@@ -1077,7 +1077,8 @@ func (a *App) flushQueueSettlement(threadID, id string, onDurable func()) *triag
 // the user's Stop or revert threw away.
 func (a *App) dropDurableFlushQueue(threadID string) {
 	a.noteAgentWakesDropped(threadID)
-	if err := a.store.DeleteFlushQueueItemsForThread(threadID); err != nil {
+	// An outside send's row goes with its notice (noteAgentSendsCleared).
+	if err := a.store.DeleteFlushQueueItemsForThread(threadID, agentSendIDRoot); err != nil {
 		log.Printf("flush queue: drop durable rows for thread %s: %v", threadID, err)
 	}
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -87,9 +86,7 @@ func (a *App) deliverThreadWake(token string, late bool) {
 		a.failThreadWake(token, "render the wake", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), threadWakeLockTimeout)
-	defer cancel()
-	if err := a.queueAgentNotice(ctx, agentNotice{
+	if err := a.queueAgentNotice(agentNotice{
 		threadID: thread.ID,
 		sendID:   threadWakeSendIDFor(token, late),
 		// The wake is a message the app wrote on the answering thread's
@@ -113,11 +110,6 @@ func (a *App) deliverThreadWake(token string, late bool) {
 	}
 }
 
-// threadWakeLockTimeout bounds the wait for the caller thread's lock. A wake
-// that cannot have it now is owed just the same, and the retry pass carries
-// it.
-const threadWakeLockTimeout = 10 * time.Second
-
 // failThreadWake records why one wake could not be handed over. The reason
 // is kept on the row, so the retry that gives up can say what stopped it and
 // a person reading the ledger can see the same thing.
@@ -134,7 +126,7 @@ func (a *App) failThreadWake(token, what string, cause error) {
 //
 // A settlement and its wake are two transactions, and the second one has ends
 // that deliver nothing: a crash between them, a caller thread that could not
-// be unarchived or locked in time, a render that failed. Nothing else revisits
+// be unarchived, a render or a queue write that failed. Nothing else revisits
 // those rows, because the pollers read open requests and this one is settled,
 // so the answer would sit in the ledger unread forever. The delivery mark is
 // conditional, so a retry of a wake that did land is a no-op.
@@ -161,8 +153,8 @@ func (a *App) retryUndeliveredThreadWakes(now time.Time) {
 		}
 		attempts := row.WakeAttempts + 1
 		// Booked before the attempt: a delivery that fails, or that is
-		// still holding a lock when the next pass comes round, must not
-		// bring this row back at once.
+		// still in flight when the next pass comes round, must not bring
+		// this row back at once.
 		if err := a.store.ScheduleThreadRequestWake(row.Token,
 			now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), attempts); err != nil {
 			logThreadRequestSweep("schedule the wake retry for "+row.Token, err)

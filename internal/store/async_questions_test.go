@@ -169,7 +169,7 @@ func TestAsyncQuestionsSurviveReopenAndQueueDrop(t *testing.T) {
 	if err != nil || len(rows) != 2 || rows[0].State != "submitted" || rows[1].State != "unanswered" {
 		t.Fatalf("restart=%+v %v", rows, err)
 	}
-	if err := s.DeleteFlushQueueItemsForThread("q"); err != nil {
+	if err := s.DeleteFlushQueueItemsForThread("q", ""); err != nil {
 		t.Fatal(err)
 	}
 	rows, err = s.ListAsyncQuestions("q", "")

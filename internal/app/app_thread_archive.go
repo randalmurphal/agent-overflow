@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -65,12 +66,15 @@ func (a *App) ArchiveThread(id string) error {
 // outside the locks because reaching the other computer may take a while.
 func (a *App) stopArchivedThreadWork(ctx context.Context, id string) error {
 	// Loops and watches are cancelled outright: nothing re-arms them, and
-	// an archived thread's schedule is over.
+	// an archived thread's schedule is over. What the app queued for the
+	// thread goes too, live session or not, so nothing of it reaches the
+	// agent when the thread is next started.
 	a.cancelAgentWakesForThread(id, "cancelled: the thread was archived")
+	withdrawErr := a.withdrawQueuedAgentMessages(id, func(string) bool { return true }, "the thread was archived before the agent took it in")
 	if err := a.cancelThreadRequests(ctx, id); err != nil {
 		log.Printf("thread tools: archive %s: cancel requests: %v", id, err)
 	}
-	return a.cancelThreadRemoteCommands(ctx, id)
+	return errors.Join(withdrawErr, a.cancelThreadRemoteCommands(ctx, id))
 }
 
 func (a *App) archiveThreadLocked(id string) error {

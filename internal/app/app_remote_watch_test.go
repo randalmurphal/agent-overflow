@@ -71,7 +71,7 @@ func TestRemoteCompletionQueueHandoffDraftAndRestartRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := a.deliverRemoteCompletion(context.Background(), w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
+		if err := a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -110,7 +110,7 @@ func TestRemoteCompletionQueueHandoffDraftAndRestartRecovery(t *testing.T) {
 	// A stale in-memory observer is also unable to insert a second message after
 	// recovery removed the normal queue row and its send identity: the durable
 	// watch no longer owes a notification.
-	_ = a.deliverRemoteCompletion(context.Background(), w, remoteCompletionOutput{Tail: w.Receipt.Output})
+	_ = a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output})
 	if len(durableQueueRows(t, a, thread.ID)) != 0 {
 		t.Fatal("stale observer re-enqueued recovered completion")
 	}
@@ -133,7 +133,7 @@ func TestRemoteCompletionUsesBusyProviderQueueForBothProviders(t *testing.T) {
 				t.Fatal(err)
 			}
 			w := completedRemoteWatch(t, a, thread)
-			if err := a.deliverRemoteCompletion(context.Background(), w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
+			if err := a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
 				t.Fatal(err)
 			}
 			flushed := waitForAtLeastQueueFlushed(t, rec, 1)
@@ -146,7 +146,7 @@ func TestRemoteCompletionUsesBusyProviderQueueForBothProviders(t *testing.T) {
 					t.Fatalf("provider input=%q", texts)
 				}
 			}
-			if err := a.deliverRemoteCompletion(context.Background(), w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
+			if err := a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
 				t.Fatal(err)
 			}
 			if count := len(waitForAtLeastQueueFlushed(t, rec, 1)); count != 1 {
@@ -425,7 +425,7 @@ func TestRemoteOnlyWorkRemainsVisibleUntilLifecycleCancelsIt(t *testing.T) {
 	if err := a.checkTransferIdle(thread); err == nil {
 		t.Fatal("transfer orphaned pending completion")
 	}
-	if err := a.deliverRemoteCompletion(context.Background(), watch, remoteCompletionOutput{Tail: watch.Receipt.Output}); err != nil {
+	if err := a.deliverRemoteCompletion(watch, remoteCompletionOutput{Tail: watch.Receipt.Output}); err != nil {
 		t.Fatal(err)
 	}
 	if pending, err := a.store.HasPendingRemoteWatches(thread.ID); err != nil || pending {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log"
 
 	"agent-overflow/internal/store"
@@ -238,8 +239,9 @@ func (a *App) stopThreadRequestsForMovedThread(ctx context.Context, threadID, de
 	// Loops and watches are this computer's clock and processes; they do
 	// not travel with the conversation.
 	a.cancelAgentWakesForThread(threadID, "cancelled: the thread was moved to another computer")
+	withdrawErr := a.withdrawCancelledAgentWakes(threadID)
 	a.settleReceiptsForThread(threadID, store.ThreadReceiptInterrupted, reason)
-	return a.cancelThreadRequests(ctx, threadID)
+	return errors.Join(withdrawErr, a.cancelThreadRequests(ctx, threadID))
 }
 
 // threadRequestDestinationName names the computer a moved thread went to, for

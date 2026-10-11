@@ -49,9 +49,12 @@ const (
 	// work has stopped and stays stopped until a person acts, which is why
 	// §6's default has it on.
 	KindApprovalNeeded Kind = "approval-needed"
-	// KindError is a turn that ended badly, or a provider process that died
-	// under a thread. It shares KindTurnComplete's identifier because both
-	// describe the same fact — this thread stopped — and a thread stops once.
+	// KindError is a turn that ended badly, a provider process that died
+	// under a thread, or a session the app started for a message it queued
+	// there failing to start. The first two share KindTurnComplete's
+	// identifier because they describe the same fact — this thread stopped —
+	// and a thread stops once. A failed start has an identifier of its own
+	// (sessionStartNotificationID).
 	KindError Kind = "error"
 	// KindProviderSignedOut is a provider whose login is gone. Account-wide,
 	// not thread-scoped: nothing will run for anyone until it is fixed.
@@ -213,6 +216,26 @@ type ThreadResumed struct {
 	QuietTick bool
 }
 
+// SessionStartFailed is a session the app started on its own, to deliver a
+// message it queued in the thread (a loop or watch wake, an outside send, an
+// answer, a worker's prompt), failing to start. Nobody watched that start, so
+// the error row it leaves is unread until something says so, and nothing in
+// the thread runs until the person acts.
+type SessionStartFailed struct {
+	Thread ThreadRef
+}
+
+// SessionStarted is a thread's session starting, whoever started it. It is
+// the retraction moment for a start failure the thread was holding.
+type SessionStarted struct {
+	ThreadID string
+	// FailureRaised is the caller's edge state: a start failure was raised
+	// for the thread and has not been withdrawn. Sessions start far more
+	// often than they fail to, and every retraction reaches each paired
+	// phone as a push, so a start with nothing to withdraw sends nothing.
+	FailureRaised bool
+}
+
 // ApprovalMoment is an approval request or its answer — the two actions of
 // the `provider:approval` transition.
 type ApprovalMoment struct {
@@ -266,6 +289,13 @@ type ProviderAuthChange struct {
 // know which it was.
 func threadNotificationID(threadID string) string { return "thread:" + threadID }
 
+// sessionStartNotificationID is per thread, apart from the rest id. A failed
+// start is not a rest state: it can follow a turn's completion that is still
+// on screen, and its retraction is a session start, which must not withdraw
+// that completion (a session restarts after a settings change with the
+// completion still unread).
+func sessionStartNotificationID(threadID string) string { return "session-start:" + threadID }
+
 // approvalNotificationID is per REQUEST, not per thread: two approvals can
 // be outstanding in one thread (a subagent's and the main agent's), each
 // answered on its own, so each needs an identifier that can be retracted on
@@ -310,6 +340,31 @@ func MapProviderExit(exit ProviderExit) (Notification, bool) {
 	return threadNotification(
 		KindError, exit.Thread, "The provider stopped. Open the thread to see why.",
 	), true
+}
+
+// MapSessionStartFailed maps a failed start the app made on its own.
+func MapSessionStartFailed(failed SessionStartFailed) (Notification, bool) {
+	if failed.Thread.ID == "" {
+		return Notification{}, false
+	}
+	notification := threadNotification(
+		KindError, failed.Thread, "The agent could not start. Open the thread to see why.",
+	)
+	notification.Send.ID = sessionStartNotificationID(failed.Thread.ID)
+	return notification, true
+}
+
+// MapSessionStarted retracts a thread's start failure. Reports false when
+// the thread holds none.
+func MapSessionStarted(started SessionStarted) (Notification, bool) {
+	if started.ThreadID == "" || !started.FailureRaised {
+		return Notification{}, false
+	}
+	return Notification{Send: Send{
+		ID:      sessionStartNotificationID(started.ThreadID),
+		Kind:    KindError,
+		Retract: true,
+	}}, true
 }
 
 // MapThreadResumed retracts a thread's rest notification. The kind on a

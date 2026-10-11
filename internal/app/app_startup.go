@@ -692,6 +692,9 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		return fmt.Errorf("restore replacement drafts: %w", err)
 	}
 	a.restoreDurableFlushQueueAtBoot()
+	if err := a.loadSessionStartFailures(); err != nil {
+		a.bootPhaseFailed(fmt.Errorf("load the threads whose start failed: %w", err))
+	}
 	endPhase()
 	browserSettings := a.currentSettings()
 	a.refreshBrowserAccelerators()

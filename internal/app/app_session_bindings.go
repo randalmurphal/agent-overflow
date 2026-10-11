@@ -319,10 +319,15 @@ func (a *App) startSession(ctx context.Context, threadID string) error {
 		return ErrShuttingDown
 	}
 	return a.runSessionStart(ctx, threadID, func() error {
+		start := a.startSessionNow
 		if a.startSessionFn != nil {
-			return a.startSessionFn(threadID)
+			start = a.startSessionFn
 		}
-		return a.startSessionNow(threadID)
+		if err := start(threadID); err != nil {
+			return err
+		}
+		a.noteSessionStarted(threadID)
+		return nil
 	})
 }
 

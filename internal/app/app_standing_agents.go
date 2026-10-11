@@ -80,21 +80,25 @@ func (a *App) GetStandingAgent(threadID string) (*store.StandingAgent, error) {
 }
 
 // DemoteStandingAgent removes a thread's standing agent row and cancels its
-// watches, which only a standing agent may keep. Its loops stay, since any
-// thread may keep one, and its home stays on disk. Demoting a thread that is
-// not a standing agent does nothing.
+// watches, which only a standing agent may keep, withdrawing their queued
+// wakes. Its loops stay, since any thread may keep one, and its home stays on
+// disk. Demoting a thread that is not a standing agent does nothing.
 //
 //ao:scope threads:operate
 func (a *App) DemoteStandingAgent(threadID string) error {
 	unlock := a.threadLocks().Lock(threadID)
-	defer unlock()
 	if _, err := a.store.DemoteStandingAgent(threadID); err != nil {
+		unlock()
 		return err
 	}
 	ids, err := a.store.CancelAgentWakesForThread(threadID, store.AgentWakeWatch,
 		"cancelled: the thread is no longer a standing agent")
 	for _, id := range ids {
 		a.stopAgentWakeRun(id)
+	}
+	unlock()
+	if len(ids) > 0 {
+		err = errors.Join(err, a.withdrawCancelledAgentWakes(threadID, ids...))
 	}
 	return err
 }

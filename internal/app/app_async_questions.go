@@ -29,7 +29,7 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 		return err
 	}
 	defer unlock()
-	err = a.queueAgentNotice(ctx, agentNotice{
+	err = a.queueAgentNotice(agentNotice{
 		threadID: threadID, sendID: sendID,
 		prepare: func() (string, bool, error) {
 			thread, err := a.store.GetThread(threadID)

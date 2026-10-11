@@ -585,7 +585,9 @@ const threadUsage = `Usage: agent-overflow thread send [--wait 30s] <thread-id> 
 Queue a message to a thread on this computer, for a script that is not an
 Agent Overflow session. The thread reads it as data, never as you speaking,
 badged as an outside send and capped at 64 KiB with the dropped bytes stated;
-a thread with no running session starts one. The app must be running here.
+a thread with no running session starts one. It returns once the message is
+queued, and prints its send id; a session that then fails to start says so
+in the thread. The app must be running here.
 --wait waits for a starting backend (at most 2m).
 `
 

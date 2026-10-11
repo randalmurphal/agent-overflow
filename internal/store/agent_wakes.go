@@ -481,13 +481,16 @@ func (s *Store) changeAgentWake(action, query string, args ...any) (bool, error)
 }
 
 // QueueAgentWake writes one wake's durable queue row, refusing with
-// ErrAgentWakeStillQueued while an earlier wake of the same row (any send id
-// under sendIDPrefix) is still waiting for the provider. The check and the
-// insert are one transaction, so two fires cannot both pass it.
-func (s *Store) QueueAgentWake(item FlushQueueItem, sendIDPrefix string) (err error) {
+// ErrAgentWakeStillQueued while more than ahead earlier wakes of the same row
+// (any send id under sendIDPrefix) are still waiting for the provider. The
+// check and the insert are one transaction, so two fires cannot both pass it.
+func (s *Store) QueueAgentWake(item FlushQueueItem, sendIDPrefix string, ahead int) (err error) {
 	action := fmt.Sprintf("store: queue agent wake %s", item.SendID)
 	if sendIDPrefix == "" || !strings.HasPrefix(item.SendID, sendIDPrefix) {
 		return fmt.Errorf("%s: send id must carry the wake's prefix", action)
+	}
+	if ahead < 0 {
+		return fmt.Errorf("%s: ahead must not be negative", action)
 	}
 	tx, release, err := s.beginDurableTx(context.Background())
 	if err != nil {
@@ -495,13 +498,13 @@ func (s *Store) QueueAgentWake(item FlushQueueItem, sendIDPrefix string) (err er
 	}
 	defer release()
 	defer rollbackAgentWakeTx(tx, action, &err)
-	var pending bool
-	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM flush_queue_items
-		WHERE thread_id = ? AND substr(send_id, 1, ?) = ?)`,
+	var pending int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM flush_queue_items
+		WHERE thread_id = ? AND substr(send_id, 1, ?) = ?`,
 		item.ThreadID, len(sendIDPrefix), sendIDPrefix).Scan(&pending); err != nil {
 		return fmt.Errorf("%s: probe queued wake: %w", action, err)
 	}
-	if pending {
+	if pending > ahead {
 		return ErrAgentWakeStillQueued
 	}
 	if err := insertFlushQueueItem(tx, item); err != nil {

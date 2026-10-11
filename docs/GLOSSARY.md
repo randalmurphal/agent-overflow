@@ -156,7 +156,7 @@ Source: `frontend/AGENTS.md`.
 |---|---|
 | **moment** | A state transition worth interrupting a person for, and the unit `internal/notify`'s mapping is written in: a turn coming to rest, an approval opening, a provider losing its login. Not an event — several wire events can project onto one moment, and most events project onto none. |
 | **retraction** | A send that WITHDRAWS a notification instead of presenting one, carrying an id and a kind and nothing else. Fired when the state that justified the notification is gone (the thread resumed, the approval was answered, the provider signed back in). Never gated by a preference: the preference answers "may I interrupt you", and withdrawing is the opposite. |
-| **stable id** | The identifier a moment derives from what it is ABOUT (`thread:<id>`, `approval:<thread>:<request>`, `provider-auth:<provider>`) rather than from a counter. It is what lets a later send replace an earlier one in place and a retraction find it. One thread holds one rest notification by construction. |
+| **stable id** | The identifier a moment derives from what it is ABOUT (`thread:<id>`, `session-start:<id>`, `approval:<thread>:<request>`, `provider-auth:<provider>`) rather than from a counter. It is what lets a later send replace an earlier one in place and a retraction find it. One thread holds one rest notification by construction. |
 
 ## Test rigs and process
 

@@ -207,6 +207,8 @@ type App struct {
 	// long-running watch processes in flight. Zero value ready. See
 	// app_agent_wakes.go.
 	agentWakes agentWakeState
+	// agentNoticeWork joins what notices run after they are accepted.
+	agentNoticeWork appAgentNoticeWorkState
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup

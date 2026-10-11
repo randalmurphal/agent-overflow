@@ -248,6 +248,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// The request sweep writes rows and can queue a wake, so it is joined
 	// beside the remote watches and before the store is closed.
 	a.threadRequestsWG.Wait()
+	// After every producer of a notice: a session start a notice began
+	// registers its session, and Step 4 must see it to close it.
+	a.stopAgentNoticeWork()
 	// The project identity refresh writes project rows. appCtx is already
 	// cancelled, which kills its git read and stops the pass unrecorded.
 	a.projectIdentityWG.Wait()

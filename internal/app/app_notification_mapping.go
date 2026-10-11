@@ -47,9 +47,10 @@ import (
 // queue mapped moments run on, the provider sign-in edges the mapping needs
 // supplied, and the log-once ledger.
 //
-// signedOut and loggedCodes are touched ONLY from queue jobs, which the
-// queue runs one at a time with a happens-before edge between them. That is
-// why neither needs a mutex — and why nothing outside a job may read them.
+// signedOut and loggedCodes are touched ONLY from queue jobs,
+// which the queue runs one at a time with a happens-before edge between them.
+// That is why none needs a mutex — and why nothing outside a job may read
+// them.
 type notificationDispatch struct {
 	queue serialqueue.Queue
 	// harnessSeq numbers the harness RPC's throwaway notification ids. It is
@@ -294,6 +295,26 @@ func (a *App) queueNotification(build func() (notify.Notification, bool)) {
 		// The fan-out hands the work to its own queue and returns; a slow
 		// Google cannot delay the next toast. See app_push.go.
 		a.pushFanout(send)
+	})
+}
+
+// notifySessionStartFailed tells the person that a session the app started
+// on its own, for a message it queued in the thread, did not start. The
+// thread's error row says why; nobody was watching for it. The failure
+// streak that raises it is the notice work's (noteAgentNoticeStartFailed).
+func (a *App) notifySessionStartFailed(threadID string) {
+	a.queueNotification(func() (notify.Notification, bool) {
+		return notify.MapSessionStartFailed(notify.SessionStartFailed{
+			Thread: a.notificationThreadRef(threadID),
+		})
+	})
+}
+
+// withdrawSessionStartFailed takes back the notification
+// notifySessionStartFailed raised.
+func (a *App) withdrawSessionStartFailed(threadID string) {
+	a.queueNotification(func() (notify.Notification, bool) {
+		return notify.MapSessionStarted(notify.SessionStarted{ThreadID: threadID, FailureRaised: true})
 	})
 }
 

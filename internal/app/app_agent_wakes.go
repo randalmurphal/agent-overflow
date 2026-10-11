@@ -172,14 +172,18 @@ func (t threadToolsApp) ListWakes(_ context.Context, caller threadtools.Caller) 
 	return out, nil
 }
 
-// CancelWake cancels the caller's live loop or watch with this label and
-// stops what it has running.
+// CancelWake cancels the caller's live loop or watch with this label, stops
+// what it has running and withdraws its wake still queued.
 func (t threadToolsApp) CancelWake(_ context.Context, caller threadtools.Caller, label, kind string) (threadtools.WakeState, bool, error) {
 	row, cancelled, err := t.app.store.CancelAgentWake(caller.ThreadID, label, kind, agentWakeOutcomeCancelled)
 	if err != nil || !cancelled {
 		return threadtools.WakeState{}, false, err
 	}
 	t.app.stopAgentWakeRun(row.ID)
+	if err := t.app.withdrawCancelledAgentWakes(row.ThreadID, row.ID); err != nil {
+		log.Printf("agent wakes: %v", err)
+		return threadtools.WakeState{}, false, fmt.Errorf("the %s %q is cancelled, but its wake already queued could not be taken back and may still arrive", row.Kind, row.Label)
+	}
 	row.State, row.NextAt = store.AgentWakeCancelled, 0
 	return agentWakeToolState(row), true, nil
 }
@@ -235,6 +239,9 @@ func agentWakeToolState(row store.AgentWake) threadtools.WakeState {
 // cancelAgentWakesForThread cancels every loop and watch of a thread that is
 // being archived, deleted or moved, and stops what they have running. Rows a
 // delete has already cascaded away still have their runs stopped by thread.
+// It may run under the thread's action lock, as a delete's does, so the
+// callers that keep the thread withdraw its queued wakes themselves
+// (withdrawCancelledAgentWakes); a deleted thread's queue goes with it.
 func (a *App) cancelAgentWakesForThread(threadID, outcome string) {
 	if _, err := a.store.CancelAgentWakesForThread(threadID, "", outcome); err != nil {
 		log.Printf("agent wakes: cancel the loops and watches of %s: %v", threadID, err)

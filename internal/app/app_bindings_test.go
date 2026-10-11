@@ -1181,6 +1181,10 @@ func newTestAppAtStorePath(t *testing.T, dbPath string) *App {
 	// stub and the textgen poison; tests that assert those behaviors
 	// install their own fakes over the top.
 	isolateE2EProviderSpawns(t, app)
+	// Cleanups run last first: the cancel releases a notice's session
+	// start waiting on a thread lock, and the join lands it before the
+	// store closes.
+	t.Cleanup(app.waitAgentNoticeWork)
 	t.Cleanup(app.appCancel)
 	ensureDefaultTestProject(t, app)
 	return app

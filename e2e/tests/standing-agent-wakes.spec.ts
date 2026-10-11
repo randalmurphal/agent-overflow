@@ -12,7 +12,10 @@
 // missed loop fire once with its count, starting the session headless; and
 // a backend killed mid-tick recording `cancelled-by-quit` and rerunning the
 // watch on the next boot; a wake whose session died before taking it in
-// recorded on its row and kept out of the composer; and a worker's question
+// recorded on its row and kept out of the composer, and the provider exit
+// notified; a wake whose session will not start (Codex's handshake refused,
+// Claude's workspace gone) leaving one error row naming the cause and a
+// notification that the next start withdraws; and a worker's question
 // and approval delivered to the standing agent that spawned it, answered
 // with thread_reply, and settled by the user answering in the worker; a
 // worker's approval or question handed back to the user, and notified, when
@@ -22,11 +25,16 @@
 // watch run stopped at its timeout; a failed tick notifying, and
 // notify_on_tick making a tick notify; wakes and outside sends queued at
 // quit recorded at boot, not put in the composer; a Claude wake flushed
-// mid-turn counted as a tick only when it runs as its own turn; and the
-// transfer dialog naming what a standing agent leaves behind.
+// mid-turn counted as a tick only when it runs as its own turn; a wake and
+// an outside send accepted while the Codex session they need is held at its
+// start, the send returning at once with its id, and both arriving after;
+// a start-failure notification raised before a restart withdrawn by the
+// first start after it; archiving a thread whose start failed withdrawing
+// its held wake and send;
+// and the transfer dialog naming what a standing agent leaves behind.
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -90,11 +98,74 @@ exec sleep 3600
 
 const run = (script: string) => `exec sh "$AO_AGENT_HOME/${script}"`;
 
+// A watch run that says what say.txt holds, once. say.hold parks a run until
+// it is removed, so a test can act between two runs.
+const SAY_SCRIPT = `h="$AO_AGENT_HOME"
+if [ -f "$h/say.hold" ]; then
+  : > "$h/say.held"
+  while [ -f "$h/say.hold" ]; do sleep 0.1; done
+  rm -f "$h/say.held"
+fi
+if [ -f "$h/say.txt" ]; then
+  cat "$h/say.txt"
+  rm -f "$h/say.txt"
+fi
+`;
+
+/** Drives SAY_SCRIPT in a standing agent's home. */
+function sayControls(home: string) {
+  return {
+    say: async (text: string) => {
+      await writeFile(join(home, 'say.tmp'), `${text}\n`);
+      await rename(join(home, 'say.tmp'), join(home, 'say.txt'));
+    },
+    hold: async () => {
+      await writeFile(join(home, 'say.hold'), '');
+      await expect.poll(() => existsSync(join(home, 'say.held')), { timeout: 15_000 }).toBe(true);
+    },
+    release: () => rm(join(home, 'say.hold')),
+  };
+}
+
+/** Breaks a thread's next session start: Codex's handshake is refused, and Claude's workspace is moved away. mend undoes it. */
+function startBreaker(harness: HarnessApp, provider: ProviderName, cwd: string) {
+  let away = '';
+  return {
+    brk: async () => {
+      if (provider === 'codex') {
+        await setScenario(harness, cwd, {
+          ...threadToolsScenario({ name: `refused-${provider}`, provider, turns: [{ text: 'unreached' }] }),
+          codex: {
+            responses: {
+              initialize:
+                '{"jsonrpc":"2.0","id":${REQUEST_ID},"error":{"code":-32603,"message":"mock: the app-server refused to start"}}',
+            },
+          },
+        });
+      } else {
+        away = `${cwd}.away`;
+        await rename(cwd, away);
+      }
+    },
+    mend: async () => {
+      if (away) {
+        await rename(away, cwd);
+        away = '';
+      }
+    },
+    cleanup: async () => {
+      if (away) await rename(away, cwd).catch(() => undefined);
+    },
+  };
+}
+
 interface NotificationSend {
   id: string;
   kind: string;
   retract?: boolean;
-  target: { threadId?: string };
+  title?: string;
+  body?: string;
+  target: { kind?: string; threadId?: string };
 }
 
 interface WakeRow {
@@ -584,7 +655,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const sent = await threadSend(dataDir, [tailThread, 'deploy 7 is done']);
       expect(sent.stderr).toBe('');
       expect(sent.code).toBe(0);
-      expect(sent.stdout).toBe(`Queued for thread ${tailThread}.\n`);
+      expect(sent.stdout).toMatch(new RegExp(`^Queued for thread ${tailThread} as agent-send:\\S+\\.\\n$`));
       const outside = await wakeInput(harness, tailP.path, 'Message sent from outside Agent Overflow');
       expect(outside.report.input).toContain(DATA_NOTICE);
       expect(outside.report.input).toContain('"deploy 7 is done"');
@@ -741,6 +812,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     test.setTimeout(120_000);
     const harness = await launchHarness();
     try {
+      await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
       const dataDir = harness.bootstrap.dataDir;
       const seed = await harness.rpc<SeedResult>('HarnessSeed', {
         projects: [{ name: `wakes-death-${provider}`, repo: {}, threads: [{ title: 'Doomed watcher', provider }] }],
@@ -811,7 +883,15 @@ echo "the only report"
       // with does not know of the loss yet.
       await expect.poll(() => existsSync(join(agent.home, 'again.waiting')), { timeout: 30_000 }).toBe(true);
 
+      // A provider that dies holding the wake (Claude's still starting) is
+      // a provider exit, and says so.
+      const exited = harness.waitForEvent<NotificationSend>(
+        'notification:send',
+        (data) => !data.retract && data.kind === 'error' && data.id === `thread:${thread}`,
+        30_000,
+      );
       await harness.rpc('HarnessMockCommand', mockId, { type: 'exit', code: 1 });
+      expect((await exited).body).toBe('The provider stopped. Open the thread to see why.');
       await expect.poll(() => dbWake(dataDir, thread, 'once')?.last_outcome, { timeout: 30_000 })
         .toBe('not delivered: the session ended before it took the wake in');
       const draftOf = () => {
@@ -1606,6 +1686,652 @@ echo "the report before the quit"
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// A wake and an outside send are accepted once they are queued, not once the
+// session they need is up. Codex holds this start at its handshake for longer
+// than the ten seconds a delivery once waited for the thread lock; both still
+// arrive, and the send returns at once with its id. Claude's start does not
+// wait on the CLI, so the mock cannot make one slow.
+test('codex: a wake and an outside send are accepted while the session they need is slow to start', async ({ page }) => {
+  test.setTimeout(150_000);
+  const provider = 'codex';
+  const HOLD_MS = 20_000;
+  const harness = await launchHarness();
+  try {
+    const dataDir = harness.bootstrap.dataDir;
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [{ name: `wakes-slow-start-${provider}`, repo: {}, threads: [{ title: 'Slow starter', provider }] }],
+    });
+    const { path: cwd, threadIds } = seed.projects[0];
+    const thread = threadIds[0];
+    const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+    await writeFile(
+      join(agent.home, 'once.sh'),
+      `[ -f "$AO_AGENT_HOME/once.done" ] && exec sleep 3600
+while [ ! -f "$AO_AGENT_HOME/once.release" ]; do sleep 0.1; done
+: > "$AO_AGENT_HOME/once.done"
+echo "the report while the start was held"
+`,
+    );
+    await setScenario(
+      harness,
+      cwd,
+      threadToolsScenario({
+        name: `wakes-slow-start-${provider}`,
+        provider,
+        echoUserMessage: true,
+        turns: [
+          {
+            steps: [{ call: { tool: 'thread_watch', args: { label: 'once', command: run('once.sh'), every_seconds: 1 } } }],
+            text: 'Watching once.',
+          },
+        ],
+        afterTurns: 'silent',
+      }),
+    );
+    await harness.rpc('StartSession', thread);
+    await harness.rpc('SendMessage', thread, 'report once', null);
+    const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd, timeoutMs: 60_000 });
+    expect(ack.isError, ack.text).toBe(false);
+    await awaitTurnCompleted(harness, thread);
+    await harness.rpc('StopSession', thread);
+
+    // The next start is held at the handshake. The send may join the
+    // wake's turn or take one of its own, so every reply reads the same.
+    await setScenario(harness, cwd, {
+      ...threadToolsScenario({
+        name: `wakes-slow-start-held-${provider}`,
+        provider,
+        echoUserMessage: true,
+        turns: [{ text: 'Noted.' }, { text: 'Noted.' }, { text: 'Noted.' }],
+        afterTurns: 'silent',
+      }),
+      startupDelayMs: HOLD_MS,
+    });
+    const queued = () => {
+      const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+      try {
+        return (
+          db.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ? ORDER BY enqueued_at, rowid`).all(thread) as {
+            send_id: string;
+          }[]
+        ).map((row) => row.send_id);
+      } finally {
+        db.close();
+      }
+    };
+    const released = Date.now();
+    await writeFile(join(agent.home, 'once.release'), '');
+    // The wake is recorded delivered when it is queued, while its start is
+    // still held.
+    await expect.poll(() => dbWake(dataDir, thread, 'once')?.last_outcome, { timeout: 15_000 }).toBe('delivered');
+
+    const sending = Date.now();
+    const sent = await threadSend(dataDir, [thread, 'deploy 10 is done']);
+    const sendMs = Date.now() - sending;
+    expect(sent.stderr).toBe('');
+    expect(sent.code).toBe(0);
+    const sendID = /^Queued for thread \S+ as (agent-send:\S+)\.\n$/.exec(sent.stdout)?.[1];
+    expect(sendID, sent.stdout).toBeTruthy();
+    expect(sendMs).toBeLessThan(8_000);
+    // Both are queued and neither has reached the provider: the start is
+    // still held.
+    const rows = queued();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatch(/^agent-wake:/);
+    expect(rows[1]).toBe(sendID);
+    expect(countInputs(harness, cwd, 'Watch "once" reported.')).toBe(0);
+    expect(countInputs(harness, cwd, 'Message sent from outside Agent Overflow')).toBe(0);
+
+    const wake = await wakeInput(harness, cwd, 'Watch "once" reported.', 90_000);
+    expect(wake.report.input).toContain('"the report while the start was held"');
+    const outside = await wakeInput(harness, cwd, 'Message sent from outside Agent Overflow', 90_000);
+    expect(outside.report.input).toContain('"deploy 10 is done"');
+    expect(Date.now() - released).toBeGreaterThanOrEqual(HOLD_MS);
+    await expect.poll(queued, { timeout: 30_000 }).toEqual([]);
+    expect(dbWake(dataDir, thread, 'once')!.last_outcome).toBe('delivered');
+
+    await harness.open(page);
+    const report = await wakeBubble(page, 'Slow starter', 'Watch · once', 'the report while the start was held');
+    const send = await wakeBubble(page, 'Slow starter', 'Sent by a script', 'deploy 10 is done');
+    await shoot(page, `${provider}-slow-start-wake-and-send.png`, report, send);
+  } finally {
+    await harness.close();
+  }
+});
+
+// A wake whose session will not start leaves an error row nobody is looking
+// at, so it also notifies, and the thread's next start takes the
+// notification back. Codex's mock refuses the handshake. Claude's start ends
+// at the spawn and does not wait on the CLI, so the mock cannot fail it; its
+// start fails here because the workspace is gone, which the row names and
+// nothing else in the start reports. The watch runs in the agent's home, so
+// it still reports.
+for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${provider}: a wake whose session will not start notifies until the thread starts`, async ({ page }) => {
+    test.setTimeout(150_000);
+    const harness = await launchHarness();
+    let away = '';
+    try {
+      await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+      const dataDir = harness.bootstrap.dataDir;
+      const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `wakes-start-fails-${provider}`, repo: {}, threads: [{ title: 'Broken starter', provider }] }],
+      });
+      const { path: cwd, threadIds } = seed.projects[0];
+      const thread = threadIds[0];
+      const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      await writeFile(
+        join(agent.home, 'once.sh'),
+        `[ -f "$AO_AGENT_HOME/once.done" ] && exec sleep 3600
+while [ ! -f "$AO_AGENT_HOME/once.release" ]; do sleep 0.1; done
+: > "$AO_AGENT_HOME/once.done"
+echo "the report nobody could read"
+`,
+      );
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `wakes-start-fails-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [
+            {
+              steps: [
+                {
+                  call: {
+                    tool: 'thread_watch',
+                    args: { label: 'once', command: run('once.sh'), every_seconds: 1, cwd: agent.home },
+                  },
+                },
+              ],
+              text: 'Watching once.',
+            },
+          ],
+          afterTurns: 'silent',
+        }),
+      );
+      await harness.rpc('StartSession', thread);
+      await harness.rpc('SendMessage', thread, 'report once', null);
+      const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd, timeoutMs: 60_000 });
+      expect(ack.isError, ack.text).toBe(false);
+      await awaitTurnCompleted(harness, thread);
+      await harness.rpc('StopSession', thread);
+
+      if (provider === 'codex') {
+        await setScenario(harness, cwd, {
+          ...threadToolsScenario({ name: `wakes-start-refused-${provider}`, provider, turns: [{ text: 'unreached' }] }),
+          codex: {
+            responses: {
+              initialize:
+                '{"jsonrpc":"2.0","id":${REQUEST_ID},"error":{"code":-32603,"message":"mock: the app-server refused to start"}}',
+            },
+          },
+        });
+      } else {
+        away = `${cwd}.away`;
+        await rename(cwd, away);
+      }
+      const startFailure = (retract: boolean) => (data: NotificationSend) =>
+        data.id === `session-start:${thread}` && Boolean(data.retract) === retract;
+      const raised = harness.waitForEvent<NotificationSend>('notification:send', startFailure(false), 60_000);
+      await writeFile(join(agent.home, 'once.release'), '');
+      const failure = await raised;
+      console.log(`${provider}: notification: ${JSON.stringify(failure)}`);
+      expect(failure).toMatchObject({
+        kind: 'error',
+        title: 'Broken starter',
+        body: 'The agent could not start. Open the thread to see why.',
+        target: { kind: 'thread', threadId: thread },
+      });
+      const rowPrefix = 'The watch "once" woke this thread and its message is queued, but the agent could not start: ';
+      const errorRows = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return (
+            db.prepare(`SELECT summary FROM items WHERE thread_id = ? AND kind = 'error'`).all(thread) as {
+              summary: string;
+            }[]
+          ).map((row) => row.summary);
+        } finally {
+          db.close();
+        }
+      };
+      await expect.poll(() => errorRows().some((row) => row.startsWith(rowPrefix)), { timeout: 15_000 }).toBe(true);
+      console.log(`${provider}: error rows: ${JSON.stringify(errorRows())}`);
+      // The start's one row, naming what failed.
+      expect(errorRows()).toEqual([
+        rowPrefix +
+          (provider === 'codex'
+            ? 'start session: codex: initialize handshake failed: codex: initialize: mock: the app-server refused to start (code -32603)'
+            : `start session: workspace ${cwd} no longer exists`),
+      ]);
+      const queued = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return (
+            db.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ?`).all(thread) as { send_id: string }[]
+          ).map((row) => row.send_id);
+        } finally {
+          db.close();
+        }
+      };
+      expect(queued()).toHaveLength(1);
+      expect(queued()[0]).toMatch(/^agent-wake:/);
+      expect(countInputs(harness, cwd, 'Watch "once" reported.')).toBe(0);
+      expect(harness.countEvents<NotificationSend>('notification:send', startFailure(false))).toBe(1);
+
+      // Mended, the person's start takes the notification back and the
+      // queued wake arrives.
+      if (away) {
+        await rename(away, cwd);
+        away = '';
+      }
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `wakes-start-mended-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [{ text: 'Noted.' }],
+          afterTurns: 'silent',
+        }),
+      );
+      const withdrawn = harness.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
+      await harness.rpc('StartSession', thread);
+      console.log(`${provider}: withdrawn: ${JSON.stringify(await withdrawn)}`);
+      const wake = await wakeInput(harness, cwd, 'Watch "once" reported.');
+      expect(wake.report.input).toContain('"the report nobody could read"');
+      await awaitTurnCompleted(harness, thread);
+      expect(harness.countEvents<NotificationSend>('notification:send', startFailure(false))).toBe(1);
+      expect(harness.countEvents<NotificationSend>('notification:send', startFailure(true))).toBe(1);
+
+      await harness.open(page);
+      const report = await wakeBubble(page, 'Broken starter', 'Watch · once', 'the report nobody could read');
+      const row = page.getByText(rowPrefix);
+      await shoot(page, `${provider}-start-failure-notifies.png`, row, report);
+    } finally {
+      if (away) await rename(away, away.slice(0, -'.away'.length)).catch(() => undefined);
+      await harness.close();
+    }
+  });
+}
+
+// A failed start does not stall the agent. Each later run of the watch
+// tries the start again, and the one whose start works delivers the held
+// wake and its own, with nobody starting the thread. The notification is
+// raised once per run of failures and withdrawn by the start that ends it;
+// the second run here is ended by a run with nothing to say. A held run
+// (SAY_SCRIPT) makes the mend land between two runs.
+for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${provider}: a later fire retries a start that failed`, async ({ page }) => {
+    test.setTimeout(180_000);
+    const harness = await launchHarness();
+    let breaker: ReturnType<typeof startBreaker> | undefined;
+    try {
+      await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+      const dataDir = harness.bootstrap.dataDir;
+      const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `wakes-start-retry-${provider}`, repo: {}, threads: [{ title: 'Retrying starter', provider }] }],
+      });
+      const { path: cwd, threadIds } = seed.projects[0];
+      const thread = threadIds[0];
+      const { home } = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      await writeFile(join(home, 'say.sh'), SAY_SCRIPT);
+      const { say, hold, release } = sayControls(home);
+      const b = startBreaker(harness, provider, cwd);
+      breaker = b;
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `wakes-start-retry-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [
+            {
+              steps: [
+                {
+                  call: {
+                    tool: 'thread_watch',
+                    args: { label: 'tick', command: run('say.sh'), every_seconds: 1, cwd: home },
+                  },
+                },
+              ],
+              text: 'Watching tick.',
+            },
+          ],
+          afterTurns: 'silent',
+        }),
+      );
+      await harness.rpc('StartSession', thread);
+      await harness.rpc('SendMessage', thread, 'watch tick', null);
+      const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd, timeoutMs: 60_000 });
+      expect(ack.isError, ack.text).toBe(false);
+      await awaitTurnCompleted(harness, thread);
+
+      const brk = async () => {
+        await harness.rpc('StopSession', thread);
+        await b.brk();
+      };
+      const mend = async (name: string) => {
+        await b.mend();
+        await setScenario(
+          harness,
+          cwd,
+          threadToolsScenario({ name, provider, echoUserMessage: true, turns: [{ text: 'Noted.' }], afterTurns: 'repeatLast' }),
+        );
+      };
+      const startFailure = (retract: boolean) => (data: NotificationSend) =>
+        data.id === `session-start:${thread}` && Boolean(data.retract) === retract;
+      const raises = () => harness.countEvents<NotificationSend>('notification:send', startFailure(false));
+      const retracts = () => harness.countEvents<NotificationSend>('notification:send', startFailure(true));
+      const errorRows = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return (
+            db.prepare(`SELECT summary FROM items WHERE thread_id = ? AND kind = 'error'`).all(thread) as {
+              summary: string;
+            }[]
+          ).map((row) => row.summary);
+        } finally {
+          db.close();
+        }
+      };
+      const lastOutput = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return (
+            db.prepare(`SELECT last_output FROM agent_wakes WHERE thread_id = ? AND label = 'tick'`).get(thread) as {
+              last_output: string;
+            }
+          ).last_output;
+        } finally {
+          db.close();
+        }
+      };
+      const queuedWakes = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return (
+            db
+              .prepare(`SELECT COUNT(*) AS n FROM flush_queue_items WHERE thread_id = ? AND send_id LIKE 'agent-wake:%'`)
+              .get(thread) as { n: number }
+          ).n;
+        } finally {
+          db.close();
+        }
+      };
+      const reported = (text: string) => countInputs(harness, cwd, JSON.stringify(text));
+      // No turn is running and nothing waits to go in. Codex may steer the
+      // second wake into the first one's turn, so inputs and turns do not
+      // pair up.
+      const settled = () =>
+        expect
+          .poll(
+            async () => {
+              const live = await harness.rpc<{ activeTurn?: unknown; queueItems: unknown[]; flushedItems: unknown[] }>(
+                'GetThreadLiveState',
+                thread,
+              );
+              return !live.activeTurn && live.queueItems.length === 0 && live.flushedItems.length === 0;
+            },
+            { timeout: 60_000 },
+          )
+          .toBe(true);
+
+      // The first run of failures: one wake held, one notification, one
+      // row, while later runs try the start and skip their own wakes.
+      await brk();
+      await say('report 1');
+      await harness.waitForEvent<NotificationSend>('notification:send', startFailure(false), 60_000);
+      // The run that reads report 2 finds report 1 still queued and skips:
+      // its output stays on the row, where the quiet runs after it leave it,
+      // and the queue still holds the one wake.
+      await say('report 2');
+      await expect.poll(lastOutput, { timeout: 30_000 }).toContain('"report 2"');
+      expect(queuedWakes()).toBe(1);
+      console.log(`${provider}: error rows while failing: ${JSON.stringify(errorRows())}`);
+      expect(errorRows()).toHaveLength(1);
+      expect(raises()).toBe(1);
+      expect(retracts()).toBe(0);
+      expect(reported('report 1')).toBe(0);
+
+      // Mended between two runs: the next run's start works, and the held
+      // wake and the run's own both arrive.
+      await hold();
+      await mend(`wakes-start-retry-mended-${provider}`);
+      await say('report 3');
+      await release();
+      await harness.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
+      await expect.poll(() => reported('report 1') > 0 && reported('report 3') > 0, { timeout: 60_000 }).toBe(true);
+      await settled();
+      console.log(`${provider}: the run after the mend delivered the held wake and its own`);
+      expect(reported('report 2')).toBe(0);
+      expect(raises()).toBe(1);
+      expect(retracts()).toBe(1);
+
+      // A second run of failures raises the notification again, and a run
+      // with nothing to say ends it.
+      await brk();
+      await say('report 4');
+      await harness.waitForEvent<NotificationSend>('notification:send', startFailure(false), 60_000);
+      expect(raises()).toBe(2);
+      console.log(`${provider}: a second run of failures raised the notification again`);
+      await hold();
+      await mend(`wakes-start-retry-quiet-${provider}`);
+      await release();
+      await harness.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
+      await expect.poll(() => reported('report 4'), { timeout: 60_000 }).toBeGreaterThan(0);
+      await settled();
+      console.log(`${provider}: a quiet run started the thread and delivered the held wake`);
+      expect(raises()).toBe(2);
+      expect(retracts()).toBe(2);
+
+      await harness.open(page);
+      const held = await wakeBubble(page, 'Retrying starter', 'Watch · tick', 'report 1');
+      const own = await wakeBubble(page, 'Retrying starter', 'Watch · tick', 'report 3');
+      await shoot(page, `${provider}-start-retried-by-a-later-fire.png`, held, own);
+    } finally {
+      await breaker?.cleanup();
+      await harness.close();
+    }
+  });
+}
+
+// The start-failure notification outlives a restart, and so does what
+// withdraws it: the first start that succeeds after the restart takes it
+// back, once.
+for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${provider}: a start failure raised before a restart is withdrawn by the first start after it`, async () => {
+    test.setTimeout(150_000);
+    const root = await mkdtemp(join(tmpdir(), `ao-wake-restart-failure-${provider}-`));
+    let harness: HarnessApp | undefined;
+    let breaker: ReturnType<typeof startBreaker> | undefined;
+    try {
+      harness = await launchHarness({ dataDir: root });
+      await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+      const dataDir = harness.bootstrap.dataDir;
+      const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `wakes-restart-failure-${provider}`, repo: {}, threads: [{ title: 'Restarted starter', provider }] }],
+      });
+      const { path: cwd, threadIds } = seed.projects[0];
+      const thread = threadIds[0];
+      const b = startBreaker(harness, provider, cwd);
+      breaker = b;
+      await b.brk();
+      const startFailure = (retract: boolean) => (data: NotificationSend) =>
+        data.id === `session-start:${thread}` && Boolean(data.retract) === retract;
+      const raised = harness.waitForEvent<NotificationSend>('notification:send', startFailure(false), 60_000);
+      const sent = await threadSend(dataDir, [thread, 'deploy 21 is done']);
+      expect(sent.code, sent.stderr).toBe(0);
+      await raised;
+      console.log(`${provider}: the start failure raised its notification`);
+
+      await harness.close();
+      harness = undefined;
+      harness = await launchHarness({ dataDir: root });
+      const h = harness;
+      await b.mend();
+      await setScenario(
+        h,
+        cwd,
+        threadToolsScenario({ name: `wakes-restart-mended-${provider}`, provider, turns: [{ text: 'Noted.' }], afterTurns: 'silent' }),
+      );
+      const withdrawn = h.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
+      await h.rpc('StartSession', thread);
+      await withdrawn;
+      console.log(`${provider}: the first start after the restart withdrew it`);
+      await h.rpc('StopSession', thread);
+      await h.rpc('StartSession', thread);
+      await h.rpc('StopSession', thread);
+      expect(h.countEvents<NotificationSend>('notification:send', startFailure(true))).toBe(1);
+      expect(h.countEvents<NotificationSend>('notification:send', startFailure(false))).toBe(0);
+    } finally {
+      await breaker?.cleanup();
+      if (harness) await harness.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+// Archiving a thread takes back what the app queued for it whether or not a
+// session is live: a wake and an outside send held behind a failed start do
+// not reach the agent when the person unarchives the thread and starts it.
+for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${provider}: archiving a thread whose start failed withdraws its held wake and send`, async ({ page }) => {
+    test.setTimeout(150_000);
+    const harness = await launchHarness();
+    let breaker: ReturnType<typeof startBreaker> | undefined;
+    try {
+      await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+      const dataDir = harness.bootstrap.dataDir;
+      const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `wakes-archive-held-${provider}`, repo: {}, threads: [{ title: 'Shelved starter', provider }] }],
+      });
+      const { path: cwd, threadIds } = seed.projects[0];
+      const thread = threadIds[0];
+      const { home } = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      await writeFile(join(home, 'say.sh'), SAY_SCRIPT);
+      const { say } = sayControls(home);
+      const b = startBreaker(harness, provider, cwd);
+      breaker = b;
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `wakes-archive-held-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [
+            {
+              steps: [
+                {
+                  call: {
+                    tool: 'thread_watch',
+                    args: { label: 'tick', command: run('say.sh'), every_seconds: 1, cwd: home },
+                  },
+                },
+              ],
+              text: 'Watching tick.',
+            },
+          ],
+          afterTurns: 'silent',
+        }),
+      );
+      await harness.rpc('StartSession', thread);
+      await harness.rpc('SendMessage', thread, 'watch tick', null);
+      const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd, timeoutMs: 60_000 });
+      expect(ack.isError, ack.text).toBe(false);
+      await awaitTurnCompleted(harness, thread);
+
+      const startFailure = (retract: boolean) => (data: NotificationSend) =>
+        data.id === `session-start:${thread}` && Boolean(data.retract) === retract;
+      const queued = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return (
+            db.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ? ORDER BY enqueued_at, rowid`).all(thread) as {
+              send_id: string;
+            }[]
+          ).map((row) => row.send_id.split(':')[0]);
+        } finally {
+          db.close();
+        }
+      };
+      const notice =
+        'A message sent with agent-overflow thread send was not delivered: the thread was archived before the agent took it in. The script that sent it can send it again.';
+      const notices = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return (
+            db
+              .prepare(`SELECT COUNT(*) AS n FROM items WHERE thread_id = ? AND kind = 'notification' AND summary = ?`)
+              .get(thread, notice) as { n: number }
+          ).n;
+        } finally {
+          db.close();
+        }
+      };
+
+      // A wake and an outside send held behind a failed start.
+      await harness.rpc('StopSession', thread);
+      await b.brk();
+      await say('report 1');
+      await harness.waitForEvent<NotificationSend>('notification:send', startFailure(false), 60_000);
+      const sent = await threadSend(dataDir, [thread, 'deploy 13 is done']);
+      expect(sent.stderr).toBe('');
+      expect(sent.code).toBe(0);
+      await expect.poll(queued, { timeout: 15_000 }).toEqual(['agent-wake', 'agent-send']);
+      console.log(`${provider}: held behind the failed start: ${JSON.stringify(queued())}`);
+
+      // Archived while stopped: both come back out of the queue, the watch
+      // is cancelled and the send leaves its notice.
+      await harness.rpc('ArchiveThread', thread);
+      await expect.poll(queued, { timeout: 15_000 }).toEqual([]);
+      await expect.poll(notices, { timeout: 15_000 }).toBe(1);
+      expect(dbWakes(dataDir, thread)).toEqual([
+        { kind: 'watch', label: 'tick', state: 'cancelled', last_outcome: 'cancelled: the thread was archived' },
+      ]);
+      console.log(`${provider}: archived: queue empty, the send's notice written, the watch cancelled`);
+
+      // Unarchived and mended, the person's start delivers neither.
+      await harness.rpc('UnarchiveThread', thread);
+      await b.mend();
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `wakes-archive-held-mended-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [{ text: 'Nothing waiting.' }],
+          afterTurns: 'silent',
+        }),
+      );
+      const withdrawn = harness.waitForEvent<NotificationSend>('notification:send', startFailure(true), 60_000);
+      await harness.rpc('StartSession', thread);
+      await withdrawn;
+      await harness.rpc('SendMessage', thread, 'anything waiting?', null);
+      await wakeInput(harness, cwd, 'anything waiting?');
+      await awaitTurnCompleted(harness, thread);
+      expect(countInputs(harness, cwd, 'Watch "tick" reported.')).toBe(0);
+      expect(countInputs(harness, cwd, 'deploy 13 is done')).toBe(0);
+      expect(queued()).toEqual([]);
+      expect(notices()).toBe(1);
+      console.log(`${provider}: the person's start after unarchive delivered neither the wake nor the send`);
+
+      await harness.open(page);
+      await page.getByTestId('thread-row').getByText('Shelved starter', { exact: true }).click();
+      await shoot(page, `${provider}-archive-withdraws-held-wake-and-send.png`, page.getByText(notice));
+    } finally {
+      await breaker?.cleanup();
+      await harness.close();
+    }
+  });
+}
 
 // A wake that joins a person's running turn leaves the turn theirs: Codex
 // steers it in, and the turn still notifies. Claude's counterpart, a wake
