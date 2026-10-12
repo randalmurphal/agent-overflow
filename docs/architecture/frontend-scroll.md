@@ -1365,6 +1365,9 @@ stays reachable during an outage; normal viewport-resize handling preserves
 the timeline's follow/escape intent. No space is reserved while healthy. The
 compact row appears and goes without a fade: a fading row would keep its
 height after its state ended and move live content under a pressed pointer.
+A tap's click is hit-tested after its release, so a press on the compact
+list or the compact thread header while the row shows keeps the row's height
+until that click, or until the press ends without one (`utils/tapHold.ts`).
 
 ## Nested Scrollers And Gesture Attribution
 
