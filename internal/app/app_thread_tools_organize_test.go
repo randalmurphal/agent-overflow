@@ -4,12 +4,58 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 )
+
+// An agent's thread_update archive of a thread with a live session returns.
+// The teardown's queue drop takes the thread's mutation lock, which is not
+// reentrant, so the patch must have released it before it stops the session.
+func TestOrganizePatchArchiveOfALiveSessionReturns(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.ensureTriageRouter()
+	thread := testThread("organize-archive-live")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex),
+		Token:    "tok",
+		Liveness: newSessionLiveness(time.Now()),
+	})
+	archived := true
+	done := make(chan error, 1)
+	go func() {
+		_, err := app.applyThreadOrganizePatchLocked(context.Background(), thread.ID, threadapp.OrganizePatch{Archived: &archived})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("applyThreadOrganizePatchLocked: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("the archive did not return: action refs %d, mutation refs %d",
+			app.threadApplication().Refs(thread.ID), app.threadApplication().MutationRefs(thread.ID))
+	}
+	if _, live := app.sessionManager().get(thread.ID); live {
+		t.Fatal("the archived thread's session is still live")
+	}
+	row, err := app.store.GetThread(thread.ID)
+	if err != nil || !row.Archived {
+		t.Fatalf("thread archived = %v, %v; want archived", row.Archived, err)
+	}
+	if refs := app.threadApplication().MutationRefs(thread.ID); refs != 0 {
+		t.Fatalf("mutation lock refs after the archive = %d, want 0", refs)
+	}
+}
 
 // thread_update and thread_group organize through the sidebar's own
 // bindings, so these tests watch two things at once: what the store holds
