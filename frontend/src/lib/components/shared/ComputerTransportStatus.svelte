@@ -72,6 +72,7 @@
   // the bundle notice: it is about the data this backend serves now.
   import { dismissBootFailureNotice, getBootFailureNotice } from '../../stores/bootFailureNotice.svelte';
   import { isBackendResyncing, onBackendRecovery } from '../../stores/transportRecovery';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   // Tick once per second so the countdown stays in sync. We only mount
   // when the banner is visible; on a steady-state connection the
@@ -337,6 +338,16 @@
     openSettingsOverlay('systems');
   }
 
+  // Compact holds the banner in the layout, so a fade-out would keep its
+  // row for the length of the fade after the state it showed has ended. The
+  // content under it is live by then: a sync ends as the sidebar's rows
+  // arrive, and the late collapse moved a row out from under a tap already
+  // pressed on it. Compact shows and drops the row at once; the desktop
+  // overlay moves nothing and keeps its fade.
+  function bannerFade(node: Element) {
+    return isCompactLayout() ? {} : fade(node, { duration: 150 });
+  }
+
   async function handleSignIn(): Promise<void> {
     if (signingIn) return;
     signingIn = true;
@@ -363,7 +374,7 @@
 {#if visible}
   <!-- An opaque ground keeps the tint readable over desktop pane content. -->
   <div
-    transition:fade={{ duration: 150 }}
+    transition:bannerFade
     class="absolute inset-x-0 top-0 z-30 bg-surface-1 compact:static compact:shrink-0"
   >
   <div
