@@ -695,7 +695,7 @@ func TestSessionCloseIdempotent(t *testing.T) {
 // failed-launch path — NewSession's deferred cleanup calls Close. Removal is
 // idempotent, so the second Close must not turn a gone file into an error.
 func TestSessionCloseRemovesTheSystemPromptFile(t *testing.T) {
-	path, err := claude.WriteSystemPromptFile("You are the agent.")
+	path, err := claude.WriteSystemPromptFile(t.TempDir(), "You are the agent.")
 	if err != nil {
 		t.Fatalf("WriteSystemPromptFile() error = %v", err)
 	}

@@ -555,6 +555,10 @@ func (a *App) spawnProviderSession(
 		// thread title lands. See app_claude_peer_name.go.
 		cfg.PeerSessionName = opts.ClaudePeerSessionName
 		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
+		cfg.SystemPromptDir, err = a.claudePromptFileDir()
+		if err != nil {
+			return session{}, err
+		}
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return session{}, err
@@ -729,6 +733,10 @@ func (a *App) spawnProviderSession(
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
 		cfg.Upstream = a.claudetuiUpstream()
 		cfg.EventLogger = a.logger
+		cfg.SystemPromptDir, err = a.claudePromptFileDir()
+		if err != nil {
+			return session{}, err
+		}
 		sess, err := claudetui.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return session{}, err

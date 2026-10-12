@@ -48,11 +48,15 @@ type Config struct {
 	SystemPrompt string
 	// AppendSystemPrompt follows the prompt the session otherwise runs with
 	// (the CLI's default body, or SystemPrompt), joined by one blank line,
-	// via `--append-system-prompt-file <path>`: a second temp file from the
+	// via `--append-system-prompt-file <path>`: a second file from the
 	// same writer, removed with the first. The TUI composes it exactly as
 	// headless does (spike-verified 2.1.284 via PTY + wire capture). The
 	// app stamps its guide here (internal/app/app_agent_guide.go).
 	AppendSystemPrompt string
+	// SystemPromptDir is the directory both prompt files are created in;
+	// required when either prompt is set. Same contract as
+	// claude.Config.SystemPromptDir.
+	SystemPromptDir string
 	// InstalledCLIVersion is the binary's version as the app last read it,
 	// empty when unknown; gates claude.SystemPromptSnapshotArgs, which the
 	// TUI honors like headless (same 2.1.284 capture).
@@ -123,7 +127,7 @@ type Config struct {
 // along, because the interactive TUI honors both flags:
 //
 //   - SystemPrompt passes through unchanged; launch.go writes it to the
-//     temp file `--system-prompt-file` names.
+//     file `--system-prompt-file` names.
 //   - DisabledTools is taken RAW from the options rather than off
 //     base.DisallowedTools, which unions in the read-only mode strip that
 //     must never reach this provider. It still goes through the headless

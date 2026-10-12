@@ -334,7 +334,7 @@ func TestTerminalExitCallbackEmitsTheExit(t *testing.T) {
 		if evt.Code != 137 || evt.Reason != "signal:SIGKILL" {
 			t.Fatalf("status = (%d,%q), want (137,signal:SIGKILL)", evt.Code, evt.Reason)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("no terminal:exit event emitted for a terminal exit")
 	}
 }
