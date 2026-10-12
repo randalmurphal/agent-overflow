@@ -345,13 +345,16 @@ providers run identical skill text:
 | `gh` in `watch-pr`, Babysit, Shipping, the autopilots | one `forge` script choosing `gh` or `glab` from the remote |
 | `.mdc` always-apply rule, SessionStart hook | the agent's own instructions file |
 | `make-bot-ui`, Benny's Slack triggers | not ported; Benny's triage and reproduce skills are ported as skills an agent runs from a watch |
+| Graphite `gt` stack reads in `orch` and the orchestrate playbook | `forge stack`: the chain of pull requests from the current branch to the default branch, read from each request's base |
 
 The settings page `Skills` lists the shipped tree with its upstream
-version, shows whether it is installed in each provider home
-(`<claude home>/skills/pstack`, `<codex home>/skills/pstack`), and
-offers Install, Update and Remove per provider. Install copies; it never
-symlinks into the repository. Remove deletes only what Install wrote,
-by manifest.
+version, shows whether it is installed in each provider home, and
+offers Install, Update and Remove per provider. Install copies each
+skill directory `assets/skills/pstack/skills/<name>` to
+`<provider home>/skills/<name>`: both providers discover a skill one
+level under `skills/`, so the tree is flattened rather than nested
+under a `pstack` directory. Install never symlinks into the
+repository. Remove deletes only what Install wrote, by manifest.
 
 ### Workflows to MCP
 
