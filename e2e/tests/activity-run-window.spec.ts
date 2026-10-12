@@ -8,7 +8,7 @@
 // its tail, and a live run a switch-back sync ships mid-run counts the
 // members it gained during the sync.
 import { test, expect, type SeedResult } from './fixtures.js';
-import { advance, claudeScenario, emit, listItems, startMock, textLines, toolResultLine, toolUseLine, waitForGate } from './agent-visibility-helpers.js';
+import { advance, claudeScenario, emit, startMock, textLines, toolResultLine, toolUseLine, waitForGate, waitForPersistedToolCalls } from './agent-visibility-helpers.js';
 
 const RUN_MEMBERS = 500;
 // activityRunWindowRows default and ACTIVITY_RUN_CHUNK_ROWS, the two
@@ -274,12 +274,9 @@ test('a live run larger than its window grows at its tail without reading the ru
   const mockId = await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'Start', null);
   await waitForGate(harness, 'grow');
-  // The gate opens once the mock has written the rows, which can be before
-  // the backend has persisted them. A page read then ships an older window
-  // and the rest arrive as live rows, so the counts below would start
-  // from a different span.
-  await expect.poll(async () => (await listItems(harness, threadId))
-    .filter(item => item.kind === 'tool_call' && item.status === 'completed').length).toBe(60);
+  // A page read before the rows persist ships an older window, so the
+  // counts below would start from a different span.
+  await waitForPersistedToolCalls(harness, threadId, 60);
 
   // Opened mid-run: the page ships the run's window and a stub for the rest.
   await openThread('Live run');

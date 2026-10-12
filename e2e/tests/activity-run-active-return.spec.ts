@@ -1,7 +1,7 @@
 // A following viewport must reach the physical tail above the composer after
 // active work advances while the thread is switched away or its pane is closed.
 import { test, expect, type SeedResult } from './fixtures.js';
-import { advance, claudeScenario, emit, startMock, textLines, toolResultLine, toolUseLine, waitForGate } from './agent-visibility-helpers.js';
+import { advance, claudeScenario, emit, startMock, textLines, toolResultLine, toolUseLine, waitForGate, waitForPersistedToolCalls } from './agent-visibility-helpers.js';
 
 const batch = (start: number, count: number) => Array.from({ length: count }, (_, j) => {
   const i = start + j;
@@ -48,6 +48,9 @@ for (const returnPath of ['switch', 'reopen'] as const) {
       }
       await advance(harness, mockId, 'away');
       await waitForGate(harness, 'back');
+      // The return must read the rows written while away, not receive them
+      // as live rows after its first paint.
+      await waitForPersistedToolCalls(harness, threadId, initialCount + awayCount);
       const returnSamples = awayCount === 1 ? page.evaluate(() => new Promise<Array<{ counts: string; later: boolean }>>(resolve => {
         const samples: Array<{ counts: string; later: boolean }> = [];
         let frames = 0;
@@ -118,6 +121,7 @@ test('a reader-pinned run keeps its earlier window when its tail advances out of
   await expect(page.getByText('Away answer.', { exact: true })).toBeVisible();
   await advance(harness, mockId, 'away');
   await waitForGate(harness, 'hold');
+  await waitForPersistedToolCalls(harness, seed.projects[0].threadIds[0], 99);
   await page.getByTestId('thread-row').getByText('Pinned return', { exact: true }).click();
   await expect(run.getByTestId('activity-run-header-counts')).toContainText('99 Bash');
   await expect(run.getByTestId('activity-run-later')).toContainText('60 later');

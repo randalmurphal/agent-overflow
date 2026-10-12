@@ -22,6 +22,7 @@
 //     main-agent shape and cannot scope to a card); prefer it, because the
 //     mock then waits for the real decision and branches on it.
 
+import { expect } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
 
@@ -523,6 +524,17 @@ export interface Item {
 
 export function listItems(harness: HarnessApp, threadId: string): Promise<Item[]> {
   return harness.rpc<Item[]>('ListItems', threadId, true);
+}
+
+/**
+ * Wait until the backend holds `count` completed tool calls for a thread.
+ * A gate opens once the mock has written its rows, which can be before the
+ * backend has persisted them; a history read in that window returns the
+ * older rows and the rest arrive later as live events.
+ */
+export function waitForPersistedToolCalls(harness: HarnessApp, threadId: string, count: number): Promise<void> {
+  return expect.poll(async () => (await listItems(harness, threadId))
+    .filter(item => item.kind === 'tool_call' && item.status === 'completed').length).toBe(count);
 }
 
 export function itemMeta(item: Item | undefined): Record<string, unknown> {
