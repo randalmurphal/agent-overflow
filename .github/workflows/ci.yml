@@ -203,6 +203,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
+        id: setup
         with:
           go: "true"
           gtk: "true"
@@ -215,8 +216,9 @@ jobs:
       - name: Release candidate script tests
         if: matrix.shard == 'rest'
         run: bin/ao-netns node --test scripts/release-candidate.test.mjs
+      # Independent of the Go tests, so it reports even when they fail.
       - name: pstack script tests (bun)
-        if: matrix.shard == 'rest'
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.shard == 'rest' }}
         run: make pstack-scripts
 
   vitest:
