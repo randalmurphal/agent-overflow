@@ -440,16 +440,32 @@ func lockable(t *testing.T, path string) bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
 	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	if err == nil {
+		unlockAndClose(t, file)
 		return true
+	}
+	if closeErr := file.Close(); closeErr != nil {
+		t.Errorf("close %s: %v", path, closeErr)
 	}
 	if errors.Is(err, syscall.EWOULDBLOCK) {
 		return false
 	}
 	t.Fatalf("flock: %v", err)
 	return false
+}
+
+// unlockAndClose drops file's flock, then closes it. A close alone keeps the
+// lock while another descriptor shares the open file description, which a
+// fork anywhere in the test binary copies until the child's exec.
+func unlockAndClose(t *testing.T, file *os.File) {
+	t.Helper()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_UN); err != nil {
+		t.Errorf("unlock %s: %v", file.Name(), err)
+	}
+	if err := file.Close(); err != nil {
+		t.Errorf("close %s: %v", file.Name(), err)
+	}
 }
 
 func waitForFile(t *testing.T, path, want string) {

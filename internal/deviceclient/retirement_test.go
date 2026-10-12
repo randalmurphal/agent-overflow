@@ -93,7 +93,11 @@ func TestSessionTransactionBoundsItsLockWait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
+	defer func() {
+		if err := release(); err != nil {
+			t.Error(err)
+		}
+	}()
 	err = client.sessionTransaction(context.Background(), func(string, *Session) error { return nil })
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("contended transaction: %v", err)
