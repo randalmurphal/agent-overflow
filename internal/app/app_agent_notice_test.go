@@ -351,7 +351,20 @@ func TestALaterFireRetriesAStartThatFailed(t *testing.T) {
 	recorder := &recordingNotificationSender{}
 	a.osNotifications = recorder
 	a.storeIdentity.Store(&store.Identity{BackendID: "backend-under-test"})
-	a.agentWakes.floorOverride = 2 * time.Second
+	// The retry gap is half the floor, measured from the last failed start.
+	// A floor of an hour puts every fire the test makes inside the gap
+	// however slowly it runs, and moving that start back is the gap
+	// passing, without the test sleeping through it.
+	a.agentWakes.floorOverride = time.Hour
+	gapPassed := func() {
+		t.Helper()
+		w := &a.agentNoticeWork
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		for threadID, last := range w.failing {
+			w.failing[threadID] = last.Add(-a.agentWakeFloor() / 2)
+		}
+	}
 	var failing atomic.Bool
 	failing.Store(true)
 	var starts atomic.Int32
@@ -416,7 +429,7 @@ func TestALaterFireRetriesAStartThatFailed(t *testing.T) {
 	if n := starts.Load(); n != 1 {
 		t.Fatalf("starts inside the retry gap = %d, want 1", n)
 	}
-	time.Sleep(a.agentWakeFloor() / 2)
+	gapPassed()
 	if err := fire(3); !errors.Is(err, store.ErrAgentWakeStillQueued) {
 		t.Fatalf("fire whose retry failed: %v, want ErrAgentWakeStillQueued", err)
 	}
@@ -433,12 +446,20 @@ func TestALaterFireRetriesAStartThatFailed(t *testing.T) {
 		t.Fatalf("queued %q, want %q", got, want)
 	}
 
+	// The retry that failed restarted the gap.
+	if err := fire(4); !errors.Is(err, store.ErrAgentWakeStillQueued) {
+		t.Fatalf("fire inside the gap after a failed retry: %v, want ErrAgentWakeStillQueued", err)
+	}
+	if n := starts.Load(); n != 2 {
+		t.Fatalf("starts inside the gap after a failed retry = %d, want 2", n)
+	}
+
 	failing.Store(false)
-	time.Sleep(a.agentWakeFloor() / 2)
-	if err := fire(4); err != nil {
+	gapPassed()
+	if err := fire(5); err != nil {
 		t.Fatalf("fire whose retry started the session: %v", err)
 	}
-	if got, want := queued(), []string{agentWakeSendID(row.ID, 1), agentWakeSendID(row.ID, 4)}; !slices.Equal(got, want) {
+	if got, want := queued(), []string{agentWakeSendID(row.ID, 1), agentWakeSendID(row.ID, 5)}; !slices.Equal(got, want) {
 		t.Fatalf("queued %q, want the held wake and the new one %q", got, want)
 	}
 	sends := recorder.snapshot()

@@ -154,9 +154,6 @@ func TestRemoteCompletionUsesCanonicalReceiptWithoutDependingOnDestination(t *te
 	}
 }
 
-// A thread action lock another operation holds costs a completion one poll,
-// never the whole watcher tick: the wait is bounded by the check context and
-// the watch stays pending for the next pass.
 // A completion is accepted while the thread's action lock is held, as a
 // send or a session start holds it, and the session start it needs waits
 // for the lock instead of the completion.
@@ -171,12 +168,20 @@ func TestRemoteCompletionQueuesWhileTheThreadIsBusy(t *testing.T) {
 	thread := remoteWatchThread(t, a, string(provider.Codex))
 	w := completedRemoteWatch(t, a, thread)
 	unlock := a.threadLocks().Lock(thread.ID)
-	began := time.Now()
-	if err := a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
-		t.Fatal(err)
-	}
-	if elapsed := time.Since(began); elapsed > 2*time.Second {
-		t.Fatalf("delivery waited %s on the held lock", elapsed)
+	delivered := make(chan error, 1)
+	go func() { delivered <- a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}) }()
+	// A delivery that waited on the lock would never return while it is
+	// held, so the bound only has to clear the delivery's own reads and
+	// queue write: they took 3.4 s at a load average of 67.
+	select {
+	case err := <-delivered:
+		if err != nil {
+			unlock()
+			t.Fatal(err)
+		}
+	case <-time.After(30 * time.Second):
+		unlock()
+		t.Fatal("delivery did not return while the thread's action lock was held")
 	}
 	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 1 {
 		t.Fatalf("not queued while the lock was held: %+v", rows)
