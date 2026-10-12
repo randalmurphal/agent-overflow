@@ -137,8 +137,10 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('PromoteStandingAgent', scenarioThreads['codex-basic']);
     await harness.rpc('SetStandingAgentNotifyOnTick', scenarioThreads['codex-basic'], true);
     // A standing agent that set itself a loop and a watch through the
-    // thread tools, and stopped a second loop. A first fire is one interval
-    // out, an hour here, so nothing fires while the corpus is written.
+    // thread tools, an hour out, and stopped a second loop. A short watch
+    // fires once, and the turn its wake starts cancels it before a second
+    // fire is due; a long-running watch is started and stopped. Nothing is
+    // left running for a later boot of the corpus to restart.
     const agent = await harness.rpc<{ id: string }>('CreateThread', {
       projectId,
       title: `Top-up v${version}: standing agent with a loop and a watch`,
@@ -158,19 +160,42 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
             { call: { tool: 'thread_watch', args: { label: 'inbox', command: 'true', cwd: home, every_seconds: 3600, timeout_seconds: 30 } } },
             { call: { tool: 'thread_loop', args: { label: 'retired', note: 'an old check', every_seconds: 3600 } } },
             { call: { tool: 'thread_loop', args: { label: 'retired', stop: true } } },
+            {
+              call: {
+                tool: 'thread_watch',
+                args: {
+                  label: 'once',
+                  command: '[ -e once.done ] || { : > once.done; echo found; }',
+                  cwd: home,
+                  every_seconds: 10,
+                  timeout_seconds: 30,
+                },
+              },
+            },
+            { call: { tool: 'thread_watch', args: { label: 'tail', command: 'sleep 600', cwd: home, long_running: true } } },
+            { call: { tool: 'thread_watch', args: { label: 'tail', stop: true } } },
           ],
           text: 'Scheduled.',
+        }, {
+          steps: [{ call: { tool: 'thread_cancel', args: { label: 'once' } } }],
+          text: 'Stopped the one-off watch.',
         }],
         afterTurns: 'silent',
       }),
     });
     await harness.rpc('StartSession', agent.id);
-    const watchSet = awaitToolAnswer(harness, { tool: 'thread_watch', timeoutMs: TURN_TIMEOUT_MS });
     const scheduled = awaitTurnCompleted(harness, agent.id, TURN_TIMEOUT_MS);
     await harness.rpc('SendMessage', agent.id, 'Look at the board and the inbox every hour.', null);
-    const watchAnswer = await watchSet;
-    if (watchAnswer.isError) throw new Error(`top-up thread_watch was refused: ${watchAnswer.text}`);
+    for (const label of ['inbox', 'once', 'tail', 'tail stopped']) {
+      const answer = await awaitToolAnswer(harness, { tool: 'thread_watch', timeoutMs: TURN_TIMEOUT_MS });
+      if (answer.isError) throw new Error(`top-up thread_watch ${label} was refused: ${answer.text}`);
+    }
     await scheduled;
+    // The short watch's one fire is waited for by its effect: the turn its
+    // wake starts cancels the watch.
+    const cancelled = await awaitToolAnswer(harness, { tool: 'thread_cancel', timeoutMs: TURN_TIMEOUT_MS });
+    if (cancelled.isError) throw new Error(`top-up thread_cancel was refused: ${cancelled.text}`);
+    await awaitTurnCompleted(harness, agent.id, TURN_TIMEOUT_MS);
 
     // Threads at every chat-bar setting the schema enumerates, drafts only.
     for (const variant of THREAD_VARIANTS) {
