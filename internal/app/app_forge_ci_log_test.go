@@ -60,7 +60,13 @@ func TestSetPRCILogFollowsFetchesNowAndEmitsIndexesUntilTerminal(t *testing.T) {
 	f.setLog("7", "step 1\nprogress 60%\nstep 2\ndone\n", nil)
 	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess, LogsAvailable: true}), nil)
 	awaitCIEvent(t, f.ciEvents, "terminal pipeline frame")
+	// A tick between the two changes delivers the new log in a frame of its
+	// own while the job's row still runs; the final frame is the one whose
+	// row is done.
 	final := awaitLogEvent(t, f.logEvents, "final log frame")
+	for len(final.Sections) == 0 || final.Sections[0].Status != gitops.CIStatusSuccess {
+		final = awaitLogEvent(t, f.logEvents, "final log frame")
+	}
 	if final.Version != 3 || final.TotalLines != 4 || final.StableLines != 3 {
 		t.Fatalf("final = %+v", final)
 	}
