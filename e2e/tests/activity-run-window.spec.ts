@@ -480,6 +480,10 @@ test('a live run a switch-back sync ships mid-run counts the members it gained d
   const mockId = await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'Start', null);
   await waitForGate(harness, 'grow');
+  // As in the growth test above: the gate opens before the backend has
+  // persisted the rows, and a read in that gap ships an older span.
+  await expect.poll(async () => (await listItems(harness, threadId))
+    .filter(item => item.kind === 'tool_call' && item.status === 'completed').length).toBe(60);
 
   // Opened mid-run, the page ships the run's newest members, and the pane
   // holds the run through its newest member.

@@ -39,20 +39,7 @@ export interface MigrationException {
   reason: string;
 }
 
-export const migrationExceptions: MigrationException[] = [
-  {
-    version: 141,
-    table: 'projects',
-    columns: ['remote_url', 'root_commit', 'identity_error'],
-    reason: 'v141 moves repository identity to repository_id: the legacy remote and root commit are cleared and an unverified identity is marked',
-  },
-  {
-    version: 141,
-    table: 'threads',
-    columns: ['created_remote_url'],
-    reason: 'v141 clears the remote a thread was created from along with the project columns it mirrored',
-  },
-];
+export const migrationExceptions: MigrationException[] = [];
 
 /**
  * Tables the old-row comparison skips, with the reason. Row counts are

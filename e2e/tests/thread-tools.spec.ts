@@ -2885,7 +2885,10 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
   const send = await awaitToolAnswer<SendAck>(harness, { tool: 'thread_send', timeoutMs: 60_000 });
   expect(send.isError, send.text).toBe(false);
   expect(send.value!.outcome).toBe('backgrounded');
-  expect(send.value!.state).toBe('accepted');
+  // The queue item is flushed into the held turn by an asynchronous worker,
+  // and the reply reads the live row: it says `running` when that dispatch
+  // landed first.
+  expect(['accepted', 'running']).toContain(send.value!.state);
   expect(send.value!.notify).toBe(true);
 
   interface TimelineItem {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -203,7 +204,7 @@ func PoisonProviderBinary(t testing.TB) (poison, sentinel string) {
 		"echo \"argv: $0 $*\" >> '" + sentinel + "'\n" +
 		"echo 'agent-overflow tests: refused to spawn a provider binary without a mock' >&2\n" +
 		"exit 127\n"
-	if err := os.WriteFile(poison, []byte(script), 0o755); err != nil {
+	if err := writeExecutable(poison, []byte(script)); err != nil {
 		t.Fatalf("write poisoned provider binary: %v", err)
 	}
 
@@ -220,6 +221,17 @@ func PoisonProviderBinary(t testing.TB) (poison, sentinel string) {
 		)
 	})
 	return poison, sentinel
+}
+
+// writeExecutable writes an executable with syscall.ForkLock held for
+// reading, as supervise's artifact writer does. A child forked by a parallel
+// test while the file is open for writing keeps the descriptor until its own
+// exec, and the kernel refuses to run a file with a writer (ETXTBSY), so the
+// poisoned binary would fail to start and write no sentinel.
+func writeExecutable(name string, data []byte) error {
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	return os.WriteFile(name, data, 0o755)
 }
 
 // ProviderBinarySettings is the settings patch that points both provider
