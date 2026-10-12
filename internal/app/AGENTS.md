@@ -90,7 +90,9 @@ operation. Uploads stage outside the thread mutation lock, then reacquire it
 for ownership-checked publication. Durable flush rows are written before the
 in-memory queue, removed only on settlement or an explicit drop, and restored
 to the composer at boot instead of being dispatched without a user present.
-See [turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
+A teardown's drop holds the thread mutation lock that every queue write takes,
+so a message queued during it is dropped with the queue or queued whole after
+it. See [turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
 
 Agent thread requests settle once. Every state change on a request or receipt
 is conditional on the state it expects to find, and a change that does not

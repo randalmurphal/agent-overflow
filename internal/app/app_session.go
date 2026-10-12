@@ -1252,20 +1252,23 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 // closeProviderSession would be redundant, and it deliberately leaves
 // triage state alone so the final wire frames have somewhere to land.
 func (a *App) teardownAndCloseSession(threadID string, sess session) error {
+	return a.teardownSession(threadID, sess, false)
+}
+
+// teardownAndCloseSessionHoldingMutations is teardownAndCloseSession for a
+// caller that holds the thread's mutation lock (the idle reaper).
+func (a *App) teardownAndCloseSessionHoldingMutations(threadID string, sess session) error {
+	return a.teardownSession(threadID, sess, true)
+}
+
+func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool) error {
 	a.workflowApplication().ReleaseUsageAttentionForThread(threadID)
 	// Events the provider emitted before the stop were read and must be
 	// persisted; CleanupThread below marks the thread stopped, after which
 	// triage drops them.
 	a.drainProviderEvents(threadID, "stop session")
 	if a.triage != nil {
-		// CleanupThread DROPS the thread's queued messages rather than
-		// restoring them (teardownDeadPreInitSession is the path that
-		// restores, and it does not come through here), so their durable rows
-		// go with them: a row that outlived the queue it belonged to would
-		// put the message back in the composer at the next boot, long after
-		// the user's Stop threw it away.
-		a.dropDurableFlushQueue(threadID)
-		a.triage.CleanupThread(threadID)
+		a.dropQueueForTeardown(threadID, mutationsHeld)
 	}
 	err := a.closeProviderSession(threadID, sess)
 	if err == nil && sess.Provider == string(provider.Codex) {
@@ -1293,6 +1296,26 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	// its entries (no final tick ever arrives to clear them).
 	a.highlightService().PurgeThread(threadID)
 	return err
+}
+
+// dropQueueForTeardown drops the thread's queue, durable rows and memory.
+// CleanupThread DROPS the queued messages rather than restoring them
+// (teardownDeadPreInitSession is the path that restores, and it does not
+// come through here), so their durable rows go with them: a row that
+// outlived the queue it belonged to would put the message back in the
+// composer at the next boot, long after the user's Stop threw it away.
+//
+// It runs under the thread's mutation lock, which every queue write takes
+// (registerQueueItem), so a message queued during a teardown is either in
+// the queue the drop deletes or queued once the memory cleanup is done,
+// durable and in memory for the next session. Nothing it runs takes the
+// thread's action lock, which some of its callers do not hold.
+func (a *App) dropQueueForTeardown(threadID string, mutationsHeld bool) {
+	if !mutationsHeld {
+		defer a.threadApplication().LockMutations(threadID)()
+	}
+	a.dropDurableFlushQueue(threadID)
+	a.triage.CleanupThread(threadID)
 }
 
 // applyClaudeSessionAxes stamps the Claude-only `--settings` block axes

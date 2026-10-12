@@ -535,6 +535,10 @@ type App struct {
 	// downstream code emitted. name is the channel's WIRE spelling, for
 	// the reason given on emitEventFn above.
 	testEmitHook func(name string, data any)
+	// queueDroppedForTest, when set, runs in a wholesale drop after its
+	// delete of the durable queue (dropDurableFlushQueue), so a test can
+	// queue a message before the in-memory queue is cleared.
+	queueDroppedForTest func(threadID string)
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a

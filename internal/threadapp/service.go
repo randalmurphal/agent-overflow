@@ -146,3 +146,8 @@ func (s *Service) LockCtx(ctx context.Context, threadID string) (func(), error) 
 func (s *Service) Refs(threadID string) int {
 	return s.locks.Refs(threadID)
 }
+
+// MutationRefs is Refs for the mutation lock (LockMutable).
+func (s *Service) MutationRefs(threadID string) int {
+	return s.mutations.Refs(threadID)
+}
