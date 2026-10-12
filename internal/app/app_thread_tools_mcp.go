@@ -263,7 +263,15 @@ func (a *App) callThreadMCP(w http.ResponseWriter, ctx context.Context, req thre
 	// Work a call defers until its answer is written: the inline delivery
 	// marks, and the deletion of a scratch thread whose own agent is still
 	// inside this call.
+	// Handed to the transport rather than run here: on the streamed path the
+	// body is still in a buffer when this returns, and deleting a scratch
+	// thread or marking an answer read before its own response is on the
+	// wire would act on work the model has not received. Registered before
+	// the call so a failed call still releases the waits it holds; an error
+	// carries no answer, so it delivers nothing.
 	ctx, pending := withThreadToolsPending(ctx)
+	answered := false
+	threadmcp.AfterResponse(ctx, func(delivered bool) { pending.run(delivered && answered) })
 	result, err := a.threadToolsServer().Call(ctx, caller, call.Name, call.Arguments)
 	if err != nil {
 		if _, _, public := errorsx.PublicDetails(err); !public {
@@ -273,12 +281,8 @@ func (a *App) callThreadMCP(w http.ResponseWriter, ctx context.Context, req thre
 		threadmcp.WriteToolError(w, req.ID, err)
 		return
 	}
+	answered = true
 	threadmcp.WriteToolJSON(w, req.ID, result)
-	// Handed to the transport rather than run here: on the streamed path the
-	// body above is still in a buffer, and deleting a scratch thread or
-	// marking an answer read before its own response is on the wire would
-	// act on work the model has not received.
-	threadmcp.AfterResponse(ctx, pending.run)
 }
 
 // threadToolsCaller names the calling thread. Everything a result, a

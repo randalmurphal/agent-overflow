@@ -1,9 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +27,7 @@ import (
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
+	"github.com/google/uuid"
 )
 
 // The request ledger end to end: a thread asks another thread for work, the
@@ -945,6 +950,209 @@ func TestThreadStatusReattachesAndCountsAsDelivery(t *testing.T) {
 	if row := f.request(t, ack.Token); row.DeliveredHow != store.ThreadWakeInline || row.DeliveredAt == 0 {
 		t.Errorf("delivery was not recorded: %q at %d", row.DeliveredHow, row.DeliveredAt)
 	}
+}
+
+// settledAnswerOwingAWake leaves one request finished, with its wake armed
+// and not yet delivered: the state the retry pass hands over as a message,
+// and the one a status reply delivers by carrying the answer.
+func (f *requestFixture) settledAnswerOwingAWake(t *testing.T) string {
+	t.Helper()
+	f.mockClaude(t, "the index rebuild took nine minutes")
+	// The spawn's reply is dropped: a target that finished before the ack
+	// rendered would otherwise have its answer delivered by the ack.
+	ctx, pending := withThreadToolsPending(t.Context())
+	ack, err := f.adapter().Spawn(ctx, f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "how long did the rebuild take?", WaitSeconds: 0, Notify: false,
+	})
+	pending.run(false)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	if row := f.request(t, ack.Token); row.DeliveredAt != 0 {
+		t.Fatalf("the answer was delivered before its wake was armed: %q", row.DeliveredHow)
+	}
+	if _, err := f.app.store.SetThreadRequestNotify(ack.Token, true); err != nil {
+		t.Fatalf("arm the wake: %v", err)
+	}
+	return ack.Token
+}
+
+// A status reply that carries the answer holds the token until the reply is
+// written: a wake retry that runs while it is still on its way queues
+// nothing and books no attempt.
+func TestAStatusReplyOnItsWayHoldsOffTheWake(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	token := f.settledAnswerOwingAWake(t)
+
+	ctx, pending := withThreadToolsPending(t.Context())
+	report, err := f.adapter().RequestStates(ctx, f.callerIdentity(), threadtools.StatusCall{
+		Tokens: []string{token}, WaitSeconds: 5,
+	})
+	if err != nil {
+		t.Fatalf("RequestStates: %v", err)
+	}
+	if state := report.Requests[0]; state.Delivered != store.ThreadWakeInline || !strings.Contains(state.Answer, "nine minutes") {
+		t.Fatalf("state = %+v", state)
+	}
+
+	f.app.retryUndeliveredThreadWakes(time.Now())
+	f.app.threadRequestsWG.Wait()
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("a wake was queued while the reply carrying the answer was on its way: %+v", rows)
+	}
+	if row := f.request(t, token); row.DeliveredAt != 0 || row.WakeAttempts != 0 {
+		t.Fatalf("the retry acted on a held token: delivered %q at %d, attempts %d", row.DeliveredHow, row.DeliveredAt, row.WakeAttempts)
+	}
+
+	pending.run(true)
+	if f.app.requestWaitActive(token) {
+		t.Fatal("the reply was written and the token is still held")
+	}
+	f.app.retryUndeliveredThreadWakes(time.Now())
+	f.app.threadRequestsWG.Wait()
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("a wake was queued for an answer the reply delivered: %+v", rows)
+	}
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeInline || row.DeliveredAt == 0 {
+		t.Fatalf("delivery was not recorded: %q at %d", row.DeliveredHow, row.DeliveredAt)
+	}
+}
+
+// A reply that never reached the model delivered nothing, so releasing the
+// token leaves the wake owed, asks the sweep for a pass, and the retry hands
+// it over at once.
+func TestADroppedStatusReplyLeavesTheWakeOwed(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	token := f.settledAnswerOwingAWake(t)
+	// The sweep's nudge channel without the sweep, so the test reads the
+	// nudge itself.
+	nudge := make(chan struct{}, 1)
+	f.app.threadRequests.mu.Lock()
+	f.app.threadRequests.nudge = nudge
+	f.app.threadRequests.mu.Unlock()
+
+	ctx, pending := withThreadToolsPending(t.Context())
+	if _, err := f.adapter().RequestStates(ctx, f.callerIdentity(), threadtools.StatusCall{
+		Tokens: []string{token}, WaitSeconds: 5,
+	}); err != nil {
+		t.Fatalf("RequestStates: %v", err)
+	}
+	select {
+	case <-nudge:
+	default:
+	}
+	pending.run(false)
+	if f.app.requestWaitActive(token) {
+		t.Fatal("a dropped reply left the token held")
+	}
+	select {
+	case <-nudge:
+	default:
+		t.Fatal("releasing the token did not ask the sweep for a pass")
+	}
+	if row := f.request(t, token); row.DeliveredAt != 0 {
+		t.Fatalf("a dropped reply was recorded as delivered: %q", row.DeliveredHow)
+	}
+	f.app.retryUndeliveredThreadWakes(time.Now())
+	f.app.threadRequestsWG.Wait()
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued {
+		t.Fatalf("the owed wake was not handed over: %q at %d, attempts %d", row.DeliveredHow, row.DeliveredAt, row.WakeAttempts)
+	}
+}
+
+// An ack that waits holds its token the same way until its reply is written.
+func TestAWaitingAckHoldsItsTokenUntilTheReplyIsWritten(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.mockClaude(t, "done")
+	ctx, pending := withThreadToolsPending(t.Context())
+	ack, err := f.adapter().Spawn(ctx, f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "say done", WaitSeconds: 30, Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if ack.Delivered != store.ThreadWakeInline {
+		t.Fatalf("ack = %+v", ack)
+	}
+	if !f.app.requestWaitActive(ack.Token) {
+		t.Fatal("the ack carrying the answer released its token before its reply was written")
+	}
+	pending.run(true)
+	if f.app.requestWaitActive(ack.Token) {
+		t.Fatal("the token is still held after the reply was written")
+	}
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("a wake was queued for an answer the ack delivered: %+v", rows)
+	}
+}
+
+// A tool call that fails after it registered its wait releases it too: the
+// error carries no answer, and a registration left behind would hold off
+// the wakes of everything it named for the life of the process.
+func TestAThreadToolCallThatFailsReleasesItsWait(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	target := f.busyThread(t, "watched")
+	if err := f.app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: target.ID, TurnID: "watched-open", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	key := threadWatchKey(target.ID)
+
+	sessionToken := uuid.NewString()
+	f.app.sessionManager().put(f.caller.ID, session{Token: sessionToken, Provider: string(provider.Claude)})
+	endpoint := threadMCPEndpoint(t, f.app, f.caller, sessionToken)
+	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
+
+	type reply struct {
+		raw json.RawMessage
+		err error
+	}
+	done := make(chan reply, 1)
+	go func() {
+		body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
+			"name": "thread_status", "arguments": map[string]any{"thread_ids": []string{target.ID}, "wait_seconds": 60},
+		}})
+		response, err := (&http.Client{Timeout: 30 * time.Second}).Post(endpoint, "application/json", bytes.NewReader(body))
+		if err != nil {
+			done <- reply{err: err}
+			return
+		}
+		raw, err := io.ReadAll(response.Body)
+		done <- reply{raw: raw, err: errors.Join(err, response.Body.Close())}
+	}()
+	for parked := time.After(10 * time.Second); !f.app.requestWaitActive(key); {
+		select {
+		case got := <-done:
+			t.Fatalf("thread_status returned before it parked: %s %v", got.raw, got.err)
+		case <-parked:
+			t.Fatal("thread_status never parked")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// The thread the call watches goes away under it, so the next check
+	// fails the call.
+	if err := f.app.store.DeleteThread(target.ID); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("thread_status: %v", got.err)
+		}
+		if !strings.Contains(string(got.raw), `"isError":true`) {
+			t.Fatalf("the call did not fail: %s", got.raw)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("thread_status did not return")
+	}
+	waitUntil(t, 5*time.Second, func() bool { return !f.app.requestWaitActive(key) })
 }
 
 // mockClaudeHoldingTheTurn answers and then keeps the turn open, which is the

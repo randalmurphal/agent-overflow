@@ -438,7 +438,10 @@ late reply on a request already `finished`. This is the
 can wait again instead of ending its turn, and after a lost reply from
 another computer it can learn what happened without asking twice. An
 answer collected here is the delivery, so no wake is queued for it; a
-wake already in the queue still lands and the reply says so. The
+wake already in the queue still lands and the reply says so. The call
+holds the token from its first read until its reply is written, so no
+wake is queued while the reply is on its way, and a reply that never
+reaches the agent delivers nothing: the wake is still owed. The
 answer is returned whole; a long one pages by `cursor` or goes to a
 file with `to_file`, and it stays available for the request's
 lifetime even when the thread that wrote it is gone.

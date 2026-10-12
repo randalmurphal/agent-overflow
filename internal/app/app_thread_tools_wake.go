@@ -134,7 +134,8 @@ func (a *App) failThreadWake(token, what string, cause error) {
 //
 // A settlement and its wake are two transactions, and the second one has ends
 // that deliver nothing: a crash between them, a caller thread that could not
-// be unarchived or locked in time, a render that failed. Nothing else revisits
+// be unarchived or locked in time, a render that failed, a tool call that
+// held the token and whose reply did not carry the answer. Nothing else revisits
 // those rows, because the pollers read open requests and this one is settled,
 // so the answer would sit in the ledger unread forever. The delivery mark is
 // conditional, so a retry of a wake that did land is a no-op.
@@ -153,6 +154,12 @@ func (a *App) retryUndeliveredThreadWakes(now time.Time) {
 	for _, row := range rows {
 		owed := undeliveredThreadWakes(row)
 		if len(owed) == 0 {
+			continue
+		}
+		if a.requestWaitActive(row.Token) {
+			// A call holding this token answers it in its reply, and its
+			// release nudges this pass if the reply did not. Booking an
+			// attempt now would push that retry out by the backoff.
 			continue
 		}
 		if row.WakeAttempts >= threadWakeRetryAttempts {
