@@ -274,13 +274,16 @@ test('losing connectivity while locked preserves the cover and recovers the same
   // An issued request may resume after reconnect or be refused promptly. Both
   // paths must keep the cover until a fresh assertion reaches this backend.
   // One DOM read: a verification that lands between two locator calls removes
-  // the button the second one would wait for.
+  // the button the second one would wait for. The proxy refused the outage's
+  // dials rather than taking the browser offline, so no `online` event wakes
+  // the reconnect ladder and the page reconnects on its next rung, which for
+  // a remote backend can be up to wsClient's RECONNECT_MAX_REMOTE_MS (30 s).
   await expect.poll(() => page.evaluate(() => {
     const cover = document.querySelector('[data-testid="app-lock"]');
     if (!cover) return 'verified';
     const button = [...cover.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Unlock');
     return button && !button.disabled ? 'retry' : 'pending';
-  })).not.toBe('pending');
+  }), { timeout: 40_000 }).not.toBe('pending');
   if (await page.getByTestId('app-lock').count()) await unlock(page);
   await expect(page.getByTestId('view-only-indicator')).toBeVisible();
   expect((await session(page)).sessionId).toBe(before.sessionId);
