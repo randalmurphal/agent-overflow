@@ -42,6 +42,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 
 async function buildPane(thread: Thread) {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   return buildRegisteredPane(thread);
 }

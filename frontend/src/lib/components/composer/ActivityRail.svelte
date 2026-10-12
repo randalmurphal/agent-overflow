@@ -15,8 +15,9 @@
   //    toggle is `pane.activityRailTodosOpen` so it survives thread
   //    switches in-session.
   //  - Background segment: visible when there are tray-eligible
-  //    background items. Toggle expands an inline body listing the
-  //    rows with provider-aware stop affordances.
+  //    background items or the thread has loops, watches or reminders.
+  //    Toggle expands an inline body listing the rows with
+  //    provider-aware stop affordances, then the schedule's rows.
   //
   // Visibility is the HOST's call: Composer mounts the rail iff any
   // sub-state is active (`railVisible`) and renders its transparent
@@ -54,6 +55,7 @@
   import type { UsageStats } from '../../stores/usageQuery.svelte';
   import { activityRailChipClasses, activityRailRowClasses } from './activityRailClasses';
   import type { BackgroundController } from './activityRailBackground.svelte';
+  import type { WakeController } from './activityRailWakes.svelte';
   import { stableTurnKey } from '../../spinners/pick';
   import WorkingChip from './WorkingChip.svelte';
   import ActivityRailTodosBody from './ActivityRailTodosBody.svelte';
@@ -68,6 +70,8 @@
     pane: ThreadPane;
     /** Composer-owned background-tasks controller (mounted there). */
     bg: BackgroundController;
+    /** Composer-owned loops, watches and reminders of the thread. */
+    wakes?: WakeController;
     /** Composer-owned shared 1Hz clock for elapsed labels + retention. */
     clock: SharedNowClock;
     /** Composer-owned lifetime usage for the compact usage chip. */
@@ -84,6 +88,7 @@
   let {
     pane,
     bg,
+    wakes,
     clock,
     usage,
     inputRequest = null,
@@ -149,6 +154,10 @@
   // working hairline/LEDs/timer are suppressed and only the "Input requested"
   // chip shows. `showWorking` gates every working-segment render below.
   let showWorking = $derived(isWorking && inputRequest === null);
+
+  // The tray lists background work and the thread's schedule together.
+  let backgroundCount = $derived(bg.count + (wakes?.count ?? 0));
+  let backgroundRunning = $derived(bg.runningCount + (wakes?.runningCount ?? 0));
 
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let density = $state<ActivityRailDensity>('full');
@@ -248,13 +257,13 @@
       </button>
     {/if}
 
-    {#if bg.count > 0}
+    {#if backgroundCount > 0}
       {#if inputRequest || showWorking || liveTodo}
         <span class="shrink-0 select-none text-fg-hint/60" data-activity-rail-separator aria-hidden="true">·</span>
       {/if}
       <ActivityRailBackgroundToggle
-        count={bg.count}
-        running={bg.runningCount > 0}
+        count={backgroundCount}
+        running={backgroundRunning > 0}
         open={backgroundOpen}
         onToggle={() => pane.toggleActivityRailBackground()}
         controls="activity-rail-background-body"
@@ -272,13 +281,15 @@
     <ActivityRailTodosBody {liveTodo} {pane} />
   {/if}
 
-  {#if backgroundOpen && bg.count > 0}
+  {#if backgroundOpen && backgroundCount > 0}
     <ActivityRailBackgroundBody
       tasks={bg.tasks}
       provider={bg.provider}
       threadId={bg.threadId}
       {pane}
-      runningCount={bg.runningCount}
+      runningCount={backgroundRunning}
+      {wakes}
+      now={clock.now}
     />
   {/if}
 </div>

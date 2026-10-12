@@ -498,6 +498,10 @@ export {
   SetPRCILogFollows,
   RefreshPRCI,
   ListLiveBackgroundTasks,
+  ListThreadWakes,
+  GetThreadWakeDetail,
+  WakeThreadWakeNow,
+  CancelThreadWake,
   CancelThreadRemoteCommand,
   ListThreadRemoteCommands,
   ReadThreadRemoteLog,
@@ -653,6 +657,9 @@ export {
   BusyThread,
   WorkspaceActivity,
   WorktreeStatus,
+  ThreadWakeRow,
+  ThreadWakes,
+  ThreadWakeDetail,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   CompanionEvent as BrowserCompanionEvent,

@@ -259,6 +259,7 @@ export function installThreadViewDefaults(): void {
   setBindingMock('ListProposedPlanComments', async () => []);
   setBindingMock('GetPayloadData', async () => ({ data: '# Plan\n\nBody' }));
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
 }

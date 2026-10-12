@@ -31,15 +31,18 @@ import {
   createBackgroundController,
   type BackgroundController,
 } from './activityRailBackground.svelte';
+import { createWakeController, type WakeController } from './activityRailWakes.svelte';
 
 export interface ActivityRailHost {
   readonly bg: BackgroundController;
+  /** The thread's loops, watches and reminders, listed in the same tray. */
+  readonly wakes: WakeController;
   readonly clock: SharedNowClock;
   /** The thread's lifetime usage, fetched only under compact, where the
    *  rail carries the usage chip; the chip renders from this same query. */
   readonly usage: UsageStats;
   readonly railVisible: boolean;
-  /** Subscribe the background controller; returns a disposer. */
+  /** Subscribe the background and wake controllers; returns a disposer. */
   mount(): () => void;
 }
 
@@ -56,6 +59,7 @@ export function createActivityRailHost(
   // turn) and the background body's elapsed labels + completion-retention
   // prune.
   const bg = createBackgroundController(getPane, () => clock.now);
+  const wakes = createWakeController(getPane);
   const clock = createSharedNowClock(() => {
     const wantsClockForWorking =
       getActiveTurn(getPane().threadId) !== null && !hasInputRequest();
@@ -81,14 +85,23 @@ export function createActivityRailHost(
       isThreadWorking(getPane().threadId) ||
       getPane().liveTodo !== null ||
       bg.count > 0 ||
+      wakes.count > 0 ||
       hasSpend,
   );
 
   return {
     get bg() { return bg; },
+    get wakes() { return wakes; },
     get clock() { return clock; },
     get usage() { return usage; },
     get railVisible() { return railVisible; },
-    mount: () => bg.mount(),
+    mount: () => {
+      const disposeBg = bg.mount();
+      const disposeWakes = wakes.mount();
+      return () => {
+        disposeBg();
+        disposeWakes();
+      };
+    },
   };
 }

@@ -269,6 +269,7 @@ describe('<GitActionsControl> palette dialog event', () => {
 
   it('disables Remove Worktree while this pane thread is busy', async () => {
     setBindingMock('ListLiveBackgroundTasks', async () => []);
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     const pane = await buildPane(makeThread({
       workspacePath: '/workspace-wt/feat',
@@ -294,6 +295,7 @@ describe('<GitActionsControl> palette dialog event', () => {
 
   it('says how many terminals removing the worktree closes', async () => {
     setBindingMock('ListLiveBackgroundTasks', async () => []);
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     const status_ = setBindingMock('GitWorktreeStatus', async () => ({ path: '/workspace-wt/feat', terminals: 2 }));
     const pane = await buildPane(makeThread({
@@ -320,6 +322,7 @@ describe('<GitActionsControl> palette dialog event', () => {
     const WORKTREE = '/workspace-wt/shared';
     const asked: string[] = [];
     setBindingMock('ListLiveBackgroundTasks', async () => []);
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
     setBindingMock('GetWorkspaceActivity', async (workspacePath: unknown) => {
       asked.push(String(workspacePath));
       return busyWorkspaceActivity(1);

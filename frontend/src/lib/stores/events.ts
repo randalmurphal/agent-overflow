@@ -157,6 +157,7 @@ import {
 import { applySubagentProgress, clearSubagentProgressForThread } from './subagentProgress.svelte';
 import type { BackgroundTrayEvent, SubagentProgressEvent } from '../types/events';
 import { applyBackgroundTrayEvent } from './eventsBackgroundTray';
+import { applyThreadWakesChanged } from './eventsThreadWakes';
 import {
   applyProviderCommands,
   type ProviderCommandsPayload,
@@ -534,6 +535,12 @@ export function setupEventListeners(): () => void {
     'provider:background_tray',
     applyBackgroundTrayEvent,
   );
+  // thread:wakes_changed: a thread's loops, watches or reminders changed;
+  // the tray of a pane showing it reads them again.
+  const cancelThreadWakes = wailsEventOn<{ threadId: string }>(
+    'thread:wakes_changed',
+    (evt, origin) => applyThreadWakesChanged(evt, backendKeyForOrigin(origin.backendId)),
+  );
 
   // provider:commands — the CLI's own list of slash commands it will execute
   // without an API call. Restated wholesale on every session init and every
@@ -806,6 +813,7 @@ export function setupEventListeners(): () => void {
     cancelCompactingState();
     cancelSubagentProgress();
     cancelBackgroundTray();
+    cancelThreadWakes();
     cancelCodexAgentsReset();
     cancelProviderCommands();
     cancelUserMessageReverted();
