@@ -126,6 +126,22 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 		unlockAction := a.threadLocks().Lock(threadID)
 		defer unlockAction()
 	}
+	result, err := a.applyThreadOrganizePatchMutable(ctx, threadID, patch)
+	if err != nil {
+		return threadapp.OrganizeResult{}, err
+	}
+	// Under the action lock alone, as archiveThreadLocked stops it: the
+	// teardown's queue drop takes the thread's mutation lock
+	// (dropQueueForTeardown), which is not reentrant.
+	if result.ArchivedChanged && result.Thread.Archived {
+		a.stopArchivedThreadSession(threadID, requestedAt)
+	}
+	return result, nil
+}
+
+// applyThreadOrganizePatchMutable writes the patch and announces it under
+// the thread's mutation lock, and releases the lock before it returns.
+func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, error) {
 	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
 	if err != nil {
 		return threadapp.OrganizeResult{}, err
@@ -146,9 +162,6 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 	// binding announces them.
 	for _, carried := range result.Carried {
 		a.broadcastThreadRow(triage.ThreadActionFull, carried)
-	}
-	if result.ArchivedChanged && result.Thread.Archived {
-		a.stopArchivedThreadSession(threadID, requestedAt)
 	}
 	return result, nil
 }
