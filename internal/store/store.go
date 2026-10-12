@@ -551,6 +551,12 @@ type Thread struct {
 	// row is the record, and it outlives the retention floor while this
 	// thread exists (spawnLineageSQL).
 	SpawnedByThreadID string `json:"spawnedByThreadId,omitempty"`
+	// SpawnedByAgent is true when SpawnedByThreadID names a standing agent,
+	// archived or not. The agent's row may be absent from a client's list
+	// (archived, another project) while the group refusal still holds, so
+	// the row says it is bound rather than leaving the client to look up
+	// the spawner.
+	SpawnedByAgent bool `json:"spawnedByAgent,omitempty"`
 	// ArchivedChildCount is how many threads this one spawned that are now
 	// archived. Only a standing agent's row carries it (zero elsewhere);
 	// the sidebar's agent row shows the count and lists them on demand.

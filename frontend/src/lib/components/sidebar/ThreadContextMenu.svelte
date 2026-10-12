@@ -345,9 +345,7 @@
   });
   // A standing agent, or a thread one spawned, never joins a group; a bulk
   // selection holding one has no group move either.
-  let bulkAgentBound = $derived(inBulkContext && selectedThreads.some(
-    (t) => isStandingAgent(t) || (Boolean(t.spawnedByThreadId) && isStandingAgent(getThreadById(t.spawnedByThreadId ?? '') ?? {})),
-  ));
+  let bulkAgentBound = $derived(inBulkContext && selectedThreads.some((t) => isStandingAgent(t) || t.spawnedByAgent === true));
   let canMoveToGroup = $derived(
     Boolean(groupProjectId) && moveTargetIds.length > 0 && !(inBulkContext ? bulkAgentBound : agentBound),
   );

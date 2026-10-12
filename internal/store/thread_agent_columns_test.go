@@ -43,12 +43,28 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	if got := row("agent"); got.AgentPromotedAt != nil || got.ArchivedChildCount != 0 {
 		t.Errorf("unpromoted agent row = promotedAt %v, archived children %d", got.AgentPromotedAt, got.ArchivedChildCount)
 	}
+	if row("child-1").SpawnedByAgent {
+		t.Error("a thread spawned by an unpromoted thread says it is agent-bound")
+	}
 
 	if _, err := s.PromoteStandingAgent("agent", "/h/agent", 500); err != nil {
 		t.Fatal(err)
 	}
 	if got := row("agent"); got.AgentPromotedAt == nil || *got.AgentPromotedAt != 500 || got.ArchivedChildCount != 0 {
 		t.Errorf("promoted agent row = promotedAt %v, archived children %d", got.AgentPromotedAt, got.ArchivedChildCount)
+	}
+	if !row("child-1").SpawnedByAgent || row("far-child").SpawnedByAgent {
+		t.Error("spawnedByAgent follows the local spawner's promotion")
+	}
+	// The bond holds while the agent is archived: the group refusal does.
+	if _, _, err := s.ArchiveThread("agent"); err != nil {
+		t.Fatal(err)
+	}
+	if !row("child-2").SpawnedByAgent {
+		t.Error("a thread spawned by an archived agent says it is not agent-bound")
+	}
+	if _, _, err := s.UnarchiveThread("agent"); err != nil {
+		t.Fatal(err)
 	}
 	if _, _, err := s.ArchiveThread("child-1"); err != nil {
 		t.Fatal(err)
@@ -92,5 +108,8 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	}
 	if got := row("agent"); got.AgentPromotedAt != nil || got.ArchivedChildCount != 0 {
 		t.Errorf("demoted agent row = promotedAt %v, archived children %d", got.AgentPromotedAt, got.ArchivedChildCount)
+	}
+	if row("child-2").SpawnedByAgent {
+		t.Error("a demoted agent's spawned thread still says it is agent-bound")
 	}
 }

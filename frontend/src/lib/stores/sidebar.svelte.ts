@@ -345,6 +345,18 @@ export function toggleAgent(threadId: string): void {
   setAgentExpanded(threadId, !isAgentExpanded(threadId));
 }
 
+/**
+ * Drop everything the sidebar keeps for a standing agent once the thread
+ * stops being one here (demoted, archived, deleted, or listed without the
+ * mark): its fold, its done footer and the footer's paging. A thread
+ * promoted again starts as a fresh agent row. The threads store calls this
+ * from its one write path, so no caller has to remember it.
+ */
+export function forgetAgentSidebarState(threadId: string): void {
+  setAgentExpanded(threadId, true);
+  closeAgentDone(threadId);
+}
+
 /** The agents whose `N done` footer is open, listing their archived children. */
 export function getExpandedDoneAgents(): ReadonlySet<string> {
   return expandedDoneAgents;

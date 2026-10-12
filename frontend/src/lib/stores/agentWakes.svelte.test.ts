@@ -9,6 +9,8 @@ import {
 import { applyThreadWakesChanged, applyThreadWakesGap } from './eventsThreadWakes';
 import { replaceAllThreads } from './threads.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
+import { takePinnedBackend } from '../transport/backends';
+import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import type { Thread } from '../types/models';
 import type { ThreadWakeRow } from './bindings';
 
@@ -30,8 +32,27 @@ async function flush(): Promise<void> {
 describe('agentWakes store', () => {
   beforeEach(() => {
     resetBindingMocks();
+    resetStagedBackends();
     resetAgentWakesForTest();
     replaceAllThreads([thread('agent', { agentPromotedAt: 1 }), thread('plain')]);
+  });
+
+  it('files a row under the computer that answered it, so a later outage there keeps it', async () => {
+    stageBackend({ id: 'gpu' });
+    let gpuDown = false;
+    // The gpu agent is not in the thread list yet: its wake read landed
+    // before the catalog did.
+    setBindingMock('ListStandingAgentWakes', async () => {
+      if (takePinnedBackend() !== 'gpu') return [{ threadId: 'agent', rows: [row('l1')] }];
+      if (gpuDown) throw new Error('offline');
+      return [{ threadId: 'gpu-agent', rows: [row('g1')] }];
+    });
+    await refreshAgentWakes();
+    expect(getAgentWakeRows('gpu-agent').map((r) => r.id)).toEqual(['g1']);
+    gpuDown = true;
+    await refreshAgentWakes();
+    expect(getAgentWakeRows('gpu-agent').map((r) => r.id)).toEqual(['g1']);
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
   });
 
   it('loads every agent\'s live loops and watches, dropping reminders', async () => {

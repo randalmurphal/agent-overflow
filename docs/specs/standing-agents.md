@@ -257,7 +257,13 @@ Mechanics, as built:
   `archivedChildCount` so a changed count reads again. The fold state
   lives in `sidebar:collapsedAgents`; an open done footer and its
   paging are session state, and both reset when the count reaches
-  zero, so a footer that returns starts closed.
+  zero, so a footer that returns starts closed. A thread that stops
+  being an agent in the list (demoted, archived, deleted) drops its
+  fold, footer and cached list, so a later promotion starts fresh.
+- A spawned thread's row carries `spawnedByAgent` beside
+  `spawnedByThreadId`: the group refusal holds while the agent is
+  archived (its own row is then absent), and the row's menu and drag
+  payload read the bond from the row, not from a lookup of the agent.
 - The harness seeds lineage with `HarnessSeedThread.spawnedBy`, the
   title of a thread seeded earlier in the same project.
 

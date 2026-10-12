@@ -118,6 +118,11 @@ var threadColumns = `id, COALESCE(project_id, ''),
        WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
        ORDER BY created_at DESC LIMIT 1
     ), ''),
+    EXISTS (SELECT 1 FROM standing_agents WHERE standing_agents.thread_id = (
+      SELECT caller_thread_id FROM thread_requests
+       WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
+       ORDER BY created_at DESC LIMIT 1
+    )),
     (SELECT COUNT(*) FROM thread_requests
        JOIN owned_threads AS child ON child.id = thread_requests.target_thread_id
       WHERE thread_requests.caller_thread_id = threads.id
@@ -221,7 +226,7 @@ func validAutoCompactPercent(percent int) bool {
 
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
-	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft int
+	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft, spawnedByAgent int
 	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentPromotedAt sql.NullInt64
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
@@ -236,7 +241,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
-		&agentPromotedAt, &t.SpawnedByThreadID, &t.ArchivedChildCount,
+		&agentPromotedAt, &t.SpawnedByThreadID, &spawnedByAgent, &t.ArchivedChildCount,
 	); err != nil {
 		return Thread{}, err
 	}
@@ -246,6 +251,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	t.HasIncompleteTurn = hasIncompleteTurn != 0
 	t.HasFailedTurn = hasFailedTurn != 0
 	t.IsDraft = isDraft != 0
+	t.SpawnedByAgent = spawnedByAgent != 0
 	if latestTurnCompletedAt.Valid {
 		v := latestTurnCompletedAt.Int64
 		t.LatestTurnCompletedAt = &v

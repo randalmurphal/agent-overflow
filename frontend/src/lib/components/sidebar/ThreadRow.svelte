@@ -281,11 +281,10 @@
     !inGroup && !isAgent && sidebarPinGroup(thread) === 'front',
   );
   // A standing agent, or a thread one spawned, never joins a group: the
-  // drag payload says so, and every group target refuses it.
-  let agentBound = $derived(
-    isAgent
-      || (Boolean(thread.spawnedByThreadId) && isStandingAgent(getThreadById(thread.spawnedByThreadId ?? '') ?? {})),
-  );
+  // drag payload says so, and every group target refuses it. The row
+  // carries the bond (spawnedByAgent) so it holds while the agent's own
+  // row is archived or listed elsewhere.
+  let agentBound = $derived(isAgent || thread.spawnedByAgent === true);
 
   function handleAgentChevronClick(e: MouseEvent): void {
     e.stopPropagation();
@@ -513,7 +512,7 @@
     >
       <Icon icon={UserRound} size={11} strokeWidth={1.75} />
     </span>
-  {:else if !isAgent}
+  {:else if !isAgent && !archivedChild}
     <div class="absolute inset-y-0 flex items-center justify-center w-6 pointer-events-none" style="left: {pinSlotLeftPx}px">
       <ThreadRowPinButton
         {isPinned}
@@ -593,7 +592,7 @@
     </span>
     {#if agent !== null && !agent.expanded && agent.childCount > 0}
       <span
-        class="-ml-0.5 shrink-0 min-w-5 text-right text-[0.625rem] tabular-nums text-fg-hint"
+        class="-ml-0.5 mr-1 shrink-0 min-w-5 text-right text-[0.625rem] tabular-nums text-fg-hint"
         data-testid="thread-row-agent-count"
       >
         {agent.childCount}

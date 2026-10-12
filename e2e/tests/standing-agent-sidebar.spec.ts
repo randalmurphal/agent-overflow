@@ -235,6 +235,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await footer.getByTestId('thread-row-agent-done-toggle').click();
     await expect(row(page, workerA)).toHaveAttribute('data-archived-child', 'true');
     expect(await row(page, workerA).evaluate((el) => getComputedStyle(el).opacity)).not.toBe('1');
+    // An archived row offers no pin: pinning belongs to live rows.
+    await expect(row(page, workerA).getByTestId('thread-row-pin')).toHaveCount(0);
     await expect(page.locator('[data-agent-member]', { has: row(page, workerA) })).toHaveCount(1);
     await capture(page, `${provider}-agent-done-footer.png`, agentRow, footer, row(page, workerA));
     // An archived child opens from the footer like any row.

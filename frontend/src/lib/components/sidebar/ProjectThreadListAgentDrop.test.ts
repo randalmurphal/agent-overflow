@@ -8,7 +8,7 @@ import { tick } from 'svelte';
 import ProjectThreadList from './ProjectThreadList.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
-import { isAgentDoneExpanded, resetSidebarForTest, toggleAgentDone } from '../../stores/sidebar.svelte';
+import { isAgentDoneExpanded, isAgentExpanded, resetSidebarForTest, setAgentExpanded, toggleAgentDone } from '../../stores/sidebar.svelte';
 import { resetArchivedChildrenForTest } from '../../stores/agentArchivedChildren.svelte';
 import { resetAgentWakesForTest } from '../../stores/agentWakes.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -155,5 +155,39 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     expect(toggle?.getAttribute('aria-expanded')).toBe('false');
     expect(view.container.querySelector('[data-testid="thread-row-agent-done-label"]')?.textContent?.trim()).toBe('3 done');
     expect(view.container.querySelector('[data-archived-child="true"]')).toBeNull();
+  });
+
+  it('forgets the fold, the open footer and its list when the agent is demoted', async () => {
+    const list = setBindingMock('ListArchivedSpawnedThreads', vi.fn(async () => [thread('done', { spawnedByThreadId: 'agent', archived: true })]));
+    const view = renderList();
+    await flush();
+    setAgentExpanded('agent', false);
+    toggleAgentDone('agent');
+    await flush();
+    expect(list).toHaveBeenCalledTimes(1);
+    const rows = (promoted: boolean) => [
+      thread('agent', promoted ? { agentPromotedAt: 1, archivedChildCount: 1 } : {}),
+      thread('child', { spawnedByThreadId: 'agent' }),
+      thread('loose', { groupId: 'ops' }),
+    ];
+    // Demoted: the row is a plain thread and every agent-only state goes.
+    replaceAllThreads(rows(false));
+    await view.rerender({ projectId: 'project', threads: rows(false), groups: [], pane: createThreadPane() });
+    await flush();
+    expect(view.container.querySelector('[data-sidebar-agent]')).toBeNull();
+    expect(isAgentExpanded('agent')).toBe(true);
+    expect(isAgentDoneExpanded('agent')).toBe(false);
+    // Promoted again at the same count: unfolded, footer shut, and opening
+    // it reads the list again instead of showing the one from before.
+    replaceAllThreads(rows(true));
+    await view.rerender({ projectId: 'project', threads: rows(true), groups: [], pane: createThreadPane() });
+    await flush();
+    expect(view.container.querySelector('[data-sidebar-agent]')?.getAttribute('data-expanded')).toBe('true');
+    expect(view.container.querySelector('[data-testid="thread-row-agent-done-toggle"]')?.getAttribute('aria-expanded')).toBe('false');
+    expect(view.container.querySelector('[data-sidebar-thread-id="done"]')).toBeNull();
+    await fireEvent.click(view.container.querySelector('[data-testid="thread-row-agent-done-toggle"]')!);
+    await flush();
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(view.container.querySelector('[data-sidebar-thread-id="done"]')).not.toBeNull();
   });
 });

@@ -406,7 +406,10 @@ describe('<ThreadRow> drag source', () => {
 
   it.each([
     ['a standing agent', { agentPromotedAt: 1 }],
-    ['a thread a standing agent spawned', { spawnedByThreadId: 'agent-1' }],
+    ['a thread a standing agent spawned', { spawnedByThreadId: 'agent-1', spawnedByAgent: true }],
+    // The agent's own row is archived, so it is not in the list; the bond
+    // rides on the child's row.
+    ['a thread an archived standing agent spawned', { spawnedByThreadId: 'archived-agent', spawnedByAgent: true }],
   ])('marks the payload of %s agent-bound, so no group takes the drop', async (_, overrides) => {
     setBindingMock('ListThreads', async () => [makeThread({ id: 'agent-1', agentPromotedAt: 1 })]);
     await refreshThreads();
