@@ -10,13 +10,15 @@ import type { TransportStatusSnapshot } from '../../transport/wsClient';
 const h = vi.hoisted(() => ({
   snapshot: { status: 'connected', nextAttemptAt: null } as TransportStatusSnapshot,
   retry: vi.fn(),
-  recovering: new Set<string>(),
+  /** Backends with a recovery out, mapped to whether it is a resync. */
+  recovering: new Map<string, boolean>(),
   recoveryListeners: new Set<(id: string, phase: 'start' | 'complete' | 'cancel') => void>(),
 }));
 
 vi.mock('../../stores/transportRecovery', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/transportRecovery')>()),
   isBackendRecovering: (id: string) => h.recovering.has(id),
+  isBackendResyncing: (id: string) => h.recovering.get(id) === true,
   onBackendRecovery: (listener: (id: string, phase: 'start' | 'complete' | 'cancel') => void) => {
     h.recoveryListeners.add(listener);
     return () => h.recoveryListeners.delete(listener);
@@ -59,6 +61,14 @@ async function settleBootGrace(): Promise<void> {
   await tick();
   await vi.advanceTimersByTimeAsync(1100);
   await tick();
+}
+
+/** Publish a recovery phase the way stores/transportRecovery does: the
+ *  record is updated before listeners hear the phase. */
+function recover(id: string, phase: 'start' | 'complete' | 'cancel', resumed = false): void {
+  if (phase === 'start') h.recovering.set(id, resumed);
+  else h.recovering.delete(id);
+  for (const listener of h.recoveryListeners) listener(id, phase);
 }
 
 beforeEach(() => {
@@ -114,20 +124,47 @@ describe('<TransportStatusBanner>', () => {
   });
 
   it('keeps sync visible until this computer finishes recovery and removes the subscription', async () => {
-    h.recovering.add('');
+    h.recovering.set('', true);
     const view = render(TransportStatusBanner);
     await tick();
     expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
     expect(view.queryByTestId('transport-status-dismiss')).toBeNull();
-    for (const listener of h.recoveryListeners) listener('other', 'complete');
+    recover('other', 'start', true);
+    recover('other', 'complete');
     await tick();
     expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
-    for (const listener of h.recoveryListeners) listener('', 'complete');
+    recover('', 'complete');
     await tick();
     await vi.advanceTimersByTimeAsync(200);
     expect(view.queryByTestId('transport-status-banner')).toBeNull();
     view.unmount();
     expect(h.recoveryListeners.size).toBe(0);
+  });
+
+  it('shows sync for a reconnect and nothing for the first connection\'s recovery', async () => {
+    const view = render(TransportStatusBanner);
+    await tick();
+    recover('', 'start', false);
+    await tick();
+    expect(view.queryByTestId('transport-status-banner')).toBeNull();
+    recover('', 'complete');
+    await tick();
+    expect(view.queryByTestId('transport-status-banner')).toBeNull();
+
+    recover('', 'start', true);
+    await tick();
+    expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
+    recover('', 'complete');
+    await tick();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(view.queryByTestId('transport-status-banner')).toBeNull();
+  });
+
+  it('mounts with no strip while the first connection recovers', async () => {
+    h.recovering.set('', false);
+    const view = render(TransportStatusBanner);
+    await tick();
+    expect(view.queryByTestId('transport-status-banner')).toBeNull();
   });
 
   it('keeps the desktop overlay positioning when disconnected', async () => {

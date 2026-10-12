@@ -777,6 +777,9 @@ export interface TransportStatusSnapshot {
 }
 
 type StatusHandler = (snapshot: TransportStatusSnapshot) => void;
+/** `resumed`: the connection replaced an earlier one of this client, so the
+ *  replay recovers what that connection had delivered. */
+type ReplayHandler = (phase: 'start' | 'complete' | 'cancel', resumed: boolean) => void;
 type HelloHandler = (hello: TransportHello | null) => void;
 
 // WSConstructor matches the global WebSocket signature plus enough state
@@ -1068,7 +1071,7 @@ export class WSClient {
   private readonly subscribers = new Map<string, Set<EventHandler>>();
   private readonly statusHandlers = new Set<StatusHandler>();
   private readonly helloHandlers = new Set<HelloHandler>();
-  private readonly replayHandlers = new Set<(phase: 'start' | 'complete' | 'cancel') => void>();
+  private readonly replayHandlers = new Set<ReplayHandler>();
   private recoveringReplay = false;
   // The most recent hello. Survives a disconnect on purpose: the same
   // backend is what the ladder is trying to reach, so clearing it would
@@ -1476,7 +1479,7 @@ export class WSClient {
   }
 
   /** Replay boundaries for every connection, including initial attachment. */
-  onReplay(handler: (phase: 'start' | 'complete' | 'cancel') => void): () => void {
+  onReplay(handler: ReplayHandler): () => void {
     this.replayHandlers.add(handler);
     return () => { this.replayHandlers.delete(handler); };
   }
@@ -1484,8 +1487,9 @@ export class WSClient {
   private publishReplay(phase: 'start' | 'complete' | 'cancel'): void {
     if (phase !== 'start' && !this.recoveringReplay) return;
     this.recoveringReplay = phase === 'start';
+    const resumed = this.connectionEpoch > 1;
     for (const handler of this.replayHandlers) {
-      try { handler(phase); }
+      try { handler(phase, resumed); }
       catch (err) { console.warn('wsClient: replay handler threw', err); }
     }
   }
@@ -3252,7 +3256,7 @@ export class WSClient {
     // every consumer for a few milliseconds of skew would turn a routine
     // reconnect into a re-render.
     if (previous !== null && sameHello(previous, next)) return;
-    for (const handler of [...this.helloHandlers]) {
+    for (const handler of Array.from(this.helloHandlers)) {
       try {
         handler(next);
       } catch (err) {
@@ -3482,7 +3486,7 @@ export class WSClient {
     ) return;
     this.statusSnapshot = next;
     if (this.statusHandlers.size === 0) return;
-    for (const handler of [...this.statusHandlers]) {
+    for (const handler of Array.from(this.statusHandlers)) {
       try {
         handler(next);
       } catch (err) {
