@@ -190,6 +190,36 @@ func (l *lastUpsertLog) get(id string) (store.Item, bool) {
 	return row, ok
 }
 
+// TestWireItemRefreshDrainWaitsForSettles: a settle still in flight when
+// the drain starts arms its refresh after the drain's flush would have
+// run. The drain waits for it, so it returns with nothing armed and the
+// settle's row pushed, instead of leaving a timer that fires after the
+// caller closed the store.
+func TestWireItemRefreshDrainWaitsForSettles(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedAgentChain(t, st, "t1")
+	release := make(chan struct{})
+	router.goSettle("t1", func() {
+		<-release
+		router.noteWireItemEmitted("t1", "agent-1", store.UnstampedItemRev)
+	})
+	time.AfterFunc(20*time.Millisecond, func() { close(release) })
+
+	emissions.reset()
+	router.DrainWireItemRefresh()
+	router.WaitForPendingSettles()
+	router.mu.Lock()
+	left := len(router.wireRefresh)
+	router.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d refreshes armed after the drain returned", left)
+	}
+	if ids := pushedIDs(itemUpserts(emissions.snapshot())); !containsString(ids, "agent-1") {
+		t.Fatalf("the drain pushed %v, want agent-1 from the settle", ids)
+	}
+}
+
 // TestWireItemRefreshAccountingUnderConcurrency drives notes, timer
 // flushes, synchronous flushes and thread teardown against each other
 // under the race detector. The assertion is that the drains return: a

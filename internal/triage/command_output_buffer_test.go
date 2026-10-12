@@ -27,10 +27,19 @@ func commandOutputDelta(itemID, content string) provider.ProviderEvent {
 	}
 }
 
+// holdCommandOutputFlush keeps a command-output window's timer from
+// flushing it, so it lands only at the test's flush. A test that counts
+// the upserts of one window would otherwise see the window split
+// whenever the run stalls past the flush interval.
+func holdCommandOutputFlush(router *Router) {
+	router.delays.commandOutputPersist = time.Hour
+}
+
 // A burst of streaming deltas must stay buffered (no payload, no wire
 // upserts), then land as ONE append + ONE upsert at the flush boundary.
 func TestCommandOutputBurstBuffersUntilFlush(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
+	holdCommandOutputFlush(router)
 	createTestThread(t, st, "t1")
 	insertToolCallItem(t, st, "t1", "cmd-1", "Bash: go build", "command_execution", "running")
 
@@ -223,6 +232,7 @@ func TestCommandOutputReplaceCreatesMissingRow(t *testing.T) {
 // and without emitting an upsert against the dead row.
 func TestCommandOutputFlushDropsWhenItemGone(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
+	holdCommandOutputFlush(router)
 	createTestThread(t, st, "t1")
 	insertToolCallItem(t, st, "t1", "cmd-1", "Bash: go build", "command_execution", "running")
 

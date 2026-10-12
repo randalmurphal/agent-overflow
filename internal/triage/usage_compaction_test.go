@@ -199,8 +199,18 @@ func createCodexThread(t *testing.T, st *store.Store, id string) {
 	}
 }
 
+// holdUsageThrottle keeps the trailing usage emit from firing on its
+// own, so a throttled update is delivered only by a flush, a reset or the
+// next event. The tests below count emissions across several events and
+// would otherwise see the trailing emit whenever the run stalls past the
+// throttle interval.
+func holdUsageThrottle(router *Router) {
+	router.delays.usageEmit = time.Hour
+}
+
 func TestThrottledEmitUsageSuppressesRapidEvents(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
+	holdUsageThrottle(router)
 	createTestThread(t, st, "t1")
 
 	fire := func(used int) {
@@ -231,6 +241,7 @@ func TestThrottledEmitUsageSuppressesRapidEvents(t *testing.T) {
 
 func TestFlushUsageEmitThrottleDrainsPending(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
+	holdUsageThrottle(router)
 	createTestThread(t, st, "t1")
 
 	fire := func(used int) {
@@ -267,6 +278,7 @@ func TestFlushUsageEmitThrottleDrainsPending(t *testing.T) {
 
 func TestResetUsageEmitThrottleAllowsImmediateNextEmit(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
+	holdUsageThrottle(router)
 	createTestThread(t, st, "t1")
 
 	fire := func(used int) {
