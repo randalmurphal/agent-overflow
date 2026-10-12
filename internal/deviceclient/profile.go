@@ -113,7 +113,7 @@ func LoadSession(dir, backendID string) (Session, error) {
 // Atomic by construction: a rotation that crashed mid-write would leave a
 // credential pair whose two halves came from different exchanges, and the
 // refresh half of that pair reads as reuse the next time it is presented.
-func SaveSession(dir string, session Session) error {
+func SaveSession(dir string, session Session) (err error) {
 	path, err := sessionPath(dir, session.BackendID)
 	if err != nil {
 		return err
@@ -124,7 +124,7 @@ func SaveSession(dir string, session Session) error {
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer func() { err = errors.Join(err, release()) }()
 	return writeSession(path, session)
 }
 
@@ -158,7 +158,7 @@ func readSession(path string) (Session, error) {
 // ForgetSession drops one backend's stored session. The device key
 // survives: it names the DEVICE, and the backend adopts its row by
 // thumbprint when this installation pairs again.
-func ForgetSession(dir, backendID string) error {
+func ForgetSession(dir, backendID string) (err error) {
 	path, err := sessionPath(dir, backendID)
 	if err != nil {
 		return err
@@ -169,7 +169,7 @@ func ForgetSession(dir, backendID string) error {
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer func() { err = errors.Join(err, release()) }()
 
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("deviceclient: forget the session for %s: %w", backendID, err)

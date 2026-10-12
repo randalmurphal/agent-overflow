@@ -76,3 +76,9 @@ func lockFileExclusiveNonBlocking(file *os.File) (bool, error) {
 	}
 	return false, err
 }
+
+// unlockFile drops the range lockFileExclusiveNonBlocking took.
+func unlockFile(file *os.File) error {
+	var overlapped windows.Overlapped
+	return windows.UnlockFileEx(windows.Handle(file.Fd()), 0, ^uint32(0), ^uint32(0), &overlapped)
+}

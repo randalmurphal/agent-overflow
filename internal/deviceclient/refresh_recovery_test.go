@@ -224,7 +224,9 @@ func TestProfileTransactionsPreserveUnknownFieldsAndReplacement(t *testing.T) {
 func TestProfileLockValidatesAndHonoursContention(t *testing.T) {
 	for _, bad := range []struct{ dir, name string }{{"", "device-key.pem"}, {t.TempDir(), "../escape"}} {
 		if unlock, err := lockProfile(t.Context(), bad.dir, bad.name); err == nil {
-			unlock()
+			if err := unlock(); err != nil {
+				t.Fatal(err)
+			}
 			t.Fatal("accepted invalid path")
 		}
 	}
@@ -237,16 +239,22 @@ func TestProfileLockValidatesAndHonoursContention(t *testing.T) {
 	defer cancel()
 	if unlock, err := lockProfile(ctx, dir, "session"); !errors.Is(err, context.DeadlineExceeded) {
 		if unlock != nil {
-			unlock()
+			if err := unlock(); err != nil {
+				t.Fatal(err)
+			}
 		}
 		t.Fatalf("contended lock: %v", err)
 	}
-	release()
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
 	unlock, err := lockProfile(t.Context(), dir, "session")
 	if err != nil {
 		t.Fatal(err)
 	}
-	unlock()
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(filepath.Join(dir, "locks", "session.lock")); err != nil {
 		t.Fatal(err)
 	}
