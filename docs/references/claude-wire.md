@@ -4969,12 +4969,15 @@ snapshot of one (model, mode) variant.
     a repository snapshot) can cross it, and then EVERY spawn fails with
     E2BIG, which the user sees as a session that refuses to start.
   - **`/proc` exposure.** argv is world-readable via
-    `/proc/<pid>/cmdline`; the temp file is 0600. A system prompt
+    `/proc/<pid>/cmdline`; the prompt file is 0600. A system prompt
     carries workspace paths, git state, and whatever the user wrote.
 
   `internal/provider/claude/session.go` writes the file at spawn
   (`WriteSystemPromptFile`) and removes it in `Close` and on every
-  failed-spawn path.
+  failed-spawn path. The file is in the app data directory's
+  `claude-prompts/`, not the shared temp directory, and boot empties that
+  directory, so a backend killed with sessions open leaves nothing behind
+  past its next start.
 
   **The INTERACTIVE TUI honors the flag too** (verified 2.1.234 by
   running the real TUI under a PTY against the same sink). The
