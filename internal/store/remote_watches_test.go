@@ -153,7 +153,7 @@ func TestWithdrawnRemoteCompletionIsOwedAgainOnceItsThreadIsUnarchived(t *testin
 	if _, _, err := s.ArchiveThread(thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WithdrawRemoteCompletion(held.ComputerID, held.RequestID, item.ID); err != nil {
+	if err := s.WithdrawRemoteCompletion(held.ComputerID, held.RequestID, item.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	if rows, err := s.ListFlushQueueItems(thread.ID); err != nil || len(rows) != 0 {
@@ -182,11 +182,18 @@ func TestWithdrawnRemoteCompletionIsOwedAgainOnceItsThreadIsUnarchived(t *testin
 	if err := s.DeleteFlushQueueItem(item.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WithdrawRemoteCompletion(sent.ComputerID, sent.RequestID, item.ID); err != nil {
+	if err := s.WithdrawRemoteCompletion(sent.ComputerID, sent.RequestID, item.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := notification(sent); got != "queued" {
 		t.Fatalf("a delivered completion's watch = %q, want queued", got)
+	}
+	// One the provider never confirmed goes back with no row left.
+	if err := s.WithdrawRemoteCompletion(sent.ComputerID, sent.RequestID, item.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := notification(sent); got != "pending" {
+		t.Fatalf("an unconfirmed completion's watch = %q, want pending", got)
 	}
 }
 

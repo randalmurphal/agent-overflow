@@ -238,11 +238,11 @@ func (a *App) clearFlushDispatchForRollback(threadID string) {
 	// discard took is gone now and goes back to its owner.
 	if a.triage != nil {
 		for _, item := range a.triage.QueuedFlushItems(threadID) {
-			held = slices.DeleteFunc(held, func(row store.FlushQueueItem) bool { return row.ID == item.ID })
+			held = slices.DeleteFunc(held, func(m ownedMessage) bool { return m.rowID == item.ID })
 		}
 	}
 	unlock()
-	a.returnHeldToOwners(threadID, held)
+	a.giveBackToOwners(threadID, held)
 }
 
 // discardFlushDispatch throws away the batches the dispatch worker holds for
@@ -767,6 +767,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// registry expectation derived together (providerSendIdentity), so
 	// the two cannot drift.
 	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
+	sendExpect.JoinedParts = joined.parts
 	// What this message puts on the wire, block by block. Headless Claude can
 	// acknowledge a queued message whose content is this message CONCATENATED
 	// onto earlier ones the CLI merged with it at a turn boundary, and the
@@ -869,6 +870,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			// preserve both across this placement-only fallback.
 			var refreshExpect triage.PendingSendExpectation
 			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, "")
+			refreshExpect.JoinedParts = joined.parts
 			a.triage.RegisterPendingFlushSendWithExpectation(
 				threadID, leadQueueItemID, userItem, leadEnqueuedAt, refreshExpect)
 			sess.Liveness.BumpActivity(time.Now())
@@ -1113,13 +1115,13 @@ func (a *App) flushQueueSettlement(threadID, id string, onDurable func()) *triag
 //
 // The answers, reminders and remote completions among them are kept and
 // returned, and the caller gives them back to their owners
-// (returnHeldToOwners) once the rest of the queue, in memory and dispatch, is
+// (giveBackToOwners) once the rest of the queue, in memory and dispatch, is
 // gone too.
-func (a *App) dropDurableFlushQueue(threadID string) (held []store.FlushQueueItem) {
+func (a *App) dropDurableFlushQueue(threadID string) (held []ownedMessage) {
 	held = a.noteAgentWakesDropped(threadID)
 	keep := make([]string, 0, len(held))
-	for _, row := range held {
-		keep = append(keep, row.ID)
+	for _, m := range held {
+		keep = append(keep, m.rowID)
 	}
 	if a.queueDropReadForTest != nil {
 		a.queueDropReadForTest(threadID)

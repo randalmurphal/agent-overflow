@@ -59,7 +59,7 @@ func (a *App) withdrawHeldThreadWakes(threadID string) error {
 			continue
 		}
 		if _, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
-			return a.store.WithdrawThreadWake(token, late, row.ID)
+			return a.store.WithdrawThreadWake(token, late, row.ID, false)
 		}); err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))
 		}

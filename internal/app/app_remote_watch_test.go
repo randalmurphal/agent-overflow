@@ -64,7 +64,7 @@ func completedRemoteWatch(t *testing.T, a *App, thread store.Thread) store.Remot
 	return w
 }
 
-func TestRemoteCompletionQueueHandoffDraftAndRestartRecovery(t *testing.T) {
+func TestRemoteCompletionQueueHandoffAndRestartRecovery(t *testing.T) {
 	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	a.startSessionFn = func(string) error { return nil }
@@ -94,28 +94,34 @@ func TestRemoteCompletionQueueHandoffDraftAndRestartRecovery(t *testing.T) {
 	if err != nil || saved.Notification != "queued" {
 		t.Fatalf("handoff=%+v %v", saved, err)
 	}
-	// Replace process-memory state and run the actual boot recovery: queued
-	// completions follow ordinary messages into the draft, never auto-resend.
+	// Replace process-memory state and run the actual boot recovery: a
+	// queued completion is not the person's to send, so it goes back to its
+	// watch rather than into the composer, and the watcher delivers it again.
 	a.triage = triage.NewRouter(a.store, rec.captureChannel)
 	a.configureTriageQueueCallbacks()
 	a.restoreDurableFlushQueueAtBoot()
 	draft, _, err = a.store.GetThreadDraft(thread.ID)
-	if err != nil || strings.Count(draft.Content, w.RequestID) != 1 || !strings.HasSuffix(draft.Content, "my unsent draft") {
-		t.Fatalf("recovered draft=%+v %v", draft, err)
+	if err != nil || draft.Content != "my unsent draft" {
+		t.Fatalf("recovered draft=%+v %v, want the person's draft alone", draft, err)
 	}
 	if len(durableQueueRows(t, a, thread.ID)) != 0 {
 		t.Fatal("recovered completion remained queued")
 	}
-	due, err := a.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 256)
-	if err != nil || len(due) != 0 {
-		t.Fatalf("restart would re-notify recovered message: %+v %v", due, err)
+	if saved, err = a.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil || saved.Notification != "pending" {
+		t.Fatalf("recovered watch=%+v %v, want pending", saved, err)
 	}
-	// A stale in-memory observer is also unable to insert a second message after
-	// recovery removed the normal queue row and its send identity: the durable
-	// watch no longer owes a notification.
-	_ = a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output})
-	if len(durableQueueRows(t, a, thread.ID)) != 0 {
-		t.Fatal("stale observer re-enqueued recovered completion")
+	due, err := a.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 256)
+	if err != nil || len(due) != 1 {
+		t.Fatalf("the recovered completion is not due again: %+v %v", due, err)
+	}
+	// Delivered again, it is queued once, however many observers deliver it.
+	for range 2 {
+		if err := a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 1 || rows[0].SendID != remoteCompletionSendID(w) {
+		t.Fatalf("redelivered queue: %+v", rows)
 	}
 }
 

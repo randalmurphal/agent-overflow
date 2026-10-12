@@ -116,9 +116,13 @@ rendering and queueing in `app_agent_wake_delivery.go`, promotion in
 loop or watch wake is data, not something the person wrote: one still queued
 at boot or left unconfirmed by a session that ended never goes to the
 composer, and its row records `not delivered`; an outside `thread send` is
-handled the same way, with a notice in its thread. A message Claude joined
-from a person's text and such parts is split, and only the person's text
-goes back (`agentPartsAtSessionEnd`). Whether a turn was a tick
+handled the same way, with a notice in its thread. A request's answer or
+reminder and a remote job's completion that never reached the agent go
+back to their owners through one path (`giveBackToOwners`), from a Stop, a
+revert, a session end, a failed Codex resend and the boot sweep. A message
+Claude joined from a person's text and such parts is split by the lengths
+its dispatch recorded (`usermessage.JoinedPart`), and only the person's
+text goes back (`agentPartsNotTakenIn`). Whether a turn was a tick
 is read from the rows of the turn that ended, because a dispatch cannot know
 what the provider joined into it. The exception is a Claude turn the CLI
 started for messages queued during the previous turn, which keep their rows

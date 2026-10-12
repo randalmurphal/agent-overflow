@@ -3449,7 +3449,7 @@ func TestQueuePayloadFromUserItemPreservesComposerCommandProvenance(t *testing.T
 	t.Parallel()
 	raw := queuePayloadFromUserItem(store.Item{
 		Meta: `{"expandComposerCommands":true}`,
-	}, nil)
+	}, nil, nil)
 	var payload flushQueuePayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)

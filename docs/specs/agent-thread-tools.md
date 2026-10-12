@@ -818,12 +818,15 @@ queued when the caller is archived, or when a Stop or a revert drops
 the caller's queue, goes back to its request: one transaction removes
 the queue row, clears its delivery and turns `notify` off, so
 `thread_status` still returns the answer and nothing reaches the
-thread at its next start. Caller deleted
-first: dropped. A restart of the caller's computer before a queued wake
-reached the provider restores it into the composer draft, as every
-queued message is; the request then reads `delivered: draft`, distinct
-from `delivered: inline` and `delivered: queued`, and `thread_status`
-still returns the answer.
+thread at its next start. So does a wake the caller's session ended
+or a Codex resend failed without taking in, still queued or written
+and unconfirmed, and one still queued when the caller's computer
+restarts. The answer is not the person's to send, so it never goes to
+the composer, where the other queued messages go; when Claude joined it
+with a person's message, the person's text alone goes there. Caller
+deleted first: dropped. Rows written by earlier versions may read
+`delivered: draft`: a wake that boot recovery restored into the
+composer.
 
 A wake the settlement could not hand over (a caller thread that could
 not be unarchived, a fenced thread, a failed queue write, a crash

@@ -2781,10 +2781,10 @@ func TestThreadRequestsListAndExport(t *testing.T) {
 	}
 }
 
-// A wake the previous process never delivered is restored into the composer
-// at boot, and the request says so rather than claiming the message was
-// delivered.
-func TestRestoredWakeIsRecordedAsADraft(t *testing.T) {
+// A wake the previous process never delivered goes back to its request at
+// boot, owed and disarmed, rather than into the composer: it is not the
+// person's to send, and thread_status still returns the answer.
+func TestAWakeQueuedAtQuitGoesBackToItsRequest(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "the backup finished")
@@ -2803,16 +2803,14 @@ func TestRestoredWakeIsRecordedAsADraft(t *testing.T) {
 	after := f.restart(t)
 	after.app.restoreDurableFlushQueueAtBoot()
 
-	row := after.request(t, ack.Token)
-	if row.DeliveredHow != store.ThreadWakeDraft {
-		t.Fatalf("delivery = %q, want the draft correction", row.DeliveredHow)
+	if row := after.request(t, ack.Token); row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
+		t.Fatalf("delivered %q at %d, notify %v; want the answer owed and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
 	}
-	draft, found, err := after.app.store.GetThreadDraft(f.caller.ID)
-	if err != nil || !found || !strings.Contains(draft.Content, "the backup finished") {
-		t.Fatalf("draft = %+v found=%v err=%v", draft, found, err)
+	if draft, _, err := after.app.store.GetThreadDraft(f.caller.ID); err != nil || strings.Contains(draft.Content, "the backup finished") {
+		t.Fatalf("draft = %+v err=%v, want no answer in it", draft, err)
 	}
 	if rows := durableQueueRows(t, after.app, f.caller.ID); len(rows) != 0 {
-		t.Fatalf("the restored row was left in the queue: %+v", rows)
+		t.Fatalf("the returned row was left in the queue: %+v", rows)
 	}
 }
 

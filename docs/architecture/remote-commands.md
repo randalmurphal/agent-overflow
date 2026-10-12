@@ -154,8 +154,10 @@ and the completion still arrives as a message. Notices name the computer and
 job, retain the exact routing IDs, and include at most 1 KiB of the output's
 start plus 2 KiB of its end, untrusted. Log-tool guidance appears only when
 output is omitted; general usage instructions stay in tool descriptions.
-After handoff, normal queue crash recovery applies: undelivered text is recovered
-into the composer, never independently sent again by the remote-job watcher.
+After handoff, a completion the queue could not deliver is not the person's to
+send and never goes to the composer: one still queued at a restart, or left
+queued or unconfirmed by a session that ended or a Codex resend that failed,
+goes back to its watch as `pending`, and the watcher delivers it again.
 Finished workflow phases are not reopened.
 The conversation that called `remote_run` owns the job. Deleting or moving it
 cancels the commands it still owns and drops their pending notifications.

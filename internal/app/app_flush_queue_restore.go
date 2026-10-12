@@ -184,8 +184,13 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 
 	parts := make([]composerdraft.Part, 0, len(restorable))
 	settlements := make([]*triage.FlushSettlement, 0, len(restorable))
+	// The answers and completions go back once the restore of the rest has
+	// committed: a restore that fails requeues the items whole, them
+	// included, and they are still queued.
+	var owned []ownedMessage
 	for _, item := range restorable {
-		part, restore := a.agentPartsAtSessionEnd(threadID, item, a.restoredFlushDraftPart(threadID, item))
+		part, restore, itemOwned := a.agentPartsNotTakenIn(threadID, item, a.restoredFlushDraftPart(threadID, item), reason)
+		owned = append(owned, itemOwned...)
 		if !restore {
 			settlements = append(settlements, item.Settlement)
 			continue
@@ -210,6 +215,9 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 	}
 	for _, settlement := range settlements {
 		settlement.Settle()
+	}
+	if len(owned) > 0 {
+		a.giveBackToOwners(threadID, owned)
 	}
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 
@@ -309,12 +317,22 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 	queueItemIDs := make([]string, 0, len(restorable))
 	userItemIDs := make([]string, 0, len(restorable))
 	parts := make([]composerdraft.Part, 0, len(restorable))
+	// What the app wrote is settled as a session end settles it, and its
+	// answers and completions go back once the draft has committed.
+	var owned []ownedMessage
 	for _, p := range restorable {
 		if p.QueueItemID != "" {
 			queueItemIDs = append(queueItemIDs, p.QueueItemID)
 		}
 		userItemIDs = append(userItemIDs, p.UserItemID)
-		part := draftPartFromUserItem(store.Item{ThreadID: threadID, ID: p.UserItemID, Summary: p.Content, Meta: p.Meta})
+		row := store.Item{ThreadID: threadID, ID: p.UserItemID, Summary: p.Content, Meta: p.Meta}
+		part, restore, itemOwned := a.agentPartsNotTakenIn(threadID, triage.UnconfirmedFlushItem{
+			QueueItemID: p.QueueItemID, UserItemID: p.UserItemID, EnqueuedAt: p.EnqueuedAt, QuietItem: &row,
+		}, draftPartFromUserItem(row), reason)
+		owned = append(owned, itemOwned...)
+		if !restore {
+			continue
+		}
 		if strings.TrimSpace(part.Content) != "" || len(part.AttachmentIDs) > 0 || part.SourceProposedPlan != nil {
 			parts = append(parts, part)
 		}
@@ -333,6 +351,9 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 			a.requeueEagerPersistedFlushes(threadID, restorable)
 			return
 		}
+	}
+	if len(owned) > 0 {
+		a.giveBackToOwners(threadID, owned)
 	}
 	a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
 		ThreadID:     threadID,
@@ -516,11 +537,11 @@ func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem) (triage.Qu
 	payload := append(json.RawMessage(nil), item.Payload...)
 	if item.DeferredItem != nil {
 		message = strings.TrimSpace(item.DeferredItem.Summary)
-		payload = queuePayloadFromUserItem(*item.DeferredItem, payload)
+		payload = queuePayloadFromUserItem(*item.DeferredItem, item.JoinedParts, payload)
 	}
 	if item.QuietItem != nil {
 		message = strings.TrimSpace(item.QuietItem.Summary)
-		payload = queuePayloadFromUserItem(*item.QuietItem, payload)
+		payload = queuePayloadFromUserItem(*item.QuietItem, item.JoinedParts, payload)
 	}
 	if queueItemID == "" {
 		queueItemID = flushqueue.NewItemID()
@@ -538,7 +559,10 @@ func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem) (triage.Qu
 	}, true
 }
 
-func queuePayloadFromUserItem(item store.Item, fallback json.RawMessage) json.RawMessage {
+// queuePayloadFromUserItem rebuilds the queue payload of a message from the
+// row it was dispatched as. parts are a joined row's members
+// (usermessage.JoinedPart), kept while they describe the requeued text.
+func queuePayloadFromUserItem(item store.Item, parts []usermessage.JoinedPart, fallback json.RawMessage) json.RawMessage {
 	meta, err := usermessage.FromItem(item)
 	if err != nil {
 		return fallback
@@ -564,6 +588,7 @@ func queuePayloadFromUserItem(item store.Item, fallback json.RawMessage) json.Ra
 		// A joined row answers for several sends, so all of them travel.
 		SendID:        meta.SendID,
 		JoinedSendIDs: meta.JoinedSendIDs,
+		JoinedParts:   joinedPartsOf(strings.TrimSpace(item.Summary), parts),
 	})
 	if err != nil {
 		return fallback
@@ -597,7 +622,10 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 
 // restoreDurableFlushQueueAtBoot puts every queued message the previous
 // process did not deliver back into its thread's composer draft, and deletes
-// the rows.
+// the rows. What the app wrote is not the person's to send and goes
+// elsewhere: a loop or watch wake, an outside send or a worker's prompt is
+// discarded (discardAgentWakeAtBoot), and an answer, a reminder or a remote
+// completion goes back to its owner (giveBackToOwners).
 //
 // It NEVER re-dispatches. A queued message was written against a turn that no
 // longer exists, on a provider session that is gone, in a conversation the
@@ -626,7 +654,17 @@ func (a *App) restoreDurableFlushQueueAtBoot() {
 			continue
 		}
 		parts := make([]composerdraft.Part, 0, len(rows))
+		ids := make([]string, 0, len(rows))
+		var owned []ownedMessage
 		for _, row := range rows {
+			// An answer, a reminder or a completion goes back to its owner
+			// with its row, in one transaction of its own; one that fails
+			// keeps its row for the next boot.
+			if ownedSendID(row.SendID) {
+				owned = append(owned, ownedMessage{sendID: row.SendID, rowID: row.ID})
+				continue
+			}
+			ids = append(ids, row.ID)
 			// Recorded on the row before the queue row goes, so a failed
 			// restore leaves both for the next boot to try again.
 			if a.discardAgentWakeAtBoot(row) {
@@ -638,18 +676,17 @@ func (a *App) restoreDurableFlushQueueAtBoot() {
 			}
 			parts = append(parts, part)
 		}
-		ids := make([]string, 0, len(rows))
-		for _, row := range rows {
-			ids = append(ids, row.ID)
+		if len(owned) > 0 {
+			a.giveBackToOwners(threadID, owned)
+		}
+		if len(ids) == 0 {
+			continue
 		}
 		if err := a.restoreQueuedDraft(threadID, parts, ids); err != nil {
 			// Leave the rows alone: the next boot tries again, which is
 			// the whole point of the message being durable.
 			log.Printf("flush queue: restore queued messages into the draft for thread %s at boot: %v", threadID, err)
 			continue
-		}
-		for _, row := range rows {
-			noteThreadWakeRestoredToDraft(a, row.SendID)
 		}
 		a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 		if len(parts) > 0 {
@@ -675,33 +712,4 @@ func draftPartFromQueueRow(row store.FlushQueueItem) composerdraft.Part {
 		AttachmentIDs:      payload.AttachmentIDs,
 		SourceProposedPlan: payload.SourceProposedPlan,
 	}
-}
-
-// noteThreadWakeRestoredToDraft corrects a thread request whose wake this
-// restore put in the composer instead of sending. The request was marked
-// delivered when the message was queued, which was true then and is still
-// true now: the answer reached the thread. Only the route changed, and a
-// reader that cannot tell a queued wake from one sitting in a draft would
-// report an answer as on its way when it is waiting on the person.
-func noteThreadWakeRestoredToDraft(a *App, sendID string) {
-	token, late, ok := threadWakeTokenFromSendID(sendID)
-	if !ok {
-		return
-	}
-	if _, err := a.store.MarkThreadRequestDeliveredAsDraft(token, late); err != nil {
-		log.Printf("thread tools: mark request %s restored to draft: %v", token, err)
-	}
-}
-
-// threadWakeTokenFromSendID recovers the request a queued wake belongs to.
-// The two prefixes are disjoint, so either order reads the same send id; what
-// the token check rejects is a bare prefix, which names no request.
-func threadWakeTokenFromSendID(sendID string) (token string, late bool, ok bool) {
-	if rest, found := strings.CutPrefix(sendID, threadWakeLateSendID("")); found {
-		return rest, true, rest != ""
-	}
-	if rest, found := strings.CutPrefix(sendID, threadWakeSendID("")); found {
-		return rest, false, rest != ""
-	}
-	return "", false, false
 }

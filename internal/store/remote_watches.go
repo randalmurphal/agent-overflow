@@ -225,11 +225,13 @@ func (s *Store) QueueRemoteCompletion(computerID, requestID string, item FlushQu
 	return tx.Commit()
 }
 
-// WithdrawRemoteCompletion takes a queued completion's message back out of
-// the queue and returns delivery to its watch, in ONE durable transaction.
-// The watch goes back to pending only when the message was still queued: one
-// already dispatched or restored has been delivered.
-func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string) error {
+// WithdrawRemoteCompletion takes a completion's message that never reached
+// the agent back out of the queue and returns delivery to its watch, in ONE
+// durable transaction. The watch goes back to pending when the message was
+// still queued: one already dispatched has been delivered. One the provider
+// was handed and never confirmed (unconfirmed) has no row left and goes
+// back all the same, while the watch still reads queued.
+func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string, unconfirmed bool) error {
 	tx, release, err := s.beginDurableTx(context.Background())
 	if err != nil {
 		return err
@@ -244,7 +246,7 @@ func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string) er
 	if err != nil {
 		return err
 	}
-	if n == 1 {
+	if n == 1 || unconfirmed {
 		if _, err = tx.Exec(`UPDATE remote_watches SET notification='pending' WHERE computer_id=? AND request_id=? AND notification='queued'`, computerID, requestID); err != nil {
 			return err
 		}

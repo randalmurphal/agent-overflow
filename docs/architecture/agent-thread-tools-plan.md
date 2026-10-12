@@ -360,7 +360,7 @@ computer's threads made):
 | `answer`, `answer_kind` | The whole settled text, uncapped (`payloads`-style BLOB, never truncated), and whether it was an explicit `reply`, the `final` assistant text, an `error`, or a reminder `note`. Wakes carry a 24 KB preview; `thread_status` pages the whole. |
 | `late_reply`, `late_reply_at` | A `thread_reply` that arrived after `finished`. Delivered as a second wake. |
 | `revision` | Increments on every settlement and late reply; `thread_status` waits with `after_revision`. |
-| `settled_at`, `delivered_at`, `delivered_how`, `late_delivered_at` | When settlement was stored here; when and how each wake was handed over: `inline`, `queued`, or `draft` (a queued wake restored into the composer by boot recovery, which never redispatches). |
+| `settled_at`, `delivered_at`, `delivered_how`, `late_delivered_at` | When settlement was stored here; when and how each wake was handed over: `inline` or `queued`. `draft` is a queued wake that boot recovery once restored into the composer; nothing writes it now. |
 | `expires_at` | From the destination: when the uncollected answer is dropped there. |
 | `next_check`, `attempts`, `issue` | Poller schedule and last error text for remote targets. |
 | `created_at`, `updated_at` | |
@@ -759,9 +759,10 @@ SendID: "thread-wake:" + token}, injectedQueueOptions{preserveDraft:
 true, persist: a.store.QueueThreadWake(token, item)})`, where
 `QueueThreadWake` inserts the queue row and sets `delivered_at` and
 `delivered_how = queued` in one transaction. Inline delivery sets
-`delivered_how = inline` only after the tool response was written. Boot
-recovery, which restores queued rows into the composer draft, marks the
-matching requests `delivered_how = draft` in the same pass. A late reply
+`delivered_how = inline` only after the tool response was written. A
+wake still queued at boot, or one a session ended or a resend failed
+without taking in, goes back to its request (`WithdrawThreadWake`)
+rather than into the composer draft. A late reply
 uses `SendID "thread-wake-late:" + token` and `late_delivered_at`. The
 caller archived after the request: unarchive first (spec). Caller
 deleted or missing: mark delivered with nothing queued and log.
@@ -1072,9 +1073,9 @@ Requests and waits:
   revision; the poller collects it and the second wake lands.
 - Two `thread_status` calls waiting on the same token: both return.
 - A thread sending to itself: refused at admission.
-- Wake restored to the composer draft by a restart: the request reads
-  `delivered: draft`; `thread_status` still returns the answer; the
-  user sees the text in the composer and decides.
+- Wake still queued at a restart, or left by a session that ended: it
+  goes back to its request, owed and disarmed, and never into the
+  composer; `thread_status` still returns the answer.
 - Scratch responder needs a write: read-only refuses instantly; the
   model says so in its reply; nothing waits on a human.
 - Scratch responder calls `thread_ask` itself: allowed (all tools in

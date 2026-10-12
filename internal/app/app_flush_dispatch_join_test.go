@@ -691,7 +691,7 @@ func TestDispatchFlush_Claude_JoinRenumbersImageMarkers(t *testing.T) {
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
 		ID:              "queue:restored",
 		Message:         row.Summary,
-		Payload:         queuePayloadFromUserItem(row, nil),
+		Payload:         queuePayloadFromUserItem(row, nil, nil),
 		StaleUserItemID: row.ID,
 	}})
 	envelopes = waitForCapturedUserEnvelopeParts(t, capturePath, 2)

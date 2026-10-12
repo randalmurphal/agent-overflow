@@ -318,7 +318,12 @@ once the queue is gone: an answer or reminder to its request, owed and
 disarmed, so `thread_status` still returns it; a remote job's
 completion to its watch, whose watcher delivers it again and starts the
 session for it, as for a completion that finishes after the Stop. A
-Stop does not quiet later wakes.
+Stop does not quiet later wakes. A session that ends, or a Codex resend
+that fails, without taking in such an answer or completion, and a
+restart that finds one still queued, return it the same way; none goes
+to the composer. A Stop and a revert drop the queue under the thread's
+mutation lock, which every queue write takes, so a message queued
+during the drop is either dropped with it or queued after it.
 An archived thread takes none of these messages and starts no session
 for them: one that arrives after the archive is refused back to what
 sent it, and one queued just before it waits, without a start, for the
@@ -354,7 +359,11 @@ received a wake or an outside send joined with a person's queued
 message and the session ended before taking it in, the join is split:
 the person's own text goes back to the composer, and the wake and send
 parts are discarded with their `not delivered` records, the watch
-keeping only its own wake's data.
+keeping only its own wake's data. The dispatch that joins the messages
+records each one's length, which splits the join exactly; an answer's
+or a completion's text can hold the separator the join puts between
+messages, so the first-line split older joins use refuses those and
+restores all of the text, giving the answer and completion back too.
 
 Other than that retry, a fire whose previous wake is still queued is
 skipped and counted missed, and its output is kept the same way. The outcome of the latest

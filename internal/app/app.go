@@ -538,9 +538,9 @@ type App struct {
 	// downstream code emitted. name is the channel's WIRE spelling, for
 	// the reason given on emitEventFn above.
 	testEmitHook func(name string, data any)
-	// heldReturnedForTest, when set, runs after a wholesale drop has
-	// returned the answers and completions it held (returnHeldToOwners), so
-	// a test can land a watcher pass at that moment.
+	// heldReturnedForTest, when set, runs after answers and completions
+	// have been given back to their owners (giveBackToOwners), so a test can
+	// land a watcher pass at that moment.
 	heldReturnedForTest func(threadID string)
 	// queueDropReadForTest, when set, runs in a wholesale drop between its
 	// read of the durable queue and its delete (dropDurableFlushQueue), so

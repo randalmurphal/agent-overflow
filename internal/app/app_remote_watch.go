@@ -453,7 +453,7 @@ func remoteCompletionFromSendID(sendID string) (computerID, requestID string, ok
 // reaches the agent when the thread is next started and the watcher delivers
 // it once the thread is unarchived. A completion the dispatch already took
 // stays delivered. One queued in a live session goes back when the archive's
-// teardown drops the queue (returnHeldToOwners).
+// teardown drops the queue (giveBackToOwners).
 func (a *App) withdrawHeldRemoteCompletions(threadID string) error {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
@@ -467,7 +467,7 @@ func (a *App) withdrawHeldRemoteCompletions(threadID string) error {
 			continue
 		}
 		removal, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
-			return a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID)
+			return a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID, false)
 		})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))

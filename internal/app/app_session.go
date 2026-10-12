@@ -1265,14 +1265,14 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool)
 	// persisted; CleanupThread below marks the thread stopped, after which
 	// triage drops them.
 	a.drainProviderEvents(threadID, "stop session")
-	var held []store.FlushQueueItem
+	var held []ownedMessage
 	if a.triage != nil {
 		held = a.dropQueueForTeardown(threadID, mutationsHeld)
 	}
 	// The answers and remote completions the drop held go back to their
 	// requests and watches once the session is closed, so a completion the
 	// watcher queues again starts a session only after this one is gone.
-	defer a.returnHeldToOwners(threadID, held)
+	defer a.giveBackToOwners(threadID, held)
 	err := a.closeProviderSession(threadID, sess)
 	if err == nil && sess.Provider == string(provider.Codex) {
 		err = a.retireCodexBackgroundRuntime(threadID)
@@ -1317,7 +1317,7 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool)
 // memory cleanup is done, durable and in memory for the next session.
 // Nothing it runs takes the thread's action lock, which some of its
 // callers do not hold.
-func (a *App) dropQueueForTeardown(threadID string, mutationsHeld bool) []store.FlushQueueItem {
+func (a *App) dropQueueForTeardown(threadID string, mutationsHeld bool) []ownedMessage {
 	if !mutationsHeld {
 		defer a.threadApplication().LockMutations(threadID)()
 	}

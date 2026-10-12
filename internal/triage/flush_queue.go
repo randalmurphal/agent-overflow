@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // flush_queue.go owns the per-thread "queued user message awaiting provider
@@ -98,6 +99,10 @@ type UnconfirmedFlushItem struct {
 	DeferredItem *store.Item
 	QuietItem    *store.Item
 	Settlement   *FlushSettlement
+	// JoinedParts are the members of a joined message as they appear in its
+	// text, when the dispatch that joined it recorded them
+	// (PendingSendExpectation.JoinedParts).
+	JoinedParts []usermessage.JoinedPart
 	// StaleUserItemID carries a requeued item's failed-cleanup row id
 	// (QueuedFlushItem.StaleUserItemID) through a session-death drain
 	// that catches the item still queued, so the obligation survives
@@ -689,6 +694,7 @@ func unconfirmedFlushItemFromPending(entry pendingSend) UnconfirmedFlushItem {
 		QueueItemID: entry.QueueItemID,
 		UserItemID:  entry.AOItemID,
 		EnqueuedAt:  entry.EnqueuedAt,
+		JoinedParts: entry.JoinedParts,
 	}
 	if entry.DeferredItem != nil {
 		item := *entry.DeferredItem

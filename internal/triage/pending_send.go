@@ -7,6 +7,7 @@ import (
 
 	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // pending_send.go owns the pending-send correlation state used by the
@@ -95,6 +96,10 @@ type pendingSend struct {
 	// queue-boundary merge rather than this message's own ack. See
 	// claude_merge_fold.go.
 	ExpectedContentBlockDigest []string
+
+	// JoinedParts are a joined message's members as they appear in its
+	// text, which a session-death restore splits it by.
+	JoinedParts []usermessage.JoinedPart
 
 	// AnchoredAtInterrupt marks a flush entry whose row was already
 	// placed at its user-visible timeline position by the interrupt
@@ -243,6 +248,11 @@ type PendingSendExpectation struct {
 	// id — headless Claude's queue-boundary merge. See
 	// pendingSend.ExpectedContentBlockDigest.
 	ContentBlockDigest []string
+
+	// JoinedParts are the members of a joined message as they appear in its
+	// text (usermessage.JoinedPart). They match no echo: a session-death
+	// restore splits the message by them (UnconfirmedFlushItem.JoinedParts).
+	JoinedParts []usermessage.JoinedPart
 }
 
 // RegisterPendingSendWithExpectation registers a direct send — the
@@ -323,6 +333,7 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 		ExpectedProviderItemID:     expect.ProviderItemID,
 		ExpectedClientID:           expectedClientID,
 		ExpectedContentBlockDigest: expect.ContentBlockDigest,
+		JoinedParts:                expect.JoinedParts,
 		Shape:                      shape,
 		InterruptedTurnIndex:       -1,
 	})

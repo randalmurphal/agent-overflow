@@ -42,6 +42,10 @@ type joinedFlushMessage struct {
 	// opaque id every member's acknowledgement resolves to) and stays on
 	// `$.sendId`; the rest ride Meta.JoinedSendIDs.
 	sendID string
+	// parts are the members as they appear in content, which a session-death
+	// restore splits the message by (usermessage.JoinedPart); nil for one
+	// message, or when a member is a joined message whose parts are unknown.
+	parts []usermessage.JoinedPart
 	// guardSlashCommand comes from the FIRST member alone: Claude's command
 	// router tests the first character of the assembled message, so only the
 	// leading member's text can enter it.
@@ -109,9 +113,11 @@ func joinFlushMembers(members []flushMember) (joinedFlushMessage, error) {
 	// display-only: the bubble renders its markers beside the row's attachment
 	// strip, and an edit-resend or a session-death requeue re-dispatches that
 	// exact string against the joined attachment list.
-	joined.content = joinRenumberedText(members, func(member flushMember) string {
+	var lengths []int
+	joined.content, lengths = joinRenumberedTextLengths(members, func(member flushMember) string {
 		return member.resolved.content
 	})
+	joined.parts = joinedFlushParts(members, lengths)
 	joined.providerContent = joinRenumberedText(members, func(member flushMember) string {
 		return member.resolved.providerContent
 	})
@@ -133,6 +139,13 @@ func joinFlushMembers(members []flushMember) (joinedFlushMessage, error) {
 // surrounds them (command expansion, file attachment lines), so one walk serves
 // both and the two cannot drift apart.
 func joinRenumberedText(members []flushMember, pick func(flushMember) string) string {
+	text, _ := joinRenumberedTextLengths(members, pick)
+	return text
+}
+
+// joinRenumberedTextLengths is joinRenumberedText that also returns each
+// member's length in the joined text.
+func joinRenumberedTextLengths(members []flushMember, pick func(flushMember) string) (string, []int) {
 	parts := make([]usermessage.TextPart, 0, len(members))
 	for _, member := range members {
 		parts = append(parts, usermessage.TextPart{
@@ -140,7 +153,30 @@ func joinRenumberedText(members []flushMember, pick func(flushMember) string) st
 			ImageCount: len(member.resolved.providerAttachments),
 		})
 	}
-	return usermessage.JoinRenumberedText(parts)
+	return usermessage.JoinRenumberedTextLengths(parts)
+}
+
+// joinedFlushParts names the members of a joined message by send id and
+// length. A member that is itself a joined message requeued after a session
+// death contributes its own parts while they still describe it: its parts
+// are unknown when it carries none, and when renumbering its image markers
+// changed its length. Then the message's are too, and it gets none.
+func joinedFlushParts(members []flushMember, lengths []int) []usermessage.JoinedPart {
+	parts := make([]usermessage.JoinedPart, 0, len(members))
+	for i, member := range members {
+		if len(member.payload.JoinedSendIDs) == 0 {
+			parts = append(parts, usermessage.JoinedPart{SendID: member.payload.SendID, Bytes: lengths[i]})
+			continue
+		}
+		if lengths[i] != len(member.resolved.content) {
+			return nil
+		}
+		if _, ok := usermessage.SplitJoinedParts(member.resolved.content, member.payload.JoinedParts); !ok {
+			return nil
+		}
+		parts = append(parts, member.payload.JoinedParts...)
+	}
+	return parts
 }
 
 // joinProviderAttachments is the image list those renumbered markers index
