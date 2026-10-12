@@ -1295,6 +1295,15 @@ func (a *App) registerQueueItem(
 // taken under triage's own lock and checked there, and this mutex is what
 // stops a fresh handoff starting between the check and the delete.
 func (a *App) removeQueuedItem(ctx context.Context, threadID, sendID string) (queueRemoval, error) {
+	return a.removeQueuedItemWith(ctx, threadID, sendID, func(row store.FlushQueueItem) error {
+		return a.store.DeleteFlushQueueItem(row.ID)
+	})
+}
+
+// removeQueuedItemWith is removeQueuedItem with the durable delete supplied
+// by the caller, for a message whose removal writes more than its row in the
+// same transaction.
+func (a *App) removeQueuedItemWith(ctx context.Context, threadID, sendID string, deleteRow func(store.FlushQueueItem) error) (queueRemoval, error) {
 	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(sendID) == "" {
 		return queueRemovalAbsent, fmt.Errorf("remove queued item: thread id and send id are required")
 	}
@@ -1330,7 +1339,7 @@ func (a *App) removeQueuedItem(ctx context.Context, threadID, sendID string) (qu
 			return queueRemovalDispatched, nil
 		}
 	}
-	if err := a.store.DeleteFlushQueueItem(row.ID); err != nil {
+	if err := deleteRow(row); err != nil {
 		return queueRemovalAbsent, fmt.Errorf("remove queued item: %w", err)
 	}
 	a.emitQueueStateChanged(threadID)

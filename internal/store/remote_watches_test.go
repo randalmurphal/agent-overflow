@@ -105,3 +105,86 @@ func TestRemoteWatchObservationCannotRegressAcceptedCompletion(t *testing.T) {
 		t.Fatal("a repeated receipt revived a deliberately dismissed accepted job")
 	}
 }
+
+// A completion taken back out of the queue is owed again, in the same
+// transaction as the delete, and the due list leaves it alone while its
+// thread is archived.
+func TestWithdrawnRemoteCompletionIsOwedAgainOnceItsThreadIsUnarchived(t *testing.T) {
+	s := newTestStore(t)
+	thread := Thread{ID: uuid.NewString(), Provider: "codex"}
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	finished := func() RemoteWatch {
+		t.Helper()
+		w := RemoteWatch{ComputerID: uuid.NewString(), RequestID: uuid.NewString(), ThreadID: thread.ID, Fingerprint: strings.Repeat("a", 64), Label: "test"}
+		if _, err := s.RegisterRemoteWatch(w); err != nil {
+			t.Fatal(err)
+		}
+		done := RemoteJob{ID: w.RequestID, SourceThreadID: thread.ID, State: "succeeded"}
+		if err := s.ObserveRemoteWatch(w.ComputerID, w.RequestID, done, "", 0); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	notification := func(w RemoteWatch) string {
+		t.Helper()
+		got, err := s.GetRemoteWatch(w.ComputerID, w.RequestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.Notification
+	}
+	due := func() int {
+		t.Helper()
+		rows, err := s.ListRemoteWatches("", 1, 256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(rows)
+	}
+
+	held := finished()
+	item := FlushQueueItem{ID: "queue:" + held.RequestID, ThreadID: thread.ID, SendID: "remote-completion:" + held.ComputerID + ":" + held.RequestID, Message: "done"}
+	if err := s.QueueRemoteCompletion(held.ComputerID, held.RequestID, item); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ArchiveThread(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WithdrawRemoteCompletion(held.ComputerID, held.RequestID, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := s.ListFlushQueueItems(thread.ID); err != nil || len(rows) != 0 {
+		t.Fatalf("withdrawn completion still queued: %+v %v", rows, err)
+	}
+	if got := notification(held); got != "pending" {
+		t.Fatalf("withdrawn completion's watch = %q, want pending", got)
+	}
+	if n := due(); n != 0 {
+		t.Fatalf("an archived thread's completion is due: %d rows", n)
+	}
+	if _, _, err := s.UnarchiveThread(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := due(); n != 1 {
+		t.Fatalf("the unarchived thread's completion is not due: %d rows", n)
+	}
+
+	// A message already gone from the queue was delivered: its watch stays
+	// with the queue.
+	sent := finished()
+	item = FlushQueueItem{ID: "queue:" + sent.RequestID, ThreadID: thread.ID, SendID: "remote-completion:" + sent.ComputerID + ":" + sent.RequestID, Message: "done"}
+	if err := s.QueueRemoteCompletion(sent.ComputerID, sent.RequestID, item); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteFlushQueueItem(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WithdrawRemoteCompletion(sent.ComputerID, sent.RequestID, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := notification(sent); got != "queued" {
+		t.Fatalf("a delivered completion's watch = %q, want queued", got)
+	}
+}

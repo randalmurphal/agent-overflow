@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -373,7 +374,8 @@ func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 		return "", false, err
 	}
 	if thread.Archived {
-		return "", false, a.store.DismissRemoteWatch(w.ComputerID, w.RequestID)
+		// Owed once the thread is unarchived; the watcher skips it until then.
+		return "", false, nil
 	}
 	if err = a.store.CheckThreadExecutionAccess(thread); err != nil {
 		return "", false, err
@@ -410,8 +412,44 @@ func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 	return remoteCompletionMessage(w, a.remoteComputerNames()[w.ComputerID], output), true, nil
 }
 
+const remoteCompletionSendIDRoot = "remote-completion:"
+
 func remoteCompletionSendID(w store.RemoteWatch) string {
-	return "remote-completion:" + w.ComputerID + ":" + w.RequestID
+	return remoteCompletionSendIDRoot + w.ComputerID + ":" + w.RequestID
+}
+
+// withdrawHeldRemoteCompletions takes an archived thread's queued remote
+// completions back out of its queue and returns each to its watch, so none
+// reaches the agent when the thread is next started and the watcher delivers
+// it once the thread is unarchived. A completion the dispatch already took
+// stays delivered. Computer and request ids are UUIDs, so the send id splits
+// at its first colon.
+func (a *App) withdrawHeldRemoteCompletions(threadID string) error {
+	rows, err := a.store.ListFlushQueueItems(threadID)
+	if err != nil {
+		return fmt.Errorf("withdraw the queued remote completions of %s: %w", threadID, err)
+	}
+	var errs []error
+	withdrawn := false
+	for _, row := range rows {
+		ids, isCompletion := strings.CutPrefix(row.SendID, remoteCompletionSendIDRoot)
+		computerID, requestID, ok := strings.Cut(ids, ":")
+		if !isCompletion || !ok {
+			continue
+		}
+		removal, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
+			return a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID)
+		})
+		if err != nil {
+			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))
+			continue
+		}
+		withdrawn = withdrawn || removal == queueRemovalRemoved
+	}
+	if withdrawn {
+		a.emitBackgroundChanged(threadID)
+	}
+	return errors.Join(errs...)
 }
 
 // ListThreadRemoteCommands lists a conversation's tracked remote jobs, pending
