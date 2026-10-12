@@ -89,10 +89,12 @@ the wrong channel twice over:
   a repository snapshot), and then every spawn fails with E2BIG, a
   session that simply refuses to start.
 - **argv is world-readable** through `/proc/<pid>/cmdline`. The rendered
-  prompt carries workspace paths and git state; the temp file is 0600.
+  prompt carries workspace paths and git state; the prompt file is 0600.
 
-`writeSystemPromptFile` materializes it at spawn; `Session.Close` and
-every failed-spawn path remove it. The rendered prompt is additionally
+`claude.WriteSystemPromptFile` materializes it at spawn in the app data
+directory's `claude-prompts/`; `Session.Close` and every failed-spawn path
+remove it, and boot empties the directory for a backend that exited
+without closing its sessions. The rendered prompt is additionally
 capped at `maxRenderedSystemPromptBytes` (256KB) at composition time.
 Rendering is multiplicative, so a prompt inside the settings length
 limit can still render to tens of megabytes. Over the cap the spawn
@@ -362,7 +364,7 @@ app-managed server adds one.
 ### Delivery
 
 - **Claude and claude-tui:** `Config.AppendSystemPrompt`, passed as
-  `--append-system-prompt-file <path>`: a second 0600 temp file from
+  `--append-system-prompt-file <path>`: a second 0600 file from
   `claude.WriteSystemPromptFile`, removed with the replacement file on
   `Close` and on a failed spawn. The CLI places it after whichever prompt
   the session otherwise runs with (the default body, a settings override

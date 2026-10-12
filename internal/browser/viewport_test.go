@@ -93,6 +93,38 @@ func (f *paneFollowFixture) awaitPagesAt(t *testing.T, w, h int) {
 	}
 }
 
+// awaitFollowIdle waits for the thread's drain goroutine to finish and
+// discards the signals it sent. A pass lays the pages out before it signals
+// viewportApplied, so a test that saw the pages arrive can still have that
+// signal in flight; only after this does the channel speak for later passes.
+func (f *paneFollowFixture) awaitFollowIdle(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for f.followScheduled() {
+		if time.Now().After(deadline) {
+			t.Fatal("the pane-follow drain never went idle")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for {
+		select {
+		case <-f.applied:
+		default:
+			return
+		}
+	}
+}
+
+// followScheduled reports whether a follow pass is queued or running. A pane
+// rect schedules one synchronously, so right after SetPaneRect returns this
+// answers whether it did.
+func (f *paneFollowFixture) followScheduled() bool {
+	f.manager.mu.Lock()
+	defer f.manager.mu.Unlock()
+	st := f.manager.viewportSyncLocked(f.access.ThreadID)
+	return st.busy || st.dirty
+}
+
 func (f *paneFollowFixture) pagesAt(w, h int) bool {
 	for _, p := range f.pages {
 		if pw, ph := p.lastViewport(); pw != w || ph != h {
@@ -145,6 +177,7 @@ func TestPagesFollowThePaneUntilAViewportIsPinned(t *testing.T) {
 	awaitStateEvent(t, f.events, func(event CompanionEvent) bool {
 		return event.ViewportWidth == 800 && event.ViewportHeight == 600 && !event.ViewportSet
 	})
+	f.awaitFollowIdle(t)
 
 	// Pinning is explicit: the pages take the pinned size at once, the pane
 	// scales it down, and later pane sizes are recorded but not followed.
@@ -169,10 +202,8 @@ func TestPagesFollowThePaneUntilAViewportIsPinned(t *testing.T) {
 	if !f.pagesAt(1000, 500) {
 		t.Fatal("a pane resize must not relayout pinned pages")
 	}
-	select {
-	case <-f.applied:
+	if f.followScheduled() {
 		t.Fatal("a pane resize under a pinned viewport must schedule no follow pass")
-	default:
 	}
 
 	// Reset returns to the pane at the size it has now, synchronously.
