@@ -2,6 +2,7 @@ package claude
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -74,7 +75,7 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 		MaxTurns:        5,
 		AllowedTools:    []string{"Bash", "Edit"},
 	}
-	systemPromptPath, err := WriteSystemPromptFile(cfg.SystemPrompt)
+	systemPromptPath, err := WriteSystemPromptFile(t.TempDir(), cfg.SystemPrompt)
 	if err != nil {
 		t.Fatalf("WriteSystemPromptFile() error = %v", err)
 	}
@@ -144,11 +145,16 @@ func TestBuildArgsWithAllOptions(t *testing.T) {
 }
 
 // The system-prompt file is the one spawn artifact AO leaves on disk, so
-// its two properties are pinned: a session without an override writes
-// nothing at all, and the file a session DOES write is readable only by the
-// user running AO (the prompt carries workspace paths and git state).
+// its properties are pinned: a session without an override writes nothing
+// at all, the file a session DOES write is in the directory it was given and
+// readable only by the user running AO (the prompt carries workspace paths
+// and git state), and a prompt with no directory is refused rather than
+// written to the shared temp directory.
 func TestWriteSystemPromptFile(t *testing.T) {
-	path, err := WriteSystemPromptFile("")
+	sharedTemp := t.TempDir()
+	t.Setenv("TMPDIR", sharedTemp)
+	dir := t.TempDir()
+	path, err := WriteSystemPromptFile(dir, "")
 	if err != nil {
 		t.Fatalf("WriteSystemPromptFile(\"\") error = %v", err)
 	}
@@ -160,9 +166,20 @@ func TestWriteSystemPromptFile(t *testing.T) {
 		t.Errorf("argv carries --system-prompt-file without a prompt: %v", args)
 	}
 
-	path, err = WriteSystemPromptFile("secret prompt")
+	if path, err := WriteSystemPromptFile("", "secret prompt"); err == nil {
+		RemoveSystemPromptFile(path)
+		t.Fatalf("WriteSystemPromptFile with no directory = %q, want an error", path)
+	}
+	if left := promptFilesIn(t, sharedTemp); len(left) > 0 {
+		t.Fatalf("prompt files written to the shared temp directory: %v", left)
+	}
+
+	path, err = WriteSystemPromptFile(dir, "secret prompt")
 	if err != nil {
 		t.Fatalf("WriteSystemPromptFile() error = %v", err)
+	}
+	if filepath.Dir(path) != dir {
+		t.Errorf("system prompt file = %s, want it in %s", path, dir)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
