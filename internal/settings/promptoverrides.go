@@ -169,7 +169,7 @@ func validatePromptOverrides(field string, entries []PromptOverride) ([]PromptOv
 				field, MaxPromptOverridesTotalLen,
 			)
 		}
-		entry.Models = dedupeTrimmed(entry.Models, MaxPromptOverrideModels)
+		entry.Models = wireModels(dedupeTrimmed(entry.Models, MaxPromptOverrideModels))
 		out = append(out, entry)
 	}
 	return out, nil
@@ -205,9 +205,9 @@ func sanitizePromptOverrides(field string, entries []PromptOverride) []PromptOve
 		}
 		ids[id] = true
 		entry.ID = id
-		entry.Models = dedupeTrimmedLogged(
+		entry.Models = wireModels(dedupeTrimmedLogged(
 			fmt.Sprintf("%s[%d].models", field, i), entry.Models, MaxPromptOverrideModels,
-		)
+		))
 		prompt := strings.TrimSpace(entry.Prompt)
 		if len(prompt) > MaxPromptOverrideLen {
 			log.Printf("settings: %s[%d].prompt is %d bytes, truncating to %d",
@@ -354,4 +354,14 @@ func dedupeTrimmedLogged(field string, values []string, limit int) []string {
 		log.Printf("settings: %s has %d entries, keeping the first %d", field, len(values), limit)
 	}
 	return kept
+}
+
+// wireModels keeps an entry's model list a JSON array: `models` has no
+// omitempty, the frontend reads it as string[], and a nil slice would cross
+// the wire as null.
+func wireModels(models []string) []string {
+	if models == nil {
+		return []string{}
+	}
+	return models
 }

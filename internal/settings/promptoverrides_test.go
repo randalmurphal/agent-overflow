@@ -387,3 +387,21 @@ func TestClaudeTodoRemindersDisabledRoutesAndRoundTrips(t *testing.T) {
 		t.Fatal("reloaded ClaudeTodoRemindersDisabled = false, want true")
 	}
 }
+
+func TestAnOverrideWithNoModelsCrossesTheWireAsAnEmptyList(t *testing.T) {
+	entry := PromptOverride{Enabled: true, Prompt: "p"}
+	validated, err := validatePromptOverrides("claudePromptOverrides", []PromptOverride{entry})
+	if err != nil {
+		t.Fatalf("validatePromptOverrides() error = %v", err)
+	}
+	sanitized := sanitizePromptOverrides("claudePromptOverrides", []PromptOverride{{Enabled: true, Prompt: "p", Models: []string{" "}}})
+	for name, list := range map[string][]PromptOverride{"validate": validated, "sanitize": sanitized} {
+		raw, err := json.Marshal(list)
+		if err != nil {
+			t.Fatalf("%s: Marshal() error = %v", name, err)
+		}
+		if !strings.Contains(string(raw), `"models":[]`) {
+			t.Errorf("%s: wire %s carries the model list as something other than an empty array", name, raw)
+		}
+	}
+}
