@@ -67,7 +67,8 @@ func TestDeletingAScratchThreadSettlesItsOwnRequest(t *testing.T) {
 // and a settlement owe each other: the wait re-reads the row and arms the
 // wake under the token's settle lock, so a settlement cannot decide there is
 // nobody to deliver to while the wait is deciding the answer will arrive as a
-// message.
+// message. The wait stays registered while it does, so a settlement that
+// takes the lock first finds it and leaves the delivery to its reply.
 func TestAWaitArmsItsWakeUnderTheTokensSettleLock(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -89,14 +90,18 @@ func TestAWaitArmsItsWakeUnderTheTokensSettleLock(t *testing.T) {
 	}()
 	waitUntil(t, 10*time.Second, func() bool { return f.waitersOn(ack.Token) == 1 })
 
-	// The wait runs out after a second and leaves the waiter registry before
-	// it arms the request. Everything it does afterwards waits for this lock.
-	waitUntil(t, 10*time.Second, func() bool { return f.waitersOn(ack.Token) == 0 })
+	// The wait runs out after a second and parks on this lock to arm the
+	// request, still registered.
+	waitUntil(t, 10*time.Second, func() bool { return f.app.threadRequests.settleLocks.Refs(ack.Token) == 2 })
+	if f.waitersOn(ack.Token) != 1 {
+		unlock()
+		t.Fatal("the wait left the registry before it armed the request")
+	}
 	select {
 	case err := <-done:
 		unlock()
 		t.Fatalf("the wait finished while the token's settle lock was held: %v", err)
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 	unlock()
 
@@ -110,6 +115,9 @@ func TestAWaitArmsItsWakeUnderTheTokensSettleLock(t *testing.T) {
 	}
 	if row := f.request(t, ack.Token); !row.Notify {
 		t.Fatal("the timed-out wait left the request with no way to deliver its answer")
+	}
+	if f.waitersOn(ack.Token) != 0 {
+		t.Fatal("the wait is still registered after it returned")
 	}
 }
 

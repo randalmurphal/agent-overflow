@@ -44,9 +44,14 @@ func threadWatchKey(threadID string) string { return "thread:" + threadID }
 // must not be deleted under an agent whose tool call just failed: the answer
 // stays undeliverable so the caller is woken for it instead, and the fork is
 // dropped by the boot sweep, which takes every scratch thread.
+//
+// Releases are the exception: a wait registration held until the response
+// is settled is released whether or not it was delivered, after the marks,
+// so a wake it held off becomes owed only once the marks are recorded.
 type threadToolsPending struct {
-	mu  sync.Mutex
-	fns []func()
+	mu       sync.Mutex
+	fns      []func()
+	releases []func()
 }
 
 type threadToolsPendingKey struct{}
@@ -63,22 +68,30 @@ func (p *threadToolsPending) add(fn func()) {
 	p.fns = append(p.fns, fn)
 }
 
+func (p *threadToolsPending) hold(release func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.releases = append(p.releases, release)
+}
+
 // run executes what the call deferred, in order, once the response has been
 // delivered. A response that never reached the model delivered nothing, so
-// the list is dropped and said to be dropped.
+// the list is dropped and said to be dropped. The releases run either way,
+// last.
 func (p *threadToolsPending) run(delivered bool) {
 	p.mu.Lock()
-	fns := p.fns
-	p.fns = nil
+	fns, releases := p.fns, p.releases
+	p.fns, p.releases = nil, nil
 	p.mu.Unlock()
-	if !delivered {
-		if len(fns) > 0 {
-			log.Printf("thread tools: the response was not delivered; %d deferred step(s) dropped", len(fns))
+	if delivered {
+		for _, fn := range fns {
+			fn()
 		}
-		return
+	} else if len(fns) > 0 {
+		log.Printf("thread tools: the response was not delivered; %d deferred step(s) dropped", len(fns))
 	}
-	for _, fn := range fns {
-		fn()
+	for _, release := range releases {
+		release()
 	}
 }
 
@@ -93,10 +106,23 @@ func (t threadToolsApp) afterResponse(ctx context.Context, fn func()) {
 	fn()
 }
 
+// releaseAfterResponse runs a wait's release once the tool response has been
+// written or dropped, after the deliveries the call recorded. Callers defer it
+// right after waitRequest returns, so a direct in-process call, which has no
+// response to wait for, releases when it returns.
+func (t threadToolsApp) releaseAfterResponse(ctx context.Context, release func()) {
+	if pending, ok := ctx.Value(threadToolsPendingKey{}).(*threadToolsPending); ok {
+		pending.hold(release)
+		return
+	}
+	release()
+}
+
 // ackRequest waits for a freshly dispatched request as long as the call asked
 // to, then renders what it knows.
 func (t threadToolsApp) ackRequest(ctx context.Context, caller threadtools.Caller, token string, waitSeconds int) (threadtools.RequestAck, error) {
-	row, err := t.waitForRequest(ctx, caller, token, waitSeconds, 0)
+	row, release, err := t.waitForRequest(ctx, caller, token, waitSeconds, 0)
+	defer t.releaseAfterResponse(ctx, release)
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
@@ -108,23 +134,26 @@ func (t threadToolsApp) ackRequest(ctx context.Context, caller threadtools.Calle
 }
 
 // waitForRequest parks on one token and returns the row as it stands
-// afterwards, arming the wake when a positive wait ended with nothing.
+// afterwards, arming the wake when a positive wait ended with nothing. The
+// caller renders the row and then hands the release to
+// releaseAfterResponse.
 func (t threadToolsApp) waitForRequest(
 	ctx context.Context, caller threadtools.Caller, token string, waitSeconds int, afterRevision int64,
-) (store.ThreadRequest, error) {
-	if _, err := t.app.waitRequest(ctx, caller.ThreadID, []string{token}, waitSeconds,
-		func() (string, bool, error) { return t.settledOrBlocked(token, afterRevision) }); err != nil {
-		return store.ThreadRequest{}, err
+) (store.ThreadRequest, func(), error) {
+	_, release, err := t.app.waitRequest(ctx, caller.ThreadID, []string{token}, waitSeconds,
+		func() (string, bool, error) { return t.settledOrBlocked(token, afterRevision) })
+	if err != nil {
+		return store.ThreadRequest{}, release, err
 	}
 	row, found, err := t.readRequestAndArmNotify(token, waitSeconds > 0)
 	if err != nil {
-		return store.ThreadRequest{}, err
+		return store.ThreadRequest{}, release, err
 	}
 	if !found {
-		return store.ThreadRequest{}, errorsx.Public(threadtools.CodeRequestUnknown,
+		return store.ThreadRequest{}, release, errorsx.Public(threadtools.CodeRequestUnknown,
 			"That request is no longer on this computer.", nil)
 	}
-	return row, nil
+	return row, release, nil
 }
 
 // readRequestAndArmNotify re-reads one request after a wait and arms the wake
@@ -193,7 +222,7 @@ func (t threadToolsApp) RequestStates(ctx context.Context, caller threadtools.Ca
 	// Every token is waited on at once and the first to settle ends the
 	// call: an agent watching three spawns wants the one that finished, not
 	// the one it happened to list first.
-	outcome, err := t.app.waitRequest(ctx, caller.ThreadID, call.Tokens, call.WaitSeconds, func() (string, bool, error) {
+	outcome, release, err := t.app.waitRequest(ctx, caller.ThreadID, call.Tokens, call.WaitSeconds, func() (string, bool, error) {
 		for _, token := range call.Tokens {
 			woke, done, err := t.settledOrBlocked(token, call.AfterRevision)
 			if err != nil || done {
@@ -202,6 +231,7 @@ func (t threadToolsApp) RequestStates(ctx context.Context, caller threadtools.Ca
 		}
 		return "", false, nil
 	})
+	defer t.releaseAfterResponse(ctx, release)
 	if err != nil {
 		return threadtools.StatusReport{}, err
 	}
@@ -275,7 +305,7 @@ func (t threadToolsApp) watchThreads(ctx context.Context, caller threadtools.Cal
 	for _, threadID := range call.ThreadIDs {
 		keys = append(keys, threadWatchKey(threadID))
 	}
-	outcome, err := t.app.waitRequest(ctx, caller.ThreadID, keys, call.WaitSeconds, func() (string, bool, error) {
+	outcome, release, err := t.app.waitRequest(ctx, caller.ThreadID, keys, call.WaitSeconds, func() (string, bool, error) {
 		for _, threadID := range call.ThreadIDs {
 			state, err := t.threadStateNow(ctx, threadID)
 			if err != nil {
@@ -287,6 +317,7 @@ func (t threadToolsApp) watchThreads(ctx context.Context, caller threadtools.Cal
 		}
 		return "", false, nil
 	})
+	defer t.releaseAfterResponse(ctx, release)
 	if err != nil {
 		return threadtools.StatusReport{}, err
 	}
