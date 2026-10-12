@@ -107,7 +107,9 @@ download site, the npm registry, Bun's releases and the Playwright CDN.
 job (`.github/actions/toolchain-image`) resolves it at
 the start of every run, builds and publishes it when it is missing and the
 token may push, and otherwise runs the jobs on the newest `main` image
-while `.github/actions/setup` installs what the change moved past it. A
+while `.github/actions/setup` installs what the change moved past it. Only
+a run on `main` or a rebuild moves the `main` tag; a pull request's build
+publishes only its own tag. A
 fork or Dependabot token cannot publish, so a pin bump from one runs on
 that fallback until it merges. `toolchain-image.yml` publishes on pushes to
 `main` that touch a pin or a manifest and weekly, refreshing the base

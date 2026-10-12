@@ -3,8 +3,9 @@
 # .github/workflows/toolchain-image.yml builds and publishes it;
 # ci/toolchain-inputs.sh lists the pins that name a tag. A job pulls this
 # one image instead of apt, the Go download site, the npm registry, Bun's
-# releases and the Playwright CDN, and .github/actions/setup only installs what the image
-# lacks when a pull request changes a pin before the image is rebuilt.
+# releases and the Playwright CDN, and .github/actions/setup only installs
+# what the image lacks when a pull request changes a pin before the image
+# is rebuilt.
 #
 # Steps run as uid 1001, the hosted runner's uid, so the mounted workspace
 # is writable and tests that expect permission errors keep getting them.
