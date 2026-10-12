@@ -58,6 +58,7 @@ import {
   awaitGate,
   awaitToolAnswer,
   awaitTurnCompleted,
+  FOOTER_TOKEN_PATTERN,
   setScenario,
   threadToolsScenario,
   type ProviderName,
@@ -1982,6 +1983,211 @@ echo "the report while the start was held"
     const report = await wakeBubble(page, 'Slow starter', 'Watch · once', 'the report while the start was held');
     const send = await wakeBubble(page, 'Slow starter', 'Sent by a script', 'deploy 10 is done');
     await shoot(page, `${provider}-slow-start-wake-and-send.png`, report, send);
+  } finally {
+    await harness.close();
+  }
+});
+
+// A thread request's answer that arrives while a person's archive waits
+// behind a start is written before the archive's flip, and the start's own
+// flush hands it to a dispatch queued behind the archive too. The archive
+// stops the session the start brought up and takes the answer back to its
+// request: owed, disarmed and still readable with thread_status. Nothing of
+// it reaches the agent, then or once the thread is unarchived and started.
+test('codex: an answer queued while an archive waits behind a start goes back to its request', async ({ page }) => {
+  test.setTimeout(180_000);
+  const HOLD_MS = 20_000;
+  const ANSWER = 'The release notes are ready: three fixes and one feature.';
+  const harness = await launchHarness();
+  try {
+    const dataDir = harness.bootstrap.dataDir;
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [
+        { name: 'wakes-archive-answer-caller', repo: {}, threads: [{ title: 'Weekly planner', provider: 'codex' }] },
+        { name: 'wakes-archive-answer-target', repo: {}, threads: [{ title: 'Release notes', provider: 'claude' }] },
+      ],
+    });
+    const callerPath = seed.projects[0].path;
+    const caller = seed.projects[0].threadIds[0];
+    const targetPath = seed.projects[1].path;
+    const target = seed.projects[1].threadIds[0];
+    await setScenario(
+      harness,
+      targetPath,
+      threadToolsScenario({
+        name: 'wakes-archive-answer-target',
+        provider: 'claude',
+        turns: [
+          {
+            steps: [
+              { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+              { gate: 'answer' },
+              { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: ANSWER } } },
+            ],
+            text: 'Replied.',
+          },
+        ],
+        afterTurns: 'silent',
+      }),
+    );
+    await setScenario(
+      harness,
+      callerPath,
+      threadToolsScenario({
+        name: 'wakes-archive-answer-caller',
+        provider: 'codex',
+        echoUserMessage: true,
+        turns: [
+          {
+            steps: [
+              {
+                call: {
+                  tool: 'thread_send',
+                  args: { thread_id: target, message: 'Draft the release notes.', wait_seconds: 0, notify: true },
+                },
+              },
+            ],
+            text: 'Asked for the notes.',
+          },
+        ],
+        afterTurns: 'silent',
+      }),
+    );
+    await harness.rpc('StartSession', caller);
+    const first = await harness.waitForEvent<HarnessMockEventData>(
+      'harness:mock',
+      (ev) => ev.report.kind === 'registered' && ev.cwd === callerPath,
+    );
+    await harness.rpc('SendMessage', caller, 'ask for the release notes', null);
+    const sent = await awaitToolAnswer<{ token: string; outcome: string; notify: boolean }>(harness, {
+      tool: 'thread_send',
+      cwd: callerPath,
+      timeoutMs: 60_000,
+    });
+    expect(sent.isError, sent.text).toBe(false);
+    expect(sent.value!.outcome).toBe('backgrounded');
+    expect(sent.value!.notify).toBe(true);
+    const token = sent.value!.token;
+    await awaitTurnCompleted(harness, caller);
+    const responder = await awaitGate(harness, 'answer', targetPath);
+    await harness.rpc('StopSession', caller);
+
+    const db = () => new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+    const queued = () => {
+      const conn = db();
+      try {
+        return (
+          conn.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ? ORDER BY enqueued_at, rowid`).all(caller) as {
+            send_id: string;
+          }[]
+        ).map((row) => row.send_id);
+      } finally {
+        conn.close();
+      }
+    };
+    const request = () => {
+      const conn = db();
+      try {
+        return conn
+          .prepare(`SELECT delivered_at IS NOT NULL AS delivered, delivered_how AS how, notify FROM thread_requests WHERE token = ?`)
+          .get(token) as { delivered: number; how: string; notify: number };
+      } finally {
+        conn.close();
+      }
+    };
+    const archived = () => {
+      const conn = db();
+      try {
+        return (conn.prepare(`SELECT archived FROM threads WHERE id = ?`).get(caller) as { archived: number }).archived;
+      } finally {
+        conn.close();
+      }
+    };
+
+    // The person's start is held at the handshake, holding the thread's
+    // action lock, and the person archives the thread while it is.
+    await setScenario(harness, callerPath, {
+      ...threadToolsScenario({
+        name: 'wakes-archive-answer-held',
+        provider: 'codex',
+        echoUserMessage: true,
+        turns: [{ text: 'Started.' }],
+        afterTurns: 'silent',
+      }),
+      startupDelayMs: HOLD_MS,
+    });
+    const started = Date.now();
+    let settled = '';
+    const starting = harness.rpcWithin(HOLD_MS + 30_000, 'StartSession', caller).then(() => (settled ||= 'start'));
+    const held = await harness.waitForEvent<HarnessMockEventData>(
+      'harness:mock',
+      (ev) => ev.report.kind === 'registered' && ev.cwd === callerPath && ev.mockId !== first.mockId,
+      15_000,
+    );
+    expect(held.mockId).not.toBe('');
+    const archiving = harness.rpcWithin(HOLD_MS + 30_000, 'ArchiveThread', caller).then(() => (settled ||= 'archive'));
+
+    // The answer arrives: its wake is written while the thread is still
+    // unarchived, before the archive's flip.
+    await advanceGate(harness, responder.mockId, 'answer');
+    await expect.poll(queued, { timeout: 15_000 }).toEqual([`thread-wake:${token}`]);
+    expect(request()).toEqual({ delivered: 1, how: 'queued', notify: 1 });
+    expect(archived()).toBe(0);
+    expect(settled, 'the held start and the archive were both still waiting when the answer was queued').toBe('');
+    console.log(`codex: the answer was queued ${Date.now() - started}ms into the held start, before the archive's flip`);
+
+    await Promise.all([starting, archiving]);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(HOLD_MS);
+    const owedAndDisarmed = () => ({ queued: queued(), request: request(), archived: archived() });
+    const want = { queued: [], request: { delivered: 0, how: '', notify: 0 }, archived: 1 };
+    expect(owedAndDisarmed()).toEqual(want);
+    // The dispatch the start's flush queued behind the archive finds nothing
+    // to send, and nothing is left for the next start.
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect(owedAndDisarmed()).toEqual(want);
+    expect((await harness.rpc<unknown[] | null>('GetQueueState', caller)) ?? []).toEqual([]);
+    expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
+    console.log('codex: archived: the answer went back to its request, owed and disarmed, and nothing is queued');
+
+    // Unarchived and started, the thread gets nothing it did not ask for; the
+    // agent still reads the answer with thread_status.
+    await setScenario(
+      harness,
+      callerPath,
+      threadToolsScenario({
+        name: 'wakes-archive-answer-unarchived',
+        provider: 'codex',
+        echoUserMessage: true,
+        // The mock numbers tool calls per process, so this one names its own
+        // id rather than take the first process's thread_send row.
+        turns: [
+          {
+            steps: [{ call: { tool: 'thread_status', args: { tokens: [token] }, toolUseId: 'status-after-unarchive' } }],
+            text: 'Read the notes.',
+          },
+        ],
+        afterTurns: 'silent',
+      }),
+    );
+    await harness.rpc('UnarchiveThread', caller);
+    await harness.rpc('StartSession', caller);
+    await harness.rpc('SendMessage', caller, 'did the notes come back?', null);
+    const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string; delivered?: string }[] }>(harness, {
+      tool: 'thread_status',
+      cwd: callerPath,
+      timeoutMs: 60_000,
+    });
+    expect(status.isError, status.text).toBe(false);
+    expect(status.value!.requests![0].token).toBe(token);
+    expect(status.value!.requests![0].answer).toContain(ANSWER);
+    await awaitTurnCompleted(harness, caller);
+    expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
+    expect(queued()).toEqual([]);
+    console.log('codex: unarchived and started: no wake reached the agent, and thread_status returned the answer');
+
+    await harness.open(page);
+    await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
+    await shoot(page, 'codex-archive-takes-back-a-queued-answer.png', page.getByText('Read the notes.').last());
   } finally {
     await harness.close();
   }

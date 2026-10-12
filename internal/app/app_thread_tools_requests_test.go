@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1986,6 +1988,150 @@ func TestADisarmedReminderIsNotDeliveredAndLeavesTheThreadArchived(t *testing.T)
 	}
 	if !thread.Archived {
 		t.Fatal("a disarmed reminder brought the archived thread back")
+	}
+}
+
+// An answer, a late reply or a reminder whose wake was queued just before
+// an archive goes back to its request when the archive lands. A session
+// start in flight holds the thread's action lock, the archive queues on it,
+// the wake is written while the thread is still unarchived, and its start
+// queues behind the archive and starts nothing. When the start brought a
+// session up, the archive's teardown drops the queue under the lock instead.
+// Either way nothing may stay queued on the archived thread for its next
+// start or for the composer at the next boot, and the request may not read
+// delivered: the wake is owed but disarmed, as one the archive refused at
+// the queue write is, so the retry leaves the thread archived. Re-armed, it
+// is delivered and brings the thread back.
+func TestAWakeQueuedJustBeforeAnArchiveGoesBackToItsRequest(t *testing.T) {
+	t.Parallel()
+	answer := func(t *testing.T, f *requestFixture) string {
+		token := uuid.NewString()
+		if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+			Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
+			State: store.ThreadRequestUnconfirmed, TargetComputerID: uuid.NewString(),
+			TargetThreadID: uuid.NewString(), Notify: true,
+		}); err != nil {
+			t.Fatalf("InsertThreadRequest: %v", err)
+		}
+		now := time.Now()
+		f.settleRemote(t, token, now, now.Add(threadLateReplyWindow))
+		return token
+	}
+	for _, tc := range []struct {
+		name string
+		late bool
+		seed func(*testing.T, *requestFixture) string
+	}{
+		{"answer", false, answer},
+		{"late reply", true, func(t *testing.T, f *requestFixture) string {
+			token := answer(t, f)
+			if _, err := f.app.store.MarkThreadRequestDelivered(token, store.ThreadWakeInline, 0, false); err != nil {
+				t.Fatalf("MarkThreadRequestDelivered: %v", err)
+			}
+			if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), time.Now().UnixMilli()); err != nil || !stored {
+				t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
+			}
+			return token
+		}},
+		{"reminder", false, func(t *testing.T, f *requestFixture) string {
+			ack, err := f.adapter().Remind(t.Context(), f.callerIdentity(), threadtools.RemindCall{
+				DueAtUnixMs: time.Now().Add(-time.Second).UnixMilli(), Note: "stand up",
+			})
+			if err != nil {
+				t.Fatalf("Remind: %v", err)
+			}
+			if !f.app.settleThreadReminder(f.request(t, ack.Token), time.Now()) {
+				t.Fatal("the reminder fired owing no wake")
+			}
+			return ack.Token
+		}},
+	} {
+		for _, live := range []bool{false, true} {
+			name := tc.name + ", no session"
+			if live {
+				name = tc.name + ", session live"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				f := newRequestFixture(t)
+				var starts atomic.Int32
+				f.app.startSessionFn = func(string) error {
+					starts.Add(1)
+					return nil
+				}
+				token := tc.seed(t, f)
+				sendID := threadWakeSendIDFor(token, tc.late)
+
+				unlock := f.app.threadLocks().Lock(f.caller.ID)
+				if live {
+					f.app.configureTriageQueueCallbacks()
+					// What the held start brings up once it lets go of the lock.
+					f.app.sessionManager().put(f.caller.ID, session{
+						Provider: string(provider.Codex),
+						Token:    "held-start",
+						Liveness: newSessionLiveness(time.Now()),
+					})
+				}
+				archived := make(chan error, 1)
+				go func() { archived <- f.app.ArchiveThread(f.caller.ID) }()
+				waitUntil(t, 10*time.Second, func() bool { return f.app.threadLocks().Refs(f.caller.ID) == 2 })
+				f.app.deliverThreadWake(token, tc.late)
+				if row := f.request(t, token); !threadRequestDelivered(row, tc.late) || row.DeliveredHow != store.ThreadWakeQueued {
+					unlock()
+					t.Fatalf("the wake was not queued before the archive: delivered as %q", row.DeliveredHow)
+				}
+				if live {
+					// The start's own flush, which hands the queue to a
+					// dispatch that waits for the lock behind the archive.
+					f.app.triage.FlushQueuedItems(f.caller.ID)
+				}
+				// The wake's start, or the dispatch, waits behind the archive.
+				waitUntil(t, 10*time.Second, func() bool { return f.app.threadLocks().Refs(f.caller.ID) == 3 })
+				unlock()
+				if err := <-archived; err != nil {
+					t.Fatalf("ArchiveThread: %v", err)
+				}
+				f.app.waitAgentNoticeWork()
+
+				owedAndDisarmed := func(when string) {
+					t.Helper()
+					durable, memory := queuedSendIDs(t, f.app, f.caller.ID)
+					row := f.request(t, token)
+					thread, err := f.app.store.GetThread(f.caller.ID)
+					if err != nil {
+						t.Fatalf("GetThread: %v", err)
+					}
+					if n := starts.Load(); n != 0 || len(durable) != 0 || len(memory) != 0 || threadRequestDelivered(row, tc.late) || row.Notify || !thread.Archived {
+						t.Fatalf("%s: %d starts, queue %q (in memory %q), delivered %v as %q, notify %v, archived %v; want no start, an empty queue, the wake owed and disarmed, the thread archived",
+							when, n, durable, memory, threadRequestDelivered(row, tc.late), row.DeliveredHow, row.Notify, thread.Archived)
+					}
+					if tc.late && row.DeliveredAt == 0 {
+						t.Fatalf("%s: taking the late reply back undid the first answer's delivery", when)
+					}
+				}
+				owedAndDisarmed("after the archive")
+				f.app.retryUndeliveredThreadWakes(time.Now().Add(time.Hour))
+				f.app.threadRequestsWG.Wait()
+				f.app.waitAgentNoticeWork()
+				owedAndDisarmed("after a retry pass")
+
+				if _, err := f.app.store.SetThreadRequestNotify(token, true); err != nil {
+					t.Fatalf("SetThreadRequestNotify: %v", err)
+				}
+				f.app.retryUndeliveredThreadWakes(time.Now().Add(time.Hour))
+				f.app.threadRequestsWG.Wait()
+				f.app.waitAgentNoticeWork()
+				thread, err := f.app.store.GetThread(f.caller.ID)
+				if err != nil {
+					t.Fatalf("GetThread: %v", err)
+				}
+				durable, _ := queuedSendIDs(t, f.app, f.caller.ID)
+				if row := f.request(t, token); thread.Archived || !threadRequestDelivered(row, tc.late) || !slices.Equal(durable, []string{sendID}) || starts.Load() != 1 {
+					t.Fatalf("re-armed: archived %v, delivered %v, queue %q, %d starts; want the wake delivered, the thread back and started once",
+						thread.Archived, threadRequestDelivered(row, tc.late), durable, starts.Load())
+				}
+			})
+		}
 	}
 }
 

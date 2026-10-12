@@ -813,7 +813,11 @@ or not; that is what waiting past the timeout or `notify` opts into. A
 caller archived after the request was made is unarchived by delivery;
 archiving the caller turns `notify` off for its open requests (see
 Lifecycle interactions), so only a request made before the archive and
-re-armed by a later wait or `thread_status` reaches it. Caller deleted
+re-armed by a later wait or `thread_status` reaches it. A wake already
+queued when the caller is archived goes back to its request: one
+transaction removes the queue row, clears its delivery and turns
+`notify` off, so `thread_status` still returns the answer and nothing
+reaches the archived thread at its next start. Caller deleted
 first: dropped. A restart of the caller's computer before a queued wake
 reached the provider restores it into the composer draft, as every
 queued message is; the request then reads `delivered: draft`, distinct

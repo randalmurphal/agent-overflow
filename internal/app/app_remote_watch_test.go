@@ -681,6 +681,92 @@ func TestAnArchiveDuringARemoteCompletionsQueueWriteTakesItBack(t *testing.T) {
 	requireRemoteCompletionHeld(t, a, thread.ID, w, starts.Load())
 }
 
+// A completion queued while a start that brought a session up holds the
+// action lock is still in the queue when the archive that waited for that
+// lock tears the session down. The teardown's drop returns it to its watch,
+// as the take-back does without a session, so the unarchive delivers it.
+func TestAnArchiveTearingDownASessionReturnsItsQueuedRemoteCompletion(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Codex))
+	w := completedRemoteWatch(t, a, thread)
+	unlock := a.threadLocks().Lock(thread.ID)
+	a.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex),
+		Token:    "held-start",
+		Liveness: newSessionLiveness(time.Now()),
+	})
+	archived := make(chan error, 1)
+	go func() { archived <- a.ArchiveThread(thread.ID) }()
+	waitUntil(t, 10*time.Second, func() bool { return a.threadLocks().Refs(thread.ID) == 2 })
+	if err := a.queueAgentNotice(a.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})); err != nil {
+		unlock()
+		t.Fatalf("queueAgentNotice: %v", err)
+	}
+	unlock()
+	if err := <-archived; err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	a.waitAgentNoticeWork()
+	if _, live := a.sessionManager().get(thread.ID); live {
+		t.Fatal("the archive left the session running; the test proves nothing")
+	}
+	requireRemoteCompletionHeld(t, a, thread.ID, w, starts.Load())
+}
+
+// A person's Stop drops a completion queued in the live session with the
+// rest of the queue. Only an archived thread's drop returns it to its watch:
+// returned here, the watcher would queue it again and start the session the
+// person just stopped.
+func TestAStoppedSessionsDroppedRemoteCompletionDoesNotStartItAgain(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Codex))
+	w := completedRemoteWatch(t, a, thread)
+	unlock := a.threadLocks().Lock(thread.ID)
+	a.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex),
+		Token:    "tok",
+		Liveness: newSessionLiveness(time.Now()),
+	})
+	if err := a.queueAgentNotice(a.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})); err != nil {
+		unlock()
+		t.Fatalf("queueAgentNotice: %v", err)
+	}
+	if err := a.StopSession(thread.ID); err != nil {
+		unlock()
+		t.Fatalf("StopSession: %v", err)
+	}
+	unlock()
+	a.flushDispatch.wg.Wait()
+	due, err := a.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range due {
+		a.checkRemoteWatch(row)
+	}
+	a.waitAgentNoticeWork()
+	saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if durable, memory := queuedSendIDs(t, a, thread.ID); starts.Load() != 0 || len(durable) != 0 || len(memory) != 0 || saved.Notification != "queued" {
+		t.Fatalf("after the Stop and a watcher pass: %d starts, queue %q (in memory %q), watch %q; want no start, an empty queue and the watch left as the Stop found it",
+			starts.Load(), durable, memory, saved.Notification)
+	}
+}
+
 // A completion whose thread is archived while its queue write waits for the
 // mutation lock is refused before its watch moves. The delivery reads that
 // as owed, so the watcher records no issue.

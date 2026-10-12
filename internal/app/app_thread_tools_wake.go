@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -28,6 +29,42 @@ func threadWakeSendIDFor(token string, late bool) string {
 		return threadWakeLateSendID(token)
 	}
 	return threadWakeSendID(token)
+}
+
+// threadWakeFromSendID reads a wake's request token back out of its send id.
+func threadWakeFromSendID(sendID string) (token string, late, ok bool) {
+	if token, ok := strings.CutPrefix(sendID, "thread-wake-late:"); ok {
+		return token, true, token != ""
+	}
+	token, ok = strings.CutPrefix(sendID, "thread-wake:")
+	return token, false, ok && token != ""
+}
+
+// withdrawHeldThreadWakes takes an archived thread's queued answers and
+// reminders back to their requests (store.WithdrawThreadWake): owed again
+// and disarmed, as a wake the archive refused at the queue write is, so
+// none reaches the agent when the thread is next started. thread_status
+// still returns each answer, and a wake re-armed by a later wait or
+// thread_status delivers it and unarchives the thread. A wake the dispatch
+// already took stays delivered.
+func (a *App) withdrawHeldThreadWakes(threadID string) error {
+	rows, err := a.store.ListFlushQueueItems(threadID)
+	if err != nil {
+		return fmt.Errorf("withdraw the queued thread wakes of %s: %w", threadID, err)
+	}
+	var errs []error
+	for _, row := range rows {
+		token, late, ok := threadWakeFromSendID(row.SendID)
+		if !ok {
+			continue
+		}
+		if _, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
+			return a.store.WithdrawThreadWake(token, late, row.ID)
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // deliverThreadWake puts the answer in the caller's message queue, as the

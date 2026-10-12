@@ -440,12 +440,20 @@ func remoteCompletionSendID(w store.RemoteWatch) string {
 	return remoteCompletionSendIDRoot + w.ComputerID + ":" + w.RequestID
 }
 
+// remoteCompletionFromSendID reads a completion's watch back out of its send
+// id. Computer and request ids are UUIDs, so it splits at its first colon.
+func remoteCompletionFromSendID(sendID string) (computerID, requestID string, ok bool) {
+	ids, isCompletion := strings.CutPrefix(sendID, remoteCompletionSendIDRoot)
+	computerID, requestID, ok = strings.Cut(ids, ":")
+	return computerID, requestID, isCompletion && ok
+}
+
 // withdrawHeldRemoteCompletions takes an archived thread's queued remote
 // completions back out of its queue and returns each to its watch, so none
 // reaches the agent when the thread is next started and the watcher delivers
 // it once the thread is unarchived. A completion the dispatch already took
-// stays delivered. Computer and request ids are UUIDs, so the send id splits
-// at its first colon.
+// stays delivered. One queued in a live session goes back when the archive's
+// teardown drops the queue (noteAgentWakesDropped).
 func (a *App) withdrawHeldRemoteCompletions(threadID string) error {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
@@ -454,9 +462,8 @@ func (a *App) withdrawHeldRemoteCompletions(threadID string) error {
 	var errs []error
 	withdrawn := false
 	for _, row := range rows {
-		ids, isCompletion := strings.CutPrefix(row.SendID, remoteCompletionSendIDRoot)
-		computerID, requestID, ok := strings.Cut(ids, ":")
-		if !isCompletion || !ok {
+		computerID, requestID, ok := remoteCompletionFromSendID(row.SendID)
+		if !ok {
 			continue
 		}
 		removal, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {

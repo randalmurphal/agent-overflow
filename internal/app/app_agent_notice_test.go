@@ -231,6 +231,42 @@ func TestAThreadSendArchivedBeforeItsSessionStartsIsWithdrawn(t *testing.T) {
 	}
 }
 
+// A thread archived between thread send's read and its queue write is
+// refused by the write, in the words the up-front check uses.
+func TestAThreadSendRefusedByAnArchiveSaysSoInOneSentence(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	a.startSessionFn = func(string) error { return nil }
+	thread := noticeTestThread(t, a, "notice-archived-during-write")
+	want := "thread " + thread.ID + " is archived; unarchive it first"
+
+	// Both archive doors flip the row holding this lock.
+	unlock, err := a.threadApplication().LockMutable(context.Background(), thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := make(chan error, 1)
+	go func() {
+		_, err := a.SendExternalThreadMessage(thread.ID, "deploy 6 is done")
+		refused <- err
+	}()
+	waitUntil(t, 10*time.Second, func() bool { return a.threadApplication().MutationRefs(thread.ID) == 2 })
+	_, _, err = a.threadApplication().Archive(thread.ID)
+	unlock()
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if err := <-refused; err == nil || err.Error() != want {
+		t.Fatalf("refused at the queue write: %v, want %q", err, want)
+	}
+	if _, err := a.SendExternalThreadMessage(thread.ID, "deploy 7 is done"); err == nil || err.Error() != want {
+		t.Fatalf("refused up front: %v, want %q", err, want)
+	}
+	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 0 {
+		t.Fatalf("a refused send was queued: %+v", rows)
+	}
+}
+
 // A revert clears the queue, then truncates the timeline, both under the
 // thread's action lock. The notice for a cleared send is written after, so
 // the truncation cannot take it, and the send's row goes with its notice,

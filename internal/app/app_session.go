@@ -1261,8 +1261,10 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 		// restores, and it does not come through here), so their durable rows
 		// go with them: a row that outlived the queue it belonged to would
 		// put the message back in the composer at the next boot, long after
-		// the user's Stop threw it away.
+		// the user's Stop threw it away. So do the batches a dispatch worker
+		// already took from the queue, or it would put them back.
 		a.dropDurableFlushQueue(threadID)
+		a.discardFlushDispatch(threadID)
 		a.triage.CleanupThread(threadID)
 	}
 	err := a.closeProviderSession(threadID, sess)

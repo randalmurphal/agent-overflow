@@ -617,6 +617,12 @@ func unconfirmedSendIDs(item triage.UnconfirmedFlushItem) []string {
 // keeps the wake's body. They keep their schedule. A worker's prompt among
 // them goes back to the user in the worker, and an outside send leaves its
 // thread a notice.
+//
+// An archived thread's request answers and reminders go back to their
+// requests, owed and disarmed, and its remote completions to their watches,
+// as the archive takes them back from a thread with no session
+// (stopArchivedThreadWork): the archive's own teardown is the drop that
+// would otherwise lose them.
 func (a *App) noteAgentWakesDropped(threadID string) {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
@@ -624,8 +630,29 @@ func (a *App) noteAgentWakesDropped(threadID string) {
 		return
 	}
 	var sends []string
+	archived, archivedRead, returned := false, false, false
 	for _, row := range rows {
 		if a.handBackWorkerPromptWake(row.SendID) {
+			continue
+		}
+		token, late, isAnswer := threadWakeFromSendID(row.SendID)
+		computerID, requestID, isCompletion := remoteCompletionFromSendID(row.SendID)
+		if isAnswer || isCompletion {
+			if !archivedRead {
+				archivedRead = true
+				if archived, err = a.threadArchivedNow(threadID); err != nil {
+					logThreadRequestSweep("keep the archived thread "+threadID+"'s answers and remote results", err)
+				}
+			}
+			switch {
+			case !archived:
+			case isAnswer:
+				logThreadRequestSweep("return "+row.SendID+" to its request", a.store.WithdrawThreadWake(token, late, row.ID))
+			default:
+				err := a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID)
+				logThreadRequestSweep("return "+row.SendID+" to its watch", err)
+				returned = returned || err == nil
+			}
 			continue
 		}
 		if strings.HasPrefix(row.SendID, agentSendIDRoot) {
@@ -638,6 +665,9 @@ func (a *App) noteAgentWakesDropped(threadID string) {
 	}
 	if len(sends) > 0 {
 		a.noteAgentSendsCleared(threadID, sends)
+	}
+	if returned {
+		a.emitBackgroundChanged(threadID)
 	}
 }
 
@@ -752,8 +782,11 @@ func (a *App) SendExternalThreadMessage(threadID, text string) (string, error) {
 	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
 		return "", err
 	}
+	// An archive that lands after this read is the queue write's to refuse,
+	// and the caller is told the same either way.
+	archived := fmt.Errorf("thread %s is archived; unarchive it first", threadID)
 	if thread.Archived {
-		return "", fmt.Errorf("thread %s is archived; unarchive it first", threadID)
+		return "", archived
 	}
 	body := renderAgentSendWake(text)
 	sendID := agentSendIDRoot + newAgentWakeID()
@@ -767,6 +800,9 @@ func (a *App) SendExternalThreadMessage(threadID, text string) (string, error) {
 			return "A message sent with agent-overflow thread send is queued, but the agent could not start: " + err.Error()
 		},
 	})
+	if errors.Is(err, errThreadArchived) {
+		return "", archived
+	}
 	if err != nil {
 		return "", err
 	}

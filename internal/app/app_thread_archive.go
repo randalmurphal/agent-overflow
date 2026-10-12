@@ -71,6 +71,9 @@ func (a *App) stopArchivedThreadWork(ctx context.Context, id string) error {
 	// agent when the thread is next started.
 	a.cancelAgentWakesForThread(id, "cancelled: the thread was archived")
 	withdrawErr := a.withdrawQueuedAgentMessages(id, func(string) bool { return true }, "the thread was archived before the agent took it in")
+	// A request's answer or reminder goes back to its request, disarmed
+	// with it, so the retry cannot bring the thread back.
+	wakesErr := a.withdrawHeldThreadWakes(id)
 	if err := a.cancelThreadRequests(ctx, id); err != nil {
 		log.Printf("thread tools: archive %s: cancel requests: %v", id, err)
 	}
@@ -78,7 +81,7 @@ func (a *App) stopArchivedThreadWork(ctx context.Context, id string) error {
 	// A finished job's completion is kept for the thread: the cancel keeps
 	// its watch, and one already held in the queue goes back to its watch
 	// after the cancel has run. It arrives once the thread is unarchived.
-	return errors.Join(withdrawErr, remoteErr, a.withdrawHeldRemoteCompletions(id))
+	return errors.Join(withdrawErr, wakesErr, remoteErr, a.withdrawHeldRemoteCompletions(id))
 }
 
 func (a *App) archiveThreadLocked(id string) error {

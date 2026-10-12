@@ -228,6 +228,16 @@ func (a *App) clearFlushDispatchForRollback(threadID string) {
 	// durable rows go with them, or the next boot restores messages the
 	// user's revert already discarded.
 	a.dropDurableFlushQueue(threadID)
+	a.discardFlushDispatch(threadID)
+}
+
+// discardFlushDispatch throws away the batches the dispatch worker holds for
+// a thread, the one it is waiting on the thread's action lock to send among
+// them. A wholesale drop takes their durable rows (dropDurableFlushQueue);
+// the worker, once it has the lock, finds its generation gone and sends
+// nothing, rather than failing for want of a session and putting the batch
+// back in the queue the drop emptied.
+func (a *App) discardFlushDispatch(threadID string) {
 	a.flushDispatch.mu.Lock()
 	a.ensureFlushDispatchMapsLocked()
 	a.flushDispatch.generation[threadID]++

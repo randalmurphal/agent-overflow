@@ -309,7 +309,10 @@ so no later start delivers them; a message a session has already taken
 is the session's. A message that could not be taken back is reported to
 the caller. A remote job's queued completion goes back to its watch
 instead and arrives once the thread is unarchived
-([remote-commands.md](../architecture/remote-commands.md)).
+([remote-commands.md](../architecture/remote-commands.md)). A thread
+request's queued answer or reminder goes back to its request, owed and
+disarmed, as the archive leaves the thread's undelivered requests
+([agent-thread-tools.md](agent-thread-tools.md)).
 An archived thread takes none of these messages and starts no session
 for them: one that arrives after the archive is refused back to what
 sent it, and one queued just before it waits, without a start, for the

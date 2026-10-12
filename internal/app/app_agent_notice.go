@@ -134,8 +134,8 @@ func (a *App) goAgentNoticeWork(fn func()) bool {
 // Both archive doors flip the row under the same lock, so a thread archived
 // after the notice was queued is seen here and is not started. The notice
 // stays queued for the archive to take back: a remote job's completion goes
-// to its watch, and every other app message is withdrawn
-// (stopArchivedThreadWork).
+// to its watch, a thread request's answer or reminder to its request, and
+// every other app message is withdrawn (stopArchivedThreadWork).
 //
 // A retry is a later fire trying the start again for a wake an earlier
 // failed start left queued. It runs only once the thread's last failed
