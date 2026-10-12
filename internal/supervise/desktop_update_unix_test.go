@@ -993,3 +993,33 @@ func TestPreflightAnswersWhetherTheBuildRunsTheDesktopHelper(t *testing.T) {
 		t.Fatalf("an old answer = %+v, %v", answer, err)
 	}
 }
+
+// A cross-filesystem move writes the staged executable with forks held off:
+// the handoff preflights it right after. The test holds ForkLock
+// exclusively, so a copy that takes the lock cannot finish before the
+// release; under starvation an unscheduled copy passes a broken guard
+// falsely, never fails a sound one.
+func TestMovePathCopiesAnExecutableWithForksHeldOff(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "agent-overflow")
+	writeExecutable(t, src, "new")
+	dst := filepath.Join(t.TempDir(), ".agent-overflow-update-x")
+	crossDeviceRename := func(string, string) error {
+		return &os.LinkError{Op: "rename", Err: syscall.EXDEV}
+	}
+	done := make(chan error, 1)
+	syscall.ForkLock.Lock()
+	go func() { done <- movePath(src, dst, crossDeviceRename) }()
+	select {
+	case err := <-done:
+		syscall.ForkLock.Unlock()
+		t.Fatalf("the copy finished while a fork held ForkLock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	syscall.ForkLock.Unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(dst); err != nil || info.Mode().Perm() != 0o755 || readFile(t, dst) != "new" {
+		t.Fatalf("copied executable = %v, %v", info, err)
+	}
+}

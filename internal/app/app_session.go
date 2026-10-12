@@ -406,11 +406,17 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	existing, ok := a.sessionManager().take(threadID)
 
 	if !ok {
+		// A session that died may have discarded sends whose death restore
+		// gave way to this replacement.
+		a.restoreUndeliveredSendsLocked(threadID)
 		return nil
 	}
 	a.emitProviderSessionDisconnected(threadID, existing.Provider)
 
 	err := a.closeProviderSession(threadID, existing)
+	// The close processed the old CLI's final frames, including the sends
+	// it discarded unrun. No session-end restore runs on this path.
+	a.restoreUndeliveredSendsLocked(threadID)
 	// The replacement session streams fresh items; the old stream's
 	// scanner states are dead weight (their final ticks will never
 	// arrive) and a reused item ID would inherit a stale watermark.

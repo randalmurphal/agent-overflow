@@ -67,6 +67,8 @@ func (e *engine) runStep(vars scenario.Vars, turn int, step scenario.Step) {
 	case step.DrainQueuedInput:
 		// Validate admits the step only for a Claude scenario that holds input.
 		e.adapter.(heldInputHolder).drainHeldInput(turn)
+	case step.CancelQueuedInput:
+		e.adapter.(heldInputHolder).cancelHeldInput()
 	default:
 		// Parse-time Validate guarantees exactly one action; an empty
 		// step here means the schema grew without this switch.
@@ -102,6 +104,8 @@ func stepName(step scenario.Step) string {
 		return "capture"
 	case step.DrainQueuedInput:
 		return "drainQueuedInput"
+	case step.CancelQueuedInput:
+		return "cancelQueuedInput"
 	}
 	return "unknown"
 }

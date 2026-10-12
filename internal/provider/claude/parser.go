@@ -280,6 +280,10 @@ type Parser struct {
 	// no ledger, nothing can be PROVEN unissued. Set by NewSession; see
 	// session_peer.go.
 	peerTurns peerTurnClassifier
+	// replaysAreOwnSends marks every `user{isReplay}` envelope as this
+	// app's own send. claude-tui synthesizes its replay echoes from AO's
+	// sends and only from them, and has no issued-uuid ledger to prove it.
+	replaysAreOwnSends bool
 	// usageTotalsByModel is the cumulative `result.modelUsage` snapshot
 	// as of the last result envelope. The wire reports SESSION-CUMULATIVE
 	// per-model usage/cost; per-turn accounting is the delta between
@@ -399,6 +403,12 @@ func (p *Parser) SetModel(model string) {
 		return
 	}
 	p.model = strings.TrimSpace(model)
+}
+
+// SetReplaysAreOwnSends declares that every replay echo this parser reads
+// is this app's own send (claude-tui). See parseUserReplay's ownSend.
+func (p *Parser) SetReplaysAreOwnSends() {
+	p.replaysAreOwnSends = true
 }
 
 // currentModel returns the parser's tracked model id, or "" when the

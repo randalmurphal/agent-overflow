@@ -370,8 +370,22 @@ mutation. Callers cannot label a mutation or leave a mode bit armed.
 
 On a pure **head** change `applyLength` splices the size store at the head
 (`spliceHead`) and reports a `head-splice` compensation whose target keeps
-the viewport stationary. On a pure **tail** change it does neither. A
-combined head-and-tail page replacement uses `applyKeyedReorder`, which
+the viewport stationary. On a pure **tail** change it does neither.
+Until head-inserted rows have measured, the virtualizer also holds the
+retained row that spanned the viewport top, correcting through further
+`head-splice` compensations. The hold is valid only against the position
+it was taken at. Scroll input ends it, and so does any authored write that
+moves the viewport other than onto the compensation being delivered (a
+bottom pin, a restore, a navigation, a redirected compensation, a glide of
+sub-pixel frames); a later correction would otherwise pull the viewport
+back from where its owner put it. The same takeover drops a compensation
+still queued for the next flush, because the owner placed the viewport
+against the change that compensation describes. Coverage: the "head-splice
+hold and authored writes" and "scrollToIndex" describes in
+`timelineVirtualizer.browser.test.ts`, and `timeline-return-pinned.spec.ts`
+for the cached-thread return that pins over a fill's head splice.
+
+A combined head-and-tail page replacement uses `applyKeyedReorder`, which
 carries every surviving measurement by key and anchors the nearest surviving
 visible row. Priors need no remap
 step across the splice: they resolve per-row against a content

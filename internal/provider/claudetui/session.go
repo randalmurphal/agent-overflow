@@ -137,6 +137,15 @@ type Session struct {
 	evlog *logging.Logger
 }
 
+// newSessionParser is the parser a session feeds. Its replay echoes are
+// synthesized from AO's sends (takeUserEcho) and nothing else, so each one is
+// this app's own send whatever its text quotes.
+func newSessionParser() *claude.Parser {
+	p := claude.NewParser()
+	p.SetReplaysAreOwnSends()
+	return p
+}
+
 // NewSession spawns the interactive Claude TUI under a fresh gateway + hook
 // relay and starts the parser feed. The session is live on return: the PTY is
 // running and the proxy/relay are serving. ctx cancellation tears the session
@@ -149,7 +158,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	s = &Session{
 		threadID: threadID,
 		onEvent:  onEvent,
-		parser:   claude.NewParser(),
+		parser:   newSessionParser(),
 		feed:     make(chan json.RawMessage, 256),
 		done:     make(chan struct{}),
 		logf:     log.Printf,

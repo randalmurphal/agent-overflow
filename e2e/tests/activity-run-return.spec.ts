@@ -44,8 +44,12 @@ for (const deviceScaleFactor of [1, 1.25, 1.5, 2]) {
         await open();
         const tail = page.getByTestId('activity-run').last();
         await expect(tail).toBeVisible();
-        // Wait for the initial short page to fill the viewport and settle.
-        await expect.poll(() => page.getByTestId('message-timeline-scroll').evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(500);
+        // The pane pages older history in until the content is taller than
+        // the viewport plus both 800px auto-load zones (timeline-window-pages
+        // section 7), and each page moves the pinned tail by a fraction of a
+        // pixel. The baseline is the filled window, so wait for the last fill
+        // page: a slow page round trip outlasts the stable-frame check below.
+        await expect.poll(() => page.getByTestId('message-timeline-scroll').evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThanOrEqual(1600);
         await waitForWebFonts(page);
         const baseline = await tail.evaluate(async el => {
           let previous = -1;

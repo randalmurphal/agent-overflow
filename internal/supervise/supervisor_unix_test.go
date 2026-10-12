@@ -48,6 +48,11 @@ report() {
 
 serve_until_stopped() {
 	trap 'note "stopped $VERSION"; exit 0' TERM INT
+	# A stop that a behavior deferred with STOPPING ends the child here.
+	if [ -n "$STOPPING" ]; then
+		note "stopped $VERSION"
+		exit 0
+	fi
 	while :; do
 		# A backgrounded sleep plus wait, so the trap runs the instant the
 		# signal lands rather than after a foreground sleep finishes. One
@@ -101,9 +106,15 @@ serve_until_stopped`
 func behaviorRequestUpdate(target string) string {
 	return `if [ ! -f "$OBS/requested" ]; then
 	: > "$OBS/requested"
+	# The supervisor writes its answer, then stops this child ResponseGrace
+	# later, which can land before the answer is read and recorded. Like a
+	# backend that finishes its in-flight RPC on SIGTERM, the stop waits for
+	# the answer. A trapped signal ends a blocked read early; the answer is
+	# already in the pipe by then, so the interrupted read is repeated.
+	trap 'STOPPING=1' TERM INT
 	printf '{"type":"request-update","targetVersion":"` + target + `"}\n' >&4
 	note "requested ` + target + `"
-	IFS= read -r ANSWER <&3
+	IFS= read -r ANSWER <&3 || { [ -n "$STOPPING" ] && IFS= read -r ANSWER <&3; }
 	printf '%s\n' "$ANSWER" >> "$OBS/answer"
 	note "answered $VERSION"
 fi

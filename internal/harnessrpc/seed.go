@@ -572,9 +572,7 @@ func (h *Harness) HarnessReset() (err error) {
 	h.scenarioRules = nil
 	h.mu.Unlock()
 	h.forge.Reset()
-	if err := h.forgeAPIServer().setOffline(false); err != nil {
-		return fmt.Errorf("bring the fake forge back online: %w", err)
-	}
+	h.forgeAPIServer().setOffline(false)
 	if replayer != nil {
 		replayer.Stop()
 	}
@@ -667,6 +665,12 @@ func (h *Harness) HarnessReset() (err error) {
 	// so it clears it; the registry fallback is the blank-slate default.
 	if err := database.ClearChatModelProfiles(); err != nil {
 		return fmt.Errorf("clear chat model profiles: %w", err)
+	}
+	// A settled thread request receipt is detached from its thread when
+	// the thread is deleted, not dropped with it, so the project cascade
+	// above leaves one test's receipts for the next to find.
+	if err := database.ClearThreadRequestReceipts(); err != nil {
+		return fmt.Errorf("clear thread request receipts: %w", err)
 	}
 	// The session-import scan is a cached projection OF the rows just
 	// deleted: its dedup subtracts sessions AO already has, so a scan taken

@@ -5,7 +5,7 @@
 // suites at cutover (plan §4 V1/V2).
 
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { mount, tick, unmount } from 'svelte';
 import TimelineVirtualizerHarness, { type HarnessRow } from './TimelineVirtualizerHarness.svelte';
 import type {
   ContentGeometrySample,
@@ -63,6 +63,7 @@ function mountHarness(
     onCompensation: (compensation: EngineCompensation) => void;
     onContentGeometry: (sample: ContentGeometrySample) => void;
     trackReadingAnchor: () => boolean;
+    forwardWriteReadback: boolean;
   }> = {},
 ) {
   const host = document.createElement('div');
@@ -665,6 +666,145 @@ describe('exact leading header', () => {
   });
 });
 
+describe('head-splice hold and authored writes', () => {
+  // A head splice holds the retained reading row while the inserted rows
+  // measure. The hold is valid only against the position it was taken at:
+  // a write the scroll owner places anywhere else (a bottom pin, a
+  // restore, a redirected compensation) owns the viewport from then on,
+  // and no later correction may pull it back.
+  const TAKEOVER_PX = 150;
+
+  async function mountReadingAtHead(
+    write: (compensation: EngineCompensation) => number = (c) => c.target,
+    afterWrite: (compensation: EngineCompensation) => void = () => {},
+  ) {
+    const compensations: EngineCompensation[] = [];
+    const ctx = mountHarness({
+      // The header offsets the splice so a still-unmeasured inserted row
+      // spans the viewport top: the case only the hold corrects.
+      headerSize: 60,
+      // The controller's topology: every write goes through the owner and
+      // its readback is forwarded.
+      onCompensation: (c) => {
+        compensations.push(c);
+        ctx.scrollEl.scrollTop = write(c);
+        ctx.harness.handle()?.noteScrollTopWritten(ctx.scrollEl.scrollTop);
+        afterWrite(c);
+      },
+    });
+    const { harness, scrollEl } = ctx;
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom seed');
+    scrollEl.scrollTop = 0;
+    await waitFor(() => rowEl(scrollEl, 'row-0') !== null, 'head rows to mount');
+    await waitForStableGeometry(scrollEl, 'head settle');
+    compensations.length = 0;
+    const authoredWrite = (top: number) => {
+      scrollEl.scrollTop = top;
+      harness.handle()!.noteScrollTopWritten(scrollEl.scrollTop);
+    };
+    const prepend = () =>
+      harness.setRows([
+        ...Array.from({ length: 20 }, (_, index) => ({
+          id: `prepended-${index}`,
+          heightPx: ROW_PX,
+          label: `Prepended ${index}`,
+        })),
+        ...harness.getRows(),
+      ]);
+    const viewportTop = (id: string) =>
+      rowEl(scrollEl, id)!.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+    return { harness, scrollEl, compensations, authoredWrite, prepend, viewportTop };
+  }
+
+  it('keeps the hold across its own compensation writes', async () => {
+    const { scrollEl, compensations, prepend, viewportTop } = await mountReadingAtHead();
+    const readingTop = viewportTop('row-1');
+
+    prepend();
+    await waitForStableGeometry(scrollEl, 'prepended estimates measure');
+
+    expect(compensations.some((c) => c.kind === 'head-splice')).toBe(true);
+    expect(viewportTop('row-1')).toBeCloseTo(readingTop, 0);
+  });
+
+  it('ends the hold when the owner writes elsewhere after the splice', async () => {
+    const { scrollEl, compensations, authoredWrite, prepend, viewportTop } =
+      await mountReadingAtHead();
+
+    prepend();
+    await tick();
+    expect(compensations.some((c) => c.kind === 'head-splice')).toBe(true);
+    // The pin: the owner moves the viewport before the inserted rows
+    // measure, as restore's bottom pin does after a cache-refresh prepend.
+    authoredWrite(scrollEl.scrollTop + TAKEOVER_PX);
+    const pinnedTop = viewportTop('row-3');
+    const afterPin = compensations.length;
+    await waitForStableGeometry(scrollEl, 'prepended estimates measure');
+
+    expect(compensations.slice(afterPin).filter((c) => c.kind === 'head-splice')).toEqual([]);
+    expect(viewportTop('row-3')).toBeCloseTo(pinnedTop, 0);
+  });
+
+  it('holds the position the owner wrote just before the splice', async () => {
+    const { scrollEl, authoredWrite, prepend, viewportTop } = await mountReadingAtHead();
+
+    // Same task, before the write's scroll event: the hold must be taken
+    // at the written position, not at the last scroll input's.
+    authoredWrite(TAKEOVER_PX);
+    const writtenTop = viewportTop('row-3');
+    prepend();
+    await waitForStableGeometry(scrollEl, 'prepended estimates measure');
+
+    expect(viewportTop('row-3')).toBeCloseTo(writtenTop, 0);
+  });
+
+  it('ends the hold when the owner redirects a compensation it was handed', async () => {
+    // Pinned intent redirects a remeasure to the bottom: the write lands
+    // somewhere other than the target the virtualizer requested.
+    let redirect = false;
+    let redirected: { index: number; top: number } | undefined;
+    const ctx = await mountReadingAtHead(
+      (c) => (redirect && c.kind === 'remeasure-above' ? c.target + TAKEOVER_PX : c.target),
+      (c) => {
+        if (!redirect || c.kind !== 'remeasure-above') return;
+        redirect = false;
+        redirected = { index: ctx.compensations.length, top: ctx.viewportTop('row-3') };
+      },
+    );
+
+    ctx.prepend();
+    await tick();
+    expect(ctx.compensations.some((c) => c.kind === 'head-splice')).toBe(true);
+    redirect = true;
+    await waitFor(() => redirected !== undefined, 'a remeasure compensation to redirect');
+    await waitForStableGeometry(ctx.scrollEl, 'prepended estimates measure');
+
+    expect(
+      ctx.compensations.slice(redirected!.index).filter((c) => c.kind === 'head-splice'),
+    ).toEqual([]);
+    expect(ctx.viewportTop('row-3')).toBeCloseTo(redirected!.top, 0);
+  });
+
+  it('ends the hold on a glide made of pixel-sized writes', async () => {
+    const { scrollEl, compensations, authoredWrite, prepend, viewportTop } =
+      await mountReadingAtHead();
+
+    prepend();
+    await tick();
+    // A spring at a high refresh rate moves about a pixel per frame: no
+    // single step is a takeover by size, the travel is. It travels past
+    // the inserted rows, as the pin does, so none spans the viewport top.
+    for (let step = 0; step < TAKEOVER_PX; step++) authoredWrite(scrollEl.scrollTop + 1);
+    const glidedTop = viewportTop('row-3');
+    const afterGlide = compensations.length;
+    await waitForStableGeometry(scrollEl, 'prepended estimates measure');
+
+    expect(compensations.slice(afterGlide).filter((c) => c.kind === 'head-splice')).toEqual([]);
+    expect(viewportTop('row-3')).toBeCloseTo(glidedTop, 0);
+  });
+});
+
 describe('content geometry target contract', () => {
   it('matches the DOM bottom through composer padding, header, and short-content transitions', async () => {
     const samples: ContentGeometrySample[] = [];
@@ -1133,7 +1273,7 @@ describe('scrollToIndex', () => {
     expect(Math.abs(scrollEl.scrollTop - takeover)).toBeLessThanOrEqual(2);
   });
 
-  it('a prepend mid-convergence keeps the navigation on its row, not on its old index', async () => {
+  it.each([true, false])('a prepend mid-convergence keeps the navigation on its row, not on its old index (readback forwarded: %s)', async (forward) => {
     // The production sequence behind a rail jump landing rows early: the
     // navigation is still converging (its destination and the rows above
     // it are estimates) when the viewport fill's load-older prepends a
@@ -1150,10 +1290,12 @@ describe('scrollToIndex', () => {
       },
       // The controller's topology: the compensation write is authored
       // through the chokepoint and read back, so the next compensation
-      // starts from it.
+      // starts from it. Unforwarded, the adapter learns each write from
+      // its scroll event, as with consumers that write directly.
+      forwardWriteReadback: forward,
       onCompensation: (c) => {
         ctx.scrollEl.scrollTop = c.target;
-        ctx.harness.handle()?.noteScrollTopWritten(ctx.scrollEl.scrollTop);
+        if (forward) ctx.harness.handle()?.noteScrollTopWritten(ctx.scrollEl.scrollTop);
       },
     });
     const { harness, scrollEl } = ctx;
@@ -1176,6 +1318,96 @@ describe('scrollToIndex', () => {
     const row = rowEl(scrollEl, 'row-30');
     expect(row).not.toBeNull();
     expect(row!.getAttribute('data-row-index')).toBe('50');
+    expect(
+      Math.abs(row!.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top),
+    ).toBeLessThanOrEqual(2);
+  });
+
+  it.each([true, false])('reads a navigation\'s own write back at once (readback forwarded: %s)', async (forward) => {
+    // The adapter performed the write and read where it landed, so its
+    // offset is that landing before the scroll event, whether or not the
+    // consumer forwards readbacks. A correction computed in the same flush
+    // starts from it rather than from where the reader was.
+    const ctx = mountHarness({ forwardWriteReadback: forward });
+    const { harness, scrollEl } = ctx;
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom seed');
+    const handle = harness.handle()!;
+    const before = handle.getScrollOffset();
+
+    handle.scrollToIndex(10, { align: 'start' });
+
+    expect(scrollEl.scrollTop).not.toBe(before);
+    expect(handle.getScrollOffset()).toBe(scrollEl.scrollTop);
+  });
+
+  it('a navigation issued between a prepend and its flush lands on its row', async () => {
+    // Handle calls apply an unrendered data change first, so the splice's
+    // compensation is queued at the pre-navigation offset and delivered
+    // after the navigation has written.
+    const ctx = mountHarness({
+      onCompensation: (c) => {
+        ctx.scrollEl.scrollTop = c.target;
+        ctx.harness.handle()?.noteScrollTopWritten(ctx.scrollEl.scrollTop);
+      },
+    });
+    const { harness, scrollEl } = ctx;
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom seed');
+    scrollEl.scrollTop = 0;
+    await waitFor(() => rowEl(scrollEl, 'row-0') !== null, 'head rows to mount');
+    await waitForStableGeometry(scrollEl, 'head settle');
+
+    harness.setRows([
+      ...Array.from({ length: 20 }, (_, index) => ({
+        id: `pre-${index}`,
+        heightPx: ROW_PX,
+        label: `Pre ${index}`,
+      })),
+      ...harness.getRows(),
+    ]);
+    harness.handle()!.scrollToIndex(40, { align: 'start' });
+    await waitForStableGeometry(scrollEl, 'navigation settle');
+
+    const row = rowEl(scrollEl, 'row-20');
+    expect(row).not.toBeNull();
+    expect(
+      Math.abs(row!.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top),
+    ).toBeLessThanOrEqual(2);
+  });
+
+  it('a navigation between two unrendered prepends lands on its row', async () => {
+    // The navigation's write lands while the rows still render the data
+    // before the first prepend; the second prepend then arms a hold from
+    // whatever retained-row sample that write left.
+    const ctx = mountHarness({
+      onCompensation: (c) => {
+        ctx.scrollEl.scrollTop = c.target;
+        ctx.harness.handle()?.noteScrollTopWritten(ctx.scrollEl.scrollTop);
+      },
+    });
+    const { harness, scrollEl } = ctx;
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom seed');
+    scrollEl.scrollTop = 0;
+    await waitFor(() => rowEl(scrollEl, 'row-0') !== null, 'head rows to mount');
+    await waitForStableGeometry(scrollEl, 'head settle');
+    const prepend = (prefix: string) => harness.setRows([
+      ...Array.from({ length: 3 }, (_, index) => ({
+        id: `${prefix}-${index}`,
+        heightPx: ROW_PX,
+        label: `${prefix} ${index}`,
+      })),
+      ...harness.getRows(),
+    ]);
+
+    prepend('first');
+    harness.handle()!.scrollToIndex(5, { align: 'start' });
+    prepend('second');
+    await waitForStableGeometry(scrollEl, 'navigation settle');
+
+    const row = rowEl(scrollEl, 'row-2');
+    expect(row).not.toBeNull();
     expect(
       Math.abs(row!.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top),
     ).toBeLessThanOrEqual(2);

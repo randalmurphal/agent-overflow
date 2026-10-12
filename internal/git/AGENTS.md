@@ -23,6 +23,9 @@ filesystem invalidation in internal/gitwatch.
   Git command. Callers use those states differently.
 - Redact credentials in remote URLs from logs and user-facing errors.
 
+Every `git worktree` command runSpec runs holds a process-wide lock per
+repository common dir (`worktree_admin_lock.go`), because Git dies reading a
+linked worktree's admin directory that a concurrent add has not finished.
 Worktree operations confirm the target through Git before removing or reusing
 it. Never recursively delete a path merely because it appears under a project
 directory. Keep main-worktree resolution and stale registration rules in

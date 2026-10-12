@@ -12,13 +12,15 @@ import { spawnContained } from './harness-process.ts';
 const execFile = promisify(execFileCallback);
 
 /**
- * A binary of this build: `agent-overflow` is $AO_HARNESS_BIN, else
- * <repo>/bin/agent-overflow; an `ao-*` tool is that binary's sibling.
+ * A binary of this build: `agent-overflow` is the backend under test,
+ * $AO_HARNESS_BIN, else <repo>/bin/agent-overflow; an `ao-*` tool is the one
+ * `make harness-build` wrote to <repo>/bin, wherever the backend is (the
+ * release workflow points AO_HARNESS_BIN at the release's own binary).
  */
 export function productBinary(name: 'agent-overflow' | `ao-${string}`): string {
-  const backend =
-    process.env.AO_HARNESS_BIN ?? path.join(path.resolve(import.meta.dirname, '..', '..'), 'bin', 'agent-overflow');
-  return name === 'agent-overflow' ? backend : path.join(path.dirname(backend), name);
+  const bin = path.join(path.resolve(import.meta.dirname, '..', '..'), 'bin');
+  if (name === 'agent-overflow') return process.env.AO_HARNESS_BIN ?? path.join(bin, name);
+  return path.join(bin, name);
 }
 
 /** Start a product binary under spawnContained with the launch environment plus `env`. */
