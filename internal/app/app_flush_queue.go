@@ -1074,6 +1074,9 @@ func (a *App) dropDurableFlushQueue(threadID string) {
 	if err := a.store.DeleteFlushQueueItemsForThread(threadID); err != nil {
 		log.Printf("flush queue: drop durable rows for thread %s: %v", threadID, err)
 	}
+	if a.queueDroppedForTest != nil {
+		a.queueDroppedForTest(threadID)
+	}
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 }
 
