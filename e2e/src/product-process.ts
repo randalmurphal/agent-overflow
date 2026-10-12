@@ -2,12 +2,14 @@
 // tools `make harness-build` writes beside it) starts through this module,
 // so its environment is always launchEnvironment's allowlist plus what the
 // caller passes. tests/product-launch.spec.ts fails when any other file in
-// src/ or tests/ can start a process and names a product binary.
+// src/ or tests/ can start a process and names a product binary, or writes a
+// script that names one.
 import { execFile as execFileCallback, type ChildProcess, type ExecFileOptions, type SpawnOptions } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { launchEnvironment } from './harness-env.ts';
-import { spawnContained } from './harness-process.ts';
+import { containedCommand, spawnContained } from './harness-process.ts';
 
 const execFile = promisify(execFileCallback);
 
@@ -41,4 +43,30 @@ export async function execProduct(
 ): Promise<{ stdout: string; stderr: string }> {
   const { env, ...execOptions } = options;
   return await execFile(binary, args, { ...execOptions, env: launchEnvironment(env), encoding: 'utf8' });
+}
+
+/**
+ * Write an executable Node script at `file` that starts a product binary as
+ * spawnProduct does, with the script's own arguments followed by `args`. It
+ * relays stdio and exits with the binary's status. This is for a launch a
+ * product process makes rather than the suite, such as the remote command a
+ * backend runs through a stand-in ssh client.
+ */
+export async function writeProductScript(
+  file: string,
+  binary: string,
+  args: string[],
+  options: { memoryLimitBytes: number; env?: Record<string, string> },
+): Promise<void> {
+  if (process.platform === 'win32') throw new Error('Windows cannot run a shebang script as an executable');
+  const command = containedCommand(binary, [], options.memoryLimitBytes);
+  await writeFile(file, `#!${process.execPath}
+const { spawn } = require('node:child_process');
+const child = spawn(${JSON.stringify(command.file)}, [...${JSON.stringify(command.args)}, ...process.argv.slice(2), ...${JSON.stringify(args)}], {
+  stdio: 'inherit',
+  env: ${JSON.stringify(launchEnvironment(options.env))},
+});
+child.on('error', (error) => { console.error(error.message); process.exit(127); });
+child.on('exit', (code) => process.exit(code ?? 1));
+`, { mode: 0o700 });
 }
