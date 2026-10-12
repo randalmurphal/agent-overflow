@@ -4,8 +4,10 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -467,5 +469,86 @@ func TestRemoteTrayRowIsBackgroundedOnlyOnceTheWaitEnds(t *testing.T) {
 	record := records[0]
 	if record.ComputerID != watch.ComputerID || record.RequestID != watch.RequestID || record.ThreadID != thread.ID || record.Label != watch.Label || record.Receipt.State != "running" || record.Notification != "pending" {
 		t.Fatalf("record: %+v", record)
+	}
+}
+
+// Archiving a thread whose start failed takes its finished job's queued
+// completion back to the job's watch: the next start delivers nothing, the
+// watcher leaves it alone while the thread is archived, and once the thread
+// is unarchived the watcher queues it again, once.
+func TestArchiveReturnsAHeldRemoteCompletionToItsWatch(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var failing atomic.Bool
+	failing.Store(true)
+	a.startSessionFn = func(string) error {
+		if failing.Load() {
+			return errors.New("the provider binary is missing")
+		}
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Claude))
+	w := completedRemoteWatch(t, a, thread)
+	notification := func() string {
+		t.Helper()
+		saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return saved.Notification
+	}
+	queued := func() []string {
+		t.Helper()
+		durable, memory := queuedSendIDs(t, a, thread.ID)
+		if !slices.Equal(durable, memory) {
+			t.Fatalf("durable queue %q and in-memory queue %q differ", durable, memory)
+		}
+		return durable
+	}
+	// One pass of the watcher: what is due, checked.
+	watch := func() {
+		t.Helper()
+		due, err := a.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range due {
+			a.checkRemoteWatch(row)
+		}
+		a.waitAgentNoticeWork()
+	}
+
+	watch()
+	if got := queued(); !slices.Equal(got, []string{remoteCompletionSendID(w)}) || notification() != "queued" {
+		t.Fatalf("held behind the failed start: queue %q, watch %q", got, notification())
+	}
+	if err := a.ArchiveThread(thread.ID); err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	if got := queued(); len(got) != 0 || notification() != "pending" {
+		t.Fatalf("after the archive: queue %q, watch %q, want an empty queue and a pending watch", got, notification())
+	}
+
+	// Archived, it is neither due nor delivered by a check that read it
+	// before the archive.
+	watch()
+	held, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.checkRemoteWatch(held)
+	a.waitAgentNoticeWork()
+	if got := queued(); len(got) != 0 || notification() != "pending" {
+		t.Fatalf("while archived: queue %q, watch %q, want an empty queue and a pending watch", got, notification())
+	}
+
+	failing.Store(false)
+	if _, err := a.UnarchiveThread(thread.ID); err != nil {
+		t.Fatalf("UnarchiveThread: %v", err)
+	}
+	watch()
+	watch()
+	if got := queued(); !slices.Equal(got, []string{remoteCompletionSendID(w)}) || notification() != "queued" {
+		t.Fatalf("after the unarchive: queue %q, watch %q, want the completion queued once", got, notification())
 	}
 }

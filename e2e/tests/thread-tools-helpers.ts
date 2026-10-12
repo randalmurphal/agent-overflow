@@ -21,6 +21,8 @@ export type ProviderName = 'claude' | 'codex';
 /** One tool call a turn makes. */
 export interface ToolCall {
   tool: string;
+  /** The built-in MCP server to call; ao-thread-tools when omitted. */
+  server?: string;
   args?: Record<string, unknown>;
   toolUseId?: string;
   /** Bounds the HTTP call. A parked wait needs its own value. */
@@ -119,10 +121,10 @@ function failedTurnLines(provider: ProviderName, message: string): string[] {
 
 function stepJSON(step: TurnStep): Record<string, unknown> {
   if ('call' in step) {
-    const { tool, args, toolUseId, timeoutMs } = step.call;
+    const { tool, server, args, toolUseId, timeoutMs } = step.call;
     return {
       mcpCall: {
-        server: THREAD_TOOLS_SERVER,
+        server: server ?? THREAD_TOOLS_SERVER,
         tool,
         args: args ?? {},
         ...(toolUseId ? { toolUseId } : {}),

@@ -131,7 +131,10 @@ func (s *Store) ListRemoteWatches(threadID string, due int64, limit int) ([]Remo
 	query := `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE thread_id=? ORDER BY (notification='pending') DESC, created_at DESC`
 	args := []any{threadID}
 	if threadID == "" {
-		query = `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE notification='pending' AND next_check<=? ORDER BY next_check`
+		// An archived thread's completions wait for it to be unarchived, and
+		// must not take the due list's places meanwhile.
+		query = `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE notification='pending' AND next_check<=?
+ AND NOT EXISTS (SELECT 1 FROM threads t WHERE t.id=remote_watches.thread_id AND t.archived=1) ORDER BY next_check`
 		args = []any{due}
 	}
 	query += ` LIMIT ` + strconv.Itoa(limit)
@@ -203,6 +206,33 @@ func (s *Store) QueueRemoteCompletion(computerID, requestID string, item FlushQu
 	}
 	if err = insertFlushQueueItem(tx, item); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+// WithdrawRemoteCompletion takes a queued completion's message back out of
+// the queue and returns delivery to its watch, in ONE durable transaction.
+// The watch goes back to pending only when the message was still queued: one
+// already dispatched or restored has been delivered.
+func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string) error {
+	tx, release, err := s.beginDurableTx(context.Background())
+	if err != nil {
+		return err
+	}
+	defer release()
+	defer func() { _ = tx.Rollback() }()
+	r, err := tx.Exec(`DELETE FROM flush_queue_items WHERE id=?`, rowID)
+	if err != nil {
+		return err
+	}
+	n, err := r.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 1 {
+		if _, err = tx.Exec(`UPDATE remote_watches SET notification='pending' WHERE computer_id=? AND request_id=? AND notification='queued'`, computerID, requestID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
