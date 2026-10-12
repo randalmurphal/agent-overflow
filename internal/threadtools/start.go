@@ -75,7 +75,9 @@ type ackResult struct {
 	Notify     bool   `json:"notify"`
 	Delivered  string `json:"delivered,omitempty"`
 	ExpiresAt  string `json:"expires_at,omitempty"`
-	Note       string `json:"note,omitempty"`
+	// NextFire is when a reminder fires.
+	NextFire string `json:"next_fire,omitempty"`
+	Note     string `json:"note,omitempty"`
 }
 
 func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {

@@ -133,6 +133,20 @@ describe('AO tool presentation', () => {
       expect(p).toMatchObject({ icon: 'speech-bubble', label, what, headerLabel: `Thread ${label}` });
     });
 
+    it('ends a schedule call with the next fire its reply named', () => {
+      const at = new Date();
+      at.setHours(14, 32, 0, 0);
+      const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(at);
+      const loop = { ...meta(THREAD_TOOLS_SERVER, 'thread_loop', { label: 'board', every_seconds: 300 }), next_fire_at: at.getTime() };
+      expect(aoToolPresentation(loop, names)!.what).toBe(`board · every 5m · next ${time}`);
+      const remind = { ...meta(THREAD_TOOLS_SERVER, 'thread_remind', { note: 'deploy' }), next_fire_at: at.getTime() };
+      expect(aoToolPresentation(remind, names)!.what).toBe(`deploy · next ${time}`);
+      const later = new Date(at.getTime() + 3 * 86_400_000);
+      const day = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' }).format(later);
+      const nextWeek = { ...meta(THREAD_TOOLS_SERVER, 'thread_remind', { note: 'deploy' }), next_fire_at: later.getTime() };
+      expect(aoToolPresentation(nextWeek, names)!.what).toBe(`deploy · next ${day} ${time}`);
+    });
+
     it('carries the computer a cross-computer call names', () => {
       const p = aoToolPresentation(meta(THREAD_TOOLS_SERVER, 'thread_show', { computer_id: 'mac', thread_id: tid }), names)!;
       expect(p).toMatchObject({ computerId: 'mac', computerName: 'Macaroni-air' });

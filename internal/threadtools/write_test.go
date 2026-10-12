@@ -365,6 +365,9 @@ func TestRemindTakesExactlyOneClockAndResolvesItAgainstNow(t *testing.T) {
 	if note := result["note"].(string); !strings.Contains(note, "2026-09-19T12:10:00Z") || !strings.Contains(note, "thread_cancel token tok-r") {
 		t.Errorf("note = %q", note)
 	}
+	if next, _ := result["next_fire"].(string); next != "2026-09-19T12:10:00Z" {
+		t.Errorf("next_fire = %q, want the due time", next)
+	}
 
 	call(t, server, localCaller(), "thread_remind", `{"at":"2026-09-20T09:00:00Z","note":"standup"}`)
 	if app.rem[1].DueAtUnixMs != time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC).UnixMilli() {

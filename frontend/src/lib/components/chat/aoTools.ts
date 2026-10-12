@@ -24,7 +24,7 @@
 
 import type { ToolKindIcon } from './toolCardHeader';
 import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
-import { formatDurationMs } from '../../utils/format';
+import { formatCalendarDate, formatDurationMs, formatTimeOfDay } from '../../utils/format';
 
 /** Mirrors `internal/app/app_remote_mcp.go#remoteMCPName`. */
 export const REMOTE_TOOLS_SERVER = 'ao-remote-tools';
@@ -471,6 +471,20 @@ function clip(text: string, max = WHAT_MAX): string {
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
 }
 
+/**
+ * A thread_loop, thread_watch or thread_remind call's summary with the next
+ * fire time its reply named, which triage stamps on the row as
+ * `next_fire_at` (internal/triage/thread_tools_schedule.go). The time is the
+ * call's answer, so the line keeps it after the schedule moves on.
+ */
+function withNextFire(what: string, itemMeta: Record<string, unknown> | null): string {
+  const at = itemMeta?.next_fire_at;
+  if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) return what;
+  const sameDay = new Date(at).toDateString() === new Date().toDateString();
+  const when = sameDay ? formatTimeOfDay(at) : `${formatCalendarDate(at)} ${formatTimeOfDay(at)}`;
+  return [what, `next ${when}`].filter(Boolean).join(' · ');
+}
+
 /** Whether the row is a tool one of AO's own MCP servers served. */
 export function isAoToolMeta(itemMeta: Record<string, unknown> | null): boolean {
   return aoToolServer(itemMeta) !== null;
@@ -499,7 +513,7 @@ export function aoToolPresentation(
   const label = spec
     ? spec.label
     : (mcp.tool.startsWith(server.prefix) ? mcp.tool.slice(server.prefix.length) : mcp.tool) || 'tool';
-  const fullWhat = (spec ? spec.what(input, names) : argsText(input)).trim();
+  const fullWhat = withNextFire((spec ? spec.what(input, names) : argsText(input)).trim(), itemMeta);
   const computerId = server.computerField ? str(input, server.computerField) : '';
   return {
     server: mcp.server,
