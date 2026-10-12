@@ -42,6 +42,13 @@ func (a *App) deliverThreadWake(token string, late bool) {
 	if !a.claimThreadWake(token, late) {
 		return
 	}
+	a.deliverClaimedThreadWake(token, late)
+}
+
+// deliverClaimedThreadWake hands over a wake whose claim its caller already
+// holds, and ends the claim. The retry pass claims under the same settle lock
+// it books the attempt under (claimThreadWakeRetry).
+func (a *App) deliverClaimedThreadWake(token string, late bool) {
 	defer a.endThreadWake(token, late)
 	row, found, err := a.store.GetThreadRequest(token)
 	if err != nil || !found {
@@ -130,13 +137,19 @@ func (a *App) claimThreadWake(token string, late bool) bool {
 	if a.requestWaitActive(token) {
 		return false
 	}
+	a.markThreadWakeInFlight(token, late)
+	return true
+}
+
+// markThreadWakeInFlight is the claim itself. The caller holds the token's
+// settle lock and has found no call holding the token.
+func (a *App) markThreadWakeInFlight(token string, late bool) {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
 	if a.threadRequests.wakesInFlight == nil {
 		a.threadRequests.wakesInFlight = make(map[string]int)
 	}
 	a.threadRequests.wakesInFlight[threadWakeSendIDFor(token, late)]++
-	return true
 }
 
 // endThreadWake clears the mark, under the settle lock so that a reply reads
@@ -205,36 +218,60 @@ func (a *App) retryUndeliveredThreadWakes(now time.Time) {
 		if len(owed) == 0 {
 			continue
 		}
-		if a.requestWaitActive(row.Token) {
-			// A call holding this token answers it in its reply, and its
-			// release nudges this pass if the reply did not. Booking an
-			// attempt now would push that retry out by the backoff.
-			continue
-		}
-		if row.WakeAttempts >= threadWakeRetryAttempts {
+		claimed, abandon := a.claimThreadWakeRetry(row, owed, now)
+		if abandon {
 			a.abandonThreadWake(row)
 			continue
 		}
-		attempts := row.WakeAttempts + 1
-		// Booked before the attempt: a delivery that fails, or that is
-		// still holding a lock when the next pass comes round, must not
-		// bring this row back at once.
-		if err := a.store.ScheduleThreadRequestWake(row.Token,
-			now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), attempts); err != nil {
-			logThreadRequestSweep("schedule the wake retry for "+row.Token, err)
-			continue
-		}
-		for _, late := range owed {
-			stillOwed := func() bool {
-				unlock := a.threadRequestSettleLock(row.Token)
-				defer unlock()
-				return a.finishThreadRequestCollection(row.Token, late)
-			}()
-			if stillOwed {
-				a.deliverThreadWakeDetached(row.Token, late)
-			}
+		for _, late := range claimed {
+			a.deliverClaimedThreadWakeDetached(row.Token, late)
 		}
 	}
+}
+
+// claimThreadWakeRetry decides one row's retry under its settle lock. It
+// books the attempt and claims each wake still owed in one critical section,
+// or, when a call holds the token, books nothing.
+//
+// A call registers its wait without the settle lock, so the section is what
+// orders the two. A call registered before the claim holds the token: its
+// reply carries the answer, and its release nudges the sweep, which finds the
+// row due because nothing was booked. A call registered after the claim reads
+// it under the same lock (claimInlineDelivery) and leaves the delivery to the
+// wake. Booking first and claiming later let a call land in between: the wake
+// backed off with the attempt spent, and the release's pass found the row not
+// due until the backoff ran out.
+//
+// The attempt is booked before the delivery runs, so a delivery that fails,
+// or that still holds a lock when the next pass comes round, does not bring
+// the row back at once.
+func (a *App) claimThreadWakeRetry(row store.ThreadRequest, owed []bool, now time.Time) (claimed []bool, abandon bool) {
+	unlock := a.threadRequestSettleLock(row.Token)
+	defer unlock()
+	stillOwed := make([]bool, 0, len(owed))
+	for _, late := range owed {
+		if a.finishThreadRequestCollection(row.Token, late) {
+			stillOwed = append(stillOwed, late)
+		}
+	}
+	// Read after the collection, so a call that registered during this
+	// section holds the token as well as one that registered before it.
+	if a.requestWaitActive(row.Token) {
+		return nil, false
+	}
+	if row.WakeAttempts >= threadWakeRetryAttempts {
+		return nil, true
+	}
+	attempts := row.WakeAttempts + 1
+	if err := a.store.ScheduleThreadRequestWake(row.Token,
+		now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), attempts); err != nil {
+		logThreadRequestSweep("schedule the wake retry for "+row.Token, err)
+		return nil, false
+	}
+	for _, late := range stillOwed {
+		a.markThreadWakeInFlight(row.Token, late)
+	}
+	return stillOwed, false
 }
 
 // abandonThreadWake ends the retry of a wake that cannot be handed over.
