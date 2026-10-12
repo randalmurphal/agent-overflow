@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -203,7 +204,14 @@ func PoisonProviderBinary(t testing.TB) (poison, sentinel string) {
 		"echo \"argv: $0 $*\" >> '" + sentinel + "'\n" +
 		"echo 'agent-overflow tests: refused to spawn a provider binary without a mock' >&2\n" +
 		"exit 127\n"
-	if err := os.WriteFile(poison, []byte(script), 0o755); err != nil {
+	// A fork copies every open descriptor until its exec closes them, and a
+	// copy of this write descriptor makes exec of the poison fail with
+	// ETXTBSY instead of recording the spawn. Every fork holds ForkLock for
+	// writing, so none starts while the script is open here.
+	syscall.ForkLock.RLock()
+	err := os.WriteFile(poison, []byte(script), 0o755)
+	syscall.ForkLock.RUnlock()
+	if err != nil {
 		t.Fatalf("write poisoned provider binary: %v", err)
 	}
 
