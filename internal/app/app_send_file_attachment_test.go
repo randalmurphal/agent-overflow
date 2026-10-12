@@ -306,7 +306,7 @@ func TestStartSession_ClaudeGetsAddDirForTheAttachmentsRoot(t *testing.T) {
 
 	argvPath := filepath.Join(t.TempDir(), "argv.txt")
 	binary := filepath.Join(t.TempDir(), "claude-argv.sh")
-	script := "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> " + argvPath + "; done\ncat >/dev/null\n"
+	script := argvRecordingClaude(argvPath)
 	mockexec.Write(t, binary, script)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)

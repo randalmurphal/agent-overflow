@@ -11,6 +11,14 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 )
 
+// argvRecordingClaude is a mock Claude that records its argv in argvPath,
+// one value per line, and then reads stdin until the session closes it. The
+// argv goes to a temporary file renamed into place, so a reader polling
+// argvPath sees either nothing or the whole argv, never a prefix.
+func argvRecordingClaude(argvPath string) string {
+	return "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argvPath + ".tmp\nmv " + argvPath + ".tmp " + argvPath + "\ncat >/dev/null\n"
+}
+
 // spawnedClaudeArgv waits for the argv-recording mock Claude to run and
 // returns what it was given, one value per line.
 func spawnedClaudeArgv(t *testing.T, argvPath string) []string {
@@ -54,7 +62,7 @@ func TestStartSession_ClaudeCarriesTheAppGuideAndSnapshotOptOut(t *testing.T) {
 
 	argvPath := filepath.Join(t.TempDir(), "argv.txt")
 	binary := filepath.Join(t.TempDir(), "claude-argv.sh")
-	script := "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> " + argvPath + "; done\ncat >/dev/null\n"
+	script := argvRecordingClaude(argvPath)
 	mockexec.Write(t, binary, script)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
@@ -125,7 +133,7 @@ func TestStartSession_ClaudeOmitsTheSnapshotFlagWithoutAKnownVersion(t *testing.
 	}
 	argvPath := filepath.Join(t.TempDir(), "argv.txt")
 	binary := filepath.Join(t.TempDir(), "claude-argv.sh")
-	mockexec.Write(t, binary, "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> "+argvPath+"; done\ncat >/dev/null\n")
+	mockexec.Write(t, binary, argvRecordingClaude(argvPath))
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
