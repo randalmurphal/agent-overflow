@@ -242,6 +242,9 @@ func (s *Store) DeleteThreadGroup(id string) ([]Thread, error) {
 //   - Every named id must have been updated, or the whole call fails and
 //     rolls back. A partial multi-select move is not a state the sidebar
 //     could explain.
+//   - A standing agent, or a thread one spawned, is refused by a move INTO
+//     a group (ErrStandingAgentGrouped, ErrSpawnedChildGrouped): the
+//     agent's own row is where they nest.
 //   - A row that changes group loses its pin in the same statement: a
 //     thread starts unpinned in a group it joins, and a thread leaving a
 //     group leaves its pin behind. A row whose group does not change keeps
@@ -302,6 +305,9 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) ([]Thread,
 		if groupID == "" {
 			result, err = tx.Exec(ungroupSQL, id)
 		} else {
+			if err := refuseAgentGroupingTx(tx, id); err != nil {
+				return nil, err
+			}
 			result, err = tx.Exec(groupSQL, groupID, groupID, groupID, id, groupID)
 		}
 		if err != nil {

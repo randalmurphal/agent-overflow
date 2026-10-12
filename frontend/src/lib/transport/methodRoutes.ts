@@ -196,6 +196,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2789068977: 'home', // IsWSL
 	1602023272: 'thread', // ListActivityRunMembers
 	2526318276: 'selected', // ListAgentComputers
+	1323325584: 'thread', // ListArchivedSpawnedThreads
 	2451527188: 'all', // ListArchivedThreads
 	3128666716: 'thread', // ListAsyncQuestions
 	1730798413: 'thread', // ListAttachments

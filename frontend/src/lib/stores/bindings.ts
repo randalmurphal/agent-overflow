@@ -80,6 +80,9 @@ export {
 
   // Thread groups (sidebar grouping rows; docs/specs/sidebar-thread-groups.md)
   ListThreadGroups,
+  ListArchivedSpawnedThreads,
+  PromoteStandingAgent,
+  DemoteStandingAgent,
   CreateThreadGroup,
   RenameThreadGroup,
   DeleteThreadGroup,

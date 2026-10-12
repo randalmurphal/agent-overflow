@@ -62,7 +62,7 @@ func TestListStandingAgentWakesListsAgentsOnly(t *testing.T) {
 	plain := noticeTestThread(t, a, "changes-plain")
 	now := time.Now()
 	for _, id := range []string{first.ID, second.ID} {
-		if _, _, err := a.store.PromoteStandingAgent(id, t.TempDir(), now.UnixMilli()); err != nil {
+		if _, err := a.store.PromoteStandingAgent(id, t.TempDir(), now.UnixMilli()); err != nil {
 			t.Fatal(err)
 		}
 	}

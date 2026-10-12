@@ -633,7 +633,7 @@ func TestArchivingAStoppedThreadWithdrawsWhatTheAppQueued(t *testing.T) {
 func TestCancellingAStoppedThreadsLoopOrWatchWithdrawsItsHeldWake(t *testing.T) {
 	t.Parallel()
 	a, thread := heldNoticeFixture(t, "notice-cancel-stopped")
-	if _, _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
+	if _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
 		t.Fatalf("PromoteStandingAgent: %v", err)
 	}
 	board := holdAgentWake(t, a, thread, store.AgentWakeLoop, "board")
@@ -700,7 +700,7 @@ func TestARetryForAWakeNoLongerWantedWithdrawsTheHeldWake(t *testing.T) {
 func TestAWithdrawalThatFailsIsReported(t *testing.T) {
 	t.Parallel()
 	a, thread := heldNoticeFixture(t, "notice-withdraw-fails")
-	if _, _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
+	if _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
 		t.Fatalf("PromoteStandingAgent: %v", err)
 	}
 	holdAgentWake(t, a, thread, store.AgentWakeLoop, "board")

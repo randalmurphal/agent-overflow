@@ -230,6 +230,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "IsWSL", ID: 2789068977, Scope: "threads:read", Route: "home"},                                                     // main.App.IsWSL
 	{Name: "ListActivityRunMembers", ID: 1602023272, Scope: "threads:read", Route: "thread"},                                  // main.App.ListActivityRunMembers
 	{Name: "ListAgentComputers", ID: 2526318276, Scope: "terminal:operate", Route: "selected"},                                // main.App.ListAgentComputers
+	{Name: "ListArchivedSpawnedThreads", ID: 1323325584, Scope: "threads:read", Route: "thread"},                              // main.App.ListArchivedSpawnedThreads
 	{Name: "ListArchivedThreads", ID: 2451527188, Scope: "threads:read", Route: "all"},                                        // main.App.ListArchivedThreads
 	{Name: "ListAsyncQuestions", ID: 3128666716, Scope: "threads:read", Route: "thread"},                                      // main.App.ListAsyncQuestions
 	{Name: "ListAttachments", ID: 1730798413, Scope: "threads:read", Route: "thread"},                                         // main.App.ListAttachments

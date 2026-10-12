@@ -612,6 +612,19 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	// Old and still open: nothing else can settle or cancel it once it is
 	// gone, so it waits for its own settlement.
 	seedThreadRequest(t, s, "tok-open-old", "t-caller", ThreadRequestSend, 100)
+	// Old, settled, and the record of which thread spawned t-child: it
+	// lives as long as that thread does. A spawn whose thread is gone, or
+	// one made on another computer, is an ordinary settled row.
+	mustCreateThread(t, s, "t-child")
+	for token, target := range map[string][2]string{
+		"tok-spawn-lineage": {"", "t-child"}, "tok-spawn-gone": {"", "t-deleted"}, "tok-spawn-remote": {"laptop", "t-child"},
+	} {
+		seedThreadRequest(t, s, token, "t-caller", ThreadRequestSpawn, 100)
+		if _, err := s.SetThreadRequestTarget(token, target[0], target[1], ""); err != nil {
+			t.Fatalf("target %s: %v", token, err)
+		}
+		settle(token, 200)
+	}
 	// A reminder armed past the floor. No ceiling: next week is a valid
 	// reminder, and so is next month.
 	if err := s.InsertThreadRequest(ThreadRequest{
@@ -644,16 +657,26 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retention sweep: %v", err)
 	}
-	if swept != 2 {
-		t.Fatalf("swept = %d, want one settled row from each table", swept)
+	if swept != 4 {
+		t.Fatalf("swept = %d, want three settled requests and one receipt", swept)
 	}
-	for _, token := range []string{"tok-settled-recent", "tok-open-old", "tok-remind-later"} {
+	for _, token := range []string{"tok-settled-recent", "tok-open-old", "tok-remind-later", "tok-spawn-lineage"} {
 		if _, found, err := s.GetThreadRequest(token); err != nil || !found {
 			t.Errorf("%s was swept: found=%v err=%v", token, found, err)
 		}
 	}
-	if _, found, err := s.GetThreadRequest("tok-settled-old"); err != nil || found {
-		t.Errorf("a request settled before the floor survived: found=%v err=%v", found, err)
+	for _, token := range []string{"tok-settled-old", "tok-spawn-gone", "tok-spawn-remote"} {
+		if _, found, err := s.GetThreadRequest(token); err != nil || found {
+			t.Errorf("%s, settled before the floor, survived: found=%v err=%v", token, found, err)
+		}
+	}
+	// Once the spawned thread is gone the lineage row is one more old
+	// settled request.
+	if err := s.DeleteThread("t-child"); err != nil {
+		t.Fatal(err)
+	}
+	if swept, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 1 {
+		t.Errorf("sweep after the child was deleted: swept=%d err=%v", swept, err)
 	}
 	for _, token := range []string{"tok-receipt-settled-recent", "tok-receipt-open-old"} {
 		if _, found, err := s.GetThreadRequestReceipt(token); err != nil || !found {

@@ -541,6 +541,20 @@ type Thread struct {
 	// was created. Write-once for the same reason and by the same mechanism
 	// as the two fields above.
 	Origin ThreadOrigin `json:"origin"`
+	// AgentPromotedAt is the standing agent row's promotion time, nil for a
+	// thread the user has not promoted (docs/specs/standing-agents.md). It
+	// is derived from standing_agents, not a persisted threads column.
+	AgentPromotedAt *int64 `json:"agentPromotedAt,omitempty"`
+	// SpawnedByThreadID names the local thread whose thread_spawn made this
+	// one, read from the newest spawn request that targets it, or "" when
+	// the user started it. Derived, like the two below: the spawn request
+	// row is the record, and it outlives the retention floor while this
+	// thread exists (spawnLineageSQL).
+	SpawnedByThreadID string `json:"spawnedByThreadId,omitempty"`
+	// ArchivedChildCount is how many threads this one spawned that are now
+	// archived. Only a standing agent's row carries it (zero elsewhere);
+	// the sidebar's agent row shows the count and lists them on demand.
+	ArchivedChildCount int `json:"archivedChildCount,omitempty"`
 	// HasActionableProposedPlan is derived for sidebar boot state. It is
 	// true when the latest assistant proposed plan is completed and has
 	// not been implemented yet. It is not a persisted threads column.

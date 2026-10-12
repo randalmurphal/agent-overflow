@@ -53,7 +53,10 @@ func proposedPlanItemSQL() string {
 // cost does not grow with the thread's rows. hasFailedTurn's turn-error
 // half reads the write-time pair thread_turn_error_aggregate.go maintains,
 // and the pending-plan flag finds its row and payload by id
-// (proposedPlanItemSQL).
+// (proposedPlanItemSQL). The three agent columns read the standing agent
+// row and the local spawn requests (idx_thread_requests_spawn_target for
+// the spawner, idx_thread_requests_caller for the finished-child count,
+// which only an agent row pays for).
 var threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
@@ -108,7 +111,19 @@ var threadColumns = `id, COALESCE(project_id, ''),
     ),
     NOT EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id),
     (SELECT COALESCE(MAX(ownership_epoch),0) FROM thread_transfers
-      WHERE thread_id = threads.id AND direction = 'incoming' AND phase = 'complete')`
+      WHERE thread_id = threads.id AND direction = 'incoming' AND phase = 'complete'),
+    (SELECT promoted_at FROM standing_agents WHERE standing_agents.thread_id = threads.id),
+    COALESCE((
+      SELECT caller_thread_id FROM thread_requests
+       WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
+       ORDER BY created_at DESC LIMIT 1
+    ), ''),
+    (SELECT COUNT(*) FROM thread_requests
+       JOIN owned_threads AS child ON child.id = thread_requests.target_thread_id
+      WHERE thread_requests.caller_thread_id = threads.id
+        AND thread_requests.kind = 'spawn' AND thread_requests.target_computer_id = ''
+        AND child.archived = 1
+        AND EXISTS (SELECT 1 FROM standing_agents WHERE standing_agents.thread_id = threads.id))`
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -207,7 +222,7 @@ func validAutoCompactPercent(percent int) bool {
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft int
-	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup sql.NullInt64
+	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentPromotedAt sql.NullInt64
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
@@ -221,6 +236,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
+		&agentPromotedAt, &t.SpawnedByThreadID, &t.ArchivedChildCount,
 	); err != nil {
 		return Thread{}, err
 	}
@@ -245,6 +261,10 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	if pinGroup.Valid {
 		v := int(pinGroup.Int64)
 		t.PinGroup = &v
+	}
+	if agentPromotedAt.Valid {
+		v := agentPromotedAt.Int64
+		t.AgentPromotedAt = &v
 	}
 	return t, nil
 }

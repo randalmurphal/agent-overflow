@@ -168,7 +168,7 @@ func TestWakeNowFiresAWatchThroughTheSweep(t *testing.T) {
 	a, rec := newAppForFlushQueueRPC(t)
 	thread := noticeTestThread(t, a, "rows-fire")
 	home := t.TempDir()
-	if _, _, err := a.store.PromoteStandingAgent(thread.ID, home, time.Now().UnixMilli()); err != nil {
+	if _, err := a.store.PromoteStandingAgent(thread.ID, home, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	next := time.Now().Add(time.Hour).UnixMilli()

@@ -324,7 +324,9 @@ does not exist, through the same organize patch `thread_update` uses.
 A group name is unique per project, compared without case, and the
 lookup and the insert share one write transaction, so two spawns
 naming the same new group land in one group rather than two;
-a fork's group lives in its source's project. `from_thread` forks that thread's history at its tail
+a fork's group lives in its source's project. A standing agent's
+spawns nest under its own sidebar row and never join a group, so
+`group` from an agent caller is refused with that reason. `from_thread` forks that thread's history at its tail
 (the same fork `thread_ask` uses, visible instead of hidden) and sends
 `prompt` there, for "try approach B in a fork"; the fork runs on the
 source thread's computer in its project and workspace and keeps that
