@@ -1331,7 +1331,10 @@ func TestThreadToolsRemoteBlockedStateReachesTheWaitingCaller(t *testing.T) {
 	if !pair.source.threadRequestBlocked(row) {
 		t.Fatal("the destination's blocked state did not reach the source row")
 	}
-	state := pair.adapter().requestState(context.Background(), row)
+	state, err := pair.adapter().requestState(context.Background(), row)
+	if err != nil {
+		t.Fatalf("requestState: %v", err)
+	}
 	if state.State != threadtools.RequestBlocked {
 		t.Fatalf("thread_status reports %q for a blocked remote request", state.State)
 	}

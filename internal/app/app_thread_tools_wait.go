@@ -61,6 +61,12 @@ type threadRequestState struct {
 	// delivery in flight, threadWakeDeliveryFanOut of them. Built on first
 	// use.
 	deliveries chan struct{}
+	// wakesInFlight counts the wakes between their claim and their end, by
+	// send id. It changes and is read only under the token's settle lock,
+	// so a render deciding whether its reply delivers an answer and a wake
+	// queuing the same answer see each other (claimThreadWake,
+	// claimInlineDelivery).
+	wakesInFlight map[string]int
 	// blocked records which remote requests their own computer last
 	// reported as waiting on a person. It is not state: the record is the
 	// source row, this is the live reading beside it, and after a restart
