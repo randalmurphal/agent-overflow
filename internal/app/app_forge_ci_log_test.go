@@ -238,7 +238,9 @@ func TestPRCILogFinalFetchFailureSurfacesAfterTheQuickTries(t *testing.T) {
 	f.publish(pipelineWith(gitops.CIStatusFailed, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusFailed, LogsAvailable: true}), nil)
 	awaitCIEvent(t, f.ciEvents, "terminal pipeline frame")
 	frame := awaitLogEvent(t, f.logEvents, "error frame after the quick tries ran out")
-	if frame.Error == "" || strings.Contains(frame.Error, "500") || frame.Version != 1 || frame.TotalLines != 1 || !frame.Available {
+	// The wire error names a correlation id, a hex string that can contain
+	// "500"; the forge's own text is what must not reach the wire.
+	if frame.Error == "" || strings.Contains(frame.Error, "glab: 500") || frame.Version != 1 || frame.TotalLines != 1 || !frame.Available {
 		t.Fatalf("error frame = %+v, want the failure over the held version", frame)
 	}
 	if n := f.logFetches.Load(); n != 1+prCILogFinalAttempts {
