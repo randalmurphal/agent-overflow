@@ -125,7 +125,9 @@ back to their owners through one path (`giveBackToOwners`), from a Stop, a
 revert, a session end, a failed Codex resend and the boot sweep. A message
 Claude joined from a person's text and such parts is split by the lengths
 its dispatch recorded (`usermessage.JoinedPart`), and only the person's
-text goes back (`agentPartsNotTakenIn`). Whether a turn was a tick
+text goes back (`agentPartsNotTakenIn`). What the app's messages are owed
+is applied once that restore commits (`settleNotTakenIn`): a restore that
+fails requeues them whole. Whether a turn was a tick
 is read from the rows of the turn that ended, because a dispatch cannot know
 what the provider joined into it. The exception is a Claude turn the CLI
 started for messages queued during the previous turn, which keep their rows

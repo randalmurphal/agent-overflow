@@ -184,13 +184,13 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 
 	parts := make([]composerdraft.Part, 0, len(restorable))
 	settlements := make([]*triage.FlushSettlement, 0, len(restorable))
-	// The answers and completions go back once the restore of the rest has
-	// committed: a restore that fails requeues the items whole, them
+	// What the app wrote is settled once the restore of the rest has
+	// committed: a restore that fails requeues the items whole, its messages
 	// included, and they are still queued.
-	var owned []ownedMessage
+	var owed []notTakenIn
 	for _, item := range restorable {
-		part, restore, itemOwned := a.agentPartsNotTakenIn(threadID, item, a.restoredFlushDraftPart(threadID, item), reason)
-		owned = append(owned, itemOwned...)
+		part, restore, itemOwed := a.agentPartsNotTakenIn(threadID, item, a.restoredFlushDraftPart(threadID, item), reason)
+		owed = append(owed, itemOwed)
 		if !restore {
 			settlements = append(settlements, item.Settlement)
 			continue
@@ -216,9 +216,7 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 	for _, settlement := range settlements {
 		settlement.Settle()
 	}
-	if len(owned) > 0 {
-		a.giveBackToOwners(threadID, owned)
-	}
+	a.settleNotTakenIn(threadID, owed)
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 
 	a.emitQueueStateChanged(threadID)
@@ -317,19 +315,19 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 	queueItemIDs := make([]string, 0, len(restorable))
 	userItemIDs := make([]string, 0, len(restorable))
 	parts := make([]composerdraft.Part, 0, len(restorable))
-	// What the app wrote is settled as a session end settles it, and its
-	// answers and completions go back once the draft has committed.
-	var owned []ownedMessage
+	// What the app wrote is settled as a session end settles it, once the
+	// draft has committed.
+	var owed []notTakenIn
 	for _, p := range restorable {
 		if p.QueueItemID != "" {
 			queueItemIDs = append(queueItemIDs, p.QueueItemID)
 		}
 		userItemIDs = append(userItemIDs, p.UserItemID)
 		row := store.Item{ThreadID: threadID, ID: p.UserItemID, Summary: p.Content, Meta: p.Meta}
-		part, restore, itemOwned := a.agentPartsNotTakenIn(threadID, triage.UnconfirmedFlushItem{
+		part, restore, itemOwed := a.agentPartsNotTakenIn(threadID, triage.UnconfirmedFlushItem{
 			QueueItemID: p.QueueItemID, UserItemID: p.UserItemID, EnqueuedAt: p.EnqueuedAt, QuietItem: &row,
 		}, draftPartFromUserItem(row), reason)
-		owned = append(owned, itemOwned...)
+		owed = append(owed, itemOwed)
 		if !restore {
 			continue
 		}
@@ -352,9 +350,7 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 			return
 		}
 	}
-	if len(owned) > 0 {
-		a.giveBackToOwners(threadID, owned)
-	}
+	a.settleNotTakenIn(threadID, owed)
 	a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
 		ThreadID:     threadID,
 		Reason:       reason,

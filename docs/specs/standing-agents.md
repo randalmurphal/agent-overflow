@@ -364,6 +364,9 @@ records each one's length, which splits the join exactly; an answer's
 or a completion's text can hold the separator the join puts between
 messages, so the first-line split older joins use refuses those and
 restores all of the text, giving the answer and completion back too.
+These records, notices and give-backs are written once the person's text
+is back in the composer; a composer write that fails queues every
+message again whole, and none of them is recorded.
 
 Other than that retry, a fire whose previous wake is still queued is
 skipped and counted missed, and its output is kept the same way. The outcome of the latest

@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -277,5 +279,119 @@ func TestTheBootSweepGivesBackWhatWasQueuedAtQuit(t *testing.T) {
 			requireGivenBack(t, after, token, tc.late, w)
 			requireDraft(t, after.app, f.caller.ID, "my own words")
 		})
+	}
+}
+
+// A restore whose composer write fails requeues every item whole, the app's
+// messages included, so none of them is settled: no notice says an outside
+// send was not delivered, a loop wake's row records nothing, and an answer
+// still reads delivered; all four are queued again for delivery. With a
+// readable composer, each is settled once. Both restores run: a session
+// death's and a failed Codex resend's. The write fails on an existing draft
+// whose attachments do not decode, the seam
+// TestCodexResendAfterInterrupt_DraftMergeFailureRequeues uses.
+func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"session death", "failed resend"} {
+		for _, fails := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s, draft write fails %v", path, fails), func(t *testing.T) {
+				t.Parallel()
+				f := newRequestFixture(t)
+				f.app.startSessionFn = func(string) error { return nil }
+				attachments := "[]"
+				if fails {
+					attachments = "corrupt"
+				}
+				if _, err := f.app.store.UpsertThreadDraft(store.ThreadDraft{
+					ThreadID: f.caller.ID, Attachments: attachments, UpdatedAt: time.Now().UnixMilli(),
+				}); err != nil {
+					t.Fatal(err)
+				}
+				wake, err := f.app.store.RegisterAgentWake(store.AgentWake{
+					ID: "wake-board", ThreadID: f.caller.ID, Kind: store.AgentWakeLoop, Label: "board",
+					IntervalSeconds: 60, NextAt: time.Now().Add(time.Hour).UnixMilli(),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				token := settledAnswerHolding(t, f, "the notes are ready")
+				if marked, err := f.app.store.MarkThreadRequestDelivered(token, store.ThreadWakeQueued, time.Now().UnixMilli(), false); err != nil || !marked {
+					t.Fatalf("MarkThreadRequestDelivered: marked=%v err=%v", marked, err)
+				}
+				sends := []struct{ sendID, text string }{
+					{"person-send", "my own words"},
+					{agentSendIDRoot + "deploy", "deploy 11 is done"},
+					{agentWakeSendID(wake.ID, 1000), "Loop board fired"},
+					{threadWakeSendID(token), "the notes are ready"},
+				}
+				var want []string
+				for _, s := range sends {
+					want = append(want, s.sendID)
+				}
+
+				if path == "session death" {
+					var items []triage.UnconfirmedFlushItem
+					for i, s := range sends {
+						meta, err := usermessage.Marshal(usermessage.Input{SendID: s.sendID})
+						if err != nil {
+							t.Fatal(err)
+						}
+						row := store.Item{ThreadID: f.caller.ID, ID: "user:death:" + s.sendID, Summary: s.text, Meta: meta}
+						items = append(items, triage.UnconfirmedFlushItem{UserItemID: row.ID, Message: s.text, EnqueuedAt: int64(1000 + i), QuietItem: &row})
+					}
+					f.app.restoreFlushItemsToDraftLocked(f.caller.ID, items, queueRestoredReasonSessionDied)
+				} else {
+					var persisted []triage.EagerPersistedFlush
+					for i, s := range sends {
+						meta, err := usermessage.Marshal(usermessage.Input{SendID: s.sendID})
+						if err != nil {
+							t.Fatal(err)
+						}
+						persisted = append(persisted, triage.EagerPersistedFlush{
+							UserItemID: "user:eager:" + s.sendID, Content: s.text, Meta: meta, EnqueuedAt: int64(1000 + i),
+						})
+					}
+					f.app.restoreEagerPersistedFlushesToDraft(f.caller.ID, persisted)
+				}
+
+				notices := noticeRows(t, f.app, f.caller.ID, "A message sent with agent-overflow thread send was not delivered")
+				saved, found, err := f.app.store.GetAgentWake(wake.ID)
+				if err != nil || !found {
+					t.Fatalf("GetAgentWake: found=%v err=%v", found, err)
+				}
+				_, memory := queuedSendIDs(t, f.app, f.caller.ID)
+				request := f.request(t, token)
+				if fails {
+					if len(notices) != 0 {
+						t.Errorf("notices %q for a send queued again", notices)
+					}
+					if saved.Undelivered != "" {
+						t.Errorf("the wake row records %q for a wake queued again", saved.Undelivered)
+					}
+					if request.DeliveredHow != store.ThreadWakeQueued || !request.Notify {
+						t.Errorf("the request reads delivered as %q, notify %v; want it still queued", request.DeliveredHow, request.Notify)
+					}
+					if !slices.Equal(memory, want) {
+						t.Errorf("queued again %q, want %q", memory, want)
+					}
+					return
+				}
+				outcome := agentWakeOutcomeSessionEnded
+				if path == "failed resend" {
+					outcome = agentWakeOutcomeNotDelivered
+				}
+				if len(notices) != 1 {
+					t.Errorf("notices %q, want one", notices)
+				}
+				if saved.Undelivered != outcome {
+					t.Errorf("the wake row records %q, want %q", saved.Undelivered, outcome)
+				}
+				requireOwedAgain(t, f, token, false)
+				if len(memory) != 0 {
+					t.Errorf("queued again %q, want nothing", memory)
+				}
+				requireDraft(t, f.app, f.caller.ID, "my own words")
+			})
+		}
 	}
 }
