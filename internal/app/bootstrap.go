@@ -74,6 +74,10 @@ type IsolationConfig struct {
 	// register (agentWakeFloor), so a test can watch fires without waiting
 	// out a minute each. Zero keeps the product floor.
 	AgentWakeFloor time.Duration
+	// RemoteWatchPoll replaces how often the remote-job watcher asks the
+	// destination about a job still running, so a test can act between two
+	// of its checks. Zero keeps the product cadence.
+	RemoteWatchPoll time.Duration
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -105,6 +109,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 		wakeupGrace: config.WakeupReapGrace,
 	}
 	a.agentWakes.floorOverride = config.AgentWakeFloor
+	a.remoteWatchPoll = config.RemoteWatchPoll
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.

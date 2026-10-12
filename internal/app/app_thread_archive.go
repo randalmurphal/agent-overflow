@@ -74,10 +74,10 @@ func (a *App) stopArchivedThreadWork(ctx context.Context, id string) error {
 	if err := a.cancelThreadRequests(ctx, id); err != nil {
 		log.Printf("thread tools: archive %s: cancel requests: %v", id, err)
 	}
-	remoteErr := a.cancelThreadRemoteCommands(ctx, id)
-	// A finished job's completion held in the queue is kept for the thread:
-	// it goes back to its watch after the cancel has dropped the pending
-	// ones, and arrives once the thread is unarchived.
+	remoteErr := a.cancelThreadRemoteCommands(ctx, id, true)
+	// A finished job's completion is kept for the thread: the cancel keeps
+	// its watch, and one already held in the queue goes back to its watch
+	// after the cancel has run. It arrives once the thread is unarchived.
 	return errors.Join(withdrawErr, remoteErr, a.withdrawHeldRemoteCompletions(id))
 }
 

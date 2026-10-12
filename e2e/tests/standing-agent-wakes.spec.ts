@@ -32,8 +32,13 @@
 // a start-failure notification raised before a restart withdrawn by the
 // first start after it; archiving a thread whose start failed withdrawing
 // its held wake and send, and returning a finished remote job's held
-// completion to its watch for delivery after the unarchive;
-// and the transfer dialog naming what a standing agent leaves behind.
+// completion to its watch for delivery after the unarchive; archiving
+// just after a remote job finished, before the watcher read the finish,
+// cancelling the job still running and keeping the finished one's result
+// for the unarchive; forgetting a computer naming the results it discards
+// for archived threads and discarding them, and a copy of such a thread
+// refused with the cause; and the transfer dialog naming what a standing
+// agent leaves behind.
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -43,7 +48,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Locator, Page } from '@playwright/test';
 
 import { test, expect, type SeedResult } from './fixtures.js';
-import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
+import { HARNESS_TIMING, launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { productBinary, spawnProduct } from '../src/product-process.js';
 import { codexTransferScenario } from './conversation-transfer-helpers.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
@@ -2679,6 +2684,223 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       );
     } finally {
       await breaker?.cleanup();
+      await Promise.allSettled([harness.close(), remote.close()]);
+    }
+  });
+}
+
+/**
+ * Pairs `remote` as Build box, starts a build and a soak test on it from a
+ * thread, and archives the thread just after the build finishes there,
+ * before the watcher's next check reads the finish: the build's job is
+ * released right after a check, and `harness` was launched with
+ * WATCHER_PAUSED, so the next check is minutes away. The archive cancels
+ * the soak test and keeps the build's result, read from the cancel's
+ * reply, for the unarchive.
+ */
+/** Harness timing whose remote-job watcher checks a running job every two minutes. */
+const WATCHER_PAUSED = { env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},remote-watch-poll=120s` } };
+
+async function archiveJustAfterARemoteFinish(provider: ProviderName, harness: HarnessApp, remote: HarnessApp, title: string) {
+  await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+  // Named here so no capture shows the host's own name.
+  await harness.rpc('SetDeviceName', 'Agent computer');
+  await remote.rpc('SetDeviceName', 'Other computer');
+  const invite = await remote.rpc<{ url: string; linkId: string }>('MintDevicePairing', 'desktop', 'full');
+  const attachment = await harness.rpc<{ id: string }>('AddBackend', invite.url);
+  await remote.rpc('ConfirmDevicePairing', invite.linkId);
+  const computer = attachment.id;
+  await harness.rpc('RenameBackend', computer, 'Build box');
+  await expect
+    .poll(async () => {
+      try {
+        await harness.rpc('SetAgentComputerEnabled', computer, true);
+        return 'enabled';
+      } catch (error) {
+        return String(error);
+      }
+    }, { timeout: 30_000 })
+    .toBe('enabled');
+  const remoteSeed = await remote.rpc<SeedResult>('HarnessSeed', { projects: [{ name: `remote-finish-${provider}`, repo: {} }] });
+  const { projectId: remoteProject, path: remotePath } = remoteSeed.projects[0];
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: `archive-finish-${provider}`, repo: {}, threads: [{ title, provider }] }],
+  });
+  const { path: cwd, threadIds } = seed.projects[0];
+  const thread = threadIds[0];
+  const build = randomUUID();
+  const soak = randomUUID();
+  const job = (requestId: string, label: string, release: string, says: string) => ({
+    call: {
+      server: 'ao-remote-tools',
+      tool: 'remote_run',
+      args: {
+        computer_id: computer,
+        project_id: remoteProject,
+        request_id: requestId,
+        label,
+        argv: ['sh', '-c', `while [ ! -f '${join(remotePath, release)}' ]; do sleep 0.1; done; echo '${says}'`],
+        wait_seconds: 0,
+      },
+    },
+  });
+  await setScenario(
+    harness,
+    cwd,
+    threadToolsScenario({
+      name: `archive-finish-${provider}`,
+      provider,
+      echoUserMessage: true,
+      turns: [
+        {
+          steps: [job(build, 'nightly build', 'build.release', 'build 812 finished: green'), job(soak, 'soak test', 'soak.release', 'soak passed')],
+          text: 'The build and the soak test run on Build box.',
+        },
+      ],
+      afterTurns: 'silent',
+    }),
+  );
+  await harness.rpc('StartSession', thread);
+  await harness.rpc('SendMessage', thread, 'run the nightly build and the soak test on the build box', null);
+  await awaitTurnCompleted(harness, thread);
+
+  const read = <T>(root: string, sql: string, ...params: string[]) => {
+    const db = new DatabaseSync(join(root, 'agent-overflow.db'), { readOnly: true });
+    try {
+      return db.prepare(sql).get(...params) as T;
+    } finally {
+      db.close();
+    }
+  };
+  const watch = (requestId: string) =>
+    read<{ notification: string; state: string; next_check: number }>(
+      harness.bootstrap.dataDir,
+      `SELECT notification, coalesce(json_extract(receipt,'$.state'),'') AS state, next_check FROM remote_watches WHERE request_id = ?`,
+      requestId,
+    );
+  const destinationState = (requestId: string) =>
+    read<{ state: string } | undefined>(remote.bootstrap.dataDir, `SELECT state FROM remote_jobs WHERE id = ?`, requestId)?.state;
+  const queued = () => {
+    const db = new DatabaseSync(join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+    try {
+      return (db.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ?`).all(thread) as { send_id: string }[]).map(
+        (row) => row.send_id.split(':')[0],
+      );
+    } finally {
+      db.close();
+    }
+  };
+  expect(watch(build).notification).toBe('pending');
+  expect(watch(soak).notification).toBe('pending');
+
+  // Released just after a check, the build finishes there and the archive
+  // lands while this computer still reads it as running.
+  const checked = watch(build).next_check;
+  await expect.poll(() => watch(build).next_check, { timeout: 15_000, intervals: [50] }).not.toBe(checked);
+  await writeFile(join(remotePath, 'build.release'), '');
+  await expect.poll(() => destinationState(build), { timeout: 30_000, intervals: [50] }).toBe('succeeded');
+  const observed = watch(build);
+  expect(observed, 'the archive lands before the watcher reads the finish').toMatchObject({ notification: 'pending', state: 'running' });
+  const margin = observed.next_check - Date.now();
+  await harness.rpc('ArchiveThread', thread);
+
+  expect(watch(build)).toMatchObject({ notification: 'pending', state: 'succeeded' });
+  expect(watch(soak).notification).toBe('dismissed');
+  await expect.poll(() => destinationState(soak), { timeout: 15_000 }).toBe('canceled');
+  console.log(`${provider}: archived ${margin} ms before the watcher's next check: build ${JSON.stringify(watch(build))}, soak test canceled and dismissed`);
+
+  // The watcher leaves an archived thread's result where it is.
+  await new Promise((resolve) => setTimeout(resolve, 6_000));
+  expect(watch(build).notification).toBe('pending');
+  expect(queued()).toEqual([]);
+  expect(countInputs(harness, cwd, `request_id: ${build}`)).toBe(0);
+  return { computer, thread, cwd, build, soak, watch, queued };
+}
+
+// A job that finished before the watcher read it is a result the thread
+// keeps: archiving cancels only the job still running, and the finished
+// one's completion arrives once after the unarchive.
+for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${provider}: archiving just after a remote job finishes keeps its result for the unarchive`, async ({ page }) => {
+    test.setTimeout(180_000);
+    const [harness, remote] = await startTogether(launchHarness(WATCHER_PAUSED), launchHarness());
+    try {
+      const { thread, cwd, build, soak, watch, queued } = await archiveJustAfterARemoteFinish(provider, harness, remote, 'Nightly checks');
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `archive-finish-mended-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [{ text: 'Build 812 is green.' }],
+          afterTurns: 'silent',
+        }),
+      );
+      await harness.rpc('UnarchiveThread', thread);
+      const input = await wakeInput(harness, cwd, `request_id: ${build}`);
+      expect(input.report.input).toContain('Remote job finished on Build box: nightly build');
+      expect(input.report.input).toContain('build 812 finished: green');
+      await awaitTurnCompleted(harness, thread);
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      expect(countInputs(harness, cwd, `request_id: ${build}`)).toBe(1);
+      expect(countInputs(harness, cwd, `request_id: ${soak}`)).toBe(0);
+      expect(queued()).toEqual([]);
+      expect(watch(build).notification).toBe('queued');
+      console.log(`${provider}: unarchived: the build's completion arrived once, the soak test's never`);
+
+      await harness.open(page);
+      await page.getByTestId('thread-row').getByText('Nightly checks', { exact: true }).click();
+      await shoot(page, `${provider}-archive-keeps-finished-remote-job.png`, page.getByText('Remote job finished on Build box: nightly build').last());
+    } finally {
+      await Promise.allSettled([harness.close(), remote.close()]);
+    }
+  });
+}
+
+// A finished job's result held for an archived thread does not block
+// forgetting its computer, which says what it discards and then discards
+// it. Copying the thread is refused with the cause.
+for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${provider}: forgetting a computer discards the result held for an archived thread, and copy names it`, async ({ page }) => {
+    test.setTimeout(180_000);
+    const [harness, remote] = await startTogether(launchHarness(WATCHER_PAUSED), launchHarness());
+    try {
+      const { computer, thread, cwd, build, watch, queued } = await archiveJustAfterARemoteFinish(provider, harness, remote, 'Release notes');
+
+      const copy = await harness
+        .rpc<{ operationId: string }>('BeginThreadTransfer', thread, randomUUID(), computer, 'copy', false)
+        .then((intent) => `admitted ${intent.operationId}`, (error: Error) => error.message);
+      expect(copy).toContain('"Release notes" is archived and holds a finished remote job; unarchive it to receive the result first.');
+
+      await harness.open(page);
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await page.getByRole('tab', { name: 'Connect to a computer', exact: true }).click();
+      const row = page.getByTestId('attached-system').filter({ hasText: 'Build box' });
+      await row.getByRole('button', { name: 'Remove', exact: true }).click();
+      await row.getByRole('button', { name: 'Confirm remove', exact: true }).click();
+      const toast = page
+        .getByTestId('toast')
+        .filter({ hasText: '1 finished job held for an archived conversation will be discarded. Confirm to forget the computer anyway.' });
+      await expect(toast).toBeVisible();
+      const forget = row.getByRole('button', { name: 'Forget anyway', exact: true });
+      await expect(forget).toBeVisible();
+      expect(await harness.rpc<Array<{ id: string }>>('ListBackends')).toEqual([expect.objectContaining({ id: computer })]);
+      expect(watch(build).notification).toBe('pending');
+      await shoot(page, `${provider}-forget-names-held-remote-result.png`, toast, forget);
+
+      await forget.click();
+      await expect(page.getByTestId('attached-system')).toHaveCount(0);
+      expect(await harness.rpc<Array<{ id: string }>>('ListBackends')).toHaveLength(0);
+      expect(watch(build).notification).toBe('dismissed');
+      console.log(`${provider}: forget refused with the held count, then confirmed: computer gone, held result dismissed`);
+
+      await harness.rpc('UnarchiveThread', thread);
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      expect(countInputs(harness, cwd, `request_id: ${build}`)).toBe(0);
+      expect(queued()).toEqual([]);
+      console.log(`${provider}: unarchived after the forget: nothing arrived`);
+    } finally {
       await Promise.allSettled([harness.close(), remote.close()]);
     }
   });

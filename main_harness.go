@@ -283,6 +283,9 @@ type harnessTiming struct {
 	// WakeFloor is the shortest interval a loop or watch may register
 	// (app.IsolationConfig.AgentWakeFloor).
 	WakeFloor time.Duration
+	// RemoteWatchPoll is how often the remote-job watcher asks the
+	// destination about a running job (app.IsolationConfig.RemoteWatchPoll).
+	RemoteWatchPoll time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -291,19 +294,20 @@ type harnessTiming struct {
 func parseHarnessTiming(value string) (harnessTiming, error) {
 	var timing harnessTiming
 	fields := map[string]*time.Duration{
-		"pairing-probe":   &timing.PairingProbe,
-		"watermark":       &timing.Watermark,
-		"thread-poll":     &timing.ThreadPoll,
-		"transfer-retry":  &timing.TransferRetry,
-		"pr-update":       &timing.PRUpdate,
-		"pr-update-retry": &timing.PRUpdateRetry,
-		"pr-ci-live":      &timing.PRCILive,
-		"pr-ci-follow":    &timing.PRCIFollow,
-		"pr-ci-log-wait":  &timing.PRCILogWait,
-		"idle-reap":       &timing.IdleReap,
-		"idle-reap-sweep": &timing.IdleReapSweep,
-		"wakeup-grace":    &timing.WakeupGrace,
-		"wake-floor":      &timing.WakeFloor,
+		"pairing-probe":     &timing.PairingProbe,
+		"watermark":         &timing.Watermark,
+		"thread-poll":       &timing.ThreadPoll,
+		"transfer-retry":    &timing.TransferRetry,
+		"pr-update":         &timing.PRUpdate,
+		"pr-update-retry":   &timing.PRUpdateRetry,
+		"pr-ci-live":        &timing.PRCILive,
+		"pr-ci-follow":      &timing.PRCIFollow,
+		"pr-ci-log-wait":    &timing.PRCILogWait,
+		"idle-reap":         &timing.IdleReap,
+		"idle-reap-sweep":   &timing.IdleReapSweep,
+		"wakeup-grace":      &timing.WakeupGrace,
+		"wake-floor":        &timing.WakeFloor,
+		"remote-watch-poll": &timing.RemoteWatchPoll,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -406,6 +410,7 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		IdleReapInterval:     opts.Timing.IdleReapSweep,
 		WakeupReapGrace:      opts.Timing.WakeupGrace,
 		AgentWakeFloor:       opts.Timing.WakeFloor,
+		RemoteWatchPoll:      opts.Timing.RemoteWatchPoll,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

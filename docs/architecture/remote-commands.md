@@ -157,17 +157,23 @@ output is omitted; general usage instructions stay in tool descriptions.
 After handoff, normal queue crash recovery applies: undelivered text is recovered
 into the composer, never independently sent again by the remote-job watcher.
 Finished workflow phases are not reopened.
-The conversation that called `remote_run` owns the job. Deleting, archiving or
-moving it cancels the commands it still owns and drops their pending
-notifications. Archiving keeps a completion already handed to the queue: one
-still queued, behind a failed start, goes back to its watch, and the watcher
-skips an archived conversation's watches until it is unarchived. A copy waits for outstanding remote work and its notification
-handoff like the existing queued/background-work checks. The cancel is
+The conversation that called `remote_run` owns the job. Deleting or moving it
+cancels the commands it still owns and drops their pending notifications.
+Archiving cancels only the jobs that have not finished and keeps the result of
+every finished one: a finish the cancel's reply reports is recorded on the
+watch, and a completion still queued, behind a failed start, goes back to its
+watch. The watcher skips an archived conversation's watches, so a kept result
+arrives once the conversation is unarchived. A copy waits for outstanding
+remote work and its notification handoff like the existing
+queued/background-work checks; the refusal for an archived conversation that
+holds a finished job says to unarchive it to receive the result. The cancel is
 delivered on a best-effort basis and logged when the destination cannot be
 reached. Deletion runs it before provider cleanup and again under the thread
 mutation lock, so a concurrent send cannot leave an orphaned command.
 Forgetting a computer waits for outstanding jobs and notification handoff;
-reconnect an offline computer and stop its jobs first. Pairing credentials must
+reconnect an offline computer and stop its jobs first. Finished jobs held for
+archived conversations do not block it: the confirmation states how many
+results it discards, and confirming dismisses them. Pairing credentials must
 remain available while AO still needs to confirm or cancel its work.
 
 Configuration changes refresh discovery for sessions that already registered

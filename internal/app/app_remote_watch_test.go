@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
@@ -550,5 +551,242 @@ func TestArchiveReturnsAHeldRemoteCompletionToItsWatch(t *testing.T) {
 	watch()
 	if got := queued(); !slices.Equal(got, []string{remoteCompletionSendID(w)}) || notification() != "queued" {
 		t.Fatalf("after the unarchive: queue %q, watch %q, want the completion queued once", got, notification())
+	}
+}
+
+// pairedRemoteSource pairs a source App with a destination whose remote jobs
+// run through run, and returns the source, the destination, the
+// destination's computer id on the source and a project there to run in.
+func pairedRemoteSource(t *testing.T, run remotejobs.Run) (source *App, destination *pairedBackend, computerID, projectID string) {
+	t.Helper()
+	destination = newPairedBackend(t)
+	source, _ = newAppForFlushQueueRPC(t)
+	peers, err := attachedbackends.New(t.TempDir(), "source", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.backends = peers
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	invite, _ := destination.mintLink(t, "full")
+	peer, err := peers.Add(ctx, invite.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := destination.app.ConfirmDevicePairing(invite.LinkID); err != nil {
+		t.Fatal(err)
+	}
+	if err := peers.Await(ctx, peer.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.SetAgentComputerEnabled(ctx, peer.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	project, err := destination.app.store.CreateProject(store.Project{ID: uuid.NewString(), Name: "destination", Path: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := remotejobs.New(context.Background(), destination.app.store, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination.app.remoteJobs = jobs
+	t.Cleanup(jobs.Close)
+	return source, destination, peer.ID, project.ID
+}
+
+// A job that finished on the destination after the watcher last checked it
+// still reads as running here when its conversation is archived. The
+// archive's cancel is answered with the finished receipt, so the completion
+// is kept and arrives once after the unarchive; the job the archive stopped
+// is dropped.
+func TestArchiveKeepsAJobThatFinishedBeforeTheNextCheck(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	source, destination, computer, project := pairedRemoteSource(t, func(ctx context.Context, _ string, argv []string, out io.Writer) (remotejobs.Outcome, error) {
+		if argv[0] == "hold" {
+			<-ctx.Done()
+			return remotejobs.Outcome{ExitCode: -1}, ctx.Err()
+		}
+		_, _ = io.WriteString(out, "nightly build passed")
+		return remotejobs.Outcome{ExitCode: 0}, nil
+	})
+	source.startSessionFn = func(string) error { return nil }
+	thread := remoteWatchThread(t, source, string(provider.Claude))
+	caller := transport.WithCallerScope(context.Background(), transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: thread.ID, ProjectID: thread.ProjectID})
+	start := func(program string) string {
+		t.Helper()
+		id := uuid.NewString()
+		request := AgentRemoteRequest{ComputerID: computer, Workspace: gitapp.WorkspaceRef{ProjectID: project}, Request: remotejobs.Request{ID: id, Argv: []string{program, id}, TimeoutSeconds: 60}}
+		if _, err := source.AgentRemoteStart(caller, request); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	held := start("hold")
+	done := start("build")
+	saved := func(id string) store.RemoteWatch {
+		t.Helper()
+		w, err := source.store.GetRemoteWatch(computer, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	queued := func() []string {
+		t.Helper()
+		durable, memory := queuedSendIDs(t, source, thread.ID)
+		if !slices.Equal(durable, memory) {
+			t.Fatalf("durable queue %q and in-memory queue %q differ", durable, memory)
+		}
+		return durable
+	}
+	watch := func() {
+		t.Helper()
+		due, err := source.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range due {
+			source.checkRemoteWatch(row)
+		}
+		source.waitAgentNoticeWork()
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		receipt, err := destination.app.store.GetRemoteJob(done)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if receipt.State == "succeeded" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the build did not finish on the destination: %q", receipt.State)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if state := saved(done).Receipt.State; state != "running" {
+		t.Fatalf("the source already saw the finish (%q); the case needs a finish it has not checked", state)
+	}
+
+	if err := source.ArchiveThread(thread.ID); err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	if w := saved(done); w.Notification != "pending" || w.Receipt.State != "succeeded" {
+		t.Fatalf("the finished job after the archive: watch %q, receipt %q, want pending and succeeded", w.Notification, w.Receipt.State)
+	}
+	if w := saved(held); w.Notification != "dismissed" {
+		t.Fatalf("the running job after the archive: watch %q, want dismissed", w.Notification)
+	}
+	watch()
+	if got := queued(); len(got) != 0 || saved(done).Notification != "pending" {
+		t.Fatalf("while archived: queue %q, watch %q, want an empty queue and a pending watch", got, saved(done).Notification)
+	}
+
+	if _, err := source.UnarchiveThread(thread.ID); err != nil {
+		t.Fatalf("UnarchiveThread: %v", err)
+	}
+	watch()
+	watch()
+	want := []string{remoteCompletionSendID(store.RemoteWatch{ComputerID: computer, RequestID: done})}
+	if got := queued(); !slices.Equal(got, want) || saved(done).Notification != "queued" {
+		t.Fatalf("after the unarchive: queue %q, watch %q, want the completion queued once", got, saved(done).Notification)
+	}
+}
+
+// A completion archive kept cannot be delivered from a computer the person
+// forgets. Forgetting names how many it discards, and goes once confirmed;
+// a live thread's pending job still refuses it as before. Copying the
+// archived thread names it as the cause.
+func TestForgettingAComputerDiscardsTheCompletionsHeldForArchivedThreads(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	source, _, computer, _ := pairedRemoteSource(t, func(context.Context, string, []string, io.Writer) (remotejobs.Outcome, error) {
+		return remotejobs.Outcome{}, nil
+	})
+	source.startSessionFn = func(string) error { return nil }
+	watch := func(thread store.Thread, state string) store.RemoteWatch {
+		t.Helper()
+		w := store.RemoteWatch{ComputerID: computer, RequestID: uuid.NewString(), ThreadID: thread.ID, Fingerprint: strings.Repeat("a", 64), Label: "nightly build"}
+		if _, err := source.store.RegisterRemoteWatch(w); err != nil {
+			t.Fatal(err)
+		}
+		w.Receipt = store.RemoteJob{ID: w.RequestID, SourceThreadID: thread.ID, State: state, Output: "build passed"}
+		if err := source.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, w.Receipt, "", 0); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	notification := func(w store.RemoteWatch) string {
+		t.Helper()
+		saved, err := source.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return saved.Notification
+	}
+	forgotten := func() bool {
+		t.Helper()
+		rows, err := source.ListBackends()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return !slices.ContainsFunc(rows, func(row AttachedBackend) bool { return row.ID == computer })
+	}
+
+	archived := remoteWatchThread(t, source, string(provider.Claude))
+	archived.Title = "Release notes"
+	if err := source.store.UpdateThread(archived); err != nil {
+		t.Fatal(err)
+	}
+	held := watch(archived, "succeeded")
+	if err := source.ArchiveThread(archived.ID); err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	if notification(held) != "pending" {
+		t.Fatalf("archive dropped the finished job: watch %q", notification(held))
+	}
+	archived, err := source.store.GetThread(archived.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.checkTransferIdle(archived); err == nil || err.Error() != `"Release notes" is archived and holds a finished remote job; unarchive it to receive the result first.` {
+		t.Fatalf("copy refusal for the archived thread: %v", err)
+	}
+
+	live := remoteWatchThread(t, source, string(provider.Claude))
+	running := watch(live, "running")
+	if err := source.checkTransferIdle(live); err == nil || !strings.HasPrefix(err.Error(), "Let remote commands finish") {
+		t.Fatalf("copy refusal for the live thread: %v", err)
+	}
+	err = source.RemoveBackend(computer, true)
+	if err == nil || !strings.HasPrefix(err.Error(), "This computer has remote commands awaiting completion or confirmation.") || forgotten() {
+		t.Fatalf("a live thread's running job did not refuse the forget: %v", err)
+	}
+	if err := source.store.DismissRemoteWatch(running.ComputerID, running.RequestID); err != nil {
+		t.Fatal(err)
+	}
+
+	err = source.RemoveBackend(computer, false)
+	code, message, public := errorsx.PublicDetails(err)
+	if !public || code != "remote_completions_held" || message != "1 finished job held for an archived conversation will be discarded. Confirm to forget the computer anyway." {
+		t.Fatalf("the unconfirmed forget: %q %q %v", code, message, err)
+	}
+	if forgotten() || notification(held) != "pending" {
+		t.Fatalf("the refused forget acted: forgotten %v, watch %q", forgotten(), notification(held))
+	}
+	if err := source.RemoveBackend(computer, true); err != nil {
+		t.Fatalf("the confirmed forget: %v", err)
+	}
+	if !forgotten() || notification(held) != "dismissed" {
+		t.Fatalf("after the confirmed forget: forgotten %v, watch %q", forgotten(), notification(held))
+	}
+	if _, err := source.UnarchiveThread(archived.ID); err != nil {
+		t.Fatal(err)
+	}
+	due, err := source.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
+	if err != nil || len(due) != 0 {
+		t.Fatalf("a discarded completion is still due: %d, %v", len(due), err)
 	}
 }

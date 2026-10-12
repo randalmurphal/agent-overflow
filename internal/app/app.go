@@ -558,6 +558,10 @@ type App struct {
 	// end-to-end test (IsolationConfig). Zero keeps the product intervals.
 	threadPollOverride   time.Duration
 	transferPendingRetry time.Duration
+	// remoteWatchPoll replaces the remote-job watcher's cadence for a
+	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
+	// product cadence.
+	remoteWatchPoll time.Duration
 	// idleReap holds an isolated test boot's idle-session reaper timing
 	// (IsolationConfig). Zero fields keep the product values.
 	idleReap idleReapTiming
