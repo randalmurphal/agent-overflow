@@ -341,7 +341,19 @@ func (a *App) remoteCompletionExcerpt(ctx context.Context, computerID, requestID
 // The excerpt is fetched before this call, so the queue write never waits on
 // the destination network.
 func (a *App) deliverRemoteCompletion(w store.RemoteWatch, output remoteCompletionOutput) error {
-	return a.queueAgentNotice(agentNotice{
+	err := a.queueAgentNotice(a.remoteCompletionNotice(w, output))
+	if errors.Is(err, errThreadArchived) {
+		// An archive that landed after prepare: the refusal came before
+		// the watch moved, so the completion is still owed, and arrives
+		// once the thread is unarchived.
+		return nil
+	}
+	return err
+}
+
+// remoteCompletionNotice is the notice that carries w's completion.
+func (a *App) remoteCompletionNotice(w store.RemoteWatch, output remoteCompletionOutput) agentNotice {
+	return agentNotice{
 		threadID: w.ThreadID,
 		sendID:   remoteCompletionSendID(w),
 		prepare:  func() (string, bool, error) { return a.prepareRemoteCompletion(w, output) },
@@ -353,7 +365,7 @@ func (a *App) deliverRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 			// queue. Startup's normal flush trigger dispatches it.
 			return "Remote job finished; its completion is queued, but the agent could not start: " + remoteErrorText(err)
 		},
-	})
+	}
 }
 
 // prepareRemoteCompletion is this notice's own policy: whether the

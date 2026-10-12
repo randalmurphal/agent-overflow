@@ -162,8 +162,9 @@ cancels the commands it still owns and drops their pending notifications.
 Archiving cancels only the jobs that have not finished and keeps the result of
 every finished one: a finish the cancel's reply reports is recorded on the
 watch, and a completion still queued, behind a failed start, goes back to its
-watch. The watcher skips an archived conversation's watches, so a kept result
-arrives once the conversation is unarchived. A copy waits for outstanding
+watch. The watcher skips an archived conversation's watches, and a completion
+it was delivering when the archive came is refused by the queue write before
+its watch moves, so a kept result arrives once the conversation is unarchived. A copy waits for outstanding
 remote work and its notification handoff like the existing
 queued/background-work checks; the refusal for an archived conversation that
 holds a finished job says to unarchive it to receive the result. The cancel is

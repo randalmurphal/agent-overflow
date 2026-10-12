@@ -25,9 +25,21 @@ import (
 // watch whose wake is held by such a failure tries the start again on each
 // later fire (retryAgentWakeStart).
 //
+// An archived thread takes no notice and starts no session for one. A
+// notice that reaches the queue after an archive is refused, and its caller
+// keeps it (errThreadArchived); one queued before the archive waits without
+// a start for the archive to take it back (stopArchivedThreadWork). A
+// person's own answers are the exception: a person can write to an archived
+// thread they opened, and their answers are theirs the same way.
+//
 // What each notice decides for itself stays its own: who may receive it,
 // what it says, whether it is still wanted when its session is about to
 // start, and what to do when the session will not start.
+
+// errThreadArchived is the refusal of a notice for an archived thread. Its
+// caller still has whatever the notice was for: the persist hook did not
+// run.
+var errThreadArchived = errors.New("the thread is archived")
 
 // agentNotice is one such message.
 type agentNotice struct {
@@ -48,24 +60,27 @@ type agentNotice struct {
 	persist func(store.FlushQueueItem) error
 	// keep is asked under the thread's action lock, just before a session is
 	// started for the notice: false takes it back out of the queue, because
-	// what it was for ended while it waited. An archive holds the same lock,
-	// so it lands wholly before keep or wholly after the start, and then
-	// withdraws what is still queued itself (withdrawQueuedAgentMessages). A
-	// cancel of a loop or watch does not take the lock: it withdraws its
-	// wake, and one the start has already handed to the session is
-	// delivered, so nothing is lost either way. An error is a failed read of
-	// what keep checks, and names that read. Nil keeps every notice.
+	// what it was for ended while it waited. An archive is not keep's: the
+	// start checks it first, for every notice. A cancel of a loop or watch
+	// does not take the lock: it withdraws its wake, and one the start has
+	// already handed to the session is delivered, so nothing is lost either
+	// way. An error is a failed read of what keep checks, and names that
+	// read. Nil keeps every notice.
 	keep func() (bool, error)
 	// withdrawn runs after keep took the notice back out of the queue.
 	withdrawn func()
 	// startFailed renders what the thread is told when its session could
 	// not be started. The message is already queued by then.
 	startFailed func(error) string
+	// fromPerson marks a person's own words, which an archived thread takes.
+	fromPerson bool
 }
 
 // queueAgentNotice queues one notice and makes sure something will run to
 // read it. It returns once the notice is in the durable queue; a session
-// start it needs runs afterwards (startAgentNoticeSession).
+// start it needs runs afterwards (startAgentNoticeSession). An archived
+// thread refuses it with errThreadArchived, which each caller treats as its
+// own reason not to proceed.
 func (a *App) queueAgentNotice(notice agentNotice) error {
 	body, proceed, err := notice.prepare()
 	if err != nil || !proceed {
@@ -79,6 +94,9 @@ func (a *App) queueAgentNotice(notice agentNotice) error {
 			originThread:  notice.originThread,
 			originWake:    notice.originWake,
 			persist:       notice.persist,
+			// The flag, not the check, is the notice's: the queue write
+			// decides it under the lock both archive doors take.
+			heldWhileArchived: !notice.fromPerson,
 		}); err != nil {
 		return err
 	}
@@ -113,6 +131,12 @@ func (a *App) goAgentNoticeWork(fn func()) bool {
 // flush trigger dispatches the queue, and starting again would restart that
 // session.
 //
+// Both archive doors flip the row under the same lock, so a thread archived
+// after the notice was queued is seen here and is not started. The notice
+// stays queued for the archive to take back: a remote job's completion goes
+// to its watch, and every other app message is withdrawn
+// (stopArchivedThreadWork).
+//
 // A retry is a later fire trying the start again for a wake an earlier
 // failed start left queued. It runs only once the thread's last failed
 // start is old enough (agentNoticeRetryDue), and its own failure writes no
@@ -132,12 +156,15 @@ func (a *App) startAgentNoticeSession(notice agentNotice, retry bool) bool {
 		unlock()
 		return false
 	}
-	kept := true
+	held, kept := false, true
 	var checkErr, startErr error
-	if notice.keep != nil {
+	if !notice.fromPerson {
+		held, checkErr = a.threadArchivedNow(notice.threadID)
+	}
+	if checkErr == nil && !held && notice.keep != nil {
 		kept, checkErr = notice.keep()
 	}
-	if checkErr == nil && kept {
+	if checkErr == nil && !held && kept {
 		startErr = a.startSession(a.lifeCtx(), notice.threadID)
 	}
 	failed := checkErr != nil || startErr != nil
@@ -161,10 +188,22 @@ func (a *App) startAgentNoticeSession(notice agentNotice, retry bool) bool {
 			"A message is queued for this thread, but the agent was not started for it: the app could not check that the message is still wanted (%v).", checkErr))
 	case startErr != nil:
 		a.emitErrorToThread(notice.threadID, notice.startFailed(startErr))
+	case held:
+		// The archive takes it back.
 	case !kept:
 		a.withdrawAgentNotice(notice)
 	}
-	return !failed && kept
+	return !failed && !held && kept
+}
+
+// threadArchivedNow reads whether a thread is archived. An error names the
+// read, as keep's do.
+func (a *App) threadArchivedNow(threadID string) (bool, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return false, fmt.Errorf("read the thread: %w", err)
+	}
+	return thread.Archived, nil
 }
 
 // noteAgentNoticeStartFailed records a failed notice start on its thread

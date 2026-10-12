@@ -89,11 +89,16 @@ func (a *App) archiveThreadLocked(id string) error {
 	requestedAt := time.Now().UnixMilli()
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
-	if err := a.threadApplication().CheckMutable(id); err != nil {
+	// The flip takes the mutation lock too, as the organize patch's does, so
+	// a queue write that holds app messages from an archived thread
+	// (registerQueueItem) sees it either way round, never between its check
+	// and its write.
+	unlockMutable, err := a.threadApplication().LockMutable(context.Background(), id)
+	if err != nil {
 		return err
 	}
-
 	row, changed, err := a.threadApplication().Archive(id)
+	unlockMutable()
 	if err != nil {
 		return err
 	}

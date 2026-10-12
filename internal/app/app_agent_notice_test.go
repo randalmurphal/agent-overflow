@@ -205,7 +205,8 @@ func TestAThreadSendArchivedBeforeItsSessionStartsIsWithdrawn(t *testing.T) {
 	thread := noticeTestThread(t, a, "notice-archived")
 
 	// An archive holds the action lock while it flips the row, and the
-	// start waits for it.
+	// start waits for it, finds the thread archived and starts nothing.
+	// The rest of the archive withdraws the send.
 	unlock := a.threadLocks().Lock(thread.ID)
 	sendWithin(t, a, thread.ID, "deploy 4 is done", 5*time.Second)
 	if _, _, err := a.threadApplication().Archive(thread.ID); err != nil {
@@ -214,10 +215,13 @@ func TestAThreadSendArchivedBeforeItsSessionStartsIsWithdrawn(t *testing.T) {
 	}
 	unlock()
 	a.waitAgentNoticeWork()
-
 	if n := starts.Load(); n != 0 {
 		t.Fatalf("started %d sessions for an archived thread", n)
 	}
+	if err := a.stopArchivedThreadWork(context.Background(), thread.ID); err != nil {
+		t.Fatalf("stopArchivedThreadWork: %v", err)
+	}
+
 	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 0 {
 		t.Fatalf("withdrawn send still queued: %+v", rows)
 	}

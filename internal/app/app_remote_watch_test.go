@@ -554,6 +554,166 @@ func TestArchiveReturnsAHeldRemoteCompletionToItsWatch(t *testing.T) {
 	}
 }
 
+// requireRemoteCompletionHeld fails unless an archived thread holds w's
+// completion: no session was started for it, nothing is queued, no failed
+// start is marked, and the watch keeps it pending with no issue.
+func requireRemoteCompletionHeld(t *testing.T, a *App, threadID string, w store.RemoteWatch, starts int32) {
+	t.Helper()
+	durable, memory := queuedSendIDs(t, a, threadID)
+	saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marks, err := a.store.SessionStartFailures()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, failed := marks[threadID]
+	if starts != 0 || len(durable) != 0 || len(memory) != 0 || saved.Notification != "pending" || saved.Error != "" || failed {
+		t.Fatalf("archived thread: %d starts, queue %q (in memory %q), watch %q with issue %q, failed start marked %v; want no start, an empty queue and a pending watch",
+			starts, durable, memory, saved.Notification, saved.Error, failed)
+	}
+}
+
+// A completion whose watcher read the thread before an archive and queues
+// it after is refused by the queue write. The archive is the whole binding,
+// or only its flip with the rest run after the write, as when the write
+// lands between the two.
+func TestARemoteCompletionQueuedAfterAnArchiveIsHeld(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		wholeArchive bool
+		failStart    bool
+	}{
+		{"whole archive, start works", true, false},
+		{"whole archive, start fails", true, true},
+		{"flip only, start works", false, false},
+		{"flip only, start fails", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, _ := newAppForFlushQueueRPC(t)
+			var starts atomic.Int32
+			a.startSessionFn = func(string) error {
+				starts.Add(1)
+				if tc.failStart {
+					return errors.New("the provider binary is missing")
+				}
+				return nil
+			}
+			thread := remoteWatchThread(t, a, string(provider.Claude))
+			w := completedRemoteWatch(t, a, thread)
+			notice := a.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})
+			body, proceed, err := notice.prepare()
+			if err != nil || !proceed {
+				t.Fatalf("prepare: proceed %v, %v", proceed, err)
+			}
+			if tc.wholeArchive {
+				if err := a.ArchiveThread(thread.ID); err != nil {
+					t.Fatalf("ArchiveThread: %v", err)
+				}
+			} else if err := a.archiveThreadLocked(thread.ID); err != nil {
+				t.Fatalf("archiveThreadLocked: %v", err)
+			}
+			notice.prepare = func() (string, bool, error) { return body, true, nil }
+			if err := a.queueAgentNotice(notice); !errors.Is(err, errThreadArchived) {
+				t.Errorf("queueAgentNotice: %v, want %v", err, errThreadArchived)
+			}
+			a.waitAgentNoticeWork()
+			startsBeforeTheRest := starts.Load()
+			if !tc.wholeArchive {
+				if err := a.stopArchivedThreadWork(context.Background(), thread.ID); err != nil {
+					t.Fatalf("stopArchivedThreadWork: %v", err)
+				}
+			}
+			requireRemoteCompletionHeld(t, a, thread.ID, w, startsBeforeTheRest)
+		})
+	}
+}
+
+// The archive binding flips the row under the mutation lock a queue write
+// holds, so a completion whose write was under way when the archive came is
+// queued before the flip. Its session start, which waits for the archive's
+// action lock, finds the thread archived and starts nothing, and the rest of
+// the archive returns the completion to its watch.
+func TestAnArchiveDuringARemoteCompletionsQueueWriteTakesItBack(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Claude))
+	w := completedRemoteWatch(t, a, thread)
+	notice := a.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})
+	persist := notice.persist
+	writing, release := make(chan struct{}), make(chan struct{})
+	notice.persist = func(item store.FlushQueueItem) error {
+		close(writing)
+		<-release
+		return persist(item)
+	}
+	queued := make(chan error, 1)
+	go func() { queued <- a.queueAgentNotice(notice) }()
+	select {
+	case <-writing:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the queue write never began")
+	}
+	archived := make(chan error, 1)
+	go func() { archived <- a.ArchiveThread(thread.ID) }()
+	// The archive waits for the write's lock. Were it not to, it would
+	// finish first, and the write would land after it took back what was
+	// queued.
+	waitUntil(t, 10*time.Second, func() bool {
+		return a.threadApplication().MutationRefs(thread.ID) == 2 || len(archived) == 1
+	})
+	close(release)
+	if err := <-queued; err != nil {
+		t.Fatalf("queueAgentNotice: %v", err)
+	}
+	if err := <-archived; err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	a.waitAgentNoticeWork()
+	requireRemoteCompletionHeld(t, a, thread.ID, w, starts.Load())
+}
+
+// A completion whose thread is archived while its queue write waits for the
+// mutation lock is refused before its watch moves. The delivery reads that
+// as owed, so the watcher records no issue.
+func TestARemoteCompletionRefusedByAnArchiveStaysWithItsWatch(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Claude))
+	w := completedRemoteWatch(t, a, thread)
+	// Both archive doors flip the row holding this lock.
+	unlock, err := a.threadApplication().LockMutable(context.Background(), thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan error, 1)
+	go func() { delivered <- a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: "done"}) }()
+	waitUntil(t, 10*time.Second, func() bool { return a.threadApplication().MutationRefs(thread.ID) == 2 })
+	_, _, err = a.threadApplication().Archive(thread.ID)
+	unlock()
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if err := <-delivered; err != nil {
+		t.Fatalf("deliverRemoteCompletion: %v, want the refusal read as still owed", err)
+	}
+	a.waitAgentNoticeWork()
+	requireRemoteCompletionHeld(t, a, thread.ID, w, starts.Load())
+}
+
 // pairedRemoteSource pairs a source App with a destination whose remote jobs
 // run through run, and returns the source, the destination, the
 // destination's computer id on the source and a project there to run in.

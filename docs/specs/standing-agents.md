@@ -310,6 +310,11 @@ is the session's. A message that could not be taken back is reported to
 the caller. A remote job's queued completion goes back to its watch
 instead and arrives once the thread is unarchived
 ([remote-commands.md](../architecture/remote-commands.md)).
+An archived thread takes none of these messages and starts no session
+for them: one that arrives after the archive is refused back to what
+sent it, and one queued just before it waits, without a start, for the
+archive to take it back. A person's answers to an agent's questions are
+the exception, as anything they type into an archived thread is.
 The queued message is badged with the wake's kind and
 label, wrapped as untrusted text with the byte cap above, and carries
 no approval or user authority. The timeline and the send queue show its

@@ -1052,6 +1052,11 @@ type injectedQueueOptions struct {
 	// persist atomically transfers an injector’s delivery responsibility to the
 	// ordinary durable queue. Nil uses the standard queue insert.
 	persist func(store.FlushQueueItem) error
+	// heldWhileArchived refuses the message with errThreadArchived when the
+	// thread is archived, before persist runs. App-written notices set it
+	// (queueAgentNotice); a person's message is taken by an archived thread
+	// they opened.
+	heldWhileArchived bool
 	// origin and originThread attribute the queued message to the agent
 	// thread that asked for it. They land on the payload so the dispatch
 	// that persists the row later stamps the same attribution an immediate
@@ -1136,6 +1141,12 @@ func (a *App) registerQueueItem(
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return QueuedItem{}, fmt.Errorf("register queue item: %w", err)
+	}
+	// Both archive doors flip the row under this lock, so a held message
+	// lands wholly before the flip, where the archive takes it back, or is
+	// refused here.
+	if injected.heldWhileArchived && thread.Archived {
+		return QueuedItem{}, errThreadArchived
 	}
 	if injected.expandComposerCommands && thread.Provider == string(provider.Codex) {
 		_, isReview, parseErr := codexReviewCommandTarget(message)

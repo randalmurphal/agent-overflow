@@ -763,17 +763,6 @@ func (a *App) SendExternalThreadMessage(threadID, text string) (string, error) {
 		origin:     usermessage.OriginAgentWake,
 		originWake: &usermessage.OriginWake{Kind: agentWakeKindSend},
 		prepare:    func() (string, bool, error) { return body, true, nil },
-		// An archive that landed since the read above has the last word.
-		keep: func() (bool, error) {
-			current, err := a.store.GetThread(threadID)
-			if err != nil {
-				return false, fmt.Errorf("read thread %s: %w", threadID, err)
-			}
-			return !current.Archived, nil
-		},
-		withdrawn: func() {
-			a.noteAgentSendNotDelivered(threadID, "the thread was archived before the agent took it in")
-		},
 		startFailed: func(err error) string {
 			return "A message sent with agent-overflow thread send is queued, but the agent could not start: " + err.Error()
 		},
