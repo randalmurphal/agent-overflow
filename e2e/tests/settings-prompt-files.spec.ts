@@ -55,6 +55,11 @@ test('a prompt override is a file: saved there, edited there, spawned from there
     ],
   });
   const [threadId] = seed.projects[0].threadIds;
+  // A row the UI cannot render (the Settings chunk throwing mid-flush) leaves
+  // the tab selected and the panel on the previous page; the error, not the
+  // stale panel, names the defect.
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
 
   let promptPath = '';
   try {
@@ -109,6 +114,7 @@ test('a prompt override is a file: saved there, edited there, spawned from there
     await expect(page.getByTestId('settings-prompt-problem-claude-0')).toHaveText(oversized.problem ?? '');
     await expect(page.getByTestId('settings-prompt-noprompt-claude-0')).toHaveCount(0);
     await expect(page.getByTestId('settings-prompt-text-claude-0')).toHaveValue('');
+    expect(pageErrors).toEqual([]);
   } finally {
     await harness.rpc('UpdateSettings', { claudePromptOverrides: [] });
   }

@@ -290,7 +290,7 @@ export function toggleModelSelection(
 // and the per-entry warnings — so it lives here once rather than as two
 // `.trim() === ''` checks that can drift apart from Go independently.
 function hasPrompt(entry: PromptOverride): boolean {
-  return entry.prompt.trim() !== '';
+  return (entry.prompt ?? '').trim() !== '';
 }
 
 /**

@@ -147,7 +147,8 @@ export interface PromptOverride {
   id: string;
   enabled: boolean;
   models: string[];
-  prompt: string;
+  /** Omitted on the wire when the file has no text or cannot be applied (see `problem`). */
+  prompt?: string;
   path?: string;
   problem?: string;
 }

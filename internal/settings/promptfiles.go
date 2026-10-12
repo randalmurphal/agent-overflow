@@ -289,7 +289,7 @@ func (s *Service) stampPromptFiles(current Settings) []promptFileStamp {
 
 // promptEntriesByID snapshots each entry's text and problem by id.
 func promptEntriesByID(current Settings) map[string]promptEntryState {
-	byID := make(map[string]promptEntryState, len(current.ClaudePromptOverrides)+len(current.CodexPromptOverrides))
+	byID := make(map[string]promptEntryState)
 	for _, entries := range [][]PromptOverride{current.ClaudePromptOverrides, current.CodexPromptOverrides} {
 		for _, entry := range entries {
 			if entry.ID != "" {

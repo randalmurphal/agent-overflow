@@ -55,7 +55,7 @@
   );
 
   function commitPrompt(value: string): void {
-    if (value === entry.prompt) return;
+    if (value === (entry.prompt ?? '')) return;
     onPatch({ prompt: value });
   }
 </script>
@@ -122,7 +122,7 @@
       data-testid="settings-prompt-text-{provider}-{index}"
       rows={8}
       spellcheck="false"
-      value={entry.prompt}
+      value={entry.prompt ?? ''}
       onfocus={(e) => onEditorFocus(e.currentTarget as HTMLTextAreaElement, index)}
       onchange={(e) => commitPrompt((e.currentTarget as HTMLTextAreaElement).value)}
       placeholder="Replaces the default system prompt for the selected models."

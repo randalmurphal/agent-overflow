@@ -406,7 +406,7 @@ describe('<ProviderPromptSection> prompt file', () => {
 
   it('shows the problem in place of the empty-prompt warning', async () => {
     const problem = `${PATH} is 70000 bytes, over the 64000-byte limit for one prompt; the entry is not applied until the file is shortened`;
-    await seed({ claudePromptOverrides: [ENTRY({ id: ID, path: PATH, prompt: '', problem })] });
+    await seed({ claudePromptOverrides: [ENTRY({ id: ID, path: PATH, prompt: undefined, problem })] });
     const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(getByTestId('settings-prompt-problem-claude-0').textContent?.trim()).toBe(problem);
     expect(queryByTestId('settings-prompt-noprompt-claude-0')).toBeNull();
