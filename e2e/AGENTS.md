@@ -18,11 +18,13 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   reaper (`idle-reap`, `idle-reap-sweep`, `wakeup-grace`), passes its own
   through `env`.
 - `src/product-process.ts` starts every product binary (`bin/agent-overflow`
-  and the `bin/ao-*` tools): `productBinary`, `spawnProduct`, `execProduct`.
-  The process inherits only the variables `src/harness-env.ts` allows, never
-  the developer's credentials or settings; a caller that needs another
-  variable passes it through `env`. `tests/product-launch.spec.ts` fails when
-  another file names a product binary and can start a process.
+  and the `bin/ao-*` tools): `productBinary`, `spawnProduct`, `execProduct`,
+  and `writeProductScript` for a launch a product process makes, such as a
+  remote command behind a stand-in ssh client. The process inherits only the
+  variables `src/harness-env.ts` allows, never the developer's credentials or
+  settings; a caller that needs another variable passes it through `env`.
+  `tests/product-launch.spec.ts` fails when another file names a product
+  binary and can start a process, or writes a script that names one.
 - `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
   wait until the previous context's page registration is gone; a leaked page is
   a test failure.
