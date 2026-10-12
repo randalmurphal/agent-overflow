@@ -46,22 +46,25 @@ export default defineConfig({
   // so it is a second PROJECT over the same harness, not a second suite:
   // the `compact-*` specs run under a phone descriptor (touch, coarse
   // pointer, a 412px layout viewport), and everything else under a desktop
-  // one. A surface is done only when both projects pass.
+  // one. A surface is done only when both projects pass. Playwright matches
+  // these patterns against the absolute path, so they anchor on the file
+  // name: a checkout whose directory names contain `compact-` must not move
+  // every spec into the compact project.
   projects: [
     {
       name: 'desktop',
       use: { ...devices['Desktop Chrome'] },
-      testIgnore: [/.*\.manual\.spec\.ts$/, /compact-.*\.spec\.ts$/],
+      testIgnore: [/.*\.manual\.spec\.ts$/, /[\\/]compact-[^\\/]*\.spec\.ts$/],
     },
     {
       name: 'compact',
       use: { ...devices['Pixel 7'] },
-      testMatch: /compact-.*\.spec\.ts$/,
+      testMatch: /[\\/]compact-[^\\/]*\.spec\.ts$/,
     },
     {
       name: 'mobile-webkit',
       use: { ...devices['iPhone 13'] },
-      testMatch: /compact-browser-lock\.spec\.ts$/,
+      testMatch: /[\\/]compact-browser-lock\.spec\.ts$/,
       grepInvert: /@chromium-lifecycle/,
     },
   ],
