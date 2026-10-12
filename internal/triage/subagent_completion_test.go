@@ -461,7 +461,10 @@ func TestAgentCompletionReadsNoTranscript(t *testing.T) {
 		t.Fatalf("completion cost grew with the agent: 500 rows took %d reads and %d upserts, 0 rows %d and %d",
 			bigReads, bigUpserts, emptyReads, emptyUpserts)
 	}
-	if elapsed > 250*time.Millisecond {
+	// The bound catches the replay this test guards against, which took
+	// 44 to 75 s per completion. A loaded host runs this completion in up
+	// to 1.26 s with nothing wrong, so the bound sits above that.
+	if elapsed > 2*time.Second {
 		t.Fatalf("completion of a 500-row agent took %v", elapsed)
 	}
 }
