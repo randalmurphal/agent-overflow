@@ -538,6 +538,10 @@ type App struct {
 	// downstream code emitted. name is the channel's WIRE spelling, for
 	// the reason given on emitEventFn above.
 	testEmitHook func(name string, data any)
+	// heldReturnedForTest, when set, runs after a wholesale drop has
+	// returned the answers and completions it held (returnHeldToOwners), so
+	// a test can land a watcher pass at that moment.
+	heldReturnedForTest func(threadID string)
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a

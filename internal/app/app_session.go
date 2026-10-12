@@ -1255,6 +1255,7 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	// persisted; CleanupThread below marks the thread stopped, after which
 	// triage drops them.
 	a.drainProviderEvents(threadID, "stop session")
+	var held []store.FlushQueueItem
 	if a.triage != nil {
 		// CleanupThread DROPS the thread's queued messages rather than
 		// restoring them (teardownDeadPreInitSession is the path that
@@ -1263,10 +1264,14 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 		// put the message back in the composer at the next boot, long after
 		// the user's Stop threw it away. So do the batches a dispatch worker
 		// already took from the queue, or it would put them back.
-		a.dropDurableFlushQueue(threadID)
+		held = a.dropDurableFlushQueue(threadID)
 		a.discardFlushDispatch(threadID)
 		a.triage.CleanupThread(threadID)
 	}
+	// The answers and remote completions the drop held go back to their
+	// requests and watches once the session is closed, so a completion the
+	// watcher queues again starts a session only after this one is gone.
+	defer a.returnHeldToOwners(threadID, held)
 	err := a.closeProviderSession(threadID, sess)
 	if err == nil && sess.Provider == string(provider.Codex) {
 		err = a.retireCodexBackgroundRuntime(threadID)

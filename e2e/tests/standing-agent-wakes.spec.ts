@@ -32,7 +32,10 @@
 // a start-failure notification raised before a restart withdrawn by the
 // first start after it; archiving a thread whose start failed withdrawing
 // its held wake and send, and returning a finished remote job's held
-// completion to its watch for delivery after the unarchive; archiving
+// completion to its watch for delivery after the unarchive; a person's
+// Stop giving a dropped answer back to its request, owed and disarmed, and
+// a dropped remote completion back to its watch, which delivers it again;
+// archiving
 // just after a remote job finished, before the watcher read the finish,
 // cancelling the job still running and keeping the finished one's result
 // for the unarchive; forgetting a computer naming the results it discards
@@ -227,6 +230,32 @@ function countInputs(harness: HarnessApp, cwd: string, prefix: string): number {
     'harness:mock',
     (ev) => ev.report.kind === 'user_input' && ev.cwd === cwd && (ev.report.input ?? '').includes(prefix),
   );
+}
+
+/**
+ * Pairs `remote` with `harness` as Build box, which agents may use, and
+ * returns its computer id. Both computers are named so no capture shows the
+ * host's own name.
+ */
+async function pairBuildBox(harness: HarnessApp, remote: HarnessApp): Promise<string> {
+  await harness.rpc('SetDeviceName', 'Agent computer');
+  await remote.rpc('SetDeviceName', 'Other computer');
+  const invite = await remote.rpc<{ url: string; linkId: string }>('MintDevicePairing', 'desktop', 'full');
+  const attachment = await harness.rpc<{ id: string }>('AddBackend', invite.url);
+  await remote.rpc('ConfirmDevicePairing', invite.linkId);
+  const computer = attachment.id;
+  await harness.rpc('RenameBackend', computer, 'Build box');
+  await expect
+    .poll(async () => {
+      try {
+        await harness.rpc('SetAgentComputerEnabled', computer, true);
+        return 'enabled';
+      } catch (error) {
+        return String(error);
+      }
+    }, { timeout: 30_000 })
+    .toBe('enabled');
+  return computer;
 }
 
 async function threadSend(dataDir: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -2193,6 +2222,317 @@ test('codex: an answer queued while an archive waits behind a start goes back to
   }
 });
 
+// A person's Stop drops the thread's whole queue. An answer it dropped goes
+// back to its request, owed and disarmed: nothing delivers it again or
+// starts the session for it, and thread_status returns it. A wake that
+// reaches a running session leaves the queue as it is sent, so the answer
+// is held in the queue behind a start that failed.
+test('codex: a Stop gives a dropped answer back to its request', async ({ page }) => {
+  test.setTimeout(150_000);
+  const ANSWER = 'The release notes are ready: two fixes and a new export.';
+  const harness = await launchHarness();
+  let breaker: ReturnType<typeof startBreaker> | undefined;
+  try {
+    await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+    const dataDir = harness.bootstrap.dataDir;
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [
+        { name: 'wakes-stop-answer-caller', repo: {}, threads: [{ title: 'Weekly planner', provider: 'codex' }] },
+        { name: 'wakes-stop-answer-target', repo: {}, threads: [{ title: 'Release notes', provider: 'claude' }] },
+      ],
+    });
+    const callerPath = seed.projects[0].path;
+    const caller = seed.projects[0].threadIds[0];
+    const targetPath = seed.projects[1].path;
+    const target = seed.projects[1].threadIds[0];
+    await setScenario(
+      harness,
+      targetPath,
+      threadToolsScenario({
+        name: 'wakes-stop-answer-target',
+        provider: 'claude',
+        turns: [
+          {
+            steps: [
+              { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+              { gate: 'answer' },
+              { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: ANSWER } } },
+            ],
+            text: 'Replied.',
+          },
+        ],
+        afterTurns: 'silent',
+      }),
+    );
+    await setScenario(
+      harness,
+      callerPath,
+      threadToolsScenario({
+        name: 'wakes-stop-answer-caller',
+        provider: 'codex',
+        echoUserMessage: true,
+        turns: [
+          {
+            steps: [
+              {
+                call: {
+                  tool: 'thread_send',
+                  args: { thread_id: target, message: 'Draft the release notes.', wait_seconds: 0, notify: true },
+                },
+              },
+            ],
+            text: 'Asked for the notes.',
+          },
+        ],
+        afterTurns: 'silent',
+      }),
+    );
+    await harness.rpc('StartSession', caller);
+    await harness.rpc('SendMessage', caller, 'ask for the release notes', null);
+    const sent = await awaitToolAnswer<{ token: string; outcome: string; notify: boolean }>(harness, {
+      tool: 'thread_send',
+      cwd: callerPath,
+      timeoutMs: 60_000,
+    });
+    expect(sent.isError, sent.text).toBe(false);
+    expect(sent.value!.outcome).toBe('backgrounded');
+    expect(sent.value!.notify).toBe(true);
+    const token = sent.value!.token;
+    await awaitTurnCompleted(harness, caller);
+    const responder = await awaitGate(harness, 'answer', targetPath);
+
+    const db = () => new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+    const queued = () => {
+      const conn = db();
+      try {
+        return (
+          conn.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ? ORDER BY enqueued_at, rowid`).all(caller) as {
+            send_id: string;
+          }[]
+        ).map((row) => row.send_id);
+      } finally {
+        conn.close();
+      }
+    };
+    const request = () => {
+      const conn = db();
+      try {
+        return conn
+          .prepare(`SELECT delivered_at IS NOT NULL AS delivered, delivered_how AS how, notify FROM thread_requests WHERE token = ?`)
+          .get(token) as { delivered: number; how: string; notify: number };
+      } finally {
+        conn.close();
+      }
+    };
+
+    // The answer arrives while the caller's start fails: its wake is held
+    // in the queue.
+    await harness.rpc('StopSession', caller);
+    const b = startBreaker(harness, 'codex', callerPath);
+    breaker = b;
+    await b.brk();
+    await advanceGate(harness, responder.mockId, 'answer');
+    await harness.waitForEvent<NotificationSend>(
+      'notification:send',
+      (data) => data.id === `session-start:${caller}` && !data.retract,
+      60_000,
+    );
+    await expect.poll(queued, { timeout: 15_000 }).toEqual([`thread-wake:${token}`]);
+    expect(request()).toEqual({ delivered: 1, how: 'queued', notify: 1 });
+
+    // Mended first, so a start the Stop made would deliver the wake to the
+    // agent, and the agent then reads the answer with thread_status. The
+    // mock numbers tool calls per process, so this one names its own id
+    // rather than take the first process's thread_send row.
+    await setScenario(
+      harness,
+      callerPath,
+      threadToolsScenario({
+        name: 'wakes-stop-answer-mended',
+        provider: 'codex',
+        echoUserMessage: true,
+        turns: [
+          {
+            steps: [{ call: { tool: 'thread_status', args: { tokens: [token] }, toolUseId: 'status-after-stop' } }],
+            text: 'Read the notes.',
+          },
+        ],
+        afterTurns: 'silent',
+      }),
+    );
+    await harness.rpc('StopSession', caller);
+    const owedAndDisarmed = () => ({ queued: queued(), request: request() });
+    const want = { queued: [], request: { delivered: 0, how: '', notify: 0 } };
+    expect(owedAndDisarmed()).toEqual(want);
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    expect(owedAndDisarmed()).toEqual(want);
+    expect((await harness.rpc<unknown[] | null>('GetQueueState', caller)) ?? []).toEqual([]);
+    expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
+    console.log('codex: stopped: the answer went back to its request, owed and disarmed, and nothing started the session');
+
+    await harness.rpc('StartSession', caller);
+    await harness.rpc('SendMessage', caller, 'did the notes come back?', null);
+    const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string }[] }>(harness, {
+      tool: 'thread_status',
+      cwd: callerPath,
+      timeoutMs: 60_000,
+    });
+    expect(status.isError, status.text).toBe(false);
+    expect(status.value!.requests![0].token).toBe(token);
+    expect(status.value!.requests![0].answer).toContain(ANSWER);
+    await awaitTurnCompleted(harness, caller);
+    expect(countInputs(harness, callerPath, ANSWER)).toBe(0);
+    expect(queued()).toEqual([]);
+    console.log('codex: started again: no wake reached the agent, and thread_status returned the answer');
+
+    await harness.open(page);
+    await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
+    await shoot(page, 'codex-stop-returns-a-dropped-answer.png', page.getByText('Read the notes.').last());
+  } finally {
+    await breaker?.cleanup();
+    await harness.close();
+  }
+});
+
+// A remote job's completion a Stop dropped goes back to its watch, and the
+// watcher delivers it again and starts the session for it, as it does for a
+// completion that finishes after the Stop. The completion is held in the
+// queue behind a start that failed.
+test('codex: a Stop gives a dropped remote completion back to its watch, which delivers it again', async ({ page }) => {
+  test.setTimeout(180_000);
+  const [harness, remote] = await startTogether(launchHarness(), launchHarness());
+  let breaker: ReturnType<typeof startBreaker> | undefined;
+  try {
+    await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+    const dataDir = harness.bootstrap.dataDir;
+    const computer = await pairBuildBox(harness, remote);
+    const remoteSeed = await remote.rpc<SeedResult>('HarnessSeed', { projects: [{ name: 'remote-stop-build', repo: {} }] });
+    const { projectId: remoteProject, path: remotePath } = remoteSeed.projects[0];
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [{ name: 'remote-stop', repo: {}, threads: [{ title: 'Remote builder', provider: 'codex' }] }],
+    });
+    const { path: cwd, threadIds } = seed.projects[0];
+    const thread = threadIds[0];
+    const requestId = randomUUID();
+    const release = join(remotePath, 'build.release');
+    await setScenario(
+      harness,
+      cwd,
+      threadToolsScenario({
+        name: 'remote-stop',
+        provider: 'codex',
+        echoUserMessage: true,
+        turns: [
+          {
+            steps: [
+              {
+                call: {
+                  server: 'ao-remote-tools',
+                  tool: 'remote_run',
+                  args: {
+                    computer_id: computer,
+                    project_id: remoteProject,
+                    request_id: requestId,
+                    label: 'nightly build',
+                    argv: ['sh', '-c', `while [ ! -f '${release}' ]; do sleep 0.1; done; echo 'build 812 finished: green'`],
+                    wait_seconds: 0,
+                  },
+                },
+              },
+            ],
+            text: 'The build runs on Build box.',
+          },
+        ],
+        afterTurns: 'silent',
+      }),
+    );
+    await harness.rpc('StartSession', thread);
+    await harness.rpc('SendMessage', thread, 'run the nightly build on the build box', null);
+    const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
+    expect(started.report.isError, started.report.result).toBeFalsy();
+    expect(started.report.result).toContain('"backgrounded":true');
+    await awaitTurnCompleted(harness, thread);
+
+    const queued = () => {
+      const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+      try {
+        return (
+          db.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ? ORDER BY enqueued_at, rowid`).all(thread) as {
+            send_id: string;
+          }[]
+        ).map((row) => row.send_id.split(':')[0]);
+      } finally {
+        db.close();
+      }
+    };
+    const watch = () => {
+      const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+      try {
+        return (db.prepare(`SELECT notification FROM remote_watches WHERE request_id = ?`).get(requestId) as { notification: string })
+          .notification;
+      } finally {
+        db.close();
+      }
+    };
+    const completion = `request_id: ${requestId}`;
+
+    // The job finishes while the thread's start fails: its completion is
+    // held in the queue.
+    await harness.rpc('StopSession', thread);
+    const b = startBreaker(harness, 'codex', cwd);
+    breaker = b;
+    await b.brk();
+    await writeFile(release, '');
+    await harness.waitForEvent<NotificationSend>(
+      'notification:send',
+      (data) => data.id === `session-start:${thread}` && !data.retract,
+      60_000,
+    );
+    await expect.poll(queued, { timeout: 15_000 }).toEqual(['remote-completion']);
+    expect(watch()).toBe('queued');
+
+    await setScenario(
+      harness,
+      cwd,
+      threadToolsScenario({
+        name: 'remote-stop-mended',
+        provider: 'codex',
+        echoUserMessage: true,
+        turns: [{ text: 'Build 812 is green.' }],
+        afterTurns: 'silent',
+      }),
+    );
+    await harness.rpc('StopSession', thread);
+    // Back at its watch, or already queued again by the watcher's next
+    // pass; never queued with nothing left to deliver it.
+    const watched = watch();
+    const rows = queued();
+    const inputs = countInputs(harness, cwd, completion);
+    const truthful =
+      (watched === 'pending' && rows.length === 0) || (watched === 'queued' && (rows.length === 1 || inputs === 1));
+    expect(truthful, `after the Stop: watch ${watched}, queue ${JSON.stringify(rows)}, ${inputs} deliveries`).toBe(true);
+    console.log(`codex: stopped: watch ${watched}, queue ${JSON.stringify(rows)}`);
+
+    // The watcher delivers it again and starts the session for it, once.
+    const input = await wakeInput(harness, cwd, completion, 30_000);
+    expect(input.report.input).toContain('Remote job finished on Build box: nightly build');
+    expect(input.report.input).toContain('build 812 finished: green');
+    await awaitTurnCompleted(harness, thread);
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    expect(countInputs(harness, cwd, completion)).toBe(1);
+    expect(queued()).toEqual([]);
+    expect(watch()).toBe('queued');
+    console.log('codex: the watcher delivered the completion again, once, to a session it started');
+
+    await harness.open(page);
+    await page.getByTestId('thread-row').getByText('Remote builder', { exact: true }).click();
+    await shoot(page, 'codex-stop-returns-a-dropped-remote-completion.png', page.getByText('Remote job finished on Build box: nightly build').last());
+  } finally {
+    await breaker?.cleanup();
+    await Promise.allSettled([harness.close(), remote.close()]);
+  }
+});
+
 // A wake whose session will not start leaves an error row nobody is looking
 // at, so it also notifies, and the thread's next start takes the
 // notification back. Codex's mock refuses the handshake. Claude's start ends
@@ -2740,24 +3080,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     try {
       await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
       const dataDir = harness.bootstrap.dataDir;
-      // Named here so no capture shows the host's own name.
-      await harness.rpc('SetDeviceName', 'Agent computer');
-      await remote.rpc('SetDeviceName', 'Other computer');
-      const invite = await remote.rpc<{ url: string; linkId: string }>('MintDevicePairing', 'desktop', 'full');
-      const attachment = await harness.rpc<{ id: string }>('AddBackend', invite.url);
-      await remote.rpc('ConfirmDevicePairing', invite.linkId);
-      const computer = attachment.id;
-      await harness.rpc('RenameBackend', computer, 'Build box');
-      await expect
-        .poll(async () => {
-          try {
-            await harness.rpc('SetAgentComputerEnabled', computer, true);
-            return 'enabled';
-          } catch (error) {
-            return String(error);
-          }
-        }, { timeout: 30_000 })
-        .toBe('enabled');
+      const computer = await pairBuildBox(harness, remote);
       const remoteSeed = await remote.rpc<SeedResult>('HarnessSeed', {
         projects: [{ name: `remote-build-${provider}`, repo: {} }],
       });
@@ -2909,24 +3232,7 @@ const WATCHER_PAUSED = { env: { AO_HARNESS_TIMING: `${HARNESS_TIMING},remote-wat
 
 async function archiveJustAfterARemoteFinish(provider: ProviderName, harness: HarnessApp, remote: HarnessApp, title: string) {
   await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
-  // Named here so no capture shows the host's own name.
-  await harness.rpc('SetDeviceName', 'Agent computer');
-  await remote.rpc('SetDeviceName', 'Other computer');
-  const invite = await remote.rpc<{ url: string; linkId: string }>('MintDevicePairing', 'desktop', 'full');
-  const attachment = await harness.rpc<{ id: string }>('AddBackend', invite.url);
-  await remote.rpc('ConfirmDevicePairing', invite.linkId);
-  const computer = attachment.id;
-  await harness.rpc('RenameBackend', computer, 'Build box');
-  await expect
-    .poll(async () => {
-      try {
-        await harness.rpc('SetAgentComputerEnabled', computer, true);
-        return 'enabled';
-      } catch (error) {
-        return String(error);
-      }
-    }, { timeout: 30_000 })
-    .toBe('enabled');
+  const computer = await pairBuildBox(harness, remote);
   const remoteSeed = await remote.rpc<SeedResult>('HarnessSeed', { projects: [{ name: `remote-finish-${provider}`, repo: {} }] });
   const { projectId: remoteProject, path: remotePath } = remoteSeed.projects[0];
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {

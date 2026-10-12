@@ -719,20 +719,12 @@ func TestAnArchiveTearingDownASessionReturnsItsQueuedRemoteCompletion(t *testing
 	requireRemoteCompletionHeld(t, a, thread.ID, w, starts.Load())
 }
 
-// A person's Stop drops a completion queued in the live session with the
-// rest of the queue. Only an archived thread's drop returns it to its watch:
-// returned here, the watcher would queue it again and start the session the
-// person just stopped.
-func TestAStoppedSessionsDroppedRemoteCompletionDoesNotStartItAgain(t *testing.T) {
-	t.Parallel()
-	a, _ := newAppForFlushQueueRPC(t)
-	var starts atomic.Int32
-	a.startSessionFn = func(string) error {
-		starts.Add(1)
-		return nil
-	}
-	thread := remoteWatchThread(t, a, string(provider.Codex))
-	w := completedRemoteWatch(t, a, thread)
+// stoppedWithAQueuedRemoteCompletion queues w's completion in a live Codex
+// session of thread and has the person Stop it, with the thread's action lock
+// held throughout so nothing dispatches it first. It returns the session
+// starts counted after the Stop.
+func stoppedWithAQueuedRemoteCompletion(t *testing.T, a *App, thread store.Thread, w store.RemoteWatch, starts *atomic.Int32) int32 {
+	t.Helper()
 	unlock := a.threadLocks().Lock(thread.ID)
 	a.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
@@ -749,6 +741,50 @@ func TestAStoppedSessionsDroppedRemoteCompletionDoesNotStartItAgain(t *testing.T
 	}
 	unlock()
 	a.flushDispatch.wg.Wait()
+	a.waitAgentNoticeWork()
+	return starts.Load()
+}
+
+// requireRemoteCompletionQueuedAgain fails unless w's completion is queued
+// once more, durably and in memory, its watch reads queued, and a session
+// start followed it.
+func requireRemoteCompletionQueuedAgain(t *testing.T, a *App, threadID string, w store.RemoteWatch, starts, startsBefore int32) {
+	t.Helper()
+	saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable, memory := queuedSendIDs(t, a, threadID)
+	want := []string{remoteCompletionSendID(w)}
+	if saved.Notification != "queued" || !slices.Equal(durable, want) || !slices.Equal(memory, want) || starts <= startsBefore {
+		t.Fatalf("after the watcher pass: watch %q, queue %q (in memory %q), %d starts (%d before); want the completion queued again and a start",
+			saved.Notification, durable, memory, starts, startsBefore)
+	}
+}
+
+// A person's Stop drops a completion queued in the live session with the
+// rest of the queue and returns it to its watch: the watch reads pending and
+// nothing is queued. The watcher then delivers it again and starts the
+// session for it, as it does a completion that finishes after the Stop.
+func TestAStoppedSessionsDroppedRemoteCompletionIsDeliveredAgain(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Codex))
+	w := completedRemoteWatch(t, a, thread)
+	startsAfterStop := stoppedWithAQueuedRemoteCompletion(t, a, thread, w, &starts)
+	saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if durable, memory := queuedSendIDs(t, a, thread.ID); len(durable) != 0 || len(memory) != 0 || saved.Notification != "pending" {
+		t.Fatalf("after the Stop: queue %q (in memory %q), watch %q; want an empty queue and a pending watch",
+			durable, memory, saved.Notification)
+	}
 	due, err := a.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
 	if err != nil {
 		t.Fatal(err)
@@ -757,14 +793,37 @@ func TestAStoppedSessionsDroppedRemoteCompletionDoesNotStartItAgain(t *testing.T
 		a.checkRemoteWatch(row)
 	}
 	a.waitAgentNoticeWork()
-	saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
-	if err != nil {
-		t.Fatal(err)
+	requireRemoteCompletionQueuedAgain(t, a, thread.ID, w, starts.Load(), startsAfterStop)
+}
+
+// The Stop returns the completion only once the queue it dropped is gone,
+// memory included, so a watcher pass landing the moment it is returned
+// queues it for good. Returned before the queue was cleared, the clear would
+// take the completion the watcher had just queued again.
+func TestARemoteCompletionQueuedAgainAsTheStopReturnsItStaysQueued(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
 	}
-	if durable, memory := queuedSendIDs(t, a, thread.ID); starts.Load() != 0 || len(durable) != 0 || len(memory) != 0 || saved.Notification != "queued" {
-		t.Fatalf("after the Stop and a watcher pass: %d starts, queue %q (in memory %q), watch %q; want no start, an empty queue and the watch left as the Stop found it",
-			starts.Load(), durable, memory, saved.Notification)
+	thread := remoteWatchThread(t, a, string(provider.Codex))
+	w := completedRemoteWatch(t, a, thread)
+	passes := 0
+	a.heldReturnedForTest = func(threadID string) {
+		current, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+		if threadID != thread.ID || err != nil {
+			return
+		}
+		passes++
+		a.checkRemoteWatch(current)
 	}
+	stoppedWithAQueuedRemoteCompletion(t, a, thread, w, &starts)
+	if passes != 1 {
+		t.Fatalf("the watcher pass ran %d times as the Stop returned the completion, want once", passes)
+	}
+	requireRemoteCompletionQueuedAgain(t, a, thread.ID, w, starts.Load(), 0)
 }
 
 // A completion whose thread is archived while its queue write waits for the

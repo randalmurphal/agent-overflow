@@ -312,7 +312,13 @@ instead and arrives once the thread is unarchived
 ([remote-commands.md](../architecture/remote-commands.md)). A thread
 request's queued answer or reminder goes back to its request, owed and
 disarmed, as the archive leaves the thread's undelivered requests
-([agent-thread-tools.md](agent-thread-tools.md)).
+([agent-thread-tools.md](agent-thread-tools.md)). A person's Stop or a
+revert drops the whole queue, and returns these two kinds the same way
+once the queue is gone: an answer or reminder to its request, owed and
+disarmed, so `thread_status` still returns it; a remote job's
+completion to its watch, whose watcher delivers it again and starts the
+session for it, as for a completion that finishes after the Stop. A
+Stop does not quiet later wakes.
 An archived thread takes none of these messages and starts no session
 for them: one that arrives after the archive is refused back to what
 sent it, and one queued just before it waits, without a start, for the

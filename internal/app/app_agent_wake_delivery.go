@@ -618,41 +618,25 @@ func unconfirmedSendIDs(item triage.UnconfirmedFlushItem) []string {
 // them goes back to the user in the worker, and an outside send leaves its
 // thread a notice.
 //
-// An archived thread's request answers and reminders go back to their
-// requests, owed and disarmed, and its remote completions to their watches,
-// as the archive takes them back from a thread with no session
-// (stopArchivedThreadWork): the archive's own teardown is the drop that
-// would otherwise lose them.
-func (a *App) noteAgentWakesDropped(threadID string) {
+// A request's answer or reminder and a remote job's completion are held
+// instead, and returned: the rows the drop must keep for
+// returnHeldToOwners, which gives each back to its request, owed and
+// disarmed, or to its watch, pending.
+func (a *App) noteAgentWakesDropped(threadID string) (held []store.FlushQueueItem) {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
 		logThreadRequestSweep("list the queued wakes of "+threadID, err)
-		return
+		return nil
 	}
 	var sends []string
-	archived, archivedRead, returned := false, false, false
 	for _, row := range rows {
 		if a.handBackWorkerPromptWake(row.SendID) {
 			continue
 		}
-		token, late, isAnswer := threadWakeFromSendID(row.SendID)
-		computerID, requestID, isCompletion := remoteCompletionFromSendID(row.SendID)
+		_, _, isAnswer := threadWakeFromSendID(row.SendID)
+		_, _, isCompletion := remoteCompletionFromSendID(row.SendID)
 		if isAnswer || isCompletion {
-			if !archivedRead {
-				archivedRead = true
-				if archived, err = a.threadArchivedNow(threadID); err != nil {
-					logThreadRequestSweep("keep the archived thread "+threadID+"'s answers and remote results", err)
-				}
-			}
-			switch {
-			case !archived:
-			case isAnswer:
-				logThreadRequestSweep("return "+row.SendID+" to its request", a.store.WithdrawThreadWake(token, late, row.ID))
-			default:
-				err := a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID)
-				logThreadRequestSweep("return "+row.SendID+" to its watch", err)
-				returned = returned || err == nil
-			}
+			held = append(held, row)
 			continue
 		}
 		if strings.HasPrefix(row.SendID, agentSendIDRoot) {
@@ -666,8 +650,37 @@ func (a *App) noteAgentWakesDropped(threadID string) {
 	if len(sends) > 0 {
 		a.noteAgentSendsCleared(threadID, sends)
 	}
+	return held
+}
+
+// returnHeldToOwners gives the answers, reminders and remote completions a
+// wholesale drop held (dropDurableFlushQueue) back to their owners: a
+// request is owed its answer again, disarmed, so thread_status returns it
+// and nothing delivers it unasked; a watch is pending again, and the
+// watcher delivers its completion as it does one that finishes after the
+// drop, starting the session for it. The drop's caller runs it once the
+// queue is gone, memory and dispatch included, because the watcher can queue
+// a pending completion again within seconds and one queued before then would
+// be dropped with the rest. Each row is returned by its id, so a message
+// queued after the drop read the queue is not taken.
+func (a *App) returnHeldToOwners(threadID string, held []store.FlushQueueItem) {
+	returned := false
+	for _, row := range held {
+		if token, late, ok := threadWakeFromSendID(row.SendID); ok {
+			logThreadRequestSweep("return "+row.SendID+" to its request", a.store.WithdrawThreadWake(token, late, row.ID))
+			continue
+		}
+		if computerID, requestID, ok := remoteCompletionFromSendID(row.SendID); ok {
+			err := a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID)
+			logThreadRequestSweep("return "+row.SendID+" to its watch", err)
+			returned = returned || err == nil
+		}
+	}
 	if returned {
 		a.emitBackgroundChanged(threadID)
+	}
+	if a.heldReturnedForTest != nil {
+		a.heldReturnedForTest(threadID)
 	}
 }
 

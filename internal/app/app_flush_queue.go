@@ -227,8 +227,18 @@ func (a *App) clearFlushDispatchForRollback(threadID string) {
 	// against, so they are being thrown away rather than deferred: their
 	// durable rows go with them, or the next boot restores messages the
 	// user's revert already discarded.
-	a.dropDurableFlushQueue(threadID)
+	held := a.dropDurableFlushQueue(threadID)
 	a.discardFlushDispatch(threadID)
+	// A revert that keeps its session (Codex's in-place cut) leaves triage's
+	// queue alone, so a message still there is delivered after it, or
+	// dropped and returned by the stop a cold cut makes next. What the
+	// discard took is gone now and goes back to its owner.
+	if a.triage != nil {
+		for _, item := range a.triage.QueuedFlushItems(threadID) {
+			held = slices.DeleteFunc(held, func(row store.FlushQueueItem) bool { return row.ID == item.ID })
+		}
+	}
+	a.returnHeldToOwners(threadID, held)
 }
 
 // discardFlushDispatch throws away the batches the dispatch worker holds for
@@ -1096,13 +1106,23 @@ func (a *App) flushQueueSettlement(threadID, id string, onDurable func()) *triag
 // the in-memory queue without restoring it, and the Codex rollback purge —
 // where a surviving row would resurrect at the next boot the very messages
 // the user's Stop or revert threw away.
-func (a *App) dropDurableFlushQueue(threadID string) {
-	a.noteAgentWakesDropped(threadID)
+//
+// The answers, reminders and remote completions among them are kept and
+// returned, and the caller gives them back to their owners
+// (returnHeldToOwners) once the rest of the queue, in memory and dispatch, is
+// gone too.
+func (a *App) dropDurableFlushQueue(threadID string) (held []store.FlushQueueItem) {
+	held = a.noteAgentWakesDropped(threadID)
+	keep := make([]string, 0, len(held))
+	for _, row := range held {
+		keep = append(keep, row.ID)
+	}
 	// An outside send's row goes with its notice (noteAgentSendsCleared).
-	if err := a.store.DeleteFlushQueueItemsForThread(threadID, agentSendIDRoot); err != nil {
+	if err := a.store.DeleteFlushQueueItemsForThread(threadID, agentSendIDRoot, keep...); err != nil {
 		log.Printf("flush queue: drop durable rows for thread %s: %v", threadID, err)
 	}
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
+	return held
 }
 
 // registerQueueItem is RegisterQueueItem plus the injected-message axes.

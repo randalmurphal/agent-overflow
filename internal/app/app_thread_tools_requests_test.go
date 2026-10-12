@@ -1991,19 +1991,14 @@ func TestADisarmedReminderIsNotDeliveredAndLeavesTheThreadArchived(t *testing.T)
 	}
 }
 
-// An answer, a late reply or a reminder whose wake was queued just before
-// an archive goes back to its request when the archive lands. A session
-// start in flight holds the thread's action lock, the archive queues on it,
-// the wake is written while the thread is still unarchived, and its start
-// queues behind the archive and starts nothing. When the start brought a
-// session up, the archive's teardown drops the queue under the lock instead.
-// Either way nothing may stay queued on the archived thread for its next
-// start or for the composer at the next boot, and the request may not read
-// delivered: the wake is owed but disarmed, as one the archive refused at
-// the queue write is, so the retry leaves the thread archived. Re-armed, it
-// is delivered and brings the thread back.
-func TestAWakeQueuedJustBeforeAnArchiveGoesBackToItsRequest(t *testing.T) {
-	t.Parallel()
+// owedWakeSeeds are the three kinds of thread-request wake: an answer, a
+// late reply after an answer read inline, and a fired reminder. Each seed
+// leaves its request settled and owing the wake, which is not yet queued.
+func owedWakeSeeds() []struct {
+	name string
+	late bool
+	seed func(*testing.T, *requestFixture) string
+} {
 	answer := func(t *testing.T, f *requestFixture) string {
 		token := uuid.NewString()
 		if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
@@ -2017,7 +2012,7 @@ func TestAWakeQueuedJustBeforeAnArchiveGoesBackToItsRequest(t *testing.T) {
 		f.settleRemote(t, token, now, now.Add(threadLateReplyWindow))
 		return token
 	}
-	for _, tc := range []struct {
+	return []struct {
 		name string
 		late bool
 		seed func(*testing.T, *requestFixture) string
@@ -2045,7 +2040,23 @@ func TestAWakeQueuedJustBeforeAnArchiveGoesBackToItsRequest(t *testing.T) {
 			}
 			return ack.Token
 		}},
-	} {
+	}
+}
+
+// An answer, a late reply or a reminder whose wake was queued just before
+// an archive goes back to its request when the archive lands. A session
+// start in flight holds the thread's action lock, the archive queues on it,
+// the wake is written while the thread is still unarchived, and its start
+// queues behind the archive and starts nothing. When the start brought a
+// session up, the archive's teardown drops the queue under the lock instead.
+// Either way nothing may stay queued on the archived thread for its next
+// start or for the composer at the next boot, and the request may not read
+// delivered: the wake is owed but disarmed, as one the archive refused at
+// the queue write is, so the retry leaves the thread archived. Re-armed, it
+// is delivered and brings the thread back.
+func TestAWakeQueuedJustBeforeAnArchiveGoesBackToItsRequest(t *testing.T) {
+	t.Parallel()
+	for _, tc := range owedWakeSeeds() {
 		for _, live := range []bool{false, true} {
 			name := tc.name + ", no session"
 			if live {
@@ -2132,6 +2143,175 @@ func TestAWakeQueuedJustBeforeAnArchiveGoesBackToItsRequest(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A person's Stop drops an answer, a late reply or a reminder queued in the
+// live session with the rest of the queue, and gives it back to its request:
+// owed and disarmed, with no start, so the request does not read delivered
+// and nothing reaches the agent unasked. thread_status returns it, and a
+// re-armed wake delivers it.
+func TestAWakeAStopDropsGoesBackToItsRequest(t *testing.T) {
+	t.Parallel()
+	for _, tc := range owedWakeSeeds() {
+		for _, read := range []bool{false, true} {
+			name := tc.name + ", re-armed"
+			if read {
+				name = tc.name + ", read by thread_status"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				f := newRequestFixture(t)
+				var starts atomic.Int32
+				f.app.startSessionFn = func(string) error {
+					starts.Add(1)
+					return nil
+				}
+				token := tc.seed(t, f)
+				sendID := threadWakeSendIDFor(token, tc.late)
+
+				unlock := f.app.threadLocks().Lock(f.caller.ID)
+				f.app.configureTriageQueueCallbacks()
+				f.app.sessionManager().put(f.caller.ID, session{
+					Provider: string(provider.Codex),
+					Token:    "tok",
+					Liveness: newSessionLiveness(time.Now()),
+				})
+				f.app.deliverThreadWake(token, tc.late)
+				if row := f.request(t, token); !threadRequestDelivered(row, tc.late) || row.DeliveredHow != store.ThreadWakeQueued {
+					unlock()
+					t.Fatalf("the wake was not queued before the Stop: delivered as %q", row.DeliveredHow)
+				}
+				if err := f.app.StopSession(f.caller.ID); err != nil {
+					unlock()
+					t.Fatalf("StopSession: %v", err)
+				}
+				unlock()
+				f.app.flushDispatch.wg.Wait()
+				f.app.waitAgentNoticeWork()
+
+				owedAndDisarmed := func(when string) {
+					t.Helper()
+					durable, memory := queuedSendIDs(t, f.app, f.caller.ID)
+					row := f.request(t, token)
+					if n := starts.Load(); n != 0 || len(durable) != 0 || len(memory) != 0 || threadRequestDelivered(row, tc.late) || row.Notify {
+						t.Fatalf("%s: %d starts, queue %q (in memory %q), delivered %v as %q, notify %v; want no start, an empty queue and the wake owed and disarmed",
+							when, n, durable, memory, threadRequestDelivered(row, tc.late), row.DeliveredHow, row.Notify)
+					}
+					if tc.late && row.DeliveredAt == 0 {
+						t.Fatalf("%s: taking the late reply back undid the first answer's delivery", when)
+					}
+				}
+				owedAndDisarmed("after the Stop")
+				f.app.retryUndeliveredThreadWakes(time.Now().Add(time.Hour))
+				f.app.threadRequestsWG.Wait()
+				f.app.waitAgentNoticeWork()
+				owedAndDisarmed("after a retry pass")
+
+				if read {
+					report, err := f.adapter().RequestStates(t.Context(), f.callerIdentity(), threadtools.StatusCall{Tokens: []string{token}})
+					if err != nil {
+						t.Fatalf("RequestStates: %v", err)
+					}
+					if len(report.Requests) != 1 || report.Requests[0].Answer == "" || report.Requests[0].Delivered != store.ThreadWakeInline {
+						t.Fatalf("thread_status after the Stop = %+v, want the answer, delivered by this read", report.Requests)
+					}
+					return
+				}
+				if _, err := f.app.store.SetThreadRequestNotify(token, true); err != nil {
+					t.Fatalf("SetThreadRequestNotify: %v", err)
+				}
+				f.app.retryUndeliveredThreadWakes(time.Now().Add(time.Hour))
+				f.app.threadRequestsWG.Wait()
+				f.app.waitAgentNoticeWork()
+				durable, _ := queuedSendIDs(t, f.app, f.caller.ID)
+				if row := f.request(t, token); !threadRequestDelivered(row, tc.late) || !slices.Equal(durable, []string{sendID}) || starts.Load() != 1 {
+					t.Fatalf("re-armed: delivered %v, queue %q, %d starts; want the wake delivered and the thread started once",
+						threadRequestDelivered(row, tc.late), durable, starts.Load())
+				}
+			})
+		}
+	}
+}
+
+// A revert drops the queue's durable rows, and gives an answer and a remote
+// completion back to their owners only when its drop took them: one a
+// dispatch held, which the revert discards, goes back owed and pending. One
+// still in triage's queue stays queued, as a revert that keeps its session
+// leaves it there to be delivered; a cold revert's Stop then drops it and
+// returns it.
+func TestARevertReturnsOnlyTheAnswersAndCompletionsItsDropTook(t *testing.T) {
+	t.Parallel()
+	for _, dispatched := range []bool{false, true} {
+		name := "still in the queue"
+		if dispatched {
+			name = "held by a dispatch"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			var starts atomic.Int32
+			f.app.startSessionFn = func(string) error {
+				starts.Add(1)
+				return nil
+			}
+			token := owedWakeSeeds()[0].seed(t, f)
+			w := completedRemoteWatch(t, f.app, f.caller)
+			want := []string{threadWakeSendID(token), remoteCompletionSendID(w)}
+
+			unlock := f.app.threadLocks().Lock(f.caller.ID)
+			if dispatched {
+				// With no dispatcher, triage keeps the queue.
+				f.app.configureTriageQueueCallbacks()
+			}
+			f.app.sessionManager().put(f.caller.ID, session{
+				Provider: string(provider.Codex),
+				Token:    "tok",
+				Liveness: newSessionLiveness(time.Now()),
+			})
+			f.app.deliverThreadWake(token, false)
+			if err := f.app.queueAgentNotice(f.app.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})); err != nil {
+				unlock()
+				t.Fatalf("queueAgentNotice: %v", err)
+			}
+			if dispatched {
+				f.app.triage.FlushQueuedItems(f.caller.ID)
+				waitUntil(t, 10*time.Second, func() bool { return len(f.app.triage.QueuedFlushItems(f.caller.ID)) == 0 })
+			}
+			// The rollback runs under the thread's action lock.
+			f.app.clearFlushDispatchForRollback(f.caller.ID)
+			durable, memory := queuedSendIDs(t, f.app, f.caller.ID)
+			row := f.request(t, token)
+			saved, err := f.app.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+			if err != nil {
+				unlock()
+				t.Fatal(err)
+			}
+			unlock()
+			if dispatched {
+				if len(durable) != 0 || len(memory) != 0 || threadRequestDelivered(row, false) || row.Notify || saved.Notification != "pending" {
+					t.Fatalf("after the revert: queue %q (in memory %q), answer delivered %v as %q, notify %v, watch %q; want an empty queue, the answer owed and disarmed and the watch pending",
+						durable, memory, threadRequestDelivered(row, false), row.DeliveredHow, row.Notify, saved.Notification)
+				}
+				return
+			}
+			if !slices.Equal(durable, want) || !slices.Equal(memory, want) || row.DeliveredHow != store.ThreadWakeQueued || saved.Notification != "queued" {
+				t.Fatalf("after the revert: queue %q (in memory %q), answer delivered as %q, watch %q; want both still queued",
+					durable, memory, row.DeliveredHow, saved.Notification)
+			}
+			if err := f.app.StopSession(f.caller.ID); err != nil {
+				t.Fatalf("StopSession: %v", err)
+			}
+			durable, memory = queuedSendIDs(t, f.app, f.caller.ID)
+			row = f.request(t, token)
+			if saved, err = f.app.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil {
+				t.Fatal(err)
+			}
+			if len(durable) != 0 || len(memory) != 0 || threadRequestDelivered(row, false) || row.Notify || saved.Notification != "pending" {
+				t.Fatalf("after the Stop that follows: queue %q (in memory %q), answer delivered %v, notify %v, watch %q; want an empty queue, the answer owed and disarmed and the watch pending",
+					durable, memory, threadRequestDelivered(row, false), row.Notify, saved.Notification)
+			}
+		})
 	}
 }
 
