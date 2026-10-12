@@ -198,7 +198,8 @@ func parseDBAttachment(value string) (dbAttachment, error) {
 	}
 	for i, r := range name {
 		letter := r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		if !letter && !(i > 0 && r >= '0' && r <= '9') {
+		digit := i > 0 && r >= '0' && r <= '9'
+		if !letter && !digit {
 			return dbAttachment{}, usagef("--attach schema name %q must be an identifier (letters, digits, underscores)", name)
 		}
 	}

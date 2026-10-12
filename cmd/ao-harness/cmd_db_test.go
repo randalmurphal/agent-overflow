@@ -370,7 +370,7 @@ func TestDBAttachesASecondFileReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer check.Close()
+	t.Cleanup(func() { _ = check.Close() })
 	var n int
 	if err := check.QueryRow(`SELECT count(*) FROM items`).Scan(&n); err != nil || n != 3 {
 		t.Fatalf("before.db has %d rows (err %v), want the 3 it was written with", n, err)

@@ -15,7 +15,7 @@ func TestMigrationStatusReportsAMigratedDatabaseAtItsBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { _ = s.Close() })
 
 	status, err := s.MigrationStatus()
 	if err != nil {
