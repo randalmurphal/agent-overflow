@@ -257,6 +257,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListReleases", ID: 397986043, Scope: "host", Route: "home"},                                                       // main.App.ListReleases
 	{Name: "ListRunningBackgroundWork", ID: 3808352241, Scope: "threads:read", Route: "all"},                                  // main.App.ListRunningBackgroundWork
 	{Name: "ListServiceReleases", ID: 4211718354, Scope: "access:admin", Route: "selected"},                                   // main.App.ListServiceReleases
+	{Name: "ListStandingAgentWakes", ID: 2939129659, Scope: "threads:read", Route: "all"},                                     // main.App.ListStandingAgentWakes
 	{Name: "ListSubagentDescendants", ID: 1299118478, Scope: "threads:read", Route: "thread"},                                 // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506, Scope: "terminal:operate", Route: "thread"},                                       // main.App.ListTerminals
 	{Name: "ListThreadEditDiffs", ID: 2243533007, Scope: "threads:read", Route: "thread"},                                     // main.App.ListThreadEditDiffs

@@ -11,18 +11,23 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// wakeRowsChanged counts the thread:wakes_changed frames naming threadID.
-func wakeRowsChanged(rec *emitRecorder, threadID string) int {
-	n := 0
+// wakeChanges lists the thread:wakes_changed frames naming threadID.
+func wakeChanges(rec *emitRecorder, threadID string) []ThreadWakeChange {
+	var out []ThreadWakeChange
 	for _, call := range rec.snapshot() {
 		if call.Channel != eventchan.ThreadWakesChanged.String() {
 			continue
 		}
-		if data, ok := call.Data.(map[string]string); ok && data["threadId"] == threadID {
-			n++
+		if change, ok := call.Data.(ThreadWakeChange); ok && change.ThreadID == threadID {
+			out = append(out, change)
 		}
 	}
-	return n
+	return out
+}
+
+// wakeRowsChanged counts the thread:wakes_changed frames naming threadID.
+func wakeRowsChanged(rec *emitRecorder, threadID string) int {
+	return len(wakeChanges(rec, threadID))
 }
 
 func registerTestWake(t *testing.T, a *App, row store.AgentWake) store.AgentWake {
@@ -194,8 +199,12 @@ func TestWakeNowFiresAWatchThroughTheSweep(t *testing.T) {
 		t.Fatalf("row after wake now = %+v; want a quiet run, its stderr kept and the schedule unchanged", row)
 	}
 	// Claim, stderr and finish.
-	if got := wakeRowsChanged(rec, thread.ID) - before; got < 3 {
-		t.Fatalf("thread:wakes_changed frames = %d, want one for the claim, the stderr and the finish", got)
+	changes := wakeChanges(rec, thread.ID)[before:]
+	if len(changes) < 3 || changes[0].Row == nil || changes[0].Row.State != store.AgentWakeRunning {
+		t.Fatalf("thread:wakes_changed frames = %+v, want the claim, the stderr and the finish, the claim running", changes)
+	}
+	if last := changes[len(changes)-1].Row; last == nil || last.State != store.AgentWakeArmed || last.LastOutcome != row.LastOutcome || last.NextAt != next {
+		t.Fatalf("the last frame's row = %+v, want the finished row", last)
 	}
 }
 
@@ -232,8 +241,10 @@ func TestCancelThreadWakeCancelsLikeTheTool(t *testing.T) {
 	if _, found, err := a.store.GetThreadRequest("rows-cancel-remind"); err != nil || found {
 		t.Fatalf("reminder after cancel: found=%v err=%v", found, err)
 	}
-	if got := wakeRowsChanged(rec, thread.ID) - before; got != 2 {
-		t.Fatalf("thread:wakes_changed frames = %d, want 2", got)
+	changes := wakeChanges(rec, thread.ID)[before:]
+	if len(changes) != 2 || changes[0] != (ThreadWakeChange{ThreadID: thread.ID, ID: loop.ID, Removed: true}) ||
+		changes[1] != (ThreadWakeChange{ThreadID: thread.ID, ID: "rows-cancel-remind", Removed: true}) {
+		t.Fatalf("thread:wakes_changed frames = %+v, want the loop and the reminder removed", changes)
 	}
 	if wakes, err := a.ListThreadWakes(thread.ID); err != nil || len(wakes.Rows) != 0 {
 		t.Fatalf("rows after the cancels = %+v, %v", wakes, err)

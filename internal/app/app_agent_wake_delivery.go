@@ -412,7 +412,7 @@ func (a *App) noteAgentWakeUndelivered(threadID, wakeID, outcome, body string) {
 		logThreadRequestSweep("record the undelivered wake of "+wakeID, err)
 		return
 	}
-	a.emitThreadWakesChanged(threadID)
+	a.emitAgentWakeChanged(threadID, wakeID)
 }
 
 // discardAgentWakeAtBoot handles a loop or watch wake still queued when the
@@ -441,7 +441,7 @@ func (a *App) discardAgentWakeAtBoot(row store.FlushQueueItem) bool {
 	if _, err := a.store.ReleaseQueuedAgentWake(wakeID, agentWakeOutcomeNotDelivered, keptAgentWakeOutput(row.Message), fireAt); err != nil {
 		logThreadRequestSweep("release the queued wake of "+wakeID, err)
 	} else {
-		a.emitThreadWakesChanged(row.ThreadID)
+		a.emitAgentWakeChanged(row.ThreadID, wakeID)
 	}
 	return true
 }

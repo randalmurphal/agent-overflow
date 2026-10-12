@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,7 +18,8 @@ import (
 // lists them (docs/specs/standing-agents.md, "Activity rail"). The rows are
 // the wake supervisor's own (`agent_wakes`) and the thread's open `remind`
 // requests (`thread_requests`); nothing here keeps a copy. Every write to
-// either emits `thread:wakes_changed`, and the tray reads the list again.
+// either emits `thread:wakes_changed` with the row as it stands
+// (ThreadWakeChange), so a reader can apply it or read the list again.
 //
 // Wake now fires a row through the sweep's own fire path, and Cancel takes the
 // path thread_cancel takes, so a row the person drives behaves as one the
@@ -76,13 +78,68 @@ type ThreadWakeDetail struct {
 	Stderr string `json:"stderr"`
 }
 
-// emitThreadWakesChanged tells every client that a thread's loops, watches or
-// reminders changed.
-func (a *App) emitThreadWakesChanged(threadID string) {
-	if threadID == "" {
+// ThreadWakeChange is one `thread:wakes_changed` frame: a loop, watch or
+// reminder of the thread changed. Row is the row as it stands now; Removed
+// says it left the listing (cancelled, gone, or a reminder that fired).
+// Neither is a change whose row could not be read, and a reader reads the
+// thread's rows again.
+type ThreadWakeChange struct {
+	ThreadID string         `json:"threadId"`
+	ID       string         `json:"id"`
+	Row      *ThreadWakeRow `json:"row,omitempty"`
+	Removed  bool           `json:"removed,omitempty"`
+}
+
+// StandingAgentWakes is one standing agent's live loops and watches.
+type StandingAgentWakes struct {
+	ThreadID string          `json:"threadId"`
+	Rows     []ThreadWakeRow `json:"rows"`
+}
+
+func (a *App) emitThreadWakeChange(change ThreadWakeChange) {
+	if change.ThreadID == "" || change.ID == "" {
 		return
 	}
-	a.emit(eventchan.ThreadWakesChanged, map[string]string{"threadId": threadID})
+	a.emit(eventchan.ThreadWakesChanged, change)
+}
+
+// emitAgentWakeChanged sends a loop or watch row as it stands after a write.
+func (a *App) emitAgentWakeChanged(threadID, id string) {
+	change := ThreadWakeChange{ThreadID: threadID, ID: id}
+	row, found, err := a.store.GetAgentWake(id)
+	switch {
+	case err != nil:
+		log.Printf("agent wakes: read %s for its change event: %v", id, err)
+	case !found || row.ThreadID != threadID || row.State == store.AgentWakeCancelled:
+		change.Removed = true
+	default:
+		current := threadWakeRowOf(row)
+		change.Row = &current
+	}
+	a.emitThreadWakeChange(change)
+}
+
+// emitAgentWakesRemoved sends the rows a thread-wide cancel took away.
+func (a *App) emitAgentWakesRemoved(threadID string, ids []string) {
+	for _, id := range ids {
+		a.emitThreadWakeChange(ThreadWakeChange{ThreadID: threadID, ID: id, Removed: true})
+	}
+}
+
+// emitThreadReminderChanged sends a reminder as it stands after a write.
+func (a *App) emitThreadReminderChanged(threadID, token string) {
+	change := ThreadWakeChange{ThreadID: threadID, ID: token}
+	row, found, err := a.store.GetThreadRequest(token)
+	switch {
+	case err != nil:
+		log.Printf("thread reminders: read %s for its change event: %v", token, err)
+	case !found || row.State != store.ThreadRequestAccepted:
+		change.Removed = true
+	default:
+		current := reminderRowOf(row)
+		change.Row = &current
+	}
+	a.emitThreadWakeChange(change)
 }
 
 // ListThreadWakes lists a thread's live loops and watches and its reminders
@@ -100,19 +157,49 @@ func (a *App) ListThreadWakes(threadID string) (ThreadWakes, error) {
 	}
 	out := ThreadWakes{Rows: make([]ThreadWakeRow, 0, len(wakes)+len(reminders)), MoreReminders: total - len(reminders)}
 	for _, row := range wakes {
-		out.Rows = append(out.Rows, ThreadWakeRow{
-			ID: row.ID, Kind: row.Kind, Label: row.Label, State: row.State, LongRunning: row.LongRunning,
-			IntervalSeconds: row.IntervalSeconds, NextAt: row.NextAt, LastRunAt: row.LastRunAt,
-			LastOutcome: row.LastOutcome, Undelivered: row.Undelivered, Missed: row.Missed,
-		})
+		out.Rows = append(out.Rows, threadWakeRowOf(row))
 	}
 	for _, row := range reminders {
-		out.Rows = append(out.Rows, ThreadWakeRow{
-			ID: row.Token, Kind: threadWakeKindReminder, Label: reminderLabel(string(row.Answer)),
-			State: store.AgentWakeArmed, NextAt: row.DueAt,
-		})
+		out.Rows = append(out.Rows, reminderRowOf(row))
 	}
 	return out, nil
+}
+
+// ListStandingAgentWakes lists the live loops and watches of every standing
+// agent on this computer, at most 64 per agent, for the sidebar's agent rows.
+// Reminders are the tray's alone: ListThreadWakes lists them per thread.
+//
+//ao:scope threads:read
+//ao:route all
+func (a *App) ListStandingAgentWakes() ([]StandingAgentWakes, error) {
+	wakes, err := a.store.ListStandingAgentWakes()
+	if err != nil {
+		return nil, err
+	}
+	out := []StandingAgentWakes{}
+	for _, row := range wakes {
+		if len(out) == 0 || out[len(out)-1].ThreadID != row.ThreadID {
+			out = append(out, StandingAgentWakes{ThreadID: row.ThreadID, Rows: []ThreadWakeRow{}})
+		}
+		last := &out[len(out)-1]
+		last.Rows = append(last.Rows, threadWakeRowOf(row))
+	}
+	return out, nil
+}
+
+func threadWakeRowOf(row store.AgentWake) ThreadWakeRow {
+	return ThreadWakeRow{
+		ID: row.ID, Kind: row.Kind, Label: row.Label, State: row.State, LongRunning: row.LongRunning,
+		IntervalSeconds: row.IntervalSeconds, NextAt: row.NextAt, LastRunAt: row.LastRunAt,
+		LastOutcome: row.LastOutcome, Undelivered: row.Undelivered, Missed: row.Missed,
+	}
+}
+
+func reminderRowOf(row store.ThreadRequest) ThreadWakeRow {
+	return ThreadWakeRow{
+		ID: row.Token, Kind: threadWakeKindReminder, Label: reminderLabel(string(row.Answer)),
+		State: store.AgentWakeArmed, NextAt: row.DueAt,
+	}
 }
 
 // reminderLabel is the first line of a reminder's note, bounded.

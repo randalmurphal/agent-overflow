@@ -733,6 +733,7 @@ export const CountRunningBackgroundTasks = dispatch('CountRunningBackgroundTasks
 export const RunningBackgroundAgents = dispatch('RunningBackgroundAgents');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
 export const ListThreadWakes = dispatch('ListThreadWakes');
+export const ListStandingAgentWakes = dispatch('ListStandingAgentWakes');
 export const GetThreadWakeDetail = dispatch('GetThreadWakeDetail');
 export const WakeThreadWakeNow = dispatch('WakeThreadWakeNow');
 export const CancelThreadWake = dispatch('CancelThreadWake');

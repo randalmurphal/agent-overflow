@@ -73,12 +73,12 @@ describe('wake controller', () => {
   it('reads again for a change to its thread, not another, and for a lost frame on its computer', async () => {
     const { pane, read, controller } = await mountWakes([row('tests')]);
     expect(read).toHaveBeenCalledTimes(1);
-    emitWailsEvent('thread:wakes_changed', { threadId: 'other-thread' });
+    emitWailsEvent('thread:wakes_changed', { threadId: 'other-thread', id: 'wake-1' });
     await vi.advanceTimersByTimeAsync(500);
     expect(read).toHaveBeenCalledTimes(1);
 
     setBindingMock('ListThreadWakes', async () => ({ rows: [row('tests', { lastOutcome: 'woke the thread' })], moreReminders: 0 }));
-    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId });
+    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId, id: 'wake-1' });
     await vi.advanceTimersByTimeAsync(500);
     expect(controller.rows[0].lastOutcome).toBe('woke the thread');
 
@@ -95,7 +95,7 @@ describe('wake controller', () => {
   it('bounds a burst of changes to a few reads', async () => {
     const { pane, read } = await mountWakes([row('tests')]);
     for (let i = 0; i < 50; i++) {
-      emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId });
+      emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId, id: 'wake-1' });
       await vi.advanceTimersByTimeAsync(20);
     }
     await vi.advanceTimersByTimeAsync(500);
@@ -108,7 +108,7 @@ describe('wake controller', () => {
     const { pane, controller } = await mountWakes([row('tests')]);
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     setBindingMock('ListThreadWakes', async () => { throw new Error('read failed'); });
-    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId });
+    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId, id: 'wake-1' });
     await vi.advanceTimersByTimeAsync(500);
     expect(log).toHaveBeenCalled();
     expect(controller.rows.map((r) => r.id)).toEqual(['tests']);
@@ -136,7 +136,7 @@ describe('wake controller', () => {
     const { pane, read } = await mountWakes([row('tests')]);
     release();
     release = () => {};
-    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId });
+    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId, id: 'wake-1' });
     emitWailsEvent('transport:gap', { channel: 'thread:wakes_changed' }, '');
     await vi.advanceTimersByTimeAsync(500);
     expect(read).toHaveBeenCalledTimes(1);

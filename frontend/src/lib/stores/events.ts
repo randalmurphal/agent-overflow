@@ -157,7 +157,7 @@ import {
 import { applySubagentProgress, clearSubagentProgressForThread } from './subagentProgress.svelte';
 import type { BackgroundTrayEvent, SubagentProgressEvent } from '../types/events';
 import { applyBackgroundTrayEvent } from './eventsBackgroundTray';
-import { applyThreadWakesChanged } from './eventsThreadWakes';
+import { applyThreadWakesChanged, type ThreadWakeChange } from './eventsThreadWakes';
 import {
   applyProviderCommands,
   type ProviderCommandsPayload,
@@ -535,9 +535,9 @@ export function setupEventListeners(): () => void {
     'provider:background_tray',
     applyBackgroundTrayEvent,
   );
-  // thread:wakes_changed: a thread's loops, watches or reminders changed;
-  // the tray of a pane showing it reads them again.
-  const cancelThreadWakes = wailsEventOn<{ threadId: string }>(
+  // thread:wakes_changed: one loop, watch or reminder of a thread changed,
+  // with the row as it stands (eventsThreadWakes.ts).
+  const cancelThreadWakes = wailsEventOn<Partial<ThreadWakeChange>>(
     'thread:wakes_changed',
     (evt, origin) => applyThreadWakesChanged(evt, backendKeyForOrigin(origin.backendId)),
   );

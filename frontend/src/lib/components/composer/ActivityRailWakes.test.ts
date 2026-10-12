@@ -92,7 +92,7 @@ describe('wake rows in the background tray', () => {
     expect(view.getAllByTestId('wake-tray-row')).toHaveLength(3);
 
     setBindingMock('ListThreadWakes', async () => ({ rows: [watch], moreReminders: 0 }));
-    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId });
+    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId, id: 'wake-1' });
     await waitFor(() => expect(view.getAllByTestId('wake-tray-row').map((r) => r.dataset.kind)).toEqual(['watch']));
     expect((await view.findByTestId('activity-rail-background-count')).textContent?.trim()).toBe('1');
   });
@@ -127,13 +127,13 @@ describe('wake rows in the background tray', () => {
 
     // A change to another row, or a read that changes nothing, leaves it be.
     setBindingMock('ListThreadWakes', async () => ({ rows: [{ ...loop, lastOutcome: 'skipped' }, { ...watch }], moreReminders: 0 }));
-    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId });
+    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId, id: 'wake-1' });
     await waitFor(() => expect(view.getAllByTestId('wake-tray-row-outcome')[0].textContent).toBe('skipped'));
     expect(detail).toHaveBeenCalledTimes(1);
 
     detail.mockImplementation(async () => ({ command: 'gh pr checks', cwd: '/work/repo', stderr: '' }));
     setBindingMock('ListThreadWakes', async () => ({ rows: [loop, { ...watch, lastRunAt: Date.now(), lastOutcome: 'no change' }], moreReminders: 0 }));
-    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId });
+    emitWailsEvent('thread:wakes_changed', { threadId: pane.threadId, id: 'wake-1' });
     expect(await view.findByTestId('wake-tray-row-stderr-empty')).toBeInTheDocument();
     expect(detail).toHaveBeenCalledTimes(2);
 

@@ -41,7 +41,9 @@ only the model label may ellipsize, and only at the tight rung below minimal.
 
 Remote jobs use the shared background tray and retain their owning computer.
 Closing or navigating the composer must not redirect a completion to the newly
-focused pane.
+focused pane. The thread's loops, watches and reminders are tray rows too
+(`activityRailWakes.svelte.ts`, `WakeTrayRow.svelte`), counted in the toggle
+with the other background work.
 
 Use the stepped working indicator. Do not add a continuously animated spinner.
 

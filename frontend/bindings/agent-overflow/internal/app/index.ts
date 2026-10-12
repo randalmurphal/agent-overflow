@@ -122,6 +122,7 @@ export {
     ServiceUpdateStatus,
     SourceDiffReview,
     SourceProposedPlan,
+    StandingAgentWakes,
     StartTerminalOptions,
     SubmitPRReviewResult,
     SyncThreadWindowRequest,

@@ -44,7 +44,7 @@ func (t threadToolsApp) Remind(_ context.Context, caller threadtools.Caller, cal
 	}); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	t.app.emitThreadWakesChanged(caller.ThreadID)
+	t.app.emitThreadReminderChanged(caller.ThreadID, token)
 	// The sweep may be sleeping past this reminder's due time; waking it
 	// keeps a reminder for ten seconds from now from waiting out the tick.
 	t.app.nudgeThreadRequestSweep()
@@ -105,7 +105,7 @@ func (a *App) settleThreadReminder(row store.ThreadRequest, now time.Time) bool 
 		// Cancelled or already fired while this sweep was reading.
 		return false
 	}
-	a.emitThreadWakesChanged(row.CallerThreadID)
+	a.emitThreadReminderChanged(row.CallerThreadID, row.Token)
 	// The collector re-reads the row under the settle lock: thread_status
 	// can have disarmed the wake since the sweep listed this row, and the
 	// collector is the one place that decides whether a message is owed.
@@ -123,7 +123,7 @@ func (a *App) dropThreadReminder(row store.ThreadRequest) (bool, error) {
 	}
 	a.wakeRequestWaits(row.Token)
 	if dropped {
-		a.emitThreadWakesChanged(row.CallerThreadID)
+		a.emitThreadReminderChanged(row.CallerThreadID, row.Token)
 	}
 	return dropped, nil
 }

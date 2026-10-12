@@ -223,6 +223,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	397986043: 'home', // ListReleases
 	3808352241: 'all', // ListRunningBackgroundWork
 	4211718354: 'selected', // ListServiceReleases
+	2939129659: 'all', // ListStandingAgentWakes
 	1299118478: 'thread', // ListSubagentDescendants
 	2445206506: 'thread', // ListTerminals
 	2243533007: 'thread', // ListThreadEditDiffs

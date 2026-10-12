@@ -97,10 +97,12 @@ export function createWakeController(
     get threadId() { return threadId; },
 
     mount(): () => void {
-      const cancelChanged = onThreadWakesChanged((changed, backend) => {
+      // The tray reads its list again rather than applying the frame's row:
+      // the listing's order and its bound on reminders are the backend's.
+      const cancelChanged = onThreadWakesChanged((change, backend) => {
         if (!threadId) return;
-        if (changed === null ? threadBackend(threadId) !== backend : changed !== threadId) return;
-        refresh.request({ immediate: changed === null });
+        if (change === null ? threadBackend(threadId) !== backend : change.threadId !== threadId) return;
+        refresh.request({ immediate: change === null });
       });
       const cancelStatus = onBackendStatusChange((backend, status) => {
         if (!threadId || threadBackend(threadId) !== backend) return;

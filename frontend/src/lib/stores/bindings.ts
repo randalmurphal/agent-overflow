@@ -499,6 +499,7 @@ export {
   RefreshPRCI,
   ListLiveBackgroundTasks,
   ListThreadWakes,
+  ListStandingAgentWakes,
   GetThreadWakeDetail,
   WakeThreadWakeNow,
   CancelThreadWake,
@@ -659,6 +660,7 @@ export {
   WorktreeStatus,
   ThreadWakeRow,
   ThreadWakes,
+  StandingAgentWakes,
   ThreadWakeDetail,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export {

@@ -151,7 +151,7 @@ func (a *App) recoverAgentWakesAtBoot() {
 				logThreadRequestSweep("recover "+row.Kind+" "+row.ID, err)
 				continue
 			}
-			a.emitThreadWakesChanged(row.ThreadID)
+			a.emitAgentWakeChanged(row.ThreadID, row.ID)
 			row.State, row.LastOutcome = store.AgentWakeArmed, outcome
 		}
 		if row.LongRunning {
@@ -185,7 +185,7 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 	if !claimed {
 		return false
 	}
-	a.emitThreadWakesChanged(row.ThreadID)
+	a.emitAgentWakeChanged(row.ThreadID, row.ID)
 	row.State, row.LastRunAt, row.NextAt, row.Missed = store.AgentWakeRunning, now.UnixMilli(), next, fire.missed
 	ctx, run, ok := a.beginAgentWakeRun(row)
 	if !ok {
@@ -262,7 +262,7 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 		if _, err := a.store.ReleaseUndeliveredAgentWake(row.ID, agentWakeOutcomeNotDelivered, kept, fire.at); err != nil {
 			logThreadRequestSweep("release undelivered "+row.Kind+" "+row.ID, err)
 		} else {
-			a.emitThreadWakesChanged(row.ThreadID)
+			a.emitAgentWakeChanged(row.ThreadID, row.ID)
 		}
 	default:
 		log.Printf("agent wakes: %s %q on %s: %v", row.Kind, row.Label, row.ThreadID, err)
@@ -279,7 +279,7 @@ func (a *App) finishAgentWakeFire(
 	if _, err := a.store.FinishAgentWake(row.ID, outcome, output, missed, carry); err != nil {
 		logThreadRequestSweep("finish "+row.Kind+" "+row.ID, err)
 	} else {
-		a.emitThreadWakesChanged(row.ThreadID)
+		a.emitAgentWakeChanged(row.ThreadID, row.ID)
 	}
 	// The row is armed again with its next fire, which may be sooner than
 	// the sweep's sleep.
@@ -444,7 +444,7 @@ func (a *App) superviseAgentWatch(ctx context.Context, run *agentWakeRun, wakeID
 			}
 			return
 		}
-		a.emitThreadWakesChanged(row.ThreadID)
+		a.emitAgentWakeChanged(row.ThreadID, row.ID)
 		startedAt := time.Now()
 		outcome := a.runAgentWatchProcess(ctx, run, row)
 		if ctx.Err() != nil {
@@ -471,7 +471,7 @@ func (a *App) noteAgentWakeOutcome(run *agentWakeRun, wakeID, outcome string, ca
 		logThreadRequestSweep("note outcome of "+wakeID, err)
 		return
 	}
-	a.emitThreadWakesChanged(run.threadID)
+	a.emitAgentWakeChanged(run.threadID, wakeID)
 }
 
 // noteAgentWakeStderr keeps the tail of what a watch's run wrote to stderr
@@ -486,7 +486,7 @@ func (a *App) noteAgentWakeStderr(run *agentWakeRun, row store.AgentWake, stderr
 		logThreadRequestSweep("note stderr of "+row.ID, err)
 		return
 	}
-	a.emitThreadWakesChanged(row.ThreadID)
+	a.emitAgentWakeChanged(row.ThreadID, row.ID)
 }
 
 // agentWatchLine is one stdout line of a long-running watch, clipped to the

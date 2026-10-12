@@ -283,6 +283,19 @@ func (s *Store) ListAgentWakes(threadID string) ([]AgentWake, error) {
 	return collectAgentWakes(rows, "store: list agent wakes for "+threadID)
 }
 
+// ListStandingAgentWakes lists the armed or running rows of every standing
+// agent, by thread and then label. Each thread keeps at most
+// MaxAgentWakesPerThread live rows.
+func (s *Store) ListStandingAgentWakes() ([]AgentWake, error) {
+	rows, err := s.reader().Query(`SELECT ` + agentWakeColumns + ` FROM agent_wakes
+		WHERE state IN ('armed','running') AND thread_id IN (SELECT thread_id FROM standing_agents)
+		ORDER BY thread_id, label`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list standing agent wakes: %w", err)
+	}
+	return collectAgentWakes(rows, "store: list standing agent wakes")
+}
+
 // ListLiveAgentWakes lists every armed or running row: what the supervisor
 // rebuilds at boot.
 func (s *Store) ListLiveAgentWakes() ([]AgentWake, error) {

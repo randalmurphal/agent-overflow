@@ -192,7 +192,7 @@ func (a *App) cancelAgentWake(threadID, label, kind string) (store.AgentWake, bo
 	if err != nil || !cancelled {
 		return store.AgentWake{}, false, err
 	}
-	a.emitThreadWakesChanged(threadID)
+	a.emitAgentWakeChanged(threadID, row.ID)
 	a.stopAgentWakeRun(row.ID)
 	if err := a.withdrawCancelledAgentWakes(row.ThreadID, row.ID); err != nil {
 		log.Printf("agent wakes: %v", err)
@@ -230,7 +230,7 @@ func (a *App) registerAgentWake(row store.AgentWake) (store.AgentWake, error) {
 	case err != nil:
 		return store.AgentWake{}, err
 	}
-	a.emitThreadWakesChanged(stored.ThreadID)
+	a.emitAgentWakeChanged(stored.ThreadID, stored.ID)
 	if stored.Kind == store.AgentWakeWatch {
 		a.stopLongRunningAgentWatch(stored.ID)
 		if stored.LongRunning {
@@ -262,7 +262,7 @@ func (a *App) cancelAgentWakesForThread(threadID, outcome string) {
 	if ids, err := a.store.CancelAgentWakesForThread(threadID, "", outcome); err != nil {
 		log.Printf("agent wakes: cancel the loops and watches of %s: %v", threadID, err)
 	} else if len(ids) > 0 {
-		a.emitThreadWakesChanged(threadID)
+		a.emitAgentWakesRemoved(threadID, ids)
 	}
 	a.stopAgentWakeRunsForThread(threadID)
 }
