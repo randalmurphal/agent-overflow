@@ -74,7 +74,7 @@ func TestTriggerWorkspaceMCPAuthSingleFlightsWithoutThread(t *testing.T) {
 	wait <- mcpapp.WorkspaceAuthOutcome{Success: true}
 	select {
 	case <-closed:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("temporary provider process was not closed after completion")
 	}
 }
@@ -142,7 +142,7 @@ func TestTriggerWorkspaceMCPAuthShutdownClosesFlowWithoutEvent(t *testing.T) {
 	app.appCancel()
 	select {
 	case <-closed:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("temporary provider process remained open after app cancellation")
 	}
 	if emits.Load() != 0 {

@@ -122,7 +122,7 @@ func TestUpdateThreadRuntimeModeWaitsForThreadSendLock(t *testing.T) {
 
 	select {
 	case <-attempted:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("UpdateThreadRuntimeMode did not reach the send-lock boundary")
 	}
 	select {

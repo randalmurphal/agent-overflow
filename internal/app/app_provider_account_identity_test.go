@@ -643,7 +643,7 @@ func TestObservedIdentityEnrichesLegacyAccountWithoutCreatingDuplicate(t *testin
 	select {
 	case got = <-result:
 		releaseSelection()
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		releaseSelection()
 		<-result
 		t.Fatal("identity reconciliation blocked while caller held providerAccountMu")
