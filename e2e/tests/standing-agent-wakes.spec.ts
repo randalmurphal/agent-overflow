@@ -1785,124 +1785,134 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 // A wake and an outside script's message still queued when the app quits
 // are not restored to the composer at the next boot: the wake's row records
 // it was not delivered and keeps its output, and the thread gets a notice
-// for the message. Codex only: its session can be held at the handshake, so
-// a queued message stays in the durable queue until the crash. Claude's
-// session takes a message as soon as it starts, which leaves the queue; the
-// boot pass reads the durable queue the same way for both.
-test('codex: a wake and an outside send queued at quit are recorded at boot, not put in the composer', async () => {
-  test.setTimeout(120_000);
-  const provider = 'codex';
-  const root = await mkdtemp(join(tmpdir(), `ao-wake-boot-${provider}-`));
-  let harness: HarnessApp | undefined;
-  try {
-    harness = await launchHarness({ dataDir: root });
-    const dataDir = harness.bootstrap.dataDir;
-    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-      projects: [{ name: `wakes-boot-${provider}`, repo: {}, threads: [{ title: 'Quitting watcher', provider }] }],
-    });
-    const { path: cwd, threadIds } = seed.projects[0];
-    const thread = threadIds[0];
-    const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
-    await writeFile(
-      join(agent.home, 'once.sh'),
-      `[ -f "$AO_AGENT_HOME/once.done" ] && exec sleep 3600
-while [ ! -f "$AO_AGENT_HOME/once.release" ]; do sleep 0.1; done
-: > "$AO_AGENT_HOME/once.done"
-echo "the report before the quit"
-`,
-    );
-    await setScenario(
-      harness,
-      cwd,
-      threadToolsScenario({
-        name: `wakes-boot-${provider}`,
-        provider,
-        echoUserMessage: true,
-        turns: [
-          {
-            steps: [{ call: { tool: 'thread_watch', args: { label: 'once', command: run('once.sh'), every_seconds: 1 } } }],
-            text: 'Watching once.',
-          },
-        ],
-        afterTurns: 'silent',
-      }),
-    );
-    await harness.rpc('StartSession', thread);
-    await harness.rpc('SendMessage', thread, 'report once', null);
-    const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd, timeoutMs: 60_000 });
-    expect(ack.isError, ack.text).toBe(false);
-    await awaitTurnCompleted(harness, thread);
-    await harness.rpc('StopSession', thread);
-
-    const queued = () => {
-      const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
-      try {
-        return (
-          db.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ?`).all(thread) as { send_id: string }[]
-        ).map((row) => row.send_id.split(':')[0]);
-      } finally {
-        db.close();
-      }
-    };
-    const state = () => {
-      const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
-      try {
-        const wake = db
-          .prepare(`SELECT last_outcome, last_output FROM agent_wakes WHERE thread_id = ? AND label = 'once'`)
-          .get(thread) as { last_outcome: string; last_output: string };
-        const draft = db.prepare(`SELECT content FROM thread_drafts WHERE thread_id = ?`).get(thread) as
-          | { content: string }
-          | undefined;
-        const count = (sql: string, ...args: string[]) => (db.prepare(sql).get(thread, ...args) as { n: number }).n;
-        return {
-          outcome: wake.last_outcome,
-          kept: wake.last_output.includes('"the report before the quit"'),
-          draft: draft?.content ?? '',
-          notices: count(
-            `SELECT COUNT(*) AS n FROM items WHERE thread_id = ? AND kind = 'notification' AND summary LIKE '%agent-overflow thread send was not delivered: the app quit before the agent took it in.%'`,
-          ),
-          messages: count(
-            `SELECT COUNT(*) AS n FROM items WHERE thread_id = ? AND kind = 'user_text' AND (summary LIKE '%deploy 9%' OR summary LIKE '%before the quit%')`,
-          ),
-          queued: count(`SELECT COUNT(*) AS n FROM flush_queue_items WHERE thread_id = ?`),
-        };
-      } finally {
-        db.close();
-      }
-    };
-    // Each message starts the session, which is held at its handshake
-    // while the message waits in the durable queue, and the app crashes.
-    const crashWhileStarting = async (queue: () => Promise<unknown>, kind: string) => {
-      await setScenario(harness!, cwd, {
-        ...threadToolsScenario({ name: `wakes-boot-slow-${provider}`, provider, turns: [{ text: 'unreached' }] }),
-        startupDelayMs: 30_000,
-      });
-      const queuing = queue();
-      await expect.poll(queued, { timeout: 30_000 }).toEqual([kind]);
-      expect(await harness!.crash()).toBe(true);
-      harness = undefined;
-      await queuing;
+// for the message. Each is held in the durable queue by a start that
+// failed, which leaves it there until the crash on both providers.
+for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${provider}: a wake and an outside send queued at quit are recorded at boot, not put in the composer`, async () => {
+    test.setTimeout(120_000);
+    const root = await mkdtemp(join(tmpdir(), `ao-wake-boot-${provider}-`));
+    let harness: HarnessApp | undefined;
+    let breaker: ReturnType<typeof startBreaker> | undefined;
+    try {
       harness = await launchHarness({ dataDir: root });
-    };
+      const dataDir = harness.bootstrap.dataDir;
+      const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `wakes-boot-${provider}`, repo: {}, threads: [{ title: 'Quitting watcher', provider }] }],
+      });
+      const { path: cwd, threadIds } = seed.projects[0];
+      const thread = threadIds[0];
+      const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      await writeFile(
+        join(agent.home, 'once.sh'),
+        `[ -f "$AO_AGENT_HOME/once.done" ] && exec sleep 3600
+  while [ ! -f "$AO_AGENT_HOME/once.release" ]; do sleep 0.1; done
+  : > "$AO_AGENT_HOME/once.done"
+  echo "the report before the quit"
+  `,
+      );
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `wakes-boot-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [
+            {
+              // In the agent's home, which a failed start leaves in place.
+              steps: [
+                {
+                  call: {
+                    tool: 'thread_watch',
+                    args: { label: 'once', command: run('once.sh'), every_seconds: 1, cwd: agent.home },
+                  },
+                },
+              ],
+              text: 'Watching once.',
+            },
+          ],
+          afterTurns: 'silent',
+        }),
+      );
+      await harness.rpc('StartSession', thread);
+      await harness.rpc('SendMessage', thread, 'report once', null);
+      const ack = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd, timeoutMs: 60_000 });
+      expect(ack.isError, ack.text).toBe(false);
+      await awaitTurnCompleted(harness, thread);
+      await harness.rpc('StopSession', thread);
 
-    // ---- An outside send, with the watch's first run waiting on its
-    // release: the crash cuts it, and boot records that and runs it again.
-    await expect.poll(() => dbWake(dataDir, thread, 'once')?.state, { timeout: 30_000 }).toBe('running');
-    await crashWhileStarting(() => threadSend(dataDir, [thread, 'deploy 9 is done']), 'agent-send');
-    await expect
-      .poll(state, { timeout: 30_000 })
-      .toEqual({ outcome: 'cancelled-by-quit', kept: false, draft: '', notices: 1, messages: 0, queued: 0 });
+      const queued = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return (
+            db.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ?`).all(thread) as { send_id: string }[]
+          ).map((row) => row.send_id.split(':')[0]);
+        } finally {
+          db.close();
+        }
+      };
+      const state = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          const wake = db
+            .prepare(`SELECT last_outcome, last_output FROM agent_wakes WHERE thread_id = ? AND label = 'once'`)
+            .get(thread) as { last_outcome: string; last_output: string };
+          const draft = db.prepare(`SELECT content FROM thread_drafts WHERE thread_id = ?`).get(thread) as
+            | { content: string }
+            | undefined;
+          const count = (sql: string, ...args: string[]) => (db.prepare(sql).get(thread, ...args) as { n: number }).n;
+          return {
+            outcome: wake.last_outcome,
+            kept: wake.last_output.includes('"the report before the quit"'),
+            draft: draft?.content ?? '',
+            notices: count(
+              `SELECT COUNT(*) AS n FROM items WHERE thread_id = ? AND kind = 'notification' AND summary LIKE '%agent-overflow thread send was not delivered: the app quit before the agent took it in.%'`,
+            ),
+            messages: count(
+              `SELECT COUNT(*) AS n FROM items WHERE thread_id = ? AND kind = 'user_text' AND (summary LIKE '%deploy 9%' OR summary LIKE '%before the quit%')`,
+            ),
+            queued: count(`SELECT COUNT(*) AS n FROM flush_queue_items WHERE thread_id = ?`),
+          };
+        } finally {
+          db.close();
+        }
+      };
+      // Each message starts the session, whose start fails while the message
+      // waits in the durable queue, and the app crashes. The workspace is
+      // back before the next boot.
+      const crashWhileStarting = async (queue: () => Promise<unknown>, kind: string) => {
+        const b = startBreaker(harness!, provider, cwd);
+        breaker = b;
+        await b.brk();
+        const queuing = queue();
+        await expect.poll(queued, { timeout: 30_000 }).toEqual([kind]);
+        expect(await harness!.crash()).toBe(true);
+        harness = undefined;
+        await queuing;
+        await b.mend();
+        harness = await launchHarness({ dataDir: root });
+      };
 
-    // ---- A wake.
-    await crashWhileStarting(() => writeFile(join(agent.home, 'once.release'), ''), 'agent-wake');
-    await expect
-      .poll(state, { timeout: 30_000 })
-      .toEqual({ outcome: 'not delivered', kept: true, draft: '', notices: 1, messages: 0, queued: 0 });
-  } finally {
-    if (harness) await harness.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
+      // ---- An outside send, with the watch's first run waiting on its
+      // release: the crash cuts it, and boot records that and runs it again.
+      await expect.poll(() => dbWake(dataDir, thread, 'once')?.state, { timeout: 30_000 }).toBe('running');
+      await crashWhileStarting(() => threadSend(dataDir, [thread, 'deploy 9 is done']), 'agent-send');
+      await expect
+        .poll(state, { timeout: 30_000 })
+        .toEqual({ outcome: 'cancelled-by-quit', kept: false, draft: '', notices: 1, messages: 0, queued: 0 });
+
+      // ---- A wake.
+      await crashWhileStarting(() => writeFile(join(agent.home, 'once.release'), ''), 'agent-wake');
+      await expect
+        .poll(state, { timeout: 30_000 })
+        .toEqual({ outcome: 'not delivered', kept: true, draft: '', notices: 1, messages: 0, queued: 0 });
+    } finally {
+      await breaker?.cleanup();
+      if (harness) await harness.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
 
 // A thread request's answer and a remote job's completion still queued when
 // the app quits are not the person's words: the next boot gives them back to
