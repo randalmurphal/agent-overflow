@@ -752,7 +752,9 @@ towards a ten-minute ceiling for eight attempts. What stops a wake is
 the caller thread's own state, which no number of retries changes, so
 the retry ends rather than running for the life of the row: the request
 keeps its answer and records why the message never arrived, and
-`thread_status` returns both.
+`thread_status` returns both. A pass that finds a call holding the token
+books no attempt, so when that call's reply does not carry the answer,
+the wake is due again the moment the call lets go.
 
 The source thread's title in a wake's status line comes from the
 answering computer: a thread on another computer has no row here, so
