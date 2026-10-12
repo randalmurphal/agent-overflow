@@ -45,14 +45,13 @@ func refuseAgentGroupingTx(tx *sql.Tx, threadID string) error {
 }
 
 // StandingAgentPromotion is what promoting a thread changed: its agent row,
-// whether this call made it, the threads the promotion took out of their
-// groups (the agent and the threads it spawned) and the groups that left
-// empty, which are deleted.
+// whether this call made it, and the groups the ungrouping of the agent and
+// its spawned threads left empty, which are deleted. The moved rows are not
+// returned: the app re-reads the agent and every live spawned thread by id
+// after the commit, since their rows change whether or not they moved.
 type StandingAgentPromotion struct {
 	Agent    StandingAgent
 	Promoted bool
-	// Ungrouped holds every row the promotion moved, as it now stands.
-	Ungrouped []Thread
 	// DeletedGroups are the groups the ungrouping emptied, in no order.
 	DeletedGroups []ThreadGroup
 }
@@ -79,7 +78,7 @@ func (s *Store) PromoteStandingAgent(threadID, home string, now int64) (promotio
 	}
 	promotion = StandingAgentPromotion{Promoted: inserted == 1}
 	if promotion.Promoted {
-		if promotion.Ungrouped, promotion.DeletedGroups, err = ungroupStandingAgentTx(tx, threadID); err != nil {
+		if promotion.DeletedGroups, err = ungroupStandingAgentTx(tx, threadID); err != nil {
 			return StandingAgentPromotion{}, fmt.Errorf("%s: %w", action, err)
 		}
 	}
@@ -97,27 +96,19 @@ func (s *Store) PromoteStandingAgent(threadID, home string, now int64) (promotio
 
 // ungroupStandingAgentTx takes the agent and every thread it spawned out of
 // their groups, pins included, and deletes each group that left empty.
-func ungroupStandingAgentTx(tx *sql.Tx, agentID string) ([]Thread, []ThreadGroup, error) {
+func ungroupStandingAgentTx(tx *sql.Tx, agentID string) ([]ThreadGroup, error) {
 	groupIDs, err := queryIDs(tx, `SELECT DISTINCT group_id FROM threads
 		WHERE group_id IS NOT NULL AND (id = ? OR id IN (
 			SELECT target_thread_id FROM thread_requests
 			 WHERE caller_thread_id = ? AND kind = 'spawn' AND target_computer_id = ''))`, agentID, agentID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("find the groups of the agent and its spawned threads: %w", err)
+		return nil, fmt.Errorf("find the groups of the agent and its spawned threads: %w", err)
 	}
-	moved, err := queryIDs(tx, `UPDATE threads SET group_id = NULL, pinned_at = NULL, pin_group = NULL
+	if _, err := tx.Exec(`UPDATE threads SET group_id = NULL, pinned_at = NULL, pin_group = NULL
 		WHERE group_id IS NOT NULL AND (id = ? OR id IN (
 			SELECT target_thread_id FROM thread_requests
-			 WHERE caller_thread_id = ? AND kind = 'spawn' AND target_computer_id = ''))
-		RETURNING id`, agentID, agentID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("ungroup the agent and its spawned threads: %w", err)
-	}
-	rows := []Thread{}
-	if len(moved) > 0 {
-		if rows, err = listThreadsByIDTx(tx, moved); err != nil {
-			return nil, nil, fmt.Errorf("read back the ungrouped threads: %w", err)
-		}
+			 WHERE caller_thread_id = ? AND kind = 'spawn' AND target_computer_id = ''))`, agentID, agentID); err != nil {
+		return nil, fmt.Errorf("ungroup the agent and its spawned threads: %w", err)
 	}
 	deleted := []ThreadGroup{}
 	for _, groupID := range groupIDs {
@@ -128,11 +119,11 @@ func ungroupStandingAgentTx(tx *sql.Tx, agentID string) ([]Thread, []ThreadGroup
 			continue
 		}
 		if err != nil {
-			return nil, nil, fmt.Errorf("delete the emptied group %s: %w", groupID, err)
+			return nil, fmt.Errorf("delete the emptied group %s: %w", groupID, err)
 		}
 		deleted = append(deleted, group)
 	}
-	return rows, deleted, nil
+	return deleted, nil
 }
 
 // ListSpawnedThreadIDs lists the live threads a thread spawned on this

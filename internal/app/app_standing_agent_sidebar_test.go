@@ -3,9 +3,10 @@ package app
 import (
 	"context"
 	"errors"
-	"github.com/google/uuid"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
