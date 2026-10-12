@@ -71,7 +71,7 @@
   // the previous instance's residue, says so in every hello. It outranks
   // the bundle notice: it is about the data this backend serves now.
   import { dismissBootFailureNotice, getBootFailureNotice } from '../../stores/bootFailureNotice.svelte';
-  import { isBackendRecovering, onBackendRecovery } from '../../stores/transportRecovery';
+  import { isBackendResyncing, onBackendRecovery } from '../../stores/transportRecovery';
 
   // Tick once per second so the countdown stays in sync. We only mount
   // when the banner is visible; on a steady-state connection the
@@ -120,16 +120,20 @@
   let bundleNotice = $derived(getBundleNotice());
   let bootFailure = $derived(getBootFailureNotice(backend));
   let connectedNotice = $derived(bootFailure || bundleNotice);
-  let recovering = $state(false);
+  // Only a connection that replaced one this page used has anything to
+  // resync. A first connection's recovery is its boot, which the startup
+  // screen and the sidebar's catalog rows already show. On compact the
+  // strip is a row above the list, so its leaving moves a row under a tap.
+  let resyncing = $state(false);
   $effect(() => {
     const target = backend;
-    recovering = isBackendRecovering(target);
-    return onBackendRecovery((id, phase) => {
-      if (id === target) recovering = phase === 'start';
+    resyncing = isBackendResyncing(target);
+    return onBackendRecovery((id) => {
+      if (id === target) resyncing = isBackendResyncing(target);
     });
   });
   let checking = $derived(snapshot.status === 'connected' && snapshot.checkingConnection === true);
-  let syncing = $derived(snapshot.status === 'connected' && recovering);
+  let syncing = $derived(snapshot.status === 'connected' && resyncing);
   let showingBootFailure = $derived(snapshot.status === 'connected' && !checking && !syncing && bootFailure !== '');
 
   // A connection problem outranks a connected notice (a failed boot phase

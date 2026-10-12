@@ -11,9 +11,8 @@ import { expect } from './fixtures.js';
  */
 export async function longPress(page: Page, target: Locator, opens: Locator): Promise<void> {
   // A raw touch has none of the actionability waits Playwright's `tap`
-  // makes. The list renders during the initial sync, while the transport
-  // banner still occupies a row above it in compact layout; a box measured
-  // then is stale by the time the banner leaves.
+  // makes. A transport strip occupies a row above the list in compact
+  // layout, so a box measured while one is up is stale once it leaves.
   await expect(page.getByTestId('transport-status-banner')).toHaveCount(0);
   await target.scrollIntoViewIfNeeded();
   const box = await target.boundingBox();

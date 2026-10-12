@@ -9,7 +9,7 @@
 // keeps the meters and rolls the pickers into one sheet, and a viewport
 // that shrinks under a pinned reader (the soft keyboard) keeps the tail
 // on screen.
-import type { Locator, Page } from '@playwright/test';
+import type { Locator, Page, WebSocketRoute } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { longPress } from './touch-helpers.js';
 
@@ -164,6 +164,69 @@ test('opening a thread swaps to the thread screen and back returns to the list',
   // Tapping the already-open thread reveals it again.
   await page.getByTestId('thread-row').filter({ hasText: 'First task' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
+});
+
+// On compact the connection strip is a row above the list, so the strip
+// appearing or leaving moves every thread row. A page's first connection
+// recovers nothing it had shown, so it raises no strip: a tap that lands
+// while that connection's replay is out opens the row it pressed. A
+// reconnect does resync what the page showed, and says so. Each
+// connection's replay answer is held to give the test the whole recovery
+// window.
+test('a tap during the first connection\'s recovery opens the pressed thread; a reconnect shows sync', async ({
+  harness,
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const seen = { strip: false };
+    (window as unknown as { __stripSeen: typeof seen }).__stripSeen = seen;
+    new MutationObserver(() => {
+      if (document.querySelector('[data-testid="transport-status-banner"]')) seen.strip = true;
+    }).observe(document, { childList: true, subtree: true });
+  });
+  const connections: Array<{ page: WebSocketRoute; server: WebSocketRoute; held: boolean; release: () => void }> = [];
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const connection = { page: socket, server, held: false, release };
+    connections.push(connection);
+    socket.onMessage((message) => server.send(message));
+    server.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string };
+      if (frame.type === 'replay' && !connection.held) {
+        connection.held = true;
+        void released.then(() => socket.send(message));
+        return;
+      }
+      socket.send(message);
+    });
+  });
+  const strip = page.getByTestId('transport-status-banner');
+  try {
+    await harness.open(page);
+    const row = page.getByTestId('thread-row').filter({ hasText: 'First task' });
+    await expect(row).toBeVisible();
+    await expect.poll(() => connections[0]?.held).toBe(true);
+    const box = (await row.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    connections[0].release();
+    await expect(strip).toHaveCount(0);
+    await page.mouse.up();
+    await expect(page.locator('html')).toHaveAttribute('data-compact-screen', 'thread');
+    await expect(page.getByTestId('chat-header-title')).toHaveText('First task');
+    expect(await page.evaluate(() => (window as unknown as { __stripSeen: { strip: boolean } }).__stripSeen.strip)).toBe(false);
+
+    await connections[0].page.close({ code: 1012, reason: 'test network outage' });
+    await connections[0].server.close();
+    await expect.poll(() => connections[1]?.held).toBe(true);
+    await expect(strip).toHaveText('Syncing…');
+    connections[1].release();
+    await expect(strip).toHaveCount(0);
+  } finally {
+    for (const connection of connections) connection.release();
+  }
 });
 
 test('Return inserts a newline and Send is the way to send', async ({ harness, page }) => {
