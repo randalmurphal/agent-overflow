@@ -33,9 +33,11 @@ type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTu
 let threads: Thread[] = $state([]);
 const catalogWriter = computerCatalogWriter('threads', () => threads, setThreads, (row) => threadBackend(row.id));
 
-// Every write to the list passes here, so a thread that stops being a
-// standing agent in this list (demoted, archived, deleted, or replaced by
-// a row without the mark) takes its agent-only sidebar state with it.
+// Every write to the list passes here except dropThreadsForDetachedBackend,
+// so a thread that stops being a standing agent in this list (demoted,
+// archived, deleted, or replaced by a row without the mark) takes its
+// agent-only sidebar state with it. A computer detaching keeps that state:
+// its agents are still agents, and the persisted fold must survive.
 function setThreads(rows: Thread[]): void {
   const before = threads;
   threads = rows;

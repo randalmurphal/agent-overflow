@@ -113,6 +113,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect.poll(async () => [(await rowById(harness, agent))?.groupId ?? null, (await rowById(harness, workerA))?.groupId ?? null]).toEqual([null, null]);
     // Worker B was pinned at the top level, not in a group: it keeps its pin inside the fold.
     await expect(row(page, workerB).getByTestId('thread-row-pin')).toHaveAttribute('data-pin-group', 'front');
+    // Its row was not regrouped, yet it learned the bond at once: no group
+    // move is offered before any reload.
+    expect(await menuLabels(page, row(page, workerB))).not.toContain('Move to Group');
     // The agent block sits above the divider, Loose thread below it.
     const divider = page.getByTestId('thread-section-divider');
     await expect(divider).toHaveCount(1);

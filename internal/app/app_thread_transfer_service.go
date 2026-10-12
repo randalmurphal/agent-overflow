@@ -63,17 +63,27 @@ func (a *App) startThreadTransfers() error {
 	if err != nil {
 		return err
 	}
-	jobs, err := threadtransfer.NewJobs(a.lifeCtx(), a.store, admittedTransferRunner{a, source}, admittedTransferRunner{a, destination}, transferErrorText, func(row store.ThreadTransfer) {
-		a.emit(eventchan.ThreadTransfer, row)
-		if err := a.announceTransferredDraft(row); err != nil {
-			log.Printf("app: announce transferred draft: %v", err)
-		}
-	}, func(err error) { log.Printf("app: conversation transfer scheduler: %v", err) }, a.transferPendingRetry)
+	jobs, err := threadtransfer.NewJobs(a.lifeCtx(), a.store, admittedTransferRunner{a, source}, admittedTransferRunner{a, destination}, transferErrorText,
+		a.threadTransferChanged, func(err error) { log.Printf("app: conversation transfer scheduler: %v", err) }, a.transferPendingRetry)
 	if err != nil {
 		return err
 	}
 	a.transfers.live.Store(&appTransferService{ctx: a.lifeCtx(), jobs: jobs, destination: destination})
 	return nil
+}
+
+// threadTransferChanged tells clients a transfer row moved. A committed
+// outgoing move retires the thread here and drops its standing agent row
+// (store.AdvanceThreadTransfer), so the live threads it spawned go out
+// again without their agent bond.
+func (a *App) threadTransferChanged(row store.ThreadTransfer) {
+	a.emit(eventchan.ThreadTransfer, row)
+	if err := a.announceTransferredDraft(row); err != nil {
+		log.Printf("app: announce transferred draft: %v", err)
+	}
+	if row.Direction == "outgoing" && row.Kind == "move" && (row.Phase == "committed" || row.Phase == "complete") {
+		a.broadcastSpawnedThreadRows(row.ThreadID)
+	}
 }
 
 func (a *App) checkTransferIdle(thread store.Thread) error {

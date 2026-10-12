@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"github.com/google/uuid"
 	"strings"
 	"testing"
 
@@ -245,6 +246,80 @@ func TestASpawnedThreadsArchiveMovesItsAgentsRow(t *testing.T) {
 	}
 	if listed, err := f.app.ListArchivedSpawnedThreads(plainSpawner.ID); err != nil || len(listed) != 1 || listed[0].ID != plainChild.ID {
 		t.Errorf("archived spawned threads of the plain spawner = %+v, %v", listed, err)
+	}
+}
+
+// A spawned thread's row says whether its spawner is a standing agent, so
+// every change of that fact re-emits the row: promotion, demotion, a
+// committed move and the agent's delete (which takes the spawn rows too).
+func TestASpawnedThreadsBondFollowsItsAgentsRow(t *testing.T) {
+	t.Parallel()
+	f := newOrganizeFixture(t)
+	agent := f.thread(t, "agent")
+	child := f.thread(t, "child")
+	archived := f.thread(t, "archived-child")
+	recordSpawn(t, f.app, "tok-child", agent.ID, child.ID)
+	recordSpawn(t, f.app, "tok-archived", agent.ID, archived.ID)
+	if err := f.app.ArchiveThread(archived.ID); err != nil {
+		t.Fatal(err)
+	}
+	childFrame := func(step string, wantBond bool) {
+		t.Helper()
+		frames := f.threadFrames(t)
+		got := fullFrameFor(frames, child.ID)
+		if got == nil || got.SpawnedByAgent != wantBond || got.SpawnedByThreadID != agent.ID {
+			t.Errorf("%s: child frame = %+v, want spawnedByAgent %v spawnedBy %q", step, got, wantBond, agent.ID)
+		}
+		// An archived child is in no client's list: no frame for it.
+		if fullFrameFor(frames, archived.ID) != nil {
+			t.Errorf("%s: the archived child was broadcast", step)
+		}
+	}
+
+	f.events.reset()
+	if _, err := f.app.PromoteStandingAgent(agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	childFrame("promote", true)
+
+	f.events.reset()
+	if err := f.app.DemoteStandingAgent(agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	childFrame("demote", false)
+
+	if _, err := f.app.PromoteStandingAgent(agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	transfer, err := f.app.store.CreateThreadTransfer(store.ThreadTransfer{
+		ID: uuid.NewString(), ThreadID: agent.ID, PeerBackendID: uuid.NewString(), Kind: "move", Direction: "outgoing",
+		ActivationHash: strings.Repeat("a", 64), PrivateState: []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"prepared", "committed"} {
+		if transfer, err = f.app.store.AdvanceThreadTransfer(transfer.ID, phase, strings.Repeat("b", 64)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.events.reset()
+	f.app.threadTransferChanged(transfer)
+	childFrame("move committed", false)
+
+	// Deleting an agent takes its spawn rows: the child is nobody's.
+	other := f.thread(t, "other-agent")
+	plain := f.thread(t, "plain-child")
+	recordSpawn(t, f.app, "tok-plain", other.ID, plain.ID)
+	if _, err := f.app.PromoteStandingAgent(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.events.reset()
+	if err := f.app.DeleteThread(other.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := fullFrameFor(f.threadFrames(t), plain.ID); got == nil || got.SpawnedByAgent || got.SpawnedByThreadID != "" {
+		t.Errorf("delete agent: child frame = %+v, want no spawner and no bond", got)
 	}
 }
 

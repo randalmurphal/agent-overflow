@@ -264,6 +264,9 @@ Mechanics, as built:
   `spawnedByThreadId`: the group refusal holds while the agent is
   archived (its own row is then absent), and the row's menu and drag
   payload read the bond from the row, not from a lookup of the agent.
+  The live spawned rows go out again whenever that bond changes:
+  promotion, demotion, the agent's delete (which takes the spawn rows
+  with it) and a committed move.
 - The harness seeds lineage with `HarnessSeedThread.spawnedBy`, the
   title of a thread seeded earlier in the same project.
 

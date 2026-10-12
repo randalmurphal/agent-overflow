@@ -135,6 +135,21 @@ func ungroupStandingAgentTx(tx *sql.Tx, agentID string) ([]Thread, []ThreadGroup
 	return rows, deleted, nil
 }
 
+// ListSpawnedThreadIDs lists the live threads a thread spawned on this
+// computer. Their rows' spawnedByAgent follows the spawner's standing agent
+// row, so the app re-emits them when that row is created or dropped
+// (promote, demote, delete, move).
+func (s *Store) ListSpawnedThreadIDs(spawnerID string) ([]string, error) {
+	ids, err := queryIDs(s.reader(), `SELECT id FROM owned_threads WHERE archived = 0 AND id IN (
+		SELECT target_thread_id FROM thread_requests
+		 WHERE caller_thread_id = ? AND kind = 'spawn' AND target_computer_id = '')
+		ORDER BY id`, spawnerID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list threads spawned by %s: %w", spawnerID, err)
+	}
+	return ids, nil
+}
+
 // ListArchivedSpawnedThreads lists the archived threads a thread spawned on
 // this computer, newest activity first: the standing agent row's finished
 // work, read when the user opens it.

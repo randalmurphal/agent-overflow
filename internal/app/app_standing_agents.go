@@ -76,16 +76,12 @@ func (a *App) PromoteStandingAgent(threadID string) (store.StandingAgent, error)
 		return store.StandingAgent{}, err
 	}
 	if promotion.Promoted {
-		// The agent's own row carries agentPromotedAt now. It is among the
-		// ungrouped rows only when it was grouped, so it is re-read either
-		// way; the others moved and go as they landed. The group frames go
-		// last: a client drops a group only once no row names it.
+		// The agent's own row carries agentPromotedAt now, and every live
+		// thread it spawned carries spawnedByAgent, grouped before or not;
+		// each is re-read as it stands after the ungrouping. The group
+		// frames go last: a client drops a group only once no row names it.
 		a.broadcastThreadRowByID(threadID)
-		for _, row := range promotion.Ungrouped {
-			if row.ID != threadID {
-				a.broadcastThreadRow(triage.ThreadActionFull, row)
-			}
-		}
+		a.broadcastSpawnedThreadRows(threadID)
 		for _, group := range promotion.DeletedGroups {
 			a.emitThreadGroup("delete", group)
 		}
@@ -124,8 +120,10 @@ func (a *App) DemoteStandingAgent(threadID string) error {
 	}
 	unlock()
 	// The row's agentPromotedAt and archivedChildCount are gone with the
-	// agent row; the sidebar renders it as a plain thread again.
+	// agent row, and its spawned threads' spawnedByAgent with them; the
+	// sidebar renders them all as plain threads again.
 	a.broadcastThreadRowByID(threadID)
+	a.broadcastSpawnedThreadRows(threadID)
 	if len(ids) > 0 {
 		a.emitAgentWakesRemoved(threadID, ids)
 	}
@@ -143,6 +141,27 @@ func (a *App) DemoteStandingAgent(threadID string) error {
 //ao:route thread
 func (a *App) ListArchivedSpawnedThreads(threadID string) ([]store.Thread, error) {
 	return a.store.ListArchivedSpawnedThreads(threadID)
+}
+
+// broadcastSpawnedThreadRows re-emits the live threads spawnerID spawned:
+// their rows' spawnedByAgent follows the spawner's standing agent row, so
+// a promotion, demotion or move of the spawner changes what their menus
+// and drags allow. A delete passes the ids itself (broadcastThreadRowsByID),
+// since the cascade has already dropped the spawn rows this reads.
+// Log-and-continue, as broadcastThreadRowByID.
+func (a *App) broadcastSpawnedThreadRows(spawnerID string) {
+	ids, err := a.store.ListSpawnedThreadIDs(spawnerID)
+	if err != nil {
+		log.Printf("broadcast the threads spawned by %s: %v", spawnerID, err)
+		return
+	}
+	a.broadcastThreadRowsByID(ids)
+}
+
+func (a *App) broadcastThreadRowsByID(ids []string) {
+	for _, id := range ids {
+		a.broadcastThreadRowByID(id)
+	}
 }
 
 // broadcastSpawnerRow re-emits the standing agent that spawned child: the
