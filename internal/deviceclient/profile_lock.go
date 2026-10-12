@@ -13,6 +13,11 @@ import (
 // test can shorten it; nothing else assigns it.
 var profileWriteTimeout = 5 * time.Second
 
+// releaseProfileLock is what a lock's release calls. A variable so a test
+// can make a release fail and see each caller report it; nothing else
+// assigns it.
+var releaseProfileLock = releaseProfile
+
 // lockProfile provides OS ownership across processes. Session/key file locks
 // cover short transactions only; a separate legacy-renewal lock serializes
 // exchanges with hosts lacking recovery. Ownership ends on exit or crash;
@@ -40,7 +45,7 @@ func lockProfile(ctx context.Context, dir, name string) (func() error, error) {
 			return nil, err
 		}
 		if locked {
-			return func() error { return releaseProfile(f) }, nil
+			return func() error { return releaseProfileLock(f) }, nil
 		}
 		timer := time.NewTimer(20 * time.Millisecond)
 		select {
@@ -64,7 +69,8 @@ func releaseProfile(f *os.File) error {
 		unlockErr = fmt.Errorf("deviceclient: unlock %s: %w", f.Name(), unlockErr)
 	}
 	if closeErr != nil {
-		closeErr = fmt.Errorf("deviceclient: close %s: %w", f.Name(), closeErr)
+		// The close error is a PathError that already names the file.
+		closeErr = fmt.Errorf("deviceclient: %w", closeErr)
 	}
 	return errors.Join(unlockErr, closeErr)
 }
