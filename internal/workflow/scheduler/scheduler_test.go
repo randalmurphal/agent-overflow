@@ -611,6 +611,9 @@ func TestListFailureIsReportedAndRetried(t *testing.T) {
 	h.store.mu.Lock()
 	h.store.listErr = fmt.Errorf("database is locked")
 	h.store.mu.Unlock()
+	// The loop acknowledges a refresh before it re-reads the table, so the
+	// read is only certain to have run once a second command is taken.
+	h.sync()
 	h.sync()
 
 	if reports := h.snapshotReports(); len(reports) == 0 {
