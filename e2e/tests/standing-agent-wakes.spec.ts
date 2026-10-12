@@ -2186,204 +2186,265 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
   });
 }
 
+// giveBackCaller sets up the round the give-back cases share: a caller
+// thread on `provider` asks a Claude thread for release notes and starts a
+// nightly build on a paired Build box, then rests with both outstanding.
+// The target holds its reply at the `answer` gate, and the build runs until
+// `release` exists. Each helper acts on app(), the running process, which a
+// relaunch replaces. state() reads the request, the watch, the composer and
+// the caller's queue rows from the database.
+async function giveBackCaller(app: () => HarnessApp, remote: HarnessApp, provider: ProviderName, name: string, answer: string) {
+  await app().rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+  const dataDir = app().bootstrap.dataDir;
+  const computer = await pairBuildBox(app(), remote);
+  const remoteSeed = await remote.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: `${name}-build-${provider}`, repo: {} }],
+  });
+  const { projectId: remoteProject, path: remotePath } = remoteSeed.projects[0];
+  const seed = await app().rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: `${name}-caller-${provider}`, repo: {}, threads: [{ title: 'Weekly planner', provider }] },
+      { name: `${name}-target-${provider}`, repo: {}, threads: [{ title: 'Release notes', provider: 'claude' }] },
+    ],
+  });
+  const callerPath = seed.projects[0].path;
+  const caller = seed.projects[0].threadIds[0];
+  const targetPath = seed.projects[1].path;
+  const target = seed.projects[1].threadIds[0];
+  const requestId = randomUUID();
+  const release = join(remotePath, 'build.release');
+  await setScenario(
+    app(),
+    targetPath,
+    threadToolsScenario({
+      name: `${name}-target-${provider}`,
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+            { gate: 'answer' },
+            { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: answer } } },
+          ],
+          text: 'Replied.',
+        },
+      ],
+      afterTurns: 'silent',
+    }),
+  );
+  await setScenario(
+    app(),
+    callerPath,
+    threadToolsScenario({
+      name: `${name}-caller-${provider}`,
+      provider,
+      echoUserMessage: true,
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_send',
+                args: { thread_id: target, message: 'Draft the release notes.', wait_seconds: 0, notify: true },
+              },
+            },
+            {
+              call: {
+                server: 'ao-remote-tools',
+                tool: 'remote_run',
+                args: {
+                  computer_id: computer,
+                  project_id: remoteProject,
+                  request_id: requestId,
+                  label: 'nightly build',
+                  argv: ['sh', '-c', `while [ ! -f '${release}' ]; do sleep 0.1; done; echo 'build 812 finished: green'`],
+                  wait_seconds: 0,
+                },
+              },
+            },
+          ],
+          text: 'Asked for the notes, and the build runs on Build box.',
+        },
+      ],
+      afterTurns: 'silent',
+    }),
+  );
+  await app().rpc('StartSession', caller);
+  await app().rpc('SendMessage', caller, 'ask for the release notes and run the nightly build', null);
+  const sent = await awaitToolAnswer<{ token: string; outcome: string }>(app(), {
+    tool: 'thread_send',
+    cwd: callerPath,
+    timeoutMs: 60_000,
+  });
+  expect(sent.isError, sent.text).toBe(false);
+  expect(sent.value!.outcome).toBe('backgrounded');
+  const token = sent.value!.token;
+  const started = await app().awaitMcpResult({
+    server: 'ao-remote-tools',
+    tool: 'remote_run',
+    cwd: callerPath,
+    timeoutMs: 60_000,
+  });
+  expect(started.report.result).toContain('"backgrounded":true');
+  await awaitTurnCompleted(app(), caller);
+  const responder = await awaitGate(app(), 'answer', targetPath);
+
+  const state = () => {
+    const conn = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+    try {
+      const request = conn
+        .prepare(`SELECT delivered_at IS NOT NULL AS delivered, delivered_how AS how, notify FROM thread_requests WHERE token = ?`)
+        .get(token) as { delivered: number; how: string; notify: number };
+      const watch = (
+        conn.prepare(`SELECT notification FROM remote_watches WHERE request_id = ?`).get(requestId) as { notification: string }
+      ).notification;
+      const draft = conn.prepare(`SELECT content FROM thread_drafts WHERE thread_id = ?`).get(caller) as
+        | { content: string }
+        | undefined;
+      const rows = (conn.prepare(`SELECT COUNT(*) AS n FROM flush_queue_items WHERE thread_id = ?`).get(caller) as { n: number }).n;
+      return { request, watch, draft: draft?.content ?? '', rows };
+    } finally {
+      conn.close();
+    }
+  };
+  // The second phase of each delivery mark, and the watch's redelivery
+  // pace (wake_attempts, next_check).
+  const marks = () => {
+    const conn = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+    try {
+      const request = conn.prepare(`SELECT confirmed_at IS NOT NULL AS confirmed FROM thread_requests WHERE token = ?`).get(token) as {
+        confirmed: number;
+      };
+      const watch = conn
+        .prepare(
+          `SELECT confirmed_at IS NOT NULL AS confirmed, wake_attempts AS attempts, next_check AS nextCheck FROM remote_watches WHERE request_id = ?`,
+        )
+        .get(requestId) as { confirmed: number; attempts: number; nextCheck: number };
+      return { answer: request.confirmed, completion: watch.confirmed, attempts: watch.attempts, nextCheck: watch.nextCheck };
+    } finally {
+      conn.close();
+    }
+  };
+  // Each message starts a session that reads it and holds, never echoing
+  // it: Claude's still starting, Codex's in a turn held at its first step.
+  const holdNextSession = async (scenario: string) => {
+    await app().rpc('StopSession', caller);
+    await setScenario(
+      app(),
+      callerPath,
+      provider === 'claude'
+        ? { ...threadToolsScenario({ name: scenario, provider, turns: [{ text: 'unreached' }] }), startupDelayMs: 30_000 }
+        : threadToolsScenario({
+            name: scenario,
+            provider,
+            echoUserMessage: true,
+            turns: [{ steps: [{ gate: 'hold' }], text: 'unreached', echo: false }],
+            afterTurns: 'silent',
+          }),
+    );
+  };
+  const heldMock = async (input: HarnessMockEventData) =>
+    provider === 'claude' ? input.mockId : (await awaitGate(app(), 'hold', callerPath)).mockId;
+  const healthy = (scenario: string) =>
+    setScenario(
+      app(),
+      callerPath,
+      threadToolsScenario({ name: scenario, provider, echoUserMessage: true, turns: [{ text: 'Build 812 is green.' }], afterTurns: 'silent' }),
+    );
+  return {
+    dataDir,
+    caller,
+    callerPath,
+    token,
+    requestId,
+    release,
+    responder,
+    completion: `request_id: ${requestId}`,
+    state,
+    marks,
+    holdNextSession,
+    heldMock,
+    healthy,
+  };
+}
+
 // A thread request's answer and a remote job's completion that a session
 // read and died before taking in go back to their owners, not to the
 // composer. The provider was handed each one, so no queue row is left: the
-// request is owed and disarmed, and the watch is pending again, so the
-// watcher delivers the completion to the session it starts next. Each goes
+// request is owed and disarmed, and the watch is pending again. A session
+// that keeps dying would be restarted for the completion every few seconds,
+// so the watcher delivers it again on the ladder a request's undelivered
+// wake is retried on: the first redelivery is half a minute out. Each goes
 // to a session that reads it and holds: Claude's still starting, Codex's in
 // a turn that never echoes it.
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: an answer and a remote completion a dying session never took in go back to their owners`, async ({
     page,
   }) => {
-    test.setTimeout(240_000);
+    test.setTimeout(300_000);
     const ANSWER = 'The release notes are ready: five fixes.';
     const [harness, remote] = await startTogether(launchHarness(), launchHarness());
     try {
-      await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
-      const dataDir = harness.bootstrap.dataDir;
-      const computer = await pairBuildBox(harness, remote);
-      const remoteSeed = await remote.rpc<SeedResult>('HarnessSeed', {
-        projects: [{ name: `give-back-death-build-${provider}`, repo: {} }],
-      });
-      const { projectId: remoteProject, path: remotePath } = remoteSeed.projects[0];
-      const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-        projects: [
-          { name: `give-back-death-caller-${provider}`, repo: {}, threads: [{ title: 'Weekly planner', provider }] },
-          { name: `give-back-death-target-${provider}`, repo: {}, threads: [{ title: 'Release notes', provider: 'claude' }] },
-        ],
-      });
-      const callerPath = seed.projects[0].path;
-      const caller = seed.projects[0].threadIds[0];
-      const targetPath = seed.projects[1].path;
-      const target = seed.projects[1].threadIds[0];
-      const requestId = randomUUID();
-      const release = join(remotePath, 'build.release');
-      await setScenario(
-        harness,
-        targetPath,
-        threadToolsScenario({
-          name: `give-back-death-target-${provider}`,
-          provider: 'claude',
-          turns: [
-            {
-              steps: [
-                { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
-                { gate: 'answer' },
-                { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: ANSWER } } },
-              ],
-              text: 'Replied.',
-            },
-          ],
-          afterTurns: 'silent',
-        }),
-      );
-      await setScenario(
-        harness,
-        callerPath,
-        threadToolsScenario({
-          name: `give-back-death-caller-${provider}`,
-          provider,
-          echoUserMessage: true,
-          turns: [
-            {
-              steps: [
-                {
-                  call: {
-                    tool: 'thread_send',
-                    args: { thread_id: target, message: 'Draft the release notes.', wait_seconds: 0, notify: true },
-                  },
-                },
-                {
-                  call: {
-                    server: 'ao-remote-tools',
-                    tool: 'remote_run',
-                    args: {
-                      computer_id: computer,
-                      project_id: remoteProject,
-                      request_id: requestId,
-                      label: 'nightly build',
-                      argv: ['sh', '-c', `while [ ! -f '${release}' ]; do sleep 0.1; done; echo 'build 812 finished: green'`],
-                      wait_seconds: 0,
-                    },
-                  },
-                },
-              ],
-              text: 'Asked for the notes, and the build runs on Build box.',
-            },
-          ],
-          afterTurns: 'silent',
-        }),
-      );
-      await harness.rpc('StartSession', caller);
-      await harness.rpc('SendMessage', caller, 'ask for the release notes and run the nightly build', null);
-      const sent = await awaitToolAnswer<{ token: string; outcome: string }>(harness, {
-        tool: 'thread_send',
-        cwd: callerPath,
-        timeoutMs: 60_000,
-      });
-      expect(sent.isError, sent.text).toBe(false);
-      expect(sent.value!.outcome).toBe('backgrounded');
-      const token = sent.value!.token;
-      const started = await harness.awaitMcpResult({
-        server: 'ao-remote-tools',
-        tool: 'remote_run',
-        cwd: callerPath,
-        timeoutMs: 60_000,
-      });
-      expect(started.report.result).toContain('"backgrounded":true');
-      await awaitTurnCompleted(harness, caller);
-      const responder = await awaitGate(harness, 'answer', targetPath);
-
-      const db = () => new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
-      const state = () => {
-        const conn = db();
-        try {
-          const request = conn
-            .prepare(`SELECT delivered_at IS NOT NULL AS delivered, delivered_how AS how, notify FROM thread_requests WHERE token = ?`)
-            .get(token) as { delivered: number; how: string; notify: number };
-          const watch = (
-            conn.prepare(`SELECT notification FROM remote_watches WHERE request_id = ?`).get(requestId) as { notification: string }
-          ).notification;
-          const draft = conn.prepare(`SELECT content FROM thread_drafts WHERE thread_id = ?`).get(caller) as
-            | { content: string }
-            | undefined;
-          const rows = (conn.prepare(`SELECT COUNT(*) AS n FROM flush_queue_items WHERE thread_id = ?`).get(caller) as { n: number }).n;
-          return { request, watch, draft: draft?.content ?? '', rows };
-        } finally {
-          conn.close();
-        }
-      };
-      const completion = `request_id: ${requestId}`;
-
-      // Each message starts a session that reads it and holds. The scenario
-      // the next process gets is set before the held one exits.
-      const holdNextSession = async (name: string) => {
-        await harness.rpc('StopSession', caller);
-        await setScenario(
-          harness,
-          callerPath,
-          provider === 'claude'
-            ? { ...threadToolsScenario({ name, provider, turns: [{ text: 'unreached' }] }), startupDelayMs: 30_000 }
-            : threadToolsScenario({
-                name,
-                provider,
-                echoUserMessage: true,
-                turns: [{ steps: [{ gate: 'hold' }], text: 'unreached', echo: false }],
-                afterTurns: 'silent',
-              }),
-        );
-      };
-      const heldMock = async (input: HarnessMockEventData) =>
-        provider === 'claude' ? input.mockId : (await awaitGate(harness, 'hold', callerPath)).mockId;
-      const healthy = (name: string) =>
-        setScenario(
-          harness,
-          callerPath,
-          threadToolsScenario({ name, provider, echoUserMessage: true, turns: [{ text: 'Build 812 is green.' }], afterTurns: 'silent' }),
-        );
+      const g = await giveBackCaller(() => harness, remote, provider, 'give-back-death', ANSWER);
 
       // ---- The answer.
-      await holdNextSession(`give-back-death-answer-held-${provider}`);
-      await advanceGate(harness, responder.mockId, 'answer');
-      const answerInput = await wakeInput(harness, callerPath, ANSWER, 60_000);
-      const answerMock = await heldMock(answerInput);
-      expect(state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
-      await healthy(`give-back-death-answer-after-${provider}`);
+      await g.holdNextSession(`give-back-death-answer-held-${provider}`);
+      await advanceGate(harness, g.responder.mockId, 'answer');
+      const answerInput = await wakeInput(harness, g.callerPath, ANSWER, 60_000);
+      const answerMock = await g.heldMock(answerInput);
+      expect(g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
+      expect(g.marks().answer).toBe(0);
+      await g.healthy(`give-back-death-answer-after-${provider}`);
       const answerDeath = harness.waitForEvent<NotificationSend>(
         'notification:send',
-        (data) => !data.retract && data.kind === 'error' && data.id === `thread:${caller}`,
+        (data) => !data.retract && data.kind === 'error' && data.id === `thread:${g.caller}`,
         30_000,
       );
       await harness.rpc('HarnessMockCommand', answerMock, { type: 'exit', code: 1 });
       expect((await answerDeath).body).toBe('The provider stopped. Open the thread to see why.');
       await expect
-        .poll(() => state().request, { timeout: 30_000 })
+        .poll(() => g.state().request, { timeout: 30_000 })
         .toEqual({ delivered: 0, how: '', notify: 0 });
       await new Promise((resolve) => setTimeout(resolve, 4_000));
-      expect(state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
-      expect(countInputs(harness, callerPath, ANSWER)).toBe(1);
+      expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
+      expect(countInputs(harness, g.callerPath, ANSWER)).toBe(1);
       console.log(`${provider}: died holding the answer: request owed and disarmed, composer empty`);
 
       // ---- The completion.
-      await holdNextSession(`give-back-death-completion-held-${provider}`);
-      await writeFile(release, '');
-      const completionInput = await wakeInput(harness, callerPath, completion, 60_000);
-      const completionMock = await heldMock(completionInput);
-      expect(state()).toMatchObject({ watch: 'queued', rows: 0 });
-      await healthy(`give-back-death-completion-after-${provider}`);
+      await g.holdNextSession(`give-back-death-completion-held-${provider}`);
+      await writeFile(g.release, '');
+      const completionInput = await wakeInput(harness, g.callerPath, g.completion, 60_000);
+      const completionMock = await g.heldMock(completionInput);
+      expect(g.state()).toMatchObject({ watch: 'queued', rows: 0 });
+      await g.healthy(`give-back-death-completion-after-${provider}`);
       // The first death's notification may still stand (Claude's held start
       // never retracts it), so this one is not waited for.
       await harness.rpc('HarnessMockCommand', completionMock, { type: 'exit', code: 1 });
-      // The watch is pending again, and the watcher delivers it to the
-      // session it starts, once.
-      await expect.poll(() => countInputs(harness, callerPath, completion), { timeout: 60_000 }).toBe(2);
-      await awaitTurnCompleted(harness, caller);
+      // The watch is pending again with its first redelivery booked half a
+      // minute out, and the watcher, which polls every two seconds, leaves it
+      // alone until then.
+      await expect.poll(() => ({ watch: g.state().watch, attempts: g.marks().attempts }), { timeout: 30_000 }).toEqual({
+        watch: 'pending',
+        attempts: 1,
+      });
+      const booked = g.marks().nextCheck;
+      const out = booked - Date.now();
+      expect(out).toBeGreaterThan(20_000);
+      expect(out).toBeLessThanOrEqual(30_000);
+      await new Promise((resolve) => setTimeout(resolve, 10_000));
+      expect(countInputs(harness, g.callerPath, g.completion)).toBe(1);
+      expect(g.state().watch).toBe('pending');
+      console.log(`${provider}: died holding the completion: redelivery booked ${out}ms out, not delivered 10s later`);
+      // Then it is delivered once to the session the watcher starts, and the
+      // echo confirms it.
+      await expect.poll(() => countInputs(harness, g.callerPath, g.completion), { timeout: 60_000 }).toBe(2);
+      expect(Date.now()).toBeGreaterThanOrEqual(booked);
+      await awaitTurnCompleted(harness, g.caller);
       await new Promise((resolve) => setTimeout(resolve, 4_000));
-      expect(countInputs(harness, callerPath, completion)).toBe(2);
-      expect(state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
-      console.log(`${provider}: died holding the completion: the watcher delivered it again, once; composer empty`);
+      expect(countInputs(harness, g.callerPath, g.completion)).toBe(2);
+      expect(g.state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
+      expect(g.marks().completion).toBe(1);
+      console.log(`${provider}: the watcher delivered it again at the booked time, once, and the echo confirmed it; composer empty`);
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
@@ -2394,6 +2455,184 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       );
     } finally {
       await Promise.allSettled([harness.close(), remote.close()]);
+    }
+  });
+}
+
+// A person's Stop or an archive that ends a session holding an answer or a
+// completion it was handed and never confirmed gives it back: the request is
+// owed and disarmed, and the watch is pending. Neither goes to the composer.
+// A Stop or an archive is not a session dying on its own, so the completion
+// is due at once: the watcher delivers it at its next poll once the thread
+// is unarchived, well inside the half minute a session end would book.
+for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${provider}: a Stop or an archive gives back an answer and a completion the session never confirmed`, async ({ page }) => {
+    test.setTimeout(240_000);
+    const ANSWER = 'The release notes are ready: six fixes.';
+    const [harness, remote] = await startTogether(launchHarness(), launchHarness());
+    try {
+      const g = await giveBackCaller(() => harness, remote, provider, 'give-back-stop', ANSWER);
+
+      // ---- The answer, and a Stop.
+      await g.holdNextSession(`give-back-stop-answer-held-${provider}`);
+      await advanceGate(harness, g.responder.mockId, 'answer');
+      await g.heldMock(await wakeInput(harness, g.callerPath, ANSWER, 60_000));
+      expect(g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
+      expect(g.marks().answer).toBe(0);
+      await harness.rpc('StopSession', g.caller);
+      expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      expect(countInputs(harness, g.callerPath, ANSWER)).toBe(1);
+      expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
+      console.log(`${provider}: stopped holding the answer: request owed and disarmed, composer empty`);
+
+      // ---- The completion, and an archive.
+      await g.holdNextSession(`give-back-stop-completion-held-${provider}`);
+      await writeFile(g.release, '');
+      await g.heldMock(await wakeInput(harness, g.callerPath, g.completion, 60_000));
+      expect(g.state()).toMatchObject({ watch: 'queued', rows: 0 });
+      expect(g.marks().completion).toBe(0);
+      await g.healthy(`give-back-stop-completion-after-${provider}`);
+      await harness.rpc('ArchiveThread', g.caller);
+      expect(g.state()).toMatchObject({ watch: 'pending', draft: '', rows: 0 });
+      expect(g.marks().attempts).toBe(0);
+      // The watcher skips an archived thread's watches.
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      expect(countInputs(harness, g.callerPath, g.completion)).toBe(1);
+      expect(g.state().watch).toBe('pending');
+      console.log(`${provider}: archived holding the completion: the watch is pending and waits for the unarchive`);
+
+      const unarchived = Date.now();
+      await harness.rpc('UnarchiveThread', g.caller);
+      await expect.poll(() => countInputs(harness, g.callerPath, g.completion), { timeout: 20_000 }).toBe(2);
+      const redelivered = Date.now() - unarchived;
+      await awaitTurnCompleted(harness, g.caller);
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      expect(countInputs(harness, g.callerPath, g.completion)).toBe(2);
+      expect(g.state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
+      expect(g.marks()).toMatchObject({ completion: 1, attempts: 0 });
+      console.log(`${provider}: unarchived: the watcher delivered the completion ${redelivered}ms later, once, and the echo confirmed it`);
+
+      await harness.open(page);
+      await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
+      await shoot(
+        page,
+        `${provider}-archive-returns-an-unconfirmed-completion-to-its-watch.png`,
+        page.getByText('Remote job finished on Build box: nightly build').last(),
+      );
+    } finally {
+      await Promise.allSettled([harness.close(), remote.close()]);
+    }
+  });
+}
+
+// An answer and a completion the app handed a provider that had not
+// confirmed them when it crashed have no queue row left, so only their
+// owners' delivery marks say they may not have arrived: queued, and never
+// confirmed by an echo. The boot sweep gives back every such owner, as it
+// gives back a queued row. Each kind is handed to a session that holds, and
+// the app crashes; Codex echoes a message steered into a running turn at
+// once, so each needs its own session.
+for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${provider}: an answer and a completion handed to the provider when the app crashed go back to their owners at boot`, async ({
+    page,
+  }) => {
+    test.setTimeout(300_000);
+    const ANSWER = 'The release notes are ready: seven fixes.';
+    const root = await mkdtemp(join(tmpdir(), `ao-give-back-crash-${provider}-`));
+    let harness: HarnessApp | undefined;
+    let remote: HarnessApp | undefined;
+    try {
+      [harness, remote] = await startTogether(launchHarness({ dataDir: root }), launchHarness());
+      const g = await giveBackCaller(() => harness!, remote, provider, 'give-back-crash', ANSWER);
+      const relaunch = async () => {
+        expect(await harness!.crash()).toBe(true);
+        harness = undefined;
+        harness = await launchHarness({ dataDir: root });
+        // The scenario rules went with the crashed process.
+        await g.healthy(`give-back-crash-relaunched-${provider}`);
+        return harness;
+      };
+
+      // ---- The answer.
+      await g.holdNextSession(`give-back-crash-answer-held-${provider}`);
+      await advanceGate(harness, g.responder.mockId, 'answer');
+      await g.heldMock(await wakeInput(harness, g.callerPath, ANSWER, 60_000));
+      expect(g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
+      expect(g.marks().answer).toBe(0);
+      let app = await relaunch();
+      expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
+      console.log(`${provider}: crashed holding the answer: at boot the request is owed and disarmed, composer empty`);
+
+      // ---- The completion.
+      await g.holdNextSession(`give-back-crash-completion-held-${provider}`);
+      await writeFile(g.release, '');
+      await g.heldMock(await wakeInput(app, g.callerPath, g.completion, 60_000));
+      expect(g.state()).toMatchObject({ watch: 'queued', rows: 0 });
+      expect(g.marks().completion).toBe(0);
+      app = await relaunch();
+      const relaunched = app;
+      const booted = g.state();
+      const deliveries = () => countInputs(relaunched, g.callerPath, g.completion);
+      // The watcher may already have queued it again or delivered it to a
+      // session it started.
+      const truthful =
+        (booted.watch === 'pending' && booted.rows === 0) ||
+        (booted.watch === 'queued' && (booted.rows === 1 || deliveries() === 1));
+      expect(truthful, `after boot: watch ${booted.watch}, ${booted.rows} rows, ${deliveries()} deliveries`).toBe(true);
+      expect(booted).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '' });
+      const input = await wakeInput(app, g.callerPath, g.completion, 60_000);
+      expect(input.report.input).toContain('build 812 finished: green');
+      await awaitTurnCompleted(app, g.caller);
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      expect(deliveries()).toBe(1);
+      expect(countInputs(app, g.callerPath, ANSWER)).toBe(0);
+      expect(g.state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
+      console.log(`${provider}: crashed holding the completion: at boot the watch was ${booted.watch}; the watcher delivered it once`);
+
+      // The agent reads the answer with thread_status. The mock numbers tool
+      // calls per process, so this one names its own id.
+      await setScenario(
+        app,
+        g.callerPath,
+        threadToolsScenario({
+          name: `give-back-crash-status-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [
+            {
+              steps: [{ call: { tool: 'thread_status', args: { tokens: [g.token] }, toolUseId: 'status-after-crash' } }],
+              text: 'Read the notes.',
+            },
+          ],
+          afterTurns: 'silent',
+        }),
+      );
+      await app.rpc('StopSession', g.caller);
+      await app.rpc('StartSession', g.caller);
+      await app.rpc('SendMessage', g.caller, 'did the notes come back?', null);
+      const status = await awaitToolAnswer<{ requests?: { token: string; answer?: string }[] }>(app, {
+        tool: 'thread_status',
+        cwd: g.callerPath,
+        timeoutMs: 60_000,
+      });
+      expect(status.isError, status.text).toBe(false);
+      expect(status.value!.requests![0].token).toBe(g.token);
+      expect(status.value!.requests![0].answer).toContain(ANSWER);
+      await awaitTurnCompleted(app, g.caller);
+      console.log(`${provider}: thread_status returned the answer`);
+
+      await app.open(page);
+      await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
+      await shoot(
+        page,
+        `${provider}-crash-returns-an-unconfirmed-completion-to-its-watch.png`,
+        page.getByText('Remote job finished on Build box: nightly build').last(),
+      );
+      await shoot(page, `${provider}-crash-returns-an-unconfirmed-answer-to-its-request.png`, page.getByText('Read the notes.').last());
+    } finally {
+      await Promise.allSettled([harness?.close(), remote?.close()]);
+      await rm(root, { recursive: true, force: true });
     }
   });
 }
