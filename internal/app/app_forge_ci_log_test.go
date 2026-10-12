@@ -60,15 +60,19 @@ func TestSetPRCILogFollowsFetchesNowAndEmitsIndexesUntilTerminal(t *testing.T) {
 	f.setLog("7", "step 1\nprogress 60%\nstep 2\ndone\n", nil)
 	f.publish(pipelineWith(gitops.CIStatusSuccess, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusSuccess, LogsAvailable: true}), nil)
 	awaitCIEvent(t, f.ciEvents, "terminal pipeline frame")
-	// A tick between the two changes delivers the new log in a frame of its
-	// own while the job's row still runs; the final frame is the one whose
-	// row is done.
+	// A tick between the two writes above fetches the finished log while
+	// the pipeline still says running; the job's terminal status then
+	// arrives as a frame of its own. Either way the last frame shows the
+	// finished job over the final log.
 	final := awaitLogEvent(t, f.logEvents, "final log frame")
-	for len(final.Sections) == 0 || final.Sections[0].Status != gitops.CIStatusSuccess {
-		final = awaitLogEvent(t, f.logEvents, "final log frame")
-	}
-	if final.Version != 3 || final.TotalLines != 4 || final.StableLines != 3 {
-		t.Fatalf("final = %+v", final)
+	for {
+		if final.Version != 3 || final.TotalLines != 4 || final.StableLines != 3 || len(final.Sections) != 1 {
+			t.Fatalf("final = %+v", final)
+		}
+		if final.Sections[0].Status == gitops.CIStatusSuccess {
+			break
+		}
+		final = awaitLogEvent(t, f.logEvents, "terminal job frame")
 	}
 	expectCountHolds(t, &f.logFetches, "terminal job kept being fetched")
 	expectCountHolds(t, &f.ciFetches, "terminal pipeline kept polling")
@@ -234,7 +238,9 @@ func TestPRCILogFinalFetchFailureSurfacesAfterTheQuickTries(t *testing.T) {
 	f.publish(pipelineWith(gitops.CIStatusFailed, gitops.CIJob{ID: "7", Name: "unit", Status: gitops.CIStatusFailed, LogsAvailable: true}), nil)
 	awaitCIEvent(t, f.ciEvents, "terminal pipeline frame")
 	frame := awaitLogEvent(t, f.logEvents, "error frame after the quick tries ran out")
-	if frame.Error == "" || strings.Contains(frame.Error, "500") || frame.Version != 1 || frame.TotalLines != 1 || !frame.Available {
+	// The wire error names a correlation id, a hex string that can contain
+	// "500"; the forge's own text is what must not reach the wire.
+	if frame.Error == "" || strings.Contains(frame.Error, "glab: 500") || frame.Version != 1 || frame.TotalLines != 1 || !frame.Available {
 		t.Fatalf("error frame = %+v, want the failure over the held version", frame)
 	}
 	if n := f.logFetches.Load(); n != 1+prCILogFinalAttempts {

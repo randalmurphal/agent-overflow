@@ -107,6 +107,18 @@ func (h DesktopHandoff) HandOff(ctx context.Context, downloaded, version string)
 		return err
 	}
 	staged := DesktopStagedPath(install, id)
+	if !isBundle(downloaded) {
+		// The download is written without the executable bit; the publish
+		// keeps the mode the install path has. It gets that mode before the
+		// move, so a copy across filesystems writes it as an executable.
+		info, err := os.Stat(h.Executable)
+		if err != nil {
+			return err
+		}
+		if err := os.Chmod(downloaded, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
 	// Staging beside the install path also proves the folder is writable,
 	// which the publish needs.
 	if err := movePath(downloaded, staged, os.Rename); err != nil {
@@ -145,17 +157,6 @@ func (h DesktopHandoff) HandOff(ctx context.Context, downloaded, version string)
 
 // record checks the staged target and writes the update pending.
 func (h DesktopHandoff) record(ctx context.Context, layout Layout, install, staged, executable, version, id string) (DesktopRecord, error) {
-	if !isBundle(staged) {
-		// The download is written without the executable bit; the publish
-		// keeps the mode the install path has.
-		info, err := os.Stat(h.Executable)
-		if err != nil {
-			return DesktopRecord{}, err
-		}
-		if err := os.Chmod(executable, info.Mode().Perm()); err != nil {
-			return DesktopRecord{}, err
-		}
-	}
 	answer, err := h.preflight(ctx, executable, version)
 	if err != nil {
 		return DesktopRecord{}, err
@@ -332,22 +333,17 @@ func copyTree(src, dst string) error {
 	})
 }
 
+// copyRegular copies src to dst with perm. The staged tree is preflighted
+// right after the move, so an executable is written with forks held off
+// (writeArtifactFileWith).
 func copyRegular(src, dst string, perm fs.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm)
-	if err != nil {
+	return writeArtifactFileWith(dst, perm, func(out *os.File) error {
+		_, err := out.ReadFrom(in)
 		return err
-	}
-	_, err = out.ReadFrom(in)
-	if syncErr := out.Sync(); err == nil {
-		err = syncErr
-	}
-	if closeErr := out.Close(); err == nil {
-		err = closeErr
-	}
-	return err
+	})
 }

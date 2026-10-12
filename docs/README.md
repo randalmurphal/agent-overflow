@@ -42,6 +42,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`transport.md`](architecture/transport.md) | Wire mechanism deep-dives: port pinning, the gap marker, scoped-token routes, coalescing, keepalive. |
 | [`forge-transport.md`](architecture/forge-transport.md) | Direct HTTPS to GitHub and GitLab with the user's `gh`/`glab` token: credential holder, hosts, typed errors, rate-limit gates, ETag and Range, the HTTP fake. |
 | [`release-candidates.md`](architecture/release-candidates.md) | Build and test an untagged production candidate, then publish its exact saved bytes. |
+| [`release-upgrade-check.md`](architecture/release-upgrade-check.md) | The candidate migrates a large previous-release database through the launcher's update path and boots on it. |
 | [`remote-access-setup.md`](architecture/remote-access-setup.md) | Mac-to-Android setup: Tailscale, APK installation, pairing, release signing, and troubleshooting. |
 | [`remote-commands.md`](architecture/remote-commands.md) | Explicit peer access, durable remote commands, connection recovery, and ownership. |
 | [`file-previews.md`](architecture/file-previews.md) | Generated HTML on its owning computer: relative assets, independent origins, authorization, browser trust and lifetime. |

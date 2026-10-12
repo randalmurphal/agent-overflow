@@ -175,9 +175,7 @@ func TestStartSession_ClaudeAllowsTheThreadToolsWithoutAPrompt(t *testing.T) {
 	}
 
 	argvPath := filepath.Join(t.TempDir(), "argv.txt")
-	binary := filepath.Join(t.TempDir(), "claude-argv.sh")
-	script := argvRecordingClaude(argvPath)
-	mockexec.Write(t, binary, script)
+	binary := writeArgvRecordingClaude(t, argvPath)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
@@ -185,24 +183,9 @@ func TestStartSession_ClaudeAllowsTheThreadToolsWithoutAPrompt(t *testing.T) {
 		t.Fatalf("StartSession: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		raw, err := os.ReadFile(argvPath)
-		if err == nil {
-			argv := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-			for i, arg := range argv {
-				if arg == "--allowedTools" && i+1 < len(argv) && argv[i+1] == ThreadToolsAllowedTool {
-					return
-				}
-			}
-			if len(argv) > 0 && time.Now().After(deadline) {
-				t.Fatalf("argv has no `--allowedTools %s`: %v", ThreadToolsAllowedTool, argv)
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for the spawned argv (%v)", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	argv := spawnedClaudeArgv(t, argvPath)
+	if !hasArgPair(argv, "--allowedTools", ThreadToolsAllowedTool) {
+		t.Fatalf("argv has no `--allowedTools %s`: %v", ThreadToolsAllowedTool, argv)
 	}
 }
 

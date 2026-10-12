@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -77,7 +78,7 @@ func newCommandRig(t *testing.T) *commandRig {
 }
 
 // flockAcquire is the lock seam over a real flock on <dataDir>/backend.lock.
-func flockAcquire(dataDir string) func(context.Context, time.Duration) (*os.File, func(), error) {
+func flockAcquire(t *testing.T, dataDir string) func(context.Context, time.Duration) (*os.File, func(), error) {
 	return func(ctx context.Context, wait time.Duration) (*os.File, func(), error) {
 		file, err := os.OpenFile(filepath.Join(dataDir, "backend.lock"), os.O_RDWR|os.O_CREATE, 0o600)
 		if err != nil {
@@ -90,7 +91,7 @@ func flockAcquire(dataDir string) func(context.Context, time.Duration) (*os.File
 		for {
 			err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 			if err == nil {
-				return file, func() { file.Close() }, nil
+				return file, func() { unlockAndClose(t, file) }, nil
 			}
 			if !time.Now().Before(deadline) {
 				file.Close()
@@ -106,10 +107,30 @@ func flockAcquire(dataDir string) func(context.Context, time.Duration) (*os.File
 	}
 }
 
+// holdDescriptorCopy starts a process that keeps a copy of file's descriptor
+// until the test ends.
+func holdDescriptorCopy(t *testing.T, file *os.File) {
+	t.Helper()
+	holder := exec.Command("sleep", "60")
+	holder.ExtraFiles = []*os.File{file}
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := holder.Process.Kill(); err != nil {
+			t.Errorf("stop the descriptor holder: %v", err)
+		}
+		var exit *exec.ExitError
+		if err := holder.Wait(); !errors.As(err, &exit) {
+			t.Errorf("reap the descriptor holder: %v", err)
+		}
+	})
+}
+
 func (r *commandRig) command(id string) UpdateCommand {
 	return UpdateCommand{
 		DataDir: r.dataDir, UpdateID: id, Out: r.out,
-		AcquireLock: flockAcquire(r.dataDir),
+		AcquireLock: flockAcquire(r.t, r.dataDir),
 	}
 }
 
@@ -140,7 +161,19 @@ func TestSnapshotCommandBacksUpUnderTheLock(t *testing.T) {
 	t.Parallel()
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
-	result := r.command("u1").Snapshot(context.Background(), nil)
+	cmd := r.command("u1")
+	acquire := cmd.AcquireLock
+	// Another process holds a copy of the lock's descriptor, as a fork
+	// anywhere in the process does until its exec. Releasing the lock must
+	// not wait for that copy to close.
+	cmd.AcquireLock = func(ctx context.Context, wait time.Duration) (*os.File, func(), error) {
+		lock, release, err := acquire(ctx, wait)
+		if err == nil {
+			holdDescriptorCopy(t, lock)
+		}
+		return lock, release, err
+	}
+	result := cmd.Snapshot(context.Background(), nil)
 	if result.Type != UpdateEventResult || result.Outcome != UpdateOutcomeOK {
 		t.Fatalf("result = %+v", result)
 	}

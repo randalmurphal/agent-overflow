@@ -54,6 +54,17 @@ afterEach(() => {
 });
 
 describe('<PasskeysBlock>', () => {
+  it('enables registration when a manifest that offers passkeys lands after mount', async () => {
+    setPasskeysAvailableFromBootstrap(false);
+    setBindingMock('ListPasskeys', async () => []);
+    const { findByText, getByRole } = render(PasskeysBlock);
+    await findByText(/Passkeys need a domain name/);
+    expect((getByRole('button', { name: 'Add a passkey' }) as HTMLButtonElement).disabled).toBe(true);
+    setPasskeysAvailableFromBootstrap(true);
+    await findByText(/Removing one does not sign any device out/);
+    expect((getByRole('button', { name: 'Add a passkey' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('says removing one signs nothing out, because it does not', async () => {
     setBindingMock('ListPasskeys', async () => []);
     const { findByText } = render(PasskeysBlock);

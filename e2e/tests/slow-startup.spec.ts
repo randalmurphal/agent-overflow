@@ -68,9 +68,11 @@ test('a held boot shows its phase, never an empty sidebar, and loads once ready'
     const shown = await meta.textContent();
     await expect(meta).not.toHaveText(shown ?? '', { timeout: 10_000 });
     const later = JSON.parse((await readBootstrap(harness)).body) as StartingReport;
-    expect(later.startedAt).toBe(report.startedAt);
+    // The phase is still the held one. updatedAt is not compared: it also
+    // advances on the process's own CPU or storage work
+    // (startupprogress.Sampler), such as paging in the assets it serves.
+    expect(later).toMatchObject({ phase: report.phase, detail: report.detail, startedAt: report.startedAt });
     expect(later.aliveAt).toBeGreaterThan(report.aliveAt);
-    expect(later.updatedAt).toBe(report.updatedAt);
     // Loading is not empty, and a first boot is not a connection problem.
     await expect(page.getByTestId('sidebar-projects-empty')).toHaveCount(0);
     await expect(page.getByTestId('pane-host-empty')).toHaveCount(0);

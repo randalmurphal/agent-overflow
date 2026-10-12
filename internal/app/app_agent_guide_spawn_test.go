@@ -11,12 +11,15 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 )
 
-// argvRecordingClaude is a mock Claude that records its argv in argvPath,
-// one value per line, and then reads stdin until the session closes it. The
-// argv goes to a temporary file renamed into place, so a reader polling
-// argvPath sees either nothing or the whole argv, never a prefix.
-func argvRecordingClaude(argvPath string) string {
-	return "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argvPath + ".tmp\nmv " + argvPath + ".tmp " + argvPath + "\ncat >/dev/null\n"
+// writeArgvRecordingClaude writes a mock Claude that records its argv at
+// argvPath, one value per line, then reads stdin until closed. The list is
+// written beside argvPath and renamed into place, so argvPath appears only
+// once it holds the whole argv.
+func writeArgvRecordingClaude(t *testing.T, argvPath string) string {
+	t.Helper()
+	script := "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > '" + argvPath + ".tmp'\n" +
+		"mv '" + argvPath + ".tmp' '" + argvPath + "'\ncat >/dev/null\n"
+	return mockexec.Write(t, filepath.Join(t.TempDir(), "claude-argv.sh"), script)
 }
 
 // spawnedClaudeArgv waits for the argv-recording mock Claude to run and
@@ -26,7 +29,7 @@ func spawnedClaudeArgv(t *testing.T, argvPath string) []string {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		raw, err := os.ReadFile(argvPath)
-		if err == nil && len(raw) > 0 {
+		if err == nil {
 			return strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 		}
 		if time.Now().After(deadline) {
@@ -34,6 +37,17 @@ func spawnedClaudeArgv(t *testing.T, argvPath string) []string {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// hasArgPair reports whether flag is followed by value anywhere in argv, for
+// a flag the CLI accepts more than once.
+func hasArgPair(argv []string, flag, value string) bool {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == flag && argv[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 func argValue(argv []string, flag string) (string, bool) {
@@ -61,9 +75,7 @@ func TestStartSession_ClaudeCarriesTheAppGuideAndSnapshotOptOut(t *testing.T) {
 	}
 
 	argvPath := filepath.Join(t.TempDir(), "argv.txt")
-	binary := filepath.Join(t.TempDir(), "claude-argv.sh")
-	script := argvRecordingClaude(argvPath)
-	mockexec.Write(t, binary, script)
+	binary := writeArgvRecordingClaude(t, argvPath)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
@@ -132,8 +144,7 @@ func TestStartSession_ClaudeOmitsTheSnapshotFlagWithoutAKnownVersion(t *testing.
 		t.Fatalf("CreateThread: %v", err)
 	}
 	argvPath := filepath.Join(t.TempDir(), "argv.txt")
-	binary := filepath.Join(t.TempDir(), "claude-argv.sh")
-	mockexec.Write(t, binary, argvRecordingClaude(argvPath))
+	binary := writeArgvRecordingClaude(t, argvPath)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}

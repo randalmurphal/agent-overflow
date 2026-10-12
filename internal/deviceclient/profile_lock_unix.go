@@ -15,3 +15,9 @@ func tryProfileLock(f *os.File) (bool, error) {
 	}
 	return err == nil, err
 }
+
+// unlockProfile drops the lock tryProfileLock took. flock belongs to the open
+// file description, so a forked child's copy keeps it until exec.
+func unlockProfile(f *os.File) error {
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}

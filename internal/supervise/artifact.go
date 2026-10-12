@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"agent-overflow/internal/atomicfile"
 )
@@ -37,7 +38,7 @@ type Artifact struct {
 // source verifies the digest BEFORE this call; extraction is not provenance.
 func PrepareArtifact(ctx context.Context, downloaded, assetName, digest string) (*Artifact, error) {
 	if !strings.HasSuffix(assetName, ".zip") {
-		return &Artifact{Binary: downloaded}, nil
+		return prepareBinaryArtifact(ctx, downloaded)
 	}
 	if assetName != "agent-overflow-darwin-arm64.zip" && assetName != "agent-overflow-darwin-amd64.zip" {
 		return nil, fmt.Errorf("supervise: unsupported release archive %q", assetName)
@@ -71,6 +72,31 @@ func PrepareArtifact(ctx context.Context, downloaded, assetName, digest string) 
 	if err := writeArtifactFile(filepath.Join(dir, artifactDigestName), []byte(digest), 0o600); err != nil {
 		a.Close()
 		return nil, err
+	}
+	return a, nil
+}
+
+// prepareBinaryArtifact copies a bare executable into its own directory
+// beside the download. The download was open for writing for as long as it
+// took, while other goroutines forked; the preflight runs the copy, which is
+// written with forks held off (writeArtifactFileWith).
+func prepareBinaryArtifact(ctx context.Context, downloaded string) (*Artifact, error) {
+	in, err := os.Open(downloaded)
+	if err != nil {
+		return nil, fmt.Errorf("supervise: open the downloaded release: %w", err)
+	}
+	dir, err := os.MkdirTemp(filepath.Dir(downloaded), "artifact-*")
+	if err != nil {
+		return nil, errors.Join(err, in.Close())
+	}
+	a := &Artifact{dir: dir, Binary: filepath.Join(dir, BinaryName)}
+	err = writeArtifactFileWith(a.Binary, 0o700, func(file *os.File) error {
+		_, err := io.Copy(file, &artifactReader{ctx: ctx, Reader: in})
+		return err
+	})
+	if err = errors.Join(err, in.Close()); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("supervise: copy the downloaded release: %w", err)
 	}
 	return a, nil
 }
@@ -141,6 +167,9 @@ func unpackAppBundle(ctx context.Context, archive, root string) error {
 		}
 		seen[name] = true
 		dest := filepath.Join(root, filepath.FromSlash(name))
+		if !strings.HasPrefix(dest, root+string(filepath.Separator)) {
+			return fmt.Errorf("supervise: bundle entry %q leaves the extraction root", entry.Name)
+		}
 		mode := entry.Mode()
 		if mode.IsDir() {
 			if err := os.MkdirAll(dest, 0o700); err != nil {
@@ -174,19 +203,13 @@ func unpackAppBundle(ctx context.Context, archive, root string) error {
 			r.Close()
 			return err
 		}
-		file, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600|mode.Perm()&0o111)
-		if err != nil {
-			r.Close()
+		var n int64
+		copyErr := writeArtifactFileWith(dest, 0o600|mode.Perm()&0o111, func(file *os.File) error {
+			var err error
+			n, err = io.Copy(file, io.LimitReader(&artifactReader{ctx: ctx, Reader: r}, remaining+1))
 			return err
-		}
-		n, copyErr := io.Copy(file, io.LimitReader(&artifactReader{ctx: ctx, Reader: r}, remaining+1))
+		})
 		r.Close()
-		if syncErr := file.Sync(); copyErr == nil {
-			copyErr = syncErr
-		}
-		if closeErr := file.Close(); copyErr == nil {
-			copyErr = closeErr
-		}
 		remaining -= n
 		if copyErr != nil {
 			return copyErr
@@ -260,13 +283,34 @@ func (r *artifactReader) Read(data []byte) (int, error) {
 }
 
 func writeArtifactFile(name string, data []byte, mode fs.FileMode) error {
-	f, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	return writeArtifactFileWith(name, mode, func(file *os.File) error {
+		_, err := file.Write(data)
+		return err
+	})
+}
+
+// writeArtifactFileWith creates name, fills it with write, syncs and closes
+// it. An executable is written with syscall.ForkLock held for reading, so no
+// fork can start while it is open for writing. A child forked then would
+// hold the descriptor until its own exec closes it, and the kernel refuses
+// to run a file that has a writer (ETXTBSY): the preflight that runs the
+// file right after would fail with "text file busy" whenever another
+// goroutine was starting a process. Forks wait for the write instead.
+func writeArtifactFileWith(name string, mode fs.FileMode, write func(*os.File) error) error {
+	if mode&0o111 != 0 {
+		syscall.ForkLock.RLock()
+		defer syscall.ForkLock.RUnlock()
+	}
+	file, err := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return err
+	err = write(file)
+	if syncErr := file.Sync(); err == nil {
+		err = syncErr
 	}
-	return f.Sync()
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }

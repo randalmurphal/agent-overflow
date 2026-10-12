@@ -141,9 +141,11 @@ func TestNewSessionWritesAndRemovesBothPromptFiles(t *testing.T) {
 	}
 }
 
-// A spawn that fails must not leave either prompt file behind.
+// A spawn that fails must not leave either prompt file behind. The prompt
+// files go to os.TempDir(), which other tests and processes also write, so
+// the test gives this process its own and stays serial.
 func TestNewSessionRemovesBothPromptFilesWhenTheSpawnFails(t *testing.T) {
-	dir := privatePromptDir(t)
+	t.Setenv("TMPDIR", t.TempDir())
 	_, err := NewSession(context.Background(), testThread, Config{
 		Binary:             t.TempDir() + "/does-not-exist",
 		SystemPrompt:       "REPLACEMENT",
@@ -152,25 +154,14 @@ func TestNewSessionRemovesBothPromptFilesWhenTheSpawnFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewSession succeeded with a missing binary")
 	}
-	if left := promptFilesIn(t, dir); len(left) != 0 {
+	if left := promptFilesInTemp(t); len(left) > 0 {
 		t.Fatalf("failed spawn left prompt files behind: %v", left)
 	}
 }
 
-// privatePromptDir points TMPDIR, where the prompt files are written, at a
-// directory only the calling test writes, so prompt files from other tests
-// and other test processes never count against it. t.Setenv keeps the test
-// out of the parallel phase while TMPDIR is changed.
-func privatePromptDir(t *testing.T) string {
+func promptFilesInTemp(t *testing.T) []string {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("TMPDIR", dir)
-	return dir
-}
-
-func promptFilesIn(t *testing.T, dir string) []string {
-	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(dir, "ao-claude-system-prompt-*.txt"))
+	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "ao-claude-system-prompt-*.txt"))
 	if err != nil {
 		t.Fatalf("glob prompt files: %v", err)
 	}

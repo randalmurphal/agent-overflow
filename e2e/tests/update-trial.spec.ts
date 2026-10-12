@@ -15,91 +15,34 @@
 // claude, codex, gh and glab first on PATH, which record each call: the
 // refused boot and the parked trial start no provider, and the live boot's
 // provider probes reach the fakes.
-import type { ChildProcess } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
-import { access, chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { access, copyFile, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { createInterface } from 'node:readline';
-import { FALLBACK_MEMORY_LIMIT_BYTES } from '../src/harness-watchdog.js';
-import { execProduct, productBinary, spawnProduct } from '../src/product-process.js';
+import { execProduct, productBinary } from '../src/product-process.js';
 import { test, expect } from './fixtures.js';
+import {
+  buildSandbox,
+  cliCalls,
+  killGroup,
+  newUpdateID,
+  runUpdateCommand,
+  settledBootstrap,
+  startHeadless,
+  stopHeadless,
+  updateResult,
+  type HeadlessBackend,
+  type Sandbox,
+} from './update-launcher-helpers.js';
+import { buildVersion } from './upgrade-corpus-tools.js';
 
-const repoRoot = path.resolve(import.meta.dirname, '..', '..');
-const backend = productBinary('agent-overflow');
-const UPDATE_PREFIX = '__AO_UPDATE__:';
-const BOOTSTRAP_PREFIX = '__AO_BOOTSTRAP__:';
 const FIXTURE_VERSION = 118;
-
-// The version `make harness-build` stamps into bin/agent-overflow.
-async function buildVersion(): Promise<string> {
-  const config = await readFile(path.join(repoRoot, 'build', 'config.yml'), 'utf8');
-  const match = /^ {2}version: "(.+)"$/m.exec(config);
-  if (!match) throw new Error('build/config.yml names no version');
-  return match[1];
-}
-
-interface Sandbox {
-  root: string;
-  dataDir: string;
-  dbPath: string;
-  env: Record<string, string>;
-  calls: string;
-}
-
-// A data root, a home and fake provider and forge CLIs. The environment
-// replaces the launch environment's home, shell, temp and PATH (see
-// src/harness-env.ts), so no provider home override, WSL interop variable or
-// user PATH entry reaches the backend. The login-shell PATH probe runs a
-// stand-in shell that skips login files: a system profile (macOS path_helper,
-// Linux /etc/profile) puts directories such as /opt/homebrew/bin ahead of the
-// fakes, where a real provider CLI may be installed.
-async function sandbox(): Promise<Sandbox> {
-  const root = await mkdtemp(path.join(tmpdir(), 'ao-update-trial-'));
-  const home = path.join(root, 'home');
-  const bin = path.join(root, 'bin');
-  const dataDir = path.join(root, 'data');
-  const calls = path.join(root, 'cli-calls.log');
-  const shell = path.join(root, 'login-shell');
-  await mkdir(home, { recursive: true });
-  await mkdir(bin, { recursive: true });
-  // shellenv runs `$SHELL -ilc <script>`.
-  await writeFile(shell, ['#!/bin/sh', '[ "$1" = -ilc ] && shift', 'exec /bin/sh -c "$1"', ''].join('\n'));
-  await chmod(shell, 0o755);
-  await mkdir(path.join(dataDir, 'agent-overflow'), { recursive: true });
-  const versions: Record<string, string> = {
-    claude: '2.1.200 (Claude Code)',
-    codex: 'codex-cli 9.0.0',
-    gh: 'gh version 2.0.0',
-    glab: 'glab 1.0.0',
-  };
-  for (const [name, version] of Object.entries(versions)) {
-    const script = path.join(bin, name);
-    await writeFile(script, [
-      '#!/bin/sh',
-      `printf '%s\\n' "${name} $*" >> '${calls}'`,
-      `if [ "$1" = --version ]; then echo '${version}'; exit 0; fi`,
-      'exit 1',
-      '',
-    ].join('\n'));
-    await chmod(script, 0o755);
-  }
-  const env: Record<string, string> = {
-    HOME: home,
-    USERPROFILE: home,
-    XDG_CONFIG_HOME: home,
-    XDG_DATA_HOME: home,
-    XDG_CACHE_HOME: home,
-    APPDATA: home,
-    LOCALAPPDATA: home,
-    SHELL: shell,
-    PATH: `${bin}:/usr/bin:/bin`,
-    LANG: 'C.UTF-8',
-    TMPDIR: path.join(root, 'tmp'),
-  };
-  await mkdir(env.TMPDIR, { recursive: true });
-  return { root, dataDir, dbPath: path.join(dataDir, 'agent-overflow', 'agent-overflow.db'), env, calls };
-}
+// The launcher's own limits are the release upgrade check's concern; here
+// every wait is a generous test timeout.
+const COMMAND_TIMEOUT_MS = 120_000;
+const BOOTSTRAP_TIMEOUT_MS = 30_000;
+const BOOT_TIMEOUT_MS = 60_000;
+const STOP_TIMEOUT_MS = 30_000;
 
 async function writeFixture(dbPath: string): Promise<void> {
   await execProduct(productBinary('ao-store-test'), ['-test.run', '^TestHistoryRepairHarnessFixture$', '-test.count=1'], {
@@ -138,149 +81,9 @@ async function schemaVersion(sb: Sandbox): Promise<number> {
   return (JSON.parse(stdout) as Array<{ v: number }>)[0].v;
 }
 
-interface UpdateEvent {
-  type: 'started' | 'progress' | 'result';
-  outcome?: string;
-  reason?: string;
-  schema?: number;
-  progress?: { phase: string; detail: string };
-}
-
-// runUpdateCommand runs one update command to its end, as
-// wsllauncher.UpdateCommandRunner does, and returns its reports.
-async function runUpdateCommand(sb: Sandbox, args: string[], timeoutMs = 120_000): Promise<{ events: UpdateEvent[]; stderr: string }> {
-  const child = spawnProduct(backend, [...args, '--data-dir', sb.dataDir], {
-    env: sb.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    memoryLimitBytes: FALLBACK_MEMORY_LIMIT_BYTES,
-    detached: true,
-  });
-  const events: UpdateEvent[] = [];
-  let stderr = '';
-  createInterface({ input: child.stdout! }).on('line', (line) => {
-    const at = line.indexOf(UPDATE_PREFIX);
-    if (at >= 0) events.push(JSON.parse(line.slice(at + UPDATE_PREFIX.length)) as UpdateEvent);
-  });
-  child.stderr!.on('data', (chunk: Buffer) => {
-    stderr = (stderr + chunk.toString()).slice(-64 * 1024);
-  });
-  const code = await exited(child, timeoutMs);
-  if (code === undefined) throw new Error(`${args[0]} did not finish in ${timeoutMs}ms\n${stderr}`);
-  return { events, stderr };
-}
-
-function result(events: UpdateEvent[]): UpdateEvent | undefined {
-  return events.filter((event) => event.type === 'result').at(-1);
-}
-
-// exited waits for the child, and kills its process group after timeoutMs.
-// It resolves the exit code, or undefined when the child had to be killed.
-function exited(child: ChildProcess, timeoutMs: number): Promise<number | undefined> {
-  return new Promise((resolve, reject) => {
-    if (child.exitCode !== null) {
-      resolve(child.exitCode);
-      return;
-    }
-    const timer = setTimeout(() => {
-      killGroup(child);
-      child.once('close', () => resolve(undefined));
-    }, timeoutMs);
-    child.once('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.once('close', (code) => {
-      clearTimeout(timer);
-      resolve(code ?? -1);
-    });
-  });
-}
-
-function killGroup(child: ChildProcess): void {
-  if (child.pid === undefined) return;
-  try {
-    process.kill(-child.pid, 'SIGKILL');
-  } catch {
-    // Already gone.
-  }
-}
-
-interface HeadlessBackend {
-  child: ChildProcess;
-  port: number;
-  token: string;
-  stderr: () => string;
-}
-
-// startHeadless boots the backend the Windows launcher starts, with the
-// launcher's own flags plus a loopback-only listener.
-async function startHeadless(sb: Sandbox): Promise<HeadlessBackend> {
-  const child = spawnProduct(backend, ['--print-url-fd', '0', '--data-dir', sb.dataDir, '--listen', '127.0.0.1:0',
-    '--refuse-pending-migrations'], {
-    env: sb.env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    memoryLimitBytes: FALLBACK_MEMORY_LIMIT_BYTES,
-    detached: true,
-  });
-  let stderr = '';
-  child.stderr!.on('data', (chunk: Buffer) => {
-    stderr = (stderr + chunk.toString()).slice(-64 * 1024);
-  });
-  const bootstrap = await new Promise<{ port: number; token: string }>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`no bootstrap line in 30s\n${stderr}`)), 30_000);
-    createInterface({ input: child.stdout! }).on('line', (line) => {
-      const at = line.indexOf(BOOTSTRAP_PREFIX);
-      if (at < 0) return;
-      clearTimeout(timer);
-      resolve(JSON.parse(line.slice(at + BOOTSTRAP_PREFIX.length)) as { port: number; token: string });
-    });
-    child.once('close', (code) => {
-      clearTimeout(timer);
-      reject(new Error(`the backend exited with ${code} before its bootstrap line\n${stderr}`));
-    });
-  }).catch((error: Error) => {
-    killGroup(child);
-    throw error;
-  });
-  return { child, port: bootstrap.port, token: bootstrap.token, stderr: () => stderr };
-}
-
-// settledBootstrap polls /bootstrap.json until the boot stops reporting
-// progress, as ProbeBootstrap does, and returns that answer.
-async function settledBootstrap(b: HeadlessBackend): Promise<{ status: number; cacheControl: string | null; body: string }> {
-  const deadline = Date.now() + 60_000;
-  for (;;) {
-    const resp = await fetch(`http://127.0.0.1:${b.port}/bootstrap.json`, {
-      headers: { authorization: `Bearer ${b.token}` },
-    });
-    const body = await resp.text();
-    if (resp.status !== 503) return { status: resp.status, cacheControl: resp.headers.get('cache-control'), body };
-    if (Date.now() > deadline) throw new Error(`the boot was still starting after 60s: ${body}\n${b.stderr()}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-}
-
-// stopHeadless stops the backend as a signal does and waits for it to exit,
-// so the next command finds backend.lock free.
-async function stopHeadless(b: HeadlessBackend): Promise<void> {
-  if (b.child.exitCode !== null || b.child.signalCode !== null) return;
-  b.child.kill('SIGTERM');
-  const code = await exited(b.child, 30_000);
-  if (code === undefined) throw new Error(`the backend did not stop in 30s after SIGTERM\n${b.stderr()}`);
-}
-
-// The calls the fake CLIs recorded, in order.
-async function cliCalls(sb: Sandbox): Promise<string[]> {
-  return (await readFile(sb.calls, 'utf8').catch(() => '')).split('\n').filter(Boolean);
-}
-
-function newUpdateID(): string {
-  return randomBytes(8).toString('hex');
-}
-
 test('a gated boot refuses a v118 database, a real trial migrates it, and the next boot finds nothing pending', async () => {
   test.setTimeout(240_000);
-  const sb = await sandbox();
+  const sb = await buildSandbox(await mkdtemp(path.join(tmpdir(), 'ao-update-trial-')));
   const backends: HeadlessBackend[] = [];
   try {
     await writeFixture(sb.dbPath);
@@ -288,9 +91,9 @@ test('a gated boot refuses a v118 database, a real trial migrates it, and the ne
     const fixture = await databaseFiles(sb.dbPath);
 
     // The gate: the boot refuses before anything writes the database.
-    const refused = await startHeadless(sb);
+    const refused = await startHeadless(sb, BOOTSTRAP_TIMEOUT_MS);
     backends.push(refused);
-    const refusal = await settledBootstrap(refused);
+    const refusal = await settledBootstrap(refused, BOOT_TIMEOUT_MS, BOOT_TIMEOUT_MS);
     expect(refusal.status).toBe(409);
     expect(refusal.cacheControl).toContain('no-store');
     const pending = JSON.parse(refusal.body) as { reason: string; database: number; build: number; pending: number };
@@ -299,15 +102,15 @@ test('a gated boot refuses a v118 database, a real trial migrates it, and the ne
     // version span, which versions need not fill contiguously.
     expect(pending.pending).toBeGreaterThan(0);
     expect(pending.pending).toBeLessThanOrEqual(pending.build - FIXTURE_VERSION);
-    await stopHeadless(refused);
+    await stopHeadless(refused, STOP_TIMEOUT_MS);
     expect(await databaseFiles(sb.dbPath)).toEqual(fixture);
 
     // The migration the launcher runs: snapshot, then the real App trial boot.
     const id = newUpdateID();
-    const snapshot = await runUpdateCommand(sb, ['__update-snapshot', '--id', id]);
-    expect(result(snapshot.events), snapshot.stderr).toMatchObject({ type: 'result', outcome: 'ok', schema: pending.database });
-    const trial = await runUpdateCommand(sb, ['__update-trial-run', '--id', id, '--to', await buildVersion(), '--attempt', '1']);
-    expect(result(trial.events), trial.stderr).toMatchObject({ type: 'result', outcome: 'prepared' });
+    const snapshot = await runUpdateCommand(sb, ['__update-snapshot', '--id', id], COMMAND_TIMEOUT_MS);
+    expect(updateResult(snapshot.events), snapshot.stderr).toMatchObject({ type: 'result', outcome: 'ok', schema: pending.database });
+    const trial = await runUpdateCommand(sb, ['__update-trial-run', '--id', id, '--to', await buildVersion(), '--attempt', '1'], COMMAND_TIMEOUT_MS);
+    expect(updateResult(trial.events), trial.stderr).toMatchObject({ type: 'result', outcome: 'prepared' });
     expect(trial.events.some((event) => event.progress?.phase === 'store.migrate'), trial.stderr).toBe(true);
     expect(await schemaVersion(sb)).toBe(pending.build);
     // Provider probes are unattended work, which a trial parks.
@@ -315,21 +118,21 @@ test('a gated boot refuses a v118 database, a real trial migrates it, and the ne
 
     // The live boot after the trial finds nothing pending and starts, and
     // its provider probes resolve to the fakes.
-    const live = await startHeadless(sb);
+    const live = await startHeadless(sb, BOOTSTRAP_TIMEOUT_MS);
     backends.push(live);
-    const ready = await settledBootstrap(live);
+    const ready = await settledBootstrap(live, BOOT_TIMEOUT_MS, BOOT_TIMEOUT_MS);
     expect(ready.status, ready.body).toBe(200);
     await expect.poll(() => cliCalls(sb), { timeout: 20_000 }).toEqual(
       expect.arrayContaining(['claude --version', 'codex --version']));
-    await stopHeadless(live);
+    await stopHeadless(live, STOP_TIMEOUT_MS);
 
-    const discard = await runUpdateCommand(sb, ['__update-discard', '--id', id]);
-    expect(result(discard.events), discard.stderr).toMatchObject({ type: 'result', outcome: 'ok' });
-    await expect(access(path.join(sb.dataDir, 'agent-overflow', 'runtime', 'app-update', 'snapshot'))).rejects.toThrow();
+    const discard = await runUpdateCommand(sb, ['__update-discard', '--id', id], COMMAND_TIMEOUT_MS);
+    expect(updateResult(discard.events), discard.stderr).toMatchObject({ type: 'result', outcome: 'ok' });
+    await expect(access(path.join(sb.dataRoot, 'agent-overflow', 'runtime', 'app-update', 'snapshot'))).rejects.toThrow();
     test.info().annotations.push({ type: 'cli-calls', description: (await cliCalls(sb)).join(' | ') });
   } finally {
     for (const b of backends) {
-      await stopHeadless(b).catch(() => killGroup(b.child));
+      await stopHeadless(b, STOP_TIMEOUT_MS).catch(() => killGroup(b.child));
     }
     await rm(sb.root, { recursive: true, force: true });
   }
@@ -337,26 +140,26 @@ test('a gated boot refuses a v118 database, a real trial migrates it, and the ne
 
 test('a restore after a prepared trial puts back the v118 fixture byte for byte', async () => {
   test.setTimeout(180_000);
-  const sb = await sandbox();
+  const sb = await buildSandbox(await mkdtemp(path.join(tmpdir(), 'ao-update-trial-')));
   try {
     await writeFixture(sb.dbPath);
     const fixture = await databaseFiles(sb.dbPath);
 
     const id = newUpdateID();
-    const snapshot = await runUpdateCommand(sb, ['__update-snapshot', '--id', id]);
-    expect(result(snapshot.events), snapshot.stderr).toMatchObject({ type: 'result', outcome: 'ok', schema: FIXTURE_VERSION });
-    const trial = await runUpdateCommand(sb, ['__update-trial-run', '--id', id, '--to', await buildVersion(), '--attempt', '1']);
-    expect(result(trial.events), trial.stderr).toMatchObject({ type: 'result', outcome: 'prepared' });
+    const snapshot = await runUpdateCommand(sb, ['__update-snapshot', '--id', id], COMMAND_TIMEOUT_MS);
+    expect(updateResult(snapshot.events), snapshot.stderr).toMatchObject({ type: 'result', outcome: 'ok', schema: FIXTURE_VERSION });
+    const trial = await runUpdateCommand(sb, ['__update-trial-run', '--id', id, '--to', await buildVersion(), '--attempt', '1'], COMMAND_TIMEOUT_MS);
+    expect(updateResult(trial.events), trial.stderr).toMatchObject({ type: 'result', outcome: 'prepared' });
     expect(await schemaVersion(sb)).toBeGreaterThan(FIXTURE_VERSION);
     expect(await databaseFiles(sb.dbPath)).not.toEqual(fixture);
 
-    const restore = await runUpdateCommand(sb, ['__update-restore', '--id', id, '--reason', 'the test rolls back']);
-    expect(result(restore.events), restore.stderr).toMatchObject({ type: 'result', outcome: 'ok' });
+    const restore = await runUpdateCommand(sb, ['__update-restore', '--id', id, '--reason', 'the test rolls back'], COMMAND_TIMEOUT_MS);
+    expect(updateResult(restore.events), restore.stderr).toMatchObject({ type: 'result', outcome: 'ok' });
     expect(await databaseFiles(sb.dbPath)).toEqual(fixture);
     expect(await schemaVersion(sb)).toBe(FIXTURE_VERSION);
 
-    const discard = await runUpdateCommand(sb, ['__update-discard', '--id', id]);
-    expect(result(discard.events), discard.stderr).toMatchObject({ type: 'result', outcome: 'ok' });
+    const discard = await runUpdateCommand(sb, ['__update-discard', '--id', id], COMMAND_TIMEOUT_MS);
+    expect(updateResult(discard.events), discard.stderr).toMatchObject({ type: 'result', outcome: 'ok' });
     expect(await cliCalls(sb)).toEqual([]);
   } finally {
     await rm(sb.root, { recursive: true, force: true });

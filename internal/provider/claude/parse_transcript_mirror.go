@@ -101,13 +101,15 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 	// transcript and a forked skill's sidechain. isSidechain identifies the
 	// transcript scope; agent_metadata identifies its owner. Main-transcript
 	// rows already arrive on stdout and must never be projected beneath the
-	// provisional command row.
+	// provisional command row. The main-transcript facts stdout can lack are
+	// the record of this app's own prompt and the turns the CLI starts
+	// itself; see mainTranscriptEvents.
 	if facts.scope == mirrorTranscriptMain {
 		state.clearPending(projectionKey)
 		if projection != nil {
 			return nil, fmt.Errorf("transcript_mirror %q changed from sidechain to main transcript", envelope.FilePath)
 		}
-		return p.mainTranscriptTurnStarts(threadID, envelope.Entries, facts, now), nil
+		return p.mainTranscriptEvents(threadID, envelope.Entries, facts.entries, now), nil
 	}
 	if projection == nil && p.activeCommandUUID != "" && state.commands[p.activeCommandUUID] != nil {
 		// Claude emits agent_metadata before the ordinary task_started event.
@@ -279,6 +281,80 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 		state.removeProjection(projectionKey)
 	}
 	return events, nil
+}
+
+// mainTranscriptEvents reads the main-transcript user rows of one mirror
+// batch, in order, for the facts stdout can lack: the record of this app's
+// own prompt (recordedOwnPrompt) and a turn the CLI started itself
+// (appendTurnStart). Every other main row already arrived on stdout. A row
+// under a uuid this app issued is its own send whatever else the row says.
+func (p *Parser) mainTranscriptEvents(threadID string, entries []json.RawMessage, facts []mirrorEntryFact, now time.Time) []provider.ProviderEvent {
+	var events []provider.ProviderEvent
+	for i, fact := range facts {
+		if i >= len(entries) || !fact.user || fact.uuid == "" {
+			continue
+		}
+		if p.peerTurns != nil && p.peerTurns.commandUUIDIsIssued(fact.uuid) {
+			if event, ok := recordedOwnPrompt(threadID, entries[i], fact.uuid, now); ok {
+				events = append(events, event)
+			}
+			continue
+		}
+		events = p.appendTurnStart(events, threadID, entries[i], fact, now)
+	}
+	return events
+}
+
+// recordedOwnPrompt reports a main-transcript user entry written under a
+// uuid this app issued, as a confirm-only EventUserText.
+//
+// The stdout echo is not a reliable confirmation for a prompt that opens a
+// turn: the CLI echoes it only when its replay filter accepts the text, and
+// that filter rejects any prompt containing a tag such as
+// `<task-notification>` or `<bash-stdout>` (verified 2.1.284). The
+// transcript write is unconditional and lands before the turn's first
+// output, so it confirms the send whatever the message says. A prompt
+// drained into a running turn is recorded as a `queued_command` attachment,
+// not a user entry, and keeps its echo; it is confirmed there.
+//
+// The ledger gate keeps every other user entry, tool results and CLI
+// injections alike, off this path. With no session ledger nothing is
+// provably ours, so nothing is reported.
+func recordedOwnPrompt(threadID string, raw json.RawMessage, uuid string, now time.Time) (provider.ProviderEvent, bool) {
+	var entry struct {
+		ParentUUID string `json:"parentUuid"`
+		Message    struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		log.Printf("claude: transcript_mirror prompt %s unreadable: %v", uuid, err)
+		return provider.ProviderEvent{}, false
+	}
+	fields := map[string]any{
+		"provider_item_id":                         uuid,
+		provider.MetaUserTextTranscriptRecordedKey: true,
+	}
+	if entry.ParentUUID != "" {
+		fields["parent_uuid"] = entry.ParentUUID
+	}
+	// The same fingerprint the echo carries, so a queue-boundary merge
+	// is recognised from whichever confirmation arrives first.
+	if digest := EchoBlockDigest(entry.Message.Content); len(digest) > 0 {
+		fields[provider.MetaUserContentBlockDigestKey] = []string(digest)
+	}
+	meta, err := json.Marshal(fields)
+	if err != nil {
+		log.Printf("claude: encode transcript_mirror prompt %s: %v", uuid, err)
+		return provider.ProviderEvent{}, false
+	}
+	return provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  threadID,
+		Content:   extractToolResultText(entry.Message.Content),
+		Meta:      meta,
+		Timestamp: now,
+	}, true
 }
 
 // tapUnprojectedCompaction forwards the compaction rows of a mirror batch
@@ -542,8 +618,9 @@ type mirrorEntryFact struct {
 	compaction      bool
 	compactBoundary bool
 	attachment      bool
-	// turnOrigin is a user row's `turnOrigin`: why the CLI started the
-	// turn this row opens (parse_turn_origin.go).
+	// user marks a `type:"user"` row; turnOrigin is its `turnOrigin`: why
+	// the CLI started the turn this row opens (parse_turn_origin.go).
+	user       bool
 	turnOrigin string
 }
 
@@ -647,8 +724,9 @@ func inspectMirrorEntries(entries []json.RawMessage) (mirrorEntryInspection, err
 			compaction:      boundary || raw.IsCompactSummary,
 			compactBoundary: boundary,
 			attachment:      raw.Type == "attachment",
+			user:            raw.Type == "user",
 		}
-		if raw.Type == "user" {
+		if fact.user {
 			fact.turnOrigin = strings.TrimSpace(raw.TurnOrigin)
 		}
 		facts.entries = append(facts.entries, fact)

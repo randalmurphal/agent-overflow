@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -116,6 +117,9 @@ type claudeAdapter struct {
 	// mcpServers is the `--mcp-config` payload, kept for mcpCall steps.
 	// Read-only after construction.
 	mcpServers map[string]json.RawMessage
+	// sessionMirror is `--session-mirror`: each turn-opening prompt's
+	// transcript entry is mirrored on stdout. Read-only after construction.
+	sessionMirror bool
 
 	mu      sync.Mutex
 	waiters map[string]chan bool // approval request_id → decision
@@ -145,11 +149,12 @@ type claudeAdapter struct {
 
 func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
 	a := &claudeAdapter{
-		e:          e,
-		w:          w,
-		waiters:    make(map[string]chan bool),
-		mcpServers: claudeMCPServerSpecs(flagValue(args, "--mcp-config")),
-		tasks:      newClaudeTaskLedger(),
+		e:             e,
+		w:             w,
+		waiters:       make(map[string]chan bool),
+		mcpServers:    claudeMCPServerSpecs(flagValue(args, "--mcp-config")),
+		sessionMirror: slices.Contains(args, "--session-mirror"),
+		tasks:         newClaudeTaskLedger(),
 	}
 	w.onLine(a.noteEnvelope)
 	return a
@@ -393,6 +398,19 @@ func (a *claudeAdapter) drainHeldInput(turn int) {
 	}
 }
 
+// cancelHeldInput retires every held envelope unrun, the CLI's answer to a
+// cancel of a queued message: `cancelled` with no `started`, no echo and no
+// transcript entry.
+func (a *claudeAdapter) cancelHeldInput() {
+	a.heldMu.Lock()
+	held := a.held
+	a.held = nil
+	a.heldMu.Unlock()
+	for _, line := range held {
+		a.writeCommandLifecycle(claudeEnvelopeUUID(line), "cancelled")
+	}
+}
+
 // pickUpUserEnvelope opens a turn for a user envelope whose `queued` ack is
 // already written: init, replay echo, `started`, and the turn's steps.
 func (a *claudeAdapter) pickUpUserEnvelope(line []byte) {
@@ -410,7 +428,7 @@ func (a *claudeAdapter) pickUpUserEnvelope(line []byte) {
 		Input: input, SessionRef: vars["SESSION_ID"],
 	})
 	a.writeInit(vars)
-	a.echoUserEnvelope(line)
+	a.recordUserEnvelope(line)
 	// `started` after the init, so the app classifies this delivery as
 	// a new turn (claude-wire.md §command_lifecycle).
 	a.writeCommandLifecycle(commandUUID, "started")
@@ -548,25 +566,82 @@ func claudeUserText(line []byte) string {
 	return strings.Join(parts, "")
 }
 
-// echoUserEnvelope mirrors the CLI's --replay-user-messages behaviour:
-// the inbound envelope goes back out with isReplay:true and a
-// parentUuid assigned by the CLI (here: the previous echo's uuid).
-func (a *claudeAdapter) echoUserEnvelope(line []byte) {
+// recordUserEnvelope writes a turn-opening prompt the way the CLI does:
+// the transcript entry first, its `transcript_mirror` frame, then the
+// --replay-user-messages echo, which the CLI withholds for text its replay
+// filter rejects (claudeReplayEchoFiltered). The entry hangs off the
+// previous transcript leaf.
+func (a *claudeAdapter) recordUserEnvelope(line []byte) {
 	var env map[string]json.RawMessage
 	if err := json.Unmarshal(line, &env); err != nil {
 		log.Printf("claude: user envelope unparseable for echo (skipped): %v", err)
 		return
 	}
 	env["isReplay"] = json.RawMessage("true")
-	if leaf := a.transcriptLeaf(); leaf != "" {
+	leaf := a.transcriptLeaf()
+	if leaf != "" {
 		env["parentUuid"] = json.RawMessage(mustJSON(leaf))
 	}
 	transcriptLine := mustJSON(env)
-	a.persistTranscript(transcriptLine)
 	// Durability precedes visibility, matching the invariant the real provider
-	// transcript gives crash recovery: once AO can observe the user echo, a cold
+	// transcript gives crash recovery: once AO can observe the prompt, a cold
 	// restart must already be able to find its leaf.
-	a.w.writeLine(mustJSON(env), 0, 0)
+	a.persistTranscript(transcriptLine)
+	commandUUID := claudeEnvelopeUUID(line)
+	if a.sessionMirror {
+		entry := map[string]any{
+			"parentUuid":   nil,
+			"isSidechain":  false,
+			"type":         "user",
+			"message":      env["message"],
+			"uuid":         commandUUID,
+			"promptSource": "sdk",
+			"timestamp":    time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		if leaf != "" {
+			entry["parentUuid"] = leaf
+		}
+		a.w.writeLine(mustJSON(map[string]any{
+			"type":     "transcript_mirror",
+			"filePath": a.transcriptPath(),
+			"entries":  []any{entry},
+		}), 0, 0)
+	}
+	if claudeReplayEchoFiltered(claudeUserText(line)) {
+		// The prompt is still the transcript leaf; only stdout lacks it.
+		if commandUUID != "" {
+			a.leafMu.Lock()
+			a.leafUUID = commandUUID
+			a.leafMu.Unlock()
+		}
+		return
+	}
+	a.w.writeLine(transcriptLine, 0, 0)
+}
+
+// claudeReplayEchoFilteredTags are the tags whose presence anywhere in a
+// turn-opening prompt makes the CLI withhold its replay echo (2.1.284
+// `Pae`: local-command and bash output, task notifications, ticks).
+var claudeReplayEchoFilteredTags = []string{
+	"<local-command-stdout>", "<local-command-stderr>",
+	"<bash-stdout>", "<bash-stderr>",
+	"<task-notification>", "<tick>",
+}
+
+// claudeReplayEchoFiltered reports whether the CLI's replay filter rejects a
+// turn-opening prompt with this text. A prompt drained into a running turn
+// is echoed regardless (echoDrainedEnvelope).
+func claudeReplayEchoFiltered(text string) bool {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "<teammate-message ") {
+		return true
+	}
+	for _, tag := range claudeReplayEchoFilteredTags {
+		if strings.Contains(text, tag) {
+			return true
+		}
+	}
+	return false
 }
 
 // echoDrainedEnvelope writes the replay echo of an envelope drained into the
@@ -611,6 +686,14 @@ func (a *claudeAdapter) echoDrainedEnvelope(line []byte) {
 // resume depends on. The destination comes only from the isolated harness boot;
 // standalone mock invocations and tests without that explicit path write
 // nothing, so this helper can never discover or mutate a real provider home.
+// transcriptPath names the session file this process records to. The file
+// is written only under a harness transcript home (persistTranscript); the
+// name also labels its `transcript_mirror` frames.
+func (a *claudeAdapter) transcriptPath() string {
+	home := strings.TrimSpace(os.Getenv(control.EnvTranscriptHome))
+	return filepath.Join(home, ".claude", "projects", "mock", a.e.currentVars()["SESSION_ID"]+".jsonl")
+}
+
 func (a *claudeAdapter) persistTranscript(line string) {
 	home := strings.TrimSpace(os.Getenv(control.EnvTranscriptHome))
 	if home == "" {
@@ -620,11 +703,10 @@ func (a *claudeAdapter) persistTranscript(line string) {
 	if sessionID == "" || filepath.Base(sessionID) != sessionID || strings.ContainsAny(sessionID, "/\\") || strings.ContainsRune(sessionID, '\x00') {
 		log.Fatalf("claude: unsafe transcript session id %q", sessionID)
 	}
-	dir := filepath.Join(home, ".claude", "projects", "mock")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	path := a.transcriptPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		log.Fatalf("claude: create mock transcript directory: %v", err)
 	}
-	path := filepath.Join(dir, sessionID+".jsonl")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		log.Fatalf("claude: open mock transcript: %v", err)
