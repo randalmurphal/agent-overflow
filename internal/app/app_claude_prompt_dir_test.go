@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // A backend killed with a Claude session live runs no Close, so the
@@ -73,6 +74,30 @@ func TestPromptFilesOfAKilledSessionAreRemovedAtTheNextBoot(t *testing.T) {
 	})
 	if _, err := os.Stat(promptDir); !os.IsNotExist(err) {
 		t.Fatalf("os.Stat(%s) = %v after the next boot, want removed", promptDir, err)
+	}
+}
+
+// claude-tui spawns through its own branch of newProviderSession; its
+// prompt file must land in the same data directory as headless Claude's.
+func TestClaudeTUISessionWritesItsPromptFileInTheDataDirectory(t *testing.T) {
+	sharedTemp := t.TempDir()
+	t.Setenv("TMPDIR", sharedTemp)
+	app := newTestAppWithStore(t)
+	dir := t.TempDir()
+	thread := createAppTestThread(t, app, "prompt-dir-tui", string(provider.ClaudeTUI), dir)
+	binary := filepath.Join(t.TempDir(), "mock-claude-tui")
+	mockexec.Write(t, binary, "#!/bin/sh\nwhile IFS= read -r _; do :; done\n")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set claude binary: %v", err)
+	}
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if files := promptFilesIn(t, filepath.Join(app.configDir, claudePromptDir)); len(files) == 0 {
+		t.Fatal("no prompt file in the data directory for a claude-tui session carrying the app guide")
+	}
+	if files := promptFilesIn(t, sharedTemp); len(files) > 0 {
+		t.Fatalf("prompt files in the shared temp directory: %v", files)
 	}
 }
 
