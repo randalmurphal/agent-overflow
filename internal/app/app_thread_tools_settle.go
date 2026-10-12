@@ -207,7 +207,8 @@ const (
 )
 
 // runThreadSettlementWork performs what the settlement deferred. It runs with
-// the token's settle lock released and never re-enters it.
+// the token's settle lock released; the wake takes it again only to claim its
+// delivery.
 func (a *App) runThreadSettlementWork(work threadSettlementWork) {
 	if work.token == "" {
 		return

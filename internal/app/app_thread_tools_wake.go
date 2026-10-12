@@ -39,6 +39,10 @@ func threadWakeSendIDFor(token string, late bool) string {
 // it asked to be told about later. The queue delivers it at the next turn
 // boundary, which is exactly what the ack promised.
 func (a *App) deliverThreadWake(token string, late bool) {
+	if !a.claimThreadWake(token, late) {
+		return
+	}
+	defer a.endThreadWake(token, late)
 	row, found, err := a.store.GetThreadRequest(token)
 	if err != nil || !found {
 		if err != nil {
@@ -113,6 +117,51 @@ func (a *App) deliverThreadWake(token string, late bool) {
 	}
 }
 
+// claimThreadWake marks one wake in flight under the token's settle lock, or
+// reports that a tool call holds the token. The collector decides a wake is
+// owed before the delivery starts, and a call can register in between; that
+// call's reply carries the answer, and its release brings the retry pass back
+// if the reply did not, so a wake queued now would hand the agent the answer
+// twice. The mark is what a reply reads under the same lock
+// (claimInlineDelivery) while the wake is still writing its message.
+func (a *App) claimThreadWake(token string, late bool) bool {
+	unlock := a.threadRequestSettleLock(token)
+	defer unlock()
+	if a.requestWaitActive(token) {
+		return false
+	}
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	if a.threadRequests.wakesInFlight == nil {
+		a.threadRequests.wakesInFlight = make(map[string]int)
+	}
+	a.threadRequests.wakesInFlight[threadWakeSendIDFor(token, late)]++
+	return true
+}
+
+// endThreadWake clears the mark, under the settle lock so that a reply reads
+// either the mark or the row the wake wrote, never neither.
+func (a *App) endThreadWake(token string, late bool) {
+	unlock := a.threadRequestSettleLock(token)
+	defer unlock()
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	key := threadWakeSendIDFor(token, late)
+	if a.threadRequests.wakesInFlight[key] <= 1 {
+		delete(a.threadRequests.wakesInFlight, key)
+		return
+	}
+	a.threadRequests.wakesInFlight[key]--
+}
+
+// threadWakeInFlight reports whether a wake for this answer is between its
+// claim and its end. The caller holds the token's settle lock.
+func (a *App) threadWakeInFlight(token string, late bool) bool {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	return a.threadRequests.wakesInFlight[threadWakeSendIDFor(token, late)] > 0
+}
+
 // threadWakeLockTimeout bounds the wait for the caller thread's lock. A wake
 // that cannot have it now is owed just the same, and the retry pass carries
 // it.
@@ -134,7 +183,8 @@ func (a *App) failThreadWake(token, what string, cause error) {
 //
 // A settlement and its wake are two transactions, and the second one has ends
 // that deliver nothing: a crash between them, a caller thread that could not
-// be unarchived or locked in time, a render that failed. Nothing else revisits
+// be unarchived or locked in time, a render that failed, a tool call that
+// held the token and whose reply did not carry the answer. Nothing else revisits
 // those rows, because the pollers read open requests and this one is settled,
 // so the answer would sit in the ledger unread forever. The delivery mark is
 // conditional, so a retry of a wake that did land is a no-op.
@@ -153,6 +203,12 @@ func (a *App) retryUndeliveredThreadWakes(now time.Time) {
 	for _, row := range rows {
 		owed := undeliveredThreadWakes(row)
 		if len(owed) == 0 {
+			continue
+		}
+		if a.requestWaitActive(row.Token) {
+			// A call holding this token answers it in its reply, and its
+			// release nudges this pass if the reply did not. Booking an
+			// attempt now would push that retry out by the backoff.
 			continue
 		}
 		if row.WakeAttempts >= threadWakeRetryAttempts {
