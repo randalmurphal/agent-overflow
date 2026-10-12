@@ -2234,6 +2234,84 @@ func TestAWakeAStopDropsGoesBackToItsRequest(t *testing.T) {
 	}
 }
 
+// A notice and a person's message queued while a Stop or a revert drops the
+// thread's queue, between the drop's read of the queue and its delete, wait
+// for the drop and land after it: durable and in memory, the answer's
+// request reading queued with the row that carries it. Queued inside the
+// drop, both rows would go with its delete, unread and so not given back,
+// and a Stop's memory cleanup would take the messages too.
+func TestAMessageQueuedDuringADropLandsAfterIt(t *testing.T) {
+	t.Parallel()
+	for _, drop := range []string{"Stop", "revert"} {
+		t.Run(drop, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.app.startSessionFn = func(string) error { return nil }
+			token := owedWakeSeeds()[0].seed(t, f)
+			queued := make(chan error, 2)
+			paused := false
+			f.app.queueDropReadForTest = func(threadID string) {
+				if threadID != f.caller.ID || paused {
+					return
+				}
+				paused = true
+				go func() {
+					f.app.deliverThreadWake(token, false)
+					queued <- nil
+				}()
+				go func() {
+					_, err := f.app.RegisterQueueItem(context.Background(), f.caller.ID, "my own words", SendMessageOptions{SendID: "person-send"})
+					queued <- err
+				}()
+				// Both wait on the drop's lock, or both land inside it.
+				waitUntil(t, 10*time.Second, func() bool {
+					return f.app.threadApplication().MutationRefs(f.caller.ID) == 3 || len(queued) == 2
+				})
+			}
+
+			// No dispatcher is configured, so triage keeps what is queued.
+			unlock := f.app.threadLocks().Lock(f.caller.ID)
+			f.app.sessionManager().put(f.caller.ID, session{
+				Provider: string(provider.Codex),
+				Token:    "tok",
+				Liveness: newSessionLiveness(time.Now()),
+			})
+			if drop == "Stop" {
+				if err := f.app.StopSession(f.caller.ID); err != nil {
+					unlock()
+					t.Fatalf("StopSession: %v", err)
+				}
+			} else {
+				f.app.clearFlushDispatchForRollback(f.caller.ID)
+			}
+			unlock()
+			if !paused {
+				t.Fatal("the drop never read the queue; the test proves nothing")
+			}
+			for range 2 {
+				select {
+				case err := <-queued:
+					if err != nil {
+						t.Fatalf("queue write: %v", err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("a queue write never finished after the drop")
+				}
+			}
+			f.app.waitAgentNoticeWork()
+
+			durable, memory := queuedSendIDs(t, f.app, f.caller.ID)
+			slices.Sort(durable)
+			slices.Sort(memory)
+			want := []string{"person-send", threadWakeSendID(token)}
+			if row := f.request(t, token); !slices.Equal(durable, want) || !slices.Equal(memory, want) || row.DeliveredHow != store.ThreadWakeQueued {
+				t.Fatalf("after the %s: queue %q (in memory %q), answer delivered as %q; want the answer and the person's message queued, durably and in memory",
+					drop, durable, memory, row.DeliveredHow)
+			}
+		})
+	}
+}
+
 // A revert drops the queue's durable rows, and gives an answer and a remote
 // completion back to their owners only when its drop took them: one a
 // dispatch held, which the revert discards, goes back owed and pending. One

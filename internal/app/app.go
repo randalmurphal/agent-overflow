@@ -542,6 +542,10 @@ type App struct {
 	// returned the answers and completions it held (returnHeldToOwners), so
 	// a test can land a watcher pass at that moment.
 	heldReturnedForTest func(threadID string)
+	// queueDropReadForTest, when set, runs in a wholesale drop between its
+	// read of the durable queue and its delete (dropDurableFlushQueue), so
+	// a test can queue a message at that moment.
+	queueDropReadForTest func(threadID string)
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a

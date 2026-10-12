@@ -226,7 +226,10 @@ func (a *App) clearFlushDispatchForRollback(threadID string) {
 	// The rollback is deleting the history these messages were queued
 	// against, so they are being thrown away rather than deferred: their
 	// durable rows go with them, or the next boot restores messages the
-	// user's revert already discarded.
+	// user's revert already discarded. Under the mutation lock, as a
+	// teardown's drop is (dropQueueForTeardown), so a message queued during
+	// it is in the queue it reads or queued after it.
+	unlock := a.threadApplication().LockMutations(threadID)
 	held := a.dropDurableFlushQueue(threadID)
 	a.discardFlushDispatch(threadID)
 	// A revert that keeps its session (Codex's in-place cut) leaves triage's
@@ -238,6 +241,7 @@ func (a *App) clearFlushDispatchForRollback(threadID string) {
 			held = slices.DeleteFunc(held, func(row store.FlushQueueItem) bool { return row.ID == item.ID })
 		}
 	}
+	unlock()
 	a.returnHeldToOwners(threadID, held)
 }
 
@@ -1116,6 +1120,9 @@ func (a *App) dropDurableFlushQueue(threadID string) (held []store.FlushQueueIte
 	keep := make([]string, 0, len(held))
 	for _, row := range held {
 		keep = append(keep, row.ID)
+	}
+	if a.queueDropReadForTest != nil {
+		a.queueDropReadForTest(threadID)
 	}
 	// An outside send's row goes with its notice (noteAgentSendsCleared).
 	if err := a.store.DeleteFlushQueueItemsForThread(threadID, agentSendIDRoot, keep...); err != nil {
