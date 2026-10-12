@@ -2,10 +2,15 @@ version: '3'
 
 tasks:
   go:mod:tidy:
-    summary: Runs `go mod tidy`
+    summary: |
+      Runs `go mod tidy` for development builds. Release builds
+      (AO_RELEASE_BUILD=1, set by the scripts/build-release*.sh scripts)
+      skip it: a release must not rewrite go.mod or go.sum, and tidy loads
+      every platform's dependencies, which an offline module cache holding
+      only the release's build set does not carry.
     internal: true
     cmds:
-      - go mod tidy
+      - '[ "${AO_RELEASE_BUILD:-}" = "1" ] || go mod tidy'
 
   install:frontend:deps:
     summary: Install frontend dependencies
