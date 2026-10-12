@@ -1348,7 +1348,9 @@ and renders the same overlay thumb. See
 Desktop transport banners overlay without resizing the scroll surface.
 Compact transport banners occupy a row while visible so the only Back control
 stays reachable during an outage; normal viewport-resize handling preserves
-the timeline's follow/escape intent. No space is reserved while healthy.
+the timeline's follow/escape intent. No space is reserved while healthy. The
+compact row appears and goes without a fade: a fading row would keep its
+height after its state ended and move live content under a pressed pointer.
 
 ## Nested Scrollers And Gesture Attribution
 
