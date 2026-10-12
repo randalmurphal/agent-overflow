@@ -2119,6 +2119,8 @@ func TestSessionStatusErrorRestoresQueuedFlushItemsToDraft(t *testing.T) {
 			if app.triage.HasQueuedFlushItems(thread.ID) {
 				t.Fatal("queued flush items still live after handler restore")
 			}
+			// The restore writes the draft before it emits the event.
+			waitForCondition(t, "queue restored event", func() bool { return len(emittedQueueRestored(rec)) > 0 })
 			if restored := emittedQueueRestored(rec); len(restored) != 1 {
 				t.Fatalf("queue restored events = %+v, want one", restored)
 			}
