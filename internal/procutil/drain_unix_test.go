@@ -100,14 +100,17 @@ func TestRunDrainedRefusesAssignedOutputs(t *testing.T) {
 // TestRunDrainedStopsAtCancellationWhileADescendantKeepsWriting: the
 // command exits at once, a descendant keeps the pipe busy more often than
 // linger, and the context ends the run. exec no longer watches the context
-// once the process has exited, so only RunDrained can.
+// once the process has exited, so only RunDrained can. Each tick forks a
+// sleep, and a loaded runner can take tens of milliseconds over a fork, so
+// linger is far above the tick: a gap that reaches it means the runner
+// stalled for half a second, not that the drain ended early.
 func TestRunDrainedStopsAtCancellationWhileADescendantKeepsWriting(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", "(i=0; while [ $i -lt 100 ]; do echo tick; sleep 0.02; i=$((i+1)); done) & echo done")
+	cmd := exec.CommandContext(ctx, "sh", "-c", "(i=0; while [ $i -lt 200 ]; do echo tick; sleep 0.02; i=$((i+1)); done) & echo done")
 	start := time.Now()
-	err := RunDrained(ctx, cmd, io.Discard, nil, 100*time.Millisecond)
-	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+	err := RunDrained(ctx, cmd, io.Discard, nil, 500*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("RunDrained ran %s, past its context", elapsed)
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
