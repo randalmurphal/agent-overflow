@@ -12,6 +12,7 @@ import type { HarnessApp } from '../src/harness.js';
 import { topUpScenarios, type TopUpScenario } from './upgrade-corpus-config.js';
 import type { CensusGrowth } from './upgrade-corpus-helpers.js';
 import { timed } from './upgrade-corpus-tools.js';
+import { awaitToolAnswer, awaitTurnCompleted, threadToolsScenario } from './thread-tools-helpers.js';
 import {
   doneResult,
   humanGateWorkflow,
@@ -135,6 +136,41 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('PromoteStandingAgent', scenarioThreads['tool-call']);
     await harness.rpc('PromoteStandingAgent', scenarioThreads['codex-basic']);
     await harness.rpc('SetStandingAgentNotifyOnTick', scenarioThreads['codex-basic'], true);
+    // A standing agent that set itself a loop and a watch through the
+    // thread tools, and stopped a second loop. A first fire is one interval
+    // out, an hour here, so nothing fires while the corpus is written.
+    const agent = await harness.rpc<{ id: string }>('CreateThread', {
+      projectId,
+      title: `Top-up v${version}: standing agent with a loop and a watch`,
+      provider: 'claude',
+      model: MODEL.claude,
+      mode: 'chat',
+    });
+    threadIds.push(agent.id);
+    const { home } = await harness.rpc<{ home: string }>('PromoteStandingAgent', agent.id);
+    await harness.rpc('HarnessSetScenario', {
+      scenario: threadToolsScenario({
+        name: 'topup-wakes',
+        provider: 'claude',
+        turns: [{
+          steps: [
+            { call: { tool: 'thread_loop', args: { label: 'board', note: 'look at the board', every_seconds: 3600 } } },
+            { call: { tool: 'thread_watch', args: { label: 'inbox', command: 'true', cwd: home, every_seconds: 3600, timeout_seconds: 30 } } },
+            { call: { tool: 'thread_loop', args: { label: 'retired', note: 'an old check', every_seconds: 3600 } } },
+            { call: { tool: 'thread_loop', args: { label: 'retired', stop: true } } },
+          ],
+          text: 'Scheduled.',
+        }],
+        afterTurns: 'silent',
+      }),
+    });
+    await harness.rpc('StartSession', agent.id);
+    const watchSet = awaitToolAnswer(harness, { tool: 'thread_watch', timeoutMs: TURN_TIMEOUT_MS });
+    const scheduled = awaitTurnCompleted(harness, agent.id, TURN_TIMEOUT_MS);
+    await harness.rpc('SendMessage', agent.id, 'Look at the board and the inbox every hour.', null);
+    const watchAnswer = await watchSet;
+    if (watchAnswer.isError) throw new Error(`top-up thread_watch was refused: ${watchAnswer.text}`);
+    await scheduled;
 
     // Threads at every chat-bar setting the schema enumerates, drafts only.
     for (const variant of THREAD_VARIANTS) {
