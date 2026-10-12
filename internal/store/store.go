@@ -56,6 +56,9 @@ type Store struct {
 	// reads counts the read statements accessors have issued; see
 	// ReadCount.
 	reads atomic.Uint64
+	// writes counts the row writes the writer connection has run; see
+	// WriteCount.
+	writes *atomic.Uint64
 	// historyReads bounds the read pool connections history reads and
 	// background checkpoints hold; see historyReadSnapshot.
 	historyReads readSlots
@@ -121,7 +124,8 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 	}
 	gate := &connGate{}
 	commits := newCommitSignal()
-	db, err := openPool(dbPath, writerConnPragmas, gate, commits)
+	writes := new(atomic.Uint64)
+	db, err := openPool(dbPath, writerConnPragmas, gate, commits, writes)
 	if err != nil {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
@@ -146,7 +150,7 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 		return nil, err
 	}
 
-	s := &Store{db: db, path: dbPath, gate: gate}
+	s := &Store{db: db, path: dbPath, gate: gate, writes: writes}
 
 	// Reclaim the WAL file before anything can read from it. Every other
 	// checkpoint the app runs is PASSIVE, which recycles WAL pages for
@@ -204,7 +208,7 @@ func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 	// _pragma values apply per connection (verified against
 	// modernc.org/sqlite v1.56.0). journal_mode is a property of the
 	// database file, so read connections inherit WAL.
-	read, err := openPool(dbPath, readerConnPragmas, gate, nil)
+	read, err := openPool(dbPath, readerConnPragmas, gate, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: open read pool: %w", err)
 	}
@@ -248,6 +252,16 @@ func (s *Store) reader() *sql.DB {
 // an atomic add on a path that is about to touch SQLite, and nothing in
 // production reads it.
 func (s *Store) ReadCount() uint64 { return s.reads.Load() }
+
+// WriteCount is how many row writes the writer connection has run since
+// the store opened: each INSERT, UPDATE, DELETE or REPLACE statement,
+// and each executed WITH, counted once per run whether or not it changed
+// a row. Migrations count too.
+//
+// It is ReadCount's counterpart, for the tests that pin a write path's
+// statements. It counts statements, not rows, so a single statement that
+// writes many rows counts once. Nothing in production reads it.
+func (s *Store) WriteCount() uint64 { return s.writes.Load() }
 
 // quiesceReads routes new reads to the writer pool, waits for in-flight
 // read-pool queries to drain, runs fn, then restores read-pool routing.
