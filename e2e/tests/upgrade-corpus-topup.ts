@@ -131,6 +131,10 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('ArchiveThread', scenarioThreads['session-death']);
     await harness.rpc('RenameThread', scenarioThreads['usage-limit-claude'], `Top-up v${version}: renamed after its usage limit`);
     await harness.rpc('SetChatBarFavorite', { kind: 'model', provider: 'claude', value: MODEL.claude, label: 'Opus' }, true);
+    // Two standing agents, one told about every tick.
+    await harness.rpc('PromoteStandingAgent', scenarioThreads['tool-call']);
+    await harness.rpc('PromoteStandingAgent', scenarioThreads['codex-basic']);
+    await harness.rpc('SetStandingAgentNotifyOnTick', scenarioThreads['codex-basic'], true);
 
     // Threads at every chat-bar setting the schema enumerates, drafts only.
     for (const variant of THREAD_VARIANTS) {

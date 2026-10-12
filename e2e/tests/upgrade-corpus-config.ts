@@ -176,6 +176,8 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'async_questions', reason: "an agent's thread_ask question" },
   { table: 'scratch_threads', reason: 'a side chat not yet promoted; the next boot sweeps every one, so the corpus keeps none' },
   { table: 'work_item_effects', reason: "an agent's workflow tool calls on a run" },
+  { table: 'agent_wakes', reason: "an agent's thread_loop or thread_watch" },
+  { table: 'session_start_failures', reason: "a session start that failed for a message the app queued for an agent (a wake, a remote completion, a thread request's answer); a later start that succeeds deletes it" },
 
   // Imports from a provider home.
   { table: 'import_history_items', reason: 'a provider session imported from a provider home' },
