@@ -141,10 +141,11 @@ func TestNewSessionWritesAndRemovesBothPromptFiles(t *testing.T) {
 	}
 }
 
-// A spawn that fails must not leave either prompt file behind.
+// A spawn that fails must not leave either prompt file behind. The prompt
+// files go to os.TempDir(), which other tests and processes also write, so
+// the test gives this process its own and stays serial.
 func TestNewSessionRemovesBothPromptFilesWhenTheSpawnFails(t *testing.T) {
-	t.Parallel()
-	before := promptFilesInTemp(t)
+	t.Setenv("TMPDIR", t.TempDir())
 	_, err := NewSession(context.Background(), testThread, Config{
 		Binary:             t.TempDir() + "/does-not-exist",
 		SystemPrompt:       "REPLACEMENT",
@@ -153,8 +154,8 @@ func TestNewSessionRemovesBothPromptFilesWhenTheSpawnFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewSession succeeded with a missing binary")
 	}
-	if after := promptFilesInTemp(t); len(after) > len(before) {
-		t.Fatalf("failed spawn left prompt files behind: before %d, after %d", len(before), len(after))
+	if left := promptFilesInTemp(t); len(left) > 0 {
+		t.Fatalf("failed spawn left prompt files behind: %v", left)
 	}
 }
 

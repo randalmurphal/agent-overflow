@@ -165,6 +165,18 @@ type pendingSend struct {
 	// (round-10, R10-2).
 	AnchorRecordedAtEcho bool
 
+	// OpenedTurn marks an entry whose TurnIndex a provider turn start
+	// already used. The entry still awaits confirmation, but it can never
+	// open another turn: a later start belongs to a later send or to the
+	// provider, and reusing this index would reopen a turn whose rows and
+	// counters are already written.
+	OpenedTurn bool
+
+	// Started records Claude's command_lifecycle `started` for this send:
+	// the message reached the model. It decides what the send's terminal
+	// lifecycle state means (handleCommandLifecycle).
+	Started bool
+
 	Confirmation *userMessageConfirmation
 }
 
@@ -351,6 +363,78 @@ func (r *Router) peekPendingSendHead(threadID string) (pendingSend, bool) {
 		return pendingSend{}, false
 	}
 	return queue[0], true
+}
+
+// claimTurnOpeningPendingSend returns the dispatcher-stamped TurnIndex of the
+// first entry that can still open a turn and marks it OpenedTurn. An entry
+// whose confirmation never arrives is then skipped by every later turn start
+// instead of handing each one the same stale index.
+func (r *Router) claimTurnOpeningPendingSend(threadID string) (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	queue := r.pendingSendsLocked(threadID)
+	for i := range queue {
+		if queue[i].canOpenTurn() {
+			queue[i].OpenedTurn = true
+			return queue[i].TurnIndex, true
+		}
+	}
+	return 0, false
+}
+
+// turnOpeningPendingSend reads the entry claimTurnOpeningPendingSend would
+// claim, without claiming it.
+func (r *Router) turnOpeningPendingSend(threadID string) (pendingSend, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, entry := range r.pendingSendsLocked(threadID) {
+		if entry.canOpenTurn() {
+			return entry, true
+		}
+	}
+	return pendingSend{}, false
+}
+
+// canOpenTurn: an entry whose consumption was already observed (a reinsert
+// after a failed write) or whose index a turn start already used has no
+// turn left to open.
+func (p pendingSend) canOpenTurn() bool {
+	return !p.OpenedTurn && !p.EchoConsumed
+}
+
+// markPendingSendStarted records `started` on the entry registered under
+// providerItemID, if it is still pending.
+func (r *Router) markPendingSendStarted(threadID, providerItemID string) {
+	if providerItemID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	queue := r.pendingSendsLocked(threadID)
+	for i := range queue {
+		if queue[i].ExpectedProviderItemID == providerItemID {
+			queue[i].Started = true
+			return
+		}
+	}
+}
+
+// consumePendingSendByProviderID pops the entry registered under the wire id
+// providerItemID. Identity only, with none of consumeMatchingPendingSend's
+// FIFO fallbacks: the caller's evidence names one send or none.
+func (r *Router) consumePendingSendByProviderID(threadID, providerItemID string) (pendingSend, bool) {
+	if providerItemID == "" {
+		return pendingSend{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	queue := r.pendingSendsLocked(threadID)
+	for i := range queue {
+		if queue[i].ExpectedProviderItemID == providerItemID {
+			return r.popPendingSendAtLocked(threadID, i), true
+		}
+	}
+	return pendingSend{}, false
 }
 
 // consumeMatchingPendingSend pops the pending entry that corresponds to

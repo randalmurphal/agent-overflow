@@ -981,8 +981,13 @@ test('a cancel stops a turn the caller started on the other computer', async () 
   );
 
   await home.rpc('StartSession', caller.threadIds[0]);
+  // The next message is a direct send, which a thread still in its turn
+  // refuses: wait for the caller's first turn to end, not just for the
+  // remote turn it started.
+  const callerTurnDone = awaitTurnCompleted(home, caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'give the GPU computer the long job', null);
   await awaitGate(remote, 'hold-remote-cancel', there.path);
+  await callerTurnDone;
 
   const interrupted = remote.waitForEvent<HarnessMockEventData>(
     'harness:mock',
@@ -2000,6 +2005,7 @@ test('forgetting a computer with open requests refuses once, then abandons them'
   interface StatusAnswer {
     requests?: Array<{ token: string; state: string; answer?: string; notify: boolean }>;
   }
+  await awaitTurnCompleted(home, caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'what happened to that request?', null);
   const status = await awaitToolAnswer<StatusAnswer>(home, {
     tool: 'thread_status',

@@ -72,6 +72,53 @@ func TestHarnessResetSettlesBackgroundTasksAfterStoppingSessions(t *testing.T) {
 	}
 }
 
+// A settled receipt is detached from its thread on delete, not dropped
+// with it, so the project cascade alone would leave one test's receipts
+// for the next to count.
+func TestHarnessResetDropsDetachedThreadRequestReceipts(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "agent-overflow")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHarness(app, HarnessPaths{DataRoot: root, DataDir: dataDir})
+	seeded, err := harnessrpc.Seed(h, harnessrpc.HarnessSeedSpec{Projects: []harnessrpc.HarnessSeedProject{{
+		Name: "reset-receipts",
+		Repo: &harness.RepoSpec{},
+		Threads: []harnessrpc.HarnessSeedThread{{
+			Title: "asked thread",
+			Turns: []harnessrpc.HarnessSeedTurn{{
+				UserText: "hello",
+				Items:    []harnessrpc.HarnessSeedItem{{Kind: "assistant_text", Summary: "Hi."}},
+			}},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	threadID := seeded.Projects[0].ThreadIDs[0]
+	if _, _, err := app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: "receipt-reset", OwnerDeviceID: "local", Kind: store.ThreadRequestSend, TargetThreadID: threadID,
+	}); err != nil {
+		t.Fatalf("accept receipt: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if _, err := app.store.SettleThreadRequestReceipt("receipt-reset", store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadReceiptFinished, SettledAt: now, ExpiresAt: now + time.Hour.Milliseconds(),
+	}); err != nil {
+		t.Fatalf("settle receipt: %v", err)
+	}
+
+	if err := h.HarnessReset(); err != nil {
+		t.Fatalf("HarnessReset: %v", err)
+	}
+	if _, found, err := app.store.GetThreadRequestReceipt("receipt-reset"); err != nil || found {
+		t.Fatalf("receipt after reset: found=%v, err=%v; want gone", found, err)
+	}
+}
+
 func TestHarnessSeedWorkflowsUsesProductionPathsAndResetClearsState(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)

@@ -151,7 +151,7 @@ func acknowledgeMockClaudeSend(t *testing.T, a *App, threadID string) {
 			t.Fatal(err)
 		}
 		if active, ok := a.triage.ActiveTurnSnapshot(threadID); ok {
-			if err := a.triage.Handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: active.TurnID, TurnIndex: active.TurnIndex, Timestamp: time.Now()}); err != nil {
+			if err := a.triage.Handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: active.TurnID, TurnIndex: active.TurnIndex, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}, Timestamp: time.Now()}); err != nil {
 				t.Fatal(err)
 			}
 		}

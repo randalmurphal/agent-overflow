@@ -126,6 +126,7 @@ func TestReleaseWorkflowCarriesEveryArtifactToPackaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	type step struct {
+		If   string
 		Uses string
 		With map[string]string
 	}
@@ -152,6 +153,10 @@ func TestReleaseWorkflowCarriesEveryArtifactToPackaging(t *testing.T) {
 		}
 		for _, s := range job.Steps {
 			if !strings.HasPrefix(s.Uses, "actions/upload-artifact@") {
+				continue
+			}
+			// A failure-only upload (traces of a failed gate) is never shipped.
+			if strings.Contains(s.If, "failure()") {
 				continue
 			}
 			if !consumed[s.With["name"]] {
@@ -204,7 +209,7 @@ func TestReleaseTagOnlyPromotesSavedCandidate(t *testing.T) {
 	if err := yaml.Unmarshal(body, &workflow); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"linux-wsl", "macos", "android", "package"} {
+	for _, name := range []string{"linux-wsl", "macos", "android", "toolchain", "upgrade-check", "package"} {
 		job := workflow.Jobs[name]
 		if job.If != "github.event_name == 'workflow_dispatch'" {
 			t.Errorf("%s must build only manual candidates", name)

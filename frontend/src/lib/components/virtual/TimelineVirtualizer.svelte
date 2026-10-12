@@ -86,11 +86,11 @@
   // measurement that moved its destination, which then stayed off screen.
   const INDEX_SCROLL_SETTLE_FRAMES = 2;
   const INDEX_SCROLL_MAX_PASSES = 8;
-  // How far the live position may sit from where a pending index scroll
-  // left it before a convergence pass treats the viewport as taken over.
-  // Covers fractional scrollTop quantization; real takeovers (a spring
-  // frame, a wheel tick) move whole tens of pixels.
-  const INDEX_SCROLL_TAKEOVER_TOLERANCE_PX = 2;
+  // How far a write may land from the target this adapter asked for (a
+  // pending index scroll's destination, a delivered compensation) and
+  // still count as that request. Covers fractional scrollTop
+  // quantization.
+  const SCROLL_TAKEOVER_TOLERANCE_PX = 2;
 
   interface Props {
     data: readonly T[];
@@ -259,6 +259,21 @@
     pendingCompensation = mergeCompensations(prior, next, actualScrollOffset);
   }
 
+  // The target of the compensation being handed to the consumer, set only
+  // while it performs that write. A readback that lands on it continues
+  // this adapter's own positioning; any other authored write is the scroll
+  // owner taking the viewport over (see noteScrollTopWritten).
+  let deliveringCompensationTarget: number | null = null;
+
+  function deliverCompensation(compensation: EngineCompensation): void {
+    deliveringCompensationTarget = compensation.target;
+    try {
+      onCompensation?.(compensation);
+    } finally {
+      deliveringCompensationTarget = null;
+    }
+  }
+
   // Header geometry is exact and therefore has no ResizeObserver delivery
   // to tell the engine that data rows moved. Report the move directly when
   // the reader is below the old header. At the top, scrollTop stays zero so
@@ -303,7 +318,7 @@
     pendingCompensation = null;
     untrack(() => {
       if (compensation) {
-        onCompensation?.(compensation);
+        deliverCompensation(compensation);
         syncEngineToLiveScrollTop();
         // The controller's compensation write moves the position by the
         // content shift it preserves across; a pending index scroll's
@@ -560,6 +575,11 @@
   // `reconciledData` is now the only door to the render data: it updates the
   // non-reactive engine first and returns that exact keyed snapshot, making an
   // unreconciled data/range pair structurally unavailable to the template.
+  // The data the engine last applied. It differs from
+  // `deliveredDataSnapshot` while a handle call has applied a change the
+  // rows have not rendered yet, when the row elements still sit at the
+  // previous data's indices.
+  let latestReconciledData: object | null = null;
   const reconciledData = $derived.by(() => {
     const items = data;
     const nextKeys = keysFor(data);
@@ -579,7 +599,9 @@
       case 'keyed':
         queueUpdate(engine.applyKeyedReorder(keyedReorderPermutation(prev, nextKeys)));
     }
-    return { items, keys: nextKeys, mutation };
+    const next = { items, keys: nextKeys, mutation };
+    latestReconciledData = next;
+    return next;
   });
 
   function queueUpdate(update: EngineUpdate | null): void {
@@ -751,8 +773,8 @@
   // leaves that row's below-viewport-top correction visible. During a head
   // splice that would move the retained reading row instead. Hold the live
   // retained DOM row across the inserted window's measurement cascade.
-  // Scroll input refreshes `latestViewportAnchor` while the request is in
-  // flight, so this never restores a position captured before the user moved.
+  // Scroll input and authored takeovers refresh `latestViewportAnchor`, so
+  // this never restores a position captured before the viewport last moved.
   function armHeadSpliceAnchor(): void {
     const anchor = latestViewportAnchor;
     headSpliceAnchor = anchor?.rowEl.isConnected ? { ...anchor } : null;
@@ -764,11 +786,9 @@
   // time. Rows are absolutely positioned from those same offsets, so this
   // equals the old client-rect delta without the forced-layout read — and
   // it deliberately excludes scroll motion actualScrollOffset has not
-  // seen yet (a spring frame's write mid-flush), which the rect read used
-  // to fold into the "content shift". The one same-flush writer that must
-  // be visible is a pending index scroll's own write (delivered before
-  // this runs, its scroll event still in flight), so only then is the
-  // live scrollTop read — a cold path.
+  // seen yet. Every move it could otherwise misread as content shift ends
+  // the hold first: scroll input in handleScroll, authored writes in
+  // noteScrollTopWritten.
   function correctHeadSpliceAnchor(): boolean {
     const anchor = headSpliceAnchor;
     if (!anchor) return false;
@@ -777,14 +797,12 @@
       headSpliceAnchor = null;
       return false;
     }
-    const currentTop = pendingIndexScroll
-      ? (observedScroller?.scrollTop ?? actualScrollOffset)
-      : actualScrollOffset;
+    const currentTop = actualScrollOffset;
     const relativeNow = engine.getItemOffset(index) + renderHeaderSize - currentTop;
     const delta = relativeNow - anchor.relativeTop;
     let corrected = false;
     if (Math.abs(delta) > 0.01 && onCompensation) {
-      onCompensation({
+      deliverCompensation({
         kind: 'head-splice',
         delta,
         target: Math.max(0, currentTop + delta),
@@ -1273,7 +1291,7 @@
       // lags its own write until the scroll event lands, and a stale
       // offset here would read the navigation's own write as a takeover.
       // Cold path — only runs while a navigation is pending.
-      if (Math.abs(scroller.scrollTop - expected) > INDEX_SCROLL_TAKEOVER_TOLERANCE_PX) {
+      if (Math.abs(scroller.scrollTop - expected) > SCROLL_TAKEOVER_TOLERANCE_PX) {
         clearIndexScroll();
         return;
       }
@@ -1333,7 +1351,11 @@
           Math.max(0, engine.getTotalSize() + renderHeaderSize - engine.getViewportSize()),
         );
     pending.expectedPosition = landed;
-    pending.reached = Math.abs(landed - Math.max(0, target)) <= INDEX_SCROLL_TAKEOVER_TOLERANCE_PX;
+    // A consumer that does not forward its readback leaves this write
+    // invisible until its scroll event, and a hold correction in the same
+    // flush would compute from the old offset and undo the navigation.
+    if (scroller) noteScrollTopWritten(landed);
+    pending.reached = Math.abs(landed - Math.max(0, target)) <= SCROLL_TAKEOVER_TOLERANCE_PX;
   }
 
   export function scrollToIndex(
@@ -1416,9 +1438,33 @@
   export function getScrollOffset(): number {
     return actualScrollOffset;
   }
+  // An authored write that moves the viewport, other than onto the
+  // compensation being delivered, is the scroll owner taking it over: a
+  // bottom pin, a restore, a navigation, a redirected compensation. State
+  // that describes the position before it would pull the viewport back:
+  // the head-splice hold ends, and a compensation queued for the next
+  // flush is dropped. Only a write between a data change and its render
+  // meets a queued compensation, and every such writer places the viewport
+  // against the applied change: a handle call applies a pending change
+  // first, and writers that read the DOM run after an await, behind the
+  // render. A tracked retained-row sample moves to the written position
+  // for a splice that arrives before the scroll event. Outside delivery
+  // any motion counts, as in handleScroll: a spring's small frames would
+  // otherwise add up under a tolerance.
   export function noteScrollTopWritten(top: number): void {
+    const takeover = deliveringCompensationTarget === null
+      ? Math.abs(top - actualScrollOffset) > 0.01
+      : Math.abs(top - deliveringCompensationTarget) > SCROLL_TAKEOVER_TOLERANCE_PX;
     actualScrollOffset = top;
     engine.noteScrollOffset(engineOffsetFor(top));
+    if (!takeover) return;
+    headSpliceAnchor = null;
+    pendingCompensation = null;
+    if (!latestViewportAnchor) return;
+    // Sampled before its render, a changed row index would pair one row's
+    // element with another's offset; the post-flush refresh samples the
+    // written position then.
+    latestViewportAnchor = latestReconciledData === deliveredDataSnapshot ? headAnchorAt(top) : null;
   }
   export function getViewportSize(): number {
     return engine.getViewportSize();

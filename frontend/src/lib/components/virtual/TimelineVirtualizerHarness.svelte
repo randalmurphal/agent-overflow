@@ -48,6 +48,10 @@
      * tripwire counts these: a projection pass that reuses an unchanged
      * row's object must not re-fire mounted rows. */
     onRowRender?: (id: string) => void;
+    /** Whether index-scroll writes forward their readback, as the scroll
+     * controller does. Off models a consumer that writes and leaves the
+     * adapter to learn the position from the scroll event. */
+    forwardWriteReadback?: boolean;
   }
 
   let {
@@ -65,6 +69,7 @@
     onContentGeometry,
     trackReadingAnchor,
     onRowRender,
+    forwardWriteReadback = true,
   }: Props = $props();
 
   // svelte-ignore state_referenced_locally -- seed copy by design; the
@@ -126,7 +131,7 @@
   function applyScrollTarget(top: number): void {
     if (!scrollEl) return;
     scrollEl.scrollTop = top;
-    listRef?.noteScrollTopWritten(scrollEl.scrollTop);
+    if (forwardWriteReadback) listRef?.noteScrollTopWritten(scrollEl.scrollTop);
   }
 
   /** Renders as '' — exists so the row snippet carries a template

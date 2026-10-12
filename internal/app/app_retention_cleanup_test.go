@@ -205,6 +205,21 @@ func TestStartStopRetentionCleanupRoundTrip(t *testing.T) {
 	app.stopRetentionCleanup()
 }
 
+func TestIsolatedBootDisablesRetentionCleanup(t *testing.T) {
+	t.Parallel()
+	app := retentionTestApp(t)
+	ConfigureIsolation(app, IsolationConfig{DisableRetentionSweep: true})
+
+	app.startRetentionCleanup()
+	// The runtime still has no sweeper: a direct start is the first one.
+	_, started := app.sessionManager().runtime.StartRetentionCleanup()
+	if !started {
+		t.Fatal("startRetentionCleanup started a sweeper with the sweep disabled")
+	}
+	app.sessionManager().runtime.RetentionCleanupDone()
+	app.stopRetentionCleanup()
+}
+
 func TestStopRetentionCleanupBeforeStart(t *testing.T) {
 	t.Parallel()
 	app := retentionTestApp(t)

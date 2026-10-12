@@ -198,6 +198,16 @@ func (r *Router) SetFlushUserTextConfirmedHook(fn func(threadID string, item sto
 	r.mu.Unlock()
 }
 
+// SetSendUndeliveredHook wires the app's signal that a thread has sends the
+// provider cancelled without running (DrainUndeliveredSends). Called under
+// the thread's flush anchor lock, so it must hand the work off. With no hook
+// they wait for the session-end drain.
+func (r *Router) SetSendUndeliveredHook(fn func(threadID string)) {
+	r.mu.Lock()
+	r.sendUndelivered = fn
+	r.mu.Unlock()
+}
+
 // FlushQueuedItems drains the queue immediately if a dispatcher is wired.
 // RegisterQueueItem calls this after emitting the pending snapshot so the
 // frontend can keep showing the submitted message above the composer while
@@ -657,23 +667,10 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 	// R5-3) — and is self-healed below instead.
 	restorable, echoConsumed := r.takeUnconfirmedFlushSendsLocked(threadID)
 	for _, entry := range restorable {
-		restored := UnconfirmedFlushItem{
-			QueueItemID: entry.QueueItemID,
-			UserItemID:  entry.AOItemID,
-			EnqueuedAt:  entry.EnqueuedAt,
-		}
-		if entry.DeferredItem != nil {
-			item := *entry.DeferredItem
-			restored.DeferredItem = &item
-			restored.Message = item.Summary
-		}
-		if entry.QuietItem != nil {
-			item := *entry.QuietItem
-			restored.QuietItem = &item
-			restored.Message = item.Summary
-		}
-		drained = append(drained, restored)
+		drained = append(drained, unconfirmedFlushItemFromPending(entry))
 	}
+	drained = append(drained, drainState.undeliveredSends...)
+	drainState.undeliveredSends = nil
 	r.mu.Unlock()
 
 	// Still under the anchor lock: a re-delivered echo retrying one of
@@ -682,6 +679,28 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 		r.selfHealEchoConsumedFlushRow(threadID, entry)
 	}
 	return drained
+}
+
+// unconfirmedFlushItemFromPending is the restore form of a pending send the
+// provider never consumed: its identity and whichever retained copy it holds.
+// A direct send retains none; its row is in the store under UserItemID.
+func unconfirmedFlushItemFromPending(entry pendingSend) UnconfirmedFlushItem {
+	restored := UnconfirmedFlushItem{
+		QueueItemID: entry.QueueItemID,
+		UserItemID:  entry.AOItemID,
+		EnqueuedAt:  entry.EnqueuedAt,
+	}
+	if entry.DeferredItem != nil {
+		item := *entry.DeferredItem
+		restored.DeferredItem = &item
+		restored.Message = item.Summary
+	}
+	if entry.QuietItem != nil {
+		item := *entry.QuietItem
+		restored.QuietItem = &item
+		restored.Message = item.Summary
+	}
+	return restored
 }
 
 // selfHealEchoConsumedFlushRow retries the original confirmation, including

@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -387,6 +388,41 @@ func TestAutoReconnectSkipsWorkflowThreads(t *testing.T) {
 	}
 }
 
+// TestAutoReconnectLeavesALiveReplacementAlone: a send after the death
+// already started a replacement session before the reconnect reached the
+// thread lock. Stopping it would end its turn and drop its queue, so the
+// reconnect does nothing; with no live session it reconnects.
+func TestAutoReconnectLeavesALiveReplacementAlone(t *testing.T) {
+	t.Parallel()
+	for _, live := range []bool{true, false} {
+		t.Run(fmt.Sprintf("live=%v", live), func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread(fmt.Sprintf("thread-reconnect-live-%v", live))
+			thread.SessionRef = "claude-resume-live"
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread() error = %v", err)
+			}
+			if live {
+				app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "token-replacement"})
+			}
+			stops, starts := 0, 0
+			app.stopSessionFn = func(string) error { stops++; return nil }
+			app.startSessionFn = func(string) error { starts++; return nil }
+
+			app.attemptAutoReconnect(thread.ID)
+
+			want := 1
+			if live {
+				want = 0
+			}
+			if stops != want || starts != want {
+				t.Fatalf("stops=%d starts=%d, want %d each", stops, starts, want)
+			}
+		})
+	}
+}
+
 // TestAutoReconnectRearmsOnlyAfterAServedTurn takes two deaths' reconnect
 // decisions with one event from the replacement session between them,
 // delivered through the public event handler. The second death earns a
@@ -461,6 +497,10 @@ func TestAutoReconnectRearmsOnlyAfterAServedTurn(t *testing.T) {
 				app.sessionEventHandler(thread.ID, "tok-2", string(tc.provider))(evt)
 				waitProviderEvents(t, app, thread.ID)
 			}
+			// The replacement's death unregisters it, if the event above
+			// did not already, before its reconnect runs: the slot alone
+			// decides, not the live-session guard.
+			app.sessionManager().unregister(thread.ID, "tok-2")
 			if got := reconnected(); got != tc.rearmed {
 				t.Fatalf("second death reconnected = %v, want %v", got, tc.rearmed)
 			}

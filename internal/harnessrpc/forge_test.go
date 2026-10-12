@@ -193,11 +193,55 @@ func TestHarnessForgeRateLimitReachesTheTransport(t *testing.T) {
 	}
 }
 
+// A response the forge is still writing when it goes offline is delivered
+// whole: the request was answered while online, and a spec that waits for
+// its record before going offline must not see it fail.
+func TestForgeAPIOfflineFinishesAResponseInFlight(t *testing.T) {
+	h, _ := newHarnessTestHost(t)
+	server, endpoint, err := StartForgeAPI(h)
+	if err != nil {
+		t.Fatalf("StartForgeAPI: %v", err)
+	}
+	t.Cleanup(server.Shutdown)
+	// 30 MB, far past what the loopback socket buffers hold, so the server
+	// is still writing it while the client has read only the headers.
+	if _, err := h.HarnessForgeSeed(json.RawMessage(`{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","ci":{"jobs":[
+{"id":510,"name":"big","status":"success","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:09:00Z",
+ "synthetic":{"lineBytes":100,"sections":[{"name":"Run tests","lines":300000}]},
+ "steps":[{"name":"Run tests","status":"success","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:09:00Z"}]}]}}]}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, endpoint.BaseURL+"/github/rest/repos/a/b/actions/jobs/510/logs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "github.com"
+	req.Header.Set("Authorization", "Bearer "+endpoint.Token)
+	resp, err := (&http.Client{Transport: transport}).Do(req)
+	if err != nil {
+		t.Fatalf("GET log: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 || resp.ContentLength < 30_000_000 {
+		t.Fatalf("GET log = %d, %d bytes", resp.StatusCode, resp.ContentLength)
+	}
+
+	if err := h.HarnessForgeOffline(true); err != nil {
+		t.Fatal(err)
+	}
+	read, err := io.Copy(io.Discard, resp.Body)
+	if err != nil || read != resp.ContentLength {
+		t.Fatalf("read %d of %d bytes after going offline: %v", read, resp.ContentLength, err)
+	}
+}
+
 // Offline drops every pooled connection and records each request as
 // route "offline" without a reply: the next request on a client holding a
 // keep-alive connection dials afresh and fails instead of getting a reply,
 // so every retry the app makes is observable. Coming back, and
-// HarnessReset, answer on the same port again.
+// HarnessReset, answer again.
 func TestForgeAPIOfflineDropsKeepAliveConnections(t *testing.T) {
 	h, _ := newHarnessTestHost(t)
 	server, endpoint, err := StartForgeAPI(h)

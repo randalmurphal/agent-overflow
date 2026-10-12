@@ -1,7 +1,6 @@
 package app
 
 import (
-	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
 	"os"
@@ -305,9 +304,7 @@ func TestStartSession_ClaudeGetsAddDirForTheAttachmentsRoot(t *testing.T) {
 	}
 
 	argvPath := filepath.Join(t.TempDir(), "argv.txt")
-	binary := filepath.Join(t.TempDir(), "claude-argv.sh")
-	script := "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\" >> " + argvPath + "; done\ncat >/dev/null\n"
-	mockexec.Write(t, binary, script)
+	binary := writeArgvRecordingClaude(t, argvPath)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set binary: %v", err)
 	}
@@ -315,23 +312,8 @@ func TestStartSession_ClaudeGetsAddDirForTheAttachmentsRoot(t *testing.T) {
 		t.Fatalf("StartSession: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		raw, err := os.ReadFile(argvPath)
-		if err == nil {
-			argv := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-			for i, arg := range argv {
-				if arg == "--add-dir" && i+1 < len(argv) && argv[i+1] == root {
-					return
-				}
-			}
-			if len(argv) > 0 && time.Now().After(deadline) {
-				t.Fatalf("argv has no `--add-dir %s`: %v", root, argv)
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for the spawned argv (%v)", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	argv := spawnedClaudeArgv(t, argvPath)
+	if !hasArgPair(argv, "--add-dir", root) {
+		t.Fatalf("argv has no `--add-dir %s`: %v", root, argv)
 	}
 }
