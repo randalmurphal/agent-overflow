@@ -41,7 +41,7 @@ async function complete(backend: BackendKey, recovery: Recovery): Promise<void> 
   recovery.replayPending = false;
   recovery.resolveReplay();
   while (active.get(backend) === recovery && recovery.pending.size) {
-    await Promise.allSettled([...recovery.pending]);
+    await Promise.allSettled(recovery.pending);
   }
   if (active.get(backend) !== recovery) return;
   active.delete(backend);
