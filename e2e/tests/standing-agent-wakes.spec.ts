@@ -31,7 +31,8 @@
 // a skipped watch wake still reported by the next wake after quiet runs;
 // a start-failure notification raised before a restart withdrawn by the
 // first start after it; archiving a thread whose start failed withdrawing
-// its held wake and send;
+// its held wake and send, and returning a finished remote job's held
+// completion to its watch for delivery after the unarchive;
 // and the transfer dialog naming what a standing agent leaves behind.
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -2510,6 +2511,175 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     } finally {
       await breaker?.cleanup();
       await harness.close();
+    }
+  });
+}
+
+// A finished remote job's completion held behind a failed start is the
+// thread's result, not the app's chatter: archiving takes it back out of the
+// queue and returns it to the job's watch, nothing delivers it while the
+// thread is archived, and it arrives once after the thread is unarchived.
+for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${provider}: archiving a thread whose start failed keeps its held remote completion for the unarchive`, async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const [harness, remote] = await startTogether(launchHarness(), launchHarness());
+    let breaker: ReturnType<typeof startBreaker> | undefined;
+    try {
+      await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+      const dataDir = harness.bootstrap.dataDir;
+      // Named here so no capture shows the host's own name.
+      await harness.rpc('SetDeviceName', 'Agent computer');
+      await remote.rpc('SetDeviceName', 'Other computer');
+      const invite = await remote.rpc<{ url: string; linkId: string }>('MintDevicePairing', 'desktop', 'full');
+      const attachment = await harness.rpc<{ id: string }>('AddBackend', invite.url);
+      await remote.rpc('ConfirmDevicePairing', invite.linkId);
+      const computer = attachment.id;
+      await harness.rpc('RenameBackend', computer, 'Build box');
+      await expect
+        .poll(async () => {
+          try {
+            await harness.rpc('SetAgentComputerEnabled', computer, true);
+            return 'enabled';
+          } catch (error) {
+            return String(error);
+          }
+        }, { timeout: 30_000 })
+        .toBe('enabled');
+      const remoteSeed = await remote.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `remote-build-${provider}`, repo: {} }],
+      });
+      const { projectId: remoteProject, path: remotePath } = remoteSeed.projects[0];
+      const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `remote-held-${provider}`, repo: {}, threads: [{ title: 'Remote builder', provider }] }],
+      });
+      const { path: cwd, threadIds } = seed.projects[0];
+      const thread = threadIds[0];
+      const b = startBreaker(harness, provider, cwd);
+      breaker = b;
+      const requestId = randomUUID();
+      const release = join(remotePath, 'build.release');
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `remote-held-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [
+            {
+              steps: [
+                {
+                  call: {
+                    server: 'ao-remote-tools',
+                    tool: 'remote_run',
+                    args: {
+                      computer_id: computer,
+                      project_id: remoteProject,
+                      request_id: requestId,
+                      label: 'nightly build',
+                      argv: ['sh', '-c', `while [ ! -f '${release}' ]; do sleep 0.1; done; echo 'build 812 finished: green'`],
+                      wait_seconds: 0,
+                    },
+                  },
+                },
+              ],
+              text: 'The build runs on Build box.',
+            },
+          ],
+          afterTurns: 'silent',
+        }),
+      );
+      await harness.rpc('StartSession', thread);
+      await harness.rpc('SendMessage', thread, 'run the nightly build on the build box', null);
+      const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
+      expect(started.report.isError, started.report.result).toBeFalsy();
+      expect(started.report.result).toContain('"backgrounded":true');
+      await awaitTurnCompleted(harness, thread);
+
+      const startFailure = (retract: boolean) => (data: NotificationSend) =>
+        data.id === `session-start:${thread}` && Boolean(data.retract) === retract;
+      const queued = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return (
+            db.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ? ORDER BY enqueued_at, rowid`).all(thread) as {
+              send_id: string;
+            }[]
+          ).map((row) => row.send_id.split(':')[0]);
+        } finally {
+          db.close();
+        }
+      };
+      const watch = () => {
+        const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return (
+            db.prepare(`SELECT notification FROM remote_watches WHERE request_id = ?`).get(requestId) as {
+              notification: string;
+            }
+          ).notification;
+        } finally {
+          db.close();
+        }
+      };
+      const completion = `request_id: ${requestId}`;
+
+      // The job finishes while the thread's start fails: its completion is
+      // held in the queue.
+      await harness.rpc('StopSession', thread);
+      await b.brk();
+      await writeFile(release, '');
+      await harness.waitForEvent<NotificationSend>('notification:send', startFailure(false), 60_000);
+      await expect.poll(queued, { timeout: 15_000 }).toEqual(['remote-completion']);
+      expect(watch()).toBe('queued');
+      console.log(`${provider}: held behind the failed start: ${JSON.stringify(queued())}, watch ${watch()}`);
+
+      // Archived: the completion goes back to its watch, and the watcher
+      // leaves it there while the thread stays archived.
+      await harness.rpc('ArchiveThread', thread);
+      await expect.poll(queued, { timeout: 15_000 }).toEqual([]);
+      expect(watch()).toBe('pending');
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      expect(queued()).toEqual([]);
+      expect(watch()).toBe('pending');
+      expect(countInputs(harness, cwd, completion)).toBe(0);
+      console.log(`${provider}: archived: queue empty, watch pending after three watcher ticks`);
+
+      // Unarchived and mended, the watcher delivers it, once.
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `remote-held-mended-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [{ text: 'Build 812 is green.' }],
+          afterTurns: 'silent',
+        }),
+      );
+      await b.mend();
+      await harness.rpc('UnarchiveThread', thread);
+      const input = await wakeInput(harness, cwd, completion);
+      expect(input.report.input).toContain('Remote job finished on Build box: nightly build');
+      expect(input.report.input).toContain('build 812 finished: green');
+      await awaitTurnCompleted(harness, thread);
+      expect(countInputs(harness, cwd, completion)).toBe(1);
+      expect(queued()).toEqual([]);
+      expect(watch()).toBe('queued');
+      console.log(`${provider}: unarchived: the completion arrived once`);
+
+      await harness.open(page);
+      await page.getByTestId('thread-row').getByText('Remote builder', { exact: true }).click();
+      await shoot(
+        page,
+        `${provider}-archive-keeps-held-remote-completion.png`,
+        page.getByText('Remote job finished on Build box: nightly build').last(),
+      );
+    } finally {
+      await breaker?.cleanup();
+      await Promise.allSettled([harness.close(), remote.close()]);
     }
   });
 }

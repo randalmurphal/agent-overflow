@@ -307,7 +307,9 @@ the queue, and cancelling a loop or watch (by label, by demotion or by
 a move) takes back its queued wakes, whether or not a session is live,
 so no later start delivers them; a message a session has already taken
 is the session's. A message that could not be taken back is reported to
-the caller.
+the caller. A remote job's queued completion goes back to its watch
+instead and arrives once the thread is unarchived
+([remote-commands.md](../architecture/remote-commands.md)).
 The queued message is badged with the wake's kind and
 label, wrapped as untrusted text with the byte cap above, and carries
 no approval or user authority. The timeline and the send queue show its

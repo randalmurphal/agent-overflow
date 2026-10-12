@@ -47,6 +47,7 @@ import {
   storeBackendEndpoint,
   storedBackendEndpoint,
 } from '../../transport/homeEndpoint';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import {
   getSettingsSection,
   isSettingsOpen,
@@ -128,6 +129,36 @@ describe('<TransportStatusBanner>', () => {
     expect(view.queryByTestId('transport-status-banner')).toBeNull();
     view.unmount();
     expect(h.recoveryListeners.size).toBe(0);
+  });
+
+  // Compact keeps the banner in the layout. A fade-out there held its row
+  // after the sync ended, while the sidebar rows under it were already live,
+  // and the late collapse moved a row out from under a pressed tap.
+  it('drops the compact row the moment the sync ends, and fades the desktop overlay', async () => {
+    for (const compact of [true, false]) {
+      setCompactLayoutForTest(compact);
+      try {
+        h.recovering.add('');
+        const view = render(TransportStatusBanner);
+        await tick();
+        expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
+        h.recovering.delete('');
+        for (const listener of h.recoveryListeners) listener('', 'complete');
+        await tick();
+        const banner = view.queryByTestId('transport-status-banner');
+        if (compact) {
+          expect(banner).toBeNull();
+        } else {
+          expect(banner).not.toBeNull();
+          expect(banner!.parentElement!.inert).toBe(true);
+          await vi.advanceTimersByTimeAsync(200);
+          expect(view.queryByTestId('transport-status-banner')).toBeNull();
+        }
+        view.unmount();
+      } finally {
+        setCompactLayoutForTest(false);
+      }
+    }
   });
 
   it('keeps the desktop overlay positioning when disconnected', async () => {

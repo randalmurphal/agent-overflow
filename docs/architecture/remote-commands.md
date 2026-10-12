@@ -159,7 +159,9 @@ into the composer, never independently sent again by the remote-job watcher.
 Finished workflow phases are not reopened.
 The conversation that called `remote_run` owns the job. Deleting, archiving or
 moving it cancels the commands it still owns and drops their pending
-notifications; a copy waits for outstanding remote work and its notification
+notifications. Archiving keeps a completion already handed to the queue: one
+still queued, behind a failed start, goes back to its watch, and the watcher
+skips an archived conversation's watches until it is unarchived. A copy waits for outstanding remote work and its notification
 handoff like the existing queued/background-work checks. The cancel is
 delivered on a best-effort basis and logged when the destination cannot be
 reached. Deletion runs it before provider cleanup and again under the thread
