@@ -4,11 +4,11 @@ vi.hoisted(() => { vi.resetModules(); });
 
 const fixture = vi.hoisted(() => {
   function client() {
-    const replay = new Set<(phase: 'start' | 'complete' | 'cancel') => void>();
+    const replay = new Set<(phase: 'start' | 'complete' | 'cancel', resumed: boolean) => void>();
     const status = new Set<(state: { status: string }) => void>();
     return {
       replay, status,
-      onReplay(fn: (phase: 'start' | 'complete' | 'cancel') => void) {
+      onReplay(fn: (phase: 'start' | 'complete' | 'cancel', resumed: boolean) => void) {
         replay.add(fn); return () => replay.delete(fn);
       },
       onStatusChange(fn: (state: { status: string }) => void) {
@@ -23,14 +23,14 @@ vi.mock('../transport/backends', () => ({
   onBackendsChanged: () => () => {},
 }));
 
-import { awaitBackendReplay, holdBackendRecovery, isBackendRecovering, onBackendRecovery, pendingBackendReplay } from './transportRecovery';
+import { awaitBackendReplay, holdBackendRecovery, isBackendRecovering, isBackendResyncing, onBackendRecovery, pendingBackendReplay } from './transportRecovery';
 import { itemEventQueued, itemEventsSettled, resetItemEventSettlement } from './itemEventSettlement';
 
 const offs: Array<() => void> = [];
 afterEach(() => {
   resetItemEventSettlement();
   for (const off of offs.splice(0)) off();
-  for (const client of [fixture.home, fixture.remote]) for (const fn of client.replay) fn('cancel');
+  for (const client of [fixture.home, fixture.remote]) for (const fn of client.replay) fn('cancel', true);
 });
 
 it('finishes replay presentation after queued item mutations reach the panes', async () => {
@@ -55,9 +55,25 @@ function deferred() {
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
 }
-function replay(client: typeof fixture.home, phase: 'start' | 'complete' | 'cancel') {
-  for (const fn of client.replay) fn(phase);
+function replay(client: typeof fixture.home, phase: 'start' | 'complete' | 'cancel', resumed = true) {
+  for (const fn of client.replay) fn(phase, resumed);
 }
+
+it('reports a resync only for a connection that replaced an earlier one', async () => {
+  const events: string[] = [];
+  offs.push(onBackendRecovery((id, phase) => events.push(`${id}:${phase}:${isBackendResyncing(id)}`)));
+  replay(fixture.home, 'start', false);
+  expect(isBackendRecovering('')).toBe(true);
+  expect(isBackendResyncing('')).toBe(false);
+  replay(fixture.home, 'complete', false);
+  await vi.waitFor(() => expect(isBackendRecovering('')).toBe(false));
+  replay(fixture.home, 'start', true);
+  expect(isBackendResyncing('')).toBe(true);
+  replay(fixture.home, 'complete', true);
+  await vi.waitFor(() => expect(isBackendRecovering('')).toBe(false));
+  expect(isBackendResyncing('')).toBe(false);
+  expect(events).toEqual([':start:false', ':complete:false', ':start:true', ':complete:false']);
+});
 
 it('waits for gap snapshots and keeps unrelated backends independent', async () => {
   const events: string[] = [];
