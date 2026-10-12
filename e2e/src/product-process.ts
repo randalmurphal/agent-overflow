@@ -58,6 +58,7 @@ export async function writeProductScript(
   args: string[],
   options: { memoryLimitBytes: number; env?: Record<string, string> },
 ): Promise<void> {
+  if (process.platform === 'win32') throw new Error('Windows cannot run a shebang script as an executable');
   const command = containedCommand(binary, [], options.memoryLimitBytes);
   await writeFile(file, `#!${process.execPath}
 const { spawn } = require('node:child_process');
