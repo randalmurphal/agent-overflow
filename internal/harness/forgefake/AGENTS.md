@@ -1,9 +1,11 @@
 # Fake forge
 
 `forgefake` answers the `gh pr create`, `glab mr create` and repository
-`ssh -G` invocations an isolated boot makes, and the requests of its forge
-API transport (every other GitHub and GitLab call), from a fixture a test
-seeds. The CLI path is:
+`ssh -G` invocations an isolated boot makes, the requests of its forge
+API transport (every other GitHub and GitLab call), and the `gh` and
+`glab` calls of the vendored pstack forge script
+(`assets/skills/pstack/skills/poteto-mode/scripts/forge`), from a fixture
+a test seeds. The CLI path is:
 
 1. `internal/git` runs every forge CLI through `Core.runSpec`. Under
    `--harness` and `--soak`, `WithIsolatedForgeCLIs` (`forge_cli.go`)
@@ -29,6 +31,15 @@ own loopback listener and hands its base URL and fixed token to the boot
 names (`github_graphql.go`), and answers from the same fixture. Offline
 drops the listener's open connections and records each request that
 arrives as route `offline`, dropping it without a reply.
+
+`gh api` and `glab api` (`cli_api.go`) reach the same `api` routes and
+GraphQL operations from the CLI path: the call's `--hostname` (default
+`github.com` or `gitlab.com`) stands for the Host header, `--input -`
+supplies the body, `-f`/`-F` build a GraphQL request, and `--paginate`
+follows the route's own next page (GitHub's `Link`, GitLab's
+`X-Next-Page`; GraphQL through `$endCursor` and the outermost
+`pageInfo`). A REST field (`-f` without `graphql`) and an `-F @file` are
+unhandled. Status 400 and above exits 1 with the forge's message.
 
 The engine lives in the harness process, not the binary, so seeding and
 inspection go through the harness wire with no fixture files.
@@ -99,8 +110,9 @@ inspection go through the harness wire with no fixture files.
 ## Invocations
 
 Handled, covering the reads the review pane, git status and CI make, the
-thread resolve toggle and the Create PR/MR dialog. Every row but the CLI
-ones is served over HTTP only: GitHub REST at `/github/rest/E`, GraphQL at
+thread resolve toggle, the Create PR/MR dialog and the pstack forge
+script. The REST and GraphQL rows are served over HTTP and through
+`gh api`/`glab api`: GitHub REST at `/github/rest/E`, GraphQL at
 `/github/graphql` (a POST of `{"query", "operationName", "variables"}`),
 an attachment URL at `/github/absolute/<host>/<path>`, GitLab REST at
 `/gitlab/api/v4/E`. The request's Host header is the invocation's
@@ -131,13 +143,31 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `GET projects/P/pipelines/ID/jobs?per_page=N[&page=N]` (`glab api pipeline jobs`) | ReadPR CI |
 | GitLab | `GET projects/P/jobs/ID/trace` (`glab api job trace`, conditional) | CI job log (the current `log` of a started job, running included; 404 while the job sets `logWithheld`). A completed job's trace honors a start or closed range (206) and refuses a suffix range (400); a running job's trace ignores `Range` (200, whole body) and a running `synthetic` trace grows on every request |
 | GitLab | `GET projects/P/uploads/SECRET/NAME` (`glab api upload`) | forge attachments |
+| GitHub | `gh pr view [N] [-R R] --json F` | forge script `pr view`: the fields in `githubPullFields`, `mergeStateStatus` from `merge_state.go` |
+| GitHub | `gh pr list -R R [--state S] [--head B] [--author A\|@me] [--limit N] --json F` | forge script `pr list`, newest first |
+| GitHub | `gh pr comment N -R R --body-file -` | forge script `pr comment` (a conversation comment by the viewer) |
+| GitHub | `gh pr merge N -R R --squash\|--merge\|--rebase [--auto]` | forge script `pr merge`: merges a CLEAN pull, arms auto-merge while CI or the merge check is pending, refuses the rest |
+| GitHub | `gh pr edit N -R R --base B` | forge script `pr edit` |
+| GitHub | `GET repos/O/R/actions/runs?branch=B` (`gh api runs`) | forge script `ci status`, newest first |
+| GitHub | GraphQL `ForgeChecks`, `ForgeCommits`, `ForgeThreads`, `ForgeComments(owner, name, number[, endCursor])` | forge script `pr checks`, `pr commits`, `pr threads`, `pr comments` |
+| GitHub | GraphQL `ForgeReply(threadID, body)` | forge script `pr reply` (appends to the seeded thread) |
+| GitLab | `POST projects/P/merge_requests/N/notes` (`glab api note`) | forge script `pr comment` |
+| GitLab | `POST projects/P/merge_requests/N/discussions/D/notes` (`glab api discussion note`) | forge script `pr reply`, the app's thread reply |
+| GitLab | `PUT projects/P/merge_requests/N/merge` (`glab api merge`) | forge script `pr merge`: 406 on conflicts, arms `auto_merge` while the pipeline runs, 405 for any other unmergeable state |
+| GitLab | `PUT projects/P/merge_requests/N` (`glab api update merge request`) | forge script `pr edit` (`target_branch` only) |
+| GitLab | `GET projects/P/merge_requests/N/pipelines`, `GET projects/P/pipelines?ref=B` | forge script `pr commits`, `ci status` |
 
 Unhandled (fail with their request): GitHub's review, file comment and
-reply POSTs; GitLab's draft notes, bulk publish, approve, discussion note
-POST and discussion resolve PUT.
+REST reply POSTs; GitLab's draft notes, bulk publish, approve and
+discussion resolve PUT.
 
 ## Fixture notes
 
+- A pull's `mergeable` is `clean`, `conflicts`, `checking` or `behind`.
+  GitHub's `mergeStateStatus` and GitLab's `detailed_merge_status` are
+  derived from it, the draft flag, CI and the reviews in
+  `merge_state.go`. `autoMerge` is an armed merge-when-ready; `mergedAt`
+  defaults for a merged pull and is refused on any other.
 - A request answers only for a repository whose seeded `host` equals its
   Host header as given, port included; a GraphQL node (a thread or commit
   id) resolves only among repositories on that host. Another host answers

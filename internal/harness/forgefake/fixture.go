@@ -65,8 +65,15 @@ type Pull struct {
 	// Diff is the PR's unified diff. The file and line counts the PR reads
 	// report are derived from it.
 	Diff string `json:"diff,omitempty"`
-	// Mergeable is "clean" (default), "conflicts" or "checking".
+	// Mergeable is "clean" (default), "conflicts", "behind" (the base
+	// moved and the forge requires an up-to-date head) or "checking".
 	Mergeable string `json:"mergeable,omitempty"`
+	// AutoMerge is armed merge-when-ready (GitHub auto-merge, GitLab
+	// auto-merge). A merge call with auto arms it while CI has not passed.
+	AutoMerge bool `json:"autoMerge,omitempty"`
+	// MergedAt is when a merged pull merged. Defaults for a merged pull;
+	// a merge call sets it.
+	MergedAt string `json:"mergedAt,omitempty"`
 	// Comments are PR-level conversation comments (GitHub issue comments,
 	// GitLab unpositioned discussions).
 	Comments []Comment `json:"comments,omitempty"`
@@ -306,9 +313,16 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 	switch p.Mergeable {
 	case "":
 		p.Mergeable = "clean"
-	case "clean", "conflicts", "checking":
+	case "clean", "conflicts", "behind", "checking":
 	default:
-		return fmt.Errorf("mergeable %q is not clean, conflicts or checking", p.Mergeable)
+		return fmt.Errorf("mergeable %q is not clean, conflicts, behind or checking", p.Mergeable)
+	}
+	switch {
+	case p.State == "merged":
+		p.MergedAt = defaultString(p.MergedAt, "2026-01-01T00:00:00Z")
+		p.AutoMerge = false
+	case p.MergedAt != "":
+		return errors.New("mergedAt is set on a pull that is not merged")
 	}
 	p.Author = defaultString(p.Author, "ao-author")
 	p.HeadRef = defaultString(p.HeadRef, "feature")

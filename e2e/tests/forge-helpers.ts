@@ -56,6 +56,11 @@ export interface ForgePull {
   headSha?: string;
   baseSha?: string;
   diff?: string;
+  mergeable?: 'clean' | 'conflicts' | 'behind' | 'checking';
+  /** Armed merge-when-ready. */
+  autoMerge?: boolean;
+  /** When a merged pull merged; defaults for a merged pull. */
+  mergedAt?: string;
   /** PR-level conversation comments. */
   comments?: ForgeComment[];
   threads?: ForgeThread[];
