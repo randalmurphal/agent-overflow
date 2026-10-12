@@ -105,9 +105,10 @@ describe("parseArgs", () => {
 
 describe("rendering", () => {
   const context = {
-    owner: "owner",
-    repo: "repo",
+    owner: "grp",
+    repo: "tool",
     number: parsePrNumber(1),
+    pullUrlBase: "https://gitlab.example/grp/tool/-/merge_requests/",
   };
   const status = {
     schemaVersion: 1,
@@ -148,7 +149,14 @@ describe("rendering", () => {
     const rendered = renderPretty(status);
     expect(rendered).toContain("| PR | CI | Review | Merge |");
     expect(rendered).toContain(
-      "| [#1](https://github.com/owner/repo/pull/1) | \u2014 | \u2014 | ✅ merged |"
+      "| [#1](https://gitlab.example/grp/tool/-/merge_requests/1) | \u2014 | \u2014 | ✅ merged |"
+    );
+    const rows = status.rows.map((row) => ({
+      ...row,
+      context: { owner: "grp", repo: "tool", number: parsePrNumber(1) },
+    }));
+    expect(renderPretty({ ...status, rows } as typeof status)).toContain(
+      "| #1 | \u2014 | \u2014 | ✅ merged |"
     );
   });
 });

@@ -3,7 +3,7 @@
 ## What this source contains
 
 - Commit history (messages, dates, authors, diffs)
-- PR descriptions, review comments, and discussion threads (via `gh`)
+- PR descriptions, review comments, and discussion threads (via the forge script, `poteto-mode/scripts/forge`)
 - Inline code comments, TODOs, FIXMEs, deprecation notes
 - ADRs (architectural decision records) if the repo keeps them
 - Tests. Names and assertions often encode the edge cases that motivated a change
@@ -43,10 +43,12 @@ For each substantive commit, pull the PR context:
 # Find the PR number from the merge commit or branch
 git log -1 --format=%B <hash>
 
-# Full PR context: body, review comments, linked issues
-gh pr view <number> --json title,body,author,createdAt,mergedAt,labels,closingIssuesReferences,comments,reviews,files
+# PR context through the library's forge script (poteto-mode/scripts/forge)
+forge pr view <number>      # title, body, author, merged_at
+forge pr comments <number>  # the conversation
+forge pr threads <number>   # review threads with every comment
 
-# The --json reviews and comments fields are where the real signal is
+# The conversation and the review threads are where the real signal is
 ```
 
 Look for out-of-band docs:

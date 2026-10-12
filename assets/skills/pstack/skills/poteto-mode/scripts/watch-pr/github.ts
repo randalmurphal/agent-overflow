@@ -1,13 +1,7 @@
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type * as T from "./types.ts";
 import { nonEmpty, parsePrNumber } from "./types.ts";
-export const REVIEW_THREADS_QUERY =
-  "\nquery ReviewThreads($owner: String!, $repo: String!, $pr: Int!) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      reviewThreads(first: 100) {\n        nodes {\n          id\n          isResolved\n          comments(first: 10) {\n            nodes {\n              body\n              createdAt\n              path\n              line\n              author { login }\n            }\n          }\n        }\n      }\n    }\n  }\n}\n";
-export const PR_COMMIT_STATUS_QUERY =
-  "\nquery PrCommitStatuses($owner: String!, $repo: String!, $pr: Int!) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      commits(last: 50) {\n        nodes {\n          commit {\n            oid\n            statusCheckRollup {\n              state\n            }\n          }\n        }\n      }\n    }\n  }\n}\n";
-export const PR_CHECK_ROLLUP_QUERY =
-  "\nquery PrCheckRollup($owner: String!, $repo: String!, $pr: Int!, $after: String) {\n  repository(owner: $owner, name: $repo) {\n    pullRequest(number: $pr) {\n      commits(last: 1) {\n        nodes {\n          commit {\n            statusCheckRollup {\n              contexts(first: 100, after: $after) {\n                pageInfo {\n                  hasNextPage\n                  endCursor\n                }\n                nodes {\n                  __typename\n                  ... on CheckRun {\n                    name\n                    status\n                    conclusion\n                    detailsUrl\n                  }\n                  ... on StatusContext {\n                    context\n                    state\n                    targetUrl\n                  }\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}\n";
-
 interface CommandResult {
   readonly code: number;
   readonly stdout: string;
@@ -100,158 +94,101 @@ function list(value: unknown, path: string): readonly unknown[] {
   if (!Array.isArray(value)) missing(path, value);
   return value;
 }
-function at(value: unknown, path: readonly string[]): unknown {
-  let current = value;
-  for (const key of path) {
-    const object = record(current, path.join("."));
-    if (!(key in object)) missing(path.join("."));
-    current = object[key];
-  }
-  return current;
-}
 function string(value: unknown, path: string): string {
   if (typeof value !== "string") missing(path, value);
   return value;
 }
 const optionalString = (value: unknown, path: string): string | null =>
   value === null ? null : string(value, path);
-function enumValue<const V extends readonly string[]>(
+// Every read goes through pstack's forge script, which picks gh or glab from
+// the checkout's remote and prints the same JSON on both forges.
+const FORGE = fileURLToPath(new URL("../forge", import.meta.url));
+const MERGE_STATES: Readonly<Record<string, T.MergeStateStatus>> = {
+  clean: "CLEAN",
+  unstable: "UNSTABLE",
+  conflicts: "DIRTY",
+  behind: "BEHIND",
+  blocked: "BLOCKED",
+  draft: "DRAFT",
+  checking: "UNKNOWN",
+  none: "UNKNOWN",
+};
+const REVIEW_DECISIONS: Readonly<Record<string, T.ReviewDecision>> = {
+  approved: "APPROVED",
+  changes_requested: "CHANGES_REQUESTED",
+  review_required: "REVIEW_REQUIRED",
+  none: null,
+};
+const PR_STATES = { open: "OPEN", closed: "CLOSED", merged: "MERGED" } as const;
+const COMMIT_STATES: Readonly<Record<string, T.RollupState | null>> = {
+  pass: "SUCCESS",
+  fail: "FAILURE",
+  pending: "PENDING",
+  none: null,
+};
+function mapped<V>(
   value: unknown,
-  values: V,
+  table: Readonly<Record<string, V>>,
   path: string
-): V[number] {
-  if (typeof value === "string")
-    for (const candidate of values) if (candidate === value) return candidate;
+): V {
+  if (typeof value === "string" && Object.hasOwn(table, value))
+    return table[value] as V;
   return missing(path, value);
 }
-const nullableEnum = <const V extends readonly string[]>(
-  value: unknown,
-  values: V,
-  path: string
-): V[number] | null => (value === null ? null : enumValue(value, values, path));
-const MERGE_STATES = [
-  "BEHIND",
-  "BLOCKED",
-  "CLEAN",
-  "CONFLICTING",
-  "DIRTY",
-  "DRAFT",
-  "HAS_HOOKS",
-  "UNKNOWN",
-  "UNSTABLE",
-] as const satisfies readonly T.MergeStateStatus[];
-const ROLLUP_STATES = [
-  "ERROR",
-  "EXPECTED",
-  "FAILURE",
-  "PENDING",
-  "SUCCESS",
-] as const;
-const REVIEW_DECISIONS = [
-  "APPROVED",
-  "CHANGES_REQUESTED",
-  "REVIEW_REQUIRED",
-] as const;
-// `gh pr view` reports no review decision as "", not null. Only this field does
-// it, so the normalization stays here rather than in nullableEnum, where it
-// would stop a genuinely unexpected rollup state from failing closed.
-const reviewDecision = (value: unknown): T.ReviewDecision =>
-  nullableEnum(
-    value === "" ? null : value,
-    REVIEW_DECISIONS,
-    "pull request.reviewDecision"
-  );
-function parseRemote(value: string): T.Repository | null {
-  let normalized = value.trim();
-  if (normalized.startsWith("git@github.com:"))
-    normalized = `https://github.com/${normalized.slice(15)}`;
-  if (normalized.startsWith("ssh://git@github.com/"))
-    normalized = `https://github.com/${normalized.slice(21)}`;
-  try {
-    const url = new URL(normalized);
-    const parts = url.pathname
-      .replace(/\.git$/, "")
-      .split("/")
-      .filter(Boolean);
-    if (
-      url.protocol !== "https:" ||
-      url.hostname !== "github.com" ||
-      url.port ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      parts.length !== 2
-    )
-      return null;
-    return { owner: parts[0], repo: parts[1] };
-  } catch {
-    return null;
-  }
+function integer(value: unknown, path: string): number {
+  if (!Number.isInteger(value)) missing(path, value);
+  return Number(value);
 }
-function parsePrUrl(value: string): T.PrContext {
-  try {
-    const url = new URL(value);
-    const parts = url.pathname.split("/").filter(Boolean);
-    if (
-      url.protocol !== "https:" ||
-      url.hostname !== "github.com" ||
-      url.port ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      parts.length !== 4 ||
-      parts[2] !== "pull"
-    )
-      throw new Error("not a canonical GitHub pull URL");
-    return {
-      owner: parts[0],
-      repo: parts[1],
-      number: parsePrNumber(Number(parts[3])),
-    };
-  } catch (error) {
-    throw new WatcherQueryError({
-      kind: "invalid-context-url",
-      retryable: false,
-      rawValue: value,
-      detail: `could not infer owner/repo from PR URL: ${value} (${error instanceof Error ? error.message : String(error)})`,
-    });
-  }
-}
-function checkDetails(value: Record<string, unknown>, nameKey: string) {
+// The repository the forge script resolves from the remote: GitLab nests
+// groups, so the owner is everything before the last segment.
+export function parseForgeRepository(value: unknown): T.Repository {
+  const object = record(value, "forge which");
+  const forge = string(object.forge, "forge which.forge");
+  const host = string(object.host, "forge which.host");
+  const project = string(object.project, "forge which.project");
+  const slash = project.lastIndexOf("/");
+  if (slash <= 0 || slash === project.length - 1)
+    missing("forge which.project", project);
+  const base = `https://${host}/${project}`;
   return {
-    name: string(value[nameKey], nameKey),
-    description: typeof value.description === "string" ? value.description : "",
-    link:
-      typeof value.link === "string"
-        ? value.link
-        : typeof value.detailsUrl === "string"
-          ? value.detailsUrl
-          : "",
-    workflow: typeof value.workflow === "string" ? value.workflow : "",
+    owner: project.slice(0, slash),
+    repo: project.slice(slash + 1),
+    pullUrlBase:
+      forge === "gitlab" ? `${base}/-/merge_requests/` : `${base}/pull/`,
   };
 }
-export function parseFastCheck(value: unknown): T.Check {
-  const object = record(value, "check");
-  const details = checkDetails(object, "name");
-  const state = string(object.state, "check.state").toUpperCase();
-  const bucket = string(object.bucket, "check.bucket");
-  if (
-    bucket === "fail" ||
-    ["FAILURE", "ERROR", "ACTION_REQUIRED"].includes(state)
-  )
-    return { ...details, kind: "failed", reportedState: state };
-  if (bucket === "pending") return pendingOrGate(details, state);
-  if (bucket === "pass")
-    return { ...details, kind: "passed", reportedState: state };
-  if (bucket === "skipping")
-    return { ...details, kind: "skipped", reportedState: state };
-  return { ...details, kind: "failed", reportedState: state };
+export function parseForgePullRequest(
+  value: unknown,
+  context: T.PrContext
+): T.PullRequestFacts {
+  const object = record(value, "pull request");
+  if (typeof object.draft !== "boolean")
+    missing("pull request.draft", object.draft);
+  const merge = mapped(object.merge, MERGE_STATES, "pull request.merge");
+  return {
+    context,
+    mergeable:
+      object.merge === "conflicts"
+        ? "CONFLICTING"
+        : object.merge === "checking"
+          ? "UNKNOWN"
+          : "MERGEABLE",
+    mergeStateStatus: merge,
+    reviewDecision: mapped(
+      object.review,
+      REVIEW_DECISIONS,
+      "pull request.review"
+    ),
+    headRefOid: optionalString(object.head_sha, "pull request.head_sha"),
+    headRefName: string(object.head, "pull request.head"),
+    baseRefName: string(object.base, "pull request.base"),
+    state: mapped(object.state, PR_STATES, "pull request.state"),
+    mergedAt: optionalString(object.merged_at, "pull request.merged_at"),
+    isDraft: object.draft,
+  };
 }
 // The owner-approval gate is excluded from pending everywhere, so the rule has
-// one home. Classifying it as pending on either read path makes the watcher
-// wait on a human, which is the behaviour #172004 removed from the Python.
+// one home. Classifying it as pending makes the watcher wait on a human.
 function pendingOrGate(
   details: {
     readonly name: string;
@@ -270,65 +207,28 @@ function pendingOrGate(
       }
     : { ...details, kind: "pending", reportedState };
 }
-export function mapRollupNode(value: unknown): T.Check | null {
-  const object = record(value, "rollup node");
-  const typename = object.__typename;
-  if (typename !== "CheckRun" && typename !== "StatusContext") return null;
-  const details = checkDetails(
-    object,
-    typename === "CheckRun" ? "name" : "context"
-  );
-  const link =
-    typeof object.targetUrl === "string" ? object.targetUrl : details.link;
-  if (typename === "CheckRun") {
-    const status =
-      typeof object.status === "string" ? object.status.toUpperCase() : "";
-    const conclusion =
-      typeof object.conclusion === "string"
-        ? object.conclusion.toUpperCase()
-        : "";
-    if (status !== "COMPLETED")
-      return pendingOrGate({ ...details, link }, "PENDING");
-    if (conclusion === "SUCCESS")
-      return { ...details, link, kind: "passed", reportedState: "SUCCESS" };
-    if (conclusion === "NEUTRAL" || conclusion === "SKIPPED")
-      return { ...details, link, kind: "skipped", reportedState: conclusion };
-    return {
-      ...details,
-      link,
-      kind: "failed",
-      reportedState: conclusion === "ACTION_REQUIRED" ? conclusion : "FAILURE",
-    };
-  }
-  const state =
-    typeof object.state === "string" ? object.state.toUpperCase() : "";
-  if (state === "PENDING" || state === "EXPECTED")
-    return pendingOrGate({ ...details, link }, "PENDING");
-  return state === "SUCCESS"
-    ? { ...details, link, kind: "passed", reportedState: state }
-    : { ...details, link, kind: "failed", reportedState: state || "FAILURE" };
-}
-function parseComment(value: unknown): T.ReviewComment {
-  const object = record(value, "review comment");
-  const author =
-    object.author === null
-      ? null
-      : record(object.author, "review comment.author");
-  return {
-    authorLogin:
-      author === null
-        ? null
-        : optionalString(author.login, "review comment.author.login"),
-    body: string(object.body, "review comment.body"),
-    path: optionalString(object.path, "review comment.path"),
-    line:
-      object.line === null
-        ? null
-        : Number.isInteger(object.line)
-          ? Number(object.line)
-          : missing("review comment.line", object.line),
-    createdAt: string(object.createdAt, "review comment.createdAt"),
+export function parseForgeCheck(value: unknown): T.Check {
+  const object = record(value, "check");
+  const details = {
+    name: string(object.name, "check.name"),
+    description: "",
+    link: typeof object.url === "string" ? object.url : "",
+    workflow: "",
   };
+  const state = string(object.state, "check.state");
+  switch (state) {
+    case "pass":
+      return { ...details, kind: "passed", reportedState: "SUCCESS" };
+    case "pending":
+      return pendingOrGate(details, "PENDING");
+    case "skipped":
+    case "neutral":
+      return { ...details, kind: "skipped", reportedState: state.toUpperCase() };
+    case "cancelled":
+      return { ...details, kind: "failed", reportedState: "CANCELLED" };
+    default:
+      return { ...details, kind: "failed", reportedState: "FAILURE" };
+  }
 }
 function isBugbot(comment: T.ReviewComment | null): boolean {
   if (comment === null) return false;
@@ -357,30 +257,31 @@ function passKey(comment: T.ReviewComment | null): string | null {
   }
   return null;
 }
-export function parseReviewThreads(value: unknown): readonly T.ReviewThread[] {
-  const nodes = list(
-    at(value, ["data", "repository", "pullRequest", "reviewThreads", "nodes"]),
-    "reviewThreads.nodes"
-  );
-  const threads: {
-    readonly id: string;
-    readonly firstComment: T.ReviewComment | null;
-    readonly resolved: boolean;
-  }[] = [];
-  for (const node of nodes) {
-    const thread = record(node, "review thread");
-    if (typeof thread.isResolved !== "boolean")
-      missing("review thread.isResolved", thread.isResolved);
-    const comments = list(
-      at(thread, ["comments", "nodes"]),
-      "review thread.comments.nodes"
-    );
-    threads.push({
-      id: string(thread.id, "review thread.id"),
-      firstComment: comments.length === 0 ? null : parseComment(comments[0]),
-      resolved: thread.isResolved,
-    });
-  }
+export function parseForgeThreads(value: unknown): readonly T.ReviewThread[] {
+  const threads = list(value, "threads").map((item, index) => {
+    const path = `threads[${index}]`;
+    const thread = record(item, path);
+    if (typeof thread.resolved !== "boolean")
+      missing(`${path}.resolved`, thread.resolved);
+    const comments = list(thread.comments, `${path}.comments`);
+    const first =
+      comments.length === 0 ? null : record(comments[0], `${path}.comments[0]`);
+    return {
+      id: string(thread.id, `${path}.id`),
+      resolved: thread.resolved,
+      firstComment:
+        first === null
+          ? null
+          : {
+              authorLogin: optionalString(first.author, `${path}.comments[0].author`),
+              body: string(first.body, `${path}.comments[0].body`),
+              path: optionalString(thread.path, `${path}.path`),
+              line:
+                thread.line === null ? null : integer(thread.line, `${path}.line`),
+              createdAt: string(first.created_at, `${path}.comments[0].created_at`),
+            },
+    };
+  });
   const keys = new Set<string>();
   let keyless = false;
   for (const thread of threads) {
@@ -399,205 +300,114 @@ export function parseReviewThreads(value: unknown): readonly T.ReviewThread[] {
       bugbotReviewPasses: passes,
     }));
 }
-export function parsePullRequest(
-  value: unknown,
-  context: T.PrContext
-): T.PullRequestFacts {
-  const object = record(value, "pull request");
-  if (typeof object.isDraft !== "boolean")
-    missing("pull request.isDraft", object.isDraft);
-  return {
-    context,
-    mergeable: enumValue(
-      object.mergeable,
-      ["MERGEABLE", "CONFLICTING", "UNKNOWN"] as const,
-      "pull request.mergeable"
-    ),
-    mergeStateStatus: enumValue(
-      object.mergeStateStatus,
-      MERGE_STATES,
-      "pull request.mergeStateStatus"
-    ),
-    reviewDecision: reviewDecision(object.reviewDecision),
-    headRefOid: optionalString(object.headRefOid, "pull request.headRefOid"),
-    headRefName: string(object.headRefName, "pull request.headRefName"),
-    baseRefName: string(object.baseRefName, "pull request.baseRefName"),
-    state: enumValue(
-      object.state,
-      ["OPEN", "CLOSED", "MERGED"] as const,
-      "pull request.state"
-    ),
-    mergedAt: optionalString(object.mergedAt, "pull request.mergedAt"),
-    isDraft: object.isDraft,
-  };
-}
-function graphqlArgs(
-  query: string,
-  context: T.PrContext
-): [string, ...string[]] {
-  return [
-    "gh",
-    "api",
-    "graphql",
-    "-f",
-    `query=${query}`,
-    "-f",
-    `owner=${context.owner}`,
-    "-f",
-    `repo=${context.repo}`,
-    "-F",
-    `pr=${context.number}`,
-  ];
+export function parseForgeCommits(value: unknown): readonly T.CommitRollup[] {
+  return list(value, "commits").map((item, index) => {
+    const commit = record(item, `commits[${index}]`);
+    return {
+      oid: string(commit.sha, `commits[${index}].sha`),
+      state: mapped(commit.state, COMMIT_STATES, `commits[${index}].state`),
+    };
+  });
 }
 
-export class GhGitHubReader implements T.GitHubReader {
+export class ForgeCliReader implements T.GitHubReader {
+  private repository: Promise<T.Repository> | null = null;
+  constructor(private readonly forge: string = FORGE) {}
+  private forgeJson(...args: string[]): Promise<unknown> {
+    return runJson([this.forge, ...args]);
+  }
+  private origin(): Promise<T.Repository> {
+    this.repository ??= this.forgeJson("which").then(parseForgeRepository);
+    return this.repository;
+  }
+  // The forge script reads the checkout's own remote, so a context naming
+  // another repository cannot be answered.
+  private async check(context: T.PrContext): Promise<void> {
+    const origin = await this.origin();
+    if (origin.owner !== context.owner || origin.repo !== context.repo)
+      throw new WatcherQueryError({
+        kind: "invalid-context-url",
+        retryable: false,
+        rawValue: `${context.owner}/${context.repo}`,
+        detail: `watch-pr reads the checkout's remote (${origin.owner}/${origin.repo}), not ${context.owner}/${context.repo}`,
+      });
+  }
   async originRepo(): Promise<T.Repository | null> {
-    const result = await run(["git", "remote", "get-url", "origin"]);
-    return result.code === 0 ? parseRemote(result.stdout) : null;
+    try {
+      return await this.origin();
+    } catch (error) {
+      if (!(error instanceof WatcherQueryError)) throw error;
+      this.repository = null;
+      return null;
+    }
   }
   async currentPr(pr: T.PrNumber | null): Promise<T.PrContext> {
-    const argv: [string, ...string[]] = ["gh", "pr", "view"];
-    if (pr !== null) argv.push(String(pr));
-    argv.push("--json", "number,url");
-    const object = record(await runJson(argv), "current PR");
-    const parsed = parsePrUrl(string(object.url, "current PR.url"));
+    const origin = await this.origin();
+    const args = ["pr", "view"];
+    if (pr !== null) args.push(String(pr));
+    const object = record(await this.forgeJson(...args), "current PR");
     return {
-      ...parsed,
+      ...origin,
       number: pr ?? parsePrNumber(object.number, "current PR.number"),
     };
   }
   async pullRequest(context: T.PrContext): Promise<T.PullRequestFacts> {
-    return parsePullRequest(
-      await runJson([
-        "gh",
-        "pr",
-        "view",
-        String(context.number),
-        "--repo",
-        `${context.owner}/${context.repo}`,
-        "--json",
-        "mergeable,mergeStateStatus,reviewDecision,headRefOid,headRefName,baseRefName,state,mergedAt,isDraft",
-      ]),
+    await this.check(context);
+    return parseForgePullRequest(
+      await this.forgeJson("pr", "view", String(context.number)),
       context
     );
   }
   async openPullRequests(
     repository: T.Repository
   ): Promise<readonly T.OpenPullRequest[]> {
-    const value = await runJson([
-      "gh",
-      "pr",
-      "list",
-      "--repo",
-      `${repository.owner}/${repository.repo}`,
-      "--state",
-      "open",
-      "--limit",
-      "300",
-      "--json",
-      "number,headRefName,baseRefName",
-    ]);
+    await this.check({ ...repository, number: parsePrNumber(1) });
+    const value = await this.forgeJson("pr", "list", "--state", "open", "--limit", "300");
     return list(value, "open PRs").map((item, index) => {
       const object = record(item, `open PRs[${index}]`);
       return {
         number: parsePrNumber(object.number, `open PRs[${index}].number`),
-        headRefName: string(
-          object.headRefName,
-          `open PRs[${index}].headRefName`
-        ),
-        baseRefName: string(
-          object.baseRefName,
-          `open PRs[${index}].baseRefName`
-        ),
+        headRefName: string(object.head, `open PRs[${index}].head`),
+        baseRefName: string(object.base, `open PRs[${index}].base`),
       };
     });
   }
   async checksFastPath(context: T.PrContext): Promise<T.ChecksFastPath> {
-    const result = await run([
-      "gh",
-      "pr",
-      "checks",
-      String(context.number),
-      "--repo",
-      `${context.owner}/${context.repo}`,
-      "--json",
-      "name,state,description,link,workflow,bucket",
-    ]);
-    if ([0, 1, 8].includes(result.code) && result.stdout.trim()) {
+    await this.check(context);
+    const result = await run([this.forge, "pr", "checks", String(context.number)]);
+    if (result.code === 0 && result.stdout.trim()) {
       try {
-        const value = parseJson(result.stdout, "gh pr checks");
-        if (Array.isArray(value))
-          return { kind: "checks", checks: value.map(parseFastCheck) };
+        const object = record(parseJson(result.stdout, "forge pr checks"), "checks");
+        return {
+          kind: "checks",
+          checks: list(object.checks, "checks.checks").map(parseForgeCheck),
+        };
       } catch (error) {
         if (!(error instanceof WatcherQueryError)) throw error;
       }
     }
     return { kind: "unusable", exitCode: result.code, stderr: result.stderr };
   }
-  async checkRollupPage(
-    context: T.PrContext,
-    after: string | null
-  ): Promise<T.RollupPage> {
-    const argv = graphqlArgs(PR_CHECK_ROLLUP_QUERY, context);
-    if (after !== null) argv.push("-f", `after=${after}`);
-    const value = await runJson(argv);
-    const commits = list(
-      at(value, ["data", "repository", "pullRequest", "commits", "nodes"]),
-      "commits.nodes"
-    );
-    if (commits.length === 0) return { checks: [], endCursor: null };
-    const commit = record(
-      at(commits[commits.length - 1], ["commit"]),
-      "commit"
-    );
-    if (commit.statusCheckRollup === null)
-      return { checks: [], endCursor: null };
-    const contexts = record(
-      at(commit, ["statusCheckRollup", "contexts"]),
-      "contexts"
-    );
-    const checks = list(contexts.nodes, "contexts.nodes")
-      .map(mapRollupNode)
-      .filter((check): check is T.Check => check !== null);
-    const page = record(contexts.pageInfo, "contexts.pageInfo");
-    if (typeof page.hasNextPage !== "boolean")
-      missing("contexts.pageInfo.hasNextPage", page.hasNextPage);
-    const cursor = optionalString(
-      page.endCursor,
-      "contexts.pageInfo.endCursor"
-    );
-    return { checks, endCursor: page.hasNextPage && cursor ? cursor : null };
+  // forge pr checks already reads every page of the head commit's checks, so
+  // there is no second source to fall back to.
+  async checkRollupPage(): Promise<T.RollupPage> {
+    return { checks: [], endCursor: null };
   }
   async reviewThreads(
     context: T.PrContext
   ): Promise<readonly T.ReviewThread[]> {
-    return parseReviewThreads(
-      await runJson(graphqlArgs(REVIEW_THREADS_QUERY, context))
+    await this.check(context);
+    return parseForgeThreads(
+      await this.forgeJson("pr", "threads", String(context.number))
     );
   }
   async commitRollups(
     context: T.PrContext
   ): Promise<readonly T.CommitRollup[]> {
-    const value = await runJson(graphqlArgs(PR_COMMIT_STATUS_QUERY, context));
-    const commits = list(
-      at(value, ["data", "repository", "pullRequest", "commits", "nodes"]),
-      "commits.nodes"
+    await this.check(context);
+    return parseForgeCommits(
+      await this.forgeJson("pr", "commits", String(context.number))
     );
-    return commits.map((item, index) => {
-      const commit = record(at(item, ["commit"]), `commits[${index}].commit`);
-      const rollup = commit.statusCheckRollup;
-      return {
-        oid: string(commit.oid, `commits[${index}].oid`),
-        state:
-          rollup === null
-            ? null
-            : nullableEnum(
-                at(rollup, ["state"]),
-                ROLLUP_STATES,
-                `commits[${index}].statusCheckRollup.state`
-              ),
-      };
-    });
   }
 }
 
@@ -607,7 +417,7 @@ export async function resolveChecks(
 ): Promise<T.CheckRead> {
   const fast = await reader.checksFastPath(context);
   const direct = fast.kind === "checks" ? nonEmpty(fast.checks) : null;
-  if (direct !== null) return { source: "gh-pr-checks", checks: direct };
+  if (direct !== null) return { source: "forge-checks", checks: direct };
   const checks: T.Check[] = [];
   let after: string | null = null;
   do {
@@ -635,6 +445,7 @@ export async function resolveContext(args: {
     const origin = await args.reader.originRepo();
     if (origin !== null)
       return {
+        ...origin,
         owner: args.owner ?? origin.owner,
         repo: args.repo ?? origin.repo,
         number: args.pr,
@@ -642,6 +453,7 @@ export async function resolveContext(args: {
   }
   const inferred = await args.reader.currentPr(args.pr);
   return {
+    ...inferred,
     owner: args.owner ?? inferred.owner,
     repo: args.repo ?? inferred.repo,
     number: args.pr ?? inferred.number,

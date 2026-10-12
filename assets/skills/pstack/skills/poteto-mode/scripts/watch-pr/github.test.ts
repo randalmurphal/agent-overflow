@@ -1,11 +1,17 @@
 import { describe, expect, it } from "bun:test";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   ChecksUnavailable,
+  ForgeCliReader,
   WatcherQueryError,
-  mapRollupNode,
   orderStack,
-  parsePullRequest,
-  parseReviewThreads,
+  parseForgeCheck,
+  parseForgeCommits,
+  parseForgePullRequest,
+  parseForgeRepository,
+  parseForgeThreads,
   resolveChecks,
   resolveContext,
 } from "./github.ts";
@@ -29,7 +35,7 @@ describe("checks fallback chain", () => {
       fastPath: { kind: "checks", checks: [passingCheck("fast")] },
     });
     const read = await resolveChecks(reader, context);
-    expect(read.source).toBe("gh-pr-checks");
+    expect(read.source).toBe("forge-checks");
     expect(read.checks.map((check) => check.name)).toEqual(["fast"]);
     expect(reader.calls).toEqual(["checksFastPath"]);
   });
@@ -78,182 +84,292 @@ describe("checks fallback chain", () => {
   });
 });
 
-describe("rollup node mapping", () => {
-  it("maps terminal and non-terminal CheckRun states fail closed", () => {
+describe("forge check mapping", () => {
+  it("maps every forge check state, failing closed on an unknown one", () => {
     const cases = [
-      ["IN_PROGRESS", null, "pending", "PENDING"],
-      ["COMPLETED", "SUCCESS", "passed", "SUCCESS"],
-      ["COMPLETED", "NEUTRAL", "skipped", "NEUTRAL"],
-      ["COMPLETED", "SKIPPED", "skipped", "SKIPPED"],
-      ["COMPLETED", "ACTION_REQUIRED", "failed", "ACTION_REQUIRED"],
-      ["COMPLETED", "TIMED_OUT", "failed", "FAILURE"],
-      ["COMPLETED", "FUTURE_VALUE", "failed", "FAILURE"],
+      ["pass", "passed", "SUCCESS"],
+      ["pending", "pending", "PENDING"],
+      ["skipped", "skipped", "SKIPPED"],
+      ["neutral", "skipped", "NEUTRAL"],
+      ["cancelled", "failed", "CANCELLED"],
+      ["fail", "failed", "FAILURE"],
+      ["future_value", "failed", "FAILURE"],
     ] as const;
-    for (const [status, conclusion, kind, reportedState] of cases) {
+    for (const [state, kind, reportedState] of cases)
       expect(
-        mapRollupNode({
-          __typename: "CheckRun",
-          name: "ci",
-          status,
-          conclusion,
-        })
-      ).toMatchObject({ kind, reportedState });
-    }
+        parseForgeCheck({ name: "ci", state, url: "https://ci/1" })
+      ).toMatchObject({ kind, reportedState, link: "https://ci/1" });
   });
 
-  it("classifies an in-progress Code Review Gate from the rollup as the gate", () => {
+  it("classifies a pending Code Review Gate as the gate", () => {
     expect(
-      mapRollupNode({
-        __typename: "CheckRun",
-        name: "Code Review Gate",
-        status: "IN_PROGRESS",
-        conclusion: null,
-      })
-    ).toMatchObject({ kind: "code-review-gate" });
-    expect(
-      mapRollupNode({
-        __typename: "StatusContext",
-        context: "Code Review Gate",
-        state: "PENDING",
-      })
-    ).toMatchObject({ kind: "code-review-gate" });
-  });
-
-  it("maps StatusContext states and drops unknown typenames", () => {
-    expect(
-      mapRollupNode({
-        __typename: "StatusContext",
-        context: "ci",
-        state: "EXPECTED",
-      })
-    ).toMatchObject({ kind: "pending", reportedState: "PENDING" });
-    expect(
-      mapRollupNode({
-        __typename: "StatusContext",
-        context: "ci",
-        state: "FUTURE_VALUE",
-      })
-    ).toMatchObject({ kind: "failed", reportedState: "FUTURE_VALUE" });
-    expect(mapRollupNode({ __typename: "FutureNode" })).toBeNull();
+      parseForgeCheck({ name: "Code Review Gate", state: "pending", url: null })
+    ).toMatchObject({ kind: "code-review-gate", link: "" });
   });
 });
 
-describe("closed enum parsing", () => {
-  const rawPullRequest = {
-    mergeable: "MERGEABLE",
-    mergeStateStatus: "CLEAN",
-    reviewDecision: "APPROVED",
-    headRefOid: "head",
-    headRefName: "feature",
-    baseRefName: "main",
-    state: "OPEN",
-    mergedAt: null,
-    isDraft: false,
+describe("forge pull request parsing", () => {
+  const view = {
+    number: 42,
+    state: "open",
+    draft: false,
+    head: "feature",
+    head_sha: "head",
+    base: "main",
+    merge: "clean",
+    review: "approved",
+    merged_at: null,
   };
 
-  it("accepts mergeStateStatus CONFLICTING", () => {
-    expect(
-      parsePullRequest(
-        { ...rawPullRequest, mergeStateStatus: "CONFLICTING" },
-        context
-      ).mergeStateStatus
-    ).toBe("CONFLICTING");
+  it("maps the forge's merge vocabulary onto the merge states the policy reads", () => {
+    const cases = [
+      ["clean", "MERGEABLE", "CLEAN"],
+      ["unstable", "MERGEABLE", "UNSTABLE"],
+      ["conflicts", "CONFLICTING", "DIRTY"],
+      ["behind", "MERGEABLE", "BEHIND"],
+      ["blocked", "MERGEABLE", "BLOCKED"],
+      ["draft", "MERGEABLE", "DRAFT"],
+      ["checking", "UNKNOWN", "UNKNOWN"],
+      ["none", "MERGEABLE", "UNKNOWN"],
+    ] as const;
+    for (const [merge, mergeable, mergeStateStatus] of cases)
+      expect(parseForgePullRequest({ ...view, merge }, context)).toMatchObject({
+        mergeable,
+        mergeStateStatus,
+      });
   });
 
-  it("reads gh's empty reviewDecision as no decision rather than a parse failure", () => {
-    expect(
-      parsePullRequest({ ...rawPullRequest, reviewDecision: "" }, context)
-        .reviewDecision
-    ).toBeNull();
+  it("reads review none as no decision and the state in upper case", () => {
+    const facts = parseForgePullRequest(
+      {
+        ...view,
+        review: "none",
+        state: "merged",
+        merged_at: "2026-01-01T00:00:00Z",
+      },
+      context
+    );
+    expect(facts).toMatchObject({
+      reviewDecision: null,
+      state: "MERGED",
+      mergedAt: "2026-01-01T00:00:00Z",
+      headRefName: "feature",
+      baseRefName: "main",
+      isDraft: false,
+    });
   });
 
-  it("still rejects an unknown reviewDecision", () => {
-    expect(() =>
-      parsePullRequest({ ...rawPullRequest, reviewDecision: "MAYBE" }, context)
-    ).toThrow(WatcherQueryError);
+  it("rejects unknown values as retryable errors carrying the raw value", () => {
+    for (const bad of [
+      { merge: "future_state" },
+      { review: "maybe" },
+      { state: "locked" },
+    ]) {
+      try {
+        parseForgePullRequest({ ...view, ...bad }, context);
+        throw new Error("expected parser to throw");
+      } catch (error) {
+        expect(error).toBeInstanceOf(WatcherQueryError);
+        if (!(error instanceof WatcherQueryError)) throw error;
+        expect(error.failure).toMatchObject({
+          kind: "missing-key",
+          retryable: true,
+          rawValue: JSON.stringify(Object.values(bad)[0]),
+        });
+      }
+    }
+  });
+});
+
+it("reads the repository and its pull request links from forge which", () => {
+  expect(
+    parseForgeRepository({
+      forge: "github",
+      host: "github.com",
+      project: "owner/repo",
+    })
+  ).toEqual({
+    owner: "owner",
+    repo: "repo",
+    pullUrlBase: "https://github.com/owner/repo/pull/",
+  });
+  expect(
+    parseForgeRepository({
+      forge: "gitlab",
+      host: "gitlab.example",
+      project: "grp/sub/tool",
+    })
+  ).toEqual({
+    owner: "grp/sub",
+    repo: "tool",
+    pullUrlBase: "https://gitlab.example/grp/sub/tool/-/merge_requests/",
+  });
+  expect(() =>
+    parseForgeRepository({ forge: "github", host: "github.com", project: "repo" })
+  ).toThrow(WatcherQueryError);
+});
+
+it("maps forge commit states onto rollup states", () => {
+  expect(
+    parseForgeCommits([
+      { sha: "a", state: "pass" },
+      { sha: "b", state: "fail" },
+      { sha: "c", state: "pending" },
+      { sha: "d", state: "none" },
+    ])
+  ).toEqual([
+    { oid: "a", state: "SUCCESS" },
+    { oid: "b", state: "FAILURE" },
+    { oid: "c", state: "PENDING" },
+    { oid: "d", state: null },
+  ]);
+});
+
+it("annotates Bugbot threads with distinct review-pass counts", () => {
+  const thread = (
+    id: string,
+    resolved: boolean,
+    author: string,
+    body: string
+  ) => ({
+    id,
+    resolved,
+    outdated: false,
+    path: "a.ts",
+    line: 1,
+    comment_count: 1,
+    comments: [{ id: 1, author, body, created_at: "now" }],
+  });
+  const threads = parseForgeThreads([
+    thread("one", false, "bugbot", "RUN_ID: run-1"),
+    thread("two", false, "cursor", "CURSOR_AUTOMATION_ID: run-2 severity high"),
+    thread("resolved", true, "bugbot", "RUN_ID: run-3"),
+  ]);
+  expect(threads.map((item) => item.id)).toEqual(["one", "two"]);
+  expect(threads.map((item) => item.isBugbot)).toEqual([true, true]);
+  expect(threads.map((item) => item.bugbotReviewPasses)).toEqual([3, 3]);
+  expect(threads[0].firstComment).toEqual({
+    authorLogin: "bugbot",
+    body: "RUN_ID: run-1",
+    path: "a.ts",
+    line: 1,
+    createdAt: "now",
+  });
+});
+
+// A stand-in for the forge script that answers from canned JSON and logs the
+// arguments of each call.
+function stubForge(answers: Record<string, unknown>): {
+  forge: string;
+  log: string;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "watch-pr-forge-"));
+  const log = join(dir, "calls");
+  const cases = Object.entries(answers)
+    .map(
+      ([args, value]) =>
+        `  '${args}') printf '%s\\n' '${JSON.stringify(value)}' ;;`
+    )
+    .join("\n");
+  const forge = join(dir, "forge");
+  writeFileSync(
+    forge,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\ncase "$*" in\n${cases}\n  *) echo "forge: unexpected $*" >&2; exit 1 ;;\nesac\n`
+  );
+  chmodSync(forge, 0o755);
+  return { forge, log };
+}
+
+describe("ForgeCliReader", () => {
+  const which = { forge: "gitlab", host: "gitlab.example", project: "grp/tool" };
+
+  it("reads a pull request, its checks, threads and commits through the forge script", async () => {
+    const { forge, log } = stubForge({
+      which,
+      "pr view": { number: 7 },
+      "pr view 7": {
+        number: 7,
+        state: "open",
+        draft: false,
+        head: "feature",
+        head_sha: "abc",
+        base: "main",
+        merge: "blocked",
+        review: "review_required",
+        merged_at: null,
+      },
+      "pr checks 7": {
+        number: 7,
+        sha: "abc",
+        state: "pending",
+        checks: [{ name: "unit", state: "pending", url: "u" }],
+      },
+      "pr threads 7": [],
+      "pr commits 7": [{ sha: "abc", state: "pending" }],
+      "pr list --state open --limit 300": [
+        { number: 7, head: "feature", base: "main" },
+      ],
+    });
+    const reader = new ForgeCliReader(forge);
+    const current = await reader.currentPr(null);
+    expect(current).toEqual({
+      owner: "grp",
+      repo: "tool",
+      number: parsePrNumber(7),
+      pullUrlBase: "https://gitlab.example/grp/tool/-/merge_requests/",
+    });
+    expect(await reader.pullRequest(current)).toMatchObject({
+      mergeStateStatus: "BLOCKED",
+      reviewDecision: "REVIEW_REQUIRED",
+      headRefOid: "abc",
+    });
+    expect((await resolveChecks(reader, current)).checks[0]).toMatchObject({
+      name: "unit",
+      kind: "pending",
+    });
+    expect(await reader.reviewThreads(current)).toEqual([]);
+    expect(await reader.commitRollups(current)).toEqual([
+      { oid: "abc", state: "PENDING" },
+    ]);
+    expect(await reader.openPullRequests(current)).toEqual([
+      { number: parsePrNumber(7), headRefName: "feature", baseRefName: "main" },
+    ]);
+    expect((await Bun.file(log).text()).split("\n").filter(Boolean)).toEqual([
+      "which",
+      "pr view",
+      "pr view 7",
+      "pr checks 7",
+      "pr threads 7",
+      "pr commits 7",
+      "pr list --state open --limit 300",
+    ]);
   });
 
-  it("rejects unknown enum values as retryable errors carrying the raw value", () => {
+  it("refuses a context naming a repository other than the remote's", async () => {
+    const { forge, log } = stubForge({ which });
+    const reader = new ForgeCliReader(forge);
     try {
-      parsePullRequest(
-        { ...rawPullRequest, mergeStateStatus: "FUTURE_STATE" },
-        context
-      );
-      throw new Error("expected parser to throw");
+      await reader.pullRequest({ ...context, owner: "other" });
+      throw new Error("expected the reader to refuse");
     } catch (error) {
       expect(error).toBeInstanceOf(WatcherQueryError);
       if (!(error instanceof WatcherQueryError)) throw error;
       expect(error.failure).toMatchObject({
-        kind: "missing-key",
-        retryable: true,
-        rawValue: '"FUTURE_STATE"',
+        kind: "invalid-context-url",
+        retryable: false,
       });
     }
+    expect(await Bun.file(log).text()).toBe("which\n");
   });
-});
 
-it("annotates Bugbot threads with distinct review-pass counts", () => {
-  const response = {
-    data: {
-      repository: {
-        pullRequest: {
-          reviewThreads: {
-            nodes: [
-              {
-                id: "one",
-                isResolved: false,
-                comments: {
-                  nodes: [
-                    {
-                      body: "RUN_ID: run-1",
-                      createdAt: "now",
-                      path: "a.ts",
-                      line: 1,
-                      author: { login: "bugbot" },
-                    },
-                  ],
-                },
-              },
-              {
-                id: "two",
-                isResolved: false,
-                comments: {
-                  nodes: [
-                    {
-                      body: "CURSOR_AUTOMATION_ID: run-2 severity high",
-                      createdAt: "now",
-                      path: null,
-                      line: null,
-                      author: { login: "cursor" },
-                    },
-                  ],
-                },
-              },
-              {
-                id: "resolved",
-                isResolved: true,
-                comments: {
-                  nodes: [
-                    {
-                      body: "RUN_ID: run-3",
-                      createdAt: "now",
-                      path: null,
-                      line: null,
-                      author: { login: "bugbot" },
-                    },
-                  ],
-                },
-              },
-            ],
-          },
-        },
-      },
-    },
-  };
-  const threads = parseReviewThreads(response);
-  expect(threads).toHaveLength(2);
-  expect(threads.map((thread) => thread.isBugbot)).toEqual([true, true]);
-  expect(threads.map((thread) => thread.bugbotReviewPasses)).toEqual([3, 3]);
+  it("reports a failing forge as unusable checks and then fails closed", async () => {
+    const { forge } = stubForge({ which });
+    const reader = new ForgeCliReader(forge);
+    const current = { owner: "grp", repo: "tool", number: context.number };
+    await expect(resolveChecks(reader, current)).rejects.toBeInstanceOf(
+      ChecksUnavailable
+    );
+  });
 });
 
 describe("context and stack discovery", () => {

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Read-only worktree prune audit. Classifies every git worktree by size, merge
-# state, uncommitted work, remote/PR state, and the most recent chat that
-# operated in it. Emits a table sorted by size with a suggested bucket. Never
-# deletes anything; deletion stays a human-gated step in the playbook.
+# state, uncommitted work, and remote/PR state. Emits a table sorted by size
+# with a suggested bucket. Which threads work in a worktree comes from the
+# thread tools, which a script cannot call, so the playbook cross-checks that.
+# Never deletes anything; deletion stays a human-gated step in the playbook.
 #
 # Usage: worktree-audit.sh [repo-path]   (defaults to the current repo)
 set -u
@@ -17,25 +18,13 @@ main_wt=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
 # origin/main drives the merge check. Best-effort; stale is fine for a first pass.
 git fetch origin main --quiet 2>/dev/null || echo "warn: could not fetch origin/main; merged column may be stale" >&2
 
-# PR state by branch, fetched once. Empty if gh is unavailable.
+# PR state by branch, fetched once through the forge script. Empty if it fails.
 prs=$(mktemp)
-gh pr list --author "@me" --state all --limit 1000 \
-	--json number,state,headRefName 2>/dev/null > "$prs" || echo "[]" > "$prs"
+"$(dirname "$0")/forge" pr list --author @me --state all --limit 1000 2>/dev/null > "$prs" || echo "[]" > "$prs"
 
-# Chat transcript dirs for a path, per harness: Cursor, Claude Code, Pi.
-# Codex and OpenCode don't group sessions by project, so they aren't searched.
-slash_slug() { printf '%s' "$1" | sed 's#^/##; s#/#-#g'; }
-claude_slug() { printf '%s' "$1" | sed 's#[^A-Za-z0-9]#-#g'; }
-transcript_dirs() {
-	for d in "$HOME/.cursor/projects/$(slash_slug "$1")/agent-transcripts" \
-		"$HOME/.claude/projects/$(claude_slug "$1")" \
-		"$HOME/.pi/agent/sessions/--$(slash_slug "$1")--"; do
-		[ -d "$d" ] && printf '%s\n' "$d"
-	done
-}
 now=$(date +%s)
 
-printf "SIZE\tAGE\tMERGED\tDIRTY\tREMOTE\tPR\tLAST_CHAT\tBUCKET\tWORKTREE\n"
+printf "SIZE\tAGE\tMERGED\tDIRTY\tREMOTE\tPR\tBUCKET\tWORKTREE\n"
 
 git worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r wt; do
 	[ "$wt" = "$main_wt" ] && continue
@@ -65,32 +54,18 @@ git worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r wt;
 	else remote=no-remote; fi
 
 	pr=$([ -n "$branch" ] && jq -r --arg b "$branch" \
-		'.[] | select(.headRefName==$b) | "#\(.number)/\(.state)"' "$prs" 2>/dev/null | head -1)
+		'.[] | select(.head==$b) | "#\(.number)/\(.state)"' "$prs" 2>/dev/null | head -1)
 	[ -z "$pr" ] && pr="-"
 
-	# Most recent chat whose transcript operated in this worktree. Match path
-	# followed by "/" or a quote so glint-482 does not match glint-482-r37.
-	# Search the main repo's transcript dirs and the worktree's own.
-	last="-"; last_ts=0
-	dirs=$( { transcript_dirs "$main_wt"; transcript_dirs "$wt"; } | sort -u)
-	if [ -n "$dirs" ]; then
-		f=$(printf '%s\n' "$dirs" | tr '\n' '\0' | xargs -0 rg -l -e "${wt}/" -e "${wt}\"" 2>/dev/null \
-			| xargs stat -f '%m %N' 2>/dev/null | sort -rn | head -1)
-		if [ -n "$f" ]; then last_ts=$(echo "$f" | awk '{print $1}')
-			last=$(date -r "$last_ts" '+%Y-%m-%d' 2>/dev/null); fi
-	fi
-	recent=$([ "$last_ts" -gt 0 ] 2>/dev/null && [ $(( (now - last_ts) / 86400 )) -le 4 ] && echo yes || echo no)
-
 	case "$dirty" in wip:*) bucket=hold-wip ;; *)
-		case "$pr" in *OPEN*) bucket=hold-open-pr ;; *)
-			if [ "$recent" = yes ]; then bucket=verify-recent-chat
-			elif [ "$merged" = YES ] || [ "$pr" != "-" ]; then bucket=safe
+		case "$pr" in */open) bucket=hold-open-pr ;; *)
+			if [ "$merged" = YES ] || [ "$pr" != "-" ]; then bucket=safe
 			else bucket=review; fi ;;
 		esac ;;
 	esac
 
-	printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-		"$size" "$age" "$merged" "$dirty" "$remote" "$pr" "$last" "$bucket" "$wt"
+	printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+		"$size" "$age" "$merged" "$dirty" "$remote" "$pr" "$bucket" "$wt"
 done | sort -t$'\t' -k1,1 -rh
 
 rm -f "$prs"

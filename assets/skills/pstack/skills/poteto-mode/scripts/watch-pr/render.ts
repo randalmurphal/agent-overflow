@@ -12,7 +12,7 @@ function ciCell(row: T.PrSnapshot): string {
     case "ci-failing":
       return `❌ ${row.ci.failed.length} failed${row.ci.pending.length ? `, ${row.ci.pending.length} pending` : ""}${was}`;
     case "ci-github-rejected":
-      return `❌ GitHub reports failing checks${was}`;
+      return `❌ the forge reports failing checks${was}`;
     default: {
       const exhaustive: never = row.ci;
       return exhaustive;
@@ -45,9 +45,12 @@ function mergeCell(row: T.PrSnapshot): string {
 export function renderStatusTable(rows: T.NonEmpty<T.PrSnapshot>): string {
   const lines = ["| PR | CI | Review | Merge |", "| --- | --- | --- | --- |"];
   for (const row of rows) {
-    const url = `https://github.com/${row.context.owner}/${row.context.repo}/pull/${row.context.number}`;
+    const base = row.context.pullUrlBase;
+    const pr = base
+      ? `[#${row.context.number}](${base}${row.context.number})`
+      : `#${row.context.number}`;
     lines.push(
-      `| [#${row.context.number}](${url}) | ${ciCell(row)} | ${reviewCell(row)} | ${mergeCell(row)} |`
+      `| ${pr} | ${ciCell(row)} | ${reviewCell(row)} | ${mergeCell(row)} |`
     );
   }
   return `${lines.join("\n")}\n`;
@@ -122,7 +125,7 @@ function renderBlocker(blocker: T.MergeBlocker | StatusQueryBlocker): string {
         "BLOCKER: status-query",
         `failures=${blocker.failures}`,
         `detail=${blocker.failure.detail}`,
-        "action=verify current PR context, GitHub authentication, and API availability, then rearm",
+        "action=verify current PR context, forge authentication, and API availability, then rearm",
       ].join("\n");
     default: {
       const exhaustive: never = blocker;
@@ -143,7 +146,7 @@ export function renderPretty(verdict: T.WatcherVerdict): string {
     case "ADVANCE":
       return `ADVANCE: merged #${verdict.merged.number}; next=#${verdict.frontier.number}; remaining=${verdict.remaining}\n`;
     case "RETRY":
-      return `RETRY: GitHub status query failed; retrying in ${verdict.retryInSeconds}s\ndetail=${verdict.failure.detail}\n`;
+      return `RETRY: forge status query failed; retrying in ${verdict.retryInSeconds}s\ndetail=${verdict.failure.detail}\n`;
     case "BLOCKER":
       return `${renderBlocker(verdict.blocker)}\n`;
     case "READY": {
@@ -159,7 +162,7 @@ export function renderPretty(verdict: T.WatcherVerdict): string {
       if (verdict.reason.kind === "pending-checks")
         return "TIMEOUT: checks still pending\n";
       if (verdict.reason.kind === "status-unavailable")
-        return "TIMEOUT: GitHub status remained unavailable\n";
+        return "TIMEOUT: forge status remained unavailable\n";
       return `TIMEOUT: queued stack still has ${verdict.reason.unmergedCount} PR${verdict.reason.unmergedCount === 1 ? "" : "s"} unmerged; frontier=#${verdict.reason.frontier.number}\n`;
     default: {
       const exhaustive: never = verdict;

@@ -16,7 +16,7 @@ const context = {
 } satisfies PrContext;
 const cleanCi = {
   kind: "ci-clean",
-  source: "gh-pr-checks",
+  source: "forge-checks",
   all: [
     {
       kind: "passed",

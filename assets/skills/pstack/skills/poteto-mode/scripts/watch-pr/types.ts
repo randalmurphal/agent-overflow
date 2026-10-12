@@ -12,6 +12,8 @@ export function parsePrNumber(value: unknown, label = "PR number"): PrNumber {
 export interface Repository {
   readonly owner: string;
   readonly repo: string;
+  // The web URL a pull request number is appended to, when the forge is known.
+  readonly pullUrlBase?: string;
 }
 export interface PrContext extends Repository {
   readonly number: PrNumber;
@@ -87,7 +89,7 @@ export type Check =
 export type FailedCheck = Extract<Check, { readonly kind: "failed" }>;
 export type PendingCheck = Extract<Check, { readonly kind: "pending" }>;
 export interface CheckRead {
-  readonly source: "gh-pr-checks" | "graphql-rollup";
+  readonly source: "forge-checks" | "graphql-rollup";
   readonly checks: NonEmpty<Check>;
 }
 export interface CommitRollup {

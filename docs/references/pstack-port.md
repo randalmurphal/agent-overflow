@@ -1,0 +1,90 @@
+# pstack port
+
+`assets/skills/pstack/` is pstack, poteto's skill library, vendored at a
+pinned upstream commit and ported to the thread tools so Claude and Codex
+threads run the same skill text. The port table and the product rules
+live in the [standing agents spec](../specs/standing-agents.md#skills-library);
+[`UPSTREAM.md`](../../assets/skills/pstack/UPSTREAM.md) records the pin,
+the license, what was not vendored and every file the port changed.
+
+## What the port maps
+
+The Agent Overflow section of
+[`poteto-mode/SKILL.md`](../../assets/skills/pstack/skills/poteto-mode/SKILL.md)
+is the map every other skill reads through. Choices a resync must keep:
+
+- Model roles live in `~/.agents/pstack-models.md`, one file both
+  providers read, written by `setup-pstack`. A role value is
+  `inherit-parent`, `other-provider`, or `<provider> <model> <effort>` as
+  `thread_options` lists it. A role on the thread's own provider runs as
+  a native subagent; one on the other provider runs as a `thread_spawn`
+  thread, because a native subagent cannot change provider. Defaults are
+  `inherit-parent`, plus an `other-provider` seat on the review panels.
+- Transcripts are threads: `thread_search`, `thread_show` and
+  `thread_item`, never provider session files.
+- Waking is `thread_loop` for any thread and `thread_watch` for a
+  standing agent; nothing sleeps in a shell loop.
+- Every GitHub or GitLab call goes through the forge script.
+- Benny's skills read reports through a source adapter the agent
+  configures; a standing agent runs them from a `thread_watch`.
+
+## Forge script
+
+`skills/poteto-mode/scripts/forge` is one bash script with the same JSON
+output on both forges: `which`,
+`pr view|merge-state|list|create|comment|comments|checks|commits|threads|reply|merge|edit`
+and `ci status|log`. `forge --help` lists the arguments. It needs git,
+jq and `gh` or `glab`.
+
+It decides the forge from the checkout's remote (`FORGE_REMOTE`, default
+`origin`):
+
+1. The remote URL's host is taken as written. An SSH host alias is
+   resolved with `ssh -G`, as the app does, so `git@work:group/repo` maps
+   to the host the alias names.
+2. `github.com` or a host containing `github` is GitHub; `gitlab.com` or
+   a host containing `gitlab` is GitLab.
+3. Any other host needs `FORGE=github` or `FORGE=gitlab`; the script
+   refuses to guess.
+
+GitHub calls go through `gh` with `-R host/owner/repo` and `gh api
+--hostname`; GitLab calls go through `glab api --hostname` with the
+URL-encoded project path. Bodies reach the CLI on stdin or as one
+argument, never through a shell. `watch-pr` and `worktree-audit.sh` read
+through the script, so they work on both forges.
+
+## Tests
+
+`make pstack-check` runs:
+
+- `TestForgeScript` (`cmd/ao-mockforge/forge_script_test.go`) runs every
+  subcommand on both forges against `forgefake` through the real
+  `ao-mockforge` binary, including an SSH alias, writes read back
+  through the app's `ReadPR`, and a refusal for an unknown host. `-v`
+  prints the run log.
+- The tripwires in `internal/threadtools/skills_tree_test.go`.
+  `TestSkillsNameOnlyToolsThatExist` fails when a skill names a
+  `thread_*` or `browser_*` tool the app does not serve.
+  `TestSkillsCarryNoReplacedPrimitive` fails when a replaced primitive
+  (`/loop`, `subagent_type`, provider home paths, `control-ui`, a direct
+  `gh pr` call and the rest of the list) comes back; `keptVerbatim` lists
+  the upstream lines kept on purpose. `TestSkillsLinkOnlyFilesThatExist`
+  fails when a relative Markdown link names a file the tree does not
+  carry.
+
+The watch-pr and orch TypeScript tests run with bun (`bun test orch
+watch-pr` in `skills/poteto-mode/scripts`), which the CI image does not
+carry.
+
+## Resync
+
+1. Clone upstream and check out the new commit.
+2. Diff it against the pinned commit, not against this tree:
+   `git diff <pinned>..<new> -- skills automations agents README.md LICENSE`.
+3. Apply the upstream changes here, keeping the port's edits. For a file
+   `UPSTREAM.md` lists, reapply its change by hand. Leave the paths
+   `UPSTREAM.md` lists as not vendored out.
+4. Run `make pstack-check`. Every hit names a file and line that brought
+   back a replaced primitive or a tool name the app does not serve; port
+   it to the mapping above.
+5. Update the pin and the changed-file table in `UPSTREAM.md`.

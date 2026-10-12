@@ -6,7 +6,7 @@ import {
   Option,
 } from "commander";
 import {
-  GhGitHubReader,
+  ForgeCliReader,
   WatcherQueryError,
   discoverStack,
   resolveContext,
@@ -89,8 +89,8 @@ export function parseArgs(
     )
     .configureOutput({ writeOut: io.stdout, writeErr: io.stderr })
     .exitOverride()
-    .option("--owner <owner>", "GitHub repository owner")
-    .option("--repo <repo>", "GitHub repository name")
+    .option("--owner <owner>", "repository owner; must match the checkout's remote")
+    .option("--repo <repo>", "repository name; must match the checkout's remote")
     .option("--pr <number>", "pull request number", prNumber)
     .addOption(
       new Option("--stack", "watch the connected open stack")
@@ -158,7 +158,7 @@ export interface CliRuntime {
 }
 function realRuntime(): CliRuntime {
   return {
-    reader: new GhGitHubReader(),
+    reader: new ForgeCliReader(),
     clock: {
       now: () => performance.now() / 1_000,
       observedAt: () => new Date().toISOString(),

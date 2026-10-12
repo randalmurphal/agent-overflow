@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test pstack-check test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -9,6 +9,7 @@ help:
 	@printf '%s\n' \
 		'Build:   make build | make check | make verify' \
 		'Tests:   make test | make test-race | make go-test GO_TEST_PKGS=./internal/x GO_TEST_FLAGS=...' \
+		'Skills:  make pstack-check (forge script on both fake forges, skills tool-name tripwire)' \
 		'Static:  make fmt-check | make go-vet | make go-lint | make frontend-lint | make bindings-check | make go-vuln' \
 		'Android: make apk | make apk-release | make e2e-android' \
 		'Mobile browser: make e2e-mobile-browser (Chromium + WebKit)' \
@@ -167,6 +168,13 @@ go-test: netns-tool
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
 	$(call go-prefetch,$$packages); \
 	$(NETNS) go test $(GO_TEST_FLAGS) $$packages
+
+# The vendored pstack skills (assets/skills/pstack): the forge script against
+# the fake gh and glab, and the tripwires: every thread_* and browser_* name
+# the skills use exists, no replaced host primitive came back, and every
+# relative link resolves.
+pstack-check:
+	$(MAKE) go-test GO_TEST_PKGS="./cmd/ao-mockforge ./internal/threadtools" GO_TEST_FLAGS="-count=1 -v -run '^(TestForgeScript|TestSkills)'"
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
 # same way here. go-lint runs golangci-lint at the pinned version through

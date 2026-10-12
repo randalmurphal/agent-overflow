@@ -1,6 +1,6 @@
 # Routing map example
 
-Copy this file outside `.cursor/automations/benny/`, for example to `.cursor/benny/routing.md`, and replace every placeholder. Point `routing.map_path` at the copy. Pack refreshes must not overwrite it.
+Copy this file into the agent's home, for example to `benny/routing.md`, and replace every placeholder. Point `routing.map_path` at the copy. Library updates must not overwrite it.
 
 The triage skill treats this as data. A route needs evidence from the report or cause trace. A keyword match alone is not enough.
 
@@ -15,7 +15,7 @@ routes:
       error_signatures:
         - "billing-error-placeholder"
     destination:
-      slack_channel: "billing-channel-placeholder"
+      source_channel: "billing-channel-placeholder"
       tracker_team: "billing-team-placeholder"
     owners:
       - "billing-owner-placeholder"
@@ -30,7 +30,7 @@ routes:
       error_signatures:
         - "desktop-error-placeholder"
     destination:
-      slack_channel: "desktop-channel-placeholder"
+      source_channel: "desktop-channel-placeholder"
       tracker_team: "desktop-team-placeholder"
     owners:
       - "desktop-owner-placeholder"
@@ -58,4 +58,4 @@ ping_policy:
 - Do not include private data in a public copy.
 - Do not paste raw user or channel IDs into an example that will be published.
 - Keep feature-owner pings off until the target team agrees to them.
-- A reroute tells the reporter where to go. The automation never cross-posts.
+- A reroute tells the reporter where to go. Benny never cross-posts.
