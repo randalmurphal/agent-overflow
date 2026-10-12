@@ -127,6 +127,22 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 		unlockAction := a.threadLocks().Lock(threadID)
 		defer unlockAction()
 	}
+	result, err := a.applyThreadOrganizePatchMutable(ctx, threadID, patch)
+	if err != nil {
+		return threadapp.OrganizeResult{}, err
+	}
+	// The session stops after the mutation lock is released, as the archive
+	// binding's does: its teardown takes that lock to drop the queue, and a
+	// queue write after the flip refuses the archived thread.
+	if result.ArchivedChanged && result.Thread.Archived {
+		a.stopArchivedThreadSession(threadID, requestedAt)
+	}
+	return result, nil
+}
+
+// applyThreadOrganizePatchMutable writes the patch and announces it under
+// the thread's mutation lock.
+func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, error) {
 	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
 	if err != nil {
 		return threadapp.OrganizeResult{}, err
@@ -143,9 +159,6 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 		a.emitThreadGroup("create", *result.CreatedGroup)
 	}
 	a.broadcastThreadRowIfChanged(organizeThreadAction(result), result.Thread, result.Changed)
-	if result.ArchivedChanged && result.Thread.Archived {
-		a.stopArchivedThreadSession(threadID, requestedAt)
-	}
 	return result, nil
 }
 
