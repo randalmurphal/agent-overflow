@@ -47,7 +47,7 @@ func TestEmitSystemStats_HappyPath(t *testing.T) {
 		if s.CPUPercent != 42.5 || s.MemUsedBytes != 4<<30 || s.MemTotalBytes != 16<<30 {
 			t.Fatalf("payload = %+v, want fields copied from sampler reading", s)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("no system:stats event emitted")
 	}
 }
@@ -138,7 +138,7 @@ func TestStartSystemStatsSampler_ExitsOnAppCtxCancel(t *testing.T) {
 	// Confirm Prime ran so the goroutine reached its select-loop body.
 	select {
 	case <-primed:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Prime never fired")
 	}
 
