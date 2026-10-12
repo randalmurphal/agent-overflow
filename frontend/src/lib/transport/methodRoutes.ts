@@ -49,6 +49,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2562316972: 'selected', // CancelSessionImport
 	378941854: 'thread', // CancelThreadRemoteCommand
 	930267104: 'thread', // CancelThreadTransfer
+	2490904523: 'thread', // CancelThreadWake
 	2347956003: 'home', // CheckForUpdate
 	2932719708: 'thread', // CheckThreadImportUpdates
 	16360282: 'thread', // CleanCodexBackgroundTerminals
@@ -155,6 +156,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1512475224: 'thread', // GetThreadTurnPreview
 	3340938325: 'thread', // GetThreadUserMessageHistory
 	556088547: 'thread', // GetThreadUserMessageTicks
+	3375683118: 'thread', // GetThreadWakeDetail
 	49371251: 'thread', // GetThreadWorktreeSetup
 	3815301456: 'thread', // GetTimelineUserMessageTicks
 	1009213933: 'home', // GetUIRenderTracePath
@@ -231,6 +233,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3375390768: 'thread', // ListThreadRecurringJobs
 	1165681857: 'thread', // ListThreadRemoteCommands
 	4176102096: 'thread', // ListThreadSliceAround
+	1646300658: 'thread', // ListThreadWakes
 	1090132042: 'all', // ListThreads
 	2332614075: 'home', // ListWSLDistros
 	2808137798: 'selected', // ListWorkspaceMcpServers
@@ -425,6 +428,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2139261008: 'home', // VerifyBrowserUnlock
 	3907724148: 'thread', // VerifyEditDiffs
 	2431199839: 'home', // Version
+	777755931: 'thread', // WakeThreadWakeNow
 	4000394635: 'home', // WorkflowAgentAddMemory
 	4273669366: 'home', // WorkflowAgentAmendSeeds
 	864025136: 'home', // WorkflowAgentGetNotes

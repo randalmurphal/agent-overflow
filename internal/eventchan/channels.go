@@ -294,6 +294,9 @@ const (
 	ThreadRuntimeModeChanged Channel = "thread:runtime_mode_changed"
 	ThreadTitleGeneration    Channel = "thread:title_generation"
 	ThreadUpdated            Channel = "thread:updated"
+	// ThreadWakesChanged names a thread whose loops, watches or reminders
+	// changed; readers refetch ListThreadWakes.
+	ThreadWakesChanged Channel = "thread:wakes_changed"
 )
 
 // updater:* — the self-update lifecycle. Six of these are bridged from

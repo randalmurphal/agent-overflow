@@ -1339,6 +1339,19 @@ var channelPolicies = []ChannelPolicy{
 			"latest-only.",
 	},
 	{
+		Channel:   eventchan.ThreadWakesChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "{threadId}, a refetch nudge: the thread's loops, watches or " +
+			"reminders changed (registered, fired, ran, recorded an outcome, " +
+			"cancelled). Scope threads:read because ListThreadWakes, the pull " +
+			"half, carries it. NOT EntityFiltered: a fire changes it about " +
+			"once a minute per row, and the standing agent's sidebar row reads " +
+			"its schedule for threads no pane shows. Keyed per thread: never " +
+			"latest-only.",
+	},
+	{
 		Channel:   eventchan.ThreadGroupUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

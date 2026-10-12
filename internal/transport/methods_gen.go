@@ -83,6 +83,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "CancelSessionImport", ID: 2562316972, Scope: "threads:operate", Route: "selected"},                                // main.App.CancelSessionImport
 	{Name: "CancelThreadRemoteCommand", ID: 378941854, Scope: "terminal:operate", Route: "thread"},                            // main.App.CancelThreadRemoteCommand
 	{Name: "CancelThreadTransfer", ID: 930267104, Scope: "threads:operate", Route: "thread"},                                  // main.App.CancelThreadTransfer
+	{Name: "CancelThreadWake", ID: 2490904523, Scope: "threads:operate", Route: "thread"},                                     // main.App.CancelThreadWake
 	{Name: "CheckForUpdate", ID: 2347956003, Scope: "host", Route: "home"},                                                    // main.App.CheckForUpdate
 	{Name: "CheckThreadImportUpdates", ID: 2932719708, Scope: "threads:operate", Route: "thread"},                             // main.App.CheckThreadImportUpdates
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282, Scope: "threads:operate", Route: "thread"},                          // main.App.CleanCodexBackgroundTerminals
@@ -189,6 +190,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetThreadTurnPreview", ID: 1512475224, Scope: "threads:read", Route: "thread"},                                    // main.App.GetThreadTurnPreview
 	{Name: "GetThreadUserMessageHistory", ID: 3340938325, Scope: "threads:read", Route: "thread"},                             // main.App.GetThreadUserMessageHistory
 	{Name: "GetThreadUserMessageTicks", ID: 556088547, Scope: "threads:read", Route: "thread"},                                // main.App.GetThreadUserMessageTicks
+	{Name: "GetThreadWakeDetail", ID: 3375683118, Scope: "threads:read", Route: "thread"},                                     // main.App.GetThreadWakeDetail
 	{Name: "GetThreadWorktreeSetup", ID: 49371251, Scope: "terminal:operate", Route: "thread"},                                // main.App.GetThreadWorktreeSetup
 	{Name: "GetTimelineUserMessageTicks", ID: 3815301456, Scope: "threads:read", Route: "thread"},                             // main.App.GetTimelineUserMessageTicks
 	{Name: "GetUIRenderTracePath", ID: 1009213933, Scope: "host", Route: "home"},                                              // main.App.GetUIRenderTracePath
@@ -265,6 +267,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListThreadRecurringJobs", ID: 3375390768, Scope: "threads:read", Route: "thread"},                                 // main.App.ListThreadRecurringJobs
 	{Name: "ListThreadRemoteCommands", ID: 1165681857, Scope: "threads:read", Route: "thread"},                                // main.App.ListThreadRemoteCommands
 	{Name: "ListThreadSliceAround", ID: 4176102096, Scope: "threads:read", Route: "thread"},                                   // main.App.ListThreadSliceAround
+	{Name: "ListThreadWakes", ID: 1646300658, Scope: "threads:read", Route: "thread"},                                         // main.App.ListThreadWakes
 	{Name: "ListThreads", ID: 1090132042, Scope: "threads:read", Route: "all"},                                                // main.App.ListThreads
 	{Name: "ListWSLDistros", ID: 2332614075, Scope: "host", Route: "home"},                                                    // main.App.ListWSLDistros
 	{Name: "ListWorkspaceMcpServers", ID: 2808137798, Scope: "settings:write", Route: "selected"},                             // main.App.ListWorkspaceMcpServers
@@ -459,6 +462,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "VerifyBrowserUnlock", ID: 2139261008, Scope: "session", Route: "home"},                                            // main.App.VerifyBrowserUnlock
 	{Name: "VerifyEditDiffs", ID: 3907724148, Scope: "files:read", Route: "thread"},                                           // main.App.VerifyEditDiffs
 	{Name: "Version", ID: 2431199839, Scope: "threads:read", Route: "home"},                                                   // main.App.Version
+	{Name: "WakeThreadWakeNow", ID: 777755931, Scope: "threads:operate", Route: "thread"},                                     // main.App.WakeThreadWakeNow
 	{Name: "WorkflowAgentAddMemory", ID: 4000394635, Scope: "threads:autonomy", Route: "home"},                                // main.App.WorkflowAgentAddMemory
 	{Name: "WorkflowAgentAmendSeeds", ID: 4273669366, Scope: "threads:autonomy", Route: "home"},                               // main.App.WorkflowAgentAmendSeeds
 	{Name: "WorkflowAgentGetNotes", ID: 864025136, Scope: "threads:autonomy", Route: "home"},                                  // main.App.WorkflowAgentGetNotes

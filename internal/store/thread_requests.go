@@ -602,6 +602,34 @@ func (s *Store) DueThreadReminders(now int64, limit int) ([]ThreadRequest, error
 	return collectThreadRequests(rows, "store: list due thread reminders")
 }
 
+// ListOpenThreadReminders returns a thread's reminders that have not fired,
+// soonest first, at most limit of them, and how many it has in all.
+func (s *Store) ListOpenThreadReminders(callerThreadID string, limit int) (_ []ThreadRequest, total int, err error) {
+	action := "store: list open thread reminders for " + callerThreadID
+	if limit < 1 {
+		limit = 32
+	}
+	if err := s.reader().QueryRow(`SELECT count(*) FROM thread_requests
+		  WHERE caller_thread_id = ? AND kind = 'remind' AND state = 'accepted'`, callerThreadID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("%s: count: %w", action, err)
+	}
+	if total == 0 {
+		return nil, 0, nil
+	}
+	rows, err := s.reader().Query(
+		`SELECT `+threadRequestColumns+` FROM thread_requests
+		  WHERE caller_thread_id = ? AND kind = 'remind' AND state = 'accepted'
+		  ORDER BY due_at ASC, token ASC LIMIT `+strconv.Itoa(limit), callerThreadID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", action, err)
+	}
+	reminders, err := collectThreadRequests(rows, action)
+	if err != nil {
+		return nil, 0, err
+	}
+	return reminders, total, nil
+}
+
 // DueThreadRequestPolls returns the remote requests the poller should visit.
 // The predicate matches idx_thread_requests_poll exactly, including the
 // `finished` state a late reply still needs polling for and the `polling`

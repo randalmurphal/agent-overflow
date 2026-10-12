@@ -10,7 +10,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -152,6 +151,7 @@ func (a *App) recoverAgentWakesAtBoot() {
 				logThreadRequestSweep("recover "+row.Kind+" "+row.ID, err)
 				continue
 			}
+			a.emitThreadWakesChanged(row.ThreadID)
 			row.State, row.LastOutcome = store.AgentWakeArmed, outcome
 		}
 		if row.LongRunning {
@@ -170,8 +170,9 @@ func (a *App) recoverAgentWakesAtBoot() {
 
 // fireAgentWake claims one interval row and runs it off the sweep's
 // goroutine: a watch script can take minutes, and a loop's delivery takes the
-// thread's lock and can start its session.
-func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFire) {
+// thread's lock and can start its session. It reports whether the run
+// started: false is a lost claim, a failed one (logged) or a shutdown.
+func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFire) bool {
 	_, next := agentWakeElapsed(row.NextAt, now.UnixMilli(), row.IntervalSeconds*1000)
 	if next <= now.UnixMilli() {
 		next = now.UnixMilli() + row.IntervalSeconds*1000
@@ -179,17 +180,18 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 	claimed, err := a.store.ClaimAgentWake(row.ID, now.UnixMilli(), next, fire.missed)
 	if err != nil {
 		logThreadRequestSweep("claim "+row.Kind+" "+row.ID, err)
-		return
+		return false
 	}
 	if !claimed {
-		return
+		return false
 	}
+	a.emitThreadWakesChanged(row.ThreadID)
 	row.State, row.LastRunAt, row.NextAt, row.Missed = store.AgentWakeRunning, now.UnixMilli(), next, fire.missed
 	ctx, run, ok := a.beginAgentWakeRun(row)
 	if !ok {
 		// Shutting down. The row stays `running`, and the next boot records
 		// the cut and runs it again.
-		return
+		return false
 	}
 	go func() {
 		defer a.endAgentWakeRun(row.ID, run)
@@ -201,6 +203,7 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 		defer func() { <-a.agentWakeSlots() }()
 		a.runAgentWakeFire(ctx, run, row, fire)
 	}()
+	return true
 }
 
 // currentAgentWake reads a row as it stands now, for what its previous wake
@@ -231,6 +234,7 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 			// row stays `running` and the next boot reruns it.
 			return
 		}
+		a.noteAgentWakeStderr(run, row, result.stderr)
 		if outcome, wakes := result.outcome(agentWatchTimeout(row)); !wakes {
 			a.retryHeldAgentWake(row)
 			a.finishAgentWakeFire(run, row, outcome, "", fire.missed, store.AgentWakeNoWake)
@@ -257,6 +261,8 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 		// run: due again at its own fire, which the next boot replays.
 		if _, err := a.store.ReleaseUndeliveredAgentWake(row.ID, agentWakeOutcomeNotDelivered, kept, fire.at); err != nil {
 			logThreadRequestSweep("release undelivered "+row.Kind+" "+row.ID, err)
+		} else {
+			a.emitThreadWakesChanged(row.ThreadID)
 		}
 	default:
 		log.Printf("agent wakes: %s %q on %s: %v", row.Kind, row.Label, row.ThreadID, err)
@@ -272,6 +278,8 @@ func (a *App) finishAgentWakeFire(
 	}
 	if _, err := a.store.FinishAgentWake(row.ID, outcome, output, missed, carry); err != nil {
 		logThreadRequestSweep("finish "+row.Kind+" "+row.ID, err)
+	} else {
+		a.emitThreadWakesChanged(row.ThreadID)
 	}
 	// The row is armed again with its next fire, which may be sooner than
 	// the sweep's sleep.
@@ -381,13 +389,7 @@ func (a *App) agentWatchCommand(row store.AgentWake) (agentWatchCommandSpec, err
 	if !standing {
 		return agentWatchCommandSpec{}, errors.New("the thread is no longer a standing agent")
 	}
-	dir := thread.WorkspacePath
-	if row.Cwd != "" {
-		dir = row.Cwd
-		if !filepath.IsAbs(dir) {
-			dir = filepath.Join(thread.WorkspacePath, dir)
-		}
-	}
+	dir := agentWatchDir(row, thread.WorkspacePath)
 	if err := a.requireIsolatedWorkspace(dir); err != nil {
 		return agentWatchCommandSpec{}, err
 	}
@@ -442,6 +444,7 @@ func (a *App) superviseAgentWatch(ctx context.Context, run *agentWakeRun, wakeID
 			}
 			return
 		}
+		a.emitThreadWakesChanged(row.ThreadID)
 		startedAt := time.Now()
 		outcome := a.runAgentWatchProcess(ctx, run, row)
 		if ctx.Err() != nil {
@@ -466,7 +469,24 @@ func (a *App) noteAgentWakeOutcome(run *agentWakeRun, wakeID, outcome string, ca
 	}
 	if _, err := a.store.NoteAgentWakeOutcome(wakeID, outcome, carry); err != nil {
 		logThreadRequestSweep("note outcome of "+wakeID, err)
+		return
 	}
+	a.emitThreadWakesChanged(run.threadID)
+}
+
+// noteAgentWakeStderr keeps the tail of what a watch's run wrote to stderr
+// on its row, for the activity rail. An interval run's stderr replaces the
+// last one even when empty; a long-running process passes only what it
+// wrote, since a batch with no stderr does not mean it stopped writing.
+func (a *App) noteAgentWakeStderr(run *agentWakeRun, row store.AgentWake, stderr cappedOutput) {
+	if run.wasStopped() || row.LongRunning && len(stderr.data) == 0 {
+		return
+	}
+	if _, err := a.store.NoteAgentWakeStderr(row.ID, string(stderr.data)); err != nil {
+		logThreadRequestSweep("note stderr of "+row.ID, err)
+		return
+	}
+	a.emitThreadWakesChanged(row.ThreadID)
 }
 
 // agentWatchLine is one stdout line of a long-running watch, clipped to the
@@ -515,6 +535,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 		switch {
 		case err == nil:
 			batch.take()
+			a.noteAgentWakeStderr(run, row, taken)
 			a.noteAgentWakeOutcome(run, row.ID, agentWakeOutcomeDelivered, store.AgentWakeCarried)
 			return true
 		case errors.Is(err, store.ErrAgentWakeStillQueued), ctx.Err() != nil:
@@ -524,7 +545,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 			log.Printf("agent wakes: watch %q on %s: %v", row.Label, row.ThreadID, err)
 			batch.take()
 			if !run.wasStopped() {
-				a.noteAgentWakeUndelivered(row.ID, agentWakeOutcomeNotDelivered+": "+err.Error(), body)
+				a.noteAgentWakeUndelivered(row.ThreadID, row.ID, agentWakeOutcomeNotDelivered+": "+err.Error(), body)
 			}
 			return true
 		}
@@ -536,7 +557,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 				// Output that never reached the queue is not replayed; the
 				// script's own cursor decides whether its next run repeats
 				// it. The row keeps it for the agent to read.
-				a.noteAgentWakeUndelivered(row.ID, agentWakeOutcomeNotDelivered, render(stderr.take()))
+				a.noteAgentWakeUndelivered(row.ThreadID, row.ID, agentWakeOutcomeNotDelivered, render(stderr.take()))
 			}
 			if lines != nil {
 				// The reader may be blocked handing over a line; let it reach
@@ -568,7 +589,9 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 		}
 	}
 	err = waitAgentWatch(cmd)
-	tail := stderrSummary(stderr.take())
+	rest := stderr.take()
+	a.noteAgentWakeStderr(run, row, rest)
+	tail := stderrSummary(rest)
 	var exit *exec.ExitError
 	switch {
 	case errors.As(err, &exit):
