@@ -157,10 +157,8 @@ progress store.migrate "Applying migration 1 of 1"
 exit 3`
 )
 
-// Serial: it asserts that backend.lock is free the moment the command
-// returns. A process another test forks in the meantime inherits the lock's
-// descriptor until it execs, and flock holds for that copy too.
 func TestSnapshotCommandBacksUpUnderTheLock(t *testing.T) {
+	t.Parallel()
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
 	cmd := r.command("u1")

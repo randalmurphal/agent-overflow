@@ -89,14 +89,18 @@ func DeviceKey(dir string) (*ecdsa.PrivateKey, error) {
 // The key is persisted BEFORE it is returned, so a key that signs a
 // redemption and then fails to store cannot enroll a device this process
 // can never present again.
-func EnrollDeviceKey(dir string) (*ecdsa.PrivateKey, error) {
+func EnrollDeviceKey(dir string) (key *ecdsa.PrivateKey, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), profileWriteTimeout)
 	defer cancel()
 	release, err := lockProfile(ctx, dir, KeyFileName)
 	if err != nil {
 		return nil, err
 	}
-	defer release()
+	defer func() {
+		if releaseErr := release(); releaseErr != nil {
+			key, err = nil, errors.Join(err, releaseErr)
+		}
+	}()
 
 	held, err := DeviceKey(dir)
 	if err == nil {
@@ -109,7 +113,7 @@ func EnrollDeviceKey(dir string) (*ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("deviceclient: generate the device key: %w", err)
 	}

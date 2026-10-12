@@ -15,7 +15,7 @@ import (
 // context says: c.mu is held throughout, so a lock another process sits on
 // would otherwise wedge every method of this client for as long as a
 // deadline-free caller (a route observation, a detached renewal) waits.
-func (c *Client) sessionTransaction(ctx context.Context, change func(string, *Session) error) error {
+func (c *Client) sessionTransaction(ctx context.Context, change func(string, *Session) error) (err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.retired {
@@ -31,7 +31,7 @@ func (c *Client) sessionTransaction(ctx context.Context, change func(string, *Se
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer func() { err = errors.Join(err, release()) }()
 	latest, err := readSession(path)
 	if errors.Is(err, ErrNoSession) {
 		c.retired = true

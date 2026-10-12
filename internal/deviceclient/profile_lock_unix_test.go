@@ -41,7 +41,9 @@ func TestProfileLockReleaseFreesTheLockWhileAForkHoldsACopy(t *testing.T) {
 			t.Errorf("reap the descriptor holder: %v", err)
 		}
 	})
-	releaseProfile(f)
+	if err := releaseProfile(f); err != nil {
+		t.Fatal(err)
+	}
 	// The lock is free at once or not until the holder exits; the budget
 	// only bounds a failure.
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
@@ -50,5 +52,7 @@ func TestProfileLockReleaseFreesTheLockWhileAForkHoldsACopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the released lock is still held: %v", err)
 	}
-	unlock()
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
 }
