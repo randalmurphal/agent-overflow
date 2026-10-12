@@ -321,15 +321,19 @@ func TestPRCIFetchFailureIsEmittedOnceAndCleared(t *testing.T) {
 		t.Fatalf("error frame = %+v, want a caller-safe summary", evt)
 	}
 	// The failure retries on the live cadence (doubling), and the same
-	// failure is not re-emitted.
-	time.Sleep(30 * time.Millisecond)
+	// failure is not re-emitted. The pump handles a fetch's result before
+	// it starts the next, so a third fetch means the retry's was handled.
+	deadline := time.Now().Add(10 * time.Second)
+	for f.ciFetches.Load() < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("failing CI poll was not retried: %d fetches", f.ciFetches.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
 	select {
 	case again := <-f.ciEvents:
 		t.Fatalf("duplicate failure re-emitted: %+v", again)
 	default:
-	}
-	if f.ciFetches.Load() < 2 {
-		t.Fatalf("failing CI poll was not retried: %d fetches", f.ciFetches.Load())
 	}
 	joiner, err := f.app.SubscribePRUpdates(context.Background(), testPR)
 	if err != nil {
