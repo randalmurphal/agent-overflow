@@ -65,6 +65,13 @@ an atomic persistence decision; they must not become a business-logic layer.
 - Keep enum constraints and their Go validators aligned. The runtime-mode and
   reasoning-effort sets intentionally remain provider-free production code;
   cross-package tests pin them to `internal/provider`.
+- A schema change lands with its upgrade-corpus entry: a new table, column
+  or enumerated value is written by the top-up or declared in
+  `e2e/tests/upgrade-corpus-config.ts`, and a migration that rewrites,
+  moves or drops old rows is declared there as a `migrationExceptions`
+  entry. The `upgrade-corpus-coverage` spec and the release upgrade check
+  fail naming the entry
+  ([release upgrade check](../../docs/architecture/release-upgrade-check.md)).
 
 ## Transactions and writes
 
