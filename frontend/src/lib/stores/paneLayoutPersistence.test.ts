@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Thread } from '../types/models';
+import type { Project, Thread } from '../types/models';
 import type { PaneLayoutPersistedSettings } from '../types/settings';
 import {
   flushPaneLayoutPersistence,
@@ -24,6 +24,8 @@ import {
   focusPane,
   getAllPanes,
   getFocusedPaneId,
+  mountThreadInPane,
+  openEmptyPane,
   resetPanesForTest,
 } from './panes.svelte';
 import {
@@ -574,8 +576,6 @@ describe('pane layout persistence', () => {
   });
 
   it('coalesces multiple resize persistence requests into one trailing write', async () => {
-    const mocks = await installUIStateMock();
-    vi.useFakeTimers();
     const left = makeThread({ id: 'left-thread' });
     const right = makeThread({ id: 'right-thread' });
     seedPane('left', left);
@@ -584,6 +584,9 @@ describe('pane layout persistence', () => {
       { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
       { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
+    // Seeding saves each pane's thread; count only the resize's writes.
+    const mocks = await installUIStateMock();
+    vi.useFakeTimers();
 
     const startWidths = new Map([['left', 800], ['right', 800]]);
     applyPaneBoundaryDrag({
@@ -607,8 +610,6 @@ describe('pane layout persistence', () => {
   });
 
   it('flushes a pending resize persistence write immediately', async () => {
-    const mocks = await installUIStateMock();
-    vi.useFakeTimers();
     const left = makeThread({ id: 'left-thread' });
     const right = makeThread({ id: 'right-thread' });
     seedPane('left', left);
@@ -617,6 +618,9 @@ describe('pane layout persistence', () => {
       { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
       { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
+    // Seeding saves each pane's thread; count only the resize's writes.
+    const mocks = await installUIStateMock();
+    vi.useFakeTimers();
 
     applyPaneBoundaryDrag({
       leftPaneId: 'left',
@@ -775,6 +779,46 @@ describe('pane layout persistence', () => {
     await waitForPaneLayoutPersistenceForTest();
 
     expect(persistedPaneLayout()).toEqual(makeSavedLayout([], null));
+  });
+
+  it('saves a thread switch before the switched thread finishes loading', async () => {
+    // A reload can land while the incoming thread's loads are still in
+    // flight. The pane already shows the new thread, so the saved layout
+    // must name it, or the reload reopens the thread the user left.
+    installPaneMocks();
+    await mountThreadInPane(makeThread({ id: 'left-thread' }), createPane('main'));
+    expect(persistedPaneLayout()).toMatchObject({ panes: [{ paneId: 'main', threadId: 'left-thread' }] });
+
+    let releaseTurns!: () => void;
+    setBindingMock('ListRecentTurns', () => new Promise((resolve) => { releaseTurns = () => resolve([]); }));
+    const mounting = mountThreadInPane(makeThread({ id: 'right-thread' }), 'main');
+    try {
+      expect(getAllPanes().get('main')?.threadId).toBe('right-thread');
+      expect(persistedPaneLayout()).toMatchObject({
+        panes: [{ paneId: 'main', threadId: 'right-thread' }],
+        focusedPaneId: 'main',
+      });
+    } finally {
+      releaseTurns();
+      await mounting;
+    }
+  });
+
+  it('saves the thread a draft pane materializes into', async () => {
+    installPaneMocks();
+    const project: Project = { id: 'project-1', path: '/repo', name: 'Repo', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false };
+    const pane = openEmptyPane();
+    pane.startDraftPlaceholder(project, 'chat');
+    setBindingMock('CreateThread', async () => makeThread({
+      id: 'created-thread', projectId: project.id, projectPath: project.path, workspacePath: project.path, isDraft: true,
+    }));
+
+    expect(await pane.ensureMaterializedThread()).toBe('created-thread');
+
+    expect(persistedPaneLayout()).toMatchObject({
+      panes: [{ paneId: pane.paneId, threadId: 'created-thread' }],
+      focusedPaneId: pane.paneId,
+    });
   });
 
   it('treats write failures as best-effort', async () => {

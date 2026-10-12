@@ -574,11 +574,9 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 
     void loadKeybindings();
     const flushPaneLayout = () => {
+      // Writes the pending debounced resize. Every other layout change
+      // is saved synchronously when it happens.
       if (paneLayoutRestored) void flushPaneLayoutPersistence();
-      // Deliver any debounced appStorage writes (sidebar view state,
-      // width) before the page goes away. Best-effort — the WS send
-      // may not complete on a hard kill, and the same-session cache
-      // covers the reload case regardless.
       void flushAppStorage();
     };
     const handleVisibilityChange = () => {

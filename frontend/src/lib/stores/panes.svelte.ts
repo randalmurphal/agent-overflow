@@ -164,6 +164,22 @@ function orderedPaneIds(): string[] {
     .filter((paneId) => panes.has(paneId));
 }
 
+// Every registry pane saves the layout when its thread identity changes, so
+// no open, switch or draft materialization can leave a reload restoring a
+// thread the pane no longer shows. Restoring the registry from the saved
+// layout is not an edit to it: those identity changes save nothing, or a
+// reload mid-restore would find a partial layout.
+let registryRestores = 0;
+
+function newThreadPane(paneId: string): ThreadPane {
+  return createThreadPane({
+    paneId,
+    onThreadChanged: () => {
+      if (registryRestores === 0) requestPanePersistence();
+    },
+  });
+}
+
 function registerPane(id: string, pane: ThreadPane, activation: PaneActivation = 'committed'): ThreadPane {
   panes = new Map(panes).set(id, pane);
   paneActivationById = new Map(paneActivationById).set(id, activation);
@@ -173,7 +189,7 @@ function registerPane(id: string, pane: ThreadPane, activation: PaneActivation =
 export function ensureMainPane(): ThreadPane {
   let main = panes.get('main');
   if (!main) {
-    main = createThreadPane({ paneId: 'main' });
+    main = newThreadPane('main');
     registerPane('main', main, 'committed');
   }
   return main;
@@ -190,7 +206,7 @@ export function getMainPane(): ThreadPane {
 export function createPane(id: string): ThreadPane {
   const existing = panes.get(id);
   if (existing) return existing;
-  const pane = createThreadPane({ paneId: id });
+  const pane = newThreadPane(id);
   return registerPane(id, pane, 'committed');
 }
 
@@ -423,7 +439,13 @@ export function commitPanePreview(id: string): void {
 }
 
 export function resetPanesForTest(): void {
-  for (const pane of panes.values()) pane.clear();
+  // Models the module state a reload drops; the saved layout stays as is.
+  registryRestores++;
+  try {
+    for (const pane of panes.values()) pane.clear();
+  } finally {
+    registryRestores--;
+  }
   panes = new Map();
   paneActivationById = new Map();
   focusedPaneId = 'main';
@@ -441,6 +463,18 @@ export function resetPaneRegistry(nextFocusedPaneId: string | null = null): void
 }
 
 export async function hydrateRestoredPaneRegistry(
+  entries: Array<{ paneId: string; thread: Thread }>,
+  nextFocusedPaneId: string | null,
+): Promise<void> {
+  registryRestores++;
+  try {
+    await restorePaneRegistry(entries, nextFocusedPaneId);
+  } finally {
+    registryRestores--;
+  }
+}
+
+async function restorePaneRegistry(
   entries: Array<{ paneId: string; thread: Thread }>,
   nextFocusedPaneId: string | null,
 ): Promise<void> {
@@ -466,7 +500,7 @@ export async function hydrateRestoredPaneRegistry(
       continue;
     }
     restoredThreadIds.add(entry.thread.id);
-    const pane = createThreadPane({ paneId: entry.paneId });
+    const pane = newThreadPane(entry.paneId);
     nextPanes = nextPanes.set(entry.paneId, pane);
     nextActivation = nextActivation.set(entry.paneId, 'committed');
     hydratedPanes.push({ pane, thread: entry.thread });
@@ -616,7 +650,6 @@ async function replaceThreadInPane(
       reportFrontendDiagnostic('panes: thread-mounted observer failed', String(err));
     }
   }
-  requestPanePersistence();
   return target;
 }
 
