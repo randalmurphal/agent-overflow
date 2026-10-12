@@ -175,7 +175,7 @@ jobs:
 
   # Three shards: internal/store is the longest package by far, app and
   # triage are the next two, and the rest fits beside them. The release
-  # candidate script test rides with the rest.
+  # candidate script test and the pstack script tests ride with the rest.
   go-test:
     name: Go tests (${{ matrix.shard }})
     needs: toolchain
@@ -209,11 +209,15 @@ jobs:
           node: "true"
           frontend-dist: "true"
           netns: "true"
+          bun: ${{ matrix.shard == 'rest' }}
           cache-name: test-${{ matrix.shard }}
       - run: make go-test GO_TEST_PKGS="${{ matrix.packages }}" GO_TEST_EXCLUDE="${{ matrix.exclude }}"
       - name: Release candidate script tests
         if: matrix.shard == 'rest'
         run: bin/ao-netns node --test scripts/release-candidate.test.mjs
+      - name: pstack script tests (bun)
+        if: matrix.shard == 'rest'
+        run: make pstack-scripts
 
   vitest:
     name: Vitest (${{ matrix.project }})
