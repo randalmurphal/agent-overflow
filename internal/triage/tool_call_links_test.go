@@ -380,6 +380,7 @@ func TestDecoratedRowPushedUnstampedThenRefreshed(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	emissions := &emissionLog{}
 	router := NewRouter(st, func(channel eventchan.Channel, data any) { emissions.add(emitted{channel.String(), data}) })
+	holdWireRefresh(router)
 	t.Cleanup(router.DrainWireItemRefresh)
 	createTestThread(t, st, "t1")
 	seedAgentChain(t, st, "t1")
@@ -473,6 +474,50 @@ func TestThreadWithoutLiveStateDefersItsRefresh(t *testing.T) {
 	router.mu.Unlock()
 	if left != 0 {
 		t.Fatalf("%d pending refreshes remain after the drain", left)
+	}
+}
+
+// TestWireRefreshTimerPushesTheAnchor: with no drain, the refresh timer
+// runs the thread's refresh at its quiet point. It pushes agent-1, which
+// the write stamped without a push, as a page reads it, and leaves no
+// pending refresh behind.
+func TestWireRefreshTimerPushesTheAnchor(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	router.delays.wireRefreshQuiet = 10 * time.Millisecond
+	createTestThread(t, st, "t1")
+	seedAgentChain(t, st, "t1")
+
+	emissions.reset()
+	if err := router.persistItem(store.Item{
+		ID: "child-text", ThreadID: "t1", Kind: itemKindAssistantText, Role: "assistant",
+		Status: statusCompleted, Summary: "hello", ParentID: "agent-2", CreatedAt: 2, UpdatedAt: 2,
+	}, nil); err != nil {
+		t.Fatalf("persist child: %v", err)
+	}
+	var refreshed *store.Item
+	for deadline := time.Now().Add(5 * time.Second); refreshed == nil; time.Sleep(5 * time.Millisecond) {
+		for _, row := range itemUpserts(emissions.snapshot()) {
+			if row.ID == "agent-1" {
+				row := row
+				refreshed = &row
+			}
+		}
+		if refreshed == nil && time.Now().After(deadline) {
+			t.Fatalf("the refresh timer did not push agent-1; pushed %v", pushedIDs(itemUpserts(emissions.snapshot())))
+		}
+	}
+	stored, _, err := st.GetThreadItem("t1", "agent-1")
+	if err != nil {
+		t.Fatalf("read agent-1: %v", err)
+	}
+	if refreshed.Rev != stored.Rev || !strings.Contains(refreshed.Meta, `"subagentDescendantCount":2`) {
+		t.Fatalf("agent-1 pushed at rev %d meta %s, want its page read at rev %d counting two rows", refreshed.Rev, refreshed.Meta, stored.Rev)
+	}
+	router.mu.Lock()
+	left := len(router.wireRefresh)
+	router.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d pending refreshes remain after the timer ran", left)
 	}
 }
 
