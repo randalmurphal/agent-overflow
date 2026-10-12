@@ -67,7 +67,17 @@ describe('wake rows in the background tray', () => {
       expect((r.querySelector('[data-testid="wake-tray-row-wake-now"]') as HTMLButtonElement).disabled).toBe(true);
     }
     expect(running.querySelector('[data-testid="wake-tray-row-wake-now"]')?.getAttribute('title')).toBe('Already running');
+    // The tray says both are running; only the run in flight pulses the toggle.
+    expect(view.getByTestId('activity-rail-background-running-label').textContent?.trim()).toBe('2 running');
+    expect(view.queryByTestId('activity-rail-background-pulse')).not.toBeNull();
     expect(standing.querySelector('[data-testid="wake-tray-row-wake-now"]')?.getAttribute('title')).toMatch(/runs all the time/);
+  });
+
+  it('does not pulse the toggle for a long-running watch alone, though its row and the tray say running', async () => {
+    const { view, toggle } = await openTray([row('watch-1', { kind: 'watch', state: 'running', longRunning: true, nextAt: 0 })]);
+    expect(view.queryByTestId('activity-rail-background-pulse')).toBeNull();
+    await fireEvent.click(toggle);
+    expect((await view.findByTestId('activity-rail-background-running-label')).textContent?.trim()).toBe('1 running');
   });
 
   it('shows a wake that did not reach the thread as a warning with its missed fires', async () => {

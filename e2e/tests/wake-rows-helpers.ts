@@ -161,12 +161,24 @@ export async function holdNextRun(home: string): Promise<{ running: () => Promis
   };
 }
 
-/** Captures the window once every target is visible and wholly in it. */
+/**
+ * Captures the window once every target is visible and wholly in it. The
+ * harness's temporary root, which a watch's directory shows, is written as
+ * `<harness root>` in the capture: the spec asserts the real path before it,
+ * and the captures are published.
+ */
 export async function capture(page: Page, name: string, ...targets: Locator[]): Promise<void> {
   for (const target of targets) {
     await expect(target).toBeVisible();
     await expect(target).toBeInViewport({ ratio: 1 });
   }
+  await page.evaluate(() => {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent ?? '';
+      if (text.includes('/ao-harness-')) node.textContent = text.replace(/\/\S*?\/ao-harness-[^/\s]+/g, '<harness root>');
+    }
+  });
   await page.evaluate(
     () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
   );

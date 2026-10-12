@@ -158,6 +158,7 @@
   // The tray lists background work and the thread's schedule together.
   let backgroundCount = $derived(bg.count + (wakes?.count ?? 0));
   let backgroundRunning = $derived(bg.runningCount + (wakes?.runningCount ?? 0));
+  let backgroundRunningRows = $derived(bg.runningCount + (wakes?.runningRowCount ?? 0));
 
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let density = $state<ActivityRailDensity>('full');
@@ -287,7 +288,7 @@
       provider={bg.provider}
       threadId={bg.threadId}
       {pane}
-      runningCount={backgroundRunning}
+      runningCount={backgroundRunningRows}
       {wakes}
       now={clock.now}
     />

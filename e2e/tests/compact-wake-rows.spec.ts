@@ -57,6 +57,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await ci.getByTestId('wake-tray-row-toggle').tap();
     await expect(ci.getByTestId('wake-tray-row-stderr')).toHaveText('ci: checked pipeline 12 at the default branch');
     await expect(ci.getByTestId('wake-tray-row-command')).toHaveText(run('ci.sh'));
+    await expect(ci.getByTestId('wake-tray-row-cwd')).toHaveText(agent.cwd);
     await expectFits(ci, width);
     const detail = (await ci.getByTestId('wake-tray-row-detail').boundingBox())!;
     expect(detail.x + detail.width).toBeLessThanOrEqual(width);

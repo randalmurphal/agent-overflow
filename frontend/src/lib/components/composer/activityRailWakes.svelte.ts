@@ -32,6 +32,9 @@ export interface WakeController {
   /** Interval runs and fires in flight. A long-running watch's process is
    *  its standing state, not work, so it does not pulse the toggle. */
   readonly runningCount: number;
+  /** Every row running, long-running watches included: the tray's own
+   *  `N running`, which must agree with the rows under it. */
+  readonly runningRowCount: number;
   readonly threadId: string | null;
   /** Subscribe to events; returns a disposer. Call once from onMount. */
   mount(): () => void;
@@ -87,6 +90,7 @@ export function createWakeController(
   });
 
   const count = $derived(rows.length + moreReminders);
+  const runningRowCount = $derived(rows.filter((row) => row.state === 'running').length);
   const runningCount = $derived(rows.filter((row) => row.state === 'running' && !row.longRunning).length);
 
   return {
@@ -94,6 +98,7 @@ export function createWakeController(
     get moreReminders() { return moreReminders; },
     get count() { return count; },
     get runningCount() { return runningCount; },
+    get runningRowCount() { return runningRowCount; },
     get threadId() { return threadId; },
 
     mount(): () => void {
