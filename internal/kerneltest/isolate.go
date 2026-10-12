@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/textgen"
 )
 
@@ -193,6 +194,11 @@ func IsolateProcessSpawns(t testing.TB) Isolation {
 // The tripwire is registered here, before the caller registers its own session
 // teardown, so (LIFO) it runs after every session is closed and no spawn is
 // still in flight.
+//
+// The script is installed through mockexec, never written as an executable:
+// executing a file just written while another goroutine forks fails with
+// ETXTBSY, and a spawn that never ran would leave no sentinel for the
+// tripwire to report.
 func PoisonProviderBinary(t testing.TB) (poison, sentinel string) {
 	t.Helper()
 
@@ -200,12 +206,10 @@ func PoisonProviderBinary(t testing.TB) (poison, sentinel string) {
 	sentinel = filepath.Join(dir, SentinelName)
 	poison = filepath.Join(dir, "poisoned-provider-binary")
 	script := "#!/bin/sh\n" +
-		"echo \"argv: $0 $*\" >> '" + sentinel + "'\n" +
+		"echo \"argv: " + poison + " $*\" >> '" + sentinel + "'\n" +
 		"echo 'agent-overflow tests: refused to spawn a provider binary without a mock' >&2\n" +
 		"exit 127\n"
-	if err := os.WriteFile(poison, []byte(script), 0o755); err != nil {
-		t.Fatalf("write poisoned provider binary: %v", err)
-	}
+	mockexec.Write(t, poison, script)
 
 	t.Cleanup(func() {
 		invocations, err := os.ReadFile(sentinel)
