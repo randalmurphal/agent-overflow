@@ -13,7 +13,7 @@ the binary.
 - `workflow` commands are offline. They discover scopes and delegate definition
   behavior to `internal/workflow/def` and starter content to
   `internal/workflow/starters`.
-- `run`, `memory`, `notes`, and `schedule` make one authenticated RPC to a
+- `run` and `memory` make one authenticated RPC to a
   running app. `service` manages the host through `internal/serviceinstall` and
   must not contact an app.
 - Keep usage, flags, exit codes, and JSON output synchronized with

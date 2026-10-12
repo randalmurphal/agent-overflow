@@ -1432,8 +1432,7 @@ covers boot, seeded rendering, a full live mock turn, frame-by-frame
 two-phase chain, human gate approval, same-session question answering,
 watchdog stall, and cancellation; the rest of the workflow surface is split by
 concern across `workflows-rerun`, `workflows-tool`, `workflows-access`,
-`workflows-fanout`, `workflows-call`, `workflows-wake`,
-`workflows-automations`, `workflows-cli`, and
+`workflows-fanout`, `workflows-call`, `workflows-wake`, `workflows-cli`, and
 `workflows-overlay`, and `workflows-resume` (same-context, missing-context, and
 cold-backend-restart behavior for both providers; see `e2e/AGENTS.md` for what
 each one pins).

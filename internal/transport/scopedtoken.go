@@ -169,10 +169,6 @@ var ScopedTokenMethods = map[string][]string{
 	// authority exercised once instead of hundreds of times.
 	"WorkflowAgentWatchRun": {"introspect", "start-run"},
 	"WorkflowAgentListRuns": {"introspect"},
-	// Automations.
-	"WorkflowAgentSchedule": {"schedule"},
-	"WorkflowAgentGetNotes": {"introspect", "update-notes"},
-	"WorkflowAgentSetNotes": {"update-notes"},
 }
 
 // GrantNotRequired admits a method to EVERY scoped token, phase or interactive,

@@ -17,7 +17,6 @@ import (
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/memory"
-	"agent-overflow/internal/workflow/scheduler"
 	"agent-overflow/internal/workflowdefs"
 	"agent-overflow/internal/workflowhost"
 	"agent-overflow/internal/workflowwatch"
@@ -69,9 +68,7 @@ type Service struct {
 	runtimeMu          sync.RWMutex
 	engine             *engine.Engine
 	runner             *workflowhost.Runner
-	scheduler          *scheduler.Scheduler
 	autoDisposition    serialqueue.Queue
-	schedulerQueue     serialqueue.Queue
 	wake               serialqueue.Queue
 	autoResume         autoResumeState
 	digestMu           sync.Mutex

@@ -668,8 +668,8 @@ func TestCreateWorkItemRefusesBindingOnCalledRun(t *testing.T) {
 
 // TestDeleteProjectWorkflowRecords: work_items carries no foreign key to
 // projects, so the only way a project's runs go away is this explicit call.
-// It must take the whole record with it — phases, units, effects, automations
-// and their cursors — and touch nothing another project owns.
+// It must take the whole record with it — phases, units and effects — and
+// touch nothing another project owns.
 func TestDeleteProjectWorkflowRecords(t *testing.T) {
 	s := newTestStore(t)
 	for _, item := range []WorkItem{
@@ -697,22 +697,6 @@ func TestDeleteProjectWorkflowRecords(t *testing.T) {
 			t.Fatalf("record effect for %s: %v", item.ID, err)
 		}
 	}
-	for _, automation := range []Automation{
-		{ID: "auto-a", ProjectID: "project-a", WorkflowID: "build", WorkflowScope: "project",
-			Name: "A", Enabled: true, Trigger: json.RawMessage(`{"cron":"0 2 * * *"}`), CreatedAt: 1, UpdatedAt: 1},
-		{ID: "auto-b", ProjectID: "project-b", WorkflowID: "build", WorkflowScope: "project",
-			Name: "B", Enabled: true, Trigger: json.RawMessage(`{"cron":"0 3 * * *"}`), CreatedAt: 1, UpdatedAt: 1},
-	} {
-		if err := s.CreateAutomation(automation); err != nil {
-			t.Fatalf("create automation %s: %v", automation.ID, err)
-		}
-		if err := s.SetAutomationCursor(AutomationCursor{
-			AutomationID: automation.ID, SourceKey: "item-done", Cursor: "1", UpdatedAt: 1,
-		}); err != nil {
-			t.Fatalf("set cursor for %s: %v", automation.ID, err)
-		}
-	}
-
 	if err := s.DeleteProjectWorkflowRecords(""); err == nil {
 		t.Fatal("empty project id: want error")
 	}
@@ -752,19 +736,6 @@ func TestDeleteProjectWorkflowRecords(t *testing.T) {
 		if found != (probe.want == 1) {
 			t.Fatalf("effect for %s found = %v", probe.itemID, found)
 		}
-	}
-	if list, err := s.ListAutomations("project-a"); err != nil || len(list) != 0 {
-		t.Fatalf("project-a automations = %#v, %v", list, err)
-	}
-	if list, err := s.ListAutomations("project-b"); err != nil || len(list) != 1 {
-		t.Fatalf("project-b automations = %#v, %v", list, err)
-	}
-	// The cursor rides its automation's ON DELETE CASCADE.
-	if _, err := s.GetAutomationCursor("auto-a", "item-done"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("cursor for deleted automation: err = %v, want sql.ErrNoRows", err)
-	}
-	if _, err := s.GetAutomationCursor("auto-b", "item-done"); err != nil {
-		t.Fatalf("surviving cursor: %v", err)
 	}
 }
 

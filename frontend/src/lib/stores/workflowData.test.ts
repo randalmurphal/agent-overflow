@@ -12,7 +12,6 @@ import {
   workflowAge,
   workflowAttentionCount,
   workflowChainSummary,
-  workflowCountdown,
   workflowDefinitionMeta,
   workflowMetaLine,
   workflowRunSection,
@@ -175,15 +174,6 @@ describe('workflow copy helpers', () => {
     expect(workflowAge(now - 6 * 60_000)).toBe('6m');
     expect(workflowAge(now - 7 * 3_600_000)).toBe('7h');
     expect(workflowAge(now - 3 * 86_400_000)).toBe('3d');
-  });
-
-  it('counts down to an automation fire', () => {
-    const now = 1_000_000;
-    expect(workflowCountdown(now + 45_000, now)).toBe('in 45s');
-    expect(workflowCountdown(now + 5 * 60_000, now)).toBe('in 5m');
-    expect(workflowCountdown(now + 3 * 3_600_000 + 40 * 60_000, now)).toBe('in 3h 40m');
-    expect(workflowCountdown(now + 4 * 3_600_000, now)).toBe('in 4h');
-    expect(workflowCountdown(now - 1, now)).toBe('in 0s');
   });
 
   it('drops empty fragments from a `·` meta line and hides a zero cost', () => {

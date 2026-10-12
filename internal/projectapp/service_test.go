@@ -1,7 +1,6 @@
 package projectapp
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -269,19 +268,12 @@ func TestServiceWorkflowFootprintFindsEveryDeletionRoot(t *testing.T) {
 			t.Fatalf("CreateWorkItem(%s): %v", item.ID, err)
 		}
 	}
-	if err := database.CreateAutomation(store.Automation{
-		ID: "automation", ProjectID: project.ID, WorkflowID: "build", WorkflowScope: "project",
-		Name: "nightly", Trigger: json.RawMessage(`{"kind":"cron"}`), CreatedAt: 1, UpdatedAt: 1,
-	}); err != nil {
-		t.Fatalf("CreateAutomation: %v", err)
-	}
-
 	footprint, err := service.WorkflowFootprint(project.ID)
 	if err != nil {
 		t.Fatalf("WorkflowFootprint: %v", err)
 	}
-	if !footprint.HasWork() || footprint.RunCount() != 3 || footprint.AutomationCount() != 1 {
-		t.Fatalf("WorkflowFootprint counts = runs %d, automations %d, hasWork %v", footprint.RunCount(), footprint.AutomationCount(), footprint.HasWork())
+	if !footprint.HasWork() || footprint.RunCount() != 3 {
+		t.Fatalf("WorkflowFootprint counts = runs %d, hasWork %v", footprint.RunCount(), footprint.HasWork())
 	}
 	rootIDs := make([]string, 0, len(footprint.Roots()))
 	for _, root := range footprint.Roots() {

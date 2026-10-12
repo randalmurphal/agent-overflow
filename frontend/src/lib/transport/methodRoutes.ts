@@ -427,7 +427,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2431199839: 'home', // Version
 	4000394635: 'home', // WorkflowAgentAddMemory
 	4273669366: 'home', // WorkflowAgentAmendSeeds
-	864025136: 'home', // WorkflowAgentGetNotes
 	76499272: 'home', // WorkflowAgentGuideRun
 	1146143060: 'home', // WorkflowAgentInspectRun
 	1978122086: 'home', // WorkflowAgentListMemory
@@ -435,17 +434,13 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3748461612: 'home', // WorkflowAgentRunNarrative
 	315193175: 'home', // WorkflowAgentRunOutput
 	49502656: 'home', // WorkflowAgentRunStatus
-	3469145856: 'home', // WorkflowAgentSchedule
-	8517788: 'home', // WorkflowAgentSetNotes
 	1060823172: 'home', // WorkflowAgentStartRun
 	2308429865: 'home', // WorkflowAgentWatchRun
 	4150249282: 'home', // WorkflowAnswerQuestion
 	1931806823: 'home', // WorkflowBindThread
 	4158962817: 'home', // WorkflowCancelItem
 	3393508470: 'home', // WorkflowCompleteTakeover
-	3011758347: 'home', // WorkflowCreateAutomation
 	1792283305: 'home', // WorkflowCreateItemPR
-	1133480652: 'home', // WorkflowDeleteAutomation
 	2163033761: 'home', // WorkflowDiscardItem
 	2659721862: 'home', // WorkflowDiscardPreview
 	1236472344: 'home', // WorkflowDiscussPR
@@ -453,9 +448,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	819019128: 'home', // WorkflowFetchPRReviewComments
 	2130001947: 'home', // WorkflowGetEngineState
 	70120675: 'home', // WorkflowGetItem
-	3798011060: 'home', // WorkflowGetJobNotes
 	4156752389: 'home', // WorkflowGetRunMap
-	2319799628: 'project', // WorkflowListAutomations
 	2064216126: 'project', // WorkflowListDefinitions
 	1544440599: 'project', // WorkflowListItemCosts
 	3037887964: 'project', // WorkflowListItems
@@ -468,16 +461,12 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3138507556: 'home', // WorkflowResumeItem
 	2846965054: 'home', // WorkflowRetryFailedUnits
 	1648002260: 'home', // WorkflowRetryUnit
-	2615697354: 'home', // WorkflowRunAutomationNow
 	658224978: 'home', // WorkflowScheduleResume
 	1172404443: 'home', // WorkflowSendPRReviewCommentsToThread
-	642610548: 'home', // WorkflowSetAutomationEnabled
 	774492663: 'home', // WorkflowSetGlobalPause
-	1934298592: 'home', // WorkflowSetJobNotes
 	1009082601: 'project', // WorkflowStartRun
 	1931942299: 'home', // WorkflowTakeOverUnit
 	2006703348: 'home', // WorkflowUnbindThread
-	536579134: 'home', // WorkflowUpdateAutomation
 	146795716: 'home', // WriteTerminal
 	1859440887: 'workspace', // WriteWorkspaceFile
 };

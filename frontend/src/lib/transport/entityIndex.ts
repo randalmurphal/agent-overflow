@@ -77,11 +77,10 @@ export function onThreadOwnershipChanged(listener: (threadId: string, previousBa
 }
 const projects = new SvelteMap<string, BackendKey>();
 // The id families that are neither thread nor project and cannot be
-// resolved through one: a workflow item and an automation belong to a
-// project the caller may never have listed, and a terminal is a live
+// resolved through one: a workflow item belongs to a project the caller
+// may never have listed, and a terminal is a live
 // process on one machine. ./methodFamilies.ts names which methods take each.
 const workflowItems = new Map<string, BackendKey>();
-const automations = new Map<string, BackendKey>();
 // A terminal lives as long as its process: its entry goes when its backend
 // reports the exit, starts a new launch, or is detached (../stores/events.ts).
 // A dropped connection ends no terminal.
@@ -137,11 +136,6 @@ export function workflowItemBackend(itemId: string): BackendKey | undefined {
   return workflowItems.get(itemId);
 }
 
-/** The backend that owns `automationId`, or undefined. */
-export function automationBackend(automationId: string): BackendKey | undefined {
-  return automations.get(automationId);
-}
-
 /** The backend running `terminalId`, or undefined. */
 export function terminalBackend(terminalId: string): BackendKey | undefined {
   return terminals.get(terminalId);
@@ -183,11 +177,6 @@ export function noteProject(projectId: string, backendId: BackendKey): void {
 export function noteWorkflowItem(itemId: string, backendId: BackendKey): void {
   if (itemId === '') return;
   workflowItems.set(itemId, backendId);
-}
-
-export function noteAutomation(automationId: string, backendId: BackendKey): void {
-  if (automationId === '') return;
-  automations.set(automationId, backendId);
 }
 
 export function noteTerminal(terminalId: string, backendId: BackendKey): void {
@@ -283,9 +272,7 @@ export function forgetBackendEntities(backendId: BackendKey): ForgottenEntities 
   const projectIds = takeOwned(projects, backendId);
   const threadGroupIds = takeOwned(threadGroups, backendId);
   const workflowItemIds = takeOwned(workflowItems, backendId);
-  for (const map of [automations, terminals]) {
-    takeOwned(map, backendId);
-  }
+  takeOwned(terminals, backendId);
   return { threadIds, projectIds, threadGroupIds, workflowItemIds };
 }
 
@@ -413,12 +400,9 @@ interface ResultFamily {
 
 const RESULT_FAMILIES: Readonly<Record<number, ResultFamily>> = {
   1009082601: { family: 'workflowItem', key: 'id', single: true }, // WorkflowStartRun
-  2615697354: { family: 'workflowItem', key: 'id', single: true }, // WorkflowRunAutomationNow
   1931806823: { family: 'workflowItem', key: 'id', single: true }, // WorkflowBindThread
   2006703348: { family: 'workflowItem', key: 'id', single: true }, // WorkflowUnbindThread
-  3011758347: { family: 'workflowAutomation', key: 'id', single: true }, // WorkflowCreateAutomation
   2247958725: { family: 'terminal', key: 'terminalID', single: true }, // OpenTerminal
-  2319799628: { family: 'workflowAutomation', key: 'id' }, // WorkflowListAutomations
   2445206506: { family: 'terminal', key: 'terminalID' }, // ListTerminals
   3037887964: { family: 'workflowItem', key: 'id' }, // WorkflowListItems
   3613211765: { family: 'workflowItem', key: 'id' }, // WorkflowListUnresolvedItems
@@ -429,7 +413,6 @@ const RESULT_FAMILIES: Readonly<Record<number, ResultFamily>> = {
 const FAMILY_NOTERS: Readonly<Record<IdFamily, (id: string, backendId: BackendKey) => void>> = {
   project: noteProject,
   workflowItem: noteWorkflowItem,
-  workflowAutomation: noteAutomation,
   terminal: noteTerminal,
   // A subscription id names no computer: every caller pins the one that
   // minted it, so none is recorded.
@@ -443,7 +426,7 @@ const FAMILY_NOTERS: Readonly<Record<IdFamily, (id: string, backendId: BackendKe
 /**
  * Record the ids a call ANSWERED with, for the families that have no row
  * in any list this client already fans out (`methodFamilies.ts`'s
- * `RESULT_FAMILIES` below). A workflow item, an automation and a terminal are
+ * `RESULT_FAMILIES` below). A workflow item and a terminal are
  * only ever learned from the call that listed or opened them.
  */
 export function noteFamilyRowsFromCall(
@@ -521,7 +504,6 @@ export function __resetEntityIndexForTest(): void {
   threads.clear();
   projects.clear();
   workflowItems.clear();
-  automations.clear();
   terminals.clear();
   threadGroups.clear();
 }

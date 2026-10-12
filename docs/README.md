@@ -87,7 +87,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | File | 1-line summary |
 |---|---|
 | [`workflow-run-map.md`](architecture/workflow-run-map.md) | The run map: waves, nodes, fans, folding, and the follow/scroll contract. Binding on the run-map renderers. |
-| [`workflow-campaigns.md`](architecture/workflow-campaigns.md) | Authoring guide for long multi-wave campaigns: the wave shape, review and verification patterns, automation wiring, operating knobs. |
+| [`workflow-campaigns.md`](architecture/workflow-campaigns.md) | Authoring guide for long multi-wave campaigns: the wave shape, review and verification patterns, steering, operating knobs. |
 
 ### Testing and diagnostics
 

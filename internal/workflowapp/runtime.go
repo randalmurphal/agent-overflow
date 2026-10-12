@@ -3,18 +3,13 @@ package workflowapp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
 	"agent-overflow/internal/eventchan"
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/engine"
-	"agent-overflow/internal/workflow/scheduler"
 	"agent-overflow/internal/workflowhost"
 )
-
-const schedulerStopTimeout = 3 * time.Second
 
 // EngineRuntimeConfig is the composition boundary for the persisted workflow
 // engine. workflowapp owns the live engine and runner after StartEngine
@@ -107,7 +102,6 @@ func (s *Service) CloseEngine() error {
 	err := workflowEngine.Close()
 	s.autoDisposition.Wait()
 	s.WaitWake()
-	s.schedulerQueue.Wait()
 	return err
 }
 
@@ -128,112 +122,6 @@ func (s *Service) queueAutoDisposition(itemID string) {
 }
 
 func (s *Service) WaitAutoDisposition() { s.autoDisposition.Wait() }
-
-// StartScheduler starts the automation timer only after the engine has
-// completed its rebuild. Its callback is the single root start port, so the
-// scheduler cannot bypass run validation or provider isolation.
-func (s *Service) StartScheduler(start scheduler.StartFunc, clock scheduler.Clock) error {
-	workflowScheduler, err := scheduler.New(scheduler.Config{
-		Store:  s.deps.Store,
-		Start:  start,
-		Clock:  clock,
-		Report: func(err error) { s.deps.Logf("workflow scheduler: %v", err) },
-	})
-	if err != nil {
-		return err
-	}
-	s.runtimeMu.Lock()
-	if s.scheduler != nil {
-		s.runtimeMu.Unlock()
-		return fmt.Errorf("workflow runtime: scheduler already initialized")
-	}
-	s.scheduler = workflowScheduler
-	s.runtimeMu.Unlock()
-	workflowScheduler.Start()
-	return nil
-}
-
-func (s *Service) Scheduler() *scheduler.Scheduler {
-	s.runtimeMu.RLock()
-	defer s.runtimeMu.RUnlock()
-	return s.scheduler
-}
-
-func (s *Service) StopScheduler(ctx context.Context) error {
-	workflowScheduler := s.Scheduler()
-	if workflowScheduler == nil {
-		return nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	stopCtx, cancel := context.WithTimeout(ctx, schedulerStopTimeout)
-	defer cancel()
-	err := workflowScheduler.Stop(stopCtx)
-	s.schedulerQueue.Wait()
-	return err
-}
-
-func (s *Service) RefreshScheduler() error {
-	workflowScheduler := s.Scheduler()
-	if workflowScheduler == nil {
-		return nil
-	}
-	if err := workflowScheduler.Refresh(); err != nil && !errors.Is(err, scheduler.ErrStopped) {
-		return err
-	}
-	return nil
-}
-
-func (s *Service) NotifyScheduler(event engine.StateEvent) {
-	if s.Scheduler() == nil {
-		return
-	}
-	if _, ok := scheduler.EventKindForState(string(event.To)); !ok {
-		return
-	}
-	s.schedulerQueue.Go(func() { s.feedSchedulerEvent(event) })
-}
-
-func (s *Service) feedSchedulerEvent(event engine.StateEvent) {
-	workflowScheduler := s.Scheduler()
-	if workflowScheduler == nil {
-		return
-	}
-	item, err := s.deps.Store.GetWorkItem(event.ItemID)
-	if err != nil {
-		s.deps.Logf("workflow scheduler feed %s: load run: %v", event.ItemID, err)
-		return
-	}
-	err = workflowScheduler.NotifyItemEvent(scheduler.ItemEvent{
-		ProjectID: event.ProjectID, ItemID: event.ItemID, WorkflowID: item.WorkflowID,
-		State: string(event.To), Reason: string(event.Reason),
-		ParentItemID: item.ParentItemID, Source: item.Source, SourceRef: item.SourceRef,
-	})
-	if err != nil && !errors.Is(err, scheduler.ErrStopped) {
-		s.deps.Logf("workflow scheduler feed %s: %v", event.ItemID, err)
-	}
-}
-
-func (s *Service) RunAutomationNow(automationID string) (store.WorkItem, error) {
-	workflowScheduler := s.Scheduler()
-	if workflowScheduler == nil {
-		return store.WorkItem{}, fmt.Errorf("workflow scheduler unavailable")
-	}
-	itemID, err := workflowScheduler.RunNow(automationID)
-	if err != nil {
-		return store.WorkItem{}, err
-	}
-	return s.deps.Store.GetWorkItem(itemID)
-}
-
-func (s *Service) RefreshAutomationSchedule() error {
-	workflowScheduler := s.Scheduler()
-	if workflowScheduler == nil {
-		return fmt.Errorf("workflow scheduler unavailable")
-	}
-	return workflowScheduler.Refresh()
-}
 
 // Runner-specific integration methods keep the concrete Runner inside the
 // application service while allowing the general session/send paths to honor

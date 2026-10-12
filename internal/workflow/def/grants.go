@@ -15,10 +15,6 @@ type Grant string
 const (
 	// GrantStartRun lets the phase start runs and control the ones it started.
 	GrantStartRun Grant = "start-run"
-	// GrantSchedule lets the phase create an automation (§11).
-	GrantSchedule Grant = "schedule"
-	// GrantUpdateNotes lets the phase rewrite an automation's continuity notes.
-	GrantUpdateNotes Grant = "update-notes"
 	// GrantIntrospect lets the phase read run status, outputs, and listings
 	// across its project.
 	GrantIntrospect Grant = "introspect"
@@ -39,8 +35,6 @@ const (
 // capability nothing can honour.
 var grantSet = map[Grant]struct{}{
 	GrantStartRun:       {},
-	GrantSchedule:       {},
-	GrantUpdateNotes:    {},
 	GrantIntrospect:     {},
 	GrantResolve:        {},
 	GrantRemoteCommands: {},

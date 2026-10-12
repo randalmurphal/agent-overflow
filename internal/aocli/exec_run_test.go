@@ -12,7 +12,7 @@ import (
 // the refusal paths — is exercised in exec_test.go against the same fake
 // backend; these are the command-specific contracts. Seed parsing and `--json`
 // fidelity are asserted here because `agent-overflow run start` is where a caller meets
-// them, and `agent-overflow schedule` takes the identical flags.
+// them.
 
 func TestRunStartSendsSeedsAsJSONWhenTheyParse(t *testing.T) {
 	backend := newFakeBackend(t)

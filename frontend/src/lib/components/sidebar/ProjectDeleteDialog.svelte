@@ -3,15 +3,14 @@
   // What deleting a project involves when it owns workflow work (D25).
   //
   // Informational, not a consent gate: deletion is cleanup. It removes the runs
-  // and automations from the app and the checkouts the app made for them, and
-  // it deletes no branch — the commits those runs produced stay in the
-  // repository, which the user still owns after the project is gone. The one
-  // thing worth saying up front is which checkouts will be left behind, because
-  // git refuses to remove a checkout with uncommitted work in it and the app
-  // does not override that.
+  // from the app and the checkouts the app made for them, and it deletes no
+  // branch — the commits those runs produced stay in the repository, which the
+  // user still owns after the project is gone. The one thing worth saying up
+  // front is which checkouts will be left behind, because git refuses to remove
+  // a checkout with uncommitted work in it and the app does not override that.
   //
-  // The plain case (a project with no runs and no automations) keeps the
-  // ordinary ConfirmDialog; nothing here renders for it.
+  // The plain case (a project with no runs) keeps the ordinary ConfirmDialog;
+  // nothing here renders for it.
 
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
@@ -45,7 +44,7 @@
     } it contains.`,
   );
   let workSummary = $derived(
-    cleanupSummary(preview.runCount, preview.liveRunIds.length, preview.automationCount),
+    cleanupSummary(preview.runCount, preview.liveRunIds.length),
   );
   let retained = $derived(retainedInPreview(preview.worktrees));
 </script>

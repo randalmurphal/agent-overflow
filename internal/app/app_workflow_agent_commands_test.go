@@ -8,7 +8,6 @@ import (
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
-	"agent-overflow/internal/workflow/scheduler"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -651,73 +650,6 @@ func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 		if len(listed.Phases) != 0 {
 			t.Fatalf("run %s carried phase attempts in a list: %#v", listed.ItemID, listed.Phases)
 		}
-	}
-}
-
-func TestWorkflowAgentNotesAndScheduleRecordOneEffect(t *testing.T) {
-	t.Parallel()
-	fixture := newCLIFixture(t)
-	scope := phaseScope(fixture, "caller-item", def.GrantSchedule, def.GrantUpdateNotes)
-	ctx := transport.WithCallerScope(context.Background(), scope)
-
-	schedule := WorkflowAgentScheduleInput{WorkflowID: "tool-flow", Cron: "0 3 * * *", Name: "Nightly"}
-	created, err := fixture.app.WorkflowAgentSchedule(ctx, schedule)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if created.Skipped || created.AutomationID == "" {
-		t.Fatalf("schedule = %#v", created)
-	}
-	replay, err := fixture.app.WorkflowAgentSchedule(ctx, schedule)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !replay.Skipped || replay.AutomationID != created.AutomationID {
-		t.Fatalf("schedule replay = %#v, want a skip naming %s", replay, created.AutomationID)
-	}
-	automations, err := fixture.app.store.ListAutomations(fixture.project.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(automations) != 1 {
-		t.Fatalf("re-entering the phase created %d automations", len(automations))
-	}
-	var trigger scheduler.Trigger
-	if err := json.Unmarshal(automations[0].Trigger, &trigger); err != nil {
-		t.Fatal(err)
-	}
-	if trigger.Kind != scheduler.KindCron || trigger.Expr != "0 3 * * *" {
-		t.Fatalf("trigger = %#v", trigger)
-	}
-
-	notesResult, err := fixture.app.WorkflowAgentSetNotes(ctx, created.AutomationID, "watch the flaky suite")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if notesResult.Skipped {
-		t.Fatal("the first notes write reported a skip")
-	}
-	notes, err := fixture.app.WorkflowAgentGetNotes(ctx, created.AutomationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if notes != "watch the flaky suite" {
-		t.Fatalf("notes = %q", notes)
-	}
-	again, err := fixture.app.WorkflowAgentSetNotes(ctx, created.AutomationID, "watch the flaky suite")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !again.Skipped {
-		t.Fatal("rewriting identical notes fired a second write")
-	}
-	// Different notes are a different effect.
-	changed, err := fixture.app.WorkflowAgentSetNotes(ctx, created.AutomationID, "the suite is fixed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed.Skipped {
-		t.Fatal("a changed notes write was skipped")
 	}
 }
 

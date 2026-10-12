@@ -433,13 +433,12 @@ by manifest.
 
 ### Workflows to MCP
 
-The `workflow`, `run`, `notes`, `memory` and `schedule` CLI verbs are
-replaced by an `ao-workflow-tools` MCP server on the shared
-`internal/threadmcp` transport, scoped the way the thread tools are. The
-phase runner's injected credentials become the per-session capability
-URL, and phase grants become the tool allowlist for that session. The
-`schedule` verb has no replacement (ruling 13). `aocli` keeps `service`,
-`pair`, `remote` and the serve entry. Starters, docs and the runner
+The `workflow`, `run` and `memory` CLI verbs are replaced by an
+`ao-workflow-tools` MCP server on the shared `internal/threadmcp`
+transport, scoped the way the thread tools are. The phase runner's
+injected credentials become the per-session capability URL, and phase
+grants become the tool allowlist for that session. `aocli` keeps
+`service`, `pair`, `remote` and the serve entry. Starters, docs and the runner
 guidance that mention `agent-overflow run` are rewritten. The decisions
 log records the reversal of D15 with the user's reasoning: app-managed
 tooling, one surface for agents, no separate binary to keep in sync.

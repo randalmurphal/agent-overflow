@@ -47,7 +47,6 @@ function emptyPreview(): ProjectDeletionPreview {
     projectId: 'project-1',
     runCount: 0,
     liveRunIds: [],
-    automationCount: 0,
     worktrees: [],
     hasWork: false,
   };
@@ -58,7 +57,6 @@ function workPreview(): ProjectDeletionPreview {
     projectId: 'project-1',
     runCount: 3,
     liveRunIds: ['run-1'],
-    automationCount: 1,
     worktrees: [
       {
         path: '/tmp/worktrees/run-1',
@@ -113,7 +111,7 @@ describe('<ProjectContextMenu> delete flow', () => {
   beforeEach(() => {
     resetBindingMocks();
     setPageGrantsFromBootstrap(false);
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of Array.from(getToasts())) removeToast(toast.id);
     setBindingMock('DeleteProject', async () => emptyResult());
   });
 
@@ -160,7 +158,7 @@ describe('<ProjectContextMenu> delete flow', () => {
       expect(baseElement.querySelector('[data-testid="project-delete-dialog"]')).not.toBeNull();
     });
     const work = baseElement.querySelector('[data-testid="project-delete-work"]');
-    expect(work?.textContent).toContain('3 workflow runs and 1 automation will be deleted with it');
+    expect(work?.textContent).toContain('3 workflow runs will be deleted with it');
     expect(work?.textContent).toContain('1 still working');
     expect(
       baseElement.querySelector('[data-testid="project-delete-branches"]')?.textContent,
@@ -241,7 +239,7 @@ describe('<ProjectContextMenu> New Group…', () => {
     resetSidebarForTest();
     resetThreadGroupsForTest();
     setThreadFilterQuery('');
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of Array.from(getToasts())) removeToast(toast.id);
   });
 
   function newGroupItem(baseElement: HTMLElement): Element {

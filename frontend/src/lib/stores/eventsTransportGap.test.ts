@@ -286,7 +286,6 @@ describe('transport gap — workflow channels', () => {
     setBindingMock('WorkflowListItems', async () => []);
     setBindingMock('WorkflowGetEngineState', async () => ({ paused: false }));
     setBindingMock('WorkflowListDefinitions', async () => ({ projectId: 'p1', workflows: [] }));
-    setBindingMock('WorkflowListAutomations', async () => []);
     setBindingMock('WorkflowListItemCosts', async () => ({}));
   });
 
