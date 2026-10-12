@@ -40,6 +40,7 @@ var replacedPrimitives = []struct {
 	{regexp.MustCompile(`~/\.(claude|codex|cursor|pi)\b`), "thread_show and thread_search, never a provider home"},
 	{regexp.MustCompile(`\bcontrol-(ui|cli)\b`), "ao-browser-tools or the shell"},
 	{regexp.MustCompile(`\bgh (pr|api|run|repo|issue)\b|\bglab (mr|api|ci)\b`), "the forge script"},
+	{regexp.MustCompile(`(^|[^-A-Za-z0-9_])gt\b|\bGraphite\b`), "forge stack"},
 }
 
 // forgeScript is the one file that runs gh and glab.
@@ -76,8 +77,15 @@ func skillFiles(t *testing.T) map[string]string {
 	t.Helper()
 	files := map[string]string{}
 	err := filepath.WalkDir(skillsTree, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
 			return err
+		}
+		if d.IsDir() {
+			// The scripts' bun install lands in node_modules, which git ignores.
+			if d.Name() == "node_modules" {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		rel, _ := filepath.Rel(skillsTree, path)
 		rel = filepath.ToSlash(rel)

@@ -32,9 +32,9 @@ is the map every other skill reads through. Choices a resync must keep:
 
 `skills/poteto-mode/scripts/forge` is one bash script with the same JSON
 output on both forges: `which`,
-`pr view|merge-state|list|create|comment|comments|checks|commits|threads|reply|merge|edit`
-and `ci status|log`. `forge --help` lists the arguments. It needs git,
-jq and `gh` or `glab`.
+`pr view|merge-state|list|create|comment|comments|checks|commits|threads|reply|merge|edit`,
+`ci status|log` and `stack`. `forge --help` lists the arguments. It needs
+git, jq and `gh` or `glab`.
 
 It decides the forge from the checkout's remote (`FORGE_REMOTE`, default
 `origin`):
@@ -50,8 +50,16 @@ It decides the forge from the checkout's remote (`FORGE_REMOTE`, default
 GitHub calls go through `gh` with `-R host/owner/repo` and `gh api
 --hostname`; GitLab calls go through `glab api --hostname` with the
 URL-encoded project path. Bodies reach the CLI on stdin or as one
-argument, never through a shell. `watch-pr` and `worktree-audit.sh` read
-through the script, so they work on both forges.
+argument, never through a shell. `watch-pr`, `orch` and
+`worktree-audit.sh` read through the script, so they work on both forges.
+
+`forge stack` replaces Graphite. It walks base links from a branch (the
+current one by default) down to the repository's default branch and
+prints those pull requests bottom first. A head with an open request
+uses it, else its newest merged one, else its newest closed one, so a
+merged base the child was not retargeted from still shows. A branch on
+the chain with no pull request exits 3, and a cycle of bases fails, so
+`orch frontier set` never records a guessed stack.
 
 ## Tests
 
@@ -60,21 +68,25 @@ through the script, so they work on both forges.
 - `TestForgeScript` (`cmd/ao-mockforge/forge_script_test.go`) runs every
   subcommand on both forges against `forgefake` through the real
   `ao-mockforge` binary, including an SSH alias, writes read back
-  through the app's `ReadPR`, and a refusal for an unknown host. `-v`
-  prints the run log.
+  through the app's `ReadPR`, and a refusal for an unknown host.
+  `TestForgeScriptStack` covers `forge stack` on both forges: a stack of
+  three, merged and closed bases, the default branch, a cycle, and a
+  branch with no pull request (exit 3). `-v` prints the run log.
 - The tripwires in `internal/threadtools/skills_tree_test.go`.
   `TestSkillsNameOnlyToolsThatExist` fails when a skill names a
   `thread_*` or `browser_*` tool the app does not serve.
   `TestSkillsCarryNoReplacedPrimitive` fails when a replaced primitive
   (`/loop`, `subagent_type`, provider home paths, `control-ui`, a direct
-  `gh pr` call and the rest of the list) comes back; `keptVerbatim` lists
+  `gh pr` call, Graphite `gt` and the rest of the list) comes back; `keptVerbatim` lists
   the upstream lines kept on purpose. `TestSkillsLinkOnlyFilesThatExist`
   fails when a relative Markdown link names a file the tree does not
   carry.
 
-The watch-pr and orch TypeScript tests run with bun (`bun test orch
-watch-pr` in `skills/poteto-mode/scripts`), which the CI image does not
-carry.
+- `make pstack-scripts`: the watch-pr and orch tests and the watch-pr
+  type check under bun, pinned in `ci/Dockerfile`. orch's bootstrap
+  installs their dependencies from `bun.lock` first, which needs the
+  network; the tests run in the isolated namespace. CI runs it in the
+  Go tests (rest) job.
 
 ## Resync
 

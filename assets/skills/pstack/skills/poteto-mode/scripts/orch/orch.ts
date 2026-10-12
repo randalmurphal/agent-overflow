@@ -472,9 +472,9 @@ function createProgram(io: Io): Command {
 
   const frontier = program
     .command("frontier")
-    .description("manage the Graphite stack frontier")
+    .description("manage the stack frontier")
     .action(() => requireSubcommand(program));
-  leaf(frontier, "set", "discover the Graphite stack and set the frontier")
+  leaf(frontier, "set", "read the stack below the repository's current branch with `forge stack` and set the frontier")
     .addOption(
       new Option(
         "--repo <dir>",

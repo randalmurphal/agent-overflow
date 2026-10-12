@@ -122,8 +122,8 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 
 | Forge | Invocation (route) | App caller |
 |---|---|---|
-| GitHub | `GET repos/O/R` (`gh repository identity`) | repository identity |
-| GitLab | `GET projects/P` (`glab repository identity`) | repository identity |
+| GitHub | `GET repos/O/R` (`gh repository identity`) | repository identity; the forge script's default branch (`forge stack`) |
+| GitLab | `GET projects/P` (`glab repository identity`) | repository identity; the forge script's default branch (`forge stack`) |
 | ssh | `-G -o CanonicalizeHostname=no -o PermitLocalCommand=no [-l U] H` | local SSH host resolution, from fixture `sshHosts` |
 | GitHub | `gh pr create --title T --body B [--base B] [--draft]` | GitCreatePR |
 | GitLab | `glab mr create --title T --description D --yes --no-editor [--target-branch B] [--draft]` | GitCreatePR |

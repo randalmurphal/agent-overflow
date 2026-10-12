@@ -43,7 +43,7 @@ CONTEXT      pointers to files and PRs; upstream reports pasted in full when thi
 ACCEPTANCE   checkable criteria, one per line
 VERIFY       exact commands or the control-skill path, plus known gotchas
 TIMEBOX      rough cap on runtime; on expiry, return partial findings and stop rather than run on
-FORBIDDEN    no gt, no rebase, no force-push, no fixes outside scope, plus unit-specific bans
+FORBIDDEN    no restack, no rebase, no force-push, no fixes outside scope, plus unit-specific bans
 REPORT       status, branch, head SHA, PRs, verdict, what you actually ran, deviations,
              suggested follow-ups
 STANDING     <preferences.md pasted verbatim>
@@ -76,9 +76,9 @@ A dependency is a context relay, not just ordering. Undeclared upstream context 
 
 #### Stack safety
 
-- The frontier is a computed object, never narrative. Recompute `frontier.json` from `gt` after every merge and stack mutation because GitHub base refs drift mid-restack while gt tracking is authoritative: ordered PR list, branch names, head SHAs, a generation number, the lowest unmerged PR. Resolve it where gt knows the stack, normally the stacker's clone. A checkout whose gt metadata never saw the submits reports no PRs and the command errors rather than guessing.
-- Exactly one stacker per stack may run `gt`, serialized within its stack. Record the holder in the standing orders. Restacks run in the stacker's own thread and worktree, never in the coordinator's.
-- Workers never rebase and never run `gt`. Babysitters follow `playbooks/babysit.md`, one per stack, scoped to one immutable frontier generation. They report conflicts to the stacker rather than restacking.
+- The frontier is a computed object, never narrative. Recompute `frontier.json` with `orch frontier set` after every merge and stack mutation: it reads `scripts/forge stack`, the chain of pull requests from the checkout's current branch down to the default branch through each request's base, and records the ordered PR list, branch names, head SHAs, a generation number, the lowest unmerged PR. Run it in a checkout on the stack's top branch, normally the stacker's. A branch on the chain with no pull request fails the command (`forge stack` exits 3) rather than guessing; open that pull request first. Base refs are the stack, so a restack retargets each moved child with `scripts/forge pr edit <n> --base <branch>` in the same unit that rebases it.
+- Exactly one stacker per stack may rebase, force-push and retarget, serialized within its stack. Record the holder in the standing orders. Restacks run in the stacker's own thread and worktree, never in the coordinator's.
+- Workers never rebase and never retarget. Babysitters follow `playbooks/babysit.md`, one per stack, scoped to one immutable frontier generation. They report conflicts to the stacker rather than restacking.
 - PR closes and retargets go through the stacker only. Closing a base PR orphans every chain above it. Merges and stack surgery are units with briefs like any other.
 - One retro watcher follows merged PRs for reverts, post-merge CI breaks, and orphaned follow-ups.
 

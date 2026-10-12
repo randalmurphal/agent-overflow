@@ -14,6 +14,7 @@
 #   forge pr merge <n> [--method squash|merge|rebase] [--auto]
 #   forge pr edit <n> --base B
 #   forge ci status [<branch>]     forge ci log <job-id>
+#   forge stack [<branch>]
 #
 # <n> defaults to the open pull request of the current branch. The forge
 # comes from the remote (FORGE_REMOTE, default origin): an SSH host alias
@@ -22,6 +23,11 @@
 # FORGE=github or FORGE=gitlab decides for any other host. A body is read
 # from a file or stdin (-). Comment and reply bodies reach the CLI on
 # stdin; a create passes its body as one argument, never through a shell.
+# stack prints the pull requests from the default branch up to <branch>
+# (default: the current branch), bottom first, in the pr list shape: each
+# request's base names the branch below it. A head with an open request
+# uses it, else its newest merged one, else its newest closed one. Exits
+# 3 when a branch on the chain has no pull request.
 # Needs git, jq and gh or glab.
 set -euo pipefail
 
@@ -29,6 +35,10 @@ die() {
 	printf 'forge: %s\n' "$*" >&2
 	exit 1
 }
+
+# EXIT_NO_PULL_REQUEST is stack's exit status when a branch on the chain
+# has no pull request.
+EXIT_NO_PULL_REQUEST=3
 
 usage() {
 	sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//' >&2
@@ -396,6 +406,37 @@ ci_status() {
 		   runs: [{id: $p.id, name: "pipeline", state: ([$j[].state] | rollup), url: $p.web_url, jobs: $j}]}'
 }
 
+default_branch() {
+	local branch
+	if [ "$KIND" = github ]; then
+		branch=$(ghapi "repos/$PROJECT" | jq -r '.default_branch // empty')
+	else
+		branch=$(glapi "projects/$PATH_ID" | jq -r '.default_branch // empty')
+	fi
+	[ -n "$branch" ] || die "the forge reported no default branch for $PROJECT"
+	printf '%s' "$branch"
+}
+
+# stack BRANCH walks base links from BRANCH down to the default branch.
+stack() {
+	local branch=$1 trunk out="[]" seen=" " pulls pull
+	trunk=$(default_branch)
+	while [ "$branch" != "$trunk" ]; do
+		case $seen in *" $branch "*) die "pull request bases form a cycle at $branch" ;; esac
+		seen="$seen$branch "
+		pulls=$(pr_list all "$branch" "" 100)
+		pull=$(jq -n --argjson p "$pulls" '([$p[] | select(.state == "open")][0]
+			// [$p[] | select(.state == "merged")][0] // $p[0]) // empty')
+		if [ -z "$pull" ]; then
+			printf 'forge: branch %s has no pull request; the stack below it is unknown\n' "$branch" >&2
+			exit "$EXIT_NO_PULL_REQUEST"
+		fi
+		out=$(jq -n --argjson a "$out" --argjson p "$pull" '[$p] + $a')
+		branch=$(jq -rn --argjson p "$pull" '$p.base')
+	done
+	printf '%s\n' "$out"
+}
+
 cmd_pr() {
 	local sub=${1:-}
 	[ -n "$sub" ] || usage
@@ -575,6 +616,10 @@ main() {
 	which) jq -n --arg forge "$KIND" --arg host "$HOST" --arg project "$PROJECT" --arg cli "$CLI" '{forge: $forge, host: $host, project: $project, cli: $cli}' ;;
 	pr) cmd_pr "$@" ;;
 	ci) cmd_ci "$@" ;;
+	stack)
+		[ $# -le 1 ] || die "usage: forge stack [<branch>]"
+		stack "${1:-$(current_branch)}"
+		;;
 	*) usage ;;
 	esac
 }

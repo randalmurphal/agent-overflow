@@ -53,16 +53,17 @@ and `other-provider`, read through the `setup-pstack` skill.
 | `skills/poteto-mode/SKILL.md` | The Harness section becomes the Agent Overflow section (the port's map); Subagents section by provider; slop pass instead of `deslop` |
 | `skills/poteto-mode/playbooks/authoring-a-skill.md` | Skill-authoring tool |
 | `skills/poteto-mode/playbooks/autonomous-run.md` | `thread_watch` and `thread_loop` wakes |
-| `skills/poteto-mode/playbooks/autopilot-full.md`, `autopilot-stack.md` | Owners are `thread_spawn` threads; the tick is a `thread_loop`; liveness through `thread_status` and `thread_ask`; forge script |
-| `skills/poteto-mode/playbooks/babysit.md` | watch-pr on both forges; the watch is `thread_watch` or `thread_loop`; replies through the forge script; Origin dropped |
+| `skills/poteto-mode/playbooks/autopilot-full.md`, `autopilot-stack.md` | Owners are `thread_spawn` threads; the tick is a `thread_loop`; liveness through `thread_status` and `thread_ask`; forge script; Graphite mentions dropped |
+| `skills/poteto-mode/playbooks/babysit.md` | watch-pr on both forges; the watch is `thread_watch` or `thread_loop`; replies through the forge script; Origin dropped; Graphite mentions dropped |
 | `skills/poteto-mode/playbooks/bug-fix.md`, `feature.md`, `hillclimb.md`, `perf-issue.md`, `refactoring.md` | `thread_loop`; model defaults |
 | `skills/poteto-mode/playbooks/eval.md`, `session-pickup.md` | Transcripts through `thread_show` and `thread_search` |
-| `skills/poteto-mode/playbooks/multi-phase-plan.md` | Drivers, `thread_loop` tick, forge script, plans read from the installed library |
-| `skills/poteto-mode/playbooks/opening-a-pr.md`, `shipping.md` | Forge script; verifiers drive `ao-browser-tools` or the shell |
-| `skills/poteto-mode/playbooks/orchestrate.md` | Workers and sub-coordinators are threads; the store is the agent home; liveness through `thread_status` and `thread_ask` |
+| `skills/poteto-mode/playbooks/multi-phase-plan.md` | Drivers, `thread_loop` tick, forge script, plans read from the installed library; Graphite mentions dropped |
+| `skills/poteto-mode/playbooks/opening-a-pr.md`, `shipping.md` | Forge script; verifiers drive `ao-browser-tools` or the shell; Graphite mentions dropped |
+| `skills/poteto-mode/playbooks/orchestrate.md` | Workers and sub-coordinators are threads; the store is the agent home; liveness through `thread_status` and `thread_ask`; the frontier from `forge stack` and retargets through the forge script instead of Graphite |
 | `skills/poteto-mode/playbooks/visual-parity.md` | `browser_screenshot`; loop wording |
 | `skills/poteto-mode/playbooks/worktree-cleanup.md` | Threads per worktree from `thread_search` instead of a transcript scan |
 | `skills/poteto-mode/scripts/forge` | Added: the one entry to GitHub and GitLab |
+| `skills/poteto-mode/scripts/orch/store.ts`, `orch.ts`, `orch.test.ts` | `frontier set` reads stack order, states and head SHAs from `forge stack` instead of Graphite `gt` |
 | `skills/poteto-mode/scripts/check-plan.mjs` | Program markers for the ported plan template |
 | `skills/poteto-mode/scripts/worktree-audit.sh` | PR state through the forge script; the transcript scan and its column removed |
 | `skills/poteto-mode/scripts/watch-pr/github.ts` | `ForgeCliReader` reads through the forge script instead of `gh` |
@@ -75,6 +76,3 @@ and `other-provider`, read through the `setup-pstack` skill.
 | `skills/show-me-your-work/SKILL.md` | The audit reads the thread with `thread_show` |
 | `skills/swarm/SKILL.md` | Workers are native subagents with their own worktrees, or threads on the other provider |
 | `skills/why/SKILL.md`, `skills/why/references/source-playbook.md`, `skills/why/references/sources/code-archaeology.md` | PR context through the forge script; MCP discovery; spawning by provider |
-
-`skills/poteto-mode/scripts/orch/` still reads stack order from Graphite
-(`gt`) as upstream does.

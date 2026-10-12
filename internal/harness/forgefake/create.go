@@ -10,7 +10,8 @@ import (
 // share. Both open one for the checkout's current branch in the repository its
 // origin names, into the repository's default branch unless the call names
 // a base. The fixture has no default-branch field; it is "main", the
-// default a seeded pull's BaseRef takes.
+// default a seeded pull's BaseRef takes and the default_branch the
+// repository identity reports.
 
 const defaultBaseRef = "main"
 

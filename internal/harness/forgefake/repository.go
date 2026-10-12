@@ -23,7 +23,7 @@ func forgeRepositoryIdentity(e *Engine, c *call, match []string) response {
 		}
 		return glabNotFound("Project")
 	}
-	return jsonResponse(map[string]any{"id": r.ID, "full_name": r.Project, "path_with_namespace": r.Project})
+	return jsonResponse(map[string]any{"id": r.ID, "full_name": r.Project, "path_with_namespace": r.Project, "default_branch": defaultBaseRef})
 }
 
 var fixtureSSHHost = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)

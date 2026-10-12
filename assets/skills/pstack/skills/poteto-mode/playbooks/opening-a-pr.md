@@ -23,7 +23,7 @@ Put each section under a `##` heading, not a bold lead-in, so the sections stand
 
 After these sections, attach videos or screenshots when they prove a claim. Do not paste full SHAs, swarm or arena lane recitals, lever-correction essays, file-by-file checklists, or "CLEAN" verdicts. Put these details in a linked artifact. A commit body does not restate its subject.
 
-**Forge.** Every forge call goes through `scripts/forge`, which picks `gh` or `glab` from the remote. Run `scripts/forge which` before the first PR operation. Do not require Graphite (`gt`).
+**Forge.** Every forge call goes through `scripts/forge`, which picks `gh` or `glab` from the remote. Run `scripts/forge which` before the first PR operation.
 
 **Size and stacks.** Prefer five narrow PRs to one large PR. A stack is a base-branch chain. The root PR targets trunk. Each child branch rebases onto its parent's exact tip and its PR targets the parent branch. Create a child with `scripts/forge pr create --title <title> --body-file <file> --base <parent-branch>`, and retarget an existing child with `scripts/forge pr edit <pr> --base <parent-branch>`. Branch from trunk only for independent work. Rebase on trunk before substantial stack work.
 

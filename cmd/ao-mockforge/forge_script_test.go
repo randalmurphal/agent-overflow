@@ -310,6 +310,70 @@ func TestForgeScript(t *testing.T) {
 	}
 }
 
+// stackFixture seeds stacks on one forge, each named by its top branch:
+// stack/three on stack/two on stack/one on main, where stack/two also
+// has an older closed pull; old/top on a merged old/base; abandoned,
+// closed with nothing open; dangling, whose base gone has no pull; and
+// loop/a and loop/b, based on each other.
+func stackFixture(forge, project string) forgefake.Fixture {
+	pull := func(n int, head, base, state string) forgefake.Pull {
+		return forgefake.Pull{Number: n, Title: head, Author: "dave", HeadRef: head, BaseRef: base, State: state, HeadSHA: strings.Repeat(string(rune('a'+n%6)), 40)}
+	}
+	return forgefake.Fixture{Repos: []forgefake.Repo{{Forge: forge, Project: project, Pulls: []forgefake.Pull{
+		pull(9, "stack/two", "main", "closed"),
+		pull(11, "stack/one", "main", ""),
+		pull(12, "stack/two", "stack/one", ""),
+		pull(13, "stack/three", "stack/two", ""),
+		pull(20, "old/base", "main", "merged"),
+		pull(21, "old/top", "old/base", ""),
+		pull(22, "abandoned", "main", "closed"),
+		pull(23, "dangling", "gone", ""),
+		pull(24, "loop/a", "loop/b", ""),
+		pull(25, "loop/b", "loop/a", ""),
+	}}}}
+}
+
+func TestForgeScriptStack(t *testing.T) {
+	for _, fc := range []struct{ forge, project, remote string }{
+		{"github", "acme/widgets", "https://github.com/acme/widgets.git"},
+		{"gitlab", "grp/sub/tool", "git@gitlab.com:grp/sub/tool.git"},
+	} {
+		t.Run(fc.forge, func(t *testing.T) {
+			r := newRig(t, stackFixture(fc.forge, fc.project))
+			f := newForgeCheckout(t, r, fc.remote, "stack/three")
+
+			stack := f.json("", "stack")
+			expect(t, "stack of three", numbers(t, stack), []float64{11, 12, 13})
+			for i, want := range [][3]any{{"stack/one", "main", "open"}, {"stack/two", "stack/one", "open"}, {"stack/three", "stack/two", "open"}} {
+				expect(t, "stack entry", []any{pick(t, stack, i, "head"), pick(t, stack, i, "base"), pick(t, stack, i, "state")}, []any{want[0], want[1], want[2]})
+			}
+			expect(t, "stack entry sha", pick(t, stack, 0, "head_sha"), strings.Repeat("f", 40))
+			expect(t, "stack of a named branch", numbers(t, f.json("", "stack", "stack/two")), []float64{11, 12})
+			expect(t, "stack over a merged base", f.json("", "stack", "old/top").([]any)[0].(map[string]any)["state"], "merged")
+			expect(t, "stack over a merged base", numbers(t, f.json("", "stack", "old/top")), []float64{20, 21})
+			expect(t, "stack of a closed pull", numbers(t, f.json("", "stack", "abandoned")), []float64{22})
+			expect(t, "stack of the default branch", f.json("", "stack", "main"), []any{})
+
+			for _, missing := range []struct{ branch, named string }{{"orphan", "orphan"}, {"dangling", "gone"}} {
+				out, stderr, err := f.try("", "stack", missing.branch)
+				exit, _ := err.(*exec.ExitError)
+				if exit == nil || exit.ExitCode() != 3 || out != "" || !strings.Contains(stderr, "branch "+missing.named+" has no pull request") {
+					t.Errorf("stack %s = exit %v, stdout %q, stderr %q; want exit 3 naming %s", missing.branch, err, out, stderr, missing.named)
+				}
+			}
+			if out, stderr, err := f.try("", "stack", "loop/a"); err == nil || out != "" || !strings.Contains(stderr, "cycle") {
+				t.Errorf("stack loop/a = %v, stdout %q, stderr %q; want a cycle error", err, out, stderr)
+			}
+
+			for _, inv := range r.engine.Invocations(0).Invocations {
+				if inv.Unhandled {
+					t.Errorf("unhandled invocation: %s %q: %s", inv.CLI, inv.Args, inv.Stderr)
+				}
+			}
+		})
+	}
+}
+
 func TestForgeScriptRefusesAnUnknownHost(t *testing.T) {
 	r := newRig(t, forgeScriptFixture("github", "acme/widgets"))
 	f := newForgeCheckout(t, r, "https://git.example.invalid/acme/widgets.git", "main")
