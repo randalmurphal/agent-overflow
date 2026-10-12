@@ -192,6 +192,11 @@ fmt-check:
 	@unformatted=$$(git ls-files -- '*.go' | while IFS= read -r f; do [ -f "$$f" ] && printf '%s\n' "$$f"; done | xargs gofmt -l); \
 	if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 
+# go.mod and go.sum must already be tidy. Development builds run `go mod
+# tidy` through the Taskfile; release builds skip it, so this is the check.
+tidy-check:
+	go mod tidy -diff
+
 # govulncheck reports known vulnerabilities reachable from this module.
 GOVULNCHECK_VERSION := latest
 go-vuln:
