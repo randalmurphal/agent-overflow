@@ -3256,7 +3256,7 @@ export class WSClient {
     // every consumer for a few milliseconds of skew would turn a routine
     // reconnect into a re-render.
     if (previous !== null && sameHello(previous, next)) return;
-    for (const handler of [...this.helloHandlers]) {
+    for (const handler of Array.from(this.helloHandlers)) {
       try {
         handler(next);
       } catch (err) {
@@ -3486,7 +3486,7 @@ export class WSClient {
     ) return;
     this.statusSnapshot = next;
     if (this.statusHandlers.size === 0) return;
-    for (const handler of [...this.statusHandlers]) {
+    for (const handler of Array.from(this.statusHandlers)) {
       try {
         handler(next);
       } catch (err) {
