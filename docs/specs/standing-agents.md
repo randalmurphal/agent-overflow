@@ -221,9 +221,45 @@ variant, not a new component. Differences from an ordinary thread row:
   that is in a group removes it from that group; if that leaves the
   group holding only the agent's own children, the group is deleted and
   those children stay under the agent.
-- Context menu: Open, Rename, Demote, Loops and watches (opens the
-  activity rail of that thread), Archive done children, the normal pin
-  items.
+- Context menu: Open, Rename, Loops and Watches (opens the thread with
+  its background tray open), Archive Done Children (the spawned threads
+  whose effective status is idle, behind a confirm), Demote. No pin
+  item: an agent row sits in the groups section whatever pin its thread
+  holds, and its pin is left alone. Promote to Standing Agent appears on
+  a chat or plan thread that is not archived, a draft or an agent; the
+  backend refuses every other mode.
+
+Mechanics, as built:
+
+- The thread row carries the lineage: `agentPromotedAt`,
+  `spawnedByThreadId` (the newest local spawn request naming it) and
+  `archivedChildCount` (an agent's archived spawned threads), derived
+  in `threadColumns`, so one `thread:updated` frame moves the row. A
+  spawn's accept, a child's archive, unarchive and delete each
+  re-broadcast the rows they change, the spawner's included. The
+  partial index `idx_thread_requests_spawn_target` serves the lookup,
+  and the thread-request retention sweep keeps a local spawn row while
+  the thread it created exists.
+- `PromoteStandingAgent` ungroups the agent and its local spawned
+  threads in the same transaction and deletes a group that is left
+  empty. `SetThreadGroup` refuses an agent (`ErrStandingAgentGrouped`)
+  and a thread an agent spawned (`ErrSpawnedChildGrouped`), and
+  `thread_spawn` with `group` is refused for an agent caller. The
+  frontend never offers the group items on those rows and the drag
+  payload marks them `agentBound`, so no group target accepts them.
+- `ListStandingAgentWakes` (route all) and `thread:wakes_changed` feed
+  `stores/agentWakes.svelte.ts`; the state line
+  (`utils/agentStateLine.ts`) shows the running row, else the soonest
+  loop or watch, with `+N more`. A row the bulk read missed asks
+  `ListThreadWakes` once on mount.
+- `ListArchivedSpawnedThreads` (newest first) feeds the done footer
+  through `stores/agentArchivedChildren.svelte.ts`, keyed by the row's
+  `archivedChildCount` so a changed count reads again. The fold state
+  lives in `sidebar:collapsedAgents`; an open done footer and its
+  paging are session state, and both reset when the count reaches
+  zero, so a footer that returns starts closed.
+- The harness seeds lineage with `HarnessSeedThread.spawnedBy`, the
+  title of a thread seeded earlier in the same project.
 
 Discussions are removed first (slice 1), and the tree code that nests
 on `parent_thread_id` goes with them. The agent tree is new code in

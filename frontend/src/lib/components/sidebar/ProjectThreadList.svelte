@@ -7,10 +7,11 @@
   // group row, then truncates to the project-specific visible limit (with
   // open threads always floated in if they would otherwise sit below the
   // fold), and finally flattens to one list honoring each group's
-  // collapse state. Every thread renders flat: at the top level, or as a
-  // group member (ThreadRow's `indent` comes from the node's depth). We
-  // deliberately do NOT virtualize — at 50 threads the flat render is
-  // 60fps and the sort already pushes off-screen rows below the fold.
+  // collapse state. Every thread renders flat: at the top level, as a
+  // group member, or under the standing agent that spawned it (ThreadRow's
+  // `indent` comes from the node's depth). We deliberately do NOT
+  // virtualize — at 50 threads the flat render is 60fps and the sort
+  // already pushes off-screen rows below the fold.
 
   import type { Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -20,12 +21,19 @@
   } from './projectNewThread';
   import {
     collapseThreadList,
+    getAgentDoneVisibleLimit,
+    getCollapsedAgents,
     getCollapsedGroups,
+    closeAgentDone,
+    getExpandedDoneAgents,
     getThreadListVisibleLimit,
+    isAgentDoneExpanded,
+    isAgentExpanded,
     isGroupExpanded,
     isThreadListExpanded,
     setThreadListVisibleLimit,
   } from '../../stores/sidebar.svelte';
+  import { getArchivedChildren, loadArchivedChildren } from '../../stores/agentArchivedChildren.svelte';
   import {
     isThreadSelected,
     toggleThreadSelection,
@@ -40,12 +48,10 @@
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import Plus from '@lucide/svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
+  import AgentDoneFooter from './AgentDoneFooter.svelte';
   import ThreadGroupRow from './ThreadGroupRow.svelte';
   import ThreadRow from './ThreadRow.svelte';
-  import {
-    buildSidebarThreadTree,
-    sidebarTreeNodeId,
-  } from '../../utils/sidebarTree';
+  import { buildSidebarThreadTree } from '../../utils/sidebarTree';
   import {
     flattenSidebarThreadTree,
     nextSidebarThreadRevealLimit,
@@ -53,6 +59,7 @@
     rollupDisplayStatus,
     sameSidebarVisibleNodes,
     sameThreadStatusPill,
+    sidebarVisibleNodeId,
   } from '../../utils/sidebarTreeView';
   import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
   import { GROUP_RAIL_LEFT_PX } from '../../utils/sidebarRowMetrics';
@@ -147,11 +154,31 @@
     const next = flattenSidebarThreadTree({
       nodes: preview.visibleNodes,
       collapsedGroupIds: getCollapsedGroups(),
+      collapsedAgentIds: getCollapsedAgents(),
       activeThreadId: pane?.threadId ?? null,
+      expandedDoneAgentIds: getExpandedDoneAgents(),
+      archivedChildrenOf: (agent) => getArchivedChildren(agent.id, agent.archivedChildCount ?? 0),
+      doneLimitOf: getAgentDoneVisibleLimit,
     });
     if (sameSidebarVisibleNodes(prevVisibleNodes, next)) return prevVisibleNodes;
     prevVisibleNodes = next;
     return next;
+  });
+
+  // An open done footer reads its agent's archived children, and reads
+  // them again when the row's count moves (a child archived, unarchived or
+  // deleted on any client). A footer whose count reaches zero leaves the
+  // list, and its open state goes with it.
+  $effect(() => {
+    for (const node of tree) {
+      if (node.kind !== 'agent' || !isAgentDoneExpanded(node.thread.id)) continue;
+      const count = node.thread.archivedChildCount ?? 0;
+      if (count === 0) {
+        closeAgentDone(node.thread.id);
+        continue;
+      }
+      loadArchivedChildren(node.thread.id, count);
+    }
   });
 
   function handleShowMore(e: MouseEvent): void {
@@ -265,6 +292,26 @@
     void moveThreadsToGroupAction([payload.threadId], groupId);
   }
 
+  // An agent row, its member rows and its done footer: a drop here moves
+  // nothing (an agent adopts only what it spawned), with the same
+  // affordance as a drop on another project. Swallowed so the container
+  // never reads it as an ungroup.
+  function agentDragOver(e: DragEvent): void {
+    if (!e.dataTransfer || !threadDragPayloadForEvent(e)) return;
+    e.stopPropagation();
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'none';
+    clearDropState();
+  }
+
+  function agentDrop(e: DragEvent): void {
+    if (!threadDragPayloadForEvent(e)) return;
+    e.stopPropagation();
+    e.preventDefault();
+    endThreadRowDrag();
+    clearDropState();
+  }
+
   // The list background: the ungroup target.
   function handleContainerDragOver(e: DragEvent): void {
     if (!e.dataTransfer) return;
@@ -345,7 +392,7 @@
     ondrop={handleContainerDrop}
     ondragend={clearDropState}
   >
-    {#each visibleNodes as node (sidebarTreeNodeId(node))}
+    {#each visibleNodes as node (sidebarVisibleNodeId(node))}
       <!-- role="presentation" keeps the animated wrapper transparent to the
            list > listitem structure now that the divider shares it. -->
       <div role="presentation" animate:sidebarFlip in:sidebarEnter out:sidebarExit>
@@ -357,7 +404,19 @@
             class="mx-2 my-1 border-t border-border-subtle/60"
           ></div>
         {/if}
-        {#if node.kind === 'group'}
+        {#if node.kind === 'agent-done'}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div
+            role="listitem"
+            class="border-l border-border-subtle/60 pb-px -mb-px"
+            style:margin-left="{GROUP_RAIL_LEFT_PX}px"
+            data-agent-member=""
+            ondragover={agentDragOver}
+            ondrop={agentDrop}
+          >
+            <AgentDoneFooter {node} />
+          </div>
+        {:else if node.kind === 'group'}
           <div role="listitem">
             <ThreadGroupRow
               group={node.group}
@@ -378,21 +437,27 @@
             1px pad-and-pull-back carries the border across the list's
             gap-px so the segments join into one line.
           -->
+          <!-- An agent's children sit behind the same rail as a group's
+               members. Neither they nor the agent row take a drop. -->
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <div
             role="listitem"
-            class={node.ownerGroupId ? 'border-l border-border-subtle/60 pb-px -mb-px' : ''}
-            style:margin-left={node.ownerGroupId ? `${GROUP_RAIL_LEFT_PX}px` : null}
+            class={node.ownerGroupId || node.ownerAgentId ? 'border-l border-border-subtle/60 pb-px -mb-px' : ''}
+            style:margin-left={node.ownerGroupId || node.ownerAgentId ? `${GROUP_RAIL_LEFT_PX}px` : null}
             data-group-member={node.ownerGroupId ? '' : null}
-            ondragover={(e) => { if (node.ownerGroupId) memberDragOver(e, node.ownerGroupId); }}
+            data-agent-member={node.ownerAgentId ? '' : null}
+            ondragover={(e) => { if (node.ownerGroupId) memberDragOver(e, node.ownerGroupId); else if (node.kind === 'agent' || node.ownerAgentId) agentDragOver(e); }}
             ondragleave={(e) => { if (node.ownerGroupId) memberDragLeave(e, node.ownerGroupId); }}
-            ondrop={(e) => { if (node.ownerGroupId) memberDrop(e, node.ownerGroupId); }}
+            ondrop={(e) => { if (node.ownerGroupId) memberDrop(e, node.ownerGroupId); else if (node.kind === 'agent' || node.ownerAgentId) agentDrop(e); }}
           >
             <ThreadRow
               thread={node.thread}
               {pane}
               indent={node.depth + 1}
-              inGroup={node.ownerGroupId !== null}
+              inGroup={node.ownerGroupId !== null || node.ownerAgentId !== null}
+              agent={node.kind === 'agent' ? { expanded: isAgentExpanded(node.thread.id), childCount: node.children.length } : null}
+              agentChildren={node.kind === 'agent' ? node.children.map((child) => child.thread) : []}
+              archivedChild={node.kind === 'thread' && node.archived === true}
               selected={isThreadSelected(node.thread.id)}
               onSelectClick={(modifier) => handleSelectClick(node.thread.id, modifier)}
             />

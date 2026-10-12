@@ -49,6 +49,8 @@ const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
 // a group the user has never touched must show its members. No legacy
 // key: the feature never existed before appStorage.
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
+// A standing agent's fold persists the same way, keyed by its thread id.
+const COLLAPSED_AGENTS_KEY = 'sidebar:collapsedAgents';
 
 // Pre-appStorage localStorage keys, adopted once at module init.
 const LEGACY_COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
@@ -189,6 +191,12 @@ function removeLocalStorageKey(key: string): void {
 
 let collapsedProjects: Set<string> = $state(readCollapsed());
 let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
+let collapsedAgents: Set<string> = $state(stringSetFromStorage(COLLAPSED_AGENTS_KEY));
+// An agent's open done footer and its paging are for this page load only:
+// a list of finished work is something the user opens to look at, not a
+// layout to come back to.
+let expandedDoneAgents: Set<string> = $state(new Set());
+let doneVisibleLimits: Record<string, number> = $state({});
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
@@ -271,6 +279,12 @@ export function syncSidebarFromAppStorage(): void {
   if (!setsEqual(groups, collapsedGroups)) {
     collapsedGroups = groups;
   }
+  const agents = new Set(
+    parseStringArray(appStorageGet(COLLAPSED_AGENTS_KEY) ?? '[]') ?? [],
+  );
+  if (!setsEqual(agents, collapsedAgents)) {
+    collapsedAgents = agents;
+  }
   const rawLimits = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
   threadListVisibleLimits = rawLimits === null ? {} : (parseThreadListVisibleLimits(rawLimits) ?? {});
 }
@@ -304,6 +318,79 @@ export function toggleGroup(id: string): void {
   else next.add(id);
   collapsedGroups = next;
   writeStringSet(COLLAPSED_GROUPS_KEY, next);
+}
+
+/**
+ * Standing-agent fold state, by the agent's thread id. Expanded until the
+ * user folds it, like a group.
+ */
+export function isAgentExpanded(threadId: string): boolean {
+  return !collapsedAgents.has(threadId);
+}
+
+export function getCollapsedAgents(): ReadonlySet<string> {
+  return collapsedAgents;
+}
+
+export function setAgentExpanded(threadId: string, expanded: boolean): void {
+  if (collapsedAgents.has(threadId) === !expanded) return;
+  const next = new Set(collapsedAgents);
+  if (expanded) next.delete(threadId);
+  else next.add(threadId);
+  collapsedAgents = next;
+  writeStringSet(COLLAPSED_AGENTS_KEY, next);
+}
+
+export function toggleAgent(threadId: string): void {
+  setAgentExpanded(threadId, !isAgentExpanded(threadId));
+}
+
+/** The agents whose `N done` footer is open, listing their archived children. */
+export function getExpandedDoneAgents(): ReadonlySet<string> {
+  return expandedDoneAgents;
+}
+
+export function isAgentDoneExpanded(threadId: string): boolean {
+  return expandedDoneAgents.has(threadId);
+}
+
+export function toggleAgentDone(threadId: string): void {
+  if (expandedDoneAgents.has(threadId)) {
+    closeAgentDone(threadId);
+    return;
+  }
+  const next = new Set(expandedDoneAgents);
+  next.add(threadId);
+  expandedDoneAgents = next;
+}
+
+/**
+ * Shuts an agent's done footer and forgets its paging, so it reopens at the
+ * preview size. The list calls this when the footer leaves (the last
+ * archived child was unarchived or deleted): a footer that returns later
+ * starts closed.
+ */
+export function closeAgentDone(threadId: string): void {
+  if (!expandedDoneAgents.has(threadId)) return;
+  const next = new Set(expandedDoneAgents);
+  next.delete(threadId);
+  expandedDoneAgents = next;
+  if (threadId in doneVisibleLimits) {
+    const { [threadId]: _dropped, ...rest } = doneVisibleLimits;
+    doneVisibleLimits = rest;
+  }
+}
+
+/** How many archived rows an open done footer lists; grows by reveals. */
+export function getAgentDoneVisibleLimit(threadId: string): number {
+  return doneVisibleLimits[threadId] ?? THREAD_PREVIEW_LIMIT;
+}
+
+export function revealMoreAgentDone(threadId: string): void {
+  doneVisibleLimits = {
+    ...doneVisibleLimits,
+    [threadId]: getAgentDoneVisibleLimit(threadId) + THREAD_REVEAL_INCREMENT,
+  };
 }
 
 /**
@@ -359,6 +446,9 @@ export function resetSidebarForTest(): void {
   showProviderIcons = false;
   collapsedProjects = new Set();
   collapsedGroups = new Set();
+  collapsedAgents = new Set();
+  expandedDoneAgents = new Set();
+  doneVisibleLimits = {};
   threadListVisibleLimits = {};
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   removeLocalStorageKey(SORT_MODE_KEY);

@@ -1501,6 +1501,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       liveTodoState.toggleActivityRailBackground(thread?.id ?? null);
     },
 
+    /** Open or close the Background accordion body; a no-op when it already is. */
+    setActivityRailBackgroundOpen(open: boolean): void {
+      liveTodoState.setActivityRailBackgroundOpen(thread?.id ?? null, open);
+    },
+
     /**
      * Collapse/expand the pending-user-input popup from the activity-rail
      * chip. Per-thread sticky like the todos/background toggles: the state

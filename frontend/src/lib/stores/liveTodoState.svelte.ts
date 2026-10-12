@@ -135,6 +135,7 @@ export interface LiveTodoState {
   toggleLiveTodoShowAll(threadID: string | null): void;
   toggleActivityRailTodos(threadID: string | null): void;
   toggleActivityRailBackground(threadID: string | null): void;
+  setActivityRailBackgroundOpen(threadID: string | null, open: boolean): void;
   toggleActivityRailInputCollapsed(threadID: string | null): void;
 }
 
@@ -285,6 +286,12 @@ export function createLiveTodoState(): LiveTodoState {
 
     toggleActivityRailBackground(threadID: string | null): void {
       activityRailBackgroundOpen = !activityRailBackgroundOpen;
+      persistActivityRailUiPrefs(threadID);
+    },
+
+    setActivityRailBackgroundOpen(threadID: string | null, open: boolean): void {
+      if (activityRailBackgroundOpen === open) return;
+      activityRailBackgroundOpen = open;
       persistActivityRailUiPrefs(threadID);
     },
 

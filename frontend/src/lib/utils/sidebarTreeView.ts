@@ -7,15 +7,17 @@
 // Pure logic, no Svelte / DOM imports — table-drivable from unit tests.
 
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
+import type { Thread } from '../types/models';
 import type { ThreadStatusPill } from './threadStatusPill';
 import {
   sidebarNodeSection,
   statusPriority,
+  type SidebarThreadTreeNode,
   type SidebarTreeNode,
 } from './sidebarTree';
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
 
-export type SidebarTreeVisibleNode = SidebarTreeNode & {
+interface SidebarVisibleNodePlacement {
   /**
    * True on the first top-level row of a section (groups, front burner,
    * back burner, unpinned) when an earlier section has rows: the renderer
@@ -29,7 +31,38 @@ export type SidebarTreeVisibleNode = SidebarTreeNode & {
    * `groupId` field is unverified against what is actually on screen.
    */
   ownerGroupId: string | null;
-};
+  /** The standing agent this row renders under, or null. */
+  ownerAgentId: string | null;
+}
+
+/**
+ * The `N done` footer under an agent's children: the agent's archived
+ * spawned threads, counted on its row and listed inline when expanded.
+ */
+export interface SidebarAgentDoneNode extends SidebarVisibleNodePlacement {
+  kind: 'agent-done';
+  /** The agent whose archived children this footer counts. */
+  agent: Thread;
+  /** One deeper than the agent row, like its children. */
+  depth: number;
+  /** `archivedChildCount` of the agent's row. */
+  count: number;
+  expanded: boolean;
+  /** True while the archived rows are expanded but not loaded yet. */
+  loading: boolean;
+  /** Archived rows past the footer's own preview limit while expanded. */
+  hiddenCount: number;
+}
+
+export type SidebarTreeVisibleNode =
+  | (SidebarTreeNode & SidebarVisibleNodePlacement & {
+    /**
+     * True for an archived spawned thread listed under an agent's done
+     * footer: the row renders muted, and it is not in the live list.
+     */
+    archived?: boolean;
+  })
+  | SidebarAgentDoneNode;
 
 export interface FlattenSidebarThreadTreeInput {
   nodes: readonly SidebarTreeNode[];
@@ -38,19 +71,49 @@ export interface FlattenSidebarThreadTreeInput {
    * collapsed: a group the user just made must show what is in it.
    */
   collapsedGroupIds?: ReadonlySet<string>;
-  /** A collapsed group shows only this member directly beneath it. */
+  /** Agents default to EXPANDED too; the thread ids the user folded. */
+  collapsedAgentIds?: ReadonlySet<string>;
+  /** A collapsed group or agent shows only this member directly beneath it. */
   activeThreadId?: string | null;
+  /** Agents whose done footer the user opened. */
+  expandedDoneAgentIds?: ReadonlySet<string>;
+  /**
+   * The archived spawned threads of an agent, newest first, or null while
+   * they are still loading. Read only for an expanded done footer.
+   */
+  archivedChildrenOf?: (agent: Thread) => readonly Thread[] | null;
+  /** How many archived rows an expanded footer shows; THREAD_PREVIEW_LIMIT by default. */
+  doneLimitOf?: (agentId: string) => number;
+}
+
+/** A row for an archived spawned thread: no live status, never a sort input. */
+function archivedChildNode(thread: Thread): SidebarThreadTreeNode {
+  return {
+    kind: 'thread',
+    thread,
+    depth: 1,
+    ownLiveStatus: 'idle',
+    ownStatus: null,
+    displayLiveStatus: 'idle',
+    displayStatus: null,
+    sortGroup: 'idle',
+    normalSortGroup: 'idle',
+    latestActivityAt: thread.updatedAt ?? 0,
+  };
 }
 
 /**
  * flattenSidebarThreadTree — emit each top-level row, followed by a group's
- * members when it is expanded, or only its focused member when collapsed.
+ * or agent's members when it is expanded, or only its focused member when
+ * collapsed. An expanded agent with archived children ends with its done
+ * footer, preceded by the archived rows while the footer is open.
  */
 export function flattenSidebarThreadTree(
   input: FlattenSidebarThreadTreeInput,
 ): SidebarTreeVisibleNode[] {
   const visibleNodes: SidebarTreeVisibleNode[] = [];
   const collapsedGroupIds = input.collapsedGroupIds;
+  const collapsedAgentIds = input.collapsedAgentIds;
 
   // The top level arrives sorted, so each section is one contiguous run.
   // Drafts sit above every section and never open one.
@@ -59,18 +122,59 @@ export function flattenSidebarThreadTree(
     const section = sidebarNodeSection(node);
     const startsSection = section !== null && previousSection !== null && section !== previousSection;
     if (section !== null) previousSection = section;
-    visibleNodes.push({ ...node, startsSection, ownerGroupId: null });
+    visibleNodes.push({ ...node, startsSection, ownerGroupId: null, ownerAgentId: null });
     if (node.kind === 'thread') continue;
-    const groupId = node.group.id;
-    const collapsed = collapsedGroupIds !== undefined && collapsedGroupIds.has(groupId);
-    const members = collapsed
-      ? node.children.filter((member) => member.thread.id === input.activeThreadId)
-      : node.children;
-    for (const member of members) {
-      visibleNodes.push({ ...member, startsSection: false, ownerGroupId: groupId });
+    if (node.kind === 'group') {
+      const groupId = node.group.id;
+      const collapsed = collapsedGroupIds !== undefined && collapsedGroupIds.has(groupId);
+      const members = collapsed
+        ? node.children.filter((member) => member.thread.id === input.activeThreadId)
+        : node.children;
+      for (const member of members) {
+        visibleNodes.push({ ...member, startsSection: false, ownerGroupId: groupId, ownerAgentId: null });
+      }
+      continue;
     }
+    const agentId = node.thread.id;
+    const collapsed = collapsedAgentIds !== undefined && collapsedAgentIds.has(agentId);
+    const children = collapsed
+      ? node.children.filter((child) => child.thread.id === input.activeThreadId)
+      : node.children;
+    for (const child of children) {
+      visibleNodes.push({ ...child, startsSection: false, ownerGroupId: null, ownerAgentId: agentId });
+    }
+    const count = node.thread.archivedChildCount ?? 0;
+    if (collapsed || count === 0) continue;
+    const expanded = input.expandedDoneAgentIds?.has(agentId) === true;
+    let loading = false;
+    let hiddenCount = 0;
+    if (expanded) {
+      const archived = input.archivedChildrenOf?.(node.thread) ?? null;
+      if (archived === null) {
+        loading = true;
+      } else {
+        const limit = input.doneLimitOf?.(agentId) ?? THREAD_PREVIEW_LIMIT;
+        const shown = archived.slice(0, limit);
+        hiddenCount = Math.max(0, archived.length - shown.length);
+        for (const thread of shown) {
+          visibleNodes.push({
+            ...archivedChildNode(thread), startsSection: false, ownerGroupId: null, ownerAgentId: agentId, archived: true,
+          });
+        }
+      }
+    }
+    visibleNodes.push({
+      kind: 'agent-done', agent: node.thread, depth: node.depth + 1, count, expanded, loading, hiddenCount,
+      startsSection: false, ownerGroupId: null, ownerAgentId: agentId,
+    });
   }
   return visibleNodes;
+}
+
+/** The each-block key of a visible row; a done footer keys on its agent. */
+export function sidebarVisibleNodeId(node: SidebarTreeVisibleNode): string {
+  if (node.kind === 'agent-done') return `${node.agent.id}:done`;
+  return node.kind === 'group' ? node.group.id : node.thread.id;
 }
 
 /**
@@ -111,7 +215,18 @@ export function sameSidebarVisibleNodes(
     const x = a[i];
     const y = b[i];
     if (x.kind !== y.kind) return false;
-    if (x.kind === 'thread' && y.kind === 'thread' && x.thread !== y.thread) return false;
+    if (x.startsSection !== y.startsSection) return false;
+    if (x.ownerGroupId !== y.ownerGroupId) return false;
+    if (x.ownerAgentId !== y.ownerAgentId) return false;
+    if (x.kind === 'agent-done' || y.kind === 'agent-done') {
+      if (x.kind !== 'agent-done' || y.kind !== 'agent-done') return false;
+      if (x.agent !== y.agent || x.count !== y.count || x.expanded !== y.expanded
+        || x.loading !== y.loading || x.hiddenCount !== y.hiddenCount) return false;
+      continue;
+    }
+    if (x.kind === 'thread' && y.kind === 'thread') {
+      if (x.thread !== y.thread || x.archived !== y.archived) return false;
+    }
     if (x.kind === 'group' && y.kind === 'group') {
       if (x.group !== y.group) return false;
       // A collapsed group renders its MEMBER COUNT, and its members are
@@ -119,9 +234,12 @@ export function sameSidebarVisibleNodes(
       // here even though a thread node's child count is not.
       if (x.children.length !== y.children.length) return false;
     }
+    if (x.kind === 'agent' && y.kind === 'agent') {
+      // The agent row renders its thread (name, state, done count) and,
+      // collapsed, its child count.
+      if (x.thread !== y.thread || x.children.length !== y.children.length) return false;
+    }
     if (x.depth !== y.depth) return false;
-    if (x.startsSection !== y.startsSection) return false;
-    if (x.ownerGroupId !== y.ownerGroupId) return false;
     if (x.ownLiveStatus !== y.ownLiveStatus || x.displayLiveStatus !== y.displayLiveStatus) return false;
     if (!sameThreadStatusPill(x.ownStatus, y.ownStatus)) return false;
     if (!sameThreadStatusPill(x.displayStatus, y.displayStatus)) return false;
@@ -129,12 +247,13 @@ export function sameSidebarVisibleNodes(
   return true;
 }
 
-/** An open thread, or a group holding one, stays above the preview cut. */
+/** An open thread, or a group or agent holding one, stays above the preview cut. */
 function nodeHoldsOpenThread(
   node: SidebarTreeNode,
   openThreadIds: ReadonlySet<string>,
 ): boolean {
   if (node.kind === 'thread') return openThreadIds.has(node.thread.id);
+  if (node.kind === 'agent' && openThreadIds.has(node.thread.id)) return true;
   return node.children.some((member) => openThreadIds.has(member.thread.id));
 }
 
@@ -146,12 +265,12 @@ export interface PreviewThreadsResult {
 /**
  * Slice a sorted top-level node list into a preview window. A thread that
  * is open in a pane never hides behind the cut: any that land in the tail
- * float back into view after the head, in tail order. Groups and pinned
- * rows from both burners sort above the unpinned section, count toward
- * the limit and always stay visible, even when their count exceeds it.
- * Drafts stay visible outside the limit.
+ * float back into view after the head, in tail order. Groups, agents and
+ * pinned rows from both burners sort above the unpinned section, count
+ * toward the limit and always stay visible, even when their count exceeds
+ * it. Drafts stay visible outside the limit.
  *
- * A group takes one slot. Its members take none.
+ * A group or agent takes one slot. Its members take none.
  */
 export function previewSidebarThreads(input: {
   nodes: readonly SidebarTreeNode[];

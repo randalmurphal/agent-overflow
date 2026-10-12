@@ -13,6 +13,7 @@
   import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from './lib/stores/eventNames';
   import { getThreads, loadThreads } from './lib/stores/threads.svelte';
   import { refreshThreadGroups } from './lib/stores/threadGroups.svelte';
+  import { refreshAgentWakes } from './lib/stores/agentWakes.svelte';
   import { markNotificationHydrated } from './lib/stores/eventsNotification';
   import {
     installPaneLayoutPersistence,
@@ -459,6 +460,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         // layout restore below: a failed group load must not be read as a
         // failed boot (refreshThreadGroups owns its own error surface).
         void refreshThreadGroups();
+        void refreshAgentWakes();
         await appStorageReady;
         if (disposed) return;
         syncSidebarLayoutFromAppStorage();

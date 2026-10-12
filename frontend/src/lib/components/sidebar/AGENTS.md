@@ -11,6 +11,12 @@ entity stores. `Sidebar.svelte` owns the top-level render boundary;
   `ThreadRowPinButton` receive callbacks; they do not own entities.
 - Groups are not pinnable. A group's members pin like top-level threads, but
   never as numbered jump targets.
+- A standing agent row is `ThreadRow`'s agent variant, not a component of its
+  own: it uses the group row's geometry, folds the threads it spawned on its
+  chevron (`sidebar:collapsedAgents`), and offers no pin or group item. Its
+  state line reads `stores/agentWakes.svelte.ts`; its `N done` footer
+  (`AgentDoneFooter.svelte`) reads `stores/agentArchivedChildren.svelte.ts`.
+  Rules: [standing agents](../../../../../docs/specs/standing-agents.md#sidebar).
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
   directory. Reconcile rows from each RPC response.
 - Inline rename stays in the owning row. Context menus delegate through the
@@ -28,7 +34,9 @@ because browsers do not expose `DataTransfer` payloads consistently.
 
 Clear the record on every drop target as well as `dragend`; the source row may
 unmount before `dragend`. Groups accept same-project threads not already in the
-group and stop propagation. The list background accepts grouped threads for
+group, never one whose payload is `agentBound` (a standing agent or a thread one
+spawned), and stop propagation. An agent row and its member rows are not drop
+targets. The list background accepts grouped threads for
 ungrouping. Keep hover ownership in `ProjectThreadList` so child rows illuminate
 their group and rejected group targets clear the background affordance.
 
