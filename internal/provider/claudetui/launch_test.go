@@ -75,7 +75,7 @@ func TestBuildLaunchOptionsOmitsEffortWhenUnset(t *testing.T) {
 // prompt with the wrong prompt, which no flag-only test would catch.
 func TestBuildLaunchOptionsPassesTheSystemPromptFile(t *testing.T) {
 	const prompt = "You are the agent.\nWork in the repo."
-	path, err := claude.WriteSystemPromptFile(prompt)
+	path, err := claude.WriteSystemPromptFile(t.TempDir(), prompt)
 	if err != nil {
 		t.Fatalf("WriteSystemPromptFile() error = %v", err)
 	}

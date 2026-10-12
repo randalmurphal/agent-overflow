@@ -270,9 +270,12 @@ func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEve
 		}
 	})
 
+	// The settings directory is the data directory, as in production, so
+	// session prompt files land in it rather than in the shared temp root.
 	app := &App{
-		store:    st,
-		settings: settings.NewService(settingsDir),
+		store:     st,
+		settings:  settings.NewService(settingsDir),
+		configDir: settingsDir,
 	}
 	app.triage = triage.NewRouter(st, bus.emitChannel)
 	app.triage.SetEventHook(bus.observeRouterEvent)

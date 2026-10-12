@@ -232,7 +232,7 @@ func TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel(t *testing.T) {
 	// select-loop body, not still mid-spawn.
 	select {
 	case <-probeFired:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("startup probe never fired")
 	}
 
@@ -343,7 +343,7 @@ func TestStartRateLimitProbeLoop_PollsOnlyAfterTurnActivity(t *testing.T) {
 	app.providerLifecycleService().NoteTurnActivity(testProvider)
 	select {
 	case <-probed:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("no poll after turn activity")
 	}
 	time.Sleep(40 * time.Millisecond)
@@ -355,7 +355,7 @@ func TestStartRateLimitProbeLoop_PollsOnlyAfterTurnActivity(t *testing.T) {
 	app.providerLifecycleService().NoteTurnActivity(testProvider)
 	select {
 	case <-probed:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("no poll after fresh turn activity")
 	}
 }

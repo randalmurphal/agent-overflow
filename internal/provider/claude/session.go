@@ -25,7 +25,7 @@ type Session struct {
 	cancel   context.CancelFunc
 	closing  atomic.Bool
 	readDone chan struct{}
-	// systemPromptPath and appendSystemPromptPath are the temp files
+	// systemPromptPath and appendSystemPromptPath are the files
 	// cfg.SystemPrompt and cfg.AppendSystemPrompt were written to for
 	// `--system-prompt-file` and `--append-system-prompt-file`, or "" for
 	// the one the session does not carry. Removed by Close; see
@@ -230,11 +230,11 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		binary = "claude"
 	}
 
-	systemPromptPath, err := WriteSystemPromptFile(cfg.SystemPrompt)
+	systemPromptPath, err := WriteSystemPromptFile(cfg.SystemPromptDir, cfg.SystemPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("claude: %w", err)
 	}
-	appendSystemPromptPath, err := WriteSystemPromptFile(cfg.AppendSystemPrompt)
+	appendSystemPromptPath, err := WriteSystemPromptFile(cfg.SystemPromptDir, cfg.AppendSystemPrompt)
 	if err != nil {
 		RemoveSystemPromptFile(systemPromptPath)
 		return nil, fmt.Errorf("claude: %w", err)
