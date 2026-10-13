@@ -21,6 +21,10 @@
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import App from '../../App.svelte';
+// CompanionPane imports PlanSidebar lazily. Loaded with the file, the plan
+// case waits for the mount rather than for a first import transforming the
+// sidebar's component graph, which is load-dependent.
+import '../../lib/components/chat/PlanSidebar.svelte';
 import type { Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { makeItem } from '../helpers/chat';
@@ -411,9 +415,6 @@ describe('App integration — windowed thread history', () => {
     pane.setShowPlanSidebar(true);
     await flush();
 
-    // PlanSidebar is a lazy import (CompanionPane); its first load in a
-    // full-suite run pays the on-demand transform, which has outrun the
-    // default 1s wait. Same tripwire budgets as settings-launcher.test.ts.
-    await findAllByText('Deep plan', {}, { timeout: 15_000 });
-  }, 20_000);
+    await findAllByText('Deep plan');
+  });
 });

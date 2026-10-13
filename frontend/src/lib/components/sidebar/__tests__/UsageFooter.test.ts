@@ -1,6 +1,10 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import UsageFooter from '../UsageFooter.svelte';
+// UsageFooter imports the modal lazily. Loaded with the file, the cases wait
+// for the mount rather than for a first import transforming the modal's
+// component graph, which is load-dependent.
+import '../../usage/UsageModal.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { UsageBucket } from '../../../stores/bindings';
 import { getUsagePeriod, resetUsagePeriodForTest } from '../../../stores/usagePeriod.svelte';
@@ -24,10 +28,6 @@ function providerBucket(provider: string, overrides: Partial<UsageBucket> = {}):
 }
 
 describe('<UsageFooter>', () => {
-  // The modal is a lazy chunk. Load it before the tests so a cold transform
-  // under load is paid in the hook, not inside a one-second findByRole wait.
-  beforeAll(() => import('../../usage/UsageModal.svelte'));
-
   beforeEach(() => {
     resetUsagePeriodForTest();
     resetUsageRefreshForTest();

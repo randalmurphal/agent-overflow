@@ -20,6 +20,10 @@ vi.mock('./ThreadTerminalDrawer.svelte', async () => ({
 }));
 
 import LazyThreadTerminalDrawer from './LazyThreadTerminalDrawer.svelte';
+// The mocked drawer module, loaded with the file so its first transform is
+// not paid inside a wait. The component's own `cachedDrawer` stays empty, so
+// the cold render below still takes the async-import path.
+import './ThreadTerminalDrawer.svelte';
 
 function makeSurface() {
   return {
@@ -42,11 +46,6 @@ describe('LazyThreadTerminalDrawer cold-open scroll settle', () => {
     // Cold first open: the module-level drawer cache is empty, so the real
     // drawer arrives via the async import and `settleAfterAsyncMount` fires to
     // re-pin the timeline against the drawer's height reflow.
-    // Load the mocked drawer module before rendering. Its first load transforms
-    // the stub component, which under a loaded full-suite run can outlast
-    // waitFor's 1s budget. The component's own `cachedDrawer` stays empty, so
-    // the render below still takes the cold async-import path.
-    await import('./ThreadTerminalDrawer.svelte');
     const cold = makeSurface();
     const { unmount } = render(LazyThreadTerminalDrawer, {
       surface: cold as never,

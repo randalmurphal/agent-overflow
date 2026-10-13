@@ -54,7 +54,7 @@ jobs:
   # The Linux Go checks share one job: each needs the same toolchain and
   # frontend bundle, which cost more than the checks themselves.
   go-checks:
-    name: gofmt, go vet, go build and bindings
+    name: gofmt, go mod tidy, go vet, go build and bindings
     needs: toolchain
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -74,6 +74,7 @@ jobs:
           frontend-dist: "true"
           cache-name: checks
       - run: make fmt-check
+      - run: make tidy-check
       - run: make go-vet
       - run: make go-build
       - name: Compile the provider smoke tests

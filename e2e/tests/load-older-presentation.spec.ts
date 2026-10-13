@@ -9,10 +9,11 @@ import { gzipSync } from 'node:zlib';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startCompositorTrace, summarizeCompositorWindow } from '../src/compositorTrace.js';
 import { waitForScrollSettle, waitForWebFonts } from '../src/scroll.js';
+import { methodIdByName } from './offhost-helpers.js';
 
 const THREAD_TITLE = 'Delayed history presentation';
 const SEEDED_TURNS = 260;
-const LIST_ITEMS_BEFORE_CURSOR_ID = fnv1a32('main.App.ListItemsBeforeCursor');
+const LIST_ITEMS_BEFORE_CURSOR_ID = methodIdByName('ListItemsBeforeCursor');
 
 interface HeldRpc {
   waitForResponse(): Promise<void>;
@@ -40,14 +41,6 @@ interface PresentationSample {
   readonly hasText: boolean;
   readonly intersectsViewport: boolean;
   readonly clipped: boolean;
-}
-
-function fnv1a32(value: string): number {
-  let hash = 0x811c9dc5;
-  for (const byte of new TextEncoder().encode(value)) {
-    hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
-  }
-  return hash;
 }
 
 function asText(message: string | Buffer): string {

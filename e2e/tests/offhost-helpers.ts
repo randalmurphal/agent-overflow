@@ -396,7 +396,7 @@ export async function solePairedDevice(harness: HarnessApp): Promise<AccessDevic
  */
 let methodNames: Map<number, string> | null = null;
 
-export function methodNameById(id: number): string {
+function methodTable(): Map<number, string> {
   if (methodNames === null) {
     const source = readFileSync(
       fileURLToPath(new URL('../../frontend/bindings/agent-overflow/app.ts', import.meta.url)),
@@ -412,7 +412,19 @@ export function methodNameById(id: number): string {
       'the generated bindings must yield a method table, or every wire assertion reports "unknown"',
     ).toBeGreaterThan(50);
   }
-  return methodNames.get(id) ?? `methodId:${id}`;
+  return methodNames;
+}
+
+export function methodNameById(id: number): string {
+  return methodTable().get(id) ?? `methodId:${id}`;
+}
+
+/** Method name → id, for a spec that holds or inspects one method's frames. */
+export function methodIdByName(name: string): number {
+  for (const [id, candidate] of methodTable()) {
+    if (candidate === name) return id;
+  }
+  throw new Error(`no bound method named ${name} in the generated bindings`);
 }
 
 // ---------------------------------------------------------------------
