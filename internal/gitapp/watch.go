@@ -170,6 +170,14 @@ func (s *Service) CloseStatus() {
 	s.status.wg.Wait()
 }
 
+// RefreshPR drops the workspace's cached open-PR answers and schedules a
+// status refresh, which asks the forge again. For a PR created outside the
+// app's own create action, which nothing on the filesystem announces.
+func (s *Service) RefreshPR(workspace string) {
+	s.core.InvalidatePRCache(workspace)
+	s.RequestRefresh(workspace)
+}
+
 // RequestRefresh schedules a status refresh for a subscribed workspace.
 func (s *Service) RequestRefresh(workspace string) {
 	if s.watch != nil {

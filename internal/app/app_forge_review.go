@@ -718,7 +718,7 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 	// a wake only triggers an immediate poll when a tick actually elapsed
 	// while paused; otherwise the regular ticker cadence resumes untouched.
 	missedTick := false
-	// A failing pump polls again on a doubling delay from the retry base up
+	// A retrying pump (prUpdatePumpRetry) polls again on a doubling delay from the retry base up
 	// to the interval, starting with the failure it was created with; a
 	// healthy one rides the ticker alone. A rate-limited pump instead waits
 	// for the failure's release (the pool's resume time plus the stagger)
@@ -728,9 +728,9 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 	var retryDelay time.Duration
 	var hold time.Time
 	scheduleRetry := func() {
-		failing, release := a.prUpdatePumpRetry(pump)
+		retrying, release := a.prUpdatePumpRetry(pump)
 		switch {
-		case !failing:
+		case !retrying:
 			retry, retryDelay, hold = nil, 0, time.Time{}
 		case !release.IsZero():
 			retryDelay, hold = 0, release
@@ -940,14 +940,18 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 	}, true
 }
 
-// prUpdatePumpRetry reports whether the pump's last observation was a
-// failure, which puts it on the retry schedule, and for a rate limit the
-// release it waits for. A transient failure held back for one retry counts
-// as failing: the retry is what reports it.
-func (a *App) prUpdatePumpRetry(pump *prUpdatePump) (failing bool, release time.Time) {
+// prUpdatePumpRetry reports whether the pump polls on the retry schedule,
+// and for a rate limit the release it waits for. A failed observation
+// retries; a transient failure held back for one retry counts as failing,
+// since the retry is what reports it. So does a PR read with no base tip:
+// GitLab fills a new merge request's diff_refs in after creating it, and
+// the review cannot load until a poll carries them.
+func (a *App) prUpdatePumpRetry(pump *prUpdatePump) (retrying bool, release time.Time) {
 	a.prUpdates.mu.Lock()
 	defer a.prUpdates.mu.Unlock()
-	return pump.fail.failing() || pump.graced, pump.fail.release
+	detail := pump.lastSnapshot.Detail
+	awaitingBase := detail.Number > 0 && detail.BaseRefSHA == ""
+	return pump.fail.failing() || pump.graced || awaitingBase, pump.fail.release
 }
 
 // unsubscribePRUpdates releases one caller's handle. The pump (and its

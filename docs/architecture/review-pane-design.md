@@ -135,7 +135,10 @@ polling.
   instead holds every poll until its resume time, and one transient
   failure over a snapshot on screen is not shown unless the retry fails
   too; each kind has its own surface ([failure
-  presentation](forge-transport.md#failure-presentation)). The pane reads its PR from
+  presentation](forge-transport.md#failure-presentation)). A GitLab merge
+  request read with no base tip (`diff_refs` is null until GitLab has
+  computed a new MR's diff) also polls on the retry delay, and the pane
+  shows it as waiting until a frame carries the tip. The pane reads its PR from
   the workspace's git status; the fast first status marks its PR lookup
   pending (`openPrLookupPending`), and the pane waits on that too rather
   than reading empty PR fields as "no PR". No background polling in v1.

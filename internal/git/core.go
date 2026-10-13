@@ -137,6 +137,12 @@ type Core struct {
 	// invalidation take the writer lock.
 	prCacheMu sync.RWMutex
 	prCache   map[string]prCacheEntry
+	// prCacheEpochs counts InvalidatePRCache calls per cwd. A lookup
+	// caches its answer only when no invalidation of its cwd ran while it
+	// was in flight, so an answer read before a PR was created cannot
+	// outlive the invalidation that announced it. Bounded by the
+	// workspaces invalidated in this process.
+	prCacheEpochs map[string]uint64
 
 	// forgeCache memoizes origin-URL classification per cwd. TTL'd via
 	// forgeDetectionTTL (5 min); written by Core.Status each refresh
@@ -293,6 +299,7 @@ func NewCore(opts ...CoreOption) *Core {
 		timeout:        defaultTimeout,
 		maxOutputBytes: defaultMaxOutputBytes,
 		prCache:        make(map[string]prCacheEntry),
+		prCacheEpochs:  make(map[string]uint64),
 		forgeCache:     make(map[string]forgeCacheEntry),
 		gitDirCache:    make(map[string]string),
 		commonDirCache: make(map[string]string),

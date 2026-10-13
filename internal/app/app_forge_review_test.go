@@ -1115,6 +1115,60 @@ func TestPRUpdateKeyMatchesTheFrontendSourceKey(t *testing.T) {
 	}
 }
 
+// GitLab reports a merge request it just created with no base tip until it
+// has computed the diff, and the review waits on that tip. The pump polls on
+// the retry schedule rather than the hour-long interval until a snapshot
+// carries it, and stops once one does.
+func TestPRUpdatePumpRetriesUntilTheBaseTipArrives(t *testing.T) {
+	t.Parallel()
+	app := NewApp()
+	stubPRCIFetch(app)
+	app.prUpdates.interval = time.Hour
+	app.prUpdates.retryBase = 5 * time.Millisecond
+	var preparing atomic.Bool
+	preparing.Store(true)
+	var fetches atomic.Int32
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
+		fetches.Add(1)
+		detail := gitops.PRDetail{Number: got.Number, HeadSHA: "head-a", BaseRefSHA: "base-a"}
+		if preparing.Load() {
+			detail.BaseRefSHA = ""
+		}
+		return prUpdateSnapshot{Detail: detail}, nil
+	}
+	events := capturePRUpdates(t, app)
+
+	sub, err := app.SubscribePRUpdates(context.Background(), testPR)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		_ = app.UnsubscribePRUpdates(context.Background(), sub.ID)
+		app.prUpdates.wg.Wait()
+	}()
+	if sub.Detail.BaseRefSHA != "" {
+		t.Fatalf("subscribe base tip = %q, want none yet", sub.Detail.BaseRefSHA)
+	}
+	// The subscribe read once; the retry schedule keeps reading.
+	for deadline := time.Now().Add(5 * time.Second); fetches.Load() < 4; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("fetches while the base tip was missing = %d, want the retry schedule polling", fetches.Load())
+		}
+	}
+	expectNoPRUpdate(t, events, "unchanged polls while the base tip is missing")
+
+	preparing.Store(false)
+	filled := awaitPRUpdate(t, events, "base tip arrived")
+	if filled.Detail.BaseRefSHA != "base-a" {
+		t.Fatalf("update base tip = %q, want base-a", filled.Detail.BaseRefSHA)
+	}
+	settled := fetches.Load()
+	time.Sleep(100 * time.Millisecond)
+	if got := fetches.Load(); got != settled {
+		t.Fatalf("fetches after the base tip arrived = %d, want none on an hour interval", got-settled)
+	}
+}
+
 // TestSubscribePRUpdatesSurvivesAFailingFirstFetch pins boot-time
 // resilience: the first forge call for a PR failing (a DNS lookup timing
 // out before the resolver is up) must not fail the subscribe and leave the

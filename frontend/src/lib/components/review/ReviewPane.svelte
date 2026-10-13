@@ -33,6 +33,7 @@
   import { countReviewComments, type CommentCounts } from '../../utils/reviewComments';
   import { fileExtensionLabel } from '../../utils/reviewTree';
   import { rateLimitMessage } from '../../utils/forgeFailure';
+  import { forgeLabels } from '../../utils/forgeLabels';
   import { threadHasScope } from '../../transport/entityScopes';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
   import Icon from '../primitives/Icon.svelte';
@@ -679,7 +680,7 @@
     {:else if review.loading && review.files.length === 0}
       <div class="px-4 py-3 text-xs text-fg-muted">Loading…</div>
     {:else if review.files.length === 0 && review.awaitingPR}
-      <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-awaiting-pr">Waiting for the pull request…</div>
+      <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-awaiting-pr">Waiting for the {forgeLabels(review.prRef?.forge).longSingular.toLowerCase()}…</div>
     {:else if review.files.length === 0 && review.error}
       <!-- Nothing loaded: the banner above says why. An empty diff is not
            what the load found. -->

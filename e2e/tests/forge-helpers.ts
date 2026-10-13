@@ -58,6 +58,9 @@ export interface ForgePull {
   baseSha?: string;
   /** The base branch's tip: GitHub baseRefOid, GitLab start_sha. */
   startSha?: string;
+  /** GitLab only: the merge request's diff is not computed yet, so
+   * diff_refs reads null. */
+  diffPending?: boolean;
   diff?: string;
   /** PR-level conversation comments. */
   comments?: ForgeComment[];

@@ -31,7 +31,7 @@ export interface CreatePRSurface {
   openDialogElsewhere: ((page: Page) => Promise<void>) | null;
 }
 
-const BRANCH = 'feature-pr';
+export const BRANCH = 'feature-pr';
 
 const labels = {
   github: { noun: 'PR', create: 'Create PR', open: 'Open PR', dialog: 'Create Pull Request' },
@@ -51,7 +51,11 @@ function createdURL(repo: ForgeRepo, number: number): string {
 }
 
 /** A thread on a project whose checked-out branch is published with no PR/MR. */
-async function seedPublishedBranch(harness: HarnessApp, forge: 'github' | 'gitlab', name: string): Promise<ForgeRepo> {
+export async function seedPublishedBranch(
+  harness: HarnessApp,
+  forge: 'github' | 'gitlab',
+  name: string,
+): Promise<{ repo: ForgeRepo; threadId: string }> {
   const title = `${name} thread`;
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{
@@ -67,10 +71,10 @@ async function seedPublishedBranch(harness: HarnessApp, forge: 'github' | 'gitla
   harnessGit(harness, root, 'commit', '--quiet', '-m', 'feature work');
   const repo: ForgeRepo = { forge, project: `acme/${name}` };
   await publishBranch(harness, root, repo, BRANCH);
-  return repo;
+  return { repo, threadId: seed.projects[0].threadIds[0] };
 }
 
-async function openThread(page: Page, name: string): Promise<void> {
+export async function openThread(page: Page, name: string): Promise<void> {
   await page.getByTestId('thread-row').filter({ hasText: `${name} thread` }).click();
   await expect(page.getByLabel('Message Input')).toBeVisible();
 }
@@ -100,7 +104,7 @@ export function createPRFlow(surface: CreatePRSurface): void {
     page,
   }) => {
     const name = `create-${forge}-ok`;
-    const repo = await seedPublishedBranch(harness, forge, name);
+    const { repo } = await seedPublishedBranch(harness, forge, name);
     await harness.open(page);
     await openThread(page, name);
 
@@ -144,7 +148,7 @@ export function createPRFlow(surface: CreatePRSurface): void {
 
   test(`a ${label.noun} the forge refuses shows its error in the dialog, which stays open`, async ({ harness, page }) => {
     const name = `create-${forge}-refused`;
-    const repo = await seedPublishedBranch(harness, forge, name);
+    const { repo } = await seedPublishedBranch(harness, forge, name);
     await harness.open(page);
     await openThread(page, name);
 

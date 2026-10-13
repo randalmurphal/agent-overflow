@@ -5,7 +5,10 @@
 // diagnosis and a Retry, not "No changed files", and loads on its own once
 // origin answers and the PR poll runs again; a refresh that fails while a
 // diff is on screen keeps that diff under the error, and Retry replaces it.
-// The PR poll runs every 2s here so the recovery frame comes quickly.
+// A GitLab merge request whose diff GitLab is still preparing (diff_refs
+// null) waits without an error and loads once GitLab reports it, on the PR
+// poll's retry schedule rather than its interval. The PR poll runs every 2s
+// in the outage tests so the recovery frame comes quickly.
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -159,4 +162,39 @@ test('a failed refresh keeps the diff on screen under the error, and Retry repla
     await page.close();
     await harness.close();
   }
+});
+
+test('a GitLab MR whose diff is still being prepared loads once GitLab reports it', async ({ harness, page }) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: `prepare-${randomBytes(4).toString('hex')}`,
+        repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+        threads: [{ title: TITLE, turns: [{ userText: 'Hello.', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }],
+      },
+    ],
+  });
+  const repo = await publishPullRequest(harness, seed.projects[0].path, {
+    forge: 'gitlab',
+    project: `ao-e2e/prepare-${randomBytes(4).toString('hex')}`,
+    pulls: [{ number: 4, title: 'Just opened', body: '', diffPending: true }],
+  }, { 'src/first.ts': 'export const first = 1;\n' });
+  await harness.open(page);
+  const review = await openPullRequestReview(page, TITLE);
+  const paths = review.getByTestId('review-file-header-path');
+
+  // Pending, and nothing wrong.
+  await expect(review.getByTestId('review-pr-header')).toContainText('Just opened');
+  await expect(review.getByTestId('review-awaiting-pr')).toHaveText('Waiting for the merge request…');
+  await expect(paths).toHaveCount(0);
+  await expect(review.getByTestId('review-error')).toHaveCount(0);
+  await expect(review.getByTestId('review-empty')).toHaveCount(0);
+
+  // The PR poll interval is 45s here; the retry schedule brings it sooner.
+  const [pull] = repo.pulls ?? [];
+  await seedForge(harness, [{ ...repo, pulls: [{ ...pull, diffPending: false }] }]);
+  await expect(paths).toContainText(['src/first.ts'], { timeout: 15_000 });
+  await expect(review.getByTestId('review-awaiting-pr')).toHaveCount(0);
+  await expect(review.getByTestId('review-error')).toHaveCount(0);
+  await expectEveryForgeCallHandled(harness);
 });

@@ -64,6 +64,9 @@ type Pull struct {
 	HeadSHA  string `json:"headSha,omitempty"`
 	BaseSHA  string `json:"baseSha,omitempty"`
 	StartSHA string `json:"startSha,omitempty"`
+	// DiffPending answers a GitLab merge request as GitLab does right after
+	// creating it, before it has computed the diff: diff_refs is null.
+	DiffPending bool `json:"diffPending,omitempty"`
 	// Diff is the PR's unified diff. The file and line counts the PR reads
 	// report are derived from it.
 	Diff string `json:"diff,omitempty"`
@@ -297,6 +300,9 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 	}
 	if strings.TrimSpace(p.Title) == "" {
 		return errors.New("title is required")
+	}
+	if p.DiffPending && forge != "gitlab" {
+		return errors.New("diffPending is a GitLab merge request state")
 	}
 	switch p.State {
 	case "":

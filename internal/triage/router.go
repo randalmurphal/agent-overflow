@@ -204,6 +204,13 @@ type Router struct {
 	// at router construction; nil disables it. Backs highlight span
 	// persistence and the remote diff seed push.
 	diffPayloadPersisted func(threadID, payloadID string, previews []string, patch string)
+	// commandSettled is an app-layer observer of a shell command's
+	// tool_call row persisted in a terminal status, with the command it
+	// ran. Every write of such a row reports it, so a row re-persisted
+	// after settling reports again. May run on the provider read loop —
+	// implementations must not block. Wired via SetCommandSettledObserver
+	// at router construction; nil disables it.
+	commandSettled func(threadID, command string)
 	// codeSpanEnricher builds the persisted `codeSpans` meta value for
 	// a settled assistant text (see code_spans.go). Wired via
 	// SetCodeSpanEnricher at router construction; nil disables it.
@@ -229,6 +236,27 @@ func (r *Router) endAssistantText(threadID, itemID, text string) {
 // it is read without synchronization on the persist paths.
 func (r *Router) SetDiffPayloadObserver(fn func(threadID, payloadID string, previews []string, patch string)) {
 	r.diffPayloadPersisted = fn
+}
+
+// SetCommandSettledObserver wires the settled-command observer (see the
+// commandSettled field). Call before the router handles events — it is
+// read without synchronization on the persist paths.
+func (r *Router) SetCommandSettledObserver(fn func(threadID, command string)) {
+	r.commandSettled = fn
+}
+
+// notifyCommandSettled reports a persisted shell command row that has
+// reached a terminal status.
+func (r *Router) notifyCommandSettled(item store.Item) {
+	if r.commandSettled == nil || item.Kind != itemKindToolCall || !store.IsCommandOutputToolName(item.ToolName) {
+		return
+	}
+	switch item.Status {
+	case statusCompleted, statusErrored:
+	default:
+		return
+	}
+	r.commandSettled(item.ThreadID, CommandFromLaunch(item))
 }
 
 // notifyDiffPayloadPersisted forwards a just-persisted diff-bearing
@@ -1433,6 +1461,7 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 		return store.Item{}, err
 	}
 	r.noteToolCallLink(persisted)
+	r.notifyCommandSettled(persisted)
 	r.countCodexExecutionToolCall(persisted)
 	// Bump sidebar activity only for user-authored user_text rows.
 	// Provider-injected wire-only context and subagent-internal prompts
@@ -1486,6 +1515,7 @@ func (r *Router) persistItemWithPayloadAppend(item store.Item, payloadID string,
 		return err
 	}
 	r.noteToolCallLink(persisted)
+	r.notifyCommandSettled(persisted)
 	r.countCodexExecutionToolCall(persisted)
 	if countsAsActivity {
 		r.bumpThreadActivityForUserText(persisted.ThreadID, persisted.UpdatedAt)

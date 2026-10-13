@@ -211,6 +211,11 @@ forge request. An answer is cached for `prLookupTTL` (30s), a "no open PR"
 included and never longer. A failed lookup is retried after 20s, doubling
 per consecutive failure of that (workspace, branch) up to 15 minutes, and
 keeps showing the PR it last found; a success resets the count.
+`InvalidatePRCache` drops a workspace's answers, and a lookup in flight
+across it does not cache its result. The app's create action invalidates,
+and so does an agent command that settles running `gh pr create` or
+`glab mr create` (`git.CreatesPullRequest`), so the new PR shows without
+waiting out a cached "no open PR".
 
 ## Requests
 

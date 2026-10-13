@@ -114,6 +114,64 @@ func TestLookupOpenPRCachesResults(t *testing.T) {
 	}
 }
 
+// A lookup that read "no PR" before the PR was created, and finished after
+// the invalidation that announced it, must not cache that answer: the next
+// lookup asks the forge again and sees the PR.
+func TestInvalidatePRCacheDiscardsALookupInFlight(t *testing.T) {
+	t.Parallel()
+	var core *Core
+	cwd := t.TempDir()
+	var calls atomic.Int32
+	core, _ = newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op != "OpenPRsByHead" {
+			return forgeUnexpected(t, call)
+		}
+		if calls.Add(1) == 1 {
+			// The forge answered before the PR existed; the create and its
+			// invalidation land before this lookup stores the answer.
+			core.InvalidatePRCache(cwd)
+			return githubData(`{"repository":{"pullRequests":{"nodes":[]}}}`)
+		}
+		return githubData(`{"repository":{"pullRequests":{"nodes":[{"url":"https://example.com/pr/7","number":7,"title":"seven","state":"OPEN"}]}}}`)
+	})
+	seedForgeCacheGitHub(t, core, cwd)
+
+	if url, _, _ := core.lookupOpenPR(t.Context(), cwd, "feat"); url != "" {
+		t.Fatalf("first lookup = %q, want no PR", url)
+	}
+	if url, number, lookupErr := core.lookupOpenPR(t.Context(), cwd, "feat"); number != 7 || lookupErr != "" {
+		t.Fatalf("lookup after invalidation = (%q, %d, %q), want PR 7", url, number, lookupErr)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("forge requests = %d, want 2", got)
+	}
+}
+
+// Invalidating one workspace leaves another's in-flight lookup alone: its
+// answer is cached, and the next lookup asks the forge nothing.
+func TestInvalidatePRCacheKeepsAnotherWorkspacesLookupInFlight(t *testing.T) {
+	t.Parallel()
+	var core *Core
+	cwd, other := t.TempDir(), t.TempDir()
+	var calls atomic.Int32
+	core, _ = newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op != "OpenPRsByHead" {
+			return forgeUnexpected(t, call)
+		}
+		if calls.Add(1) == 1 {
+			core.InvalidatePRCache(other)
+		}
+		return githubData(`{"repository":{"pullRequests":{"nodes":[]}}}`)
+	})
+	seedForgeCacheGitHub(t, core, cwd)
+
+	core.lookupOpenPR(t.Context(), cwd, "feat")
+	core.lookupOpenPR(t.Context(), cwd, "feat")
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("forge requests = %d, want 1: another workspace's invalidation discarded this one's answer", got)
+	}
+}
+
 // TestInvalidatePRCacheClearsCwdEntries verifies that a successful
 // CreatePR can drop the stale "no PR" cached value so the next status
 // refresh sees the freshly-opened PR rather than waiting up to 30s.
