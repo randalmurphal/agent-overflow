@@ -2637,6 +2637,83 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
   });
 }
 
+// The cost the give-back accepts, shown on Codex. The provider records a
+// message in its thread when it takes it in, and the session died before
+// the echo confirmed the completion, so it goes back to its watch and the
+// watcher delivers it again into the thread the next session resumes. The
+// agent then holds it twice; the person sees one row for it and an empty
+// composer. A crash leaves the same state, but its relaunch resumes the
+// thread during boot, before a client is connected to see the resume.
+test('codex: a completion the provider took in before its session died reaches the agent twice and the person once', async ({ page }) => {
+  test.setTimeout(300_000);
+  const provider = 'codex';
+  const [harness, remote] = await startTogether(launchHarness(), launchHarness());
+  try {
+    const g = await giveBackCaller(() => harness, remote, provider, 'give-back-duplicate', 'Unused.');
+    // A session that records each message in its thread as it takes it in,
+    // as Codex writes the user message to the rollout, then holds the turn
+    // without echoing it.
+    await harness.rpc('StopSession', g.caller);
+    await setScenario(harness, g.callerPath, {
+      ...threadToolsScenario({
+        name: 'give-back-duplicate-held',
+        provider,
+        echoUserMessage: true,
+        turns: [{ steps: [{ gate: 'hold' }], text: 'unreached', echo: false }],
+        afterTurns: 'silent',
+      }),
+      codex: { keepHistory: true },
+    });
+    await writeFile(g.release, '');
+    const held = await g.heldMock(await wakeInput(harness, g.callerPath, g.completion, 60_000));
+    expect(g.state()).toMatchObject({ watch: 'queued', rows: 0 });
+    expect(g.marks().completion).toBe(0);
+    await g.healthy('give-back-duplicate-after');
+    await harness.rpc('HarnessMockCommand', held, { type: 'exit', code: 1 });
+    await expect.poll(() => g.state().watch, { timeout: 30_000 }).toBe('pending');
+
+    // The redelivery resumes the thread, which already holds the completion.
+    const resumed = () =>
+      harness.countEvents<HarnessMockEventData>(
+        'harness:mock',
+        (ev) => ev.report.kind === 'history_resumed' && ev.cwd === g.callerPath && (ev.report.input ?? '').includes(g.completion),
+      );
+    await expect.poll(() => countInputs(harness, g.callerPath, g.completion), { timeout: 90_000 }).toBe(2);
+    await awaitTurnCompleted(harness, g.caller);
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    expect(
+      { resumed: resumed(), redelivered: countInputs(harness, g.callerPath, g.completion) - 1 },
+      'the resumed session holds the completion from its thread and from the redelivery',
+    ).toEqual({ resumed: 1, redelivered: 1 });
+    const conn = new DatabaseSync(join(g.dataDir, 'agent-overflow.db'), { readOnly: true });
+    let rows: number;
+    try {
+      rows = (
+        conn
+          .prepare(`SELECT COUNT(*) AS n FROM items WHERE thread_id = ? AND kind = 'user_text' AND summary LIKE ?`)
+          .get(g.caller, `%${g.requestId}%`) as { n: number }
+      ).n;
+    } finally {
+      conn.close();
+    }
+    expect(rows, 'the person sees the completion once').toBe(1);
+    expect(g.state()).toMatchObject({ watch: 'queued', draft: '', rows: 0 });
+    expect(g.marks().completion).toBe(1);
+    console.log(
+      `codex: died after the provider took the completion in: the resumed agent holds it twice, the transcript shows ${rows} row, the composer is empty`,
+    );
+
+    await harness.open(page);
+    await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
+    const completion = page.getByText('Remote job finished on Build box: nightly build');
+    await expect(completion).toHaveCount(1);
+    await expect(page.getByTestId('composer-root').locator('textarea')).toHaveValue('');
+    await shoot(page, 'codex-duplicate-after-death-shows-one-completion.png', completion);
+  } finally {
+    await Promise.allSettled([harness.close(), remote.close()]);
+  }
+});
+
 // A wake and an outside send are accepted once they are queued, not once the
 // session they need is up. Codex holds this start at its handshake for longer
 // than the ten seconds a delivery once waited for the thread lock; both still

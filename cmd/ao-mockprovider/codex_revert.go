@@ -268,3 +268,48 @@ func (a *codexAdapter) loadHistoryMode(threadID string) string {
 	}
 	return state.HistoryMode
 }
+
+// codexHistoryPath locates a thread's recorded inputs
+// (scenario.CodexOptions.KeepHistory) beside its thread-store entry.
+func codexHistoryPath(threadID string) (string, bool) {
+	path, ok := codexThreadStatePath(threadID)
+	return strings.TrimSuffix(path, ".json") + ".inputs.json", ok
+}
+
+func loadHistoryInputs(path string) []string {
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	var inputs []string
+	if err == nil {
+		err = json.Unmarshal(raw, &inputs)
+	}
+	if err != nil {
+		log.Fatalf("codex: read mock thread history: %v", err)
+	}
+	return inputs
+}
+
+// recordHistoryInput adds one turn/start input to the thread's history.
+func recordHistoryInput(threadID, input string) {
+	path, ok := codexHistoryPath(threadID)
+	if !ok {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		log.Fatalf("codex: create mock thread store: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(mustJSON(append(loadHistoryInputs(path), input))), 0o600); err != nil {
+		log.Fatalf("codex: record mock thread history: %v", err)
+	}
+}
+
+// reportResumedHistory reports each input the resumed thread's history holds.
+func (a *codexAdapter) reportResumedHistory(threadID string) {
+	if path, ok := codexHistoryPath(threadID); ok {
+		for _, input := range loadHistoryInputs(path) {
+			a.e.rep.report(control.Report{Kind: control.ReportHistoryResumed, Input: input, SessionRef: threadID})
+		}
+	}
+}

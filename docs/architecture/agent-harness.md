@@ -580,6 +580,13 @@ envelope up into its own turn at once. On, it holds the envelope:
 
 See claude-wire.md §Queued-message consumption.
 
+`codex.keepHistory` records each `turn/start` input in the mock's thread
+store as it arrives, before any echo, as Codex writes a user message to
+the thread's rollout when it takes it in. A later mock process that
+resumes the thread posts one `history_resumed` report per recorded input,
+so a spec can show what a resumed agent already holds, including a
+message the app never saw confirmed.
+
 A Codex sign-in is the exception among those: its argv is a plain
 `app-server`, so it reaches the ordinary adapter and DOES register on
 the control channel. That is deliberate — the device-code flow finishes
@@ -717,7 +724,7 @@ workspace boundary. The mock then long-polls for
 commands and posts progress reports (`registered`, `turn_started`,
 `user_input`, `step_started`, `step_completed`, `waiting_signal`,
 `advance_released`, `advance_buffered`, `approval_pending`,
-`approval_decided`, `turn_interrupted`, `history_cut`, `mcp_result`,
+`approval_decided`, `turn_interrupted`, `history_cut`, `history_resumed`, `mcp_result`,
 `mcp_tools`, `fixture_error`, `session_config`, `scenario_done`,
 `exiting`),
 which the harness re-emits as `harness:mock` events
