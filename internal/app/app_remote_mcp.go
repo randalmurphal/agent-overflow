@@ -214,6 +214,9 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 				a.emitBackgroundChanged(access.ThreadID)
 			}
 		}
+		if a.remoteReplySettledForTest != nil {
+			a.remoteReplySettledForTest()
+		}
 		endWait()
 		// The wait's end is what moves a running job into the background:
 		// the tray row changes state without the job itself changing.
