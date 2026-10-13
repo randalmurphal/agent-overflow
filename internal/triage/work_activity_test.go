@@ -31,7 +31,7 @@ func TestUnfinishedWorkIncludesFlushHandoffAfterCleanup(t *testing.T) {
 		}
 	})
 	r.RegisterQueueItem("thread", makeQueueItem("queue:0", "send"))
-	r.tryFlushQueue("thread")
+	r.tryFlushQueue("thread", "")
 	if r.AnyUnfinishedWork(time.Minute) {
 		t.Fatal("settled dispatch left an admission claim")
 	}

@@ -516,7 +516,7 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		if err := r.handleBackgroundTaskTerminal(evt); err != nil {
 			return err
 		}
-		r.maybeFlushQueueAtBoundary(evt.ThreadID)
+		r.maybeFlushQueueAtBoundary(evt.ThreadID, evt.SessionToken)
 		return nil
 	case provider.EventBackgroundTaskNotification:
 		return r.handleBackgroundTaskNotification(evt)
@@ -693,7 +693,7 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	}
 	if handled, err := r.observeCodexUnifiedExecComplete(evt); handled || err != nil {
 		if handled && err == nil {
-			r.maybeFlushQueueAtBoundary(evt.ThreadID)
+			r.maybeFlushQueueAtBoundary(evt.ThreadID, evt.SessionToken)
 		}
 		return err
 	}
@@ -737,7 +737,7 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	if err := r.observeCodexToolComplete(evt); err != nil {
 		return err
 	}
-	r.maybeFlushQueueAtBoundary(evt.ThreadID)
+	r.maybeFlushQueueAtBoundary(evt.ThreadID, evt.SessionToken)
 	return r.emitInline(evt)
 }
 

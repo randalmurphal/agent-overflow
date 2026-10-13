@@ -186,11 +186,10 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 					a.attemptAutoReconnect(threadID)
 				}()
 			}
-			// The provider emits nothing after "disconnected". The mark
-			// stands only while this session still owns the thread.
-			if a.triage == nil || a.triage.SessionCurrent(threadID, sessionToken) {
-				a.providerEvents.retireWhenIdle(threadID)
-			}
+			// The provider emits nothing after "disconnected". Only the
+			// disconnect of the session that owns the thread marks the
+			// queue; a retired session's returns above.
+			a.providerEvents.retireWhenIdle(threadID)
 		}
 	}
 	handleEvent := func(evt provider.ProviderEvent) { handle(evt, 0) }

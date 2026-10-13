@@ -82,7 +82,8 @@ clears the entries the list marks for clearing at a commit.
 names and fails when an entry has no refusal case, so state added to the
 list, or to the commit's clears, needs a guarded writer. An execution's
 tool count carries the token of the session that started it, since the row
-writes that feed it have no frame. A stream's count is released only on
+writes that feed it have no frame. A boundary that sends queued messages
+(`tryFlushQueue`) sends them only from a frame of the live session. A stream's count is released only on
 the thread state it was taken on, so a settle that outlives
 `CleanupThread` releases nothing of a replacement's. Rows such a frame
 persists stay in history. `HandleSessionFrame` reports to the host whether

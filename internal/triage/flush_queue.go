@@ -218,7 +218,7 @@ func (r *Router) SetSendUndeliveredHook(fn func(threadID string)) {
 // frontend can keep showing the submitted message above the composer while
 // the app writes it to the provider and waits for the provider-visible echo.
 func (r *Router) FlushQueuedItems(threadID string) bool {
-	return r.tryFlushQueue(threadID)
+	return r.tryFlushQueue(threadID, "")
 }
 
 // RegisterQueueItem appends a queued user message to the per-thread
@@ -450,7 +450,8 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 // no-op until new items are registered.
 //
 // Returns true when the dispatcher was invoked; false otherwise (no
-// items, no dispatcher, empty threadID). The boolean is
+// items, no dispatcher, empty threadID, a boundary of a retired session's
+// frame). The boolean is
 // informational — lifecycle handlers don't branch on it.
 //
 // Dispatcher invocation happens AFTER r.mu is released so callbacks can call
@@ -479,11 +480,17 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 // does. A dispatch that fails and requeues between those two reads is
 // covered separately: the failure persists an error row before the
 // inflight count drops, so the turn is no longer clean.
-func (r *Router) tryFlushQueue(threadID string) bool {
+func (r *Router) tryFlushQueue(threadID, sessionToken string) bool {
 	if threadID == "" {
 		return false
 	}
 	r.mu.Lock()
+	// A retired session's boundary is not the live session's: the queue
+	// waits for one of its own.
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		r.mu.Unlock()
+		return false
+	}
 	st := r.threadStateIfPresent(threadID)
 	if st == nil || len(st.queuedFlushItems) == 0 {
 		r.mu.Unlock()
@@ -551,7 +558,7 @@ func releaseClaimedFlushItems(claimed, released []QueuedFlushItem) []QueuedFlush
 	return kept
 }
 
-func (r *Router) maybeFlushQueueAtBoundary(threadID string) bool {
+func (r *Router) maybeFlushQueueAtBoundary(threadID, sessionToken string) bool {
 	if threadID == "" || !r.HasQueuedFlushItems(threadID) {
 		return false
 	}
@@ -565,7 +572,7 @@ func (r *Router) maybeFlushQueueAtBoundary(threadID string) bool {
 	if active {
 		return false
 	}
-	return r.tryFlushQueue(threadID)
+	return r.tryFlushQueue(threadID, sessionToken)
 }
 
 func (r *Router) hasQueueBlockingWork(threadID string) (bool, error) {

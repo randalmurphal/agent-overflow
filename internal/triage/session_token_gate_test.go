@@ -237,7 +237,7 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { return r.openRoundID(threadID) == "" || !r.HasInFlightTurnOrRound(threadID) }},
-		{"open turn and round", "turn complete queue flush", func(t *testing.T, r *Router, token string) {
+		{"queued sends dispatch", "turn complete queue flush", func(t *testing.T, r *Router, token string) {
 			// The live session is idle with a message queued: only its own
 			// turn boundary may send it.
 			r.SetFlushDispatcher((&recordingDispatcher{}).dispatch)
@@ -245,6 +245,11 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			if err := r.handleTurnComplete(fromSession(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: threadID, TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now()}, token)); err != nil {
 				t.Fatal(err)
 			}
+		}, func(r *Router) bool { return !r.HasQueuedFlushItems(threadID) }},
+		{"queued sends dispatch", "boundary queue flush", func(t *testing.T, r *Router, token string) {
+			r.SetFlushDispatcher((&recordingDispatcher{}).dispatch)
+			r.RegisterQueueItem(threadID, makeQueueItem("queue:0", "for the live session"))
+			r.maybeFlushQueueAtBoundary(threadID, token)
 		}, func(r *Router) bool { return !r.HasQueuedFlushItems(threadID) }},
 		{"approvals", "approval request", func(t *testing.T, r *Router, token string) {
 			request := provider.ApprovalRequest{RequestID: "req-1", ThreadID: threadID, ToolUseID: "tool-1", ToolName: "Bash", Kind: "command", Input: []byte(`{"command":"make"}`)}

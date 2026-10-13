@@ -360,7 +360,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	flushQueueAtBoundary := true
 	defer func() {
 		if flushQueueAtBoundary {
-			r.maybeFlushQueueAtBoundary(evt.ThreadID)
+			r.maybeFlushQueueAtBoundary(evt.ThreadID, evt.SessionToken)
 		}
 	}()
 	// The turn's writes are done once settlement below returns; push the

@@ -37,6 +37,9 @@ var processBoundState = []processBoundEntry{
 	// restore's removal against the fresh list finds nothing.
 	{name: "interrupt marks", hostWritten: true, clear: func(_ *threadState, id *threadIdentity) { id.interruptMarks = nil }},
 	{name: "open turn and round"},
+	// The queue's contents are the host's; a frame's boundary is what
+	// sends them. Only the live session's boundary may.
+	{name: "queued sends dispatch"},
 	{name: "streams"},
 	{name: "approvals"},
 	{name: "user inputs"},
