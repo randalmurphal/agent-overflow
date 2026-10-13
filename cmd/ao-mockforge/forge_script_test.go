@@ -329,9 +329,9 @@ func TestForgeScriptReadsForgeRemote(t *testing.T) {
 // otherRemote is an origin naming a repository the fixtures do not seed.
 var otherRemote = map[string]string{"github": "https://github.com/other/proj.git", "gitlab": "git@gitlab.com:other/proj.git"}
 
-// TestForgeScriptReadsEveryPage seeds a pull with more jobs and review
-// threads than one page (100) holds and reads them through each paginated
-// subcommand.
+// TestForgeScriptReadsEveryPage seeds more pulls, and a pull with more
+// jobs and review threads, than one page (100) holds and reads them
+// through each paginated subcommand.
 func TestForgeScriptReadsEveryPage(t *testing.T) {
 	const count = 101
 	for _, fc := range []struct{ forge, project, remote string }{
@@ -348,7 +348,11 @@ func TestForgeScriptReadsEveryPage(t *testing.T) {
 				}
 				pull.Threads = append(pull.Threads, forgefake.Thread{ID: id, Path: "app.go", Line: intPtr(i + 1), Comments: []forgefake.Comment{{Author: "erin", Body: fmt.Sprintf("thread %d", i)}}})
 			}
-			r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: fc.forge, Project: fc.project, Pulls: []forgefake.Pull{pull}}}})
+			pulls := []forgefake.Pull{pull}
+			for i := range count {
+				pulls = append(pulls, forgefake.Pull{Number: 2 + i, Title: fmt.Sprintf("pull %d", i), Author: "dave", HeadRef: fmt.Sprintf("topic-%03d", i), State: "merged"})
+			}
+			r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: fc.forge, Project: fc.project, Pulls: pulls}}})
 			f := newForgeCheckout(t, r, fc.remote, "busy")
 
 			for _, read := range []struct {
@@ -364,6 +368,13 @@ func TestForgeScriptReadsEveryPage(t *testing.T) {
 				{[]string{"pr", "commits"}, func(t *testing.T, out any) {
 					expect(t, "pr commits", out, []any{map[string]any{"sha": strings.Repeat("b", 40), "state": "pass"}})
 				}},
+				{[]string{"pr", "list", "--state", "all", "--limit", "1000"}, func(t *testing.T, out any) {
+					got := numbers(t, out)
+					expect(t, "pr list past one page", []any{len(got), got[0], got[len(got)-1]}, []any{count + 1, float64(count + 1), 1.0})
+				}},
+				{[]string{"pr", "list", "--state", "all", "--limit", "101"}, func(t *testing.T, out any) {
+					expect(t, "pr list cut inside the second page", len(numbers(t, out)), count)
+				}},
 			} {
 				t.Run(strings.Join(read.args, " "), func(t *testing.T) {
 					f.t = t
@@ -377,6 +388,84 @@ func TestForgeScriptReadsEveryPage(t *testing.T) {
 					t.Errorf("unhandled invocation: %s %q: %s", inv.CLI, inv.Args, inv.Stderr)
 				}
 			}
+		})
+	}
+}
+
+// TestForgeScriptViewsMergeStates: pr view reports an armed
+// merge-when-ready and a base that moved, from the fixture's AutoMerge
+// and Mergeable "behind".
+func TestForgeScriptViewsMergeStates(t *testing.T) {
+	for _, fc := range []struct{ forge, project, remote, behind string }{
+		{"github", "acme/widgets", "https://github.com/acme/widgets.git", "BEHIND"},
+		{"gitlab", "grp/sub/tool", "git@gitlab.com:grp/sub/tool.git", "need_rebase"},
+	} {
+		t.Run(fc.forge, func(t *testing.T) {
+			running := &forgefake.Pipeline{ID: 91, Jobs: []forgefake.Job{{ID: 911, Name: "unit", Status: "running"}}}
+			r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: fc.forge, Project: fc.project, Pulls: []forgefake.Pull{
+				{Number: 1, Title: "Armed", Author: "dave", HeadRef: "armed", AutoMerge: true, CI: running},
+				{Number: 2, Title: "Stale", Author: "dave", HeadRef: "stale", Mergeable: "behind"},
+				{Number: 3, Title: "Plain", Author: "dave", HeadRef: "plain"},
+			}}}})
+			f := newForgeCheckout(t, r, fc.remote, "main")
+			expect(t, "pr view 1 auto_merge", pick(t, f.json("", "pr", "view", "1"), "auto_merge"), true)
+			expect(t, "pr view 3 auto_merge", pick(t, f.json("", "pr", "view", "3"), "auto_merge"), false)
+			stale := f.json("", "pr", "view", "2")
+			expect(t, "pr view 2 merge", []any{pick(t, stale, "merge"), pick(t, stale, "merge_native")}, []any{"behind", fc.behind})
+			for _, inv := range r.engine.Invocations(0).Invocations {
+				if inv.Unhandled {
+					t.Errorf("unhandled invocation: %s %q: %s", inv.CLI, inv.Args, inv.Stderr)
+				}
+			}
+		})
+	}
+}
+
+// TestWorktreeAuditReadsPRState runs worktree-audit.sh, the third caller
+// of the forge script, in a checkout holding worktrees on two branches:
+// `ready` has the viewer's open pull, `feature` a pull by someone else,
+// which `pr list --author @me` leaves out. The best-effort fetch fails
+// fast (GIT_SSH_COMMAND=false).
+func TestWorktreeAuditReadsPRState(t *testing.T) {
+	audit := filepath.Join(filepath.Dir(forgeScript), "worktree-audit.sh")
+	for _, fc := range []struct{ forge, project, remote string }{
+		{"github", "acme/widgets", "git@github.com:acme/widgets.git"},
+		{"gitlab", "grp/sub/tool", "git@gitlab.com:grp/sub/tool.git"},
+	} {
+		t.Run(fc.forge, func(t *testing.T) {
+			r := newRig(t, forgeScriptFixture(fc.forge, fc.project))
+			f := newForgeCheckout(t, r, fc.remote, "main")
+			ready, feature := filepath.Join(t.TempDir(), "ready"), filepath.Join(t.TempDir(), "feature")
+			f.git("worktree", "add", "-q", "-b", "ready", ready)
+			f.git("worktree", "add", "-q", "-b", "feature", feature)
+			f.env = append(f.env, "GIT_SSH_COMMAND=false")
+			f.script = audit
+			out := f.run("")
+			rows := map[string][]string{}
+			for _, line := range strings.Split(strings.TrimSpace(out), "\n")[1:] {
+				cols := strings.Split(line, "\t")
+				rows[filepath.Base(cols[len(cols)-1])] = cols
+			}
+			if len(rows) != 2 {
+				t.Fatalf("audit rows = %q, want the two linked worktrees", out)
+			}
+			expect(t, "ready PR and bucket", []any{rows["ready"][5], rows["ready"][6]}, []any{"#4/open", "hold-open-pr"})
+			expect(t, "feature PR and bucket", []any{rows["feature"][5], rows["feature"][6]}, []any{"-", "review"})
+
+			var lists []string
+			for _, inv := range r.engine.Invocations(0).Invocations {
+				if inv.Unhandled {
+					t.Errorf("unhandled invocation: %s %q: %s", inv.CLI, inv.Args, inv.Stderr)
+				}
+				if args := strings.Join(inv.Args, " "); strings.HasPrefix(args, "pr list") || strings.Contains(args, "/merge_requests?") {
+					lists = append(lists, args)
+				}
+			}
+			want := map[string]string{
+				"github": "pr list -R github.com/acme/widgets --state all --limit 1000 --json number,title,url,state,isDraft,author,headRefName,headRefOid,baseRefName --author @me",
+				"gitlab": "api --hostname gitlab.com projects/grp%2Fsub%2Ftool/merge_requests?state=all&scope=created_by_me&per_page=100&page=1",
+			}[fc.forge]
+			expect(t, "the audit's pull list", lists, []string{want})
 		})
 	}
 }
