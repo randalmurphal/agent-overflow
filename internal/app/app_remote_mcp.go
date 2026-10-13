@@ -196,20 +196,31 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		}
 		return err == nil
 	}
-	// A reply carrying the settled receipt is the delivery. The wait stays
-	// registered until the reply is written, then the queued completion is
-	// dismissed; a reply that could not be written leaves it pending.
+	// A reply carrying the settled receipt is the delivery. Once the reply
+	// has gone out, a delivered one dismisses the watch and an undelivered
+	// one leaves it pending for the watcher. The wait stays registered until
+	// then, because the watcher leaves a job alone only while a call is parked
+	// on it. Delivery is the transport's answer (threadmcp.AfterResponse), not
+	// the request context: a client that reads the reply and hangs up at once
+	// has received it.
 	var settled *remoteMCPResult
 	backgrounded := false
 	endWait := func() {}
-	defer func() {
+	defer threadmcp.AfterResponse(ctx, func(delivered bool) {
+		if settled != nil && delivered {
+			if err := a.store.DismissRemoteWatch(computerID, requestID); err != nil {
+				log.Printf("remote job %s: dismiss delivered completion: %v", requestID, err)
+			} else {
+				a.emitBackgroundChanged(access.ThreadID)
+			}
+		}
 		endWait()
 		// The wait's end is what moves a running job into the background:
 		// the tray row changes state without the job itself changing.
 		if backgrounded {
 			a.emitBackgroundChanged(access.ThreadID)
 		}
-	}()
+	})
 	waitFor := func(command RemoteCommand, options remoteResultOptions) {
 		var waitCtx context.Context
 		waitCtx, endWait = a.beginRemoteWait(ctx, access.ThreadID, computerID, requestID)
@@ -218,7 +229,7 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		if err == nil {
 			if reply.State != "running" && reply.Notification == "pending" {
 				// This reply is the delivery; say so instead of promising a
-				// message that the dismissal below prevents.
+				// message that its dismissal prevents.
 				reply.Notification = "dismissed"
 			}
 			result = reply
@@ -338,16 +349,6 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		return
 	}
 	threadmcp.WriteToolJSON(w, req.ID, result)
-	// A request the provider abandoned (interrupt, timeout, crash) may never
-	// read this reply; the watcher then delivers the completion instead.
-	if settled == nil || ctx.Err() != nil {
-		return
-	}
-	if err := a.store.DismissRemoteWatch(computerID, requestID); err != nil {
-		log.Printf("remote job %s: dismiss delivered completion: %v", requestID, err)
-		return
-	}
-	a.emitBackgroundChanged(access.ThreadID)
 }
 
 func remoteTool(name, description string, properties map[string]any, required ...string) map[string]any {

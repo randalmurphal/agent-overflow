@@ -4,6 +4,7 @@ import { __resetParseJsonObjectCacheForTest } from './parseJsonObject';
 import {
   applyTrayDelta,
   completionStatusFor,
+  createTrayTaskMemo,
   deriveTrayTasks,
   trayTaskAgentInfo,
   extractClaudeTaskID,
@@ -737,5 +738,30 @@ describe('scopedTrayTasks', () => {
     const done = makeItem({ id: 'complete:shell', kind: 'tool_completion', completionOf: 'shell', parentId: 'outer', status: 'completed', createdAt: 8 });
     const withDone = deriveTrayTasks([...rows.filter((r) => r.id !== 'shell'), done], 10, 200);
     expect(scopedTrayTasks(withDone, 'outer').map((t) => t.rowId)).toContain('complete:shell');
+  });
+});
+
+describe('createTrayTaskMemo', () => {
+  const rows = [
+    makeItem({ id: 'outer', createdAt: 1 }),
+    makeItem({ id: 'a', parentId: 'outer', createdAt: 2 }),
+    makeItem({ id: 'b', parentId: 'outer', createdAt: 3 }),
+  ];
+
+  it('answers an unchanged row with the object it answered before, even through the scoped copy', () => {
+    const keep = createTrayTaskMemo();
+    const first = keep(scopedTrayTasks(deriveTrayTasks(rows, 10, 200), 'outer'));
+    const killed = makeItem({ id: 'complete:a', kind: 'tool_completion', completionOf: 'a', parentId: 'outer', status: 'killed', createdAt: 9 });
+    const second = keep(scopedTrayTasks(deriveTrayTasks([...rows, killed], 10, 200), 'outer'));
+    expect(second.map((t) => [t.rowId, t.status])).toEqual([['a', 'killed'], ['b', 'running']]);
+    expect(second[0]).not.toBe(first[0]);
+    expect(second[1]).toBe(first[1]);
+  });
+
+  it('answers a new object for a row whose elapsed time moved', () => {
+    const keep = createTrayTaskMemo();
+    const first = keep(deriveTrayTasks(rows, 10, 200));
+    const later = keep(deriveTrayTasks(rows, 11, 200));
+    expect(later.every((task, i) => task !== first[i] && task.elapsedMs === first[i].elapsedMs! + 1)).toBe(true);
   });
 });

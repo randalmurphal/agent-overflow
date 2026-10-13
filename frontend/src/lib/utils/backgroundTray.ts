@@ -369,6 +369,45 @@ export function deriveTrayTasks(
 }
 
 /**
+ * A tray's rows with their identity kept across derivations. Each call
+ * answers `next` with every row that equals the previous answer's row of
+ * the same id replaced by that previous object, so a keyed list updates
+ * only the rows a change touched. Without it a delta naming one launch
+ * re-renders every row, and a tray of N launches stopping costs O(N^2).
+ * One per derived list: the memo is that list's last answer.
+ */
+export function createTrayTaskMemo(): (next: TrayTask[]) => TrayTask[] {
+  let previous = new Map<string, TrayTask>();
+  return (next) => {
+    const byRow = new Map<string, TrayTask>();
+    const out = next.map((task) => {
+      const prior = previous.get(task.rowId);
+      const kept = prior !== undefined && sameTrayTask(prior, task) ? prior : task;
+      byRow.set(kept.rowId, kept);
+      return kept;
+    });
+    previous = byRow;
+    return out;
+  };
+}
+
+// Every TrayTask field but the key, so a field added to TrayTask fails the
+// type check here instead of being masked by the memo.
+const comparedTrayTaskFields: Record<Exclude<keyof TrayTask, 'rowId'>, true> = {
+  anchor: true,
+  launch: true,
+  completion: true,
+  status: true,
+  elapsedMs: true,
+  depth: true,
+};
+const comparedTrayTaskKeys = Object.keys(comparedTrayTaskFields) as Array<keyof typeof comparedTrayTaskFields>;
+
+function sameTrayTask(a: TrayTask, b: TrayTask): boolean {
+  return comparedTrayTaskKeys.every((key) => a[key] === b[key]);
+}
+
+/**
  * The tray rows under agent `scopeId`, for that agent's own pane: every
  * row whose parent chain through the tray set reaches the agent, in tray
  * order, with its depth counted from the agent. The agent's own row is not
