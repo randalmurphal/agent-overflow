@@ -24,6 +24,7 @@ import {
   RenameThread,
   SetThreadPinGroup,
   StopSession,
+  UnarchiveThread,
   UnpinThread,
 } from '../../stores/bindings';
 import {
@@ -136,6 +137,21 @@ export async function archiveDoneChildrenAction(ctx: ThreadActionCtx, children: 
   if (failures > 0) {
     console.error('Failed to archive spawned threads:', lastError);
     ctx.reportError(`${children.length - failures}/${children.length} archived: ${userFacingError(lastError)}`, lastError);
+  }
+}
+
+/**
+ * Unarchive a row the agent's done footer lists. The thread comes back as
+ * cold as any other unarchived thread; its row returns to the fold through
+ * the backend's `thread:updated` frames (the child listed, the spawner's
+ * done count changed), so nothing is written to the list here.
+ */
+export async function unarchiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
+  try {
+    await UnarchiveThread(ctx.thread.id);
+  } catch (err) {
+    console.error('Failed to unarchive thread:', err);
+    ctx.reportError(userFacingError(err), err);
   }
 }
 

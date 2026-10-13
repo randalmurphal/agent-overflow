@@ -21,6 +21,7 @@ import { clearThreadStatus } from './threadStatuses.svelte';
 import { addErrorToast } from './toast.svelte';
 import { forgetAgentSidebarState } from './sidebar.svelte';
 import { forgetArchivedChildren } from './agentArchivedChildren.svelte';
+import { notifyStandingAgentEnded } from './standingAgentEnded';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { onBackendDetached } from '../transport/backends';
@@ -52,6 +53,8 @@ function setThreads(rows: Thread[]): void {
 function endStandingAgent(id: string): void {
   forgetAgentSidebarState(id);
   forgetArchivedChildren(id);
+  // The wakes store reads this one, so it listens rather than being called.
+  notifyStandingAgentEnded(id);
 }
 // Ownership changes before the destination's row is applied. Fence the
 // former owner's offline snapshot and rewrite it without the moved row;

@@ -213,6 +213,8 @@ describe('group drop predicates', () => {
   it('refuses another project, and refuses the group the thread is already in', () => {
     expect(canDropThreadInGroup(loose, 'p2', 'g1')).toBe(false);
     expect(canDropThreadInGroup(inG1, 'p1', 'g1')).toBe(false);
+    // An agent, or a thread an agent spawned, never joins a group.
+    expect(canDropThreadInGroup({ ...loose, agentBound: true }, 'p1', 'g1')).toBe(false);
     expect(canDropThreadInGroup(inG1, 'p1', 'g2')).toBe(true);
   });
 

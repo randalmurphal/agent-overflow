@@ -682,6 +682,7 @@
   {isActive}
   {agentBound}
   {agentChildren}
+  {archivedChild}
 />
 
 <ConfirmDialog

@@ -12,6 +12,23 @@ import {
 } from './threads.svelte';
 import type { Thread } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import {
+  isAgentDoneExpanded,
+  isAgentExpanded,
+  resetSidebarForTest,
+  setAgentExpanded,
+  toggleAgentDone,
+} from './sidebar.svelte';
+import {
+  getArchivedChildren,
+  loadArchivedChildren,
+  resetArchivedChildrenForTest,
+} from './agentArchivedChildren.svelte';
+import {
+  ensureAgentWakes,
+  getAgentWakeRows,
+  resetAgentWakesForTest,
+} from './agentWakes.svelte';
 
 function makeThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -167,5 +184,62 @@ describe('threads store', () => {
       prependThread(makeThread('a', { updatedAt: 200 }));
       expect(getThreadLiveActivityAt(getThreads()[0])).toBe(200);
     });
+  });
+});
+
+// A thread that stops being a standing agent in the list takes its
+// agent-only sidebar state with it, whichever way it left: the next
+// promotion starts unfolded, footer shut, lists read afresh.
+describe('standing agent state on removal', () => {
+  const agent = (promoted: boolean) => makeThread('agent', promoted ? { agentPromotedAt: 1, archivedChildCount: 1 } : {});
+
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  }
+
+  async function primeAgentState(): Promise<void> {
+    resetSidebarForTest();
+    resetArchivedChildrenForTest();
+    resetAgentWakesForTest();
+    setBindingMock('ListArchivedSpawnedThreads', async () => [makeThread('done', { archived: true, spawnedByThreadId: 'agent' })]);
+    setBindingMock('ListThreadWakes', async () => ({
+      rows: [{ id: 'l1', kind: 'loop', label: 'beat', state: 'armed' }], moreReminders: false,
+    }));
+    prependThread(agent(true));
+    setAgentExpanded('agent', false);
+    toggleAgentDone('agent');
+    loadArchivedChildren('agent', 1);
+    ensureAgentWakes('agent');
+    await settle();
+    expect(isAgentExpanded('agent')).toBe(false);
+    expect(isAgentDoneExpanded('agent')).toBe(true);
+    expect(getArchivedChildren('agent', 1)?.length).toBe(1);
+    expect(getAgentWakeRows('agent').length).toBe(1);
+  }
+
+  function expectCleared(): void {
+    expect(isAgentExpanded('agent')).toBe(true);
+    expect(isAgentDoneExpanded('agent')).toBe(false);
+    expect(getArchivedChildren('agent', 1)).toBeNull();
+    expect(getAgentWakeRows('agent')).toEqual([]);
+  }
+
+  it('is cleared when the agent is archived (removed from the list)', async () => {
+    await primeAgentState();
+    removeThread('agent');
+    expectCleared();
+  });
+
+  it('is cleared when the agent is deleted (a list without it)', async () => {
+    await primeAgentState();
+    setBindingMock('ListThreads', async () => [makeThread('other')]);
+    await refreshThreads();
+    expectCleared();
+  });
+
+  it('is cleared when the row comes back demoted', async () => {
+    await primeAgentState();
+    replaceThread(agent(false));
+    expectCleared();
   });
 });

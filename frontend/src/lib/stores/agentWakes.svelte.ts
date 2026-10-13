@@ -17,6 +17,7 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import type { BackendKey } from '../transport/backendKey';
 import { agentWakeRows } from '../utils/agentStateLine';
 import { getThreadById } from './threads.svelte';
+import { onStandingAgentEnded } from './standingAgentEnded';
 
 interface AgentWakeEntry {
   backend: BackendKey;
@@ -26,7 +27,15 @@ interface AgentWakeEntry {
 const NO_ROWS: readonly ThreadWakeRow[] = Object.freeze([]);
 
 let entries = $state<Map<string, AgentWakeEntry>>(new Map());
-/** Threads whose own read is in flight, so a row asks once. */
+/**
+ * Threads whose rows this store has read, with or without live rows, and
+ * threads whose own read is in flight. Both stay outside the reactive
+ * state: a row's mount effect consults them, and a reactive read there
+ * would re-run every mounted row's effect on every change to `entries`,
+ * which for two idle agents answering at different speeds is a loop of
+ * reads that never settles.
+ */
+const known = new Set<string>();
 const pending = new Set<string>();
 
 /** The agent's live loops and watches; the shared empty array when none. */
@@ -34,11 +43,19 @@ export function getAgentWakeRows(threadId: string): readonly ThreadWakeRow[] {
   return entries.get(threadId)?.rows ?? NO_ROWS;
 }
 
+/** Writes the thread's live rows; `entries` changes only when the map does. */
 function setRows(threadId: string, backend: BackendKey, rows: readonly ThreadWakeRow[]): void {
+  known.add(threadId);
   const live = agentWakeRows(rows);
+  if (live.length === 0) {
+    if (!entries.has(threadId)) return;
+    const next = new Map(entries);
+    next.delete(threadId);
+    entries = next;
+    return;
+  }
   const next = new Map(entries);
-  if (live.length === 0) next.delete(threadId);
-  else next.set(threadId, { backend, rows: live });
+  next.set(threadId, { backend, rows: live });
   entries = next;
 }
 
@@ -57,6 +74,7 @@ export async function refreshAgentWakes(): Promise<void> {
           if (!result.answered.has(entry.backend) && result.attached.has(entry.backend)) next.set(threadId, entry);
         }
         for (const agent of result.rows) {
+          known.add(agent.threadId);
           const backend = owners.get(agent.threadId) ?? threadBackend(agent.threadId) ?? HOME_BACKEND;
           const live = agentWakeRows(agent.rows);
           if (live.length > 0) next.set(agent.threadId, { backend, rows: live });
@@ -72,21 +90,38 @@ export async function refreshAgentWakes(): Promise<void> {
 
 /**
  * Fill one agent's rows when the bulk read did not carry them: a thread
- * promoted after boot keeps the loops it registered before. Asked by the
- * row on mount; a thread that already has rows, or whose read is out, is
- * left alone.
+ * promoted after boot keeps the loops it registered before, and an idle
+ * agent is absent from the bulk read altogether. Asked by the row on
+ * mount; a thread already read, with rows or without, or whose read is
+ * out, is left alone. Reads nothing reactive: see `known`.
  */
 export function ensureAgentWakes(threadId: string): void {
-  if (entries.has(threadId) || pending.has(threadId)) return;
+  if (known.has(threadId) || pending.has(threadId)) return;
   const backend = threadBackend(threadId) ?? HOME_BACKEND;
   pending.add(threadId);
   void withBackendTarget(backend, () => ListThreadWakes(threadId)).then((wakes) => {
+    // Forgotten while the read was out (the thread stopped being an
+    // agent): its answer is not state the sidebar shows.
+    if (!pending.has(threadId)) return;
     setRows(threadId, backend, wakes?.rows ?? []);
   }).catch((err: unknown) => {
     if (!isPassiveConnectionFailure(err)) console.error(`Failed to load wakes of ${threadId}:`, err);
   }).finally(() => {
     pending.delete(threadId);
   });
+}
+
+/**
+ * Drop what the store holds for a thread that stopped being a standing
+ * agent here, so a later promotion reads its rows afresh.
+ */
+export function forgetAgentWakes(threadId: string): void {
+  known.delete(threadId);
+  pending.delete(threadId);
+  if (!entries.has(threadId)) return;
+  const next = new Map(entries);
+  next.delete(threadId);
+  entries = next;
 }
 
 onThreadWakesChanged((change, backend) => {
@@ -113,22 +148,19 @@ onThreadWakesChanged((change, backend) => {
   }
   // Neither row nor removed: the backend could not read the row. Read the
   // thread again.
-  const next = new Map(entries);
-  next.delete(threadId);
-  entries = next;
+  forgetAgentWakes(threadId);
   ensureAgentWakes(threadId);
 });
 
+onStandingAgentEnded(forgetAgentWakes);
+
 onBackendDetached(({ threadIds }) => {
   if (threadIds.length === 0) return;
-  const gone = new Set(threadIds);
   let changed = false;
   const next = new Map(entries);
-  for (const threadId of next.keys()) {
-    if (gone.has(threadId)) {
-      next.delete(threadId);
-      changed = true;
-    }
+  for (const threadId of threadIds) {
+    known.delete(threadId);
+    if (next.delete(threadId)) changed = true;
   }
   if (changed) entries = next;
 });
@@ -136,5 +168,6 @@ onBackendDetached(({ threadIds }) => {
 /** Test helper. */
 export function resetAgentWakesForTest(): void {
   entries = new Map();
+  known.clear();
   pending.clear();
 }

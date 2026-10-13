@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import {
   ensureAgentWakes,
+  forgetAgentWakes,
   getAgentWakeRows,
   refreshAgentWakes,
   resetAgentWakesForTest,
@@ -74,6 +75,33 @@ describe('agentWakes store', () => {
     ensureAgentWakes('agent');
     await flush();
     expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('remembers a thread read with no rows, and reads it again only once forgotten', async () => {
+    const list = setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
+    ensureAgentWakes('agent');
+    await flush();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(getAgentWakeRows('agent')).toEqual([]);
+    ensureAgentWakes('agent');
+    await flush();
+    expect(list).toHaveBeenCalledTimes(1);
+    // Demoted and promoted again: the rows are read afresh.
+    forgetAgentWakes('agent');
+    ensureAgentWakes('agent');
+    await flush();
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it('discards a read that lands after the thread was forgotten', async () => {
+    let answer: (wakes: { rows: ThreadWakeRow[]; moreReminders: boolean }) => void = () => {};
+    setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answer = resolve; }));
+    ensureAgentWakes('agent');
+    await flush();
+    forgetAgentWakes('agent');
+    answer({ rows: [row('l1')], moreReminders: false });
+    await flush();
+    expect(getAgentWakeRows('agent')).toEqual([]);
   });
 
   it('applies a changed row, drops a removed one, and re-reads an unreadable one', async () => {

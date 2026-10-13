@@ -190,7 +190,8 @@ variant, not a new component. Differences from an ordinary thread row:
 
 - Leading person glyph after the chevron. The chevron is the only fold
   target; name, dot and state line open the thread. Keyboard: Enter
-  opens, Right and Left fold and unfold, the same as a project row.
+  opens, Right and Left fold and unfold (project rows have no arrow
+  keys; the agent row is the one foldable thread row).
 - A state line under the name, 10px, one line, truncating from the
   right: `until 10:30 · watching 4 MRs · 2 need you`,
   `loop board check · next 12m · 1 missed`, or nothing when the agent
@@ -223,7 +224,10 @@ variant, not a new component. Differences from an ordinary thread row:
   those children stay under the agent.
 - Context menu: Open, Rename, Loops and Watches (opens the thread with
   its background tray open), Archive Done Children (the spawned threads
-  whose effective status is idle, behind a confirm), Demote. No pin
+  whose effective status is idle, behind a confirm), Demote (behind a
+  confirm that says the home stays on disk). An archived child listed
+  by the done footer offers Open, Rename, Unarchive, Copy and Delete:
+  no pin, group or archive item. No pin
   item: an agent row sits in the groups section whatever pin its thread
   holds, and its pin is left alone. Promote to Standing Agent appears on
   a chat or plan thread that is not archived, a draft or an agent; the
@@ -235,8 +239,9 @@ Mechanics, as built:
   `spawnedByThreadId` (the newest local spawn request naming it) and
   `archivedChildCount` (an agent's archived spawned threads), derived
   in `threadColumns`, so one `thread:updated` frame moves the row. A
-  spawn's accept, a child's archive, unarchive and delete each
-  re-broadcast the rows they change, the spawner's included. The
+  spawn's accept re-broadcasts the spawned thread; a child's archive,
+  unarchive and delete re-broadcast the child and its spawner, whose
+  `archivedChildCount` they change. The
   partial index `idx_thread_requests_spawn_target` serves the lookup,
   and the thread-request retention sweep keeps a local spawn row while
   the thread it created exists.

@@ -810,7 +810,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     return node as HTMLElement;
   }
 
-  function renderAgentMenu(thread: Thread, extra: { agentBound?: boolean; agentChildren?: Thread[] } = {}) {
+  function renderAgentMenu(thread: Thread, extra: { agentBound?: boolean; agentChildren?: Thread[]; archivedChild?: boolean } = {}) {
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
     const pane = createThreadPane();
@@ -879,12 +879,56 @@ describe('<ThreadContextMenu> standing agent', () => {
     expect(labels).not.toContain('Demote Standing Agent');
   });
 
-  it('demotes through the binding', async () => {
+  it('demotes behind a confirm that says the home stays, and only after it', async () => {
     const demote = setBindingMock('DemoteStandingAgent', async () => {});
     const { baseElement } = renderAgentMenu(makeThread({ agentPromotedAt: 1 }));
     await fireEvent.click(item(baseElement, 'Demote Standing Agent'));
     await tick();
+    expect(demote).not.toHaveBeenCalled();
+    const dialog = baseElement.querySelector('[role="alertdialog"], [role="dialog"]');
+    expect(dialog?.textContent).toContain('home directory stay');
+    await fireEvent.click(Array.from(baseElement.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Demote')!);
+    await tick();
     expect(demote).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('hides the group items in bulk when the selection holds an agent or a spawned thread', () => {
+    replaceAllThreads([
+      makeThread({ id: 'a', projectId: 'project-1' }),
+      makeThread({ id: 'b', projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true }),
+    ]);
+    setThreadSelection(['a', 'b']);
+    const { baseElement } = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1' }));
+    const labels = labelsOf(baseElement);
+    expect(labels).toContain('Archive (2)');
+    expect(labels).not.toContain('Move to Group');
+    expect(labels).not.toContain('Remove from Group');
+  });
+
+  it('offers an archived child Unarchive, Copy and Delete, and no pin, group or archive', () => {
+    const { baseElement } = renderAgentMenu(
+      makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1', archived: true }),
+      { agentBound: true, archivedChild: true },
+    );
+    expect(labelsOf(baseElement)).toEqual([
+      'Open in New Pane',
+      'Rename Thread',
+      'Unarchive Thread',
+      'Copy Path',
+      'Copy Thread ID',
+      'Delete',
+    ]);
+  });
+
+  it('unarchives an archived child through the binding', async () => {
+    const unarchive = setBindingMock('UnarchiveThread', async () => makeThread());
+    const { baseElement } = renderAgentMenu(
+      makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1', archived: true }),
+      { agentBound: true, archivedChild: true },
+    );
+    await fireEvent.click(item(baseElement, 'Unarchive Thread'));
+    await tick();
+    expect(unarchive).toHaveBeenCalledWith('thread-1');
   });
 
   it('Loops and Watches opens the thread with its background rail open', async () => {

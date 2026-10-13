@@ -6,8 +6,9 @@ entity stores. `Sidebar.svelte` owns the top-level render boundary;
 
 ## Rows and actions
 
-- Every thread renders flat under its project or group. Keep one row grammar
-  for normal and grouped entries. Shared controls such as
+- A thread renders flat under its project or group, except a standing
+  agent's spawned threads, which nest under the agent row by spawn
+  lineage. Keep one row grammar for normal, grouped and nested entries. Shared controls such as
   `ThreadRowPinButton` receive callbacks; they do not own entities.
 - Groups are not pinnable. A group's members pin like top-level threads, but
   never as numbered jump targets.

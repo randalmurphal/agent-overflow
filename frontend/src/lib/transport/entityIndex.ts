@@ -338,6 +338,7 @@ const SINGLE_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = 
 const ROW_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = {
   1090132042: 'thread', // ListThreads
   2451527188: 'thread', // ListArchivedThreads
+  1323325584: 'thread', // ListArchivedSpawnedThreads
   2721360259: 'project', // ListProjects
   2514763466: 'thread', // SetThreadGroup
   2929723500: 'thread', // UpdateThreadBranch

@@ -265,10 +265,15 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(page.locator('[data-archived-child]')).toHaveCount(3);
     await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveCount(0);
 
-    // ---- Demote: an ordinary row again, the done footer gone, the
-    // archived children stay archived.
+    // ---- Demote, behind a confirm that says the home stays on disk: an
+    // ordinary row again, the done footer gone, the archived children stay
+    // archived.
     await agentRow.click({ button: 'right' });
     await page.getByRole('menuitem', { name: 'Demote Standing Agent' }).click();
+    const demoteDialog = page.getByRole('dialog').or(page.getByRole('alertdialog'));
+    await expect(demoteDialog).toContainText('home directory stay');
+    await expect(agentRow).toHaveAttribute('data-sidebar-agent', '');
+    await demoteDialog.getByRole('button', { name: 'Demote', exact: true }).click();
     await expect(agentRow).not.toHaveAttribute('data-sidebar-agent', '');
     await expect(agentRow.getByTestId('thread-row-agent-icon')).toHaveCount(0);
     await expect(footer).toHaveCount(0);
