@@ -189,9 +189,9 @@ func TestRacingChangesLeaveEveryFileNamed(t *testing.T) {
 		}
 		var wg sync.WaitGroup
 		errs := make(chan error, len(changes))
-		for i, change := range changes {
+		for i := range changes {
 			// Rotate the start order so each change leads some rounds.
-			change = changes[(i+round)%len(changes)]
+			change := changes[(i+round)%len(changes)]
 			if change.process {
 				cmd := exec.Command(os.Args[0], "-test.run=^$")
 				cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s|%d|%s", helperEnv, home, change.variant, change.op))
