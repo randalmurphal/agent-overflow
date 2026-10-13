@@ -53,8 +53,8 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 ### PR mechanics, for every PR
 
-- [ ] Resolve the forge once with `scripts/forge which`. Every forge call goes through `scripts/forge`, which picks `gh` or `glab` from the remote.
-- [ ] Open the PR ready, never draft, per **Opening a PR**, with `scripts/forge pr create --base <base-branch>`. A stack child targets its parent branch.
+- [ ] Resolve the forge once with `scripts/forge which`, then use `gh` or `glab` directly.
+- [ ] Open the PR ready, never draft, per **Opening a PR**, with its base set to `<base-branch>`. A stack child targets its parent branch.
 - [ ] Run the repo's lint and typecheck once before the PR-facing push. Push with hooks on.
 - [ ] Run a slop pass over the diff before each commit and `/no-comments` before review.
 - [ ] Triage every Bugbot and security-reviewer comment per `../references/bugbot-triage.md`.

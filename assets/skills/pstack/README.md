@@ -2,7 +2,7 @@
 
 This is [pstack](https://github.com/backnotprop/pstack), poteto's skill library, vendored into Agent Overflow and ported to the app's thread tools and browser tools, so a Claude thread and a Codex thread run the same skill text. [`UPSTREAM.md`](./UPSTREAM.md) pins the upstream commit and lists every file the port changed. The upstream README follows, edited where it named another host's tools.
 
-The Agent Overflow section of [`poteto-mode`](./skills/poteto-mode/SKILL.md) is the map: native subagents for a thread's own work and `thread_spawn` for work that outlives the turn, `thread_loop` and `thread_watch` for waking, `thread_search` and `thread_show` for transcripts, `thread_status` and `thread_ask` for liveness, `ao-browser-tools` for live UIs, and [`scripts/forge`](./skills/poteto-mode/scripts/forge) for every GitHub or GitLab call.
+The Agent Overflow section of [`poteto-mode`](./skills/poteto-mode/SKILL.md) is the map: native subagents for a thread's own work and `thread_spawn` for work that outlives the turn, `thread_loop` and `thread_watch` for waking, `thread_search` and `thread_show` for transcripts, `thread_status` and `thread_ask` for liveness, `ao-browser-tools` for live UIs, `gh` or `glab` for GitHub or GitLab, after [`scripts/forge which`](./skills/poteto-mode/scripts/forge) names the forge, and `scripts/forge stack` for stack order.
 
 ---
 
@@ -67,7 +67,7 @@ morning.
 | [authoring a skill](./skills/poteto-mode/playbooks/authoring-a-skill.md) | writing or editing a SKILL.md. |
 | [eval](./skills/poteto-mode/playbooks/eval.md) | test how a skill or prompt change affects agent behavior, blinded. |
 | [babysit](./skills/poteto-mode/playbooks/babysit.md) | drive a pr or a stack to merge-ready: conflicts, review threads, ci. |
-| [shipping](./skills/poteto-mode/playbooks/shipping.md) | independently verify a green stack, then land the contiguous verified run bottom-up through the forge script. |
+| [shipping](./skills/poteto-mode/playbooks/shipping.md) | independently verify a green stack, then land the contiguous verified run bottom-up through the forge. |
 | [autonomous run](./skills/poteto-mode/playbooks/autonomous-run.md) | drive a long task to completion without stopping. |
 | [orchestrate](./skills/poteto-mode/playbooks/orchestrate.md) | a standing project handed to one coordinator, best run as a standing agent: multi-day, many stacked prs, fleets of subagents. |
 | [autopilot-full](./skills/poteto-mode/playbooks/autopilot-full.md) | run independent prs to merged with one owner per pr and a root swarm verdict on each round, from the code-ready head on. |

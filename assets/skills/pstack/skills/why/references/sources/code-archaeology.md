@@ -3,7 +3,7 @@
 ## What this source contains
 
 - Commit history (messages, dates, authors, diffs)
-- PR descriptions, review comments, and discussion threads (via the forge script, `poteto-mode/scripts/forge`)
+- PR descriptions, review comments, and discussion threads (via `gh` or `glab`; `poteto-mode/scripts/forge which` names the forge)
 - Inline code comments, TODOs, FIXMEs, deprecation notes
 - ADRs (architectural decision records) if the repo keeps them
 - Tests. Names and assertions often encode the edge cases that motivated a change
@@ -43,10 +43,11 @@ For each substantive commit, pull the PR context:
 # Find the PR number from the merge commit or branch
 git log -1 --format=%B <hash>
 
-# PR context through the library's forge script (poteto-mode/scripts/forge)
-forge pr view <number>      # title, body, author, merged_at
-forge pr comments <number>  # the conversation
-forge pr threads <number>   # review threads with every comment
+# PR context through gh or glab (poteto-mode/scripts/forge which names the forge)
+gh pr view <number> --comments                    # title, body, the conversation
+gh api repos/{owner}/{repo}/pulls/<number>/comments # review comments
+glab mr view <number> --comments                  # title, description, notes
+glab api projects/:id/merge_requests/<number>/discussions # review threads
 
 # The conversation and the review threads are where the real signal is
 ```

@@ -290,7 +290,7 @@ Only after before-and-after proof:
 - Review the final diff for unrelated changes and secrets.
 - Run the repository's required checks.
 - Create small ordered commits when the repository workflow allows it.
-- Open a draft pull request with pstack's forge script (`skills/poteto-mode/scripts/forge pr create --draft` in the library), which picks `gh` or `glab` from the remote. Never merge or deploy from this workflow.
+- Open a draft pull request with `gh pr create --draft` or `glab mr create --draft`; pstack's `skills/poteto-mode/scripts/forge which` names the forge. Never merge or deploy from this workflow.
 - Link the configured tracker issue using the tracker's supported pull request syntax.
 - Include the repro steps, root cause, test result, before and after evidence, and blast-radius checks.
 - Run the pull request text and all source updates through pstack's `unslop` skill.

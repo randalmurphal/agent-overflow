@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# forge: one interface to the repository's forge, GitHub through gh or
-# GitLab through glab, for the pstack skills. Run it inside the checkout.
-# Every read prints one JSON value with the same shape on both forges.
+# forge: the adapter pstack's scripts (watch-pr, orch, worktree-audit)
+# read the repository's forge through, GitHub through gh or GitLab through
+# glab, and the way to read a stack (forge stack). Agents run forge which
+# once to learn the forge, then use gh or glab directly. Run it inside the
+# checkout. Every read prints one JSON value with the same shape on both
+# forges.
 #
 #   forge which
 #   forge pr view [<n>]            forge pr merge-state [<n>]

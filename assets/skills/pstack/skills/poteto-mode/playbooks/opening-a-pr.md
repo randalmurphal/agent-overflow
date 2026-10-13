@@ -23,11 +23,11 @@ Put each section under a `##` heading, not a bold lead-in, so the sections stand
 
 After these sections, attach videos or screenshots when they prove a claim. Do not paste full SHAs, swarm or arena lane recitals, lever-correction essays, file-by-file checklists, or "CLEAN" verdicts. Put these details in a linked artifact. A commit body does not restate its subject.
 
-**Forge.** Every forge call goes through `scripts/forge`, which picks `gh` or `glab` from the remote. Run `scripts/forge which` before the first PR operation.
+**Forge.** Run `scripts/forge which` once before the first PR operation, then use `gh` or `glab` directly, per poteto-mode's **Forge** section.
 
-**Size and stacks.** Prefer five narrow PRs to one large PR. A stack is a base-branch chain. The root PR targets trunk. Each child branch rebases onto its parent's exact tip and its PR targets the parent branch. Create a child with `scripts/forge pr create --title <title> --body-file <file> --base <parent-branch>`, and retarget an existing child with `scripts/forge pr edit <pr> --base <parent-branch>`. Branch from trunk only for independent work. Rebase on trunk before substantial stack work.
+**Size and stacks.** Prefer five narrow PRs to one large PR. A stack is a base-branch chain. The root PR targets trunk. Each child branch rebases onto its parent's exact tip and its PR targets the parent branch. Create a child with its base set to the parent branch (`gh pr create --base <parent-branch>`, `glab mr create --target-branch <parent-branch>`), and retarget an existing child the same way (`gh pr edit <pr> --base <parent-branch>`, `glab mr update <mr> --target-branch <parent-branch>`). Branch from trunk only for independent work. Rebase on trunk before substantial stack work.
 
-**Readiness.** Open every PR ready, never as a draft: `scripts/forge pr create` without `--draft`. Run `scripts/forge pr view <number>` before you refer to PR status.
+**Readiness.** Open every PR ready, never as a draft: create it without `--draft`. Read it with `gh pr view` or `glab mr view` before you refer to PR status.
 
 **Babysit.** Opening a PR does not start a babysit. Post the URL and keep building. Finish the phase or stack first. Run a separate babysit pass only when the user asks for one after the whole stack exists. A babysit for each new PR stalls the build and spends checks on commits that later waves restart. Push back when feedback drifts from intent.
 

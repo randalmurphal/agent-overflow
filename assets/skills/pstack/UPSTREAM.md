@@ -31,12 +31,13 @@ and `other-provider`, read through the `setup-pstack` skill.
 
 | File | Change |
 |---|---|
-| `README.md` | Replaced the mirror preface with a port preface; dropped install, plugin, Custom Mode, `/loop`, the upstream guide link and the `make-bot-ui` row |
+| `README.md` | Replaced the mirror preface with a port preface; dropped install, plugin, Custom Mode, `/loop`, the upstream guide link and the `make-bot-ui` row; the map names `gh` or `glab` after `forge which` and `forge stack` for stack order |
+| `agents/poteto-agent.md` | Reads `SKILL.md` by path unless a `/poteto-mode` brief already loaded the skill |
 | `automations/benny/README.md` | Rewritten: a standing agent runs Benny from a `thread_watch` on a configured report source |
 | `automations/benny/configuration.example.yaml` | Added: the upstream template with `source` in place of `slack` and role values for models |
 | `automations/benny/skills/triage-issue-reports/SKILL.md` | Slack replaced by a source adapter contract; coordinates come from the wake line; the follow-up window runs on `thread_loop` |
 | `automations/benny/skills/triage-issue-reports/references/routing.example.md` | Copies live in the agent home; `source_channel` |
-| `automations/benny/skills/reproduce-and-fix-issues/SKILL.md` | Same source adapter; waiting runs on `thread_loop`; the draft PR goes through the forge script |
+| `automations/benny/skills/reproduce-and-fix-issues/SKILL.md` | Same source adapter; waiting runs on `thread_loop`; the draft PR opens with `gh` or `glab` |
 | `automations/benny/skills/reproduce-and-fix-issues/references/control-adapter.md` | Copies live in the agent home; `ao-browser-tools` named for web and Electron apps |
 | `automations/benny/skills/reproduce-and-fix-issues/references/feature-map.example.md` | Copies live in the agent home |
 | `automations/benny/skills/reproduce-and-fix-issues/references/verify-existing-fix.md` | PR links come from the forge |
@@ -50,29 +51,29 @@ and `other-provider`, read through the `setup-pstack` skill.
 | `skills/no-comments/SKILL.md` | Comment Sicko as a native subagent with its prompt |
 | `skills/poteto-help/SKILL.md` | Install, settings, keeping the mode on, and tools not shipped, for this app; links to vendored files instead of the guide |
 | `skills/poteto-help/references/prompting.md`, `skills/poteto-help/references/recipes.md` | `/loop` wording |
-| `skills/poteto-mode/SKILL.md` | The Harness section becomes the Agent Overflow section (the port's map); Subagents section by provider; slop pass instead of `deslop` |
+| `skills/poteto-mode/SKILL.md` | The Harness section becomes the Agent Overflow section (the port's map); Subagents section by provider, with every spawned brief starting with `/poteto-mode` (Claude's Skill tool refuses a model's own invocation of this skill) and read-by-path for a worker with no slash entry; the Forge section: `forge which` once, then `gh` or `glab` directly; slop pass instead of `deslop` |
 | `skills/poteto-mode/playbooks/authoring-a-skill.md` | Skill-authoring tool |
 | `skills/poteto-mode/playbooks/autonomous-run.md` | `thread_watch` and `thread_loop` wakes |
-| `skills/poteto-mode/playbooks/autopilot-full.md`, `autopilot-stack.md` | Owners are `thread_spawn` threads; the tick is a `thread_loop`; liveness through `thread_status` and `thread_ask`; forge script; Graphite mentions dropped |
-| `skills/poteto-mode/playbooks/babysit.md` | watch-pr on both forges; the watch is `thread_watch` or `thread_loop`; replies through the forge script; Origin dropped; Graphite mentions dropped |
+| `skills/poteto-mode/playbooks/autopilot-full.md`, `autopilot-stack.md` | Owners are `thread_spawn` threads; the tick is a `thread_loop`; owner briefs start with `/poteto-mode`; liveness through `thread_status` and `thread_ask`; `forge which`, then `gh` or `glab`; the merge step follows the agent's instructions and the repository's guides; Graphite mentions dropped |
+| `skills/poteto-mode/playbooks/babysit.md` | watch-pr on both forges; the watch is `thread_watch` or `thread_loop`; `forge which`, then `gh` or `glab`, replies included; Origin dropped; Graphite mentions dropped |
 | `skills/poteto-mode/playbooks/bug-fix.md`, `feature.md`, `hillclimb.md`, `perf-issue.md`, `refactoring.md` | `thread_loop`; model defaults |
 | `skills/poteto-mode/playbooks/eval.md`, `session-pickup.md` | Transcripts through `thread_show` and `thread_search` |
-| `skills/poteto-mode/playbooks/multi-phase-plan.md` | Drivers, `thread_loop` tick, forge script, plans read from the installed library; Graphite mentions dropped |
-| `skills/poteto-mode/playbooks/opening-a-pr.md`, `shipping.md` | Forge script; verifiers drive `ao-browser-tools` or the shell; Graphite mentions dropped |
-| `skills/poteto-mode/playbooks/orchestrate.md` | Workers and sub-coordinators are threads; the store is the agent home; liveness through `thread_status` and `thread_ask`; the frontier from `forge stack` and retargets through the forge script instead of Graphite |
+| `skills/poteto-mode/playbooks/multi-phase-plan.md` | Drivers, `thread_loop` tick, `forge which` then `gh` or `glab`, plans read from the installed library; Graphite mentions dropped |
+| `skills/poteto-mode/playbooks/opening-a-pr.md`, `shipping.md` | `forge which`, then `gh` or `glab`; Shipping's merge step follows the agent's instructions and the repository's guides; verifiers drive `ao-browser-tools` or the shell; Graphite mentions dropped |
+| `skills/poteto-mode/playbooks/orchestrate.md` | Workers and sub-coordinators are threads; the store is the agent home; worker briefs start with `/poteto-mode`; liveness through `thread_status` and `thread_ask`; the frontier from `forge stack` and retargets with `gh` or `glab` instead of Graphite; the land step follows the agent's instructions and the repository's guides |
 | `skills/poteto-mode/playbooks/visual-parity.md` | `browser_screenshot`; loop wording |
 | `skills/poteto-mode/playbooks/worktree-cleanup.md` | Threads per worktree from `thread_search` instead of a transcript scan |
-| `skills/poteto-mode/scripts/forge` | Added: the one entry to GitHub and GitLab |
+| `skills/poteto-mode/scripts/forge` | Added: the adapter the scripts read GitHub or GitLab through, and `forge stack` for stack order |
 | `skills/poteto-mode/scripts/orch/store.ts`, `orch.ts`, `orch.test.ts` | `frontier set` reads stack order, states and head SHAs from `forge stack` instead of Graphite `gt` |
 | `skills/poteto-mode/scripts/check-plan.mjs` | Program markers for the ported plan template |
 | `skills/poteto-mode/scripts/worktree-audit.sh` | PR state through the forge script; the transcript scan and its column removed |
 | `skills/poteto-mode/scripts/watch-pr/github.ts` | `ForgeCliReader` reads through the forge script instead of `gh` |
 | `skills/poteto-mode/scripts/watch-pr/types.ts`, `types.compile.ts`, `render.ts`, `cli.ts` | Forge-neutral PR links and labels |
 | `skills/poteto-mode/scripts/watch-pr/github.test.ts`, `cli.test.ts` | Tests for the forge reader |
-| `skills/recall/SKILL.md` | History from `thread_search` and `thread_show` |
+| `skills/recall/SKILL.md` | History from `thread_search` and `thread_show`; live state with `gh` or `glab` |
 | `skills/reflect/SKILL.md` | The transcript is the thread, exported with `thread_show`; spawning by provider |
 | `skills/reflect/references/divergent-reviewer.md`, `judgment-reviewer.md`, `tooling-reviewer.md` | Skill folders and spawn tools to scan for |
 | `skills/setup-pstack/SKILL.md` | Models from `thread_options`; one settings file for both providers; the *Reading a role* section |
 | `skills/show-me-your-work/SKILL.md` | The audit reads the thread with `thread_show` |
 | `skills/swarm/SKILL.md` | Workers are native subagents with their own worktrees, or threads on the other provider |
-| `skills/why/SKILL.md`, `skills/why/references/source-playbook.md`, `skills/why/references/sources/code-archaeology.md` | PR context through the forge script; MCP discovery; spawning by provider |
+| `skills/why/SKILL.md`, `skills/why/references/source-playbook.md`, `skills/why/references/sources/code-archaeology.md` | PR context with `gh` or `glab`; MCP discovery; spawning by provider |

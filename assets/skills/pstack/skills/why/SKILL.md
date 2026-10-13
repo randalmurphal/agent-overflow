@@ -47,12 +47,13 @@ git log --oneline -20 -- <file>
 git log -1 --format=%B <commit>
 ```
 
-Pull PR bodies and review discussion for any substantive commits through the forge script (`poteto-mode/scripts/forge` in this library), which picks `gh` or `glab` from the remote:
+Pull PR bodies and review discussion for any substantive commits with `gh` or `glab`; `poteto-mode/scripts/forge which` in this library names the forge:
 
 ```bash
-forge pr view <number>      # title, body, author, merged_at
-forge pr comments <number>  # the conversation
-forge pr threads <number>   # review threads with every comment
+gh pr view <number> --comments                    # title, body, the conversation
+gh api repos/{owner}/{repo}/pulls/<number>/comments # review comments
+glab mr view <number> --comments                  # title, description, notes
+glab api projects/:id/merge_requests/<number>/discussions # review threads
 ```
 
 Capture this as seed context (file paths, symbols, commits, PR numbers, linked ticket IDs). Pass it to the investigators.
@@ -75,7 +76,7 @@ Map each available MCP to one evidence category:
 6. Error / exception tracking
 7. Product analytics warehouse
 
-Source control is always available through git and the forge script. For the other six, classify using the MCP name, server instructions, tool names, and resource descriptors. If an MCP could fit more than one category, choose the one matching its primary evidence. Record ambiguous cases in the coverage map.
+Source control is always available through git and `gh` or `glab`. For the other six, classify using the MCP name, server instructions, tool names, and resource descriptors. If an MCP could fit more than one category, choose the one matching its primary evidence. Record ambiguous cases in the coverage map.
 
 Aim for a complete **coverage map**, not a minimal one. Document the null, don't skip the search.
 
@@ -100,7 +101,7 @@ Spawn one investigator per category that has a matching MCP. Each owns exactly o
 
 Each entry names the category and the kind of "why" it uniquely surfaces. Use it to know what to expect back, how to name a gap when a category returns empty, and (only in the rare provably-irrelevant case) to justify a skip.
 
-1. **Source control investigator**. Git history, the forge script for PRs, code comments, tests. Always spawn. The only guaranteed source. Best at surfacing *implementation-time rationale captured during review*.
+1. **Source control investigator**. Git history, `gh` or `glab` for PRs, code comments, tests. Always spawn. The only guaranteed source. Best at surfacing *implementation-time rationale captured during review*.
 
 2. **Issue / ticket tracker investigator** (e.g. Linear, Jira, GitHub Issues, Plane, Shortcut MCP). Best at surfacing *the product or business forcing function*. Strongest when the why is external to engineering.
 

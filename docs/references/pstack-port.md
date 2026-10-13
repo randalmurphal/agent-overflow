@@ -24,14 +24,25 @@ is the map every other skill reads through. Choices a resync must keep:
   `thread_item`, never provider session files.
 - Waking is `thread_loop` for any thread and `thread_watch` for a
   standing agent; nothing sleeps in a shell loop.
-- Every GitHub or GitLab call goes through the forge script.
+- Agents run `forge which` once to learn the forge, then use `gh` or
+  `glab` directly. The forge script is the adapter pstack's scripts read
+  the forge through, and `forge stack` reads a stack.
+- Who merges is governed by the agent's instructions and the
+  repository's guides; when the operator merges, the merge step ends at
+  merge-ready with the PR and head SHA reported, and auto-merge is never
+  armed.
+- Spawned briefs start with `/poteto-mode`, the user-message entry that
+  loads the skill on both providers; Claude's Skill tool refuses a
+  model's own invocation of a `disable-model-invocation` skill. A worker
+  with no slash entry reads `SKILL.md` by path.
 - Benny's skills read reports through a source adapter the agent
   configures; a standing agent runs them from a `thread_watch`.
 
 ## Forge script
 
-`skills/poteto-mode/scripts/forge` is one bash script with the same JSON
-output on both forges: `which`,
+`skills/poteto-mode/scripts/forge` is the adapter `watch-pr`, `orch` and
+`worktree-audit.sh` read the forge through, and the way to read a stack.
+It is one bash script with the same JSON output on both forges: `which`,
 `pr view|merge-state|list|create|comment|comments|checks|commits|threads|reply|merge|edit`,
 `ci status|log` and `stack`. `forge --help` lists the arguments. It needs
 bash 3.2 or later (stock macOS), git, jq and `gh` or `glab`. It sets
@@ -84,8 +95,9 @@ the chain with no pull request exits 3, and a cycle of bases fails, so
   `TestSkillsNameOnlyToolsThatExist` fails when a skill names a
   `thread_*` or `browser_*` tool the app does not serve.
   `TestSkillsCarryNoReplacedPrimitive` fails when a replaced primitive
-  (`/loop`, `subagent_type`, provider home paths, `control-ui`, a direct
-  `gh pr` call, Graphite `gt` and the rest of the list) comes back; `keptVerbatim` lists
+  (`/loop`, `subagent_type`, provider home paths, `control-ui`, Graphite
+  `gt` and the rest of the list) comes back, or when a script other than
+  the forge script runs `gh` or `glab`; `keptVerbatim` lists
   the upstream lines kept on purpose. `TestSkillsLinkOnlyFilesThatExist`
   fails when a relative Markdown link names a file the tree does not
   carry.

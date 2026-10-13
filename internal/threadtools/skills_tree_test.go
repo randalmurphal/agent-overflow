@@ -28,22 +28,26 @@ var (
 )
 
 // replacedPrimitives are the upstream host primitives the port rewrote,
-// each with what replaced it.
+// each with what replaced it. A scriptsOnly primitive is allowed in the
+// skill prose (Markdown) and refused in the scripts.
 var replacedPrimitives = []struct {
-	pattern *regexp.Regexp
-	use     string
+	pattern     *regexp.Regexp
+	use         string
+	scriptsOnly bool
 }{
-	{regexp.MustCompile(`\bCursor\b|\.cursor/|\.mdc\b|cursor-team-kit|agent-transcripts`), "the thread tools and the agent's own instructions file"},
-	{regexp.MustCompile(`(^|[^A-Za-z0-9_])/loop\b`), "thread_loop"},
-	{regexp.MustCompile(`environment: "cloud"|\bcloud agents?\b|subagent_type|run_in_background|\bTask(?: tool| call)\b|` + "`Task`"), "a native subagent or thread_spawn"},
-	{regexp.MustCompile(`AskQuestion|SessionStart`), "the provider's own question tool and the agent's instructions file"},
-	{regexp.MustCompile(`~/\.(claude|codex|cursor|pi)\b`), "thread_show and thread_search, never a provider home"},
-	{regexp.MustCompile(`\bcontrol-(ui|cli)\b`), "ao-browser-tools or the shell"},
-	{regexp.MustCompile(`\bgh (pr|api|run|repo|issue)\b|\bglab (mr|api|ci)\b`), "the forge script"},
-	{regexp.MustCompile(`(^|[^-A-Za-z0-9_])gt\b|\bGraphite\b`), "forge stack"},
+	{regexp.MustCompile(`\bCursor\b|\.cursor/|\.mdc\b|cursor-team-kit|agent-transcripts`), "the thread tools and the agent's own instructions file", false},
+	{regexp.MustCompile(`(^|[^A-Za-z0-9_])/loop\b`), "thread_loop", false},
+	{regexp.MustCompile(`environment: "cloud"|\bcloud agents?\b|subagent_type|run_in_background|\bTask(?: tool| call)\b|` + "`Task`"), "a native subagent or thread_spawn", false},
+	{regexp.MustCompile(`AskQuestion|SessionStart`), "the provider's own question tool and the agent's instructions file", false},
+	{regexp.MustCompile(`~/\.(claude|codex|cursor|pi)\b`), "thread_show and thread_search, never a provider home", false},
+	{regexp.MustCompile(`\bcontrol-(ui|cli)\b`), "ao-browser-tools or the shell", false},
+	// Agents run gh and glab directly; the scripts read the forge through
+	// the forge script, the one script that runs them.
+	{regexp.MustCompile(`\bgh (pr|api|run|repo|issue)\b|\bglab (mr|api|ci)\b`), "the forge script", true},
+	{regexp.MustCompile(`(^|[^-A-Za-z0-9_])gt\b|\bGraphite\b`), "forge stack", false},
 }
 
-// forgeScript is the one file that runs gh and glab.
+// forgeScript is the one script that runs gh and glab.
 const forgeScript = "skills/poteto-mode/scripts/forge"
 
 // keptVerbatim are upstream lines that name a replaced primitive as a
@@ -152,7 +156,7 @@ func TestSkillsCarryNoReplacedPrimitive(t *testing.T) {
 	for _, rel := range paths {
 		for i, line := range strings.Split(files[rel], "\n") {
 			for _, primitive := range replacedPrimitives {
-				if rel == forgeScript && strings.Contains(primitive.use, "forge script") {
+				if primitive.scriptsOnly && (rel == forgeScript || strings.HasSuffix(rel, ".md")) {
 					continue
 				}
 				if phrase, ok := keptVerbatim[rel]; ok && strings.Contains(line, phrase) {
