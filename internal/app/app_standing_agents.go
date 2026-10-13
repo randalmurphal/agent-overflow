@@ -108,10 +108,41 @@ func (a *App) GetStandingAgent(threadID string) (*store.StandingAgent, error) {
 //
 //ao:scope threads:operate
 func (a *App) DemoteStandingAgent(threadID string) error {
+	_, _, err := a.demoteStandingAgent(threadID)
+	return err
+}
+
+// DemoteStandingAgentAndDeleteHome demotes a standing agent as
+// DemoteStandingAgent does and then deletes its home: exactly the directory
+// its row recorded, and only when that is `<config>/agents/<thread-id>`. The
+// demotion stands when the deletion fails, and the error names the path.
+// Nothing is deleted for a thread that is not a standing agent.
+//
+//ao:scope threads:autonomy
+func (a *App) DemoteStandingAgentAndDeleteHome(threadID string) error {
+	home, found, err := a.demoteStandingAgent(threadID)
+	if !found {
+		return err
+	}
+	deleteErr := a.deleteStandingAgentHome(threadID, home)
+	if err == nil {
+		return deleteErr
+	}
+	return errors.Join(err, deleteErr)
+}
+
+// demoteStandingAgent removes the row and cancels the watches, returning the
+// home the removed row recorded; found is false when there was no row.
+func (a *App) demoteStandingAgent(threadID string) (home string, found bool, err error) {
 	unlock := a.threadLocks().Lock(threadID)
+	row, found, err := a.store.GetStandingAgent(threadID)
+	if err != nil {
+		unlock()
+		return "", false, err
+	}
 	if _, err := a.store.DemoteStandingAgent(threadID); err != nil {
 		unlock()
-		return err
+		return "", false, err
 	}
 	ids, err := a.store.CancelAgentWakesForThread(threadID, store.AgentWakeWatch,
 		"cancelled: the thread is no longer a standing agent")
@@ -130,7 +161,40 @@ func (a *App) DemoteStandingAgent(threadID string) error {
 	if len(ids) > 0 {
 		err = errors.Join(err, a.withdrawCancelledAgentWakes(threadID, ids...))
 	}
-	return err
+	return row.Home, found, err
+}
+
+// deleteStandingAgentHome removes a demoted agent's home. The recorded path
+// must be the one promotion creates for this thread; any other path is
+// refused rather than deleted. A failure's innermost layer, the one a toast
+// shows, says the demotion stood and carries no path; the layer around it
+// names the recorded home and the expected folder or where removal stopped.
+func (a *App) deleteStandingAgentHome(threadID, home string) error {
+	var reason error
+	at := ""
+	agents := filepath.Join(a.configDir, "agents")
+	want := filepath.Join(agents, threadID)
+	switch {
+	case home == "":
+		reason = errors.New("its row records no home")
+	case a.configDir == "":
+		reason = errors.New("no config directory")
+	case filepath.Clean(home) != want || filepath.Dir(want) != agents:
+		reason = errors.New("it is not this agent's folder in the app's agents folder")
+		at = fmt.Sprintf(" (expected %s)", want)
+	default:
+		reason = os.RemoveAll(want)
+	}
+	if reason == nil {
+		return nil
+	}
+	var pathErr *fs.PathError
+	if errors.As(reason, &pathErr) {
+		at = fmt.Sprintf(" (stopped at %s)", pathErr.Path)
+		reason = pathErr.Err
+	}
+	return fmt.Errorf("delete the agent's home %q%s: %w", home, at,
+		fmt.Errorf("the thread was demoted, but its home folder was not deleted: %v", reason))
 }
 
 // ListArchivedSpawnedThreads lists the archived threads a standing agent
@@ -254,4 +318,37 @@ A script outside the app can message the agent:
 
     agent-overflow thread send %s "text"
 `, title, title, thread.ID, project, thread.ID)
+}
+
+// standingAgentPrompt is the block a standing agent's sessions carry beside
+// the app guide (docs/specs/standing-agents.md, "Standing agent"): its home,
+// its thread id and that the home is its own. "" for any other thread. It is
+// read at every start and resume, so a promotion reaches the next session and
+// a demotion leaves it out.
+func (a *App) standingAgentPrompt(thread store.Thread) (string, error) {
+	row, found, err := a.store.GetStandingAgent(thread.ID)
+	if err != nil {
+		return "", fmt.Errorf("read the standing agent row of %s: %w", thread.ID, err)
+	}
+	if !found {
+		return "", nil
+	}
+	return standingAgentPromptText(row), nil
+}
+
+func standingAgentPromptText(row store.StandingAgent) string {
+	return fmt.Sprintf("You are a standing agent: the user promoted this thread (id %s). Your home is %s. You own that directory and keep your durable state there.",
+		row.ThreadID, row.Home)
+}
+
+// joinPromptParts joins the non-empty parts of an appended prompt with a
+// blank line, the way the model reads paragraphs.
+func joinPromptParts(parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, "\n\n")
 }

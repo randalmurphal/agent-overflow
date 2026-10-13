@@ -248,6 +248,13 @@ const (
 	SettingsUpdated Channel = "settings:updated"
 )
 
+// skills:*: a payload-less refetch nudge. An Install, Update or Remove
+// changed what a provider home holds of the shipped skills tree. Receivers
+// re-read through GetSkillsLibrary.
+const (
+	SkillsChanged Channel = "skills:changed"
+)
+
 // sound:* / spinner:* / theme:* — payload-less refetch nudges from the
 // three client-asset directory watchers.
 const (

@@ -248,7 +248,8 @@ const (
 	// ReportSessionConfig carries the permission/sandbox configuration the
 	// app actually launched this session with. Posted once per mock as soon
 	// as it is observable — for Claude that is argv at boot, for Codex the
-	// thread/start params.
+	// thread/start params, or the thread/resume params of a process that
+	// only resumed.
 	ReportSessionConfig = "session_config"
 )
 
@@ -288,7 +289,12 @@ type SessionConfig struct {
 	// SystemPromptSnapshot is Claude's --system-prompt-snapshot value ("" when
 	// the flag was omitted, which is what an unknown or old CLI version gets).
 	SystemPromptSnapshot string `json:"systemPromptSnapshot,omitempty"`
-	// DeveloperInstructions is Codex's thread/start `developerInstructions`:
-	// the app guide and the on servers' guides, composed by the app.
+	// DeveloperInstructions is Codex's thread/start or thread/resume
+	// `developerInstructions`: the app guide, a standing agent's home block
+	// and the on servers' guides, composed by the app.
 	DeveloperInstructions string `json:"developerInstructions,omitempty"`
+	// Resumed marks a Codex report taken from thread/resume, which a mock
+	// posts only when no thread/start came first. Claude reports argv, so
+	// its resume is an ordinary report of a process started with --resume.
+	Resumed bool `json:"resumed,omitempty"`
 }

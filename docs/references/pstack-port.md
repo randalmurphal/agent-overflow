@@ -108,6 +108,13 @@ the chain with no pull request exits 3, and a cycle of bases fails, so
   fails when a relative Markdown link names a file the tree does not
   carry.
 
+- `assets/skills` embeds the tree the Settings page installs
+  ([Skills library](../specs/standing-agents.md#skills-library)).
+  `TestShippedSkillsAreTheTrackedTree` fails when what ships differs
+  from what git tracks (a `node_modules` left by `pstack-scripts`
+  never ships), and `TestEveryTrackedExecutableStartsWithAShebang`
+  fails when an executable would install without its mode.
+
 - `make pstack-scripts`: the watch-pr and orch tests and the watch-pr
   type check under bun, pinned in `ci/Dockerfile`. orch's bootstrap
   installs their dependencies from `bun.lock` first, which needs the
