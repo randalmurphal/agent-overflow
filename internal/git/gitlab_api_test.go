@@ -106,7 +106,7 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 			t.Fatalf("request %s went to %q with Private-Token %q", call.Path, call.Host, call.Header.Get("Private-Token"))
 		}
 	}
-	if d := read.Detail; d.Number != 7 || d.HeadSHA != "head2" || d.ReviewDecision != "APPROVED" || len(d.LatestReviews) != 1 ||
+	if d := read.Detail; d.Number != 7 || d.HeadSHA != "head2" || d.BaseRefSHA != "start" || d.ReviewDecision != "APPROVED" || len(d.LatestReviews) != 1 ||
 		d.Checks.Total != 1 || d.ChangedFiles != 3 || d.DiffRefs == nil || d.DiffRefs.StartSHA != "start" {
 		t.Fatalf("detail = %+v", d)
 	}

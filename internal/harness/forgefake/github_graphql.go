@@ -258,6 +258,7 @@ func githubPullDetail(r *Repo, p *Pull) map[string]any {
 		"state":            strings.ToUpper(p.State),
 		"isDraft":          p.Draft,
 		"baseRefName":      p.BaseRef,
+		"baseRefOid":       p.StartSHA,
 		"headRefName":      p.HeadRef,
 		"headRefOid":       p.HeadSHA,
 		"url":              githubPullURL(r, p),

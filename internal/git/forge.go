@@ -119,15 +119,19 @@ const (
 // does not report one (GitHub review verdicts, bots, users without a
 // display name); clients then show the login.
 type PRDetail struct {
-	Number         int             `json:"number"`
-	Title          string          `json:"title"`
-	Body           string          `json:"body"`
-	AuthorLogin    string          `json:"authorLogin"`
-	AuthorName     string          `json:"authorName,omitempty"`
-	State          string          `json:"state"`
-	Draft          bool            `json:"draft"`
-	HeadRefName    string          `json:"headRefName"`
-	BaseRefName    string          `json:"baseRefName"`
+	Number      int    `json:"number"`
+	Title       string `json:"title"`
+	Body        string `json:"body"`
+	AuthorLogin string `json:"authorLogin"`
+	AuthorName  string `json:"authorName,omitempty"`
+	State       string `json:"state"`
+	Draft       bool   `json:"draft"`
+	HeadRefName string `json:"headRefName"`
+	BaseRefName string `json:"baseRefName"`
+	// BaseRefSHA is the base branch's tip the forge compares the PR
+	// against: GitHub's baseRefOid, GitLab's diff_refs.start_sha. Empty
+	// while GitLab is still preparing the merge request's diff.
+	BaseRefSHA     string          `json:"baseRefSHA"`
 	HeadSHA        string          `json:"headSHA"`
 	URL            string          `json:"url"`
 	Additions      int             `json:"additions"`

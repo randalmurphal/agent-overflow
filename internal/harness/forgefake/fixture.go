@@ -58,7 +58,9 @@ type Pull struct {
 	// HeadRef and BaseRef default to "feature" and "main".
 	HeadRef string `json:"headRef,omitempty"`
 	BaseRef string `json:"baseRef,omitempty"`
-	// HeadSHA, BaseSHA and StartSHA are generated when omitted.
+	// HeadSHA, BaseSHA and StartSHA are generated when omitted. StartSHA is
+	// the base branch's tip (GitHub baseRefOid, GitLab start_sha); BaseSHA
+	// is GitLab's merge base.
 	HeadSHA  string `json:"headSha,omitempty"`
 	BaseSHA  string `json:"baseSha,omitempty"`
 	StartSHA string `json:"startSha,omitempty"`

@@ -162,11 +162,14 @@ type prUpdatePump struct {
 	// failure the pump held back because a snapshot is on screen; the
 	// retry reports it if it fails again. seq stamps the state this pump
 	// currently holds, so a frame is orderable against the reference a
-	// joiner took.
+	// joiner took. readFailed is set by a local read of this PR that
+	// failed (prRevisionWorkspace): the next successful poll emits even
+	// when unchanged, and that frame is a pane's cue to retry.
 	last         []byte
 	lastSnapshot prUpdateSnapshot
 	fail         prForgeFailure
 	graced       bool
+	readFailed   bool
 	seq          uint64
 
 	// The CI phase (app_forge_ci.go), under the same lock. ci is the last
@@ -237,115 +240,43 @@ func (a *App) GetPRDetail(ctx context.Context, pr gitops.PRReference) (gitops.PR
 }
 
 // OpenPRDiff opens the PR's three-dot diff (merge base of the base branch
-// to the PR head), computed in the referenced clone after fetching the PR
-// head and base branch. The result names the head the diff was computed at.
+// tip to the head) at rev, the revision of the PR snapshot the caller
+// shows, computed in the referenced clone.
 //
 //ao:scope git:operate
-func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, baseRef string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+func (a *App) OpenPRDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, ignoreWhitespace bool) (ReviewDiffOpened, error) {
 	const action = "open PR diff"
-	if a.shuttingDown.Load() {
-		return ReviewDiffOpened{}, ErrShuttingDown
-	}
-	if err := pr.Validate(); err != nil {
-		return ReviewDiffOpened{}, err
-	}
-	baseRef = strings.TrimSpace(baseRef)
-	if baseRef == "" {
-		return ReviewDiffOpened{}, errors.New("base branch is required")
-	}
-	if err := gitops.ValidateBranchName(baseRef); err != nil {
-		return ReviewDiffOpened{}, err
-	}
-	workspace, err := a.prCloneWorkspace(action, ws)
+	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev)
 	if err != nil {
 		return ReviewDiffOpened{}, err
 	}
-	headOID, err := a.fetchPRHeadAndBase(workspace, pr, baseRef)
-	if err != nil {
-		return ReviewDiffOpened{}, err
-	}
-	opened, err := a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
-		return gitdiff.OpenMergeBaseDiff(ctx, workspace, "origin/"+baseRef, headOID,
+	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
+		return gitdiff.OpenMergeBaseDiff(ctx, workspace, rev.BaseSHA, rev.HeadSHA,
 			gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
 	})
-	if err != nil {
-		return ReviewDiffOpened{}, err
-	}
-	opened.HeadSHA = headOID
-	return opened, nil
 }
 
-// ListPRCommits returns the commits a PR carries (`origin/base..head`,
+// ListPRCommits returns the commits a PR carries at rev (`base..head`,
 // newest first), computed from the referenced clone.
 //
-// headSHA is an optimization contract, not a filter: when the caller
-// already knows the PR head OID (OpenPRDiff fetched it moments earlier)
-// and that commit plus the base branch are present locally, the fetch
-// round-trips are skipped. Empty, unknown, or not-yet-fetched values
-// fall back to a full fetch.
-//
 //ao:scope git:operate
-func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, baseRef, headSHA string) ([]BranchCommit, error) {
-	const action = "list PR commits"
-	if a.shuttingDown.Load() {
-		return nil, ErrShuttingDown
-	}
-	if err := pr.Validate(); err != nil {
-		return nil, err
-	}
-	baseRef = strings.TrimSpace(baseRef)
-	if baseRef == "" {
-		return nil, errors.New("base branch is required")
-	}
-	if err := gitops.ValidateBranchName(baseRef); err != nil {
-		return nil, err
-	}
-	workspace, err := a.prCloneWorkspace(action, ws)
+func (a *App) ListPRCommits(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision) ([]BranchCommit, error) {
+	workspace, err := a.prRevisionWorkspace("list PR commits", ws, pr, rev)
 	if err != nil {
 		return nil, err
 	}
-	headOID := strings.TrimSpace(headSHA)
-	if !gitdiff.RevisionsExist(context.Background(), workspace, headOID, "refs/remotes/origin/"+baseRef) {
-		headOID, err = a.fetchPRHeadAndBase(workspace, pr, baseRef)
-		if err != nil {
-			return nil, err
-		}
-	}
-	commits, err := gitdiff.ListCommitsRange(context.Background(), workspace, "origin/"+baseRef, headOID)
-	if err != nil {
-		return nil, err
-	}
-	return commits, nil
+	return gitdiff.ListCommitsRange(context.Background(), workspace, rev.BaseSHA, rev.HeadSHA)
 }
 
-// OpenPRCommitDiff opens the unified patch a single PR commit introduced
-// (first-parent diff), read from the referenced clone.
+// OpenPRCommitDiff opens the unified patch a single commit of the PR at rev
+// introduced (first-parent diff), read from the referenced clone.
 //
 //ao:scope git:operate
-func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, sha string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
+func (a *App) OpenPRCommitDiff(ctx context.Context, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, sha string, ignoreWhitespace bool) (ReviewDiffOpened, error) {
 	const action = "open PR commit diff"
-	if a.shuttingDown.Load() {
-		return ReviewDiffOpened{}, ErrShuttingDown
-	}
-	if err := pr.Validate(); err != nil {
-		return ReviewDiffOpened{}, err
-	}
-	workspace, err := a.prCloneWorkspace(action, ws)
+	workspace, err := a.prRevisionWorkspace(action, ws, pr, rev)
 	if err != nil {
 		return ReviewDiffOpened{}, err
-	}
-	// The commit almost always sits in the clone already (ListPRCommits
-	// just fetched the head), so only fetch the PR head — the case where
-	// this call races a push or lands in a fresh session — when the
-	// commit is missing locally.
-	if !gitdiff.RevisionsExist(ctx, workspace, sha) {
-		headRef, err := gitops.PRHeadRef(pr.Forge, pr.Number)
-		if err != nil {
-			return ReviewDiffOpened{}, err
-		}
-		if _, err := a.gitCore().FetchRefOID(workspace, "origin", headRef); err != nil {
-			return ReviewDiffOpened{}, fmt.Errorf("fetch PR head: %w", err)
-		}
 	}
 	return a.openReviewDiff(ctx, action, transport.ScopeGitOperate, func(string) (*gitdiff.Diff, error) {
 		return gitdiff.OpenCommitDiff(ctx, workspace, sha, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
@@ -367,22 +298,39 @@ func (a *App) prCloneWorkspace(action string, ws WorkspaceRef) (string, error) {
 	return workspace, nil
 }
 
-// fetchPRHeadAndBase fetches the PR head ref and base branch into the
-// local clone's origin remote and returns the head OID.
-func (a *App) fetchPRHeadAndBase(workspace string, pr gitops.PRReference, baseRef string) (string, error) {
-	headRef, err := gitops.PRHeadRef(pr.Forge, pr.Number)
+// prRevisionWorkspace is the shared entry of a PR read at rev: it resolves
+// the clone and makes rev's commits present in it (EnsurePRObjects).
+func (a *App) prRevisionWorkspace(action string, ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision) (string, error) {
+	if a.shuttingDown.Load() {
+		return "", ErrShuttingDown
+	}
+	if err := pr.Validate(); err != nil {
+		return "", err
+	}
+	if err := rev.Validate(); err != nil {
+		return "", err
+	}
+	workspace, err := a.prCloneWorkspace(action, ws)
 	if err != nil {
 		return "", err
 	}
-	core := a.gitCore()
-	headOID, err := core.FetchRefOID(workspace, "origin", headRef)
-	if err != nil {
-		return "", fmt.Errorf("fetch PR head: %w", err)
+	if err := a.gitCore().EnsurePRObjects(workspace, pr, rev); err != nil {
+		a.notePRReadFailed(pr)
+		return "", fmt.Errorf("%s: %w", action, err)
 	}
-	if err := core.FetchBranch(workspace, "origin", baseRef); err != nil {
-		return "", fmt.Errorf("fetch base branch: %w", err)
+	return workspace, nil
+}
+
+// notePRReadFailed has the PR's live pump emit its next successful poll
+// even when nothing changed: the commits a read could not fetch are worth
+// asking for again once the forge has answered, and that frame is when the
+// reader retries. No pump, no reader to tell.
+func (a *App) notePRReadFailed(pr gitops.PRReference) {
+	a.prUpdates.mu.Lock()
+	defer a.prUpdates.mu.Unlock()
+	if pump := a.livePRUpdatePumpLocked(prUpdateKey(pr)); pump != nil {
+		pump.readFailed = true
 	}
-	return headOID, nil
 }
 
 // ListPRReviewThreads reads a PR's review threads for the user who asked.
@@ -911,9 +859,10 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 				return PRUpdatedEvent{}, false
 			}
 			pump.graced = false
-			unchanged := string(encoded) == string(pump.last) && !pump.fail.failing()
+			unchanged := string(encoded) == string(pump.last) && !pump.fail.failing() && !pump.readFailed
 			var seq uint64
 			if !unchanged {
+				pump.readFailed = false
 				pump.last = encoded
 				pump.lastSnapshot = snapshot
 				pump.fail = prForgeFailure{}

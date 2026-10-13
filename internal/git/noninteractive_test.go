@@ -32,6 +32,7 @@ case "$1 $2" in
   "symbolic-ref --quiet") echo "feature" ;;
   "rev-parse --abbrev-ref") echo "origin/feature" ;;
   "remote ") echo "origin" ;;
+  "cat-file --batch-check") while read -r object; do echo "$object missing"; done ;;
 esac
 exit 0
 `
@@ -118,8 +119,11 @@ func TestCredentialPromptsBlockedUnlessUserInitiated(t *testing.T) {
 	if err := core.PruneRemotes(cwd); err != nil {
 		t.Fatalf("PruneRemotes: %v", err)
 	}
-	if err := core.FetchBranch(cwd, "origin", "main"); err != nil {
-		t.Fatalf("FetchBranch: %v", err)
+	// A PR read fetching commits its clone lacks. The mock never produces
+	// them, so the call reports them missing after the fetch.
+	sha := strings.Repeat("a", 40)
+	if err := core.EnsurePRObjects(cwd, prRevisionPR, PRRevision{BaseRef: "main", BaseSHA: sha, HeadSHA: sha}); err == nil {
+		t.Fatal("EnsurePRObjects: expected the commits reported missing")
 	}
 
 	env := commandCredentialEnv(t, logPath)
@@ -145,7 +149,7 @@ func TestCredentialPromptsBlockedUnlessUserInitiated(t *testing.T) {
 	allowed := []string{
 		"pull --ff-only",
 		"fetch --all --prune",
-		"fetch origin main",
+		"fetch origin pull/5/head main",
 	}
 	for _, argv := range allowed {
 		got, ok := env[argv]
