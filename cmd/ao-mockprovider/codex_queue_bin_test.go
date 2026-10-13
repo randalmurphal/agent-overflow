@@ -48,21 +48,41 @@ func queueScenario() *scenario.Scenario {
 // unbounded, non-flaky amount of wall time.
 func startControlledMock(t *testing.T, sc *scenario.Scenario, args []string, extraEnv ...string) (*mockProc, func(name string)) {
 	t.Helper()
+	mockIDCh := make(chan string, 1)
+	p, srv := startMockOnControl(t, sc, args, func(info control.MockInfo, _ control.Report) {
+		select {
+		case mockIDCh <- info.MockID:
+		default:
+		}
+	}, extraEnv...)
+
+	var mockID string
+	select {
+	case mockID = <-mockIDCh:
+	case <-time.After(testTimeout):
+		t.Fatal("mock id never observed")
+	}
+	return p, func(name string) {
+		t.Helper()
+		if err := srv.Command(mockID, control.Command{Type: control.CommandAdvance, Name: name}); err != nil {
+			t.Fatalf("advance %q: %v", name, err)
+		}
+	}
+}
+
+// startMockOnControl boots the real binary on a live control channel that
+// assigns it sc and hands each report it posts to onReport.
+func startMockOnControl(t *testing.T, sc *scenario.Scenario, args []string, onReport func(control.MockInfo, control.Report), extraEnv ...string) (*mockProc, *control.Server) {
+	t.Helper()
 	scenarioJSON, err := json.Marshal(sc)
 	if err != nil {
 		t.Fatalf("marshal scenario: %v", err)
 	}
-	mockIDCh := make(chan string, 1)
 	srv, err := control.NewServer(control.ServerConfig{
 		Resolve: func(control.Registration) (control.Assignment, error) {
 			return control.Assignment{ScenarioName: sc.Name, ScenarioJSON: scenarioJSON}, nil
 		},
-		OnReport: func(info control.MockInfo, _ control.Report) {
-			select {
-			case mockIDCh <- info.MockID:
-			default:
-			}
-		},
+		OnReport: onReport,
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -80,19 +100,7 @@ func startControlledMock(t *testing.T, sc *scenario.Scenario, args []string, ext
 		control.EnvAddr + "=" + srv.Addr(),
 		control.EnvToken + "=" + srv.Token(),
 	}, extraEnv...), t.TempDir())
-
-	var mockID string
-	select {
-	case mockID = <-mockIDCh:
-	case <-time.After(testTimeout):
-		t.Fatal("mock id never observed")
-	}
-	return p, func(name string) {
-		t.Helper()
-		if err := srv.Command(mockID, control.Command{Type: control.CommandAdvance, Name: name}); err != nil {
-			t.Fatalf("advance %q: %v", name, err)
-		}
-	}
+	return p, srv
 }
 
 // TestCodexInitializeReportsAVersion pins the handshake field every codex

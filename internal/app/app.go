@@ -552,6 +552,9 @@ type App struct {
 	// delete of the durable queue (dropDurableFlushQueue), so a test can
 	// queue a message before the in-memory queue is cleared.
 	queueDroppedForTest func(threadID string)
+	// remoteReplySettledForTest, when set, runs in a parked remote call's
+	// after-response work between the dismissal and the end of its wait.
+	remoteReplySettledForTest func()
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a

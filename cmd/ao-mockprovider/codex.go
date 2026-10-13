@@ -75,6 +75,10 @@ type codexAdapter struct {
 	// report carries names only).
 	mcpServers map[string]json.RawMessage
 
+	// keepHistory records each turn/start input in the thread store
+	// (scenario.CodexOptions.KeepHistory, codex_revert.go).
+	keepHistory bool
+
 	// login is the account sign-in this connection is serving, if any. It
 	// carries its own lock rather than sharing mu: its completion arrives on
 	// the control-poll goroutine while account/login/* arrive on the stdin
@@ -141,6 +145,7 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 		waiters:   make(map[int64]chan approvalAnswer),
 		forkTurns: make(map[string][]string),
 	}
+	a.keepHistory = opts != nil && opts.KeepHistory
 	a.approvalSeq.Store(codexApprovalIDBase)
 	w.onLine(a.noteTurnEnd)
 	return a
@@ -218,6 +223,7 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		if !a.configReported.Load() {
 			a.reportSessionConfig(params, true)
 		}
+		a.reportResumedHistory(a.e.currentVars()["THREAD_ID"])
 		a.markThreadLoaded()
 		a.respond(id, method, a.e.currentVars())
 	case "turn/start":
@@ -245,6 +251,9 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			Kind: control.ReportUserInput, Turn: n,
 			Input: input, SessionRef: vars["THREAD_ID"],
 		})
+		if a.keepHistory {
+			recordHistoryInput(vars["THREAD_ID"], input)
+		}
 		a.respond(id, method, vars)
 		a.e.enqueueTurn(n)
 	case "turn/steer":

@@ -467,7 +467,7 @@ func (a *App) withdrawHeldRemoteCompletions(threadID string) error {
 			continue
 		}
 		removal, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
-			return a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID, false)
+			return a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID, false, nil)
 		})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))

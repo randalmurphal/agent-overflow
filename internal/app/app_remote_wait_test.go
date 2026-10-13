@@ -262,8 +262,9 @@ func (w *replyWriter) Write(p []byte) (int, error) {
 
 // statusThrough parks a remote_status call on the job through the MCP
 // transport, settles the job, and returns once the call has finished,
-// including the work it deferred until its reply went out.
-func (f *remoteWaitFixture) statusThrough(t *testing.T, ctx context.Context, id string, w http.ResponseWriter) {
+// including the work it deferred until its reply went out. accept is the
+// client's Accept header; both provider CLIs list text/event-stream.
+func (f *remoteWaitFixture) statusThrough(t *testing.T, ctx context.Context, id string, w http.ResponseWriter, accept string) {
 	t.Helper()
 	for f.source.remoteWaitActive(f.peerID, id) {
 		time.Sleep(time.Millisecond)
@@ -281,6 +282,9 @@ func (f *remoteWaitFixture) statusThrough(t *testing.T, ctx context.Context, id 
 	request := httptest.NewRequestWithContext(ctx, http.MethodPost, endpoint.Path, bytes.NewReader(body))
 	request.RemoteAddr = "[::1]:40000"
 	request.Header.Set("Content-Type", "application/json")
+	if accept != "" {
+		request.Header.Set("Accept", accept)
+	}
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
@@ -324,7 +328,7 @@ func TestRemoteWaitReplyDeliveryIsTheTransportsAnswer(t *testing.T) {
 			defer hangUp()
 			return nil
 		}}
-		f.statusThrough(t, ctx, id, w)
+		f.statusThrough(t, ctx, id, w, "")
 		if ctx.Err() == nil || !strings.Contains(w.Body.String(), `\"notification\":\"dismissed\"`) {
 			t.Fatalf("reply was not the settled receipt read before the hang-up: %s", w.Body.String())
 		}
@@ -346,7 +350,7 @@ func TestRemoteWaitReplyDeliveryIsTheTransportsAnswer(t *testing.T) {
 		w := &replyWriter{ResponseRecorder: httptest.NewRecorder(), onWrite: func() error {
 			return errors.New("broken pipe")
 		}}
-		f.statusThrough(t, context.Background(), id, w)
+		f.statusThrough(t, context.Background(), id, w, "")
 		if watch := f.watch(t, id); watch.Notification != "pending" || watch.Receipt.State != "succeeded" {
 			t.Fatalf("an undelivered reply settled the watch: %+v", watch)
 		}
@@ -356,6 +360,44 @@ func TestRemoteWaitReplyDeliveryIsTheTransportsAnswer(t *testing.T) {
 			t.Fatalf("the watcher did not deliver the result once: %+v", rows)
 		}
 	})
+}
+
+// On the event-stream path both provider CLIs use, the watch is dismissed
+// before the wait ends: a watcher pass landing between the two finds nothing
+// owed, so a client that read the reply and hung up gets no second copy.
+func TestRemoteReplyIsDismissedBeforeItsWaitEnds(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	f := newRemoteWaitFixture(t)
+	id := uuid.NewString()
+	if receipt := f.run(t, id, 0.2); receipt.State != "running" {
+		t.Fatalf("expected a running receipt: %+v", receipt)
+	}
+	landed := false
+	f.source.remoteReplySettledForTest = func() {
+		landed = true
+		watch, err := f.source.store.GetRemoteWatch(f.peerID, id)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		f.source.checkRemoteWatch(watch)
+	}
+	ctx, hangUp := context.WithCancel(context.Background())
+	defer hangUp()
+	w := &replyWriter{ResponseRecorder: httptest.NewRecorder(), onWrite: func() error { return nil }}
+	f.statusThrough(t, ctx, id, w, "application/json, text/event-stream")
+	hangUp()
+	if !landed || !strings.Contains(w.Body.String(), "event: message") || !strings.Contains(w.Body.String(), `\"notification\":\"dismissed\"`) {
+		t.Fatalf("not a settled event-stream reply (seam ran %v): %s", landed, w.Body.String())
+	}
+	if watch := f.watch(t, id); watch.Notification != "dismissed" {
+		t.Fatalf("watch = %+v, want dismissed", watch)
+	}
+	f.source.checkRemoteWatch(f.watch(t, id))
+	if rows := durableQueueRows(t, f.source, f.thread.ID); len(rows) != 0 {
+		t.Fatalf("result delivered twice: %+v", rows)
+	}
 }
 
 // The wait is bounded by the tool schema, and an interrupt ends a parked call

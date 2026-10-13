@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -133,6 +134,23 @@ func claudeRecordingSession(t *testing.T, f *requestFixture) string {
 	return stdinLog
 }
 
+// dispatchUnconfirmed hands everything queued on the caller to a Claude
+// session that never echoes, as one joined message, and returns the
+// envelope it wrote: the rows go at the write and the messages stay
+// unconfirmed.
+func dispatchUnconfirmed(t *testing.T, f *requestFixture) map[string]any {
+	t.Helper()
+	stdinLog := claudeRecordingSession(t, f)
+	f.app.triage.FlushQueuedItems(f.caller.ID)
+	envelopes := waitForRecordedUserEnvelopes(t, stdinLog, 1)
+	if len(envelopes) != 1 {
+		t.Fatalf("the session was written %d messages, want one", len(envelopes))
+	}
+	waitUntil(t, 10*time.Second, func() bool { return len(durableQueueRows(t, f.app, f.caller.ID)) == 0 })
+	f.app.flushDispatch.wg.Wait()
+	return envelopes[0]
+}
+
 // settledAnswerHolding settles a request of the caller's with an answer that
 // holds text, and returns its token.
 func settledAnswerHolding(t *testing.T, f *requestFixture, text string) string {
@@ -172,11 +190,7 @@ func TestASessionDeathSplitsAJoinedAnswerAndCompletionExactly(t *testing.T) {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
 
-	stdinLog := claudeRecordingSession(t, f)
-	f.app.triage.FlushQueuedItems(f.caller.ID)
-	waitForRecordedUserEnvelopes(t, stdinLog, 1)
-	waitUntil(t, 10*time.Second, func() bool { return len(durableQueueRows(t, f.app, f.caller.ID)) == 0 })
-	f.app.flushDispatch.wg.Wait()
+	dispatchUnconfirmed(t, f)
 
 	f.app.restoreUnconfirmedQueueOnSessionDeath(f.caller.ID)
 
@@ -205,11 +219,7 @@ func TestASessionDeathGivesBackAnUnconfirmedMessageWithNoRow(t *testing.T) {
 				}
 			}
 			f.app.waitAgentNoticeWork()
-			stdinLog := claudeRecordingSession(t, f)
-			f.app.triage.FlushQueuedItems(f.caller.ID)
-			waitForRecordedUserEnvelopes(t, stdinLog, 1)
-			waitUntil(t, 10*time.Second, func() bool { return len(durableQueueRows(t, f.app, f.caller.ID)) == 0 })
-			f.app.flushDispatch.wg.Wait()
+			dispatchUnconfirmed(t, f)
 
 			f.app.restoreUnconfirmedQueueOnSessionDeath(f.caller.ID)
 
@@ -501,5 +511,258 @@ func TestAnUnsplittableJoinGoesToTheComposerWhole(t *testing.T) {
 				t.Errorf("queued again %q, want nothing", memory)
 			}
 		})
+	}
+}
+
+// requireDueAtOnce fails unless the watch is pending and due now, with no
+// session end counted against it.
+func requireDueAtOnce(t *testing.T, a *App, w store.RemoteWatch) {
+	t.Helper()
+	requirePendingAgain(t, a, w)
+	saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.NextCheck > time.Now().UnixMilli() || saved.WakeAttempts != 0 {
+		t.Fatalf("the watch is due at %d after %d session ends; want due now after none", saved.NextCheck, saved.WakeAttempts)
+	}
+}
+
+// A person's Stop or an archive while the provider holds an answer, a late
+// reply or a reminder and a completion it has not confirmed gives them
+// back: CleanupThread drops them from the session with the person's text
+// joined to them, which stays dropped. A Stop's completion is due again at
+// once; an archive's waits for the unarchive.
+func TestAStopOrArchiveGivesBackWhatTheProviderNeverConfirmed(t *testing.T) {
+	t.Parallel()
+	for _, end := range []string{"stop", "archive"} {
+		for _, tc := range owedWakeSeeds() {
+			t.Run(end+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				f := newRequestFixture(t)
+				f.app.startSessionFn = func(string) error { return nil }
+				token := tc.seed(t, f)
+				w := completedRemoteWatch(t, f.app, f.caller)
+				queueOwnedAndPersonMessages(t, f, token, tc.late, w, "build passed")
+				dispatchUnconfirmed(t, f)
+
+				if end == "stop" {
+					if err := f.app.StopSession(f.caller.ID); err != nil {
+						t.Fatalf("StopSession: %v", err)
+					}
+				} else if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+					t.Fatalf("ArchiveThread: %v", err)
+				}
+
+				requireGivenBack(t, f, token, tc.late, w)
+				if end == "stop" {
+					requireDueAtOnce(t, f.app, w)
+				}
+				requireDraft(t, f.app, f.caller.ID, "")
+			})
+		}
+	}
+}
+
+// An answer or a completion whose echo the store recorded before the
+// Stop's give-back ran stays delivered: the provider took it in, even
+// though the session's pending entry was still there when the Stop read
+// it.
+func TestAStopKeepsAnAnswerOrCompletionTheProviderConfirmed(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	token := owedWakeSeeds()[0].seed(t, f)
+	w := completedRemoteWatch(t, f.app, f.caller)
+	queueOwnedAndPersonMessages(t, f, token, false, w, "build passed")
+	dispatchUnconfirmed(t, f)
+	f.app.confirmOwnedDeliveries(f.caller.ID, []string{threadWakeSendID(token), remoteCompletionSendID(w)})
+
+	if err := f.app.StopSession(f.caller.ID); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued || row.ConfirmedAt == 0 {
+		t.Fatalf("a confirmed answer was given back: delivered as %q, confirmed at %d", row.DeliveredHow, row.ConfirmedAt)
+	}
+	if saved, err := f.app.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil || saved.Notification != "queued" {
+		t.Fatalf("a confirmed completion's watch = %+v %v, want queued", saved, err)
+	}
+}
+
+// The provider's echo of a queued answer, late reply or reminder is the
+// second phase of its delivery mark: before it, a restart gives the
+// answer back; after it, nothing does.
+func TestTheEchoConfirmsAnAnswersDelivery(t *testing.T) {
+	t.Parallel()
+	for _, tc := range owedWakeSeeds() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.app.startSessionFn = func(string) error { return nil }
+			token := tc.seed(t, f)
+			f.app.deliverThreadWake(token, tc.late)
+			f.app.waitAgentNoticeWork()
+			envelope := dispatchUnconfirmed(t, f)
+			confirmedAt := func() int64 {
+				row := f.request(t, token)
+				if tc.late {
+					return row.LateConfirmedAt
+				}
+				return row.ConfirmedAt
+			}
+			if confirmedAt() != 0 {
+				t.Fatal("the answer was confirmed before its echo")
+			}
+
+			wireID, _ := envelope["uuid"].(string)
+			text, _ := envelopeText(t, envelope)
+			meta, _ := json.Marshal(map[string]any{"provider_item_id": wireID})
+			if err := f.app.triage.Handle(provider.ProviderEvent{
+				Kind: provider.EventUserText, ThreadID: f.caller.ID, Content: text,
+				Meta: meta, Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("echo: %v", err)
+			}
+			if confirmedAt() == 0 {
+				t.Fatal("the echo did not confirm the answer's delivery")
+			}
+
+			after := f.restart(t)
+			after.app.restoreDurableFlushQueueAtBoot()
+			if row := after.request(t, token); !threadRequestDelivered(row, tc.late) {
+				t.Fatal("the boot sweep gave back an answer the provider confirmed")
+			}
+		})
+	}
+}
+
+// A restart finds an answer, a late reply or a reminder and a completion
+// that the last run handed the provider and never saw confirmed, with no
+// queue row left: they go back to their owners, the completion due at once.
+func TestTheBootSweepGivesBackWhatWasNeverConfirmed(t *testing.T) {
+	t.Parallel()
+	for _, tc := range owedWakeSeeds() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.app.startSessionFn = func(string) error { return nil }
+			token := tc.seed(t, f)
+			w := completedRemoteWatch(t, f.app, f.caller)
+			queueOwnedAndPersonMessages(t, f, token, tc.late, w, "build passed")
+			dispatchUnconfirmed(t, f)
+
+			after := f.restart(t)
+			after.app.restoreDurableFlushQueueAtBoot()
+
+			requireGivenBack(t, after, token, tc.late, w)
+			requireDueAtOnce(t, after.app, w)
+		})
+	}
+}
+
+// A completion a session end gave back waits on the thread request wake
+// retry's ladder before the watcher delivers it again, and after the last
+// attempt the watch gives it up with the reason and keeps the receipt. A
+// Stop's give-back is due at once and counts nothing.
+func TestACompletionASessionEndGaveBackWaitsOnTheLadder(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	w := completedRemoteWatch(t, f.app, f.caller)
+	if err := f.app.queueAgentNotice(f.app.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})); err != nil {
+		t.Fatalf("queueAgentNotice: %v", err)
+	}
+	f.app.waitAgentNoticeWork()
+	dispatchUnconfirmed(t, f)
+	sendID := remoteCompletionSendID(w)
+	watch := func() store.RemoteWatch {
+		t.Helper()
+		saved, err := f.app.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return saved
+	}
+	requireBooked := func(attempts int64, before time.Time) {
+		t.Helper()
+		saved := watch()
+		earliest := before.Add(threadWakeRetryDelay(attempts)).UnixMilli()
+		latest := time.Now().Add(threadWakeRetryDelay(attempts)).UnixMilli()
+		if saved.Notification != "pending" || saved.WakeAttempts != attempts || saved.NextCheck < earliest || saved.NextCheck > latest {
+			t.Fatalf("after %d session ends the watch is %q, due %d after %d; want pending, due in %v",
+				attempts, saved.Notification, saved.NextCheck, saved.WakeAttempts, threadWakeRetryDelay(attempts))
+		}
+		due, err := f.app.store.ListRemoteWatches("", time.Now().UnixMilli(), 256)
+		if err != nil || len(due) != 0 {
+			t.Fatalf("the completion is due before its time: %+v %v", due, err)
+		}
+	}
+	// The watcher queues a completion once it is due, observing the watch
+	// first, which books its next poll.
+	requeue := func() {
+		t.Helper()
+		if err := f.app.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, w.Receipt, "", time.Now().UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+		item := store.FlushQueueItem{ID: uuid.NewString(), ThreadID: f.caller.ID, SendID: sendID, Message: "done", EnqueuedAt: time.Now().UnixMilli()}
+		if err := f.app.store.QueueRemoteCompletion(w.ComputerID, w.RequestID, item); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.app.store.DeleteDispatchedFlushQueueItem(item.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The first comes back through the session-death restore.
+	before := time.Now()
+	f.app.restoreUnconfirmedQueueOnSessionDeath(f.caller.ID)
+	requireBooked(1, before)
+
+	for attempts := int64(2); attempts <= threadWakeRetryAttempts; attempts++ {
+		requeue()
+		before = time.Now()
+		f.app.giveBackToOwners(f.caller.ID, []ownedMessage{{sendID: sendID, unconfirmed: true, ended: true}})
+		requireBooked(attempts, before)
+	}
+
+	// A Stop is due at once and counts nothing.
+	requeue()
+	f.app.giveBackToOwners(f.caller.ID, []ownedMessage{{sendID: sendID, unconfirmed: true}})
+	if saved := watch(); saved.Notification != "pending" || saved.WakeAttempts != threadWakeRetryAttempts || saved.NextCheck > time.Now().UnixMilli() {
+		t.Fatalf("a Stop's give-back: %q due %d after %d", saved.Notification, saved.NextCheck, saved.WakeAttempts)
+	}
+
+	requeue()
+	f.app.giveBackToOwners(f.caller.ID, []ownedMessage{{sendID: sendID, unconfirmed: true, ended: true}})
+	saved := watch()
+	if saved.Notification != "dismissed" || !strings.Contains(saved.WakeIssue, "9 times") || saved.Receipt.State != "succeeded" {
+		t.Fatalf("after the ladder: %q issue %q receipt %+v; want dismissed with the reason and the receipt", saved.Notification, saved.WakeIssue, saved.Receipt)
+	}
+}
+
+// The boot sweep of unconfirmed deliveries leaves a message whose queue row
+// is still there to that row, which the restore gives back or, when that
+// fails, keeps for the next boot: given back without its row, the owner
+// would be delivered again with the row still queued.
+func TestTheBootSweepOfUnconfirmedDeliveriesLeavesQueuedRows(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	token := owedWakeSeeds()[0].seed(t, f)
+	w := completedRemoteWatch(t, f.app, f.caller)
+	queueOwnedAndPersonMessages(t, f, token, false, w, "build passed")
+
+	after := f.restart(t)
+	after.app.giveBackUnconfirmedAtBoot()
+
+	if row := after.request(t, token); row.DeliveredHow != store.ThreadWakeQueued {
+		t.Fatalf("the answer with a queued row was given back: delivered as %q", row.DeliveredHow)
+	}
+	if saved, err := after.app.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil || saved.Notification != "queued" {
+		t.Fatalf("the completion with a queued row was given back: %+v %v", saved, err)
+	}
+	if durable, _ := queuedSendIDs(t, after.app, f.caller.ID); len(durable) != 3 {
+		t.Fatalf("queued rows %q, want all three kept", durable)
 	}
 }

@@ -214,6 +214,9 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 				a.emitBackgroundChanged(access.ThreadID)
 			}
 		}
+		if a.remoteReplySettledForTest != nil {
+			a.remoteReplySettledForTest()
+		}
 		endWait()
 		// The wait's end is what moves a running job into the background:
 		// the tray row changes state without the job itself changing.
@@ -383,7 +386,7 @@ var remoteToolDefinitions = []map[string]any{
 	}, "computer_id", "project_id", "request_id"),
 	remoteTool("remote_status", "Read a remote command receipt and retained output, optionally waiting for it to finish. Use the original computer and request IDs after a disconnect or lost reply. Only this conversation's commands are accessible, including after destination opt-out.", map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),
 	remoteTool("remote_cancel", "Stop this conversation's remote command by its original computer and request IDs: SIGTERM to its process group, then SIGKILL after a few seconds. Cancellation remains available after destination opt-out.", map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),
-	remoteTool("remote_jobs", "List this conversation’s tracked remote jobs, pending first, up to 256 recent jobs, including completed jobs. Recovers original computer/request IDs after context loss. notification=queued means the normal message queue owns delivery/recovery, not proof the agent read it; dismissed means a tool reply already carried the result. Receipts reflect the latest observation; use remote_status for a fresh check when needed. Connectivity errors do not mean the destination process stopped.", map[string]any{}),
+	remoteTool("remote_jobs", "List this conversation’s tracked remote jobs, pending first, up to 256 recent jobs, including completed jobs. Recovers original computer/request IDs after context loss. notification=queued means the normal message queue owns delivery/recovery, not proof the agent read it; dismissed means a tool reply already carried the result, or, with wakeIssue, that delivery was given up and the result is here. Receipts reflect the latest observation; use remote_status for a fresh check when needed. Connectivity errors do not mean the destination process stopped.", map[string]any{}),
 	remoteTool("remote_read_log", "Read a bounded log range, or its tail (offset=-1, default), of a running or finished command. Output is retained on the destination up to 4 GiB/job and 20 GiB total. Offsets are absolute output byte offsets; nextOffset resumes reading. startOffset identifies expired/discarded prefix; expired means the log is no longer retained. Never page a large log into context; search it, or fetch it with remote_fetch_log and inspect the local file.", remoteLogProperties(false), "computer_id", "request_id"),
 	remoteTool("remote_search_log", "Search literal case-sensitive text in a bounded log page, with bounded match context. Continue at nextOffset until done. Search is not a regular expression.", remoteLogProperties(true), "computer_id", "request_id", "query"),
 	remoteTool("remote_fetch_log", "Copy a finished command's whole retained log to this computer and return the local path, size and SHA-256 (no inline bytes), then inspect it with normal local tools. Refused while the command is running; use remote_read_log for a running job. log.startOffset is non-zero when the destination discarded older output.", map[string]any{"computer_id": map[string]any{"type": "string"}, "request_id": map[string]any{"type": "string", "format": "uuid"}}, "computer_id", "request_id"),

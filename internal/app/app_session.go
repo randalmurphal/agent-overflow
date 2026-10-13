@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -1329,6 +1330,11 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool)
 // Stop threw it away. So do the batches a dispatch worker already took
 // from the queue, or it would put them back.
 //
+// CleanupThread also drops the messages the provider was handed and has
+// not confirmed, a person's as they are. An answer, a reminder or a
+// completion among them is held too: its row went at the provider write,
+// and nothing else would tell its owner it was not taken in.
+//
 // It runs under the thread's mutation lock, which every queue write takes
 // (registerQueueItem), so a message queued during a teardown is either in
 // the queue the drop reads, and settled with it, or queued once the
@@ -1340,9 +1346,30 @@ func (a *App) dropQueueForTeardown(threadID string, mutationsHeld bool) []ownedM
 		defer a.threadApplication().LockMutations(threadID)()
 	}
 	held := a.dropDurableFlushQueue(threadID)
+	held = append(held, a.unconfirmedOwnedMessages(threadID, held)...)
 	a.discardFlushDispatch(threadID)
 	a.triage.CleanupThread(threadID)
 	return held
+}
+
+// unconfirmedOwnedMessages names the answers, reminders and completions
+// among the sends the provider was handed and has not confirmed, each once
+// and none that held already names. The send of a joined message names
+// them all; the person's text joined with them stays the teardown's.
+func (a *App) unconfirmedOwnedMessages(threadID string, held []ownedMessage) []ownedMessage {
+	var owned []ownedMessage
+	named := func(id string) bool {
+		return slices.ContainsFunc(held, func(m ownedMessage) bool { return m.sendID == id }) ||
+			slices.ContainsFunc(owned, func(m ownedMessage) bool { return m.sendID == id })
+	}
+	for _, item := range a.triage.UnconfirmedFlushSends(threadID) {
+		for _, id := range unconfirmedSendIDs(item) {
+			if ownedSendID(id) && !named(id) {
+				owned = append(owned, ownedMessage{sendID: id, unconfirmed: true})
+			}
+		}
+	}
+	return owned
 }
 
 // applyClaudeSessionAxes stamps the Claude-only `--settings` block axes

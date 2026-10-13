@@ -132,6 +132,13 @@ type CodexOptions struct {
 	// ThreadID seeds ${THREAD_ID}; defaults to "mock-codex-thread".
 	// thread/resume echoes the requested id instead.
 	ThreadID string `json:"threadId,omitempty"`
+	// KeepHistory records each turn/start input in the mock's thread store
+	// when it arrives, before any echo, as upstream writes the user message
+	// to the thread's rollout. A later process that resumes the thread
+	// reports each recorded input (control.ReportHistoryResumed): the
+	// messages the resumed agent holds, whether or not the app saw them
+	// confirmed.
+	KeepHistory bool `json:"keepHistory,omitempty"`
 }
 
 // Turn is the step list for one user turn.

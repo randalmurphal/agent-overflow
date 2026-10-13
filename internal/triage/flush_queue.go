@@ -203,6 +203,18 @@ func (r *Router) SetFlushUserTextConfirmedHook(fn func(threadID string, item sto
 	r.mu.Unlock()
 }
 
+// SetFlushSendConsumedHook wires the app-layer callback that runs when the
+// provider consumes a flush send, with the send ids the send carries (all
+// of a joined message's). It runs on every confirmation source and never
+// on an interrupt's anchoring, under the thread's flush anchor lock and
+// often on the provider read loop: the same contract as
+// SetFlushUserTextConfirmedHook. Nil disables it.
+func (r *Router) SetFlushSendConsumedHook(fn func(threadID string, sendIDs []string)) {
+	r.mu.Lock()
+	r.flushSendConsumed = fn
+	r.mu.Unlock()
+}
+
 // SetSendUndeliveredHook wires the app's signal that a thread has sends the
 // provider cancelled without running (DrainUndeliveredSends). Called under
 // the thread's flush anchor lock, so it must hand the work off. With no hook
@@ -684,6 +696,35 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 		r.selfHealEchoConsumedFlushRow(threadID, entry)
 	}
 	return drained
+}
+
+// UnconfirmedFlushSends returns the sends the provider was handed and has
+// not confirmed, from the pending-send FIFO and the provider's cancelled
+// sends, as DrainUnconfirmedFlushItems would hand them back, without taking
+// them. A teardown reads them before CleanupThread drops them.
+func (r *Router) UnconfirmedFlushSends(threadID string) []UnconfirmedFlushItem {
+	if threadID == "" {
+		return nil
+	}
+	// Under the anchor lock, as the drain is: an interrupt transition in
+	// flight commits before the snapshot.
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return nil
+	}
+	var sends []UnconfirmedFlushItem
+	for _, entry := range st.pendingSends {
+		if entry.QueueItemID == "" || entry.Shape != sendShapeFlush || entry.EchoConsumed {
+			continue
+		}
+		sends = append(sends, unconfirmedFlushItemFromPending(entry))
+	}
+	return append(sends, st.undeliveredSends...)
 }
 
 // unconfirmedFlushItemFromPending is the restore form of a pending send the
