@@ -7,6 +7,9 @@
 // thread it trades messages with. A mock's scenario starts over with each
 // session, so the agent's scenario is set again before every start.
 //
+// The mock starts its tool-call ids over with each session, so every call
+// names its own id; a repeated id would replace an earlier session's row.
+//
 // The mock cannot run the hygiene pass, so the hygiene turn parks on a gate
 // and the test writes MEMORY.md the way the pass would, then releases it.
 // The home files are read only when a session starts, so the rewrite is
@@ -152,6 +155,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
             call: {
               tool: 'thread_loop',
               args: { label: HYGIENE_LABEL, note: 'Run the agent-home hygiene pass.', every_seconds: 21600 },
+              toolUseId: 'register-hygiene',
             },
           },
         ],
@@ -209,7 +213,15 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
       turns: [
         { text: 'Release notes confirmed.' },
         {
-          steps: [{ call: { tool: 'thread_send', args: { thread_id: agent, message: 'The release notes are ready for your review.' } } }],
+          steps: [
+            {
+              call: {
+                tool: 'thread_send',
+                args: { thread_id: agent, message: 'The release notes are ready for your review.' },
+                toolUseId: 'notes-ready',
+              },
+            },
+          ],
           text: 'Told the lead.',
         },
       ],
@@ -231,6 +243,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
                 project_id: workers.projectId,
                 home_files: ['verification.md'],
               },
+              toolUseId: 'spawn-reviewer',
             },
           },
           { capture: { var: 'WORKER', from: 'lastResult', pattern: RESULT_THREAD_PATTERN } },
@@ -238,7 +251,11 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
         text: 'Spawned a reviewer with my verification checklist.',
       },
       {
-        steps: [{ call: { tool: 'thread_send', args: { thread_id: ordinary, message: 'Please confirm the release notes.' } } }],
+        steps: [
+          {
+            call: { tool: 'thread_send', args: { thread_id: ordinary, message: 'Please confirm the release notes.' }, toolUseId: 'ask-notes' },
+          },
+        ],
         text: 'Asked the ordinary thread.',
       },
       { text: 'Thanks, noted.' },

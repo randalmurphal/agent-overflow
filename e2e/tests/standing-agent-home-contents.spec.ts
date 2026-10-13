@@ -44,6 +44,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const opening = page.getByTestId('user-message-bubble').filter({ hasText: 'Set up your home.' });
     await expect(opening).toHaveCount(1);
     await opening.scrollIntoViewIfNeeded();
+    await expect(page.getByText('1 Thread loop')).toBeVisible();
     await capture(page, `${provider}-agent-session.png`, opening);
     await expect(page.getByText('Load the agent-home skill', { exact: false })).toHaveCount(0);
     await expect(page.getByText(ROLE, { exact: false })).toHaveCount(0);
