@@ -126,7 +126,7 @@ func (r *Router) settleAgentStreams(threadID string, end agentEnd) error {
 		}
 		if held {
 			r.mu.Lock()
-			r.decStreamingCounts(threadID, ref.scope)
+			r.releaseStreamCountLocked(ref)
 			r.mu.Unlock()
 		}
 		if err != nil {

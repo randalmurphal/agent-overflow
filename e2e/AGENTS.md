@@ -15,9 +15,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   not wait out (pairing probe, thread poll, transfer retry, PR update retry,
   PR CI live, follow and log wait polls); a spec that needs another value,
   the PR update poll cadence (`pr-update`), a shortened idle-session
-  reaper (`idle-reap`, `idle-reap-sweep`, `wakeup-grace`) or a longer
-  remote-job watcher cadence (`remote-watch-poll`), passes its own
-  through `env`.
+  reaper (`idle-reap`, `idle-reap-sweep`, `wakeup-grace`), a longer
+  remote-job watcher cadence (`remote-watch-poll`) or a shorter provider
+  event drain stall bound (`drain-stall`), passes its own through `env`.
 - `src/product-process.ts` starts every product binary (`bin/agent-overflow`
   and the `bin/ao-*` tools): `productBinary`, `spawnProduct`, `execProduct`,
   and `writeProductScript` for a launch a product process makes, such as a

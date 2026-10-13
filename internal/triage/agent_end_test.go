@@ -420,12 +420,12 @@ func TestAgentEndSettlesARowItsStopIsSettling(t *testing.T) {
 		}{
 			{"before the stop's flush", []string{head, tail}, func(t *testing.T, router *Router, turnIndex int, end func()) {
 				// The stop's two halves (settleStreamingTextAsync).
-				itemID, taken := router.takeActiveTextBlock("t1", turnIndex, "tu-a", "")
+				block, taken := router.takeActiveTextBlock("t1", turnIndex, "tu-a", "")
 				if !taken {
 					t.Fatal("the agent's stream is not open")
 				}
 				end()
-				if err := router.doSettleStreamingText("t1", "tu-a", itemID, statusCompleted, "", false, nil); err != nil {
+				if err := router.doSettleStreamingText(block, statusCompleted, "", false, nil); err != nil {
 					t.Fatal(err)
 				}
 			}},

@@ -190,7 +190,7 @@ func TestTryFlushQueue_FiresAndConsumes(t *testing.T) {
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
 	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
 
-	if !router.tryFlushQueue("t1") {
+	if !router.tryFlushQueue("t1", "") {
 		t.Fatalf("fire: returned false, expected true")
 	}
 	calls := rec.waitForAtLeastCalls(t, 1)
@@ -244,7 +244,7 @@ func TestTryFlushQueue_SecondCallWithNewItems_FiresAgain(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
-	if !router.tryFlushQueue("t1") {
+	if !router.tryFlushQueue("t1", "") {
 		t.Fatalf("first fire: returned false")
 	}
 
@@ -254,7 +254,7 @@ func TestTryFlushQueue_SecondCallWithNewItems_FiresAgain(t *testing.T) {
 	// round (the production bug).
 	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
 
-	if !router.tryFlushQueue("t1") {
+	if !router.tryFlushQueue("t1", "") {
 		t.Fatalf("second fire (new items, same round): returned false — per-round suppression regressed")
 	}
 	calls := rec.waitForAtLeastCalls(t, 2)
@@ -282,14 +282,14 @@ func TestTryFlushQueue_SecondCallEmptyQueue_NoOp(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
-	if !router.tryFlushQueue("t1") {
+	if !router.tryFlushQueue("t1", "") {
 		t.Fatalf("first fire: returned false")
 	}
 
 	// No new items — the second call sees an empty queue and no-ops.
 	// This is the natural idempotency the queue-empty check provides;
 	// the previous per-round marker was redundant for this case.
-	if router.tryFlushQueue("t1") {
+	if router.tryFlushQueue("t1", "") {
 		t.Errorf("second fire (empty queue): returned true, want false")
 	}
 	if len(rec.waitForAtLeastCalls(t, 1)) != 1 {
@@ -302,7 +302,7 @@ func TestTryFlushQueue_EmptyQueue_NoOp(t *testing.T) {
 	rec := &recordingDispatcher{}
 	router.SetFlushDispatcher(rec.dispatch)
 
-	if router.tryFlushQueue("t1") {
+	if router.tryFlushQueue("t1", "") {
 		t.Errorf("fire on empty queue: returned true, want false")
 	}
 	if len(rec.snapshot()) != 0 {
@@ -316,7 +316,7 @@ func TestTryFlushQueue_NilDispatcher_DoesNotConsume(t *testing.T) {
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
 
-	if router.tryFlushQueue("t1") {
+	if router.tryFlushQueue("t1", "") {
 		t.Errorf("fire with nil dispatcher: returned true, want false")
 	}
 	// Items must remain queued — without a dispatcher there's no one
@@ -335,7 +335,7 @@ func TestMaybeFlushQueueAtBoundary_BlocksOnLiveCodexSubagent(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 	router.RegisterQueueItem("t-codex", makeQueueItem("queue:0", "wait for subagent"))
 
-	if router.maybeFlushQueueAtBoundary("t-codex") {
+	if router.maybeFlushQueueAtBoundary("t-codex", "") {
 		t.Fatal("maybeFlushQueueAtBoundary flushed despite live Codex subagent")
 	}
 	if !router.HasQueuedFlushItems("t-codex") {
@@ -377,7 +377,7 @@ func TestTryFlushQueue_RejectsEmptyThreadID(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
 
-	if router.tryFlushQueue("") {
+	if router.tryFlushQueue("", "") {
 		t.Errorf("empty threadID: returned true")
 	}
 	if !router.HasQueuedFlushItems("t1") {
@@ -392,7 +392,7 @@ func TestCleanupThread_SweepsQueue(t *testing.T) {
 	router.SetFlushDispatcher(rec.dispatch)
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "x"))
-	router.tryFlushQueue("t1")
+	router.tryFlushQueue("t1", "")
 	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "y"))
 
 	if !router.HasQueuedFlushItems("t1") {
@@ -408,7 +408,7 @@ func TestCleanupThread_SweepsQueue(t *testing.T) {
 	// A fresh registration after cleanup must drain normally — no
 	// stale state from the prior session blocks the new flush.
 	router.RegisterQueueItem("t1", makeQueueItem("queue:2", "z"))
-	if !router.tryFlushQueue("t1") {
+	if !router.tryFlushQueue("t1", "") {
 		t.Errorf("fire after CleanupThread: returned false")
 	}
 }
@@ -628,7 +628,7 @@ func TestRemoveQueuedFlushItem_TakesBackOnlyWhatIsStillWaiting(t *testing.T) {
 		close(entered)
 		<-release
 	})
-	go router.tryFlushQueue("t1")
+	go router.tryFlushQueue("t1", "")
 	<-entered
 	if _, ok := router.RemoveQueuedFlushItem("t1", "queue:1"); ok {
 		t.Error("a claimed message was removed from under the dispatcher")

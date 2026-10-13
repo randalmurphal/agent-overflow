@@ -427,7 +427,7 @@ func TestAutoReconnectFailureSurfacesOnThread(t *testing.T) {
 	app.stopSessionFn = func(string) error { return nil }
 	app.startSessionFn = func(string) error { return errors.New("chdir /gone: no such file or directory") }
 
-	handler := app.sessionEventHandler(thread.ID, "token-dead", string(provider.Claude))
+	handler := startedSessionEventHandler(app, thread.ID, "token-dead", string(provider.Claude))
 	handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "error", Timestamp: time.Now()})
 	handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "disconnected", Timestamp: time.Now()})
 	waitProviderEvents(t, app, thread.ID)

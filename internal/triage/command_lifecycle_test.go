@@ -305,5 +305,5 @@ func openTestRound(t *testing.T, r *Router, threadID string, turnIndex int) {
 		TurnID:    "round-" + threadID + "-" + string(rune('0'+turnIndex)),
 		TurnIndex: turnIndex,
 		StartedAt: time.Now().UnixMilli(),
-	})
+	}, "")
 }

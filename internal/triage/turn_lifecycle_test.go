@@ -1104,8 +1104,9 @@ func TestLateErrorResultOnSettledTurnFoldsWithoutErrorItem(t *testing.T) {
 	}
 }
 
-// TestMarkThreadActiveResetsSettlementLedger pins the repair-restart
-// staleness hole: the context-repair restart skips CleanupThread, so
+// TestMarkThreadActiveResetsSettlementLedger pins the replacement-start
+// staleness hole: the session-config restart (reconcileSessionConfig)
+// replaces the live session without CleanupThread, so
 // without MarkThreadActive clearing settledTurns, a replacement session
 // dying pre-init would have its orphan error result misrouted into
 // persistLateTurnPayload by the PRIOR session's settlement marker —
@@ -1133,7 +1134,7 @@ func TestMarkThreadActiveResetsSettlementLedger(t *testing.T) {
 	// Repair restart: the host re-activates the thread (no CleanupThread
 	// on this path) and dispatches the next send, which registers its
 	// deferred pending marker for turn 3.
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	router.RegisterPendingSendWithExpectation("t1", "user:3", 3, PendingSendExpectation{})
 
 	// The replacement session dies pre-init with only an error result.

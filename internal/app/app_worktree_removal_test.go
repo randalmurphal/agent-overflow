@@ -357,7 +357,7 @@ func TestReconcileProjectWorktreesLeavesAThreadWithExitWorktreeInFlight(t *testi
 		stops = append(stops, id)
 		return nil
 	}
-	f.app.sessionEventHandler(exiting.ID, "token-exit-pending", string(provider.Claude))(exitWorktreeStart(exiting.ID, "toolu_exit_pending", "remove"))
+	startedSessionEventHandler(f.app, exiting.ID, "token-exit-pending", string(provider.Claude))(exitWorktreeStart(exiting.ID, "toolu_exit_pending", "remove"))
 
 	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", worktree)
 	f.app.reconcileProjectWorktrees(f.repo, []string{worktree})
@@ -395,7 +395,7 @@ func TestRefusedExitWorktreeResweepsTheThreadItDeferredTo(t *testing.T) {
 		stops = append(stops, id)
 		return nil
 	}
-	handle := f.app.sessionEventHandler(exiting.ID, "token-exit-refused", string(provider.Claude))
+	handle := startedSessionEventHandler(f.app, exiting.ID, "token-exit-refused", string(provider.Claude))
 	handle(exitWorktreeStart(exiting.ID, "toolu_exit_refused", "remove"))
 
 	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", worktree)
@@ -429,17 +429,17 @@ func TestRefusedExitWorktreeResweepsTheThreadItDeferredTo(t *testing.T) {
 func TestExitWorktreeKeepIsNotAPendingRemoval(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	app.sessionEventHandler("thread-exit-keep", "token-keep", string(provider.Claude))(exitWorktreeStart("thread-exit-keep", "toolu_keep", "keep"))
+	startedSessionEventHandler(app, "thread-exit-keep", "token-keep", string(provider.Claude))(exitWorktreeStart("thread-exit-keep", "toolu_keep", "keep"))
 	app.drainProviderEvents("thread-exit-keep", "test")
 	if _, pending := app.pendingWorktreeExits.toolUseID("thread-exit-keep", "token-keep"); pending {
 		t.Error("ExitWorktree keep was recorded as a pending removal")
 	}
-	app.sessionEventHandler("thread-exit-keep", "token-keep", string(provider.Claude))(exitWorktreeStart("thread-exit-keep", "toolu_remove", "remove"))
+	startedSessionEventHandler(app, "thread-exit-keep", "token-keep", string(provider.Claude))(exitWorktreeStart("thread-exit-keep", "toolu_remove", "remove"))
 	app.drainProviderEvents("thread-exit-keep", "test")
 	if id, pending := app.pendingWorktreeExits.toolUseID("thread-exit-keep", "token-keep"); !pending || id != "toolu_remove" {
 		t.Errorf("pending = %q %v, want toolu_remove recorded", id, pending)
 	}
-	app.sessionEventHandler("thread-exit-keep", "token-keep", string(provider.Claude))(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "thread-exit-keep"})
+	startedSessionEventHandler(app, "thread-exit-keep", "token-keep", string(provider.Claude))(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "thread-exit-keep"})
 	app.drainProviderEvents("thread-exit-keep", "test")
 	if _, pending := app.pendingWorktreeExits.toolUseID("thread-exit-keep", "token-keep"); pending {
 		t.Error("the pending call survived the end of its turn")

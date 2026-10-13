@@ -78,6 +78,11 @@ type IsolationConfig struct {
 	// destination about a job still running, so a test can act between two
 	// of its checks. Zero keeps the product cadence.
 	RemoteWatchPoll time.Duration
+	// ProviderEventDrainStall replaces providerEventDrainStall, how long a
+	// session stop waits for the thread's event worker to handle its next
+	// event, so a test can stall a worker past it without waiting seconds.
+	// Zero keeps the product bound.
+	ProviderEventDrainStall time.Duration
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -110,6 +115,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	}
 	a.agentWakes.floorOverride = config.AgentWakeFloor
 	a.remoteWatchPoll = config.RemoteWatchPoll
+	a.providerEvents.drainStall = config.ProviderEventDrainStall
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.

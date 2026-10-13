@@ -409,15 +409,21 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 	if started {
 		// Before the runtime write, whose progress frame carries the
 		// new execution's count.
-		if err := r.startCodexExecutionTools(launch.item, runtime.ChildStartIndex); err != nil {
+		if err := r.startCodexExecutionTools(launch.item, runtime.ChildStartIndex, evt.SessionToken); err != nil {
 			return err
 		}
 	}
-	if err := r.setCodexAgentRuntime(launch.item); err != nil {
+	if err := r.setCodexAgentRuntime(launch.item, evt.SessionToken); err != nil {
 		return err
 	}
 
 	r.mu.Lock()
+	// A retired session's status neither tracks nor completes the
+	// execution: the replacement's runtime owns it now.
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		r.mu.Unlock()
+		return nil
+	}
 	state := r.codexBackgroundForThread(evt.ThreadID)
 	if anyActive {
 		state.spawnAgent[launch.item.ID] = &spawnAgentTracker{backgrounded: true, hasRunningChildren: true, receiverThreadIDs: launch.meta.ReceiverThreadIDs}
@@ -483,9 +489,12 @@ func (r *Router) findPersistedCodexSpawnLaunchForStatus(threadID, launchID, chil
 	return persistedCodexSpawnLaunch{item: launch, meta: meta}, true, nil
 }
 
-func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID string, allTerminal bool) {
+func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID string, allTerminal bool, sessionToken string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return
+	}
 
 	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {
@@ -504,14 +513,14 @@ func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID strin
 	}
 }
 
-func (r *Router) markCodexSpawnChildTerminal(launch store.Item, meta codexItemMeta, childID, status string) (bool, string, error) {
+func (r *Router) markCodexSpawnChildTerminal(launch store.Item, meta codexItemMeta, childID, status, sessionToken string) (bool, string, error) {
 	launch = r.codexAgentRuntimeOrLaunch(launch)
 	var allTerminal bool
 	launch.Meta, allTerminal, _ = MergeCodexSubagentTerminalMeta(launch.Meta, childID, status)
 	terminalStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))
 	aggregateStatus := aggregateCodexSubagentTerminalStatus(meta.ReceiverThreadIDs, terminalStatuses)
 	launch.UpdatedAt = time.Now().UnixMilli()
-	if err := r.setCodexAgentRuntime(launch); err != nil {
+	if err := r.setCodexAgentRuntime(launch, sessionToken); err != nil {
 		return allTerminal, aggregateStatus, err
 	}
 
@@ -583,7 +592,7 @@ func (r *Router) findPersistedCodexSpawnLaunch(threadID, launchID, childID strin
 }
 
 // stampCodexItemBackgrounded initializes the live execution from its recorded spawn.
-func (r *Router) stampCodexItemBackgrounded(threadID, itemID string) error {
+func (r *Router) stampCodexItemBackgrounded(threadID, itemID, sessionToken string) error {
 	launch, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil {
 		return fmt.Errorf("codex-background lookup %s: %w", itemID, err)
@@ -599,10 +608,10 @@ func (r *Router) stampCodexItemBackgrounded(threadID, itemID string) error {
 	current.Meta = mergeItemMetaJSON(current.Meta, json.RawMessage(fmt.Sprintf(`{"live_background_active":true,"codex_runtime":{"status":"running","startedAt":%d}}`, launch.CreatedAt)))
 	// The first execution's start index is zero until a child status
 	// fences it (observeCodexSubagentStatus).
-	if err := r.startCodexExecutionTools(current, 0); err != nil {
+	if err := r.startCodexExecutionTools(current, 0, sessionToken); err != nil {
 		return err
 	}
-	if err := r.setCodexAgentRuntime(current); err != nil {
+	if err := r.setCodexAgentRuntime(current, sessionToken); err != nil {
 		return err
 	}
 	r.emitCodexBackgroundChanged(threadID)

@@ -286,6 +286,10 @@ type harnessTiming struct {
 	// RemoteWatchPoll is how often the remote-job watcher asks the
 	// destination about a running job (app.IsolationConfig.RemoteWatchPoll).
 	RemoteWatchPoll time.Duration
+	// DrainStall is how long a session stop waits for a thread's provider
+	// event worker to handle its next event
+	// (app.IsolationConfig.ProviderEventDrainStall).
+	DrainStall time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -308,6 +312,7 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"wakeup-grace":      &timing.WakeupGrace,
 		"wake-floor":        &timing.WakeFloor,
 		"remote-watch-poll": &timing.RemoteWatchPoll,
+		"drain-stall":       &timing.DrainStall,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -398,19 +403,20 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		// gh and glab; see internal/git/forge_cli.go.
 		ForgeCLI: paths.MockForge,
 		// Dev-server discovery; see internal/app/app_preview.go.
-		ScanScopePIDs:        opts.ScanScopePIDs,
-		ThreadRequestPoll:    opts.Timing.ThreadPoll,
-		TransferPendingRetry: opts.Timing.TransferRetry,
-		PRUpdateInterval:     opts.Timing.PRUpdate,
-		PRUpdateRetryBase:    opts.Timing.PRUpdateRetry,
-		PRCILiveInterval:     opts.Timing.PRCILive,
-		PRCIFollowInterval:   opts.Timing.PRCIFollow,
-		PRCILogWaitInterval:  opts.Timing.PRCILogWait,
-		IdleReapThreshold:    opts.Timing.IdleReap,
-		IdleReapInterval:     opts.Timing.IdleReapSweep,
-		WakeupReapGrace:      opts.Timing.WakeupGrace,
-		AgentWakeFloor:       opts.Timing.WakeFloor,
-		RemoteWatchPoll:      opts.Timing.RemoteWatchPoll,
+		ScanScopePIDs:           opts.ScanScopePIDs,
+		ThreadRequestPoll:       opts.Timing.ThreadPoll,
+		TransferPendingRetry:    opts.Timing.TransferRetry,
+		PRUpdateInterval:        opts.Timing.PRUpdate,
+		PRUpdateRetryBase:       opts.Timing.PRUpdateRetry,
+		PRCILiveInterval:        opts.Timing.PRCILive,
+		PRCIFollowInterval:      opts.Timing.PRCIFollow,
+		PRCILogWaitInterval:     opts.Timing.PRCILogWait,
+		IdleReapThreshold:       opts.Timing.IdleReap,
+		IdleReapInterval:        opts.Timing.IdleReapSweep,
+		WakeupReapGrace:         opts.Timing.WakeupGrace,
+		AgentWakeFloor:          opts.Timing.WakeFloor,
+		RemoteWatchPoll:         opts.Timing.RemoteWatchPoll,
+		ProviderEventDrainStall: opts.Timing.DrainStall,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

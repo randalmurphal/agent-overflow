@@ -1230,6 +1230,51 @@ func TestWorkflowReliabilityTransientDeathRetriesThenExhausts(t *testing.T) {
 	}
 }
 
+// A workflow attempt folds a session death it observed even when the dead
+// session's disconnect reaches the host only after another start committed
+// the thread: the death's "error" was handled while the session was current,
+// and the disconnect is the only signal that folds it into the ladder. Each
+// death here commits the thread elsewhere the moment its "error" is handled,
+// so every disconnect arrives from a retired session.
+func TestWorkflowDeathFoldsWhenItsDisconnectArrivesRetired(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	configRoot := t.TempDir()
+	writeReliabilityWorkflow(t, configRoot, `
+  - id: run
+    driver: agent
+    provider: claude
+    model: claude-opus-4-7
+    prompt: run.md
+    gate:
+      routes:
+        - to: done`)
+	counterPath := filepath.Join(t.TempDir(), "starts")
+	binary := writeDyingWorkflowClaude(t, counterPath)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	unsubscribe := app.subscribeGlobalTurnObserver(func(threadID string, evt provider.ProviderEvent) {
+		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" {
+			// What a replacement start does before it spawns: take the
+			// dead session out of the registry and commit the thread.
+			app.sessionManager().take(threadID)
+			app.triage.MarkThreadActive(threadID, "another-start")
+		}
+	})
+	t.Cleanup(unsubscribe)
+	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
+	projectRow = mustReloadProject(t, app.store, projectRow.ID)
+	writeReliabilityProfile(t, configRoot, projectRow.Slug, "watchdog: 1h\n  backoff: [50ms, 50ms]\n")
+	startWorkflowEngineForTest(t, app, configRoot)
+
+	item, err := app.WorkflowStartRun(projectRow.ID, "reliability-flow", "shared", "retired deaths", json.RawMessage(`{}`), nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonProviderRetriesExhausted)
+}
+
 func TestWorkflowReliabilityAttributedTokenBudgetTripsAtBoundary(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)

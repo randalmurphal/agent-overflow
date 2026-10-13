@@ -32,24 +32,30 @@ type codexExecutionTools struct {
 	count      int
 	// parentID is the spawn's own parent, for the progress frame.
 	parentID string
+	// sessionToken is the session whose frame started the execution; a
+	// row that session's frame writes after it was retired is not counted.
+	sessionToken string
 }
 
 // startCodexExecutionTools begins the live tool count of the execution
 // that starts after startIndex in the spawn's turn. It replaces the
 // previous execution's count, which the max rule of
 // mergeSubagentProgress would otherwise keep.
-func (r *Router) startCodexExecutionTools(launch store.Item, startIndex int) error {
+func (r *Router) startCodexExecutionTools(launch store.Item, startIndex int, sessionToken string) error {
 	count, last, err := r.store.SubagentExecutionToolCallsAfter(launch.ThreadID, launch.ID, launch.TurnIndex, startIndex)
 	if err != nil {
 		return fmt.Errorf("seed Codex execution tool count %s: %w", launch.ID, err)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(launch.ThreadID, sessionToken) {
+		return nil
+	}
 	state := r.codexBackgroundForThread(launch.ThreadID)
 	if _, exists := state.tools[launch.ID]; !exists && len(state.tools) >= subagentProgressCap {
 		return fmt.Errorf("Codex execution tool count limit reached for thread %s", launch.ThreadID)
 	}
-	state.tools[launch.ID] = codexExecutionTools{turnIndex: launch.TurnIndex, afterIndex: last, count: count, parentID: launch.ParentID}
+	state.tools[launch.ID] = codexExecutionTools{turnIndex: launch.TurnIndex, afterIndex: last, count: count, parentID: launch.ParentID, sessionToken: sessionToken}
 	progress := r.state(launch.ThreadID).subagentProgress[launch.ID]
 	progress.ToolUses = count
 	r.putLiveSubagentProgressLocked(launch.ThreadID, launch.ID, progress)
@@ -70,7 +76,7 @@ func (r *Router) countCodexExecutionToolCall(item store.Item) {
 		return
 	}
 	tools, ok := state.tools[item.ParentID]
-	if !ok || item.TurnIndex != tools.turnIndex || item.ItemIndex <= tools.afterIndex {
+	if !ok || item.TurnIndex != tools.turnIndex || item.ItemIndex <= tools.afterIndex || r.frameRetiredLocked(item.ThreadID, tools.sessionToken) {
 		r.mu.Unlock()
 		return
 	}

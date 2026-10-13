@@ -301,7 +301,7 @@ func TestForgetToolCallLinksAfterCut(t *testing.T) {
 func TestToolCallLinksNotMintedForStoppedThread(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	router.CleanupThread("t1")
 	if err := router.persistItem(store.Item{
 		ID: "late", ThreadID: "t1", Kind: itemKindToolCall, Role: "assistant",
@@ -733,7 +733,7 @@ func TestLiveSubagentWritesFeedTheirCard(t *testing.T) {
 func TestLiveSubagentCardsFlushAtTheirBoundaries(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	seedOpenTurn(t, router, st, "t1", 0)
 	startMeta, _ := json.Marshal(map[string]any{"toolName": "Bash", "input": map[string]any{"command": "ls"}})
 	child := func(id, parent string) {

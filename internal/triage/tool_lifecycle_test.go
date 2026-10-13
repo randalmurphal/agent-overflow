@@ -1112,7 +1112,7 @@ func TestCodexWaitStartSnapshotsActiveReceiversWhenWireTargetsAreMissing(t *test
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := router.setCodexAgentRuntime(item); err != nil {
+		if err := router.setCodexAgentRuntime(item, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

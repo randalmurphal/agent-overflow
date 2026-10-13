@@ -87,18 +87,25 @@ func (r *Router) persistedToolCallScope(threadID, toolUseID string) string {
 	return strings.TrimSpace(item.ParentID)
 }
 
-func (r *Router) setPendingApproval(threadID string, approval pendingApprovalState) {
-	if approval.Request.RequestID == "" {
-		return
-	}
+// setPendingApproval registers a prompt. It reports false, and registers
+// nothing, for a retired session's prompt: only its dead process could
+// take the answer.
+func (r *Router) setPendingApproval(threadID string, approval pendingApprovalState, sessionToken string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return false
+	}
+	if approval.Request.RequestID == "" {
+		return true
+	}
 	st := r.state(threadID)
 	if st.pendingApprovals == nil {
 		st.pendingApprovals = make(map[string]pendingApprovalState)
 	}
 	st.pendingApprovals[approval.Request.RequestID] = approval
 	st.pendingApprovalOrder = rememberInteractiveRequestOrder(st.pendingApprovalOrder, threadID, approval.Request.RequestID)
+	return true
 }
 
 func (r *Router) takePendingApproval(threadID, requestID string) (pendingApprovalState, bool) {
@@ -292,10 +299,12 @@ func (r *Router) handleApprovalRequest(evt provider.ProviderEvent) error {
 	itemID := approvalItemID(evt, request)
 	request.ParentToolUseID = r.resolveInteractiveScope(evt, request.ParentToolUseID, itemID)
 	request.RoutedTo = r.routePrompt(evt.ThreadID)
-	r.setPendingApproval(evt.ThreadID, pendingApprovalState{
+	if !r.setPendingApproval(evt.ThreadID, pendingApprovalState{
 		Request: request,
 		ItemID:  itemID,
-	})
+	}, evt.SessionToken) {
+		return nil
+	}
 	// Approval requests are one of the three sidebar-bump boundaries
 	// (alongside user_text persist and turn settle): the agent is
 	// blocked waiting on the user. Resolutions don't bump — the user's

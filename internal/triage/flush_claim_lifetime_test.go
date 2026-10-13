@@ -59,7 +59,7 @@ func TestFlushClaimSurvivesCleanupMidHandoff(t *testing.T) {
 
 	// Generation 1: one item, dispatcher blocks holding the claim.
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
-	go router.tryFlushQueue("t1")
+	go router.tryFlushQueue("t1", "")
 	<-firstEntered
 	if got := router.QueuedFlushItemCount("t1"); got != 1 {
 		t.Fatalf("claim before sweep: count = %d, want 1", got)
@@ -73,13 +73,13 @@ func TestFlushClaimSurvivesCleanupMidHandoff(t *testing.T) {
 
 	// Generation 2: successor session queues two items; its dispatch
 	// returns immediately, so only its own claim (+2, −2) settles.
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
 	router.RegisterQueueItem("t1", makeQueueItem("queue:2", "third"))
 	if got := router.QueuedFlushItemCount("t1"); got != 3 {
 		t.Fatalf("queued+claimed: count = %d, want 3", got)
 	}
-	if !router.tryFlushQueue("t1") {
+	if !router.tryFlushQueue("t1", "") {
 		t.Fatalf("generation-2 flush did not dispatch")
 	}
 	// Gen-2's decrement has settled (its dispatch was synchronous); gen-1's
@@ -141,7 +141,7 @@ func TestQueuedFlushItemsCoverClaimedBatch(t *testing.T) {
 	}
 
 	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
-	go router.tryFlushQueue("t1")
+	go router.tryFlushQueue("t1", "")
 	<-entered
 
 	// Mid-handoff: the queue is already nil, the dispatcher has not
