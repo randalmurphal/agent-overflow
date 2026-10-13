@@ -530,6 +530,26 @@ func TestForgeScriptStack(t *testing.T) {
 	}
 }
 
+// TestForgeScriptHelp: help asked for prints the usage on stdout and
+// exits 0; a call the script cannot run prints it on stderr and exits 2.
+func TestForgeScriptHelp(t *testing.T) {
+	r := newRig(t, forgeScriptFixture("github", "acme/widgets"))
+	f := newForgeCheckout(t, r, "https://github.com/acme/widgets.git", "main")
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}, {"pr", "--help"}, {"ci", "-h"}} {
+		out, stderr, err := f.try("", args...)
+		if err != nil || !strings.Contains(out, "forge pr view [<n>]") || stderr != "" {
+			t.Errorf("forge %s = %v, stdout %q, stderr %q; want the usage on stdout and exit 0", strings.Join(args, " "), err, out, stderr)
+		}
+	}
+	for _, args := range [][]string{{}, {"bogus"}, {"pr"}, {"pr", "bogus"}, {"ci", "bogus"}} {
+		out, stderr, err := f.try("", args...)
+		exit, _ := err.(*exec.ExitError)
+		if exit == nil || exit.ExitCode() != 2 || out != "" || !strings.Contains(stderr, "forge pr view [<n>]") {
+			t.Errorf("forge %s = %v, stdout %q, stderr %q; want the usage on stderr and exit 2", strings.Join(args, " "), err, out, stderr)
+		}
+	}
+}
+
 func TestForgeScriptRefusesAnUnknownHost(t *testing.T) {
 	r := newRig(t, forgeScriptFixture("github", "acme/widgets"))
 	f := newForgeCheckout(t, r, "https://git.example.invalid/acme/widgets.git", "main")

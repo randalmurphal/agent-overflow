@@ -46,8 +46,15 @@ die() {
 # has no pull request.
 EXIT_NO_PULL_REQUEST=3
 
+# show_help prints this header on stdout and exits 0, as asked for; usage
+# prints it on stderr and exits 2, after a call it cannot run.
+header() { sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; }
+show_help() {
+	header
+	exit 0
+}
 usage() {
-	sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//' >&2
+	header >&2
 	exit 2
 }
 
@@ -461,6 +468,7 @@ cmd_pr() {
 	# inside an argument does not stop the command it is passed to.
 	local n
 	case $sub in
+	-h | --help | help) show_help ;;
 	view)
 		n=$(pr_number "${1:-}")
 		pr_view_json "$n"
@@ -635,6 +643,7 @@ cmd_ci() {
 	[ -n "$sub" ] || usage
 	shift
 	case $sub in
+	-h | --help | help) show_help ;;
 	status)
 		local ref=${1:-}
 		[ -n "$ref" ] || ref=$(current_branch)
@@ -655,7 +664,8 @@ cmd_ci() {
 
 main() {
 	case ${1:-} in
-	'' | -h | --help | help) usage ;;
+	'') usage ;;
+	-h | --help | help) show_help ;;
 	esac
 	resolve
 	local cmd=$1
