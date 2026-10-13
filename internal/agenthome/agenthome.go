@@ -71,7 +71,7 @@ type SessionBlock struct {
 // ReadSessionBlock reads instructions.md and the part of MEMORY.md above the
 // archive marker, each capped. A home that cannot be opened at all is one
 // problem, unless it does not exist.
-func ReadSessionBlock(home string) SessionBlock {
+func ReadSessionBlock(home string) (block SessionBlock) {
 	root, err := os.OpenRoot(home)
 	if errors.Is(err, fs.ErrNotExist) {
 		return SessionBlock{}
@@ -82,8 +82,11 @@ func ReadSessionBlock(home string) SessionBlock {
 			Problems: []error{fmt.Errorf("open the agent home %s: %w", home, err)},
 		}
 	}
-	defer root.Close()
-	var block SessionBlock
+	defer func() {
+		if err := root.Close(); err != nil {
+			block.Problems = append(block.Problems, fmt.Errorf("close the agent home %s: %w", home, err))
+		}
+	}()
 	var parts []string
 	for _, file := range []struct {
 		name, heading string
@@ -114,12 +117,12 @@ func ReadSessionBlock(home string) SessionBlock {
 // when archive is set, then at most limit bytes, cut at the last line break
 // inside the cap (or a rune boundary when there is none) with a notice naming
 // the byte the cut stopped at.
-func readCapped(root *os.Root, name string, limit int, archive bool) (string, error) {
+func readCapped(root *os.Root, name string, limit int, archive bool) (_ string, err error) {
 	file, err := openRegular(root, name)
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer closeInto(file, &err)
 	// Enough to see a marker line that starts inside the cap, and one byte
 	// past the cap to know there is more.
 	raw, err := io.ReadAll(io.LimitReader(file, int64(limit+len(ArchiveMarker)+2)))
@@ -184,7 +187,7 @@ func cutAt(raw []byte, limit int) int {
 // it: cleaned, a leading Markdown heading marker dropped, and bounded to
 // RoleRunes. "" when the file is absent, empty or unreadable; err is set only
 // for a failure other than absence.
-func RoleLine(home string) (string, error) {
+func RoleLine(home string) (_ string, err error) {
 	root, err := os.OpenRoot(home)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
@@ -192,7 +195,7 @@ func RoleLine(home string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer root.Close()
+	defer closeInto(root, &err)
 	file, err := openRegular(root, InstructionsFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
@@ -200,7 +203,7 @@ func RoleLine(home string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer file.Close()
+	defer closeInto(file, &err)
 	raw, err := io.ReadAll(io.LimitReader(file, 4<<10))
 	if err != nil {
 		return "", err
@@ -233,7 +236,7 @@ func BoundRole(text string) string {
 // home, a duplicate, a file that is missing or not a regular file, more than
 // MaxHomeFiles paths, or a total past HomeFilesCap. Sizes are checked before
 // anything is read.
-func ReadAttached(home string, paths []string) (string, error) {
+func ReadAttached(home string, paths []string) (_ string, err error) {
 	if len(paths) == 0 {
 		return "", nil
 	}
@@ -257,11 +260,11 @@ func ReadAttached(home string, paths []string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open your home to attach files: %w", err)
 	}
-	defer root.Close()
+	defer closeInto(root, &err)
 	files := make([]*os.File, 0, len(names))
 	defer func() {
 		for _, file := range files {
-			_ = file.Close()
+			closeInto(file, &err)
 		}
 	}()
 	total := int64(0)
@@ -326,6 +329,14 @@ func homeRelative(raw string) (string, error) {
 	return name, nil
 }
 
+// closeInto closes a handle the read is done with and reports a failure
+// through the read's own error, so a failed close is never dropped.
+func closeInto(closer io.Closer, err *error) {
+	if closeErr := closer.Close(); closeErr != nil {
+		*err = errors.Join(*err, closeErr)
+	}
+}
+
 // openRegular opens name inside root and refuses anything but a regular file.
 func openRegular(root *os.Root, name string) (*os.File, error) {
 	file, err := root.Open(name)
@@ -333,13 +344,12 @@ func openRegular(root *os.Root, name string) (*os.File, error) {
 		return nil, err
 	}
 	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
-		return nil, err
+	if err == nil && !info.Mode().IsRegular() {
+		err = errors.New("not a regular file")
 	}
-	if !info.Mode().IsRegular() {
-		_ = file.Close()
-		return nil, errors.New("not a regular file")
+	if err != nil {
+		closeInto(file, &err)
+		return nil, err
 	}
 	return file, nil
 }
