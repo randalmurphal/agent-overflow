@@ -575,7 +575,7 @@ replaces what the manifest names and deletes the named files the tree
 no longer has; it is refused for a home with no install. Remove deletes
 the named files and the directories they leave empty; a directory
 holding a file the user added stays. A home is current when its
-manifest's digest of the tree's paths, modes and content matches the
+manifest's digest of the tree's paths and content matches the
 shipped one, since the port edits files without moving the upstream
 pin. An embedded file has no mode, so a file starting with `#!` is
 installed executable.

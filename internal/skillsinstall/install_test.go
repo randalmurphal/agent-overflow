@@ -85,7 +85,7 @@ func TestLoadTreeReadsThePinAndSkipsNodeModules(t *testing.T) {
 	}
 }
 
-func TestDigestFollowsContentAndMode(t *testing.T) {
+func TestDigestFollowsContent(t *testing.T) {
 	base := testTree(t, v1).Digest
 	if again := testTree(t, v1).Digest; again != base {
 		t.Fatal("digest is not stable")
@@ -98,13 +98,10 @@ func TestDigestFollowsContentAndMode(t *testing.T) {
 	if testTree(t, edited).Digest == base {
 		t.Error("a content edit kept the digest")
 	}
-	edited = map[string]string{}
-	for k, v := range v1 {
-		edited[k] = v
-	}
-	edited["alpha/scripts/run"] = "echo alpha\n" // no shebang: no longer executable
-	if testTree(t, edited).Digest == base {
-		t.Error("a mode change kept the digest")
+	delete(edited, "beta/SKILL.md")
+	edited["beta/README.md"] = "beta v2"
+	if testTree(t, edited).Digest == testTree(t, map[string]string{"alpha/SKILL.md": "alpha v1", "alpha/scripts/run": "#!/bin/sh\necho alpha\n", "beta/references/doc.md": "beta doc", "beta/SKILL.md": "beta v2"}).Digest {
+		t.Error("a rename kept the digest")
 	}
 }
 

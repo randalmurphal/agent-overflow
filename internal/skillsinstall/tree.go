@@ -29,9 +29,9 @@ type Tree struct {
 	// Commit the upstream commit, both read from its UPSTREAM.md.
 	Version string
 	Commit  string
-	// Digest covers every file's path, mode and content. The port edits
-	// files without moving the upstream pin, so the version alone cannot
-	// say whether an installed copy is the shipped one.
+	// Digest covers every file's path and content, which decides its
+	// mode. The port edits files without moving the upstream pin, so the
+	// version alone cannot say whether an installed copy is the shipped one.
 	Digest string
 	Skills []string
 	files  []treeFile
@@ -103,8 +103,8 @@ func LoadTree(fsys fs.FS, upstream []byte) (Tree, error) {
 	return tree, nil
 }
 
-// hashFile adds one file's path, mode and content to sum and reports whether
-// it is executable. WalkDir visits names in lexical order, so the digest does
+// hashFile adds one file's path and content to sum and reports whether it
+// is executable. WalkDir visits names in lexical order, so the digest does
 // not depend on the filesystem's order.
 func hashFile(fsys fs.FS, name string, sum io.Writer) (executable bool, err error) {
 	file, err := fsys.Open(name)
@@ -118,7 +118,7 @@ func hashFile(fsys fs.FS, name string, sum io.Writer) (executable bool, err erro
 		return false, err
 	}
 	executable = string(head) == "#!"
-	if _, err := fmt.Fprintf(sum, "%s\x00%t\x00", name, executable); err != nil {
+	if _, err := fmt.Fprintf(sum, "%s\x00", name); err != nil {
 		return false, err
 	}
 	if _, err := io.Copy(sum, reader); err != nil {
