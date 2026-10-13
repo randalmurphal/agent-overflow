@@ -222,6 +222,15 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 	// self-heal can stamp them — the confirmation won't necessarily be
 	// re-delivered (round-6, R6-1).
 	pending.stashEchoIdentity(providerItemID, parentUUID)
+	// The provider has the message whatever the row writes below do.
+	r.mu.Lock()
+	consumed := r.flushSendConsumed
+	r.mu.Unlock()
+	if consumed != nil {
+		if ids := pending.sendIDs(); len(ids) > 0 {
+			consumed(evt.ThreadID, ids)
+		}
+	}
 	// Decided BEFORE the handlers run, off the entry just popped: a merge
 	// is read from what the popped send expected against what the
 	// confirmation actually carries. Acting on it waits until the

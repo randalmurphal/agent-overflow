@@ -621,7 +621,9 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 // the rows. What the app wrote is not the person's to send and goes
 // elsewhere: a loop or watch wake, an outside send or a worker's prompt is
 // discarded (discardAgentWakeAtBoot), and an answer, a reminder or a remote
-// completion goes back to its owner (giveBackToOwners).
+// completion goes back to its owner (giveBackToOwners), as does one the
+// previous process handed a provider that never confirmed it
+// (giveBackUnconfirmedAtBoot).
 //
 // It NEVER re-dispatches. A queued message was written against a turn that no
 // longer exists, on a provider session that is gone, in a conversation the
@@ -635,6 +637,10 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 // every remaining row is provably residue: nothing else could still be
 // holding one.
 func (a *App) restoreDurableFlushQueueAtBoot() {
+	// Once the rows are settled, the answers, reminders and completions the
+	// previous process handed a provider and never saw confirmed go back
+	// too.
+	defer a.giveBackUnconfirmedAtBoot()
 	threadIDs, err := a.store.ListThreadsWithFlushQueueItems()
 	if err != nil {
 		log.Printf("flush queue: list threads with queued messages at boot: %v", err)

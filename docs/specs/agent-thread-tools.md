@@ -815,7 +815,9 @@ live, lazily starting a session otherwise once the wake is queued (a
 start that fails is an error row in the caller, and the wake stays
 queued), draft preserved, one durable
 transaction inserting the row and marking the request delivered so a
-repeated observation cannot inject it twice. A wake is a message, so an
+repeated observation cannot inject it twice. The provider's echo of the
+wake confirms that mark; an answer collected inline is confirmed by its
+own. A wake is a message, so an
 idle caller wakes up and runs on its own when it lands, human present
 or not; that is what waiting past the timeout or `notify` opts into. A
 caller archived after the request was made is unarchived by delivery;
@@ -826,10 +828,13 @@ queued when the caller is archived, or when a Stop or a revert drops
 the caller's queue, goes back to its request: one transaction removes
 the queue row, clears its delivery and turns `notify` off, so
 `thread_status` still returns the answer and nothing reaches the
-thread at its next start. So does a wake the caller's session ended
-or a Codex resend failed without taking in, still queued or written
-and unconfirmed, and one still queued when the caller's computer
-restarts. The answer is not the person's to send, so it never goes to
+thread at its next start. So does a wake the caller's session ended,
+or a Stop, an archive or a Codex resend that failed ended it, without
+taking in, still queued or written and unconfirmed, and one still
+queued, or written and never confirmed, when the caller's computer
+restarts; on Codex such a wake can reach the agent twice
+([standing agents](standing-agents.md#wake-supervisor)). The answer
+is not the person's to send, so it never goes to
 the composer, where the other queued messages go; when Claude joined it
 with a person's message, the person's text alone goes there. Caller
 deleted first: dropped. Rows written by earlier versions may read

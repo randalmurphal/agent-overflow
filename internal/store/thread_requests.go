@@ -106,6 +106,11 @@ type ThreadRequest struct {
 	DeliveredAt     int64  `json:"deliveredAt,omitempty"`
 	DeliveredHow    string `json:"deliveredHow,omitempty"`
 	LateDeliveredAt int64  `json:"lateDeliveredAt,omitempty"`
+	// ConfirmedAt and LateConfirmedAt record the provider's echo of a
+	// queued answer and late reply. A queued one without it may never have
+	// reached the agent. An inline delivery is confirmed when it is marked.
+	ConfirmedAt     int64 `json:"-"`
+	LateConfirmedAt int64 `json:"-"`
 	// ExpiresAt is the destination's deadline for collecting the answer.
 	ExpiresAt int64 `json:"expiresAt,omitempty"`
 	// Polling is whether the poller still visits this row. It is turned off
@@ -156,7 +161,8 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     COALESCE(settled_at, 0), COALESCE(delivered_at, 0), delivered_how,
     COALESCE(late_delivered_at, 0), COALESCE(expires_at, 0),
     polling, next_check, attempts, issue,
-    wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at`
+    wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at,
+    COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0)`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	var r ThreadRequest
@@ -169,6 +175,7 @@ func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 		&r.LateDeliveredAt, &r.ExpiresAt,
 		&polling, &r.NextCheck, &r.Attempts, &r.Issue,
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
+		&r.ConfirmedAt, &r.LateConfirmedAt,
 	)
 	r.Notify = notify != 0
 	r.Polling = polling != 0
@@ -325,6 +332,10 @@ func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64
 // one delivered would disarm the wake the settlement still owes, so the
 // condition is checked here rather than left to every caller.
 //
+// A queued delivery is unconfirmed until the provider echoes it
+// (ConfirmThreadWake); an inline one is confirmed by this mark, since the
+// tool reply that carried it was the agent's.
+//
 // `late` marks the second wake (a late reply) instead of the first.
 func MarkThreadRequestDeliveredTx(tx *sql.Tx, token, how string, at int64, late bool) (bool, error) {
 	action := fmt.Sprintf("store: mark thread request %s delivered", token)
@@ -342,13 +353,17 @@ func MarkThreadRequestDeliveredTx(tx *sql.Tx, token, how string, at int64, late 
 	// The retry schedule is cleared with the delivery: what it counted is
 	// over, and the row's second wake starts its own attempts from zero.
 	retry := `, wake_attempts = 0, wake_next_check = 0, wake_issue = ''`
-	query := `UPDATE thread_requests SET delivered_at = ?, delivered_how = ?, updated_at = ?` + retry +
+	query := `UPDATE thread_requests SET delivered_at = ?, delivered_how = ?, confirmed_at = ?, updated_at = ?` + retry +
 		` WHERE token = ? AND delivered_at IS NULL` + settled
 	if late {
-		query = `UPDATE thread_requests SET late_delivered_at = ?, delivered_how = ?, updated_at = ?` + retry +
+		query = `UPDATE thread_requests SET late_delivered_at = ?, delivered_how = ?, late_confirmed_at = ?, updated_at = ?` + retry +
 			` WHERE token = ? AND late_reply IS NOT NULL AND late_delivered_at IS NULL` + settled
 	}
-	args := append([]any{at, how, nowMillis(), token}, states...)
+	var confirmed any
+	if how != ThreadWakeQueued {
+		confirmed = at
+	}
+	args := append([]any{at, how, confirmed, nowMillis(), token}, states...)
 	result, err := tx.Exec(query, args...)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
@@ -958,8 +973,10 @@ func (s *Store) QueueThreadWake(token string, late bool, item FlushQueueItem) er
 // Otherwise a row already gone means the wake was sent, and changes
 // nothing. A wake the provider was handed and never confirmed
 // (unconfirmed) has no row left and goes back all the same, while the
-// request still reads queued. A late wake clears only its own mark; the
-// first answer's delivery stands.
+// request still reads queued and the provider has not confirmed it. A late
+// wake clears only its own mark; the first answer's delivery stands. A
+// lineage-only row keeps its marks (clearLineagePayloadSQL): a cleared
+// delivered_at would read as a wake still owed.
 func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, unconfirmed bool) error {
 	action := fmt.Sprintf("store: withdraw thread wake %s", token)
 	tx, release, err := s.beginDurableTx(context.Background())
@@ -977,11 +994,16 @@ func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, unconf
 		return err
 	}
 	if removed || unconfirmed {
-		query := `UPDATE thread_requests SET delivered_at = NULL, delivered_how = '', notify = 0, updated_at = ?
-		           WHERE token = ? AND delivered_at IS NOT NULL AND delivered_how = ?`
+		delivered, confirmed, clear := "delivered_at", "confirmed_at", "delivered_how = '', "
 		if late {
-			query = `UPDATE thread_requests SET late_delivered_at = NULL, notify = 0, updated_at = ?
-			          WHERE token = ? AND late_delivered_at IS NOT NULL AND delivered_how = ?`
+			delivered, confirmed, clear = "late_delivered_at", "late_confirmed_at", ""
+		}
+		query := `UPDATE thread_requests SET ` + delivered + ` = NULL, ` + confirmed + ` = NULL, ` + clear + `notify = 0, updated_at = ?
+		           WHERE token = ? AND ` + delivered + ` IS NOT NULL AND delivered_how = ? AND lineage_only = 0`
+		// A message still in the queue never reached the provider. One that
+		// left it goes back only while no echo has confirmed it.
+		if !removed {
+			query += ` AND ` + confirmed + ` IS NULL`
 		}
 		if _, err := tx.Exec(query, nowMillis(), token, ThreadWakeQueued); err != nil {
 			return fmt.Errorf("%s: %w", action, err)
@@ -991,4 +1013,39 @@ func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, unconf
 		return fmt.Errorf("%s: commit: %w", action, err)
 	}
 	return nil
+}
+
+// ConfirmThreadWake records the provider's echo of a queued answer, or of a
+// late reply (late): the second phase of its delivery mark, after which no
+// session end or restart gives it back. It reports whether the mark was
+// still unconfirmed. A lineage-only row is left as the sweep left it.
+func (s *Store) ConfirmThreadWake(token string, late bool, at int64) (bool, error) {
+	action := fmt.Sprintf("store: confirm thread wake %s", token)
+	query := `UPDATE thread_requests SET confirmed_at = ?, updated_at = ?
+	           WHERE token = ? AND delivered_at IS NOT NULL AND confirmed_at IS NULL AND lineage_only = 0`
+	if late {
+		query = `UPDATE thread_requests SET late_confirmed_at = ?, updated_at = ?
+		          WHERE token = ? AND late_delivered_at IS NOT NULL AND late_confirmed_at IS NULL AND lineage_only = 0`
+	}
+	result, err := s.db.Exec(query, at, nowMillis(), token)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return rowsChanged(result, action)
+}
+
+// UnconfirmedThreadWakes returns the requests whose answer or late reply
+// was queued and never confirmed: at boot, no session holds them, so the
+// agent may never have taken them in. A lineage-only row answers nothing
+// any more and is not among them.
+func (s *Store) UnconfirmedThreadWakes() ([]ThreadRequest, error) {
+	rows, err := s.reader().Query(
+		`SELECT ` + threadRequestColumns + ` FROM thread_requests
+		  WHERE lineage_only = 0
+		    AND ((delivered_at IS NOT NULL AND confirmed_at IS NULL)
+		      OR (late_delivered_at IS NOT NULL AND late_confirmed_at IS NULL))`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list unconfirmed thread wakes: %w", err)
+	}
+	return collectThreadRequests(rows, "store: list unconfirmed thread wakes")
 }

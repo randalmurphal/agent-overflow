@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"agent-overflow/internal/composerdraft"
@@ -495,7 +496,7 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 		if len(ids) == 1 {
 			rowID = item.QueueItemID
 		}
-		owed.owned = append(owed.owned, ownedMessage{sendID: id, rowID: rowID, unconfirmed: true})
+		owed.owned = append(owed.owned, ownedMessage{sendID: id, rowID: rowID, unconfirmed: true, ended: true})
 	}
 	bodies, person, split := splitSessionEndParts(ids, unconfirmedJoinedParts(item), part.Content)
 	if !split {
@@ -796,11 +797,14 @@ func (a *App) noteAgentWakesDropped(threadID string) (held []ownedMessage) {
 // ownedMessage is a message that belongs to a request or a watch: an answer,
 // a reminder or a remote job's completion, by its send id. rowID is its queue
 // row, empty when it has none left; unconfirmed marks one the provider was
-// handed and never confirmed, whose row went at the write.
+// handed and never confirmed, whose row went at the write. ended marks one
+// a session end or a failed Codex resend did not take in, rather than a
+// person's Stop, archive or revert or a restart.
 type ownedMessage struct {
 	sendID      string
 	rowID       string
 	unconfirmed bool
+	ended       bool
 }
 
 // ownedSendID reports an answer's, a reminder's or a remote completion's
@@ -817,6 +821,12 @@ func ownedSendID(sendID string) bool {
 // unasked; a watch is pending again, and the watcher delivers its completion
 // as it does one that finishes later, starting the session for it. None of
 // them goes to the composer: it is not the person's to send.
+//
+// A completion a session end gave back (ended) is delivered again on the
+// thread request wake retry's ladder rather than at once, so a session that
+// keeps ending before it takes the completion in is not started every few
+// seconds; once the ladder is spent, the watch is dismissed with the reason
+// and keeps the completion for remote_jobs.
 //
 // Every path that takes one out of the thread's delivery runs it: a
 // wholesale drop (Stop, revert, teardown), a session that ended with it
@@ -835,8 +845,20 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 			continue
 		}
 		if computerID, requestID, ok := remoteCompletionFromSendID(m.sendID); ok {
-			err := a.store.WithdrawRemoteCompletion(computerID, requestID, m.rowID, m.unconfirmed)
+			var paced func(int64) store.CompletionReturn
+			gaveUp := false
+			if m.ended {
+				paced = func(attempts int64) store.CompletionReturn {
+					back := completionRedelivery(time.Now(), attempts)
+					gaveUp = back.Issue != ""
+					return back
+				}
+			}
+			err := a.store.WithdrawRemoteCompletion(computerID, requestID, m.rowID, m.unconfirmed, paced)
 			logThreadRequestSweep("return "+m.sendID+" to its watch", err)
+			if err == nil && gaveUp {
+				log.Printf("remote completion watches: giving up on delivering %s after %d session ends", m.sendID, threadWakeRetryAttempts+1)
+			}
 			returned = returned || err == nil
 		}
 	}
@@ -846,6 +868,76 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 	if a.heldReturnedForTest != nil {
 		a.heldReturnedForTest(threadID)
 	}
+}
+
+// confirmOwnedDeliveries records the provider's echo of the answers,
+// reminders and completions a consumed send carries (sendIDs): the second
+// phase of their owners' delivery mark, after which nothing gives them
+// back. It runs on the provider read loop under the flush anchor lock, so a
+// person's send costs nothing but the id check.
+func (a *App) confirmOwnedDeliveries(threadID string, sendIDs []string) {
+	now := time.Now().UnixMilli()
+	for _, id := range sendIDs {
+		if token, late, ok := threadWakeFromSendID(id); ok {
+			_, err := a.store.ConfirmThreadWake(token, late, now)
+			logThreadRequestSweep("confirm "+id+" in "+threadID, err)
+			continue
+		}
+		if computerID, requestID, ok := remoteCompletionFromSendID(id); ok {
+			_, err := a.store.ConfirmRemoteCompletion(computerID, requestID, now)
+			logThreadRequestSweep("confirm "+id+" in "+threadID, err)
+		}
+	}
+}
+
+// giveBackUnconfirmedAtBoot gives back the answers, reminders and
+// completions the previous process handed a provider that never confirmed
+// them: their rows went at the provider write, and the session that held
+// them is gone. A message whose row is still queued is the row's, which
+// restoreDurableFlushQueueAtBoot gives back or keeps for the next boot.
+func (a *App) giveBackUnconfirmedAtBoot() {
+	byThread := make(map[string][]ownedMessage)
+	requests, err := a.store.UnconfirmedThreadWakes()
+	logThreadRequestSweep("list the unconfirmed thread wakes at boot", err)
+	for _, r := range requests {
+		if r.DeliveredAt != 0 && r.ConfirmedAt == 0 {
+			byThread[r.CallerThreadID] = append(byThread[r.CallerThreadID], ownedMessage{sendID: threadWakeSendID(r.Token), unconfirmed: true})
+		}
+		if r.LateDeliveredAt != 0 && r.LateConfirmedAt == 0 {
+			byThread[r.CallerThreadID] = append(byThread[r.CallerThreadID], ownedMessage{sendID: threadWakeLateSendID(r.Token), unconfirmed: true})
+		}
+	}
+	watches, err := a.store.UnconfirmedRemoteCompletions()
+	logThreadRequestSweep("list the unconfirmed remote completions at boot", err)
+	for _, w := range watches {
+		byThread[w.ThreadID] = append(byThread[w.ThreadID], ownedMessage{sendID: remoteCompletionSendID(w), unconfirmed: true})
+	}
+	for threadID, owned := range byThread {
+		rows, err := a.store.ListFlushQueueItems(threadID)
+		if err != nil {
+			logThreadRequestSweep("list the queued messages of "+threadID+" at boot", err)
+			continue
+		}
+		owned = slices.DeleteFunc(owned, func(m ownedMessage) bool {
+			return slices.ContainsFunc(rows, func(row store.FlushQueueItem) bool { return row.SendID == m.sendID })
+		})
+		if len(owned) > 0 {
+			a.giveBackToOwners(threadID, owned)
+		}
+	}
+}
+
+// completionRedelivery paces a completion a session end gave back, after
+// attempts earlier ones, on the thread request wake retry's ladder
+// (retryUndeliveredThreadWakes): each return books the next delivery
+// further out, and the one after the last attempt gives it up.
+func completionRedelivery(now time.Time, attempts int64) store.CompletionReturn {
+	if attempts >= threadWakeRetryAttempts {
+		return store.CompletionReturn{Issue: fmt.Sprintf(
+			"Not delivered: the conversation's session ended %d times before the agent took this completion in.", attempts+1)}
+	}
+	attempts++
+	return store.CompletionReturn{NextCheck: now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), Attempts: attempts}
 }
 
 // withdrawQueuedAgentMessages takes the app-written messages match picks

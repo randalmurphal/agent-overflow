@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1671,5 +1672,76 @@ func TestHandleUserTextPrestampedDirectConfirmationDoesNotWriteOrEmit(t *testing
 	}
 	if got := itemUpsertEmissionsForID(emissions.snapshot(), "t1", row.ID); len(got) != 0 {
 		t.Fatalf("unchanged confirmation emitted %d rows", len(got))
+	}
+}
+
+// The consumed hook names the send ids a flush send carries when the
+// provider consumes it: once, at its echo, with every id of a joined
+// message. An interrupt that anchors the row is not a consumption, and a
+// direct send is not a flush send.
+func TestHandleUserText_FlushSendConsumedHook(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 3)
+
+	var consumed [][]string
+	router.SetFlushSendConsumedHook(func(threadID string, sendIDs []string) {
+		if threadID != "t1" {
+			t.Fatalf("hook threadID = %q, want t1", threadID)
+		}
+		consumed = append(consumed, sendIDs)
+	})
+	echo := func(id, text string) {
+		t.Helper()
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventUserText, ThreadID: "t1", Content: text,
+			Meta:      json.RawMessage(`{"provider_item_id":"` + id + `"}`),
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("echo %s: %v", id, err)
+		}
+	}
+	now := time.Now().UnixMilli()
+	quietFlush := func(id, queueID, wire string, in usermessage.Input) {
+		t.Helper()
+		meta, err := usermessage.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row := store.Item{
+			ID: id, ThreadID: "t1", TurnIndex: 3, Kind: "user_text", Role: "user",
+			Status: "completed", Summary: id, Meta: meta, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := router.PersistItemQuiet(row, nil); err != nil {
+			t.Fatalf("quiet persist %s: %v", id, err)
+		}
+		router.RegisterPendingQuietFlushSendWithExpectation("t1", queueID, row, 4, now, PendingSendExpectation{ProviderItemID: wire})
+	}
+
+	seedUserTextRow(t, st, "t1", 3, "direct send", "")
+	router.RegisterPendingSendWithExpectation("t1", "user:3", 3, PendingSendExpectation{ProviderItemID: "uuid-direct"})
+	echo("uuid-direct", "direct send")
+	if len(consumed) != 0 {
+		t.Fatalf("hook fired for a direct send: %q", consumed)
+	}
+
+	quietFlush("user:3:flush:0", "queue:a", "uuid-answer", usermessage.Input{SendID: "thread-wake:tok"})
+	if promoted := promoteQuietForTest(router, "t1"); len(promoted) != 1 {
+		t.Fatalf("promote: got %d, want 1", len(promoted))
+	}
+	if len(consumed) != 0 {
+		t.Fatalf("hook fired for an interrupt's anchoring: %q", consumed)
+	}
+	echo("uuid-answer", "user:3:flush:0")
+	if len(consumed) != 1 || !slices.Equal(consumed[0], []string{"thread-wake:tok"}) {
+		t.Fatalf("after the echo the hook saw %q, want [[thread-wake:tok]]", consumed)
+	}
+
+	quietFlush("user:3:flush:1", "queue:b", "uuid-joined", usermessage.Input{
+		SendID: "person", JoinedSendIDs: []string{"person", "thread-wake:tok2", "remote-completion:c:r"},
+	})
+	echo("uuid-joined", "user:3:flush:1")
+	if len(consumed) != 2 || !slices.Equal(consumed[1], []string{"person", "thread-wake:tok2", "remote-completion:c:r"}) {
+		t.Fatalf("a joined send's echo gave the hook %q, want all three ids", consumed)
 	}
 }

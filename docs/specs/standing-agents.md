@@ -371,10 +371,28 @@ once the queue is gone: an answer or reminder to its request, owed and
 disarmed, so `thread_status` still returns it; a remote job's
 completion to its watch, whose watcher delivers it again and starts the
 session for it, as for a completion that finishes after the Stop. A
-Stop does not quiet later wakes. A session that ends, or a Codex resend
-that fails, without taking in such an answer or completion, and a
-restart that finds one still queued, return it the same way; none goes
-to the composer. A Stop and a revert drop the queue under the thread's
+Stop does not quiet later wakes. A Stop or an archive that ends a
+session holding such an answer or completion, handed to the provider
+and not confirmed, returns it too; a person's text joined with it stays
+dropped. A session that ends, or a Codex resend that fails, without
+taking in such an answer or completion, and a restart that finds one
+still queued or handed to the provider and never confirmed, return it
+the same way; none goes to the composer. Delivery is marked in two
+phases: the queue write marks the request or watch `queued`, and the
+provider's echo of the message confirms it, so only a message the
+provider has not confirmed goes back. On Codex, a message written and
+not yet confirmed may already be in the thread the app-server resumes,
+so one given back can reach the agent twice. That cost is accepted: a
+request that reads owed and a watch that reads pending, with nothing
+lost, outrank a line the agent may already have seen. A completion a
+session end or a failed resend returned is delivered again on the
+ladder a request's undelivered wake is retried on, doubling from half
+a minute towards ten minutes for eight attempts, so a session that keeps
+ending before it takes the completion in is not restarted every few
+seconds; after the last attempt the watch is dismissed with the reason,
+and `remote_jobs` still returns the result. One that a Stop, an
+archive, a revert or a restart returned is delivered at the watcher's
+next poll. A Stop and a revert drop the queue under the thread's
 mutation lock, which every queue write takes, so a message queued
 during the drop is either dropped with it or queued after it.
 An archived thread takes none of these messages and starts no session

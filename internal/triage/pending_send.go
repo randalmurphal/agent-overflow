@@ -1046,6 +1046,28 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 	return promoted
 }
 
+// sendIDs names the messages a flush send carries, from its retained copy:
+// all of a joined message's, in order. A send that retains no copy names
+// none.
+func (p pendingSend) sendIDs() []string {
+	for _, row := range []*store.Item{p.DeferredItem, p.QuietItem} {
+		if row == nil {
+			continue
+		}
+		meta, err := usermessage.FromItem(*row)
+		if err != nil {
+			return nil
+		}
+		if len(meta.JoinedSendIDs) > 0 {
+			return meta.JoinedSendIDs
+		}
+		if meta.SendID != "" {
+			return []string{meta.SendID}
+		}
+	}
+	return nil
+}
+
 // restorePendingSendDeferred undoes EagerPersistDeferredFlushSends'
 // deferred→quiet transition after its store persist failed: the
 // retained copy moves back to DeferredItem, and the WasDeferred /

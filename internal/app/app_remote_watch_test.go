@@ -162,18 +162,27 @@ func TestRemoteCompletionUsesBusyProviderQueueForBothProviders(t *testing.T) {
 				t.Fatalf("repeat notification dispatched %d times", count)
 			}
 			saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
-			if err != nil || saved.Notification != "queued" {
-				t.Fatalf("notification responsibility=%+v %v", saved, err)
+			if err != nil || saved.Notification != "queued" || saved.ConfirmedAt != 0 {
+				t.Fatalf("notification responsibility=%+v %v, want queued and unconfirmed", saved, err)
 			}
 			// Keep the normal provider echo as the source of timeline confirmation.
 			item := flushed[0].Items[0]
-			meta, _ := json.Marshal(map[string]any{"provider_item_id": "remote-notice-echo", "client_id": item.UserItemID})
+			echoID := "remote-notice-echo"
+			if name == string(provider.Claude) {
+				// Claude's echo carries the uuid the send minted.
+				echoID, _ = waitForRecordedUserEnvelopes(t, capture, 1)[0]["uuid"].(string)
+			}
+			meta, _ := json.Marshal(map[string]any{"provider_item_id": echoID, "client_id": item.UserItemID})
 			if err := a.triage.Handle(provider.ProviderEvent{Kind: provider.EventUserText, ThreadID: thread.ID, TurnIndex: 0, ItemID: item.UserItemID, Meta: meta, Content: item.Message, Timestamp: time.Now()}); err != nil {
 				t.Fatal(err)
 			}
 			row, found, err := a.store.GetThreadItem(thread.ID, item.UserItemID)
 			if err != nil || !found || row.Kind != "user_text" || row.Role != "user" || row.Summary != item.Message {
 				t.Fatalf("ordinary timeline confirmation=%+v found=%v err=%v", row, found, err)
+			}
+			// The echo is the second phase of the watch's delivery mark.
+			if saved, err = a.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil || saved.ConfirmedAt == 0 {
+				t.Fatalf("after the echo the watch=%+v %v, want it confirmed", saved, err)
 			}
 		})
 	}

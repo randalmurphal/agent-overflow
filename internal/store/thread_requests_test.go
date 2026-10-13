@@ -1240,3 +1240,194 @@ func TestNextThreadRequestWorkReportsEachPassApart(t *testing.T) {
 		t.Fatalf("after retirement poll = %+v err=%v, want nothing to poll", schedule.Poll, err)
 	}
 }
+
+// A queued answer is delivered in two phases: the queue write marks it, and
+// only the provider's echo confirms it. Until then it is listed for the
+// boot sweep and an unconfirmed give-back takes it back; once confirmed,
+// neither does. An inline delivery is confirmed by its mark, so a late
+// reply queued after one lists only the late slot, and a give-back clears
+// the confirmation with the mark, so a requeue starts unconfirmed.
+func TestThreadWakeDeliveryIsConfirmedByItsEcho(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	unconfirmed := func() []string {
+		t.Helper()
+		rows, err := s.UnconfirmedThreadWakes()
+		if err != nil {
+			t.Fatalf("UnconfirmedThreadWakes: %v", err)
+		}
+		var got []string
+		for _, row := range rows {
+			if row.DeliveredAt != 0 && row.ConfirmedAt == 0 {
+				got = append(got, row.Token)
+			}
+			if row.LateDeliveredAt != 0 && row.LateConfirmedAt == 0 {
+				got = append(got, row.Token+":late")
+			}
+		}
+		return got
+	}
+	queue := func(token string, late bool, id string) {
+		t.Helper()
+		if err := s.QueueThreadWake(token, late, FlushQueueItem{
+			ID: id, ThreadID: "t-caller", SendID: id, Message: "the answer", EnqueuedAt: 900,
+		}); err != nil {
+			t.Fatalf("QueueThreadWake %s: %v", id, err)
+		}
+		if err := s.DeleteDispatchedFlushQueueItem(id); err != nil {
+			t.Fatalf("DeleteDispatchedFlushQueueItem %s: %v", id, err)
+		}
+	}
+
+	seedSettledThreadRequest(t, s, "tok-queued", "t-caller", ThreadRequestSend, 100, "the answer")
+	seedSettledThreadRequest(t, s, "tok-inline", "t-caller", ThreadRequestSend, 100, "the answer")
+	queue("tok-queued", false, "queue:queued")
+	if _, err := s.MarkThreadRequestDelivered("tok-inline", ThreadWakeInline, 920, false); err != nil {
+		t.Fatalf("MarkThreadRequestDelivered: %v", err)
+	}
+	if got := unconfirmed(); !slices.Equal(got, []string{"tok-queued"}) {
+		t.Fatalf("unconfirmed after the queue write = %q, want [tok-queued]", got)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-inline"); row.ConfirmedAt != 920 {
+		t.Fatalf("inline delivery confirmed at %d, want 920", row.ConfirmedAt)
+	}
+
+	if confirmed, err := s.ConfirmThreadWake("tok-queued", false, 950); err != nil || !confirmed {
+		t.Fatalf("ConfirmThreadWake = %v, %v; want true", confirmed, err)
+	}
+	if confirmed, err := s.ConfirmThreadWake("tok-queued", false, 960); err != nil || confirmed {
+		t.Fatalf("second ConfirmThreadWake = %v, %v; want false", confirmed, err)
+	}
+	if got := unconfirmed(); len(got) != 0 {
+		t.Fatalf("unconfirmed after the echo = %q, want none", got)
+	}
+	if err := s.WithdrawThreadWake("tok-queued", false, "queue:queued", true); err != nil {
+		t.Fatalf("WithdrawThreadWake: %v", err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-queued"); row.DeliveredAt == 0 || row.ConfirmedAt != 950 {
+		t.Fatalf("a confirmed answer was given back: delivered at %d, confirmed at %d", row.DeliveredAt, row.ConfirmedAt)
+	}
+
+	// A late reply after an inline answer: only the late slot is owed a
+	// confirmation.
+	if _, err := s.StoreThreadRequestLateReply("tok-inline", []byte("more"), 1000); err != nil {
+		t.Fatalf("StoreThreadRequestLateReply: %v", err)
+	}
+	queue("tok-inline", true, "queue:late")
+	if got := unconfirmed(); !slices.Equal(got, []string{"tok-inline:late"}) {
+		t.Fatalf("unconfirmed after the late queue write = %q, want [tok-inline:late]", got)
+	}
+	if err := s.WithdrawThreadWake("tok-inline", true, "queue:late", true); err != nil {
+		t.Fatalf("WithdrawThreadWake(late): %v", err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-inline"); row.LateDeliveredAt != 0 || row.DeliveredAt != 920 || row.ConfirmedAt != 920 {
+		t.Fatalf("late give-back: late delivered %d, delivered %d confirmed %d", row.LateDeliveredAt, row.DeliveredAt, row.ConfirmedAt)
+	}
+	if got := unconfirmed(); len(got) != 0 {
+		t.Fatalf("unconfirmed after the late give-back = %q, want none", got)
+	}
+
+	// Given back and queued again, an answer is unconfirmed again.
+	seedSettledThreadRequest(t, s, "tok-again", "t-caller", ThreadRequestSend, 100, "the answer")
+	if err := s.QueueThreadWake("tok-again", false, FlushQueueItem{
+		ID: "queue:again", ThreadID: "t-caller", SendID: "queue:again", Message: "the answer", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	if err := s.WithdrawThreadWake("tok-again", false, "queue:again", false); err != nil {
+		t.Fatalf("WithdrawThreadWake: %v", err)
+	}
+	queue("tok-again", false, "queue:again2")
+	if got := unconfirmed(); !slices.Equal(got, []string{"tok-again"}) {
+		t.Fatalf("unconfirmed after a requeue = %q, want [tok-again]", got)
+	}
+}
+
+// A lineage-only row keeps the delivery marks the retention sweep left
+// (clearLineagePayloadSQL). One queued and never confirmed, answer and
+// late reply both, is not listed at boot, not given back with or without
+// its queue row, and not confirmed: a cleared delivered_at would read as a
+// wake still owed.
+func TestALineageOnlyRowIsNeverGivenBackOrConfirmed(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	seedSettledThreadRequest(t, s, "tok", "t-caller", ThreadRequestSpawn, 100, "the answer")
+	if stored, err := s.StoreThreadRequestLateReply("tok", []byte("one more thing"), 300); err != nil || !stored {
+		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
+	}
+	for _, late := range []bool{false, true} {
+		if marked, err := s.MarkThreadRequestDelivered("tok", ThreadWakeQueued, 900, late); err != nil || !marked {
+			t.Fatalf("MarkThreadRequestDelivered(late=%v): marked=%v err=%v", late, marked, err)
+		}
+	}
+	unconfirmed := func() []string {
+		t.Helper()
+		rows, err := s.UnconfirmedThreadWakes()
+		if err != nil {
+			t.Fatalf("UnconfirmedThreadWakes: %v", err)
+		}
+		var tokens []string
+		for _, row := range rows {
+			tokens = append(tokens, row.Token)
+		}
+		return tokens
+	}
+	if got := unconfirmed(); !slices.Equal(got, []string{"tok"}) {
+		t.Fatalf("unconfirmed before the sweep = %q, want [tok]", got)
+	}
+	if _, err := s.db.Exec(clearLineagePayloadSQL+` AND token = ?`, "tok"); err != nil {
+		t.Fatalf("mark the row lineage-only: %v", err)
+	}
+	if err := insertFlushQueueItem(s.db, FlushQueueItem{
+		ID: "queue:tok", ThreadID: "t-caller", SendID: "thread-wake:tok", Message: "the answer", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("insert queue row: %v", err)
+	}
+	before := rawThreadRequest(t, s, "tok")
+
+	if got := unconfirmed(); len(got) != 0 {
+		t.Errorf("unconfirmed at boot = %q, want the lineage-only row left out", got)
+	}
+	for _, late := range []bool{false, true} {
+		if err := s.WithdrawThreadWake("tok", late, "", true); err != nil {
+			t.Fatalf("WithdrawThreadWake(late=%v, unconfirmed): %v", late, err)
+		}
+		if confirmed, err := s.ConfirmThreadWake("tok", late, 1000); err != nil || confirmed {
+			t.Errorf("ConfirmThreadWake(late=%v) on the lineage-only row: confirmed=%v err=%v", late, confirmed, err)
+		}
+	}
+	if err := s.WithdrawThreadWake("tok", false, "queue:tok", false); err != nil {
+		t.Fatalf("WithdrawThreadWake with its row: %v", err)
+	}
+	after := rawThreadRequest(t, s, "tok")
+	if after.DeliveredAt != before.DeliveredAt || after.DeliveredHow != ThreadWakeQueued || after.LateDeliveredAt != before.LateDeliveredAt ||
+		after.ConfirmedAt != 0 || after.LateConfirmedAt != 0 || after.Notify || !after.LineageOnly {
+		t.Errorf("the lineage-only row changed:\n got %+v\nwant %+v", after, before)
+	}
+	if rows, err := s.ListFlushQueueItems("t-caller"); err != nil || len(rows) != 0 {
+		t.Errorf("queue rows after the withdraw = %+v, %v; want the row taken out", rows, err)
+	}
+}
+
+// A wake whose queue row is still there never reached the provider, so it
+// goes back whatever its confirmation reads: a row queued before v148 was
+// recorded as confirmed by the migration's backfill.
+func TestWithdrawThreadWakeWithItsRowIgnoresTheConfirmation(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	seedSettledThreadRequest(t, s, "tok", "t-caller", ThreadRequestSend, 100, "the answer")
+	if err := s.QueueThreadWake("tok", false, FlushQueueItem{
+		ID: "queue:tok", ThreadID: "t-caller", SendID: "thread-wake:tok", Message: "the answer", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	if _, err := s.ConfirmThreadWake("tok", false, 950); err != nil {
+		t.Fatalf("ConfirmThreadWake: %v", err)
+	}
+	if err := s.WithdrawThreadWake("tok", false, "queue:tok", false); err != nil {
+		t.Fatalf("WithdrawThreadWake: %v", err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok"); row.DeliveredAt != 0 || row.ConfirmedAt != 0 {
+		t.Fatalf("a queued wake was kept: delivered at %d, confirmed at %d", row.DeliveredAt, row.ConfirmedAt)
+	}
+}

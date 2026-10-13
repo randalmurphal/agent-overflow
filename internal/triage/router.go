@@ -174,6 +174,11 @@ type Router struct {
 	// message anchor recording. Direct sends never fire it — their
 	// anchor is recorded at send time in app_send.go.
 	flushUserTextConfirmed func(threadID string, item store.Item)
+	// flushSendConsumed is the app-layer signal that the provider consumed
+	// a flush send, by the send ids it carries: every confirmation source
+	// (confirmConsumedSend), whether or not the row's write then succeeds,
+	// and never an interrupt's anchoring.
+	flushSendConsumed func(threadID string, sendIDs []string)
 	// sendUndelivered is the app-layer signal that a thread has sends the
 	// provider cancelled without running (retireUnrunSend). The app drains
 	// them and returns them to the composer. Called under the thread's flush
