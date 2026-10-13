@@ -380,11 +380,18 @@ still queued or handed to the provider and never confirmed, return it
 the same way; none goes to the composer. Delivery is marked in two
 phases: the queue write marks the request or watch `queued`, and the
 provider's echo of the message confirms it, so only a message the
-provider has not confirmed goes back. On Codex, a message written and
-not yet confirmed may already be in the thread the app-server resumes,
-so one given back can reach the agent twice. That cost is accepted: a
-request that reads owed and a watch that reads pending, with nothing
-lost, outrank a line the agent may already have seen. A completion a
+provider has not confirmed goes back. On either provider, a message
+given back may already be in the conversation the next session resumes,
+so it can reach the agent twice. The confirmation is the app's own write
+after the provider's echo, while the provider records the message in its
+session file on its own, so a crash or a session death between the two
+leaves a message the agent holds reading unconfirmed. A Stop or an
+archive drops the unconfirmed sends before it closes the provider, which
+has three seconds to exit once its input closes, and an echo the
+provider sends in that window arrives after the drop and is discarded.
+That cost is accepted: a request that reads owed and a watch that reads
+pending, with nothing lost, outrank a line the agent may already have
+seen. A completion a
 session end or a failed resend returned is delivered again on the
 ladder a request's undelivered wake is retried on, doubling from half
 a minute towards ten minutes for eight attempts, so a session that keeps

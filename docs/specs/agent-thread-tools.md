@@ -832,7 +832,7 @@ thread at its next start. So does a wake the caller's session ended,
 or a Stop, an archive or a Codex resend that failed ended it, without
 taking in, still queued or written and unconfirmed, and one still
 queued, or written and never confirmed, when the caller's computer
-restarts; on Codex such a wake can reach the agent twice
+restarts; on either provider such a wake can reach the agent twice
 ([standing agents](standing-agents.md#wake-supervisor)). The answer
 is not the person's to send, so it never goes to
 the composer, where the other queued messages go; when Claude joined it
