@@ -43,10 +43,14 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// act on it either: its turn would earn the replacement a
 		// reconnect, its death would restore or reconnect for the
 		// replacement, and its disconnect would clear what the
-		// replacement armed. Only the queue's end-of-session mark
-		// stands, since the provider emits nothing after it.
+		// replacement armed. Two things stand at its disconnect: the
+		// queue's end-of-session mark, since the provider emits nothing
+		// after it, and a workflow attempt's fold of a death it already
+		// observed from this session's own "error", handled while the
+		// session was still current.
 		if a.triage != nil && !a.triage.SessionCurrent(threadID, sessionToken) {
 			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
+				a.workflowApplication().SessionDisconnected(threadID)
 				a.providerEvents.retireWhenIdle(threadID)
 			}
 			return

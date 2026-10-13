@@ -106,10 +106,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await reconnect;
       await expect.poll(() => pendingEvents(harness, threadId)).toBe(0);
 
-      expect(await updateWorkReason(harness), 'the replacement holds the stopped session\'s schedule or turn').toBe('');
+      // Soft, so a failure records everything that leaked.
+      expect.soft(await updateWorkReason(harness), 'the replacement holds the stopped session\'s schedule or turn').toBe('');
       const items = await listItems(harness, threadId);
-      expect(items.filter((item) => item.summary.includes(STALE_REPLY) || item.summary.includes('Armed the schedule.')), 'a stopped session\'s reply reached the replacement').toEqual([]);
-      expect(items.filter((item) => item.toolName === 'ScheduleWakeup' || item.toolName === 'CronCreate'), 'a stopped session\'s schedule call reached the replacement').toEqual([]);
+      expect.soft(items.filter((item) => item.summary.includes(STALE_REPLY) || item.summary.includes('Armed the schedule.')), 'a stopped session\'s reply reached the replacement').toEqual([]);
+      expect.soft(items.filter((item) => item.toolName === 'ScheduleWakeup' || item.toolName === 'CronCreate'), 'a stopped session\'s schedule call reached the replacement').toEqual([]);
       // The replacement serves the thread, and the stale reply never shows.
       await harness.rpc('SendMessage', threadId, 'Answer again.', null);
       await expect(page.getByText(REPLACEMENT_REPLY, { exact: true })).toBeVisible();
