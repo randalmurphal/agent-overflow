@@ -3,7 +3,7 @@
 // Copy Thread ID, Delete (when not a child thread).
 
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadContextMenu from './ThreadContextMenu.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
@@ -12,6 +12,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { clearThreadSelection, setThreadSelection } from '../../stores/threadFilter.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { replaceAllThreads } from '../../stores/threads.svelte';
+import { setThreadStatus } from '../../stores/threadStatuses.svelte';
 import {
   consumePendingGroupRename,
   resetThreadGroupsForTest,
@@ -78,6 +79,7 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(visibleLabels(baseElement)).toEqual([
       'Open in New Pane',
       'Rename Thread',
+      'Promote to Standing Agent',
       'Fork Thread',
       'Mark Unread',
       'Pin Thread',
@@ -120,6 +122,7 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(visibleLabels(baseElement)).toEqual([
       'Open in New Pane',
       'Rename Thread',
+      'Promote to Standing Agent',
       'Fork Thread',
       'Mark Unread',
       'Move to Back Burner',
@@ -780,5 +783,186 @@ describe('<ThreadContextMenu> group items', () => {
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
     expect(setGroup).toHaveBeenCalledWith(['a', 'b'], 'g-zebra');
+  });
+});
+
+// A standing agent's row (docs/specs/standing-agents.md, "Sidebar") swaps
+// Promote for Demote, Loops and Watches and Archive Done Children, and
+// drops the pin and group items; a thread it spawned drops the group items.
+
+describe('<ThreadContextMenu> standing agent', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    clearThreadSelection();
+    resetSidebarForTest();
+    resetThreadGroupsForTest();
+    upsertThreadGroup({ id: 'g-alpha', projectId: 'project-1', name: 'Alpha', createdAt: 0, updatedAt: 0 });
+  });
+
+  function labelsOf(el: HTMLElement): string[] {
+    return visibleLabels(el).map((text) => text.replace(/[▸\s]+$/u, ''));
+  }
+
+  function item(el: HTMLElement, label: string): HTMLElement {
+    const node = Array.from(el.querySelectorAll('[role="menuitem"]'))
+      .find((node) => node.textContent?.trim().replace(/[▸\s]+$/u, '') === label);
+    if (!node) throw new Error(`${label} not rendered`);
+    return node as HTMLElement;
+  }
+
+  function renderAgentMenu(thread: Thread, extra: { agentBound?: boolean; agentChildren?: Thread[]; archivedChild?: boolean } = {}) {
+    setBindingMock('SwitchThread', async () => {});
+    setBindingMock('ListItems', async () => []);
+    const pane = createThreadPane();
+    const anchor = document.createElement('div');
+    document.body.appendChild(anchor);
+    const view = render(ThreadContextMenu, {
+      props: {
+        thread, pane, anchor, open: true, onClose: () => {}, onRename: () => {}, isActive: false, ...extra,
+      },
+    });
+    return { ...view, pane };
+  }
+
+  it.each([
+    [{ projectId: 'project-1' }, true],
+    [{ mode: 'plan' as const }, true],
+    [{ mode: 'terminal' as const }, false],
+    [{ archived: true }, false],
+    [{ isDraft: true }, false],
+    [{ agentPromotedAt: 1 }, false],
+  ])('offers Promote only on a chat or plan thread: %j → %s', (overrides, offered) => {
+    const labels = labelsOf(renderMenu(makeThread(overrides)).baseElement);
+    expect(labels.includes('Promote to Standing Agent')).toBe(offered);
+  });
+
+  it('promotes through the binding', async () => {
+    const promote = setBindingMock('PromoteStandingAgent', async () => ({ threadId: 'thread-1' }));
+    const { baseElement } = renderMenu(makeThread());
+    await fireEvent.click(item(baseElement, 'Promote to Standing Agent'));
+    await tick();
+    expect(promote).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('replaces the pin and group items on an agent row with the agent items, in order', () => {
+    const { baseElement } = renderAgentMenu(
+      makeThread({ projectId: 'project-1', agentPromotedAt: 1, pinnedAt: 1, pinGroup: 0 }),
+      { agentBound: true },
+    );
+    expect(labelsOf(baseElement)).toEqual([
+      'Open in New Pane',
+      'Rename Thread',
+      'Loops and Watches',
+      'Archive Done Children',
+      'Demote Standing Agent',
+      'Fork Thread',
+      'Mark Unread',
+      'Copy Path',
+      'Copy Thread ID',
+      'Archive Thread',
+      'Delete',
+    ]);
+    expect(item(baseElement, 'Archive Done Children').getAttribute('aria-disabled')).toBe('true');
+    expect(item(baseElement, 'Archive Done Children').getAttribute('title')).toBe('No spawned thread is done');
+  });
+
+  it('keeps the pin items but drops the group items on a thread an agent spawned', () => {
+    const { baseElement } = renderAgentMenu(
+      makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1' }),
+      { agentBound: true },
+    );
+    const labels = labelsOf(baseElement);
+    expect(labels).toContain('Pin Thread');
+    expect(labels).toContain('Promote to Standing Agent');
+    expect(labels).not.toContain('Move to Group');
+    expect(labels).not.toContain('Remove from Group');
+    expect(labels).not.toContain('Demote Standing Agent');
+  });
+
+  it('demotes behind a confirm that says the home stays, and only after it', async () => {
+    const demote = setBindingMock('DemoteStandingAgent', async () => {});
+    const { baseElement } = renderAgentMenu(makeThread({ agentPromotedAt: 1 }));
+    await fireEvent.click(item(baseElement, 'Demote Standing Agent'));
+    await tick();
+    expect(demote).not.toHaveBeenCalled();
+    const dialog = baseElement.querySelector('[role="alertdialog"], [role="dialog"]');
+    expect(dialog?.textContent).toContain('home directory stay');
+    await fireEvent.click(Array.from(baseElement.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Demote')!);
+    await tick();
+    expect(demote).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('hides the group items in bulk when the selection holds an agent or a spawned thread', () => {
+    replaceAllThreads([
+      makeThread({ id: 'a', projectId: 'project-1' }),
+      makeThread({ id: 'b', projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true }),
+    ]);
+    setThreadSelection(['a', 'b']);
+    const { baseElement } = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1' }));
+    const labels = labelsOf(baseElement);
+    expect(labels).toContain('Archive (2)');
+    expect(labels).not.toContain('Move to Group');
+    expect(labels).not.toContain('Remove from Group');
+  });
+
+  it('offers an archived child Unarchive, Copy and Delete, and no pin, group or archive', () => {
+    const { baseElement } = renderAgentMenu(
+      makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1', archived: true }),
+      { agentBound: true, archivedChild: true },
+    );
+    expect(labelsOf(baseElement)).toEqual([
+      'Open in New Pane',
+      'Rename Thread',
+      'Unarchive Thread',
+      'Copy Path',
+      'Copy Thread ID',
+      'Delete',
+    ]);
+  });
+
+  it('unarchives an archived child through the binding', async () => {
+    const unarchive = setBindingMock('UnarchiveThread', async () => makeThread());
+    const { baseElement } = renderAgentMenu(
+      makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1', archived: true }),
+      { agentBound: true, archivedChild: true },
+    );
+    await fireEvent.click(item(baseElement, 'Unarchive Thread'));
+    await tick();
+    expect(unarchive).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('Loops and Watches opens the thread with its background rail open', async () => {
+    setBindingMock('GetThread', async () => makeThread({ agentPromotedAt: 1 }));
+    setBindingMock('GetThreadDisplayState', async () => null);
+    const { baseElement, pane } = renderAgentMenu(makeThread({ agentPromotedAt: 1 }));
+    await fireEvent.click(item(baseElement, 'Loops and Watches'));
+    // The rail opens once the thread is mounted, after the pane's switch
+    // has read the thread's own rail preferences.
+    await waitFor(() => expect(pane.activityRailBackgroundOpen).toBe(true));
+    expect(pane.threadId).toBe('thread-1');
+  });
+
+  it('Archive Done Children counts the idle children, confirms, then archives only those', async () => {
+    const archive = setBindingMock('ArchiveThread', async () => {});
+    const idle = makeThread({ id: 'child-idle', spawnedByThreadId: 'thread-1' });
+    const idle2 = makeThread({ id: 'child-idle-2', spawnedByThreadId: 'thread-1' });
+    const busy = makeThread({ id: 'child-busy', spawnedByThreadId: 'thread-1' });
+    setThreadStatus('child-busy', 'awaiting-input');
+    const { baseElement } = renderAgentMenu(
+      makeThread({ agentPromotedAt: 1 }),
+      { agentChildren: [idle, busy, idle2] },
+    );
+    const row = item(baseElement, 'Archive Done Children (2)');
+    expect(row.getAttribute('aria-disabled')).not.toBe('true');
+    await fireEvent.click(row);
+    await tick();
+    const dialog = baseElement.querySelector('[role="dialog"], [role="alertdialog"]');
+    expect(dialog?.textContent).toContain('2 spawned threads');
+    expect(archive).not.toHaveBeenCalled();
+    const confirm = Array.from(baseElement.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Archive');
+    if (!confirm) throw new Error('confirm button not rendered');
+    await fireEvent.click(confirm);
+    await waitFor(() => expect(archive).toHaveBeenCalledTimes(2));
+    expect(archive.mock.calls.map((call) => call[0])).toEqual(['child-idle', 'child-idle-2']);
   });
 });

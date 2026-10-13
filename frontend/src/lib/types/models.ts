@@ -78,6 +78,18 @@ export interface Thread {
    */
   latestTurnCompletedAt?: number;
   archived: boolean;
+  /** Unix ms when the user promoted this thread to a standing agent; absent otherwise. */
+  agentPromotedAt?: number;
+  /** The local thread whose thread_spawn made this one; absent when the user started it. */
+  spawnedByThreadId?: string;
+  /**
+   * True when the spawner is a standing agent, archived or not: the backend
+   * refuses to group this thread, so the row says so even when the agent's
+   * own row is not in the list.
+   */
+  spawnedByAgent?: boolean;
+  /** Spawned threads now archived. Set only on a standing agent's row. */
+  archivedChildCount?: number;
   /**
    * Unix-ms timestamp of when the user last viewed the thread. New rows
    * start with a creation-time baseline; undefined means "never tracked"

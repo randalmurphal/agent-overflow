@@ -48,6 +48,9 @@ const FOLDER_GLYPH_PX = 11;
 /** Group row padding-left: centres the chevron on the top-level pin column. */
 export const GROUP_ROW_PADDING_LEFT_PX = (PIN_SLOT_PX - CHEVRON_PX) / 2;
 
+/** Where a group's folder glyph, or an agent's person glyph, starts. */
+export const GROUP_GLYPH_LEFT_PX = GROUP_ROW_PADDING_LEFT_PX + CHEVRON_PX + ROW_GAP_PX;
+
 /** The member rail drops from the chevron's centre (it is a 1px border). */
 export const GROUP_RAIL_LEFT_PX = GROUP_ROW_PADDING_LEFT_PX + CHEVRON_PX / 2;
 

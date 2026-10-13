@@ -70,9 +70,14 @@ type HarnessSeedThread struct {
 	RuntimeMode string `json:"runtimeMode,omitempty"`
 	// SessionRef pre-binds a provider session cursor (pair with a
 	// seeded ~/.claude session file to exercise resume flows).
-	SessionRef string            `json:"sessionRef,omitempty"`
-	Archived   bool              `json:"archived,omitempty"`
-	Turns      []HarnessSeedTurn `json:"turns,omitempty"`
+	SessionRef string `json:"sessionRef,omitempty"`
+	Archived   bool   `json:"archived,omitempty"`
+	// SpawnedBy is the title of a thread seeded earlier in this project.
+	// The thread is recorded as that thread's thread_spawn, through a
+	// finished spawn request row, so the sidebar nests it under a promoted
+	// spawner and counts it once archived.
+	SpawnedBy string            `json:"spawnedBy,omitempty"`
+	Turns     []HarnessSeedTurn `json:"turns,omitempty"`
 }
 
 // HarnessSeedTurn is one completed exchange: the user message plus the
@@ -284,12 +289,23 @@ func (h *Harness) seedProject(spec HarnessSeedProject) (HarnessSeedProjectResult
 	}
 	out := HarnessSeedProjectResult{ProjectID: projectRow.ID, Path: projectRow.Path}
 
+	seededByTitle := map[string]string{}
 	for ti, threadSpec := range spec.Threads {
-		threadID, err := h.seedThread(projectRow.ID, threadSpec)
+		spawner := ""
+		if threadSpec.SpawnedBy != "" {
+			var ok bool
+			if spawner, ok = seededByTitle[threadSpec.SpawnedBy]; !ok {
+				return out, fmt.Errorf("thread %d: spawnedBy %q names no thread seeded earlier in this project", ti+1, threadSpec.SpawnedBy)
+			}
+		}
+		threadID, err := h.seedThread(projectRow.ID, threadSpec, spawner)
 		if err != nil {
 			return out, fmt.Errorf("thread %d: %w", ti+1, err)
 		}
 		out.ThreadIDs = append(out.ThreadIDs, threadID)
+		if threadSpec.Title != "" {
+			seededByTitle[threadSpec.Title] = threadID
+		}
 	}
 	if spec.Workflows != nil {
 		if err := h.seedProjectWorkflowFiles(projectRow, *spec.Workflows); err != nil {
@@ -299,7 +315,9 @@ func (h *Harness) seedProject(spec HarnessSeedProject) (HarnessSeedProjectResult
 	return out, nil
 }
 
-func (h *Harness) seedThread(projectID string, spec HarnessSeedThread) (string, error) {
+// seedThread creates one thread; spawnerID, when set, is the seeded thread
+// recorded as having spawned it.
+func (h *Harness) seedThread(projectID string, spec HarnessSeedThread, spawnerID string) (string, error) {
 	providerName := spec.Provider
 	if providerName == "" {
 		providerName = "claude"
@@ -341,10 +359,24 @@ func (h *Harness) seedThread(projectID string, spec HarnessSeedThread) (string, 
 	if err := h.seedHistory(thread.ID, spec.Turns); err != nil {
 		return thread.ID, err
 	}
-	if spec.SessionRef != "" || len(spec.Turns) > 0 {
-		// CreateThread announced an item-less row (IsDraft=true). The
-		// history and session cursor above went in behind the store, so a
-		// page that is already open would keep the draft row until reload.
+	if spawnerID != "" {
+		// The record a real thread_spawn leaves once it has answered: a
+		// finished local spawn request from the spawner naming this thread.
+		now := h.config.Now().UnixMilli()
+		if err := h.store().InsertThreadRequest(store.ThreadRequest{
+			Token: uuid.NewString(), CallerThreadID: spawnerID, Kind: store.ThreadRequestSpawn,
+			TargetThreadID: thread.ID, State: store.ThreadRequestFinished,
+			Answer: []byte("seeded"), AnswerKind: store.ThreadAnswerFinal,
+			SettledAt: now, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return thread.ID, fmt.Errorf("record spawner: %w", err)
+		}
+	}
+	if spec.SessionRef != "" || len(spec.Turns) > 0 || spawnerID != "" {
+		// CreateThread announced an item-less row (IsDraft=true) with no
+		// spawner. The history, session cursor and spawn record above went
+		// in behind the store, so a page that is already open would keep
+		// the first row until reload.
 		h.config.Host.BroadcastThreadRow(thread.ID)
 	}
 	if spec.Archived {

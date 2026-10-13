@@ -159,6 +159,9 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 		a.emitThreadGroup("create", *result.CreatedGroup)
 	}
 	a.broadcastThreadRowIfChanged(organizeThreadAction(result), result.Thread, result.Changed)
+	if result.ArchivedChanged {
+		a.broadcastSpawnerRow(result.Thread)
+	}
 	return result, nil
 }
 
@@ -300,6 +303,12 @@ func threadToolsOrganizeError(threadID string, err error) error {
 			"That group is no longer in this project. Read the groups again with thread_options.", err)
 	case errors.Is(err, store.ErrEmptyThreadGroupName):
 		return errorsx.Public(threadtools.CodeInvalidRequest, "A group name is trimmed, and a blank one is refused.", err)
+	case errors.Is(err, store.ErrStandingAgentGrouped):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"That thread is a standing agent, and a standing agent is not grouped: its own sidebar row holds the threads it spawned.", err)
+	case errors.Is(err, store.ErrSpawnedChildGrouped):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"A standing agent spawned that thread, so it nests under the agent's sidebar row rather than in a group.", err)
 	case errors.Is(err, store.ErrThreadGone), errors.Is(err, sql.ErrNoRows), errors.As(err, &moved):
 		return threadToolsNotFound(threadID)
 	}

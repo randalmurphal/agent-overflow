@@ -89,7 +89,7 @@ func TestDeleteThreadReportsTheRowOnceItsDeleteMarkCommits(t *testing.T) {
 		t.Fatal(err)
 	}
 	var deleted []string
-	report := func(thread store.Thread) { deleted = append(deleted, thread.ID) }
+	report := func(thread store.Thread, _ []string) { deleted = append(deleted, thread.ID) }
 
 	cleanupErr := errors.New("disk busy")
 	err = service.DeleteThread(afterMark.ID, DeletePorts{
@@ -151,7 +151,7 @@ func TestDeleteThreadClosesBrowserPagesAgainAfterTheRowDrops(t *testing.T) {
 			return nil
 		},
 		Forget:  func(string) { forgotten = true },
-		Deleted: func(store.Thread) { deleted = true },
+		Deleted: func(store.Thread, []string) { deleted = true },
 	})
 	if !errors.Is(err, closeErr) {
 		t.Fatalf("DeleteThread error = %v, want the second close's error", err)
@@ -188,7 +188,7 @@ func TestDeleteThreadClosesTerminalsAgainAfterTheRowDrops(t *testing.T) {
 			return nil
 		},
 		Forget:  func(string) { forgotten = true },
-		Deleted: func(store.Thread) { deleted = true },
+		Deleted: func(store.Thread, []string) { deleted = true },
 	})
 	if !errors.Is(err, closeErr) {
 		t.Fatalf("DeleteThread error = %v, want the second close's error", err)

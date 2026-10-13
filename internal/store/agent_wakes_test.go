@@ -341,12 +341,13 @@ func TestPromoteStandingAgentIsIdempotent(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t")
-	row, promoted, err := s.PromoteStandingAgent("t", "/home/t", 5)
+	promotion, err := s.PromoteStandingAgent("t", "/home/t", 5)
+	row, promoted := promotion.Agent, promotion.Promoted
 	if err != nil || !promoted || row.Home != "/home/t" || row.NotifyOnTick {
 		t.Fatalf("promote: %+v %v %v", row, promoted, err)
 	}
-	if _, promoted, err := s.PromoteStandingAgent("t", "/other", 6); err != nil || promoted {
-		t.Fatalf("second promote: %v %v", promoted, err)
+	if again, err := s.PromoteStandingAgent("t", "/other", 6); err != nil || again.Promoted {
+		t.Fatalf("second promote: %v %v", again.Promoted, err)
 	}
 	if demoted, err := s.DemoteStandingAgent("t"); err != nil || !demoted {
 		t.Fatalf("demote: %v %v", demoted, err)
@@ -363,7 +364,7 @@ func TestCommittedMoveDropsTheStandingAgent(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"moved", "copied", "cancelled"} {
 		mustCreateThread(t, s, id)
-		if _, _, err := s.PromoteStandingAgent(id, "/home/"+id, 1); err != nil {
+		if _, err := s.PromoteStandingAgent(id, "/home/"+id, 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -577,7 +578,7 @@ func TestSetStandingAgentNotifyOnTick(t *testing.T) {
 	if _, _, found, err := s.SetStandingAgentNotifyOnTick("t", true); err != nil || found {
 		t.Fatalf("a thread that is not a standing agent: found=%v err=%v", found, err)
 	}
-	if _, _, err := s.PromoteStandingAgent("t", "/h", 1); err != nil {
+	if _, err := s.PromoteStandingAgent("t", "/h", 1); err != nil {
 		t.Fatal(err)
 	}
 	for _, step := range []struct{ on, changed bool }{{true, true}, {true, false}, {false, true}, {false, false}} {

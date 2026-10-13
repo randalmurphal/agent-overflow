@@ -147,6 +147,7 @@ export const GetStandingAgent = dispatch('GetStandingAgent');
 export const PromoteStandingAgent = dispatch('PromoteStandingAgent');
 export const DemoteStandingAgent = dispatch('DemoteStandingAgent');
 export const SetStandingAgentNotifyOnTick = dispatch('SetStandingAgentNotifyOnTick');
+export const ListArchivedSpawnedThreads = dispatch('ListArchivedSpawnedThreads');
 export const SendExternalThreadMessage = dispatch('SendExternalThreadMessage');
 export const BeginThreadTransfer = dispatch('BeginThreadTransfer');
 export const CreateThreadTransferOffer = dispatch('CreateThreadTransferOffer');

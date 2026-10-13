@@ -109,6 +109,9 @@ func (a *App) archiveThreadLocked(id string) error {
 	// from its sidebar too; re-archiving an already-archived thread
 	// changes nothing and says nothing.
 	a.broadcastThreadRowIfChanged(triage.ThreadActionUnlisted, row, changed)
+	if changed {
+		a.broadcastSpawnerRow(row)
+	}
 	a.stopArchivedThreadSession(id, requestedAt)
 	return nil
 }
@@ -145,6 +148,9 @@ func (a *App) UnarchiveThread(id string) (store.Thread, error) {
 	// Broadcast as `listed` so every other attached client puts the row
 	// back in its sidebar.
 	a.broadcastThreadRowIfChanged(triage.ThreadActionListed, row, changed)
+	if changed {
+		a.broadcastSpawnerRow(row)
+	}
 	return row, nil
 }
 

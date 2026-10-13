@@ -574,29 +574,6 @@ func (s *Store) QueueAgentWake(item FlushQueueItem, sendIDPrefix string, ahead i
 	return nil
 }
 
-// PromoteStandingAgent records a promotion. Promoted false means the thread
-// already was a standing agent; the row is returned either way.
-func (s *Store) PromoteStandingAgent(threadID, home string, now int64) (StandingAgent, bool, error) {
-	action := fmt.Sprintf("store: promote %s", threadID)
-	result, err := s.db.Exec(`INSERT INTO standing_agents (thread_id, home, promoted_at) VALUES (?, ?, ?)
-		ON CONFLICT(thread_id) DO NOTHING`, threadID, home, now)
-	if err != nil {
-		return StandingAgent{}, false, fmt.Errorf("%s: %w", action, err)
-	}
-	inserted, err := result.RowsAffected()
-	if err != nil {
-		return StandingAgent{}, false, fmt.Errorf("%s: rows affected: %w", action, err)
-	}
-	row, found, err := s.GetStandingAgent(threadID)
-	if err != nil {
-		return StandingAgent{}, false, err
-	}
-	if !found {
-		return StandingAgent{}, false, fmt.Errorf("%s: the row is gone after insert", action)
-	}
-	return row, inserted == 1, nil
-}
-
 // SetStandingAgentNotifyOnTick turns tick notifications on or off for one
 // standing agent. Changed is false when the row already said so; found is
 // false when the thread is not a standing agent.
@@ -643,7 +620,9 @@ func (s *Store) GetStandingAgent(threadID string) (StandingAgent, bool, error) {
 // StandingAgentSpawnerOf names the standing agent that spawned a thread on
 // this computer: the caller of a local `spawn` request whose target is the
 // thread, while that caller is promoted and not archived. Found is false for
-// every other thread, a worker past the request ledger's retention included.
+// every other thread. A worker past the request ledger's retention still
+// names its agent: the sweep keeps its spawn row as lineage
+// (spawnLineageSQL), so its prompts keep routing there.
 func (s *Store) StandingAgentSpawnerOf(threadID string) (agentID, title string, found bool, err error) {
 	err = s.reader().QueryRow(`SELECT t.id, t.title FROM standing_agents a
 		JOIN thread_requests r ON r.caller_thread_id = a.thread_id

@@ -133,6 +133,17 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 	if _, err := t.spawnThreadOptions(ctx, origin, call); err != nil {
 		return threadtools.RequestAck{}, err
 	}
+	if call.Group != "" {
+		// A standing agent's spawned threads nest under its own sidebar row
+		// (store.ErrSpawnedChildGrouped); the group would be refused once
+		// the thread existed, so it is refused before.
+		if _, standing, err := t.app.store.GetStandingAgent(caller.ThreadID); err != nil {
+			return threadtools.RequestAck{}, err
+		} else if standing {
+			return threadtools.RequestAck{}, errorsx.Public(threadtools.CodeInvalidRequest,
+				"This thread is a standing agent, and the threads it spawns nest under its own sidebar row rather than in a group. Omit group.", nil)
+		}
+	}
 	return t.startLocalRequest(ctx, caller, store.ThreadRequest{
 		Kind:           store.ThreadRequestSpawn,
 		OriginThreadID: call.FromThread,
@@ -410,6 +421,11 @@ func (t threadToolsApp) acceptRequest(
 		// No title: a thread on this computer is named from its own row.
 		if _, err := t.app.store.SetThreadRequestTarget(token, "", target, ""); err != nil {
 			return "", false, err
+		}
+		if created && kind == store.ThreadRequestSpawn {
+			// The row went out at creation without a spawner; now the
+			// request names it, so the sidebar can nest the thread.
+			t.app.broadcastThreadRowByID(target)
 		}
 		// Conditional: a request that already settled during dispatch keeps
 		// its settled state, and a no-op means the other path won, not an

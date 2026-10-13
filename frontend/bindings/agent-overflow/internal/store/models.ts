@@ -1548,6 +1548,38 @@ export class Thread {
     "origin": ThreadOrigin;
 
     /**
+     * AgentPromotedAt is the standing agent row's promotion time, nil for a
+     * thread the user has not promoted (docs/specs/standing-agents.md). It
+     * is derived from standing_agents, not a persisted threads column.
+     */
+    "agentPromotedAt"?: number | null;
+
+    /**
+     * SpawnedByThreadID names the local thread whose thread_spawn made this
+     * one, read from the newest spawn request that targets it, or "" when
+     * the user started it. Derived, like the two below: the spawn request
+     * row is the record, and it outlives the retention floor while this
+     * thread exists (spawnLineageSQL).
+     */
+    "spawnedByThreadId"?: string;
+
+    /**
+     * SpawnedByAgent is true when SpawnedByThreadID names a standing agent,
+     * archived or not. The agent's row may be absent from a client's list
+     * (archived, another project) while the group refusal still holds, so
+     * the row says it is bound rather than leaving the client to look up
+     * the spawner.
+     */
+    "spawnedByAgent"?: boolean;
+
+    /**
+     * ArchivedChildCount is how many threads this one spawned that are now
+     * archived. Only a standing agent's row carries it (zero elsewhere);
+     * the sidebar's agent row shows the count and lists them on demand.
+     */
+    "archivedChildCount"?: number;
+
+    /**
      * HasActionableProposedPlan is derived for sidebar boot state. It is
      * true when the latest assistant proposed plan is completed and has
      * not been implemented yet. It is not a persisted threads column.

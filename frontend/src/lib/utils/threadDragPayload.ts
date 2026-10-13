@@ -13,6 +13,11 @@ export interface ThreadDragPayload {
   projectId: string;
   /** The thread's current group, when it is in one. */
   groupId?: string;
+  /**
+   * A standing agent, or a thread one spawned: neither joins a group (the
+   * agent's row is where they nest), so every group target refuses it.
+   */
+  agentBound?: boolean;
 }
 
 export type ThreadDropKind = 'pane-left' | 'pane-right' | 'gap' | 'end' | 'empty';
@@ -45,6 +50,7 @@ export function decodeThreadDragPayload(raw: string): ThreadDragPayload | null {
       ...(typeof parsed.groupId === 'string' && parsed.groupId
         ? { groupId: parsed.groupId }
         : {}),
+      ...(parsed.agentBound === true ? { agentBound: true } : {}),
     };
   } catch {
     return null;
@@ -90,14 +96,16 @@ export function threadDragPayloadForEvent(event: DragEvent): ThreadDragPayload |
 /**
  * A group row (or any row inside it) accepts a thread from its OWN project
  * that is not already a member. Cross-project is refused outright — a group
- * belongs to one project and the backend would reject the move anyway.
+ * belongs to one project and the backend would reject the move anyway — and
+ * so is an agent or a thread an agent spawned, which the backend refuses too.
  */
 export function canDropThreadInGroup(
   payload: ThreadDragPayload,
   projectId: string,
   groupId: string,
 ): boolean {
-  return Boolean(projectId) && payload.projectId === projectId && payload.groupId !== groupId;
+  return Boolean(projectId) && payload.projectId === projectId && payload.groupId !== groupId
+    && payload.agentBound !== true;
 }
 
 /**

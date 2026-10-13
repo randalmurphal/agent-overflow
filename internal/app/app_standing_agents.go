@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/triage"
 )
 
 // Standing agents (docs/specs/standing-agents.md, "Standing agent"): a thread
@@ -23,9 +25,12 @@ var errNotAStandingAgentThread = errors.New("this thread cannot be promoted")
 
 // PromoteStandingAgent makes a thread a standing agent: it creates the home
 // `<config>/agents/<thread-id>/`, writes the README that names the agent, and
-// records the row. Promoting a standing agent again returns its row
-// unchanged. Refused for an archived thread, a thread a workflow run that has
-// not ended is bound to, and a thread that is not on this computer.
+// records the row. The thread and the threads it spawned leave their sidebar
+// groups, since the agent's row is where they nest, and a group that leaves
+// empty is deleted; every row that moved is broadcast. Promoting a standing
+// agent again returns its row unchanged. Refused for an archived thread, a
+// thread a workflow run that has not ended is bound to, a thread that is not
+// a chat or plan thread, and a thread that is not on this computer.
 //
 //ao:scope threads:autonomy
 func (a *App) PromoteStandingAgent(threadID string) (store.StandingAgent, error) {
@@ -48,6 +53,9 @@ func (a *App) PromoteStandingAgent(threadID string) (store.StandingAgent, error)
 	if thread.Archived {
 		return store.StandingAgent{}, fmt.Errorf("%w: the thread is archived", errNotAStandingAgentThread)
 	}
+	if thread.Mode != threadmode.ModeChat && thread.Mode != threadmode.ModePlan {
+		return store.StandingAgent{}, fmt.Errorf("%w: only a chat or plan thread can be one", errNotAStandingAgentThread)
+	}
 	if live, err := a.store.ThreadHasLiveWorkflowRun(threadID); err != nil {
 		return store.StandingAgent{}, err
 	} else if live {
@@ -63,8 +71,22 @@ func (a *App) PromoteStandingAgent(threadID string) (store.StandingAgent, error)
 	if err := a.writeStandingAgentReadme(home, thread); err != nil {
 		return store.StandingAgent{}, err
 	}
-	row, _, err := a.store.PromoteStandingAgent(threadID, home, time.Now().UnixMilli())
-	return row, err
+	promotion, err := a.store.PromoteStandingAgent(threadID, home, time.Now().UnixMilli())
+	if err != nil {
+		return store.StandingAgent{}, err
+	}
+	if promotion.Promoted {
+		// The agent's own row carries agentPromotedAt now, and every live
+		// thread it spawned carries spawnedByAgent, grouped before or not;
+		// each is re-read as it stands after the ungrouping. The group
+		// frames go last: a client drops a group only once no row names it.
+		a.broadcastThreadRowByID(threadID)
+		a.broadcastSpawnedThreadRows(threadID)
+		for _, group := range promotion.DeletedGroups {
+			a.emitThreadGroup("delete", group)
+		}
+	}
+	return promotion.Agent, nil
 }
 
 // GetStandingAgent returns a thread's standing agent row, or nil when the
@@ -97,6 +119,11 @@ func (a *App) DemoteStandingAgent(threadID string) error {
 		a.stopAgentWakeRun(id)
 	}
 	unlock()
+	// The row's agentPromotedAt and archivedChildCount are gone with the
+	// agent row, and its spawned threads' spawnedByAgent with them; the
+	// sidebar renders them all as plain threads again.
+	a.broadcastThreadRowByID(threadID)
+	a.broadcastSpawnedThreadRows(threadID)
 	if len(ids) > 0 {
 		a.emitAgentWakesRemoved(threadID, ids)
 	}
@@ -104,6 +131,58 @@ func (a *App) DemoteStandingAgent(threadID string) error {
 		err = errors.Join(err, a.withdrawCancelledAgentWakes(threadID, ids...))
 	}
 	return err
+}
+
+// ListArchivedSpawnedThreads lists the archived threads a standing agent
+// spawned on this computer, newest activity first: what the agent row's
+// finished count opens.
+//
+//ao:scope threads:read
+//ao:route thread
+func (a *App) ListArchivedSpawnedThreads(threadID string) ([]store.Thread, error) {
+	return a.store.ListArchivedSpawnedThreads(threadID)
+}
+
+// broadcastSpawnedThreadRows re-emits the live threads spawnerID spawned:
+// their rows' spawnedByAgent follows the spawner's standing agent row, so
+// a promotion, demotion or move of the spawner changes what their menus
+// and drags allow. A delete passes the ids itself (broadcastThreadRowsByID),
+// since the cascade has already dropped the spawn rows this reads.
+// Log-and-continue, as broadcastThreadRowByID.
+func (a *App) broadcastSpawnedThreadRows(spawnerID string) {
+	ids, err := a.store.ListSpawnedThreadIDs(spawnerID)
+	if err != nil {
+		log.Printf("broadcast the threads spawned by %s: %v", spawnerID, err)
+		return
+	}
+	a.broadcastThreadRowsByID(ids)
+}
+
+func (a *App) broadcastThreadRowsByID(ids []string) {
+	for _, id := range ids {
+		a.broadcastThreadRowByID(id)
+	}
+}
+
+// broadcastSpawnerRow re-emits the standing agent that spawned child: the
+// agent row's archivedChildCount moves when a spawned thread is archived,
+// unarchived or deleted. A spawner that is not a standing agent carries no
+// count, so nothing is said for it. Log-and-continue, as
+// broadcastThreadRowByID: the child's change is already durable and the
+// sidebar converges on the next ListThreads.
+func (a *App) broadcastSpawnerRow(child store.Thread) {
+	if child.SpawnedByThreadID == "" {
+		return
+	}
+	spawner, err := a.store.GetThread(child.SpawnedByThreadID)
+	if err != nil {
+		log.Printf("broadcast spawner %s of thread %s: %v", child.SpawnedByThreadID, child.ID, err)
+		return
+	}
+	if spawner.AgentPromotedAt == nil {
+		return
+	}
+	a.broadcastThreadRow(triage.ThreadActionFull, spawner)
 }
 
 // SetStandingAgentNotifyOnTick turns a standing agent's tick notifications on

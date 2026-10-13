@@ -7,8 +7,9 @@
 //
 // Sort order (highest first):
 //   0. Drafts, newest first.
-//   1. Groups, a section of their own at the top level. Groups are not
-//      pinnable; within the section they take the normal comparator below.
+//   1. Groups and standing agents, a section of their own at the top level.
+//      Neither is pinnable; within the section they take the normal
+//      comparator below.
 //   2. Pinned front-burner block, then pinned back-burner block.
 //      Within each block: the normal status/activity/id comparator below.
 //      A group's members pin the same way inside their group.
@@ -19,11 +20,21 @@
 // Within each tier (after pinned): latestActivityAt desc, then thread.id
 // localeCompare for stability.
 //
-// Every thread renders flat: at the top level, or as a direct member of a
-// group. Group members bubble:
-//   - displayStatus: the group row shows its most important member's status.
+// Every thread renders flat: at the top level, as a direct member of a
+// group, or under the standing agent that spawned it. Members bubble:
+//   - displayStatus: the group row shows its most important member's status;
+//     an agent row shows the most important of its own and its children's.
 //   - latestActivityAt: a group's activity is its newest member's, so a
-//     group with a freshly-active member surfaces in the sort.
+//     group with a freshly-active member surfaces in the sort. An agent's
+//     is the newest of its own and its children's.
+//
+// A standing agent (docs/specs/standing-agents.md, "Sidebar"): a thread
+// with `agentPromotedAt` is an agent node, and the live threads whose
+// `spawnedByThreadId` names it, unless promoted themselves, are its
+// children. The backend keeps an agent and its children out of groups; a
+// `groupId` or pin left on an agent's row is ignored here. An agent whose
+// row is not in the list (another project, archived) nests nothing: its
+// spawned threads render as plain rows.
 
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread, ThreadGroup } from '../types/models';
@@ -122,12 +133,26 @@ export interface SidebarGroupTreeNode extends SidebarTreeNodeBase {
   children: SidebarThreadTreeNode[];
 }
 
+export interface SidebarAgentTreeNode extends SidebarTreeNodeBase {
+  kind: 'agent';
+  /** The standing agent's own thread. */
+  thread: Thread;
+  /** The live threads it spawned, sorted. */
+  children: SidebarThreadTreeNode[];
+}
+
 /**
- * A sidebar row: either a thread or a thread group (a named container whose
- * top row is not a thread). Discriminate on `kind` — never on the presence
- * of a field.
+ * A sidebar row: a thread, a thread group (a named container whose top row
+ * is not a thread), or a standing agent (a thread whose row also holds the
+ * threads it spawned). Discriminate on `kind` — never on the presence of a
+ * field.
  */
-export type SidebarTreeNode = SidebarThreadTreeNode | SidebarGroupTreeNode;
+export type SidebarTreeNode = SidebarThreadTreeNode | SidebarGroupTreeNode | SidebarAgentTreeNode;
+
+/** A promoted thread: its row is an agent node. */
+export function isStandingAgent(thread: Pick<Thread, 'agentPromotedAt'>): boolean {
+  return thread.agentPromotedAt != null;
+}
 
 export interface BuildSidebarThreadTreeInput {
   threads: readonly Thread[];
@@ -205,12 +230,15 @@ export function sidebarPinGroup(thread: Pick<Thread, 'pinnedAt' | 'pinGroup'>): 
   return thread.pinGroup === 1 ? 'back' : 'front';
 }
 
-/** Stable id for a node of either kind — the each-block key and sort tie-break. */
+/** Stable id for a node of any kind — the each-block key and sort tie-break. */
 export function sidebarTreeNodeId(node: SidebarTreeNode): string {
-  return node.kind === 'thread' ? node.thread.id : node.group.id;
+  return node.kind === 'group' ? node.group.id : node.thread.id;
 }
 
-/** A group is never pinned; a thread node's burner is its thread's. */
+/**
+ * A group is never pinned, and an agent renders in the groups section
+ * whatever pin its thread carries; a thread node's burner is its thread's.
+ */
 export function sidebarNodePinGroup(node: SidebarTreeNode): SidebarPinGroup {
   return node.kind === 'thread' ? sidebarPinGroup(node.thread) : null;
 }
@@ -223,19 +251,23 @@ export type SidebarSection = 'groups' | 'front' | 'back' | 'unpinned';
 
 export function sidebarNodeSection(node: SidebarTreeNode): SidebarSection | null {
   if (isDraftNode(node)) return null;
-  if (node.kind === 'group') return 'groups';
+  if (node.kind !== 'thread') return 'groups';
   return sidebarNodePinGroup(node) ?? 'unpinned';
 }
 
-/** A thread node the user is actively composing. Groups are never drafts. */
+/**
+ * A thread node the user is actively composing. Groups are never drafts,
+ * and an agent has run (it was promoted from a conversation).
+ */
 export function isDraftNode(node: SidebarTreeNode): boolean {
   return node.kind === 'thread' && node.thread.isDraft === true;
 }
 
 /**
- * The status a group row shows: its most important member's, pill
+ * The status a container row shows: its most important member's, pill
  * included, ranked by status tier and then by live-status priority. The
- * tier ignores pins: a pinned idle member must not mask a running one.
+ * tier ignores pins: a pinned idle member must not mask a running one. An
+ * agent passes its own node among the members, so its own status competes.
  */
 function groupDisplay(
   members: readonly SidebarThreadTreeNode[],
@@ -277,9 +309,11 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
     return left.thread.id < right.thread.id ? 1 : -1;
   }
 
-  // Groups form their own section above the pin blocks. Only the top level
-  // holds groups, so inside a group this never decides.
-  if (left.kind !== right.kind) return left.kind === 'group' ? -1 : 1;
+  // Groups and agents form their own section above the pin blocks. Only
+  // the top level holds them, so inside one this never decides.
+  const leftContainer = left.kind !== 'thread';
+  const rightContainer = right.kind !== 'thread';
+  if (leftContainer !== rightContainer) return leftContainer ? -1 : 1;
 
   const leftPinGroup = sidebarNodePinGroup(left);
   const rightPinGroup = sidebarNodePinGroup(right);
@@ -309,13 +343,18 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
 
 /**
  * buildSidebarThreadTree — build one node per visible thread, file each
- * into its group, and sort each level.
+ * into its group or under its agent, and sort each level.
  *
  * Groups: a thread whose `groupId` names one of `input.groups` is built at
  * depth 1 under that group's node instead of at the top level. Group nodes
  * sort above every top-level thread and among themselves by the normal
  * comparator, so a group with a running member rises within the group
  * section. Members sort by the same comparator, their own pins included.
+ *
+ * Agents: a promoted thread is an agent node in the same section, and a
+ * thread it spawned is built at depth 1 under it, before any group its
+ * `groupId` could name. A promoted thread never nests under its own
+ * spawner: it is an agent row of its own.
  */
 export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): SidebarTreeNode[] {
   const visibleThreads = input.threads.filter((thread) => !isHiddenThreadMode(thread.mode));
@@ -364,15 +403,48 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
     };
   };
 
+  const buildAgentNode = (agent: Thread, children: SidebarThreadTreeNode[]): SidebarAgentTreeNode => {
+    const own = buildThreadNode(agent, 0);
+    const display = groupDisplay([own, ...children]);
+    let latestActivityAt = own.latestActivityAt;
+    for (const child of children) {
+      if (child.latestActivityAt > latestActivityAt) latestActivityAt = child.latestActivityAt;
+    }
+    return {
+      kind: 'agent',
+      thread: agent,
+      depth: 0,
+      children,
+      ownLiveStatus: own.ownLiveStatus,
+      ownStatus: own.ownStatus,
+      displayLiveStatus: display.displayLiveStatus,
+      displayStatus: display.displayStatus,
+      sortGroup: getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
+      normalSortGroup: getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
+      latestActivityAt,
+    };
+  };
+
   const groups = input.groups ?? [];
-  if (groups.length === 0) {
+  const agents = visibleThreads.filter(isStandingAgent);
+  if (groups.length === 0 && agents.length === 0) {
     return visibleThreads.map((t) => buildThreadNode(t, 0)).sort(compareTreeNodes);
   }
 
   const groupsById = new Map(groups.map((group) => [group.id, group] as const));
+  const agentIds = new Set(agents.map((agent) => agent.id));
   const membersByGroup = new Map<string, Thread[]>();
+  const childrenByAgent = new Map<string, Thread[]>();
   const nodes: SidebarTreeNode[] = [];
   for (const thread of visibleThreads) {
+    if (agentIds.has(thread.id)) continue;
+    const spawner = thread.spawnedByThreadId;
+    if (spawner && agentIds.has(spawner)) {
+      const bucket = childrenByAgent.get(spawner);
+      if (bucket) bucket.push(thread);
+      else childrenByAgent.set(spawner, [thread]);
+      continue;
+    }
     const groupId = thread.groupId;
     if (groupId && groupsById.has(groupId)) {
       const bucket = membersByGroup.get(groupId);
@@ -387,6 +459,12 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
       .map((thread) => buildThreadNode(thread, 1))
       .sort(compareTreeNodes);
     nodes.push(buildGroupNode(group, members));
+  }
+  for (const agent of agents) {
+    const children = (childrenByAgent.get(agent.id) ?? [])
+      .map((thread) => buildThreadNode(thread, 1))
+      .sort(compareTreeNodes);
+    nodes.push(buildAgentNode(agent, children));
   }
   return nodes.sort(compareTreeNodes);
 }

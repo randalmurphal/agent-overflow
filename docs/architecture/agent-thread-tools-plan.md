@@ -877,8 +877,11 @@ receipt past `expires_at` whose latest revision is uncollected has its
 `answer` and `late_reply` cleared and its state set `expired`; the row
 stays until the retention floor so the token keeps answering. Rows past
 the floor (30 days from `created_at`) are deleted, source rows the
-same. Destination-side export files awaiting transfer are deleted after
-one day; delivered export files stay until removed.
+same, except a local spawn row whose thread still exists: it is marked
+`lineage_only` with its answer, late reply and wake cleared, and every
+ledger read treats its token as unknown. Destination-side export files
+awaiting transfer are deleted after one day; delivered export files stay
+until removed.
 
 ### Resolution
 

@@ -1,6 +1,13 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { deleteThreadAction, forkThreadAction, type ThreadActionCtx } from './threadRowActions';
+import {
+  archiveDoneChildrenAction,
+  deleteThreadAction,
+  demoteThreadAction,
+  forkThreadAction,
+  promoteThreadAction,
+  type ThreadActionCtx,
+} from './threadRowActions';
 import { buildPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
@@ -42,7 +49,7 @@ function makeCtx(thread: Partial<Thread>): ThreadActionCtx {
 }
 
 function clearThreadsForTest(): void {
-  for (const t of [...getThreads()]) removeThread(t.id);
+  for (const t of Array.from(getThreads())) removeThread(t.id);
 }
 
 describe('forkThreadAction', () => {
@@ -50,7 +57,7 @@ describe('forkThreadAction', () => {
     resetBindingMocks();
     clearThreadsForTest();
     collapseProject('project-1');
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of Array.from(getToasts())) removeToast(toast.id);
     setBindingMock('GetSettings', async () => makeSettings());
     await loadSettings();
   });
@@ -134,5 +141,43 @@ describe('deleteThreadAction', () => {
     expect(order).toEqual(['remove', 'delete, sibling at /tmp/work']);
     expect(siblingPane.thread?.worktreePath).toBe('');
     expect(siblingPane.thread?.branch).toBe('main');
+  });
+});
+
+describe('standing agent actions', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetPanesForTest();
+    clearThreadsForTest();
+  });
+
+  it('promotes and demotes through the bindings, reporting a refusal', async () => {
+    const promote = setBindingMock('PromoteStandingAgent', async () => ({ threadId: 'thread-1' }));
+    const demote = setBindingMock('DemoteStandingAgent', async () => {});
+    const ctx = makeCtx({});
+    await promoteThreadAction(ctx);
+    await demoteThreadAction(ctx);
+    expect(promote).toHaveBeenCalledWith('thread-1');
+    expect(demote).toHaveBeenCalledWith('thread-1');
+    expect(ctx.reportError).not.toHaveBeenCalled();
+
+    promote.mockImplementation(async () => { throw new Error('only a chat or plan thread can be one'); });
+    await promoteThreadAction(ctx);
+    expect(ctx.reportError).toHaveBeenCalledTimes(1);
+    expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain('chat or plan');
+  });
+
+  it('archives the done children in order, drops their rows, and reports how many failed', async () => {
+    const children: Thread[] = ['c1', 'c2', 'c3'].map((id) => makeBaseThread({ id, title: id, spawnedByThreadId: 'thread-1' }));
+    for (const child of children) prependThread(child);
+    const archive = setBindingMock('ArchiveThread', async (id: unknown) => {
+      if (id === 'c2') throw new Error('locked');
+    });
+    const ctx = makeCtx({});
+    await archiveDoneChildrenAction(ctx, children);
+    expect(archive.mock.calls.map((call) => call[0])).toEqual(['c1', 'c2', 'c3']);
+    expect(getThreads().map((t) => t.id).sort()).toEqual(['c2']);
+    expect(ctx.reportError).toHaveBeenCalledTimes(1);
+    expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/^2\/3 archived: /);
   });
 });

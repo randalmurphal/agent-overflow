@@ -24,20 +24,26 @@
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuSubmenuItem from '../primitives/MenuSubmenuItem.svelte';
   import {
+    archiveDoneChildrenAction,
     archiveThreadAction,
     copyThreadIdAction,
     copyThreadPathAction,
     deleteThreadAction,
+    demoteThreadAction,
     forkThreadAction,
     transferThreadAction,
     markThreadUnreadAction,
     PIN_GROUP_BACK,
     PIN_GROUP_FRONT,
     pinThreadAction,
+    promoteThreadAction,
     setThreadPinGroupAction,
+    unarchiveThreadAction,
     unpinThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
+  import { isStandingAgent } from '../../utils/sidebarTree';
+  import { getEffectiveThreadStatus } from '../../stores/threadStatuses.svelte';
   import {
     applyThreadImportUpdatesAction,
     checkThreadImportUpdatesAction,
@@ -82,6 +88,16 @@
     /** Whether the row is currently the pane's active thread. Delete
      *  clears the pane when true. */
     isActive: boolean;
+    /** A standing agent or a thread one spawned: no group items. */
+    agentBound?: boolean;
+    /** An agent's live spawned threads, for Archive Done Children. */
+    agentChildren?: readonly Thread[];
+    /**
+     * An archived thread listed by an agent's done footer: it can be
+     * unarchived, copied and deleted, and nothing else (no pin, no group,
+     * no archive of what is already archived).
+     */
+    archivedChild?: boolean;
   }
 
   let {
@@ -92,11 +108,39 @@
     onClose,
     onRename,
     isActive,
+    agentBound = false,
+    agentChildren = [],
+    archivedChild = false,
   }: Props = $props();
 
   let showDeleteConfirm = $state(false);
   let showArchiveConfirm = $state(false);
   let showBulkDeleteConfirm = $state(false);
+  let showArchiveDoneConfirm = $state(false);
+  let showDemoteConfirm = $state(false);
+
+  // ── Standing agent ───────────────────────────────────────────────────────
+  //
+  // Promotion rides `threads:autonomy` (it lets the thread register
+  // watches that run scripts); demotion and the children's archive ride
+  // `threads:operate` like every other write here. Only a chat or plan
+  // thread with a conversation can be promoted; the backend refuses the
+  // rest, and the item stays off the menu for those.
+  let isAgent = $derived(isStandingAgent(thread));
+  let canPromote = $derived(
+    !isAgent && !thread.archived && !thread.isDraft
+      && (thread.mode === undefined || thread.mode === 'chat' || thread.mode === 'plan'),
+  );
+  let autonomyUngranted = $derived(!threadHasScope('threads:autonomy', thread.id, thread.projectId));
+  // Done: a spawned thread with nothing running and nothing waiting on
+  // the user. Archiving it is what the agent's `N done` footer counts.
+  let doneChildren = $derived(agentChildren.filter((child) => getEffectiveThreadStatus(child) === 'idle'));
+
+  async function openLoopsAndWatches(): Promise<void> {
+    onClose();
+    const target = pane ? await openThreadFromNavigation(thread, pane) : await openThreadFromNavigation(thread);
+    target.setActivityRailBackgroundOpen(true);
+  }
   // Deleting a thread on a worktree removes it; the confirmation says which
   // terminals that closes.
   const deleteTerminalsNote = new TerminalsClosingNote();
@@ -165,7 +209,7 @@
     Boolean(pendingUpdate?.restoresModelProfile) && (pendingUpdate?.newItems ?? 0) === 0,
   );
 
-  let canArchive = $derived(thread.mode !== 'terminal');
+  let canArchive = $derived(thread.mode !== 'terminal' && !archivedChild);
   let isPinned = $derived(thread.pinnedAt != null);
   let isBackBurner = $derived(isPinned && thread.pinGroup === PIN_GROUP_BACK);
   let selectedThreads = $derived.by(() => {
@@ -308,7 +352,13 @@
       .filter((t) => t.groupId)
       .map((t) => t.id);
   });
-  let canMoveToGroup = $derived(Boolean(groupProjectId) && moveTargetIds.length > 0);
+  // A standing agent, or a thread one spawned, never joins a group; a bulk
+  // selection holding one has no group move either.
+  let bulkAgentBound = $derived(inBulkContext && selectedThreads.some((t) => isStandingAgent(t) || t.spawnedByAgent === true));
+  let canMoveToGroup = $derived(
+    Boolean(groupProjectId) && moveTargetIds.length > 0 && !archivedChild
+      && !(inBulkContext ? bulkAgentBound : agentBound),
+  );
   let currentGroupId = $derived(inBulkContext ? '' : (thread.groupId ?? ''));
   let canRemoveFromGroup = $derived(canMoveToGroup && removeTargetIds.length > 0);
   // Sorted by name so the submenu reads as a list the user curated, not as
@@ -440,7 +490,52 @@
               onRename();
             }}
           />
-          {#if canFork}
+          {#if isAgent}
+            <MenuItem
+              label="Loops and Watches"
+              onSelect={() => void openLoopsAndWatches()}
+            />
+            <MenuItem
+              label={doneChildren.length > 0 ? `Archive Done Children (${doneChildren.length})` : 'Archive Done Children'}
+              disabled={operateUngranted || doneChildren.length === 0}
+              title={operateUngranted ? ungrantedTitle : doneChildren.length === 0 ? 'No spawned thread is done' : undefined}
+              onSelect={() => {
+                onClose();
+                showArchiveDoneConfirm = true;
+              }}
+            />
+            <MenuItem
+              label="Demote Standing Agent"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                showDemoteConfirm = true;
+              }}
+            />
+          {:else if canPromote}
+            <MenuItem
+              label="Promote to Standing Agent"
+              disabled={autonomyUngranted}
+              title={autonomyUngranted ? 'Not granted to this device' : undefined}
+              onSelect={() => {
+                onClose();
+                void promoteThreadAction(ctx());
+              }}
+            />
+          {/if}
+          {#if archivedChild}
+            <MenuItem
+              label="Unarchive Thread"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void unarchiveThreadAction(ctx());
+              }}
+            />
+          {/if}
+          {#if canFork && !archivedChild}
             <MenuItem
               label="Fork Thread"
               disabled={operateUngranted}
@@ -451,14 +546,14 @@
               }}
             />
           {/if}
-          {#if canOfferConversationTransfer(thread)}
+          {#if canOfferConversationTransfer(thread) && !archivedChild}
             <MenuItem
               label="Move or copy to computer…"
               disabled={!hasScope('threads:operate', threadMachine(thread.id, thread.projectId))}
               onSelect={() => { onClose(); transferThreadAction(ctx()); }}
             />
           {/if}
-          {#if canCheckImportUpdates}
+          {#if canCheckImportUpdates && !archivedChild}
             <MenuItem
               label={checkingUpdates ? 'Checking for Provider Updates…' : 'Check for Provider Updates'}
               disabled={checkingUpdates || operateUngranted}
@@ -466,15 +561,17 @@
               onSelect={() => void handleCheckImportUpdates()}
             />
           {/if}
-          <MenuItem
-            label="Mark Unread"
-            disabled={operateUngranted}
-            title={ungrantedTitle}
-            onSelect={() => {
-              onClose();
-              void markThreadUnreadAction(ctx());
-            }}
-          />
+          {#if !archivedChild}
+            <MenuItem
+              label="Mark Unread"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void markThreadUnreadAction(ctx());
+              }}
+            />
+          {/if}
           {#if canMoveToGroup}
             <MenuSubmenuItem label="Move to Group" disabled={operateUngranted}>
               {@render groupTargets()}
@@ -491,7 +588,10 @@
               }}
             />
           {/if}
-          {#if isPinned}
+          {#if isAgent || archivedChild}
+            <!-- An agent row sits in the groups section, and an archived
+                 child in its done footer: neither pins. -->
+          {:else if isPinned}
             <MenuItem
               label={isBackBurner ? 'Move to Front Burner' : 'Move to Back Burner'}
               disabled={operateUngranted}
@@ -609,6 +709,36 @@
   }}
   onCancel={() => {
     pendingUpdate = null;
+  }}
+/>
+
+<!-- Demotion keeps the home on disk (docs/specs/standing-agents.md,
+     "Standing agent"); the dialog is where the user is told so. -->
+<ConfirmDialog
+  open={showDemoteConfirm}
+  title="Demote Standing Agent"
+  description="This thread becomes an ordinary thread. Its watches are cancelled; its loops and its home directory stay as they are."
+  confirmLabel="Demote"
+  onConfirm={() => {
+    showDemoteConfirm = false;
+    void demoteThreadAction(ctx());
+  }}
+  onCancel={() => {
+    showDemoteConfirm = false;
+  }}
+/>
+
+<ConfirmDialog
+  open={showArchiveDoneConfirm}
+  title="Archive Done Children"
+  description={`This will archive ${countNoun(doneChildren.length, 'spawned thread')} with nothing running and nothing waiting on you. They stay under the agent's done count.`}
+  confirmLabel="Archive"
+  onConfirm={() => {
+    showArchiveDoneConfirm = false;
+    void archiveDoneChildrenAction(ctx(), doneChildren);
+  }}
+  onCancel={() => {
+    showArchiveDoneConfirm = false;
   }}
 />
 

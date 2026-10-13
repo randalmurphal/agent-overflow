@@ -42,8 +42,10 @@ type DeletePorts struct {
 	// reports the row, and the next boot finishes it
 	// (store.ListPendingThreadDeletes). Root broadcasts it on
 	// `thread:updated` so every attached client drops the row without a
-	// refresh.
-	Deleted func(store.Thread)
+	// refresh. spawned lists the live threads a standing agent spawned,
+	// read before the drop took their spawn rows: their rows lost the
+	// agent bond and go out again. Empty for any other thread.
+	Deleted func(thread store.Thread, spawned []string)
 	Logf    func(format string, args ...any)
 	// ChunkPause, when set, runs between the bounded item-delete chunks
 	// of the store delete so a background sweep yields the write lock
@@ -71,6 +73,12 @@ func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 		return fmt.Errorf("delete thread %s: lookup: %w", threadID, threadErr)
 	}
 	threadFound := threadErr == nil
+	var spawned []string
+	if threadFound && thread.AgentPromotedAt != nil {
+		if spawned, err = database.ListSpawnedThreadIDs(threadID); err != nil {
+			return fmt.Errorf("delete thread %s: %w", threadID, err)
+		}
+	}
 
 	if ports.StopRemoteWork != nil {
 		if err := ports.StopRemoteWork(threadID); err != nil {
@@ -123,7 +131,7 @@ func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 		// No client lists a holder: its source's delete reported the
 		// thread gone, and a revert's holder was never shown.
 		if err == nil && ports.Deleted != nil && thread.Mode != threadmode.ModeHolder {
-			defer ports.Deleted(thread)
+			defer ports.Deleted(thread, spawned)
 		}
 	}
 	if ports.CleanupAttachments != nil {

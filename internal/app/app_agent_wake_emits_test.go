@@ -35,7 +35,7 @@ func TestBootRecoveryTellsTheTray(t *testing.T) {
 	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	thread := noticeTestThread(t, a, "emits-recover")
-	if _, _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
+	if _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	next := time.Now().Add(time.Hour).UnixMilli()
@@ -75,7 +75,7 @@ func TestALongRunningWatchStartTellsTheTray(t *testing.T) {
 	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	thread := noticeTestThread(t, a, "emits-process")
-	if _, _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
+	if _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	watch := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "tail", Command: "exec sleep 60", LongRunning: true})
@@ -137,7 +137,7 @@ func TestDemotingAnAgentTellsTheTray(t *testing.T) {
 	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	thread := noticeTestThread(t, a, "emits-demote")
-	if _, _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
+	if _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	watch := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "poll", Command: "true", IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})

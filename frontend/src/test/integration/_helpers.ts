@@ -107,6 +107,7 @@ export function installAppDefaults(): void {
   setBindingMock('ListThreads', async () => []);
   // Sidebar boot loads thread groups beside the threads they contain.
   setBindingMock('ListThreadGroups', async () => []);
+  setBindingMock('ListStandingAgentWakes', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('GetProviderStatuses', async () => []);
   setBindingMock('GetProviderLoginState', async () => null);

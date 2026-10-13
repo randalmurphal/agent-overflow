@@ -16,12 +16,15 @@ import { withForkProgress } from '../../stores/forkPreparation.svelte';
 import {
   ArchiveThread,
   DeleteThread,
+  DemoteStandingAgent,
+  PromoteStandingAgent,
   ForkThread,
   GitRemoveWorktree,
   PinThread,
   RenameThread,
   SetThreadPinGroup,
   StopSession,
+  UnarchiveThread,
   UnpinThread,
 } from '../../stores/bindings';
 import {
@@ -86,6 +89,68 @@ export async function renameThreadAction(
     }
   } catch (err) {
     console.error('Failed to rename thread:', err);
+    ctx.reportError(userFacingError(err), err);
+  }
+}
+
+/**
+ * Promote the thread to a standing agent. The backend broadcasts every row
+ * the promotion moved (the thread, the threads it spawned, an emptied
+ * group), so nothing is patched here: the sidebar re-nests on the frames.
+ */
+export async function promoteThreadAction(ctx: ThreadActionCtx): Promise<void> {
+  try {
+    await PromoteStandingAgent(ctx.thread.id);
+  } catch (err) {
+    console.error('Failed to promote thread:', err);
+    ctx.reportError(userFacingError(err), err);
+  }
+}
+
+export async function demoteThreadAction(ctx: ThreadActionCtx): Promise<void> {
+  try {
+    await DemoteStandingAgent(ctx.thread.id);
+  } catch (err) {
+    console.error('Failed to demote thread:', err);
+    ctx.reportError(userFacingError(err), err);
+  }
+}
+
+/**
+ * Archive the agent's spawned threads that are done: sequentially, as the
+ * bulk menu does, so writes never race the store. Failures count and the
+ * last one is reported; the rows that archived stay archived.
+ */
+export async function archiveDoneChildrenAction(ctx: ThreadActionCtx, children: readonly Thread[]): Promise<void> {
+  let failures = 0;
+  let lastError: unknown;
+  for (const child of children) {
+    try {
+      await ArchiveThread(child.id);
+      removeThread(child.id);
+      closePanesShowingThread(child.id);
+    } catch (err) {
+      failures += 1;
+      lastError = err;
+    }
+  }
+  if (failures > 0) {
+    console.error('Failed to archive spawned threads:', lastError);
+    ctx.reportError(`${children.length - failures}/${children.length} archived: ${userFacingError(lastError)}`, lastError);
+  }
+}
+
+/**
+ * Unarchive a row the agent's done footer lists. The thread comes back as
+ * cold as any other unarchived thread; its row returns to the fold through
+ * the backend's `thread:updated` frames (the child listed, the spawner's
+ * done count changed), so nothing is written to the list here.
+ */
+export async function unarchiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
+  try {
+    await UnarchiveThread(ctx.thread.id);
+  } catch (err) {
+    console.error('Failed to unarchive thread:', err);
     ctx.reportError(userFacingError(err), err);
   }
 }

@@ -2589,6 +2589,17 @@ export function ListAgentComputers(): $CancellablePromise<app$0.AgentComputer[]>
 }
 
 /**
+ * ListArchivedSpawnedThreads lists the archived threads a standing agent
+ * spawned on this computer, newest activity first: what the agent row's
+ * finished count opens.
+ */
+export function ListArchivedSpawnedThreads(threadID: string): $CancellablePromise<store$0.Thread[]> {
+    return $Call.ByID(1323325584, threadID).then(($result: any) => {
+        return $$createType116($result);
+    });
+}
+
+/**
  * ListArchivedThreads returns every archived thread for the settings panel.
  */
 export function ListArchivedThreads(): $CancellablePromise<store$0.Thread[]> {
@@ -3623,9 +3634,12 @@ export function PromoteScratchThread(threadID: string): $CancellablePromise<stor
 /**
  * PromoteStandingAgent makes a thread a standing agent: it creates the home
  * `<config>/agents/<thread-id>/`, writes the README that names the agent, and
- * records the row. Promoting a standing agent again returns its row
- * unchanged. Refused for an archived thread, a thread a workflow run that has
- * not ended is bound to, and a thread that is not on this computer.
+ * records the row. The thread and the threads it spawned leave their sidebar
+ * groups, since the agent's row is where they nest, and a group that leaves
+ * empty is deleted; every row that moved is broadcast. Promoting a standing
+ * agent again returns its row unchanged. Refused for an archived thread, a
+ * thread a workflow run that has not ended is bound to, a thread that is not
+ * a chat or plan thread, and a thread that is not on this computer.
  */
 export function PromoteStandingAgent(threadID: string): $CancellablePromise<store$0.StandingAgent> {
     return $Call.ByID(3186469152, threadID).then(($result: any) => {

@@ -11,6 +11,7 @@ import type { Thread } from '../types/models';
 import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
+import { refreshAgentWakes } from './agentWakes.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
@@ -238,6 +239,7 @@ export function refreshSidebarProjections(): void {
     void refreshProjects();
     // Groups have no local row merge, so the ordinary list load recovers them.
     void refreshThreadGroups();
+    void refreshAgentWakes();
   });
 }
 

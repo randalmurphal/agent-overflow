@@ -367,3 +367,40 @@ func TestHarnessSeedsTheWindowedThreadFixture(t *testing.T) {
 		t.Fatalf("thread runs %q..%q, want the head and tail rows", all[1].Summary, all[len(all)-1].Summary)
 	}
 }
+
+// A seeded thread can name the seeded thread that spawned it: the row then
+// names its spawner the way a real thread_spawn's does, and it is broadcast
+// again once it does.
+func TestHarnessSeedRecordsASpawner(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "spawned-seed",
+		Repo: &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{
+			{Title: "Agent"},
+			{Title: "Child", SpawnedBy: "Agent"},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ids := result.Projects[0].ThreadIDs
+	row, err := host.store.GetThread(ids[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.SpawnedByThreadID != ids[0] {
+		t.Fatalf("child names spawner %q, want %s", row.SpawnedByThreadID, ids[0])
+	}
+	if strings.Join(host.broadcastRows, ",") != ids[1] {
+		t.Fatalf("broadcast rows = %v, want the child alone", host.broadcastRows)
+	}
+	_, err = Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name:    "unknown-spawner",
+		Repo:    &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{{Title: "Child", SpawnedBy: "Nobody"}},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "names no thread seeded earlier") {
+		t.Fatalf("seed with an unknown spawner: %v", err)
+	}
+}

@@ -1735,6 +1735,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: removeAutomationsMigrationVersion, Name: "remove_automations", SQL: removeAutomationsV144SQL, Fix: mapAutomationRunsToManual},
 	{Version: workItemSourcesMigrationVersion, Name: "work_item_sources", SQL: workItemSourcesV145SQL, Rebuild: true},
 	{Version: agentWakeStderrMigrationVersion, Name: "agent_wake_stderr", SQL: agentWakeStderrV146SQL},
+	{Version: spawnLineageMigrationVersion, Name: "spawn_lineage", SQL: spawnLineageV147SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

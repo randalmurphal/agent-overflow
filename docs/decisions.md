@@ -187,9 +187,10 @@ Mechanism in
   state instead (`frontend/src/lib/stores/companionStash.ts`).
 - Thread groups, pins, and auto-pin rulings: `docs/specs/sidebar-thread-groups.md`
   and `internal/store/AGENTS.md`. Re-pin-to-bump is deliberately dead.
-- Multi-agent discussions are removed, and threads never nest under threads:
-  every thread renders flat under its project or group
-  ([standing agents](specs/standing-agents.md) ruling 15).
+- Multi-agent discussions are removed. A thread nests under another only
+  as a standing agent's spawned child, by spawn lineage; every other
+  thread renders flat under its project or group
+  ([standing agents](specs/standing-agents.md) ruling 15 and "Sidebar").
 - Thread content search matches title and workspace path only. Searching
   message text server-side (t3-code does) is undecided, not rejected.
 - A fork is a snapshot of its source at the cut. Nothing the source does

@@ -190,7 +190,8 @@ variant, not a new component. Differences from an ordinary thread row:
 
 - Leading person glyph after the chevron. The chevron is the only fold
   target; name, dot and state line open the thread. Keyboard: Enter
-  opens, Right and Left fold and unfold, the same as a project row.
+  opens, Right and Left fold and unfold (project rows have no arrow
+  keys; the agent row is the one foldable thread row).
 - A state line under the name, 10px, one line, truncating from the
   right: `until 10:30 · watching 4 MRs · 2 need you`,
   `loop board check · next 12m · 1 missed`, or nothing when the agent
@@ -221,9 +222,61 @@ variant, not a new component. Differences from an ordinary thread row:
   that is in a group removes it from that group; if that leaves the
   group holding only the agent's own children, the group is deleted and
   those children stay under the agent.
-- Context menu: Open, Rename, Demote, Loops and watches (opens the
-  activity rail of that thread), Archive done children, the normal pin
-  items.
+- Context menu: Open, Rename, Loops and Watches (opens the thread with
+  its background tray open), Archive Done Children (the spawned threads
+  whose effective status is idle, behind a confirm), Demote (behind a
+  confirm that says the home stays on disk). An archived child listed
+  by the done footer offers Open, Rename, Unarchive, Copy and Delete:
+  no pin, group or archive item. No pin
+  item: an agent row sits in the groups section whatever pin its thread
+  holds, and its pin is left alone. Promote to Standing Agent appears on
+  a chat or plan thread that is not archived, a draft or an agent; the
+  backend refuses every other mode.
+
+Mechanics, as built:
+
+- The thread row carries the lineage: `agentPromotedAt`,
+  `spawnedByThreadId` (the newest local spawn request naming it) and
+  `archivedChildCount` (an agent's archived spawned threads), derived
+  in `threadColumns`, so one `thread:updated` frame moves the row. A
+  spawn's accept re-broadcasts the spawned thread; a child's archive,
+  unarchive and delete re-broadcast the child and its spawner, whose
+  `archivedChildCount` they change. The
+  partial index `idx_thread_requests_spawn_target` serves the lookup,
+  and while the thread it created exists the thread-request retention
+  sweep keeps a local spawn row past the floor as `lineage_only`, its
+  answer, late reply and wake cleared. The ledger tools treat that
+  token as unknown; the lineage reads, and a worker's prompt routing
+  (`StandingAgentSpawnerOf`), still find the row.
+- `PromoteStandingAgent` ungroups the agent and its local spawned
+  threads in the same transaction and deletes a group that is left
+  empty. `SetThreadGroup` refuses an agent (`ErrStandingAgentGrouped`)
+  and a thread an agent spawned (`ErrSpawnedChildGrouped`), and
+  `thread_spawn` with `group` is refused for an agent caller. The
+  frontend never offers the group items on those rows and the drag
+  payload marks them `agentBound`, so no group target accepts them.
+- `ListStandingAgentWakes` (route all) and `thread:wakes_changed` feed
+  `stores/agentWakes.svelte.ts`; the state line
+  (`utils/agentStateLine.ts`) shows the running row, else the soonest
+  loop or watch, with `+N more`. A row the bulk read missed asks
+  `ListThreadWakes` once on mount.
+- `ListArchivedSpawnedThreads` (newest first) feeds the done footer
+  through `stores/agentArchivedChildren.svelte.ts`, keyed by the row's
+  `archivedChildCount` so a changed count reads again. The fold state
+  lives in `sidebar:collapsedAgents`; an open done footer and its
+  paging are session state, and both reset when the count reaches
+  zero, so a footer that returns starts closed. A thread that stops
+  being an agent in the list (demoted, archived, deleted) drops its
+  fold, footer and cached list, so a later promotion starts fresh.
+- A spawned thread's row carries `spawnedByAgent` beside
+  `spawnedByThreadId`: the group refusal holds while the agent is
+  archived (its own row is then absent), and the row's menu and drag
+  payload read the bond from the row, not from a lookup of the agent.
+  The live spawned rows go out again whenever that bond changes:
+  promotion, demotion, the agent's delete (which takes the spawn rows
+  with it) and a committed move.
+- The harness seeds lineage with `HarnessSeedThread.spawnedBy`, the
+  title of a thread seeded earlier in the same project.
 
 Discussions are removed first (slice 1), and the tree code that nests
 on `parent_thread_id` goes with them. The agent tree is new code in

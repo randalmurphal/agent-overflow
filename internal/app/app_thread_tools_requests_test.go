@@ -3431,3 +3431,51 @@ func testAReplyDuringAWakesQueueWrite(t *testing.T, tool string, wake func(f *re
 		t.Fatalf("delivery = %q at %d, want the wake", row.DeliveredHow, row.DeliveredAt)
 	}
 }
+
+// Past the retention floor a spawn's token is unknown to every ledger
+// tool, as a deleted row's was, while the row's lineage still nests the
+// spawned thread under its spawner.
+func TestASpawnPastTheFloorIsUnknownButKeepsItsLineage(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	token := f.settledAnswerOwingAWake(t)
+	child := f.request(t, token).TargetThreadID
+	if child == "" {
+		t.Fatal("the spawn names no thread")
+	}
+
+	f.app.expireThreadRequests(time.Now().AddDate(0, 0, store.ThreadRequestRetentionDays+1))
+
+	adapter, caller := f.adapter(), f.callerIdentity()
+	unknown := func(tool string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Errorf("%s on the swept token answered, want %s", tool, threadtools.CodeRequestUnknown)
+			return
+		}
+		if code := publicCode(t, err); code != threadtools.CodeRequestUnknown {
+			t.Errorf("%s on the swept token = %q (%v), want %s", tool, code, err, threadtools.CodeRequestUnknown)
+		}
+	}
+	_, err := adapter.RequestStates(t.Context(), caller, threadtools.StatusCall{Tokens: []string{token}})
+	unknown("thread_status", err)
+	_, err = adapter.ExportAnswer(t.Context(), caller, token)
+	unknown("export", err)
+	_, err = adapter.Cancel(t.Context(), caller, threadtools.CancelCall{Token: token})
+	unknown("thread_cancel", err)
+	_, err = adapter.Reply(t.Context(), f.targetIdentity(t, child), threadtools.ReplyCall{Token: token, Text: "one more thing"})
+	unknown("thread_reply", err)
+	listing, err := adapter.ListRequests(t.Context(), caller, threadtools.ListCall{})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	for _, row := range listing.Requests {
+		if row.Token == token {
+			t.Errorf("the listing still shows the swept spawn: %+v", row)
+		}
+	}
+
+	if spawned, err := f.app.store.GetThread(child); err != nil || spawned.SpawnedByThreadID != f.caller.ID {
+		t.Errorf("spawned thread after the sweep = spawnedBy %q, %v; want %s", spawned.SpawnedByThreadID, err, f.caller.ID)
+	}
+}

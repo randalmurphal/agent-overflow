@@ -284,6 +284,7 @@ export function createAgentScopeView(
     get setShowPlanSidebar() { return sourcePane.setShowPlanSidebar; },
     get toggleReviewPane() { return sourcePane.toggleReviewPane; },
     get setShowReviewPane() { return sourcePane.setShowReviewPane; },
+    get setActivityRailBackgroundOpen() { return sourcePane.setActivityRailBackgroundOpen; },
     get closeAgentPane() { return sourcePane.closeAgentPane; },
   } satisfies Pick<ThreadPane, Exclude<keyof ThreadPane, keyof typeof overrides>>;
 

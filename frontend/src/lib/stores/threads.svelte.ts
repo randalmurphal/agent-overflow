@@ -19,6 +19,9 @@ import { invalidateReplicaCatalog } from '../replica/session';
 import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { clearThreadStatus } from './threadStatuses.svelte';
 import { addErrorToast } from './toast.svelte';
+import { forgetAgentSidebarState } from './sidebar.svelte';
+import { forgetArchivedChildren } from './agentArchivedChildren.svelte';
+import { notifyStandingAgentEnded } from './standingAgentEnded';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { onBackendDetached } from '../transport/backends';
@@ -29,7 +32,30 @@ import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelt
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn' | 'hasFailedTurn'>>;
 
 let threads: Thread[] = $state([]);
-const catalogWriter = computerCatalogWriter('threads', () => threads, (rows) => { threads = rows; }, (row) => threadBackend(row.id));
+const catalogWriter = computerCatalogWriter('threads', () => threads, setThreads, (row) => threadBackend(row.id));
+
+// Every write to the list passes here except dropThreadsForDetachedBackend,
+// so a thread that stops being a standing agent in this list (demoted,
+// archived, deleted, or replaced by a row without the mark) takes its
+// agent-only sidebar state with it. A computer detaching keeps that state:
+// its agents are still agents, and the persisted fold must survive.
+function setThreads(rows: Thread[]): void {
+  const before = threads;
+  threads = rows;
+  let after: Map<string, Thread> | null = null;
+  for (const row of before) {
+    if (row.agentPromotedAt == null) continue;
+    after ??= new Map(rows.map((t) => [t.id, t]));
+    if (after.get(row.id)?.agentPromotedAt == null) endStandingAgent(row.id);
+  }
+}
+
+function endStandingAgent(id: string): void {
+  forgetAgentSidebarState(id);
+  forgetArchivedChildren(id);
+  // The wakes store reads this one, so it listens rather than being called.
+  notifyStandingAgentEnded(id);
+}
 // Ownership changes before the destination's row is applied. Fence the
 // former owner's offline snapshot and rewrite it without the moved row;
 // otherwise removing the destination could expose the old offline snapshot.
@@ -148,7 +174,7 @@ export async function refreshThreads(): Promise<void> {
  */
 export function replaceAllThreads(rows: Thread[]): void {
   for (const backend of new Set([...threads, ...rows].map((row) => threadBackend(row.id)))) catalogWriter.persist(backend);
-  threads = rows;
+  setThreads(rows);
   // Callers hand rows already reconciled against local state (including
   // the live-activity box, via mergeThreadRowWithLocal), so the boxes'
   // content is folded into the rows and stale entries can go.
@@ -158,7 +184,7 @@ export function replaceAllThreads(rows: Thread[]): void {
 /** Test-only: an empty catalog with no live-activity bumps, without the
  *  catalog write a replacement records. */
 export function resetThreadsForTest(): void {
-  threads = [];
+  setThreads([]);
   liveActivityAt.reset();
 }
 

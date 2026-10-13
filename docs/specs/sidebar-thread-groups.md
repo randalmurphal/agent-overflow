@@ -261,6 +261,11 @@ Names are trimmed and non-empty; a blank rename is rejected.
   container outside any group, the container shows a subtle inset
   dashed outline so the ungroup target is visible. Drops from another
   project set `dropEffect = 'none'`.
+- A standing agent is a third container beside a group: `ThreadRow`'s
+  agent variant takes the group row's geometry, its spawned threads
+  render as members behind the same rail, and neither the agent nor a
+  spawned thread can be grouped
+  ([standing agents](standing-agents.md#sidebar)).
 - `ThreadRow` keeps the pin affordance and pin menu items on grouped
   rows; `ThreadGroupRow` has none. `ThreadContextMenu` adds the "Move to Group"
   submenu (`MenuSubmenuItem`) and "Remove from Group";
