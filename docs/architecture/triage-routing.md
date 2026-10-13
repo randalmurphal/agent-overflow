@@ -59,15 +59,43 @@ this split exists to prevent.
 
 ## Pre-dispatch rewrites
 
-`Handle` performs exactly two checks before the switch. The stopped-thread
-gate drops every wire event for a thread `CleanupThread`
-marked stopped. The carrier rewrite then replaces a `ParentToolUseID`
-naming a known §E6 resume CARRIER with that agent's transcript ROOT
+`Handle` performs exactly two checks before the switch. The session gate
+drops every wire event for a thread `CleanupThread` marked stopped, and
+every provider frame whose session token is not the one `MarkThreadActive`
+last committed the thread to: a frame of a session a replacement has
+claimed. Host-originated events carry no token and meet only the stopped
+check. The carrier rewrite then replaces a `ParentToolUseID` naming a
+known §E6 resume CARRIER with that agent's transcript ROOT
 (`internal/triage/transcript_root.go`), so no handler can write a row
 parented to a lifecycle row. Both are cheap by construction — the rewrite
 short-circuits on an empty parent before taking the lock — and both apply
 to every kind, which is why they live above the switch rather than in a
-handler. This is the stopped-thread ownership contract described in
+handler.
+
+A frame that passed the gate can have its session retired while it is
+being handled. `processBoundState` (`process_state.go`) is the one list of
+state that belongs to the provider process, and it is the contract: every
+writer of an entry takes the frame's token and refuses a retired one under
+the `r.mu` it writes under (`frameRetiredLocked`), and `MarkThreadActive`
+clears the entries the list marks for clearing at a commit.
+`TestProcessStateWritersRefuseARetiredSessionsFrame` is keyed by the same
+names and fails when an entry has no refusal case, so state added to the
+list needs a guarded writer, and
+`TestMarkThreadActiveClearsOnlyThroughProcessBoundState` fails when
+`MarkThreadActive` clears any field outside the list. An execution's
+tool count carries the token of the session that started it, since the row
+writes that feed it have no frame. A boundary that sends queued messages
+(`tryFlushQueue`) sends them only from a frame of the live session. A stream's count is released only on
+the thread state it was taken on, so a settle that outlives
+`CleanupThread` releases nothing of a replacement's. Rows such a frame
+persists stay in history. `HandleSessionFrame` reports to the host whether
+the frame's session still owned the thread once handling finished, and
+`sessionEventHandler` does no work of its own on a frame whose session did
+not, except a workflow attempt's fold, at the disconnect, of a death it
+already observed. The event queue's end-of-session mark is set by the
+disconnect of the session that owns the thread, or by a start that
+committed the thread and failed before registering its session. This is the stopped-thread
+ownership contract described in
 [`turn-lifecycle.md`](turn-lifecycle.md#turn--tool--task-lifecycles).
 
 ## Exhaustiveness Check

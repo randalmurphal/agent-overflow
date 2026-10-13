@@ -1038,7 +1038,7 @@ func TestInterruptedQueuedEchoPredecessor_FlipsStreamsToStopped(t *testing.T) {
 		t.Fatalf("text delta: %v", err)
 	}
 
-	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), 0)
+	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), 0, "")
 	router.WaitForPendingSettles()
 
 	items, err := st.ListTurnItems("t1", 0)
@@ -1070,7 +1070,7 @@ func TestInterruptedQueuedEchoPredecessor_FlipsStreamsToStopped(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("t2 text delta: %v", err)
 	}
-	router.openQueuedEchoTurn("t2", 1, time.Now().UnixMilli(), -1)
+	router.openQueuedEchoTurn("t2", 1, time.Now().UnixMilli(), -1, "")
 	router.WaitForPendingSettles()
 	items, err = st.ListTurnItems("t2", 0)
 	if err != nil {
@@ -1122,7 +1122,7 @@ func TestInFlightEchoPoppedBeforeMark_SettlesInterrupted(t *testing.T) {
 	// The in-flight echo finishes and opens its turn with the stale
 	// popped stamp; the record must settle the cut predecessor
 	// "interrupted".
-	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), popped.InterruptedTurnIndex)
+	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), popped.InterruptedTurnIndex, "")
 	router.WaitForPendingSettles()
 	turn0, found, err := st.GetTurn("t1:0")
 	if err != nil || !found {
@@ -1150,7 +1150,7 @@ func TestInterruptMarkedTurnRecord_RestoreAndLinger(t *testing.T) {
 	tok := router.MarkFlushSendsInterrupted("t1", 0)
 	router.RestoreFlushSendsInterrupted("t1", tok)
 	router.RestoreFlushSendsInterrupted("t1", tok)
-	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), -1)
+	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), -1, "")
 	router.WaitForPendingSettles()
 	turn0, found, err := st.GetTurn("t1:0")
 	if err != nil || !found {
@@ -1165,7 +1165,7 @@ func TestInterruptMarkedTurnRecord_RestoreAndLinger(t *testing.T) {
 	createTestThread(t, st, "t2")
 	seedOpenTurn(t, router, st, "t2", 0)
 	router.MarkFlushSendsInterrupted("t2", 0)
-	router.openQueuedEchoTurn("t2", 1, time.Now().UnixMilli(), -1)
+	router.openQueuedEchoTurn("t2", 1, time.Now().UnixMilli(), -1, "")
 	router.WaitForPendingSettles()
 	cut, found, err := st.GetTurn("t2:0")
 	if err != nil || !found {
@@ -1174,7 +1174,7 @@ func TestInterruptMarkedTurnRecord_RestoreAndLinger(t *testing.T) {
 	if cut.StopReason != "interrupted" {
 		t.Errorf("turn 0 stop_reason = %q, want interrupted", cut.StopReason)
 	}
-	router.openQueuedEchoTurn("t2", 2, time.Now().UnixMilli(), -1)
+	router.openQueuedEchoTurn("t2", 2, time.Now().UnixMilli(), -1, "")
 	router.WaitForPendingSettles()
 	sibling, found, err := st.GetTurn("t2:1")
 	if err != nil || !found {
@@ -1195,7 +1195,7 @@ func TestInterruptMarkedTurnRecord_RestoreAndLinger(t *testing.T) {
 	tokB := router.MarkFlushSendsInterrupted("t3", 5)
 	router.RestoreFlushSendsInterrupted("t3", tokA)
 	router.RestoreFlushSendsInterrupted("t3", tokB)
-	router.openQueuedEchoTurn("t3", 1, time.Now().UnixMilli(), -1)
+	router.openQueuedEchoTurn("t3", 1, time.Now().UnixMilli(), -1, "")
 	router.WaitForPendingSettles()
 	outOfOrder, found, err := st.GetTurn("t3:0")
 	if err != nil || !found {
@@ -1213,8 +1213,8 @@ func TestInterruptMarkedTurnRecord_RestoreAndLinger(t *testing.T) {
 	createTestThread(t, st, "t4")
 	seedOpenTurn(t, router, st, "t4", 0)
 	router.MarkFlushSendsInterrupted("t4", 0)
-	router.MarkThreadActive("t4")
-	router.openQueuedEchoTurn("t4", 1, time.Now().UnixMilli(), -1)
+	router.MarkThreadActive("t4", "")
+	router.openQueuedEchoTurn("t4", 1, time.Now().UnixMilli(), -1, "")
 	router.WaitForPendingSettles()
 	reused, found, err := st.GetTurn("t4:0")
 	if err != nil || !found {
@@ -1240,7 +1240,7 @@ func TestMarkUserInterrupt_TargetsSampledTurnNotEchoOpenedTurn(t *testing.T) {
 	tok := router.MarkFlushSendsInterrupted("t1", interruptedTurn)
 	// The CLI's mid-loop queue drain echoes the queued message during
 	// the ack wait; its echo opens the queued message's turn.
-	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), interruptedTurn)
+	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), interruptedTurn, "")
 	router.WaitForPendingSettles()
 
 	errID, err := router.MarkUserInterrupt("t1", interruptedTurn, tok)
@@ -1262,7 +1262,7 @@ func TestMarkUserInterrupt_TargetsSampledTurnNotEchoOpenedTurn(t *testing.T) {
 	// Session replacement between ack and bookkeeping (round-11,
 	// CT11-1): the stale token must make the whole call a no-op.
 	tok = router.MarkFlushSendsInterrupted("t1", 1)
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	if errID, err := router.MarkUserInterrupt("t1", 1, tok); err != nil || errID != "" {
 		t.Errorf("stale MarkUserInterrupt = (%q, %v), want a silent no-op", errID, err)
 	}
@@ -1332,7 +1332,7 @@ func TestPostAckFlushTransition_FencedAgainstSessionReplacement(t *testing.T) {
 	}
 	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q1", quietRow, 1, now, PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 	tok := router.MarkFlushSendsInterrupted("t1", 0)
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	if promoted := router.PromoteQuietFlushSends("t1", tok); len(promoted) != 0 {
 		t.Fatalf("stale promote = %+v, want none", promoted)
 	}
@@ -1361,7 +1361,7 @@ func TestPostAckFlushTransition_FencedAgainstSessionReplacement(t *testing.T) {
 	}, now, PendingSendExpectation{ProviderItemID: "ao-uuid-2"})
 
 	tok = router.MarkFlushSendsInterrupted("t1", 1)
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	if persisted := router.EagerPersistDeferredFlushSends("t1", 1, tok); len(persisted) != 0 {
 		t.Fatalf("stale eager persist = %+v, want none", persisted)
 	}
@@ -1459,7 +1459,7 @@ func TestRestoreFlushSendsInterrupted_EpochGuard(t *testing.T) {
 	// replacement's same-ID entries (R9-6).
 	seed("t4")
 	tokA = router.MarkFlushSendsInterrupted("t4", 2)
-	router.MarkThreadActive("t4")
+	router.MarkThreadActive("t4", "")
 	router.RestoreFlushSendsInterrupted("t4", tokA)
 	if got := stamp("t4"); got != 2 {
 		t.Fatalf("stamp after cross-session restore = %d, want 2 untouched", got)

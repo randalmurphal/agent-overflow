@@ -115,7 +115,7 @@ func (r *Router) handleModelFallback(evt provider.ProviderEvent) error {
 	}
 
 	r.mu.Lock()
-	if id := r.identityIfPresent(evt.ThreadID); id != nil && (id.stopped || id.epoch != sessionEpoch) {
+	if id := r.identityIfPresent(evt.ThreadID); r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) || id != nil && (id.stopped || id.epoch != sessionEpoch) {
 		r.mu.Unlock()
 		return nil
 	}

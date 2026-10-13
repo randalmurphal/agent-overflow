@@ -128,7 +128,7 @@ func (r *Router) handleCommandLifecycle(evt provider.ProviderEvent) error {
 			UserItemID:     r.pendingSendItemIDForProviderID(evt.ThreadID, meta.CommandUUID),
 			RoundIDAtQueue: r.openRoundID(evt.ThreadID),
 		}
-		r.rememberCommandLifecycle(evt.ThreadID, meta.CommandUUID, entry)
+		r.rememberCommandLifecycle(evt.ThreadID, meta.CommandUUID, entry, evt.SessionToken)
 		out.UserItemID = entry.UserItemID
 	case provider.CommandStarted:
 		r.markPendingSendStarted(evt.ThreadID, meta.CommandUUID)
@@ -269,9 +269,13 @@ func classifyCommandDelivery(roundAtQueue, roundAtStart string) CommandDelivery 
 	return CommandDeliveredNewTurn
 }
 
-func (r *Router) rememberCommandLifecycle(threadID, commandUUID string, entry commandLifecycleEntry) {
+func (r *Router) rememberCommandLifecycle(threadID, commandUUID string, entry commandLifecycleEntry, sessionToken string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		// The ack it waits on can only come from the retired process.
+		return
+	}
 	st := r.state(threadID)
 	byUUID := st.commandLifecycle
 	if byUUID == nil {

@@ -100,7 +100,7 @@ func (f followFixture) send(t *testing.T, token string, change provider.Workspac
 	if err != nil {
 		t.Fatalf("marshal meta: %v", err)
 	}
-	handler := f.app.sessionEventHandler(f.thread.ID, token, string(provider.Claude))
+	handler := startedSessionEventHandler(f.app, f.thread.ID, token, string(provider.Claude))
 	handler(provider.ProviderEvent{
 		Kind:      provider.EventWorkspaceChanged,
 		ThreadID:  f.thread.ID,
@@ -322,7 +322,7 @@ func TestFollowReportsUnreadableMeta(t *testing.T) {
 	t.Parallel()
 	f := newFollowFixture(t, "thread-follow-badmeta")
 	errors := collectErrorItemUpserts(t, f.app, 4)
-	handler := f.app.sessionEventHandler(f.thread.ID, "token-live", string(provider.Claude))
+	handler := startedSessionEventHandler(f.app, f.thread.ID, "token-live", string(provider.Claude))
 	handler(provider.ProviderEvent{Kind: provider.EventWorkspaceChanged, ThreadID: f.thread.ID, Meta: json.RawMessage(`{"tool":"EnterWorktree"}`), Timestamp: time.Now()})
 
 	select {

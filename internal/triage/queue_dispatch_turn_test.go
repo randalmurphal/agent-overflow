@@ -644,20 +644,20 @@ func TestOpenQueuedEchoTurn_RefusesBackwardAndSettledIndexes(t *testing.T) {
 	createTestThread(t, st, "t1")
 	now := time.Now().UnixMilli()
 
-	router.openQueuedEchoTurn("t1", 1, now, -1)
+	router.openQueuedEchoTurn("t1", 1, now, -1, "")
 	if openTurn, ok := router.openTurnIndex("t1"); !ok || openTurn != 1 {
 		t.Fatalf("openTurnIndex = %d ok=%v, want 1", openTurn, ok)
 	}
 
 	// Same index again: idempotent no-op.
 	emissions.reset()
-	router.openQueuedEchoTurn("t1", 1, now+10, -1)
+	router.openQueuedEchoTurn("t1", 1, now+10, -1, "")
 	if got := len(emissions.snapshot()); got != 0 {
 		t.Fatalf("re-open of the open index emitted %d events, want 0", got)
 	}
 
 	// Backward: refused, open turn unchanged, no turns row minted.
-	router.openQueuedEchoTurn("t1", 0, now+20, -1)
+	router.openQueuedEchoTurn("t1", 0, now+20, -1, "")
 	if openTurn, ok := router.openTurnIndex("t1"); !ok || openTurn != 1 {
 		t.Fatalf("openTurnIndex after backward call = %d ok=%v, want still 1", openTurn, ok)
 	}
@@ -683,7 +683,7 @@ func TestOpenQueuedEchoTurn_RefusesBackwardAndSettledIndexes(t *testing.T) {
 		t.Fatalf("turn 1 not settled: found=%v err=%v", found, err)
 	}
 	emissions.reset()
-	router.openQueuedEchoTurn("t1", 1, now+40, -1)
+	router.openQueuedEchoTurn("t1", 1, now+40, -1, "")
 	if _, ok := router.openTurnIndex("t1"); ok {
 		t.Fatal("replayed echo reopened a settled turn")
 	}
@@ -960,7 +960,7 @@ func TestUpsertTurnRow_EchoOpenedIndex_AdoptedByTheProviderTurnStart(t *testing.
 	createTestThread(t, st, "t1")
 
 	startedAt := time.Now().UnixMilli()
-	router.openQueuedEchoTurn("t1", 1, startedAt, -1)
+	router.openQueuedEchoTurn("t1", 1, startedAt, -1, "")
 	if _, found, err := st.GetTurn("t1:1"); err != nil || !found {
 		t.Fatalf("echo-opened turns row missing: found=%v err=%v", found, err)
 	}
@@ -1010,7 +1010,7 @@ func TestUpsertTurnRow_ProviderTurnStartThenEcho_KeepsOneRow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("wire turn/started: %v", err)
 	}
-	router.openQueuedEchoTurn("t1", 1, startedAt+5, -1)
+	router.openQueuedEchoTurn("t1", 1, startedAt+5, -1, "")
 
 	turns, err := st.ListRecentTurns("t1", 10)
 	if err != nil {

@@ -144,8 +144,9 @@ func (a *App) closeProviderSession(threadID string, sess session) error {
 	closeErr := providerSess.Close()
 	// Close returns once the read loop is gone, which leaves its final
 	// events (the session's own "disconnected" among them) queued rather
-	// than handled. Callers rely on those being handled when this returns:
-	// a replacement start re-admits the thread right after.
+	// than handled. Callers rely on those being handled when this returns;
+	// any a stalled worker still holds are refused once a replacement
+	// start commits the thread to its own session.
 	a.drainProviderEvents(threadID, "close provider session")
 	a.settlePendingWorktreeExit(threadID, sess.Token, false)
 	if closeErr != nil {

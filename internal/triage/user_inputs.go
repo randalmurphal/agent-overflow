@@ -36,18 +36,25 @@ func decodeUserInputResolvedMeta(raw json.RawMessage) (requestID string, decisio
 	return requestID, decision, payload.Answers
 }
 
-func (r *Router) setPendingUserInput(threadID string, request provider.UserInputRequest) {
-	if request.RequestID == "" {
-		return
-	}
+// setPendingUserInput registers a question. It reports false, and registers
+// nothing, for a retired session's question: only its dead process
+// could take the answer.
+func (r *Router) setPendingUserInput(threadID string, request provider.UserInputRequest, sessionToken string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return false
+	}
+	if request.RequestID == "" {
+		return true
+	}
 	st := r.state(threadID)
 	if st.pendingUserInputs == nil {
 		st.pendingUserInputs = make(map[string]provider.UserInputRequest)
 	}
 	st.pendingUserInputs[request.RequestID] = request
 	st.pendingUserInputOrder = rememberInteractiveRequestOrder(st.pendingUserInputOrder, threadID, request.RequestID)
+	return true
 }
 
 func (r *Router) takePendingUserInput(threadID, requestID string) (provider.UserInputRequest, bool) {
@@ -95,7 +102,9 @@ func (r *Router) handleUserInputRequest(evt provider.ProviderEvent) error {
 	}
 
 	request.RoutedTo = r.routePrompt(evt.ThreadID)
-	r.setPendingUserInput(evt.ThreadID, request)
+	if !r.setPendingUserInput(evt.ThreadID, request, evt.SessionToken) {
+		return nil
+	}
 	// User-input requests are a sidebar-bump boundary alongside
 	// user_text persist and turn settle: the agent is paused waiting
 	// for the user. Resolutions ride on the user's submitted answer,

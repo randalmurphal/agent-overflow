@@ -73,6 +73,18 @@ func (h *harnessHost) ForgetPushSent() { h.app.harnessPushForget() }
 
 func (h *harnessHost) UpdateWorkReason() (string, error) { return h.app.updateWorkReason() }
 
+func (h *harnessHost) StallProviderEvents(threadID string) error {
+	return h.app.providerEvents.stall(threadID)
+}
+
+func (h *harnessHost) ReleaseProviderEvents(threadID string) error {
+	return h.app.providerEvents.releaseStall(threadID)
+}
+
+func (h *harnessHost) PendingProviderEvents(threadID string) int {
+	return h.app.providerEvents.pending(threadID)
+}
+
 func (h *harnessHost) ReplayLog() *replaylog.Manager { return h.app.replay }
 
 func (h *harnessHost) Shutdown(ctx context.Context) error { return h.app.Shutdown(ctx) }

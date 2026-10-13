@@ -34,6 +34,10 @@ func (r *Router) handleSessionWakeup(evt provider.ProviderEvent) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		// The timer belongs to a process the thread no longer runs.
+		return nil
+	}
 	if meta.ScheduledForUnixMs <= 0 {
 		if st := r.threadStateIfPresent(evt.ThreadID); st != nil {
 			st.pendingWakeupAt, st.pendingWakeupSet = 0, false
@@ -64,6 +68,10 @@ func (r *Router) handleScheduledJobs(evt provider.ProviderEvent) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		// The jobs belong to a process the thread no longer runs.
+		return nil
+	}
 	if len(meta.Jobs) == 0 {
 		if st := r.threadStateIfPresent(evt.ThreadID); st != nil {
 			st.scheduledJobs = nil

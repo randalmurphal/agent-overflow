@@ -184,7 +184,7 @@ func TestCodexRecoveryPreservesExecutionBoundariesAndCreatesMissingCompletion(t 
 		t.Fatal(err)
 	}
 	r.CleanupThread("t1")
-	r.MarkThreadActive("t1")
+	r.MarkThreadActive("t1", "")
 	signal("A", "completed", true)
 	after, _, err := st.GetThreadItem("t1", first.ID)
 	if err != nil || !reflect.DeepEqual(first, after) {

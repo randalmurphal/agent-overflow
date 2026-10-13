@@ -51,8 +51,15 @@ changing parser or triage completion behavior.
 The provider process and its session files are the source of truth while a turn
 is running. One thread action runs at a time. Session start and teardown
 coordinate with that action lock, provider read-loop shutdown and the drain
-of the thread's provider event queue so stale events cannot enter a
-replacement session.
+of the thread's provider event queue. Every provider frame carries the
+token of the session that produced it. Once a session start commits the
+thread to a new token, an earlier session's frame is refused at triage's
+gate if it is still queued; if it was already being handled, every writer of
+process-bound state refuses it under the lock it writes under, and the host
+does none of its own work on it. Triage's `processBoundState` lists that
+state ([triage routing](triage-routing.md#pre-dispatch-rewrites)). This holds when that drain
+gives up on a stalled worker. Rows a frame already being handled has
+persisted stay in the thread's history.
 
 Fork, resume, queued-send, stop, and recovery behavior is specified in
 [`turn-lifecycle.md`](turn-lifecycle.md),

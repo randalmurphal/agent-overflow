@@ -152,7 +152,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 		}
 		current := r.codexAgentRuntimeOrLaunch(served)
 		current.Meta = mergeItemMetaJSON(current.Meta, evt.Meta)
-		if err := r.setCodexAgentRuntime(current); err != nil {
+		if err := r.setCodexAgentRuntime(current, evt.SessionToken); err != nil {
 			return store.Item{}, false, err
 		}
 		r.emitCodexBackgroundChanged(evt.ThreadID)
@@ -635,7 +635,7 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent, launch st
 	// This row just went terminal. An AWAITED agent launch settles HERE
 	// and nowhere else — no completion sibling, no child terminal — so
 	// this is the one moment its live counters can become durable.
-	return r.persistFinalSubagentProgressIfLaunch(persisted)
+	return r.persistFinalSubagentProgressIfLaunch(persisted, evt.SessionToken)
 }
 
 // persistFinalSubagentProgressIfLaunch folds a settling AWAITED launch
@@ -658,7 +658,7 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent, launch st
 // would have to keep in sync with two providers. It runs only after a
 // live tick has been found, so a plain Read/Edit result never reaches
 // the store for it.
-func (r *Router) persistFinalSubagentProgressIfLaunch(launch store.Item) error {
+func (r *Router) persistFinalSubagentProgressIfLaunch(launch store.Item, sessionToken string) error {
 	if r == nil || r.store == nil {
 		return nil
 	}
@@ -677,7 +677,7 @@ func (r *Router) persistFinalSubagentProgressIfLaunch(launch store.Item) error {
 		r.TakeSubagentProgress(launch.ThreadID, launch.ID)
 		return nil
 	}
-	return r.persistSubagentFinalProgress(launch, provider.SubagentProgressMeta{})
+	return r.persistSubagentFinalProgress(launch, provider.SubagentProgressMeta{}, sessionToken)
 }
 
 func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEvent, meta ToolCompleteMeta) error {

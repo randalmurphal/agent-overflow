@@ -312,7 +312,7 @@ func (r *Router) persistDeferredUserText(pending *pendingSend, evt provider.Prov
 	r.captureUserConfirmation(item.ThreadID, pending, eventTimestampMillis(evt))
 	persisted, err := r.commitUserConfirmation(item.ThreadID, pending, eventTimestampMillis(evt))
 	// Consumption advances provider attribution even when the cache write fails.
-	r.openQueuedEchoTurn(item.ThreadID, item.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex)
+	r.openQueuedEchoTurn(item.ThreadID, item.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex, evt.SessionToken)
 	if err != nil {
 		return err
 	}
@@ -610,7 +610,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 	// re-round), it gets no start of its own, so its consumption opens it,
 	// exactly as a deferred row's does. A no-op when its turn is open.
 	if pending.Shape == sendShapeDirect && !pending.OpenedTurn {
-		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex)
+		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex, evt.SessionToken)
 	}
 	if !pending.Confirmation.Placement && !pending.Confirmation.Promoted {
 		merged, err := usermessage.MergeProviderIDs(existing.Meta, providerItemID, pending.EchoParentUUID)
@@ -623,7 +623,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 		}
 	}
 	if pending.WasDeferred {
-		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex)
+		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex, evt.SessionToken)
 	}
 	persisted, err := r.commitUserConfirmation(threadID, pending, eventTimestampMillis(evt))
 	if err != nil {

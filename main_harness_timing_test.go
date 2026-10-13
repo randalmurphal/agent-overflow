@@ -9,11 +9,11 @@ import (
 )
 
 func TestParseHarnessTiming(t *testing.T) {
-	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,transfer-retry=100ms,pr-update=2s,pr-update-retry=20ms,pr-ci-live=30ms,pr-ci-follow=15ms,pr-ci-log-wait=40ms,idle-reap=3s,idle-reap-sweep=500ms,wakeup-grace=2s,wake-floor=1s,remote-watch-poll=90s,")
+	got, err := parseHarnessTiming(" pairing-probe=500ms, watermark=1s ,thread-poll=250ms,transfer-retry=100ms,pr-update=2s,pr-update-retry=20ms,pr-ci-live=30ms,pr-ci-follow=15ms,pr-ci-log-wait=40ms,idle-reap=3s,idle-reap-sweep=500ms,wakeup-grace=2s,wake-floor=1s,remote-watch-poll=90s,drain-stall=750ms,")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := harnessTiming{PairingProbe: 500 * time.Millisecond, Watermark: time.Second, ThreadPoll: 250 * time.Millisecond, TransferRetry: 100 * time.Millisecond, PRUpdate: 2 * time.Second, PRUpdateRetry: 20 * time.Millisecond, PRCILive: 30 * time.Millisecond, PRCIFollow: 15 * time.Millisecond, PRCILogWait: 40 * time.Millisecond, IdleReap: 3 * time.Second, IdleReapSweep: 500 * time.Millisecond, WakeupGrace: 2 * time.Second, WakeFloor: time.Second, RemoteWatchPoll: 90 * time.Second}
+	want := harnessTiming{PairingProbe: 500 * time.Millisecond, Watermark: time.Second, ThreadPoll: 250 * time.Millisecond, TransferRetry: 100 * time.Millisecond, PRUpdate: 2 * time.Second, PRUpdateRetry: 20 * time.Millisecond, PRCILive: 30 * time.Millisecond, PRCIFollow: 15 * time.Millisecond, PRCILogWait: 40 * time.Millisecond, IdleReap: 3 * time.Second, IdleReapSweep: 500 * time.Millisecond, WakeupGrace: 2 * time.Second, WakeFloor: time.Second, RemoteWatchPoll: 90 * time.Second, DrainStall: 750 * time.Millisecond}
 	if got != want {
 		t.Fatalf("parsed %+v, want %+v", got, want)
 	}
@@ -71,6 +71,7 @@ func TestHarnessTimingOnlyInHarnessBoot(t *testing.T) {
 			`WakeupReapGrace:\s+opts\.Timing\.WakeupGrace,`,
 			`AgentWakeFloor:\s+opts\.Timing\.WakeFloor,`,
 			`RemoteWatchPoll:\s+opts\.Timing\.RemoteWatchPoll,`,
+			`ProviderEventDrainStall:\s+opts\.Timing\.DrainStall,`,
 		},
 		"main.go": {
 			`WatermarkInterval:\s+opts\.HarnessTiming\.Watermark,`,

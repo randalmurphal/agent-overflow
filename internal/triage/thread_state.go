@@ -475,6 +475,13 @@ type threadIdentity struct {
 	// exactly why it cannot live on threadState.
 	stopped bool
 
+	// sessionToken is the host session MarkThreadActive last committed the
+	// thread to. Handle admits a provider frame only when the frame carries
+	// this token, so a dead session's frames handled after a replacement
+	// start are refused whatever the host's drain managed. Tokens are never
+	// reused, so a retired token cannot match again.
+	sessionToken string
+
 	// turnSpanGeneration prevents a slow or reentrant span start from
 	// registering after a newer start or terminal cleanup won the thread.
 	// Monotonic for the process lifetime and never reset: resetting it

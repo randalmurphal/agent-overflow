@@ -84,7 +84,7 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 			}
 			continue
 		}
-		allTerminal, aggregateStatus, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status)
+		allTerminal, aggregateStatus, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status, evt.SessionToken)
 		if err != nil {
 			log.Printf("triage: codex-background subagent notification mark %s: %v", launch.item.ID, err)
 			if firstErr == nil {
@@ -92,7 +92,7 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 			}
 			continue
 		}
-		r.observeCodexSpawnChildTerminalInMemory(threadID, launch.item.ID, allTerminal)
+		r.observeCodexSpawnChildTerminalInMemory(threadID, launch.item.ID, allTerminal, evt.SessionToken)
 		if !allTerminal {
 			continue
 		}

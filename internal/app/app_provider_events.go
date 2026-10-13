@@ -37,6 +37,39 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 	// the worker handles the event, a replacement start may have bumped
 	// it. Zero for every other event.
 	handle := func(evt provider.ProviderEvent, deathEpoch uint64) {
+		// Whether this session still owns the thread. A replacement start
+		// retires it, whether it ran while this worker was stalled behind
+		// the frames before this one (the frame is refused at entry) or
+		// while this frame was being handled (triage's answer after
+		// handling). Triage refuses a retired session's frame, and nothing
+		// here may act on it either: its turn would earn the replacement a
+		// reconnect or finish its workflow phase, its death would restore or
+		// reconnect for the replacement, and its disconnect would clear what
+		// the replacement armed.
+		current := a.triage == nil || a.triage.SessionCurrent(threadID, sessionToken)
+		if current {
+			a.observeFrameBeforeTriage(threadID, sessionToken, providerType, evt)
+		}
+		if a.triage != nil {
+			stillCurrent, err := a.triage.HandleSessionFrame(evt)
+			if err != nil {
+				log.Printf("triage: thread %s: %s event: %v", threadID, evt.Kind, err)
+			}
+			current = current && stillCurrent
+		}
+		if !current {
+			// One thing stands at a retired session's disconnect: a
+			// workflow attempt's fold of a death it already observed from
+			// this session's own "error", handled while the session was
+			// still current. The event queue is not marked: it belongs to
+			// the session that owns the thread now, whether or not that
+			// session has queued a frame yet.
+			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
+				a.workflowApplication().SessionDisconnected(threadID)
+			}
+			return
+		}
+
 		// EventInit carries Claude's `system/init.mcp_servers` array
 		// via the SessionInfo meta. Feed each entry into the status
 		// cache so the popup shows authoritative provider state
@@ -48,29 +81,6 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			if providerType == string(provider.Claude) {
 				a.ingestClaudeInitMCPStatus(evt.Meta)
 			}
-		}
-
-		// Claude command output settles live-config applies (/effort,
-		// /fast) and follows user-typed /effort; a cancelled command
-		// lifecycle reverts an apply whose output will never arrive. See
-		// app_claude_live_config.go.
-		if providerType == string(provider.Claude) {
-			switch evt.Kind {
-			case provider.EventCommandResult:
-				a.observeClaudeCommandResult(threadID, sessionToken, evt)
-			case provider.EventCommandLifecycle:
-				a.observeClaudeCommandLifecycle(evt)
-			}
-		}
-
-		// The process moved its own working directory (EnterWorktree /
-		// ExitWorktree). Both Claude providers share the parser that
-		// emits this, and both leave the thread row to follow the move.
-		if providerType == string(provider.Claude) || providerType == string(provider.ClaudeTUI) {
-			a.observeClaudeWorktreeExit(threadID, sessionToken, evt)
-		}
-		if evt.Kind == provider.EventWorkspaceChanged {
-			a.followProviderWorkspaceChange(threadID, sessionToken, evt)
 		}
 
 		// A TOP-LEVEL turn boundary: a subagent's completion is not the
@@ -88,12 +98,6 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// replacement that never serves a turn gets no second attempt.
 		if evt.Kind == provider.EventTurnStart || (topLevelTurn && turnCompletedWithoutError(evt)) {
 			a.clearAutoReconnectAttempted(threadID)
-		}
-
-		if a.triage != nil {
-			if err := a.triage.Handle(evt); err != nil {
-				log.Printf("triage: thread %s: %s event: %v", threadID, evt.Kind, err)
-			}
 		}
 		a.dispatchTurnObservers(threadID, evt)
 
@@ -182,7 +186,9 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 					a.attemptAutoReconnect(threadID)
 				}()
 			}
-			// The provider emits nothing after "disconnected".
+			// The provider emits nothing after "disconnected". Only the
+			// disconnect of the session that owns the thread marks the
+			// queue; a retired session's returns above.
 			a.providerEvents.retireWhenIdle(threadID)
 		}
 	}
@@ -191,6 +197,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// Activity and rate-limit attribution describe the wire as it is
 		// read, so they stay on the provider's goroutine; everything else
 		// runs on the thread's worker, in emission order.
+		evt.SessionToken = sessionToken
 		evt = a.providerLifecycleService().PrepareEvent(threadID, sessionToken, evt)
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" && a.triage != nil {
 			epoch := a.triage.ThreadEpoch(threadID)
@@ -198,6 +205,39 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			return
 		}
 		a.providerEvents.enqueue(threadID, evt, handleEvent)
+	}
+}
+
+// observeFrameBeforeTriage is the host's work on a current session's frame
+// that runs before triage handles it, so it has only the entry check, which
+// keeps a retired session's frame from replacing the thread's one pending
+// ExitWorktree call. A commit that lands after the entry check reaches no
+// replacement state through here: the live-config applies go through the
+// session registry under the frame's token, and the worktree follow
+// re-checks the registry's token under the thread lock a replacement start
+// holds through registration.
+func (a *App) observeFrameBeforeTriage(threadID, sessionToken, providerType string, evt provider.ProviderEvent) {
+	// Claude command output settles live-config applies (/effort,
+	// /fast) and follows user-typed /effort; a cancelled command
+	// lifecycle reverts an apply whose output will never arrive. See
+	// app_claude_live_config.go.
+	if providerType == string(provider.Claude) {
+		switch evt.Kind {
+		case provider.EventCommandResult:
+			a.observeClaudeCommandResult(threadID, sessionToken, evt)
+		case provider.EventCommandLifecycle:
+			a.observeClaudeCommandLifecycle(evt)
+		}
+	}
+
+	// The process moved its own working directory (EnterWorktree /
+	// ExitWorktree). Both Claude providers share the parser that
+	// emits this, and both leave the thread row to follow the move.
+	if providerType == string(provider.Claude) || providerType == string(provider.ClaudeTUI) {
+		a.observeClaudeWorktreeExit(threadID, sessionToken, evt)
+	}
+	if evt.Kind == provider.EventWorkspaceChanged {
+		a.followProviderWorkspaceChange(threadID, sessionToken, evt)
 	}
 }
 

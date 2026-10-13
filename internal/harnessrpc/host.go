@@ -81,4 +81,11 @@ type Host interface {
 	// UpdateWorkReason is the production update admission check: what a
 	// service update or restart would wait for now, "" when nothing.
 	UpdateWorkReason() (string, error)
+	// StallProviderEvents queues a handler that holds the thread's
+	// provider event worker until ReleaseProviderEvents, and
+	// PendingProviderEvents counts the thread's queued events not handled
+	// yet, the stall included.
+	StallProviderEvents(threadID string) error
+	ReleaseProviderEvents(threadID string) error
+	PendingProviderEvents(threadID string) int
 }

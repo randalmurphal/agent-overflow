@@ -74,7 +74,7 @@ func TestSendsPendingFollowsTheFlushHandoff(t *testing.T) {
 	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "queued"))
 	probe.step("queued", true)
 
-	go router.tryFlushQueue("t1")
+	go router.tryFlushQueue("t1", "")
 	<-entered
 	probe.step("claimed by the dispatcher", true)
 
@@ -179,7 +179,7 @@ func TestSendsPendingClearsOnEveryExit(t *testing.T) {
 			r.CleanupThread("t1")
 		}},
 		{"claimed batch released with no send registered", queued, func(t *testing.T, r *Router, _ *store.Store) {
-			if !r.tryFlushQueue("t1") {
+			if !r.tryFlushQueue("t1", "") {
 				t.Fatal("queue did not dispatch")
 			}
 		}},
