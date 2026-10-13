@@ -4,7 +4,9 @@ name: Toolchain image
 # in (ci/Dockerfile). A push to main that touches a pin or a manifest
 # rebuilds it so the tag those pins name exists before the next pull
 # request needs it; the weekly build refreshes the base image, the module
-# cache and the package store under the same tag.
+# cache and the package store under the same tag. A run on main rebuilds
+# and moves the main tag; a dispatch from another branch publishes its
+# own tag only when that tag is missing.
 on:
   push:
     branches:
@@ -43,6 +45,6 @@ jobs:
         id: image
         with:
           push: "true"
-          rebuild: "true"
+          rebuild: ${{ github.ref == 'refs/heads/main' }}
           token: ${{ github.token }}
       - run: echo "Published ${{ steps.image.outputs.image }}" >> "$GITHUB_STEP_SUMMARY"
