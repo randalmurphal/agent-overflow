@@ -6976,7 +6976,7 @@ export class VerifyEditDiffsResult {
 
 /**
  * WorkflowAgentRunBudget is the ceiling in force for one run and where its run
- * TREE stands against it. Present only on a run that has one — most runs
+ * TREE stands against it. Present only on a run that has one: most runs
  * declare no budget, and a field saying "no ceiling" on every one of them would
  * be noise on the surface a reader scans for what a run needs.
  * 
@@ -7006,7 +7006,7 @@ export class WorkflowAgentRunBudget {
 
     /**
      * Estimated says the dollar figure is not exactly what the providers
-     * reported — the rate table priced part of it (Codex reports tokens only),
+     * reported: the rate table priced part of it (Codex reports tokens only),
      * or some rows could not be priced at all. Never set for a token or
      * wall-clock ceiling: both are exact.
      */
@@ -7021,7 +7021,7 @@ export class WorkflowAgentRunBudget {
     "unpricedRows"?: number;
 
     /**
-     * Exhausted is the ceiling already crossed — true only in the window
+     * Exhausted is the ceiling already crossed, true only in the window
      * between the breach and the park it produces, and on a run parked for it.
      */
     "exhausted"?: boolean;
