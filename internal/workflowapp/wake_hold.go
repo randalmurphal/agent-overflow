@@ -183,7 +183,7 @@ func (s *Service) releaseWakeHold(hold *WakeHold, returned *ReturnedRest) {
 	s.holds.mu.Unlock()
 
 	if returned != nil {
-		if item, ok := s.currentReturnedRest(hold, *returned, held, kept); ok {
+		if item, ok := s.currentReturnedRest(hold, *returned, held, keptAt, kept); ok {
 			s.recordCallDeliveredRest(item, hold, claim)
 			return
 		}
@@ -207,8 +207,9 @@ func (s *Service) runMoves(itemID string, cursor int64) (moved, unknown bool) {
 // returned is still the run's rest for the hold's thread. The store check
 // covers a transition written but not yet recorded in the ring, and answers
 // alone when the ring has lost track of the cursor: then the stored rest must
-// also be the one the hold kept back, if it kept one.
-func (s *Service) currentReturnedRest(hold *WakeHold, returned ReturnedRest, held bool, kept restIdentity) (store.WorkItem, bool) {
+// also be the one the hold kept back, if it kept one, and a rest kept back
+// after the call's read is a later rest, not the one it returned.
+func (s *Service) currentReturnedRest(hold *WakeHold, returned ReturnedRest, held bool, keptAt int64, kept restIdentity) (store.WorkItem, bool) {
 	if returned.Cursor <= 0 {
 		return store.WorkItem{}, false
 	}
@@ -224,6 +225,9 @@ func (s *Service) currentReturnedRest(hold *WakeHold, returned ReturnedRest, hel
 	current := item.ParentItemID == "" && item.OriginThreadID == hold.threadID &&
 		restingWorkflowState(engine.State(item.State)) &&
 		item.State == returned.State && item.Reason == returned.Reason
+	if current && unknown && held && keptAt > returned.Cursor {
+		current = false
+	}
 	if current && unknown {
 		current = s.currentPhaseIs(item.ID, returned.PhaseID)
 		if current && held {

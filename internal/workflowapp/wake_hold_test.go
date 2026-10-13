@@ -478,6 +478,27 @@ func TestARestPastTheRingAtAnotherPhaseIsNotTheOneReturned(t *testing.T) {
 	}
 }
 
+// The call read the rest on attempt 1; before its release the run parked at
+// the same gate on attempt 2, and that rest was kept back in turn. Past the
+// ring, the stored run matches the kept rest, but it was kept after the call
+// read, so it is not the one returned: it wakes once.
+func TestALaterAttemptKeptBeforeTheReleasePastTheRingStillWakes(t *testing.T) {
+	f := newHoldFixture(t)
+	f.parkAt("work", 1)
+	hold := f.service.HoldRestWake(f.item.ID, f.thread)
+	f.rest()
+	returned := f.read()
+	f.move(engine.StateRunning, "")
+	f.parkAt("work", 2)
+	f.move(engine.StateNeedsHuman, engine.ReasonGate)
+	f.service.WaitWake()
+	f.others(600)
+	f.release(hold, returned)
+	if f.wakes() != 1 {
+		t.Fatalf("the rest on the later attempt delivered %d wakes, want 1", f.wakes())
+	}
+}
+
 // A rest named without the cursor it was read at cannot be shown to be the
 // run's current one, so it is not taken as delivered.
 func TestARestWithoutAReadPointIsNotDelivered(t *testing.T) {
