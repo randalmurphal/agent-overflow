@@ -39,7 +39,7 @@ func (c *Client) refreshRecoverySupport(ctx context.Context, held Session) (bool
 	return true, nil
 }
 
-func (c *Client) rotate(ctx context.Context, observed Session) error {
+func (c *Client) rotate(ctx context.Context, observed Session) (err error) {
 	// Read first: another process may already have renewed or renamed this file.
 	var held Session
 	if err := c.sessionTransaction(ctx, func(_ string, latest *Session) error { held = *latest; return nil }); err != nil {
@@ -60,12 +60,12 @@ func (c *Client) rotate(ctx context.Context, observed Session) error {
 		// across current client processes with a separate lock; profile transactions
 		// and forgetting/renaming remain available while the network is slow.
 		wait, cancel := context.WithTimeout(ctx, profileWriteTimeout)
-		release, err := lockProfile(wait, c.dir, "legacy-renewal-"+held.BackendID)
+		release, lockErr := lockProfile(wait, c.dir, "legacy-renewal-"+held.BackendID)
 		cancel()
-		if err != nil {
-			return err
+		if lockErr != nil {
+			return lockErr
 		}
-		defer release()
+		defer func() { err = errors.Join(err, release()) }()
 	}
 	ready := false
 	if err := c.sessionTransaction(ctx, func(path string, latest *Session) error {

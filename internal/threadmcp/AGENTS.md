@@ -22,7 +22,9 @@ AfterResponse. The streamed path keeps the handler's body buffered until the
 call finishes, so running such work inline acts before the response exists on
 the wire. The hook is told whether the response was delivered; nothing may be
 recorded as read, and no thread the call needs may be torn down, when it was
-not.
+not. Delivery is judged from the request context as the response begins to go
+out and from write and flush errors, never from the context after the flush: a
+client may hang up as soon as it holds the answer.
 
 Decode tools/call envelopes with DecodeToolCall, which accepts MCP metadata
 and protocol extensions. Tool arguments are decoded by `internal/mcpargs`

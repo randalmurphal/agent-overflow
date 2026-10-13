@@ -27,11 +27,13 @@ explicit gates that need a human.
   - an **agent starts a run from a chat thread** (the §5 CLI) and keeps
     working; the run's resting states wake that thread (§5);
   - a **human starts a run from the overlay** (§10);
-  - the **§11 scheduler** starts a run when a trigger fires.
+  - a **standing agent** starts a run when its loop or watch wakes it
+    (§11); it is the agent case above.
 - **Positioning: workflows are background jobs, not the center of the app.**
   Most work stays in normal threads. Workflows cover **large decomposable
   efforts** (parallel port/refactor campaigns, §3 fan-out + §3 call recursion),
-  **scheduled/triggered automations**, and **unattended build-and-validate**.
+  **runs an agent starts on a schedule or an outside event** (§11), and
+  **unattended build-and-validate**.
   The surface (§10) is **deliberately secondary and quiet**: an overlay, one
   clear "needs you" signal, never a takeover.
 - **Durability is structural.** Every run, phase attempt, child run, and
@@ -664,7 +666,7 @@ run records an optional **bound thread**:
   mid-turn, immediately when idle, exactly like a user sending a message into
   a running thread. The agent resumes with the result in context, acts, or
   escalates to the human.
-- **human-started / scheduled**: unbound until needed. Resting states surface
+- **human-started**: unbound until needed. Resting states surface
   via the overlay + OS notification (§10); **"open in thread"** creates and
   binds a thread seeded with the run's result (the intent-seed pattern), or
   **binds an existing open thread** chosen from a picker, after which resting
@@ -717,15 +719,12 @@ Grantable first-party capabilities (phase-side):
 - **start a run**, for decomposition: spinning off independent work that is *not*
   part of this run. The started run binds to the *starting phase's* thread
   only if the grant says so; default unbound, surfaced in the overlay.
-- **schedule a job / automation**: hand work to the §11 scheduler;
-- **report back**, the outbound twin of §11's poller: a terminal phase posts
+- **report back**, the outbound twin of §11's polling: a terminal phase posts
   the item's result (status / comment) to the ticket or MR it came from, by
   shelling the user's authenticated, **profile-bound** command (`gh` / `glab`
-  / `acli`, §8). Same delegate-to-host model (no stored creds), so a
-  scheduler-driven loop *closes* (work gets done **and** the human watching
-  the ticket learns);
-- **update job notes**: a terminal phase may rewrite its job's continuity
-  notes (§11); a no-op rewrite is a normal outcome;
+  / `acli`, §8). Same delegate-to-host model (no stored creds), so a run
+  a standing agent started from a ticket *closes* (work gets done **and**
+  the human watching the ticket learns);
 - **introspection**: run status / outputs / records, for the agents that
   manage the system (a woken origin thread investigating a failure, an agent
   a human pointed at the workflow files);
@@ -738,7 +737,7 @@ Grantable first-party capabilities (phase-side):
 
 **Side effects are idempotent across re-runs (surface-and-skip).** Loop-back
 (§4), take-over discard+re-run (§7), and crash-recovery re-runs (§12) all
-re-enter a phase, so a first-party side-effecting tool (start-run / schedule /
+re-enter a phase, so a first-party side-effecting tool (start-run /
 report-back) **records what it did per (item, phase)**; on a re-run the system
 **shows the prior effect and defaults to skip** rather than silently re-firing
 (no duplicate Jira ticket, no double-started run). It does *not* try to make
@@ -974,7 +973,8 @@ is the repo its worktree is cut from.
 **Producers of that same shape, all calling one start path:** a human in the
 overlay (§10); **an agent from any chat thread** via `agent-overflow run start` (§5:
 the run binds to the thread and wakes it); a phase via the **start-run
-capability** (§5 decomposition); the **§11 scheduler** on a trigger. Manual is
+capability** (§5 decomposition); a **standing agent** woken by its loop or
+watch (§11), which is the agent case. Manual is
 just the n=1 case; every producer emits the identical item.
 
 **The `/workflow` composer command: context on demand, never standing.**
@@ -995,10 +995,9 @@ overlay and the workflow's own gates, not a pre-start confirmation click.
 behaves as a human gate, the trust-building mode for a new workflow. A
 workflow may also declare it as its default.
 
-**Workflow is chosen explicitly at start**. You name the workflow.
-Attribute-based **routing** (type/labels → workflow) is a convenience that
-rides in with the scheduler (a trigger must pick a workflow without a human);
-the core stays explicit.
+**Workflow is chosen explicitly at start**. Every producer names the
+workflow, a standing agent starting a scheduled run included. There is no
+attribute-based routing (type/labels → workflow).
 
 **Seeds** come from whatever the producer has: a ticket's fields (Jira /
 GitHub import), what you typed, the conversation context the agent shaped
@@ -1213,7 +1212,7 @@ are no longer created (D32); the exclusion keeps existing ones hidden.
 - **Home**: per project, its workflow definitions (read-only rows; authoring
   is file work, §8) and its runs: active first (live state, current phase,
   waiting-on markers), then resting (needs-attention leading), then recent
-  history. Scheduled automations (§11) show trigger + next fire inline.
+  history.
 - **Run detail**: the run **tree**, phases in order; a fan-out phase expands
   to its units; a call phase expands to its child run (recursively). Leads
   with the digest, diff, checks, and cost; hosts the resolution actions
@@ -1293,76 +1292,47 @@ either provider CLI. A live rejection that `internal/providerschema` does not
 already flag means the rule set is short one rule, and adding it there is what
 makes the mock catch it from then on.
 
-## 11. Scheduler / automations
+## 11. Scheduled and triggered runs
 
-An **automation = a trigger + an optional condition + an action**, and **the
-action is always to start a run** (§8) through the same path every other
-producer uses. The scheduler never runs a second executor.
-(A "single-phase," "a script," "script → workflow," or "an agent that decides"
-are all just *workflows*, §3, so every action reduces to one item with a
-chosen workflow + seed variables; an agent-decider is a workflow that starts
-0..N runs via the start-run capability.)
+The workflow system keeps no clock of its own. A run that starts on a
+schedule or on an outside event is started by a **standing agent**
+(`docs/specs/standing-agents.md`): its `thread_loop` or `thread_watch`
+wakes it, and it starts the run with `agent-overflow run start` like any
+agent (§5). The wake supervisor is the app's only clock (D76).
 
-**Overlap policy: skip-if-running.** If the previous run this automation
-started is still active when the trigger fires, the fire is **skipped and
-recorded** (visible on the automation's row). No queueing of fires, no
-overlapping runs of one automation. (A workflow that genuinely wants overlap
-is two automations.)
-
-**Results reach a human through the §5 binding mechanism**: a scheduled run is
-unbound; its resting states surface via overlay + notification, and "open in
-thread" seeds a thread with the result for follow-up, the same affordance as
-any human-started run. (A report automation's deliverable is its §3 artifacts;
-the thread is how you discuss them.)
-
-**Two trigger primitives:**
-
-- **Cron**: time-based; any schedule.
-- **Internal event**: the system's own lifecycle (item done / failed /
-  needs-human, a phase completed, a gate outcome). A **closed, typed set** the
-  system already emits (the §10 run-record stream); carries run context as
-  variables. This is what chains automations (one item finishing triggers the
-  next).
-
-**Conditions** (run-if, reusing §4) gate whether a fired trigger actually
-starts a run.
-
-**Minimal in-overlay management + Run now.** The overlay (§10) shows an
-automation's trigger, enable/disable, next fire, and skipped fires, plus a
-**Run now** button. Anything richer (changing cron, seeds, conditions) is §8
-file work over the automation config, not forms.
-
-**Job continuity notes.** A scheduled/triggered job carries **per-job notes**
-(a markdown blob) for cross-run continuity: visible and editable in the UI,
-injected as a reserved seed variable, and optionally rewritten by a terminal
-phase via the §5 **update-job-notes** capability (a no-op rewrite is a normal
-outcome). Deliberately a notes file per job, **not a memory subsystem** (the
-exclusion below stands).
+- **Results** reach the agent through the §5 binding: the run binds to the
+  agent's thread and its resting states wake that thread. The overlay and
+  notifications surface the run as they do any agent-started run.
+- **Overlap, conditions and continuity are the agent's.** It reads
+  `run list` / `run status` before starting another run, decides whether
+  a wake warrants one, and keeps what it must carry between runs in its
+  home (cursors, rulings, notes). There is no per-run-source overlap
+  policy, condition language or notes store in the workflow system.
+- **Chaining**: a finished run wakes the agent that started it, which may
+  start the next. Inside a run, chaining stays the start-run capability
+  (§5) and call phases (§3a).
 
 ### External sources: poll with authenticated CLIs, no webhooks
 
 External triggers (MR comments, ticket transitions, pushes) are reached by
-**polling through the user's already-authenticated CLIs**, which are
-**profile-bound commands** (§8: `gh`, `glab`, `acli` for Jira) and never a tool
-name hardcoded in the engine. They are **not** reached by inbound webhooks.
-A poll is just a **cron automation
-whose action workflow queries the source and starts** what's new: a phase
-shells out to the CLI, computes "new since a cursor," and starts a child item
-per hit. It is **not a third trigger primitive**, just cron + a
-query-and-start phase using the curated **query-source** and **start-run**
-tools (§5).
+**polling through the user's already-authenticated CLIs** (`gh`, `glab`,
+`acli` for Jira). They are **not** reached by inbound webhooks. A poll is a
+standing agent's `thread_watch` script: on an interval, or long-running
+with one event per output line, it queries the source and wakes the agent
+with what is new, and the agent starts a run per hit.
 
 **The system manages no external credentials.** Auth is delegated to the
 user's logged-in CLIs; the system holds no tokens and runs no inbound server.
 
 **Required for correctness:** a **cursor/watermark** per polled source
-(last-seen id / `updated >=` timestamp) + **dedup**, so one comment or
-transition starts exactly one item.
+(last-seen id / `updated >=` timestamp), kept by the agent's script in the
+agent's home, + **dedup**, so one comment or transition starts exactly one
+run.
 
-**Trade-off (accepted):** polling reacts on the next tick (minute-scale
-latency), not instantly, which is fine for coding automations. **Webhook ingress**
-(instant push) is **deferred**, not deleted. Revisit only if a real
-sub-minute-latency need appears.
+**Trade-off (accepted):** an interval watch reacts on the next tick, not
+instantly; a long-running watch that streams events closes most of that
+gap. **Webhook ingress** (instant push) is **deferred**, not deleted.
+Revisit only if a real need appears that neither covers.
 
 ## 12. Reliability & lifecycle controls
 
@@ -1474,8 +1444,8 @@ never leave a grandchild running or a sub-worktree stranded.
   interrupts other running work, or infers a model/bucket from unstable limit
   labels. A queued alert lost on restart is recovered by provider/account scope
   and watching conversation, so recovery selects another currently affected
-  run if the original source resolved. Start, scheduled trigger, and explicit
-  resume always make a real provider attempt. Returning to `running` re-arms
+  run if the original source resolved. Start and explicit resume always make
+  a real provider attempt. Returning to `running` re-arms
   attention so a delayed post-resume failure notifies once; there is no
   automatic quota resume or resolution message. `run resume --at <time>`
   remains an independent manual schedule for any continuable park.
@@ -1537,8 +1507,8 @@ exitable**.
   junk (transient noise, hallucinated facts), and the durable knowledge that
   matters already lives in the repo (code, project profile, `CLAUDE.md`-style
   rules, ADRs) which phases read anyway. A "watcher" that proposes workflow
-  tweaks is, if ever wanted, just a later §11 automation built on existing
-  primitives, not a subsystem. Rationale and the research behind this call:
+  tweaks is, if ever wanted, just a standing agent built on existing
+  primitives (§11), not a subsystem. Rationale and the research behind this call:
   `workflows-system-self-improvement-research.md`.
 - **A work queue.** Removed in rev 2 (was rev 1's core). If a future need
   genuinely wants admission control beyond resource capacity (§6), it returns

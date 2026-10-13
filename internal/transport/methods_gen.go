@@ -466,7 +466,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "WakeThreadWakeNow", ID: 777755931, Scope: "threads:operate", Route: "thread"},                                     // main.App.WakeThreadWakeNow
 	{Name: "WorkflowAgentAddMemory", ID: 4000394635, Scope: "threads:autonomy", Route: "home"},                                // main.App.WorkflowAgentAddMemory
 	{Name: "WorkflowAgentAmendSeeds", ID: 4273669366, Scope: "threads:autonomy", Route: "home"},                               // main.App.WorkflowAgentAmendSeeds
-	{Name: "WorkflowAgentGetNotes", ID: 864025136, Scope: "threads:autonomy", Route: "home"},                                  // main.App.WorkflowAgentGetNotes
 	{Name: "WorkflowAgentGuideRun", ID: 76499272, Scope: "threads:autonomy", Route: "home"},                                   // main.App.WorkflowAgentGuideRun
 	{Name: "WorkflowAgentInspectRun", ID: 1146143060, Scope: "threads:autonomy", Route: "home"},                               // main.App.WorkflowAgentInspectRun
 	{Name: "WorkflowAgentListMemory", ID: 1978122086, Scope: "threads:autonomy", Route: "home"},                               // main.App.WorkflowAgentListMemory
@@ -474,17 +473,13 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "WorkflowAgentRunNarrative", ID: 3748461612, Scope: "threads:autonomy", Route: "home"},                             // main.App.WorkflowAgentRunNarrative
 	{Name: "WorkflowAgentRunOutput", ID: 315193175, Scope: "threads:autonomy", Route: "home"},                                 // main.App.WorkflowAgentRunOutput
 	{Name: "WorkflowAgentRunStatus", ID: 49502656, Scope: "threads:autonomy", Route: "home"},                                  // main.App.WorkflowAgentRunStatus
-	{Name: "WorkflowAgentSchedule", ID: 3469145856, Scope: "threads:autonomy", Route: "home"},                                 // main.App.WorkflowAgentSchedule
-	{Name: "WorkflowAgentSetNotes", ID: 8517788, Scope: "threads:autonomy", Route: "home"},                                    // main.App.WorkflowAgentSetNotes
 	{Name: "WorkflowAgentStartRun", ID: 1060823172, Scope: "threads:autonomy", Route: "home"},                                 // main.App.WorkflowAgentStartRun
 	{Name: "WorkflowAgentWatchRun", ID: 2308429865, Scope: "threads:autonomy", Route: "home"},                                 // main.App.WorkflowAgentWatchRun
 	{Name: "WorkflowAnswerQuestion", ID: 4150249282, Scope: "threads:autonomy", Route: "home"},                                // main.App.WorkflowAnswerQuestion
 	{Name: "WorkflowBindThread", ID: 1931806823, Scope: "threads:autonomy", Route: "home"},                                    // main.App.WorkflowBindThread
 	{Name: "WorkflowCancelItem", ID: 4158962817, Scope: "threads:autonomy", Route: "home"},                                    // main.App.WorkflowCancelItem
 	{Name: "WorkflowCompleteTakeover", ID: 3393508470, Scope: "threads:autonomy", Route: "home"},                              // main.App.WorkflowCompleteTakeover
-	{Name: "WorkflowCreateAutomation", ID: 3011758347, Scope: "threads:autonomy", Route: "home"},                              // main.App.WorkflowCreateAutomation
 	{Name: "WorkflowCreateItemPR", ID: 1792283305, Scope: "threads:autonomy", Route: "home"},                                  // main.App.WorkflowCreateItemPR
-	{Name: "WorkflowDeleteAutomation", ID: 1133480652, Scope: "threads:autonomy", Route: "home"},                              // main.App.WorkflowDeleteAutomation
 	{Name: "WorkflowDiscardItem", ID: 2163033761, Scope: "threads:autonomy", Route: "home"},                                   // main.App.WorkflowDiscardItem
 	{Name: "WorkflowDiscardPreview", ID: 2659721862, Scope: "git:operate", Route: "home"},                                     // main.App.WorkflowDiscardPreview
 	{Name: "WorkflowDiscussPR", ID: 1236472344, Scope: "threads:autonomy", Route: "home"},                                     // main.App.WorkflowDiscussPR
@@ -492,9 +487,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "WorkflowFetchPRReviewComments", ID: 819019128, Scope: "threads:autonomy", Route: "home"},                          // main.App.WorkflowFetchPRReviewComments
 	{Name: "WorkflowGetEngineState", ID: 2130001947, Scope: "threads:read", Route: "home"},                                    // main.App.WorkflowGetEngineState
 	{Name: "WorkflowGetItem", ID: 70120675, Scope: "threads:read", Route: "home"},                                             // main.App.WorkflowGetItem
-	{Name: "WorkflowGetJobNotes", ID: 3798011060, Scope: "threads:read", Route: "home"},                                       // main.App.WorkflowGetJobNotes
 	{Name: "WorkflowGetRunMap", ID: 4156752389, Scope: "threads:read", Route: "home"},                                         // main.App.WorkflowGetRunMap
-	{Name: "WorkflowListAutomations", ID: 2319799628, Scope: "threads:read", Route: "project"},                                // main.App.WorkflowListAutomations
 	{Name: "WorkflowListDefinitions", ID: 2064216126, Scope: "threads:read", Route: "project"},                                // main.App.WorkflowListDefinitions
 	{Name: "WorkflowListItemCosts", ID: 1544440599, Scope: "threads:read", Route: "project"},                                  // main.App.WorkflowListItemCosts
 	{Name: "WorkflowListItems", ID: 3037887964, Scope: "threads:read", Route: "project"},                                      // main.App.WorkflowListItems
@@ -507,16 +500,12 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "WorkflowResumeItem", ID: 3138507556, Scope: "threads:autonomy", Route: "home"},                                    // main.App.WorkflowResumeItem
 	{Name: "WorkflowRetryFailedUnits", ID: 2846965054, Scope: "threads:autonomy", Route: "home"},                              // main.App.WorkflowRetryFailedUnits
 	{Name: "WorkflowRetryUnit", ID: 1648002260, Scope: "threads:autonomy", Route: "home"},                                     // main.App.WorkflowRetryUnit
-	{Name: "WorkflowRunAutomationNow", ID: 2615697354, Scope: "threads:autonomy", Route: "home"},                              // main.App.WorkflowRunAutomationNow
 	{Name: "WorkflowScheduleResume", ID: 658224978, Scope: "threads:autonomy", Route: "home"},                                 // main.App.WorkflowScheduleResume
 	{Name: "WorkflowSendPRReviewCommentsToThread", ID: 1172404443, Scope: "threads:autonomy", Route: "home"},                  // main.App.WorkflowSendPRReviewCommentsToThread
-	{Name: "WorkflowSetAutomationEnabled", ID: 642610548, Scope: "threads:autonomy", Route: "home"},                           // main.App.WorkflowSetAutomationEnabled
 	{Name: "WorkflowSetGlobalPause", ID: 774492663, Scope: "threads:autonomy", Route: "home"},                                 // main.App.WorkflowSetGlobalPause
-	{Name: "WorkflowSetJobNotes", ID: 1934298592, Scope: "threads:autonomy", Route: "home"},                                   // main.App.WorkflowSetJobNotes
 	{Name: "WorkflowStartRun", ID: 1009082601, Scope: "threads:autonomy", Route: "project"},                                   // main.App.WorkflowStartRun
 	{Name: "WorkflowTakeOverUnit", ID: 1931942299, Scope: "threads:autonomy", Route: "home"},                                  // main.App.WorkflowTakeOverUnit
 	{Name: "WorkflowUnbindThread", ID: 2006703348, Scope: "threads:autonomy", Route: "home"},                                  // main.App.WorkflowUnbindThread
-	{Name: "WorkflowUpdateAutomation", ID: 536579134, Scope: "threads:autonomy", Route: "home"},                               // main.App.WorkflowUpdateAutomation
 	{Name: "WriteTerminal", ID: 146795716, Scope: "terminal:operate", Route: "home"},                                          // main.App.WriteTerminal
 	{Name: "WriteWorkspaceFile", ID: 1859440887, Scope: "git:operate", Route: "workspace"},                                    // main.App.WriteWorkspaceFile
 }

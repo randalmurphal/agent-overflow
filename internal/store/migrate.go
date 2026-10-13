@@ -399,6 +399,7 @@ DELETE FROM diff_review_comments WHERE scope IN ('turn', 'session');`,
 	{
 		Version: 26,
 		Name:    "workflow_persistence",
+		// v144 drops automations and automation_cursors.
 		SQL: `CREATE TABLE work_items (
     id             TEXT    PRIMARY KEY,
     project_id     TEXT    NOT NULL,
@@ -633,6 +634,8 @@ CREATE INDEX idx_work_item_units_worktree
 		// automation source, because every other run's source_ref means something
 		// else entirely (an agent proposal id, a call site) and none of them are
 		// ever queried this way.
+		//
+		// v144 drops automations and this index.
 		SQL: `ALTER TABLE automations ADD COLUMN last_fired_at INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE automations ADD COLUMN last_run_item_id TEXT NOT NULL DEFAULT '';
@@ -1729,7 +1732,9 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 141, Name: "repository_identity", SQL: repositoryIdentityV141SQL, Fix: scrubRepositoryCoordinates},
 	{Version: removeDiscussionsMigrationVersion, Name: "remove_discussions", SQL: removeDiscussionsV142SQL, Rebuild: true},
 	{Version: standingAgentsMigrationVersion, Name: "standing_agents", SQL: standingAgentsV143SQL},
-	{Version: agentWakeStderrMigrationVersion, Name: "agent_wake_stderr", SQL: agentWakeStderrV144SQL},
+	{Version: removeAutomationsMigrationVersion, Name: "remove_automations", SQL: removeAutomationsV144SQL, Fix: mapAutomationRunsToManual},
+	{Version: workItemSourcesMigrationVersion, Name: "work_item_sources", SQL: workItemSourcesV145SQL, Rebuild: true},
+	{Version: agentWakeStderrMigrationVersion, Name: "agent_wake_stderr", SQL: agentWakeStderrV146SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

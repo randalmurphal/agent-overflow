@@ -6,7 +6,6 @@
 
 import type { BackendKey } from './backendKey';
 import {
-  automationBackend,
   projectBackend,
   terminalBackend,
   resolveThreadBackend,
@@ -17,7 +16,6 @@ import {
 export type IdFamily =
   | 'project'
   | 'workflowItem'
-  | 'workflowAutomation'
   | 'terminal'
   | 'subscription'
   // A sidebar thread group — argument 0 is `groupID`. Belongs to one
@@ -37,7 +35,6 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   1978122086: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentListMemory
   3748461612: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentRunNarrative
   2308429865: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentWatchRun
-  3011758347: { family: 'project', field: 'projectId' }, // WorkflowCreateAutomation
   // Workflow ITEM ids — argument 0 is `itemID`. An item belongs to the
   // project it was started in, and therefore to that project's machine.
   49502656: 'workflowItem', // WorkflowAgentRunStatus
@@ -66,15 +63,6 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   4150249282: 'workflowItem', // WorkflowAnswerQuestion
   4156752389: 'workflowItem', // WorkflowGetRunMap
   4158962817: 'workflowItem', // WorkflowCancelItem
-  // Workflow AUTOMATION ids — argument 0 is `automationID`.
-  8517788: 'workflowAutomation', // WorkflowAgentSetNotes
-  536579134: 'workflowAutomation', // WorkflowUpdateAutomation
-  642610548: 'workflowAutomation', // WorkflowSetAutomationEnabled
-  864025136: 'workflowAutomation', // WorkflowAgentGetNotes
-  1133480652: 'workflowAutomation', // WorkflowDeleteAutomation
-  1934298592: 'workflowAutomation', // WorkflowSetJobNotes
-  2615697354: 'workflowAutomation', // WorkflowRunAutomationNow
-  3798011060: 'workflowAutomation', // WorkflowGetJobNotes
   // Terminal ids — argument 0 is `terminalID`. A terminal is a live
   // process on one machine; there is no other machine it could mean.
   146795716: 'terminal', // WriteTerminal
@@ -105,7 +93,6 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
 const RESOLVERS: Readonly<Record<IdFamily, (id: string) => BackendKey | undefined>> = {
   workflowItem: workflowItemBackend,
   project: projectBackend,
-  workflowAutomation: automationBackend,
   terminal: terminalBackend,
   subscription: () => undefined,
   threadGroup: threadGroupBackend,

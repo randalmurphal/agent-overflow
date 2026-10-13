@@ -11,8 +11,7 @@
 # A campaign is ONE root run. Each wave is this graph; the last phase calls
 # THIS workflow again for the next wave, so wave N+1 is a child of wave N and
 # the whole campaign is one call tree in one worktree on one branch. Nothing
-# chains it from outside - no automation, no cron, no second orchestration
-# engine. See docs/architecture/workflow-campaigns.md.
+# chains it from outside. See docs/architecture/workflow-campaigns.md.
 #
 # Fable plans, GPT works. The planner is Claude because deciding what the
 # campaign does next is the judgment call; the task lanes are Codex, and the

@@ -456,7 +456,12 @@ late reply on a request already `finished`. This is the
 can wait again instead of ending its turn, and after a lost reply from
 another computer it can learn what happened without asking twice. An
 answer collected here is the delivery, so no wake is queued for it; a
-wake already in the queue still lands and the reply says so. The
+wake already in the queue, or already writing to it, still lands and the
+reply says so. The call holds the token from its first read until its
+reply is written, so no wake is queued while the reply is on its way, and
+a reply that never reaches the agent delivers nothing: the wake is still
+owed. A listing or a `to_file` export that delivers an answer holds its
+token the same way. The
 answer is returned whole; a long one pages by `cursor` or goes to a
 file with `to_file`, and it stays available for the request's
 lifetime even when the thread that wrote it is gone.
@@ -814,12 +819,20 @@ or not; that is what waiting past the timeout or `notify` opts into. A
 caller archived after the request was made is unarchived by delivery;
 archiving the caller turns `notify` off for its open requests (see
 Lifecycle interactions), so only a request made before the archive and
-re-armed by a later wait or `thread_status` reaches it. Caller deleted
-first: dropped. A restart of the caller's computer before a queued wake
-reached the provider restores it into the composer draft, as every
-queued message is; the request then reads `delivered: draft`, distinct
-from `delivered: inline` and `delivered: queued`, and `thread_status`
-still returns the answer.
+re-armed by a later wait or `thread_status` reaches it. A wake already
+queued when the caller is archived, or when a Stop or a revert drops
+the caller's queue, goes back to its request: one transaction removes
+the queue row, clears its delivery and turns `notify` off, so
+`thread_status` still returns the answer and nothing reaches the
+thread at its next start. So does a wake the caller's session ended
+or a Codex resend failed without taking in, still queued or written
+and unconfirmed, and one still queued when the caller's computer
+restarts. The answer is not the person's to send, so it never goes to
+the composer, where the other queued messages go; when Claude joined it
+with a person's message, the person's text alone goes there. Caller
+deleted first: dropped. Rows written by earlier versions may read
+`delivered: draft`: a wake that boot recovery restored into the
+composer.
 
 A wake the settlement could not hand over (a caller thread that could
 not be unarchived, a fenced thread, a failed queue write, a crash
@@ -828,7 +841,9 @@ towards a ten-minute ceiling for eight attempts. What stops a wake is
 the caller thread's own state, which no number of retries changes, so
 the retry ends rather than running for the life of the row: the request
 keeps its answer and records why the message never arrived, and
-`thread_status` returns both.
+`thread_status` returns both. A pass that finds a call holding the token
+books no attempt, so when that call's reply does not carry the answer,
+the wake is due again the moment the call lets go.
 
 The source thread's title in a wake's status line comes from the
 answering computer: a thread on another computer has no row here, so

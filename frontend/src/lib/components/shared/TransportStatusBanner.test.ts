@@ -10,13 +10,15 @@ import type { TransportStatusSnapshot } from '../../transport/wsClient';
 const h = vi.hoisted(() => ({
   snapshot: { status: 'connected', nextAttemptAt: null } as TransportStatusSnapshot,
   retry: vi.fn(),
-  recovering: new Set<string>(),
+  /** Backends with a recovery out, mapped to whether it is a resync. */
+  recovering: new Map<string, boolean>(),
   recoveryListeners: new Set<(id: string, phase: 'start' | 'complete' | 'cancel') => void>(),
 }));
 
 vi.mock('../../stores/transportRecovery', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/transportRecovery')>()),
   isBackendRecovering: (id: string) => h.recovering.has(id),
+  isBackendResyncing: (id: string) => h.recovering.get(id) === true,
   onBackendRecovery: (listener: (id: string, phase: 'start' | 'complete' | 'cancel') => void) => {
     h.recoveryListeners.add(listener);
     return () => h.recoveryListeners.delete(listener);
@@ -60,6 +62,14 @@ async function settleBootGrace(): Promise<void> {
   await tick();
   await vi.advanceTimersByTimeAsync(1100);
   await tick();
+}
+
+/** Publish a recovery phase the way stores/transportRecovery does: the
+ *  record is updated before listeners hear the phase. */
+function recover(id: string, phase: 'start' | 'complete' | 'cancel', resumed = false): void {
+  if (phase === 'start') h.recovering.set(id, resumed);
+  else h.recovering.delete(id);
+  for (const listener of h.recoveryListeners) listener(id, phase);
 }
 
 beforeEach(() => {
@@ -115,20 +125,47 @@ describe('<TransportStatusBanner>', () => {
   });
 
   it('keeps sync visible until this computer finishes recovery and removes the subscription', async () => {
-    h.recovering.add('');
+    h.recovering.set('', true);
     const view = render(TransportStatusBanner);
     await tick();
     expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
     expect(view.queryByTestId('transport-status-dismiss')).toBeNull();
-    for (const listener of h.recoveryListeners) listener('other', 'complete');
+    recover('other', 'start', true);
+    recover('other', 'complete');
     await tick();
     expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
-    for (const listener of h.recoveryListeners) listener('', 'complete');
+    recover('', 'complete');
     await tick();
     await vi.advanceTimersByTimeAsync(200);
     expect(view.queryByTestId('transport-status-banner')).toBeNull();
     view.unmount();
     expect(h.recoveryListeners.size).toBe(0);
+  });
+
+  it('shows sync for a reconnect and nothing for the first connection\'s recovery', async () => {
+    const view = render(TransportStatusBanner);
+    await tick();
+    recover('', 'start', false);
+    await tick();
+    expect(view.queryByTestId('transport-status-banner')).toBeNull();
+    recover('', 'complete');
+    await tick();
+    expect(view.queryByTestId('transport-status-banner')).toBeNull();
+
+    recover('', 'start', true);
+    await tick();
+    expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
+    recover('', 'complete');
+    await tick();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(view.queryByTestId('transport-status-banner')).toBeNull();
+  });
+
+  it('mounts with no strip while the first connection recovers', async () => {
+    h.recovering.set('', false);
+    const view = render(TransportStatusBanner);
+    await tick();
+    expect(view.queryByTestId('transport-status-banner')).toBeNull();
   });
 
   // Compact keeps the banner in the layout. A fade-out there held its row
@@ -138,12 +175,11 @@ describe('<TransportStatusBanner>', () => {
     for (const compact of [true, false]) {
       setCompactLayoutForTest(compact);
       try {
-        h.recovering.add('');
+        h.recovering.set('', true);
         const view = render(TransportStatusBanner);
         await tick();
         expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
-        h.recovering.delete('');
-        for (const listener of h.recoveryListeners) listener('', 'complete');
+        recover('', 'complete');
         await tick();
         const banner = view.queryByTestId('transport-status-banner');
         if (compact) {
@@ -158,6 +194,65 @@ describe('<TransportStatusBanner>', () => {
       } finally {
         setCompactLayoutForTest(false);
       }
+    }
+  });
+
+  // A tap's click comes after its release and is hit-tested against the
+  // layout as it is then. A row that went between the press and the click
+  // moved the pressed control out from under the tap, so compact keeps the
+  // row's height until the tap completes (utils/tapHold.ts).
+  it('keeps the compact row under a tap pressed as the sync ends, until its click', async () => {
+    const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(30);
+    const surface = document.createElement('div');
+    surface.setAttribute('data-transport-tap-hold', '');
+    const pressed = document.createElement('button');
+    surface.appendChild(pressed);
+    document.body.appendChild(surface);
+    const press = (type: string) =>
+      pressed.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, pointerType: 'touch', isPrimary: true }));
+    const endSync = async () => {
+      recover('', 'complete');
+      await tick();
+    };
+    try {
+      for (const compact of [true, false]) {
+        setCompactLayoutForTest(compact);
+        h.recovering.set('', true);
+        const view = render(TransportStatusBanner);
+        await tick();
+        expect(view.getByTestId('transport-status-banner')).toHaveTextContent('Syncing…');
+        press('pointerdown');
+        await endSync();
+        press('pointerup');
+        await tick();
+        if (compact) {
+          expect(view.queryByTestId('transport-status-banner')).toBeNull();
+          expect(view.getByTestId('transport-status-held-row').style.height).toBe('30px');
+          pressed.click();
+          await tick();
+        } else {
+          await vi.advanceTimersByTimeAsync(200);
+        }
+        expect(view.queryByTestId('transport-status-held-row')).toBeNull();
+        view.unmount();
+      }
+
+      // Leaving the compact layout during a tap drops the row it held.
+      setCompactLayoutForTest(true);
+      h.recovering.set('', true);
+      const view = render(TransportStatusBanner);
+      await tick();
+      press('pointerdown');
+      await endSync();
+      expect(view.getByTestId('transport-status-held-row')).toBeInTheDocument();
+      setCompactLayoutForTest(false);
+      await tick();
+      expect(view.queryByTestId('transport-status-held-row')).toBeNull();
+      view.unmount();
+    } finally {
+      setCompactLayoutForTest(false);
+      surface.remove();
+      height.mockRestore();
     }
   });
 

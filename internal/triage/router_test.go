@@ -545,9 +545,20 @@ func newTestRouter(t *testing.T) (*Router, *store.Store, *emissionLog) {
 	}
 
 	router := NewRouter(st, emit)
+	holdWireRefresh(router)
 	t.Cleanup(router.flushAllUsage)
 	t.Cleanup(router.DrainWireItemRefresh)
 	return router, st, emissions
+}
+
+// holdWireRefresh keeps the router's deferred wire refresh from firing
+// on its own, so it runs only at DrainWireItemRefresh or a turn's flush.
+// A test that counts what one call pushed or read would otherwise count
+// a refresh an earlier write armed whenever the run stalls past the
+// quiet period.
+func holdWireRefresh(router *Router) {
+	router.delays.wireRefreshQuiet = time.Hour
+	router.delays.wireRefreshMaxWait = time.Hour
 }
 
 // storedTodo reads the thread's durable todo list straight from the column

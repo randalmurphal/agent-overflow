@@ -93,6 +93,12 @@ func (a *App) configureTriageQueueCallbacks() {
 		a.agentWakeQueuedConfirmed(threadID, item.ID)
 	})
 	a.triage.SetSendsPendingObserver(a.markSendsPendingDirty)
+	a.triage.SetSendUndeliveredHook(func(threadID string) {
+		// Off the provider event worker: the restore takes the thread
+		// action lock, which an interrupt holds while it waits on this
+		// worker for its ack.
+		go a.restoreUndeliveredSends(threadID)
+	})
 }
 
 // newTriageRouter constructs the triage router with every App-owned
@@ -220,8 +226,32 @@ func (a *App) clearFlushDispatchForRollback(threadID string) {
 	// The rollback is deleting the history these messages were queued
 	// against, so they are being thrown away rather than deferred: their
 	// durable rows go with them, or the next boot restores messages the
-	// user's revert already discarded.
-	a.dropDurableFlushQueue(threadID)
+	// user's revert already discarded. Under the mutation lock, as a
+	// teardown's drop is (dropQueueForTeardown), so a message queued during
+	// it is in the queue it reads or queued after it.
+	unlock := a.threadApplication().LockMutations(threadID)
+	held := a.dropDurableFlushQueue(threadID)
+	a.discardFlushDispatch(threadID)
+	// A revert that keeps its session (Codex's in-place cut) leaves triage's
+	// queue alone, so a message still there is delivered after it, or
+	// dropped and returned by the stop a cold cut makes next. What the
+	// discard took is gone now and goes back to its owner.
+	if a.triage != nil {
+		for _, item := range a.triage.QueuedFlushItems(threadID) {
+			held = slices.DeleteFunc(held, func(m ownedMessage) bool { return m.rowID == item.ID })
+		}
+	}
+	unlock()
+	a.giveBackToOwners(threadID, held)
+}
+
+// discardFlushDispatch throws away the batches the dispatch worker holds for
+// a thread, the one it is waiting on the thread's action lock to send among
+// them. A wholesale drop takes their durable rows (dropDurableFlushQueue);
+// the worker, once it has the lock, finds its generation gone and sends
+// nothing, rather than failing for want of a session and putting the batch
+// back in the queue the drop emptied.
+func (a *App) discardFlushDispatch(threadID string) {
 	a.flushDispatch.mu.Lock()
 	a.ensureFlushDispatchMapsLocked()
 	a.flushDispatch.generation[threadID]++
@@ -737,6 +767,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// registry expectation derived together (providerSendIdentity), so
 	// the two cannot drift.
 	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
+	sendExpect.JoinedParts = joined.parts
 	// What this message puts on the wire, block by block. Headless Claude can
 	// acknowledge a queued message whose content is this message CONCATENATED
 	// onto earlier ones the CLI merged with it at a turn boundary, and the
@@ -839,6 +870,7 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			// preserve both across this placement-only fallback.
 			var refreshExpect triage.PendingSendExpectation
 			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, "")
+			refreshExpect.JoinedParts = joined.parts
 			a.triage.RegisterPendingFlushSendWithExpectation(
 				threadID, leadQueueItemID, userItem, leadEnqueuedAt, refreshExpect)
 			sess.Liveness.BumpActivity(time.Now())
@@ -1046,6 +1078,11 @@ type injectedQueueOptions struct {
 	// persist atomically transfers an injector’s delivery responsibility to the
 	// ordinary durable queue. Nil uses the standard queue insert.
 	persist func(store.FlushQueueItem) error
+	// heldWhileArchived refuses the message with errThreadArchived when the
+	// thread is archived, before persist runs. App-written notices set it
+	// (queueAgentNotice); a person's message is taken by an archived thread
+	// they opened.
+	heldWhileArchived bool
 	// origin and originThread attribute the queued message to the agent
 	// thread that asked for it. They land on the payload so the dispatch
 	// that persists the row later stamps the same attribution an immediate
@@ -1075,13 +1112,29 @@ func (a *App) flushQueueSettlement(threadID, id string, onDurable func()) *triag
 // the in-memory queue without restoring it, and the Codex rollback purge —
 // where a surviving row would resurrect at the next boot the very messages
 // the user's Stop or revert threw away.
-func (a *App) dropDurableFlushQueue(threadID string) {
-	a.noteAgentWakesDropped(threadID)
+//
+// The answers, reminders and remote completions among them are kept and
+// returned, and the caller gives them back to their owners
+// (giveBackToOwners) once the rest of the queue, in memory and dispatch, is
+// gone too.
+func (a *App) dropDurableFlushQueue(threadID string) (held []ownedMessage) {
+	held = a.noteAgentWakesDropped(threadID)
+	keep := make([]string, 0, len(held))
+	for _, m := range held {
+		keep = append(keep, m.rowID)
+	}
+	if a.queueDropReadForTest != nil {
+		a.queueDropReadForTest(threadID)
+	}
 	// An outside send's row goes with its notice (noteAgentSendsCleared).
-	if err := a.store.DeleteFlushQueueItemsForThread(threadID, agentSendIDRoot); err != nil {
+	if err := a.store.DeleteFlushQueueItemsForThread(threadID, agentSendIDRoot, keep...); err != nil {
 		log.Printf("flush queue: drop durable rows for thread %s: %v", threadID, err)
 	}
+	if a.queueDroppedForTest != nil {
+		a.queueDroppedForTest(threadID)
+	}
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
+	return held
 }
 
 // registerQueueItem is RegisterQueueItem plus the injected-message axes.
@@ -1130,6 +1183,12 @@ func (a *App) registerQueueItem(
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return QueuedItem{}, fmt.Errorf("register queue item: %w", err)
+	}
+	// Both archive doors flip the row under this lock, so a held message
+	// lands wholly before the flip, where the archive takes it back, or is
+	// refused here.
+	if injected.heldWhileArchived && thread.Archived {
+		return QueuedItem{}, errThreadArchived
 	}
 	if injected.expandComposerCommands && thread.Provider == string(provider.Codex) {
 		_, isReview, parseErr := codexReviewCommandTarget(message)

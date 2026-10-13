@@ -32,9 +32,9 @@ isolated boot has no real push credential. `HarnessReset` clears the ledger but
 does not remove device registrations.
 
 This package never resolves or spawns provider binaries. Isolated boot must pin
-provider binaries, homes, credentials, keychain behavior, catalogs, and
-background fetch before constructing this receiver. Unit tests use a fake
-`Host`; App integration uses the repository's provider-spawn isolation.
+provider binaries, homes, credentials, keychain behavior, catalogs, background
+fetch and the retention sweep before constructing this receiver. Unit tests use
+a fake `Host`; App integration uses the repository's provider-spawn isolation.
 
 Run `go test ./internal/harnessrpc` for receiver changes and `make e2e` for wire
 or lifecycle changes.

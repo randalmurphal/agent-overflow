@@ -608,7 +608,7 @@ the floor (its own tier below observe — wave 7b, §6), and `host`
 | `files:read` | observe | diffs, file content, context lines, search |
 | `threads:operate` | execute | send/steer/queue/start **in read-only or approval-required modes only** |
 | `approvals:respond` | execute | answering tool-use approvals |
-| `threads:autonomy` | execute | creating or moving threads into auto / auto-accept-edits / full-access; running workflows & automations |
+| `threads:autonomy` | execute | creating or moving threads into auto / auto-accept-edits / full-access; running workflows |
 | `terminal:operate` | execute | PTY create/attach/write/replay, worktree-setup output |
 | `preview:open` | execute | opening this machine's dev-server previews from another machine: the discovered port list and the ticketed preview URL for one port (§7; deliberately not `terminal:operate`) |
 | `git:operate` | execute | git mutations, worktrees, PR surface |
@@ -2966,7 +2966,7 @@ chip. 7d: project identity and merged entries.
 (155 thread, 21 project, 153 home, 38 selected, 6 all at landing;
 122 / 14 / 162 / 43 / 7 plus 31 `workspace` after the 2026-09-03 main
 merge added that inferred route; the methods keyed by workflow item,
-automation, terminal, subscription, thread-group or thread-batch ids
+terminal, subscription, thread-group or thread-batch ids
 are parked `home` in the table, and the client's index resolves the
 49 of them that carry that id as argument 0, a count
 `methodFamilies.test.ts` asserts; the `WorkflowAgent*` methods whose
@@ -2995,7 +2995,7 @@ an `all` route with one attached computer is dispatched to it directly
 by the fan-out, whichever computer that is. Route
 resolution: a one-call pin (`withBackendTarget`, drained at dispatch)
 for path-argument and subscription calls, then the id-family index for
-workflow items, automations and terminals, then the generated table;
+workflow items and terminals, then the generated table;
 `all` fans out and merges in one place (arrays concatenate in attach
 order, id-keyed objects shallow-merge, a failed backend's share is
 dropped and recorded on its entry). `selected` resolves focused thread

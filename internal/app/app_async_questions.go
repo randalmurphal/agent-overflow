@@ -57,6 +57,8 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 		startFailed: func(err error) string {
 			return "Your answers are queued, but the agent could not start: " + err.Error()
 		},
+		// The person answering may have opened an archived thread to do it.
+		fromPerson: true,
 	})
 	if errors.Is(err, store.ErrAsyncQuestionHandled) {
 		return fmt.Errorf("%w: %v", transport.ErrAlreadyHandled, err)

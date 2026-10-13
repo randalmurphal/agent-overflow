@@ -1,7 +1,7 @@
 package def
 
 // CallDepthVariable is the reserved name every element of a run reads that
-// run's CALL DEPTH under: 0 for the run a human or an automation started, 1 for
+// run's CALL DEPTH under: 0 for the run a human or an agent started, 1 for
 // a run one `call:` edge below it, and so on.
 //
 // It exists because a recursive campaign — one workflow whose last phase calls

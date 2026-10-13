@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"strings"
@@ -21,12 +22,9 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 	// handle runs only on the thread's provider event worker, one event at
 	// a time (app_provider_event_queue.go).
 	var deathReported bool
-	// deathRestored closes when the queue restore started for the reported
-	// death returns. The auto-reconnect waits for it: started first, the
-	// reconnect registers a replacement the restore's guard defers to, and
-	// what the dead session never took in is left in neither the queue nor
-	// the composer. Same single-worker justification as deathReported.
-	var deathRestored chan struct{}
+	// deathRestoreGuard is the death restore's guard, kept for the
+	// reconnect that follows the same death. Same worker-only access.
+	var deathRestoreGuard func() bool
 	// sawInit flips true on the session's first EventInit. An error
 	// turn-complete BEFORE init is the dead-on-arrival signature: the
 	// process failed during startup (Claude rejecting its
@@ -160,28 +158,27 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			// separate goroutine, then fence the drain after the lock is acquired.
 			// The token covers a registered replacement. The triage epoch covers
 			// a replacement that called MarkThreadActive but has not registered
-			// its provider session yet. Either is one the person started: the
-			// app's own reconnect waits for this restore (deathRestored).
-			restored := make(chan struct{})
-			deathRestored = restored
-			go func() {
-				defer close(restored)
-				a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, func() bool {
-					if current, ok := a.sessionManager().get(threadID); ok {
-						return current.Token == sessionToken
-					}
-					return a.triage != nil && a.triage.ThreadEpoch(threadID) == deathEpoch
-				})
-			}()
+			// its provider session yet.
+			deathRestoreGuard = func() bool {
+				if current, ok := a.sessionManager().get(threadID); ok {
+					return current.Token == sessionToken
+				}
+				return a.triage != nil && a.triage.ThreadEpoch(threadID) == deathEpoch
+			}
+			go a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, deathRestoreGuard)
 		}
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
 			a.unregisterSession(threadID, sessionToken)
 			a.workflowApplication().SessionDisconnected(threadID)
 			if deathReported {
-				restored := deathRestored
+				guard := deathRestoreGuard
 				go func() {
-					<-restored
+					// The reconnect stops the dead thread first, and a stop
+					// drops its queue. Whichever goroutine reaches the lock
+					// first, the death's queue is restored before that; a
+					// second restore drains nothing.
+					a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, guard)
 					a.attemptAutoReconnect(threadID)
 				}()
 			}
@@ -248,7 +245,7 @@ func (a *App) attemptAutoReconnect(threadID string) {
 	if !a.markAutoReconnectAttempted(threadID) {
 		return
 	}
-	if err := a.ReconnectSession(threadID); err != nil {
+	if err := a.reconnectDeadSession(threadID); err != nil {
 		// The death banner says the session died; this says the recovery
 		// the user did not ask for also failed, and why. Without it the
 		// spawn's own refusal (a workspace that is gone, a resume cursor
@@ -256,6 +253,19 @@ func (a *App) attemptAutoReconnect(threadID string) {
 		log.Printf("app: auto-reconnect after session death failed for %s: %v", threadID, err)
 		a.emitErrorToThread(threadID, "session could not be resumed automatically: "+err.Error())
 	}
+}
+
+// reconnectDeadSession is the auto-reconnect body. It reconnects only while
+// the thread has no live session: a send or start since the death already
+// replaced the dead one, and stopping that would end its turn and drop its
+// queue. A manual Reconnect still restarts unconditionally.
+func (a *App) reconnectDeadSession(threadID string) error {
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	if _, live := a.sessionManager().get(threadID); live {
+		return nil
+	}
+	return a.reconnectSessionLocked(context.Background(), threadID)
 }
 
 func (a *App) markAutoReconnectAttempted(threadID string) bool {

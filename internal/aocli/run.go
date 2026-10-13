@@ -68,14 +68,8 @@ var topLevelCommands = []topLevelCommand{
 	{name: "run", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 		return runCommand(args, lookupEnv, stdout, stderr)
 	}},
-	{name: "notes", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
-		return notesCommand(args, lookupEnv, stdout, stderr)
-	}},
 	{name: "memory", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 		return memoryCommand(args, lookupEnv, stdout, stderr)
-	}},
-	{name: "schedule", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
-		return scheduleCommand.run(args, lookupEnv, stdout, stderr)
 	}},
 }
 

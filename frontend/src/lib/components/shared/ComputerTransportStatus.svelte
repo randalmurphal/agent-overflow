@@ -71,8 +71,9 @@
   // the previous instance's residue, says so in every hello. It outranks
   // the bundle notice: it is about the data this backend serves now.
   import { dismissBootFailureNotice, getBootFailureNotice } from '../../stores/bootFailureNotice.svelte';
-  import { isBackendRecovering, onBackendRecovery } from '../../stores/transportRecovery';
+  import { isBackendResyncing, onBackendRecovery } from '../../stores/transportRecovery';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { installTapHold } from '../../utils/tapHold';
 
   // Tick once per second so the countdown stays in sync. We only mount
   // when the banner is visible; on a steady-state connection the
@@ -121,16 +122,20 @@
   let bundleNotice = $derived(getBundleNotice());
   let bootFailure = $derived(getBootFailureNotice(backend));
   let connectedNotice = $derived(bootFailure || bundleNotice);
-  let recovering = $state(false);
+  // Only a connection that replaced one this page used has anything to
+  // resync. A first connection's recovery is its boot, which the startup
+  // screen and the sidebar's catalog rows already show. On compact the
+  // strip is a row above the list, so its leaving moves a row under a tap.
+  let resyncing = $state(false);
   $effect(() => {
     const target = backend;
-    recovering = isBackendRecovering(target);
-    return onBackendRecovery((id, phase) => {
-      if (id === target) recovering = phase === 'start';
+    resyncing = isBackendResyncing(target);
+    return onBackendRecovery((id) => {
+      if (id === target) resyncing = isBackendResyncing(target);
     });
   });
   let checking = $derived(snapshot.status === 'connected' && snapshot.checkingConnection === true);
-  let syncing = $derived(snapshot.status === 'connected' && recovering);
+  let syncing = $derived(snapshot.status === 'connected' && resyncing);
   let showingBootFailure = $derived(snapshot.status === 'connected' && !checking && !syncing && bootFailure !== '');
 
   // A connection problem outranks a connected notice (a failed boot phase
@@ -344,6 +349,27 @@
     return isCompactLayout() ? {} : fade(node, { duration: 150 });
   }
 
+  // The state can also end during a tap: between the press and the click,
+  // which the engine hit-tests against the layout as it is by then. A press
+  // on what the row's collapse would move (the compact list, the compact
+  // thread header: `data-transport-tap-hold`) keeps the row at its height
+  // until the tap completes or cannot (utils/tapHold.ts).
+  let bannerRow: HTMLElement | null = $state(null);
+  let heldHeight = $state(0);
+  $effect(() => {
+    if (!isCompactLayout()) return;
+    const stop = installTapHold(
+      (target) => bannerRow !== null && target.closest('[data-transport-tap-hold]') !== null,
+      (held) => {
+        heldHeight = held && bannerRow ? bannerRow.offsetHeight : 0;
+      },
+    );
+    return () => {
+      stop();
+      heldHeight = 0;
+    };
+  });
+
   async function handleSignIn(): Promise<void> {
     if (signingIn) return;
     signingIn = true;
@@ -370,6 +396,7 @@
 {#if visible}
   <!-- An opaque ground keeps the tint readable over desktop pane content. -->
   <div
+    bind:this={bannerRow}
     transition:bannerFade
     class="absolute inset-x-0 top-0 z-30 bg-surface-1 compact:static compact:shrink-0"
   >
@@ -441,4 +468,6 @@
     {/if}
   </div>
   </div>
+{:else if heldHeight}
+  <div aria-hidden="true" data-testid="transport-status-held-row" class="shrink-0 bg-surface-1" style:height="{heldHeight}px"></div>
 {/if}

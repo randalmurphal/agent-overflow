@@ -103,8 +103,7 @@ function applyWorkflowGap(channel: string, origin?: EventOrigin): void {
       return;
     case 'workflow:definitions-changed':
       // The event handler IS the resync: it re-reads every loaded project's
-      // definitions, automations and costs, which is exactly what a dropped
-      // frame cost us.
+      // definitions and costs, which is exactly what a dropped frame cost us.
       applyWorkflowDefinitionsChanged();
       return;
     case 'workflow:error':

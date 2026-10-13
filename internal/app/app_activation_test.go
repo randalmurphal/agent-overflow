@@ -28,9 +28,9 @@ func TestTheZeroActivationGateRunsWorkInlineAndPropagatesItsError(t *testing.T) 
 		t.Fatal("Run did not execute the work")
 	}
 
-	// Inline means the caller sees the failure. A boot whose scheduler will not
-	// start must still fail the boot.
-	want := errors.New("the scheduler would not start")
+	// Inline means the caller sees the failure. A boot whose unattended work
+	// will not start must still fail the boot.
+	want := errors.New("thread transfers would not start")
 	if got := gate.Run(context.Background(), func() error { return want }); !errors.Is(got, want) {
 		t.Fatalf("Run returned %v, want the work's own error", got)
 	}

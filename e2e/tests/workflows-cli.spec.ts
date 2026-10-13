@@ -363,10 +363,10 @@ test('a granted phase starts a run once and a re-entered call surfaces the prior
 
   // A method the phase's grants do not admit is a typed refusal that names the
   // missing grant, not a silent no-op.
-  const scheduled = await runAO(env, 'schedule', 'child-flow', '--cron', '0 3 * * *');
-  expect(scheduled.code).toBe(2);
-  expect(scheduled.stderr).toContain('"schedule"');
-  expect(scheduled.stderr).toContain("phase's grants");
+  const answered = await runAO(env, 'run', 'answer', startDoc.itemId, 'yes');
+  expect(answered.code).toBe(2);
+  expect(answered.stderr).toContain('"resolve"');
+  expect(answered.stderr).toContain("phase's grants");
 
   // A method outside the scoped allow-list does not exist for this token at all
   // — the surface stays unenumerable from a compromised agent session. the CLI has

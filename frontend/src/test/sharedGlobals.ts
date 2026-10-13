@@ -78,12 +78,16 @@ function changed(before: Entry, after: Entry): boolean {
   return !Object.is(before.value, after.value);
 }
 
-function inheritedValue(prototype: Record<string, unknown>, key: string): unknown {
-  try {
-    return prototype[key];
-  } catch {
-    return undefined;
+// Whether the prototype chain holds key as a data property equal to value.
+// An inherited accessor never matches: read on the prototype itself it
+// throws or answers undefined, which would exempt an own property set to
+// undefined over it (navigator.clipboard).
+function inheritsValue(prototype: object, key: string, value: unknown): boolean {
+  for (let target: object | null = prototype; target !== null; target = Object.getPrototypeOf(target)) {
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+    if (descriptor !== undefined) return 'value' in descriptor && Object.is(descriptor.value, value);
   }
+  return false;
 }
 
 /** Lists every global the file changed, removed or added since `before`. */
@@ -102,11 +106,11 @@ export function sharedGlobalChanges(before: SharedGlobalsSnapshot): string[] {
       }
     }
     if (isGlobal) return;
-    const inherited = Object.getPrototypeOf(target()) as Record<string, unknown> | null;
+    const inherited = Object.getPrototypeOf(target()) as object | null;
     for (const [key, entry] of now) {
       if (prior.has(key) || key.startsWith('__')) continue;
       // A restored spy on an inherited method leaves an own copy of it.
-      if (!entry.accessor && inherited !== null && Object.is(entry.value, inheritedValue(inherited, key))) continue;
+      if (!entry.accessor && inherited !== null && inheritsValue(inherited, key, entry.value)) continue;
       changes.push(`${name}.${key} was added`);
     }
   });

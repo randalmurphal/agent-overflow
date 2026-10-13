@@ -224,6 +224,18 @@ func (s *Store) DetachThreadReceiptsFromThread(threadID string) (int64, error) {
 	return affected, nil
 }
 
+// ClearThreadRequestReceipts removes every receipt. A settled receipt
+// outlives its thread by design (DetachThreadReceiptsFromThread), so the
+// project cascade leaves it behind; this is how the harness reset keeps one
+// test's requests out of the next. Production never calls it: a receipt is
+// the record a paired computer has not collected yet.
+func (s *Store) ClearThreadRequestReceipts() error {
+	if _, err := s.db.Exec(`DELETE FROM thread_request_receipts`); err != nil {
+		return fmt.Errorf("store: clear thread request receipts: %w", err)
+	}
+	return nil
+}
+
 // MarkThreadReceiptRunning records the user row the request wrote and the
 // turn that consumed it, and moves the receipt out of `accepted`. Until it
 // applies, the request's message is still queued and no turn can settle it.

@@ -59,7 +59,7 @@ describe('familyBackend', () => {
     noteWorkflowItem('phase', 'mac');
     noteProject('project', 'mac');
     expect(familyBackend(1146143060, [{ itemId: 'run', phaseId: 'phase' }])).toBe('gpu');
-    expect(familyBackend(3011758347, [{ projectId: 'project', workflowId: 'run' }])).toBe('mac');
+    expect(familyBackend(595194384, [{ projectId: 'project', workflowId: 'run' }])).toBe('mac');
     expect(familyBackend(1146143060, [{ phaseId: 'run' }])).toBeUndefined();
     __resetEntityIndexForTest();
   });

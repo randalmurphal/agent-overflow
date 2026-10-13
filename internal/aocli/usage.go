@@ -85,8 +85,6 @@ const rootUsageOfflineCommands = `Offline commands (work anywhere):
 const rootUsageSessionCommands = `Session commands (run inside an Agent Overflow agent session):
   run                Start, observe, and control workflow runs
   memory             Record and read this campaign's accumulated lessons
-  notes              Read and write an automation's continuity notes
-  schedule           Create a cron automation for a workflow
 `
 
 const rootUsageRemoteCommand = `  remote             Run and inspect commands on enabled paired computers
@@ -552,32 +550,6 @@ const memoryListUsage = `Usage: agent-overflow memory list [--kind <kind>] [--ru
 Prints the campaign's notes oldest first, with the element and wave that wrote
 each. Unreadable lines (a note torn by a crash) are counted in the header
 rather than hidden.
-`
-
-const notesUsage = `Usage: agent-overflow notes <command> [options]
-
-Commands:
-  get <automation-id>  Print an automation's continuity notes
-  set <automation-id>  Replace them with stdin, or with --file
-`
-
-const notesGetUsage = `Usage: agent-overflow notes get [--json] <automation-id>
-`
-
-const notesSetUsage = `Usage: agent-overflow notes set [--json] [--file <path>] <automation-id>
-
-Reads the new notes from stdin unless --file names a file. Empty input clears
-the notes.
-`
-
-const scheduleUsage = `Usage: agent-overflow schedule [options] --cron <expr> <workflow-id>
-
-Options:
-  --cron <expr>       five-field cron expression naming when to start (required)
-  --json              write the app's result as JSON
-  --name <text>       name shown in the automations list
-  --scope <scope>     resolve the workflow in this scope (shared|project)
-  --seed <key=value>  seed one declared input (repeatable; JSON values parsed)
 `
 
 const threadUsage = `Usage: agent-overflow thread send [--wait 30s] <thread-id> <text>

@@ -448,7 +448,8 @@ and permits a client `ping` frame requesting an immediate heartbeat. Resume
 uses this probe to verify an open socket; repeated wake signals do not extend
 its deadline. Older servers arm the watchdog by sending their first heartbeat
 and receive no probes. The connection banner distinguishes resume verification
-from replay and snapshot recovery.
+from replay and snapshot recovery, and reports recovery only for a connection
+that replaced an earlier one of the same client.
 
 ## Session lifetime and revocation
 

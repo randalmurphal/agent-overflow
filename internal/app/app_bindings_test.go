@@ -34,7 +34,7 @@ func TestWorkflowBoundMethodsRegisteredOnApp(t *testing.T) {
 		"WorkflowCompleteTakeover",
 		"WorkflowMergeItem", "WorkflowCreateItemPR", "WorkflowDiscardItem",
 		"WorkflowFetchPRReviewComments", "WorkflowSendPRReviewCommentsToThread", "WorkflowDiscussPR",
-		"WorkflowGetJobNotes", "WorkflowSetJobNotes", "WorkflowListDefinitions",
+		"WorkflowListDefinitions",
 	} {
 		if _, ok := appType.MethodByName(name); !ok {
 			t.Errorf("App method %s is not registered", name)
@@ -1169,7 +1169,10 @@ func newTestAppAtStorePath(t *testing.T, dbPath string) *App {
 	// service whose writes announced nothing, so any test of settings
 	// convergence built on this fixture would have passed by observing
 	// silence.
-	app.setSettingsService(settings.NewService(t.TempDir()))
+	// The settings directory is the data directory, as in production and
+	// setupE2EApp, so session prompt files land in it.
+	app.configDir = t.TempDir()
+	app.setSettingsService(settings.NewService(app.configDir))
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
 	// The same structural spawn/home isolation setupE2EApp gets. This
 	// fixture is the majority one (~600 call sites); before this call was

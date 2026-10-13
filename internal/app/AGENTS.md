@@ -90,7 +90,11 @@ operation. Uploads stage outside the thread mutation lock, then reacquire it
 for ownership-checked publication. Durable flush rows are written before the
 in-memory queue, removed only on settlement or an explicit drop, and restored
 to the composer at boot instead of being dispatched without a user present.
-See [turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
+A teardown's or a revert's drop holds the thread mutation lock that every queue
+write takes, so a message queued during it is in the queue the drop reads or
+queued whole after it. A caller releases that lock before it tears down; the
+idle reaper, which holds it, uses the HoldingMutations variant. See
+[turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
 
 Agent thread requests settle once. Every state change on a request or receipt
 is conditional on the state it expects to find, and a change that does not
@@ -121,9 +125,15 @@ contract is
 loop or watch wake is data, not something the person wrote: one still queued
 at boot or left unconfirmed by a session that ended never goes to the
 composer, and its row records `not delivered`; an outside `thread send` is
-handled the same way, with a notice in its thread. A message Claude joined
-from a person's text and such parts is split, and only the person's text
-goes back (`agentPartsAtSessionEnd`). Whether a turn was a tick
+handled the same way, with a notice in its thread. A request's answer or
+reminder and a remote job's completion that never reached the agent go
+back to their owners through one path (`giveBackToOwners`), from a Stop, a
+revert, a session end, a failed Codex resend and the boot sweep. A message
+Claude joined from a person's text and such parts is split by the lengths
+its dispatch recorded (`usermessage.JoinedPart`), and only the person's
+text goes back (`agentPartsNotTakenIn`). What the app's messages are owed
+is applied once that restore commits (`settleNotTakenIn`): a restore that
+fails requeues them whole. Whether a turn was a tick
 is read from the rows of the turn that ended, because a dispatch cannot know
 what the provider joined into it. The exception is a Claude turn the CLI
 started for messages queued during the previous turn, which keep their rows

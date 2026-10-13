@@ -42,8 +42,7 @@ root run ── wave 1 ── plan ─► implement ─► verify ─► next-wa
                                               wave 2 ── plan ─► implement ─► …
 ```
 
-Nothing chains it from outside: no automation, no cron, no
-alternating-trigger pair. The loop is a call edge, which is the primitive
+Nothing chains it from outside. The loop is a call edge, which is the primitive
 the spec gives for "loop with an exit condition" (§3a). Each wave is a
 fresh child run with fresh loop counters, fresh budget accounting of its
 own, and a **freshly resolved definition**.

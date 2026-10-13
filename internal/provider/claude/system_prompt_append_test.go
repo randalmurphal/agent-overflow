@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
@@ -47,7 +48,7 @@ func TestSystemPromptSnapshotArgsAreVersionGated(t *testing.T) {
 // replacement or not.
 func TestBuildArgsPassesTheAppendSystemPromptFileAndSnapshotFlag(t *testing.T) {
 	t.Parallel()
-	appendPath, err := WriteSystemPromptFile("APPENDED GUIDE")
+	appendPath, err := WriteSystemPromptFile(t.TempDir(), "APPENDED GUIDE")
 	if err != nil {
 		t.Fatalf("WriteSystemPromptFile: %v", err)
 	}
@@ -102,16 +103,21 @@ func TestNewSessionWritesAndRemovesBothPromptFiles(t *testing.T) {
 	argvPath := t.TempDir() + "/argv.txt"
 	binary := writeArgvRecordingClaude(t, argvPath)
 
+	dir := t.TempDir()
 	s, err := NewSession(context.Background(), testThread, Config{
 		Binary:             binary,
 		SystemPrompt:       "REPLACEMENT",
 		AppendSystemPrompt: "APPENDED GUIDE",
+		SystemPromptDir:    dir,
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	if s.systemPromptPath == "" || s.appendSystemPromptPath == "" {
 		t.Fatalf("prompt files = (%q, %q), want both written", s.systemPromptPath, s.appendSystemPromptPath)
+	}
+	if left := promptFilesIn(t, dir); len(left) != 2 {
+		t.Fatalf("prompt files in SystemPromptDir = %v, want both", left)
 	}
 	for path, want := range map[string]string{s.systemPromptPath: "REPLACEMENT", s.appendSystemPromptPath: "APPENDED GUIDE"} {
 		data, err := os.ReadFile(path)
@@ -144,23 +150,64 @@ func TestNewSessionWritesAndRemovesBothPromptFiles(t *testing.T) {
 // A spawn that fails must not leave either prompt file behind.
 func TestNewSessionRemovesBothPromptFilesWhenTheSpawnFails(t *testing.T) {
 	t.Parallel()
-	before := promptFilesInTemp(t)
+	dir := t.TempDir()
 	_, err := NewSession(context.Background(), testThread, Config{
 		Binary:             t.TempDir() + "/does-not-exist",
 		SystemPrompt:       "REPLACEMENT",
 		AppendSystemPrompt: "APPENDED GUIDE",
+		SystemPromptDir:    dir,
 	}, func(provider.ProviderEvent) {})
 	if err == nil {
 		t.Fatal("NewSession succeeded with a missing binary")
 	}
-	if after := promptFilesInTemp(t); len(after) > len(before) {
-		t.Fatalf("failed spawn left prompt files behind: before %d, after %d", len(before), len(after))
+	if left := promptFilesIn(t, dir); len(left) > 0 {
+		t.Fatalf("failed spawn left prompt files behind: %v", left)
 	}
 }
 
-func promptFilesInTemp(t *testing.T) []string {
+// A process that dies without Close cannot remove its prompt files. They
+// must then be in SystemPromptDir, which the app empties at boot, and never
+// in the shared temp directory, where nothing would remove them.
+func TestKilledSessionLeavesItsPromptFilesOnlyInTheSystemPromptDir(t *testing.T) {
+	sharedTemp := t.TempDir()
+	t.Setenv("TMPDIR", sharedTemp)
+	dir := t.TempDir()
+	binary := writeArgvRecordingClaude(t, t.TempDir()+"/argv.txt")
+	s, err := NewSession(context.Background(), testThread, Config{
+		Binary:             binary,
+		SystemPrompt:       "REPLACEMENT",
+		AppendSystemPrompt: "APPENDED GUIDE",
+		SystemPromptDir:    dir,
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	proc, err := os.FindProcess(s.PID())
+	if err != nil {
+		t.Fatalf("find session process: %v", err)
+	}
+	if err := proc.Kill(); err != nil {
+		t.Fatalf("kill session process: %v", err)
+	}
+	select {
+	case <-s.readDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("read loop did not end after the process was killed")
+	}
+
+	if left := promptFilesIn(t, sharedTemp); len(left) > 0 {
+		t.Fatalf("prompt files in the shared temp directory: %v", left)
+	}
+	if left := promptFilesIn(t, dir); len(left) != 2 {
+		t.Fatalf("prompt files in SystemPromptDir after the kill = %v, want both", left)
+	}
+}
+
+func promptFilesIn(t *testing.T, dir string) []string {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "ao-claude-system-prompt-*.txt"))
+	matches, err := filepath.Glob(filepath.Join(dir, "ao-claude-system-prompt-*.txt"))
 	if err != nil {
 		t.Fatalf("glob prompt files: %v", err)
 	}

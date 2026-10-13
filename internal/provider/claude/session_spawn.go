@@ -29,19 +29,24 @@ type Config struct {
 	ResumeAt       string // transcript UUID to resume at inside Resume
 	ForkSession    bool
 	// SystemPrompt REPLACES the CLI's default system prompt. It reaches the
-	// process as `--system-prompt-file <path>` (a 0600 temp file written at
-	// spawn and removed on Close) rather than as an argv value — the two
-	// flags are wire-identical, and the file avoids both MAX_ARG_STRLEN and
-	// /proc exposure. See WriteSystemPromptFile.
+	// process as `--system-prompt-file <path>` (a 0600 file in
+	// SystemPromptDir written at spawn and removed on Close) rather than as
+	// an argv value — the two flags are wire-identical, and the file avoids
+	// both MAX_ARG_STRLEN and /proc exposure. See WriteSystemPromptFile.
 	SystemPrompt string
 	// AppendSystemPrompt follows the system prompt the session otherwise
 	// runs with: the CLI's default body, or SystemPrompt when that replaces
 	// it, joined by one blank line. It reaches the process as
-	// `--append-system-prompt-file <path>`, a second temp file written and
+	// `--append-system-prompt-file <path>`, a second file written and
 	// removed beside the replacement's. The app uses it for its guide
 	// (internal/app/app_agent_guide.go). Stamped at spawn like
 	// AdditionalDirs, so PlanLiveUpdate never sees it.
 	AppendSystemPrompt string
+	// SystemPromptDir is the existing directory the SystemPrompt and
+	// AppendSystemPrompt files are created in. Required when either is set.
+	// It must be a directory its owner sweeps, because a process that dies
+	// without Close cannot remove its files; see WriteSystemPromptFile.
+	SystemPromptDir string
 	// InstalledCLIVersion is the version of the binary about to run, as the
 	// app last read it from `claude --version`; empty when unknown. It gates
 	// SystemPromptSnapshotArgs. Spawn-only, same reasoning as AdditionalDirs.
@@ -315,8 +320,9 @@ func withClaudeSessionEnvDefaults(env map[string]string, disableTodoReminders bo
 	return merged
 }
 
-// WriteSystemPromptFile materializes cfg.SystemPrompt for
-// `--system-prompt-file`, returning "" for a session with no override.
+// WriteSystemPromptFile materializes a prompt in dir for
+// `--system-prompt-file` or `--append-system-prompt-file`, returning "" for
+// an empty prompt. A non-empty prompt with no dir is an error.
 //
 // The two flags are wire-equivalent — `--system-prompt <text>` and
 // `--system-prompt-file <path>` produce byte-identical API requests
@@ -334,17 +340,24 @@ func withClaudeSessionEnvDefaults(env map[string]string, disableTodoReminders bo
 //     user running AO.
 //
 // The caller owns removal: Close for a live session, RemoveSystemPromptFile
-// on every failed-spawn path.
+// on every failed-spawn path. Neither runs when the owning process is
+// killed, crashes or abandons a session at shutdown, so dir must not be the
+// shared temp directory, where such a file would stay until the machine
+// cleans it. The app passes a directory under its data root and empties it
+// at boot (internal/app/app_claude_prompt_dir.go).
 //
 // Exported for internal/provider/claudetui, which passes the same flag on
 // the PTY launch (the interactive TUI honors `--system-prompt-file`
-// identically — spike-verified 2.1.234). One writer means one temp-file
-// name, one mode, and one removal contract for both Claude transports.
-func WriteSystemPromptFile(prompt string) (string, error) {
+// identically — spike-verified 2.1.234). One writer means one file name,
+// one mode, and one removal contract for both Claude transports.
+func WriteSystemPromptFile(dir, prompt string) (string, error) {
 	if prompt == "" {
 		return "", nil
 	}
-	f, err := os.CreateTemp("", "ao-claude-system-prompt-*.txt")
+	if dir == "" {
+		return "", errors.New("create system prompt file: no system prompt directory configured")
+	}
+	f, err := os.CreateTemp(dir, "ao-claude-system-prompt-*.txt")
 	if err != nil {
 		return "", fmt.Errorf("create system prompt file: %w", err)
 	}
@@ -358,11 +371,11 @@ func WriteSystemPromptFile(prompt string) (string, error) {
 	return path, nil
 }
 
-// RemoveSystemPromptFile drops the temp file a session spawned with.
+// RemoveSystemPromptFile drops the file a session spawned with.
 // Best-effort: the CLI has already read it, so a failure costs a stray file
-// in the temp directory, not correctness — but it is logged rather than
-// swallowed, because a removal that keeps failing means the temp directory
-// is accumulating prompts.
+// until the directory's owner sweeps it, not correctness — but it is logged
+// rather than swallowed, because a removal that keeps failing means the
+// directory is accumulating prompts.
 func RemoveSystemPromptFile(path string) {
 	if path == "" {
 		return

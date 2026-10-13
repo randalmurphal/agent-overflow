@@ -71,7 +71,7 @@ type Session struct {
 	term       *terminal.Manager
 	terminalID string
 
-	// systemPromptPath and appendSystemPromptPath are the temp files
+	// systemPromptPath and appendSystemPromptPath are the files
 	// cfg.SystemPrompt and cfg.AppendSystemPrompt were written to for
 	// `--system-prompt-file` and `--append-system-prompt-file`, or "" for
 	// the one the session does not carry. Removed by Close — which the
@@ -137,6 +137,15 @@ type Session struct {
 	evlog *logging.Logger
 }
 
+// newSessionParser is the parser a session feeds. Its replay echoes are
+// synthesized from AO's sends (takeUserEcho) and nothing else, so each one is
+// this app's own send whatever its text quotes.
+func newSessionParser() *claude.Parser {
+	p := claude.NewParser()
+	p.SetReplaysAreOwnSends()
+	return p
+}
+
 // NewSession spawns the interactive Claude TUI under a fresh gateway + hook
 // relay and starts the parser feed. The session is live on return: the PTY is
 // running and the proxy/relay are serving. ctx cancellation tears the session
@@ -149,7 +158,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	s = &Session{
 		threadID: threadID,
 		onEvent:  onEvent,
-		parser:   claude.NewParser(),
+		parser:   newSessionParser(),
 		feed:     make(chan json.RawMessage, 256),
 		done:     make(chan struct{}),
 		logf:     log.Printf,
@@ -204,15 +213,15 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// Materialize the system-prompt override before the launch and record the
 	// path on the session in the same breath, so the deferred Close above
 	// removes it on every remaining failure path — a launch that never
-	// happened must not leave a 0600 prompt in the temp directory.
-	systemPromptPath, err := claude.WriteSystemPromptFile(cfg.SystemPrompt)
+	// happened must not leave a 0600 prompt behind.
+	systemPromptPath, err := claude.WriteSystemPromptFile(cfg.SystemPromptDir, cfg.SystemPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("claudetui: %w", err)
 	}
 	s.mu.Lock()
 	s.systemPromptPath = systemPromptPath
 	s.mu.Unlock()
-	appendSystemPromptPath, err := claude.WriteSystemPromptFile(cfg.AppendSystemPrompt)
+	appendSystemPromptPath, err := claude.WriteSystemPromptFile(cfg.SystemPromptDir, cfg.AppendSystemPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("claudetui: %w", err)
 	}

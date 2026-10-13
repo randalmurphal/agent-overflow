@@ -590,8 +590,8 @@ func TestClaudeBuiltinFallbackWithoutScenario(t *testing.T) {
 	p.expectLineContaining(`"subtype":"init"`, testTimeout)
 	p.expectLineContaining(fallbackResponseText, testTimeout)
 	p.expectLineContaining(`"type":"result"`, testTimeout)
-	// Stderr is copied on its own goroutine, which only the exit's Wait
-	// joins; a stdout line says nothing about how far that copy has got.
+	// stderr reaches the buffer through exec's own copy, which Wait joins;
+	// read it only after the exit.
 	p.closeStdinAndExpectExit(0, testTimeout)
 	if !strings.Contains(p.stderr.String(), "builtin claude fallback") {
 		t.Fatalf("fallback was not announced on stderr:\n%s", p.stderr.String())

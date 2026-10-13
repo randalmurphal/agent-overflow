@@ -149,6 +149,28 @@ test('touch unlock preserves view-only access across tabs, reload and reopening'
   expect((await session(reopened)).sessionId).toBe(before.sessionId);
 });
 
+test('an unlock pressed before the backend answers waits for its answer', async ({ lockedBrowser, context }) => {
+  const second = await context.newPage();
+  let held = 0;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  await second.route(/\/bootstrap\.json/, async (route) => {
+    held++;
+    await released;
+    await route.continue();
+  });
+  await second.goto(lockedBrowser.page.url());
+  await expectCovered(second);
+  // The cover is up while the manifest that says whether this backend
+  // offers passkeys is still in flight.
+  await expect.poll(() => held).toBeGreaterThan(0);
+  await second.getByRole('button', { name: 'Unlock', exact: true }).tap();
+  release();
+  await expect(second.getByTestId('app-lock')).toHaveCount(0);
+  await expect(second.getByRole('alert')).toHaveCount(0);
+  await second.close();
+});
+
 test('background grace, canceled verification and returning through browser history stay locked when owed', async ({ lockedBrowser }) => {
   const { page } = lockedBrowser;
   const start = Date.now();
@@ -252,13 +274,16 @@ test('losing connectivity while locked preserves the cover and recovers the same
   // An issued request may resume after reconnect or be refused promptly. Both
   // paths must keep the cover until a fresh assertion reaches this backend.
   // One DOM read: a verification that lands between two locator calls removes
-  // the button the second one would wait for.
+  // the button the second one would wait for. The proxy refused the outage's
+  // dials rather than taking the browser offline, so no `online` event wakes
+  // the reconnect ladder and the page reconnects on its next rung, which for
+  // a remote backend can be up to wsClient's RECONNECT_MAX_REMOTE_MS (30 s).
   await expect.poll(() => page.evaluate(() => {
     const cover = document.querySelector('[data-testid="app-lock"]');
     if (!cover) return 'verified';
     const button = [...cover.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Unlock');
     return button && !button.disabled ? 'retry' : 'pending';
-  })).not.toBe('pending');
+  }), { timeout: 40_000 }).not.toBe('pending');
   if (await page.getByTestId('app-lock').count()) await unlock(page);
   await expect(page.getByTestId('view-only-indicator')).toBeVisible();
   expect((await session(page)).sessionId).toBe(before.sessionId);

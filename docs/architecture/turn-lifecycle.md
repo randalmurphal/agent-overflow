@@ -621,7 +621,10 @@ One-to-one with a user → assistant round-trip. The authoritative
 **Claude**:
 - Turn start: `SendMessage` registers a pending-send marker, then
   Claude's wire `system/init` drives `handleTurnStart` through
-  `handleInit`.
+  `handleInit`. The start claims the first pending send that has not
+  opened a turn (`OpenedTurn`) and uses its index; a send that is never
+  confirmed therefore costs one turn and cannot hand its index to every
+  later start.
 - Turn end: `result` envelope. Carries `subtype`, `stop_reason`,
   `usage`, `duration_ms`, `total_cost_usd`, `modelUsage`,
   `permission_denials`, `terminal_reason`.
@@ -978,7 +981,8 @@ boundary drains the queue.
 active turn persists the row QUIETLY at the active turn's index, with no
 `provider:item_event`; every other case defers the row until its provider
 echo. Either way the message is visible above the composer, not in the
-timeline, until the echo confirms consumption.
+timeline, until its confirmation proves consumption
+(`docs/architecture/user-message-ordering.md` § Confirmation).
 
 **The frontend mirror** (`frontend/src/lib/stores/sendQueue.svelte.ts`) has
 two zones, both per-thread and both surviving thread switches:
@@ -1080,7 +1084,7 @@ working indicator clears and the user gets actionable copy:
    startup failure, e.g. an unusable `--resume-session-at` cursor, where
    the process emits only the error result and lingers):
    `handleTurnComplete`'s orphan branch persists an error item
-   attributed to the pending-send head when one exists (the send that
+   attributed to the first pending send that has not opened a turn (the send that
    triggered the doomed lazy start), else the last turn index, and
    suppresses the queued-send flush so deferred sends aren't
    dispatched into a dead session. Settled turns are excluded: a late

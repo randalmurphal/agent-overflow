@@ -223,6 +223,77 @@ func TestSessionTeardownDropsDurableQueueRows(t *testing.T) {
 	}
 }
 
+// A person's message queued while a Stop drops the thread's queue, after
+// the drop's delete and before its memory cleanup, waits for the drop and
+// lands after it: durable and in memory. Queued inside the drop, its row
+// would outlive the in-memory queue the cleanup clears: the message is never
+// sent, and the next boot puts it back in the composer.
+func TestAMessageQueuedDuringAStopsDropLandsAfterIt(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.ensureTriageRouter()
+	thread := testThread("durable-drop-race")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	queued := make(chan error, 1)
+	paused := false
+	app.queueDroppedForTest = func(threadID string) {
+		if threadID != thread.ID || paused {
+			return
+		}
+		paused = true
+		go func() {
+			_, err := app.RegisterQueueItem(context.Background(), thread.ID, "my own words", SendMessageOptions{SendID: "person-send"})
+			queued <- err
+		}()
+		// It waits on the drop's lock, or lands inside the drop.
+		waitUntil(t, 10*time.Second, func() bool {
+			return app.threadApplication().MutationRefs(thread.ID) == 2 || len(queued) == 1
+		})
+	}
+
+	// No dispatcher is configured, so triage keeps what is queued.
+	unlock := app.threadLocks().Lock(thread.ID)
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex),
+		Token:    "tok",
+		Liveness: newSessionLiveness(time.Now()),
+	})
+	if err := app.StopSession(thread.ID); err != nil {
+		unlock()
+		t.Fatalf("StopSession: %v", err)
+	}
+	unlock()
+	if !paused {
+		t.Fatal("the Stop never dropped the queue; the test proves nothing")
+	}
+	select {
+	case err := <-queued:
+		if err != nil {
+			t.Fatalf("RegisterQueueItem: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the queue write never finished after the drop")
+	}
+
+	var durable, memory []string
+	for _, row := range durableQueueRows(t, app, thread.ID) {
+		durable = append(durable, row.SendID)
+	}
+	items, err := app.GetQueueState(thread.ID)
+	if err != nil {
+		t.Fatalf("GetQueueState: %v", err)
+	}
+	for _, item := range items {
+		memory = append(memory, item.SendID)
+	}
+	if len(durable) != 1 || durable[0] != "person-send" || len(memory) != 1 || memory[0] != "person-send" {
+		t.Fatalf("after the Stop: queue %q (in memory %q); want the message queued, durably and in memory", durable, memory)
+	}
+}
+
 // The boot sweep: every row still present when the process starts is residue
 // from a crash, and it goes into the composer rather than to the provider.
 func TestBootSweepRestoresQueuedMessagesIntoTheComposer(t *testing.T) {

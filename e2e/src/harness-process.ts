@@ -34,11 +34,20 @@ export function spawnContained(
   options: SpawnOptions & { memoryLimitBytes: number },
 ): ChildProcess {
   const { memoryLimitBytes, ...spawnOptions } = options;
+  const command = containedCommand(binary, args, memoryLimitBytes);
+  return spawn(command.file, command.args, spawnOptions);
+}
+
+/**
+ * The command spawnContained runs for `binary` and `args`. `args` stay last,
+ * so a caller may append more.
+ */
+export function containedCommand(binary: string, args: string[], memoryLimitBytes: number): { file: string; args: string[] } {
   if (process.platform === 'win32') {
     // The Go launcher uses a Job Object on Windows. This direct TS entrypoint
     // cannot create one without a native helper, so the process-tree watchdog
     // still fails visibly on its first unverifiable sample.
-    return spawn(binary, args, spawnOptions);
+    return { file: binary, args };
   }
   const kib = Math.floor(memoryLimitBytes / 1024);
   if (!Number.isSafeInteger(kib) || kib < 1) {
@@ -48,17 +57,13 @@ export function spawnContained(
     // Current macOS kernels reject lowering RLIMIT_DATA, RLIMIT_RSS, and
     // RLIMIT_AS. HarnessWatchdog applies the same exact-tree ceiling at 100ms
     // cadence, and the outer ao-harness-e2e launcher monitors the whole suite.
-    return spawn(binary, args, spawnOptions);
+    return { file: binary, args };
   }
   // RLIMIT_AS (`ulimit -v`) prevents Go and Node from reserving their normal
   // runtime address space before the watchdog can start. RLIMIT_DATA bounds
   // heap/data allocations without blocking those virtual reservations.
   const script = 'limit="$1"; shift; ulimit -d "$limit" || exit 125; exec "$@"';
-  return spawn(
-    '/bin/sh',
-    ['-c', script, 'ao-harness-memory-limit', String(kib), binary, ...args],
-    spawnOptions,
-  );
+  return { file: '/bin/sh', args: ['-c', script, 'ao-harness-memory-limit', String(kib), binary, ...args] };
 }
 
 export async function captureProcessIdentity(pid: number | undefined): Promise<ProcessIdentity> {

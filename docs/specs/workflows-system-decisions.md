@@ -158,6 +158,7 @@ session; codex-cli 0.144.0 app-server). Raw runs in the session scratchpad
    the affordance). **Amends spec §6.**
 2. **Scheduler/automations (§11) ship in v1.** Cron + internal-event triggers +
    authenticated-CLI polling with cursors. Not a fast-follow.
+   **Superseded by D76.**
 3. **In-app disposition in v1: merge / PR / discard on done items.** Net-new local
    merge machinery. **Spec amendment (user call): "nothing auto-merges" becomes the
    default, not an absolute**: a project profile may opt into auto-merge-on-done
@@ -541,6 +542,7 @@ blob): visible + editable in the item/automation UI, injected as a reserved seed
 variable, and optionally rewritten by a terminal phase via a first-party
 `update-job-notes` tool (NOOP is a normal outcome). Scoped deliberately small:
 a notes file per job, not a memory subsystem (the §12 exclusion stands).
+**Superseded by D76.**
 
 ## D6 amendments (2026-07-11)
 
@@ -713,10 +715,13 @@ verdict it now is, with what the first attempt got wrong.
   `report-back` early would let a workflow declare a capability nothing can
   honour and discover it only at run time. Adding it later is additive: a
   new `Grant` constant, its `ScopedTokenMethods` rows, and the bound method's
-  row-level check. **Ratified as-is; not a gap.**
+  row-level check. **Ratified as-is; not a gap.** **Superseded in part by
+  D76:** `schedule` and `update-notes` are removed from the set.
 
 - **D25 (RESOLVED 2026-07-25). Deleting a project cleans up after itself; it
-  never deletes a branch.** The M6 sweep left this open, and the first
+  never deletes a branch.** **Superseded in part by D76:** automations, the
+  schedule refresh and the preview's automation count are gone; the
+  locked-section re-read covers run ids only. The M6 sweep left this open, and the first
   implementation went further than the ruling that followed it. See the rework
   note below. Settled shape: deleting a project removes what Agent Overflow
   owns (its threads, its runs and their phase/unit/effect rows, its
@@ -2825,3 +2830,37 @@ each pinned by an incident-replay test:
   re-stamped by a resume refresh, since the wall-clock budget measures
   against it. No UI affordance yet; the frontend passes `false`, and
   exposing it is a product decision.
+
+## One clock (user ruling, 2026-10-12)
+
+- **D76. A scheduled or triggered run is started by a standing agent whose
+  loop or watch wakes it; the workflow system keeps no clock.** Standing
+  agents ruling 13 (`docs/specs/standing-agents.md`) makes the wake
+  supervisor the app's only scheduler, so the workflow scheduler
+  (`internal/workflow/scheduler`) and the `automations` and
+  `automation_cursors` tables are removed, together with everything that
+  existed only for them: the automation bound methods
+  (`WorkflowCreateAutomation` and its siblings), the `schedule` and `notes`
+  CLI verbs, the `schedule` and `update-notes` grants and their scoped-token
+  methods, job notes, the overlay's automation rows and Run now, the
+  `poll-jira-and-start` starter, and the automation count in the
+  project-deletion preview. A run an agent starts on a wake is an ordinary
+  agent-started run (§5): it binds to the agent's thread and wakes it.
+  Overlap, conditions, cursors and continuity belong to the agent and live
+  in its home (§11).
+
+  **Supersedes** D3.2, D12, the M5 automations milestone in D10, the
+  automation surfaces in D11 and its coverage gap 2, D16's skip-if-running
+  overlap policy, the `schedule` and `update-notes` grants in D24's closed
+  set, the automation parts of D25's project deletion, and what D34 still
+  held true of automations. Predicates stay: route `when:` clauses still
+  evaluate them (§4); only the automation condition that also used them is
+  gone.
+
+  **Existing rows.** Migration v144 drops both tables and the partial index
+  `idx_work_items_automation_source_ref`, and rewrites every run an
+  automation started as `source = 'manual'` with `source_ref` cleared,
+  because the reference named a row that no longer exists; it logs how many
+  runs it mapped. v145 rebuilds `work_items` so its `source` CHECK admits
+  only `manual`, `agent` and `call`. Keeping `automation` as a value nothing
+  writes would leave the removed feature in the schema.

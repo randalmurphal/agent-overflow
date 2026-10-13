@@ -177,6 +177,11 @@ func acquireUpdateLock(ctx context.Context, wait time.Duration) (*os.File, func(
 		return nil, nil, err
 	}
 	return lock.file, func() {
+		// flock belongs to the open file description, so a forked child's
+		// copy keeps it until exec: unlock rather than rely on the close.
+		if err := unlockFile(lock.file); err != nil {
+			log.Printf("update: unlock the backend lock: %v", err)
+		}
 		if err := lock.file.Close(); err != nil {
 			log.Printf("update: release the backend lock: %v", err)
 		}

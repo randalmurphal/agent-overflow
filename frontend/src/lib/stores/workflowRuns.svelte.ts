@@ -6,8 +6,8 @@
 //     badge is authoritative on app open (§7: the badge re-surfaces, a missed
 //     notification never loses work). Summaries only: no snapshot, no seeds,
 //     no digest.
-//   - overlay — the full listing plus per-project catalogs, automations and
-//     costs, loaded when the overlay opens.
+//   - overlay — the full listing plus per-project catalogs and costs, loaded
+//     when the overlay opens.
 //
 // Run DETAIL (phases, units, artifacts, outputs, spend) is loaded for the ONE
 // run the overlay is looking at and evicted the moment it looks at another, so
@@ -19,7 +19,6 @@
 
 import type {
   WorkItem,
-  WorkflowAutomationView,
   WorkflowDefinitionCatalog,
   WorkflowEngineStateEvent,
   WorkflowItemDetail,
@@ -31,7 +30,6 @@ import type {
 import {
   WorkflowGetEngineState,
   WorkflowGetItem,
-  WorkflowListAutomations,
   WorkflowListDefinitions,
   WorkflowListItemCosts,
   WorkflowListItems,
@@ -58,7 +56,6 @@ export interface WorkflowLivePhase {
 let runs = $state<WorkItem[]>([]);
 let costs = $state<Record<string, number>>({});
 let catalogs = $state(new Map<string, WorkflowDefinitionCatalog>());
-let automations = $state(new Map<string, WorkflowAutomationView[]>());
 let details = $state(new Map<string, WorkflowItemDetail>());
 let livePhases = $state(new Map<string, WorkflowLivePhase>());
 let receipts = $state(new Map<string, WorkflowResolvedReceipt>());
@@ -94,10 +91,6 @@ export function getWorkflowCosts(): Readonly<Record<string, number>> {
 
 export function getWorkflowCatalog(projectId: string): WorkflowDefinitionCatalog | undefined {
   return catalogs.get(projectId);
-}
-
-export function getWorkflowAutomations(projectId: string): readonly WorkflowAutomationView[] {
-  return automations.get(projectId) ?? [];
 }
 
 export function getWorkflowDetail(itemId: string): WorkflowItemDetail | undefined {
@@ -213,24 +206,20 @@ async function loadProjectScopedData(projectIds: readonly string[]): Promise<voi
     try { backend = requireEntityBackend(projectBackend(projectId)); }
     catch { return null; } // A removed project's old view may still be closing.
     const computer = backendById(backend);
-    const [catalog, automations, costs] = await Promise.all([
+    const [catalog, costs] = await Promise.all([
       withBackendTarget(backend, () => WorkflowListDefinitions(projectId)).catch(() => null),
-      withBackendTarget(backend, () => WorkflowListAutomations(projectId)).catch(() => null),
       withBackendTarget(backend, () => WorkflowListItemCosts(projectId)).catch(() => null),
     ]);
-    return { projectId, backend, computer, catalog, automations, costs };
+    return { projectId, backend, computer, catalog, costs };
   }));
   if (revision !== projectRevision) return;
   const nextCatalogs = new Map<string, WorkflowDefinitionCatalog>();
-  const nextAutomations = new Map<string, WorkflowAutomationView[]>();
   const nextCosts: Record<string, number> = {};
   for (const entry of loaded) {
     if (!entry) continue;
     if (backendById(entry.backend) !== entry.computer) continue;
     const catalog = entry.catalog ?? catalogs.get(entry.projectId);
-    const automation = entry.automations ?? automations.get(entry.projectId);
     if (catalog) nextCatalogs.set(entry.projectId, catalog);
-    if (automation) nextAutomations.set(entry.projectId, automation);
     if (!entry.costs) {
       for (const item of runs) if (item.projectId === entry.projectId && costs[item.id] !== undefined) nextCosts[item.id] = costs[item.id];
     }
@@ -239,7 +228,6 @@ async function loadProjectScopedData(projectIds: readonly string[]): Promise<voi
     }
   }
   catalogs = nextCatalogs;
-  automations = nextAutomations;
   costs = nextCosts;
 }
 
@@ -401,9 +389,8 @@ onBackendDetached(({ backendId, projectIds, workflowItemIds }) => {
   details = new Map(details);
   livePhases = new Map(livePhases);
   receipts = new Map(receipts);
-  for (const id of projectIds) { catalogs.delete(id); automations.delete(id); }
+  for (const id of projectIds) catalogs.delete(id);
   catalogs = new Map(catalogs);
-  automations = new Map(automations);
   paused.delete(backendId);
   engineRevisions.delete(backendId);
   paused = new Map(paused);
@@ -424,7 +411,6 @@ export function resetWorkflowRunsForTest(): void {
   runs = [];
   costs = {};
   catalogs = new Map();
-  automations = new Map();
   details = new Map();
   livePhases = new Map();
   receipts = new Map();

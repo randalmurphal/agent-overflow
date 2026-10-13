@@ -216,11 +216,11 @@ func TestNewSurfacesProfileBindingFindingsAfterCreatingFiles(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := Run([]string{"workflow", "new", "poll-jira-and-start", "--id", "jira-poll", "--project", "sample", "--config-root", configRoot}, &stdout, &stderr)
+	code := Run([]string{"workflow", "new", "port-campaign", "--id", "campaign", "--project", "sample", "--config-root", configRoot}, &stdout, &stderr)
 	if code != exitFindings || !strings.Contains(stdout.String(), "bindings: checked") || !strings.Contains(stdout.String(), "binding.command") || !strings.Contains(stdout.String(), "binding.capacity") {
 		t.Fatalf("Run exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if _, err := os.Stat(filepath.Join(profileDir, "workflows", "jira-poll.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(profileDir, "workflows", "campaign.yaml")); err != nil {
 		t.Fatalf("created definition: %v", err)
 	}
 }

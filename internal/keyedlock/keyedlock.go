@@ -10,8 +10,9 @@ import (
 // Registry hands out one lock per string key and reclaims it once
 // nothing references it. Users include per-thread action
 // serialization (`App.threadLocks`), per-thread session-config apply
-// serialization (`App.configApplyLocks`), and per-item workflow workspace
-// provisioning (`workflowhost.Runner.workspaceLocks`).
+// serialization (`App.configApplyLocks`), per-item workflow workspace
+// provisioning (`workflowhost.Runner.workspaceLocks`), and per-repository
+// `git worktree` commands (`git.worktreeAdminLocks`).
 type Registry struct {
 	mu    sync.Mutex
 	locks map[string]*entry

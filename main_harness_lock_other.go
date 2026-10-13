@@ -15,3 +15,6 @@ func openHarnessLock(path string, mode os.FileMode) (*os.File, error) {
 // on such a platform today (the harness backend is linux/macOS, with the
 // Windows shell hosting a WSL Linux backend).
 func lockFileExclusiveNonBlocking(*os.File) (bool, error) { return true, nil }
+
+// unlockFile has nothing to drop: lockFileExclusiveNonBlocking takes no lock.
+func unlockFile(*os.File) error { return nil }

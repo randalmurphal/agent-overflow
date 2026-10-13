@@ -47,18 +47,6 @@ export function workflowAge(timestampMs: number, nowMs = Date.now()): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
-/** "in 3h 40m" / "in 45s" — the countdown on an automation row. */
-export function workflowCountdown(timestampMs: number, nowMs = Date.now()): string {
-  const seconds = Math.max(0, Math.round((timestampMs - nowMs) / 1000));
-  if (seconds < 60) return `in ${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `in ${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remainder = minutes % 60;
-  if (hours < 24) return remainder > 0 ? `in ${hours}h ${remainder}m` : `in ${hours}h`;
-  return `in ${Math.floor(hours / 24)}d`;
-}
-
 export function formatWorkflowCost(costUsd: number | undefined): string {
   if (typeof costUsd !== 'number' || !Number.isFinite(costUsd) || costUsd <= 0) return '';
   return `$${costUsd.toFixed(2)}`;
@@ -149,7 +137,7 @@ function restedAt(item: WorkItem): number {
  * Project-grouped home content (§3.2). Only root runs are listed — a child
  * run is a node of its parent's tree, never a row of its own. Groups come
  * back ordered by project name; a project with no runs is still returned so
- * the caller can decide whether its definitions/automations justify a group.
+ * the caller can decide whether its definitions justify a group.
  */
 export function groupWorkflowRunsByProject(
   items: readonly WorkItem[],

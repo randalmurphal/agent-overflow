@@ -86,9 +86,11 @@ type codexAdapter struct {
 // means "this account has no codex models at all" — after which every
 // explicit reasoning effort on a codex thread is refused and the model picker
 // is blank. The list names the harness seed's own model
-// (`app_harness_seed.go`) plus one current catalog slug, each with the full
-// effort menu and the fast tier, so a harness session looks like an account
-// that can actually run.
+// (`app_harness_seed.go`) plus one current catalog slug, each with the effort
+// menu the shipped catalog (internal/provider/models.go) gives it and the
+// fast tier, so a harness session looks like an account that can actually
+// run and a thread's effort is accepted the same way whether the live list
+// has been fetched yet or not.
 const mockCodexModelList = `{"data":[` +
 	`{"model":"gpt-5.2-codex","displayName":"GPT 5.2 Codex (mock)","defaultReasoningEffort":"medium",` +
 	`"supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},` +
@@ -96,7 +98,7 @@ const mockCodexModelList = `{"data":[` +
 	`"serviceTiers":[{"id":"priority","name":"Fast","description":"mock fast tier"}]},` +
 	`{"model":"gpt-5.6-sol","displayName":"GPT 5.6 Sol (mock)","defaultReasoningEffort":"low",` +
 	`"supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},` +
-	`{"reasoningEffort":"high"},{"reasoningEffort":"xhigh"}],` +
+	`{"reasoningEffort":"high"},{"reasoningEffort":"xhigh"},{"reasoningEffort":"max"},{"reasoningEffort":"ultra"}],` +
 	`"serviceTiers":[{"id":"priority","name":"Fast","description":"mock fast tier"}]}],` +
 	`"nextCursor":null}`
 

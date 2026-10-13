@@ -136,8 +136,11 @@ test('advisor calls the API never ran show no row or settle as Not run', async (
   await harness.rpc('SendMessage', threadId, 'check with the advisor', null);
   await advising;
 
-  // The call that runs is the only advisor row, and it is running.
+  // The call that runs is the only advisor row, and it is running. The
+  // sampler reads once per frame, so the gate closes only after a frame has
+  // seen that row; the locator alone can match before any frame has.
   await expect(timeline.locator('[data-testid="advisor-row"] [data-testid="indicator"][data-state="running"]')).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __aoAdvisor: AdvisorFrames }).__aoAdvisor.maxRowsBeforeGate)).toBe(1);
   await page.evaluate(() => {
     (window as unknown as { __aoAdvisor: AdvisorFrames }).__aoAdvisor.gate = true;
   });

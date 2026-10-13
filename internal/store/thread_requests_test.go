@@ -965,41 +965,104 @@ func TestQueueThreadWakeWritesTheRowAndTheMarkTogether(t *testing.T) {
 	}
 }
 
-// A queued wake the previous process never delivered is restored into the
-// composer at boot. The row is already marked delivered by then, so the
-// correction applies to a delivered row rather than an undelivered one.
-func TestMarkThreadRequestDeliveredAsDraftCorrectsAQueuedWake(t *testing.T) {
+// WithdrawThreadWake is QueueThreadWake undone for an archive: the queue row,
+// its delivery mark and the request's notify go in one transaction, so a
+// retry never sees the answer owed and armed. A late wake clears only its
+// own mark, and a row already gone changes nothing.
+func TestWithdrawThreadWakeOwesTheAnswerAgainDisarmed(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
-	seedSettledThreadRequest(t, s, "tok-draft", "t-caller", ThreadRequestSend, 100, "the answer")
-
-	// Nothing to correct before a wake was queued.
-	if corrected, err := s.MarkThreadRequestDeliveredAsDraft("tok-draft", false); err != nil || corrected {
-		t.Fatalf("correction applied to an undelivered request: corrected=%v err=%v", corrected, err)
+	seedSettledThreadRequest(t, s, "tok-back", "t-caller", ThreadRequestSend, 100, "the answer")
+	if _, err := s.SetThreadRequestNotify("tok-back", true); err != nil {
+		t.Fatalf("SetThreadRequestNotify: %v", err)
 	}
-	if err := s.QueueThreadWake("tok-draft", false, FlushQueueItem{
-		ID: "queue:draft", ThreadID: "t-caller", SendID: "thread-wake:tok-draft", Message: "the answer", EnqueuedAt: 900,
+	if err := s.QueueThreadWake("tok-back", false, FlushQueueItem{
+		ID: "queue:back", ThreadID: "t-caller", SendID: "thread-wake:tok-back", Message: "the answer", EnqueuedAt: 900,
 	}); err != nil {
 		t.Fatalf("QueueThreadWake: %v", err)
 	}
-	corrected, err := s.MarkThreadRequestDeliveredAsDraft("tok-draft", false)
-	if err != nil || !corrected {
-		t.Fatalf("correction did not apply: corrected=%v err=%v", corrected, err)
+	if err := s.WithdrawThreadWake("tok-back", false, "queue:back", false); err != nil {
+		t.Fatalf("WithdrawThreadWake: %v", err)
 	}
-	row := mustGetThreadRequest(t, s, "tok-draft")
-	if row.DeliveredHow != ThreadWakeDraft {
-		t.Fatalf("delivery = %q, want the draft correction", row.DeliveredHow)
+	row := mustGetThreadRequest(t, s, "tok-back")
+	if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
+		t.Fatalf("withdrawn: delivered %q at %d, notify %v; want undelivered and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
 	}
-	if row.DeliveredAt != 900 {
-		t.Errorf("the correction moved the delivery time to %d", row.DeliveredAt)
+	if rows, err := s.ListFlushQueueItems("t-caller"); err != nil || len(rows) != 0 {
+		t.Fatalf("the withdrawn wake left %+v (err %v)", rows, err)
 	}
-	// An inline delivery is not a queued wake and is never corrected.
-	seedSettledThreadRequest(t, s, "tok-inline", "t-caller", ThreadRequestSend, 100, "the answer")
-	if _, err := s.MarkThreadRequestDelivered("tok-inline", ThreadWakeInline, 800, false); err != nil {
+
+	// The late reply's wake: the first answer was delivered inline.
+	if _, err := s.MarkThreadRequestDelivered("tok-back", ThreadWakeInline, 920, false); err != nil {
 		t.Fatalf("MarkThreadRequestDelivered: %v", err)
 	}
-	if corrected, err := s.MarkThreadRequestDeliveredAsDraft("tok-inline", false); err != nil || corrected {
-		t.Fatalf("an inline delivery was rewritten as a draft: corrected=%v err=%v", corrected, err)
+	if stored, err := s.StoreThreadRequestLateReply("tok-back", []byte("on reflection"), 940); err != nil || !stored {
+		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
+	}
+	if _, err := s.SetThreadRequestNotify("tok-back", true); err != nil {
+		t.Fatalf("SetThreadRequestNotify: %v", err)
+	}
+	if err := s.QueueThreadWake("tok-back", true, FlushQueueItem{
+		ID: "queue:back-late", ThreadID: "t-caller", SendID: "thread-wake-late:tok-back", Message: "on reflection", EnqueuedAt: 950,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake(late): %v", err)
+	}
+	if err := s.WithdrawThreadWake("tok-back", true, "queue:back-late", false); err != nil {
+		t.Fatalf("WithdrawThreadWake(late): %v", err)
+	}
+	row = mustGetThreadRequest(t, s, "tok-back")
+	if row.LateDeliveredAt != 0 || row.Notify || row.DeliveredAt != 920 {
+		t.Fatalf("late withdrawn: late delivery %d, notify %v, first delivery %d; want the late wake owed and disarmed, the first delivery kept",
+			row.LateDeliveredAt, row.Notify, row.DeliveredAt)
+	}
+
+	// Gone already (dispatched or withdrawn): nothing changes.
+	if _, err := s.SetThreadRequestNotify("tok-back", true); err != nil {
+		t.Fatalf("SetThreadRequestNotify: %v", err)
+	}
+	if err := s.WithdrawThreadWake("tok-back", false, "queue:absent", false); err != nil {
+		t.Fatalf("WithdrawThreadWake(absent): %v", err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-back"); !row.Notify || row.DeliveredAt != 920 {
+		t.Fatalf("an absent row changed the request: notify %v, delivered at %d", row.Notify, row.DeliveredAt)
+	}
+}
+
+// A wake the provider was handed and never confirmed has no queue row left,
+// and goes back all the same while its request still reads queued: owed and
+// disarmed. A request delivered some other way is left alone.
+func TestWithdrawThreadWakeReturnsAnUnconfirmedWakeWithNoRow(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	seedSettledThreadRequest(t, s, "tok-sent", "t-caller", ThreadRequestSend, 100, "the answer")
+	if err := s.QueueThreadWake("tok-sent", false, FlushQueueItem{
+		ID: "queue:sent", ThreadID: "t-caller", SendID: "thread-wake:tok-sent", Message: "the answer", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	if _, err := s.SetThreadRequestNotify("tok-sent", true); err != nil {
+		t.Fatalf("SetThreadRequestNotify: %v", err)
+	}
+	// The dispatch retired the row at the provider write.
+	if err := s.DeleteDispatchedFlushQueueItem("queue:sent"); err != nil {
+		t.Fatalf("DeleteDispatchedFlushQueueItem: %v", err)
+	}
+	if err := s.WithdrawThreadWake("tok-sent", false, "queue:sent", true); err != nil {
+		t.Fatalf("WithdrawThreadWake: %v", err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-sent"); row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
+		t.Fatalf("unconfirmed: delivered %q at %d, notify %v; want undelivered and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
+	}
+
+	seedSettledThreadRequest(t, s, "tok-inline", "t-caller", ThreadRequestSend, 100, "the answer")
+	if _, err := s.MarkThreadRequestDelivered("tok-inline", ThreadWakeInline, 920, false); err != nil {
+		t.Fatalf("MarkThreadRequestDelivered: %v", err)
+	}
+	if err := s.WithdrawThreadWake("tok-inline", false, "", true); err != nil {
+		t.Fatalf("WithdrawThreadWake(inline): %v", err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-inline"); row.DeliveredAt != 920 || row.DeliveredHow != ThreadWakeInline {
+		t.Fatalf("an inline delivery was taken back: delivered %q at %d", row.DeliveredHow, row.DeliveredAt)
 	}
 }
 

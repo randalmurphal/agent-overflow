@@ -44,3 +44,9 @@ func lockFileExclusiveNonBlocking(file *os.File) (bool, error) {
 	}
 	return false, err
 }
+
+// unlockFile drops the lock lockFileExclusiveNonBlocking took. flock belongs
+// to the open file description, so a forked child's copy keeps it until exec.
+func unlockFile(file *os.File) error {
+	return syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+}

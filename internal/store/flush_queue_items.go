@@ -125,23 +125,28 @@ func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids []str
 }
 
 // DeleteFlushQueueItemsForThread drops every queued message of one thread
-// but those whose send id starts with keepSendIDPrefix (empty keeps none).
-// Its callers are the wholesale DROPS — a session teardown whose triage
-// cleanup discards the in-memory queue, and the Codex rollback purge — where
-// leaving rows behind would resurrect at the next boot exactly the messages
-// the user's Stop or revert threw away. A row kept is the caller's to
-// remove (RemoveFlushQueueItem).
-func (s *Store) DeleteFlushQueueItemsForThread(threadID, keepSendIDPrefix string) error {
+// but those whose send id starts with keepSendIDPrefix (empty keeps none)
+// and the rows keepIDs names. Its callers are the wholesale DROPS — a
+// session teardown whose triage cleanup discards the in-memory queue, and
+// the Codex rollback purge — where leaving rows behind would resurrect at
+// the next boot exactly the messages the user's Stop or revert threw away. A
+// row kept is the caller's to remove (RemoveFlushQueueItem, or its owner's
+// own withdrawal).
+func (s *Store) DeleteFlushQueueItemsForThread(threadID, keepSendIDPrefix string, keepIDs ...string) error {
 	if strings.TrimSpace(threadID) == "" {
 		return nil
+	}
+	kept, err := json.Marshal(append([]string{}, keepIDs...))
+	if err != nil {
+		return err
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	dropped := `thread_id = ? AND (? = '' OR substr(send_id, 1, ?) <> ?)`
-	args := []any{threadID, keepSendIDPrefix, len(keepSendIDPrefix), keepSendIDPrefix}
+	dropped := `thread_id = ? AND (? = '' OR substr(send_id, 1, ?) <> ?) AND id NOT IN (SELECT value FROM json_each(?))`
+	args := []any{threadID, keepSendIDPrefix, len(keepSendIDPrefix), keepSendIDPrefix, string(kept)}
 	if _, err := tx.Exec(`UPDATE async_questions SET state='unanswered',answer='',send_id='',user_item_id=''
       WHERE thread_id=? AND state='submitted' AND send_id<>'' AND send_id IN
       (SELECT send_id FROM flush_queue_items WHERE send_id<>'' AND `+dropped+`)`, append([]any{threadID}, args...)...); err != nil {

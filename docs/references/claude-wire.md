@@ -1145,6 +1145,44 @@ summarized`), 3 turns in one persistent session:
 - **`parentUuid` is CLI-assigned.** The client supplies only `uuid`; the
   CLI assigns `parentUuid` itself, threading the entry onto the transcript.
 
+### ⚠ The echo of a turn-opening prompt is filtered (verified 2.1.284)
+
+The echo is not unconditional. For a prompt that opens a turn, the CLI
+echoes only what its replay filter (`Pae`) accepts, and the filter
+rejects any user text that contains `<local-command-stdout>`,
+`<local-command-stderr>`, `<bash-stdout>`, `<bash-stderr>`,
+`<task-notification>` or `<tick>`, or starts with `<teammate-message `.
+A user quoting one of those tags in a real prompt gets no echo. A prompt
+drained into a running turn takes a different path and is echoed whatever
+it says.
+
+The transcript write is unconditional. With `--session-mirror` the
+prompt's main-transcript entry arrives as a `transcript_mirror` frame
+right after the turn's `system/init` and before its first output, under
+the client-supplied `uuid`, with `promptSource:"sdk"`, the CLI-assigned
+`parentUuid` and content byte-identical to the echo's. A drained prompt
+has no user entry; the transcript records it as a `queued_command`
+attachment carrying the uuid as `source_uuid`.
+
+Spike 2026-10-11 (haiku, AO's flag set), each case with its
+`command_lifecycle` bracket:
+
+| Case | Echo | Main-transcript user entry |
+|---|---|---|
+| Plain prompt, idle session | yes, at `message_start` | yes, ~0.2 s after init |
+| Filtered prompt, idle session | none | yes |
+| Filtered prompt, drained mid-turn | yes, at drain | none (`queued_command` attachment) |
+| Filtered prompt, its turn interrupted | none | yes, before the interrupt |
+
+AO confirms a send from whichever of the two names its uuid first: the
+parser reports a main-transcript user entry under a uuid in the session's
+issued ledger as a confirm-only `EventUserText`
+(`provider.MetaUserTextTranscriptRecordedKey`, `recordedOwnPrompt`), and
+triage consumes the pending send by identity only. The echo that follows
+is a duplicate. The parser also never reclassifies an echo carrying an
+issued uuid by its content, so a prompt quoting a balanced injected or
+peer wrapper keeps its echo.
+
 ### Queued-message consumption: three flavors (claude 2.1.202 / 2.1.205 / 2.1.257)
 
 A user envelope written to stdin **while a turn is running** honors the
@@ -1326,7 +1364,15 @@ so the ack correlates with no ordering assumptions.
 | `queued` | The CLI accepted the envelope and holds it. Written immediately on stdin write, before the message reaches the model. |
 | `started` | The message reached the model. |
 | `completed` | The turn the message drove has finished. |
-| `cancelled` | The message will **never** be delivered. |
+| `cancelled` | Before `started`: removed from the queue and never delivered. After `started`: consumed into a turn that was aborted (an interrupt) or failed hard. |
+| `discarded` | 2.1.224+: the session ended with the message still queued. |
+
+The terminal meaning of `cancelled` comes from the 2.1.284 schema text and
+was observed live: an interrupted turn's own prompt went `started`, then
+the interrupt's `control_response`, the `error_during_execution` result
+and `cancelled`, in that order. AO sends neither `cancel_queued` nor
+`cancel_async_message`, so every `cancelled` it has observed follows
+`started`; triage still handles one that does not (below).
 
 ### Why this is better than the `isReplay` echo
 
@@ -1335,9 +1381,16 @@ echo, which can arrive an arbitrarily long time after the stdin write,
 across the whole remaining turn (documented above under
 [§Queued-message consumption](#queued-message-consumption-three-flavors-claude-21202--21205--21257)).
 The lifecycle frames are prompt and explicit. They do NOT replace the
-echo: the echo is still what confirms the message entered context and
-what stamps `provider_item_id` on the row. The acks answer the different
-question of what is happening to a message that is still pending.
+transcript record or the echo, which confirm the message entered context
+and stamp `provider_item_id` on the row. The acks answer the different
+question of what is happening to a message that is still pending. One
+exception: a terminal state settles a send that is still pending
+(`settleTerminalSend`). After `started` it proves consumption, so triage
+confirms the send and logs the drift. Without `started` the CLI retired the
+message unrun, so it goes back to the composer: at once after `cancelled`
+(`provider:queue_restored`, reason `not_delivered`), and with the session-end
+queue restore after `discarded`
+([user-message-ordering.md](../architecture/user-message-ordering.md#confirmation)).
 
 ### Reading the delivery flavour off the ordering
 
@@ -1381,7 +1434,7 @@ detail is purely additive labelling. AO also drops any frame whose
 `parse_command_lifecycle.go` → `EventCommandLifecycle` → triage
 `handleCommandLifecycle`, which resolves the AO row id from the
 pending-send registry and emits `provider:command_lifecycle`. Live UI
-state only; nothing is persisted. The correlation is registered at
+state, plus the terminal settlement above. The correlation is registered at
 `queued` and survives the wire echo popping the pending-send FIFO, so
 both arrival orders resolve.
 
@@ -3941,9 +3994,13 @@ stdout remains its live source. AO opens a projector only if
 `background_tasks` stopped that feed or the launch belongs below an already
 mirrored scope. Ownerless `agent_metadata` plus `isSidechain:true` and
 `attributionSkill` claim a forked Skill. An explicit `isSidechain:false` clears
-the buffer and leaves the command unprojected. If the file, entry, or byte bound
-drops any prefix data, AO persists a warning beneath the command row instead of
-leaving the gap silent.
+the buffer and leaves the command unprojected. Main-transcript rows are never
+projected: `mainTranscriptEvents` reads their user rows, in order, for the two
+facts stdout lacks. A row under an issued uuid confirms AO's own send (the
+filtered-echo section above); any other row with a `turnOrigin` is a turn the
+CLI started itself, a scheduled fire (§E11) or an idle background wake. If the
+file, entry, or byte bound drops any prefix data, AO persists a warning beneath
+the command row instead of leaving the gap silent.
 
 No capture yet shows a moved agent that parks (§E6b) and later wakes.
 The code assumes its woken rounds continue in the same mirrored file:
@@ -5032,12 +5089,15 @@ snapshot of one (model, mode) variant.
     a repository snapshot) can cross it, and then EVERY spawn fails with
     E2BIG, which the user sees as a session that refuses to start.
   - **`/proc` exposure.** argv is world-readable via
-    `/proc/<pid>/cmdline`; the temp file is 0600. A system prompt
+    `/proc/<pid>/cmdline`; the prompt file is 0600. A system prompt
     carries workspace paths, git state, and whatever the user wrote.
 
   `internal/provider/claude/session.go` writes the file at spawn
   (`WriteSystemPromptFile`) and removes it in `Close` and on every
-  failed-spawn path.
+  failed-spawn path. The file is in the app data directory's
+  `claude-prompts/`, not the shared temp directory, and boot empties that
+  directory, so a backend killed with sessions open leaves nothing behind
+  past its next start.
 
   **The INTERACTIVE TUI honors the flag too** (verified 2.1.234 by
   running the real TUI under a PTY against the same sink). The

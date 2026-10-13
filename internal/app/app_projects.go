@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"time"
 
@@ -268,7 +270,7 @@ type ProjectDeletionResult struct {
 }
 
 // DeleteProject removes a project from Agent Overflow: every contained thread,
-// every workflow run and automation the project owns, the worktrees the app
+// every workflow run the project owns, the worktrees the app
 // created for those runs, and the project row. A project with active turns or
 // running background tasks is refused: deleting the workspace container must
 // never implicitly interrupt work in one of its threads.
@@ -315,6 +317,11 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	threads := make(map[string]store.Thread, len(ids))
 	for _, threadID := range ids {
 		thread, err := a.store.GetThread(threadID)
+		if errors.Is(err, sql.ErrNoRows) {
+			// Deleted since the list (the retention sweep, another client):
+			// nothing left to delete.
+			continue
+		}
 		if err != nil {
 			return ProjectDeletionResult{}, fmt.Errorf("delete project: load thread %s: %w", threadID, err)
 		}
@@ -337,11 +344,21 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	}
 	slices.Sort(lockedIDs)
 	lockedIDs = slices.Compact(lockedIDs)
-	if !slices.Equal(ids, lockedIDs) {
-		return ProjectDeletionResult{}, fmt.Errorf("delete project: contained threads changed during deletion; retry")
+	// A thread removed while these locks were awaited was removed whole by
+	// its deleter, which held the same lock. Only a thread added since the
+	// list escapes this deletion's locks.
+	for _, threadID := range lockedIDs {
+		if _, listed := threads[threadID]; !listed {
+			return ProjectDeletionResult{}, fmt.Errorf("delete project: contained threads changed during deletion; retry")
+		}
 	}
+	maps.DeleteFunc(threads, func(threadID string, _ store.Thread) bool {
+		_, still := slices.BinarySearch(lockedIDs, threadID)
+		return !still
+	})
+	ids = lockedIDs
 	// The same guard for the workflow side: the cleanup above ran unlocked, and a
-	// cron automation firing in that window would start a run this deletion never
+	// run an agent started in that window would be one this deletion never
 	// described and never cleaned up after.
 	lockedFootprint, err := a.projectApplication().WorkflowFootprint(id)
 	if err != nil {
@@ -393,11 +410,6 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	}
 	if err := a.store.DeleteProjectWorkflowRecords(id); err != nil {
 		return ProjectDeletionResult{}, err
-	}
-	// Automations went with those rows; the scheduler still has them armed until
-	// it re-reads.
-	if err := a.refreshWorkflowSchedule(); err != nil {
-		return ProjectDeletionResult{}, fmt.Errorf("delete project %s: refresh automation schedule: %w", id, err)
 	}
 	if err := a.store.DeleteProject(id); err != nil {
 		if errors.Is(err, store.ErrProjectHasThreads) {

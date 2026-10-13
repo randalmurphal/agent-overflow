@@ -68,13 +68,11 @@ type ProjectDeletionPreview struct {
 	// LiveRunIDs is the subset still in flight. Deletion cancels them first;
 	// they are called out because that is work the human is stopping.
 	LiveRunIDs []string `json:"liveRunIds"`
-	// AutomationCount is how many triggers go with the project.
-	AutomationCount int `json:"automationCount"`
 	// Worktrees is every checkout the deletion will act on, deduplicated across
 	// the whole forest, each carrying whether it will survive the cleanup.
 	Worktrees []ProjectCleanupWorktree `json:"worktrees"`
 	// HasWork is the one signal a caller branches on. It is true when the
-	// project owns any run or any automation — deriving it again from the counts
+	// project owns any run — deriving it again from the counts
 	// is how two surfaces end up disagreeing about what a deletion involves.
 	HasWork bool `json:"hasWork"`
 }
@@ -98,12 +96,11 @@ func (a *App) ProjectDeletionPreview(projectID string) (ProjectDeletionPreview, 
 		return ProjectDeletionPreview{}, err
 	}
 	preview := ProjectDeletionPreview{
-		ProjectID:       projectID,
-		RunCount:        footprint.RunCount(),
-		LiveRunIDs:      make([]string, 0),
-		AutomationCount: footprint.AutomationCount(),
-		Worktrees:       make([]ProjectCleanupWorktree, 0),
-		HasWork:         footprint.HasWork(),
+		ProjectID:  projectID,
+		RunCount:   footprint.RunCount(),
+		LiveRunIDs: make([]string, 0),
+		Worktrees:  make([]ProjectCleanupWorktree, 0),
+		HasWork:    footprint.HasWork(),
 	}
 	if len(footprint.Roots()) == 0 {
 		return preview, nil

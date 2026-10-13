@@ -922,9 +922,8 @@ func (s *Store) CreateWorkItemTriageThread(itemID string, thread Thread) error {
 }
 
 // DeleteProjectWorkflowRecords removes every workflow row a project owns: its
-// runs, their phase/unit/effect records, and its automations (whose cursors
-// cascade). One transaction, because a half-deleted run is a run the engine's
-// startup rebuild would try to resume.
+// runs and their phase/unit/effect records. One transaction, because a
+// half-deleted run is a run the engine's startup rebuild would try to resume.
 //
 // App.DeleteProject calls this on every project deletion (decision D25): there
 // is no foreign key from these tables to `projects` to cascade through, so a
@@ -950,7 +949,6 @@ func (s *Store) DeleteProjectWorkflowRecords(projectID string) error {
 		`DELETE FROM work_item_phases WHERE item_id IN (` + owned + `)`,
 		`DELETE FROM work_item_effects WHERE item_id IN (` + owned + `)`,
 		`DELETE FROM work_items WHERE project_id = ?`,
-		`DELETE FROM automations WHERE project_id = ?`,
 	} {
 		if _, err := tx.Exec(statement, projectID); err != nil {
 			return fmt.Errorf("store: delete project %s workflow records: %w", projectID, err)

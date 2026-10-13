@@ -319,9 +319,12 @@ Mechanism in
 
 ## Workflows
 
-Decisions D1..D73 are in `docs/specs/workflows-system-decisions.md`. Rulings
+Decisions D1..D76 are in `docs/specs/workflows-system-decisions.md`. Rulings
 and anti-changes that live only here:
 
+- Workflows keep no clock. A scheduled or triggered run is started by a
+  standing agent whose loop or watch wakes it
+  ([standing agents](specs/standing-agents.md) ruling 13, D76).
 - Maximum autonomy with full authoring flexibility; intervene only when
   there is no good way to proceed. Free-running default, notify-not-gate at
   wave boundaries, soft-stop is the brake.

@@ -71,14 +71,17 @@ func (a *App) stopArchivedThreadWork(ctx context.Context, id string) error {
 	// agent when the thread is next started.
 	a.cancelAgentWakesForThread(id, "cancelled: the thread was archived")
 	withdrawErr := a.withdrawQueuedAgentMessages(id, func(string) bool { return true }, "the thread was archived before the agent took it in")
+	// A request's answer or reminder goes back to its request, disarmed
+	// with it, so the retry cannot bring the thread back.
+	wakesErr := a.withdrawHeldThreadWakes(id)
 	if err := a.cancelThreadRequests(ctx, id); err != nil {
 		log.Printf("thread tools: archive %s: cancel requests: %v", id, err)
 	}
-	remoteErr := a.cancelThreadRemoteCommands(ctx, id)
-	// A finished job's completion held in the queue is kept for the thread:
-	// it goes back to its watch after the cancel has dropped the pending
-	// ones, and arrives once the thread is unarchived.
-	return errors.Join(withdrawErr, remoteErr, a.withdrawHeldRemoteCompletions(id))
+	remoteErr := a.cancelThreadRemoteCommands(ctx, id, true)
+	// A finished job's completion is kept for the thread: the cancel keeps
+	// its watch, and one already held in the queue goes back to its watch
+	// after the cancel has run. It arrives once the thread is unarchived.
+	return errors.Join(withdrawErr, wakesErr, remoteErr, a.withdrawHeldRemoteCompletions(id))
 }
 
 func (a *App) archiveThreadLocked(id string) error {
@@ -89,11 +92,16 @@ func (a *App) archiveThreadLocked(id string) error {
 	requestedAt := time.Now().UnixMilli()
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
-	if err := a.threadApplication().CheckMutable(id); err != nil {
+	// The flip takes the mutation lock too, as the organize patch's does, so
+	// a queue write that holds app messages from an archived thread
+	// (registerQueueItem) sees it either way round, never between its check
+	// and its write.
+	unlockMutable, err := a.threadApplication().LockMutable(context.Background(), id)
+	if err != nil {
 		return err
 	}
-
 	row, changed, err := a.threadApplication().Archive(id)
+	unlockMutable()
 	if err != nil {
 		return err
 	}

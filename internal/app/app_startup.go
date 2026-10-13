@@ -284,12 +284,13 @@ func (a *App) startUnattendedWork() error {
 	// coordination server.
 	a.startTailnetLoop(a.configDir)
 
-	// Workflow automation: the self-resume schedules and the §11 trigger
-	// cadence, both of which START PROVIDER TURNS with no one asking. The
-	// engine itself is already running (initWorkflowEngine, during
-	// initSubsystems) because rebuilding its state from SQLite is exactly
-	// what a trial has to prove works; what waits is the part that acts.
-	return a.startWorkflowAutomation()
+	// Workflow self-resume schedules, which START PROVIDER TURNS with no
+	// one asking. The engine itself is already running (initWorkflowEngine,
+	// during initSubsystems) because rebuilding its state from SQLite is
+	// exactly what a trial has to prove works; what waits is the part that
+	// acts.
+	a.armWorkflowAutoResumes()
+	return nil
 }
 
 // initStores resolves the on-disk data directory, opens SQLite, wires the
@@ -322,6 +323,11 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	}
 	if err := repairStartupOwnedPaths(dbDir); err != nil {
 		return "", nil, err
+	}
+	// Before any session can start: every prompt file here belongs to a
+	// process that exited without closing its sessions.
+	if err := sweepClaudePromptFiles(dbDir); err != nil {
+		a.bootPhaseFailed(err)
 	}
 	dbPath := filepath.Join(dbDir, databaseFileName)
 	if err := prepareAppSensitiveFile(dbPath); err != nil {
