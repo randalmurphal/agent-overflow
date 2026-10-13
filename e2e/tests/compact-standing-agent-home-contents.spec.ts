@@ -19,8 +19,20 @@ test('compact: the agent session, its hygiene wake and the worker first message 
   await expect(wake).toHaveCount(1);
   await expect(page.getByText(HYGIENE_OUTCOME)).toBeVisible();
   await expect(page.getByText('Your standing instructions')).toHaveCount(0);
+  // The phone's timeline windows its oldest rows: scroll to the top until
+  // the session's first message is mounted.
   const opening = page.getByTestId('user-message-bubble').filter({ hasText: 'Set up your home.' });
-  await expect(opening).toHaveCount(1);
+  await expect
+    .poll(
+      async () => {
+        await page.getByTestId('message-timeline-scroll').first().evaluate((el) => {
+          el.scrollTop = 0;
+        });
+        return opening.count();
+      },
+      { timeout: 15_000 },
+    )
+    .toBe(1);
   await opening.scrollIntoViewIfNeeded();
   await capture(page, 'compact-agent-session.png', opening);
   await wake.scrollIntoViewIfNeeded();
