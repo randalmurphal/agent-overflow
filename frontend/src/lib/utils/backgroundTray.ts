@@ -391,13 +391,20 @@ export function createTrayTaskMemo(): (next: TrayTask[]) => TrayTask[] {
   };
 }
 
+// Every TrayTask field but the key, so a field added to TrayTask fails the
+// type check here instead of being masked by the memo.
+const comparedTrayTaskFields: Record<Exclude<keyof TrayTask, 'rowId'>, true> = {
+  anchor: true,
+  launch: true,
+  completion: true,
+  status: true,
+  elapsedMs: true,
+  depth: true,
+};
+const comparedTrayTaskKeys = Object.keys(comparedTrayTaskFields) as Array<keyof typeof comparedTrayTaskFields>;
+
 function sameTrayTask(a: TrayTask, b: TrayTask): boolean {
-  return a.anchor === b.anchor
-    && a.launch === b.launch
-    && a.completion === b.completion
-    && a.status === b.status
-    && a.elapsedMs === b.elapsedMs
-    && a.depth === b.depth;
+  return comparedTrayTaskKeys.every((key) => a[key] === b[key]);
 }
 
 /**
