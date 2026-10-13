@@ -1076,6 +1076,10 @@ type WorkflowAgentStartInput struct {
 	Seeds      json.RawMessage `json:"seeds,omitempty"`
 	BaseBranch string          `json:"baseBranch,omitempty"`
 	StepMode   bool            `json:"stepMode,omitempty"`
+	// beforeBind runs once the run exists and before it is bound to the
+	// caller's thread, so a waiting call's wake hold stands before any rest
+	// of the run could wake that thread.
+	beforeBind func(itemID string)
 }
 
 // WorkflowAgentStartResult is what run_start returns. Skipped marks a
@@ -1224,6 +1228,9 @@ func (a *App) workflowAgentStartRun(ctx context.Context, input WorkflowAgentStar
 	result := WorkflowAgentStartResult{
 		ItemID: item.ID, WorkflowID: item.WorkflowID, WorkflowScope: item.WorkflowScope,
 		State: item.State,
+	}
+	if input.beforeBind != nil {
+		input.beforeBind(item.ID)
 	}
 	if warning := a.bindOriginThread(scope, item); warning != "" {
 		result.BindingWarning = warning

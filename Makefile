@@ -599,8 +599,9 @@ mockforge:
 
 # harness-build produces bin/agent-overflow with the production SPA
 # embedded, plus the sibling ao-mockprovider and ao-mockforge the harness
-# resolves by default. That same bin/agent-overflow is the workflow CLI the
-# workflows spec drives by verb (D30) — there is no second binary to build. UI_TRACE=1
+# resolves by default. That same bin/agent-overflow carries the remaining CLI
+# verbs (D30) and the workflow tools (D77); there is no second binary to
+# build. UI_TRACE=1
 # bakes the render-trace instrumentation into the SPA (see the flag docs at
 # the top of this file).
 #

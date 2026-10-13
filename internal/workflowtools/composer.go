@@ -64,7 +64,7 @@ type composerRow struct{ left, right string }
 
 // composerTools is the tool table the block prints: the call, its purpose.
 var composerTools = []composerRow{
-	{"run_start(workflow_id, goal?, seeds?, wait_seconds?)", "start a run; bound to this thread, so its rest arrives here"},
+	{"run_start(workflow_id, goal?, seeds?, wait_seconds?)", "start a run; bound to this thread, so its rest arrives here or in the call that waits"},
 	{"run_status(run_id, wait_seconds?)", "check on one, or wait for it to come to rest"},
 	{"run_watch(run_id, cursor?, tree?)", "wait for the next state change; the call that replaces a sleep loop"},
 	{"run_output(run_id)", "read its declared outputs and artifacts"},
@@ -133,7 +133,7 @@ func RenderComposerContext(context ComposerContext) string {
 
 	block.WriteString("Tools:\n")
 	writeComposerRows(&block, composerTools)
-	block.WriteString("A wait never runs past " + fmt.Sprint(MaxWaitSeconds) + " seconds; a run this thread started reports its rest here as a message, so a wait that ends early costs nothing.\n")
+	block.WriteString("A wait never runs past " + fmt.Sprint(MaxWaitSeconds) + " seconds. A run this thread started reports its rest here as a message unless a waiting call returned it, so a wait that ends early costs nothing.\n")
 
 	block.WriteString("When a run needs a human, the reason picks the fix:\n")
 	writeComposerRows(&block, composerRepair)

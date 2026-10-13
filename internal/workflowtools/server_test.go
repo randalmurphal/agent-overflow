@@ -3,6 +3,7 @@ package workflowtools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"regexp"
 	"slices"
 	"strings"
@@ -31,12 +32,46 @@ type fakeApp struct {
 	control       ControlInput
 	resolve       ResolveInput
 	err           error
+	// fail answers the named method with an error, after the calls before it
+	// succeeded.
+	fail map[string]error
+	// holds records every wake hold, in the order taken.
+	holds []*fakeHold
+	// armedAt is what ControlRun reports for a scheduled resume.
+	armedAt string
 }
 
 func (f *fakeApp) record(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, name)
+}
+
+// errFor is the error the named method answers with.
+func (f *fakeApp) errFor(name string) error {
+	if err := f.fail[name]; err != nil {
+		return err
+	}
+	return f.err
+}
+
+// fakeHold records how a wake hold ended.
+type fakeHold struct {
+	runID     string
+	releases  int
+	delivered bool
+}
+
+func (h *fakeHold) Release(delivered bool) {
+	h.releases++
+	h.delivered = delivered
+}
+
+func (f *fakeApp) HoldWake(_ context.Context, runID string) WakeHold {
+	f.record("HoldWake")
+	hold := &fakeHold{runID: runID}
+	f.holds = append(f.holds, hold)
+	return hold
 }
 
 func (f *fakeApp) ListWorkflows(context.Context) (catalog.Listing, error) {
@@ -56,12 +91,21 @@ func (f *fakeApp) ScaffoldWorkflow(_ context.Context, starter, id string, projec
 
 func (f *fakeApp) StartRun(_ context.Context, input StartInput) (Started, error) {
 	f.record("StartRun")
-	return Started{RunID: "run-1", Result: map[string]any{"itemId": "run-1"}}, f.err
+	if err := f.errFor("StartRun"); err != nil {
+		return Started{}, err
+	}
+	started := Started{RunID: "run-1", Result: map[string]any{"itemId": "run-1"}}
+	if input.HoldWake {
+		hold := &fakeHold{runID: started.RunID}
+		f.holds = append(f.holds, hold)
+		started.Hold = hold
+	}
+	return started, nil
 }
 
 func (f *fakeApp) RunStatus(_ context.Context, runID string) (any, error) {
 	f.record("RunStatus")
-	return map[string]any{"itemId": runID, "resting": f.statusResting}, f.err
+	return map[string]any{"itemId": runID, "resting": f.statusResting}, f.errFor("RunStatus")
 }
 
 func (f *fakeApp) WatchRun(_ context.Context, input WatchInput) (Watched, error) {
@@ -70,18 +114,18 @@ func (f *fakeApp) WatchRun(_ context.Context, input WatchInput) (Watched, error)
 	defer f.mu.Unlock()
 	f.watchInputs = append(f.watchInputs, input)
 	if len(f.watches) == 0 {
-		return Watched{}, f.err
+		return Watched{}, f.errFor("WatchRun")
 	}
 	next := f.watches[0]
 	if len(f.watches) > 1 {
 		f.watches = f.watches[1:]
 	}
-	return next, f.err
+	return next, f.errFor("WatchRun")
 }
 
 func (f *fakeApp) RunBoundThread(context.Context, string) (string, error) {
 	f.record("RunBoundThread")
-	return f.bound, f.err
+	return f.bound, f.errFor("RunBoundThread")
 }
 
 func (f *fakeApp) RunOutput(context.Context, string) (any, error) {
@@ -104,10 +148,10 @@ func (f *fakeApp) ListRuns(context.Context, bool) (any, error) {
 	return []any{}, f.err
 }
 
-func (f *fakeApp) ControlRun(_ context.Context, input ControlInput) (any, error) {
+func (f *fakeApp) ControlRun(_ context.Context, input ControlInput) (ControlDone, error) {
 	f.record("ControlRun")
 	f.control = input
-	return map[string]any{}, f.err
+	return ControlDone{ArmedAt: f.armedAt}, f.errFor("ControlRun")
 }
 
 func (f *fakeApp) AmendSeeds(context.Context, string, json.RawMessage) (any, error) {
@@ -120,10 +164,10 @@ func (f *fakeApp) GuideRun(context.Context, string, string) (any, error) {
 	return map[string]any{}, f.err
 }
 
-func (f *fakeApp) ResolveRun(_ context.Context, input ResolveInput) (any, error) {
+func (f *fakeApp) ResolveRun(_ context.Context, input ResolveInput) error {
 	f.record("ResolveRun")
 	f.resolve = input
-	return map[string]any{}, f.err
+	return f.errFor("ResolveRun")
 }
 
 func (f *fakeApp) AddMemory(context.Context, MemoryInput) (any, error) {
@@ -412,6 +456,174 @@ func TestWaitsAreBounded(t *testing.T) {
 		if code, _ := publicCode(t, err); code != CodeInvalidRequest {
 			t.Errorf("%s accepted a wait past %d: %v", tool, MaxWaitSeconds, err)
 		}
+	}
+	// The refusal comes before the start: a run started and then refused
+	// would be one the caller never hears of.
+	app := &fakeApp{}
+	_, err := New(app).Call(context.Background(), interactive, "run_start", json.RawMessage(`{"workflow_id":"w","wait_seconds":901}`))
+	if err == nil || len(app.calls) != 0 {
+		t.Fatalf("an over-limit wait reached the app: err=%v calls=%v", err, app.calls)
+	}
+}
+
+// Once StartRun commits, run_start answers with the run whatever fails after:
+// a failed read reported as a failed start would have the caller start it
+// again, and an interactive start has no surface-and-skip to stop that.
+func TestStartKeepsTheRunWhenReadingItBackFails(t *testing.T) {
+	broken := errors.New("store unavailable")
+	for _, method := range []string{"WatchRun", "RunStatus"} {
+		t.Run(method, func(t *testing.T) {
+			app := &fakeApp{fail: map[string]error{method: broken}, watches: []Watched{{Cursor: 1, Resting: true}}}
+			result, err := New(app).Call(context.Background(), interactive, "run_start", json.RawMessage(`{"workflow_id":"flow","wait_seconds":60}`))
+			if err != nil {
+				t.Fatalf("a %s failure after the start failed the call: %v", method, err)
+			}
+			started := result.(StartResult)
+			if started.Start.(map[string]any)["itemId"] != "run-1" || started.Outcome != OutcomeUnknown || started.Run != nil {
+				t.Fatalf("result = %+v", started)
+			}
+			if !strings.Contains(started.ReadError, "store unavailable") {
+				t.Fatalf("readError = %q", started.ReadError)
+			}
+			if len(app.holds) != 1 || app.holds[0].releases != 1 || app.holds[0].delivered {
+				t.Fatalf("hold = %+v, want released once, not delivered", app.holds)
+			}
+		})
+	}
+}
+
+// The binding lookup comes after the status read: its failure costs the
+// caller the notify answer, never the run it started or the status it read.
+func TestNotifyLookupFailureKeepsTheRunAndItsStatus(t *testing.T) {
+	broken := errors.New("binding unreadable")
+	now := time.Unix(1000, 0)
+	app := &fakeApp{fail: map[string]error{"RunBoundThread": broken}, watches: []Watched{{Cursor: 1}}}
+	server := New(app)
+	server.now = func() time.Time { now = now.Add(31 * time.Second); return now }
+	result, err := server.Call(context.Background(), interactive, "run_start", json.RawMessage(`{"workflow_id":"flow","wait_seconds":30}`))
+	if err != nil {
+		t.Fatalf("a notify failure after the start failed the call: %v", err)
+	}
+	started := result.(StartResult)
+	if started.Start == nil || started.Outcome != OutcomeBackgrounded || started.Run == nil {
+		t.Fatalf("result = %+v", started)
+	}
+	if started.Notify == nil || started.Notify.Armed || !strings.Contains(started.Notify.Detail, "binding unreadable") {
+		t.Fatalf("notify = %+v", started.Notify)
+	}
+
+	app = &fakeApp{fail: map[string]error{"RunBoundThread": broken}, watches: []Watched{{Cursor: 1}}}
+	server = New(app)
+	server.now = func() time.Time { now = now.Add(31 * time.Second); return now }
+	status, err := server.Call(context.Background(), interactive, "run_status", json.RawMessage(`{"run_id":"run-1","wait_seconds":30}`))
+	if err != nil {
+		t.Fatalf("a notify failure discarded the status: %v", err)
+	}
+	if wait := status.(Wait); wait.Run == nil || wait.Notify == nil || !strings.Contains(wait.Notify.Detail, "binding unreadable") {
+		t.Fatalf("status = %+v", wait)
+	}
+}
+
+// An action that took effect is reported as done when reading the run back
+// fails, so the caller does not act twice.
+func TestActionsReportDoneWhenReadingTheRunBackFails(t *testing.T) {
+	broken := errors.New("store unavailable")
+	cases := []struct {
+		tool, args, method, action, armedAt string
+	}{
+		{"run_control", `{"run_id":"run-1","action":"pause"}`, "ControlRun", "pause", ""},
+		{"run_control", `{"run_id":"run-1","action":"resume","at":"+1h"}`, "ControlRun", "resume", "2030-01-01T00:00:00Z"},
+		{"run_resolve", `{"run_id":"run-1","decision":"approve"}`, "ResolveRun", "approve", ""},
+	}
+	for _, test := range cases {
+		t.Run(test.tool+" "+test.action, func(t *testing.T) {
+			app := &fakeApp{fail: map[string]error{"RunStatus": broken}, armedAt: test.armedAt}
+			result, err := New(app).Call(context.Background(), interactive, test.tool, json.RawMessage(test.args))
+			if err != nil {
+				t.Fatalf("a read failure after %s failed the call: %v", test.method, err)
+			}
+			done := result.(ActionDone)
+			if !done.Done || done.RunID != "run-1" || done.Action != test.action || done.ArmedAt != test.armedAt || !strings.Contains(done.ReadError, "store unavailable") {
+				t.Fatalf("result = %+v", done)
+			}
+			if !slices.Equal(app.calls, []string{test.method, "RunStatus"}) {
+				t.Fatalf("calls = %v", app.calls)
+			}
+		})
+	}
+	// An action the app refused is still a failure.
+	app := &fakeApp{fail: map[string]error{"ControlRun": broken}}
+	if _, err := New(app).Call(context.Background(), interactive, "run_control", json.RawMessage(`{"run_id":"run-1","action":"pause"}`)); err == nil {
+		t.Fatal("a refused action reported success")
+	}
+}
+
+// A call that waits holds the run's wake to its thread and says, when it ends,
+// whether it returned the rest; a call that does not wait, or a phase caller
+// that is never woken, holds nothing.
+func TestWaitingCallsHoldTheWake(t *testing.T) {
+	ctx := context.Background()
+	t.Run("start that returns the rest", func(t *testing.T) {
+		app := &fakeApp{watches: []Watched{{Cursor: 1, Resting: true}}}
+		if _, err := New(app).Call(ctx, interactive, "run_start", json.RawMessage(`{"workflow_id":"flow","wait_seconds":60}`)); err != nil {
+			t.Fatal(err)
+		}
+		if len(app.holds) != 1 || app.holds[0].releases != 1 || !app.holds[0].delivered {
+			t.Fatalf("holds = %+v, want one released as delivered", app.holds)
+		}
+	})
+	t.Run("start that backgrounds", func(t *testing.T) {
+		now := time.Unix(1000, 0)
+		app := &fakeApp{watches: []Watched{{Cursor: 1}}}
+		server := New(app)
+		server.now = func() time.Time { now = now.Add(31 * time.Second); return now }
+		if _, err := server.Call(ctx, interactive, "run_start", json.RawMessage(`{"workflow_id":"flow","wait_seconds":30}`)); err != nil {
+			t.Fatal(err)
+		}
+		if len(app.holds) != 1 || app.holds[0].releases != 1 || app.holds[0].delivered {
+			t.Fatalf("holds = %+v, want one released as not delivered", app.holds)
+		}
+	})
+	t.Run("status that returns the rest", func(t *testing.T) {
+		app := &fakeApp{watches: []Watched{{Cursor: 1, Resting: true}}}
+		if _, err := New(app).Call(ctx, interactive, "run_status", json.RawMessage(`{"run_id":"run-1","wait_seconds":60}`)); err != nil {
+			t.Fatal(err)
+		}
+		if len(app.holds) != 1 || app.holds[0].runID != "run-1" || app.holds[0].releases != 1 || !app.holds[0].delivered {
+			t.Fatalf("holds = %+v", app.holds)
+		}
+		if app.calls[0] != "HoldWake" {
+			t.Fatalf("the hold was taken after the wait began: %v", app.calls)
+		}
+	})
+	t.Run("status whose wait fails", func(t *testing.T) {
+		app := &fakeApp{fail: map[string]error{"WatchRun": errors.New("gone")}}
+		if _, err := New(app).Call(ctx, interactive, "run_status", json.RawMessage(`{"run_id":"run-1","wait_seconds":60}`)); err == nil {
+			t.Fatal("a failed wait answered")
+		}
+		if len(app.holds) != 1 || app.holds[0].releases != 1 || app.holds[0].delivered {
+			t.Fatalf("holds = %+v", app.holds)
+		}
+	})
+	for name, test := range map[string]struct {
+		caller Caller
+		tool   string
+		args   string
+	}{
+		"start without a wait":   {interactive, "run_start", `{"workflow_id":"flow"}`},
+		"status without a wait":  {interactive, "run_status", `{"run_id":"run-1","notify":true}`},
+		"phase that waits":       {phase(false, def.GrantStartRun), "run_status", `{"run_id":"run-1","wait_seconds":60}`},
+		"phase start that waits": {phase(false, def.GrantStartRun), "run_start", `{"workflow_id":"flow","wait_seconds":60}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			app := &fakeApp{watches: []Watched{{Cursor: 1, Resting: true}}}
+			if _, err := New(app).Call(ctx, test.caller, test.tool, json.RawMessage(test.args)); err != nil {
+				t.Fatal(err)
+			}
+			if len(app.holds) != 0 {
+				t.Fatalf("holds = %+v, want none", app.holds)
+			}
+		})
 	}
 }
 

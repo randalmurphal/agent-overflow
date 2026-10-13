@@ -70,6 +70,7 @@ type Service struct {
 	runner             *workflowhost.Runner
 	autoDisposition    serialqueue.Queue
 	wake               serialqueue.Queue
+	holds              wakeHolds
 	autoResume         autoResumeState
 	digestMu           sync.Mutex
 	digestSlots        chan struct{}

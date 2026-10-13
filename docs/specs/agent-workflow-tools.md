@@ -49,7 +49,10 @@ Memory and `workflow_list`/`workflow_validate`/`workflow_schema` are
 grant-free because a phase could already reach them through the offline CLI
 and the memory verb, so nothing a phase can do widened. Grant-free tools never
 widen what a phase can do, and a read-only phase keeps exactly the envelope
-memory channel it had. A phase is read-only unless its access is `write`.
+memory channel it had. A phase is read-only unless its access is `write`: the
+access its run's frozen definition declares for the phase, or for the fan-out
+unit the session runs, never the session's runtime mode, which a user can
+change on a live thread.
 
 Grants take effect on read-only phases: the author declared them and
 validation accepted them, and that a read-only session could not reach the old
@@ -90,7 +93,11 @@ false`). A result is the app's own document, camelCase, unchanged.
   wait_seconds?, notify?)`: returns `{start: {itemId, workflowId,
   workflowScope, state, skipped?, boundThreadId?, bindingWarning?}}`, plus the
   wait fields below when it waits. A phase's repeated start with the same
-  arguments returns the first run with `skipped: true`.
+  arguments returns the first run with `skipped: true`. Every argument,
+  `wait_seconds` included, is checked before the run starts; once it has
+  started the answer always carries `start`, and a run that cannot be read
+  back afterwards answers `outcome: "unknown"` with `readError` rather than an
+  error, so the caller never starts it twice.
 - `run_status(run_id, wait_seconds?, notify?)`: the run status document.
 - `run_watch(run_id, cursor?, tree?, wait_seconds?)`: `wait_seconds` defaults
   to 60. Returns `{itemId, cursor, transitions: [{seq, at, itemId, phaseId?,
@@ -122,14 +129,16 @@ false`). A result is the app's own document, camelCase, unchanged.
   | `retry_failed_units` | `note` |
 
   Returns the run status document after the action; a scheduled resume
-  returns `{armedAt, run}`.
+  returns `{armedAt, run}`. An action that took effect when the run cannot
+  be read back returns `{itemId, action, done: true, armedAt?, readError}`.
 - `run_amend(run_id, seeds)`: `{itemId, names, seeds, phaseId?, effect,
   appliesNote, callerNote?}`.
 - `run_guide(run_id, text)`: `{itemId, pending, maxPending, by, state,
   reason?, phaseId?, deliversNote, callerNote?, quarantineNote?}`.
 - `run_resolve(run_id, decision, note?, answer?)`: `decision` is `approve`,
   `reject` or `answer`; `answer` requires `answer`. Returns the run status
-  document.
+  document, or `{itemId, action, done: true, readError}` as `run_control`
+  does.
 
 ### Memory
 
@@ -175,7 +184,9 @@ waiting call watches the run without polling and answers with `outcome`:
 
 - `resting`: the run came to rest within the wait;
 - `running`: no wait was asked for and the run is working;
-- `backgrounded`: the wait ended with the run still working.
+- `backgrounded`: the wait ended with the run still working;
+- `unknown`: `run_start` only, the run started and could not be read back
+  (`readError` says why).
 
 The transport keeps a long call alive, so a wait never times out the
 provider's tool call.
@@ -184,9 +195,24 @@ provider's tool call.
 
 A run's rest reaches a thread only through its binding (§5, D17): a run an
 interactive thread starts is bound to that thread, and the bound thread is
-woken whenever the run comes to rest. No tool call changes a binding. A
-backgrounded wait, or any call with `notify: true` on a run not yet resting,
-carries `notify: {armed, detail}`:
+woken whenever the run comes to rest. No tool call changes a binding.
+
+A wait that returns the rest is the delivery, as a thread tool's wait is: that
+rest does not also wake the thread. While an interactive call waits, the run's
+wakes to the caller's thread are held (`internal/workflowapp/wake_hold.go`).
+`run_start` takes the hold before it binds the run, so no rest can slip past
+it. When the call returns the run at rest, the rest is recorded as the
+thread's last delivered wake, and the wake-coalescing rule suppresses the same
+rest arriving after the call; when it returns `backgrounded`, fails or is
+cancelled, a rest held back during the call wakes the thread as it would
+have. The next rest, after the run is resumed, rerun or otherwise acted on,
+wakes the thread as usual. A hold is process memory: a crash between the rest
+and the call returning loses that one wake, as a crash between a rest and its
+wake always could.
+
+A backgrounded wait, or any call with `notify: true` on a run not yet resting,
+carries `notify: {armed, detail}`. When the binding cannot be read, the status
+still stands and `detail` says so:
 
 | Case | `armed` | `detail` |
 |---|---|---|

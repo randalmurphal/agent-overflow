@@ -176,8 +176,8 @@ func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	// A workflow thread carries the phase's FROZEN grants.
 	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{
 		ID: "wf", Phases: []def.Phase{
-			{ID: "build", Driver: def.DriverAgent, Grants: []string{string(def.GrantStartRun), "retired-grant"}},
-			{ID: "verify", Driver: def.DriverAgent},
+			{ID: "build", Driver: def.DriverAgent, Access: def.AccessWrite, Grants: []string{string(def.GrantStartRun), "retired-grant"}},
+			{ID: "verify", Driver: def.DriverAgent, Shape: def.ShapeFanOut, FanOut: []def.Unit{{ID: "alpha", Access: def.AccessWrite}}},
 		},
 	}})
 	if err != nil {
@@ -209,6 +209,9 @@ func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	if len(scope.Grants) != 1 || scope.Grants[0] != string(def.GrantStartRun) {
 		t.Fatalf("frozen grants = %#v", scope.Grants)
 	}
+	if scope.Access != string(def.AccessWrite) {
+		t.Fatalf("phase access = %q, want the frozen phase's write", scope.Access)
+	}
 
 	// A unit thread inherits its phase's grants through the unit row, which is
 	// consulted BEFORE the phase table — a unit thread has no phase row of its
@@ -228,6 +231,10 @@ func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	if scope.PhaseID != "verify" || len(scope.Grants) != 0 {
 		t.Fatalf("unit scope = %#v (want the verify phase's own grants)", scope)
 	}
+	// A unit declares its own access: this one writes in a read-only phase.
+	if scope.Access != string(def.AccessWrite) {
+		t.Fatalf("unit access = %q, want the unit's own write", scope.Access)
+	}
 
 	// A workflow thread with no attempt row yet gets no credential rather than
 	// an unscoped one.
@@ -238,7 +245,7 @@ func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	}
 }
 
-func TestFrozenPhaseGrantsRefusesAPhaseTheSnapshotDoesNotName(t *testing.T) {
+func TestFrozenPhaseAuthorityRefusesWorkTheSnapshotDoesNotName(t *testing.T) {
 	t.Parallel()
 	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{
 		ID: "wf", Phases: []def.Phase{{ID: "build", Driver: def.DriverAgent}},
@@ -246,12 +253,19 @@ func TestFrozenPhaseGrantsRefusesAPhaseTheSnapshotDoesNotName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := frozenPhaseGrants(snapshot, "ghost"); err == nil {
+	if _, err := frozenPhaseAuthority(snapshot, phaseAttachment{phaseID: "ghost"}); err == nil {
 		t.Fatal("a phase absent from the snapshot resolved to no grants instead of erroring")
 	}
+	if _, err := frozenPhaseAuthority(snapshot, phaseAttachment{phaseID: "build", unitID: "ghost"}); err == nil {
+		t.Fatal("a unit absent from the snapshot resolved to the phase's access instead of erroring")
+	}
+	// An undeclared access is read-only.
+	if authority, err := frozenPhaseAuthority(snapshot, phaseAttachment{phaseID: "build"}); err != nil || authority.access != def.AccessReadOnly {
+		t.Fatalf("frozenPhaseAuthority(build) = %#v, %v", authority, err)
+	}
 	// An empty snapshot is a legitimate pre-freeze state, not an error.
-	if grants, err := frozenPhaseGrants(nil, "build"); err != nil || grants != nil {
-		t.Fatalf("frozenPhaseGrants(nil) = %#v, %v", grants, err)
+	if authority, err := frozenPhaseAuthority(nil, phaseAttachment{phaseID: "build"}); err != nil || authority.grants != nil || authority.access != def.DefaultAccess {
+		t.Fatalf("frozenPhaseAuthority(nil) = %#v, %v", authority, err)
 	}
 }
 

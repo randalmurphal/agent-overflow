@@ -104,12 +104,12 @@ func waitProperties(properties map[string]any, what string) {
 		"minimum":     0,
 		"maximum":     MaxWaitSeconds,
 		"default":     0,
-		"description": fmt.Sprintf("How long THIS CALL waits for %s, not how long the run may take. Zero answers now. A wait that ends with the run still working returns outcome backgrounded and says whether its rest will reach you (see notify). Maximum %d.", what, MaxWaitSeconds),
+		"description": fmt.Sprintf("How long THIS CALL waits for %s, not how long the run may take. Zero answers now. A rest the call returns is delivered by the call and does not also arrive as a message. A wait that ends with the run still working returns outcome backgrounded and says whether its rest will reach you (see notify). Maximum %d.", what, MaxWaitSeconds),
 	}
 	properties["notify"] = map[string]any{
 		"type":    "boolean",
 		"default": false,
-		"description": "Ask whether this run's rest will arrive in your thread as a message. It does when the run is bound to your thread, which every run an interactive thread starts is: a bound run wakes the thread it reports to whenever it comes to rest. A run that is not bound to your thread, or that reports to another thread, cannot notify you, and a workflow phase session receives no wakes at all; " +
+		"description": "Ask whether this run's rest will arrive in your thread as a message. It does when the run is bound to your thread, which every run an interactive thread starts is: a bound run wakes the thread it reports to whenever it comes to rest, except for a rest a waiting call returned. A run that is not bound to your thread, or that reports to another thread, cannot notify you, and a workflow phase session receives no wakes at all; " +
 			"the result then says notify is unavailable and why, and you call run_status again. A positive wait that ends with the run still working answers this by itself.",
 	}
 }
@@ -175,7 +175,7 @@ func runStartSchema() map[string]any {
 	}
 	waitProperties(properties, "the run to come to rest")
 	return tool("run_start",
-		"Start a workflow run in this project and return its id. A run an interactive thread starts is bound to that thread: when it comes to rest (done, parked or failed) the thread receives a wake naming what to do next. A workflow phase session starting a run with the same arguments twice gets the first run back with skipped true; nothing new starts.",
+		"Start a workflow run in this project and return its id. A run an interactive thread starts is bound to that thread: when it comes to rest (done, parked or failed) the thread receives a wake naming what to do next, unless this call waited and returned that rest. Once the run starts the answer names it: outcome unknown with readError means it started but could not be read back, so do not start it again. A workflow phase session starting a run with the same arguments twice gets the first run back with skipped true; nothing new starts.",
 		properties, "workflow_id")
 }
 
@@ -183,7 +183,7 @@ func runStatusSchema() map[string]any {
 	properties := map[string]any{"run_id": runIDProperty()}
 	waitProperties(properties, "the run to come to rest")
 	return tool("run_status",
-		"Read one run: its state and reason, current phase, the seeds it froze, its per-phase attempts, any failed units with the ids run_control retry_unit takes, its budget against its ceiling, and how many run_guide entries wait for it. With wait_seconds it blocks until the run comes to rest instead of polling. outcome is resting, running, or backgrounded when a wait ended first.",
+		"Read one run: its state and reason, current phase, the seeds it froze, its per-phase attempts, any failed units with the ids run_control retry_unit takes, its budget against its ceiling, and how many run_guide entries wait for it. With wait_seconds it blocks until the run comes to rest instead of polling, and a rest it returns does not also arrive as a message. outcome is resting, running, or backgrounded when a wait ended first; if whether the rest reaches you cannot be read, notify says so and the status still stands.",
 		properties, "run_id")
 }
 
@@ -264,7 +264,7 @@ var ControlActions = []string{"pause", "resume", "cancel", "rerun", "soft_stop",
 
 func runControlSchema() map[string]any {
 	return tool("run_control",
-		"Act on a run and return its state afterwards. pause parks it and everything below it. resume continues a parked run, preserving what it finished; phase_id instead starts that phase over from outside every loop through it, and refresh_def re-reads the definition and prompt files from disk for that fresh entry; at schedules the bare resume for later (RFC 3339 or +36h) and returns the moment it armed. cancel stops it for good. rerun starts a failed run's last phase again, carrying guidance and honoring refresh_def. soft_stop asks the run tree to park at its next call boundary; clear withdraws the request. retry_unit re-runs one failed unit of a parked fan-out attempt (a failed join is one of them); retry_failed_units re-runs every failed unit; note rides into the repaired units' next try. A phase session may act only on runs it started.",
+		"Act on a run and return its state afterwards. pause parks it and everything below it. resume continues a parked run, preserving what it finished; phase_id instead starts that phase over from outside every loop through it, and refresh_def re-reads the definition and prompt files from disk for that fresh entry; at schedules the bare resume for later (RFC 3339 or +36h) and returns the moment it armed. cancel stops it for good. rerun starts a failed run's last phase again, carrying guidance and honoring refresh_def. soft_stop asks the run tree to park at its next call boundary; clear withdraws the request. retry_unit re-runs one failed unit of a parked fan-out attempt (a failed join is one of them); retry_failed_units re-runs every failed unit; note rides into the repaired units' next try. A phase session may act only on runs it started. When the action took effect but the run could not be read back, the answer is {itemId, action, done: true, readError} (with armedAt for a scheduled resume): do not repeat it.",
 		map[string]any{
 			"run_id": runIDProperty(),
 			"action": map[string]any{
@@ -305,7 +305,7 @@ func runGuideSchema() map[string]any {
 
 func runResolveSchema() map[string]any {
 	return tool("run_resolve",
-		"Settle a run parked on a decision a workflow author routed to a person. approve or reject takes one of the two routes a human gate declares, with note recorded and, on reject, carried into the loop. answer answers a run parked on a question and returns it to running. Decide only what you have the standing to decide.",
+		"Settle a run parked on a decision a workflow author routed to a person. approve or reject takes one of the two routes a human gate declares, with note recorded and, on reject, carried into the loop. answer answers a run parked on a question and returns it to running. Returns the run's state afterwards, or {itemId, action, done: true, readError} when the decision took effect but the run could not be read back. Decide only what you have the standing to decide.",
 		map[string]any{
 			"run_id": runIDProperty(),
 			"decision": map[string]any{

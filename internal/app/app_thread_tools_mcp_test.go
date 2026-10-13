@@ -107,11 +107,17 @@ func TestThreadMCPRegistersForInteractiveSessionsAndNotPhases(t *testing.T) {
 		t.Fatalf("a workflow phase thread lists the thread tools row: %#v", row)
 	}
 
-	// A provider that hosts no MCP servers at all.
+	// claude-tui hosts the workflow tools and no thread tools
+	// (docs/decisions.md).
 	terminal, terminalToken := remoteMCPThread(t, app, string(provider.ClaudeTUI))
 	servers, err = app.threadMCPConfigForThread(terminal, terminalToken)
 	if err != nil || len(servers) != 0 {
-		t.Fatalf("non-MCP provider = %#v, %v", servers, err)
+		t.Fatalf("claude-tui got thread tools: %#v, %v", servers, err)
+	}
+	t.Cleanup(func() { _ = app.workflowMCPServer().Close() })
+	servers, err = app.workflowMCPConfigForThread(terminal, terminalToken)
+	if err != nil || len(servers) != 1 || servers[workflowMCPName] == nil {
+		t.Fatalf("claude-tui servers = %#v, %v, want exactly %s", servers, err, workflowMCPName)
 	}
 }
 

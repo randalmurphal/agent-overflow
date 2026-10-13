@@ -48,6 +48,9 @@ type CallerScope struct {
 	PhaseID string `json:"phaseId,omitempty"`
 	// Grants is the frozen phase's grant list (phase kind only).
 	Grants []string `json:"grants,omitempty"`
+	// Access is the frozen access of the phase, or of the fan-out unit the
+	// session runs (phase kind only): `write` or `read-only`.
+	Access string `json:"access,omitempty"`
 }
 
 // HasGrant reports whether the scope carries one named grant.

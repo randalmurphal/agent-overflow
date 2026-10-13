@@ -9,6 +9,8 @@ import type { Page } from '@playwright/test';
 import { expect, test, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import {
+  advanceGate,
+  awaitGate,
   awaitTurnCompleted,
   setScenario,
   threadToolsScenario,
@@ -129,14 +131,16 @@ export async function answerPhasesDone(harness: HarnessApp, provider: ProviderNa
   await setPhaseScenario(harness, provider, `${provider}-phases-done`, [], { complete: true });
 }
 
-/** One MCP step a phase's turn takes before its envelope. */
+/** One step a phase's turn takes before its envelope. */
 export type PhaseStep =
   | { list: true }
   | { call: string; args?: Record<string, unknown>; timeoutMs?: number }
-  | { capture: string; pattern: string };
+  | { capture: string; pattern: string }
+  | { gate: string };
 
 function phaseStepJSON(step: PhaseStep): Record<string, unknown> {
   if ('list' in step) return { mcpList: { server: WORKFLOW_TOOLS_SERVER } };
+  if ('gate' in step) return { waitSignal: { name: step.gate } };
   if ('call' in step) {
     return {
       mcpCall: {
@@ -243,25 +247,64 @@ export interface StartAnswer {
   notify?: { armed: boolean; detail: string };
 }
 
+/** The gate a held phase waits on until the spec releases it. */
+export const HELD_PHASE_GATE = 'migration';
+
+/** An input a mock received. */
+type MockInput = { scenario: string; report: { kind: string; input?: string } };
+
+/** The scenario the interactive thread's session runs. */
+export function threadScenario(provider: ProviderName): string {
+  return `workflow-tools-${provider}`;
+}
+
 /**
- * Drives one interactive thread through a run: it lists the tools, starts
- * `workflowId` and waits for it to rest, then reads its outputs. Returns
- * the answers in call order, after the turn and the wake that follows the
- * run's rest have both completed.
+ * How many inputs the interactive thread's session received that name a run.
+ * Matched by the session's scenario, not its cwd: a read-only phase runs in
+ * the same project root, and its prompt names its run.
+ */
+export function inputsNaming(harness: HarnessApp, provider: ProviderName, runId: string): number {
+  return harness.countEvents<MockInput>(
+    'harness:mock',
+    (event) =>
+      event.scenario === threadScenario(provider) &&
+      event.report.kind === 'user_input' &&
+      (event.report.input ?? '').includes(runId),
+  );
+}
+
+export interface ThreadRuns {
+  tools: string[];
+  instructions: string;
+  /** importer: run_start waited and returned the rest. */
+  rested: StartAnswer;
+  restedOutput: Record<string, unknown>;
+  /** migrator: run_start's wait ended first, and the rest came as a wake. */
+  backgrounded: StartAnswer;
+  backgroundedOutput: Record<string, unknown>;
+}
+
+/**
+ * Drives one interactive thread through two runs, the two ways a rest
+ * reaches it. Turn 1 lists the tools, starts `importer` and waits for its
+ * rest, then reads its outputs: the call is the delivery, so no wake follows.
+ * Turn 2 starts `migrator`, whose phase holds on HELD_PHASE_GATE, with a short
+ * wait that ends first. Releasing the gate lets the run rest, the rest wakes
+ * the thread exactly once, and turn 3 (the wake's) reads its outputs.
  */
 export async function startAndWatchFromThread(
   harness: HarnessApp,
   provider: ProviderName,
   project: { path: string; threadId: string },
-  workflowId: string,
-  later: ScriptedTurn[] = [{ text: 'The run is done; nothing else to do.' }],
-): Promise<{ tools: string[]; instructions: string; start: StartAnswer; output: Record<string, unknown> }> {
+): Promise<ThreadRuns> {
   const W = WORKFLOW_TOOLS_SERVER;
+  const phaseProvider = otherProvider(provider);
+  await answerPhasesDone(harness, phaseProvider);
   await setScenario(
     harness,
     project.path,
     threadToolsScenario({
-      name: `workflow-tools-${provider}`,
+      name: threadScenario(provider),
       provider,
       echoUserMessage: true,
       turns: [
@@ -272,16 +315,33 @@ export async function startAndWatchFromThread(
               call: {
                 server: W,
                 tool: 'run_start',
-                args: { workflow_id: workflowId, goal: 'Ship the importer', seeds: { goal: 'Ship the importer' }, wait_seconds: 120 },
+                args: { workflow_id: 'importer', goal: 'Ship the importer', seeds: { goal: 'Ship the importer' }, wait_seconds: 120 },
                 timeoutMs: 150_000,
               },
             },
             { capture: { var: 'RUN', from: '${MCP_RESULT}', pattern: START_RUN_PATTERN } },
             { call: { server: W, tool: 'run_output', args: { run_id: '${RUN}' } } },
           ],
-          text: 'Started the run and watched it finish.',
+          text: 'The importer ran to completion while I waited.',
         },
-        ...later,
+        {
+          steps: [
+            {
+              call: {
+                server: W,
+                tool: 'run_start',
+                args: { workflow_id: 'migrator', goal: 'Migrate the schema', seeds: { goal: 'Migrate the schema' }, wait_seconds: 2 },
+                timeoutMs: 30_000,
+              },
+            },
+            { capture: { var: 'RUN2', from: '${MCP_RESULT}', pattern: START_RUN_PATTERN } },
+          ],
+          text: 'The migration is still running; its result will arrive here.',
+        },
+        {
+          steps: [{ call: { server: W, tool: 'run_output', args: { run_id: '${RUN2}' } } }],
+          text: 'The migration finished and its outputs are in.',
+        },
       ],
       afterTurns: 'repeatLast',
     }),
@@ -291,18 +351,67 @@ export async function startAndWatchFromThread(
 
   const listing = await harness.awaitMcpTools({ server: W, cwd: project.path, timeoutMs: 60_000 });
   expect(listing.isError, listing.error).toBe(false);
-  const started = await awaitWorkflowAnswer<StartAnswer>(harness, 'run_start', { cwd: project.path, timeoutMs: 180_000 });
-  expect(started.isError, started.text).toBe(false);
-  const output = await awaitWorkflowAnswer(harness, 'run_output', { cwd: project.path });
-  expect(output.isError, output.text).toBe(false);
+  const rested = await awaitWorkflowAnswer<StartAnswer>(harness, 'run_start', { cwd: project.path, timeoutMs: 180_000 });
+  expect(rested.isError, rested.text).toBe(false);
+  const restedOutput = await awaitWorkflowAnswer(harness, 'run_output', { cwd: project.path });
+  expect(restedOutput.isError, restedOutput.text).toBe(false);
   await awaitTurnCompleted(harness, project.threadId);
-  return { tools: listing.tools, instructions: listing.instructions, start: started.value!, output: output.value! };
+
+  // The migrator's phase holds until the spec releases it, so the wait in
+  // turn 2 ends first.
+  await setPhaseScenario(harness, phaseProvider, `${phaseProvider}-phases-held`, [{ gate: HELD_PHASE_GATE }], { complete: true });
+  const second = 'Now start the migration and let me know when it is done.';
+  // A wake for the importer's rest would have started a turn of its own
+  // after turn 1, and the send would be refused as the thread is working.
+  const refused = await harness.rpc('SendMessage', project.threadId, second, null).then(
+    () => undefined,
+    (error: Error) => error.message,
+  );
+  expect(refused, 'the thread was busy after turn 1: the importer rest the wait returned also woke it').toBeUndefined();
+  // The barrier for the absence below: a wake for the importer's rest would
+  // have been queued during turn 1, ahead of this message.
+  await harness.waitForEvent<MockInput>(
+    'harness:mock',
+    (event) =>
+      event.scenario === threadScenario(provider) &&
+      event.report.kind === 'user_input' &&
+      (event.report.input ?? '').includes(second),
+    60_000,
+  );
+  const backgrounded = await awaitWorkflowAnswer<StartAnswer>(harness, 'run_start', { cwd: project.path, timeoutMs: 60_000 });
+  expect(backgrounded.isError, backgrounded.text).toBe(false);
+  await awaitTurnCompleted(harness, project.threadId);
+
+  const gate = await awaitGate(harness, HELD_PHASE_GATE);
+  await advanceGate(harness, gate.mockId, HELD_PHASE_GATE);
+  const runId = backgrounded.value!.start.itemId;
+  await harness.waitForEvent<MockInput>(
+    'harness:mock',
+    (event) =>
+      event.scenario === threadScenario(provider) &&
+      event.report.kind === 'user_input' &&
+      (event.report.input ?? '').includes(runId),
+    60_000,
+  );
+  const backgroundedOutput = await awaitWorkflowAnswer(harness, 'run_output', { cwd: project.path });
+  expect(backgroundedOutput.isError, backgroundedOutput.text).toBe(false);
+  await awaitTurnCompleted(harness, project.threadId);
+
+  return {
+    tools: listing.tools,
+    instructions: listing.instructions,
+    rested: rested.value!,
+    restedOutput: restedOutput.value!,
+    backgrounded: backgrounded.value!,
+    backgroundedOutput: backgroundedOutput.value!,
+  };
 }
 
 /**
- * Opens the thread in the page and captures it once the run_start row and
- * the wake that reported the run's rest are both on screen. The harness's
- * temporary root is written as `<harness root>` in the capture.
+ * Opens the thread in the page and captures its end: the backgrounded
+ * run_start row, the wake that reported the run's rest, and the turn that
+ * read it, every activity run expanded and the last row clear of the
+ * composer. The harness's temporary root is written as `<harness root>`.
  */
 export async function captureRunFromThread(
   harness: HarnessApp,
@@ -316,18 +425,13 @@ export async function captureRunFromThread(
     await page.getByTestId('compact-back').click();
   }
   await page.getByTestId('thread-row').filter({ hasText: title }).click();
-  // The turn's two tool calls fold into one activity run; open it so the
-  // run_start row is in the capture.
-  const run = page.getByTestId('activity-run').filter({ hasText: 'Workflow start' }).first();
-  await expect(run).toBeVisible({ timeout: 30_000 });
-  if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
-  const startRow = run.getByTestId('tool-call-card').filter({ hasText: 'importer' }).first();
-  await expect(startRow).toBeVisible();
-  const wake = page.getByText(`Run "${runId}"`).last();
-  await wake.scrollIntoViewIfNeeded();
-  await expect(wake).toBeVisible({ timeout: 30_000 });
-  await run.evaluate((element) => element.scrollIntoView({ block: 'start' }));
-  await expect(startRow).toBeInViewport();
+  await expect(page.getByText(`Run "${runId}"`).last()).toBeAttached({ timeout: 30_000 });
+  const runs = page.getByTestId('activity-run');
+  for (let index = 0; index < (await runs.count()); index++) {
+    const run = runs.nth(index);
+    if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
+  }
+  await expect(page.getByTestId('tool-call-card').filter({ hasText: 'migrator' }).first()).toBeAttached();
   await page.evaluate(() => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -335,8 +439,16 @@ export async function captureRunFromThread(
       if (text.includes('/ao-harness-')) node.textContent = text.replace(/\/\S*?\/ao-harness-[^/\s]+/g, '<harness root>');
     }
   });
+  const scroller = page.getByTestId('message-timeline-scroll').first();
+  await scroller.evaluate((element) => element.scrollTo({ top: element.scrollHeight }));
   await page.evaluate(
     () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
   );
+  // The end of the thread reads whole: the wake and the turn after it are
+  // on screen, and the last row stops above the composer.
+  await expect(page.getByText(`Run "${runId}"`).last()).toBeInViewport();
+  const last = (await page.getByTestId('message-timeline-node').last().boundingBox())!;
+  const composer = (await page.getByTestId('composer-root').first().boundingBox())!;
+  expect(last.y + last.height).toBeLessThanOrEqual(composer.y + 1);
   await page.screenshot({ path: test.info().outputPath(name), animations: 'disabled' });
 }

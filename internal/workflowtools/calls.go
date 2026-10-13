@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/workflow/def"
 )
 
@@ -90,11 +91,13 @@ func (w waitArgs) validate() error {
 	return nil
 }
 
-// Outcomes of a waiting call.
+// Outcomes of a waiting call. Unknown is a run_start whose run started but
+// could not be read back; the start document still names it.
 const (
 	OutcomeResting      = "resting"
 	OutcomeRunning      = "running"
 	OutcomeBackgrounded = "backgrounded"
+	OutcomeUnknown      = "unknown"
 )
 
 // Notify says whether a run's rest will reach the caller's thread.
@@ -105,11 +108,12 @@ type Notify struct {
 
 // Wait is the answer to a waiting call: the run's status document, where
 // the wait left it, and, when it matters, whether its rest will reach the
-// caller.
+// caller. ReadError says why a run that started could not be read back.
 type Wait struct {
-	Run     any     `json:"run"`
-	Outcome string  `json:"outcome"`
-	Notify  *Notify `json:"notify,omitempty"`
+	Run       any     `json:"run,omitempty"`
+	Outcome   string  `json:"outcome"`
+	Notify    *Notify `json:"notify,omitempty"`
+	ReadError string  `json:"readError,omitempty"`
 }
 
 // StartResult is run_start's answer: the start document, and the wait when
@@ -141,15 +145,22 @@ func (c *call) runStart(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := checkObject("seeds", args.Seeds); err != nil {
 		return nil, err
 	}
+	// Everything is checked before the start: once StartRun commits, the run
+	// exists, and the answer must name it whatever happens after.
 	if err := args.validate(); err != nil {
 		return nil, err
 	}
 	started, err := c.app.StartRun(ctx, StartInput{
 		WorkflowID: strings.TrimSpace(args.WorkflowID), Scope: args.Scope, Goal: args.Goal,
 		Seeds: args.Seeds, BaseBranch: args.BaseBranch, StepMode: args.StepMode,
+		HoldWake: c.holdsWakes(args.waitArgs),
 	})
 	if err != nil {
 		return nil, failed(err)
+	}
+	delivered := false
+	if started.Hold != nil {
+		defer func() { started.Hold.Release(delivered) }()
 	}
 	if args.WaitSeconds == 0 && !args.Notify {
 		return struct {
@@ -158,9 +169,26 @@ func (c *call) runStart(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	wait, err := c.wait(ctx, started.RunID, args.waitArgs)
 	if err != nil {
-		return nil, err
+		// The run started; a failed read must not read as a failed start, or
+		// the caller starts it again. An interactive start has no
+		// surface-and-skip to catch the second one.
+		return StartResult{Start: started.Result, Wait: Wait{Outcome: OutcomeUnknown, ReadError: publicMessage(err)}}, nil
 	}
+	delivered = wait.Outcome == OutcomeResting
 	return StartResult{Start: started.Result, Wait: wait}, nil
+}
+
+// holdsWakes reports whether a call that waits as args asks holds the run's
+// wake while it does. Only an interactive caller can be woken, and only a
+// call that waits can deliver a rest in the wake's place.
+func (c *call) holdsWakes(args waitArgs) bool {
+	return args.WaitSeconds > 0 && !c.caller.Phase
+}
+
+// publicMessage is the text a caller may read for an app refusal.
+func publicMessage(err error) string {
+	_, message, _ := errorsx.PublicDetails(failed(err))
+	return message
 }
 
 func (c *call) runStatus(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -177,7 +205,18 @@ func (c *call) runStatus(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err := args.validate(); err != nil {
 		return nil, err
 	}
-	return c.wait(ctx, strings.TrimSpace(args.RunID), args.waitArgs)
+	runID := strings.TrimSpace(args.RunID)
+	delivered := false
+	if c.holdsWakes(args.waitArgs) {
+		hold := c.app.HoldWake(ctx, runID)
+		defer func() { hold.Release(delivered) }()
+	}
+	wait, err := c.wait(ctx, runID, args.waitArgs)
+	if err != nil {
+		return nil, err
+	}
+	delivered = wait.Outcome == OutcomeResting
+	return wait, nil
 }
 
 // wait blocks until the run rests or the wait passes, then reads its status.
@@ -219,9 +258,11 @@ func (c *call) wait(ctx context.Context, runID string, args waitArgs) (Wait, err
 		result.Outcome = OutcomeBackgrounded
 	}
 	if result.Outcome == OutcomeBackgrounded || (args.Notify && result.Outcome != OutcomeResting) {
+		// The status is already read; a failed binding lookup costs the
+		// caller the notify answer, not the status.
 		notify, err := c.notify(ctx, runID)
 		if err != nil {
-			return Wait{}, err
+			notify = Notify{Detail: fmt.Sprintf(notifyUnreadableF, publicMessage(err))}
 		}
 		result.Notify = &notify
 	}
@@ -248,10 +289,11 @@ func statusResting(status any) bool {
 // binding: the bound thread is woken whenever the run comes to rest (D17).
 // Nothing here binds a run; binding is the overlay's, or the start's.
 const (
-	notifyBound      = "This run is bound to your thread: when it comes to rest, a message naming what to do next arrives here at your next turn boundary. You do not need to poll."
-	notifyUnbound    = "This run is not bound to your thread; poll run_status again or bind it from the overlay."
-	notifyPhase      = "A workflow phase session receives no wakes; call run_status again to read where the run stands."
-	notifyElsewhereF = "This run reports to thread %s, not to yours; poll run_status again."
+	notifyBound       = "This run is bound to your thread: when it comes to rest, a message naming what to do next arrives here at your next turn boundary. You do not need to poll."
+	notifyUnbound     = "This run is not bound to your thread; poll run_status again or bind it from the overlay."
+	notifyPhase       = "A workflow phase session receives no wakes; call run_status again to read where the run stands."
+	notifyElsewhereF  = "This run reports to thread %s, not to yours; poll run_status again."
+	notifyUnreadableF = "Whether this run's rest reaches your thread could not be read (%s); poll run_status again."
 )
 
 func (c *call) notify(ctx context.Context, runID string) (Notify, error) {
@@ -432,12 +474,42 @@ func (c *call) runControl(ctx context.Context, raw json.RawMessage) (any, error)
 	if args.Action == "retry_unit" && !set["unit_id"] {
 		return nil, invalidf("retry_unit needs unit_id; run_status lists the failed units.")
 	}
-	result, err := c.app.ControlRun(ctx, ControlInput{
-		RunID: strings.TrimSpace(args.RunID), Action: args.Action, PhaseID: strings.TrimSpace(args.PhaseID),
+	runID := strings.TrimSpace(args.RunID)
+	done, err := c.app.ControlRun(ctx, ControlInput{
+		RunID: runID, Action: args.Action, PhaseID: strings.TrimSpace(args.PhaseID),
 		RefreshDef: args.RefreshDef, At: strings.TrimSpace(args.At), Guidance: args.Guidance,
 		UnitID: strings.TrimSpace(args.UnitID), Note: args.Note, Clear: args.Clear,
 	})
-	return result, failed(err)
+	if err != nil {
+		return nil, failed(err)
+	}
+	// What state the run is in now is the useful answer to acting on it, but
+	// the action is done whether or not that read succeeds.
+	status, err := c.app.RunStatus(ctx, runID)
+	if err != nil {
+		return ActionDone{RunID: runID, Action: args.Action, Done: true, ArmedAt: done.ArmedAt, ReadError: publicMessage(err)}, nil
+	}
+	if done.ArmedAt != "" {
+		return ScheduledResume{ArmedAt: done.ArmedAt, Run: status}, nil
+	}
+	return status, nil
+}
+
+// ScheduledResume is run_control resume with at: the moment the resume armed,
+// and the run, which stays where it is until then.
+type ScheduledResume struct {
+	ArmedAt string `json:"armedAt"`
+	Run     any    `json:"run"`
+}
+
+// ActionDone answers an action that took effect when the run could not be
+// read back afterwards.
+type ActionDone struct {
+	RunID     string `json:"itemId"`
+	Action    string `json:"action"`
+	Done      bool   `json:"done"`
+	ArmedAt   string `json:"armedAt,omitempty"`
+	ReadError string `json:"readError"`
 }
 
 func (c *call) runAmend(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -507,10 +579,17 @@ func (c *call) runResolve(ctx context.Context, raw json.RawMessage) (any, error)
 	default:
 		return nil, invalidf("decision must be approve, reject or answer.")
 	}
-	result, err := c.app.ResolveRun(ctx, ResolveInput{
-		RunID: strings.TrimSpace(args.RunID), Decision: args.Decision, Note: args.Note, Answer: args.Answer,
-	})
-	return result, failed(err)
+	runID := strings.TrimSpace(args.RunID)
+	if err := c.app.ResolveRun(ctx, ResolveInput{
+		RunID: runID, Decision: args.Decision, Note: args.Note, Answer: args.Answer,
+	}); err != nil {
+		return nil, failed(err)
+	}
+	status, err := c.app.RunStatus(ctx, runID)
+	if err != nil {
+		return ActionDone{RunID: runID, Action: args.Decision, Done: true, ReadError: publicMessage(err)}, nil
+	}
+	return status, nil
 }
 
 func (c *call) memoryAdd(ctx context.Context, raw json.RawMessage) (any, error) {

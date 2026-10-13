@@ -8,10 +8,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflowtools"
@@ -64,6 +66,14 @@ func workflowMCPToolNames(t *testing.T, endpoint string) []string {
 // the thread, and the runtime mode its access maps to.
 func workflowPhaseThread(t *testing.T, a *App, access def.Access, grants ...string) (store.Thread, string) {
 	t.Helper()
+	return workflowPhaseThreadInMode(t, a, access, workflowPhaseRuntimeMode(access), grants...)
+}
+
+// workflowPhaseThreadInMode is workflowPhaseThread with the session's runtime
+// mode chosen apart from the phase's declared access, as a user changing the
+// mode on a live phase thread leaves it.
+func workflowPhaseThreadInMode(t *testing.T, a *App, access def.Access, mode provider.RuntimeMode, grants ...string) (store.Thread, string) {
+	t.Helper()
 	project, err := a.store.CreateProject(store.Project{ID: uuid.NewString(), Name: "phase", Path: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +94,7 @@ func workflowPhaseThread(t *testing.T, a *App, access def.Access, grants ...stri
 	thread := store.Thread{
 		ID: uuid.NewString(), ProjectID: project.ID, Provider: string(provider.Claude),
 		Mode: threadmode.ModeWorkflow, WorkspacePath: project.Path,
-		RuntimeMode: string(workflowPhaseRuntimeMode(access)),
+		RuntimeMode: string(mode),
 	}
 	if err := a.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
@@ -157,6 +167,36 @@ func TestWorkflowMCPPhaseSessionSeesItsGrants(t *testing.T) {
 	endpoint = workflowMCPEndpoint(t, app, writing, token)
 	if got := workflowMCPToolNames(t, endpoint); !slices.Contains(got, "memory_add") || !slices.Contains(got, "workflow_new") || slices.Contains(got, "run_start") {
 		t.Fatalf("write phase with no grants sees %v", got)
+	}
+}
+
+// A phase's access is the one its definition froze, whatever runtime mode its
+// session is in: a write phase holds the writing tools in every mode, and a
+// read-only phase is refused them in every mode, full access included.
+func TestWorkflowMCPReadOnlyFollowsTheFrozenAccessNotTheRuntimeMode(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	t.Cleanup(func() { _ = app.workflowMCPServer().Close() })
+	modes := []provider.RuntimeMode{
+		provider.RuntimeReadOnly, provider.RuntimeApprovalRequired, provider.RuntimeAutoAcceptEdits,
+		provider.RuntimeAuto, provider.RuntimeFullAccess,
+	}
+	for _, access := range []def.Access{def.AccessWrite, def.AccessReadOnly} {
+		for _, mode := range modes {
+			thread, token := workflowPhaseThreadInMode(t, app, access, mode)
+			endpoint := workflowMCPEndpoint(t, app, thread, token)
+			tools := workflowMCPToolNames(t, endpoint)
+			writes := access == def.AccessWrite
+			for _, name := range []string{"memory_add", "workflow_new"} {
+				if slices.Contains(tools, name) != writes {
+					t.Errorf("%s phase in %s mode: %s listed = %t", access, mode, name, !writes)
+				}
+			}
+			answer := string(remoteMCPCall(t, endpoint, "memory_add", map[string]any{"kind": "learning", "text": "x"}, !writes))
+			if refused := strings.Contains(answer, workflowtools.CodeReadOnly); refused == writes {
+				t.Errorf("%s phase in %s mode: memory_add = %s", access, mode, answer)
+			}
+		}
 	}
 }
 
@@ -252,6 +292,18 @@ func TestClaudeTUISessionStartsAndWatchesARunThroughTheWorkflowTools(t *testing.
 	if started.Outcome != workflowtools.OutcomeResting || started.Run.State != string(engine.StateDone) || !started.Run.Resting {
 		t.Fatalf("the wait did not see the run rest done: %s", answer)
 	}
+	// The wait returned the rest, so the rest does not also wake the thread:
+	// nothing for this run reached the thread's queue or its sends.
+	app.workflowApplication().WaitWake()
+	rows, err := app.store.ListFlushQueueItems(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if strings.Contains(row.Message, started.Start.ItemID) {
+			t.Fatalf("the rest the wait returned also woke the thread: %q", row.Message)
+		}
+	}
 }
 
 func TestClaudeTUIHostsOnlyTheWorkflowTools(t *testing.T) {
@@ -336,5 +388,77 @@ func TestWorkflowMCPRowHasNoToggle(t *testing.T) {
 	}
 	if err := app.SetThreadMcpServerEnabled(thread.ID, workflowMCPName, false); !errors.Is(err, errWorkflowToolsAlwaysOn) {
 		t.Fatalf("switching the workflow tools off = %v, want %v", err, errWorkflowToolsAlwaysOn)
+	}
+}
+
+// waitOnRunFromThread calls run_status for a run as an interactive thread
+// would, through the app's own adapter.
+func waitOnRunFromThread(t *testing.T, h *wakeHarness, threadID, runID string, waitSeconds int) workflowtools.Wait {
+	t.Helper()
+	ctx := transport.WithCallerScope(t.Context(), transport.CallerScope{
+		Kind: transport.ScopeKindInteractive, ThreadID: threadID, ProjectID: defaultTestProjectID,
+	})
+	args, err := json.Marshal(map[string]any{"run_id": runID, "wait_seconds": waitSeconds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := h.app.workflowToolsServer().Call(ctx, workflowtools.Caller{ThreadID: threadID}, "run_status", args)
+	if err != nil {
+		t.Fatalf("run_status: %v", err)
+	}
+	return result.(workflowtools.Wait)
+}
+
+// A wait that returns the run's rest is the delivery: the rest does not also
+// wake the thread. Here the call reads the rest from the store before the
+// engine's event has queued its wake, the order a fast rest takes.
+func TestAWaitThatReturnedTheRestSuppressesItsWake(t *testing.T) {
+	t.Parallel()
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "waiting-thread")
+	item := h.run(t, "held-run", engine.StateRunning, "")
+	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.app.store.UpdateWorkItemState(item.ID, string(engine.StateDone), "", time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	wait := waitOnRunFromThread(t, h, thread.ID, item.ID, 30)
+	if wait.Outcome != workflowtools.OutcomeResting {
+		t.Fatalf("wait = %+v", wait)
+	}
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateDone,
+	})
+	h.drain()
+	if sends, queued, _, _ := h.snapshot(); len(sends)+len(queued) != 0 {
+		t.Fatalf("the rest the wait returned also woke the thread: sends=%q queued=%q", sends, queued)
+	}
+}
+
+// A wait that ends with the run still working leaves the rest to the wake:
+// it arrives once.
+func TestABackgroundedWaitLeavesExactlyOneWake(t *testing.T) {
+	t.Parallel()
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "waiting-thread")
+	item := h.run(t, "slow-run", engine.StateRunning, "")
+	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	wait := waitOnRunFromThread(t, h, thread.ID, item.ID, 1)
+	if wait.Outcome != workflowtools.OutcomeBackgrounded || wait.Notify == nil || !wait.Notify.Armed {
+		t.Fatalf("wait = %+v", wait)
+	}
+	if err := h.app.store.UpdateWorkItemState(item.ID, string(engine.StateDone), "", time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateDone,
+	})
+	h.drain()
+	sends, queued, _, _ := h.snapshot()
+	if len(sends)+len(queued) != 1 {
+		t.Fatalf("a backgrounded wait's rest delivered sends=%d queued=%d, want one wake", len(sends), len(queued))
 	}
 }

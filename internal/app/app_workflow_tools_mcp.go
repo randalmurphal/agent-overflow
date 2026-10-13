@@ -94,13 +94,12 @@ func (a *App) workflowMCPConfigForThread(thread store.Thread, sessionToken strin
 
 // workflowCaller is the tool-level authority of a thread's session.
 func workflowCaller(thread store.Thread, scope transport.CallerScope) workflowtools.Caller {
-	caller := workflowtools.Caller{ThreadID: thread.ID, Phase: scope.IsPhase(), Grants: scope.Grants}
-	if scope.IsPhase() {
-		// A phase thread's runtime mode is its declared access
-		// (workflowPhaseRuntimeMode): only `write` runs with full access.
-		caller.ReadOnly = thread.RuntimeMode != string(provider.RuntimeFullAccess)
+	return workflowtools.Caller{
+		ThreadID: thread.ID, Phase: scope.IsPhase(), Grants: scope.Grants,
+		// The access the phase or unit froze, not the session's runtime mode:
+		// the mode can be changed on a live thread, the declaration cannot.
+		ReadOnly: scope.IsPhase() && def.Access(scope.Access) != def.AccessWrite,
 	}
-	return caller
 }
 
 // callWorkflowMCP runs one tool. The session must still be the one the
@@ -215,19 +214,46 @@ func (w workflowToolsAdapter) ScaffoldWorkflow(ctx context.Context, starter, id 
 }
 
 func (w workflowToolsAdapter) StartRun(ctx context.Context, input workflowtools.StartInput) (workflowtools.Started, error) {
-	result, err := w.a.workflowAgentStartRun(ctx, WorkflowAgentStartInput{
+	start := WorkflowAgentStartInput{
 		WorkflowID: input.WorkflowID, Scope: input.Scope, Goal: input.Goal, Seeds: input.Seeds,
 		BaseBranch: input.BaseBranch, StepMode: input.StepMode,
-	})
+	}
+	var hold workflowtools.WakeHold
+	if input.HoldWake {
+		start.beforeBind = func(itemID string) { hold = w.HoldWake(ctx, itemID) }
+	}
+	result, err := w.a.workflowAgentStartRun(ctx, start)
 	if err != nil {
+		if hold != nil {
+			hold.Release(false)
+		}
 		return workflowtools.Started{}, err
 	}
-	return workflowtools.Started{RunID: result.ItemID, Result: result}, nil
+	started := workflowtools.Started{RunID: result.ItemID, Result: result}
+	if hold != nil {
+		started.Hold = hold
+	}
+	return started, nil
 }
 
 func (w workflowToolsAdapter) RunStatus(ctx context.Context, runID string) (any, error) {
 	return w.a.workflowAgentRunStatus(ctx, runID)
 }
+
+// HoldWake holds the run's wakes to the calling session's thread. A caller
+// with no readable scope cannot be woken, so it gets a hold that holds
+// nothing.
+func (w workflowToolsAdapter) HoldWake(ctx context.Context, runID string) workflowtools.WakeHold {
+	scope, err := requireCallerScope(ctx)
+	if err != nil || !scope.IsInteractive() {
+		return noWakeHold{}
+	}
+	return w.a.workflowApplication().HoldRestWake(runID, scope.ThreadID)
+}
+
+type noWakeHold struct{}
+
+func (noWakeHold) Release(bool) {}
 
 func (w workflowToolsAdapter) WatchRun(ctx context.Context, input workflowtools.WatchInput) (workflowtools.Watched, error) {
 	result, err := w.a.workflowAgentWatchRun(ctx, WorkflowAgentWatchInput{
@@ -274,14 +300,7 @@ func (w workflowToolsAdapter) ListRuns(ctx context.Context, activeOnly bool) (an
 	return w.a.workflowAgentListRuns(ctx, activeOnly)
 }
 
-// WorkflowScheduledResume is run_control resume with at: the moment the
-// resume armed, and the run, which stays where it is until then.
-type WorkflowScheduledResume struct {
-	ArmedAt string               `json:"armedAt"`
-	Run     WorkflowAgentRunView `json:"run"`
-}
-
-func (w workflowToolsAdapter) ControlRun(ctx context.Context, input workflowtools.ControlInput) (any, error) {
+func (w workflowToolsAdapter) ControlRun(ctx context.Context, input workflowtools.ControlInput) (workflowtools.ControlDone, error) {
 	var err error
 	switch input.Action {
 	case "pause":
@@ -291,14 +310,7 @@ func (w workflowToolsAdapter) ControlRun(ctx context.Context, input workflowtool
 	case "resume":
 		if input.At != "" {
 			armed, err := w.a.WorkflowScheduleResume(ctx, input.RunID, input.At)
-			if err != nil {
-				return nil, err
-			}
-			view, err := w.a.workflowAgentRunStatus(ctx, input.RunID)
-			if err != nil {
-				return nil, err
-			}
-			return WorkflowScheduledResume{ArmedAt: armed, Run: view}, nil
+			return workflowtools.ControlDone{ArmedAt: armed}, err
 		}
 		err = w.a.WorkflowResumeItem(ctx, input.RunID, input.PhaseID, input.RefreshDef)
 	case "rerun":
@@ -310,13 +322,9 @@ func (w workflowToolsAdapter) ControlRun(ctx context.Context, input workflowtool
 	case "retry_failed_units":
 		err = w.a.WorkflowRetryFailedUnits(ctx, input.RunID, input.Note)
 	default:
-		return nil, fmt.Errorf("unknown run action %q", input.Action)
+		err = fmt.Errorf("unknown run action %q", input.Action)
 	}
-	if err != nil {
-		return nil, err
-	}
-	// What state the run is in now is the only useful answer to acting on it.
-	return w.a.workflowAgentRunStatus(ctx, input.RunID)
+	return workflowtools.ControlDone{}, err
 }
 
 func (w workflowToolsAdapter) AmendSeeds(ctx context.Context, runID string, seeds json.RawMessage) (any, error) {
@@ -327,20 +335,15 @@ func (w workflowToolsAdapter) GuideRun(ctx context.Context, runID, text string) 
 	return w.a.workflowAgentGuideRun(ctx, WorkflowAgentGuideRunInput{ItemID: runID, Text: text})
 }
 
-func (w workflowToolsAdapter) ResolveRun(ctx context.Context, input workflowtools.ResolveInput) (any, error) {
-	var err error
+func (w workflowToolsAdapter) ResolveRun(ctx context.Context, input workflowtools.ResolveInput) error {
 	switch input.Decision {
 	case "approve", "reject":
-		err = w.a.WorkflowResolveGate(ctx, input.RunID, input.Decision, input.Note)
+		return w.a.WorkflowResolveGate(ctx, input.RunID, input.Decision, input.Note)
 	case "answer":
-		err = w.a.WorkflowAnswerQuestion(ctx, input.RunID, input.Answer)
+		return w.a.WorkflowAnswerQuestion(ctx, input.RunID, input.Answer)
 	default:
-		err = errors.New("decision must be approve, reject or answer")
+		return errors.New("decision must be approve, reject or answer")
 	}
-	if err != nil {
-		return nil, err
-	}
-	return w.a.workflowAgentRunStatus(ctx, input.RunID)
 }
 
 func (w workflowToolsAdapter) AddMemory(ctx context.Context, input workflowtools.MemoryInput) (any, error) {

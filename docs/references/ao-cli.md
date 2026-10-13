@@ -32,6 +32,11 @@ agent-overflow <command>
                                                serve; update stages a binary as a new version and
                                                restarts the unit, and is the only way to replace
                                                the supervisor itself
+  pair [--lan|--class browser|android|desktop|--json|--wait <dur>]
+                                               host command: pairs a device with this computer's
+                                               running app or service; the six-digit code is
+                                               confirmed on stdin. --json emits the invitation,
+                                               verification and paired records for SSH setup
   remote list|run|status|cancel                session command: commands on an enabled paired
                                                computer (below)
   thread send <thread-id> <text> [--config-root|--wait <dur>]

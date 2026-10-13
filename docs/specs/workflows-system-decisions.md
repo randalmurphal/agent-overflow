@@ -2896,18 +2896,29 @@ each pinned by an incident-replay test:
   through the offline CLI and the memory verb, so nothing a phase can do
   widened. Grant-free tools never widen what a phase can do, and a read-only
   phase keeps exactly the envelope memory channel it had: `memory_add` and
-  `workflow_new` are withheld from phases whose access is not `write`.
+  `workflow_new` are withheld from phases whose access is not `write`. The
+  access is the one the run's frozen definition declares for the phase, or
+  for the fan-out unit the session runs, never the session's runtime mode.
 
   **Grants take effect on read-only phases.** The author declared them and
   validation already accepted them; that a read-only session could not
   reach the CLI's socket was a mechanism accident, not a rule.
 
   **Waits and wakes.** A waiting call is bounded by the thread tools' 900
-  second ceiling and reports `resting`, `running` or `backgrounded`. A run's
-  rest reaches a thread only through its D17 binding, and no tool call
-  changes a binding, so a waiting result says whether the run is bound to the
-  caller's thread, unbound, bound to another thread, or being watched by a
-  phase session that receives no wakes.
+  second ceiling and reports `resting`, `running` or `backgrounded`. A wait
+  that returned the run's rest is that rest's delivery, as with the thread
+  tools: the D17 wake for that rest is suppressed, and a later rest (after a
+  resume or a rerun) wakes the thread as usual (product ruling, logged for
+  the user). Otherwise a run's rest reaches a thread only through its D17
+  binding, and no tool call changes a binding, so a backgrounded result says
+  whether the run is bound to the caller's thread, unbound, bound to another
+  thread, or being watched by a phase session that receives no wakes.
+
+  **A committed action is never reported as failed.** Once `run_start` has
+  started a run, or `run_control`/`run_resolve` has acted, a failure to read
+  the run back is carried in the answer (`readError`) beside the run's id;
+  an interactive start has no surface-and-skip, so an error there would
+  start a second run on retry.
 
   **claude-tui** hosts `ao-workflow-tools` and none of the app's other
   servers (`docs/decisions.md`); whether it hosts the thread tools is a

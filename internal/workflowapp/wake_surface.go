@@ -38,6 +38,12 @@ func (s *Service) afterWorkflowResting(item store.WorkItem, usageClaim *store.Wo
 	if item.OriginThreadID == "" {
 		return false
 	}
+	if s.keepBackRest(item, usageClaim) {
+		// A waiting call has the rest (wake_hold.go). Reported as delivered:
+		// the hold carries the usage claim, and the call or its release
+		// settles it.
+		return true
+	}
 	composed, err := s.composeWorkflowWake(item, nil)
 	if err != nil {
 		s.deps.Logf("workflow wake %s: compose: %v", item.ID, err)

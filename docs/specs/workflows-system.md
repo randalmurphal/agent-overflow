@@ -669,9 +669,11 @@ could not reach the old CLI was a mechanism accident, not a rule.
 
 **Waiting and hearing back.** A waiting call (`run_start` or `run_status`
 with `wait_seconds`) returns `resting`, `running` or `backgrounded`, never
-past 900 seconds. A run's rest reaches a thread only through its binding
-below, so the result says which of three cases holds, and no tool call
-changes a binding:
+past 900 seconds. A wait that returns the rest is that rest's delivery: the
+bound thread is not also woken for it, and the next rest wakes it as usual
+([agent workflow tools](agent-workflow-tools.md#hearing-back)). A run's rest
+otherwise reaches a thread only through its binding below, so a backgrounded
+result says which case holds, and no tool call changes a binding:
 
 - the run is bound to the caller's thread: its rest arrives there as a
   message, so the caller need not poll;

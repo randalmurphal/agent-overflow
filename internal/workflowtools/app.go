@@ -25,6 +25,11 @@ type App interface {
 
 	StartRun(ctx context.Context, input StartInput) (Started, error)
 	RunStatus(ctx context.Context, runID string) (any, error)
+	// HoldWake keeps the run's rests from waking the calling thread while a
+	// call waits on it, until the hold is released. A rest the call returned
+	// is delivered; any other rest the hold kept back wakes the thread on
+	// release. A run bound to another thread is not held.
+	HoldWake(ctx context.Context, runID string) WakeHold
 	// WatchRun returns once the run has transitions after the cursor, is
 	// resting, or Wait passes. A zero cursor answers at once.
 	WatchRun(ctx context.Context, input WatchInput) (Watched, error)
@@ -35,17 +40,19 @@ type App interface {
 	InspectRun(ctx context.Context, input InspectInput) (any, error)
 	RunNarrative(ctx context.Context, input NarrativeInput) (any, error)
 	ListRuns(ctx context.Context, activeOnly bool) (any, error)
-	// ControlRun acts on a run and returns its state afterwards, or, for a
-	// scheduled resume, the moment it armed.
-	ControlRun(ctx context.Context, input ControlInput) (any, error)
+	// ControlRun acts on a run. A scheduled resume reports the moment it
+	// armed; every other action reports nothing.
+	ControlRun(ctx context.Context, input ControlInput) (ControlDone, error)
 	AmendSeeds(ctx context.Context, runID string, seeds json.RawMessage) (any, error)
 	GuideRun(ctx context.Context, runID, text string) (any, error)
-	ResolveRun(ctx context.Context, input ResolveInput) (any, error)
+	ResolveRun(ctx context.Context, input ResolveInput) error
 	AddMemory(ctx context.Context, input MemoryInput) (any, error)
 	ListMemory(ctx context.Context, runID, kind string) (any, error)
 }
 
-// StartInput is run_start's request.
+// StartInput is run_start's request. HoldWake asks for the new run's wake
+// hold, taken before the run is bound to the caller's thread so no rest of it
+// can wake the thread past the call that is about to wait on it.
 type StartInput struct {
 	WorkflowID string
 	Scope      string
@@ -53,12 +60,27 @@ type StartInput struct {
 	Seeds      json.RawMessage
 	BaseBranch string
 	StepMode   bool
+	HoldWake   bool
 }
 
-// Started is a run start: the run's id, and the app's start document.
+// Started is a run start: the run's id, the app's start document, and the
+// wake hold when one was asked for.
 type Started struct {
 	RunID  string
 	Result any
+	Hold   WakeHold
+}
+
+// WakeHold is a waiting call's claim on a run's wake. Release ends it exactly
+// once; delivered says the call returned the run at rest.
+type WakeHold interface {
+	Release(delivered bool)
+}
+
+// ControlDone is what an action reports before the run is read back.
+type ControlDone struct {
+	// ArmedAt is the moment a scheduled resume will fire.
+	ArmedAt string
 }
 
 // WatchInput is one bounded wait on a run's transitions.
