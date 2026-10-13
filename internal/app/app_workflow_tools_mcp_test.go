@@ -295,7 +295,12 @@ func TestClaudeTUISessionStartsAndWatchesARunThroughTheWorkflowTools(t *testing.
 		t.Fatalf("the wait did not see the run rest done: %s", answer)
 	}
 	// The wait returned the rest, so the rest does not also wake the thread:
-	// nothing for this run reached the thread's queue or its sends.
+	// nothing for this run reached the thread's queue or its sends. The
+	// call's hold releases after its response went out; closing the server
+	// joins the call, so the release is queued before the drain.
+	if err := app.workflowMCPServer().Close(); err != nil {
+		t.Fatal(err)
+	}
 	app.workflowApplication().WaitWake()
 	rows, err := app.store.ListFlushQueueItems(thread.ID)
 	if err != nil {

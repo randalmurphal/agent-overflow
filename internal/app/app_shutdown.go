@@ -394,6 +394,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	record("stop thread search index", nil)
 	record("close thread MCP server", a.threadMCPServer().Close())
 	record("close workflow MCP server", a.workflowMCPServer().Close())
+	// A workflow tool call's wait hold releases on the wake queue once its
+	// response is written, which can follow the engine's close and the drain
+	// there. Closing the server joins those calls, so their wake work is
+	// queued by now; it finishes before SQLite closes.
+	a.workflowApplication().WaitWake()
+	record("drain workflow wakes", nil)
 	if a.backends != nil {
 		a.backends.WaitOwnDevices()
 		// Session renewals write profile files and call the other

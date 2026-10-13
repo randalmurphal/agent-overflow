@@ -224,6 +224,9 @@ Limits:
 
 - A hold is process memory: a crash between the rest and the call returning
   loses that one wake, as a crash between a rest and its wake always could.
+  A call that ends during shutdown releases before the store closes, but the
+  app takes no new messages by then, so the kept-back wake is reported as
+  undelivered on the run instead.
 - A rest whose wake job ran before `run_start` bound the run found no binding
   and is never woken; a `run_start` that waits still returns it.
 - The engine writes a transition before it records it in the ring. A rest
