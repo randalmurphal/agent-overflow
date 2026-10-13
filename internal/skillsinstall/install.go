@@ -23,7 +23,8 @@ type Status struct {
 var ErrNotInstalled = errors.New("the skills are not installed here")
 
 // ConflictError refuses an install that would write over skill directories
-// or files the manifest does not name.
+// or files the manifest does not name, or into a link or file where one of
+// its directories should be.
 type ConflictError struct {
 	Paths []string
 }
