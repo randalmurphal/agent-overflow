@@ -421,12 +421,12 @@ func TestForgeScriptViewsMergeStates(t *testing.T) {
 	}
 }
 
-// TestWorktreeAuditReadsPRState runs worktree-audit.sh, the third caller
+// TestForgeScriptWorktreeAudit runs worktree-audit.sh, the third caller
 // of the forge script, in a checkout holding worktrees on two branches:
 // `ready` has the viewer's open pull, `feature` a pull by someone else,
 // which `pr list --author @me` leaves out. The best-effort fetch fails
 // fast (GIT_SSH_COMMAND=false).
-func TestWorktreeAuditReadsPRState(t *testing.T) {
+func TestForgeScriptWorktreeAudit(t *testing.T) {
 	audit := filepath.Join(filepath.Dir(forgeScript), "worktree-audit.sh")
 	for _, fc := range []struct{ forge, project, remote string }{
 		{"github", "acme/widgets", "git@github.com:acme/widgets.git"},

@@ -89,7 +89,7 @@ the chain with no pull request exits 3, and a cycle of bases fails, so
   `ao-mockforge` binary, including an SSH alias, `FORGE_REMOTE`, reads
   past one page, and a refusal for an unknown host. `TestForgeScriptHelp`
   covers help and misuse inside and outside a checkout, and
-  `TestWorktreeAuditReadsPRState` runs `worktree-audit.sh` on both
+  `TestForgeScriptWorktreeAudit` runs `worktree-audit.sh` on both
   forges.
   `TestForgeScriptStack` covers `forge stack` on both forges: a stack of
   three, merged and closed bases, the default branch, a cycle, and a
