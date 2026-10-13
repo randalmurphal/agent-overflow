@@ -762,17 +762,32 @@ func (s *Store) DeleteThreadRequest(token string) (bool, error) {
 // spawnLineageSQL matches a local spawn request whose thread still exists.
 // The row is the only record of which thread started that one: the sidebar
 // nests a spawned thread under its spawner and counts a standing agent's
-// finished children through it, so it lives as long as the thread it made.
-// ON DELETE CASCADE on the caller takes it when the spawner goes, and a
-// thread deleted on its own leaves a row nothing reads, which the sweep
-// takes once it is past the floor.
+// finished children through it, so its lineage lives as long as the thread
+// it made. Past the retention floor the sweep keeps only that lineage
+// (clearLineagePayloadSQL). ON DELETE CASCADE on the caller takes it when
+// the spawner goes, and a thread deleted on its own leaves a row nothing
+// reads, which the sweep deletes once it is past the floor.
 const spawnLineageSQL = `kind = 'spawn' AND target_computer_id = ''
 			AND target_thread_id IN (SELECT id FROM threads)`
 
+// clearLineagePayloadSQL empties everything a lineage row answered and
+// disarms its wake, so past the floor the row names its caller, kind,
+// target, state and times and nothing else: an old answer is not kept for
+// the life of the thread, and a wake it never handed over is not delivered
+// empty. The delivery marks stay, because a cleared delivered_at would read
+// as a wake still owed. The sweep appends its floor after the WHERE that
+// skips rows already cleared.
+const clearLineagePayloadSQL = `UPDATE thread_requests
+	SET answer = NULL, answer_kind = '', late_reply = NULL, late_reply_at = NULL,
+	    notify = 0, issue = '', wake_issue = '', expires_at = NULL
+	WHERE (answer IS NOT NULL OR answer_kind <> '' OR late_reply IS NOT NULL OR late_reply_at IS NOT NULL
+	    OR notify <> 0 OR issue <> '' OR wake_issue <> '' OR expires_at IS NOT NULL)`
+
 // DeleteThreadRequestsBefore removes both sides of every request that has
-// been settled longer than the retention floor. Past it a token stops
-// answering, so a late reply gets `thread_request_unknown` rather than
-// resurrecting a month-old exchange.
+// been settled longer than the retention floor, and reports how many rows
+// it deleted or cleared. Past it a token stops answering, so a late reply
+// gets `thread_request_unknown` rather than resurrecting a month-old
+// exchange.
 //
 // Two rows survive the floor whatever their age. An OPEN row is still work:
 // deleting it would leave a receipt nobody can settle or cancel, so the row
@@ -780,8 +795,8 @@ const spawnLineageSQL = `kind = 'spawn' AND target_computer_id = ''
 // moment it finished, not from when it was made: a reminder armed for next
 // month is due in the future and older than the floor at the same time, and
 // an answer written yesterday on a request made last year has been readable
-// for a day. A local spawn request also survives while the thread it
-// created exists (spawnLineageSQL).
+// for a day. A local spawn request whose thread exists keeps its lineage
+// past the floor with its payload cleared (spawnLineageSQL).
 func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -794,11 +809,12 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (int64, error) {
 		// age is the terminal moment the floor is measured against,
 		// falling back through what the row has.
 		age string
-		// keep names rows the floor never takes, however old.
-		keep string
+		// keep names rows the floor never deletes, however old, and clear
+		// is the update applied to them instead.
+		keep, clear string
 	}{
-		{"thread_requests", threadRequestOpenStates, "COALESCE(settled_at, due_at, created_at)", spawnLineageSQL},
-		{"thread_request_receipts", threadReceiptOpenStates, "COALESCE(settled_at, created_at)", "0"},
+		{"thread_requests", threadRequestOpenStates, "COALESCE(settled_at, due_at, created_at)", spawnLineageSQL, clearLineagePayloadSQL},
+		{"thread_request_receipts", threadReceiptOpenStates, "COALESCE(settled_at, created_at)", "0", ""},
 	}
 	var total int64
 	for _, sweep := range sweeps {
@@ -812,8 +828,19 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (int64, error) {
 		}
 		args := append([]any{}, openArgs...)
 		args = append(args, cutoff)
-		result, err := tx.Exec(`DELETE FROM `+sweep.table+` WHERE NOT `+openClause+
-			` AND `+sweep.age+` < ? AND NOT (`+sweep.keep+`)`, args...)
+		pastFloor := `NOT ` + openClause + ` AND ` + sweep.age + ` < ?`
+		if sweep.clear != "" {
+			result, err := tx.Exec(sweep.clear+` AND `+pastFloor+` AND (`+sweep.keep+`)`, args...)
+			if err != nil {
+				return 0, fmt.Errorf("store: clear kept %s before %d: %w", sweep.table, cutoff, err)
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				return 0, fmt.Errorf("store: count cleared %s rows: %w", sweep.table, err)
+			}
+			total += affected
+		}
+		result, err := tx.Exec(`DELETE FROM `+sweep.table+` WHERE `+pastFloor+` AND NOT (`+sweep.keep+`)`, args...)
 		if err != nil {
 			return 0, fmt.Errorf("store: sweep %s before %d: %w", sweep.table, cutoff, err)
 		}

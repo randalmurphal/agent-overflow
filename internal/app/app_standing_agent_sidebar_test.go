@@ -377,3 +377,31 @@ func TestASpawnBroadcastsItsThreadNamingTheSpawner(t *testing.T) {
 		t.Fatalf("a refused spawn left a thread behind: %d rows, had %d", len(after), len(before))
 	}
 }
+
+// A demotion re-emits the agent's own row: its agentPromotedAt and
+// archivedChildCount came from the agent row it no longer has.
+func TestDemoteStandingAgentBroadcastsItsOwnRow(t *testing.T) {
+	t.Parallel()
+	f := newOrganizeFixture(t)
+	agent := f.thread(t, "agent")
+	archived := f.thread(t, "archived-child")
+	recordSpawn(t, f.app, "tok-archived", agent.ID, archived.ID)
+	if err := f.app.ArchiveThread(archived.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.events.reset()
+	if _, err := f.app.PromoteStandingAgent(agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := fullFrameFor(f.threadFrames(t), agent.ID); got == nil || got.AgentPromotedAt == nil || got.ArchivedChildCount != 1 {
+		t.Fatalf("promote: agent frame = %+v, want a promoted row counting one archived child", got)
+	}
+
+	f.events.reset()
+	if err := f.app.DemoteStandingAgent(agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := fullFrameFor(f.threadFrames(t), agent.ID); got == nil || got.AgentPromotedAt != nil || got.ArchivedChildCount != 0 {
+		t.Errorf("demote: agent frame = %+v, want a plain row with no promotion and no archived count", got)
+	}
+}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -612,9 +613,10 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	// Old and still open: nothing else can settle or cancel it once it is
 	// gone, so it waits for its own settlement.
 	seedThreadRequest(t, s, "tok-open-old", "t-caller", ThreadRequestSend, 100)
-	// Old, settled, and the record of which thread spawned t-child: it
-	// lives as long as that thread does. A spawn whose thread is gone, or
-	// one made on another computer, is an ordinary settled row.
+	// Old, settled, and the record of which thread spawned t-child: its
+	// lineage lives as long as that thread does, its answer does not. A
+	// spawn whose thread is gone, or one made on another computer, is an
+	// ordinary settled row.
 	mustCreateThread(t, s, "t-child")
 	for token, target := range map[string][2]string{
 		"tok-spawn-lineage": {"", "t-child"}, "tok-spawn-gone": {"", "t-deleted"}, "tok-spawn-remote": {"laptop", "t-child"},
@@ -624,6 +626,30 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 			t.Fatalf("target %s: %v", token, err)
 		}
 		settle(token, 200)
+	}
+	// The lineage row also owes a wake it never handed over, and holds a
+	// late reply.
+	if _, err := s.SetThreadRequestNotify("tok-spawn-lineage", true); err != nil {
+		t.Fatal(err)
+	}
+	if stored, err := s.StoreThreadRequestLateReply("tok-spawn-lineage", []byte("one more thing"), 300); err != nil || !stored {
+		t.Fatalf("late reply: stored=%v err=%v", stored, err)
+	}
+	owesWake := func() bool {
+		t.Helper()
+		wakes, err := s.UndeliveredThreadRequestWakes(1<<62, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range wakes {
+			if row.Token == "tok-spawn-lineage" {
+				return true
+			}
+		}
+		return false
+	}
+	if !owesWake() {
+		t.Fatal("the lineage row owes no wake before the sweep")
 	}
 	// A reminder armed past the floor. No ceiling: next week is a valid
 	// reminder, and so is next month.
@@ -657,8 +683,8 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retention sweep: %v", err)
 	}
-	if swept != 4 {
-		t.Fatalf("swept = %d, want three settled requests and one receipt", swept)
+	if swept != 5 {
+		t.Errorf("swept = %d, want three settled requests and one receipt deleted and one lineage row cleared", swept)
 	}
 	for _, token := range []string{"tok-settled-recent", "tok-open-old", "tok-remind-later", "tok-spawn-lineage"} {
 		if _, found, err := s.GetThreadRequest(token); err != nil || !found {
@@ -669,6 +695,32 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		if _, found, err := s.GetThreadRequest(token); err != nil || found {
 			t.Errorf("%s, settled before the floor, survived: found=%v err=%v", token, found, err)
 		}
+	}
+	// The lineage row keeps what names the spawn and nothing it answered.
+	lineage, _, err := s.GetThreadRequest("tok-spawn-lineage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lineage.Answer) != 0 || lineage.AnswerKind != "" || len(lineage.LateReply) != 0 || lineage.LateReplyAt != 0 || lineage.Notify {
+		t.Errorf("lineage row past the floor = answer %q kind %q late reply %q at %d notify %v; want its payload cleared",
+			lineage.Answer, lineage.AnswerKind, lineage.LateReply, lineage.LateReplyAt, lineage.Notify)
+	}
+	if lineage.CallerThreadID != "t-caller" || lineage.Kind != ThreadRequestSpawn || lineage.TargetThreadID != "t-child" ||
+		lineage.State != ThreadRequestFinished || lineage.SettledAt != 200 || lineage.CreatedAt != 100 {
+		t.Errorf("lineage row past the floor lost its lineage: %+v", lineage)
+	}
+	if owesWake() {
+		t.Error("the cleared lineage row still owes a wake")
+	}
+	if child, err := s.GetThread("t-child"); err != nil || child.SpawnedByThreadID != "t-caller" {
+		t.Errorf("t-child after the sweep = spawnedBy %q, %v; want t-caller", child.SpawnedByThreadID, err)
+	}
+	if ids, err := s.ListSpawnedThreadIDs("t-caller"); err != nil || !slices.Equal(ids, []string{"t-child"}) {
+		t.Errorf("threads spawned by t-caller after the sweep = %v, %v; want t-child", ids, err)
+	}
+	// A second sweep finds nothing left to take.
+	if swept, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 0 {
+		t.Errorf("second sweep: swept=%d err=%v", swept, err)
 	}
 	// Once the spawned thread is gone the lineage row is one more old
 	// settled request.
