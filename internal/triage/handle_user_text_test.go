@@ -1758,17 +1758,22 @@ func TestAConsumedSendWithUnreadableIDsIsLoggedAndTheRestReported(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	joined, err := usermessage.MarshalMeta(usermessage.Meta{JoinedSendIDs: []string{"remote-completion:c:r", "send-c"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var logBuf bytes.Buffer
 	prev := log.Writer()
 	log.SetOutput(&logBuf)
 	defer log.SetOutput(prev)
 
 	router.reportSendsConsumed("t1", []pendingSend{
-		{AOItemID: "user:3:flush:0", QueueItemID: "queue:bad", DeferredItem: &store.Item{ID: "user:3:flush:0", Meta: "{"}},
 		{AOItemID: "user:3:flush:1", QueueItemID: "queue:ok", QuietItem: &store.Item{ID: "user:3:flush:1", Meta: readable}},
+		{AOItemID: "user:3:flush:0", QueueItemID: "queue:bad", DeferredItem: &store.Item{ID: "user:3:flush:0", Meta: "{"}},
+		{AOItemID: "user:3:flush:2", QueueItemID: "queue:joined", QuietItem: &store.Item{ID: "user:3:flush:2", Meta: joined}},
 	})
-	if !slices.Equal(consumed, []string{"thread-wake:tok"}) {
-		t.Fatalf("hook saw %q, want the readable send's ids", consumed)
+	if want := []string{"thread-wake:tok", "remote-completion:c:r", "send-c"}; !slices.Equal(consumed, want) {
+		t.Fatalf("hook saw %q, want every readable send's ids %q", consumed, want)
 	}
 	if line := logBuf.String(); !strings.Contains(line, "t1/user:3:flush:0 (queue queue:bad) leaves its owners unconfirmed") {
 		t.Fatalf("unreadable send not logged by its id: %q", line)

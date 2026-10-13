@@ -551,3 +551,52 @@ func TestAMergeFoldedMemberIsReportedConsumed(t *testing.T) {
 		t.Fatalf("consumed hook saw %q; the folded member's completion was never confirmed", consumed)
 	}
 }
+
+// A merge that absorbs several members consumes them all in one settle, so
+// every member's owner must reach the consumed hook, not only the first.
+// Neither member's own echo arrives first: A is still deferred and B, though
+// persisted, was never echoed, so the fold is the only confirmation either
+// gets.
+func TestEveryMergeFoldedMemberIsReportedConsumed(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	var consumed []string
+	router.SetFlushSendConsumedHook(func(_ string, sendIDs []string) {
+		consumed = append(consumed, sendIDs...)
+	})
+
+	digestA, err := claude.UserMessageBlockDigest("one", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaA, err := usermessage.MarshalMeta(usermessage.Meta{SendID: "remote-completion:c:r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	deferredA := store.Item{
+		ID: "user:3:flush:1", ThreadID: "t1", TurnIndex: 4,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "one", Meta: metaA, CreatedAt: now, UpdatedAt: now,
+	}
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:1", deferredA, now,
+		PendingSendExpectation{ProviderItemID: "uuid-a", ContentBlockDigest: digestA})
+	rowB := mergeFoldSend(t, router, "t1", "user:3:flush:2", "uuid-b", "two", nil,
+		usermessage.Meta{SendID: "thread-wake:tok"}, 3, 5)
+	mergeFoldSend(t, router, "t1", "user:3:flush:3", "uuid-c", "three", nil,
+		usermessage.Meta{SendID: "send-c"}, 3, 6)
+
+	if err := router.Handle(mergeEcho(t, "t1", "uuid-c", textBlocks("one", "two", "three"), true)); err != nil {
+		t.Fatalf("survivor echo: %v", err)
+	}
+	for _, member := range []string{deferredA.ID, rowB.ID} {
+		if _, ok := router.peekPendingSendByItemID("t1", member); ok {
+			t.Fatalf("fixture: the fold did not consume %s", member)
+		}
+	}
+	for _, owner := range []string{"remote-completion:c:r", "thread-wake:tok"} {
+		if !slices.Contains(consumed, owner) {
+			t.Errorf("consumed hook saw %q; folded member owner %q was never confirmed", consumed, owner)
+		}
+	}
+}

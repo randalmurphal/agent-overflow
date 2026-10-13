@@ -216,32 +216,6 @@ func (r *Router) confirmRecordedSend(evt provider.ProviderEvent, meta userTextMe
 // already unclaimed. The confirmed hook (message-anchor record) runs inside
 // the lock too. Interrupt operations and recovery snapshots wait for the
 // complete confirmation transaction.
-// reportSendsConsumed tells the app layer (flushSendConsumed) that the
-// provider consumed these sends, by the send ids they carry. A send whose ids
-// cannot be read leaves its owners unconfirmed, so the next boot gives its
-// message back; that is logged with the send it concerns. Caller holds the
-// thread's flush anchor lock and not r.mu.
-func (r *Router) reportSendsConsumed(threadID string, sends []pendingSend) {
-	r.mu.Lock()
-	consumed := r.flushSendConsumed
-	r.mu.Unlock()
-	if consumed == nil {
-		return
-	}
-	var ids []string
-	for _, send := range sends {
-		sendIDs, err := send.sendIDs()
-		if err != nil {
-			log.Printf("triage: consumed send %s/%s (queue %s) leaves its owners unconfirmed: %v", threadID, send.AOItemID, send.QueueItemID, err)
-			continue
-		}
-		ids = append(ids, sendIDs...)
-	}
-	if len(ids) > 0 {
-		consumed(threadID, ids)
-	}
-}
-
 func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pendingSend, providerItemID, parentUUID string, digest []string) error {
 	// Stash the wire identity on the popped entry BEFORE the fallible
 	// handlers: if a write fails, the reinserted EchoConsumed entry must
@@ -294,6 +268,32 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 		r.reinsertPendingSendHead(evt.ThreadID, pending)
 	}
 	return handleErr
+}
+
+// reportSendsConsumed tells the app layer (flushSendConsumed) that the
+// provider consumed these sends, by the send ids they carry. A send whose ids
+// cannot be read leaves its owners unconfirmed, so the next boot gives its
+// message back; that is logged with the send it concerns. Caller holds the
+// thread's flush anchor lock and not r.mu.
+func (r *Router) reportSendsConsumed(threadID string, sends []pendingSend) {
+	r.mu.Lock()
+	consumed := r.flushSendConsumed
+	r.mu.Unlock()
+	if consumed == nil {
+		return
+	}
+	var ids []string
+	for _, send := range sends {
+		sendIDs, err := send.sendIDs()
+		if err != nil {
+			log.Printf("triage: consumed send %s/%s (queue %s) leaves its owners unconfirmed: %v", threadID, send.AOItemID, send.QueueItemID, err)
+			continue
+		}
+		ids = append(ids, sendIDs...)
+	}
+	if len(ids) > 0 {
+		consumed(threadID, ids)
+	}
 }
 
 func (r *Router) persistDeferredUserText(pending *pendingSend, evt provider.ProviderEvent) error {
