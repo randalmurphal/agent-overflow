@@ -108,7 +108,7 @@ func (a *App) GetStandingAgent(threadID string) (*store.StandingAgent, error) {
 //
 //ao:scope threads:operate
 func (a *App) DemoteStandingAgent(threadID string) error {
-	_, err := a.demoteStandingAgent(threadID)
+	_, _, err := a.demoteStandingAgent(threadID)
 	return err
 }
 
@@ -120,8 +120,8 @@ func (a *App) DemoteStandingAgent(threadID string) error {
 //
 //ao:scope threads:autonomy
 func (a *App) DemoteStandingAgentAndDeleteHome(threadID string) error {
-	home, err := a.demoteStandingAgent(threadID)
-	if home == "" {
+	home, found, err := a.demoteStandingAgent(threadID)
+	if !found {
 		return err
 	}
 	deleteErr := a.deleteStandingAgentHome(threadID, home)
@@ -132,17 +132,17 @@ func (a *App) DemoteStandingAgentAndDeleteHome(threadID string) error {
 }
 
 // demoteStandingAgent removes the row and cancels the watches, returning the
-// home the removed row recorded, or "" when no row was removed.
-func (a *App) demoteStandingAgent(threadID string) (string, error) {
+// home the removed row recorded; found is false when there was no row.
+func (a *App) demoteStandingAgent(threadID string) (home string, found bool, err error) {
 	unlock := a.threadLocks().Lock(threadID)
 	row, found, err := a.store.GetStandingAgent(threadID)
 	if err != nil {
 		unlock()
-		return "", err
+		return "", false, err
 	}
 	if _, err := a.store.DemoteStandingAgent(threadID); err != nil {
 		unlock()
-		return "", err
+		return "", false, err
 	}
 	ids, err := a.store.CancelAgentWakesForThread(threadID, store.AgentWakeWatch,
 		"cancelled: the thread is no longer a standing agent")
@@ -161,10 +161,7 @@ func (a *App) demoteStandingAgent(threadID string) (string, error) {
 	if len(ids) > 0 {
 		err = errors.Join(err, a.withdrawCancelledAgentWakes(threadID, ids...))
 	}
-	if !found {
-		return "", err
-	}
-	return row.Home, err
+	return row.Home, found, err
 }
 
 // deleteStandingAgentHome removes a demoted agent's home. The recorded path
@@ -176,6 +173,8 @@ func (a *App) deleteStandingAgentHome(threadID, home string) error {
 	agents := filepath.Join(a.configDir, "agents")
 	want := filepath.Join(agents, threadID)
 	switch {
+	case home == "":
+		reason = errors.New("its row records no home")
 	case a.configDir == "":
 		reason = errors.New("no config directory")
 	case filepath.Clean(home) != want || filepath.Dir(want) != agents:
@@ -186,7 +185,7 @@ func (a *App) deleteStandingAgentHome(threadID, home string) error {
 	if reason == nil {
 		return nil
 	}
-	return fmt.Errorf("delete the agent's home %s: %w", home,
+	return fmt.Errorf("delete the agent's home %q: %w", home,
 		fmt.Errorf("the thread was demoted, but its home folder was not deleted: %v", reason))
 }
 

@@ -141,28 +141,82 @@ func TestDemoteStandingAgentAndDeleteHome(t *testing.T) {
 	}
 }
 
-// A recorded home that is not `<config>/agents/<thread-id>` is never deleted,
-// and a deletion that fails leaves the demotion in place and names the path.
-func TestDemoteStandingAgentAndDeleteHomeRefusesAForeignPath(t *testing.T) {
+// A recorded home that is not exactly `<config>/agents/<thread-id>` is never
+// deleted: the demotion lands, the error names the recorded path, and every
+// file the path could reach survives.
+func TestDemoteStandingAgentAndDeleteHomeRefusesAnyOtherPath(t *testing.T) {
+	t.Parallel()
+	f := newThreadToolsFixture(t)
+	agents := filepath.Join(f.app.configDir, "agents")
+	otherProfile := t.TempDir()
+	for name, homeFor := range map[string]func(id string) string{
+		"sibling":               func(id string) string { return filepath.Join(agents, id+"-x") },
+		"another agent":         func(string) string { return filepath.Join(agents, "11111111-2222-3333-4444-555555555555") },
+		"escape through parent": func(id string) string { return filepath.Join(agents, id) + "/../victim" },
+		"agents root":           func(string) string { return agents },
+		"relative":              func(id string) string { return filepath.Join("agents", id) },
+		"another profile":       func(id string) string { return filepath.Join(otherProfile, "agents", id) },
+		"config dir":            func(string) string { return f.app.configDir },
+	} {
+		t.Run(name, func(t *testing.T) {
+			thread := f.thread(t, "agent "+name)
+			home := homeFor(thread.ID)
+			// Markers in every place the path or a lax check could reach.
+			markers := []string{
+				filepath.Join(agents, thread.ID, "keep"),
+				filepath.Join(agents, "victim", "keep"),
+				filepath.Join(filepath.Clean(home), "keep"),
+			}
+			if filepath.IsAbs(home) {
+				markers = append(markers, filepath.Join(home, "keep"))
+			}
+			for _, marker := range markers {
+				if !filepath.IsAbs(marker) {
+					continue
+				}
+				if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(marker, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := f.app.store.PromoteStandingAgent(thread.ID, home, 1); err != nil {
+				t.Fatalf("seed the row: %v", err)
+			}
+			err := f.app.DemoteStandingAgentAndDeleteHome(thread.ID)
+			if err == nil || !strings.Contains(err.Error(), home) || !strings.Contains(err.Error(), "was not deleted") {
+				t.Fatalf("err = %v, want a refusal naming %s", err, home)
+			}
+			for _, marker := range markers {
+				if !filepath.IsAbs(marker) {
+					continue
+				}
+				if _, statErr := os.Stat(marker); statErr != nil {
+					t.Fatalf("%s was deleted: %v", marker, statErr)
+				}
+			}
+			if _, found, _ := f.app.store.GetStandingAgent(thread.ID); found {
+				t.Fatal("the demotion must land even when the deletion is refused")
+			}
+		})
+	}
+}
+
+// A row that recorded no home is refused rather than read as "nothing to
+// delete": the user asked for a deletion and must hear that none happened.
+func TestDemoteStandingAgentAndDeleteHomeRefusesAnEmptyHome(t *testing.T) {
 	t.Parallel()
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "agent")
-	foreign := t.TempDir()
-	marker := filepath.Join(foreign, "keep")
-	if err := os.WriteFile(marker, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.app.store.PromoteStandingAgent(thread.ID, foreign, 1); err != nil {
+	if _, err := f.app.store.PromoteStandingAgent(thread.ID, "", 1); err != nil {
 		t.Fatalf("seed the row: %v", err)
 	}
 	err := f.app.DemoteStandingAgentAndDeleteHome(thread.ID)
-	if err == nil || !strings.Contains(err.Error(), foreign) {
-		t.Fatalf("err = %v, want a refusal naming %s", err, foreign)
-	}
-	if _, statErr := os.Stat(marker); statErr != nil {
-		t.Fatalf("a foreign path was deleted: %v", statErr)
+	if err == nil || !strings.Contains(err.Error(), "records no home") {
+		t.Fatalf("err = %v, want the empty home refused", err)
 	}
 	if _, found, _ := f.app.store.GetStandingAgent(thread.ID); found {
-		t.Fatal("the demotion must land even when the deletion is refused")
+		t.Fatal("the demotion must land")
 	}
 }

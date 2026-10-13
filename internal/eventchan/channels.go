@@ -248,7 +248,7 @@ const (
 	SettingsUpdated Channel = "settings:updated"
 )
 
-// skills:* — a payload-less refetch nudge: an Install, Update or Remove
+// skills:*: a payload-less refetch nudge. An Install, Update or Remove
 // changed what a provider home holds of the shipped skills tree. Receivers
 // re-read through GetSkillsLibrary.
 const (
