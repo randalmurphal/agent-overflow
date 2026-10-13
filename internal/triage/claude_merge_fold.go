@@ -155,7 +155,9 @@ func (r *Router) foldMergedFlushRows(threadID string, survivor *pendingSend, dig
 // provider context — the survivor's echo carried its blocks — so leaving the
 // entry would let the late echo pop it and stamp a row this fold absorbed; and
 // dropping the entry without marking its uuid seen would route that echo to
-// the injected-context branch. Both are done together here.
+// the injected-context branch. Both are done together here. The consumption is
+// also a confirmation source: the app layer hears of the entry's send ids, as
+// it would from the entry's own echo, or its owners would stay unconfirmed.
 func (r *Router) settleFoldedMergeState(threadID string, survivor *pendingSend, digests []flushSendDigest) {
 	var joinedDigest []string
 	dropped := make([]string, 0, len(digests))
@@ -166,6 +168,7 @@ func (r *Router) settleFoldedMergeState(threadID string, survivor *pendingSend, 
 	joinedDigest = append(joinedDigest, survivor.ExpectedContentBlockDigest...)
 
 	var consumedIDs []string
+	var consumedSends []pendingSend
 	r.mu.Lock()
 	if st := r.threadStateIfPresent(threadID); st != nil {
 		st.dropFlushSendDigests(dropped)
@@ -175,7 +178,12 @@ func (r *Router) settleFoldedMergeState(threadID string, survivor *pendingSend, 
 		// disagreed with the row would decompose a later echo wrongly.
 		st.recordFlushSendDigest(survivor.AOItemID, joinedDigest)
 		for _, id := range dropped {
-			if entry, ok := r.popPendingSendByItemIDLocked(threadID, id); ok && entry.ExpectedProviderItemID != "" {
+			entry, ok := r.popPendingSendByItemIDLocked(threadID, id)
+			if !ok {
+				continue
+			}
+			consumedSends = append(consumedSends, entry)
+			if entry.ExpectedProviderItemID != "" {
 				consumedIDs = append(consumedIDs, entry.ExpectedProviderItemID)
 			}
 		}
@@ -184,6 +192,7 @@ func (r *Router) settleFoldedMergeState(threadID string, survivor *pendingSend, 
 	for _, providerItemID := range consumedIDs {
 		r.markWireOnlyUserTextSeen(threadID, providerItemID)
 	}
+	r.reportSendsConsumed(threadID, consumedSends)
 }
 
 // resolveMergedFlushRow finds a merged-away member's durable content. The row

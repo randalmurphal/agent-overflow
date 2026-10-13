@@ -1745,3 +1745,32 @@ func TestHandleUserText_FlushSendConsumedHook(t *testing.T) {
 		t.Fatalf("a joined send's echo gave the hook %q, want all three ids", consumed)
 	}
 }
+
+// A consumed send whose ids cannot be read is reported in the log by the send
+// it concerns, and the other sends consumed with it still reach the hook.
+func TestAConsumedSendWithUnreadableIDsIsLoggedAndTheRestReported(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	var consumed []string
+	router.SetFlushSendConsumedHook(func(_ string, sendIDs []string) {
+		consumed = append(consumed, sendIDs...)
+	})
+	readable, err := usermessage.MarshalMeta(usermessage.Meta{SendID: "thread-wake:tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prev)
+
+	router.reportSendsConsumed("t1", []pendingSend{
+		{AOItemID: "user:3:flush:0", QueueItemID: "queue:bad", DeferredItem: &store.Item{ID: "user:3:flush:0", Meta: "{"}},
+		{AOItemID: "user:3:flush:1", QueueItemID: "queue:ok", QuietItem: &store.Item{ID: "user:3:flush:1", Meta: readable}},
+	})
+	if !slices.Equal(consumed, []string{"thread-wake:tok"}) {
+		t.Fatalf("hook saw %q, want the readable send's ids", consumed)
+	}
+	if line := logBuf.String(); !strings.Contains(line, "t1/user:3:flush:0 (queue queue:bad) leaves its owners unconfirmed") {
+		t.Fatalf("unreadable send not logged by its id: %q", line)
+	}
+}

@@ -177,7 +177,8 @@ type Router struct {
 	// flushSendConsumed is the app-layer signal that the provider consumed
 	// a flush send, by the send ids it carries: every confirmation source
 	// (confirmConsumedSend), whether or not the row's write then succeeds,
-	// and never an interrupt's anchoring.
+	// and a queue-boundary merge that consumes a member whose own echo had
+	// not arrived (settleFoldedMergeState), never an interrupt's anchoring.
 	flushSendConsumed func(threadID string, sendIDs []string)
 	// sendUndelivered is the app-layer signal that a thread has sends the
 	// provider cancelled without running (retireUnrunSend). The app drains
