@@ -35,6 +35,7 @@
   <ActivityRail
     {pane}
     bg={host.bg}
+    wakes={host.wakes}
     clock={host.clock}
     usage={host.usage}
     {inputRequest}

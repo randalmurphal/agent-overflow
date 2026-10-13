@@ -79,6 +79,7 @@ function installDraftMocks() {
   setBindingMock('ListAttachments', async () => []);
   mockAttachmentDownload();
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   // The composer toolbar's MCP trigger holds the pane's MCP entity for as
   // long as it is mounted, so every composer render lists once.
@@ -2480,6 +2481,7 @@ describe('<Composer>', () => {
     // (net composer height unchanged) and lives ABOVE the card so the card
     // itself looks identical whether or not a turn is running.
     setBindingMock('ListLiveBackgroundTasks', async () => []);
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
     const pane = await buildPane();
     const draft = await buildDraft();
 
@@ -2527,6 +2529,7 @@ describe('<Composer>', () => {
     // that still shows todos doesn't stack an extra transparent row above
     // the card.
     setBindingMock('ListLiveBackgroundTasks', async () => []);
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
     const pane = await buildPane();
     pane.setLiveTodo([{ step: 'one', status: 'inProgress' }]);
     const draft = await buildDraft();
@@ -2611,6 +2614,7 @@ describe('<Composer>', () => {
     setCompactLayoutForTest(true);
     try {
       setBindingMock('ListLiveBackgroundTasks', async () => []);
+      setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
       const draft = await buildDraft();
       const sent = await buildPane(makeTestThread());
       setBindingMock('GetUsageStats', async () => [new UsageBucket({

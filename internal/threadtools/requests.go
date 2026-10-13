@@ -595,6 +595,7 @@ func (c *session) remind(ctx context.Context, raw json.RawMessage) (any, error) 
 		return nil, err
 	}
 	result := c.ack(ack, "remind")
+	result.NextFire = unixMsToRFC3339(due)
 	result.Note = "This thread will wake with that note at " + unixMsToRFC3339(due) + ". End your turn: the reminder starts a new one. Stop it with thread_cancel token " + ack.Token + "."
 	return result, nil
 }

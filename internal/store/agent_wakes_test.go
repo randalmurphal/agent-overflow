@@ -150,7 +150,9 @@ func TestStandingAgentsMigration(t *testing.T) {
 		if w.LongRunning {
 			long = 1
 		}
-		mustExec(t, db, `INSERT INTO agent_wakes (`+agentWakeColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		// The columns as v143 made them; later migrations add their own.
+		mustExec(t, db, `INSERT INTO agent_wakes (id, thread_id, kind, label, note, command, cwd, interval_seconds,
+			timeout_seconds, long_running, next_at, last_run_at, last_outcome, last_output, undelivered, missed, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			w.ID, w.ThreadID, w.Kind, w.Label, w.Note, w.Command, w.Cwd, nullableMillis(w.IntervalSeconds),
 			nullableMillis(w.TimeoutSeconds), long, nullableMillis(w.NextAt), nullableMillis(w.LastRunAt), w.LastOutcome,
 			w.LastOutput, w.Undelivered, w.Missed, w.State, w.CreatedAt)

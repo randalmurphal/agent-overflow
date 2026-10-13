@@ -430,9 +430,47 @@ existing background tray (`ActivityRailBackgroundBody`), one row each:
 kind glyph, label, `next 12m` or `running`, last outcome, a `Wake now`
 action that fires it immediately and a `Cancel` action. The tray toggle
 counts them with the other background work. Expanding a watch row shows
-its command, cwd and the tail of its last stderr. The tool call that
+its command, cwd and the tail of its last stderr. Under the compact
+layout a row takes two lines, so the label is never cut to fit the
+actions: the kind and the label across the row (an ellipsis only past
+two lines), then `next 12m` and the two actions. The tool call that
 registered it renders in the timeline like any thread tool call, with
-the next fire time in the summary line; today it renders nothing.
+the next fire time in the summary line: a time alone when it falls on
+the day of the call, and dated otherwise. The form is fixed by the
+call's own stamp, so the settled row reads the same on any later day.
+
+- **Reading.** `ListThreadWakes` returns the thread's live loops and
+  watches and its 64 soonest reminders that have not fired; the tray
+  says how many more there are. `ListStandingAgentWakes` returns the live
+  loops and watches of every standing agent on a computer, for the
+  sidebar's agent rows. `GetThreadWakeDetail` reads an expanded
+  watch on demand. A watch keeps the last 8 KiB of its last run's stderr
+  (`agent_wakes.last_stderr`); a long-running watch keeps its latest
+  non-empty batch.
+- **Live updates.** Every write to a loop, watch or reminder (register,
+  fire, run, outcome, undelivered wake, boot recovery, cancel, demote,
+  archive) emits `thread:wakes_changed` for that row: the thread id, the
+  row id, and the row as it stands or `removed` when it left the listing.
+  A frame with neither means the row could not be read, and a reader
+  reads the thread again, as it does after a lost frame or a reconnect.
+  The tray reads its list again through the rate-bounded refresh
+  scheduler, since the order and the reminder bound are the backend's.
+  Nothing polls.
+- **Outcome.** A wake that did not reach the thread is shown as a warning,
+  with its missed fires, until a later wake does. An `error` outcome is
+  shown as an error.
+- **Wake now** (`WakeThreadWakeNow`) fires a loop or watch through the
+  sweep's own fire path and keeps its schedule; a reminder settles as if
+  it came due. It is refused, with the reason, for a cancelled row, a run
+  already in flight, a long-running watch (its process is the schedule)
+  and an archived thread. A watch's Wake now runs a script on the
+  computer, so it also needs `threads:autonomy`.
+- **Cancel** (`CancelThreadWake`) takes `thread_cancel`'s path. A row
+  already gone is not an error.
+- **Next fire in the timeline.** Triage stamps the `next_fire` of a
+  successful `thread_loop`, `thread_watch` or `thread_remind` answer on
+  its row's meta. History imported from a provider file has no stamp and
+  shows the summary without a time.
 
 ### Skills library
 

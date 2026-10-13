@@ -19,7 +19,7 @@ import (
 	"agent-overflow/internal/threadtools"
 )
 
-const threadMCPName = "ao-thread-tools"
+const threadMCPName = threadtools.MCPServerName
 
 // threadToolsDisabledCode is the refusal a call gets while the switch or
 // the per-conversation toggle is off. It is a documented code so the

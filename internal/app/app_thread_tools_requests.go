@@ -677,10 +677,9 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 	// A reminder is nothing but a row: there is no work to stop, and the
 	// caller cancelling it wants it gone rather than settled as cancelled.
 	if row.Kind == store.ThreadRequestRemind {
-		if _, err := t.app.store.DeleteThreadRequest(token); err != nil {
+		if _, err := t.app.dropThreadReminder(row); err != nil {
 			return threadtools.CancelReport{}, err
 		}
-		t.app.wakeRequestWaits(token)
 		report.State, report.Effect = threadtools.RequestCancelled, threadtools.EffectReminderDropped
 		return report, nil
 	}

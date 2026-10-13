@@ -133,6 +133,30 @@ describe('AO tool presentation', () => {
       expect(p).toMatchObject({ icon: 'speech-bubble', label, what, headerLabel: `Thread ${label}` });
     });
 
+    it('ends a schedule call with the next fire its reply named, dated against the row, not today', () => {
+      // A row from another year: whether the fire reads as a time or a date
+      // and time depends on the row's day alone.
+      const rowAt = new Date(2024, 2, 5, 9, 0, 0, 0);
+      const at = new Date(2024, 2, 5, 14, 32, 0, 0);
+      const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(at);
+      const stamp = (tool: string, input: Record<string, unknown>, fire: Date, from?: Date) => ({
+        ...meta(THREAD_TOOLS_SERVER, tool, input),
+        next_fire_at: fire.getTime(),
+        ...(from ? { next_fire_from: from.getTime() } : {}),
+      });
+      expect(aoToolPresentation(stamp('thread_loop', { label: 'board', every_seconds: 300 }, at, rowAt), names)!.what)
+        .toBe(`board · every 5m · next ${time}`);
+      expect(aoToolPresentation(stamp('thread_remind', { note: 'deploy' }, at, rowAt), names)!.what).toBe(`deploy · next ${time}`);
+      const nextDay = new Date(2024, 2, 6, 0, 15, 0, 0);
+      const day = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' }).format(nextDay);
+      const dayTime = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(nextDay);
+      expect(aoToolPresentation(stamp('thread_remind', { note: 'deploy' }, nextDay, rowAt), names)!.what)
+        .toBe(`deploy · next ${day} ${dayTime}`);
+      // A row with no stamped day of its own says the date.
+      const atDay = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' }).format(at);
+      expect(aoToolPresentation(stamp('thread_remind', { note: 'deploy' }, at), names)!.what).toBe(`deploy · next ${atDay} ${time}`);
+    });
+
     it('carries the computer a cross-computer call names', () => {
       const p = aoToolPresentation(meta(THREAD_TOOLS_SERVER, 'thread_show', { computer_id: 'mac', thread_id: tid }), names)!;
       expect(p).toMatchObject({ computerId: 'mac', computerName: 'Macaroni-air' });

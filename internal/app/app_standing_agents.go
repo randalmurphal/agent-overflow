@@ -98,6 +98,9 @@ func (a *App) DemoteStandingAgent(threadID string) error {
 	}
 	unlock()
 	if len(ids) > 0 {
+		a.emitAgentWakesRemoved(threadID, ids)
+	}
+	if len(ids) > 0 {
 		err = errors.Join(err, a.withdrawCancelledAgentWakes(threadID, ids...))
 	}
 	return err

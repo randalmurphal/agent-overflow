@@ -115,7 +115,12 @@ worker's queue.
 Loops and watches run on the same sweep: registration and lifecycle in
 `app_agent_wakes.go`, runs and boot recovery in `app_agent_wake_runs.go`,
 rendering and queueing in `app_agent_wake_delivery.go`, promotion in
-`app_standing_agents.go`. The contract is
+`app_standing_agents.go`, and the background tray's reads, Wake now and
+Cancel in `app_agent_wake_rows.go`. Every write to a loop, watch or
+reminder row emits `thread:wakes_changed` with that row as it stands
+(`emitAgentWakeChanged`, `emitThreadReminderChanged`); Wake now goes through
+`fireAgentWake` or `fireThreadReminder`, never a delivery of its own. The
+contract is
 [standing agents](../../docs/specs/standing-agents.md#wake-supervisor). A
 loop or watch wake is data, not something the person wrote: one still queued
 at boot or left unconfirmed by a session that ended never goes to the

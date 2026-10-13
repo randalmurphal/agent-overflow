@@ -136,6 +136,7 @@ async function buildPane(
   // these on mount. Default to empty; tests that need a populated rail
   // override these before rendering.
   setBindingMock('ListLiveBackgroundTasks', async () => []);
+  setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('CountRunningBackgroundTasks', async () => 0);
   // GitActionsControl calls GetGitStatus on mount; return "not a repo"

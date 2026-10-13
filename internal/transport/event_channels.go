@@ -1339,6 +1339,21 @@ var channelPolicies = []ChannelPolicy{
 			"latest-only.",
 	},
 	{
+		Channel:   eventchan.ThreadWakesChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "{threadId,id,row?,removed?}: one loop, watch or reminder " +
+			"changed (registered, fired, ran, recorded an outcome, went " +
+			"undelivered, recovered at boot, cancelled, demoted, archived), " +
+			"with the row as it stands. Scope threads:read because " +
+			"ListThreadWakes, the pull half, carries it. NOT EntityFiltered: " +
+			"one fire emits 2 to 4 frames and a loop can fire more than once " +
+			"a minute, and the standing agent's sidebar row reads its schedule " +
+			"for threads no pane shows. Never latest-only: the frames of " +
+			"different rows each carry state the others do not.",
+	},
+	{
 		Channel:   eventchan.ThreadGroupUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

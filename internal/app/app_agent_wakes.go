@@ -175,17 +175,31 @@ func (t threadToolsApp) ListWakes(_ context.Context, caller threadtools.Caller) 
 // CancelWake cancels the caller's live loop or watch with this label, stops
 // what it has running and withdraws its wake still queued.
 func (t threadToolsApp) CancelWake(_ context.Context, caller threadtools.Caller, label, kind string) (threadtools.WakeState, bool, error) {
-	row, cancelled, err := t.app.store.CancelAgentWake(caller.ThreadID, label, kind, agentWakeOutcomeCancelled)
+	row, cancelled, err := t.app.cancelAgentWake(caller.ThreadID, label, kind)
 	if err != nil || !cancelled {
 		return threadtools.WakeState{}, false, err
 	}
-	t.app.stopAgentWakeRun(row.ID)
-	if err := t.app.withdrawCancelledAgentWakes(row.ThreadID, row.ID); err != nil {
+	return agentWakeToolState(row), true, nil
+}
+
+// cancelAgentWake cancels a thread's live loop or watch by label, stops what
+// it has running and withdraws its wake still queued. It is the one cancel of
+// a single row: thread_cancel and the activity rail's Cancel both take it.
+// Not cancelled is no live row of that kind under that label. A wake that
+// could not be taken back is an error, with the row already cancelled.
+func (a *App) cancelAgentWake(threadID, label, kind string) (store.AgentWake, bool, error) {
+	row, cancelled, err := a.store.CancelAgentWake(threadID, label, kind, agentWakeOutcomeCancelled)
+	if err != nil || !cancelled {
+		return store.AgentWake{}, false, err
+	}
+	a.emitAgentWakeChanged(threadID, row.ID)
+	a.stopAgentWakeRun(row.ID)
+	if err := a.withdrawCancelledAgentWakes(row.ThreadID, row.ID); err != nil {
 		log.Printf("agent wakes: %v", err)
-		return threadtools.WakeState{}, false, fmt.Errorf("the %s %q is cancelled, but its wake already queued could not be taken back and may still arrive", row.Kind, row.Label)
+		return store.AgentWake{}, false, fmt.Errorf("the %s %q is cancelled, but its wake already queued could not be taken back and may still arrive", row.Kind, row.Label)
 	}
 	row.State, row.NextAt = store.AgentWakeCancelled, 0
-	return agentWakeToolState(row), true, nil
+	return row, true, nil
 }
 
 // checkAgentWakeInterval refuses an interval below the computer's floor.
@@ -216,6 +230,7 @@ func (a *App) registerAgentWake(row store.AgentWake) (store.AgentWake, error) {
 	case err != nil:
 		return store.AgentWake{}, err
 	}
+	a.emitAgentWakeChanged(stored.ThreadID, stored.ID)
 	if stored.Kind == store.AgentWakeWatch {
 		a.stopLongRunningAgentWatch(stored.ID)
 		if stored.LongRunning {
@@ -244,8 +259,10 @@ func agentWakeToolState(row store.AgentWake) threadtools.WakeState {
 // callers that keep the thread withdraw its queued wakes themselves
 // (withdrawCancelledAgentWakes); a deleted thread's queue goes with it.
 func (a *App) cancelAgentWakesForThread(threadID, outcome string) {
-	if _, err := a.store.CancelAgentWakesForThread(threadID, "", outcome); err != nil {
+	if ids, err := a.store.CancelAgentWakesForThread(threadID, "", outcome); err != nil {
 		log.Printf("agent wakes: cancel the loops and watches of %s: %v", threadID, err)
+	} else if len(ids) > 0 {
+		a.emitAgentWakesRemoved(threadID, ids)
 	}
 	a.stopAgentWakeRunsForThread(threadID)
 }

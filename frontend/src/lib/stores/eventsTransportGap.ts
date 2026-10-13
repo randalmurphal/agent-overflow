@@ -1,4 +1,5 @@
 import { refreshAsyncQuestions } from './asyncQuestions.svelte';
+import { applyThreadWakesGap } from './eventsThreadWakes';
 import { refreshTimelineSurfaces } from './timelineSurfaces';
 import type { EventOrigin } from '../transport/handle';
 import { backendKeyForOrigin } from '../transport/backends';
@@ -175,6 +176,11 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
   switch (gap.channel) {
     case 'provider:async_questions_changed':
       refreshAsyncQuestions(undefined, backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
+    case 'thread:wakes_changed':
+      // A lost frame could have named any thread's row, so every tray on
+      // that computer reads its list again; nothing else renders it.
+      applyThreadWakesGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'backend:attach':
     case 'backend:set-changed':

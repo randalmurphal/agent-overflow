@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -602,6 +603,45 @@ func (s *Store) DueThreadReminders(now int64, limit int) ([]ThreadRequest, error
 		return nil, fmt.Errorf("store: list due thread reminders: %w", err)
 	}
 	return collectThreadRequests(rows, "store: list due thread reminders")
+}
+
+// ListOpenThreadReminders returns a thread's reminders that have not fired,
+// soonest first, at most limit of them, and how many it has in all.
+func (s *Store) ListOpenThreadReminders(callerThreadID string, limit int) (_ []ThreadRequest, total int, err error) {
+	action := "store: list open thread reminders for " + callerThreadID
+	if limit < 1 {
+		limit = 32
+	}
+	// One read transaction, so the count and the listing see the same rows
+	// and the count is never below what was listed.
+	tx, err := s.reader().BeginTx(context.Background(), nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) && err == nil {
+			err = fmt.Errorf("%s: end the read: %w", action, rollbackErr)
+		}
+	}()
+	if err := tx.QueryRow(`SELECT count(*) FROM thread_requests
+		  WHERE caller_thread_id = ? AND kind = 'remind' AND state = 'accepted'`, callerThreadID).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("%s: count: %w", action, err)
+	}
+	if total == 0 {
+		return nil, 0, nil
+	}
+	rows, err := tx.Query(
+		`SELECT `+threadRequestColumns+` FROM thread_requests
+		  WHERE caller_thread_id = ? AND kind = 'remind' AND state = 'accepted'
+		  ORDER BY due_at ASC, token ASC LIMIT `+strconv.Itoa(limit), callerThreadID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s: %w", action, err)
+	}
+	reminders, err := collectThreadRequests(rows, action)
+	if err != nil {
+		return nil, 0, err
+	}
+	return reminders, total, nil
 }
 
 // DueThreadRequestPolls returns the remote requests the poller should visit.

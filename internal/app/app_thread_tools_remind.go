@@ -44,6 +44,7 @@ func (t threadToolsApp) Remind(_ context.Context, caller threadtools.Caller, cal
 	}); err != nil {
 		return threadtools.RequestAck{}, err
 	}
+	t.app.emitThreadReminderChanged(caller.ThreadID, token)
 	// The sweep may be sleeping past this reminder's due time; waking it
 	// keeps a reminder for ten seconds from now from waiting out the tick.
 	t.app.nudgeThreadRequestSweep()
@@ -104,10 +105,27 @@ func (a *App) settleThreadReminder(row store.ThreadRequest, now time.Time) bool 
 		// Cancelled or already fired while this sweep was reading.
 		return false
 	}
+	a.emitThreadReminderChanged(row.CallerThreadID, row.Token)
 	// The collector re-reads the row under the settle lock: thread_status
 	// can have disarmed the wake since the sweep listed this row, and the
 	// collector is the one place that decides whether a message is owed.
 	return a.finishThreadRequestCollection(row.Token, false)
+}
+
+// dropThreadReminder cancels a reminder that has not fired. A reminder is
+// nothing but a row, so the cancel deletes it rather than settling it, and
+// a wait parked on its token is told. thread_cancel and the activity rail's
+// Cancel both take it. Dropped false is a reminder already gone.
+func (a *App) dropThreadReminder(row store.ThreadRequest) (bool, error) {
+	dropped, err := a.store.DeleteThreadRequest(row.Token)
+	if err != nil {
+		return false, err
+	}
+	a.wakeRequestWaits(row.Token)
+	if dropped {
+		a.emitThreadReminderChanged(row.CallerThreadID, row.Token)
+	}
+	return dropped, nil
 }
 
 // threadReminderBatch bounds one sweep's work. Reminders that miss a batch

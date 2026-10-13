@@ -40,6 +40,9 @@ const MaxAgentWakesPerThread = 64
 // undelivered output a row keeps in `last_output`.
 const MaxAgentWakeOutputBytes = 64 << 10
 
+// MaxAgentWakeStderrBytes bounds the stderr tail a row keeps.
+const MaxAgentWakeStderrBytes = 8 << 10
+
 // ErrAgentWakeLabelTaken refuses a registration whose label names a live row
 // of the other kind: `thread_cancel` addresses both kinds by label, so one
 // label names one thing.
@@ -80,8 +83,12 @@ type AgentWake struct {
 	// uncounted for as long as it stands.
 	Undelivered string `json:"undelivered,omitempty"`
 	Missed      int64  `json:"missed,omitempty"`
-	State       string `json:"state"`
-	CreatedAt   int64  `json:"createdAt"`
+	// LastStderr is the tail of a watch's last stderr, at most
+	// MaxAgentWakeStderrBytes: an interval watch's last run, or what a
+	// long-running watch's process last wrote there.
+	LastStderr string `json:"lastStderr,omitempty"`
+	State      string `json:"state"`
+	CreatedAt  int64  `json:"createdAt"`
 }
 
 // StandingAgent is one row of standing_agents.
@@ -93,7 +100,7 @@ type StandingAgent struct {
 }
 
 const agentWakeColumns = `id, thread_id, kind, label, note, command, cwd, interval_seconds,
-	timeout_seconds, long_running, next_at, last_run_at, last_outcome, last_output, undelivered, missed, state, created_at`
+	timeout_seconds, long_running, next_at, last_run_at, last_outcome, last_output, undelivered, missed, state, created_at, last_stderr`
 
 func scanAgentWake(scanner interface{ Scan(...any) error }) (AgentWake, error) {
 	var row AgentWake
@@ -101,7 +108,7 @@ func scanAgentWake(scanner interface{ Scan(...any) error }) (AgentWake, error) {
 	var longRunning int
 	if err := scanner.Scan(&row.ID, &row.ThreadID, &row.Kind, &row.Label, &row.Note, &row.Command,
 		&row.Cwd, &interval, &timeout, &longRunning, &nextAt, &lastRunAt, &row.LastOutcome, &row.LastOutput,
-		&row.Undelivered, &row.Missed, &row.State, &row.CreatedAt); err != nil {
+		&row.Undelivered, &row.Missed, &row.State, &row.CreatedAt, &row.LastStderr); err != nil {
 		return AgentWake{}, err
 	}
 	row.IntervalSeconds, row.TimeoutSeconds = interval.Int64, timeout.Int64
@@ -153,8 +160,8 @@ func nullableMillis(value int64) any {
 // already keeps under the same label. A label is one row for the life of the
 // thread: a cancelled row is revived rather than joined by a second one, so
 // the rows stay bounded by the labels a thread ever used. A registration
-// clears the undelivered output the row kept: it belonged to the watch the
-// registration replaces.
+// clears the undelivered output and the stderr tail the row kept: they
+// belonged to the watch the registration replaces.
 //
 // An interval run in flight keeps `running`: the run that holds it re-arms it
 // when it finishes, and arming it here would let the sweep start a second run
@@ -203,7 +210,7 @@ func (s *Store) RegisterAgentWake(w AgentWake) (_ AgentWake, err error) {
 		}
 		if _, err := tx.Exec(`UPDATE agent_wakes
 			SET kind = ?, note = ?, command = ?, cwd = ?, interval_seconds = ?, timeout_seconds = ?,
-			    long_running = ?, next_at = ?, missed = 0, last_output = '', undelivered = '', state = ?
+			    long_running = ?, next_at = ?, missed = 0, last_output = '', undelivered = '', last_stderr = '', state = ?
 			WHERE id = ?`,
 			w.Kind, w.Note, w.Command, w.Cwd, nullableMillis(w.IntervalSeconds), nullableMillis(w.TimeoutSeconds),
 			longRunning, nullableMillis(w.NextAt), state, existing.ID); err != nil {
@@ -274,6 +281,19 @@ func (s *Store) ListAgentWakes(threadID string) ([]AgentWake, error) {
 		return nil, fmt.Errorf("store: list agent wakes for %s: %w", threadID, err)
 	}
 	return collectAgentWakes(rows, "store: list agent wakes for "+threadID)
+}
+
+// ListStandingAgentWakes lists the armed or running rows of every standing
+// agent, by thread and then label. Each thread keeps at most
+// MaxAgentWakesPerThread live rows.
+func (s *Store) ListStandingAgentWakes() ([]AgentWake, error) {
+	rows, err := s.reader().Query(`SELECT ` + agentWakeColumns + ` FROM agent_wakes
+		WHERE state IN ('armed','running') AND thread_id IN (SELECT thread_id FROM standing_agents)
+		ORDER BY thread_id, label`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list standing agent wakes: %w", err)
+	}
+	return collectAgentWakes(rows, "store: list standing agent wakes")
 }
 
 // ListLiveAgentWakes lists every armed or running row: what the supervisor
@@ -431,6 +451,17 @@ func (s *Store) NoteAgentWakeUndelivered(id, outcome, output string) (bool, erro
 		`UPDATE agent_wakes SET last_outcome = ?, undelivered = ?,
 		        last_output = CASE WHEN kind = 'watch' AND ? <> '' THEN ? ELSE last_output END
 		  WHERE id = ? AND state <> 'cancelled'`, outcome, outcome, output, output, id)
+}
+
+// NoteAgentWakeStderr keeps the tail of a watch's last stderr. The caller
+// passes at most MaxAgentWakeStderrBytes, the tail it captured.
+func (s *Store) NoteAgentWakeStderr(id, stderr string) (bool, error) {
+	action := fmt.Sprintf("store: note agent wake stderr %s", id)
+	if len(stderr) > MaxAgentWakeStderrBytes {
+		return false, fmt.Errorf("%s: stderr is %d bytes, past the %d-byte cap", action, len(stderr), MaxAgentWakeStderrBytes)
+	}
+	return s.changeAgentWake(action,
+		`UPDATE agent_wakes SET last_stderr = ? WHERE id = ? AND kind = 'watch' AND state <> 'cancelled'`, stderr, id)
 }
 
 // checkAgentWakeOutput refuses an output past MaxAgentWakeOutputBytes. The

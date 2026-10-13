@@ -536,9 +536,10 @@ Wakes the calling thread later: exactly one of `after_seconds` or `at`
 valid reminder.
 It is a request like any other, settled by the clock with the note as
 its answer, delivered as a wake through the same path, listed and
-cancelled by `thread_status` and `thread_cancel`. It exists so an agent
-waiting on something slow (a CI run, a deploy) ends its turn instead of
-sleeping in a loop.
+cancelled by `thread_status` and `thread_cancel`. Its answer carries the
+token and `next_fire`, when it fires. It exists so an agent waiting on
+something slow (a CI run, a deploy) ends its turn instead of sleeping in
+a loop.
 
 ### `thread_loop`
 
@@ -567,6 +568,9 @@ line of stderr. The interval bounds and the count limit are
 Loops and watches are owned by the wake supervisor: delivery, the
 untrusted framing and byte cap, restart rules and notifications are
 specified in [standing agents](standing-agents.md#wake-supervisor).
+A thread's loops, watches and reminders are also rows in its composer's
+background tray, where the person can fire or cancel each one
+([activity rail](standing-agents.md#activity-rail)).
 
 ## Server instructions
 
