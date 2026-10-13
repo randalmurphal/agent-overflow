@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -16,6 +16,7 @@ help:
 		'Long-run: make soak | make soak-window | make soak-check' \
 		'Perf:    make perf-wsl | make soak-contract' \
 		'Smoke:   make e2e (mocked) | make provider-smoke (real tokens)' \
+		'Release: make release-upgrade-check [PREVIOUS_RELEASE=vX.Y.Z] [RELEASE_UPGRADE_BOOTSTRAP=1 RELEASE_UPGRADE_SCALE=0.02] [RELEASE_UPGRADE_ARCHIVE_OUT=FILE] [RELEASE_UPGRADE_CORPUS=/data-root]' \
 		'Import:  make import-corpus-smoke AO_IMPORT_CORPUS_CLAUDE=/copy AO_IMPORT_CORPUS_CODEX=/copy' \
 		'Docs:    make ao-harness-docs' \
 		'Codegen: make methodgen'
@@ -640,6 +641,30 @@ e2e e2e-mobile-browser: harness-build
 	cd e2e && pnpm install --frozen-lockfile
 	cd e2e && pnpm exec playwright install chromium webkit
 	bin/ao-harness-e2e $(E2E_ARGS) $(if $(filter e2e-mobile-browser,$@),tests/compact-browser-lock.spec.ts)
+
+# release-upgrade-check: the candidate migrates the corpus the previous
+# release published, boots on it, tops it up and archives it for the next
+# release (docs/architecture/release-upgrade-check.md). A release gate, an
+# operator tool and CI's upgrade-lineage job; every pull request runs the
+# upgrade-corpus-coverage spec in make e2e instead. PREVIOUS_RELEASE picks
+# the release to upgrade from (default:
+# the newest GitHub release); RELEASE_UPGRADE_BOOTSTRAP=1 seeds a synthetic
+# corpus with that release's binary instead of its published corpus, at
+# RELEASE_UPGRADE_SCALE (1 is about 2 GB, 0.02 a smoke slice);
+# RELEASE_UPGRADE_ARCHIVE_OUT writes the corpus for the next release;
+# RELEASE_UPGRADE_CORPUS runs an existing data root instead (an `ao-harness
+# clone` of a real database, never committed or archived);
+# RELEASE_UPGRADE_REPORT names the JSON report.
+RELEASE_UPGRADE_SCALE ?= 1
+release-upgrade-check: harness-build
+	cd e2e && pnpm install --frozen-lockfile
+	cd e2e && pnpm exec playwright install chromium
+	scripts/release-upgrade-check.sh --scale "$(RELEASE_UPGRADE_SCALE)" \
+		$(if $(PREVIOUS_RELEASE),--previous "$(PREVIOUS_RELEASE)") \
+		$(if $(RELEASE_UPGRADE_BOOTSTRAP),--bootstrap) \
+		$(if $(RELEASE_UPGRADE_ARCHIVE_OUT),--archive-out "$(RELEASE_UPGRADE_ARCHIVE_OUT)") \
+		$(if $(RELEASE_UPGRADE_CORPUS),--corpus "$(RELEASE_UPGRADE_CORPUS)") \
+		$(if $(RELEASE_UPGRADE_REPORT),--report "$(RELEASE_UPGRADE_REPORT)")
 
 # The Android shell (mobile/). Builds the ordinary production SPA,
 # syncs it into the native project, and assembles the debug APK. See

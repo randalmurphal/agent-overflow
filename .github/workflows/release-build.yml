@@ -219,6 +219,125 @@ jobs:
           path: dist/release/${{ env.VERSION }}/agent-overflow-android.apk
           if-no-files-found: error
 
+  toolchain:
+    if: github.event_name == 'workflow_dispatch'
+    name: Toolchain image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/toolchain-image
+        id: image
+        with:
+          push: "true"
+          token: ${{ github.token }}
+
+  # The release upgrade check (docs/architecture/release-upgrade-check.md):
+  # the candidate's own headless bytes migrate the newest release's published
+  # corpus, serve it and top it up; the result is this release's corpus
+  # asset, which the next release migrates.
+  upgrade-check:
+    if: github.event_name == 'workflow_dispatch'
+    name: Upgrade check and corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    needs:
+      - toolchain
+      - linux-wsl
+    container:
+      image: ${{ needs.toolchain.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+      options: --init --privileged -v /lib/modules:/lib/modules:ro
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${REQUESTED_VERSION}" ]]; then
+            version="${REQUESTED_VERSION#v}"
+          else
+            version="$(sed -n 's/^  version: "\([^"]*\)"/\1/p' build/config.yml)"
+          fi
+          case "$version" in
+            ""|.*|-*|*..*|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._+-]*)
+              echo "Unsafe version: $version" >&2
+              exit 2
+              ;;
+          esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Download the Linux candidate
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-wsl-raw
+          path: dist/release/${{ env.VERSION }}
+
+      - uses: ./.github/actions/setup
+        with:
+          go: "true"
+          gtk: "true"
+          node: "true"
+          frontend-deps: "true"
+          e2e-deps: "true"
+          browsers: chromium
+          netns: "true"
+          cache-name: harness
+
+      - name: Migrate the newest release's corpus with the candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          candidate="$PWD/dist/release/$VERSION/agent-overflow-headless-linux-amd64"
+          chmod +x "$candidate"
+          AO_HARNESS_BIN="$candidate" make release-upgrade-check \
+            RELEASE_UPGRADE_ARCHIVE_OUT="$PWD/dist/release/$VERSION/upgrade-corpus.tar.zst" \
+            RELEASE_UPGRADE_REPORT="$RUNNER_TEMP/upgrade-report.json"
+
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f "$RUNNER_TEMP/upgrade-report.json" ]]; then
+            { echo '```json'; cat "$RUNNER_TEMP/upgrade-report.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # A failed check's traces; never shipped bytes, which is why the
+      # packaging contract test skips failure-only uploads.
+      - name: Upload failure traces
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-check-traces
+          path: e2e/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload the corpus
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-corpus
+          path: dist/release/${{ env.VERSION }}/upgrade-corpus.tar.zst
+          if-no-files-found: error
+
   package:
     if: github.event_name == 'workflow_dispatch'
     name: Package release assets
@@ -227,6 +346,7 @@ jobs:
       - linux-wsl
       - macos
       - android
+      - upgrade-check
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -268,6 +388,12 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: android-raw
+          path: dist/release/${{ env.VERSION }}
+
+      - name: Download the upgrade corpus
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: upgrade-corpus
           path: dist/release/${{ env.VERSION }}
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

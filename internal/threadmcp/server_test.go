@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -302,8 +304,8 @@ func TestDisabledErrorCarriesTheOwnersCode(t *testing.T) {
 }
 
 // afterResponseServer registers one thread whose handler defers work with
-// AfterResponse, and returns the capability URL.
-func afterResponseServer(t *testing.T, handler func(http.ResponseWriter, context.Context, Request)) string {
+// AfterResponse, and returns the server and the capability URL.
+func afterResponseServer(t *testing.T, handler func(http.ResponseWriter, context.Context, Request)) (*Server[string], string) {
 	t.Helper()
 	server := New("test-tools", "", func(string) []map[string]any { return nil },
 		func(w http.ResponseWriter, ctx context.Context, req Request, _ string) { handler(w, ctx, req) })
@@ -312,7 +314,14 @@ func afterResponseServer(t *testing.T, handler func(http.ResponseWriter, context
 	if err != nil {
 		t.Fatal(err)
 	}
-	return config["test-tools"].(map[string]any)["url"].(string)
+	return server, config["test-tools"].(map[string]any)["url"].(string)
+}
+
+// afterResponseClients are the two ways a call is answered: the event stream
+// both provider CLIs ask for, and one JSON body for any other client.
+var afterResponseClients = []struct{ name, accept string }{
+	{"event stream", "application/json, text/event-stream"},
+	{"plain JSON", ""},
 }
 
 // readEvents reads server-sent lines off a response body without waiting for
@@ -363,7 +372,7 @@ func awaitData(t *testing.T, lines <-chan string, what string) string {
 func TestAfterResponseWorkWaitsForTheAnswerToReachTheClient(t *testing.T) {
 	release := make(chan struct{})
 	ran := make(chan bool, 1)
-	url := afterResponseServer(t, func(w http.ResponseWriter, ctx context.Context, req Request) {
+	_, url := afterResponseServer(t, func(w http.ResponseWriter, ctx context.Context, req Request) {
 		AfterResponse(ctx, func(delivered bool) {
 			<-release
 			ran <- delivered
@@ -396,7 +405,7 @@ func TestAfterResponseWorkWaitsForTheAnswerToReachTheClient(t *testing.T) {
 // nothing may be recorded as read.
 func TestAfterResponseReportsAnUndeliveredAnswer(t *testing.T) {
 	ran := make(chan bool, 1)
-	url := afterResponseServer(t, func(w http.ResponseWriter, ctx context.Context, req Request) {
+	_, url := afterResponseServer(t, func(w http.ResponseWriter, ctx context.Context, req Request) {
 		AfterResponse(ctx, func(delivered bool) { ran <- delivered })
 		// Answer only once the client is provably gone.
 		<-ctx.Done()
@@ -433,6 +442,157 @@ func TestAfterResponseReportsAnUndeliveredAnswer(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("deferred work never ran for an abandoned call")
+	}
+}
+
+// TestAfterResponseCountsAnAnswerReadBeforeTheClientHungUp pins delivery
+// from the client's side: a client that has read the whole answer and closes
+// its connection straight away received it, however soon after the last byte
+// it hangs up and whenever the server notices.
+func TestAfterResponseCountsAnAnswerReadBeforeTheClientHungUp(t *testing.T) {
+	for _, client := range afterResponseClients {
+		t.Run(client.name, func(t *testing.T) {
+			ran := make(chan bool, 1)
+			hungUp := make(chan struct{})
+			server, url := afterResponseServer(t, func(w http.ResponseWriter, ctx context.Context, req Request) {
+				AfterResponse(ctx, func(delivered bool) { ran <- delivered })
+				go func() {
+					<-ctx.Done()
+					close(hungUp)
+				}()
+				WriteResult(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": "answered"}}})
+			})
+			// The call is held once its answer is flushed until the server has
+			// seen the client go, which is the order a fast client and a
+			// loaded server produce on their own.
+			server.finalFlushedForTest = func() {
+				select {
+				case <-hungUp:
+				case <-time.After(15 * time.Second):
+				}
+			}
+			request, err := http.NewRequest(http.MethodPost, url, strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"quick","arguments":{}}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Content-Type", "application/json")
+			if client.accept != "" {
+				request.Header.Set("Accept", client.accept)
+			}
+			resp, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}}).Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			answer := ""
+			if client.accept != "" {
+				answer = awaitData(t, readEvents(t, resp.Body), "a call answered at once")
+			} else {
+				var reply map[string]json.RawMessage
+				if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
+					t.Fatal(err)
+				}
+				answer = string(reply["result"])
+			}
+			if !strings.Contains(answer, "answered") {
+				t.Fatalf("answer %q", answer)
+			}
+			_ = resp.Body.Close()
+			select {
+			case <-hungUp:
+			case <-time.After(15 * time.Second):
+				t.Fatal("the server never saw the client hang up")
+			}
+			select {
+			case delivered := <-ran:
+				if !delivered {
+					t.Fatal("an answer the client read before hanging up reported delivered=false")
+				}
+			case <-time.After(15 * time.Second):
+				t.Fatal("deferred work never ran")
+			}
+		})
+	}
+}
+
+// TestAfterResponseReportsAnUndeliveredPlainJSONAnswer is the plain JSON
+// half of TestAfterResponseReportsAnUndeliveredAnswer: nothing reaches a
+// client that left while the handler ran, and a write into a socket whose
+// peer is gone can still look like it succeeded.
+func TestAfterResponseReportsAnUndeliveredPlainJSONAnswer(t *testing.T) {
+	ran := make(chan bool, 1)
+	started := make(chan struct{})
+	_, url := afterResponseServer(t, func(w http.ResponseWriter, ctx context.Context, req Request) {
+		AfterResponse(ctx, func(delivered bool) { ran <- delivered })
+		close(started)
+		<-ctx.Done()
+		WriteResult(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": "answered"}}})
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"slow","arguments":{}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	done := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(request)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the call never reached its handler")
+	}
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("a call the client abandoned still returned a response")
+	}
+	select {
+	case delivered := <-ran:
+		if delivered {
+			t.Fatal("an abandoned call reported its answer as delivered")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("deferred work never ran for an abandoned call")
+	}
+}
+
+// failingFlushWriter is a connection whose last flush fails, which is how a
+// peer that left while the answer was in flight shows itself.
+type failingFlushWriter struct{ *httptest.ResponseRecorder }
+
+func (failingFlushWriter) FlushError() error { return errors.New("connection reset by peer") }
+
+// TestAfterResponseReportsAFailedFlush covers a client that was there when
+// the answer began to go out and gone by the time it was flushed: the write
+// buffered fine, the flush did not, and nothing may be recorded as read.
+func TestAfterResponseReportsAFailedFlush(t *testing.T) {
+	for _, client := range afterResponseClients {
+		t.Run(client.name, func(t *testing.T) {
+			ran := make(chan bool, 1)
+			server := New("test-tools", "", func(string) []map[string]any { return nil },
+				func(w http.ResponseWriter, ctx context.Context, req Request, _ string) {
+					AfterResponse(ctx, func(delivered bool) { ran <- delivered })
+					WriteResult(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": "answered"}}})
+				})
+			request := httptest.NewRequest(http.MethodPost, "/", nil)
+			if client.accept != "" {
+				request.Header.Set("Accept", client.accept)
+			}
+			server.serveCall(failingFlushWriter{httptest.NewRecorder()}, request, Request{ID: json.RawMessage("7")}, "access")
+			select {
+			case delivered := <-ran:
+				if delivered {
+					t.Fatal("an answer whose flush failed reported delivered=true")
+				}
+			default:
+				t.Fatal("deferred work did not run when the call returned")
+			}
+		})
 	}
 }
 

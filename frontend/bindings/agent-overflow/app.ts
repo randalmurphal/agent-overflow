@@ -4029,11 +4029,13 @@ export function RemoteCommandStatus(id: string): $CancellablePromise<app$0.Remot
  * this DEVICE, and the far side adopts its row again by thumbprint if
  * this installation ever pairs with that machine a second time.
  * 
- * `abandon` is the confirmation for the agent thread requests this
- * computer still has open there. Without it they are listed and the call
- * refuses; with it they are settled locally as errored, their wakes are
- * dropped, and the pairing goes. The other computer is not told, because
- * forgetting it is exactly the decision to stop talking to it.
+ * `abandon` is the confirmation for what forgetting drops: the agent thread
+ * requests this computer still has open there, and the finished jobs whose
+ * completions are held for archived conversations, which can no longer be
+ * delivered. Without it they are named and the call refuses; with it the
+ * requests are settled locally as errored, their wakes are dropped, the held
+ * completions are discarded, and the pairing goes. The other computer is not
+ * told, because forgetting it is exactly the decision to stop talking to it.
  */
 export function RemoveBackend(id: string, abandon: boolean): $CancellablePromise<void> {
     return $Call.ByID(3005272623, id, abandon);

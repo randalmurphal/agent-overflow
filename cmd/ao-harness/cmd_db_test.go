@@ -318,3 +318,67 @@ func seedWideCellDB(t *testing.T) string {
 	}
 	return path
 }
+
+// --attach puts a second file beside the main one, so a query can
+// compare them in one statement; the attachment is read-only too.
+func TestDBAttachesASecondFileReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, rows string) string {
+		path := filepath.Join(dir, name)
+		seed, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := seed.Exec(`CREATE TABLE items (id TEXT, kind TEXT); INSERT INTO items VALUES ` + rows); err != nil {
+			t.Fatal(err)
+		}
+		if err := seed.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	after := write("after.db", `('a', 'text'), ('b', 'tool')`)
+	before := write("before.db", `('a', 'text'), ('b', 'thinking'), ('c', 'text')`)
+
+	e, stdout, _ := testEnv(t.TempDir())
+	e.format = "json"
+	if err := runDB(e, []string{"--file", after, "--attach", "snap=" + before,
+		"SELECT id FROM snap.items EXCEPT SELECT id FROM main.items WHERE kind = snap.items.kind ORDER BY id"}); err == nil {
+		t.Fatal("a correlated reference across the EXCEPT was accepted; the test query is wrong")
+	}
+	stdout.Reset()
+	if err := runDB(e, []string{"--file", after, "--attach", "snap=" + before,
+		"SELECT id, kind FROM snap.items EXCEPT SELECT id, kind FROM main.items ORDER BY id"}); err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &rows); err != nil {
+		t.Fatalf("output was not JSON: %v\n%s", err, stdout.String())
+	}
+	if len(rows) != 2 || rows[0]["id"] != "b" || rows[1]["id"] != "c" {
+		t.Fatalf("rows = %+v, want the changed row b and the missing row c", rows)
+	}
+
+	stdout.Reset()
+	err := runDB(e, []string{"--file", after, "--attach", "snap=" + before, "PRAGMA snap.query_only=0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Even with the statement guard aimed at the attachment, the file was
+	// opened mode=ro: nothing in this process can have written it.
+	check, err := sql.Open("sqlite", before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = check.Close() })
+	var n int
+	if err := check.QueryRow(`SELECT count(*) FROM items`).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("before.db has %d rows (err %v), want the 3 it was written with", n, err)
+	}
+
+	for _, bad := range []string{"snap", "=x", "1x=" + before, "main=" + before, "a-b=" + before} {
+		if _, err := parseDBAttachment(bad); err == nil {
+			t.Errorf("parseDBAttachment(%q) was accepted", bad)
+		}
+	}
+}

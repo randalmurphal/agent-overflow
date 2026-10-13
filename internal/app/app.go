@@ -538,6 +538,18 @@ type App struct {
 	// downstream code emitted. name is the channel's WIRE spelling, for
 	// the reason given on emitEventFn above.
 	testEmitHook func(name string, data any)
+	// heldReturnedForTest, when set, runs after answers and completions
+	// have been given back to their owners (giveBackToOwners), so a test can
+	// land a watcher pass at that moment.
+	heldReturnedForTest func(threadID string)
+	// queueDropReadForTest, when set, runs in a wholesale drop between its
+	// read of the durable queue and its delete (dropDurableFlushQueue), so
+	// a test can queue a message at that moment.
+	queueDropReadForTest func(threadID string)
+	// queueDroppedForTest, when set, runs in a wholesale drop after its
+	// delete of the durable queue (dropDurableFlushQueue), so a test can
+	// queue a message before the in-memory queue is cleared.
+	queueDroppedForTest func(threadID string)
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a
@@ -558,6 +570,10 @@ type App struct {
 	// end-to-end test (IsolationConfig). Zero keeps the product intervals.
 	threadPollOverride   time.Duration
 	transferPendingRetry time.Duration
+	// remoteWatchPoll replaces the remote-job watcher's cadence for a
+	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
+	// product cadence.
+	remoteWatchPoll time.Duration
 	// idleReap holds an isolated test boot's idle-session reaper timing
 	// (IsolationConfig). Zero fields keep the product values.
 	idleReap idleReapTiming
@@ -692,6 +708,10 @@ type App struct {
 	// reach it — they build *App directly and never call Start. Set once
 	// before Start; never mutated afterwards.
 	backgroundFetchDisabled bool
+	// retentionSweepDisabled keeps the retention sweep from starting
+	// (IsolationConfig.DisableRetentionSweep). Set once before Start;
+	// never mutated afterwards.
+	retentionSweepDisabled bool
 	// isolatedWorkspaceRoot, when non-empty, bounds every project path and
 	// session working directory (app_isolated_workspace.go). Empty disables
 	// the check, which only unit tests do. Set once before Start; never

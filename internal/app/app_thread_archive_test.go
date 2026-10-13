@@ -2,6 +2,8 @@ package app
 
 import (
 	"agent-overflow/internal/testutil/mockexec"
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +11,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
 
 // writeExitMarkerClaudeScript writes a mock Claude CLI that answers the
@@ -128,6 +131,72 @@ func TestArchiveThreadClosesLiveProviderSession(t *testing.T) {
 	}
 	if !archived.Archived {
 		t.Fatal("thread is not archived")
+	}
+}
+
+// An archive of a thread with a live session returns through either door,
+// the binding and an agent's thread_update: the session and its process
+// end, and the thread's action and mutation locks are free. The teardown
+// takes the mutation lock to drop the queue, so a door that held it across
+// the teardown would never return.
+func TestArchivingALiveThreadReturnsThroughEitherDoor(t *testing.T) {
+	t.Parallel()
+	doors := map[string]func(app *App, threadID string) error{
+		"binding": func(app *App, threadID string) error { return app.ArchiveThread(threadID) },
+		"thread_update": func(app *App, threadID string) error {
+			archived := true
+			report, err := threadToolsApp{app: app}.UpdateThreads(context.Background(), threadtools.Caller{ThreadID: "another-thread"},
+				threadtools.UpdateCall{ThreadIDs: []string{threadID}, Archived: &archived})
+			if err != nil {
+				return err
+			}
+			if row := report.Results[0]; !row.Updated {
+				return fmt.Errorf("thread_update refused: %s", row.Error)
+			}
+			return nil
+		},
+	}
+	for name, archive := range doors {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			app, bus := setupE2EApp(t)
+			thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+			if err != nil {
+				t.Fatalf("createTestThread: %v", err)
+			}
+			marker := startExitMarkerClaudeSession(t, app, bus, thread.ID)
+			if _, live := app.sessionManager().get(thread.ID); !live {
+				t.Fatal("expected a live session before archiving")
+			}
+
+			done := make(chan error, 1)
+			go func() { done <- archive(app, thread.ID) }()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("archive: %v", err)
+				}
+			case <-time.After(15 * time.Second):
+				t.Fatalf("the archive did not return in 15s; mutation lock refs %d, action lock refs %d",
+					app.threadApplication().MutationRefs(thread.ID), app.threadLocks().Refs(thread.ID))
+			}
+
+			if _, live := app.sessionManager().get(thread.ID); live {
+				t.Fatal("the archived thread still holds a registered session")
+			}
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatalf("the provider process survived the archive: %v", err)
+			}
+			if refs := app.threadApplication().MutationRefs(thread.ID); refs != 0 {
+				t.Fatalf("mutation lock refs = %d after the archive, want 0", refs)
+			}
+			if refs := app.threadLocks().Refs(thread.ID); refs != 0 {
+				t.Fatalf("action lock refs = %d after the archive, want 0", refs)
+			}
+			if row, err := app.store.GetThread(thread.ID); err != nil || !row.Archived {
+				t.Fatalf("thread archived = %v (%v), want true", row.Archived, err)
+			}
+		})
 	}
 }
 

@@ -26,6 +26,14 @@ func (s *Service) LockMutable(ctx context.Context, threadID string) (func(), err
 	return unlock, nil
 }
 
+// LockMutations takes the mutation lock without CheckMutable, for a
+// session teardown: dropping the queue of a thread that has moved, is in
+// transfer or is a holder must still serialize with queue writes, and
+// CheckMutable refuses those threads.
+func (s *Service) LockMutations(threadID string) func() {
+	return s.mutations.Lock(threadID)
+}
+
 // CheckCleanup permits local cache cleanup after the destination has confirmed
 // a move, and the delete of a holder: the history a deleted thread's pointer
 // forks read, which nothing runs in and every other operation refuses

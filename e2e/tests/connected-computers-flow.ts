@@ -5,6 +5,7 @@ import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
+import { reloadAtRoot } from './compact-history-helpers.js';
 import { instrument } from './offhost-helpers.js';
 import { runSessionCLI } from './session-cli-helpers.js';
 import { randomUUID } from 'node:crypto';
@@ -197,7 +198,7 @@ export function connectedComputersFlow(): void {
       const port = await unusedPort();
       const network = await remote.rpc<Record<string, unknown>>('GetNetworkSettings');
       await remote.rpc('SetNetworkSettings', { ...network, listenPort: port });
-      await page.reload();
+      await reloadAtRoot(page);
       await settingsPage(page, 'Connect to a computer');
       await expect(computerRow).toContainText('Offline');
       await computerRow.getByRole('button', { name: 'Change address' }).click();
@@ -210,7 +211,7 @@ export function connectedComputersFlow(): void {
       // Stop one independently; a remembered catalog must not disappear on
       // reload and the other computer must remain usable.
       await remote.stop();
-      await page.reload();
+      await reloadAtRoot(page);
       await expect(page.getByText('already-cloned', { exact: true })).toBeVisible();
       await expect(page.getByText('Mac checkout', { exact: true })).toBeVisible();
       await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize)).toBe(changedFont);

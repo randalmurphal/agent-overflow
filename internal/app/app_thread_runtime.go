@@ -218,7 +218,7 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 			if err := a.stopThreadRequestsForDeletedThread(context.Background(), threadID); err != nil {
 				return err
 			}
-			return a.cancelThreadRemoteCommands(context.Background(), threadID)
+			return a.cancelThreadRemoteCommands(context.Background(), threadID, false)
 		},
 		CleanProviderBackground: a.cleanThreadProviderBackground,
 		StopSession:             a.stopSession,

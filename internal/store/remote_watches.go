@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -86,12 +88,16 @@ func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
 		return false, err
 	}
 	fresh := errors.Is(err, sql.ErrNoRows)
-	var count int
-	if err = tx.QueryRow(`SELECT count(*) FROM remote_watches WHERE notification='pending'`).Scan(&count); err != nil {
+	var count, archived int
+	if err = tx.QueryRow(`SELECT count(*), coalesce(sum(CASE WHEN `+archivedRemoteCompletion+` THEN 1 ELSE 0 END),0) FROM remote_watches WHERE notification='pending'`).Scan(&count, &archived); err != nil {
 		return false, err
 	}
 	if count >= 256 {
-		return false, errorsx.Public("remote_tracking_capacity", "256 remote jobs are awaiting completion or reconnection. Resolve those jobs before starting more.", nil)
+		held := ""
+		if archived > 0 {
+			held = fmt.Sprintf(" %d of them are finished jobs held for archived conversations; unarchive those conversations to receive the results.", archived)
+		}
+		return false, errorsx.Public("remote_tracking_capacity", "256 remote jobs are awaiting completion or reconnection."+held+" Resolve those jobs before starting more.", nil)
 	}
 	if !fresh {
 		_, err = tx.Exec(`UPDATE remote_watches SET notification='pending',next_check=? WHERE computer_id=? AND request_id=?`, time.Now().Add(25*time.Second).UnixMilli(), w.ComputerID, w.RequestID)
@@ -131,7 +137,10 @@ func (s *Store) ListRemoteWatches(threadID string, due int64, limit int) ([]Remo
 	query := `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE thread_id=? ORDER BY (notification='pending') DESC, created_at DESC`
 	args := []any{threadID}
 	if threadID == "" {
-		query = `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE notification='pending' AND next_check<=? ORDER BY next_check`
+		// An archived thread's completions wait for it to be unarchived, and
+		// must not take the due list's places meanwhile.
+		query = `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE notification='pending' AND next_check<=?
+ AND NOT EXISTS (SELECT 1 FROM threads t WHERE t.id=remote_watches.thread_id AND t.archived=1) ORDER BY next_check`
 		args = []any{due}
 	}
 	query += ` LIMIT ` + strconv.Itoa(limit)
@@ -153,6 +162,15 @@ func (s *Store) ListRemoteWatches(threadID string, due int64, limit int) ([]Remo
 
 func (s *Store) DismissRemoteWatch(computerID, requestID string) error {
 	_, err := s.db.Exec(`UPDATE remote_watches SET notification='dismissed' WHERE computer_id=? AND request_id=? AND notification='pending'`, computerID, requestID)
+	return err
+}
+
+// DismissUnfinishedRemoteWatch drops a pending notification only while its
+// receipt still says the job has not finished. A finish recorded first, by
+// the watcher or a reply, keeps it.
+func (s *Store) DismissUnfinishedRemoteWatch(computerID, requestID string) error {
+	_, err := s.db.Exec(`UPDATE remote_watches SET notification='dismissed' WHERE computer_id=? AND request_id=? AND notification='pending'
+ AND (coalesce(json_extract(receipt,'$.id'),'')='' OR json_extract(receipt,'$.state')='running')`, computerID, requestID)
 	return err
 }
 
@@ -207,16 +225,74 @@ func (s *Store) QueueRemoteCompletion(computerID, requestID string, item FlushQu
 	return tx.Commit()
 }
 
+// WithdrawRemoteCompletion takes a completion's message that never reached
+// the agent back out of the queue and returns delivery to its watch, in ONE
+// durable transaction. The watch goes back to pending when the message was
+// still queued: one already dispatched has been delivered. One the provider
+// was handed and never confirmed (unconfirmed) has no row left and goes
+// back all the same, while the watch still reads queued.
+func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string, unconfirmed bool) error {
+	tx, release, err := s.beginDurableTx(context.Background())
+	if err != nil {
+		return err
+	}
+	defer release()
+	defer func() { _ = tx.Rollback() }()
+	r, err := tx.Exec(`DELETE FROM flush_queue_items WHERE id=?`, rowID)
+	if err != nil {
+		return err
+	}
+	n, err := r.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 1 || unconfirmed {
+		if _, err = tx.Exec(`UPDATE remote_watches SET notification='pending' WHERE computer_id=? AND request_id=? AND notification='queued'`, computerID, requestID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) HasPendingRemoteWatches(threadID string) (bool, error) {
 	var pending bool
 	err := s.reader().QueryRow(`SELECT EXISTS(SELECT 1 FROM remote_watches WHERE thread_id=? AND notification='pending')`, threadID).Scan(&pending)
 	return pending, err
 }
 
-func (s *Store) HasPendingRemoteWatchesForComputer(computerID string) (bool, error) {
-	var pending bool
-	err := s.reader().QueryRow(`SELECT EXISTS(SELECT 1 FROM remote_watches WHERE computer_id=? AND notification='pending')`, computerID).Scan(&pending)
-	return pending, err
+// archivedRemoteCompletion matches a pending watch whose job has finished
+// and whose conversation is archived: a completion the archive kept for
+// the unarchive.
+const archivedRemoteCompletion = `notification='pending' AND coalesce(json_extract(receipt,'$.id'),'')<>'' AND json_extract(receipt,'$.state')<>'running'
+ AND EXISTS (SELECT 1 FROM threads t WHERE t.id=remote_watches.thread_id AND t.archived=1)`
+
+// PendingRemoteWatchesForComputer counts a computer's pending
+// notifications: the completions held for archived conversations, and the
+// others, which still need the computer.
+func (s *Store) PendingRemoteWatchesForComputer(computerID string) (archived, other int, err error) {
+	err = s.reader().QueryRow(`SELECT coalesce(sum(CASE WHEN `+archivedRemoteCompletion+` THEN 1 ELSE 0 END),0), coalesce(sum(CASE WHEN `+archivedRemoteCompletion+` THEN 0 ELSE 1 END),0)
+ FROM remote_watches WHERE computer_id=? AND notification='pending'`, computerID).Scan(&archived, &other)
+	return archived, other, err
+}
+
+// DismissArchivedRemoteCompletions drops the completions held for a
+// computer's archived conversations and returns those conversations.
+func (s *Store) DismissArchivedRemoteCompletions(computerID string) ([]string, error) {
+	rows, err := s.db.Query(`UPDATE remote_watches SET notification='dismissed' WHERE computer_id=? AND `+archivedRemoteCompletion+` RETURNING thread_id`, computerID)
+	if err != nil {
+		return nil, err
+	}
+	var threads []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		if !slices.Contains(threads, id) {
+			threads = append(threads, id)
+		}
+	}
+	return threads, errors.Join(rows.Err(), rows.Close())
 }
 
 func (s *Store) HasUnfinishedRemoteWatches(threadID string) (bool, error) {

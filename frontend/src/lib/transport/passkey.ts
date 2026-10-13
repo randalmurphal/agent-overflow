@@ -24,6 +24,8 @@
 // runtime test here, never a build flag: `passkeysUsable()` answers false
 // and every surface asking keeps whatever it did before.
 
+import { createSubscriber } from 'svelte/reactivity';
+
 /** The `publicKey` member of a ceremony, as JSON with base64url binaries. */
 type ChallengeOptions = Record<string, unknown>;
 
@@ -40,15 +42,32 @@ export interface PasskeyChallenge {
  *
  * Published from the manifest rather than from the connection's hello,
  * because the page that most needs the answer is the one whose socket the
- * backend will not open — a browser that has never paired. Latched the way
- * ./harnessMode.ts latches its own: set on every manifest resolution, read
- * synchronously by whoever is drawing.
+ * backend will not open — a browser that has never paired. Set on every
+ * manifest resolution. Surfaces mount before the first one lands, so the
+ * answer is reactive the way ./scopes.ts is: a `$derived` or template
+ * reader re-runs when it moves.
  */
 let backendOffersPasskeys = false;
+let offerAnswered = false;
+let notifyOfferChanged: (() => void) | null = null;
+const subscribeOffer = createSubscriber((update) => {
+  notifyOfferChanged = update;
+  return () => {
+    if (notifyOfferChanged === update) notifyOfferChanged = null;
+  };
+});
 
 /** Called by ./bootstrap.ts on every manifest resolution. */
 export function setPasskeysAvailableFromBootstrap(available: boolean): void {
+  offerAnswered = true;
+  if (available === backendOffersPasskeys) return;
   backendOffersPasskeys = available;
+  notifyOfferChanged?.();
+}
+
+/** Whether a manifest has answered the backend half of `passkeysUsable()`. */
+export function passkeyOfferAnswered(): boolean {
+  return offerAnswered;
 }
 
 /**
@@ -58,6 +77,7 @@ export function setPasskeysAvailableFromBootstrap(available: boolean): void {
  * backend with no domain spends a round trip to be refused.
  */
 export function passkeysUsable(): boolean {
+  subscribeOffer();
   return backendOffersPasskeys && passkeysSupported();
 }
 

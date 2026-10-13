@@ -324,6 +324,7 @@ every App plus Harness method. Use `ao-harness rpc --list` for that full list.
 | `HarnessWindowState()` | Read the isolated native window's outer DIP bounds, maximize/fullscreen/minimize flags, and its screen's DIP + physical work areas. Windowed boots only; headless instances refuse by name. This is the geometry assertion surface on hosts where OS accessibility automation is unavailable. |
 | `HarnessWindowCommand(command)` | Drive one native action (`maximize`, `unmaximize`, `fullscreen`, `unfullscreen`, `minimize`, `unminimize`, `reveal`) or set one outer DIP `bounds` rect. Exactly one is required. `reveal` is the production bring-forward path (`uiwindow.Reveal`, what an OS-notification click and a second launch call), so "a maximized window stays maximized after a reveal" is a scriptable assertion rather than a click on a real notification. Animated transitions return before settling; poll `HarnessWindowState`. Windowed boots only. On macOS the webview runs rAF only while the window is frontmost, so `reveal` right before any timing-sensitive send: a spring that shows `active` with no writes and a trace ring that stops growing is a backgrounded window, not a frozen glide. |
 | `HarnessListThreadRows()` | Every non-archived thread ROW, drafts included. `App.ListThreads` hides a row until it has an item or a content-carrying draft, so this is the only read that can prove a row was *not* created (or read back what a just-materialized one was bound to). |
+| `HarnessStoreStatus()` | The database's migration state: `schemaVersion` applied against `buildSchemaVersion`, the deferred watermark against the last deferred version, `deferredPending`, and `deferredFailure` (null when none). The release upgrade check polls it after a migrated boot until the deferred phases finish. |
 | `HarnessSeed(spec)` | **Strictly decoded** (unknown fields refused, positions reported, since a mistyped `treads:` used to seed nothing and return success). Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, project-scoped workflow definitions/profile/items, and `providerHome` files, which are slash-separated relative paths written under the harness-owned provider home (`<dataRoot>/home`, never the real one, even under `AO_HARNESS_KEEP_HOME`), for `.claude.json` MCP config, skills, settings, or a `.claude/projects/...` transcript paired with a thread's `sessionRef`. Returns created ids and the home paths written. |
 | `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords`: production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, remove the provider trees under the harness-owned home (`.claude`, `.claude.json`, `.codex`: seeded `providerHome` fixtures plus the transcripts mocks wrote, which would otherwise leak into the next test's import scan), drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), clear persisted UI view state (`ui_state` rows name entity ids: the workflows overlay stack persists work-item ids, and a surviving row makes the next test's fresh page restore a selection onto deleted rows — the wipe also takes the user and device settings tiers, which live in the same table since `internal/settings/residency.go`, so the reset drops the settings cache with it and both return to their defaults), discard the event bus's retained history (a fresh loopback page replays `notification:activated` from zero, so an activation one spec sent would otherwise open, or toast the absence of, its target on the next spec's page), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations, the fake forge's fixture and invocation log). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
 | `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` and `sessionRef` scopes, described in "Scoping a scenario" below). Validated at set time. |
@@ -568,6 +569,9 @@ envelope up into its own turn at once. On, it holds the envelope:
   new turn, and a `queued_command` attachment carrying the client uuid as
   `source_uuid` in the transcript. This is the CLI's mid-loop consumption.
   Validation rejects the step in a scenario that holds no input.
+- A `cancelQueuedInput` step retires every held envelope unrun: a
+  `cancelled` ack with no `started`, no echo and no transcript entry, the
+  CLI's answer to a cancel of a queued message. The same validation applies.
 - Input the turn never drains is picked up when the turn ends, so the
   replay echo that confirms a queued message lands after every row that
   turn still wrote. This is the CLI's turn-pickup consumption, and the case
@@ -678,9 +682,13 @@ lifecycle:
 1. **`system/init` is emitted per user turn** (after the user message
    arrives), never by scenarios. The app opens a logical turn only
    when init lands with a pending send registered.
-2. **User envelopes echo back** with `isReplay: true`
-   (`--replay-user-messages`), which resolves the pending send and
-   stamps the item's provider id.
+2. **A turn-opening user envelope is recorded, then echoed.** The
+   transcript entry goes out as a `transcript_mirror` frame
+   (`--session-mirror`), which confirms the pending send, then the
+   `isReplay: true` echo (`--replay-user-messages`), which the adapter
+   withholds for the text the 2.1.284 replay filter rejects
+   (`claudeReplayEchoFiltered`). An envelope drained into a running turn
+   is echoed and never mirrored as a user entry, like the CLI.
 3. **Each accepted user envelope appends a minimal provider transcript** under
    the harness's redirected `.claude` home. This is durable mock context, not
    app state: restarting the backend against the same data root exercises the

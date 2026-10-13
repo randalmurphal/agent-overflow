@@ -16,6 +16,8 @@ interface Recovery {
   resolveReplay(): void;
   rejectReplay(error: Error): void;
   replayPending: boolean;
+  /** The connection replaced an earlier one of the backend's client. */
+  resumed: boolean;
 }
 const active = new Map<BackendKey, Recovery>();
 
@@ -39,7 +41,7 @@ async function complete(backend: BackendKey, recovery: Recovery): Promise<void> 
   recovery.replayPending = false;
   recovery.resolveReplay();
   while (active.get(backend) === recovery && recovery.pending.size) {
-    await Promise.allSettled([...recovery.pending]);
+    await Promise.allSettled(recovery.pending);
   }
   if (active.get(backend) !== recovery) return;
   active.delete(backend);
@@ -51,7 +53,7 @@ function sync(): void {
   for (const { id, client } of attachedBackends()) {
     live.add(id);
     if (subscriptions.has(id)) continue;
-    const offReplay = client.onReplay((phase) => {
+    const offReplay = client.onReplay((phase, resumed) => {
       if (phase === 'start') {
         cancel(id);
         let resolveReplay!: () => void;
@@ -59,7 +61,7 @@ function sync(): void {
         const replay = new Promise<void>((resolve, reject) => { resolveReplay = resolve; rejectReplay = reject; });
         // A connection can close before any snapshot has joined the fence.
         void replay.catch(() => {});
-        active.set(id, { pending: new Set(), replay, resolveReplay, rejectReplay, replayPending: true });
+        active.set(id, { pending: new Set(), replay, resolveReplay, rejectReplay, replayPending: true, resumed });
         publish(id, phase);
       } else if (phase === 'complete') {
         const pending = active.get(id);
@@ -97,6 +99,15 @@ export function onBackendRecovery(listener: Listener): () => void {
 
 export function isBackendRecovering(backend: BackendKey): boolean {
   return active.has(backend);
+}
+
+/**
+ * Whether `backend` is recovering a connection that replaced an earlier one.
+ * A first connection's recovery fences reads the same way, but nothing it
+ * delivers was on screen before, so there is nothing to call a resync.
+ */
+export function isBackendResyncing(backend: BackendKey): boolean {
+  return active.get(backend)?.resumed === true;
 }
 
 export function holdBackendRecovery(backend: BackendKey, work: Promise<unknown>): void {

@@ -97,17 +97,25 @@ func TestRunDrainedRefusesAssignedOutputs(t *testing.T) {
 	}
 }
 
+// The two cancellation tests below set linger a second past the context's
+// 200ms deadline. No pause in the descendant's output can then end the
+// drain first: a read deadline is never sooner than linger after the run
+// starts, so a nil result would need this test process to leave its main
+// goroutine unscheduled for a second after the context ended. The
+// descendant's own scheduling has no such bound: under load its start alone
+// can outlast any linger shorter than the context.
+
 // TestRunDrainedStopsAtCancellationWhileADescendantKeepsWriting: the
-// command exits at once, a descendant keeps the pipe busy more often than
-// linger, and the context ends the run. exec no longer watches the context
-// once the process has exited, so only RunDrained can.
+// command exits at once, a descendant keeps writing, and the context ends
+// the run. exec no longer watches the context once the process has exited,
+// so only RunDrained can.
 func TestRunDrainedStopsAtCancellationWhileADescendantKeepsWriting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", "(i=0; while [ $i -lt 100 ]; do echo tick; sleep 0.02; i=$((i+1)); done) & echo done")
+	cmd := exec.CommandContext(ctx, "sh", "-c", "(i=0; while [ $i -lt 200 ]; do echo tick; sleep 0.02; i=$((i+1)); done) & echo done")
 	start := time.Now()
-	err := RunDrained(ctx, cmd, io.Discard, nil, 100*time.Millisecond)
-	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+	err := RunDrained(ctx, cmd, io.Discard, nil, 1200*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("RunDrained ran %s, past its context", elapsed)
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -125,7 +133,7 @@ func TestRunDrainedStopsAtCancellationDuringAFlood(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", "dd if=/dev/zero bs=65536 count=1000000 2>/dev/null & echo done")
 	start := time.Now()
-	err := RunDrained(ctx, cmd, io.Discard, nil, 100*time.Millisecond)
+	err := RunDrained(ctx, cmd, io.Discard, nil, 1200*time.Millisecond)
 	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
 		t.Fatalf("RunDrained ran %s, past its context", elapsed)
 	}

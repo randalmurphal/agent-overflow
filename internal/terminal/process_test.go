@@ -209,10 +209,6 @@ func TestNudgeRows(t *testing.T) {
 // shell print the child pid to stdout and then asserting that the child pid
 // is not alive after Kill returns.
 func TestProcessKillsGroup(t *testing.T) {
-	if os.Getenv("CI") != "" && os.Getenv("TERMINAL_GROUP_TEST") == "" {
-		t.Skip("group kill test flaky on some CI runners; set TERMINAL_GROUP_TEST=1 to enable")
-	}
-
 	// `sh -c "sleep 60 & echo $!; wait"` — prints the child pid then waits.
 	p, err := Start(ProcessConfig{
 		Shell: "/bin/sh",
@@ -440,8 +436,10 @@ func extractChildPID(t *testing.T, ch <-chan []byte, timeout time.Duration) int 
 	}
 }
 
-// processAlive returns true if the given pid is running. Implemented via
-// signal-0 which never delivers a signal but reports existence.
+// processAlive returns true if the given pid exists. Implemented via
+// signal-0 which never delivers a signal but reports existence. A killed
+// process exists until it is reaped, and an orphan is reaped by PID 1, so
+// this needs a reaping PID 1; CI container jobs run with --init for it.
 func processAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil

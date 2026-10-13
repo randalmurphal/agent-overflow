@@ -4,8 +4,10 @@ import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
@@ -61,7 +64,7 @@ func completedRemoteWatch(t *testing.T, a *App, thread store.Thread) store.Remot
 	return w
 }
 
-func TestRemoteCompletionQueueHandoffDraftAndRestartRecovery(t *testing.T) {
+func TestRemoteCompletionQueueHandoffAndRestartRecovery(t *testing.T) {
 	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	a.startSessionFn = func(string) error { return nil }
@@ -91,28 +94,34 @@ func TestRemoteCompletionQueueHandoffDraftAndRestartRecovery(t *testing.T) {
 	if err != nil || saved.Notification != "queued" {
 		t.Fatalf("handoff=%+v %v", saved, err)
 	}
-	// Replace process-memory state and run the actual boot recovery: queued
-	// completions follow ordinary messages into the draft, never auto-resend.
+	// Replace process-memory state and run the actual boot recovery: a
+	// queued completion is not the person's to send, so it goes back to its
+	// watch rather than into the composer, and the watcher delivers it again.
 	a.triage = triage.NewRouter(a.store, rec.captureChannel)
 	a.configureTriageQueueCallbacks()
 	a.restoreDurableFlushQueueAtBoot()
 	draft, _, err = a.store.GetThreadDraft(thread.ID)
-	if err != nil || strings.Count(draft.Content, w.RequestID) != 1 || !strings.HasSuffix(draft.Content, "my unsent draft") {
-		t.Fatalf("recovered draft=%+v %v", draft, err)
+	if err != nil || draft.Content != "my unsent draft" {
+		t.Fatalf("recovered draft=%+v %v, want the person's draft alone", draft, err)
 	}
 	if len(durableQueueRows(t, a, thread.ID)) != 0 {
 		t.Fatal("recovered completion remained queued")
 	}
-	due, err := a.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 256)
-	if err != nil || len(due) != 0 {
-		t.Fatalf("restart would re-notify recovered message: %+v %v", due, err)
+	if saved, err = a.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil || saved.Notification != "pending" {
+		t.Fatalf("recovered watch=%+v %v, want pending", saved, err)
 	}
-	// A stale in-memory observer is also unable to insert a second message after
-	// recovery removed the normal queue row and its send identity: the durable
-	// watch no longer owes a notification.
-	_ = a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output})
-	if len(durableQueueRows(t, a, thread.ID)) != 0 {
-		t.Fatal("stale observer re-enqueued recovered completion")
+	due, err := a.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 256)
+	if err != nil || len(due) != 1 {
+		t.Fatalf("the recovered completion is not due again: %+v %v", due, err)
+	}
+	// Delivered again, it is queued once, however many observers deliver it.
+	for range 2 {
+		if err := a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 1 || rows[0].SendID != remoteCompletionSendID(w) {
+		t.Fatalf("redelivered queue: %+v", rows)
 	}
 }
 
@@ -467,5 +476,628 @@ func TestRemoteTrayRowIsBackgroundedOnlyOnceTheWaitEnds(t *testing.T) {
 	record := records[0]
 	if record.ComputerID != watch.ComputerID || record.RequestID != watch.RequestID || record.ThreadID != thread.ID || record.Label != watch.Label || record.Receipt.State != "running" || record.Notification != "pending" {
 		t.Fatalf("record: %+v", record)
+	}
+}
+
+// Archiving a thread whose start failed takes its finished job's queued
+// completion back to the job's watch: the next start delivers nothing, the
+// watcher leaves it alone while the thread is archived, and once the thread
+// is unarchived the watcher queues it again, once.
+func TestArchiveReturnsAHeldRemoteCompletionToItsWatch(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var failing atomic.Bool
+	failing.Store(true)
+	a.startSessionFn = func(string) error {
+		if failing.Load() {
+			return errors.New("the provider binary is missing")
+		}
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Claude))
+	w := completedRemoteWatch(t, a, thread)
+	notification := func() string {
+		t.Helper()
+		saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return saved.Notification
+	}
+	queued := func() []string {
+		t.Helper()
+		durable, memory := queuedSendIDs(t, a, thread.ID)
+		if !slices.Equal(durable, memory) {
+			t.Fatalf("durable queue %q and in-memory queue %q differ", durable, memory)
+		}
+		return durable
+	}
+	// One pass of the watcher: what is due, checked.
+	watch := func() {
+		t.Helper()
+		due, err := a.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range due {
+			a.checkRemoteWatch(row)
+		}
+		a.waitAgentNoticeWork()
+	}
+
+	watch()
+	if got := queued(); !slices.Equal(got, []string{remoteCompletionSendID(w)}) || notification() != "queued" {
+		t.Fatalf("held behind the failed start: queue %q, watch %q", got, notification())
+	}
+	if err := a.ArchiveThread(thread.ID); err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	if got := queued(); len(got) != 0 || notification() != "pending" {
+		t.Fatalf("after the archive: queue %q, watch %q, want an empty queue and a pending watch", got, notification())
+	}
+
+	// Archived, it is neither due nor delivered by a check that read it
+	// before the archive.
+	watch()
+	held, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.checkRemoteWatch(held)
+	a.waitAgentNoticeWork()
+	if got := queued(); len(got) != 0 || notification() != "pending" {
+		t.Fatalf("while archived: queue %q, watch %q, want an empty queue and a pending watch", got, notification())
+	}
+
+	failing.Store(false)
+	if _, err := a.UnarchiveThread(thread.ID); err != nil {
+		t.Fatalf("UnarchiveThread: %v", err)
+	}
+	watch()
+	watch()
+	if got := queued(); !slices.Equal(got, []string{remoteCompletionSendID(w)}) || notification() != "queued" {
+		t.Fatalf("after the unarchive: queue %q, watch %q, want the completion queued once", got, notification())
+	}
+}
+
+// requireRemoteCompletionHeld fails unless an archived thread holds w's
+// completion: no session was started for it, nothing is queued, no failed
+// start is marked, and the watch keeps it pending with no issue.
+func requireRemoteCompletionHeld(t *testing.T, a *App, threadID string, w store.RemoteWatch, starts int32) {
+	t.Helper()
+	durable, memory := queuedSendIDs(t, a, threadID)
+	saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marks, err := a.store.SessionStartFailures()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, failed := marks[threadID]
+	if starts != 0 || len(durable) != 0 || len(memory) != 0 || saved.Notification != "pending" || saved.Error != "" || failed {
+		t.Fatalf("archived thread: %d starts, queue %q (in memory %q), watch %q with issue %q, failed start marked %v; want no start, an empty queue and a pending watch",
+			starts, durable, memory, saved.Notification, saved.Error, failed)
+	}
+}
+
+// A completion whose watcher read the thread before an archive and queues
+// it after is refused by the queue write. The archive is the whole binding,
+// or only its flip with the rest run after the write, as when the write
+// lands between the two.
+func TestARemoteCompletionQueuedAfterAnArchiveIsHeld(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		wholeArchive bool
+		failStart    bool
+	}{
+		{"whole archive, start works", true, false},
+		{"whole archive, start fails", true, true},
+		{"flip only, start works", false, false},
+		{"flip only, start fails", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, _ := newAppForFlushQueueRPC(t)
+			var starts atomic.Int32
+			a.startSessionFn = func(string) error {
+				starts.Add(1)
+				if tc.failStart {
+					return errors.New("the provider binary is missing")
+				}
+				return nil
+			}
+			thread := remoteWatchThread(t, a, string(provider.Claude))
+			w := completedRemoteWatch(t, a, thread)
+			notice := a.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})
+			body, proceed, err := notice.prepare()
+			if err != nil || !proceed {
+				t.Fatalf("prepare: proceed %v, %v", proceed, err)
+			}
+			if tc.wholeArchive {
+				if err := a.ArchiveThread(thread.ID); err != nil {
+					t.Fatalf("ArchiveThread: %v", err)
+				}
+			} else if err := a.archiveThreadLocked(thread.ID); err != nil {
+				t.Fatalf("archiveThreadLocked: %v", err)
+			}
+			notice.prepare = func() (string, bool, error) { return body, true, nil }
+			if err := a.queueAgentNotice(notice); !errors.Is(err, errThreadArchived) {
+				t.Errorf("queueAgentNotice: %v, want %v", err, errThreadArchived)
+			}
+			a.waitAgentNoticeWork()
+			startsBeforeTheRest := starts.Load()
+			if !tc.wholeArchive {
+				if err := a.stopArchivedThreadWork(context.Background(), thread.ID); err != nil {
+					t.Fatalf("stopArchivedThreadWork: %v", err)
+				}
+			}
+			requireRemoteCompletionHeld(t, a, thread.ID, w, startsBeforeTheRest)
+		})
+	}
+}
+
+// The archive binding flips the row under the mutation lock a queue write
+// holds, so a completion whose write was under way when the archive came is
+// queued before the flip. Its session start, which waits for the archive's
+// action lock, finds the thread archived and starts nothing, and the rest of
+// the archive returns the completion to its watch.
+func TestAnArchiveDuringARemoteCompletionsQueueWriteTakesItBack(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Claude))
+	w := completedRemoteWatch(t, a, thread)
+	notice := a.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})
+	persist := notice.persist
+	writing, release := make(chan struct{}), make(chan struct{})
+	notice.persist = func(item store.FlushQueueItem) error {
+		close(writing)
+		<-release
+		return persist(item)
+	}
+	queued := make(chan error, 1)
+	go func() { queued <- a.queueAgentNotice(notice) }()
+	select {
+	case <-writing:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the queue write never began")
+	}
+	archived := make(chan error, 1)
+	go func() { archived <- a.ArchiveThread(thread.ID) }()
+	// The archive waits for the write's lock. Were it not to, it would
+	// finish first, and the write would land after it took back what was
+	// queued.
+	waitUntil(t, 10*time.Second, func() bool {
+		return a.threadApplication().MutationRefs(thread.ID) == 2 || len(archived) == 1
+	})
+	close(release)
+	if err := <-queued; err != nil {
+		t.Fatalf("queueAgentNotice: %v", err)
+	}
+	if err := <-archived; err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	a.waitAgentNoticeWork()
+	requireRemoteCompletionHeld(t, a, thread.ID, w, starts.Load())
+}
+
+// A completion queued while a start that brought a session up holds the
+// action lock is still in the queue when the archive that waited for that
+// lock tears the session down. The teardown's drop returns it to its watch,
+// as the take-back does without a session, so the unarchive delivers it.
+func TestAnArchiveTearingDownASessionReturnsItsQueuedRemoteCompletion(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Codex))
+	w := completedRemoteWatch(t, a, thread)
+	unlock := a.threadLocks().Lock(thread.ID)
+	a.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex),
+		Token:    "held-start",
+		Liveness: newSessionLiveness(time.Now()),
+	})
+	archived := make(chan error, 1)
+	go func() { archived <- a.ArchiveThread(thread.ID) }()
+	waitUntil(t, 10*time.Second, func() bool { return a.threadLocks().Refs(thread.ID) == 2 })
+	if err := a.queueAgentNotice(a.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})); err != nil {
+		unlock()
+		t.Fatalf("queueAgentNotice: %v", err)
+	}
+	unlock()
+	if err := <-archived; err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	a.waitAgentNoticeWork()
+	if _, live := a.sessionManager().get(thread.ID); live {
+		t.Fatal("the archive left the session running; the test proves nothing")
+	}
+	requireRemoteCompletionHeld(t, a, thread.ID, w, starts.Load())
+}
+
+// stoppedWithAQueuedRemoteCompletion queues w's completion in a live Codex
+// session of thread and has the person Stop it, with the thread's action lock
+// held throughout so nothing dispatches it first. It returns the session
+// starts counted after the Stop.
+func stoppedWithAQueuedRemoteCompletion(t *testing.T, a *App, thread store.Thread, w store.RemoteWatch, starts *atomic.Int32) int32 {
+	t.Helper()
+	unlock := a.threadLocks().Lock(thread.ID)
+	a.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex),
+		Token:    "tok",
+		Liveness: newSessionLiveness(time.Now()),
+	})
+	if err := a.queueAgentNotice(a.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})); err != nil {
+		unlock()
+		t.Fatalf("queueAgentNotice: %v", err)
+	}
+	if err := a.StopSession(thread.ID); err != nil {
+		unlock()
+		t.Fatalf("StopSession: %v", err)
+	}
+	unlock()
+	a.flushDispatch.wg.Wait()
+	a.waitAgentNoticeWork()
+	return starts.Load()
+}
+
+// requireRemoteCompletionQueuedAgain fails unless w's completion is queued
+// once more, durably and in memory, its watch reads queued, and a session
+// start followed it.
+func requireRemoteCompletionQueuedAgain(t *testing.T, a *App, threadID string, w store.RemoteWatch, starts, startsBefore int32) {
+	t.Helper()
+	saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable, memory := queuedSendIDs(t, a, threadID)
+	want := []string{remoteCompletionSendID(w)}
+	if saved.Notification != "queued" || !slices.Equal(durable, want) || !slices.Equal(memory, want) || starts <= startsBefore {
+		t.Fatalf("after the watcher pass: watch %q, queue %q (in memory %q), %d starts (%d before); want the completion queued again and a start",
+			saved.Notification, durable, memory, starts, startsBefore)
+	}
+}
+
+// A person's Stop drops a completion queued in the live session with the
+// rest of the queue and returns it to its watch: the watch reads pending and
+// nothing is queued. The watcher then delivers it again and starts the
+// session for it, as it does a completion that finishes after the Stop.
+func TestAStoppedSessionsDroppedRemoteCompletionIsDeliveredAgain(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Codex))
+	w := completedRemoteWatch(t, a, thread)
+	startsAfterStop := stoppedWithAQueuedRemoteCompletion(t, a, thread, w, &starts)
+	saved, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if durable, memory := queuedSendIDs(t, a, thread.ID); len(durable) != 0 || len(memory) != 0 || saved.Notification != "pending" {
+		t.Fatalf("after the Stop: queue %q (in memory %q), watch %q; want an empty queue and a pending watch",
+			durable, memory, saved.Notification)
+	}
+	due, err := a.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range due {
+		a.checkRemoteWatch(row)
+	}
+	a.waitAgentNoticeWork()
+	requireRemoteCompletionQueuedAgain(t, a, thread.ID, w, starts.Load(), startsAfterStop)
+}
+
+// The Stop returns the completion only once the queue it dropped is gone,
+// memory included, so a watcher pass landing the moment it is returned
+// queues it for good. Returned before the queue was cleared, the clear would
+// take the completion the watcher had just queued again.
+func TestARemoteCompletionQueuedAgainAsTheStopReturnsItStaysQueued(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Codex))
+	w := completedRemoteWatch(t, a, thread)
+	passes := 0
+	a.heldReturnedForTest = func(threadID string) {
+		current, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+		if threadID != thread.ID || err != nil {
+			return
+		}
+		passes++
+		a.checkRemoteWatch(current)
+	}
+	stoppedWithAQueuedRemoteCompletion(t, a, thread, w, &starts)
+	if passes != 1 {
+		t.Fatalf("the watcher pass ran %d times as the Stop returned the completion, want once", passes)
+	}
+	requireRemoteCompletionQueuedAgain(t, a, thread.ID, w, starts.Load(), 0)
+}
+
+// A completion whose thread is archived while its queue write waits for the
+// mutation lock is refused before its watch moves. The delivery reads that
+// as owed, so the watcher records no issue.
+func TestARemoteCompletionRefusedByAnArchiveStaysWithItsWatch(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
+	thread := remoteWatchThread(t, a, string(provider.Claude))
+	w := completedRemoteWatch(t, a, thread)
+	// Both archive doors flip the row holding this lock.
+	unlock, err := a.threadApplication().LockMutable(context.Background(), thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan error, 1)
+	go func() { delivered <- a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: "done"}) }()
+	waitUntil(t, 10*time.Second, func() bool { return a.threadApplication().MutationRefs(thread.ID) == 2 })
+	_, _, err = a.threadApplication().Archive(thread.ID)
+	unlock()
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if err := <-delivered; err != nil {
+		t.Fatalf("deliverRemoteCompletion: %v, want the refusal read as still owed", err)
+	}
+	a.waitAgentNoticeWork()
+	requireRemoteCompletionHeld(t, a, thread.ID, w, starts.Load())
+}
+
+// pairedRemoteSource pairs a source App with a destination whose remote jobs
+// run through run, and returns the source, the destination, the
+// destination's computer id on the source and a project there to run in.
+func pairedRemoteSource(t *testing.T, run remotejobs.Run) (source *App, destination *pairedBackend, computerID, projectID string) {
+	t.Helper()
+	destination = newPairedBackend(t)
+	source, _ = newAppForFlushQueueRPC(t)
+	peers, err := attachedbackends.New(t.TempDir(), "source", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.backends = peers
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	invite, _ := destination.mintLink(t, "full")
+	peer, err := peers.Add(ctx, invite.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := destination.app.ConfirmDevicePairing(invite.LinkID); err != nil {
+		t.Fatal(err)
+	}
+	if err := peers.Await(ctx, peer.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.SetAgentComputerEnabled(ctx, peer.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	project, err := destination.app.store.CreateProject(store.Project{ID: uuid.NewString(), Name: "destination", Path: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := remotejobs.New(context.Background(), destination.app.store, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination.app.remoteJobs = jobs
+	t.Cleanup(jobs.Close)
+	return source, destination, peer.ID, project.ID
+}
+
+// A job that finished on the destination after the watcher last checked it
+// still reads as running here when its conversation is archived. The
+// archive's cancel is answered with the finished receipt, so the completion
+// is kept and arrives once after the unarchive; the job the archive stopped
+// is dropped.
+func TestArchiveKeepsAJobThatFinishedBeforeTheNextCheck(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	source, destination, computer, project := pairedRemoteSource(t, func(ctx context.Context, _ string, argv []string, out io.Writer) (remotejobs.Outcome, error) {
+		if argv[0] == "hold" {
+			<-ctx.Done()
+			return remotejobs.Outcome{ExitCode: -1}, ctx.Err()
+		}
+		_, _ = io.WriteString(out, "nightly build passed")
+		return remotejobs.Outcome{ExitCode: 0}, nil
+	})
+	source.startSessionFn = func(string) error { return nil }
+	thread := remoteWatchThread(t, source, string(provider.Claude))
+	caller := transport.WithCallerScope(context.Background(), transport.CallerScope{Kind: transport.ScopeKindInteractive, ThreadID: thread.ID, ProjectID: thread.ProjectID})
+	start := func(program string) string {
+		t.Helper()
+		id := uuid.NewString()
+		request := AgentRemoteRequest{ComputerID: computer, Workspace: gitapp.WorkspaceRef{ProjectID: project}, Request: remotejobs.Request{ID: id, Argv: []string{program, id}, TimeoutSeconds: 60}}
+		if _, err := source.AgentRemoteStart(caller, request); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	held := start("hold")
+	done := start("build")
+	saved := func(id string) store.RemoteWatch {
+		t.Helper()
+		w, err := source.store.GetRemoteWatch(computer, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	queued := func() []string {
+		t.Helper()
+		durable, memory := queuedSendIDs(t, source, thread.ID)
+		if !slices.Equal(durable, memory) {
+			t.Fatalf("durable queue %q and in-memory queue %q differ", durable, memory)
+		}
+		return durable
+	}
+	watch := func() {
+		t.Helper()
+		due, err := source.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range due {
+			source.checkRemoteWatch(row)
+		}
+		source.waitAgentNoticeWork()
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		receipt, err := destination.app.store.GetRemoteJob(done)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if receipt.State == "succeeded" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the build did not finish on the destination: %q", receipt.State)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if state := saved(done).Receipt.State; state != "running" {
+		t.Fatalf("the source already saw the finish (%q); the case needs a finish it has not checked", state)
+	}
+
+	if err := source.ArchiveThread(thread.ID); err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	if w := saved(done); w.Notification != "pending" || w.Receipt.State != "succeeded" {
+		t.Fatalf("the finished job after the archive: watch %q, receipt %q, want pending and succeeded", w.Notification, w.Receipt.State)
+	}
+	if w := saved(held); w.Notification != "dismissed" {
+		t.Fatalf("the running job after the archive: watch %q, want dismissed", w.Notification)
+	}
+	watch()
+	if got := queued(); len(got) != 0 || saved(done).Notification != "pending" {
+		t.Fatalf("while archived: queue %q, watch %q, want an empty queue and a pending watch", got, saved(done).Notification)
+	}
+
+	if _, err := source.UnarchiveThread(thread.ID); err != nil {
+		t.Fatalf("UnarchiveThread: %v", err)
+	}
+	watch()
+	watch()
+	want := []string{remoteCompletionSendID(store.RemoteWatch{ComputerID: computer, RequestID: done})}
+	if got := queued(); !slices.Equal(got, want) || saved(done).Notification != "queued" {
+		t.Fatalf("after the unarchive: queue %q, watch %q, want the completion queued once", got, saved(done).Notification)
+	}
+}
+
+// A completion archive kept cannot be delivered from a computer the person
+// forgets. Forgetting names how many it discards, and goes once confirmed;
+// a live thread's pending job still refuses it as before. Copying the
+// archived thread names it as the cause.
+func TestForgettingAComputerDiscardsTheCompletionsHeldForArchivedThreads(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	source, _, computer, _ := pairedRemoteSource(t, func(context.Context, string, []string, io.Writer) (remotejobs.Outcome, error) {
+		return remotejobs.Outcome{}, nil
+	})
+	source.startSessionFn = func(string) error { return nil }
+	watch := func(thread store.Thread, state string) store.RemoteWatch {
+		t.Helper()
+		w := store.RemoteWatch{ComputerID: computer, RequestID: uuid.NewString(), ThreadID: thread.ID, Fingerprint: strings.Repeat("a", 64), Label: "nightly build"}
+		if _, err := source.store.RegisterRemoteWatch(w); err != nil {
+			t.Fatal(err)
+		}
+		w.Receipt = store.RemoteJob{ID: w.RequestID, SourceThreadID: thread.ID, State: state, Output: "build passed"}
+		if err := source.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, w.Receipt, "", 0); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	notification := func(w store.RemoteWatch) string {
+		t.Helper()
+		saved, err := source.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return saved.Notification
+	}
+	forgotten := func() bool {
+		t.Helper()
+		rows, err := source.ListBackends()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return !slices.ContainsFunc(rows, func(row AttachedBackend) bool { return row.ID == computer })
+	}
+
+	archived := remoteWatchThread(t, source, string(provider.Claude))
+	archived.Title = "Release notes"
+	if err := source.store.UpdateThread(archived); err != nil {
+		t.Fatal(err)
+	}
+	held := watch(archived, "succeeded")
+	if err := source.ArchiveThread(archived.ID); err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	if notification(held) != "pending" {
+		t.Fatalf("archive dropped the finished job: watch %q", notification(held))
+	}
+	archived, err := source.store.GetThread(archived.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.checkTransferIdle(archived); err == nil || err.Error() != `"Release notes" is archived and holds a finished remote job; unarchive it to receive the result first.` {
+		t.Fatalf("copy refusal for the archived thread: %v", err)
+	}
+
+	live := remoteWatchThread(t, source, string(provider.Claude))
+	running := watch(live, "running")
+	if err := source.checkTransferIdle(live); err == nil || !strings.HasPrefix(err.Error(), "Let remote commands finish") {
+		t.Fatalf("copy refusal for the live thread: %v", err)
+	}
+	err = source.RemoveBackend(computer, true)
+	if err == nil || !strings.HasPrefix(err.Error(), "This computer has remote commands awaiting completion or confirmation.") || forgotten() {
+		t.Fatalf("a live thread's running job did not refuse the forget: %v", err)
+	}
+	if err := source.store.DismissRemoteWatch(running.ComputerID, running.RequestID); err != nil {
+		t.Fatal(err)
+	}
+
+	err = source.RemoveBackend(computer, false)
+	code, message, public := errorsx.PublicDetails(err)
+	if !public || code != "remote_completions_held" || message != "1 finished job held for an archived conversation will be discarded. Confirm to forget the computer anyway." {
+		t.Fatalf("the unconfirmed forget: %q %q %v", code, message, err)
+	}
+	if forgotten() || notification(held) != "pending" {
+		t.Fatalf("the refused forget acted: forgotten %v, watch %q", forgotten(), notification(held))
+	}
+	if err := source.RemoveBackend(computer, true); err != nil {
+		t.Fatalf("the confirmed forget: %v", err)
+	}
+	if !forgotten() || notification(held) != "dismissed" {
+		t.Fatalf("after the confirmed forget: forgotten %v, watch %q", forgotten(), notification(held))
+	}
+	if _, err := source.UnarchiveThread(archived.ID); err != nil {
+		t.Fatal(err)
+	}
+	due, err := source.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
+	if err != nil || len(due) != 0 {
+		t.Fatalf("a discarded completion is still due: %d, %v", len(due), err)
 	}
 }

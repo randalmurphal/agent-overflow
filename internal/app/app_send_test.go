@@ -139,9 +139,11 @@ func TestSendMessagePersistsUserItemBeforeLazyStartCompletes(t *testing.T) {
 		errCh <- app.SendMessage(thread.ID, "visible now", nil)
 	}()
 
+	// The bounds only end a hung test. This package runs its tests in
+	// parallel, and a loaded host stalls one for over a second.
 	select {
 	case <-startEntered:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("SendMessage did not enter lazy start")
 	}
 
@@ -157,7 +159,7 @@ func TestSendMessagePersistsUserItemBeforeLazyStartCompletes(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "session has no provider") {
 			t.Fatalf("SendMessage() error = %v, want session-has-no-provider after lazy start returns", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("SendMessage did not return after lazy start was released")
 	}
 }

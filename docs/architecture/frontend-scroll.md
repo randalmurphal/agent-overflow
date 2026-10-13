@@ -370,8 +370,22 @@ mutation. Callers cannot label a mutation or leave a mode bit armed.
 
 On a pure **head** change `applyLength` splices the size store at the head
 (`spliceHead`) and reports a `head-splice` compensation whose target keeps
-the viewport stationary. On a pure **tail** change it does neither. A
-combined head-and-tail page replacement uses `applyKeyedReorder`, which
+the viewport stationary. On a pure **tail** change it does neither.
+Until head-inserted rows have measured, the virtualizer also holds the
+retained row that spanned the viewport top, correcting through further
+`head-splice` compensations. The hold is valid only against the position
+it was taken at. Scroll input ends it, and so does any authored write that
+moves the viewport other than onto the compensation being delivered (a
+bottom pin, a restore, a navigation, a redirected compensation, a glide of
+sub-pixel frames); a later correction would otherwise pull the viewport
+back from where its owner put it. The same takeover drops a compensation
+still queued for the next flush, because the owner placed the viewport
+against the change that compensation describes. Coverage: the "head-splice
+hold and authored writes" and "scrollToIndex" describes in
+`timelineVirtualizer.browser.test.ts`, and `timeline-return-pinned.spec.ts`
+for the cached-thread return that pins over a fill's head splice.
+
+A combined head-and-tail page replacement uses `applyKeyedReorder`, which
 carries every surviving measurement by key and anchors the nearest surviving
 visible row. Priors need no remap
 step across the splice: they resolve per-row against a content
@@ -1348,7 +1362,12 @@ and renders the same overlay thumb. See
 Desktop transport banners overlay without resizing the scroll surface.
 Compact transport banners occupy a row while visible so the only Back control
 stays reachable during an outage; normal viewport-resize handling preserves
-the timeline's follow/escape intent. No space is reserved while healthy.
+the timeline's follow/escape intent. No space is reserved while healthy. The
+compact row appears and goes without a fade: a fading row would keep its
+height after its state ended and move live content under a pressed pointer.
+A tap's click is hit-tested after its release, so a press on the compact
+list or the compact thread header while the row shows keeps the row's height
+until that click, or until the press ends without one (`utils/tapHold.ts`).
 
 ## Nested Scrollers And Gesture Attribution
 

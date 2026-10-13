@@ -116,6 +116,15 @@ func (a *App) checkTransferIdle(thread store.Thread) error {
 	if pending, err := a.store.HasPendingRemoteWatches(thread.ID); err != nil {
 		return err
 	} else if pending {
+		// An archived conversation's are finished jobs archive kept, and
+		// nothing delivers them until it is unarchived.
+		if thread.Archived {
+			if unfinished, err := a.store.HasUnfinishedRemoteWatches(thread.ID); err != nil {
+				return err
+			} else if !unfinished {
+				return errors.New(quotedThreadTitle(thread) + " is archived and holds a finished remote job; unarchive it to receive the result first.")
+			}
+		}
 		return errors.New("Let remote commands finish and their completion messages reach this conversation before copying it. Moving the conversation cancels them.")
 	}
 	if open, err := a.store.HasOpenThreadRequests(thread.ID); err != nil {
@@ -278,4 +287,12 @@ func (r admittedTransferRunner) Run(ctx context.Context, id string) (store.Threa
 	}
 	defer release()
 	return r.runner.Run(ctx, id)
+}
+
+// quotedThreadTitle names a conversation in a refusal.
+func quotedThreadTitle(thread store.Thread) string {
+	if thread.Title == "" {
+		return "This conversation"
+	}
+	return `"` + thread.Title + `"`
 }

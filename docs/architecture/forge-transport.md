@@ -418,12 +418,14 @@ chooses the surface instead of parsing text. `classifyForgeFailure`
   base, which is what specs matched through `args[1]` before; `operation`
   and `variables` are a GraphQL request's, so a spec can assert which parts
   a read asked for.
-- `HarnessForgeOffline` closes every open connection, pooled keep-alive
-  ones included, and keeps the listener, so its port stays bound and
-  nothing else can take it. Each request sent while offline arrives on a fresh connection, is
-  recorded as route `offline` and is dropped without a reply, so the app
-  sees the same `*TransientError` a dead network gives, not a 5xx or a
-  reply on a stale connection, and a spec can count its retries. The CLI fake
+- `HarnessForgeOffline` turns the fake server's keep-alives off, which
+  closes every idle pooled connection and lets a response already being
+  written finish. Each request sent while offline arrives on a fresh
+  connection, is recorded as route `offline` and is dropped without a reply,
+  so the app sees the same `*TransientError` a dead network gives, not a 5xx
+  or a reply on a stale connection, and a spec can count its retries. The
+  listener stays up, so a request answered before going offline is never
+  cut short. The CLI fake
   keeps answering `pr create` and `mr create` with its offline exit as today.
 - `ao-mockforge` keeps only the CLI commands in the table above.
 

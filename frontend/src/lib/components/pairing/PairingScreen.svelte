@@ -130,7 +130,7 @@
   // held admin, so the session it mints is live on arrival and the screen
   // goes straight to `ready` — the same hand-off pairing takes, so the
   // redial main.ts awaits is not forked.
-  const passkeyOffered = passkeysUsable();
+  const passkeyOffered = $derived(passkeysUsable());
   // Which way in succeeded, for the one word the ready state shows. The
   // two outcomes are genuinely different — one enrolled a device the owner
   // confirmed, the other signed in as the owner — and calling both

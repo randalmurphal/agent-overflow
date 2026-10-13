@@ -189,6 +189,12 @@ type Step struct {
 	// claude.holdQueuedInput into the running turn, in arrival order.
 	// Holding nothing, it writes nothing.
 	DrainQueuedInput bool `json:"drainQueuedInput,omitempty"`
+	// CancelQueuedInput retires every user envelope held under
+	// claude.holdQueuedInput without running it: a `command_lifecycle`
+	// `cancelled` with no `started`, no echo and no transcript entry, the
+	// CLI's answer to a cancel of a queued message. Holding nothing, it
+	// writes nothing.
+	CancelQueuedInput bool `json:"cancelQueuedInput,omitempty"`
 }
 
 // McpListStep runs `tools/list` against one of the app's built-in MCP
@@ -655,6 +661,12 @@ func (st *Step) validate(holdsInput bool) error {
 		set++
 		if !holdsInput {
 			return fmt.Errorf("drainQueuedInput: needs provider %q with claude.holdQueuedInput", ProviderClaude)
+		}
+	}
+	if st.CancelQueuedInput {
+		set++
+		if !holdsInput {
+			return fmt.Errorf("cancelQueuedInput: needs provider %q with claude.holdQueuedInput", ProviderClaude)
 		}
 	}
 	if set != 1 {

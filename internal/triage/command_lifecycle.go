@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 
 	"agent-overflow/internal/eventchan"
@@ -12,11 +13,13 @@ import (
 // Claude's delivery narrative for a user message AO wrote to the CLI's
 // stdin, projected onto the AO row the message belongs to.
 //
-// Live UI state only. The message's durable record is its `user_text`
-// row, and the wire `user{isReplay}` echo remains what confirms the row
-// entered context; this channel answers the different question "what is
-// happening to the message I just sent" while it is still pending above
-// the composer.
+// Live UI state. The message's durable record is its `user_text` row,
+// and its transcript record or `user{isReplay}` echo is what confirms the
+// row entered context; this channel answers the different question "what
+// is happening to the message I just sent" while it is still pending
+// above the composer. The one exception is the backstop in
+// handleCommandLifecycle: a message that started and then terminated with
+// neither confirmation is confirmed from the bracket.
 //
 // Older CLIs emit no lifecycle frames at all, so a consumer must render
 // correctly from the queue events alone. Every field here is additive
@@ -118,6 +121,7 @@ func (r *Router) handleCommandLifecycle(evt provider.ProviderEvent) error {
 		State:       meta.State,
 	}
 
+	var confirmErr error
 	switch meta.State {
 	case provider.CommandQueued:
 		entry := commandLifecycleEntry{
@@ -127,22 +131,129 @@ func (r *Router) handleCommandLifecycle(evt provider.ProviderEvent) error {
 		r.rememberCommandLifecycle(evt.ThreadID, meta.CommandUUID, entry)
 		out.UserItemID = entry.UserItemID
 	case provider.CommandStarted:
+		r.markPendingSendStarted(evt.ThreadID, meta.CommandUUID)
 		entry, ok := r.peekCommandLifecycle(evt.ThreadID, meta.CommandUUID)
 		if ok {
 			out.UserItemID = entry.UserItemID
 			out.Delivery = classifyCommandDelivery(entry.RoundIDAtQueue, r.openRoundID(evt.ThreadID))
 		}
 	default:
-		// completed / cancelled are terminal: release the correlation in
-		// the same step that reports it.
+		// completed / cancelled / discarded are terminal: release the
+		// correlation in the same step that reports it.
 		entry, ok := r.takeCommandLifecycle(evt.ThreadID, meta.CommandUUID)
 		if ok {
 			out.UserItemID = entry.UserItemID
 		}
+		confirmErr = r.settleTerminalSend(evt, meta)
 	}
 
 	r.emit(eventchan.ProviderCommandLifecycle, out)
+	return confirmErr
+}
+
+// settleTerminalSend resolves a send that is still pending when its
+// command_lifecycle bracket ends. Its transcript record and echo both precede
+// the terminal frame, so a send still pending here was missed by both, and
+// leaving it pending would hold the thread busy until the session ends.
+// The frame says which way it went:
+//
+//   - After `started`, the message reached the model: `completed` ended its
+//     turn, and `cancelled` means the turn that consumed it was aborted
+//     (2.1.284 schema). Confirm it. The row lands at the head of a turn the
+//     send opened, where the transcript has it; any other shape takes its
+//     normal placement.
+//   - With no `started`, the CLI retired it unrun (`cancelled` by a cancel,
+//     `discarded` by the session ending). It moves to the thread's
+//     undelivered list for the app to return to the composer. A `cancelled`
+//     tells the app now; a `discarded` session is ending, so the session-end
+//     drain takes it in one batch with the rest of the queue, in queue order.
+//
+// An entry whose echo already arrived is confirmed whatever the frame says:
+// the echo proved consumption.
+func (r *Router) settleTerminalSend(evt provider.ProviderEvent, meta provider.CommandLifecycleMeta) error {
+	anchor := r.flushAnchor(evt.ThreadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+	r.mu.Lock()
+	var entry pendingSend
+	var found bool
+	for _, candidate := range r.pendingSendsLocked(evt.ThreadID) {
+		if candidate.ExpectedProviderItemID == meta.CommandUUID {
+			entry, found = candidate, true
+			break
+		}
+	}
+	r.mu.Unlock()
+	if !found {
+		return nil
+	}
+	if !entry.Started && !entry.EchoConsumed {
+		return r.retireUnrunSend(evt.ThreadID, entry, meta.State)
+	}
+	pending, ok := r.consumePendingSendByProviderID(evt.ThreadID, meta.CommandUUID)
+	if !ok {
+		return nil
+	}
+	log.Printf("triage: send %s/%s reached %s with no transcript record or echo; confirming from command_lifecycle", evt.ThreadID, pending.AOItemID, meta.State)
+	// A retained confirmation (an earlier write failed) keeps its decision.
+	if pending.Confirmation == nil {
+		r.captureUserConfirmation(evt.ThreadID, &pending, eventTimestampMillis(evt))
+		if pending.OpenedTurn && pending.DeferredItem != nil && !pending.AnchoredAtInterrupt && pending.Confirmation.Placement {
+			pending.Confirmation.BoundaryID = ""
+		}
+	}
+	return r.confirmConsumedSend(evt, pending, meta.CommandUUID, "", nil)
+}
+
+// retireUnrunSend moves a send the provider retired without running from the
+// pending registry to the undelivered list. A direct send retains no copy of
+// its message; its row is read first so the restore can delete it and return
+// its text. A failed read returns the error with the entry still pending, as
+// it was before the frame. Caller holds the flush anchor.
+func (r *Router) retireUnrunSend(threadID string, entry pendingSend, state provider.CommandLifecycleState) error {
+	item := unconfirmedFlushItemFromPending(entry)
+	if item.DeferredItem == nil && item.QuietItem == nil {
+		row, found, err := r.store.GetThreadItem(threadID, entry.AOItemID)
+		if err != nil {
+			return fmt.Errorf("read unrun send %s/%s: %w", threadID, entry.AOItemID, err)
+		}
+		if found {
+			item.QuietItem = &row
+		}
+	}
+	if _, ok := r.consumePendingSendByProviderID(threadID, entry.ExpectedProviderItemID); !ok {
+		return nil
+	}
+	if item.DeferredItem == nil && item.QuietItem == nil {
+		// The send failed before its row was written; that failure already
+		// reached the user, and there is nothing to return.
+		log.Printf("triage: send %s/%s was %s before it started and has no row; dropping it", threadID, entry.AOItemID, state)
+		return nil
+	}
+	log.Printf("triage: send %s/%s was %s before it started; returning it to the composer", threadID, entry.AOItemID, state)
+	r.mu.Lock()
+	st := r.state(threadID)
+	st.undeliveredSends = append(st.undeliveredSends, item)
+	notify := r.sendUndelivered
+	r.mu.Unlock()
+	if state == provider.CommandCancelled && notify != nil {
+		notify(threadID)
+	}
 	return nil
+}
+
+// DrainUndeliveredSends takes the sends the provider retired without running,
+// for the app to return to the composer.
+func (r *Router) DrainUndeliveredSends(threadID string) []UnconfirmedFlushItem {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return nil
+	}
+	drained := st.undeliveredSends
+	st.undeliveredSends = nil
+	return drained
 }
 
 // classifyCommandDelivery compares the round open when the message was

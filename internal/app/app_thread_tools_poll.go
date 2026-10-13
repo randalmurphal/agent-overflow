@@ -257,20 +257,34 @@ func (a *App) threadRequestPollInFlight() bool {
 // which is arbitrarily slower than the pass that decided it was owed; done
 // in line, one thread that is busy holds up every reminder behind it. It
 // waits for a free slot rather than dropping the wake: the retry pass has
-// already booked the attempt this delivery is, and a wake skipped here
+// already booked the attempt a claimed delivery is, and a wake skipped here
 // would spend that attempt without being tried.
 func (a *App) deliverThreadWakeDetached(token string, late bool) {
+	a.runThreadWakeDetached(func() { a.deliverThreadWake(token, late) }, func() {})
+}
+
+// deliverClaimedThreadWakeDetached is the same for a wake the retry pass has
+// claimed. The claim is held while the wake waits for a slot, so a reply in
+// that time says the message is on its way, and it ends if the app stops
+// first.
+func (a *App) deliverClaimedThreadWakeDetached(token string, late bool) {
+	a.runThreadWakeDetached(func() { a.deliverClaimedThreadWake(token, late) },
+		func() { a.endThreadWake(token, late) })
+}
+
+func (a *App) runThreadWakeDetached(deliver, dropped func()) {
 	slots := a.threadWakeDeliverySlots()
 	select {
 	case slots <- struct{}{}:
 	case <-a.lifeCtx().Done():
+		dropped()
 		return
 	}
 	a.threadRequestsWG.Add(1)
 	go func() {
 		defer a.threadRequestsWG.Done()
 		defer func() { <-slots }()
-		a.deliverThreadWake(token, late)
+		deliver()
 	}()
 }
 

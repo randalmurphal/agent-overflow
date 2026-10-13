@@ -148,6 +148,27 @@ describe('<SystemsSection>', () => {
     await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());
   });
 
+  it('carries the abandon when forgetting discards completions held for archived conversations', async () => {
+    stageBackend();
+    setBindingMock('ListBackends', async () => [LAPTOP]);
+    const remove = setBindingMock('RemoveBackend', async (_id: string, abandon: boolean) => {
+      if (!abandon) {
+        throw Object.assign(
+          new Error('1 finished job held for an archived conversation will be discarded. Confirm to forget the computer anyway.'),
+          { code: 'remote_completions_held' },
+        );
+      }
+    });
+    const { getByText, findByTestId, queryByTestId } = render(SystemsSection);
+    await fireEvent.click(within(await findByTestId('attached-system')).getByText('Remove'));
+    await fireEvent.click(getByText('Confirm remove'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', false));
+    await waitFor(() => expect(getToasts()[0]?.message).toMatch(/1 finished job held for an archived conversation will be discarded/));
+    await fireEvent.click(getByText('Forget anyway'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', true));
+    await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());
+  });
+
   it('saves a frontend nickname without renaming the host profile', async () => {
     stageBackend();
     setBindingMock('ListBackends', async () => [LAPTOP]);

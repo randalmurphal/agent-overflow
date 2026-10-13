@@ -98,7 +98,7 @@ func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, de
 	// remote commands; stop them before fencing the thread. A copy leaves
 	// the original in place and waits for them like any other pending work.
 	if kind == "move" {
-		if err := a.cancelThreadRemoteCommands(ctx, threadID); err != nil {
+		if err := a.cancelThreadRemoteCommands(ctx, threadID, false); err != nil {
 			return ThreadTransferIntent{}, err
 		}
 		// The thread stops being answerable here, so open receipts against it

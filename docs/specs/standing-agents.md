@@ -307,7 +307,28 @@ the queue, and cancelling a loop or watch (by label, by demotion or by
 a move) takes back its queued wakes, whether or not a session is live,
 so no later start delivers them; a message a session has already taken
 is the session's. A message that could not be taken back is reported to
-the caller.
+the caller. A remote job's queued completion goes back to its watch
+instead and arrives once the thread is unarchived
+([remote-commands.md](../architecture/remote-commands.md)). A thread
+request's queued answer or reminder goes back to its request, owed and
+disarmed, as the archive leaves the thread's undelivered requests
+([agent-thread-tools.md](agent-thread-tools.md)). A person's Stop or a
+revert drops the whole queue, and returns these two kinds the same way
+once the queue is gone: an answer or reminder to its request, owed and
+disarmed, so `thread_status` still returns it; a remote job's
+completion to its watch, whose watcher delivers it again and starts the
+session for it, as for a completion that finishes after the Stop. A
+Stop does not quiet later wakes. A session that ends, or a Codex resend
+that fails, without taking in such an answer or completion, and a
+restart that finds one still queued, return it the same way; none goes
+to the composer. A Stop and a revert drop the queue under the thread's
+mutation lock, which every queue write takes, so a message queued
+during the drop is either dropped with it or queued after it.
+An archived thread takes none of these messages and starts no session
+for them: one that arrives after the archive is refused back to what
+sent it, and one queued just before it waits, without a start, for the
+archive to take it back. A person's answers to an agent's questions are
+the exception, as anything they type into an archived thread is.
 The queued message is badged with the wake's kind and
 label, wrapped as untrusted text with the byte cap above, and carries
 no approval or user authority. The timeline and the send queue show its
@@ -338,7 +359,17 @@ received a wake or an outside send joined with a person's queued
 message and the session ended before taking it in, the join is split:
 the person's own text goes back to the composer, and the wake and send
 parts are discarded with their `not delivered` records, the watch
-keeping only its own wake's data.
+keeping only its own wake's data. The dispatch that joins the messages
+records each one's length, which splits the join exactly; an answer's
+or a completion's text can hold the separator the join puts between
+messages, so the first-line split older joins use refuses those and
+restores all of the text, giving the answer and completion back too.
+An outside send's and a wake's text then go to the composer whole with
+the person's, and the send leaves no `not delivered` notice: its text is
+in front of the person, and a notice would invite sending it twice.
+These records, notices and give-backs are written once the person's text
+is back in the composer; a composer write that fails queues every
+message again whole, and none of them is recorded.
 
 Other than that retry, a fire whose previous wake is still queued is
 skipped and counted missed, and its output is kept the same way. The outcome of the latest
@@ -423,13 +454,16 @@ providers run identical skill text:
 | `gh` in `watch-pr`, Babysit, Shipping, the autopilots | one `forge` script choosing `gh` or `glab` from the remote |
 | `.mdc` always-apply rule, SessionStart hook | the agent's own instructions file |
 | `make-bot-ui`, Benny's Slack triggers | not ported; Benny's triage and reproduce skills are ported as skills an agent runs from a watch |
+| Graphite `gt` stack reads in `orch` and the orchestrate playbook | `forge stack`: the chain of pull requests from the current branch to the default branch, read from each request's base |
 
 The settings page `Skills` lists the shipped tree with its upstream
-version, shows whether it is installed in each provider home
-(`<claude home>/skills/pstack`, `<codex home>/skills/pstack`), and
-offers Install, Update and Remove per provider. Install copies; it never
-symlinks into the repository. Remove deletes only what Install wrote,
-by manifest.
+version, shows whether it is installed in each provider home, and
+offers Install, Update and Remove per provider. Install copies each
+skill directory `assets/skills/pstack/skills/<name>` to
+`<provider home>/skills/<name>`: both providers discover a skill one
+level under `skills/`, so the tree is flattened rather than nested
+under a `pstack` directory. Install never symlinks into the
+repository. Remove deletes only what Install wrote, by manifest.
 
 ### Workflows to MCP
 

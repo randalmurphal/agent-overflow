@@ -25,7 +25,11 @@ func TestProfileProcessLockHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
+	defer func() {
+		if err := release(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	}()
 	fmt.Fprintln(os.Stdout, "profile-locked")
 	_, _ = io.Copy(io.Discard, os.Stdin)
 }
@@ -75,7 +79,9 @@ func TestProfileLockSurvivesContentionAndReleasesAfterProcessCrash(t *testing.T)
 	unlock, err := lockProfile(attempt, dir, "profile")
 	stop()
 	if unlock != nil {
-		unlock()
+		if err := unlock(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("cross-process contention: %v", err)
@@ -89,5 +95,7 @@ func TestProfileLockSurvivesContentionAndReleasesAfterProcessCrash(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	unlock()
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
 }

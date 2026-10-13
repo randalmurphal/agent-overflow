@@ -1,6 +1,6 @@
 import { BeginPasskeyStepUp, VerifyBrowserUnlock } from './bindings';
-import { HOME_BACKEND, withBackendTarget } from '../transport/backends';
-import { answerChallenge, PasskeyAbandonedError, passkeysUsable } from '../transport/passkey';
+import { HOME_BACKEND, backendById, withBackendTarget } from '../transport/backends';
+import { answerChallenge, PasskeyAbandonedError, passkeyOfferAnswered, passkeysSupported, passkeysUsable } from '../transport/passkey';
 import { createBrowserLock, BROWSER_LOCK_KEY, type BrowserLockState } from '../utils/browserLock';
 
 export const browserLock = $state<BrowserLockState>({ enabled: false, locked: false, busy: false, error: '' });
@@ -16,9 +16,13 @@ export function installBrowserLock(changed: (locked: boolean) => void): () => vo
       removeItem: (key) => localStorage.removeItem(key),
     },
     verify: async () => {
-      if (!passkeysUsable()) {
-        throw new Error('Use HTTPS at the configured passkey domain and a registered passkey.');
-      }
+      const unusable = new Error('Use HTTPS at the configured passkey domain and a registered passkey.');
+      if (!passkeysSupported()) throw unusable;
+      // The cover is up before the first manifest says whether this backend
+      // offers passkeys. Connecting fetches that answer, or fails with the
+      // reason it cannot.
+      if (!passkeyOfferAnswered()) await backendById(HOME_BACKEND)?.client.ready();
+      if (!passkeysUsable()) throw unusable;
       const challenge = await withBackendTarget(HOME_BACKEND, () => BeginPasskeyStepUp());
       let response: string;
       try {

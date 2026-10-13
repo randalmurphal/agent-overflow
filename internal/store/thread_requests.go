@@ -40,7 +40,9 @@ const (
 )
 
 // Delivery routes for a wake. `draft` is a queued wake that boot recovery
-// restored into the composer instead of dispatching.
+// restored into the composer instead of dispatching; nothing writes it now,
+// since a wake that never reached the agent goes back to its request
+// (WithdrawThreadWake), but rows written before keep it.
 const (
 	ThreadWakeInline = "inline"
 	ThreadWakeQueued = "queued"
@@ -854,21 +856,45 @@ func (s *Store) QueueThreadWake(token string, late bool, item FlushQueueItem) er
 	return nil
 }
 
-// MarkThreadRequestDeliveredAsDraft records that boot recovery restored a
-// queued wake into the composer instead of dispatching it. The row is
-// already `queued`; this is the correction, so it applies to a delivered
-// row rather than an undelivered one.
-func (s *Store) MarkThreadRequestDeliveredAsDraft(token string, late bool) (bool, error) {
-	action := fmt.Sprintf("store: mark thread request %s restored to draft", token)
-	query := `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
-	           WHERE token = ? AND delivered_at IS NOT NULL AND delivered_how = ?`
-	if late {
-		query = `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
-		          WHERE token = ? AND late_delivered_at IS NOT NULL AND delivered_how = ?`
-	}
-	result, err := s.db.Exec(query, ThreadWakeDraft, nowMillis(), token, ThreadWakeQueued)
+// WithdrawThreadWake takes a wake that never reached the agent back for its
+// request: its queue row goes, if it still has one, and with it the
+// delivery mark the queue write set and the request's notify, in one
+// transaction. The answer is owed again but disarmed, so only a later wait
+// or thread_status re-arms it, and thread_status still returns it.
+// Otherwise a row already gone means the wake was sent, and changes
+// nothing. A wake the provider was handed and never confirmed
+// (unconfirmed) has no row left and goes back all the same, while the
+// request still reads queued. A late wake clears only its own mark; the
+// first answer's delivery stands.
+func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, unconfirmed bool) error {
+	action := fmt.Sprintf("store: withdraw thread wake %s", token)
+	tx, release, err := s.beginDurableTx(context.Background())
 	if err != nil {
-		return false, fmt.Errorf("%s: %w", action, err)
+		return fmt.Errorf("%s: begin: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	defer release()
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.Exec(`DELETE FROM flush_queue_items WHERE id = ?`, rowID)
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	removed, err := rowsChanged(result, action)
+	if err != nil {
+		return err
+	}
+	if removed || unconfirmed {
+		query := `UPDATE thread_requests SET delivered_at = NULL, delivered_how = '', notify = 0, updated_at = ?
+		           WHERE token = ? AND delivered_at IS NOT NULL AND delivered_how = ?`
+		if late {
+			query = `UPDATE thread_requests SET late_delivered_at = NULL, notify = 0, updated_at = ?
+			          WHERE token = ? AND late_delivered_at IS NOT NULL AND delivered_how = ?`
+		}
+		if _, err := tx.Exec(query, nowMillis(), token, ThreadWakeQueued); err != nil {
+			return fmt.Errorf("%s: %w", action, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return nil
 }

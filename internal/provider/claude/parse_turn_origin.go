@@ -36,51 +36,44 @@ const backgroundWakeNotificationKind = "background_wake"
 // of it and the task's own output stays where it was.
 const maxBackgroundWakeDetailRunes = 2000
 
-// mainTranscriptTurnStarts reads the main-transcript rows of one mirror
-// batch for the turns the CLI started itself. Every other main row
-// already arrived on stdout.
+// appendTurnStart appends the events for a main-transcript user row that
+// opens a turn the CLI started itself (mainTranscriptEvents).
 //
 // A scheduled row becomes the turn's user row and moves the cron job
 // table past the fire. A task-notification row becomes a wake row only
 // while the session is between turns: one injected mid-turn reaches the
 // stdout replay echo, which already reports it (parse_user_replay.go).
-func (p *Parser) mainTranscriptTurnStarts(threadID string, entries []json.RawMessage, facts mirrorEntryInspection, now time.Time) []provider.ProviderEvent {
-	var events []provider.ProviderEvent
-	for i, fact := range facts.entries {
-		if i >= len(entries) || fact.uuid == "" {
-			continue
+func (p *Parser) appendTurnStart(events []provider.ProviderEvent, threadID string, entry json.RawMessage, fact mirrorEntryFact, now time.Time) []provider.ProviderEvent {
+	switch fact.turnOrigin {
+	case mirrorTurnOriginScheduled:
+		prompt := mirrorUserRowText(entry)
+		if prompt == "" {
+			return events
 		}
-		switch fact.turnOrigin {
-		case mirrorTurnOriginScheduled:
-			prompt := mirrorUserRowText(entries[i])
-			if prompt == "" {
-				continue
-			}
-			p.noteCommandOrigin(fact.uuid, ScheduledTurnOrigin)
-			meta, err := json.Marshal(map[string]any{
-				"provider_item_id": fact.uuid,
-				"origin":           ScheduledTurnOrigin,
-			})
-			if err != nil {
-				log.Printf("claude: marshal scheduled turn meta for %s: %v", fact.uuid, err)
-				continue
-			}
-			events = append(events, provider.ProviderEvent{
-				Kind:      provider.EventUserText,
-				ThreadID:  threadID,
-				Content:   prompt,
-				Meta:      meta,
-				Timestamp: now,
-			})
-			events = p.noteScheduledFire(events, threadID, now)
-		case mirrorTurnOriginTaskNotification:
-			if !p.betweenTurns {
-				continue
-			}
-			for n, fields := range ExtractAllTaskNotificationFields(mirrorUserRowText(entries[i])) {
-				if event, ok := backgroundWakeEvent(threadID, fact.uuid, n, fields, now); ok {
-					events = append(events, event)
-				}
+		p.noteCommandOrigin(fact.uuid, ScheduledTurnOrigin)
+		meta, err := json.Marshal(map[string]any{
+			"provider_item_id": fact.uuid,
+			"origin":           ScheduledTurnOrigin,
+		})
+		if err != nil {
+			log.Printf("claude: marshal scheduled turn meta for %s: %v", fact.uuid, err)
+			return events
+		}
+		events = append(events, provider.ProviderEvent{
+			Kind:      provider.EventUserText,
+			ThreadID:  threadID,
+			Content:   prompt,
+			Meta:      meta,
+			Timestamp: now,
+		})
+		return p.noteScheduledFire(events, threadID, now)
+	case mirrorTurnOriginTaskNotification:
+		if !p.betweenTurns {
+			return events
+		}
+		for n, fields := range ExtractAllTaskNotificationFields(mirrorUserRowText(entry)) {
+			if event, ok := backgroundWakeEvent(threadID, fact.uuid, n, fields, now); ok {
+				events = append(events, event)
 			}
 		}
 	}

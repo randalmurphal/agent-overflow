@@ -61,11 +61,10 @@ func (h *Harness) HarnessForgeInvocations(since int) forgefake.InvocationLog {
 func (h *Harness) HarnessForgeOffline(offline bool) error {
 	if offline {
 		h.forge.SetOffline(true)
-		return h.forgeAPIServer().setOffline(true)
+		h.forgeAPIServer().setOffline(true)
+		return nil
 	}
-	if err := h.forgeAPIServer().setOffline(false); err != nil {
-		return err
-	}
+	h.forgeAPIServer().setOffline(false)
 	h.forge.SetOffline(false)
 	return nil
 }
@@ -88,24 +87,16 @@ type ForgeAPIEndpoint struct {
 }
 
 // ForgeAPIServer is the fake forge's own loopback HTTP listener, apart
-// from the control server. Going offline closes every open connection,
-// pooled keep-alive ones included, and keeps the listener, so each
-// request the app sends while offline arrives on a fresh connection, is
-// recorded, and gets no reply: the same *TransientError a dead network
-// gives, not a 5xx or a reply on a stale connection. The port stays
-// bound throughout, so nothing else on the machine can take it while
-// the forge is offline.
+// from the control server. Going offline turns its keep-alives off, which
+// closes every idle pooled connection and lets a response already being
+// written finish before its connection closes. Each request the app sends
+// while offline then arrives on a fresh connection, is recorded, and gets
+// no reply: the same *TransientError a dead network gives, not a 5xx or a
+// reply on a stale connection. The listener itself stays up throughout.
 type ForgeAPIServer struct {
-	mu      sync.Mutex
-	addr    string
-	server  *http.Server
-	offline bool
-	done    bool
-
-	// connsMu guards conns, the connections the server has accepted and
-	// not yet closed, kept by its ConnState hook.
-	connsMu sync.Mutex
-	conns   map[net.Conn]struct{}
+	mu     sync.Mutex
+	server *http.Server
+	done   bool
 }
 
 // StartForgeAPI starts the fake forge's HTTP listener for h and returns
@@ -119,65 +110,32 @@ func StartForgeAPI(h *Harness) (*ForgeAPIServer, ForgeAPIEndpoint, error) {
 	if err != nil {
 		return nil, ForgeAPIEndpoint{}, fmt.Errorf("forge API: listen on %s: %w", loopback.EphemeralIPv6, err)
 	}
-	s := &ForgeAPIServer{addr: ln.Addr().String(), conns: make(map[net.Conn]struct{})}
-	server := &http.Server{Handler: h.forge, ReadHeaderTimeout: 10 * time.Second, ConnState: s.trackConn}
-	s.server = server
+	server := &http.Server{Handler: h.forge, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("harness forge API: serve: %v", err)
 		}
 	}()
+	s := &ForgeAPIServer{server: server}
 	h.mu.Lock()
 	h.forgeAPI = s
 	h.mu.Unlock()
-	return s, ForgeAPIEndpoint{BaseURL: "http://" + s.addr, Token: h.forgeToken}, nil
+	return s, ForgeAPIEndpoint{BaseURL: "http://" + ln.Addr().String(), Token: h.forgeToken}, nil
 }
 
-// trackConn keeps the set of open connections setOffline closes. The
-// server reports StateNew before it reads the first request.
-func (s *ForgeAPIServer) trackConn(conn net.Conn, state http.ConnState) {
-	s.connsMu.Lock()
-	defer s.connsMu.Unlock()
-	switch state {
-	case http.StateNew:
-		s.conns[conn] = struct{}{}
-	case http.StateHijacked, http.StateClosed:
-		delete(s.conns, conn)
-	}
-}
-
-// setOffline closes every open connection (true); the engine, already
-// offline, records and drops each request that arrives after. Coming back
-// (false) changes nothing here. Repeating either state is a no-op.
-func (s *ForgeAPIServer) setOffline(offline bool) error {
+// setOffline turns keep-alives off (true) or back on (false); the engine,
+// already offline, records and drops each request that arrives.
+// Repeating either state is a no-op.
+func (s *ForgeAPIServer) setOffline(offline bool) {
 	if s == nil {
-		return nil
+		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.done || offline == s.offline {
-		return nil
+	if s.done {
+		return
 	}
-	s.offline = offline
-	if !offline {
-		return nil
-	}
-	s.connsMu.Lock()
-	open := make([]net.Conn, 0, len(s.conns))
-	for conn := range s.conns {
-		open = append(open, conn)
-	}
-	s.connsMu.Unlock()
-	var errs []error
-	for _, conn := range open {
-		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			errs = append(errs, err)
-		}
-	}
-	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("forge API: drop connections: %w", err)
-	}
-	return nil
+	s.server.SetKeepAlivesEnabled(!offline)
 }
 
 // Shutdown closes the listener and every connection for good.
@@ -187,14 +145,13 @@ func (s *ForgeAPIServer) Shutdown() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.done = true
-	if s.server == nil {
+	if s.done {
 		return
 	}
+	s.done = true
 	if err := s.server.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "harness: forge API shutdown: %v\n", err)
 	}
-	s.server = nil
 }
 
 // forgeAPIServer returns the started listener, nil before StartForgeAPI.

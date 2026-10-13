@@ -24,6 +24,11 @@ type IsolationConfig struct {
 	CredentialHome         string
 	UseFileKeychain        bool
 	DisableBackgroundFetch bool
+	// DisableRetentionSweep keeps the retention TTL sweep from starting.
+	// Fixture rows can carry fixed past timestamps, and a sweep firing once
+	// a long-lived harness passes its settle gate would delete them under a
+	// running test or its reset.
+	DisableRetentionSweep bool
 	// MockBrowserEngine pins the browser Manager to the fake engine. A mocked
 	// boot has no display and must never open a real one, yet its pane chrome
 	// and host rect still have to render (spec §10).
@@ -69,6 +74,10 @@ type IsolationConfig struct {
 	// register (agentWakeFloor), so a test can watch fires without waiting
 	// out a minute each. Zero keeps the product floor.
 	AgentWakeFloor time.Duration
+	// RemoteWatchPoll replaces how often the remote-job watcher asks the
+	// destination about a job still running, so a test can act between two
+	// of its checks. Zero keeps the product cadence.
+	RemoteWatchPoll time.Duration
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -81,6 +90,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.credentialHomeOverride = config.CredentialHome
 	a.fileKeychainOverride = config.UseFileKeychain
 	a.backgroundFetchDisabled = config.DisableBackgroundFetch
+	a.retentionSweepDisabled = config.DisableRetentionSweep
 	a.browser.mockEngine = config.MockBrowserEngine
 	a.isolatedWorkspaceRoot = config.WorkspaceRoot
 	a.forgeCLIs = isolatedForgeCLIs{isolated: true, fake: config.ForgeCLI}
@@ -99,6 +109,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 		wakeupGrace: config.WakeupReapGrace,
 	}
 	a.agentWakes.floorOverride = config.AgentWakeFloor
+	a.remoteWatchPoll = config.RemoteWatchPoll
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.

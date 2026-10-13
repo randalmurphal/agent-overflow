@@ -41,6 +41,10 @@ import (
 //     `<agent-message>` subagent report) surfaced as a top-level user
 //     message — incident 2026-07.
 //
+// A provider transcript record of an AO send
+// (MetaUserTextTranscriptRecordedKey) takes branch 1 or 2 by identity and
+// otherwise does nothing; the echo that follows it is a duplicate.
+//
 // Both wire-only branches dedup via wireOnlyUserTextSeen so a
 // session-resume replay doesn't double-write. An empty
 // `provider_item_id` is a non-stable envelope — skip rather than mint a
@@ -73,6 +77,13 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 		return r.persistWakePromptRow(evt, meta)
 	}
 
+	// A transcript record confirms by identity only and never becomes a
+	// row of its own: a record no pending send claims is either a send
+	// this router already confirmed or one from before it existed.
+	if meta.flag(provider.MetaUserTextTranscriptRecordedKey) {
+		return r.confirmRecordedSend(evt, meta, providerItemID)
+	}
+
 	// The FIFO is only consulted for an echo that could BE one of this app's
 	// sends. Two provenance flags say positively that it is not — the Codex
 	// session's `external-queue` origin stamp (another producer's row
@@ -90,15 +101,6 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	foreignEcho := isPeerEcho || origin == externalQueueOrigin || origin == scheduledTurnOrigin
 
 	if eventParentID(evt) == "" && !foreignEcho {
-		// Pop and handle under the thread's flush anchor lock so the popped snapshot's
-		// AnchoredAtInterrupt / WasDeferred state is truthful: the
-		// interrupt paths (PromoteQuietFlushSends,
-		// EagerPersistDeferredFlushSends) hold the same mutex across their
-		// claim + store write, so a claim this echo observes is a claim
-		// whose bump/persist already committed — and a failed write was
-		// already unclaimed. The confirmed hook (message-anchor record)
-		// runs inside the lock too. Interrupt operations and recovery
-		// snapshots wait for the complete confirmation transaction.
 		handled, err := func() (bool, error) {
 			anchor := r.flushAnchor(evt.ThreadID)
 			anchor.Lock()
@@ -108,67 +110,20 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 			if !ok {
 				return false, nil
 			}
-			// Stash the echo's wire identity on the popped entry BEFORE
-			// the fallible handlers: if a write fails, the reinserted
-			// EchoConsumed entry must still carry the transcript uuid and
-			// parent so the session-death self-heal can stamp them — the
-			// echo won't necessarily be re-delivered (round-6, R6-1).
-			pending.stashEchoIdentity(providerItemID, meta.text("parent_uuid"))
-			// Decided BEFORE the handlers run, off the entry this echo just
-			// popped: a merge is read from what the popped send expected
-			// against what the echo actually carries. Acting on it waits
-			// until the survivor's own row is durable and stamped.
-			merged := r.mergedFlushPrefix(evt.ThreadID, &pending, meta.strings(provider.MetaUserContentBlockDigestKey))
-			r.captureUserConfirmation(evt.ThreadID, &pending, eventTimestampMillis(evt))
-			var handleErr error
-			if pending.DeferredItem != nil {
-				handleErr = r.persistDeferredUserText(&pending, evt)
-			} else {
-				handleErr = r.attachProviderItemIDToUserRow(evt.ThreadID, &pending, evt)
-			}
-			if handleErr == nil && len(merged) > 0 {
-				// The provider merged earlier dispatched messages into this
-				// one, so AO's rows become the one row the transcript holds.
-				handleErr = r.foldMergedFlushRows(evt.ThreadID, &pending, merged)
-			}
-			if r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
-				r.markWireOnlyUserTextSeen(evt.ThreadID, providerItemID)
-			}
-			if handleErr != nil && !r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
-				// This echo IS the consumption boundary even though the
-				// write failed: record the message anchor now so fork /
-				// revert-on-interrupt can slice at this message without
-				// waiting for a retry or session-death self-heal. The
-				// anchor row doesn't depend on the failed stamp, only on
-				// the item row existing (FK) — so record for found rows
-				// (quiet persists committed at dispatch); deferred rows
-				// that never persisted stay honestly anchor-less until
-				// their write lands (round-10, R10-2).
-				r.recordEchoBoundaryAnchor(evt.ThreadID, &pending)
-				// Both paths mark the dedup set exactly at their durable
-				// point, so unseen means nothing committed for this
-				// envelope: reinsert the popped entry so a re-delivered
-				// echo retries instead of persisting an injected-context
-				// duplicate. The reinsert marks the entry EchoConsumed —
-				// a session-death drain self-heals the timeline row from
-				// DeferredItem / QuietItem rather than restoring the
-				// message to the draft, because this echo proved the
-				// provider context already contains it (round-5, R5-3).
-				r.reinsertPendingSendHead(evt.ThreadID, pending)
-			}
-			return true, handleErr
+			return true, r.confirmConsumedSend(evt, pending, providerItemID, meta.text("parent_uuid"), meta.strings(provider.MetaUserContentBlockDigestKey))
 		}()
 		if handled || err != nil {
 			return err
 		}
-		if r.HasPendingSendForThread(evt.ThreadID) {
+		if r.HasPendingSendForThread(evt.ThreadID) && !r.isWireOnlyUserTextSeen(evt.ThreadID, providerItemID) {
 			// Sends are outstanding but this echo matched none of their
 			// expected ids — either an injected envelope arriving during
 			// the queue-wait window (routed to the injected-context row
 			// below, working as intended) or, if it recurs for every
 			// send, Claude no longer honoring the supplied uuid
 			// (binary-contract drift; re-spike per
-			// docs/references/spike-policy.md).
+			// docs/references/spike-policy.md). An echo of a send its
+			// transcript record already confirmed is the dedup below.
 			log.Printf("triage: top-level wire user echo %s on %s matched no pending send while sends await confirmation — treating as provider-injected content", providerItemID, evt.ThreadID)
 		}
 	}
@@ -228,6 +183,88 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	// context, NOT user-authored. Persist as a non-user notification so it
 	// can never masquerade as a user message.
 	return r.persistInjectedContextNotification(evt, providerItemID)
+}
+
+// confirmRecordedSend consumes the send a provider transcript record names.
+// Identity only: the record carries the uuid this app minted, so the FIFO
+// fallback an id-less echo gets would only let it claim someone else's send.
+func (r *Router) confirmRecordedSend(evt provider.ProviderEvent, meta userTextMeta, providerItemID string) error {
+	if providerItemID == "" {
+		return nil
+	}
+	anchor := r.flushAnchor(evt.ThreadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+	pending, ok := r.consumePendingSendByProviderID(evt.ThreadID, providerItemID)
+	if !ok {
+		return nil
+	}
+	return r.confirmConsumedSend(evt, pending, providerItemID, meta.text("parent_uuid"), meta.strings(provider.MetaUserContentBlockDigestKey))
+}
+
+// confirmConsumedSend records the provider's consumption of a popped send:
+// its row lands or is stamped, a queue-boundary merge folds, and a failed
+// write puts the entry back for a retry. Every confirmation source (echo,
+// transcript record, lifecycle backstop) runs this one transaction.
+//
+// Caller holds the thread's flush anchor lock, so the popped snapshot's
+// AnchoredAtInterrupt / WasDeferred state is truthful: the interrupt paths
+// (PromoteQuietFlushSends, EagerPersistDeferredFlushSends) hold the same
+// mutex across their claim + store write, so a claim observed here is a
+// claim whose bump/persist already committed, and a failed write was
+// already unclaimed. The confirmed hook (message-anchor record) runs inside
+// the lock too. Interrupt operations and recovery snapshots wait for the
+// complete confirmation transaction.
+func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pendingSend, providerItemID, parentUUID string, digest []string) error {
+	// Stash the wire identity on the popped entry BEFORE the fallible
+	// handlers: if a write fails, the reinserted EchoConsumed entry must
+	// still carry the transcript uuid and parent so the session-death
+	// self-heal can stamp them — the confirmation won't necessarily be
+	// re-delivered (round-6, R6-1).
+	pending.stashEchoIdentity(providerItemID, parentUUID)
+	// Decided BEFORE the handlers run, off the entry just popped: a merge
+	// is read from what the popped send expected against what the
+	// confirmation actually carries. Acting on it waits until the
+	// survivor's own row is durable and stamped.
+	merged := r.mergedFlushPrefix(evt.ThreadID, &pending, digest)
+	r.captureUserConfirmation(evt.ThreadID, &pending, eventTimestampMillis(evt))
+	var handleErr error
+	if pending.DeferredItem != nil {
+		handleErr = r.persistDeferredUserText(&pending, evt)
+	} else {
+		handleErr = r.attachProviderItemIDToUserRow(evt.ThreadID, &pending, evt)
+	}
+	if handleErr == nil && len(merged) > 0 {
+		// The provider merged earlier dispatched messages into this
+		// one, so AO's rows become the one row the transcript holds.
+		handleErr = r.foldMergedFlushRows(evt.ThreadID, &pending, merged)
+	}
+	if r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
+		r.markWireOnlyUserTextSeen(evt.ThreadID, providerItemID)
+	}
+	if handleErr != nil && !r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
+		// This confirmation IS the consumption boundary even though the
+		// write failed: record the message anchor now so fork /
+		// revert-on-interrupt can slice at this message without
+		// waiting for a retry or session-death self-heal. The
+		// anchor row doesn't depend on the failed stamp, only on
+		// the item row existing (FK) — so record for found rows
+		// (quiet persists committed at dispatch); deferred rows
+		// that never persisted stay honestly anchor-less until
+		// their write lands (round-10, R10-2).
+		r.recordEchoBoundaryAnchor(evt.ThreadID, &pending)
+		// Both paths mark the dedup set exactly at their durable
+		// point, so unseen means nothing committed for this
+		// envelope: reinsert the popped entry so a re-delivered
+		// confirmation retries instead of persisting an injected-context
+		// duplicate. The reinsert marks the entry EchoConsumed —
+		// a session-death drain self-heals the timeline row from
+		// DeferredItem / QuietItem rather than restoring the
+		// message to the draft, because the provider context
+		// provably contains it (round-5, R5-3).
+		r.reinsertPendingSendHead(evt.ThreadID, pending)
+	}
+	return handleErr
 }
 
 func (r *Router) persistDeferredUserText(pending *pendingSend, evt provider.ProviderEvent) error {
@@ -525,6 +562,11 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 	}
 	if !found && pending.QuietItem == nil {
 		log.Printf("triage: handleUserText pending match for %s/%s but row absent — skipping stamp", threadID, pending.AOItemID)
+		// The send is consumed all the same: a later copy of this uuid (the
+		// echo after its transcript record) is a duplicate, not new content.
+		if providerItemID != "" {
+			r.markWireOnlyUserTextSeen(threadID, providerItemID)
+		}
 		return nil
 	}
 	if providerItemID == "" {
@@ -533,6 +575,13 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 	}
 	if oldID := usermessage.ReadProviderItemID(existing.Meta); oldID != "" && oldID != providerItemID {
 		log.Printf("triage: Claude did not honour the supplied uuid %q; echo carries %q", oldID, providerItemID)
+	}
+	// A direct send owns a fresh turn that a provider turn start normally
+	// opens. Drained into a turn the provider started itself (a background
+	// re-round), it gets no start of its own, so its consumption opens it,
+	// exactly as a deferred row's does. A no-op when its turn is open.
+	if pending.Shape == sendShapeDirect && !pending.OpenedTurn {
+		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex)
 	}
 	if !pending.Confirmation.Placement && !pending.Confirmation.Promoted {
 		merged, err := usermessage.MergeProviderIDs(existing.Meta, providerItemID, pending.EchoParentUUID)

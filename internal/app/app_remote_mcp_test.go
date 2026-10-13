@@ -61,7 +61,11 @@ func remoteMCPRequest(t *testing.T, endpoint, method string, params any) (int, m
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	// No keep-alive: a pooled transport can finish dialing a connection
+	// after the previous one went back to the pool, and leave it unused.
+	// The server's Close waits five seconds for a connection that has not
+	// sent a request, which is its whole shutdown deadline.
+	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 	response, err := client.Post(endpoint, "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		t.Fatal(err)

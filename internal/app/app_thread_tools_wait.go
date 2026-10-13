@@ -61,6 +61,12 @@ type threadRequestState struct {
 	// delivery in flight, threadWakeDeliveryFanOut of them. Built on first
 	// use.
 	deliveries chan struct{}
+	// wakesInFlight counts the wakes between their claim and their end, by
+	// send id. It changes and is read only under the token's settle lock,
+	// so a render deciding whether its reply delivers an answer and a wake
+	// queuing the same answer see each other (claimThreadWake,
+	// claimInlineDelivery).
+	wakesInFlight map[string]int
 	// blocked records which remote requests their own computer last
 	// reported as waiting on a person. It is not state: the record is the
 	// source row, this is the live reading beside it, and after a restart
@@ -105,9 +111,15 @@ func (a *App) threadRequestSettleLock(token string) func() {
 // The release runs AFTER the reply is written, never before: between the
 // terminal observation and the response the collector must still see the
 // wait as active, or it queues a wake for an answer the model is about to
-// read in the reply.
+// read in the reply. It nudges the sweep, because a wake this call held off
+// is owed again when its reply did not carry the answer: the response was
+// dropped, or the request settled after the reply was rendered.
 func (a *App) beginRequestWait(ctx context.Context, threadID string, keys []string) (context.Context, <-chan string, func()) {
-	return a.beginWait(ctx, threadRequestWait{threadID: threadID}, keys)
+	waitCtx, woke, end := a.beginWait(ctx, threadRequestWait{threadID: threadID}, keys)
+	return waitCtx, woke, func() {
+		end()
+		a.nudgeThreadRequestSweep()
+	}
 }
 
 // beginRemoteWait parks one tool call on a remote command. The returned end
@@ -288,8 +300,25 @@ type waitRequestOutcome struct {
 // willing to end on. That is what lets `thread_status` end on a settlement
 // past a revision, on a thread coming to rest, and on a target that became
 // blocked on a person, without this function knowing any of the three.
+//
+// The call is registered before its first check, so one that finds the
+// answer already there is held as well as one that parks, and it stays
+// registered until the caller runs the returned release after its reply is
+// written (releaseAfterResponse). The caller runs it on every path,
+// including an error.
 func (a *App) waitRequest(
 	ctx context.Context, threadID string, keys []string, seconds int,
+	check func() (string, bool, error),
+) (waitRequestOutcome, func(), error) {
+	waitCtx, wake, release := a.beginRequestWait(ctx, threadID, keys)
+	outcome, err := parkRequest(waitCtx, wake, seconds, check)
+	return outcome, release, err
+}
+
+// parkRequest is waitRequest's loop, run under a registration the caller
+// holds.
+func parkRequest(
+	waitCtx context.Context, wake <-chan string, seconds int,
 	check func() (string, bool, error),
 ) (waitRequestOutcome, error) {
 	woke, done, err := check()
@@ -299,8 +328,6 @@ func (a *App) waitRequest(
 	if seconds <= 0 {
 		return waitRequestOutcome{TimedOut: true}, nil
 	}
-	waitCtx, wake, end := a.beginRequestWait(ctx, threadID, keys)
-	defer end()
 
 	timer := time.NewTimer(time.Duration(seconds) * time.Second)
 	defer timer.Stop()

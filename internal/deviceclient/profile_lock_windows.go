@@ -16,3 +16,8 @@ func tryProfileLock(f *os.File) (bool, error) {
 	}
 	return err == nil, err
 }
+
+// unlockProfile drops the byte tryProfileLock locked.
+func unlockProfile(f *os.File) error {
+	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, &windows.Overlapped{})
+}

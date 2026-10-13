@@ -3,6 +3,7 @@ package deviceclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -12,11 +13,16 @@ import (
 // test can shorten it; nothing else assigns it.
 var profileWriteTimeout = 5 * time.Second
 
+// releaseProfileLock is what a lock's release calls. A variable so a test
+// can make a release fail and see each caller report it; nothing else
+// assigns it.
+var releaseProfileLock = releaseProfile
+
 // lockProfile provides OS ownership across processes. Session/key file locks
 // cover short transactions only; a separate legacy-renewal lock serializes
 // exchanges with hosts lacking recovery. Ownership ends on exit or crash;
 // the lock file itself stays so all contenders keep opening the same inode.
-func lockProfile(ctx context.Context, dir, name string) (func(), error) {
+func lockProfile(ctx context.Context, dir, name string) (func() error, error) {
 	if dir == "" || name == "" || name == "." || name == ".." || filepath.Base(name) != name {
 		return nil, errors.New("deviceclient: invalid profile lock location")
 	}
@@ -39,7 +45,7 @@ func lockProfile(ctx context.Context, dir, name string) (func(), error) {
 			return nil, err
 		}
 		if locked {
-			return func() { _ = f.Close() }, nil
+			return func() error { return releaseProfileLock(f) }, nil
 		}
 		timer := time.NewTimer(20 * time.Millisecond)
 		select {
@@ -52,13 +58,30 @@ func lockProfile(ctx context.Context, dir, name string) (func(), error) {
 	}
 }
 
+// releaseProfile ends a lock's ownership. flock belongs to the open file
+// description, so a forked child's copy keeps it until exec: unlock rather
+// than rely on the close. A failed unlock leaves the close to release it;
+// either failure is returned so the caller's operation reports it.
+func releaseProfile(f *os.File) error {
+	unlockErr := unlockProfile(f)
+	closeErr := f.Close()
+	if unlockErr != nil {
+		unlockErr = fmt.Errorf("deviceclient: unlock %s: %w", f.Name(), unlockErr)
+	}
+	if closeErr != nil {
+		// The close error is a PathError that already names the file.
+		closeErr = fmt.Errorf("deviceclient: %w", closeErr)
+	}
+	return errors.Join(unlockErr, closeErr)
+}
+
 // WithProfileLock serializes a short catalog transaction across controllers
 // sharing an installation. Network work must finish before entering it.
-func WithProfileLock(ctx context.Context, dir, name string, transaction func() error) error {
+func WithProfileLock(ctx context.Context, dir, name string, transaction func() error) (err error) {
 	release, err := lockProfile(ctx, dir, name)
 	if err != nil {
 		return err
 	}
-	defer release()
+	defer func() { err = errors.Join(err, release()) }()
 	return transaction()
 }

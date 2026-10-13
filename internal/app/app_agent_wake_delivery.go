@@ -451,63 +451,202 @@ func (a *App) noteAgentSendNotDelivered(threadID, why string) {
 	}
 }
 
-// agentPartsAtSessionEnd settles the app-written messages an unconfirmed
-// item carries when its session ended before taking it in: loop and watch
-// wakes, outside `thread send` messages and workers' prompts. It returns what
-// of the item goes back to the composer, and false when nothing does.
+// agentPartsNotTakenIn finds what the app-written messages an unconfirmed
+// item carries are owed when the provider did not take it in, its session
+// having ended or refused it (reason, a queue_restored reason): loop and
+// watch wakes, outside `thread send` messages, workers' prompts, and
+// requests' answers and reminders and remote jobs' completions. It returns
+// what of the item goes back to the composer, false when nothing does, and
+// those outcomes, which the caller applies (settleNotTakenIn) once the
+// restore of the rest has committed: a restore that fails requeues the items
+// whole, these included, and they are still queued.
 //
 // Like a wake queued at quit, none of them goes to the composer; unlike one,
 // a wake does not replay: the session that ended may end again, and a replay
 // would start it on every fire. A wake's row records `not delivered` and
 // keeps its schedule, and a watch keeps the wake's own text. An outside send
 // is thrown away with a notice, as at boot, and a worker's prompt goes back
-// to the user in the worker. When a person's message was joined with them,
-// the person's text alone goes back to the composer.
-func (a *App) agentPartsAtSessionEnd(threadID string, item triage.UnconfirmedFlushItem, part composerdraft.Part) (composerdraft.Part, bool) {
-	ids := unconfirmedSendIDs(item)
-	if !slices.ContainsFunc(ids, func(id string) bool { return agentAppPartRoot(id) != "" }) {
-		return part, true
+// to the user in the worker. An answer, a reminder or a completion goes back
+// to its request or watch, as a Stop's does. When a person's message was
+// joined with them, the person's text alone goes back to the composer.
+func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlushItem, part composerdraft.Part, reason string) (composerdraft.Part, bool, notTakenIn) {
+	wakeOutcome, sendWhy := agentWakeOutcomeSessionEnded, "the session ended before the agent took it in"
+	if reason != queueRestoredReasonSessionDied && reason != queueRestoredReasonNotDelivered {
+		wakeOutcome, sendWhy = agentWakeOutcomeNotDelivered, "the provider did not take it in"
 	}
-	bodies, person, split := splitJoinedAgentParts(ids, part.Content)
+	ids := unconfirmedSendIDs(item)
+	if !slices.ContainsFunc(ids, appWrittenSendID) {
+		return part, true, notTakenIn{}
+	}
+	var owed notTakenIn
+	for _, id := range ids {
+		if !ownedSendID(id) {
+			continue
+		}
+		// A message sent alone is the item's queue row, still there if it
+		// never left the queue. The members of a joined one lost theirs at
+		// the provider write, which handed them over unconfirmed.
+		rowID := ""
+		if len(ids) == 1 {
+			rowID = item.QueueItemID
+		}
+		owed.owned = append(owed.owned, ownedMessage{sendID: id, rowID: rowID, unconfirmed: true})
+	}
+	bodies, person, split := splitSessionEndParts(ids, unconfirmedJoinedParts(item), part.Content)
 	if !split {
 		// The text does not hold a part for every app message the item
 		// names, so none of it can be told apart from the person's: all of
-		// it goes back to the composer. Its wakes are still recorded and its
-		// prompts handed back.
+		// it goes back to the composer, an outside send's with it. Its wakes
+		// are still recorded, its prompts handed back and its answers and
+		// completions returned. An outside send leaves no notice: its text
+		// is in front of the person, and a notice would invite a duplicate.
 		log.Printf("agent wakes: a message of %s does not split into the app messages it names; restoring all of it", threadID)
 		for _, id := range ids {
-			if !a.handBackWorkerPromptWake(id) {
-				if wakeID, _, ok := agentWakeFromSendID(id); ok {
-					a.noteAgentWakeUndelivered(wakeID, agentWakeOutcomeSessionEnded, "")
-				}
+			if agentAppPartRoot(id) != "" && !strings.HasPrefix(id, agentSendIDRoot) {
+				owed.messages = append(owed.messages, appMessageOutcome{sendID: id, wakeOutcome: wakeOutcome})
 			}
 		}
-		return part, true
+		return part, true, owed
 	}
 	for _, id := range ids {
-		switch {
-		case agentAppPartRoot(id) == "":
-		case a.handBackWorkerPromptWake(id):
-		case strings.HasPrefix(id, agentSendIDRoot):
-			a.noteAgentSendNotDelivered(threadID, "the session ended before the agent took it in")
-		default:
-			if wakeID, _, ok := agentWakeFromSendID(id); ok {
-				a.noteAgentWakeUndelivered(wakeID, agentWakeOutcomeSessionEnded, bodies[id])
-			}
+		if agentAppPartRoot(id) != "" {
+			owed.messages = append(owed.messages, appMessageOutcome{sendID: id, wakeOutcome: wakeOutcome, body: bodies[id], sendWhy: sendWhy})
 		}
 	}
 	if person != nil {
 		part.Content = *person
-		return part, true
+		return part, true, owed
 	}
 	// The composer restore that would have retired the durable row takes
 	// none of it.
-	if item.QueueItemID != "" {
-		if err := a.store.DeleteFlushQueueItem(item.QueueItemID); err != nil {
-			logThreadRequestSweep("delete the queued wake "+item.QueueItemID, err)
+	owed.rowID = item.QueueItemID
+	return composerdraft.Part{}, false, owed
+}
+
+// notTakenIn is what the app-written messages of unconfirmed items are owed
+// when the provider did not take them in (agentPartsNotTakenIn), held until
+// the restore of the rest commits.
+type notTakenIn struct {
+	// messages are the loop and watch wakes, outside sends and workers'
+	// prompts, by send id, in order.
+	messages []appMessageOutcome
+	// owned are the answers, reminders and completions, for their owners.
+	owned []ownedMessage
+	// rowID is the queue row of an item wholly the app's, which no composer
+	// restore retires.
+	rowID string
+}
+
+// appMessageOutcome is one app-written message the agent did not take in: a
+// loop or watch wake's row records wakeOutcome and keeps body, an outside
+// send leaves its thread a notice saying sendWhy, and a worker's prompt goes
+// back to the user in the worker.
+type appMessageOutcome struct {
+	sendID      string
+	wakeOutcome string
+	body        string
+	sendWhy     string
+}
+
+// settleNotTakenIn applies what agentPartsNotTakenIn found, for every item of
+// one restore, once that restore has committed.
+func (a *App) settleNotTakenIn(threadID string, owed []notTakenIn) {
+	var owned []ownedMessage
+	for _, item := range owed {
+		for _, m := range item.messages {
+			switch {
+			case a.handBackWorkerPromptWake(m.sendID):
+			case strings.HasPrefix(m.sendID, agentSendIDRoot):
+				a.noteAgentSendNotDelivered(threadID, m.sendWhy)
+			default:
+				if wakeID, _, ok := agentWakeFromSendID(m.sendID); ok {
+					a.noteAgentWakeUndelivered(wakeID, m.wakeOutcome, m.body)
+				}
+			}
+		}
+		if item.rowID != "" {
+			if err := a.store.DeleteFlushQueueItem(item.rowID); err != nil {
+				logThreadRequestSweep("delete the queued wake "+item.rowID, err)
+			}
+		}
+		owned = append(owned, item.owned...)
+	}
+	if len(owned) > 0 {
+		a.giveBackToOwners(threadID, owned)
+	}
+}
+
+// appWrittenSendID reports a message the app wrote for a thread rather than
+// a person: the app parts agentAppPartRoot names, and the answers,
+// reminders and completions that belong to a request or a watch.
+func appWrittenSendID(sendID string) bool {
+	return agentAppPartRoot(sendID) != "" || ownedSendID(sendID)
+}
+
+// splitSessionEndParts splits an unconfirmed item's text into the bodies of
+// the app-written messages ids names, by send id, and the rest, which is the
+// person's (person nil when nothing is left). A single message is all one
+// part. A joined one splits by the parts its dispatch recorded, exactly. A
+// joined one without them splits by each app part's first line
+// (splitJoinedAgentParts), which needs a part to hold no separator: an
+// answer's or a completion's text can, so one of those makes it unsplittable.
+func splitSessionEndParts(ids []string, parts []usermessage.JoinedPart, content string) (app map[string]string, person *string, ok bool) {
+	if len(ids) == 1 {
+		return map[string]string{ids[0]: content}, nil, true
+	}
+	if members, fits := usermessage.SplitJoinedParts(content, parts); fits && partsNameIDs(parts, ids) {
+		app = make(map[string]string)
+		var kept []string
+		for i, part := range parts {
+			if appWrittenSendID(part.SendID) {
+				app[part.SendID] = members[i]
+				continue
+			}
+			kept = append(kept, members[i])
+		}
+		if len(kept) == 0 {
+			return app, nil, true
+		}
+		joined := strings.Join(kept, usermessage.JoinSeparator)
+		return app, &joined, true
+	}
+	if slices.ContainsFunc(ids, ownedSendID) {
+		return nil, nil, false
+	}
+	return splitJoinedAgentParts(ids, content)
+}
+
+// partsNameIDs reports whether parts name the send ids of a joined message
+// in its order; a member without a send id is in parts but not in ids.
+func partsNameIDs(parts []usermessage.JoinedPart, ids []string) bool {
+	var named []string
+	for _, part := range parts {
+		if part.SendID != "" {
+			named = append(named, part.SendID)
 		}
 	}
-	return composerdraft.Part{}, false
+	return slices.Equal(named, ids)
+}
+
+// unconfirmedJoinedParts is the parts a joined item's dispatch recorded:
+// from its pending send, or from its queue payload when it was requeued.
+func unconfirmedJoinedParts(item triage.UnconfirmedFlushItem) []usermessage.JoinedPart {
+	if len(item.JoinedParts) > 0 {
+		return item.JoinedParts
+	}
+	var payload flushQueuePayload
+	if len(item.Payload) > 0 && json.Unmarshal(item.Payload, &payload) == nil {
+		return payload.JoinedParts
+	}
+	return nil
+}
+
+// joinedPartsOf keeps parts only while they describe text exactly.
+func joinedPartsOf(text string, parts []usermessage.JoinedPart) []usermessage.JoinedPart {
+	if _, ok := usermessage.SplitJoinedParts(text, parts); !ok {
+		return nil
+	}
+	return parts
 }
 
 // agentAppPartRoot is the send id root of a message the app wrote for a
@@ -617,15 +756,22 @@ func unconfirmedSendIDs(item triage.UnconfirmedFlushItem) []string {
 // keeps the wake's body. They keep their schedule. A worker's prompt among
 // them goes back to the user in the worker, and an outside send leaves its
 // thread a notice.
-func (a *App) noteAgentWakesDropped(threadID string) {
+//
+// A request's answer or reminder and a remote job's completion are held
+// instead: the rows the drop must keep, for giveBackToOwners.
+func (a *App) noteAgentWakesDropped(threadID string) (held []ownedMessage) {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
 		logThreadRequestSweep("list the queued wakes of "+threadID, err)
-		return
+		return nil
 	}
 	var sends []string
 	for _, row := range rows {
 		if a.handBackWorkerPromptWake(row.SendID) {
+			continue
+		}
+		if ownedSendID(row.SendID) {
+			held = append(held, ownedMessage{sendID: row.SendID, rowID: row.ID})
 			continue
 		}
 		if strings.HasPrefix(row.SendID, agentSendIDRoot) {
@@ -638,6 +784,62 @@ func (a *App) noteAgentWakesDropped(threadID string) {
 	}
 	if len(sends) > 0 {
 		a.noteAgentSendsCleared(threadID, sends)
+	}
+	return held
+}
+
+// ownedMessage is a message that belongs to a request or a watch: an answer,
+// a reminder or a remote job's completion, by its send id. rowID is its queue
+// row, empty when it has none left; unconfirmed marks one the provider was
+// handed and never confirmed, whose row went at the write.
+type ownedMessage struct {
+	sendID      string
+	rowID       string
+	unconfirmed bool
+}
+
+// ownedSendID reports an answer's, a reminder's or a remote completion's
+// send id.
+func ownedSendID(sendID string) bool {
+	_, _, isAnswer := threadWakeFromSendID(sendID)
+	_, _, isCompletion := remoteCompletionFromSendID(sendID)
+	return isAnswer || isCompletion
+}
+
+// giveBackToOwners gives answers, reminders and remote completions that
+// never reached the agent back to their owners. A request is owed its answer
+// again, disarmed, so thread_status returns it and nothing delivers it
+// unasked; a watch is pending again, and the watcher delivers its completion
+// as it does one that finishes later, starting the session for it. None of
+// them goes to the composer: it is not the person's to send.
+//
+// Every path that takes one out of the thread's delivery runs it: a
+// wholesale drop (Stop, revert, teardown), a session that ended with it
+// queued or unconfirmed, a Codex resend that failed, and the boot sweep. A
+// drop runs it once the queue is gone, memory and dispatch included, because
+// the watcher can queue a pending completion again within seconds and one
+// queued before then would be dropped with the rest. Each message goes back
+// by its row, so a message queued again after the caller read the queue is
+// not taken; an unconfirmed one has no row left and goes back while its
+// owner still reads queued.
+func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
+	returned := false
+	for _, m := range messages {
+		if token, late, ok := threadWakeFromSendID(m.sendID); ok {
+			logThreadRequestSweep("return "+m.sendID+" to its request", a.store.WithdrawThreadWake(token, late, m.rowID, m.unconfirmed))
+			continue
+		}
+		if computerID, requestID, ok := remoteCompletionFromSendID(m.sendID); ok {
+			err := a.store.WithdrawRemoteCompletion(computerID, requestID, m.rowID, m.unconfirmed)
+			logThreadRequestSweep("return "+m.sendID+" to its watch", err)
+			returned = returned || err == nil
+		}
+	}
+	if returned {
+		a.emitBackgroundChanged(threadID)
+	}
+	if a.heldReturnedForTest != nil {
+		a.heldReturnedForTest(threadID)
 	}
 }
 
@@ -728,7 +930,7 @@ func (a *App) noteAgentSendsCleared(threadID string, rowIDs []string) {
 // notifies. Like a wake it never goes to the composer: one still queued at
 // boot, or left unconfirmed by a session that ended, is thrown away and the
 // thread gets a notice that it was not delivered, and one joined with a
-// person's message is taken back out of it (agentPartsAtSessionEnd).
+// person's message is taken back out of it (agentPartsNotTakenIn).
 const agentSendIDRoot = "agent-send:"
 
 // SendExternalThreadMessage queues text a script outside the app sent with
@@ -752,8 +954,11 @@ func (a *App) SendExternalThreadMessage(threadID, text string) (string, error) {
 	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
 		return "", err
 	}
+	// An archive that lands after this read is the queue write's to refuse,
+	// and the caller is told the same either way.
+	archived := fmt.Errorf("thread %s is archived; unarchive it first", threadID)
 	if thread.Archived {
-		return "", fmt.Errorf("thread %s is archived; unarchive it first", threadID)
+		return "", archived
 	}
 	body := renderAgentSendWake(text)
 	sendID := agentSendIDRoot + newAgentWakeID()
@@ -763,21 +968,13 @@ func (a *App) SendExternalThreadMessage(threadID, text string) (string, error) {
 		origin:     usermessage.OriginAgentWake,
 		originWake: &usermessage.OriginWake{Kind: agentWakeKindSend},
 		prepare:    func() (string, bool, error) { return body, true, nil },
-		// An archive that landed since the read above has the last word.
-		keep: func() (bool, error) {
-			current, err := a.store.GetThread(threadID)
-			if err != nil {
-				return false, fmt.Errorf("read thread %s: %w", threadID, err)
-			}
-			return !current.Archived, nil
-		},
-		withdrawn: func() {
-			a.noteAgentSendNotDelivered(threadID, "the thread was archived before the agent took it in")
-		},
 		startFailed: func(err error) string {
 			return "A message sent with agent-overflow thread send is queued, but the agent could not start: " + err.Error()
 		},
 	})
+	if errors.Is(err, errThreadArchived) {
+		return "", archived
+	}
 	if err != nil {
 		return "", err
 	}

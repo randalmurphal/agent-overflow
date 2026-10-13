@@ -449,6 +449,8 @@ type heldInputHolder interface {
 	releaseHeldInput()
 	// drainHeldInput consumes the held input into the running turn.
 	drainHeldInput(turn int)
+	// cancelHeldInput retires the held input without running it.
+	cancelHeldInput()
 }
 
 // shutdownTurn interrupts a matching live turn and waits until its adapter has

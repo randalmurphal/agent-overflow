@@ -39,7 +39,7 @@ func TestNativeRouteChangesInvalidateOnlyAfterUsableAddressChanges(t *testing.T)
 		if string(event.Data) != "{}" {
 			t.Fatalf("invalidation exposed stale route trust: %s", event.Data)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("new native address did not invalidate connected clients")
 	}
 	if err := b.app.ReportNativeNetworkState(ctx, report); err != nil {
@@ -53,7 +53,7 @@ func TestNativeRouteChangesInvalidateOnlyAfterUsableAddressChanges(t *testing.T)
 	conn.RunCleanups()
 	select {
 	case <-sub.Events():
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("withdrawn native listener left clients unaware")
 	}
 	if err := b.app.ReportNativeNetworkState(ctx, report); err == nil {
