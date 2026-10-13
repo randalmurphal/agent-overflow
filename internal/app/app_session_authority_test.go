@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -175,8 +176,8 @@ func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	// A workflow thread carries the phase's FROZEN grants.
 	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{
 		ID: "wf", Phases: []def.Phase{
-			{ID: "build", Driver: def.DriverAgent, Grants: []string{string(def.GrantStartRun), "retired-grant"}},
-			{ID: "verify", Driver: def.DriverAgent},
+			{ID: "build", Driver: def.DriverAgent, Access: def.AccessWrite, Grants: []string{string(def.GrantStartRun), "retired-grant"}},
+			{ID: "verify", Driver: def.DriverAgent, Shape: def.ShapeFanOut, FanOut: []def.Unit{{ID: "alpha", Access: def.AccessWrite}}},
 		},
 	}})
 	if err != nil {
@@ -208,6 +209,9 @@ func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	if len(scope.Grants) != 1 || scope.Grants[0] != string(def.GrantStartRun) {
 		t.Fatalf("frozen grants = %#v", scope.Grants)
 	}
+	if scope.Access != string(def.AccessWrite) {
+		t.Fatalf("phase access = %q, want the frozen phase's write", scope.Access)
+	}
 
 	// A unit thread inherits its phase's grants through the unit row, which is
 	// consulted BEFORE the phase table — a unit thread has no phase row of its
@@ -227,6 +231,10 @@ func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	if scope.PhaseID != "verify" || len(scope.Grants) != 0 {
 		t.Fatalf("unit scope = %#v (want the verify phase's own grants)", scope)
 	}
+	// A unit declares its own access: this one writes in a read-only phase.
+	if scope.Access != string(def.AccessWrite) {
+		t.Fatalf("unit access = %q, want the unit's own write", scope.Access)
+	}
 
 	// A workflow thread with no attempt row yet gets no credential rather than
 	// an unscoped one.
@@ -237,7 +245,7 @@ func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	}
 }
 
-func TestFrozenPhaseGrantsRefusesAPhaseTheSnapshotDoesNotName(t *testing.T) {
+func TestFrozenPhaseAuthorityRefusesWorkTheSnapshotDoesNotName(t *testing.T) {
 	t.Parallel()
 	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{
 		ID: "wf", Phases: []def.Phase{{ID: "build", Driver: def.DriverAgent}},
@@ -245,12 +253,19 @@ func TestFrozenPhaseGrantsRefusesAPhaseTheSnapshotDoesNotName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := frozenPhaseGrants(snapshot, "ghost"); err == nil {
+	if _, err := frozenPhaseAuthority(snapshot, phaseAttachment{phaseID: "ghost"}); err == nil {
 		t.Fatal("a phase absent from the snapshot resolved to no grants instead of erroring")
 	}
+	if _, err := frozenPhaseAuthority(snapshot, phaseAttachment{phaseID: "build", unitID: "ghost"}); err == nil {
+		t.Fatal("a unit absent from the snapshot resolved to the phase's access instead of erroring")
+	}
+	// An undeclared access is read-only.
+	if authority, err := frozenPhaseAuthority(snapshot, phaseAttachment{phaseID: "build"}); err != nil || authority.access != def.AccessReadOnly {
+		t.Fatalf("frozenPhaseAuthority(build) = %#v, %v", authority, err)
+	}
 	// An empty snapshot is a legitimate pre-freeze state, not an error.
-	if grants, err := frozenPhaseGrants(nil, "build"); err != nil || grants != nil {
-		t.Fatalf("frozenPhaseGrants(nil) = %#v, %v", grants, err)
+	if authority, err := frozenPhaseAuthority(nil, phaseAttachment{phaseID: "build"}); err != nil || authority.grants != nil || authority.access != def.DefaultAccess {
+		t.Fatalf("frozenPhaseAuthority(nil) = %#v, %v", authority, err)
 	}
 }
 
@@ -344,7 +359,7 @@ func TestSessionProcessEnvPublishesTheCLIOnPath(t *testing.T) {
 
 // A session with no credential at all still gets the command: an interactive
 // thread outside a project can legitimately have no scoped token, and
-// `agent-overflow workflow …` works offline.
+// `agent-overflow thread …` needs none.
 func TestSessionProcessEnvPublishesTheCLIWithoutACredential(t *testing.T) {
 	t.Parallel()
 	app := &App{cliBinDir: "/cfg/bin"}
@@ -354,27 +369,17 @@ func TestSessionProcessEnvPublishesTheCLIWithoutACredential(t *testing.T) {
 	}
 }
 
-// AO_PROJECT is the offline half's only way to learn which project it is in:
-// `agent-overflow workflow list` resolves project-scoped definitions from a
-// directory named by slug, and it has no app to translate a project id with.
-//
-// It rides the same credential every other AO_* does, so the two ends of the
-// contract are asserted together: a session that gets a credential gets the slug,
-// and a thread that gets no credential gets no AO_* at all.
-func TestMintAOCredentialCarriesTheProjectSlug(t *testing.T) {
+// The credential carries exactly what the remaining session command reads.
+// Workflow tooling reaches a session as ao-workflow-tools, so the variables
+// only the workflow verbs read are gone: an agent finding AO_RUN_ID would go
+// looking for a command that no longer exists.
+func TestMintAOCredentialCarriesOnlyTheSessionContract(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.SetTransportServer(startTestTransportServer(t))
 	projectRow := store.Project{ID: "slug-project", Path: t.TempDir(), Name: "Repo A", CreatedAt: 1, UpdatedAt: 1}
 	if _, err := app.store.CreateProject(projectRow); err != nil {
 		t.Fatal(err)
-	}
-	stored, err := app.store.GetProject(projectRow.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.Slug == "" {
-		t.Fatal("the project row has no slug to inject")
 	}
 
 	credential, err := app.mintAOCredential(store.Thread{
@@ -383,18 +388,16 @@ func TestMintAOCredentialCarriesTheProjectSlug(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if credential.env[aocli.EnvProject] != stored.Slug {
-		t.Fatalf("%s = %q, want the project slug %q", aocli.EnvProject, credential.env[aocli.EnvProject], stored.Slug)
+	keys := make([]string, 0, len(credential.env))
+	for key := range credential.env {
+		keys = append(keys, key)
 	}
-	// It reaches the subprocess through the same merge as the rest of the
-	// credential, so the writer and the reader cannot disagree.
-	env := app.sessionProcessEnv(string(provider.Claude), nil, credential)
-	if env[aocli.EnvProject] != stored.Slug {
-		t.Fatalf("session env %s = %q, want %q", aocli.EnvProject, env[aocli.EnvProject], stored.Slug)
+	slices.Sort(keys)
+	if want := []string{aocli.EnvEndpoint, aocli.EnvThreadID, aocli.EnvToken}; !slices.Equal(keys, want) {
+		t.Fatalf("credential env keys = %v, want %v", keys, want)
 	}
 
-	// A projectless thread is scoped to nothing and gets no credential at all —
-	// so no AO_PROJECT either, rather than a blank one the CLI would trust.
+	// A projectless thread is scoped to nothing and gets no credential at all.
 	projectless, err := app.mintAOCredential(store.Thread{ID: "loose", Mode: threadmode.ModeChat})
 	if err != nil {
 		t.Fatal(err)

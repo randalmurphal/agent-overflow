@@ -72,7 +72,7 @@ Source: `docs/specs/workflows-system.md` unless noted.
 | **snapshot / frozen definition** | The resolved graph + bindings pinned into the run record at start; the run executes from that, never live config. |
 | **step mode** | Per-item intake option making every gate behave as a human gate. The trust-building mode for a new workflow. |
 | **soft-stop** | Deferred pause: the current wave finishes, nothing in flight is interrupted, the run parks `needs-human(checkpoint)`. |
-| **guidance** | `run guide <id> "<text>"`: a pending-guidance slot delivered at the run's next fresh phase entry only, never mid-turn. |
+| **guidance** | `run_guide(run_id, text)`: a pending-guidance slot delivered at the run's next fresh phase entry only, never mid-turn. |
 | **takeover** | Sending a message into a phase's thread interrupts the turn, detaches the attempt, and parks `needs-human(taken-over)`. The send is the takeover; there is no button. |
 | **campaign memory** | Append-only NDJSON notes keyed by the run tree's root, closed kind vocabulary `pattern \| warning \| learning \| handoff` (`internal/workflow/memory/AGENTS.md`). |
 | **`history.<phase>`** | Reserved phase input giving prior attempts of a phase oldest-first. Prompt surface only; gates cannot reference it. |

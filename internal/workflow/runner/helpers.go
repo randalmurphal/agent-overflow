@@ -418,15 +418,12 @@ func writeFeedbackSection(prompt *strings.Builder, feedback *engine.Feedback) er
 // writeMemorySection states the campaign-memory contract and appends the
 // digest the app rendered.
 //
-// The CHANNEL follows `access` for the same reason the narrative's does, and
-// for a stricter reason besides. A `write` element records through the CLI verb,
-// which lands the note the moment it is learned — a note written during the work
-// survives an attempt that later fails, parks, or is retried, and an envelope
-// field only lands if the envelope is accepted. A `read-only` element runs a
-// session that denies file writes and, on both providers, cannot reach the
-// loopback RPC the CLI speaks (Claude's read-only mode denies the bash call;
-// Codex's read-only sandbox blocks the socket), so the verb is not a channel it
-// has at all. It answers the envelope's `memory` field instead, which the app
+// The CHANNEL follows `access`. A `write` element records through the
+// memory_add tool, which lands the note the moment it is learned: a note
+// written during the work survives an attempt that later fails, parks, or is
+// retried, and an envelope field only lands if the envelope is accepted. A
+// `read-only` element is withheld memory_add (D77): a read-only phase keeps
+// exactly the channel it had, the envelope's `memory` field, which the app
 // lifts at the same seam it lifts `narrative`.
 //
 // READING is not split that way, and does not need to be. A read-only session
@@ -445,10 +442,10 @@ func writeMemorySection(prompt *strings.Builder, access def.Access, digest Memor
 	}
 	if access == def.AccessWrite {
 		prompt.WriteString("Record durable lessons for later work in this campaign as you learn them:\n")
-		prompt.WriteString("  agent-overflow memory add --kind <" + strings.Join(memory.Kinds, "|") + "> \"<text>\" [--file <path>]...\n")
-		prompt.WriteString("Run it when you learn the thing, not at the end: a note recorded during the work outlives an attempt that later fails. Write each note for an element with NO context — it will see your text and nothing else. Leave the envelope's `memory` field null.\n")
+		prompt.WriteString("  memory_add(kind: " + strings.Join(memory.Kinds, "|") + ", text: \"<text>\", files?: [\"<path>\"])  (ao-workflow-tools)\n")
+		prompt.WriteString("Call it when you learn the thing, not at the end: a note recorded during the work outlives an attempt that later fails. Write each note for an element with NO context: it will see your text and nothing else. Leave the envelope's `memory` field null.\n")
 	} else {
-		prompt.WriteString("Record durable lessons for later work in this campaign in the `memory` field of your final envelope: an array of {kind, text, files}, kind one of " + memory.KindList() + ". You run read-only, so the `agent-overflow memory add` command is not available to you and this field is your channel. Write each note for an element with NO context — it will see your text and nothing else. Null when there is nothing worth recording.\n")
+		prompt.WriteString("Record durable lessons for later work in this campaign in the `memory` field of your final envelope: an array of {kind, text, files}, kind one of " + memory.KindList() + ". You run read-only, so the memory_add tool is not available to you and this field is your channel. Write each note for an element with NO context: it will see your text and nothing else. Null when there is nothing worth recording.\n")
 	}
 	prompt.WriteString(string(digest))
 	prompt.WriteString("\n")

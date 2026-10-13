@@ -5,7 +5,7 @@
 # capacities: validation-slot
 #
 # Also required: the `port-one-task` workflow, in a scope this one resolves
-# (`agent-overflow workflow new port-one-task --id port-one-task`). Each
+# (`workflow_new(starter: "port-one-task", id: "port-one-task", scope: "project")`). Each
 # implement unit CALLS it, so without it every wave refuses at its fan-out.
 #
 # A campaign is ONE root run. Each wave is this graph; the last phase calls
@@ -20,14 +20,15 @@
 # Two things end a campaign, and neither is a wave count:
 #   - the planner reports `complete`, and this run finishes WITHOUT taking the
 #     self-call, which unwinds the whole tree wave by wave;
-#   - a human stops it - `agent-overflow run soft-stop <root-run-id>` parks the
+#   - a human stops it - a soft stop (the overlay's, or
+#     `run_control(run_id: "<root-run-id>", action: "soft_stop")`) parks the
 #     tree at its next call boundary (D36), and `checkpoint-every` below parks
 #     it on a schedule.
 #
 # The merge join is bound to `merge-unit-branches`, and a reference
 # implementation is scaffolded beside this definition as
 # `<id>-merge-unit-branches.py` (where `<id>` is what you passed to
-# `workflow new --id`). Bind that name in the project profile's command map to
+# workflow_new's `id`). Bind that name in the project profile's command map to
 # the argv ["python3", "<abs path to the scaffolded script>", "{{units}}"].
 #
 # The units reach it as one JSON argv element with id, status, branch, and
@@ -114,7 +115,7 @@ inputs:
     schema:
       type: number
       minimum: 0
-      description: Ask a human to approve continuing every Nth wave. 0 never asks, and a human can still stop the tree at any wave boundary with `agent-overflow run soft-stop`.
+      description: Ask a human to approve continuing every Nth wave. 0 never asks, and a human can still stop the tree at any wave boundary with a soft stop.
   job-notes:
     schema:
       type: string

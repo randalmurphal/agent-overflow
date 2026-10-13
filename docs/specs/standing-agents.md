@@ -719,13 +719,28 @@ installed executable.
 
 The `workflow`, `run` and `memory` CLI verbs are replaced by an
 `ao-workflow-tools` MCP server on the shared `internal/threadmcp`
-transport, scoped the way the thread tools are. The phase runner's
-injected credentials become the per-session capability URL, and phase
-grants become the tool allowlist for that session. `aocli` keeps
-`service`, `pair`, `remote` and the serve entry. Starters, docs and the runner
-guidance that mention `agent-overflow run` are rewritten. The decisions
-log records the reversal of D15 with the user's reasoning: app-managed
-tooling, one surface for agents, no separate binary to keep in sync.
+transport, scoped the way the thread tools are and registered on Claude,
+claude-tui and Codex. The phase runner's injected credentials become the
+per-session capability URL, and phase grants become the tool allowlist for
+that session. `aocli` keeps `service`, `pair`, `remote`, `thread` and the
+serve entry. Starters, docs and the runner guidance name the tools. The
+decisions log records the reversal of D15 with the user's reasoning:
+app-managed tooling, one surface for agents, no separate binary to keep in
+sync (D77). The contract is
+[agent-workflow-tools.md](agent-workflow-tools.md).
+
+Memory and `workflow_list`/`workflow_validate`/`workflow_schema` are
+grant-free because a phase could already reach them through the offline CLI
+and the memory verb, so nothing a phase can do widened. Grant-free tools
+never widen what a phase can do, and a read-only phase keeps exactly the
+envelope memory channel it had: `memory_add` and `workflow_new` are withheld
+from read-only phases. Grants take effect on read-only phases; the author
+declared them and validation already accepted them, so their old
+unreachability was a mechanism accident, not a rule.
+
+claude-tui hosts `ao-workflow-tools` and no other app server; whether it
+hosts the thread tools is a separate decision
+([decisions](../decisions.md)).
 
 ### Claude wire gaps
 
@@ -788,7 +803,7 @@ ticket keys.
 | 4a | Stale session frames after a stalled drain | 4 | A dead session's frames still queued when the provider event drain hits its stall bound (`providerEventDrainStall`) never reach triage after a replacement session starts: frames carry their session token and `triage.Handle` refuses a token that is no longer the thread's; `MarkThreadActive`'s claim that no stale frame passes its gate becomes true | Harness spec that stalls a worker across a replacement start with the dead session's frames queued and asserts nothing reaches the replacement, on both mock providers: on Claude a ScheduleWakeup and a CronCreate ack plus the reply, and the replacement holds no schedule; on Codex, which has no session schedule, the reply and the turn completion, and the replacement holds no stale turn or row. A frame already being handled when the replacement commits is proven by unit tests at every process-state writer and in the host |
 | 5 | Agent homes and settings | 2, 3a | Promotion creates the home and injects its path into both providers; the Skills page installs, updates and removes per provider | Settings e2e with temp provider homes showing the installed tree; harness proof that a Claude and a Codex mock session received the home path; screenshots of the Skills page |
 | 6 | pstack vendored and ported | 3a, 5 | Every primitive in the port table is rewritten; the `forge` script passes against the fake `gh` and `glab`; `poteto-mode` completes a small real task in a Claude thread and in a Codex thread with the same steps | Manual provider smoke on a throwaway repo with the transcripts attached; forge script run log against the harness fake |
-| 7 | Workflows to MCP | 5 | No workflow verb in `aocli`; every workflow e2e spec passes through the MCP tool; starters and docs name the tool | Workflow e2e suite run; a screenshot of a run started and watched from a thread through the tool |
+| 7 | Workflows to MCP | 5 | No workflow verb in `aocli`; every workflow e2e spec passes through the MCP tool; starters and docs name the tool | Workflow e2e suite run; a screenshot of a run started and watched from a thread through the tool. No mock speaks claude-tui, so the claude-tui leg is proven at the argv level and at the app level through the real threadmcp transport, and the only unproven step is the real Claude TUI binary reading --mcp-config and --allowedTools, which the manual provider smoke covers. |
 | 8 | MR lead migration | 2, 3b, 5, 6 | The lead's notes live in its home, it is promoted, it set its own loop and watches, and it ran a week | The user |
 | 9 | Agent home contents | 5, 6 | The `agent-home` skill ships in the installed tree; a standing agent's sessions on Claude, claude-tui and Codex carry its `instructions.md` and the non-archive part of `MEMORY.md` within their caps, byte-identical over unchanged files, with a rewrite reaching the next start and nothing after demotion; an unreadable file starts the session with a warning row; footers and wakes name a standing agent with its role line and tell a worker its questions go to its agent; `home_files` attaches files on spawn and send and is refused for a non-agent, an escaping path, a missing file and a total past 32 KiB; thread rows carry `standing_agent` and `spawned_by` | `standing-agent-home-contents.spec.ts` on both mock providers (injected prompt, hygiene wake through `thread_loop` reaching the next start, a worker's first message carrying `home_files`, the footer role line between an agent and an ordinary thread); app tests reading the claude-tui argv and append file, since no mock speaks claude-tui; screenshots of the agent's session, the worker's first message and the hygiene wake, desktop and compact |
 

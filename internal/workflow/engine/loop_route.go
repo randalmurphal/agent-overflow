@@ -180,8 +180,8 @@ func consumePromptRoute(workflow def.Workflow, armed *PromptRoute, phaseID strin
 // the single decision point, which is why RunRequest carries the resolved body
 // on its Phase rather than the two sources for a consumer to choose between.
 //
-// A reference that no longer resolves — a snapshot re-frozen by `--refresh-def`
-// whose edit removed the route — falls back to the phase's body rather than
+// A reference that no longer resolves (a snapshot re-frozen by `refresh_def`
+// whose edit removed the route) falls back to the phase's body rather than
 // failing the attempt: the round still has a prompt, and the narrowing it lost
 // is a definition the operator deliberately replaced.
 func promptBody(workflow def.Workflow, phase def.Phase, ref *PromptRoute) string {

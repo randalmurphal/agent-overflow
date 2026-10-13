@@ -51,7 +51,7 @@ func (s *Service) afterEngineEvent(name eventchan.Channel, payload any) {
 			return
 		}
 		// Recorded before the classification below, and without its
-		// from == to filter: a `run watch` reports what MOVED, and a takeover
+		// from == to filter: a `run_watch` reports what MOVED, and a takeover
 		// re-parking an already-parked run under a new reason is a move a
 		// monitor must not be blind to.
 		s.recordWorkflowTransition(event)
@@ -111,8 +111,10 @@ func (s *Service) afterWorkflowStateEvent(event engine.StateEvent) {
 	if event.To == engine.StateDone {
 		s.queueAutoDisposition(event.ItemID)
 	}
-	itemID := event.ItemID
-	s.wake.Go(func() { s.surfaceRestingWorkflowItem(itemID) })
+	// The ring head now is this rest's own transition: a wake hold that keeps
+	// the rest back measures later moves of the run from here.
+	itemID, restAt := event.ItemID, s.watch.Head()
+	s.wake.Go(func() { s.surfaceRestingWorkflowItem(itemID, restAt) })
 }
 
 // restingWorkflowState reports the transitions a run comes to rest on. `running`
@@ -131,8 +133,9 @@ func restingWorkflowState(state engine.State) bool {
 // what makes them consistent: a run cannot notify without waking its bound
 // thread, and a called run cannot do either as itself. Its return value is used
 // only by restart recovery to confirm that a replacement usage alert was
-// accepted by the delivery path or suppressed by a concurrent claim.
-func (s *Service) surfaceRestingWorkflowItem(itemID string) UsageAttentionSurface {
+// accepted by the delivery path or suppressed by a concurrent claim. restAt
+// is the ring head when the rest's wake was queued.
+func (s *Service) surfaceRestingWorkflowItem(itemID string, restAt int64) UsageAttentionSurface {
 	item, err := s.deps.Store.GetWorkItem(itemID)
 	if err != nil {
 		s.deps.Logf("workflow surface %s: load run: %v", itemID, err)
@@ -151,14 +154,14 @@ func (s *Service) surfaceRestingWorkflowItem(itemID string) UsageAttentionSurfac
 	// a human interrupt them through the OS. A usage-limited storm shares one
 	// attention generation across all affected runs watched by this thread.
 	usage := s.UsageAttentionForRest(item, item)
-	return s.surfaceRootRestingWorkflowItem(item, usage)
+	return s.surfaceRootRestingWorkflowItem(item, usage, restAt)
 }
 
-func (s *Service) surfaceRootRestingWorkflowItem(item store.WorkItem, usage UsageAttentionDecision) UsageAttentionSurface {
+func (s *Service) surfaceRootRestingWorkflowItem(item store.WorkItem, usage UsageAttentionDecision, restAt int64) UsageAttentionSurface {
 	if usage.Suppress {
 		return usage.Surface
 	}
-	delivered := s.afterWorkflowResting(item, usage.Claim)
+	delivered := s.afterWorkflowResting(item, usage.Claim, restAt)
 	if engine.State(item.State) == engine.StateNeedsHuman || engine.State(item.State) == engine.StateFailed {
 		s.notifyWorkflowItemNeedsHuman(item)
 	}

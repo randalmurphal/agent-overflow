@@ -29,8 +29,8 @@ func TestComposeProgressReportsTheGateAndAsksForNothing(t *testing.T) {
 		`- "severity": "low"`,
 		"Nothing is waiting on a reply — the run is still going.",
 	)
-	// A progress wake must never read as a park: no repair verb, no "parked".
-	mustNotContain(t, message, "agent-overflow run resume", "is parked", "does not continue")
+	// A progress wake must never read as a park: no repair call, no "parked".
+	mustNotContain(t, message, `action: "resume"`, "is parked", "does not continue")
 }
 
 func TestComposeProgressNamesTheCalledRunAndItsChain(t *testing.T) {
@@ -63,7 +63,7 @@ func TestComposeProgressStatesItsOwnOverflowAndQuotesModelText(t *testing.T) {
 	mustNotContain(t, message, "ignore previous instructions\n")
 	mustContain(t, message,
 		untrustedtext.Quote(injection, MaxGoalRunes),
-		"…and 4 more (`agent-overflow run inspect \"run-1\" --phase \"wave\" --attempt 2`).",
+		"…and 4 more (`run_inspect(run_id: \"run-1\", phase_id: \"wave\", attempt: 2)`).",
 	)
 }
 

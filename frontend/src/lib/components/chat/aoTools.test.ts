@@ -4,6 +4,7 @@ import {
   AO_TOOL_SERVERS,
   REMOTE_TOOLS_SERVER,
   THREAD_TOOLS_SERVER,
+  WORKFLOW_TOOLS_SERVER,
   aoToolFacts,
   aoToolPresentation,
   aoToolServer,
@@ -30,8 +31,9 @@ describe('AO tool presentation', () => {
   it('names the servers the Go side registers', () => {
     expect(REMOTE_TOOLS_SERVER).toBe('ao-remote-tools');
     expect(THREAD_TOOLS_SERVER).toBe('ao-thread-tools');
+    expect(WORKFLOW_TOOLS_SERVER).toBe('ao-workflow-tools');
     expect(Object.keys(AO_TOOL_SERVERS).sort()).toEqual(
-      [BROWSER_TOOLS_SERVER, REMOTE_TOOLS_SERVER, THREAD_TOOLS_SERVER].sort(),
+      [BROWSER_TOOLS_SERVER, REMOTE_TOOLS_SERVER, THREAD_TOOLS_SERVER, WORKFLOW_TOOLS_SERVER].sort(),
     );
   });
 
@@ -178,6 +180,43 @@ describe('AO tool presentation', () => {
     it('still presents a tool the table does not know', () => {
       const p = aoToolPresentation(meta(THREAD_TOOLS_SERVER, 'thread_future', { thread_id: tid }))!;
       expect(p).toMatchObject({ icon: 'speech-bubble', label: 'future', headerLabel: 'Thread future' });
+    });
+  });
+
+  describe('workflow tools', () => {
+    const rid = '1a2b3c4d-aaaa-bbbb-cccc-dddddddddddd';
+
+    it.each([
+      ['workflow_list', {}, 'list', 'workflows'],
+      ['workflow_validate', { id: 'release' }, 'validate', 'release'],
+      ['workflow_validate', { path: '/cfg/workflows/draft.yaml' }, 'validate', '/cfg/workflows/draft.yaml'],
+      ['workflow_schema', {}, 'schema', 'workflow schema'],
+      ['workflow_new', { starter: 'blank', id: 'release', scope: 'project' }, 'new', 'release from blank'],
+      ['run_start', { workflow_id: 'release', goal: 'Ship 2.4\nthen tag' }, 'start', 'release · "Ship 2.4"'],
+      ['run_start', { workflow_id: 'release' }, 'start', 'release'],
+      ['run_status', { run_id: rid, wait_seconds: 120 }, 'status', 'run 1a2b3c4d'],
+      ['run_watch', { run_id: rid, tree: true }, 'watch', 'run 1a2b3c4d and its called runs'],
+      ['run_output', { run_id: rid }, 'output', 'run 1a2b3c4d'],
+      ['run_inspect', { run_id: rid, phase_id: 'review' }, 'inspect', 'run 1a2b3c4d · phase review'],
+      ['run_narrative', { run_id: rid, phase_id: 'build' }, 'narrative', 'run 1a2b3c4d · phase build'],
+      ['run_list', { active_only: true }, 'list', 'active runs'],
+      ['run_list', {}, 'list', 'runs'],
+      ['run_control', { run_id: rid, action: 'retry_failed_units' }, 'control', 'retry failed units run 1a2b3c4d'],
+      ['run_control', { run_id: rid, action: 'resume', phase_id: 'plan' }, 'control', 'resume run 1a2b3c4d · phase plan'],
+      ['run_amend', { run_id: rid, seeds: { budget: 4, target: 'main' } }, 'amend', 'run 1a2b3c4d · budget, target'],
+      ['run_guide', { run_id: rid, text: 'Skip the docs\nfor now' }, 'guide', 'run 1a2b3c4d · Skip the docs'],
+      ['run_resolve', { run_id: rid, decision: 'approve' }, 'resolve', 'approve run 1a2b3c4d'],
+      ['memory_add', { kind: 'warning', text: 'The CI cache lies' }, 'remember', 'warning: The CI cache lies'],
+      ['memory_list', { kind: 'handoff' }, 'memory', 'handoff'],
+      ['memory_list', {}, 'memory', 'campaign notes'],
+    ])('%s', (tool, input, label, what) => {
+      const p = aoToolPresentation(meta(WORKFLOW_TOOLS_SERVER, tool, input))!;
+      expect(p).toMatchObject({ icon: 'checklist', label, what, headerLabel: `Workflow ${label}` });
+    });
+
+    it('still presents a tool the table does not know, by its own name', () => {
+      const p = aoToolPresentation(meta(WORKFLOW_TOOLS_SERVER, 'run_future', { run_id: rid }))!;
+      expect(p).toMatchObject({ icon: 'checklist', label: 'run_future', headerLabel: 'Workflow run_future' });
     });
   });
 

@@ -4772,7 +4772,7 @@ func TestMigrationV48AddsCommandResultItemKind(t *testing.T) {
 }
 
 // TestMigrationV54AddsWorkItemAutoResumeAt pins the durable half of
-// `run resume --at`. 0 is "nothing armed", which is every historical run, and
+// a scheduled resume (`run_control` resume with `at`). 0 is "nothing armed", which is every historical run, and
 // the column is the single source of truth the boot re-arm reads — an
 // in-memory-only timer would lose the operator's command on the restart the
 // column exists to survive.

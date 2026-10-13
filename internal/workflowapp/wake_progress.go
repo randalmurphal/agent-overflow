@@ -79,8 +79,8 @@ func (s *Service) surfaceWorkflowGateNotify(event engine.NotifyEvent) {
 }
 
 // workflowGateOutputs digests the envelope the gate decided on. It is what
-// makes the message worth sending — "wave 12 finished" with its verdict beats a
-// heartbeat — and it reuses `run inspect`'s bounding so the same outputs read
+// makes the message worth sending ("wave 12 finished" with its verdict beats a
+// heartbeat), and it reuses `run_inspect`'s bounding so the same outputs read
 // the same way wherever a reader meets them.
 //
 // An attempt whose record cannot be read still sends the message: the fact that

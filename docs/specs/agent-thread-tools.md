@@ -60,8 +60,7 @@ fork: a companion pane, discarded on close.
 
 ## Why MCP and not a CLI (Q1, revised)
 
-The workflow CLI stays a CLI because it has offline verbs and humans run
-it in a shell. Thread tools are agent-only and in-session, and one of
+Thread tools are agent-only and in-session, and one of
 them must work from a read-only fork: Claude's `read-only` mode is
 `dontAsk`, which auto-denies any Bash call that would prompt, so a CLI
 `reply` would need a Bash prefix allow rule. An MCP tool is allowlisted

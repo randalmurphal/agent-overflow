@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// The two reads behind `run inspect` and `run narrative`. They are projections
+// The two reads behind `run_inspect` and `run_narrative`. They are projections
 // over records the engine already writes, so the fixture writes those records
 // directly: what is under test is what the projections answer, not how a run
 // gets into the state being read.
@@ -132,7 +132,7 @@ func TestWorkflowAgentInspectRunAnswersTheWholePicture(t *testing.T) {
 		GateTrace: gateTrace(t, def.DecisionHuman, "land"),
 	})
 
-	inspection, err := h.app.WorkflowAgentInspectRun(
+	inspection, err := h.app.workflowAgentInspectRun(
 		h.scope(def.GrantIntrospect), WorkflowAgentInspectInput{ItemID: item.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestWorkflowAgentInspectRunAnswersTheWholePicture(t *testing.T) {
 		inspection.BaseBranch != "main" {
 		t.Fatalf("workspace facts = %#v", inspection)
 	}
-	// Seeds ride the run view, which is also what `run status --json` returns.
+	// Seeds ride the run view, which is also what `run_status` returns.
 	var seeds map[string]any
 	if err := json.Unmarshal(inspection.Run.Seeds, &seeds); err != nil {
 		t.Fatalf("seeds did not decode: %v (%s)", err, inspection.Run.Seeds)
@@ -207,7 +207,7 @@ func TestWorkflowAgentInspectRunBoundsTheDigest(t *testing.T) {
 		ItemID: item.ID, PhaseID: "survey", Attempt: 1, StartedAt: 10, OutputEnvelope: envelope,
 	})
 
-	inspection, err := h.app.WorkflowAgentInspectRun(
+	inspection, err := h.app.workflowAgentInspectRun(
 		h.scope(def.GrantIntrospect), WorkflowAgentInspectInput{ItemID: item.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -249,7 +249,7 @@ func TestWorkflowAgentInspectRunDrillsIntoOneAttempt(t *testing.T) {
 
 	ctx := h.scope(def.GrantIntrospect)
 	// No attempt named: the latest is what a parked run is resting on.
-	latest, err := h.app.WorkflowAgentInspectRun(ctx, WorkflowAgentInspectInput{ItemID: item.ID, PhaseID: "fan"})
+	latest, err := h.app.workflowAgentInspectRun(ctx, WorkflowAgentInspectInput{ItemID: item.ID, PhaseID: "fan"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestWorkflowAgentInspectRunDrillsIntoOneAttempt(t *testing.T) {
 		}
 	}
 
-	older, err := h.app.WorkflowAgentInspectRun(ctx,
+	older, err := h.app.workflowAgentInspectRun(ctx,
 		WorkflowAgentInspectInput{ItemID: item.ID, PhaseID: "fan", Attempt: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -301,18 +301,18 @@ func TestWorkflowAgentInspectRunRefusesUnknownCoordinates(t *testing.T) {
 	h.phase(t, store.WorkItemPhase{ItemID: item.ID, PhaseID: "review", Attempt: 1, StartedAt: 10})
 	ctx := h.scope(def.GrantIntrospect)
 
-	_, err := h.app.WorkflowAgentInspectRun(ctx, WorkflowAgentInspectInput{ItemID: item.ID, PhaseID: "reviw"})
+	_, err := h.app.workflowAgentInspectRun(ctx, WorkflowAgentInspectInput{ItemID: item.ID, PhaseID: "reviw"})
 	if err == nil || !strings.Contains(err.Error(), "phases review") {
 		t.Fatalf("unknown phase error = %v", err)
 	}
-	_, err = h.app.WorkflowAgentInspectRun(ctx,
+	_, err = h.app.workflowAgentInspectRun(ctx,
 		WorkflowAgentInspectInput{ItemID: item.ID, PhaseID: "review", Attempt: 4})
 	if err == nil || !strings.Contains(err.Error(), "attempts 1") {
 		t.Fatalf("unknown attempt error = %v", err)
 	}
 	// An attempt with no phase names nothing at all, and is refused before any
 	// of the above is even looked up.
-	_, err = h.app.WorkflowAgentInspectRun(ctx, WorkflowAgentInspectInput{ItemID: item.ID, Attempt: 2})
+	_, err = h.app.workflowAgentInspectRun(ctx, WorkflowAgentInspectInput{ItemID: item.ID, Attempt: 2})
 	if err == nil || !strings.Contains(err.Error(), "supply the phase id too") {
 		t.Fatalf("attempt without phase error = %v", err)
 	}
@@ -344,7 +344,7 @@ func TestWorkflowAgentRunNarrativeResolvesPhaseAndUnitAccounts(t *testing.T) {
 
 	ctx := h.scope(def.GrantIntrospect)
 	// No attempt named resolves the latest, which is the account a reader wants.
-	phase, err := h.app.WorkflowAgentRunNarrative(ctx,
+	phase, err := h.app.workflowAgentRunNarrative(ctx,
 		WorkflowAgentNarrativeInput{ItemID: item.ID, PhaseID: "fan"})
 	if err != nil {
 		t.Fatal(err)
@@ -357,7 +357,7 @@ func TestWorkflowAgentRunNarrativeResolvesPhaseAndUnitAccounts(t *testing.T) {
 	}
 	// The unit's try comes from its row: a caller that had to supply it would be
 	// guessing at the one part of the path it cannot see.
-	unit, err := h.app.WorkflowAgentRunNarrative(ctx,
+	unit, err := h.app.workflowAgentRunNarrative(ctx,
 		WorkflowAgentNarrativeInput{ItemID: item.ID, PhaseID: "fan", UnitID: "unit-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -383,7 +383,7 @@ func TestWorkflowAgentRunNarrativeSeparatesAbsenceFromAWrongCoordinate(t *testin
 	}
 	ctx := h.scope(def.GrantIntrospect)
 
-	absent, err := h.app.WorkflowAgentRunNarrative(ctx,
+	absent, err := h.app.workflowAgentRunNarrative(ctx,
 		WorkflowAgentNarrativeInput{ItemID: item.ID, PhaseID: "review"})
 	if err != nil {
 		t.Fatalf("an unwritten narrative was reported as a failure: %v", err)
@@ -394,16 +394,16 @@ func TestWorkflowAgentRunNarrativeSeparatesAbsenceFromAWrongCoordinate(t *testin
 	if !strings.HasSuffix(absent.Path, filepath.Join("review.1", "narrative.md")) {
 		t.Fatalf("absence did not name what was looked for: %#v", absent)
 	}
-	if _, err := h.app.WorkflowAgentRunNarrative(ctx,
+	if _, err := h.app.workflowAgentRunNarrative(ctx,
 		WorkflowAgentNarrativeInput{ItemID: item.ID, PhaseID: "nope"}); err == nil {
 		t.Fatal("a phase this run never attempted read as an absent narrative")
 	}
-	_, err = h.app.WorkflowAgentRunNarrative(ctx,
+	_, err = h.app.workflowAgentRunNarrative(ctx,
 		WorkflowAgentNarrativeInput{ItemID: item.ID, PhaseID: "review", UnitID: "unit-z"})
 	if err == nil || !strings.Contains(err.Error(), "unit-a") {
 		t.Fatalf("unknown unit error = %v", err)
 	}
-	if _, err := h.app.WorkflowAgentRunNarrative(ctx,
+	if _, err := h.app.workflowAgentRunNarrative(ctx,
 		WorkflowAgentNarrativeInput{ItemID: item.ID}); err == nil {
 		t.Fatal("a narrative with no phase id was accepted")
 	}
@@ -423,7 +423,7 @@ func TestWorkflowAgentRunNarrativeTruncatesAnOversizedAccount(t *testing.T) {
 	// Multi-byte content, so a byte-bounded read has a rune to split.
 	h.narrative(t, path, strings.Repeat("é", maxWorkflowNarrativeBytes))
 
-	narrative, err := h.app.WorkflowAgentRunNarrative(h.scope(def.GrantIntrospect),
+	narrative, err := h.app.workflowAgentRunNarrative(h.scope(def.GrantIntrospect),
 		WorkflowAgentNarrativeInput{ItemID: item.ID, PhaseID: "review"})
 	if err != nil {
 		t.Fatal(err)
@@ -448,27 +448,27 @@ func TestWorkflowAgentInspectAndNarrativeAreRowConfined(t *testing.T) {
 	h.phase(t, store.WorkItemPhase{ItemID: item.ID, PhaseID: "review", Attempt: 1, StartedAt: 10})
 
 	blind := h.scope(def.GrantStartRun)
-	if _, err := h.app.WorkflowAgentInspectRun(blind, WorkflowAgentInspectInput{ItemID: item.ID}); err == nil ||
+	if _, err := h.app.workflowAgentInspectRun(blind, WorkflowAgentInspectInput{ItemID: item.ID}); err == nil ||
 		!strings.Contains(err.Error(), "may only act on the runs it started") {
 		t.Fatalf("a start-run-only phase inspected a run it did not start: %v", err)
 	}
-	if _, err := h.app.WorkflowAgentRunNarrative(blind,
+	if _, err := h.app.workflowAgentRunNarrative(blind,
 		WorkflowAgentNarrativeInput{ItemID: item.ID, PhaseID: "review"}); err == nil ||
 		!strings.Contains(err.Error(), "may only act on the runs it started") {
 		t.Fatalf("a start-run-only phase read a foreign run's narrative: %v", err)
 	}
-	if _, err := h.app.WorkflowAgentInspectRun(h.scope(def.GrantIntrospect),
+	if _, err := h.app.workflowAgentInspectRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentInspectInput{ItemID: item.ID}); err != nil {
 		t.Fatalf("introspect could not inspect a project run: %v", err)
 	}
 	// The webview carries no caller scope and has no business on this surface.
-	if _, err := h.app.WorkflowAgentInspectRun(context.Background(),
+	if _, err := h.app.workflowAgentInspectRun(context.Background(),
 		WorkflowAgentInspectInput{ItemID: item.ID}); err == nil {
 		t.Fatal("an unscoped call reached the agent surface")
 	}
 }
 
-// The blocking read behind `agent-overflow run watch`. Transitions reach the
+// The blocking read behind run_watch. Transitions reach the
 // ring through the SAME listener a wake does (`afterWorkflowEngineEvent`), so
 // what these drive is the wiring, not a private test entry point.
 
@@ -538,12 +538,12 @@ func TestWorkflowAgentWatchRunAnswersTheFirstCallWithoutBlocking(t *testing.T) {
 	h.move(t, item.ID, "survey", 1, engine.StateRunning, engine.StateRunning, "")
 
 	started := time.Now()
-	result, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	result, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: item.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if elapsed := time.Since(started); elapsed > maxWorkflowWatchHold/2 {
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
 		t.Fatalf("a cursorless watch blocked for %s", elapsed)
 	}
 	if len(result.Transitions) != 0 {
@@ -565,7 +565,7 @@ func TestWorkflowAgentWatchRunBlocksUntilTheRunMoves(t *testing.T) {
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
-	first, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	first, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: item.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -573,7 +573,7 @@ func TestWorkflowAgentWatchRunBlocksUntilTheRunMoves(t *testing.T) {
 
 	answered := make(chan WorkflowAgentWatchResult, 1)
 	go func() {
-		result, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+		result, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 			WorkflowAgentWatchInput{ItemID: item.ID, Cursor: first.Cursor, WaitMillis: 5000})
 		if err != nil {
 			t.Error(err)
@@ -626,14 +626,14 @@ func TestWorkflowAgentWatchRunReportsARepark(t *testing.T) {
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonQuestion)})
-	first, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	first, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: item.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.move(t, item.ID, "survey", 1, engine.StateNeedsHuman, engine.StateNeedsHuman, engine.ReasonTakenOver)
 
-	result, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	result, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: item.ID, Cursor: first.Cursor, WaitMillis: 5000})
 	if err != nil {
 		t.Fatal(err)
@@ -654,14 +654,14 @@ func TestWorkflowAgentWatchRunTreeFollowsCalledRuns(t *testing.T) {
 		State: string(engine.StateRunning), Source: "call", ParentItemID: root.ID,
 		ParentPhaseID: "wave", ParentAttempt: 3, CallDepth: 1, CreatedAt: 2})
 
-	first, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	first, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: root.ID, Tree: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.move(t, child.ID, "build", 1, engine.StateRunning, engine.StateNeedsHuman, engine.ReasonUnitFailed)
 
-	result, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	result, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: root.ID, Cursor: first.Cursor, Tree: true, WaitMillis: 5000})
 	if err != nil {
 		t.Fatal(err)
@@ -676,7 +676,7 @@ func TestWorkflowAgentWatchRunTreeFollowsCalledRuns(t *testing.T) {
 	}
 	// The same transition is invisible without the flag: the watch is scoped to
 	// what the caller asked to watch.
-	narrow, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	narrow, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: root.ID, Cursor: first.Cursor, WaitMillis: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -766,7 +766,7 @@ func TestWorkflowAgentWatchRunAnswersAnUntrimmedID(t *testing.T) {
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonQuestion)})
 
-	result, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	result, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: " " + item.ID + "\n", Tree: true})
 	if err != nil {
 		t.Fatal(err)
@@ -797,14 +797,14 @@ func TestWorkflowAgentWatchRunCarriesTheParkCauseOfThatAttempt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	first, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	first, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: item.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.move(t, item.ID, "survey", 1, engine.StateRunning, engine.StateNeedsHuman, engine.ReasonSetupFailed)
 
-	result, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	result, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: item.ID, Cursor: first.Cursor, WaitMillis: 5000})
 	if err != nil {
 		t.Fatal(err)
@@ -825,7 +825,7 @@ func TestWorkflowAgentWatchRunGapsAnImpossibleCursor(t *testing.T) {
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
-	result, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	result, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: item.ID, Cursor: 9_000, WaitMillis: 5000})
 	if err != nil {
 		t.Fatal(err)
@@ -845,13 +845,13 @@ func TestWorkflowAgentWatchRunHonoursTheCallersWaitBudget(t *testing.T) {
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
-	first, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	first, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: item.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	started := time.Now()
-	result, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	result, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: item.ID, Cursor: first.Cursor, WaitMillis: 60})
 	if err != nil {
 		t.Fatal(err)
@@ -876,7 +876,7 @@ func TestWorkflowAgentWatchRunReturnsWhenTheCallerHangsUp(t *testing.T) {
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
-	first, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	first, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: item.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -885,7 +885,7 @@ func TestWorkflowAgentWatchRunReturnsWhenTheCallerHangsUp(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := h.app.WorkflowAgentWatchRun(ctx,
+		if _, err := h.app.workflowAgentWatchRun(ctx,
 			WorkflowAgentWatchInput{ItemID: item.ID, Cursor: first.Cursor, WaitMillis: 20_000}); err != nil {
 			t.Error(err)
 		}
@@ -907,11 +907,11 @@ func TestWorkflowAgentWatchRunRefusesARunThePhaseMayNotSee(t *testing.T) {
 	h := newWatchHarness(t)
 	item := h.run(t, store.WorkItem{ID: "root", Goal: "port", WorkflowID: "campaign",
 		State: string(engine.StateRunning)})
-	_, err := h.app.WorkflowAgentWatchRun(h.scope(), WorkflowAgentWatchInput{ItemID: item.ID})
+	_, err := h.app.workflowAgentWatchRun(h.scope(), WorkflowAgentWatchInput{ItemID: item.ID})
 	if err == nil {
 		t.Fatal("a phase with no grant watched a run it did not start")
 	}
-	if _, err := h.app.WorkflowAgentWatchRun(h.scope(def.GrantIntrospect),
+	if _, err := h.app.workflowAgentWatchRun(h.scope(def.GrantIntrospect),
 		WorkflowAgentWatchInput{ItemID: "nonexistent"}); err == nil {
 		t.Fatal("watching a run that does not exist was accepted")
 	}

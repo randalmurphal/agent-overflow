@@ -14,7 +14,7 @@ import (
 // gave up on a provider API failure — and the session it died in is still there.
 // These tests pin that a bare resume continues on it, that the two things a
 // continuation cannot do (refill a loop bound, deliver pending guidance) stay
-// undone, and that `--phase` is still the start-over.
+// undone, and that `phase_id` is still the start-over.
 
 // parkProviderRetriesExhausted drives a single-shape run into the park the runner
 // produces when transient retries run out, with its attempt attached to a live
@@ -39,7 +39,7 @@ func parkProviderRetriesExhausted(t *testing.T, h *testHarness, itemID, threadID
 	return item.ID
 }
 
-// The change itself: `run resume` with no phase takes the next turn on the
+// The change itself: a bare resume with no phase takes the next turn on the
 // session the dead one ran in, instead of throwing away a turn's context that a
 // phase running for many minutes had built up.
 func TestResumeAfterProviderRetriesExhaustedContinuesTheParkedSession(t *testing.T) {
@@ -91,7 +91,7 @@ func TestResumeAfterProviderRetriesExhaustedFallsBackWhenTheSessionIsGone(t *tes
 	}
 }
 
-// Naming a phase is still the deliberate start-over, and `--refresh-def` is
+// Naming a phase is still the deliberate start-over, and `refresh_def` is
 // still offered only there: a bare resume now continues an attempt launched
 // under the frozen definition, so the refusal names the flag's one entry point.
 func TestResumeWithAPhaseAfterProviderRetriesExhaustedIsStillTheFreshEntry(t *testing.T) {
@@ -99,8 +99,8 @@ func TestResumeWithAPhaseAfterProviderRetriesExhaustedIsStillTheFreshEntry(t *te
 	item := parkProviderRetriesExhausted(t, h, "item", "thread-one")
 
 	err := h.engine.Resume(item, "", true)
-	if err == nil || !strings.Contains(err.Error(), "--phase work") {
-		t.Fatalf("bare --refresh-def resume = %v, want a refusal naming the fresh entry", err)
+	if err == nil || !strings.Contains(err.Error(), "phase_id work") {
+		t.Fatalf("bare refresh_def resume = %v, want a refusal naming the fresh entry", err)
 	}
 	requireItemState(t, h.store, item, StateNeedsHuman, ReasonProviderRetriesExhausted)
 
@@ -284,7 +284,7 @@ func TestGuidanceIsNotDeliveredByARetriesExhaustedContinuation(t *testing.T) {
 	}
 }
 
-// `run amend` says WHEN the run reads a new seed, and for this park the honest
+// `run_amend` says WHEN the run reads a new seed, and for this park the honest
 // answer is the next attempt: a single-shape continuation continues the SESSION,
 // and the turn it starts builds its variable context from the run row like any
 // other. The second half is what makes the label more than a string.

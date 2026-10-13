@@ -127,6 +127,7 @@ func (a *App) runSessionStart(ctx context.Context, threadID string, start func()
 func (a *App) revokeSessionMCP(threadID, token string) {
 	a.revokeRemoteMCP(threadID, token)
 	a.revokeThreadMCP(threadID, token)
+	a.workflowMCPServer().RevokeThread(threadID, token)
 	if a.browser.mcp != nil {
 		a.browser.mcp.RevokeThread(threadID, token)
 	}
@@ -160,11 +161,11 @@ func (a *App) closeProviderSession(threadID string, sess session) error {
 	return nil
 }
 
-// The `ao` execution surface (spec §5, D15/D17).
+// The session credential for the `agent-overflow remote` command (D30).
 //
 // Every provider session the app starts is handed a scoped credential in its
-// process environment. The credential authorizes the workflow CLI's method set
-// and nothing else, and it lives exactly as long as the session: minted while
+// process environment. The credential authorizes the `remote` command's method
+// set (transport.ScopedTokenMethods) and nothing else, and it lives exactly as long as the session: minted while
 // the session's launch config is built, registered when the session enters the
 // session map, revoked the moment it leaves. Registration riding the session
 // map — not the spawn path — is what makes leaking an entry structurally
@@ -240,35 +241,7 @@ func (a *App) mintAOCredential(thread store.Thread) (aoSessionCredential, error)
 		aocli.EnvToken:    token,
 		aocli.EnvThreadID: thread.ID,
 	}
-	// The project's slug, not its id: the offline half of the CLI resolves
-	// project-scoped workflow definitions from a directory named by slug, and it
-	// has no app to translate an id with. A scope always carries a project (a
-	// projectless thread gets no credential at all), so a missing slug here is a
-	// project row that predates slugs rather than a session without a project.
-	slug, err := a.projectSlug(scope.ProjectID)
-	if err != nil {
-		return aoSessionCredential{}, err
-	}
-	if slug != "" {
-		env[aocli.EnvProject] = slug
-	}
-	if scope.IsPhase() {
-		env[aocli.EnvRunID] = scope.ItemID
-		env[aocli.EnvPhaseID] = scope.PhaseID
-	}
 	return aoSessionCredential{token: token, scope: scope, env: env}, nil
-}
-
-// projectSlug resolves one project's stable user-facing identifier.
-func (a *App) projectSlug(projectID string) (string, error) {
-	if strings.TrimSpace(projectID) == "" {
-		return "", nil
-	}
-	project, err := a.store.GetProject(projectID)
-	if err != nil {
-		return "", fmt.Errorf("ao session env: load project %s: %w", projectID, err)
-	}
-	return project.Slug, nil
 }
 
 // aoEndpointFromOrigin validates the transport's own origin into the endpoint
@@ -287,10 +260,9 @@ func aoEndpointFromOrigin(origin string) (string, error) {
 }
 
 // deriveCallerScope answers "what authority does this thread's session have".
-// A workflow phase or fan-out unit thread carries its frozen phase's grants; a
-// unit inherits the phase's, because a unit is that phase's work. Every other
-// app-owned session is interactive: full user authority over the CLI's method
-// set, exercised one bash approval at a time.
+// A workflow phase or fan-out unit thread carries its frozen phase's grants and
+// its own frozen access (derivePhaseScope). Every other app-owned session in a
+// project is interactive: the user's authority over that project's runs.
 func (a *App) deriveCallerScope(thread store.Thread) (transport.CallerScope, bool, error) {
 	if a.store == nil {
 		return transport.CallerScope{}, false, nil
@@ -299,8 +271,8 @@ func (a *App) deriveCallerScope(thread store.Thread) (transport.CallerScope, boo
 		return a.derivePhaseScope(thread)
 	}
 	if strings.TrimSpace(thread.ProjectID) == "" {
-		// A projectless thread has nothing to scope runs against; the CLI would
-		// have no project to start or list in.
+		// A projectless thread has nothing to scope runs against: there is no
+		// project to start or list runs in.
 		return transport.CallerScope{}, false, nil
 	}
 	return transport.CallerScope{
@@ -308,84 +280,111 @@ func (a *App) deriveCallerScope(thread store.Thread) (transport.CallerScope, boo
 	}, true, nil
 }
 
-// derivePhaseScope resolves the run, phase, and frozen grants behind a workflow
-// thread. A unit thread resolves through its unit row; a phase thread through
-// its phase row. Either way the grants come from the run's SNAPSHOT, never from
-// the definition on disk — a definition edited mid-run must not widen what an
-// already-running phase may do.
+// derivePhaseScope resolves the run, phase, frozen grants and access behind a
+// workflow thread. A unit thread resolves through its unit row; a phase thread
+// through its phase row. Either way both come from the run's SNAPSHOT, never
+// from the definition on disk: a definition edited mid-run must not widen what
+// an already-running phase may do.
 func (a *App) derivePhaseScope(thread store.Thread) (transport.CallerScope, bool, error) {
-	itemID, phaseID, err := a.workflowPhaseForThread(thread.ID)
+	attached, err := a.workflowPhaseForThread(thread.ID)
 	if err != nil {
 		return transport.CallerScope{}, false, err
 	}
-	if itemID == "" {
+	if attached.itemID == "" {
 		// A workflow thread whose attempt row is not attached yet (or was torn
 		// down) gets no credential rather than an unscoped one.
 		return transport.CallerScope{}, false, nil
 	}
-	item, err := a.store.GetWorkItem(itemID)
+	item, err := a.store.GetWorkItem(attached.itemID)
 	if err != nil {
 		return transport.CallerScope{}, false, fmt.Errorf("ao session scope for thread %s: %w", thread.ID, err)
 	}
-	grants, err := frozenPhaseGrants(item.Snapshot, phaseID)
+	authority, err := frozenPhaseAuthority(item.Snapshot, attached)
 	if err != nil {
 		return transport.CallerScope{}, false, fmt.Errorf("ao session scope for thread %s: %w", thread.ID, err)
 	}
 	return transport.CallerScope{
 		Kind: transport.ScopeKindPhase, ThreadID: thread.ID, ProjectID: item.ProjectID,
-		ItemID: item.ID, PhaseID: phaseID, Grants: grants,
+		ItemID: item.ID, PhaseID: attached.phaseID, Grants: authority.grants, Access: string(authority.access),
 	}, true, nil
 }
 
-// workflowPhaseForThread maps a workflow thread onto the (item, phase) it is
-// running. Unit rows are consulted first: a unit thread also has no phase row of
-// its own, so asking the phase table first would attribute it to whichever phase
-// attempt last touched the thread.
-func (a *App) workflowPhaseForThread(threadID string) (string, string, error) {
+// phaseAttachment is the work a workflow thread runs: a phase attempt, or one
+// fan-out unit (or the join) of it.
+type phaseAttachment struct {
+	itemID, phaseID string
+	unitID          string
+	join            bool
+}
+
+// workflowPhaseForThread maps a workflow thread onto the (item, phase, unit) it
+// is running. Unit rows are consulted first: a unit thread also has no phase
+// row of its own, so asking the phase table first would attribute it to
+// whichever phase attempt last touched the thread.
+func (a *App) workflowPhaseForThread(threadID string) (phaseAttachment, error) {
 	unit, found, err := a.store.GetWorkItemUnitByThread(threadID)
 	if err != nil {
-		return "", "", err
+		return phaseAttachment{}, err
 	}
 	if found {
-		return unit.ItemID, unit.PhaseID, nil
+		return phaseAttachment{
+			itemID: unit.ItemID, phaseID: unit.PhaseID,
+			unitID: unit.UnitID, join: unit.Kind == store.WorkItemUnitKindJoin,
+		}, nil
 	}
 	phase, found, err := a.store.GetWorkItemPhaseByThread(threadID)
 	if err != nil {
-		return "", "", err
+		return phaseAttachment{}, err
 	}
 	if !found {
-		return "", "", nil
+		return phaseAttachment{}, nil
 	}
-	return phase.ItemID, phase.PhaseID, nil
+	return phaseAttachment{itemID: phase.ItemID, phaseID: phase.PhaseID}, nil
 }
 
-// frozenPhaseGrants reads one phase's grants out of a run's frozen snapshot. A
-// phase the snapshot does not name is a wiring bug, not a permission question,
-// so it is reported rather than resolved to "no grants".
-func frozenPhaseGrants(snapshot json.RawMessage, phaseID string) ([]string, error) {
+// phaseAuthority is what a phase session may do: its phase's grants (a unit
+// inherits them, because a unit is that phase's work) and the access its own
+// definition declares (a unit declares its own).
+type phaseAuthority struct {
+	grants []string
+	access def.Access
+}
+
+// frozenPhaseAuthority reads a phase session's authority out of a run's frozen
+// snapshot. A phase or unit the snapshot does not name is a wiring bug, not a
+// permission question, so it is reported rather than resolved to "no grants".
+// An empty snapshot is the pre-freeze state: no grants, default access.
+func frozenPhaseAuthority(snapshot json.RawMessage, attached phaseAttachment) (phaseAuthority, error) {
 	if len(snapshot) == 0 {
-		return nil, nil
+		return phaseAuthority{access: def.DefaultAccess}, nil
 	}
 	var decoded engine.Snapshot
 	if err := json.Unmarshal(snapshot, &decoded); err != nil {
-		return nil, fmt.Errorf("decode run snapshot: %w", err)
+		return phaseAuthority{}, fmt.Errorf("decode run snapshot: %w", err)
 	}
 	for _, phase := range decoded.Workflow.Phases {
-		if phase.ID != phaseID {
+		if phase.ID != attached.phaseID {
 			continue
 		}
-		grants := make([]string, 0, len(phase.Grants))
+		authority := phaseAuthority{grants: make([]string, 0, len(phase.Grants)), access: phase.EffectiveAccess()}
 		for _, grant := range phase.Grants {
 			// A snapshot frozen before a grant was retired (or written by a
 			// definition that failed validation on another path) must not hand
 			// out authority this build cannot enforce.
 			if def.KnownGrant(grant) {
-				grants = append(grants, grant)
+				authority.grants = append(authority.grants, grant)
 				continue
 			}
-			log.Printf("ao session scope: phase %q declares unknown grant %q; ignoring", phaseID, grant)
+			log.Printf("ao session scope: phase %q declares unknown grant %q; ignoring", attached.phaseID, grant)
 		}
-		return grants, nil
+		if attached.unitID != "" {
+			unit, found := def.UnitDefinition(phase, attached.unitID, attached.join)
+			if !found {
+				return phaseAuthority{}, fmt.Errorf("unit %q is not in phase %q of the run's frozen workflow", attached.unitID, attached.phaseID)
+			}
+			authority.access = unit.EffectiveAccess()
+		}
+		return authority, nil
 	}
-	return nil, fmt.Errorf("phase %q is not in the run's frozen workflow", phaseID)
+	return phaseAuthority{}, fmt.Errorf("phase %q is not in the run's frozen workflow", attached.phaseID)
 }

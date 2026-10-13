@@ -1,5 +1,6 @@
 // Presentation of the tools Agent Overflow itself serves to a provider
-// (`ao-remote-tools`, `ao-browser-tools`), so their rows read like native
+// (`ao-remote-tools`, `ao-browser-tools`, `ao-thread-tools`,
+// `ao-workflow-tools`), so their rows read like native
 // tool calls: an icon for the family, a verb in the gutter, and the one
 // argument a reader wants (the command, the URL, the selector) instead of
 // `server.tool(key=value, …)`.
@@ -31,6 +32,9 @@ export const REMOTE_TOOLS_SERVER = 'ao-remote-tools';
 
 /** Mirrors `internal/app/app_thread_tools_mcp.go#threadMCPName`. */
 export const THREAD_TOOLS_SERVER = 'ao-thread-tools';
+
+/** Mirrors `internal/workflowtools/server.go#MCPServerName`. */
+export const WORKFLOW_TOOLS_SERVER = 'ao-workflow-tools';
 
 /** Names for the ids a tool input carries; '' when the name is unknown. */
 export interface AoToolNames {
@@ -412,6 +416,77 @@ function wakeInterval(seconds: number): string {
   return `${seconds}s`;
 }
 
+/** A run by a short id, the way a thread is named: `run 1a2b3c4d`. */
+function runRef(input: Input): string {
+  const id = str(input, 'run_id');
+  if (!id) return '';
+  return id.length > SHORT_ID_CHARS ? `run ${id.slice(0, SHORT_ID_CHARS)}` : `run ${id}`;
+}
+
+/** A run and, when the call names one, the phase it reads. */
+function runPhaseRef(input: Input): string {
+  const phase = str(input, 'phase_id');
+  return [runRef(input), phase ? `phase ${phase}` : ''].filter(Boolean).join(' · ');
+}
+
+function seedNames(input: Input): string {
+  const seeds = input.seeds;
+  if (!seeds || typeof seeds !== 'object' || Array.isArray(seeds)) return '';
+  return Object.keys(seeds).join(', ');
+}
+
+const WORKFLOW_TOOLS: Record<string, AoToolSpec> = {
+  workflow_list: { label: 'list', what: () => 'workflows' },
+  workflow_validate: { label: 'validate', what: (input) => str(input, 'id') || str(input, 'path') },
+  workflow_schema: { label: 'schema', what: () => 'workflow schema' },
+  workflow_new: {
+    label: 'new',
+    what: (input) => {
+      const id = str(input, 'id');
+      const starter = str(input, 'starter');
+      return starter ? `${id} from ${starter}` : id;
+    },
+  },
+  run_start: {
+    label: 'start',
+    what: (input) => {
+      const goal = firstLine(input, 'goal');
+      return [str(input, 'workflow_id'), goal ? quoted(goal) : ''].filter(Boolean).join(' · ');
+    },
+  },
+  run_status: { label: 'status', what: (input) => runRef(input) },
+  run_watch: {
+    label: 'watch',
+    what: (input) => [runRef(input), input.tree === true ? 'and its called runs' : ''].filter(Boolean).join(' '),
+  },
+  run_output: { label: 'output', what: (input) => runRef(input) },
+  run_inspect: { label: 'inspect', what: (input) => runPhaseRef(input) },
+  run_narrative: { label: 'narrative', what: (input) => runPhaseRef(input) },
+  run_list: { label: 'list', what: (input) => (input.active_only === true ? 'active runs' : 'runs') },
+  run_control: {
+    label: 'control',
+    what: (input) => [str(input, 'action').replace(/_/g, ' '), runPhaseRef(input)].filter(Boolean).join(' '),
+  },
+  run_amend: {
+    label: 'amend',
+    what: (input) => [runRef(input), seedNames(input)].filter(Boolean).join(' · '),
+  },
+  run_guide: { label: 'guide', what: (input) => [runRef(input), firstLine(input, 'text')].filter(Boolean).join(' · ') },
+  run_resolve: {
+    label: 'resolve',
+    what: (input) => [str(input, 'decision'), runRef(input)].filter(Boolean).join(' '),
+  },
+  memory_add: {
+    label: 'remember',
+    what: (input) => {
+      const kind = str(input, 'kind');
+      const text = firstLine(input, 'text');
+      return kind && text ? `${kind}: ${text}` : kind || text;
+    },
+  },
+  memory_list: { label: 'memory', what: (input) => str(input, 'kind') || runRef(input) || 'campaign notes' },
+};
+
 export const AO_TOOL_SERVERS: Record<string, AoToolServer> = {
   [REMOTE_TOOLS_SERVER]: {
     family: 'Remote',
@@ -432,6 +507,12 @@ export const AO_TOOL_SERVERS: Record<string, AoToolServer> = {
     prefix: 'thread_',
     tools: THREAD_TOOLS,
     computerField: 'computer_id',
+  },
+  [WORKFLOW_TOOLS_SERVER]: {
+    family: 'Workflow',
+    icon: 'checklist',
+    prefix: '',
+    tools: WORKFLOW_TOOLS,
   },
 };
 

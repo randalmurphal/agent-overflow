@@ -154,7 +154,7 @@ func main() {
 		os.Exit(runDesktopApply(os.Args[2:]))
 	}
 
-	// This binary is also the workflow CLI (D30): there is no separate `ao`
+	// This binary is also the `agent-overflow` CLI (D30): there is no separate
 	// executable, and a provider session finds this one on its PATH under the
 	// canonical name (see ensureCLISymlink). The two sidecars above are internal
 	// re-execs of our own making and win the argv outright; everything from here

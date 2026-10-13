@@ -865,7 +865,7 @@ CREATE TABLE thread_import_state (
 		// this carries a person's steering in without parking the run.
 		//
 		// A JSON array of `{text, at, by, byRun}` objects, appended by
-		// `run guide` and cleared by the entry that delivers it. Empty (the
+		// `run_guide` and cleared by the entry that delivers it. Empty (the
 		// default, and what a cleared slot is set back to) means nothing is
 		// pending. The engine bounds both the per-entry size and the entry count
 		// before it writes, so the column stays small enough to read on every
@@ -886,8 +886,8 @@ CREATE TABLE thread_import_state (
 		// Unix milliseconds at which a parked run resumes ITSELF, or 0 for the
 		// runs that never will — which is almost all of them.
 		//
-		// It is written by `agent-overflow run resume --at`, an explicit request
-		// to continue a parked attempt at a future moment. Provider usage-limit
+		// It is written by a scheduled resume (`run_control` resume with `at`),
+		// an explicit request to continue a parked attempt at a future moment. Provider usage-limit
 		// handling no longer arms it (D75): a typed refusal parks and waits for an
 		// ordinary explicit action.
 		//

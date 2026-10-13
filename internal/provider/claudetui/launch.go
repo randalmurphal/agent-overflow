@@ -119,6 +119,15 @@ func buildLaunchOptions(cfg Config, systemPromptPath, appendSystemPromptPath, ga
 		args = append(args, "--disallowedTools", tool)
 	}
 
+	if mcpJSON, ok := claude.MCPConfigJSON(cfg.MCPServers); ok {
+		// The same flag and payload as the headless buildArgs; one binary
+		// reads it the same way in both modes.
+		args = append(args, "--mcp-config", mcpJSON)
+	}
+	for _, tool := range claude.SanitizeAllowedTools(cfg.AllowedTools) {
+		args = append(args, "--allowedTools", tool)
+	}
+
 	return terminal.SessionOptions{
 		Shell: cfg.Binary,
 		Args:  args,

@@ -910,10 +910,10 @@ func TestWorkflowCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
 	for _, want := range []string{
 		"needs-human (checkpoint)",
 		`run "checkpoint-wave" reached the checkpoint and did not start the next one`,
-		// The literal command, against the DESCENDANT's id: the run to act on is
+		// The literal call, against the DESCENDANT's id: the run to act on is
 		// one the reader has never seen, and "resume" is one of four control
-		// verbs it could otherwise be mapped onto.
-		"`agent-overflow run resume \"checkpoint-wave\"` takes the call it skipped, or leave it parked.",
+		// actions it could otherwise be mapped onto.
+		"`run_control(run_id: \"checkpoint-wave\", action: \"resume\")` takes the call it skipped, or leave it parked.",
 	} {
 		if !strings.Contains(sends[0], want) {
 			t.Fatalf("checkpoint wake missing %q:\n%s", want, sends[0])
@@ -992,7 +992,7 @@ func TestWorkflowWakeSaysWhyEachFailedUnitRests(t *testing.T) {
 	// attempt down: the phase attempt's status, not the run's reason.
 	const interrupted = "interrupted with its phase attempt (parked)"
 	// A note far past the reference budget still leaves the id and the thread
-	// whole, because those are what `run retry-unit` and a thread read take.
+	// whole, because those are what `retry_unit` and a thread read take.
 	long := "unit outcome error: " + strings.Repeat("stack frame; ", 200)
 	if err := h.app.store.CreateWorkItemUnits([]store.WorkItemUnit{
 		{ItemID: item.ID, PhaseID: "fan", Attempt: 1, UnitID: "adjudicate", UnitIndex: 0,
@@ -1437,7 +1437,7 @@ func TestWorkflowWakeCarriesTheWorkspaceAndTheGateOutputs(t *testing.T) {
 	}
 }
 
-// The attempt digest is bounded by the same helper `run inspect` uses, and says
+// The attempt digest is bounded by the same helper `run_inspect` uses, and says
 // what it left out — a digest that hides its own truncation is how a reader
 // concludes an output does not exist.
 func TestWorkflowWakeBoundsTheGateOutputsAndNamesTheDrillDown(t *testing.T) {
@@ -1461,7 +1461,7 @@ func TestWorkflowWakeBoundsTheGateOutputsAndNamesTheDrillDown(t *testing.T) {
 	if len(sends) != 1 {
 		t.Fatalf("wakes = %d, want one", len(sends))
 	}
-	if !strings.Contains(sends[0], "…and 3 more (`agent-overflow run inspect \"bounded-run\" --phase \"review\" --attempt 1`).") {
+	if !strings.Contains(sends[0], "…and 3 more (`run_inspect(run_id: \"bounded-run\", phase_id: \"review\", attempt: 1)`).") {
 		t.Fatalf("wake did not state its own overflow with the read that answers it:\n%s", sends[0])
 	}
 	if !strings.Contains(sends[0], "[truncated]") {
@@ -1580,7 +1580,7 @@ func TestWorkflowWakeQueuedRecordIsSpentByAnActionBeforeItDispatches(t *testing.
 	}
 
 	// (2) Somebody acts before the thread reaches a boundary — an overlay
-	// resolve, a `run resume`, an auto-resume timer: all of them land here.
+	// resolve, a run_control resume, an auto-resume timer: all of them land here.
 	h.act(item.ID, item.ProjectID, engine.StateNeedsHuman)
 	if spent, err := h.app.store.WorkItemWakeSignature(item.ID); err != nil || spent != "" {
 		t.Fatalf("the action did not spend the queued wake record: %q (err %v)", spent, err)

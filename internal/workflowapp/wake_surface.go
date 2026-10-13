@@ -33,10 +33,17 @@ import (
 
 // afterWorkflowResting runs the wake half of a lifecycle transition. It is
 // called from the one app-side item-state listener, so a wake and a
-// notification are always decided from the same event.
-func (s *Service) afterWorkflowResting(item store.WorkItem, usageClaim *store.WorkflowProviderUsageAttentionClaim) bool {
+// notification are always decided from the same event. restAt is the ring
+// head when the rest's wake was queued.
+func (s *Service) afterWorkflowResting(item store.WorkItem, usageClaim *store.WorkflowProviderUsageAttentionClaim, restAt int64) bool {
 	if item.OriginThreadID == "" {
 		return false
+	}
+	if s.keepBackRest(item, usageClaim, restAt) {
+		// A waiting call has the rest (wake_hold.go). Reported as delivered:
+		// the hold carries the usage claim, and the call or its release
+		// settles it.
+		return true
 	}
 	composed, err := s.composeWorkflowWake(item, nil)
 	if err != nil {
@@ -270,7 +277,7 @@ func (s *Service) composeWorkflowWake(item store.WorkItem, descendant *wakeDesce
 // already supplies, so this stays scoped rather than adding outputs to every
 // message.
 //
-// It shares `run inspect`'s bounding rather than growing a second one, so the
+// It shares `run_inspect`'s bounding rather than growing a second one, so the
 // same outputs read the same way on both surfaces. A digest that cannot be read
 // is logged and dropped: a wake whose repair verb is correct must not be
 // suppressed over an unreadable envelope.
@@ -421,7 +428,7 @@ func (s *Service) workflowRestingNarrative(itemID string) (string, bool) {
 // output envelope.
 // workflowGateDecision resolves what kind of `gate` park a run rests under —
 // "human" for a human: route (an approve/reject exists), "park" for a park:
-// route (no continuation is declared, `run resolve` does not apply) — plus a
+// route (no continuation is declared, `run_resolve` does not apply), plus a
 // park: route's authored label. The two rest under one typed reason, so the
 // wake's repair verb depends on this read. Best-effort: a record that cannot
 // be read composes the wake without it, which the composer renders as the

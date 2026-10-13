@@ -1,11 +1,9 @@
-package aocli
+package catalog
 
 import (
 	"bytes"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,9 +18,13 @@ import (
 
 var workflowIDPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
-type scaffoldResult struct {
+// ScaffoldResult is what Scaffold created and what the new definition
+// validates to. Note is set when an existing authoring schema beside the
+// scope was left untouched.
+type ScaffoldResult struct {
 	Created    []string             `json:"created"`
 	Validation def.ValidationResult `json:"validation"`
+	Note       string               `json:"note,omitempty"`
 }
 
 type scaffoldFile struct {
@@ -30,139 +32,80 @@ type scaffoldFile struct {
 	data []byte
 }
 
-// runNew deliberately does NOT default --project from AO_PROJECT the way the
-// read commands do. --project is this command's write destination, not a filter:
-// inheriting it would silently redirect where files land and leave no way to
-// scaffold into the shared scope from inside a session. The read commands always
-// include shared scope, so a shared-by-default scaffold is still listed and
-// validated by the very next command an agent runs.
-func runNew(args []string, inheritedConfigRoot string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		if err := writeNewUsage(stderr); err != nil {
-			return operationalError(stderr, err)
-		}
-		return exitError
+// Starters names every source Scaffold accepts: the registered starters and
+// `blank`.
+func Starters() []string { return append(starters.List(), "blank") }
+
+// Scaffold copies a starter (or the blank definition) into a scope under a new
+// id and validates the result. projectSlug is the write destination: empty
+// writes to the shared scope, a slug to that project's. A destination is never
+// inferred from the caller's project, because the shared scope must stay
+// reachable from inside a project session; listing and validation always
+// include shared, so a shared scaffold is still seen by the next call.
+func Scaffold(configRoot, starterName, id, projectSlug string) (ScaffoldResult, error) {
+	if strings.TrimSpace(id) == "" {
+		return ScaffoldResult{}, errors.New("a workflow id is required")
 	}
-	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		if err := writeNewUsage(stdout); err != nil {
-			return operationalError(stderr, err)
-		}
-		return exitOK
+	if !workflowIDPattern.MatchString(id) {
+		return ScaffoldResult{}, fmt.Errorf("invalid workflow id %q (want [a-z0-9-]+)", id)
 	}
-	starterName := args[0]
-	flags := flag.NewFlagSet("agent-overflow workflow new", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	configRoot := flags.String("config-root", inheritedConfigRoot, "override the Agent Overflow config root")
-	id := flags.String("id", "", "id for the scaffolded workflow")
-	projectSlug := flags.String("project", "", "write to the project workflow scope")
-	jsonOutput := flags.Bool("json", false, "write the scaffold result as JSON")
-	if err := flags.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			if writeErr := writeNewUsage(stdout); writeErr != nil {
-				return operationalError(stderr, writeErr)
-			}
-			return exitOK
-		}
-		fmt.Fprintf(stderr, "agent-overflow workflow new: %v\n", err)
-		_ = writeNewUsage(stderr)
-		return exitError
+	if err := validateProjectSlug(projectSlug); err != nil {
+		return ScaffoldResult{}, err
 	}
-	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "agent-overflow workflow new: unexpected positional arguments")
-		return exitError
-	}
-	if *id == "" {
-		fmt.Fprintln(stderr, "agent-overflow workflow new: --id is required")
-		return exitError
-	}
-	if !workflowIDPattern.MatchString(*id) {
-		return operationalError(stderr, fmt.Errorf("invalid workflow id %q (want [a-z0-9-]+)", *id))
-	}
-	if err := validateProjectSlug(*projectSlug); err != nil {
-		return operationalError(stderr, err)
-	}
-	root, err := resolveConfigRoot(*configRoot)
-	if err != nil {
-		return operationalError(stderr, err)
-	}
-	targetDir := filepath.Join(root, "workflows")
+	targetDir := filepath.Join(configRoot, "workflows")
 	scope := def.ScopeShared
-	if *projectSlug != "" {
-		targetDir = filepath.Join(project.ConfigDir(root, *projectSlug), "workflows")
+	if projectSlug != "" {
+		targetDir = filepath.Join(project.ConfigDir(configRoot, projectSlug), "workflows")
 		scope = def.ScopeProject
 	}
-	files, definitionPath, err := scaffoldFiles(starterName, *id, targetDir)
+	files, definitionPath, err := scaffoldFiles(starterName, id, targetDir)
 	if err != nil {
-		return operationalError(stderr, err)
+		return ScaffoldResult{}, err
 	}
-	targetExists, err := inspectScopeDir(root, targetDir, false)
+	targetExists, err := inspectScopeDir(configRoot, targetDir, false)
 	if err != nil {
-		return operationalError(stderr, err)
+		return ScaffoldResult{}, err
 	}
 	if err := checkScaffoldDestinations(files); err != nil {
-		return operationalError(stderr, err)
+		return ScaffoldResult{}, err
 	}
 	if targetExists {
-		if err := ensureWorkflowIDAvailable(targetDir, scope, *id); err != nil {
-			return operationalError(stderr, err)
+		if err := ensureWorkflowIDAvailable(targetDir, scope, id); err != nil {
+			return ScaffoldResult{}, err
 		}
 	}
-	bindings, err := loadProjectBindings(root, *projectSlug)
+	bindings, err := loadProjectBindings(configRoot, projectSlug)
 	if err != nil {
-		return operationalError(stderr, err)
+		return ScaffoldResult{}, err
 	}
-	schemaPath, schemaCreated, schemaNote, err := ensureAuthoringSchema(root, targetDir)
+	schemaPath, schemaCreated, schemaNote, err := ensureAuthoringSchema(configRoot, targetDir)
 	if err != nil {
-		return operationalError(stderr, err)
+		return ScaffoldResult{}, err
 	}
-	if schemaNote != "" {
-		fmt.Fprintf(stderr, "note: %s\n", schemaNote)
-	}
-	if err := writeScaffold(files, root, targetDir); err != nil {
+	if err := writeScaffold(files, configRoot, targetDir); err != nil {
 		if schemaCreated {
-			err = errors.Join(err, removeConfinedFile(root, filepath.Dir(schemaPath), filepath.Base(schemaPath), schemaPath))
+			err = errors.Join(err, removeConfinedFile(configRoot, filepath.Dir(schemaPath), filepath.Base(schemaPath), schemaPath))
 		}
-		return operationalError(stderr, err)
+		return ScaffoldResult{}, err
 	}
 	workflow, err := def.ParseFile(definitionPath)
 	if err != nil {
-		return operationalError(stderr, err)
+		return ScaffoldResult{}, err
 	}
-	calls, err := NewCallResolver(root, *projectSlug)
+	calls, err := NewCallResolver(configRoot, projectSlug)
 	if err != nil {
-		return operationalError(stderr, err)
+		return ScaffoldResult{}, err
 	}
 	validation := def.Validate(def.ResolvedWorkflow{Workflow: workflow, Scope: scope, Path: definitionPath}, bindings, calls)
 	validation.Findings = slicesx.OrEmpty(validation.Findings)
-	created := make([]string, 0, len(files))
+	created := make([]string, 0, len(files)+1)
 	for _, file := range files {
 		created = append(created, file.path)
 	}
 	if schemaCreated {
 		created = append(created, schemaPath)
 	}
-	result := scaffoldResult{Created: created, Validation: validation}
-	if *jsonOutput {
-		if err := writeJSON(stdout, result); err != nil {
-			return operationalError(stderr, err)
-		}
-	} else {
-		var output strings.Builder
-		for _, path := range created {
-			fmt.Fprintf(&output, "created: %s\n", path)
-		}
-		fmt.Fprintf(&output, "bindings: %s\n", validation.BindingStatus)
-		for _, finding := range validation.Findings {
-			fmt.Fprintf(&output, "%s: %s: %s\n", finding.Element, finding.Code, finding.Message)
-		}
-		if err := writeOutput(stdout, output.String()); err != nil {
-			return operationalError(stderr, err)
-		}
-	}
-	if validation.Valid() {
-		return exitOK
-	}
-	return exitFindings
+	return ScaffoldResult{Created: created, Validation: validation, Note: schemaNote}, nil
 }
 
 func scaffoldFiles(starterName, id, targetDir string) ([]scaffoldFile, string, error) {
@@ -315,16 +258,6 @@ func ensureAuthoringSchema(configRoot, targetDir string) (path string, created b
 		}
 	}
 	return "", false, fmt.Sprintf("existing workflow authoring schema %q differs from this build's; left untouched", path), nil
-}
-
-func writeNewUsage(output io.Writer) error {
-	var usage strings.Builder
-	usage.WriteString("Usage: agent-overflow workflow new <starter|blank> --id <new-id> [options]\n\nStarters:\n")
-	for _, name := range append(starters.List(), "blank") {
-		fmt.Fprintf(&usage, "  %s\n", name)
-	}
-	usage.WriteString("\nOptions:\n  --config-root <path>  override the Agent Overflow config root\n  --id <new-id>         id for the scaffolded workflow (required)\n  --json                write created paths and validation as JSON\n  --project <slug>      write to the project workflow scope\n                        (a write destination, so never taken from AO_PROJECT)\n")
-	return writeOutput(output, usage.String())
 }
 
 const blankWorkflow = `# yaml-language-server: $schema=../workflow.schema.json

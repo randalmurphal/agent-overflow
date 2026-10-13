@@ -28,10 +28,9 @@ const EnvelopeNarrativeField = "narrative"
 
 // EnvelopeMemoryField is the optional control field an element records campaign
 // memory in. It exists for the same reason `narrative` does and is lifted at the
-// same seam: a `read-only` element runs in a session that denies file writes and
-// cannot reliably run a command either, so the CLI verb a writing element uses
-// (`agent-overflow memory add`) is not a channel available to it. Carrying the
-// notes in the envelope works identically on both providers.
+// same seam: a `read-only` element is withheld the memory_add tool a writing
+// element uses (D77), so the envelope is its channel. Carrying the notes in the
+// envelope works identically on both providers.
 //
 // It is a control field, not an output, so an author may still declare an output
 // named `memory` and the two never meet. It is legal on every status — an

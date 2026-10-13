@@ -85,7 +85,7 @@ func (a *App) browserMCPConfigForThread(thread store.Thread, sessionToken string
 // appManagedMCPServers names every MCP server the app registers on a session
 // itself. Each one is hidden from the user-config MCP bindings, toggled in
 // Settings, and named in the app guide (app_agent_guide.go).
-var appManagedMCPServers = []string{appbrowser.ServerName, remoteMCPName, threadMCPName}
+var appManagedMCPServers = []string{appbrowser.ServerName, remoteMCPName, threadMCPName, workflowMCPName}
 
 func isAppManagedMCPServer(name string) bool {
 	return slices.Contains(appManagedMCPServers, strings.TrimSpace(name))

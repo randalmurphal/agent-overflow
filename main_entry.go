@@ -17,7 +17,7 @@ import (
 
 // Argv handling for the app binary. One executable wears three hats: the GUI /
 // headless backend, the internal re-exec sidecars (handled in main before
-// anything here), and the workflow CLI (D30 — there is no separate `ao`
+// anything here), and the `agent-overflow` CLI (D30: there is no separate
 // binary). This file owns the rule that decides which one an argv asked for,
 // and the flag set the boot modes are parsed from.
 
@@ -28,7 +28,7 @@ const (
 	// entryBoot continues into flag parsing and the mode switch: desktop
 	// window, headless backend, remote client, or harness.
 	entryBoot entryMode = iota
-	// entryCLI hands the whole argv to the workflow CLI.
+	// entryCLI hands the whole argv to the CLI.
 	entryCLI
 	// entryRefuse prints CLI help and exits non-zero. Reached only from
 	// inside a provider session, where a boot would mean a second app.
@@ -78,9 +78,8 @@ const superviseVerb = "supervise"
 //     one for the same SQLite file, which is the whole entryRefuse class —
 //     and a SUPERVISOR started there is that plus a second writer of the
 //     launch state.
-//  2. A top-level CLI verb is a CLI invocation anywhere, session or not. The
-//     offline `workflow` commands are useful from a plain terminal and always
-//     have been.
+//  2. A top-level CLI verb is a CLI invocation anywhere, session or not.
+//     `service` and `pair` are useful from a plain terminal.
 //  3. Outside a session (no AO_ENDPOINT) nothing else changes: this is the
 //     binary a user double-clicks, and an unrecognised argument has always
 //     landed in the desktop boot.

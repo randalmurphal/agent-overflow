@@ -428,7 +428,7 @@ func (e *Engine) resume(itemID, targetPhase string, refreshDefinition bool) erro
 			// the continuation a different definition would render one half of an
 			// attempt from each. Naming a phase is the way to say "discard it".
 			return fmt.Errorf(
-				"resume item %q: the run is parked %q, so a bare resume continues the attempt its work was launched under; re-reading the definition needs a fresh entry, so name the phase to enter (--phase %s) if discarding that attempt is intended",
+				"resume item %q: the run is parked %q, so a bare resume continues the attempt its work was launched under; re-reading the definition needs a fresh entry, so name the phase to enter (resume with phase_id %s) if discarding that attempt is intended",
 				itemID, item.item.Reason, item.phaseID,
 			)
 		}
@@ -448,7 +448,7 @@ func (e *Engine) resume(itemID, targetPhase string, refreshDefinition bool) erro
 // whether or not it was asked to. `refreshDefinition` is that same re-read
 // asked for deliberately, on a run that already has a frozen definition.
 //
-// Every fresh re-entry lands here — the human's `--phase`, a bare resume of a
+// Every fresh re-entry lands here: the human's `phase_id`, a bare resume of a
 // park that cannot be continued, and the gaps the continuation path falls
 // through — so this is where that fact is recorded, once, for all of them.
 func (e *Engine) enterPhaseFresh(item *runtimeItem, targetPhase string, refreshDefinition bool) error {

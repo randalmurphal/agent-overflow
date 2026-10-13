@@ -36,6 +36,7 @@ var agentGuideServers = []agentGuideServer{
 	{appbrowser.ServerName, "`" + appbrowser.ServerName + "` drives a browser in a pane beside this chat; use it to show the user a page or an HTML file you made (make the page visible; screenshots reach only you)."},
 	{threadMCPName, "`" + threadMCPName + "` reads, starts and messages the user's other conversations."},
 	{remoteMCPName, "`" + remoteMCPName + "` runs commands on the user's other computers."},
+	{workflowMCPName, "`" + workflowMCPName + "` starts, watches and steers this project's workflow runs and authors its workflows."},
 }
 
 const (
@@ -75,6 +76,9 @@ func (a *App) agentGuideServersOn(threadID string, registered map[string]any) ma
 	}
 	if registered[remoteMCPName] != nil {
 		on[remoteMCPName] = true
+	}
+	if registered[workflowMCPName] != nil {
+		on[workflowMCPName] = true
 	}
 	return on
 }
@@ -118,6 +122,9 @@ func (a *App) codexDeveloperInstructions(threadID, appGuide string, registered m
 	}
 	if on[threadMCPName] {
 		parts = append(parts, a.threadToolsServer().Instructions(a.threadToolsShape(threadID)))
+	}
+	if on[workflowMCPName] {
+		parts = append(parts, a.workflowToolsInstructions(threadID))
 	}
 	return strings.Join(parts, "\n\n")
 }

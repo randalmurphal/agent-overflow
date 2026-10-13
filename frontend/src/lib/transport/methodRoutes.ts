@@ -436,17 +436,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3907724148: 'thread', // VerifyEditDiffs
 	2431199839: 'home', // Version
 	777755931: 'thread', // WakeThreadWakeNow
-	4000394635: 'home', // WorkflowAgentAddMemory
-	4273669366: 'home', // WorkflowAgentAmendSeeds
-	76499272: 'home', // WorkflowAgentGuideRun
-	1146143060: 'home', // WorkflowAgentInspectRun
-	1978122086: 'home', // WorkflowAgentListMemory
-	717593283: 'home', // WorkflowAgentListRuns
-	3748461612: 'home', // WorkflowAgentRunNarrative
-	315193175: 'home', // WorkflowAgentRunOutput
-	49502656: 'home', // WorkflowAgentRunStatus
-	1060823172: 'home', // WorkflowAgentStartRun
-	2308429865: 'home', // WorkflowAgentWatchRun
 	4150249282: 'home', // WorkflowAnswerQuestion
 	1931806823: 'home', // WorkflowBindThread
 	4158962817: 'home', // WorkflowCancelItem

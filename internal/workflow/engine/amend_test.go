@@ -38,7 +38,7 @@ func newSeededHarness(t *testing.T) *testHarness {
 }
 
 // The seeds column is the durable evidence, and the log is the record that a
-// human changed it — the same division `--refresh-def` makes, where the
+// human changed it: the same division `refresh_def` makes, where the
 // re-frozen snapshot is the evidence and the log says it happened. Without the
 // line, a run that suddenly renders different inputs has no account of why.
 func TestAmendSeedsIsLogged(t *testing.T) {
