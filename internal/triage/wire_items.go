@@ -263,9 +263,9 @@ func (r *Router) noteWireItemEmitted(threadID, itemID string, rev int64) {
 	}
 	now := time.Now()
 	if pending.timer == nil {
-		pending.deadline = now.Add(wireRefreshMaxWait)
+		pending.deadline = now.Add(r.delays.wireRefreshMaxWait)
 		r.refreshWG.Add(1)
-		pending.timer = time.AfterFunc(wireRefreshQuiet, func() {
+		pending.timer = time.AfterFunc(r.delays.wireRefreshQuiet, func() {
 			defer r.refreshWG.Done()
 			r.refreshWireItems(threadID, r.takeWireRefresh(threadID, pending, false))
 		})
@@ -275,7 +275,7 @@ func (r *Router) noteWireItemEmitted(threadID, itemID string, rev int64) {
 	// this note with the rest; only a timer that has not fired is pushed
 	// back, and never past the deadline.
 	if pending.timer.Stop() {
-		pending.timer.Reset(min(wireRefreshQuiet, pending.deadline.Sub(now)))
+		pending.timer.Reset(min(r.delays.wireRefreshQuiet, pending.deadline.Sub(now)))
 	}
 }
 
@@ -308,12 +308,14 @@ func (r *Router) flushWireItemRefresh(threadID string) {
 
 // DrainWireItemRefresh runs every pending refresh now and waits for the
 // ones already running, so a caller about to close the store knows no
-// refresh will read it afterwards. A settle still in flight can arm a
-// new timer behind it; callers drain settles first (Wait does).
+// refresh will read it afterwards. It waits for the settles in flight
+// first: a settle can arm a new timer, which a flush that ran before it
+// would leave armed.
 func (r *Router) DrainWireItemRefresh() {
 	if r == nil {
 		return
 	}
+	r.settleWG.Wait()
 	r.flushAllWireItemRefresh()
 	r.refreshWG.Wait()
 }

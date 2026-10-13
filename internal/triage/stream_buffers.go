@@ -236,11 +236,11 @@ func persistByteThresholdForKind(kind string) int {
 	return streamPersistByteThreshold
 }
 
-func persistIntervalForKind(kind string) time.Duration {
+func (r *Router) persistIntervalForKind(kind string) time.Duration {
 	if kind == payloadKindCommandOutput {
-		return commandOutputPersistInterval
+		return r.delays.commandOutputPersist
 	}
-	return streamPersistInterval
+	return r.delays.streamPersist
 }
 
 func (r *Router) scheduleStreamPersistenceLocked(buffer *streamPersistBuffer) {
@@ -248,7 +248,7 @@ func (r *Router) scheduleStreamPersistenceLocked(buffer *streamPersistBuffer) {
 		return
 	}
 	threadID, itemID := buffer.threadID, buffer.itemID
-	buffer.timer = time.AfterFunc(persistIntervalForKind(buffer.kind), func() {
+	buffer.timer = time.AfterFunc(r.persistIntervalForKind(buffer.kind), func() {
 		r.flushStreamPersistenceKey(threadID, itemID)
 	})
 }

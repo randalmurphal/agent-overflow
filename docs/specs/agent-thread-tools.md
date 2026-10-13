@@ -456,10 +456,12 @@ late reply on a request already `finished`. This is the
 can wait again instead of ending its turn, and after a lost reply from
 another computer it can learn what happened without asking twice. An
 answer collected here is the delivery, so no wake is queued for it; a
-wake already in the queue still lands and the reply says so. The call
-holds the token from its first read until its reply is written, so no
-wake is queued while the reply is on its way, and a reply that never
-reaches the agent delivers nothing: the wake is still owed. The
+wake already in the queue, or already writing to it, still lands and the
+reply says so. The call holds the token from its first read until its
+reply is written, so no wake is queued while the reply is on its way, and
+a reply that never reaches the agent delivers nothing: the wake is still
+owed. A listing or a `to_file` export that delivers an answer holds its
+token the same way. The
 answer is returned whole; a long one pages by `cursor` or goes to a
 file with `to_file`, and it stays available for the request's
 lifetime even when the thread that wrote it is gone.
@@ -835,7 +837,9 @@ towards a ten-minute ceiling for eight attempts. What stops a wake is
 the caller thread's own state, which no number of retries changes, so
 the retry ends rather than running for the life of the row: the request
 keeps its answer and records why the message never arrived, and
-`thread_status` returns both.
+`thread_status` returns both. A pass that finds a call holding the token
+books no attempt, so when that call's reply does not carry the answer,
+the wake is due again the moment the call lets go.
 
 The source thread's title in a wake's status line comes from the
 answering computer: a thread on another computer has no row here, so
