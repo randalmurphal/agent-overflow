@@ -203,9 +203,11 @@ func (a *App) threadMCPConfigForThread(thread store.Thread, sessionToken string)
 
 // threadMCPServerConfig decorates the shared entry with what each provider
 // needs to run these tools without prompting the user for every call and
-// without failing a parked one. Claude takes a per-server timeout in
-// milliseconds and the allowlist through argv; Codex takes seconds and
-// approves the server's tools in its own entry.
+// without failing a parked one. Claude, on either provider, takes a
+// per-server timeout in milliseconds and the allowlist through argv; Codex
+// takes seconds and approves the server's tools in its own entry. The
+// workflow tools ride the same transport and park calls as long, so they
+// take the same decoration.
 func threadMCPServerConfig(providerName string, config any) any {
 	entry, ok := config.(map[string]any)
 	if !ok {
@@ -216,7 +218,7 @@ func threadMCPServerConfig(providerName string, config any) any {
 		out[key] = value
 	}
 	switch providerName {
-	case string(provider.Claude):
+	case string(provider.Claude), string(provider.ClaudeTUI):
 		out["timeout"] = threadMCPCallCeiling.Milliseconds()
 	case string(provider.Codex):
 		out["tool_timeout_sec"] = int(threadMCPCallCeiling.Seconds())

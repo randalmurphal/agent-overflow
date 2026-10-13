@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/workflow/catalog"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"agent-overflow/internal/aocli"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/project"
@@ -165,7 +165,7 @@ func (s workflowDefinitionSource) resolve(ctx context.Context, projectID, workfl
 	if err != nil {
 		return engine.ResolvedDefinition{}, fmt.Errorf("workflow definition: load project %q: %w", projectID, err)
 	}
-	calls, err := aocli.NewCallResolver(s.configRoot, projectRow.Slug)
+	calls, err := catalog.NewCallResolver(s.configRoot, projectRow.Slug)
 	if err != nil {
 		return engine.ResolvedDefinition{}, err
 	}
@@ -173,7 +173,7 @@ func (s workflowDefinitionSource) resolve(ctx context.Context, projectID, workfl
 	if scope == "" {
 		resolved, err = calls.ResolveCall(workflowID)
 	} else {
-		resolved, err = aocli.ResolveWorkflow(s.configRoot, projectRow.Slug, workflowID, scope)
+		resolved, err = catalog.ResolveWorkflow(s.configRoot, projectRow.Slug, workflowID, scope)
 	}
 	if err != nil {
 		return engine.ResolvedDefinition{}, err
@@ -364,7 +364,7 @@ func (a *App) startWorkflowRun(projectID, workflowID, workflowScope, goal string
 	normalizedSeeds := append(json.RawMessage(nil), seeds...)
 	// Agent-supplied seeds are untrusted input and are validated against the
 	// workflow's declared inputs before anything starts, whether they came from
-	// a conversation's `ao run start` or a granted phase's. The manual/harness
+	// a conversation's `run_start` or a granted phase's. The manual/harness
 	// contract is preserved as-is: those callers may intentionally let the
 	// workflow runner derive values from Goal.
 	if source == workflowSourceAgent {

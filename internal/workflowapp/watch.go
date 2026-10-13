@@ -11,6 +11,8 @@ import (
 	"agent-overflow/internal/workflowwatch"
 )
 
+// maxWorkflowWatchHold bounds one blocked watch. A longer tool wait is a
+// series of watches, each ending early when the caller's context does.
 const maxWorkflowWatchHold = 25 * time.Second
 
 // WatchRun long-polls the injected transition ring while reading current state

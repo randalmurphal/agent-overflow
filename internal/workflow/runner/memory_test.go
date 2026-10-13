@@ -21,8 +21,8 @@ func TestPromptSuffixChannelFollowsAccessAndBothBranchesCarryTheLog(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(writing, "agent-overflow memory add --kind") {
-		t.Fatalf("a writing element was not given the CLI verb:\n%s", writing)
+	if !strings.Contains(writing, "memory_add(kind: ") {
+		t.Fatalf("a writing element was not given the memory_add tool:\n%s", writing)
 	}
 	if !strings.Contains(writing, "Leave the envelope's `memory` field null") {
 		t.Fatalf("a writing element was not told which channel is not its:\n%s", writing)
@@ -38,11 +38,11 @@ func TestPromptSuffixChannelFollowsAccessAndBothBranchesCarryTheLog(t *testing.T
 	if !strings.Contains(readOnly, "`memory` field of your final envelope") {
 		t.Fatalf("a read-only element was not given the envelope channel:\n%s", readOnly)
 	}
-	if strings.Contains(readOnly, "agent-overflow memory add --kind <") {
-		t.Fatalf("a read-only element was told to run a command it cannot run:\n%s", readOnly)
+	if strings.Contains(readOnly, "memory_add(") {
+		t.Fatalf("a read-only element was told to call a tool it does not have:\n%s", readOnly)
 	}
 	if !strings.Contains(readOnly, "not available to you") {
-		t.Fatalf("a read-only element was not told why the verb is not its channel:\n%s", readOnly)
+		t.Fatalf("a read-only element was not told why the tool is not its channel:\n%s", readOnly)
 	}
 	if !strings.Contains(readOnly, testDigest) {
 		t.Fatalf("a read-only element got no digest:\n%s", readOnly)

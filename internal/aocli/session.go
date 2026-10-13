@@ -14,59 +14,40 @@ import (
 	"agent-overflow/internal/transport"
 )
 
-// The AO_* environment contract (spec §5). Agent Overflow injects these into
-// every provider session it starts; an `agent-overflow` process inherits them
-// and needs no configuration, no discovery, and no credential of its own. The
-// names are
-// declared here rather than at the injection site so the writer (the app's
-// session env assembly) and the reader (this package) cannot drift apart.
+// The AO_* environment contract. Agent Overflow injects these into every
+// provider session it starts that belongs to a project; an `agent-overflow`
+// process inherits them and needs no configuration, no discovery, and no
+// credential of its own. The names are declared here rather than at the
+// injection site so the writer (the app's session env assembly) and the reader
+// (this package) cannot drift apart.
 //
-//   - AO_ENDPOINT — the running app's loopback base URL, no token, no path.
-//   - AO_TOKEN    — a scoped credential valid for exactly this session's
-//     lifetime and no wider than this session's authority.
-//   - AO_THREAD_ID — the thread the session belongs to.
-//   - AO_PROJECT — the slug of the project this session works in. Set for every
-//     app-started session that has one, which is every session carrying a
-//     credential at all (a projectless thread is scoped to nothing and gets no
-//     AO_* — see deriveCallerScope). It exists because the OFFLINE half of the
-//     CLI has no app to ask: `agent-overflow workflow list` resolves
-//     project-scoped definitions from a directory named by slug, and a cold
-//     agent inside a session has no other way to learn it. Read-only commands
-//     default their project scope from it; an explicit --project always wins.
-//   - AO_RUN_ID / AO_PHASE_ID — set for workflow phase and unit sessions only;
-//     they say which run and phase the caller is part of. An interactive chat
-//     session has neither.
+//   - AO_ENDPOINT: the running app's loopback base URL, no token, no path.
+//   - AO_TOKEN: a scoped credential valid for exactly this session's lifetime
+//     and no wider than this session's authority.
+//   - AO_THREAD_ID: the thread the session belongs to.
+//
+// Workflow tooling does not read them: it reaches a session as the
+// ao-workflow-tools MCP server, scoped by the session's capability URL.
 const (
 	EnvEndpoint = "AO_ENDPOINT"
 	EnvToken    = "AO_TOKEN"
 	EnvThreadID = "AO_THREAD_ID"
-	EnvProject  = "AO_PROJECT"
-	EnvRunID    = "AO_RUN_ID"
-	EnvPhaseID  = "AO_PHASE_ID"
 )
 
 // Session is the ambient credential an `agent-overflow` process inherits.
 type Session struct {
-	Endpoint    string
-	Token       string
-	ThreadID    string
-	ProjectSlug string
-	RunID       string
-	PhaseID     string
+	Endpoint string
+	Token    string
+	ThreadID string
 }
 
-// InsidePhase reports whether this session is a workflow phase or unit rather
-// than a conversation.
-func (s Session) InsidePhase() bool { return s.RunID != "" && s.PhaseID != "" }
-
-// errNoSession is what every execution command reports when it was run outside
+// errNoSession is what every session command reports when it was run outside
 // an Agent Overflow session. It is a distinct sentinel because "you are not in
 // a session" and "the app refused you" are different problems for whoever reads
 // the output, and only the first one is fixed by running the command elsewhere.
 var errNoSession = errors.New(
 	"not inside an Agent Overflow session: " + EnvEndpoint + " and " + EnvToken +
-		" are unset. These commands run from an agent session Agent Overflow started; " +
-		"`agent-overflow workflow` commands work anywhere")
+		" are unset. These commands run from an agent session Agent Overflow started")
 
 // SessionFromEnv reads the contract above. lookup is injected so tests exercise
 // the parsing without mutating process environment.
@@ -79,12 +60,9 @@ func SessionFromEnv(lookup func(string) (string, bool)) (Session, error) {
 		return strings.TrimSpace(value)
 	}
 	session := Session{
-		Endpoint:    read(EnvEndpoint),
-		Token:       read(EnvToken),
-		ThreadID:    read(EnvThreadID),
-		ProjectSlug: read(EnvProject),
-		RunID:       read(EnvRunID),
-		PhaseID:     read(EnvPhaseID),
+		Endpoint: read(EnvEndpoint),
+		Token:    read(EnvToken),
+		ThreadID: read(EnvThreadID),
 	}
 	if session.Endpoint == "" && session.Token == "" {
 		return Session{}, errNoSession
@@ -101,18 +79,9 @@ func SessionFromEnv(lookup func(string) (string, bool)) (Session, error) {
 	return session, nil
 }
 
-// rpcTimeout bounds one call. Every method behind the scoped surface is a
-// SQLite read or a run start that detaches its provisioning, so a call that
-// takes this long is a wedged backend rather than slow work.
-//
-// It is paired with `runnerStartReplyBudget` (20s,
-// `internal/workflow/engine/reply_budget.go`), which bounds how long the engine's
-// own reply waits on a runner start, and with `maxWorkflowWatchHold` (25s) for
-// `run watch`. Both sit UNDER this number on purpose: the backend must be the
-// side that answers first, or a verb that committed server-side comes back to
-// the operator as `context deadline exceeded` and their retry meets an FSM
-// refusal for the state their first call already produced. Lowering this, or
-// raising either of those, breaks that ordering — change them together.
+// rpcTimeout bounds one call. Every method behind the scoped surface answers
+// from persisted state or detaches its work, so a call that takes this long is
+// a wedged backend rather than slow work.
 const rpcTimeout = 30 * time.Second
 
 // client speaks the scoped HTTP RPC route. It is deliberately built on the
@@ -142,25 +111,9 @@ func (e *rpcError) Error() string {
 	return e.Message
 }
 
-// transportError is a failure to REACH the app: the request produced no
-// response at all. It is a type rather than a message because one command has
-// to act on the distinction — `run watch` blocks on the app for hours, and "the
-// backend is gone" and "the backend refused me" are different verdicts for
-// whoever is reading the watch. Everything else treats it as any other error,
-// and its text is unchanged from an untyped one.
-type transportError struct {
-	Method string
-	Err    error
-}
-
-func (e *transportError) Error() string { return fmt.Sprintf("call %s: %v", e.Method, e.Err) }
-
-func (e *transportError) Unwrap() error { return e.Err }
-
-// call invokes one method by name and returns its raw JSON result. Raw, because
-// `--json` prints the app's own result shape verbatim: the CLI must not become a
-// second definition of what a run status looks like. Human rendering decodes
-// only the fields it prints, into narrow local structs.
+// call invokes one method by name and returns its raw JSON result, which the
+// caller prints verbatim: the CLI must not become a second definition of the
+// app's result shapes.
 func (c *client) call(method string, params ...any) (json.RawMessage, error) {
 	encoded := make([]json.RawMessage, 0, len(params))
 	for i, param := range params {
@@ -184,7 +137,7 @@ func (c *client) call(method string, params ...any) (json.RawMessage, error) {
 
 	response, err := c.http.Do(request)
 	if err != nil {
-		return nil, &transportError{Method: method, Err: err}
+		return nil, fmt.Errorf("call %s: %w", method, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -198,21 +151,6 @@ func (c *client) call(method string, params ...any) (json.RawMessage, error) {
 		return nil, &rpcError{Code: frame.Error.Code, Message: frame.Error.Message}
 	}
 	return frame.Result, nil
-}
-
-// callInto is call plus a decode, for the commands that need typed fields.
-func (c *client) callInto(out any, method string, params ...any) (json.RawMessage, error) {
-	result, err := c.call(method, params...)
-	if err != nil {
-		return nil, err
-	}
-	if len(result) == 0 {
-		return nil, fmt.Errorf("call %s: the app returned no result", method)
-	}
-	if err := json.Unmarshal(result, out); err != nil {
-		return nil, fmt.Errorf("decode %s result: %w", method, err)
-	}
-	return result, nil
 }
 
 // httpStatusError translates the transport-level outcomes the RPC envelope

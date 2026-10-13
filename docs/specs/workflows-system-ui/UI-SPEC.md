@@ -103,7 +103,7 @@ name; a project renders only if it has workflow definitions or runs.
 | `+ New run` | Opens intake (§7). |
 
 `+ New run` is the only entry point. Authoring a workflow is work over the
-definition files (`agent-overflow workflow new`, then an editor or a thread the
+definition files (`workflow_new` from a thread, then an editor or a thread the
 human opens themselves), not a button here (D32).
 
 At narrow widths, controls past Pause-all collapse into `⋯`; row metadata

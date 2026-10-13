@@ -1,7 +1,6 @@
 package app
 
 import (
-	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitdiff"
@@ -9,6 +8,7 @@ import (
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usageledger"
+	"agent-overflow/internal/workflow/catalog"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/profile"
@@ -33,7 +33,7 @@ import (
 // rather than having to watch an overlay.
 //
 // A binding is always made against a thread that already exists — the CLI's
-// `run start` auto-bind to its origin thread, or an explicit bind here. D32
+// `run_start` auto-bind to its origin thread, or an explicit bind here. D32
 // removed the seed-a-new-thread-and-bind-it affordance; nothing on a workflow
 // surface creates a conversation any more.
 //
@@ -172,11 +172,11 @@ func (a *App) WorkflowListDefinitions(projectID string) (WorkflowDefinitionCatal
 	if err != nil {
 		return WorkflowDefinitionCatalog{}, err
 	}
-	resolved, err := aocli.ResolveConfigured(a.workflowDataRoot(), projectRow.Slug)
+	resolved, err := catalog.ResolveConfigured(a.workflowDataRoot(), projectRow.Slug)
 	if err != nil {
 		return WorkflowDefinitionCatalog{}, err
 	}
-	calls := aocli.CallResolverFor(resolved)
+	calls := catalog.CallResolverFor(resolved)
 	listings := make([]WorkflowDefinitionListing, 0, len(resolved))
 	for _, workflow := range resolved {
 		validation := def.Validate(workflow, &bindings, calls)
@@ -1259,7 +1259,7 @@ func (a *App) WorkflowTakeOverUnit(itemID, unitID string) error {
 // ids WorkflowRetryUnit accepts. The join is one of them: its failure is the
 // failure of a unit of the attempt, and a human repairs it by name like any
 // other. The rule lives here so the surfaces that REPORT the set (the wake's
-// failed-unit references, `agent-overflow run status`) cannot disagree with the
+// failed-unit references, `run_status`) cannot disagree with the
 // verbs that repair it.
 //
 // Earlier attempts are excluded for the same reason: their rows are history, and

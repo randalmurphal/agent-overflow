@@ -51,7 +51,7 @@ func (s *Service) afterEngineEvent(name eventchan.Channel, payload any) {
 			return
 		}
 		// Recorded before the classification below, and without its
-		// from == to filter: a `run watch` reports what MOVED, and a takeover
+		// from == to filter: a `run_watch` reports what MOVED, and a takeover
 		// re-parking an already-parked run under a new reason is a move a
 		// monitor must not be blind to.
 		s.recordWorkflowTransition(event)

@@ -119,7 +119,7 @@ func requireCallerScope(ctx context.Context) (transport.CallerScope, error) {
 	scope, ok := transport.CallerScopeFrom(ctx)
 	if !ok {
 		return transport.CallerScope{}, fmt.Errorf(
-			"this method is part of the ao CLI surface and requires a session-scoped token")
+			"this method is part of the workflow tools surface and requires a session caller scope")
 	}
 	if strings.TrimSpace(scope.ProjectID) == "" {
 		return transport.CallerScope{}, fmt.Errorf("this session is not attached to a project")

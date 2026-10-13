@@ -304,7 +304,7 @@ type Config struct {
 	// manifest carries no backends array. See attachedroutes.go.
 	AttachedBackends AttachedBackends
 
-	// ScopedTokens resolves an `ao` CLI credential to the caller scope it
+	// ScopedTokens resolves a session command's credential to the scope it
 	// was minted for. The App owns the registry (a token lives exactly as
 	// long as the provider session it belongs to); this package owns the
 	// authorization table and the ScopedRPCPath route.
@@ -1560,8 +1560,8 @@ func (s *Server) Ready() bool { return s.ready.Load() }
 
 // Origin returns this server's own origin ("http://host:port"), with no
 // credential on it. Callers that want a page to navigate to want AppURL;
-// this is for the callers that only need to name the server — the `ao`
-// CLI's endpoint, the harness's page-origin check.
+// this is for the callers that only need to name the server: the session
+// command's endpoint, the harness's page-origin check.
 //
 // Empty before Start, for the same reason AppURL is.
 func (s *Server) Origin() string {

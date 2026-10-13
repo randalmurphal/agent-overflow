@@ -393,6 +393,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.waitThreadSearchIndex()
 	record("stop thread search index", nil)
 	record("close thread MCP server", a.threadMCPServer().Close())
+	record("close workflow MCP server", a.workflowMCPServer().Close())
 	if a.backends != nil {
 		a.backends.WaitOwnDevices()
 		// Session renewals write profile files and call the other

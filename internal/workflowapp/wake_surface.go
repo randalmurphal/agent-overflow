@@ -270,7 +270,7 @@ func (s *Service) composeWorkflowWake(item store.WorkItem, descendant *wakeDesce
 // already supplies, so this stays scoped rather than adding outputs to every
 // message.
 //
-// It shares `run inspect`'s bounding rather than growing a second one, so the
+// It shares `run_inspect`'s bounding rather than growing a second one, so the
 // same outputs read the same way on both surfaces. A digest that cannot be read
 // is logged and dropped: a wake whose repair verb is correct must not be
 // suppressed over an unreadable envelope.
@@ -421,7 +421,7 @@ func (s *Service) workflowRestingNarrative(itemID string) (string, bool) {
 // output envelope.
 // workflowGateDecision resolves what kind of `gate` park a run rests under —
 // "human" for a human: route (an approve/reject exists), "park" for a park:
-// route (no continuation is declared, `run resolve` does not apply) — plus a
+// route (no continuation is declared, `run_resolve` does not apply), plus a
 // park: route's authored label. The two rest under one typed reason, so the
 // wake's repair verb depends on this read. Best-effort: a record that cannot
 // be read composes the wake without it, which the composer renders as the

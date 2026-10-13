@@ -376,8 +376,8 @@ MRs against `review_targets` and enqueue changed heads.
 
 `/ao-review` in the composer inserts a block like `/workflow`'s: how to
 start a `review` run with a target, wait, and read results. The agent
-runs `agent-overflow run start review --seed target=...`, `run wait`,
-`run output --out <file>` and reads the findings file. The run also
+calls `run_start` for `review` with a `target` seed and a `wait_seconds`,
+then `run_output`, and reads the findings file. The run also
 shows in the workflows section with the findings view.
 
 Findings view (one component for local results, the approval hold, and

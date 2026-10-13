@@ -320,9 +320,11 @@ Mechanism in
 
 ## Workflows
 
-Decisions D1..D76 are in `docs/specs/workflows-system-decisions.md`. Rulings
+Decisions D1..D77 are in `docs/specs/workflows-system-decisions.md`. Rulings
 and anti-changes that live only here:
 
+- claude-tui hosts `ao-workflow-tools`; thread tools there are a separate
+  decision ([agent workflow tools](specs/agent-workflow-tools.md), D77).
 - Workflows keep no clock. A scheduled or triggered run is started by a
   standing agent whose loop or watch wakes it
   ([standing agents](specs/standing-agents.md) ruling 13, D76).

@@ -56,8 +56,8 @@ type Run struct {
 	State  string
 	Reason string
 	// PhaseID is the phase the run rested in, empty when it never entered one,
-	// and Attempt is which attempt of it — the coordinate `run inspect --phase
-	// <id> --attempt <n>` takes, and the coordinate that tells a second wake
+	// and Attempt is which attempt of it: the coordinate run_inspect's
+	// `phase_id` and `attempt` take, and the coordinate that tells a second wake
 	// about a retried phase from a repeat of the first one.
 	PhaseID string
 	Attempt int
@@ -80,7 +80,7 @@ type Run struct {
 	// "human" for a human: route, "park" for a park: route — resolved by the
 	// app from the attempt's gate trace. Both rest under the one reason, but
 	// only a human: route has an approve/reject to resolve, so the closing's
-	// verb depends on it. Empty when unknown; the closing then names both.
+	// call depends on it. Empty when unknown; the closing then names both.
 	GateDecision string
 	// GateLabel is a park: route's authored label (`park: <label>`), the one
 	// word the author chose to say why a human is needed.
@@ -109,7 +109,7 @@ type Descendant struct {
 	WorktreePath string
 	Branch       string
 	// GateDecision and GateLabel mirror Run's: the closing issues its repair
-	// verb against the DESCENDANT, so the human-vs-park distinction has to
+	// call against the DESCENDANT, so the human-vs-park distinction has to
 	// travel with it.
 	GateDecision string
 	GateLabel    string

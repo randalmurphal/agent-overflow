@@ -24,6 +24,7 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | CI job logs on disk: download, line index, sections, reads | `cilog/` (package comment); the review pane's use in [review-pane-design.md](../docs/architecture/review-pane-design.md) |
 | Browser engines and thread browser tools | [browser/](browser/AGENTS.md) |
 | Agent thread tools and `/side-chat` | [threadtools/](threadtools/AGENTS.md), `app/app_thread_tools*.go`; contract in [agent-thread-tools.md](../docs/specs/agent-thread-tools.md) |
+| Agent workflow tools (`ao-workflow-tools`) | `workflowtools/` (package comment), `app/app_workflow_tools_mcp.go`; contract in [agent-workflow-tools.md](../docs/specs/agent-workflow-tools.md) |
 | Loopback MCP transport for built-in tool servers | [threadmcp/](threadmcp/AGENTS.md), `mcpargs/` |
 | Settings ownership and persistence | [settings/](settings/AGENTS.md) |
 | Test fixtures and provider isolation | [kerneltest/](kerneltest/AGENTS.md), [testutil/](testutil/AGENTS.md) |

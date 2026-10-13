@@ -151,7 +151,7 @@ func TestResumeRefreshRefusesAContinuablePark(t *testing.T) {
 	h.definitions.edit("flow", promptWorkflow("flow", "edited prompt"))
 
 	err := h.engine.Resume(item.ID, "", true)
-	if err == nil || !strings.Contains(err.Error(), "--phase work") {
+	if err == nil || !strings.Contains(err.Error(), "phase_id work") {
 		t.Fatalf("refresh error = %v, want the fresh entry named", err)
 	}
 	if frozen := frozenPrompt(t, h, item.ID, "work"); frozen != "original prompt" {

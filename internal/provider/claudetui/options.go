@@ -61,6 +61,15 @@ type Config struct {
 	// empty when unknown; gates claude.SystemPromptSnapshotArgs, which the
 	// TUI honors like headless (same 2.1.284 capture).
 	InstalledCLIVersion string
+	// MCPServers are the MCP servers registered for this session, passed as
+	// one `--mcp-config <json>` in the shape the headless provider uses
+	// (claude.MCPConfigJSON). The app registers only its workflow tools
+	// here; empty omits the flag.
+	MCPServers map[string]any
+	// AllowedTools admits tools without a permission prompt, one
+	// `--allowedTools <name>` each, through the same argv boundary as the
+	// headless provider (claude.SanitizeAllowedTools).
+	AllowedTools []string
 	// DisallowedTools are the tool names removed from the session outright
 	// via one `--disallowedTools <name>` flag each; their schemas never
 	// reach the request (spike-verified 2.1.234, same capture).

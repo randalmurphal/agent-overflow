@@ -822,7 +822,7 @@ test('/workflow completes in the composer and expands on the wire, not in the tr
   // composer command, not a provider command, so it takes the guard.
   expect(wireText.startsWith('\n/workflow start the release\n\n')).toBe(true);
   expect(wireText).toContain('Agent Overflow workflows are available');
-  expect(wireText).toContain('agent-overflow run start');
+  expect(wireText).toContain('run_start(');
   expect(wireText).toContain('ctx-flow');
 
   // The transcript keeps exactly what was typed, with the command word in the
@@ -830,7 +830,7 @@ test('/workflow completes in the composer and expands on the wire, not in the tr
   const bubble = page.getByTestId('user-message-bubble').last();
   await expect(bubble).toHaveText('/workflow start the release');
   await expect(bubble.getByTestId('user-message-command')).toHaveText('/workflow');
-  expect(await bubble.textContent()).not.toContain('agent-overflow run start');
+  expect(await bubble.textContent()).not.toContain('run_start(');
 
   // Let the first turn finish, so the next Enter sends rather than queues.
   await harness.waitForEvent('provider:turn_completed');

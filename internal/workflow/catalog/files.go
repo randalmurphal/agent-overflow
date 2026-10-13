@@ -1,4 +1,4 @@
-package aocli
+package catalog
 
 import (
 	"errors"

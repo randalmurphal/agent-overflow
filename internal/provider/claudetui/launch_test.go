@@ -138,6 +138,45 @@ func TestBuildLaunchOptionsPassesOneDisallowedToolsFlagPerName(t *testing.T) {
 	}
 }
 
+// The app's MCP servers reach the interactive claude through the same
+// `--mcp-config` payload the headless provider sends, with the transport type
+// backfilled, and each allowed tool as its own `--allowedTools` value. No
+// servers means no flag.
+func TestBuildLaunchOptionsPassesMCPServersAndAllowedTools(t *testing.T) {
+	cfg := Config{
+		Binary:       "claude",
+		WorkDir:      t.TempDir(),
+		HookCmd:      "/tmp/ao-exe",
+		MCPServers:   map[string]any{"ao-workflow-tools": map[string]any{"url": "http://127.0.0.1:9/mcp/x"}},
+		AllowedTools: []string{"mcp__ao-workflow-tools__*", "-bad"},
+	}
+	opts, err := buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	if err != nil {
+		t.Fatalf("buildLaunchOptions: %v", err)
+	}
+	want := `{"mcpServers":{"ao-workflow-tools":{"type":"http","url":"http://127.0.0.1:9/mcp/x"}}}`
+	if !hasArgPair(opts.Args, "--mcp-config", want) {
+		t.Fatalf("launch args missing --mcp-config %s; got %v", want, opts.Args)
+	}
+	if !hasArgPair(opts.Args, "--allowedTools", "mcp__ao-workflow-tools__*") {
+		t.Fatalf("launch args missing the workflow tools allowlist entry; got %v", opts.Args)
+	}
+	// The allowlist goes through the headless provider's argv boundary: a
+	// value that would read as a flag is dropped, not passed.
+	if got := strings.Count(strings.Join(opts.Args, "\x00"), "--allowedTools"); got != 1 {
+		t.Fatalf("--allowedTools appears %d times, want 1; got %v", got, opts.Args)
+	}
+
+	bare := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
+	opts, err = buildLaunchOptions(bare, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	if err != nil {
+		t.Fatalf("buildLaunchOptions: %v", err)
+	}
+	if slices.Contains(opts.Args, "--mcp-config") || slices.Contains(opts.Args, "--allowedTools") {
+		t.Fatalf("a session with no servers carries MCP flags: %v", opts.Args)
+	}
+}
+
 // countEnv returns how many entries of env carry the given key, and the last
 // value seen. A duplicated key would leave which value wins to exec-env
 // ordering semantics, so tests assert exactly one.

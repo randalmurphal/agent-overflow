@@ -268,7 +268,7 @@ func TestLoopRoutePromptTemplateIsNotCheckedAgainstAnUnknownTarget(t *testing.T)
 }
 
 // The override is inlined and frozen with the definition exactly as a phase's
-// prompt is: a run renders the body it froze, and `--refresh-def` is what re-reads
+// prompt is: a run renders the body it froze, and `refresh_def` is what re-reads
 // an edited file.
 func TestInlinePromptsInlinesLoopRouteOverrides(t *testing.T) {
 	dir := t.TempDir()

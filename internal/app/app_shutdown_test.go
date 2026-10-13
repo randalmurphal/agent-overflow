@@ -221,6 +221,7 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// the boot-time FTS build writes straight into SQLite.
 		"stop thread search index",
 		"close thread MCP server",
+		"close workflow MCP server",
 		"close logger",
 		"close store",
 	}

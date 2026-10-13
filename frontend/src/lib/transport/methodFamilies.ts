@@ -28,18 +28,9 @@ export type IdFamily =
 
 export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: IdFamily; field: string }>> = {
   595194384: { family: 'project', field: 'projectId' }, // UpdateNewThreadDefaults
-  4000394635: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentAddMemory
-  4273669366: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentAmendSeeds
-  76499272: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentGuideRun
-  1146143060: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentInspectRun
-  1978122086: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentListMemory
-  3748461612: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentRunNarrative
-  2308429865: { family: 'workflowItem', field: 'itemId' }, // WorkflowAgentWatchRun
   // Workflow ITEM ids — argument 0 is `itemID`. An item belongs to the
   // project it was started in, and therefore to that project's machine.
-  49502656: 'workflowItem', // WorkflowAgentRunStatus
   70120675: 'workflowItem', // WorkflowGetItem
-  315193175: 'workflowItem', // WorkflowAgentRunOutput
   658224978: 'workflowItem', // WorkflowScheduleResume
   819019128: 'workflowItem', // WorkflowFetchPRReviewComments
   1005356607: 'workflowItem', // WorkflowDropUnit

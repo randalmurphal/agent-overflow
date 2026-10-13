@@ -66,7 +66,7 @@ func TestComposeFailedRunStatesItsReasonAndPhase(t *testing.T) {
 	mustContain(t, message,
 		`Run "run-2" (workflow "repair") is failed (agent-error) — goal "Fix flake".`,
 		`Phase "patch": "the CLI exited before writing an envelope"`,
-		"The run is over. `agent-overflow run rerun \"run-2\"` starts its last phase again once the cause is fixed.",
+		"The run is over. `run_control(run_id: \"run-2\", action: \"rerun\")` starts its last phase again once the cause is fixed.",
 	)
 }
 
@@ -82,12 +82,12 @@ func TestComposeQuestionParkCarriesTheQuestionAndBlocks(t *testing.T) {
 		`is needs-human (question)`,
 		`Phase "plan": "Should the backfill run in one transaction?"`,
 		`Run "run-3" is parked and does not continue until this is resolved.`,
-		"Answer it with `agent-overflow run answer \"run-3\" <text>`",
+		"Answer it with `run_resolve(run_id: \"run-3\", decision: \"answer\", answer: \"<text>\")`",
 		"answer only what you actually know",
 	)
-	// The verb is the answering one alone — a resume or a retry would restart
+	// The call is the answering one alone: a resume or a retry would restart
 	// the phase without the answer it is waiting for.
-	mustNotContain(t, message, "run resume", "run rerun", "retry-")
+	mustNotContain(t, message, `action: "resume"`, `action: "rerun"`, "retry_")
 }
 
 func TestComposeUnitFailureNamesTheFailedUnitThread(t *testing.T) {
@@ -105,17 +105,17 @@ func TestComposeUnitFailureNamesTheFailedUnitThread(t *testing.T) {
 		`is needs-human (unit-failed)`,
 		`- "failed unit": "pkg-store (thread thread-77)"`,
 		`- "phase thread": "thread-40"`,
-		"Repair it with `agent-overflow run retry-failed-units \"run-4\"`, "+
-			"or `agent-overflow run retry-unit \"run-4\" <unit-id>` for one of the failed units above "+
-			"— a failed join is one of them.",
-		"`agent-overflow run resume \"run-4\"` continues the same attempt instead.",
-		"None of these re-run a unit that finished; `run resume --phase <id>` would",
+		"Repair it with `run_control(run_id: \"run-4\", action: \"retry_failed_units\")`, "+
+			"or `run_control(run_id: \"run-4\", action: \"retry_unit\", unit_id: \"<unit-id>\")` for one of the failed units above"+
+			"; a failed join is one of them.",
+		"`run_control(run_id: \"run-4\", action: \"resume\")` continues the same attempt instead.",
+		"None of these re-run a unit that finished; resume with phase_id would",
 	)
 }
 
-// The verbs a parked run names must be the ones that act on it. A closing that
+// The calls a parked run names must be the ones that act on it. A closing that
 // says which run to act on but not how leaves a cold agent to map a reason onto
-// one of four control verbs that all sound alike.
+// one of four control actions that all sound alike.
 func TestComposeParkedRunNamesTheVerbThatRepairsIt(t *testing.T) {
 	for _, test := range []struct {
 		reason       string
@@ -123,24 +123,24 @@ func TestComposeParkedRunNamesTheVerbThatRepairsIt(t *testing.T) {
 		gateLabel    string
 		want         string
 	}{
-		{"paused", "", "", "`agent-overflow run resume \"run-11\"` returns it to running."},
-		{"interrupted", "", "", "`agent-overflow run resume \"run-11\"` returns it to running."},
+		{"paused", "", "", "`run_control(run_id: \"run-11\", action: \"resume\")` returns it to running."},
+		{"interrupted", "", "", "`run_control(run_id: \"run-11\", action: \"resume\")` returns it to running."},
 		// A gate park is two states under one reason: a human: route has an
 		// approve/reject to resolve, a park: route declares no continuation, and
 		// an unreadable record names both instead of guessing.
-		{"gate", "human", "", "Decide it with `agent-overflow run resolve \"run-11\" --approve|--reject [--note <text>]`"},
-		{"gate", "park", "review-unresolved", "This is a park: route (\"review-unresolved\"): it declares no approve or reject, so `run resolve` does not apply."},
-		{"gate", "park", "review-unresolved", "`agent-overflow run resume \"run-11\"` re-enters the phase — an approvable park is authored as a human: route."},
-		{"gate", "", "", "If `agent-overflow run status \"run-11\"` shows the parked attempt's decision as human"},
-		{"provider-retries-exhausted", "", "", "`agent-overflow run resume \"run-11\"` continues the parked attempt on the provider session its last turn died in"},
-		{"provider-usage-limited", "", "", "`agent-overflow run resume \"run-11\"` tries the parked attempt immediately"},
+		{"gate", "human", "", "Decide it with `run_resolve(run_id: \"run-11\", decision: \"approve\" or \"reject\", note: \"<text>\")`"},
+		{"gate", "park", "review-unresolved", "This is a park: route (\"review-unresolved\"): it declares no approve or reject, so run_resolve does not apply."},
+		{"gate", "park", "review-unresolved", "`run_control(run_id: \"run-11\", action: \"resume\")` re-enters the phase; an approvable park is authored as a human: route."},
+		{"gate", "", "", "If `run_status(run_id: \"run-11\")` shows the parked attempt's decision as human"},
+		{"provider-retries-exhausted", "", "", "`run_control(run_id: \"run-11\", action: \"resume\")` continues the parked attempt on the provider session its last turn died in"},
+		{"provider-usage-limited", "", "", "`run_control(run_id: \"run-11\", action: \"resume\")` tries the parked attempt immediately"},
 		{"provider-usage-limited", "", "", "Recorded limit state never blocks the attempt"},
 		{"loop-limit-exhausted", "", "", "The workflow's loop limit is spent."},
-		{"loop-limit-exhausted", "", "", "`agent-overflow run resume \"run-11\" --phase <phase-id>` naming an EARLIER phase"},
+		{"loop-limit-exhausted", "", "", "`run_control(run_id: \"run-11\", action: \"resume\", phase_id: \"<phase-id>\")` naming an EARLIER phase"},
 		// Legacy rows cannot be classified safely, so their repair names both
 		// possibilities and preserves the shipped bare-resume behavior.
 		{"retries-exhausted", "", "", "This run predates the separate provider-retry and loop-limit reasons."},
-		{"retries-exhausted", "", "", "`agent-overflow run resume \"run-11\"` preserves its original behavior and continues the parked attempt."},
+		{"retries-exhausted", "", "", "`run_control(run_id: \"run-11\", action: \"resume\")` preserves its original behavior and continues the parked attempt."},
 	} {
 		message := Compose(Input{Run: Run{
 			ItemID: "run-11", Goal: "g", WorkflowID: "w", State: "needs-human", Reason: test.reason,
@@ -148,16 +148,16 @@ func TestComposeParkedRunNamesTheVerbThatRepairsIt(t *testing.T) {
 		}})
 		mustContain(t, message, `Run "run-11" is parked and does not continue until this is resolved.`, test.want)
 	}
-	// A reason with no single repair prints no verb at all: the reason names the
+	// A reason with no single repair prints no call at all: the reason names the
 	// cause, and a generic "resume" would be exactly the wrong guess.
 	stalled := Compose(Input{Run: Run{
 		ItemID: "run-12", Goal: "g", WorkflowID: "w", State: "needs-human", Reason: "stalled",
 	}})
 	mustContain(t, stalled, `Run "run-12" is parked and does not continue until this is resolved.`)
-	mustNotContain(t, stalled, "agent-overflow run")
+	mustNotContain(t, stalled, "run_control", "run_resolve")
 }
 
-// A descendant park is the case the verb matters most for: the run to act on is
+// A descendant park is the case the call matters most for: the run to act on is
 // one the reader has never seen, so the command must carry the DESCENDANT's id.
 func TestComposeDescendantParkNamesTheVerbAgainstTheDescendant(t *testing.T) {
 	message := Compose(Input{
@@ -168,12 +168,12 @@ func TestComposeDescendantParkNamesTheVerbAgainstTheDescendant(t *testing.T) {
 	})
 	mustContain(t, message,
 		`act on run "wave-4", not on "root-8".`,
-		"Repair it with `agent-overflow run retry-failed-units \"wave-4\"`, "+
-			"or `agent-overflow run retry-unit \"wave-4\" <unit-id>` for one of the failed units above "+
-			"— a failed join is one of them.",
-		"`agent-overflow run resume \"wave-4\"` continues the same attempt instead.",
+		"Repair it with `run_control(run_id: \"wave-4\", action: \"retry_failed_units\")`, "+
+			"or `run_control(run_id: \"wave-4\", action: \"retry_unit\", unit_id: \"<unit-id>\")` for one of the failed units above"+
+			"; a failed join is one of them.",
+		"`run_control(run_id: \"wave-4\", action: \"resume\")` continues the same attempt instead.",
 	)
-	mustNotContain(t, message, `retry-failed-units "root-8"`, `run resume "root-8"`)
+	mustNotContain(t, message, `run_id: "root-8"`)
 }
 
 func TestComposeDescendantParkReportsTheRootAsWaiting(t *testing.T) {
@@ -200,7 +200,7 @@ func TestComposeDescendantParkReportsTheRootAsWaiting(t *testing.T) {
 }
 
 // The chain is what makes a deep park actionable: a reader has to be able to
-// name the run a repair verb takes, and the waves between it and the root.
+// name the run a repair call takes, and the waves between it and the root.
 func TestComposeDescendantParkNamesTheRunsBetweenRootAndPark(t *testing.T) {
 	message := Compose(Input{
 		Run: Run{ItemID: "root-1", Goal: "Port the campaign", WorkflowID: "campaign", State: "running"},
@@ -250,7 +250,7 @@ func TestComposeCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
 	mustContain(t, root,
 		`is needs-human (checkpoint)`,
 		"This is the stop that was asked for, not a failure.",
-		"`agent-overflow run resume \"root-3\"` takes the call it skipped, or leave it parked.",
+		"`run_control(run_id: \"root-3\", action: \"resume\")` takes the call it skipped, or leave it parked.",
 	)
 	mustNotContain(t, root, "does not continue until this is resolved")
 
@@ -262,7 +262,7 @@ func TestComposeCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
 	})
 	mustContain(t, descendant,
 		`run "wave-7" reached the checkpoint and did not start the next one`,
-		"`agent-overflow run resume \"wave-7\"` takes the call it skipped, or leave it parked.",
+		"`run_control(run_id: \"wave-7\", action: \"resume\")` takes the call it skipped, or leave it parked.",
 	)
 	mustNotContain(t, descendant, "cannot continue until called run")
 }
@@ -358,7 +358,7 @@ func TestComposeOmitsEmptySections(t *testing.T) {
 	}
 }
 
-// `stuck` used to be the one actionable reason with no verb: the phase said
+// `stuck` used to be the one actionable reason with no call: the phase said
 // what it needed, and the reader was left to guess which of four resume-shaped
 // commands acts on it.
 func TestComposeStuckParkNamesResumeAndTheRefreshEscape(t *testing.T) {
@@ -368,8 +368,8 @@ func TestComposeStuckParkNamesResumeAndTheRefreshEscape(t *testing.T) {
 	}})
 	mustContain(t, message,
 		`Run "run-20" is parked and does not continue until this is resolved.`,
-		"`agent-overflow run resume \"run-20\"` enters the parked phase again as a fresh attempt",
-		"`agent-overflow run resume \"run-20\" --refresh-def` re-reads them at that entry",
+		"`run_control(run_id: \"run-20\", action: \"resume\")` enters the parked phase again as a fresh attempt",
+		"`run_control(run_id: \"run-20\", action: \"resume\", refresh_def: true)` re-reads them at that entry",
 	)
 }
 
@@ -382,8 +382,8 @@ func TestComposeStuckDescendantParkNamesTheDescendantsResume(t *testing.T) {
 			ItemID: "wave-7", WorkflowID: "wave", State: "needs-human", Reason: "stuck", Depth: 2,
 		},
 	})
-	mustContain(t, message, `agent-overflow run resume "wave-7"`, `run resume "wave-7" --refresh-def`)
-	mustNotContain(t, message, `run resume "root-20"`)
+	mustContain(t, message, `run_control(run_id: "wave-7", action: "resume")`, `run_control(run_id: "wave-7", action: "resume", refresh_def: true)`)
+	mustNotContain(t, message, `run_id: "root-20"`)
 }
 
 // An engine-diagnosed park explains itself in the wake, on its own line: the
@@ -488,7 +488,7 @@ func TestComposeCarriesTheParkedAttemptsOutputsAndItsOverflow(t *testing.T) {
 		`What the parked attempt produced (phase "review", attempt 2):`,
 		`- "verdict": "reject"`,
 		`- "severity": "high"`,
-		"…and 5 more (`agent-overflow run inspect \"run-34\" --phase \"review\" --attempt 2`).",
+		"…and 5 more (`run_inspect(run_id: \"run-34\", phase_id: \"review\", attempt: 2)`).",
 	)
 }
 
@@ -512,7 +512,7 @@ func TestComposeAttributesTheAttemptDigestToTheParkedDescendant(t *testing.T) {
 		`The called run works in "/work/wave-4" on branch "ao/wave-4".`,
 		`Workspace: "/work/root-35" on branch "ao/campaign".`,
 		`What the called run's parked attempt produced (phase "review", attempt 1):`,
-		"…and 1 more (`agent-overflow run inspect \"wave-4\" --phase \"review\" --attempt 1`).",
+		"…and 1 more (`run_inspect(run_id: \"wave-4\", phase_id: \"review\", attempt: 1)`).",
 	)
 }
 

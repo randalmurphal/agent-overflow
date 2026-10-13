@@ -491,6 +491,8 @@ and read files natively; MCP calls block and trap results in-context.
   background `ao run wait` is the primary agent pattern. Workflow tooling does
   not add a separate loopback MCP server.
 
+**Superseded by D77.**
+
 ## D14. Per-workflow workspace + cleanup policy (user ruling, 2026-07-11)
 
 - **Workspace need is derived, not declared:** if no phase in the graph has
@@ -968,6 +970,8 @@ verdict it now is, with what the first attempt got wrong.
   `agent-overflow workflow list`. The verb set is exported from the
   package's own dispatch table rather than restated in `main`, because a
   hand-kept second copy is exactly how a verb becomes unreachable again.
+  **D77 moved the `workflow`, `run` and `memory` verbs to the
+  `ao-workflow-tools` MCP server; D30 stands for the remaining verbs.**
 
   **Sessions find it on PATH, under a canonical-name symlink.** Boot
   writes `<configDir>/bin/agent-overflow` pointing at `os.Executable()`
@@ -2864,3 +2868,47 @@ each pinned by an incident-replay test:
   runs it mapped. v145 rebuilds `work_items` so its `source` CHECK admits
   only `manual`, `agent` and `call`. Keeping `automation` as a value nothing
   writes would leave the removed feature in the schema.
+
+## Workflows are an MCP tool (user ruling, 2026-10-13)
+
+- **D77. Agents reach workflows through the app-managed
+  `ao-workflow-tools` MCP server; the `workflow`, `run` and `memory` CLI
+  verbs are removed.** This reverses D15. The user's reasoning: the tooling
+  is app-managed, agents get one surface, and there is no separate binary
+  to keep in sync. The server runs on the shared loopback MCP transport
+  (`internal/threadmcp`) and is registered on every Claude, claude-tui and
+  Codex session in a project on a per-session capability URL, the way the
+  thread tools are; a thread with no project has none. A phase session's
+  tool list is its grants, and the server refuses a call outside them by
+  name with the grant it needs rather than narrowing it. Every call runs the
+  bound workflow methods with the session's caller scope, so row-level
+  authorization and surface-and-skip are unchanged. The contract is
+  [agent-workflow-tools.md](agent-workflow-tools.md).
+
+  **D30 stands for the remaining verbs.** `service`, `pair`, `remote`,
+  `thread` and `help` stay CLI verbs of the app binary, `serve` and
+  `supervise` stay boot entries, and the PATH symlink and `AO_ENDPOINT`,
+  `AO_TOKEN` and `AO_THREAD_ID` stay for `remote`. `AO_PROJECT`, `AO_RUN_ID`
+  and `AO_PHASE_ID` are no longer injected; nothing reads them.
+
+  **Grant-free tools.** Memory and `workflow_list`/`workflow_validate`/
+  `workflow_schema` are grant-free because a phase could already reach them
+  through the offline CLI and the memory verb, so nothing a phase can do
+  widened. Grant-free tools never widen what a phase can do, and a read-only
+  phase keeps exactly the envelope memory channel it had: `memory_add` and
+  `workflow_new` are withheld from phases whose access is not `write`.
+
+  **Grants take effect on read-only phases.** The author declared them and
+  validation already accepted them; that a read-only session could not
+  reach the CLI's socket was a mechanism accident, not a rule.
+
+  **Waits and wakes.** A waiting call is bounded by the thread tools' 900
+  second ceiling and reports `resting`, `running` or `backgrounded`. A run's
+  rest reaches a thread only through its D17 binding, and no tool call
+  changes a binding, so a waiting result says whether the run is bound to the
+  caller's thread, unbound, bound to another thread, or being watched by a
+  phase session that receives no wakes.
+
+  **claude-tui** hosts `ao-workflow-tools` and none of the app's other
+  servers (`docs/decisions.md`); whether it hosts the thread tools is a
+  separate decision.

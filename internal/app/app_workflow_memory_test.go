@@ -84,7 +84,7 @@ func TestAddMemoryWritesTheRootTreeAndStampsTheWave(t *testing.T) {
 
 	for index, item := range runs {
 		ctx := h.phaseScope(item.ID, "implement", "thread-"+item.ID)
-		result, err := h.app.WorkflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
+		result, err := h.app.workflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
 			Kind: memory.KindLearning, Text: "note from " + item.ID, Files: []string{"a.go"},
 		})
 		if err != nil {
@@ -138,13 +138,13 @@ func TestAddMemoryResolvesTheAttemptAndUnitFromTheSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.app.WorkflowAgentAddMemory(
+	if _, err := h.app.workflowAgentAddMemory(
 		h.phaseScope("root", "implement", "phase-thread"),
 		WorkflowAgentMemoryInput{Kind: memory.KindWarning, Text: "from the phase"},
 	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.app.WorkflowAgentAddMemory(
+	if _, err := h.app.workflowAgentAddMemory(
 		h.phaseScope("root", "review", "unit-thread"),
 		WorkflowAgentMemoryInput{Kind: memory.KindWarning, Text: "from the unit"},
 	); err != nil {
@@ -169,11 +169,11 @@ func TestAddMemoryRefusesABadKindAndAnOversizeNote(t *testing.T) {
 	h.campaign(t, "root")
 	ctx := h.phaseScope("root", "implement", "thread")
 
-	_, err := h.app.WorkflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{Kind: "insight", Text: "x"})
+	_, err := h.app.workflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{Kind: "insight", Text: "x"})
 	if err == nil || !strings.Contains(err.Error(), memory.KindList()) {
 		t.Fatalf("bad kind error = %v", err)
 	}
-	_, err = h.app.WorkflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
+	_, err = h.app.workflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
 		Kind: memory.KindLearning, Text: strings.Repeat("x", memory.MaxTextBytes+1),
 	})
 	if err == nil || !strings.Contains(err.Error(), "text") {
@@ -202,11 +202,11 @@ func TestMemoryScopeIsConfinedToTheCallersOwnTree(t *testing.T) {
 	for _, verb := range []string{"add", "list"} {
 		var err error
 		if verb == "add" {
-			_, err = h.app.WorkflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
+			_, err = h.app.workflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
 				ItemID: "other-root", Kind: memory.KindWarning, Text: "not mine",
 			})
 		} else {
-			_, err = h.app.WorkflowAgentListMemory(ctx, WorkflowAgentMemoryListInput{ItemID: "other-root"})
+			_, err = h.app.workflowAgentListMemory(ctx, WorkflowAgentMemoryListInput{ItemID: "other-root"})
 		}
 		if err == nil || !strings.Contains(err.Error(), "may only act on the runs it started") {
 			t.Fatalf("memory %s reached another campaign: %v", verb, err)
@@ -220,14 +220,14 @@ func TestMemoryScopeIsConfinedToTheCallersOwnTree(t *testing.T) {
 	// same answer — a phase's own run is not one it "started", so this is the
 	// case a bare scopedRun check would have refused.
 	for _, named := range []string{"", "lane"} {
-		if _, err := h.app.WorkflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
+		if _, err := h.app.workflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
 			ItemID: named, Kind: memory.KindPattern, Text: "mine",
 		}); err != nil {
 			t.Fatalf("itemId=%q was refused: %v", named, err)
 		}
 	}
 	// A run this phase started shares the same root, and is reachable too.
-	if _, err := h.app.WorkflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
+	if _, err := h.app.workflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
 		ItemID: "started-by-lane", Kind: memory.KindHandoff, Text: "from the child",
 	}); err != nil {
 		t.Fatalf("a run this phase started was refused: %v", err)
@@ -246,12 +246,12 @@ func TestMemoryFromAnInteractiveThreadRequiresARunId(t *testing.T) {
 	ctx := transport.WithCallerScope(context.Background(), transport.CallerScope{
 		Kind: transport.ScopeKindInteractive, ThreadID: "chat", ProjectID: defaultTestProjectID,
 	})
-	if _, err := h.app.WorkflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
+	if _, err := h.app.workflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
 		Kind: memory.KindWarning, Text: "x",
 	}); err == nil || !strings.Contains(err.Error(), "run id is required") {
 		t.Fatalf("error = %v", err)
 	}
-	if _, err := h.app.WorkflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
+	if _, err := h.app.workflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
 		ItemID: "root", Kind: memory.KindWarning, Text: "a human ruling",
 	}); err != nil {
 		t.Fatal(err)
@@ -272,12 +272,12 @@ func TestListMemoryRendersProvenanceAndFiltersByKind(t *testing.T) {
 		{Kind: memory.KindLearning, Text: "the learning", Files: []string{"pkg/a.go"}},
 		{Kind: memory.KindWarning, Text: "another warning"},
 	} {
-		if _, err := h.app.WorkflowAgentAddMemory(ctx, draft); err != nil {
+		if _, err := h.app.workflowAgentAddMemory(ctx, draft); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	whole, err := h.app.WorkflowAgentListMemory(ctx, WorkflowAgentMemoryListInput{})
+	whole, err := h.app.workflowAgentListMemory(ctx, WorkflowAgentMemoryListInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,21 +291,21 @@ func TestListMemoryRendersProvenanceAndFiltersByKind(t *testing.T) {
 		t.Fatalf("note lost its files or provenance: %+v", whole.Notes[1])
 	}
 
-	filtered, err := h.app.WorkflowAgentListMemory(ctx, WorkflowAgentMemoryListInput{Kind: memory.KindWarning})
+	filtered, err := h.app.workflowAgentListMemory(ctx, WorkflowAgentMemoryListInput{Kind: memory.KindWarning})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(filtered.Notes) != 2 || filtered.Total != 3 {
 		t.Fatalf("filtered = %d notes of %d, want 2 of 3", len(filtered.Notes), filtered.Total)
 	}
-	if _, err := h.app.WorkflowAgentListMemory(ctx, WorkflowAgentMemoryListInput{Kind: "bogus"}); err == nil {
+	if _, err := h.app.workflowAgentListMemory(ctx, WorkflowAgentMemoryListInput{Kind: "bogus"}); err == nil {
 		t.Fatal("an unknown kind filter was accepted")
 	}
 
 	// An empty campaign answers with an empty list rather than a null, and names
 	// the log it read from.
 	h.campaign(t, "quiet")
-	empty, err := h.app.WorkflowAgentListMemory(
+	empty, err := h.app.workflowAgentListMemory(
 		h.phaseScope("quiet", "implement", "t"), WorkflowAgentMemoryListInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -322,7 +322,7 @@ func TestListMemoryReportsUnreadableLines(t *testing.T) {
 	h := newMemoryHarness(t)
 	h.campaign(t, "root")
 	ctx := h.phaseScope("root", "implement", "thread")
-	if _, err := h.app.WorkflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
+	if _, err := h.app.workflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
 		Kind: memory.KindWarning, Text: "kept",
 	}); err != nil {
 		t.Fatal(err)
@@ -338,7 +338,7 @@ func TestListMemoryReportsUnreadableLines(t *testing.T) {
 	if err := os.WriteFile(path, append(whole, []byte(`{"kind":"warning","tex`)...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := h.app.WorkflowAgentListMemory(ctx, WorkflowAgentMemoryListInput{})
+	result, err := h.app.workflowAgentListMemory(ctx, WorkflowAgentMemoryListInput{})
 	if err != nil {
 		t.Fatalf("a torn line was fatal: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestWorkflowMemoryDigestRendersTheTreeAndSurvivesAnUnresolvableRun(t *testi
 	h := newMemoryHarness(t)
 	h.campaign(t, "root", "lane")
 	ctx := h.phaseScope("root", "plan", "thread")
-	if _, err := h.app.WorkflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
+	if _, err := h.app.workflowAgentAddMemory(ctx, WorkflowAgentMemoryInput{
 		Kind: memory.KindHandoff, Text: "the wave-one handoff",
 	}); err != nil {
 		t.Fatal(err)
@@ -387,7 +387,7 @@ func TestProjectDeletionRemovesTheMemoryTree(t *testing.T) {
 		Kind: transport.ScopeKindPhase, ThreadID: "phase-thread",
 		ProjectID: fixture.project.ID, ItemID: fixture.child.ID, PhaseID: "run",
 	})
-	if _, err := fixture.app.WorkflowAgentAddMemory(scope, WorkflowAgentMemoryInput{
+	if _, err := fixture.app.workflowAgentAddMemory(scope, WorkflowAgentMemoryInput{
 		Kind: memory.KindWarning, Text: "will be forgotten with the project",
 	}); err != nil {
 		t.Fatal(err)
@@ -422,7 +422,7 @@ func TestDiscardKeepsTheMemoryTree(t *testing.T) {
 		Kind: transport.ScopeKindPhase, ThreadID: "phase-thread",
 		ProjectID: fixture.project.ID, ItemID: fixture.root.ID, PhaseID: "run",
 	})
-	if _, err := fixture.app.WorkflowAgentAddMemory(scope, WorkflowAgentMemoryInput{
+	if _, err := fixture.app.workflowAgentAddMemory(scope, WorkflowAgentMemoryInput{
 		Kind: memory.KindLearning, Text: "survives the discard",
 	}); err != nil {
 		t.Fatal(err)

@@ -78,9 +78,8 @@ const superviseVerb = "supervise"
 //     one for the same SQLite file, which is the whole entryRefuse class —
 //     and a SUPERVISOR started there is that plus a second writer of the
 //     launch state.
-//  2. A top-level CLI verb is a CLI invocation anywhere, session or not. The
-//     offline `workflow` commands are useful from a plain terminal and always
-//     have been.
+//  2. A top-level CLI verb is a CLI invocation anywhere, session or not.
+//     `service` and `pair` are useful from a plain terminal.
 //  3. Outside a session (no AO_ENDPOINT) nothing else changes: this is the
 //     binary a user double-clicks, and an unrecognised argument has always
 //     landed in the desktop boot.

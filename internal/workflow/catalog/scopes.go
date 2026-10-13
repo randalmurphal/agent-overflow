@@ -1,4 +1,4 @@
-package aocli
+package catalog
 
 import (
 	"errors"
@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/workflow/def"
@@ -15,48 +14,10 @@ import (
 
 // Workflow scope discovery and resolution: where definitions live, which of
 // them a given project sees, and how a call edge resolves. Every caller that
-// needs "the workflows this project has" — the offline commands, the app's
-// composer context, the engine's call resolver — comes through here, so there
-// is one answer to scope precedence (project shadows shared) rather than one
-// per entry point.
-
-func resolveConfigRoot(override string) (string, error) {
-	if strings.TrimSpace(override) != "" {
-		return override, nil
-	}
-	return appdirs.Root()
-}
-
-// workflowProjectScope resolves which project's workflow scope an offline
-// command reads. An explicit --project always wins; otherwise AO_PROJECT — the
-// slug of the project the calling session works in — supplies it, because the
-// offline half has no app to infer a project from and a cold agent inside a
-// session has no other way to learn the slug.
-//
-// An empty answer therefore means neither input was present, which is what lets
-// a command with nothing to show say why. A malformed value is named by where it
-// came from: the fix for a bad flag is retyping it, and the fix for a bad
-// AO_PROJECT is not something the caller typed at all.
-func workflowProjectScope(flagValue string, lookupEnv func(string) (string, bool)) (string, error) {
-	if slug := strings.TrimSpace(flagValue); slug != "" {
-		if err := validateProjectSlug(slug); err != nil {
-			return "", err
-		}
-		return slug, nil
-	}
-	if lookupEnv == nil {
-		return "", nil
-	}
-	value, _ := lookupEnv(EnvProject)
-	slug := strings.TrimSpace(value)
-	if slug == "" {
-		return "", nil
-	}
-	if err := validateProjectSlug(slug); err != nil {
-		return "", fmt.Errorf("%s: %w", EnvProject, err)
-	}
-	return slug, nil
-}
+// needs "the workflows this project has" (the workflow tools, the composer
+// context, the engine's call resolver) comes through here, so there is one
+// answer to scope precedence (project shadows shared) rather than one per
+// entry point.
 
 func validateProjectSlug(slug string) error {
 	if slug == "" {
@@ -95,7 +56,7 @@ func validateProjectSlug(slug string) error {
 // Neither directory is a failure. A definition drafted outside the config root
 // — in a repo checkout, before it is installed — is a legitimate thing to
 // validate, and it gets no scope unless the caller names one.
-func workflowScopeForPath(configRoot, path string) (slug string, scope def.Scope, ok bool) {
+func scopeForPath(configRoot, path string) (slug string, scope def.Scope, ok bool) {
 	absRoot, err := filepath.Abs(configRoot)
 	if err != nil {
 		return "", "", false
@@ -156,8 +117,8 @@ func WorkflowSourceDirs(configRoot, projectSlug string) (shared, projectDir stri
 	return shared, projectDir
 }
 
-// ResolveConfigured returns workflows from the same shared/project discovery
-// chain used by the CLI.
+// ResolveConfigured returns the workflows a project sees: its own scope over
+// the shared one.
 func ResolveConfigured(configRoot, projectSlug string) ([]def.ResolvedWorkflow, error) {
 	sources, err := configuredSources(configRoot, projectSlug)
 	if err != nil {
@@ -229,7 +190,7 @@ func ResolveWorkflow(configRoot, projectSlug, workflowID string, scope def.Scope
 // looks like an attempt at a workflow. The wording states the layout rather than
 // just the fact, because the only useful thing to say to someone who authored
 // `<id>/workflow.yaml` is what the flat form is.
-func skippedWorkflowDirNotes(configRoot, projectSlug string) ([]string, error) {
+func skippedDirNotes(configRoot, projectSlug string) ([]string, error) {
 	sources, err := configuredSources(configRoot, projectSlug)
 	if err != nil {
 		return nil, err
@@ -241,14 +202,14 @@ func skippedWorkflowDirNotes(configRoot, projectSlug string) ([]string, error) {
 	notes := make([]string, 0, len(skipped))
 	for _, directory := range skipped {
 		notes = append(notes, fmt.Sprintf(
-			"note: %s is a directory and was skipped — a workflow is a flat <id>.yaml beside its <id>-*.md prompts",
+			"note: %s is a directory and was skipped; a workflow is a flat <id>.yaml beside its <id>-*.md prompts",
 			directory.Path,
 		))
 	}
 	return notes, nil
 }
 
-func listConfigured(configRoot, projectSlug string, bindings def.Bindings) ([]listEntry, error) {
+func listConfigured(configRoot, projectSlug string, bindings def.Bindings) ([]Entry, error) {
 	sources, err := configuredSources(configRoot, projectSlug)
 	if err != nil {
 		return nil, err
@@ -266,11 +227,11 @@ func listConfigured(configRoot, projectSlug string, bindings def.Bindings) ([]li
 	for _, workflow := range shared {
 		sharedIDs[workflow.Workflow.ID] = struct{}{}
 	}
-	entries := make([]listEntry, 0, len(resolved))
+	entries := make([]Entry, 0, len(resolved))
 	for _, workflow := range resolved {
 		_, shadows := sharedIDs[workflow.Workflow.ID]
 		validation := def.Validate(workflow, bindings, calls)
-		entries = append(entries, listEntry{
+		entries = append(entries, Entry{
 			ID:            workflow.Workflow.ID,
 			Name:          workflow.Workflow.Name,
 			Scope:         workflow.Scope,
@@ -281,7 +242,7 @@ func listConfigured(configRoot, projectSlug string, bindings def.Bindings) ([]li
 		})
 	}
 	if entries == nil {
-		entries = []listEntry{}
+		entries = []Entry{}
 	}
 	return entries, nil
 }

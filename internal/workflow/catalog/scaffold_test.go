@@ -1,11 +1,11 @@
-package aocli
+package catalog
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,8 +15,8 @@ import (
 
 // TestEveryStarterCanBeScaffolded scaffolds the whole shipped set into ONE
 // scope and validates each definition against the others. A starter may call
-// another starter — the campaign spine calls the task lane for every unit and
-// calls itself for the next wave — so validating one in isolation would only
+// another starter (the campaign spine calls the task lane for every unit and
+// calls itself for the next wave), so validating one in isolation would only
 // prove that a call edge cannot be checked, which is not the question.
 func TestEveryStarterCanBeScaffolded(t *testing.T) {
 	configRoot := t.TempDir()
@@ -100,7 +100,7 @@ func TestScaffoldRenamesSelfCallEdges(t *testing.T) {
 
 // EVERY sibling is scoped to the id being created, not only the prompts. A
 // scope is one flat directory shared by every workflow in it, so a starter
-// carrying a non-prompt sibling — the campaign's reference merge script — would
+// carrying a non-prompt sibling (the campaign's reference merge script) would
 // otherwise collide with itself the second time it is scaffolded there, and the
 // second scaffold would be refused naming a file the user never chose.
 func TestScaffoldNamespacesEverySiblingNotOnlyPrompts(t *testing.T) {
@@ -137,17 +137,11 @@ func TestScaffoldNamespacesEverySiblingNotOnlyPrompts(t *testing.T) {
 	}
 }
 
-func TestNewScaffoldsRenamedStarterAndRefusesOverwrite(t *testing.T) {
+func TestScaffoldRenamesStarterAndRefusesOverwrite(t *testing.T) {
 	configRoot := t.TempDir()
-	args := []string{"workflow", "new", "build-and-validate", "--id", "custom-build", "--config-root", configRoot, "--json"}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	if code := Run(args, &stdout, &stderr); code != exitOK {
-		t.Fatalf("Run exit code = %d; stderr=%q", code, stderr.String())
-	}
-	var result scaffoldResult
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("decode scaffold JSON: %v\n%s", err, stdout.String())
+	result, err := Scaffold(configRoot, "build-and-validate", "custom-build", "")
+	if err != nil {
+		t.Fatal(err)
 	}
 	if len(result.Created) != 4 || result.Validation.BindingStatus != def.BindingsUnchecked || !result.Validation.Valid() {
 		t.Fatalf("scaffold result = %+v", result)
@@ -171,10 +165,8 @@ func TestNewScaffoldsRenamedStarterAndRefusesOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stdout.Reset()
-	stderr.Reset()
-	if code := Run(args, &stdout, &stderr); code != exitError || !strings.Contains(stderr.String(), "refusing to overwrite") {
-		t.Fatalf("overwrite exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	if _, err := Scaffold(configRoot, "build-and-validate", "custom-build", ""); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("overwrite error = %v", err)
 	}
 	after, err := os.ReadFile(definitionPath)
 	if err != nil {
@@ -185,13 +177,11 @@ func TestNewScaffoldsRenamedStarterAndRefusesOverwrite(t *testing.T) {
 	}
 }
 
-func TestNewBlankCreatesMinimalValidProjectWorkflow(t *testing.T) {
+func TestScaffoldBlankCreatesMinimalValidProjectWorkflow(t *testing.T) {
 	configRoot := t.TempDir()
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	code := Run([]string{"workflow", "new", "blank", "--id", "ticket-triage", "--project", "sample", "--config-root", configRoot}, &stdout, &stderr)
-	if code != exitOK {
-		t.Fatalf("Run exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	result, err := Scaffold(configRoot, "blank", "ticket-triage", "sample")
+	if err != nil {
+		t.Fatal(err)
 	}
 	definitionPath := filepath.Join(configRoot, "projects", "sample", "workflows", "ticket-triage.yaml")
 	workflow, err := def.ParseFile(definitionPath)
@@ -202,45 +192,47 @@ func TestNewBlankCreatesMinimalValidProjectWorkflow(t *testing.T) {
 	if !validation.Valid() {
 		t.Fatalf("blank scaffold findings = %+v", validation.Findings)
 	}
-	if !strings.Contains(stdout.String(), definitionPath) || !strings.Contains(stdout.String(), "ticket-triage-run.md") || !strings.Contains(stdout.String(), "bindings: unchecked") {
-		t.Fatalf("stdout = %q", stdout.String())
+	created := strings.Join(result.Created, "\n")
+	if !strings.Contains(created, definitionPath) || !strings.Contains(created, "ticket-triage-run.md") || result.Validation.BindingStatus != def.BindingsUnchecked {
+		t.Fatalf("result = %+v", result)
 	}
 	assertPublishedSchema(t, filepath.Join(configRoot, "projects", "sample", "workflow.schema.json"))
 }
 
-func TestNewSurfacesProfileBindingFindingsAfterCreatingFiles(t *testing.T) {
+func TestScaffoldSurfacesProfileBindingFindingsAfterCreatingFiles(t *testing.T) {
 	configRoot := t.TempDir()
 	profileDir := filepath.Join(configRoot, "projects", "sample")
 	mustMkdirAll(t, profileDir)
 	mustWriteFile(t, filepath.Join(profileDir, "profile.yaml"), "base_branch: main\n")
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	code := Run([]string{"workflow", "new", "port-campaign", "--id", "campaign", "--project", "sample", "--config-root", configRoot}, &stdout, &stderr)
-	if code != exitFindings || !strings.Contains(stdout.String(), "bindings: checked") || !strings.Contains(stdout.String(), "binding.command") || !strings.Contains(stdout.String(), "binding.capacity") {
-		t.Fatalf("Run exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	result, err := Scaffold(configRoot, "port-campaign", "campaign", "sample")
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes := map[string]bool{}
+	for _, finding := range result.Validation.Findings {
+		codes[finding.Code] = true
+	}
+	if result.Validation.Valid() || result.Validation.BindingStatus != "checked" || !codes["binding.command"] || !codes["binding.capacity"] {
+		t.Fatalf("validation = %+v", result.Validation)
 	}
 	if _, err := os.Stat(filepath.Join(profileDir, "workflows", "campaign.yaml")); err != nil {
 		t.Fatalf("created definition: %v", err)
 	}
 }
 
-func TestNewRejectsUnknownStarterAndInvalidIDWithoutWriting(t *testing.T) {
+func TestScaffoldRejectsUnknownStarterAndInvalidIDWithoutWriting(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		args []string
-		want string
+		name, starter, id, want string
 	}{
-		{name: "starter", args: []string{"workflow", "new", "missing", "--id", "valid"}, want: "unknown workflow starter"},
-		{name: "id", args: []string{"workflow", "new", "blank", "--id", "../escape"}, want: "invalid workflow id"},
+		{name: "starter", starter: "missing", id: "valid", want: "unknown workflow starter"},
+		{name: "id", starter: "blank", id: "../escape", want: "invalid workflow id"},
+		{name: "empty id", starter: "blank", id: " ", want: "a workflow id is required"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			configRoot := t.TempDir()
-			args := append(test.args, "--config-root", configRoot)
-			var stdout bytes.Buffer
-			var stderr bytes.Buffer
-			if code := Run(args, &stdout, &stderr); code != exitError || !strings.Contains(stderr.String(), test.want) {
-				t.Fatalf("Run exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			if _, err := Scaffold(configRoot, test.starter, test.id, ""); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
 			}
 			if _, err := os.Stat(filepath.Join(configRoot, "workflows")); !os.IsNotExist(err) {
 				t.Fatalf("workflow directory exists after rejected scaffold: %v", err)
@@ -249,67 +241,58 @@ func TestNewRejectsUnknownStarterAndInvalidIDWithoutWriting(t *testing.T) {
 	}
 }
 
-func TestNewMalformedProfileDoesNotCreateFiles(t *testing.T) {
+func TestScaffoldMalformedProfileDoesNotCreateFiles(t *testing.T) {
 	configRoot := t.TempDir()
 	profileDir := filepath.Join(configRoot, "projects", "sample")
 	mustMkdirAll(t, profileDir)
 	mustWriteFile(t, filepath.Join(profileDir, "profile.yaml"), "unknown: true\n")
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	code := Run([]string{"workflow", "new", "blank", "--id", "safe", "--project", "sample", "--config-root", configRoot}, &stdout, &stderr)
-	if code != exitError || !strings.Contains(stderr.String(), filepath.Join(profileDir, "profile.yaml")) {
-		t.Fatalf("Run exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	if _, err := Scaffold(configRoot, "blank", "safe", "sample"); err == nil || !strings.Contains(err.Error(), filepath.Join(profileDir, "profile.yaml")) {
+		t.Fatalf("error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(profileDir, "workflows")); !os.IsNotExist(err) {
 		t.Fatalf("workflow directory exists after malformed profile: %v", err)
 	}
 }
 
-func TestNewRefusesDuplicateDeclaredID(t *testing.T) {
+func TestScaffoldRefusesDuplicateDeclaredID(t *testing.T) {
 	configRoot := t.TempDir()
 	workflowDir := filepath.Join(configRoot, "workflows")
 	mustMkdirAll(t, workflowDir)
 	mustWriteFile(t, filepath.Join(workflowDir, "legacy-name.yaml"), workflowYAML("duplicate", "Existing workflow"))
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	code := Run([]string{"workflow", "new", "blank", "--id", "duplicate", "--config-root", configRoot}, &stdout, &stderr)
-	if code != exitError || !strings.Contains(stderr.String(), "already declared") || !strings.Contains(stderr.String(), "legacy-name.yaml") {
-		t.Fatalf("Run exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	_, err := Scaffold(configRoot, "blank", "duplicate", "")
+	if err == nil || !strings.Contains(err.Error(), "already declared") || !strings.Contains(err.Error(), "legacy-name.yaml") {
+		t.Fatalf("error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(workflowDir, "duplicate.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("duplicate definition was created: %v", err)
 	}
 }
 
-func TestNewRejectsSymlinkedScopeComponents(t *testing.T) {
+func TestScaffoldRejectsSymlinkedScopeComponents(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires privileges on some Windows hosts")
 	}
 	for _, test := range []struct {
 		name    string
-		project bool
+		project string
 	}{
 		{name: "workflow directory"},
-		{name: "projects directory", project: true},
+		{name: "projects directory", project: "sample"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			configRoot := t.TempDir()
 			outside := t.TempDir()
 			link := filepath.Join(configRoot, "workflows")
-			args := []string{"workflow", "new", "blank", "--id", "safe", "--config-root", configRoot}
-			if test.project {
+			if test.project != "" {
 				link = filepath.Join(configRoot, "projects")
-				args = append(args, "--project", "sample")
 			}
 			if err := os.Symlink(outside, link); err != nil {
 				t.Fatal(err)
 			}
-			var stdout bytes.Buffer
-			var stderr bytes.Buffer
-			if code := Run(args, &stdout, &stderr); code != exitError || !strings.Contains(stderr.String(), "must not be a symlink") {
-				t.Fatalf("Run exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			if _, err := Scaffold(configRoot, "blank", "safe", test.project); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+				t.Fatalf("error = %v", err)
 			}
 			entries, err := os.ReadDir(outside)
 			if err != nil {
@@ -322,35 +305,27 @@ func TestNewRejectsSymlinkedScopeComponents(t *testing.T) {
 	}
 }
 
-func TestNewHelpListsRegisteredStarters(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	if code := Run([]string{"workflow", "new", "--help"}, &stdout, &stderr); code != exitOK {
-		t.Fatalf("Run exit code = %d; stderr=%q", code, stderr.String())
-	}
+func TestStartersListsEveryRegisteredStarterAndBlank(t *testing.T) {
+	names := Starters()
 	for _, name := range append(starters.List(), "blank") {
-		if !strings.Contains(stdout.String(), "  "+name+"\n") {
-			t.Errorf("help does not list %q:\n%s", name, stdout.String())
+		if !slices.Contains(names, name) {
+			t.Errorf("Starters() = %v, missing %q", names, name)
 		}
 	}
 }
 
-func TestNewReusesMatchingSchemaAndLeavesDifferingSchemaUntouched(t *testing.T) {
+func TestScaffoldReusesMatchingSchemaAndLeavesDifferingSchemaUntouched(t *testing.T) {
 	configRoot := t.TempDir()
 	for _, id := range []string{"first", "second"} {
-		var stdout bytes.Buffer
-		var stderr bytes.Buffer
-		if code := Run([]string{"workflow", "new", "blank", "--id", id, "--config-root", configRoot}, &stdout, &stderr); code != exitOK {
-			t.Fatalf("new %s exit code = %d; stdout=%q stderr=%q", id, code, stdout.String(), stderr.String())
+		if _, err := Scaffold(configRoot, "blank", id, ""); err != nil {
+			t.Fatalf("scaffold %s: %v", id, err)
 		}
 	}
 	schemaPath := filepath.Join(configRoot, "workflow.schema.json")
 	mustWriteFile(t, schemaPath, "{}\n")
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	code := Run([]string{"workflow", "new", "blank", "--id", "third", "--config-root", configRoot}, &stdout, &stderr)
-	if code != exitOK || !strings.Contains(stderr.String(), "differs from this build's; left untouched") {
-		t.Fatalf("Run exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	result, err := Scaffold(configRoot, "blank", "third", "")
+	if err != nil || !strings.Contains(result.Note, "differs from this build's; left untouched") {
+		t.Fatalf("result = %+v, err = %v", result, err)
 	}
 	if _, err := os.Stat(filepath.Join(configRoot, "workflows", "third.yaml")); err != nil {
 		t.Fatalf("scaffold did not proceed past a differing schema: %v", err)
@@ -358,8 +333,8 @@ func TestNewReusesMatchingSchemaAndLeavesDifferingSchemaUntouched(t *testing.T) 
 	if data, err := os.ReadFile(schemaPath); err != nil || string(data) != "{}\n" {
 		t.Fatalf("differing schema was modified: data=%q err=%v", data, err)
 	}
-	if strings.Contains(stdout.String(), schemaPath) {
-		t.Fatalf("untouched schema reported as created: stdout=%q", stdout.String())
+	if slices.Contains(result.Created, schemaPath) {
+		t.Fatalf("untouched schema reported as created: %v", result.Created)
 	}
 }
 

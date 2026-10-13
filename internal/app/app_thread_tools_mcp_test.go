@@ -278,17 +278,19 @@ func TestStartSession_CodexCarriesTheThreadToolsEntryAndGuide(t *testing.T) {
 	if guide == "" {
 		t.Fatal("thread/start carried no developerInstructions, so the decision guide never reaches Codex")
 	}
-	// The app guide leads, naming the thread tools as on, and the thread
-	// tools' own guide follows it: Codex reads neither from the handshake.
-	want := agentGuideText(map[string]bool{threadMCPName: true}) + "\n\n" + app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID))
+	// The app guide leads, naming the thread and workflow tools as on, and
+	// each server's own guide follows it: Codex reads none from the handshake.
+	want := agentGuideText(map[string]bool{threadMCPName: true, workflowMCPName: true}) + "\n\n" +
+		app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID)) + "\n\n" +
+		app.workflowToolsInstructions(thread.ID)
 	if guide != want {
 		t.Errorf("developerInstructions:\n%s\nwant:\n%s", guide, want)
 	}
 }
 
 // With the app guide switched off, Codex still gets the on servers' guides;
-// with the thread tools off too, nothing is sent and the cwd's configured
-// instructions stand unchanged.
+// with the thread tools off too, only the workflow tools' guide is sent,
+// because a project session always has them.
 func TestStartSession_CodexDeveloperInstructionsFollowTheSwitches(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
@@ -309,8 +311,12 @@ func TestStartSession_CodexDeveloperInstructionsFollowTheSwitches(t *testing.T) 
 		t.Fatalf("StartSession: %v", err)
 	}
 	params := waitForCodexRequest(t, logPath, "thread/start")
-	if got := params["developerInstructions"]; got != app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID)) {
-		t.Errorf("guide off: developerInstructions = %v, want the thread tools guide alone", got)
+	workflowGuide := app.workflowToolsInstructions(thread.ID)
+	if workflowGuide == "" {
+		t.Fatal("a project session has no workflow tools guide")
+	}
+	if got := params["developerInstructions"]; got != app.threadToolsServer().Instructions(app.threadToolsShape(thread.ID))+"\n\n"+workflowGuide {
+		t.Errorf("guide off: developerInstructions = %v, want the thread and workflow tools guides", got)
 	}
 
 	// A second, fresh thread: the first one would resume its provider thread.
@@ -328,8 +334,8 @@ func TestStartSession_CodexDeveloperInstructionsFollowTheSwitches(t *testing.T) 
 		t.Fatalf("StartSession: %v", err)
 	}
 	params = waitForCodexRequest(t, logPath, "thread/start")
-	if got, present := params["developerInstructions"]; present {
-		t.Errorf("everything off, yet thread/start carried developerInstructions %v", got)
+	if got := params["developerInstructions"]; got != workflowGuide {
+		t.Errorf("guide and thread tools off: developerInstructions = %v, want the workflow tools guide alone", got)
 	}
 }
 
