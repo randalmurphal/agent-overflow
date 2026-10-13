@@ -100,6 +100,26 @@ func TestARestTheCallReturnedBeforeItsWakeRanDoesNotWake(t *testing.T) {
 	}
 }
 
+// The rest's wake job was queued before the call returned the rest: the job
+// runs after the release was asked for, and must still find the hold.
+func TestAWakeQueuedBeforeTheReleaseStillFindsTheHold(t *testing.T) {
+	f := newHoldFixture(t)
+	hold := f.service.HoldRestWake(f.item.ID, f.thread)
+	// Hold the wake queue so the rest's job and the release queue up behind
+	// it in the order they were asked for.
+	gate := make(chan struct{})
+	f.service.wake.Go(func() { <-gate })
+	f.service.AfterStateEvent(engine.StateEvent{
+		ItemID: f.item.ID, From: engine.StateRunning, To: engine.StateNeedsHuman, Reason: engine.ReasonGate,
+	})
+	hold.Release(true)
+	close(gate)
+	f.service.WaitWake()
+	if f.wakes() != 0 {
+		t.Fatalf("a rest the call returned woke the thread: %d wakes", f.wakes())
+	}
+}
+
 // A call that ends without returning the rest (it backgrounded, failed, or
 // its client went away) leaves the thread owed exactly the wake it held back.
 func TestAKeptBackRestWakesWhenTheCallEndsWithoutIt(t *testing.T) {
@@ -186,5 +206,16 @@ func TestAKeptBackRestPassesToAnotherStandingHold(t *testing.T) {
 	}
 	if len(f.service.holds.byRun) != 0 {
 		t.Fatalf("released holds stayed registered: %v", f.service.holds.byRun)
+	}
+}
+
+// A call from another thread that returned the rest delivered it to that
+// thread, not to the one the run is bound to.
+func TestAnotherThreadsDeliveryDoesNotSilenceTheBoundThread(t *testing.T) {
+	f := newHoldFixture(t)
+	f.release(f.service.HoldRestWake(f.item.ID, "other-thread"), true)
+	f.rest()
+	if f.wakes() != 1 {
+		t.Fatalf("another thread's delivery silenced the bound thread: %d wakes", f.wakes())
 	}
 }

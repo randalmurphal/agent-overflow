@@ -201,9 +201,10 @@ A wait that returns the rest is the delivery, as a thread tool's wait is: that
 rest does not also wake the thread. While an interactive call waits, the run's
 wakes to the caller's thread are held (`internal/workflowapp/wake_hold.go`).
 `run_start` takes the hold before it binds the run, so no rest can slip past
-it. When the call returns the run at rest, the rest is recorded as the
-thread's last delivered wake, and the wake-coalescing rule suppresses the same
-rest arriving after the call; when it returns `backgrounded`, fails or is
+it. The hold is released on the wake queue, behind any wake job already
+queued for the run, so such a job still finds it. When the call returns the
+run at rest, the rest is recorded as the thread's last delivered wake, and the
+wake-coalescing rule suppresses the same rest arriving after the call; when it returns `backgrounded`, fails or is
 cancelled, a rest held back during the call wakes the thread as it would
 have. The next rest, after the run is resumed, rerun or otherwise acted on,
 wakes the thread as usual. A hold is process memory: a crash between the rest

@@ -16,11 +16,13 @@ import (
 // arriving later, or it did not, and the rest it kept back wakes the thread as
 // it would have.
 //
-// The record is what makes the order of the two halves irrelevant. A call can
-// read a rest from the store before the engine's event has queued that rest's
-// wake: the release then lands first and records the rest, and the wake that
-// follows is suppressed by wakeAlreadyDelivered. When the wake runs first, it
-// finds the hold and keeps the rest back. Either way the thread hears once.
+// A release takes effect on the wake queue, in order with the rests it
+// settles. A wake job queued before the release still finds the hold standing
+// and keeps its rest back. A call can also read a rest from the store before
+// the engine's event has queued that rest's wake: the release then runs first
+// and records the rest, and the wake that follows is suppressed by
+// wakeAlreadyDelivered. The engine persists a rest's phase before the
+// transition, so the record and the later wake compose the same signature.
 //
 // Holds are process memory. A crash while one stands loses a kept-back rest,
 // as a crash between a rest and its wake job always could; a rest is surfaced
@@ -61,7 +63,12 @@ func (s *Service) HoldRestWake(itemID, threadID string) *WakeHold {
 // Release ends the hold. delivered says the call returned the run at rest.
 // Later calls do nothing.
 func (h *WakeHold) Release(delivered bool) {
-	h.once.Do(func() { h.service.releaseWakeHold(h, delivered) })
+	h.once.Do(func() {
+		// On the wake queue, behind every wake job already queued for this
+		// run: those still see the hold, so a release never lets past a rest
+		// it is about to settle.
+		h.service.wake.Go(func() { h.service.releaseWakeHold(h, delivered) })
+	})
 }
 
 // keepBackRest is the wake half's check, made for a root's rest before it is
@@ -91,6 +98,7 @@ func (s *Service) keepBackRest(item store.WorkItem, claim *store.WorkflowProvide
 	return true
 }
 
+// releaseWakeHold runs on the wake queue.
 func (s *Service) releaseWakeHold(hold *WakeHold, delivered bool) {
 	s.holds.mu.Lock()
 	holds := s.holds.byRun[hold.itemID]
@@ -109,18 +117,14 @@ func (s *Service) releaseWakeHold(hold *WakeHold, delivered bool) {
 	hold.claim = nil
 	s.holds.mu.Unlock()
 
-	// On the wake queue, behind any wake job already queued for this run, so
-	// a release never overtakes the rest it settles.
-	s.wake.Go(func() {
-		switch {
-		case delivered:
-			s.recordCallDeliveredRest(hold, claim)
-		case held:
-			s.wakeKeptBackRest(hold, claim)
-		default:
-			s.releaseWorkflowUsageAttention(claim)
-		}
-	})
+	switch {
+	case delivered:
+		s.recordCallDeliveredRest(hold, claim)
+	case held:
+		s.wakeKeptBackRest(hold, claim)
+	default:
+		s.releaseWorkflowUsageAttention(claim)
+	}
 }
 
 // recordCallDeliveredRest records the rest a call returned as the last wake
