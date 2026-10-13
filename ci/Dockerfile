@@ -2,9 +2,10 @@
 # The toolchain the Linux CI jobs run in (.github/workflows/ci.yml).
 # .github/workflows/toolchain-image.yml builds and publishes it;
 # ci/toolchain-inputs.sh lists the pins that name a tag. A job pulls this
-# one image instead of apt, the Go download site, the npm registry and the
-# Playwright CDN, and .github/actions/setup only installs what the image
-# lacks when a pull request changes a pin before the image is rebuilt.
+# one image instead of apt, the Go download site, the npm registry, Bun's
+# releases and the Playwright CDN, and .github/actions/setup only installs
+# what the image lacks when a pull request changes a pin before the image
+# is rebuilt.
 #
 # Steps run as uid 1001, the hosted runner's uid, so the mounted workspace
 # is writable and tests that expect permission errors keep getting them.
@@ -21,6 +22,7 @@ FROM ubuntu:24.04 AS base
 ARG GO_VERSION
 ARG NODE_VERSION=24.21.0
 ARG PNPM_VERSION
+ARG BUN_VERSION=1.3.14
 ARG PLAYWRIGHT_VERSION
 ARG GH_VERSION=2.102.0
 ARG TARGETARCH=amd64
@@ -53,6 +55,18 @@ RUN arch="$TARGETARCH"; [ "$arch" = amd64 ] && arch=x64; \
         | tar -C /usr/local --strip-components=1 -xJ \
     && npm install -g "pnpm@${PNPM_VERSION}" \
     && npm cache clean --force
+
+# Bun from its GitHub release, pinned and checked against the release's
+# SHASUMS256.txt, for the pstack script tests (make pstack-scripts).
+# .github/actions/setup installs the same pin on an image that lacks it.
+RUN arch="$TARGETARCH"; [ "$arch" = amd64 ] && arch=x64; [ "$arch" = arm64 ] && arch=aarch64; \
+    release="https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}"; \
+    cd /tmp \
+    && curl -fsSLO "${release}/bun-linux-${arch}.zip" \
+    && curl -fsSL "${release}/SHASUMS256.txt" | grep " bun-linux-${arch}.zip\$" | sha256sum -c - \
+    && unzip -q "bun-linux-${arch}.zip" \
+    && install -m 0755 "bun-linux-${arch}/bun" /usr/local/bin/bun \
+    && rm -rf "bun-linux-${arch}" "bun-linux-${arch}.zip"
 
 ENV PATH=/opt/ao-toolchain/bin:/usr/local/go/bin:$PATH \
     GOMODCACHE=/var/cache/go-mod \

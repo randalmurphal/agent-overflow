@@ -70,7 +70,9 @@ runs:
 
     # Layers are zstd so a job spends less of its pull decompressing. The
     # registry cache keeps the stages a build did not change; a rebuild
-    # refreshes everything and re-resolves the base image.
+    # refreshes everything and re-resolves the base image. Only a rebuild or
+    # a run on main moves the main tag: a pull request's build publishes its
+    # own tag, so the fallback image never carries an unmerged change.
     - name: Build and publish
       if: inputs.push == 'true' && (inputs.rebuild == 'true' || steps.check.outputs.exists != 'true')
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -80,7 +82,7 @@ runs:
         build-args: ${{ steps.name.outputs.args }}
         tags: |
           ${{ steps.name.outputs.repository }}:${{ steps.name.outputs.tag }}
-          ${{ steps.name.outputs.repository }}:main
+          ${{ (inputs.rebuild == 'true' || github.ref == 'refs/heads/main') && format('{0}:main', steps.name.outputs.repository) || '' }}
         outputs: type=image,push=true,compression=zstd,compression-level=3,force-compression=true,oci-mediatypes=true
         cache-from: type=registry,ref=${{ steps.name.outputs.repository }}:buildcache
         cache-to: type=registry,ref=${{ steps.name.outputs.repository }}:buildcache,mode=max,compression=zstd

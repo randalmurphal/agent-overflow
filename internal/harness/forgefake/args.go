@@ -20,7 +20,8 @@ type flagDef struct {
 // is the one positional, --method and --hostname are synthesized from
 // the request, and handlers answer status and headers through the
 // response instead of exit codes and --include text. A GraphQL request
-// carries graphQL instead of an endpoint.
+// carries graphQL instead of an endpoint. body is a REST request's JSON
+// body, which only the mutation routes read.
 type call struct {
 	cli     string
 	args    []string
@@ -28,6 +29,10 @@ type call struct {
 	stdin   []byte
 	http    *httpCall
 	graphQL *graphQLRequest
+	body    []byte
+	// contentType is the body's media type, an HTTP request's
+	// Content-Type header.
+	contentType string
 
 	flags      map[string][]string
 	positional []string

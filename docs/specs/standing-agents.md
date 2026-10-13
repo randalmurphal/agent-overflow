@@ -489,7 +489,7 @@ providers run identical skill text:
 | transcripts under the agent store | `thread_show` and `thread_search` |
 | Cursor dashboard liveness | `thread_status`, `thread_ask` |
 | `control-ui`, `control-cli`, verification live lane | `ao-browser-tools` |
-| `gh` in `watch-pr`, Babysit, Shipping, the autopilots | one `forge` script choosing `gh` or `glab` from the remote |
+| `gh` in `watch-pr`, Babysit, Shipping, the autopilots | agents run `forge which` once, then `gh` or `glab` directly; the scripts read the forge through the `forge` script, which chooses `gh` or `glab` from the remote |
 | `.mdc` always-apply rule, SessionStart hook | the agent's own instructions file |
 | `make-bot-ui`, Benny's Slack triggers | not ported; Benny's triage and reproduce skills are ported as skills an agent runs from a watch |
 | Graphite `gt` stack reads in `orch` and the orchestrate playbook | `forge stack`: the chain of pull requests from the current branch to the default branch, read from each request's base |

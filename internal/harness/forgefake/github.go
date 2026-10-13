@@ -14,11 +14,6 @@ import (
 // routes here serve repository identity, a run's jobs, job logs and
 // attachments, and `gh pr create` is the one gh command the app runs.
 
-var (
-	githubMergeable  = map[string]string{"clean": "MERGEABLE", "conflicts": "CONFLICTING", "checking": "UNKNOWN"}
-	githubMergeState = map[string]string{"clean": "CLEAN", "conflicts": "DIRTY", "checking": "UNKNOWN"}
-)
-
 func githubPullURL(r *Repo, p *Pull) string {
 	return fmt.Sprintf("https://%s/%s/pull/%d", r.Host, r.Project, p.Number)
 }

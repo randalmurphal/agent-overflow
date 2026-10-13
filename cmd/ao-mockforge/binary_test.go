@@ -56,6 +56,9 @@ func TestMain(m *testing.M) {
 type rig struct {
 	engine *forgefake.Engine
 	core   *gitops.Core
+	// env reaches the harness control channel, for a process that runs
+	// ao-mockforge as gh, glab or ssh itself.
+	env []string
 }
 
 func newRig(t *testing.T, fixture forgefake.Fixture) *rig {
@@ -87,7 +90,7 @@ func newRig(t *testing.T, fixture forgefake.Fixture) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(svc.Close)
-	return &rig{engine: engine, core: gitops.NewCore(gitops.WithIsolatedForgeCLIs(fakeBin, env), gitops.WithForgeAPI(svc))}
+	return &rig{engine: engine, core: gitops.NewCore(gitops.WithIsolatedForgeCLIs(fakeBin, env), gitops.WithForgeAPI(svc)), env: env}
 }
 
 func intPtr(n int) *int { return &n }
@@ -713,16 +716,16 @@ func TestUnimplementedInvocationSurfacesItsArgvToTheApp(t *testing.T) {
 		t.Fatalf("GitHub ReplyToThread error = %v, want the fake's unhandled report with the request", err)
 	}
 	mr := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp/sub", Repo: "tool", Number: 3}
-	err = r.core.ReplyToThread(t.Context(), mr, "abc", 0, "Body")
-	if err == nil || !strings.Contains(err.Error(), "unhandled http request") || !strings.Contains(err.Error(), "POST projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc/notes") {
-		t.Fatalf("GitLab ReplyToThread error = %v, want the fake's unhandled report with the request", err)
+	err = r.core.SetThreadResolved(t.Context(), mr, "abc", true)
+	if err == nil || !strings.Contains(err.Error(), "unhandled http request") || !strings.Contains(err.Error(), "PUT projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc") {
+		t.Fatalf("GitLab SetThreadResolved error = %v, want the fake's unhandled report with the request", err)
 	}
 	log := r.engine.Invocations(0).Invocations
 	if len(log) != 2 {
 		t.Fatalf("recorded %+v", log)
 	}
 	for i, forge := range []string{"github", "gitlab"} {
-		if inv := log[i]; !inv.Unhandled || inv.Via != forgefake.ViaHTTP || inv.Method != "POST" || inv.Forge != forge {
+		if inv := log[i]; !inv.Unhandled || inv.Via != forgefake.ViaHTTP || inv.Forge != forge {
 			t.Fatalf("recorded %+v", log)
 		}
 	}
@@ -803,4 +806,32 @@ func TestRepositorySSHIdentityThroughTheFake(t *testing.T) {
 			t.Fatalf("unhandled: %+v", call)
 		}
 	}
+}
+
+// TestGitLabReplyLandsInTheThread drives the app's GitLab reply against
+// the discussion note route: the note joins the thread the next read
+// returns.
+func TestGitLabReplyLandsInTheThread(t *testing.T) {
+	fixture := gitlabFixture()
+	fixture.Repos[0].Pulls[0].Threads[0].ID = strings.Repeat("ab", 20)
+	r := newRig(t, fixture)
+	mr := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp/sub", Repo: "tool", Number: 3}
+	if err := r.core.ReplyToThread(t.Context(), mr, strings.Repeat("ab", 20), 0, "Thanks, fixed"); err != nil {
+		t.Fatalf("ReplyToThread: %v", err)
+	}
+	read, err := r.core.ReadPR(t.Context(), mr, gitops.PRReadParts{Threads: true}, nil, nil)
+	if err != nil {
+		t.Fatalf("ReadPR: %v", err)
+	}
+	for _, thread := range read.Threads {
+		if thread.ID != strings.Repeat("ab", 20) {
+			continue
+		}
+		last := thread.Comments[len(thread.Comments)-1]
+		if len(thread.Comments) != 3 || last.Body != "Thanks, fixed" || last.AuthorLogin != "ao-viewer" {
+			t.Fatalf("thread after reply = %+v", thread.Comments)
+		}
+		return
+	}
+	t.Fatalf("thread missing from %+v", read.Threads)
 }

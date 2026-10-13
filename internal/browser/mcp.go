@@ -19,6 +19,15 @@ const (
 
 var cachedToolDefinitions = toolDefinitions()
 
+// ToolNames lists the browser tools the server offers, in definition order.
+func ToolNames() []string {
+	names := make([]string, 0, len(cachedToolDefinitions))
+	for _, tool := range cachedToolDefinitions {
+		names = append(names, tool["name"].(string))
+	}
+	return names
+}
+
 // Instructions is the guide the server states on its MCP handshake. Claude
 // reads it there; Codex never shows a server's instructions to the model, so
 // the app appends it to that provider's developer instructions instead.

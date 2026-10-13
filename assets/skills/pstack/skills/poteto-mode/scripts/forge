@@ -1,0 +1,449 @@
+#!/usr/bin/env bash
+# forge: the adapter pstack's scripts (watch-pr, orch, worktree-audit)
+# read the repository's forge through, GitHub through gh or GitLab through
+# glab, and the way to read a stack (forge stack). Agents run forge which
+# once to learn the forge, then use gh or glab directly. Run it inside the
+# checkout. Every read prints one JSON value with the same shape on both
+# forges.
+#
+#   forge which
+#   forge pr view [<n>]
+#   forge pr list [--state open|closed|merged|all] [--head B] [--author LOGIN|@me] [--limit N]
+#   forge pr checks [<n>]          forge pr commits [<n>]
+#   forge pr threads [<n>] [--unresolved]
+#   forge stack [<branch>]
+#
+# <n> defaults to the open pull request of the current branch. The forge
+# comes from the remote (FORGE_REMOTE, default origin): an SSH host alias
+# is resolved with ssh -G, then github.com or a host containing "github"
+# is GitHub and gitlab.com or a host containing "gitlab" is GitLab.
+# FORGE=github or FORGE=gitlab decides for any other host. -h or --help
+# anywhere prints this help.
+# stack prints the pull requests from the default branch up to <branch>
+# (default: the current branch), bottom first, in the pr list shape: each
+# request's base names the branch below it. A head with an open request
+# uses it, else its newest merged one, else its newest closed one. Exits
+# 3 when a branch on the chain has no pull request.
+# Needs bash 3.2 or later, git, jq and gh or glab.
+set -euo pipefail
+# From bash 4.4 a failure inside $(...) stops the script, not only the
+# substitution. Bash 3.2 (stock macOS) lacks the option, so every number
+# and branch is assigned before use and checked rather than relying on it.
+shopt -s inherit_errexit 2>/dev/null || true
+
+die() {
+	printf 'forge: %s\n' "$*" >&2
+	exit 1
+}
+
+# EXIT_NO_PULL_REQUEST is stack's exit status when a branch on the chain
+# has no pull request.
+EXIT_NO_PULL_REQUEST=3
+
+# show_help prints this header on stdout and exits 0, as asked for; usage
+# prints it on stderr and exits 2, after a call it cannot run.
+header() { sed -n '2,/^set -euo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; }
+show_help() {
+	header
+	exit 0
+}
+usage() {
+	header >&2
+	exit 2
+}
+
+need() {
+	command -v "$1" >/dev/null 2>&1 || die "$1 is required and not on PATH"
+}
+
+resolve() {
+	need git
+	need jq
+	local remote url rest authority scheme ssh resolved
+	remote=${FORGE_REMOTE:-origin}
+	url=$(git remote get-url "$remote" 2>/dev/null) || die "no git remote '$remote' here"
+	ssh=0
+	case $url in
+	*://*)
+		scheme=${url%%://*}
+		rest=${url#*://}
+		authority=${rest%%/*}
+		PROJECT=${rest#*/}
+		HOST=${authority##*@}
+		case $scheme in
+		ssh | git+ssh)
+			ssh=1
+			HOST=${HOST%%:*}
+			;;
+		esac
+		;;
+	*:*)
+		HOST=${url%%:*}
+		HOST=${HOST##*@}
+		PROJECT=${url#*:}
+		ssh=1
+		;;
+	*) die "remote '$remote' ($url) is not a forge URL" ;;
+	esac
+	if [ "$ssh" = 1 ] && command -v ssh >/dev/null 2>&1; then
+		resolved=$(ssh -G -o CanonicalizeHostname=no -o PermitLocalCommand=no "$HOST" </dev/null 2>/dev/null | awk '$1 == "hostname" { print $2; exit }') || true
+		[ -z "$resolved" ] || HOST=$resolved
+	fi
+	HOST=$(printf '%s' "$HOST" | tr '[:upper:]' '[:lower:]')
+	PROJECT=${PROJECT%/}
+	PROJECT=${PROJECT%.git}
+	PROJECT=${PROJECT#/}
+	case $PROJECT in */*) ;; *) die "remote '$remote' ($url) names no owner/repository" ;; esac
+	KIND=${FORGE:-}
+	if [ -z "$KIND" ]; then
+		case $HOST in
+		github.com | *github*) KIND=github ;;
+		gitlab.com | *gitlab*) KIND=gitlab ;;
+		*) die "cannot tell which forge $HOST is; set FORGE=github or FORGE=gitlab" ;;
+		esac
+	fi
+	case $KIND in
+	github)
+		need gh
+		CLI=gh
+		REPO="$HOST/$PROJECT"
+		OWNER=${PROJECT%%/*}
+		NAME=${PROJECT#*/}
+		;;
+	gitlab)
+		need glab
+		CLI=glab
+		PATH_ID=$(jq -rn --arg p "$PROJECT" '$p | @uri')
+		;;
+	*) die "FORGE=$KIND is not github or gitlab" ;;
+	esac
+}
+
+uri() { jq -rn --arg v "$1" '$v | @uri'; }
+
+ghapi() { gh api --hostname "$HOST" "$@"; }
+glapi() { glab api --hostname "$HOST" "$@"; }
+
+# glapi_all reads a paginated GitLab list as one array: glab --paginate
+# prints each page's array after the last ([...][...]).
+glapi_all() { glapi --paginate "$@" | jq -s 'add // []'; }
+
+current_branch() {
+	local branch
+	branch=$(git symbolic-ref --quiet --short HEAD) || die "HEAD is detached; name the pull request"
+	printf '%s' "$branch"
+}
+
+# pr_number prints the number given, or the open pull request of the
+# current branch.
+pr_number() {
+	if [ -n "${1:-}" ]; then
+		local n=${1#\#}
+		case $n in '' | *[!0-9]*) die "'$1' is not a pull request number" ;; esac
+		printf '%s' "$n"
+		return
+	fi
+	local branch n
+	branch=$(current_branch)
+	# An empty head would list every open pull request.
+	[ -n "$branch" ] || die "no current branch; name the pull request"
+	n=$(pr_list open "$branch" "" 1 | jq -r '.[0].number // empty')
+	[ -n "$n" ] || die "no open pull request for branch $branch"
+	printf '%s' "$n"
+}
+
+# Shared state vocabularies.
+JQ_DEFS='
+def gh_check_state:
+  if .__typename == "StatusContext" then
+    ({SUCCESS: "pass", FAILURE: "fail", ERROR: "fail", PENDING: "pending", EXPECTED: "pending"}[.state] // "pending")
+  elif .status != "COMPLETED" then "pending"
+  else ({SUCCESS: "pass", FAILURE: "fail", TIMED_OUT: "fail", STARTUP_FAILURE: "fail", ACTION_REQUIRED: "fail",
+         CANCELLED: "cancelled", SKIPPED: "skipped", NEUTRAL: "neutral", STALE: "neutral"}[.conclusion // ""] // "neutral")
+  end;
+def gl_job_state:
+  if .status == "failed" then (if .allow_failure then "neutral" else "fail" end)
+  else ({success: "pass", canceled: "cancelled", skipped: "skipped", manual: "skipped"}[.status] // "pending")
+  end;
+def rollup:
+  if any(.[]; . == "fail" or . == "cancelled") then "fail"
+  elif any(.[]; . == "pending") then "pending"
+  elif length > 0 then "pass"
+  else "none" end;
+'
+
+GH_PR_FIELDS=number,title,body,url,state,isDraft,author,headRefName,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,mergedAt,autoMergeRequest
+GH_PR_VIEW='{
+  number, title, body, url,
+  state: (.state | ascii_downcase), draft: .isDraft, author: .author.login,
+  head: .headRefName, head_sha: .headRefOid, base: .baseRefName,
+  merge: (if .state != "OPEN" then "none"
+          elif .mergeable == "CONFLICTING" then "conflicts"
+          else ({CLEAN: "clean", HAS_HOOKS: "clean", UNSTABLE: "unstable", DIRTY: "conflicts", BEHIND: "behind",
+                 BLOCKED: "blocked", DRAFT: "draft", UNKNOWN: "checking"}[.mergeStateStatus] // "blocked") end),
+  merge_native: .mergeStateStatus,
+  review: ({APPROVED: "approved", CHANGES_REQUESTED: "changes_requested", REVIEW_REQUIRED: "review_required"}[.reviewDecision // ""] // "none"),
+  auto_merge: (.autoMergeRequest != null), merged_at: .mergedAt
+}'
+GL_PR_VIEW='$mr | {
+  number: .iid, title, body: (.description // ""), url: .web_url,
+  state: ({opened: "open", closed: "closed", locked: "closed", merged: "merged"}[.state] // .state),
+  draft: (.draft // false), author: .author.username,
+  head: .source_branch, head_sha: .sha, base: .target_branch,
+  merge: (if .state != "opened" then "none"
+          elif .has_conflicts then "conflicts"
+          else ({mergeable: "clean", conflict: "conflicts", need_rebase: "behind", draft_status: "draft",
+                 checking: "checking", unchecked: "checking", preparing: "checking", approvals_syncing: "checking"}[.detailed_merge_status] // "blocked") end),
+  merge_native: .detailed_merge_status,
+  review: (if $approvals.approved then "approved"
+           elif .detailed_merge_status == "requested_changes" then "changes_requested"
+           elif .detailed_merge_status == "not_approved" then "review_required"
+           else "none" end),
+  auto_merge: (.auto_merge // .merge_when_pipeline_succeeds // false), merged_at: .merged_at
+}'
+
+pr_view_json() {
+	local n=$1
+	if [ "$KIND" = github ]; then
+		gh pr view "$n" -R "$REPO" --json "$GH_PR_FIELDS" | jq "$GH_PR_VIEW"
+	else
+		local mr approvals
+		mr=$(glapi "projects/$PATH_ID/merge_requests/$n")
+		approvals=$(glapi "projects/$PATH_ID/merge_requests/$n/approvals")
+		jq -n --argjson mr "$mr" --argjson approvals "$approvals" "$GL_PR_VIEW"
+	fi
+}
+
+# pr_list STATE HEAD AUTHOR LIMIT prints a JSON array, newest first.
+pr_list() {
+	local state=$1 head=$2 author=$3 limit=$4
+	case $state in open | closed | merged | all) ;; *) die "--state is open, closed, merged or all" ;; esac
+	case $limit in '' | *[!0-9]* | 0) die "--limit is a positive number" ;; esac
+	if [ "$KIND" = github ]; then
+		local args=(pr list -R "$REPO" --state "$state" --limit "$limit" --json number,title,url,state,isDraft,author,headRefName,headRefOid,baseRefName)
+		[ -z "$head" ] || args+=(--head "$head")
+		[ -z "$author" ] || args+=(--author "$author")
+		gh "${args[@]}" | jq '[.[] | {number, title, url, state: (.state | ascii_downcase), draft: .isDraft,
+			author: .author.login, head: .headRefName, head_sha: .headRefOid, base: .baseRefName}]'
+		return
+	fi
+	local query="state=$state"
+	[ "$state" != open ] || query="state=opened"
+	[ -z "$head" ] || query="$query&source_branch=$(uri "$head")"
+	case $author in
+	'') ;;
+	@me) query="$query&scope=created_by_me" ;;
+	*) query="$query&author_username=$(uri "$author")" ;;
+	esac
+	local per=$((limit < 100 ? limit : 100)) page=1 out="[]" chunk count
+	while :; do
+		chunk=$(glapi "projects/$PATH_ID/merge_requests?$query&per_page=$per&page=$page")
+		out=$(jq -n --argjson a "$out" --argjson b "$chunk" '$a + $b')
+		count=$(jq -n --argjson b "$chunk" '$b | length')
+		[ "$count" -eq "$per" ] && [ "$(jq -n --argjson a "$out" '$a | length')" -lt "$limit" ] || break
+		page=$((page + 1))
+	done
+	jq -n --argjson a "$out" --argjson limit "$limit" '[$a[:$limit][] | {number: .iid, title, url: .web_url,
+		state: ({opened: "open", closed: "closed", locked: "closed", merged: "merged"}[.state] // .state),
+		draft: (.draft // false), author: .author.username, head: .source_branch, head_sha: .sha, base: .target_branch}]'
+}
+
+GH_CHECKS_QUERY='query ForgeChecks($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { __typename ... on CheckRun { databaseId name status conclusion detailsUrl } ... on StatusContext { context state targetUrl } }
+      } } } } }
+    }
+  }
+}'
+GH_COMMITS_QUERY='query ForgeCommits($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { commits(last: 100) { nodes { commit { oid statusCheckRollup { state } } } } }
+  }
+}'
+GH_THREADS_QUERY='query ForgeThreads($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { id isResolved isOutdated path line comments(first: 100) { totalCount nodes { databaseId author { login } body createdAt } } }
+      }
+    }
+  }
+}'
+gh_pr_graphql() {
+	local query=$1 n=$2
+	shift 2
+	ghapi graphql "$@" -f query="$query" -f owner="$OWNER" -f name="$NAME" -F number="$n"
+}
+
+pr_checks() {
+	local n=$1
+	if [ "$KIND" = github ]; then
+		gh_pr_graphql "$GH_CHECKS_QUERY" "$n" --paginate | jq -s "$JQ_DEFS"'
+			[.[].data.repository.pullRequest.commits.nodes[0].commit] as $pages
+			| [$pages[] | .statusCheckRollup.contexts.nodes[]? | {
+				name: (if .__typename == "StatusContext" then .context else .name end),
+				state: gh_check_state,
+				url: (if .__typename == "StatusContext" then .targetUrl else .detailsUrl end),
+				job_id: (if .__typename == "CheckRun" then .databaseId else null end)}] as $checks
+			| {number: '"$n"', sha: $pages[0].oid, state: ([$checks[].state] | rollup), checks: $checks}'
+		return
+	fi
+	local mr pipeline jobs="[]"
+	mr=$(glapi "projects/$PATH_ID/merge_requests/$n")
+	pipeline=$(jq -n --argjson mr "$mr" '$mr.head_pipeline.id // empty')
+	[ -z "$pipeline" ] || jobs=$(glapi_all "projects/$PATH_ID/pipelines/$pipeline/jobs?per_page=100")
+	jq -n --argjson mr "$mr" --argjson jobs "$jobs" "$JQ_DEFS"'
+		[$jobs[] | {name, state: gl_job_state, url: .web_url, job_id: .id}] as $checks
+		| {number: $mr.iid, sha: $mr.sha, state: ([$checks[].state] | rollup), checks: $checks}'
+}
+
+pr_commits() {
+	local n=$1
+	if [ "$KIND" = github ]; then
+		gh_pr_graphql "$GH_COMMITS_QUERY" "$n" | jq '[.data.repository.pullRequest.commits.nodes[].commit | {sha: .oid,
+			state: (if .statusCheckRollup == null then "none"
+			        else ({SUCCESS: "pass", FAILURE: "fail", ERROR: "fail", PENDING: "pending", EXPECTED: "pending"}[.statusCheckRollup.state] // "pending") end)}]'
+		return
+	fi
+	glapi_all "projects/$PATH_ID/merge_requests/$n/pipelines?per_page=100" | jq '
+		reduce .[] as $p ({seen: {}, out: []}; if .seen[$p.sha] then . else .seen[$p.sha] = true | .out += [$p] end)
+		| [.out | reverse[] | {sha, state: ({success: "pass", failed: "fail", canceled: "fail", skipped: "none"}[.status] // "pending")}]'
+}
+
+pr_threads() {
+	local n=$1 unresolved=$2 filter='.'
+	[ "$unresolved" = 0 ] || filter='map(select(.resolved | not))'
+	if [ "$KIND" = github ]; then
+		gh_pr_graphql "$GH_THREADS_QUERY" "$n" --paginate | jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[] | {
+			id, resolved: .isResolved, outdated: .isOutdated, path, line, comment_count: .comments.totalCount,
+			comments: [.comments.nodes[] | {id: .databaseId, author: (.author.login // null), body, created_at: .createdAt}]}]' | jq "$filter"
+		return
+	fi
+	local sha
+	sha=$(glapi "projects/$PATH_ID/merge_requests/$n" | jq -r .sha)
+	glapi_all "projects/$PATH_ID/merge_requests/$n/discussions?per_page=100" | jq --arg sha "$sha" '[.[]
+		| select(.notes[0].resolvable == true)
+		| (.notes[0].position // {}) as $pos
+		| [.notes[] | select(.system | not)] as $notes
+		| {id, resolved: all(.notes[] | select(.resolvable); .resolved), outdated: (($pos.head_sha // $sha) != $sha),
+		   path: ($pos.new_path // $pos.old_path), line: ($pos.new_line // $pos.old_line), comment_count: ($notes | length),
+		   comments: [$notes[] | {id, author: .author.username, body, created_at}]}]' | jq "$filter"
+}
+
+default_branch() {
+	local branch
+	if [ "$KIND" = github ]; then
+		branch=$(ghapi "repos/$PROJECT" | jq -r '.default_branch // empty')
+	else
+		branch=$(glapi "projects/$PATH_ID" | jq -r '.default_branch // empty')
+	fi
+	[ -n "$branch" ] || die "the forge reported no default branch for $PROJECT"
+	printf '%s' "$branch"
+}
+
+# stack BRANCH walks base links from BRANCH down to the default branch.
+stack() {
+	local branch=$1 trunk out="[]" seen=" " pulls pull
+	trunk=$(default_branch)
+	while [ "$branch" != "$trunk" ]; do
+		case $seen in *" $branch "*) die "pull request bases form a cycle at $branch" ;; esac
+		seen="$seen$branch "
+		pulls=$(pr_list all "$branch" "" 100)
+		pull=$(jq -n --argjson p "$pulls" '([$p[] | select(.state == "open")][0]
+			// [$p[] | select(.state == "merged")][0] // $p[0]) // empty')
+		if [ -z "$pull" ]; then
+			printf 'forge: branch %s has no pull request; the stack below it is unknown\n' "$branch" >&2
+			exit "$EXIT_NO_PULL_REQUEST"
+		fi
+		out=$(jq -n --argjson a "$out" --argjson p "$pull" '[$p] + $a')
+		branch=$(jq -rn --argjson p "$pull" '$p.base')
+	done
+	printf '%s\n' "$out"
+}
+
+cmd_pr() {
+	local sub=$1
+	shift
+	# Each pull request number is assigned before use: a failed $(...)
+	# inside an argument does not stop the command it is passed to.
+	local n
+	case $sub in
+	view)
+		n=$(pr_number "${1:-}")
+		pr_view_json "$n"
+		;;
+	list)
+		local state=open head="" author="" limit=30
+		while [ $# -gt 0 ]; do
+			case $1 in
+			--state) state=${2:?--state needs a value}; shift 2 ;;
+			--head) head=${2:?--head needs a branch}; shift 2 ;;
+			--author) author=${2:?--author needs a login}; shift 2 ;;
+			--limit) limit=${2:?--limit needs a number}; shift 2 ;;
+			*) die "pr list: unknown argument $1" ;;
+			esac
+		done
+		pr_list "$state" "$head" "$author" "$limit"
+		;;
+	checks)
+		n=$(pr_number "${1:-}")
+		pr_checks "$n"
+		;;
+	commits)
+		n=$(pr_number "${1:-}")
+		pr_commits "$n"
+		;;
+	threads)
+		local unresolved=0
+		n=""
+		while [ $# -gt 0 ]; do
+			case $1 in
+			--unresolved) unresolved=1; shift ;;
+			*) [ -z "$n" ] || die "pr threads: unexpected $1"; n=$1; shift ;;
+			esac
+		done
+		n=$(pr_number "$n")
+		pr_threads "$n" "$unresolved"
+		;;
+	esac
+}
+
+main() {
+	# Help and a call the script cannot run need no checkout, so they are
+	# answered before the remote is resolved.
+	local arg
+	for arg in "$@"; do
+		case $arg in -h | --help) show_help ;; esac
+	done
+	case ${1:-} in
+	help) show_help ;;
+	which) [ $# -eq 1 ] || usage ;;
+	stack) [ $# -le 2 ] || usage ;;
+	pr)
+		case ${2:-} in
+		help) show_help ;;
+		view | list | checks | commits | threads) ;;
+		*) usage ;;
+		esac
+		;;
+	*) usage ;;
+	esac
+	resolve
+	local cmd=$1
+	shift
+	case $cmd in
+	which) jq -n --arg forge "$KIND" --arg host "$HOST" --arg project "$PROJECT" --arg cli "$CLI" '{forge: $forge, host: $host, project: $project, cli: $cli}' ;;
+	pr) cmd_pr "$@" ;;
+	stack)
+		local branch=${1:-}
+		[ -n "$branch" ] || branch=$(current_branch)
+		stack "$branch"
+		;;
+	esac
+}
+
+main "$@"

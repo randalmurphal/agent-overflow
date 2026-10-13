@@ -45,6 +45,9 @@ var githubGraphQL = []graphQLOp{
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
 	{kind: "query", name: "OpenPRsByHead", required: []string{"owner", "name", "head"}, run: ghOpenPRsByHead},
 	{kind: "query", name: "MergedPRs", required: []string{"owner", "name", "first"}, optional: []string{"after"}, run: ghMergedPRs},
+	{kind: "query", name: "ForgeChecks", required: []string{"owner", "name", "number"}, optional: []string{"endCursor"}, run: ghForgeChecks},
+	{kind: "query", name: "ForgeCommits", required: []string{"owner", "name", "number"}, run: ghForgeCommits},
+	{kind: "query", name: "ForgeThreads", required: []string{"owner", "name", "number"}, optional: []string{"endCursor"}, run: ghForgeThreads},
 }
 
 // graphQLRequest is the body of a POST to /github/graphql.
@@ -264,8 +267,8 @@ func githubPullDetail(r *Repo, p *Pull) map[string]any {
 		"additions":        diffTotals(p.Diff).additions,
 		"deletions":        diffTotals(p.Diff).deletions,
 		"changedFiles":     len(diffFiles(p.Diff)),
-		"mergeable":        githubMergeable[p.Mergeable],
-		"mergeStateStatus": githubMergeState[p.Mergeable],
+		"mergeable":        githubMergeable(p),
+		"mergeStateStatus": githubMergeStateStatus(p),
 		"reviewDecision":   decision,
 		"author":           githubActor(p.Author, p.AuthorName),
 		"latestReviews":    map[string]any{"nodes": githubLatestReviews(p.Reviews)},

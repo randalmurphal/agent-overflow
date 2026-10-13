@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -151,11 +152,12 @@ func TestUnknownInvocationsFailLoudlyWithTheFullArgv(t *testing.T) {
 	e, _ := seeded(t, Options{})
 	cases := [][]string{
 		{"gh", "pr", "create", "--title", "t", "--body", "b", "--web"},
-		// GitHub reads are HTTP requests; the gh CLI answers only pr create.
-		{"gh", "pr", "view", "--repo", "acme/widgets", "7", "--json", "title"},
+		{"gh", "pr", "view", "--repo", "acme/widgets", "7", "--json", "title,labels"},
 		{"gh", "pr", "list", "--head", "feature", "--state", "open", "--json", "url"},
+		{"gh", "pr", "comment", "7", "--repo", "acme/widgets", "--body", "b"},
 		{"gh", "api", "user", "--jq", ".login"},
-		{"gh", "api", "--hostname", "github.com", "repos/acme/widgets"},
+		{"gh", "api", "--hostname", "github.com", "repos/acme/widgets", "--jq", ".id"},
+		{"gh", "api", "--hostname", "github.com", "-X", "POST", "repos/acme/widgets/issues/7/comments", "-f", "body=b"},
 		{"gh", "run", "view", "1", "--repo", "acme/widgets", "--json", "jobs"},
 		{"glab", "mr", "create", "--title", "t"},
 		{"glab", "api", "--hostname", "gitlab.com", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions?per_page=50&page=1&sort=asc", "--include"},
@@ -397,6 +399,49 @@ func TestCreateOpensAPullForTheCheckoutsBranch(t *testing.T) {
 	}
 	if inv := gh("pr", "create", "--title", "Filled", "--body", "", "--fill"); !strings.Contains(inv.Stderr, "unhandled") {
 		t.Errorf("gh pr create --fill = %q, want unhandled", inv.Stderr)
+	}
+}
+
+// glab api --paginate prints each page's array straight after the last.
+func TestGlabAPIPrintsPagesBackToBack(t *testing.T) {
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"repos":[{"forge":"gitlab","project":"grp/tool","pulls":[{"number":1,"title":"x","comments":[{"id":1,"body":"a"},{"id":2,"body":"b"}]}]}]}`); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	paged := e.Handle(control.ForgeCall{CLI: "glab", Cwd: "/work", Args: []string{"api", "--hostname", "gitlab.com", "--paginate", "projects/grp%2Ftool/merge_requests/1/discussions?per_page=1"}})
+	if paged.ExitCode != 0 || !regexp.MustCompile(`^\[\{[^\n]*\}\]\[\{[^\n]*\}\]$`).Match(paged.Stdout) {
+		t.Fatalf("glab api --paginate = %d %q %q, want two arrays back to back", paged.ExitCode, paged.Stdout, paged.Stderr)
+	}
+}
+
+// A GitLab write body must be sent as application/json: GitLab reads a
+// body as JSON only when its Content-Type says so.
+func TestGitLabWriteNeedsAJSONBody(t *testing.T) {
+	discussion := strings.Repeat("ab", 20)
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"repos":[{"forge":"gitlab","project":"grp/tool","pulls":[{"number":1,"title":"x","threads":[{"id":"`+discussion+`","path":"a.go","line":1,"comments":[{"author":"erin","body":"rename"}]}]}]}]}`); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+	note := "/gitlab/api/v4/projects/grp%2Ftool/merge_requests/1/discussions/" + discussion + "/notes"
+	for _, c := range []struct {
+		name, contentType, want string
+	}{
+		{"no Content-Type", "", `Content-Type is "", not application/json`},
+		{"a form body", "application/x-www-form-urlencoded", "not application/json"},
+	} {
+		header := http.Header{"Private-Token": {testAPIToken}}
+		if c.contentType != "" {
+			header.Set("Content-Type", c.contentType)
+		}
+		if got := httpRequest(t, srv, "POST", "gitlab.com", note, `{"body":"hi"}`, header); got.status != 404 || !strings.Contains(got.body, c.want) {
+			t.Errorf("note with %s = %d %q, want unhandled naming %q", c.name, got.status, got.body, c.want)
+		}
+	}
+	header := http.Header{"Private-Token": {testAPIToken}, "Content-Type": {"application/json; charset=utf-8"}}
+	if got := httpRequest(t, srv, "POST", "gitlab.com", note, `{"body":"hi"}`, header); got.status != 201 || !strings.Contains(got.body, `"body":"hi"`) {
+		t.Errorf("note sent as JSON = %d %q", got.status, got.body)
 	}
 }
 
@@ -1005,7 +1050,7 @@ func TestHTTPRefusals(t *testing.T) {
 	for _, write := range [][2]string{
 		{"POST", "projects/grp%2Fsub%2Ftool/merge_requests/3/approve"},
 		{"POST", "projects/grp%2Fsub%2Ftool/merge_requests/3/draft_notes"},
-		{"POST", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc/notes"},
+		{"POST", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions"},
 		{"PUT", "projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc"},
 	} {
 		if got := httpRequest(t, srv, write[0], "gitlab.com", "/gitlab/api/v4/"+write[1], `{}`, nil); got.status != 404 || !lastInvocation(t, e).Unhandled {
