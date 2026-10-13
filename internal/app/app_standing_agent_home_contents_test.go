@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +53,13 @@ func claudeInjected(app *App, threadID, argvPath string) injectedPrompt {
 			t.Fatalf("StartSession: %v", err)
 		}
 		argv := spawnedClaudeArgv(t, argvPath)
+		// Slice 7's workflow tools ride the same launch (claude-tui hosts
+		// only them): the home block must coexist with them, not displace
+		// them.
+		if !hasArgPair(argv, "--allowedTools", WorkflowToolsAllowedTool) ||
+			!slices.ContainsFunc(argv, func(arg string) bool { return strings.Contains(arg, `"`+workflowMCPName+`"`) }) {
+			t.Fatalf("the launch lost ao-workflow-tools: %v", argv)
+		}
 		appendPath, found := argValue(argv, "--append-system-prompt-file")
 		if !found {
 			return ""
@@ -130,7 +138,7 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 		t.Run(providerName, func(t *testing.T) {
 			t.Parallel()
 			app, _ := setupE2EApp(t)
-			t.Cleanup(func() { _ = app.threadMCPServer().Close() })
+			t.Cleanup(func() { _ = app.threadMCPServer().Close(); _ = app.workflowMCPServer().Close() })
 			model := "claude-opus-4-7"
 			if providerName == string(provider.Codex) {
 				model = "gpt-5.4"
@@ -221,7 +229,7 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 func TestStandingAgentStartsWhenAHomeFileCannotBeRead(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
-	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
+	t.Cleanup(func() { _ = app.threadMCPServer().Close(); _ = app.workflowMCPServer().Close() })
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
 	if err != nil {
 		t.Fatalf("CreateThread: %v", err)
