@@ -37,6 +37,21 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 	// the worker handles the event, a replacement start may have bumped
 	// it. Zero for every other event.
 	handle := func(evt provider.ProviderEvent, deathEpoch uint64) {
+		// A frame of a session the thread is no longer committed to: a
+		// replacement start ran while this worker was stalled behind
+		// the frames before it. Triage refuses it, and nothing here may
+		// act on it either: its turn would earn the replacement a
+		// reconnect, its death would restore or reconnect for the
+		// replacement, and its disconnect would clear what the
+		// replacement armed. Only the queue's end-of-session mark
+		// stands, since the provider emits nothing after it.
+		if a.triage != nil && !a.triage.SessionCurrent(threadID, sessionToken) {
+			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
+				a.providerEvents.retireWhenIdle(threadID)
+			}
+			return
+		}
+
 		// EventInit carries Claude's `system/init.mcp_servers` array
 		// via the SessionInfo meta. Feed each entry into the status
 		// cache so the popup shows authoritative provider state
@@ -191,6 +206,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// Activity and rate-limit attribution describe the wire as it is
 		// read, so they stay on the provider's goroutine; everything else
 		// runs on the thread's worker, in emission order.
+		evt.SessionToken = sessionToken
 		evt = a.providerLifecycleService().PrepareEvent(threadID, sessionToken, evt)
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" && a.triage != nil {
 			epoch := a.triage.ThreadEpoch(threadID)

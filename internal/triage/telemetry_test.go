@@ -542,7 +542,7 @@ func TestCleanupInvalidatesSpanStartBeforeRegistration(t *testing.T) {
 	}()
 	<-blocker.started
 	r.CleanupThread("thread-1")
-	r.MarkThreadActive("thread-1")
+	r.MarkThreadActive("thread-1", "")
 	r.openTurnSpan(provider.ProviderEvent{ThreadID: "thread-1"}, 2)
 	close(blocker.release)
 	<-startDone

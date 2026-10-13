@@ -178,7 +178,7 @@ func TestSessionEventHandlerDisconnectUnregistersSession(t *testing.T) {
 		Token:    "token-disconnect",
 	})
 
-	handler := app.sessionEventHandler(thread.ID, "token-disconnect", "")
+	handler := startedSessionEventHandler(app, thread.ID, "token-disconnect", "")
 	handler(provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
 		ThreadID:  thread.ID,
@@ -208,7 +208,7 @@ func TestSessionEventHandlerNonDisconnectStatusPreservesSession(t *testing.T) {
 		Token:    "token-ok",
 	})
 
-	handler := app.sessionEventHandler(thread.ID, "token-ok", "")
+	handler := startedSessionEventHandler(app, thread.ID, "token-ok", "")
 	handler(provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
 		ThreadID:  thread.ID,
@@ -249,7 +249,7 @@ func TestSessionEventHandlerAutoReconnectsAfterAbnormalDeath(t *testing.T) {
 		return nil
 	}
 
-	handler := app.sessionEventHandler(thread.ID, "token-dead", string(provider.Claude))
+	handler := startedSessionEventHandler(app, thread.ID, "token-dead", string(provider.Claude))
 	handler(provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
 		ThreadID:  thread.ID,
@@ -300,7 +300,7 @@ func TestSessionEventHandlerNoAutoReconnectWithoutDeathSignal(t *testing.T) {
 		return nil
 	}
 
-	handler := app.sessionEventHandler(thread.ID, "token-clean", string(provider.Claude))
+	handler := startedSessionEventHandler(app, thread.ID, "token-clean", string(provider.Claude))
 	handler(provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
 		ThreadID:  thread.ID,
@@ -342,7 +342,7 @@ func TestSessionEventHandlerNoAutoReconnectWithoutSessionRef(t *testing.T) {
 		return nil
 	}
 
-	handler := app.sessionEventHandler(thread.ID, "token-early", string(provider.Claude))
+	handler := startedSessionEventHandler(app, thread.ID, "token-early", string(provider.Claude))
 	handler(provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
 		ThreadID:  thread.ID,
@@ -494,7 +494,7 @@ func TestAutoReconnectRearmsOnlyAfterAServedTurn(t *testing.T) {
 				evt := *tc.served
 				evt.ThreadID = thread.ID
 				evt.Timestamp = time.Now()
-				app.sessionEventHandler(thread.ID, "tok-2", string(tc.provider))(evt)
+				startedSessionEventHandler(app, thread.ID, "tok-2", string(tc.provider))(evt)
 				waitProviderEvents(t, app, thread.ID)
 			}
 			// The replacement's death unregisters it, if the event above
@@ -531,7 +531,7 @@ func TestAttemptAutoReconnectSkippedDuringShutdown(t *testing.T) {
 
 	app.shuttingDown.Store(true)
 
-	handler := app.sessionEventHandler(thread.ID, "tok-shutdown", string(provider.Claude))
+	handler := startedSessionEventHandler(app, thread.ID, "tok-shutdown", string(provider.Claude))
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "tok-shutdown"})
 	handler(provider.ProviderEvent{
 		Kind:      provider.EventSessionStatus,
@@ -611,5 +611,66 @@ func TestReconnectSessionSingleFlightSecondCallNoOps(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("calls[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// A frame of a session the thread is no longer committed to is the
+// replacement's business in no way: the host does nothing with it, before
+// or after triage refuses it. Here the dead session's turn, death and
+// disconnect are handled after the replacement start committed the thread
+// but before the replacement registered, the window a stalled worker hands
+// them over in. None of them may clear what the replacement armed, reach a
+// turn observer or start an auto-reconnect over it.
+func TestRetiredSessionFramesDoNotActOnTheReplacement(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-retired-frames")
+	thread.Provider = string(provider.Claude)
+	thread.SessionRef = "claude-resume-retired"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	starts := make(chan string, 4)
+	app.stopSessionFn = func(string) error { return nil }
+	app.startSessionFn = func(threadID string) error {
+		starts <- threadID
+		return nil
+	}
+	var observed sync.Mutex
+	var kinds []provider.EventKind
+	unsubscribe := app.subscribeThreadTurnObserver(thread.ID, func(_ string, evt provider.ProviderEvent) {
+		observed.Lock()
+		kinds = append(kinds, evt.Kind)
+		observed.Unlock()
+	})
+	t.Cleanup(unsubscribe)
+
+	dead := startedSessionEventHandler(app, thread.ID, "token-retired", string(provider.Claude))
+	app.triage.MarkThreadActive(thread.ID, "token-replacement")
+	armProcessSchedule(t, app.triage, thread.ID)
+
+	for _, evt := range []provider.ProviderEvent{
+		{Kind: provider.EventTurnComplete, ThreadID: thread.ID, TurnComplete: &provider.WireTurnCompleteMeta{}},
+		{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "error"},
+		{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "disconnected"},
+	} {
+		evt.Timestamp = time.Now()
+		dead(evt)
+	}
+	waitProviderEvents(t, app, thread.ID)
+
+	if _, ok := app.triage.PendingWakeupAt(thread.ID); !ok {
+		t.Fatal("the retired session's disconnect cleared the replacement's schedule")
+	}
+	observed.Lock()
+	got := append([]provider.EventKind(nil), kinds...)
+	observed.Unlock()
+	if len(got) != 0 {
+		t.Fatalf("turn observers saw the retired session's frames: %v", got)
+	}
+	select {
+	case threadID := <-starts:
+		t.Fatalf("the retired session's death started an auto-reconnect for %s", threadID)
+	case <-time.After(200 * time.Millisecond):
 	}
 }

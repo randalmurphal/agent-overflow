@@ -1916,30 +1916,61 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	return true
 }
 
-// isThreadStopped returns true when CleanupThread has been called for
-// threadID and the host has not since re-activated it via
-// MarkThreadActive.
-func (r *Router) isThreadStopped(threadID string) bool {
+// frameRefusal is Handle's gate: it names why evt is refused, or returns
+// "" when evt is admitted. See frameRefusalLocked.
+func (r *Router) frameRefusal(evt provider.ProviderEvent) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.frameRefusalLocked(evt)
+}
+
+// frameRefusalLocked refuses every event for a thread CleanupThread
+// stopped and not since re-activated, and a provider frame whose session
+// token is not the one MarkThreadActive last committed the thread to: a
+// frame of a session a replacement has already claimed. Host-originated
+// events carry no token and are refused only while the thread is stopped.
+// A handler that writes state belonging to the provider process calls it
+// again under the r.mu it writes under, so a frame already in flight when
+// a replacement starts cannot write that state for the replacement.
+// Caller holds r.mu.
+func (r *Router) frameRefusalLocked(evt provider.ProviderEvent) string {
+	id := r.identityIfPresent(evt.ThreadID)
+	if id != nil && id.stopped {
+		return "stopped thread"
+	}
+	if evt.SessionToken != "" && (id == nil || id.sessionToken != evt.SessionToken) {
+		return "retired session"
+	}
+	return ""
+}
+
+// SessionCurrent reports whether sessionToken is the session
+// MarkThreadActive last committed threadID to. The host asks it before
+// acting on a provider frame itself, with the same answer Handle's gate
+// gives that frame's token.
+func (r *Router) SessionCurrent(threadID, sessionToken string) bool {
+	if r == nil || sessionToken == "" {
+		return false
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	id := r.identityIfPresent(threadID)
-	return id != nil && id.stopped
+	return id != nil && id.sessionToken == sessionToken
 }
 
-// MarkThreadActive clears the stopped flag so a replacement session's
-// events persist again. The host calls this from the session-start
-// path BEFORE spawning the new subprocess — it must not wait for a
-// wire signal, because a session that dies during startup (e.g. Claude
+// MarkThreadActive commits the thread to the session sessionToken names:
+// it clears the stopped flag and makes that session's frames the only
+// ones Handle admits. The host calls this from the session-start path
+// BEFORE spawning the new subprocess — it must not wait for a wire
+// signal, because a session that dies during startup (e.g. Claude
 // rejecting --resume-session-at pre-init) emits its only diagnostics
-// before anything init-like, and those must route. Clearing pre-spawn
-// is safe: the prior subprocess's read loop is fully drained before a
-// start proceeds (provider Close blocks on read-loop exit), so no
-// stale frame can slip through the freshly-cleared gate. That holds only
-// while the host's drain of the thread's event worker completes: the
-// drain gives up once the worker handles nothing for its stall bound, so
-// a stalled worker can hand the dead session's queued frames to Handle
-// after this call, and Handle has no session-token gate. No wire event
-// may clear this flag — see the threadIdentity.stopped field comment.
+// before anything init-like, and those must route. No stale frame passes
+// the gate after this call: every provider frame carries the token of
+// the session that produced it, and a frame of any earlier session no
+// longer matches, even when the host's drain of the prior session gave
+// up at its stall bound and left that session's frames queued. No wire
+// event may clear the stopped flag — see the threadIdentity.stopped
+// field comment.
 //
 // Reactivation also resets the thread's logical-turn settlement ledger.
 // The context-repair restart deliberately skips CleanupThread, so
@@ -1949,16 +1980,17 @@ func (r *Router) isThreadStopped(threadID string) bool {
 // (folding into a finished turn's row) instead of the orphan error-item
 // branch the user actually needs to see. Clearing here is safe for the
 // soft-close late-fold path — the fold's trailing result rides the SAME
-// session's read loop, which is fully drained before any restart
-// reaches this call.
+// session's read loop, whose frames the gate refuses once this call
+// names another session.
 //
 // Each call bumps the thread's reactivation epoch (see ThreadEpoch),
 // which lets asynchronous teardowns detect that a replacement session
 // claimed the thread mid-teardown and abort their cleanup.
-func (r *Router) MarkThreadActive(threadID string) {
+func (r *Router) MarkThreadActive(threadID, sessionToken string) {
 	identity := r.identity(threadID)
 	r.mu.Lock()
 	identity.stopped = false
+	identity.sessionToken = sessionToken
 	identity.epoch++
 	// This is NOT the cleanup sweep — the repair-restart path reaches
 	// here WITHOUT a CleanupThread, so the thread's state entry can be

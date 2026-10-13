@@ -96,7 +96,7 @@ func TestSessionWakeupClearedBySessionLifecycle(t *testing.T) {
 		if err := r.Handle(wakeupEvent(t, threadID, fireAt)); err != nil {
 			t.Fatalf("handle schedule: %v", err)
 		}
-		r.MarkThreadActive(threadID)
+		r.MarkThreadActive(threadID, "")
 		if _, ok := r.PendingWakeupAt(threadID); ok {
 			t.Fatal("MarkThreadActive must clear the previous process's pending wakeup")
 		}
@@ -177,7 +177,7 @@ func TestScheduledJobsClearedBySessionLifecycle(t *testing.T) {
 	job := provider.ScheduledJob{ID: "a", Cron: "0 9 * * 1", FireByUnixMs: time.Now().Add(6 * 24 * time.Hour).UnixMilli()}
 	for name, sweep := range map[string]func(*Router, string){
 		"CleanupThread":        func(r *Router, id string) { r.CleanupThread(id) },
-		"MarkThreadActive":     func(r *Router, id string) { r.MarkThreadActive(id) },
+		"MarkThreadActive":     func(r *Router, id string) { r.MarkThreadActive(id, "") },
 		"ClearProcessSchedule": func(r *Router, id string) { r.ClearProcessSchedule(id) },
 	} {
 		t.Run(name, func(t *testing.T) {

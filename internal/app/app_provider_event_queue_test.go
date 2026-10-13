@@ -28,6 +28,17 @@ func waitProviderEvents(t testing.TB, app *App, threadID string) {
 	}
 }
 
+// startedSessionEventHandler is sessionEventHandler for a session the test
+// treats as started: it first commits the thread to token in triage, as
+// startSessionNow does before it spawns, so triage admits the session's
+// frames. Build a retired session's handler with sessionEventHandler.
+func startedSessionEventHandler(app *App, threadID, token, providerType string) func(provider.ProviderEvent) {
+	if app.triage != nil {
+		app.triage.MarkThreadActive(threadID, token)
+	}
+	return app.sessionEventHandler(threadID, token, providerType)
+}
+
 // seqEvent is a queue test event whose Content carries seq, padded to size
 // bytes when size is larger.
 func seqEvent(seq, size int) provider.ProviderEvent {
@@ -343,7 +354,7 @@ func TestProviderEventQueueRetiresAfterDisconnect(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	handler := app.sessionEventHandler(thread.ID, "retire-token", string(provider.Claude))
+	handler := startedSessionEventHandler(app, thread.ID, "retire-token", string(provider.Claude))
 	handler(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: thread.ID, Timestamp: time.Now()})
 	waitProviderEvents(t, app, thread.ID)
 	if app.providerEvents.lookup(thread.ID) == nil {
@@ -359,7 +370,7 @@ func TestProviderEventQueueRetiresAfterDisconnect(t *testing.T) {
 	var observed atomic.Int32
 	unsubscribe := app.subscribeThreadTurnObserver(thread.ID, func(string, provider.ProviderEvent) { observed.Add(1) })
 	t.Cleanup(unsubscribe)
-	next := app.sessionEventHandler(thread.ID, "retire-token-2", string(provider.Claude))
+	next := startedSessionEventHandler(app, thread.ID, "retire-token-2", string(provider.Claude))
 	next(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: thread.ID, Timestamp: time.Now()})
 	waitProviderEvents(t, app, thread.ID)
 	if observed.Load() != 1 {
@@ -422,7 +433,7 @@ func TestProviderEventHandlerErrorIsLoggedAndTheWorkerContinues(t *testing.T) {
 	})
 	t.Cleanup(unsubscribe)
 
-	handler := app.sessionEventHandler(thread.ID, "error-token", string(provider.Claude))
+	handler := startedSessionEventHandler(app, thread.ID, "error-token", string(provider.Claude))
 	handler(provider.ProviderEvent{Kind: "not-a-kind", ThreadID: thread.ID, Timestamp: time.Now()})
 	handler(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: thread.ID, Timestamp: time.Now()})
 	waitProviderEvents(t, app, thread.ID)
@@ -459,7 +470,7 @@ func TestStopSessionPersistsEventsReadBeforeTheStop(t *testing.T) {
 	})
 	t.Cleanup(unsubscribe)
 
-	handler := app.sessionEventHandler(thread.ID, "stop-drain-token", string(provider.Claude))
+	handler := startedSessionEventHandler(app, thread.ID, "stop-drain-token", string(provider.Claude))
 	for _, summary := range []string{"first", "second"} {
 		handler(provider.ProviderEvent{
 			Kind:      provider.EventError,
@@ -525,7 +536,7 @@ func TestStopSessionLogsADrainThatStalls(t *testing.T) {
 		unsubscribe()
 	})
 
-	app.sessionEventHandler(thread.ID, "bound-token", string(provider.Claude))(provider.ProviderEvent{
+	startedSessionEventHandler(app, thread.ID, "bound-token", string(provider.Claude))(provider.ProviderEvent{
 		Kind: provider.EventTurnStart, ThreadID: thread.ID, Timestamp: time.Now(),
 	})
 	<-started
@@ -565,7 +576,7 @@ func TestShutdownHandlesProviderEventsAlreadyRead(t *testing.T) {
 		handled.Add(1)
 	})
 	t.Cleanup(unsubscribe)
-	handler := app.sessionEventHandler(threadID, "shutdown-drain-token", string(provider.Claude))
+	handler := startedSessionEventHandler(app, threadID, "shutdown-drain-token", string(provider.Claude))
 	for i := range events {
 		handler(provider.ProviderEvent{Kind: provider.EventNotification, ThreadID: threadID, Content: strconv.Itoa(i)})
 	}
@@ -619,7 +630,7 @@ func TestShutdownReportsADrainThatStalls(t *testing.T) {
 		<-finished
 		unsubscribe()
 	})
-	app.sessionEventHandler(threadID, "bound-token", string(provider.Claude))(provider.ProviderEvent{
+	startedSessionEventHandler(app, threadID, "bound-token", string(provider.Claude))(provider.ProviderEvent{
 		Kind: provider.EventNotification, ThreadID: threadID,
 	})
 	<-started
@@ -673,7 +684,7 @@ func TestStopSessionHandlesTheSessionsFinalEvents(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{Binary: writeSilentClaudeBinary(t), WorkDir: thread.WorkspacePath},
-		app.sessionEventHandler(thread.ID, token, string(provider.Claude)),
+		startedSessionEventHandler(app, thread.ID, token, string(provider.Claude)),
 	)
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)
@@ -813,7 +824,7 @@ func TestClaudeInterruptAnswersWhileEventHandlingIsBlocked(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{Binary: writeSilentClaudeBinary(t), WorkDir: thread.WorkspacePath},
-		app.sessionEventHandler(thread.ID, "blocked-handler-token", string(provider.Claude)),
+		startedSessionEventHandler(app, thread.ID, "blocked-handler-token", string(provider.Claude)),
 	)
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)

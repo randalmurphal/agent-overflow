@@ -103,7 +103,7 @@ func TestTurnObserversDispatchAfterTriage(t *testing.T) {
 		order = append(order, "observer")
 	})
 
-	handler := app.sessionEventHandler(thread.ID, "session-token", string(provider.Codex))
+	handler := startedSessionEventHandler(app, thread.ID, "session-token", string(provider.Codex))
 	handler(provider.ProviderEvent{
 		Kind:     provider.EventModelFallback,
 		ThreadID: thread.ID,

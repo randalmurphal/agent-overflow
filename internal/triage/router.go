@@ -381,16 +381,17 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 	defer r.inflight.Done()
 	defer r.fireEventHook(evt)
 
-	if r.isThreadStopped(evt.ThreadID) {
-		// Drop silently — including EventInit. The readLoop could still
-		// be draining in-flight lines after StopSession returned;
-		// persisting them under the stopped thread would pollute the
-		// timeline (Bug B5). The flag is cleared exclusively by the
-		// host's session-start path (MarkThreadActive), so a stale init
-		// from a torn-down subprocess cannot re-admit its trailing
-		// frames.
+	if refusal := r.frameRefusal(evt); refusal != "" {
+		// Drop — including EventInit. The readLoop could still be
+		// draining in-flight lines after StopSession returned, and a
+		// host drain that stalled can leave a dead session's frames
+		// queued behind a replacement start; persisting them would
+		// pollute the timeline (Bug B5) or hand the replacement the dead
+		// process's state. Only the host's session-start path
+		// (MarkThreadActive) re-admits a thread, and only for the session
+		// it names, so no frame can re-admit itself.
 		if evt.Kind != provider.EventSessionStatus || evt.Content != "disconnected" {
-			log.Printf("triage: dropping %s event for stopped thread %s", evt.Kind, evt.ThreadID)
+			log.Printf("triage: dropping %s event for thread %s: %s", evt.Kind, evt.ThreadID, refusal)
 		}
 		return nil
 	}

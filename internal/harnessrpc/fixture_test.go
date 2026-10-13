@@ -101,6 +101,9 @@ func (h *testHost) ForgetPushSent()         { h.pushSent = nil }
 func (h *testHost) UpdateWorkReason() (string, error) {
 	return h.updateWorkReason, nil
 }
+func (h *testHost) StallProviderEvents(string) error   { return nil }
+func (h *testHost) ReleaseProviderEvents(string) error { return nil }
+func (h *testHost) PendingProviderEvents(string) int   { return 0 }
 func (h *testHost) BrowserPressKey(string, string, keybindings.Accelerator) error {
 	return errors.New("no browser engine in the fixture")
 }

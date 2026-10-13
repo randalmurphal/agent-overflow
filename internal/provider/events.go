@@ -309,6 +309,12 @@ type ProviderEvent struct {
 	// fields remain in Meta/Raw for rendering and diagnostics; control-flow
 	// consumers must use this typed value rather than decoding provider JSON.
 	Failure *FailureMeta `json:"-"`
+	// SessionToken names the host session whose provider process produced
+	// the frame. The host stamps it on every frame its read-loop callback
+	// receives; triage refuses a frame whose token is no longer the
+	// thread's (triage.Router.MarkThreadActive). Host-originated events
+	// carry none.
+	SessionToken string `json:"-"`
 }
 
 // MetaTranscriptMirroredKey marks a subagent launch whose sidechain is

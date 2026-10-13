@@ -2137,7 +2137,7 @@ func TestSessionStatusErrorRestoresQueuedFlushItemsToDraft(t *testing.T) {
 				EnqueuedAt: 10,
 			})
 
-			handler := app.sessionEventHandler(thread.ID, "session-token", string(providerType))
+			handler := startedSessionEventHandler(app, thread.ID, "session-token", string(providerType))
 			handler(provider.ProviderEvent{
 				Kind:      provider.EventSessionStatus,
 				ThreadID:  thread.ID,
@@ -3625,7 +3625,7 @@ func TestDiscardedSendsRestoreWithTheQueueInOrder(t *testing.T) {
 	}
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{ID: "queue:third", Message: "third", Payload: json.RawMessage(`{}`), EnqueuedAt: 30})
 
-	handler := app.sessionEventHandler(thread.ID, "session-token", string(provider.Claude))
+	handler := startedSessionEventHandler(app, thread.ID, "session-token", string(provider.Claude))
 	lifecycle := func(uuid string, state provider.CommandLifecycleState) {
 		meta, err := json.Marshal(provider.CommandLifecycleMeta{CommandUUID: uuid, State: state})
 		if err != nil {
@@ -3780,7 +3780,7 @@ func TestAutoReconnectAfterDeathRestoresTheQueueFirst(t *testing.T) {
 		ids = append(ids, thread.ID)
 	}
 	for _, id := range ids {
-		handler := app.sessionEventHandler(id, "session-token", string(provider.Claude))
+		handler := startedSessionEventHandler(app, id, "session-token", string(provider.Claude))
 		handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: id, Content: "error", Timestamp: time.Now()})
 		handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: id, Content: "disconnected", Timestamp: time.Now()})
 	}

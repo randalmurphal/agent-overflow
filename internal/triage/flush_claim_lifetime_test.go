@@ -73,7 +73,7 @@ func TestFlushClaimSurvivesCleanupMidHandoff(t *testing.T) {
 
 	// Generation 2: successor session queues two items; its dispatch
 	// returns immediately, so only its own claim (+2, −2) settles.
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
 	router.RegisterQueueItem("t1", makeQueueItem("queue:2", "third"))
 	if got := router.QueuedFlushItemCount("t1"); got != 3 {

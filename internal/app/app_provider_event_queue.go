@@ -81,6 +81,9 @@ type providerEventQueues struct {
 	queues map[string]*providerEventQueue
 	// drainStall overrides providerEventDrainStall when non-zero.
 	drainStall time.Duration
+	// stalls holds the release of each thread whose worker a harness spec
+	// stalled (app_provider_event_stall.go). Guarded by mu.
+	stalls map[string]chan struct{}
 }
 
 type queuedProviderEvent struct {
@@ -356,8 +359,9 @@ func providerEventSize(evt provider.ProviderEvent) int {
 // drainProviderEvents waits for the thread's events already read from its
 // provider to be handled, for as long as its worker keeps handling them. A
 // stalled worker is logged and the caller moves on: the remaining events
-// are still handled in order, and a stop's CleanupThread then drops the
-// ones its session emitted (invariant 29), as it drops any later frame.
+// are still handled in order, and triage drops the ones its session
+// emitted once a stop's CleanupThread marks the thread stopped (invariant
+// 29) or a replacement start commits the thread to another session.
 func (a *App) drainProviderEvents(threadID, reason string) {
 	if err := a.providerEvents.drain(threadID); err != nil {
 		log.Printf("app: %s: %v", reason, err)

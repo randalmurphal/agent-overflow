@@ -286,7 +286,7 @@ func TestSessionEventHandlerTurnCompleteRecordsActivityWithoutProbing(t *testing
 	}
 
 	mark := time.Now().Add(-time.Millisecond)
-	claudeHandler := app.sessionEventHandler("thread-claude", "tok-claude", string(provider.Claude))
+	claudeHandler := startedSessionEventHandler(app, "thread-claude", "tok-claude", string(provider.Claude))
 	claudeHandler(provider.ProviderEvent{
 		Kind:      provider.EventTurnComplete,
 		ThreadID:  "thread-claude",

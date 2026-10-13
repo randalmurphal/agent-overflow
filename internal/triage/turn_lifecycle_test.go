@@ -1133,7 +1133,7 @@ func TestMarkThreadActiveResetsSettlementLedger(t *testing.T) {
 	// Repair restart: the host re-activates the thread (no CleanupThread
 	// on this path) and dispatches the next send, which registers its
 	// deferred pending marker for turn 3.
-	router.MarkThreadActive("t1")
+	router.MarkThreadActive("t1", "")
 	router.RegisterPendingSendWithExpectation("t1", "user:3", 3, PendingSendExpectation{})
 
 	// The replacement session dies pre-init with only an error result.

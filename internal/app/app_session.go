@@ -205,19 +205,19 @@ func (a *App) startSessionNow(threadID string) error {
 		}
 	}
 
-	// Re-admit the thread's events in triage BEFORE spawning. A prior
-	// StopSession left the stopped-thread marker set, and the
+	// Commit the thread to this session in triage BEFORE spawning. A
+	// prior StopSession left the stopped-thread marker set, and the
 	// replacement session can emit before any wire proof-of-life lands:
 	// Codex emits EventInit synchronously inside NewSession, and a
 	// Claude process that dies during startup (unusable
 	// --resume-session-at cursor) emits its only diagnostics pre-init.
-	// Clearing here is safe — stopExistingSessionLocked has fully
-	// drained the prior session's read loop and its event queue
-	// (closeProviderSession waits for both), so no stale frame can slip
-	// through. This is the ONLY place the marker
-	// is cleared; see triage.MarkThreadActive.
+	// From here triage admits only this session's frames, so a prior
+	// session's frames that stopExistingSessionLocked's drain left
+	// queued when the worker stalled are refused rather than applied to
+	// this one. This is the ONLY place the marker is cleared; see
+	// triage.MarkThreadActive.
 	if a.triage != nil {
-		a.triage.MarkThreadActive(threadID)
+		a.triage.MarkThreadActive(threadID, sessionToken)
 	}
 
 	registeredTools := false
