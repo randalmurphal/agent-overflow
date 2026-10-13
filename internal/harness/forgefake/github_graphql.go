@@ -48,8 +48,6 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "ForgeChecks", required: []string{"owner", "name", "number"}, optional: []string{"endCursor"}, run: ghForgeChecks},
 	{kind: "query", name: "ForgeCommits", required: []string{"owner", "name", "number"}, run: ghForgeCommits},
 	{kind: "query", name: "ForgeThreads", required: []string{"owner", "name", "number"}, optional: []string{"endCursor"}, run: ghForgeThreads},
-	{kind: "query", name: "ForgeComments", required: []string{"owner", "name", "number"}, optional: []string{"endCursor"}, run: ghForgeComments},
-	{kind: "mutation", name: "ForgeReply", required: []string{"threadID", "body"}, run: ghForgeReply},
 }
 
 // graphQLRequest is the body of a POST to /github/graphql.

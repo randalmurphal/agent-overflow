@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-// GitLab writes and pipeline lists the pstack forge script makes through
-// `glab api` (assets/skills/pstack/skills/poteto-mode/scripts/forge). A
-// write's JSON body is decoded strictly: a key the handler does not
-// implement is refused. Each changes the fixture the next read answers
-// from.
+// The GitLab discussion note the app writes over HTTP, and the merge
+// request pipelines the pstack forge script reads through `glab api`
+// (assets/skills/pstack/skills/poteto-mode/scripts/forge). A write's JSON
+// body is decoded strictly: a key the handler does not implement is
+// refused. It changes the fixture the next read answers from.
 
 // decodeRequestBody decodes a request body into target, refusing unknown
 // keys and a body whose Content-Type is not application/json.
@@ -37,29 +37,6 @@ func decodeRequestBody(c *call, target any) error {
 func glabStatus(status int, message string) response {
 	out, _ := json.Marshal(map[string]string{"message": message})
 	return response{stdout: out, stderr: message, status: status, header: http.Header{"Content-Type": {"application/json"}}}
-}
-
-// glabNote answers POST projects/P/merge_requests/N/notes {body}: a
-// conversation note by the viewer.
-func glabNote(e *Engine, c *call, m []string) response {
-	_, p, fail, ok := e.glabMRFrom(c, m)
-	if !ok {
-		return fail
-	}
-	var req struct {
-		Body string `json:"body"`
-	}
-	if err := decodeRequestBody(c, &req); err != nil {
-		return unhandled("%v", err)
-	}
-	if strings.TrimSpace(req.Body) == "" {
-		return glabStatus(http.StatusBadRequest, "400 Bad request - Note {:note=>[\"can't be blank\"]}")
-	}
-	comment := Comment{ID: e.ids.next(), Author: e.viewer, Body: req.Body, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
-	p.Comments = append(p.Comments, comment)
-	resp := glabOK(jsonResponse(gitlabNote(comment, map[string]any{"resolvable": false})))
-	resp.status = http.StatusCreated
-	return resp
 }
 
 // glabDiscussionNote answers POST
@@ -95,62 +72,6 @@ func glabDiscussionNote(e *Engine, c *call, m []string) response {
 	return resp
 }
 
-// glabMerge answers PUT projects/P/merge_requests/N/merge {squash,
-// auto_merge, merge_when_pipeline_succeeds}; either of the last two arms
-// auto-merge (auto_merge from GitLab 17.11, which deprecates the other).
-// GitLab refuses a merge request that cannot merge now with 405 (406 for
-// conflicts); an armed merge request whose pipeline has not passed is
-// left open and answered as it stands.
-func glabMerge(e *Engine, c *call, m []string) response {
-	_, p, fail, ok := e.glabMRFrom(c, m)
-	if !ok {
-		return fail
-	}
-	// squash shapes the merge commit, which the fixture does not record.
-	var req struct {
-		Squash                    *bool `json:"squash"`
-		AutoMerge                 bool  `json:"auto_merge"`
-		MergeWhenPipelineSucceeds bool  `json:"merge_when_pipeline_succeeds"`
-	}
-	if err := decodeRequestBody(c, &req); err != nil {
-		return unhandled("%v", err)
-	}
-	status := gitlabDetailedMergeStatus(p)
-	switch {
-	case status == "conflict":
-		return glabStatus(http.StatusNotAcceptable, "406 Branch cannot be merged")
-	case (req.AutoMerge || req.MergeWhenPipelineSucceeds) && (status == "ci_still_running" || status == "checking"):
-		p.AutoMerge = true
-	case status != "mergeable":
-		return glabStatus(http.StatusMethodNotAllowed, "405 Method Not Allowed")
-	default:
-		p.State, p.AutoMerge, p.MergedAt = "merged", false, time.Now().UTC().Format(time.RFC3339)
-	}
-	return glabMR(e, c, m)
-}
-
-// glabUpdateMR answers PUT projects/P/merge_requests/N {target_branch}.
-func glabUpdateMR(e *Engine, c *call, m []string) response {
-	_, p, fail, ok := e.glabMRFrom(c, m)
-	if !ok {
-		return fail
-	}
-	var req struct {
-		TargetBranch string `json:"target_branch"`
-	}
-	if err := decodeRequestBody(c, &req); err != nil {
-		return unhandled("%v", err)
-	}
-	if req.TargetBranch == "" {
-		return unhandled("merge request update implements only target_branch")
-	}
-	if p.State != "open" {
-		return glabStatus(http.StatusMethodNotAllowed, "405 Method Not Allowed")
-	}
-	p.BaseRef = req.TargetBranch
-	return glabMR(e, c, m)
-}
-
 func gitlabPipeline(r *Repo, p *Pull) map[string]any {
 	return map[string]any{
 		"id":      p.CI.ID,
@@ -159,28 +80,6 @@ func gitlabPipeline(r *Repo, p *Pull) map[string]any {
 		"status":  p.CI.Status,
 		"web_url": fmt.Sprintf("https://%s/%s/-/pipelines/%d", r.Host, r.Project, p.CI.ID),
 	}
-}
-
-// glabPipelines answers GET projects/P/pipelines?ref=B, newest first: the
-// pipelines of the merge requests whose source branch is B.
-func glabPipelines(e *Engine, c *call, m []string) response {
-	r, fail, ok := e.glabProject(c, m[1])
-	if !ok {
-		return fail
-	}
-	query, perPage, page, err := glabPage(m[2], "ref")
-	if err != nil {
-		return unhandled("%v", err)
-	}
-	pipelines := []map[string]any{}
-	for i := len(r.Pulls) - 1; i >= 0; i-- {
-		p := &r.Pulls[i]
-		if p.CI != nil && (!query.Has("ref") || p.HeadRef == query.Get("ref")) {
-			pipelines = append(pipelines, gitlabPipeline(r, p))
-		}
-	}
-	items, next := paginate(pipelines, perPage, page)
-	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
 }
 
 // glabMRPipelines answers GET projects/P/merge_requests/N/pipelines: the

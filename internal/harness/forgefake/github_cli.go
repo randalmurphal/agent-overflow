@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // The gh pull request commands and GitHub operations the pstack forge
@@ -152,119 +151,6 @@ func ghPRList(e *Engine, c *call) response {
 	return jsonResponse(out)
 }
 
-// ghPRComment answers `gh pr comment N -R R --body-file -`: a
-// conversation comment by the viewer, printed as its URL.
-func ghPRComment(e *Engine, c *call) response {
-	if c.flag("body-file") != "-" {
-		return unhandled("pr comment reads its body only from --body-file -")
-	}
-	r, p, fail, ok := e.ghRepoPull(c)
-	if !ok {
-		return fail
-	}
-	body := string(c.stdin)
-	if strings.TrimSpace(body) == "" {
-		return response{exit: 1, stderr: "body cannot be blank\n"}
-	}
-	comment := Comment{ID: e.ids.next(), Author: e.viewer, Body: body, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
-	p.Comments = append(p.Comments, comment)
-	return response{stdout: []byte(fmt.Sprintf("%s#issuecomment-%d\n", githubPullURL(r, p), comment.ID))}
-}
-
-// ghPRMerge answers `gh pr merge N -R R --squash|--merge|--rebase
-// [--auto]`. A pull the forge would refuse fails as gh does; with --auto
-// a pull whose checks have not passed is armed instead of merged.
-func ghPRMerge(e *Engine, c *call) response {
-	methods := 0
-	for _, flag := range []string{"squash", "merge", "rebase"} {
-		if c.has(flag) {
-			methods++
-		}
-	}
-	if methods != 1 {
-		return response{exit: 1, stderr: "--merge, --rebase, or --squash required when not running interactively\n"}
-	}
-	r, p, fail, ok := e.ghRepoPull(c)
-	if !ok {
-		return fail
-	}
-	ref := fmt.Sprintf("%s#%d", r.Project, p.Number)
-	switch {
-	case p.State == "merged":
-		return response{exit: 1, stderr: fmt.Sprintf("X Pull request %s was already merged\n", ref)}
-	case p.State == "closed":
-		return response{exit: 1, stderr: fmt.Sprintf("X Pull request %s is closed\n", ref)}
-	case p.Mergeable == "conflicts":
-		return response{exit: 1, stderr: fmt.Sprintf("X Pull request %s is not mergeable: the merge commit cannot be cleanly created.\n", ref)}
-	case c.has("auto") && (p.ciBlocks() || p.Mergeable == "checking"):
-		p.AutoMerge = true
-		return response{stderr: fmt.Sprintf("✓ Pull request %s will be automatically merged when all requirements are met\n", ref)}
-	case githubMergeStateStatus(p) != "CLEAN":
-		return response{exit: 1, stderr: fmt.Sprintf("X Pull request %s is not mergeable: the base branch policy prohibits the merge.\n", ref)}
-	}
-	p.State, p.AutoMerge, p.MergedAt = "merged", false, time.Now().UTC().Format(time.RFC3339)
-	return response{stderr: fmt.Sprintf("✓ Merged pull request %s (%s)\n", ref, p.Title)}
-}
-
-// ghPREdit answers `gh pr edit N -R R --base B`.
-func ghPREdit(e *Engine, c *call) response {
-	base := c.flag("base")
-	if base == "" {
-		return unhandled("pr edit implements only --base")
-	}
-	r, p, fail, ok := e.ghRepoPull(c)
-	if !ok {
-		return fail
-	}
-	if p.State != "open" {
-		return response{exit: 1, stderr: "GraphQL: Cannot change the base branch of a closed pull request. (updatePullRequest)\n"}
-	}
-	p.BaseRef = base
-	return response{stdout: []byte(githubPullURL(r, p) + "\n")}
-}
-
-// ghRuns answers the REST workflow runs of a branch, newest first: the
-// runs of the pulls whose head is that branch. Paginated like ghRunJobs.
-func ghRuns(e *Engine, c *call, m []string) response {
-	query, perPage, page, err := glabPage(m[2], "branch")
-	if err != nil {
-		return unhandled("%v", err)
-	}
-	if query.Get("per_page") == "" {
-		perPage = 30
-	}
-	r := e.repoOn("github", c.http.host, m[1])
-	if r == nil {
-		return ghHTTPNotFound()
-	}
-	runs := []map[string]any{}
-	for i := len(r.Pulls) - 1; i >= 0; i-- {
-		p := &r.Pulls[i]
-		if p.CI == nil || (query.Has("branch") && p.HeadRef != query.Get("branch")) {
-			continue
-		}
-		status, conclusion := githubRESTState(p.CI.Status)
-		runs = append(runs, map[string]any{
-			"id":          p.CI.ID,
-			"name":        p.CI.Name,
-			"head_branch": p.HeadRef,
-			"head_sha":    p.HeadSHA,
-			"status":      status,
-			"conclusion":  conclusion,
-			"html_url":    fmt.Sprintf("https://%s/%s/actions/runs/%d", r.Host, r.Project, p.CI.ID),
-		})
-	}
-	items, next := paginate(runs, perPage, page)
-	resp := jsonResponse(map[string]any{"total_count": len(runs), "workflow_runs": items})
-	if next != "" {
-		query.Set("per_page", strconv.Itoa(perPage))
-		query.Set("page", next)
-		link := fmt.Sprintf("%s/github/rest/repos/%s/actions/runs?%s", c.http.base, r.Project, query.Encode())
-		resp.header.Set("Link", "<"+link+`>; rel="next"`)
-	}
-	return resp
-}
-
 // The forge script's GraphQL operations. Each answers exactly the
 // selection of the script's document.
 
@@ -372,56 +258,5 @@ func ghForgeThreads(e *Engine, c *call, v graphQLVars) response {
 	}
 	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
 		"reviewThreads": graphQLConnection(threads, offset, githubGraphQLPageSize),
-	}}})
-}
-
-// ghForgeComments: one page of the pull's conversation comments, oldest
-// first.
-func ghForgeComments(e *Engine, c *call, v graphQLVars) response {
-	project, number, err := v.pullVars()
-	offset, err1 := v.cursor("endCursor")
-	if err := firstErr(err, err1); err != nil {
-		return unhandled("ForgeComments: %v", err)
-	}
-	r, p, fail, ok := e.ghGraphQLPull(c, project, number, map[string]any{})
-	if !ok {
-		return fail
-	}
-	comments := make([]map[string]any, 0, len(p.Comments))
-	for _, comment := range p.Comments {
-		comments = append(comments, map[string]any{
-			"databaseId": comment.ID,
-			"author":     map[string]any{"login": comment.Author},
-			"body":       comment.Body,
-			"createdAt":  comment.CreatedAt,
-			"url":        fmt.Sprintf("%s#issuecomment-%d", githubPullURL(r, p), comment.ID),
-		})
-	}
-	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
-		"comments": graphQLConnection(comments, offset, githubGraphQLPageSize),
-	}}})
-}
-
-// ghForgeReply adds the viewer's reply to a review thread
-// (addPullRequestReviewThreadReply) and answers the comment's databaseId
-// and url.
-func ghForgeReply(e *Engine, c *call, v graphQLVars) response {
-	id, err := v.str("threadID")
-	body, err1 := v.str("body")
-	if err := firstErr(err, err1); err != nil {
-		return unhandled("ForgeReply: %v", err)
-	}
-	thread := e.githubThread(c, id)
-	if thread == nil {
-		return graphQLNotFound(map[string]any{"addPullRequestReviewThreadReply": nil}, []string{"addPullRequestReviewThreadReply"}, fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
-	}
-	if strings.TrimSpace(body) == "" {
-		return graphQLNotFound(map[string]any{"addPullRequestReviewThreadReply": nil}, []string{"addPullRequestReviewThreadReply"}, "Body can't be blank")
-	}
-	comment := Comment{ID: e.ids.next(), Author: e.viewer, Body: body, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
-	thread.Comments = append(thread.Comments, comment)
-	return graphQLData(map[string]any{"addPullRequestReviewThreadReply": map[string]any{"comment": map[string]any{
-		"databaseId": comment.ID,
-		"url":        fmt.Sprintf("https://%s#discussion_r%d", c.http.host, comment.ID),
 	}}})
 }

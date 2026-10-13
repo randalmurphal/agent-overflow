@@ -63,7 +63,7 @@ and `other-provider`, read through the `setup-pstack` skill.
 | `skills/poteto-mode/playbooks/orchestrate.md` | Workers and sub-coordinators are threads; the store is the agent home; the brief template opens with the load line; liveness through `thread_status` and `thread_ask`; the frontier from `forge stack` and retargets with `gh` or `glab` instead of Graphite; the land step follows the agent's instructions and the repository's guides |
 | `skills/poteto-mode/playbooks/visual-parity.md` | `browser_screenshot`; loop wording |
 | `skills/poteto-mode/playbooks/worktree-cleanup.md` | Threads per worktree from `thread_search` instead of a transcript scan |
-| `skills/poteto-mode/scripts/forge` | Added: the adapter the scripts read GitHub or GitLab through, and `forge stack` for stack order |
+| `skills/poteto-mode/scripts/forge` | Added: the read-only adapter the scripts read GitHub or GitLab through (`which`, `pr view`, `pr list`, `pr checks`, `pr commits`, `pr threads`), and `forge stack` for stack order |
 | `skills/poteto-mode/scripts/orch/store.ts`, `orch.ts`, `orch.test.ts` | `frontier set` reads stack order, states and head SHAs from `forge stack` instead of Graphite `gt` |
 | `skills/poteto-mode/scripts/check-plan.mjs` | Program markers for the ported plan template |
 | `skills/poteto-mode/scripts/worktree-audit.sh` | PR state through the forge script; the transcript scan and its column removed |

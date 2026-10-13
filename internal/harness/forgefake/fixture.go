@@ -69,10 +69,9 @@ type Pull struct {
 	// moved and the forge requires an up-to-date head) or "checking".
 	Mergeable string `json:"mergeable,omitempty"`
 	// AutoMerge is armed merge-when-ready (GitHub auto-merge, GitLab
-	// auto-merge). A merge call with auto arms it while CI has not passed.
+	// auto-merge).
 	AutoMerge bool `json:"autoMerge,omitempty"`
-	// MergedAt is when a merged pull merged. Defaults for a merged pull;
-	// a merge call sets it.
+	// MergedAt is when a merged pull merged. Defaults for a merged pull.
 	MergedAt string `json:"mergedAt,omitempty"`
 	// Comments are PR-level conversation comments (GitHub issue comments,
 	// GitLab unpositioned discussions).

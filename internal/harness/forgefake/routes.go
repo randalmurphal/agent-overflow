@@ -41,24 +41,17 @@ var commands = []command{
 	{cli: "gh", path: []string{"pr", "create"}, flags: []flagDef{
 		{long: "title", short: "t", value: true}, {long: "body", short: "b", value: true},
 		{long: "base", short: "B", value: true}, {long: "draft", short: "d"},
-		{long: "repo", short: "R", value: true}, {long: "head", short: "H", value: true},
 	}, run: ghPRCreate},
 	{cli: "glab", path: []string{"mr", "create"}, flags: []flagDef{
 		{long: "title", short: "t", value: true}, {long: "description", short: "d", value: true},
 		{long: "target-branch", short: "b", value: true}, {long: "draft"},
 		{long: "yes", short: "y"}, {long: "no-editor"},
-		{long: "repo", short: "R", value: true}, {long: "head", short: "H", value: true}, {long: "source-branch", short: "s", value: true},
 	}, run: glabMRCreate},
 	{cli: "gh", path: []string{"pr", "view"}, flags: []flagDef{{long: "repo", short: "R", value: true}, {long: "json", value: true}}, run: ghPRView},
 	{cli: "gh", path: []string{"pr", "list"}, flags: []flagDef{
 		{long: "repo", short: "R", value: true}, {long: "state", short: "s", value: true}, {long: "head", short: "H", value: true},
 		{long: "author", short: "A", value: true}, {long: "limit", short: "L", value: true}, {long: "json", value: true},
 	}, run: ghPRList},
-	{cli: "gh", path: []string{"pr", "comment"}, flags: []flagDef{{long: "repo", short: "R", value: true}, {long: "body-file", short: "F", value: true}}, run: ghPRComment},
-	{cli: "gh", path: []string{"pr", "merge"}, flags: []flagDef{
-		{long: "repo", short: "R", value: true}, {long: "squash", short: "s"}, {long: "merge", short: "m"}, {long: "rebase", short: "r"}, {long: "auto"},
-	}, run: ghPRMerge},
-	{cli: "gh", path: []string{"pr", "edit"}, flags: []flagDef{{long: "repo", short: "R", value: true}, {long: "base", short: "B", value: true}}, run: ghPREdit},
 	{cli: "gh", path: []string{"api"}, flags: apiFlags, run: cliAPI},
 	{cli: "glab", path: []string{"api"}, flags: apiFlags, run: cliAPI},
 }
@@ -67,8 +60,7 @@ var commands = []command{
 // GraphQL operations are githubGraphQL.
 var githubAPI = []apiRoute{
 	{name: "gh repository identity", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
-	{name: "gh api runs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs(?:\?(.*))?$`), flags: []string{"hostname", "paginate"}, run: ghRuns},
-	{name: "gh api run jobs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match", "paginate"}, run: ghRunJobs},
+	{name: "gh api run jobs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: ghRunJobs},
 	{name: "gh api job logs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/jobs/(\d+)/logs$`), flags: []string{"hostname", "if-none-match", "range"}, run: ghJobLogs},
 	{name: "gh api attachment", method: "GET", pattern: regexp.MustCompile(`^https://.+`), run: ghAttachment},
 }
@@ -78,13 +70,9 @@ var gitlabAPI = []apiRoute{
 	{name: "glab api merge request", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname", "if-none-match"}, run: glabMR},
 	{name: "glab api approvals", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approvals$`), flags: []string{"hostname"}, run: glabApprovals},
 	{name: "glab api discussions", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions(?:\?(.*))?$`), flags: []string{"hostname", "paginate"}, run: glabDiscussions},
-	{name: "glab api discussion note", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([0-9a-f]+)/notes$`), flags: []string{"hostname", "input"}, run: glabDiscussionNote},
-	{name: "glab api note", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/notes$`), flags: []string{"hostname", "input"}, run: glabNote},
-	{name: "glab api merge", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/merge$`), flags: []string{"hostname", "input"}, run: glabMerge},
-	{name: "glab api update merge request", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname", "input"}, run: glabUpdateMR},
+	{name: "glab api discussion note", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions/([0-9a-f]+)/notes$`), flags: []string{"hostname"}, run: glabDiscussionNote},
 	{name: "glab api merge request pipelines", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/pipelines(?:\?(.*))?$`), flags: []string{"hostname", "paginate"}, run: glabMRPipelines},
-	{name: "glab api pipelines", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines(?:\?(.*))?$`), flags: []string{"hostname", "paginate"}, run: glabPipelines},
-	{name: "glab api merge request list", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match", "paginate"}, run: glabMRList},
+	{name: "glab api merge request list", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: glabMRList},
 	{name: "glab api pipeline jobs", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname", "paginate"}, run: glabPipelineJobs},
 	{name: "glab api job trace", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/trace$`), flags: []string{"hostname", "if-none-match", "range"}, run: glabJobTrace},
 	{name: "glab api upload", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/uploads/([0-9a-f]{32})/([^/?]+)$`), flags: []string{"hostname"}, run: glabUpload},

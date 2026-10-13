@@ -12,17 +12,14 @@ import (
 )
 
 // `gh api` and `glab api`, the CLIs' own way to call the forge APIs, as
-// the pstack forge script (assets/skills/pstack) runs them. A CLI call is
-// answered by the same REST and GraphQL route tables as the HTTP mounts:
-// the endpoint is the one positional, --hostname names the forge host
-// (each CLI's default host when omitted), --method or a body picks the
-// method, and --input - is the request body read from stdin. A GraphQL
-// call (`gh api graphql`) carries its document and variables as fields:
-// -f is a raw string, -F converts true, false, null and integers and reads
-// @- from stdin. -H sets the request's Content-Type, the one header
-// implemented; a write route refuses a body that is not application/json.
-// A route lists input or paginate among its flags when it takes a body or
-// answers --paginate; any other flag on it is refused.
+// the pstack forge script (assets/skills/pstack) runs them: reads only.
+// A CLI call is answered by the same REST and GraphQL route tables as the
+// HTTP mounts: the endpoint is the one positional and --hostname names the
+// forge host (each CLI's default host when omitted). A REST call is a GET.
+// A GraphQL call (`gh api graphql`) is a POST carrying its document and
+// variables as fields: -f is a raw string, -F converts true, false, null
+// and integers. A route lists paginate among its flags when it answers
+// --paginate; any other flag on it is refused.
 //
 // --paginate follows the forge's next-page signal and prints what the CLI
 // prints: gh writes each page's JSON in turn, glab writes each page's
@@ -33,12 +30,9 @@ import (
 
 var apiFlags = []flagDef{
 	{long: "hostname", value: true},
-	{long: "method", short: "X", value: true},
-	{long: "input", value: true},
 	{long: "raw-field", short: "f", value: true},
 	{long: "field", short: "F", value: true},
 	{long: "paginate"},
-	{long: "header", short: "H", value: true},
 }
 
 // maxAPIPages bounds a --paginate walk, so a route whose next-page signal
@@ -58,26 +52,9 @@ func cliAPI(e *Engine, c *call) response {
 	if err != nil {
 		return unhandled("%v", err)
 	}
-	for _, header := range c.flags["header"] {
-		name, value, ok := strings.Cut(header, ":")
-		if !ok || !strings.EqualFold(strings.TrimSpace(name), "Content-Type") {
-			return unhandled("header %q is not implemented; only Content-Type is", header)
-		}
-		c.contentType = strings.TrimSpace(value)
-	}
-	delete(c.flags, "header")
-	if input, ok := c.flags["input"]; ok {
-		if len(input) != 1 || input[0] != "-" {
-			return unhandled("--input reads only stdin (-) here")
-		}
-		c.body = c.stdin
-	}
-	method := strings.ToUpper(c.flag("method"))
-	if method == "" {
-		method = "GET"
-		if c.has("input") || len(fields) > 0 {
-			method = "POST"
-		}
+	method := "GET"
+	if endpoint == "graphql" {
+		method = "POST"
 	}
 	c.flags["method"] = []string{method}
 	paginate := c.has("paginate")
@@ -85,9 +62,6 @@ func cliAPI(e *Engine, c *call) response {
 	if endpoint == "graphql" {
 		if c.cli != "gh" {
 			return unhandled("glab api graphql is not implemented")
-		}
-		if method != "POST" || c.has("input") {
-			return unhandled("gh api graphql is a POST of -f/-F fields")
 		}
 		req := graphQLRequest{vars: graphQLVars{}}
 		for name, value := range fields {
@@ -115,7 +89,7 @@ func cliAPI(e *Engine, c *call) response {
 		return e.paginateGraphQL(c)
 	}
 	if len(fields) > 0 {
-		return unhandled("REST fields are not implemented; send a body with --input -")
+		return unhandled("REST fields are not implemented")
 	}
 	delete(c.flags, "raw-field")
 	delete(c.flags, "field")
@@ -145,10 +119,8 @@ func apiFields(c *call) (map[string]any, error) {
 			fields[name] = value == "true"
 		case value == "null":
 			fields[name] = nil
-		case value == "@-":
-			fields[name] = string(c.stdin)
 		case strings.HasPrefix(value, "@"):
-			return nil, fmt.Errorf("field %q reads a file; only @- (stdin) is implemented", name)
+			return nil, fmt.Errorf("field %q reads a file or stdin, which is not implemented", name)
 		default:
 			if n, err := strconv.ParseInt(value, 10, 64); err == nil {
 				fields[name] = float64(n)

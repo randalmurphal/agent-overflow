@@ -33,18 +33,17 @@ drops the listener's open connections and records each request that
 arrives as route `offline`, dropping it without a reply.
 
 `gh api` and `glab api` (`cli_api.go`) reach the same `api` routes and
-GraphQL operations from the CLI path: the call's `--hostname` (default
-`github.com` or `gitlab.com`) stands for the Host header, `--input -`
-supplies the body, `-H 'Content-Type: ...'` its media type, `-f`/`-F`
-build a GraphQL request, and `--paginate` follows the route's own next
-page (GitHub's `Link`, GitLab's `X-Next-Page`; GraphQL through
-`$endCursor` and the outermost `pageInfo`). `gh` prints each page in
-turn; `glab` prints each page's array straight after the last
-(`[...][...]`), as glab 1.117.0 does. A REST field (`-f` without
-`graphql`), an `-F @file` and any `-H` header but `Content-Type` are
-unhandled. A GitLab write whose body is not `application/json`, over
-either path, is unhandled. Status 400 and above exits 1 with the forge's
-message.
+GraphQL operations from the CLI path, for reads only: the call's
+`--hostname` (default `github.com` or `gitlab.com`) stands for the Host
+header, a REST call is a GET, `-f`/`-F` build a GraphQL request, and
+`--paginate` follows the route's own next page (GitHub's `Link`,
+GitLab's `X-Next-Page`; GraphQL through `$endCursor` and the outermost
+`pageInfo`). `gh` prints each page in turn; `glab` prints each page's
+array straight after the last (`[...][...]`), as glab 1.117.0 does. A
+REST field (`-f` without `graphql`), an `-F @file`, and any other flag
+(`-X`, `--input`, `-H`) are unhandled. Status 400 and above exits 1 with
+the forge's message. A GitLab write over HTTP whose body is not
+`application/json` is unhandled.
 
 The engine lives in the harness process, not the binary, so seeding and
 inspection go through the harness wire with no fixture files.
@@ -130,8 +129,8 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | `GET repos/O/R` (`gh repository identity`) | repository identity; the forge script's default branch (`forge stack`) |
 | GitLab | `GET projects/P` (`glab repository identity`) | repository identity; the forge script's default branch (`forge stack`) |
 | ssh | `-G -o CanonicalizeHostname=no -o PermitLocalCommand=no [-l U] H` | local SSH host resolution, from fixture `sshHosts` |
-| GitHub | `gh pr create --title T --body B [-R [HOST/]O/R] [--head B] [--base B] [--draft]` | GitCreatePR; forge script `pr create` |
-| GitLab | `glab mr create --title T --description D --yes --no-editor [-R URL] [--head URL] [--source-branch B] [--target-branch B] [--draft]` | GitCreatePR; forge script `pr create` |
+| GitHub | `gh pr create --title T --body B [--base B] [--draft]` | GitCreatePR |
+| GitLab | `glab mr create --title T --description D --yes --no-editor [--target-branch B] [--draft]` | GitCreatePR |
 | GitHub | GraphQL `PRTick(owner, name, number, wantDetail, wantThreads, wantChecks)` (`gh graphql PRTick`) | ReadPR: detail and viewer, threads and comments, head commit rollup (CI) |
 | GitHub | GraphQL `PRThreadsPage`, `PRCommentsPage(owner, name, number, after)` | ReadPR: review threads and comments past the first 100 |
 | GitHub | GraphQL `ThreadCommentsPage(threadID, after)`, `RollupContextsPage(commitID, after)` | ReadPR: one thread's comments, the rollup's contexts past 100 |
@@ -144,23 +143,15 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `GET projects/P/merge_requests/N` (`glab api merge request`, conditional) | ReadPR, once per read: detail, head SHA for threads, head pipeline for CI |
 | GitLab | `GET projects/P/merge_requests/N/approvals` (`glab api approvals`) | ReadPR detail |
 | GitLab | `GET projects/P/merge_requests/N/discussions?per_page=N[&page=N]` (`glab api discussions`) | ReadPR threads; `X-Next-Page` while more pages exist |
-| GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin) |
+| GitLab | `GET projects/P/merge_requests?state=opened\|closed\|merged\|all[&source_branch=B][&author_username=A\|scope=created_by_me]&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin); forge script `pr list` |
 | GitLab | `GET projects/P/pipelines/ID/jobs?per_page=N[&page=N]` (`glab api pipeline jobs`) | ReadPR CI |
 | GitLab | `GET projects/P/jobs/ID/trace` (`glab api job trace`, conditional) | CI job log (the current `log` of a started job, running included; 404 while the job sets `logWithheld`). A completed job's trace honors a start or closed range (206) and refuses a suffix range (400); a running job's trace ignores `Range` (200, whole body) and a running `synthetic` trace grows on every request |
 | GitLab | `GET projects/P/uploads/SECRET/NAME` (`glab api upload`) | forge attachments |
 | GitHub | `gh pr view [N] [-R R] --json F` | forge script `pr view`: the fields in `githubPullFields`, `mergeStateStatus` from `merge_state.go` |
 | GitHub | `gh pr list -R R [--state S] [--head B] [--author A\|@me] [--limit N] --json F` | forge script `pr list`, newest first |
-| GitHub | `gh pr comment N -R R --body-file -` | forge script `pr comment` (a conversation comment by the viewer) |
-| GitHub | `gh pr merge N -R R --squash\|--merge\|--rebase [--auto]` | forge script `pr merge`: merges a CLEAN pull, arms auto-merge while CI or the merge check is pending, refuses the rest |
-| GitHub | `gh pr edit N -R R --base B` | forge script `pr edit` |
-| GitHub | `GET repos/O/R/actions/runs?branch=B` (`gh api runs`) | forge script `ci status`, newest first |
-| GitHub | GraphQL `ForgeChecks`, `ForgeCommits`, `ForgeThreads`, `ForgeComments(owner, name, number[, endCursor])` | forge script `pr checks`, `pr commits`, `pr threads`, `pr comments` |
-| GitHub | GraphQL `ForgeReply(threadID, body)` | forge script `pr reply` (appends to the seeded thread) |
-| GitLab | `POST projects/P/merge_requests/N/notes` (`glab api note`) | forge script `pr comment` |
-| GitLab | `POST projects/P/merge_requests/N/discussions/D/notes` (`glab api discussion note`) | forge script `pr reply`, the app's thread reply |
-| GitLab | `PUT projects/P/merge_requests/N/merge` (`glab api merge`) | forge script `pr merge`: 406 on conflicts, arms auto-merge (`auto_merge` or `merge_when_pipeline_succeeds`) while the pipeline runs, 405 for any other unmergeable state |
-| GitLab | `PUT projects/P/merge_requests/N` (`glab api update merge request`) | forge script `pr edit` (`target_branch` only) |
-| GitLab | `GET projects/P/merge_requests/N/pipelines`, `GET projects/P/pipelines?ref=B` | forge script `pr commits`, `ci status` |
+| GitHub | GraphQL `ForgeChecks`, `ForgeCommits`, `ForgeThreads(owner, name, number[, endCursor])` | forge script `pr checks`, `pr commits`, `pr threads` |
+| GitLab | `POST projects/P/merge_requests/N/discussions/D/notes` (`glab api discussion note`) | the app's thread reply (ReplyToThread) |
+| GitLab | `GET projects/P/merge_requests/N/pipelines` (`glab api merge request pipelines`) | forge script `pr commits` |
 
 Unhandled (fail with their request): GitHub's review, file comment and
 REST reply POSTs; GitLab's draft notes, bulk publish, approve and
@@ -177,13 +168,9 @@ discussion resolve PUT.
   Host header as given, port included; a GraphQL node (a thread or commit
   id) resolves only among repositories on that host. Another host answers
   the forge's not-found.
-- `gh pr create` and `glab mr create` resolve the repository from `-R`
-  (gh: `[HOST/]OWNER/REPO`; glab: a URL, since its path forms take the
-  host from glab's configuration), else from the call's cwd
-  (`git config remote.origin.url`). The seeded `host` and `project` must
-  match. gh's `--head` and glab's `--source-branch` may only name the
-  checked-out branch and glab's `--head` only the `-R` repository; any
-  other is unhandled. An HTTP request names its project.
+- `gh pr create` and `glab mr create` resolve the repository from the
+  call's cwd (`git config remote.origin.url`). The seeded `host` and
+  `project` must match that origin. An HTTP request names its project.
 - A GitLab path may name the project by its numeric `id` instead of its
   path; both resolve.
 - A create opens the pull for the cwd's checked-out branch and commit

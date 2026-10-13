@@ -44,9 +44,11 @@ is the map every other skill reads through. Choices a resync must keep:
 
 `skills/poteto-mode/scripts/forge` is the adapter `watch-pr`, `orch` and
 `worktree-audit.sh` read the forge through, and the way to read a stack.
-It is one bash script with the same JSON output on both forges: `which`,
-`pr view|merge-state|list|create|comment|comments|checks|commits|threads|reply|merge|edit`,
-`ci status|log` and `stack`. `forge --help` lists the arguments. It needs
+It is one bash script that only reads, with the same JSON output on both
+forges: `which`, `pr view|list|checks|commits|threads` and `stack`, the
+calls those scripts make and nothing else. `forge --help`, or `-h` or
+`--help` after any command, lists the arguments without needing a
+checkout. It needs
 bash 3.2 or later (stock macOS), git, jq and `gh` or `glab`. It sets
 `inherit_errexit` where bash has it, but its checks do not depend on it.
 
@@ -63,15 +65,11 @@ It decides the forge from the checkout's remote (`FORGE_REMOTE`, default
 
 GitHub calls go through `gh` with `-R host/owner/repo` and `gh api
 --hostname`; GitLab calls go through `glab api --hostname` with the
-URL-encoded project path. `pr create` names the remote's repository on
-both CLIs (`-R`), so it opens in that repository whichever remote the
-CLI would pick. A paginated GitLab list is slurped into one array, since
-`glab --paginate` prints each page's array after the last, and a GitLab
-write sends `Content-Type: application/json`. Bodies reach the CLI on
-stdin or as one argument, never through a shell. A `pr` read that
-defaults to the current branch fails, printing nothing, on a branch with
-no open pull request; it, `ci status` and `stack` fail the same way on a
-detached HEAD. `watch-pr`, `orch` and `worktree-audit.sh` read through
+URL-encoded project path. A paginated GitLab list is slurped into one
+array, since `glab --paginate` prints each page's array after the last.
+A `pr` read that defaults to the current branch fails, printing nothing,
+on a branch with no open pull request; it and `stack` fail the same way
+on a detached HEAD. `watch-pr`, `orch` and `worktree-audit.sh` read through
 the script, so they work on both forges.
 
 `forge stack` replaces Graphite. It walks base links from a branch (the
@@ -88,8 +86,9 @@ the chain with no pull request exits 3, and a cycle of bases fails, so
 
 - `TestForgeScript` (`cmd/ao-mockforge/forge_script_test.go`) runs every
   subcommand on both forges against `forgefake` through the real
-  `ao-mockforge` binary, including an SSH alias, writes read back
-  through the app's `ReadPR`, and a refusal for an unknown host.
+  `ao-mockforge` binary, including an SSH alias, `FORGE_REMOTE`, reads
+  past one page, and a refusal for an unknown host. `TestForgeScriptHelp`
+  covers help and misuse inside and outside a checkout.
   `TestForgeScriptStack` covers `forge stack` on both forges: a stack of
   three, merged and closed bases, the default branch, a cycle, and a
   branch with no pull request (exit 3). `-v` prints the run log.

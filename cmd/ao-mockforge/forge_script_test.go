@@ -17,9 +17,8 @@ import (
 
 // The pstack forge script (assets/skills/pstack/.../scripts/forge) run
 // against this fake: gh, glab and ssh are links to ao-mockforge, so every
-// subcommand on both forges reaches the engine through the CLI path, and a
-// write is checked by reading it back, through the script or through the
-// app's own forge reads. Run with -v for the command log.
+// subcommand on both forges reaches the engine through the CLI path. Run
+// with -v for the command log.
 
 var forgeScript, _ = filepath.Abs(filepath.Join("..", "..", "assets", "skills", "pstack", "skills", "poteto-mode", "scripts", "forge"))
 
@@ -203,9 +202,11 @@ func TestForgeScript(t *testing.T) {
 			}
 			expect(t, "pr view on the current branch", pick(t, f.json("", "pr", "view"), "number"), 1.0)
 			expect(t, "pr view 4 review", pick(t, f.json("", "pr", "view", "4"), "review"), "approved")
-			expect(t, "pr merge-state 4", f.json("", "pr", "merge-state", "4"), map[string]any{"number": 4.0, "state": "open", "merge": "clean", "merge_native": fc.native["clean"], "ready": true})
-			expect(t, "pr merge-state 2", pick(t, f.json("", "pr", "merge-state", "2"), "merge"), "conflicts")
-			expect(t, "pr merge-state 3", pick(t, f.json("", "pr", "merge-state", "3"), "ready"), false)
+			ready := f.json("", "pr", "view", "4")
+			expect(t, "pr view 4 merge", []any{pick(t, ready, "merge"), pick(t, ready, "merge_native")}, []any{"clean", fc.native["clean"]})
+			expect(t, "pr view 2 merge", pick(t, f.json("", "pr", "view", "2"), "merge"), "conflicts")
+			shipped := f.json("", "pr", "view", "3")
+			expect(t, "pr view 3", []any{pick(t, shipped, "state"), pick(t, shipped, "merge"), pick(t, shipped, "merged_at") != nil}, []any{"merged", "none", true})
 
 			expect(t, "pr list", numbers(t, f.json("", "pr", "list")), []float64{4, 2, 1})
 			expect(t, "pr list --state all", numbers(t, f.json("", "pr", "list", "--state", "all")), []float64{4, 3, 2, 1})
@@ -238,83 +239,6 @@ func TestForgeScript(t *testing.T) {
 			unresolved := f.json("", "pr", "threads", "1", "--unresolved").([]any)
 			expect(t, "pr threads --unresolved", len(unresolved), 1)
 
-			const reply = "Renamed in the next push; `$(touch pwned)` stays text"
-			expect(t, "pr reply id", pick(t, f.json(reply, "pr", "reply", "1", threadIDs[0], "--body-file", "-"), "id") != nil, true)
-			after := f.json("", "pr", "threads", "1").([]any)
-			expect(t, "thread after reply", []any{pick(t, after, 0, "comment_count"), pick(t, after, 0, "comments", 1, "body"), pick(t, after, 0, "comments", 1, "author")}, []any{2.0, reply, "ao-viewer"})
-
-			conversation := f.json("", "pr", "comments", "1").([]any)
-			expect(t, "pr comments", []any{len(conversation), pick(t, conversation, 0, "author"), pick(t, conversation, 0, "body")}, []any{1, "erin", "Looks right overall"})
-
-			const note = "Status: CI is running.\nNext: merge when green."
-			body := filepath.Join(t.TempDir(), "note.md")
-			if err := os.WriteFile(body, []byte(note), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			comment := f.json("", "pr", "comment", "1", "--body-file", body)
-			if id, _ := pick(t, comment, "id").(float64); id == 0 || !strings.Contains(pick(t, comment, "url").(string), "/1") {
-				t.Errorf("pr comment = %v", comment)
-			}
-			read, err := r.core.ReadPR(t.Context(), fc.ref, gitops.PRReadParts{Threads: true}, nil, nil)
-			if err != nil {
-				t.Fatalf("ReadPR after comment: %v", err)
-			}
-			found := false
-			for _, thread := range read.Threads {
-				for _, c := range thread.Comments {
-					found = found || (thread.Path == "" && c.Body == note)
-				}
-			}
-			expect(t, "the comment in the app's read", found, true)
-			conversation = f.json("", "pr", "comments", "1").([]any)
-			expect(t, "pr comments after a comment", []any{len(conversation), pick(t, conversation, 1, "body"), pick(t, conversation, 1, "url")}, []any{2, note, pick(t, comment, "url")})
-			if _, stderr, err := f.try("", "pr", "comment", "1", "--body-file", "-"); err == nil || !strings.Contains(stderr, "body is empty") {
-				t.Errorf("an empty comment body was sent: %v %s", err, stderr)
-			}
-			for _, inv := range r.engine.Invocations(0).Invocations {
-				if strings.Contains(strings.Join(inv.Args, " "), "Renamed in the next push") || strings.Contains(strings.Join(inv.Args, " "), "CI is running") {
-					t.Errorf("a body reached the command line: %q", inv.Args)
-				}
-			}
-
-			expect(t, "pr edit --base", pick(t, f.json("", "pr", "edit", "1", "--base", "develop"), "base"), "develop")
-			armed := f.json("", "pr", "merge", "1", "--auto")
-			expect(t, "pr merge --auto on pending CI", []any{pick(t, armed, "state"), pick(t, armed, "auto_merge")}, []any{"open", true})
-			if _, _, err := f.try("", "pr", "merge", "2"); err == nil {
-				t.Error("merging a conflicting pull succeeded")
-			}
-			merged := f.json("", "pr", "merge", "4")
-			expect(t, "pr merge 4 state", pick(t, merged, "state"), "merged")
-			if pick(t, merged, "merged_at") == nil {
-				t.Error("a merged pull has no merged_at")
-			}
-
-			if fc.forge == "gitlab" {
-				// GitLab before 17.11 reads only merge_when_pipeline_succeeds.
-				armedBodies := 0
-				for _, inv := range r.engine.Invocations(0).Invocations {
-					if slices.ContainsFunc(inv.Args, func(arg string) bool { return strings.HasSuffix(arg, "/merge_requests/1/merge") }) {
-						var body map[string]any
-						if err := json.Unmarshal([]byte(inv.Stdin), &body); err != nil {
-							t.Fatalf("merge body %q: %v", inv.Stdin, err)
-						}
-						expect(t, "merge --auto body", []any{body["auto_merge"], body["merge_when_pipeline_succeeds"]}, []any{true, true})
-						armedBodies++
-					}
-				}
-				expect(t, "merge --auto requests", armedBodies, 1)
-			}
-
-			status := f.json("", "ci", "status")
-			expect(t, "ci status", []any{pick(t, status, "ref"), pick(t, status, "sha"), pick(t, status, "state")}, []any{"feature", strings.Repeat("1", 40), "pending"})
-			jobs := map[string]any{}
-			for _, job := range pick(t, status, "runs", 0, "jobs").([]any) {
-				jobs[pick(t, job, "name").(string)] = pick(t, job, "id")
-			}
-			expect(t, "ci status jobs", jobs, map[string]any{"unit": 711.0, "e2e": 712.0})
-			expect(t, "ci status ready", pick(t, f.json("", "ci", "status", "ready"), "state"), "pass")
-			expect(t, "ci status of a branch without CI", f.json("", "ci", "status", "nowhere"), map[string]any{"ref": "nowhere", "sha": nil, "state": "none", "runs": []any{}})
-			expect(t, "ci log", strings.TrimPrefix(f.run("", "ci", "log", "711"), "\ufeff"), "unit ok\n")
 			for _, inv := range r.engine.Invocations(0).Invocations {
 				if inv.Unhandled {
 					t.Errorf("unhandled invocation: %s %q: %s", inv.CLI, inv.Args, inv.Stderr)
@@ -354,13 +278,13 @@ func TestForgeScriptRefusesAnUnresolvedPull(t *testing.T) {
 			detached.git("switch", "-q", "--detach")
 			lonely := newForgeCheckout(t, r, fc.remote, "lonely")
 			detached.script, lonely.script = fc.script, fc.script
-			reads := [][]string{{"pr", "view"}, {"pr", "merge-state"}, {"pr", "checks"}, {"pr", "commits"}, {"pr", "comments"}, {"pr", "threads"}}
+			reads := [][]string{{"pr", "view"}, {"pr", "checks"}, {"pr", "commits"}, {"pr", "threads"}}
 			for _, c := range []struct {
 				checkout *forgeCheckout
 				reads    [][]string
 				stderr   string
 			}{
-				{detached, slices.Concat(reads, [][]string{{"ci", "status"}, {"stack"}}), "HEAD is detached"},
+				{detached, slices.Concat(reads, [][]string{{"stack"}}), "HEAD is detached"},
 				{lonely, reads, "no open pull request for branch lonely"},
 			} {
 				for _, args := range c.reads {
@@ -379,22 +303,20 @@ func TestForgeScriptRefusesAnUnresolvedPull(t *testing.T) {
 	}
 }
 
-// TestForgeScriptCreatesOnForgeRemote: create opens the pull in the
-// repository FORGE_REMOTE names, not in origin's.
-func TestForgeScriptCreatesOnForgeRemote(t *testing.T) {
+// TestForgeScriptReadsForgeRemote: the script reads the repository
+// FORGE_REMOTE names, not origin's.
+func TestForgeScriptReadsForgeRemote(t *testing.T) {
 	for _, fc := range []struct{ forge, project, remote string }{
 		{"github", "acme/widgets", "https://github.com/acme/widgets.git"},
 		{"gitlab", "grp/sub/tool", "git@gitlab.com:grp/sub/tool.git"},
 	} {
 		t.Run(fc.forge, func(t *testing.T) {
 			r := newRig(t, forgeScriptFixture(fc.forge, fc.project))
-			topic := newForgeCheckout(t, r, otherRemote[fc.forge], "topic")
-			topic.git("remote", "add", "upstream", fc.remote)
-			topic.env = append(topic.env, "FORGE_REMOTE=upstream")
-			created := topic.json("Adds a topic.", "pr", "create", "--title", "Topic", "--body-file", "-", "--draft")
-			expect(t, "pr create number", pick(t, created, "number"), 5.0)
-			createdView := topic.json("", "pr", "view")
-			expect(t, "created pull", []any{pick(t, createdView, "number"), pick(t, createdView, "head"), pick(t, createdView, "draft"), pick(t, createdView, "body")}, []any{5.0, "topic", true, "Adds a topic."})
+			f := newForgeCheckout(t, r, otherRemote[fc.forge], "feature")
+			f.git("remote", "add", "upstream", fc.remote)
+			f.env = append(f.env, "FORGE_REMOTE=upstream")
+			expect(t, "which", pick(t, f.json("", "which"), "project"), fc.project)
+			expect(t, "pr view on the current branch", pick(t, f.json("", "pr", "view"), "title"), "Add widgets")
 			for _, inv := range r.engine.Invocations(0).Invocations {
 				if inv.Unhandled {
 					t.Errorf("unhandled invocation: %s %q: %s", inv.CLI, inv.Args, inv.Stderr)
@@ -407,9 +329,9 @@ func TestForgeScriptCreatesOnForgeRemote(t *testing.T) {
 // otherRemote is an origin naming a repository the fixtures do not seed.
 var otherRemote = map[string]string{"github": "https://github.com/other/proj.git", "gitlab": "git@gitlab.com:other/proj.git"}
 
-// TestForgeScriptReadsEveryPage seeds a pull with more jobs, review
-// threads and conversation comments than one page (100) holds and reads
-// them through each paginated subcommand.
+// TestForgeScriptReadsEveryPage seeds a pull with more jobs and review
+// threads than one page (100) holds and reads them through each paginated
+// subcommand.
 func TestForgeScriptReadsEveryPage(t *testing.T) {
 	const count = 101
 	for _, fc := range []struct{ forge, project, remote string }{
@@ -425,7 +347,6 @@ func TestForgeScriptReadsEveryPage(t *testing.T) {
 					id = fmt.Sprintf("%040x", i+1)
 				}
 				pull.Threads = append(pull.Threads, forgefake.Thread{ID: id, Path: "app.go", Line: intPtr(i + 1), Comments: []forgefake.Comment{{Author: "erin", Body: fmt.Sprintf("thread %d", i)}}})
-				pull.Comments = append(pull.Comments, forgefake.Comment{Author: "erin", Body: fmt.Sprintf("comment %d", i)})
 			}
 			r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: fc.forge, Project: fc.project, Pulls: []forgefake.Pull{pull}}}})
 			f := newForgeCheckout(t, r, fc.remote, "busy")
@@ -437,14 +358,8 @@ func TestForgeScriptReadsEveryPage(t *testing.T) {
 				{[]string{"pr", "checks"}, func(t *testing.T, out any) {
 					expect(t, "pr checks", []any{len(pick(t, out, "checks").([]any)), pick(t, out, "state")}, []any{count, "pass"})
 				}},
-				{[]string{"ci", "status"}, func(t *testing.T, out any) {
-					expect(t, "ci status jobs", []any{len(pick(t, out, "runs", 0, "jobs").([]any)), pick(t, out, "state")}, []any{count, "pass"})
-				}},
 				{[]string{"pr", "threads"}, func(t *testing.T, out any) {
 					expect(t, "pr threads", []any{len(out.([]any)), pick(t, out, count-1, "comments", 0, "body")}, []any{count, fmt.Sprintf("thread %d", count-1)})
-				}},
-				{[]string{"pr", "comments"}, func(t *testing.T, out any) {
-					expect(t, "pr comments", []any{len(out.([]any)), pick(t, out, count-1, "body")}, []any{count, fmt.Sprintf("comment %d", count-1)})
 				}},
 				{[]string{"pr", "commits"}, func(t *testing.T, out any) {
 					expect(t, "pr commits", out, []any{map[string]any{"sha": strings.Repeat("b", 40), "state": "pass"}})
@@ -540,15 +455,23 @@ func TestForgeScriptHelp(t *testing.T) {
 	outside := *f
 	outside.dir = t.TempDir()
 	outside.env = append(append([]string(nil), f.env...), "GIT_CEILING_DIRECTORIES="+filepath.Dir(outside.dir))
-	help := [][]string{{"--help"}, {"-h"}, {"help"}, {"pr", "--help"}, {"pr", "help"}, {"ci", "-h"}, {"ci", "help"}}
-	misuse := [][]string{{}, {"bogus"}, {"pr"}, {"ci"}}
+	// Help for every command, and calls that name no command the script
+	// has, including the subcommands it no longer carries.
+	help := [][]string{
+		{"--help"}, {"-h"}, {"help"}, {"which", "--help"}, {"which", "-h"}, {"stack", "--help"}, {"stack", "main", "-h"},
+		{"pr", "--help"}, {"pr", "help"}, {"pr", "view", "--help"}, {"pr", "view", "1", "-h"}, {"pr", "list", "--help"},
+		{"pr", "list", "--state", "all", "-h"}, {"pr", "checks", "-h"}, {"pr", "commits", "--help"}, {"pr", "threads", "1", "--help"},
+	}
+	misuse := [][]string{
+		{}, {"bogus"}, {"which", "extra"}, {"stack", "a", "b"}, {"pr"}, {"pr", "bogus"},
+		{"pr", "merge", "1"}, {"pr", "create"}, {"pr", "comment", "1"}, {"ci"}, {"ci", "status"},
+	}
 	for _, c := range []struct {
-		name   string
-		f      *forgeCheckout
-		misuse [][]string
+		name string
+		f    *forgeCheckout
 	}{
-		{"in a checkout", f, append(misuse, []string{"pr", "bogus"}, []string{"ci", "bogus"})},
-		{"outside a checkout", &outside, misuse},
+		{"in a checkout", f},
+		{"outside a checkout", &outside},
 	} {
 		for _, args := range help {
 			out, stderr, err := c.f.try("", args...)
@@ -556,7 +479,7 @@ func TestForgeScriptHelp(t *testing.T) {
 				t.Errorf("%s: forge %s = %v, stdout %q, stderr %q; want the usage on stdout and exit 0", c.name, strings.Join(args, " "), err, out, stderr)
 			}
 		}
-		for _, args := range c.misuse {
+		for _, args := range misuse {
 			out, stderr, err := c.f.try("", args...)
 			exit, _ := err.(*exec.ExitError)
 			if exit == nil || exit.ExitCode() != 2 || out != "" || !strings.Contains(stderr, "forge pr view [<n>]") {

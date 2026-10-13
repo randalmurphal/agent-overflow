@@ -7,27 +7,18 @@
 # forges.
 #
 #   forge which
-#   forge pr view [<n>]            forge pr merge-state [<n>]
+#   forge pr view [<n>]
 #   forge pr list [--state open|closed|merged|all] [--head B] [--author LOGIN|@me] [--limit N]
-#   forge pr create --title T [--body-file F|-] [--base B] [--draft]
-#   forge pr comment <n> --body-file F|-
 #   forge pr checks [<n>]          forge pr commits [<n>]
-#   forge pr comments [<n>]        forge pr threads [<n>] [--unresolved]
-#   forge pr reply <n> <thread-id> --body-file F|-
-#   forge pr merge <n> [--method squash|merge|rebase] [--auto]
-#   forge pr edit <n> --base B
-#   forge ci status [<branch>]     forge ci log <job-id>
+#   forge pr threads [<n>] [--unresolved]
 #   forge stack [<branch>]
 #
 # <n> defaults to the open pull request of the current branch. The forge
 # comes from the remote (FORGE_REMOTE, default origin): an SSH host alias
 # is resolved with ssh -G, then github.com or a host containing "github"
 # is GitHub and gitlab.com or a host containing "gitlab" is GitLab.
-# FORGE=github or FORGE=gitlab decides for any other host. A body is read
-# from a file or stdin (-). Comment and reply bodies reach the CLI on
-# stdin; a create passes its body as one argument, never through a shell,
-# and opens the pull request for the current branch in the remote's
-# repository.
+# FORGE=github or FORGE=gitlab decides for any other host. -h or --help
+# anywhere prints this help.
 # stack prints the pull requests from the default branch up to <branch>
 # (default: the current branch), bottom first, in the pr list shape: each
 # request's base names the branch below it. A head with an open request
@@ -63,26 +54,6 @@ usage() {
 
 need() {
 	command -v "$1" >/dev/null 2>&1 || die "$1 is required and not on PATH"
-}
-
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/forge.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT
-
-scratch() { printf '%s/%s' "$TMP" "$1"; }
-
-# body_file copies a --body-file argument (a path, or - for stdin) to a
-# private file and prints its path.
-body_file() {
-	local out
-	out=$(scratch body)
-	if [ "$1" = "-" ]; then
-		cat >"$out"
-	else
-		[ -f "$1" ] || die "body file $1 does not exist"
-		cat -- "$1" >"$out"
-	fi
-	[ -n "$(tr -d '[:space:]' <"$out")" ] || die "the body is empty"
-	printf '%s' "$out"
 }
 
 resolve() {
@@ -157,10 +128,6 @@ glapi() { glab api --hostname "$HOST" "$@"; }
 # prints each page's array after the last ([...][...]).
 glapi_all() { glapi --paginate "$@" | jq -s 'add // []'; }
 
-# glapi_write sends the JSON body on stdin with METHOD to ENDPOINT. GitLab
-# reads a body as JSON only when its Content-Type says so.
-glapi_write() { glapi -X "$1" "$2" -H 'Content-Type: application/json' --input -; }
-
 current_branch() {
 	local branch
 	branch=$(git symbolic-ref --quiet --short HEAD) || die "HEAD is detached; name the pull request"
@@ -193,11 +160,6 @@ def gh_check_state:
   elif .status != "COMPLETED" then "pending"
   else ({SUCCESS: "pass", FAILURE: "fail", TIMED_OUT: "fail", STARTUP_FAILURE: "fail", ACTION_REQUIRED: "fail",
          CANCELLED: "cancelled", SKIPPED: "skipped", NEUTRAL: "neutral", STALE: "neutral"}[.conclusion // ""] // "neutral")
-  end;
-def gh_rest_state:
-  if .status != "completed" then "pending"
-  else ({success: "pass", failure: "fail", timed_out: "fail", startup_failure: "fail", action_required: "fail",
-         cancelled: "cancelled", skipped: "skipped", neutral: "neutral", stale: "neutral"}[.conclusion // ""] // "neutral")
   end;
 def gl_job_state:
   if .status == "failed" then (if .allow_failure then "neutral" else "fail" end)
@@ -311,20 +273,6 @@ GH_THREADS_QUERY='query ForgeThreads($owner: String!, $name: String!, $number: I
     }
   }
 }'
-GH_COMMENTS_QUERY='query ForgeComments($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      comments(first: 100, after: $endCursor) {
-        pageInfo { hasNextPage endCursor }
-        nodes { databaseId author { login } body createdAt url }
-      }
-    }
-  }
-}'
-GH_REPLY_MUTATION='mutation ForgeReply($threadID: ID!, $body: String!) {
-  addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadID, body: $body}) { comment { databaseId url } }
-}'
-
 gh_pr_graphql() {
 	local query=$1 n=$2
 	shift 2
@@ -366,18 +314,6 @@ pr_commits() {
 		| [.out | reverse[] | {sha, state: ({success: "pass", failed: "fail", canceled: "fail", skipped: "none"}[.status] // "pending")}]'
 }
 
-pr_comments() {
-	local n=$1
-	if [ "$KIND" = github ]; then
-		gh_pr_graphql "$GH_COMMENTS_QUERY" "$n" --paginate | jq -s '[.[].data.repository.pullRequest.comments.nodes[]
-			| {id: .databaseId, author: (.author.login // null), body, created_at: .createdAt, url}]'
-		return
-	fi
-	glapi_all "projects/$PATH_ID/merge_requests/$n/discussions?per_page=100" |
-		jq --arg mr "https://$HOST/$PROJECT/-/merge_requests/$n" '[.[] | select(.individual_note) | .notes[] | select(.system | not)
-			| {id, author: .author.username, body, created_at, url: "\($mr)#note_\(.id)"}]'
-}
-
 pr_threads() {
 	local n=$1 unresolved=$2 filter='.'
 	[ "$unresolved" = 0 ] || filter='map(select(.resolved | not))'
@@ -396,40 +332,6 @@ pr_threads() {
 		| {id, resolved: all(.notes[] | select(.resolvable); .resolved), outdated: (($pos.head_sha // $sha) != $sha),
 		   path: ($pos.new_path // $pos.old_path), line: ($pos.new_line // $pos.old_line), comment_count: ($notes | length),
 		   comments: [$notes[] | {id, author: .author.username, body, created_at}]}]' | jq "$filter"
-}
-
-ci_status() {
-	local ref=$1
-	if [ "$KIND" = github ]; then
-		local runs sha out="[]" run id jobs
-		runs=$(ghapi "repos/$PROJECT/actions/runs?branch=$(uri "$ref")&per_page=100")
-		sha=$(jq -rn --argjson r "$runs" '$r.workflow_runs[0].head_sha // empty')
-		if [ -z "$sha" ]; then
-			jq -n --arg ref "$ref" '{ref: $ref, sha: null, state: "none", runs: []}'
-			return
-		fi
-		for id in $(jq -rn --argjson r "$runs" --arg sha "$sha" '$r.workflow_runs[] | select(.head_sha == $sha) | .id'); do
-			jobs=$(ghapi --paginate "repos/$PROJECT/actions/runs/$id/jobs?per_page=100" | jq -s '[.[].jobs[]]')
-			run=$(jq -n --argjson r "$runs" --argjson id "$id" --argjson jobs "$jobs" "$JQ_DEFS"'
-				$r.workflow_runs[] | select(.id == $id) | {id, name, state: gh_rest_state, url: .html_url,
-				jobs: [$jobs[] | {id, name, state: gh_rest_state, url: .html_url}]}')
-			out=$(jq -n --argjson a "$out" --argjson run "$run" '$a + [$run]')
-		done
-		jq -n --arg ref "$ref" --arg sha "$sha" --argjson runs "$out" "$JQ_DEFS"'{ref: $ref, sha: $sha, state: ([$runs[].state] | rollup), runs: $runs}'
-		return
-	fi
-	local pipeline id jobs
-	pipeline=$(glapi "projects/$PATH_ID/pipelines?ref=$(uri "$ref")&per_page=1" | jq '.[0] // empty')
-	if [ -z "$pipeline" ]; then
-		jq -n --arg ref "$ref" '{ref: $ref, sha: null, state: "none", runs: []}'
-		return
-	fi
-	id=$(jq -n --argjson p "$pipeline" '$p.id')
-	jobs=$(glapi_all "projects/$PATH_ID/pipelines/$id/jobs?per_page=100")
-	jq -n --arg ref "$ref" --argjson p "$pipeline" --argjson jobs "$jobs" "$JQ_DEFS"'
-		[$jobs[] | {id, name, state: gl_job_state, url: .web_url}] as $j
-		| {ref: $ref, sha: $p.sha, state: ([$j[].state] | rollup),
-		   runs: [{id: $p.id, name: "pipeline", state: ([$j[].state] | rollup), url: $p.web_url, jobs: $j}]}'
 }
 
 default_branch() {
@@ -474,11 +376,6 @@ cmd_pr() {
 		n=$(pr_number "${1:-}")
 		pr_view_json "$n"
 		;;
-	merge-state)
-		n=$(pr_number "${1:-}")
-		pr_view_json "$n" | jq '{number, state, merge, merge_native,
-			ready: (.state == "open" and (.merge == "clean" or .merge == "unstable"))}'
-		;;
 	list)
 		local state=open head="" author="" limit=30
 		while [ $# -gt 0 ]; do
@@ -492,58 +389,6 @@ cmd_pr() {
 		done
 		pr_list "$state" "$head" "$author" "$limit"
 		;;
-	create)
-		local title="" body="" base="" draft=0 url
-		while [ $# -gt 0 ]; do
-			case $1 in
-			--title) title=${2:?--title needs a value}; shift 2 ;;
-			--body-file) body=$(body_file "${2:?--body-file needs a path or -}"); shift 2 ;;
-			--base) base=${2:?--base needs a branch}; shift 2 ;;
-			--draft) draft=1; shift ;;
-			*) die "pr create: unknown argument $1" ;;
-			esac
-		done
-		[ -n "$title" ] || die "pr create needs --title"
-		local text="" branch
-		[ -z "$body" ] || text=$(cat "$body")
-		branch=$(current_branch)
-		# Name the repository: without it each CLI picks one from the
-		# checkout's remotes, which need not be FORGE_REMOTE's.
-		if [ "$KIND" = github ]; then
-			local args=(pr create -R "$REPO" --head "$branch" --title "$title" --body "$text")
-			[ -z "$base" ] || args+=(--base "$base")
-			[ "$draft" = 0 ] || args+=(--draft)
-			url=$(gh "${args[@]}" | tail -n 1)
-		else
-			local args=(mr create -R "https://$HOST/$PROJECT" --head "https://$HOST/$PROJECT" --source-branch "$branch"
-				--title "$title" --description "$text" --yes --no-editor)
-			[ -z "$base" ] || args+=(--target-branch "$base")
-			[ "$draft" = 0 ] || args+=(--draft)
-			url=$(glab "${args[@]}" | grep -E '^https?://' | tail -n 1)
-		fi
-		[ -n "$url" ] || die "the forge printed no pull request URL"
-		jq -n --arg url "$url" '{number: ($url | sub(".*/"; "") | tonumber), url: $url}'
-		;;
-	comment)
-		local body=""
-		n=""
-		while [ $# -gt 0 ]; do
-			case $1 in
-			--body-file) body=$(body_file "${2:?--body-file needs a path or -}"); shift 2 ;;
-			*) [ -z "$n" ] || die "pr comment: unexpected $1"; n=$1; shift ;;
-			esac
-		done
-		[ -n "$n" ] && [ -n "$body" ] || die "usage: forge pr comment <n> --body-file F|-"
-		n=$(pr_number "$n")
-		if [ "$KIND" = github ]; then
-			local url
-			url=$(gh pr comment "$n" -R "$REPO" --body-file - <"$body" | tail -n 1)
-			jq -n --arg url "$url" '{id: ($url | capture("issuecomment-(?<id>[0-9]+)").id | tonumber), url: $url}'
-		else
-			jq -n --rawfile b "$body" '{body: $b}' | glapi_write POST "projects/$PATH_ID/merge_requests/$n/notes" |
-				jq --arg mr "https://$HOST/$PROJECT/-/merge_requests/$n" '{id, url: "\($mr)#note_\(.id)"}'
-		fi
-		;;
 	checks)
 		n=$(pr_number "${1:-}")
 		pr_checks "$n"
@@ -551,10 +396,6 @@ cmd_pr() {
 	commits)
 		n=$(pr_number "${1:-}")
 		pr_commits "$n"
-		;;
-	comments)
-		n=$(pr_number "${1:-}")
-		pr_comments "$n"
 		;;
 	threads)
 		local unresolved=0
@@ -568,109 +409,25 @@ cmd_pr() {
 		n=$(pr_number "$n")
 		pr_threads "$n" "$unresolved"
 		;;
-	reply)
-		local thread="" body=""
-		n=""
-		while [ $# -gt 0 ]; do
-			case $1 in
-			--body-file) body=$(body_file "${2:?--body-file needs a path or -}"); shift 2 ;;
-			*)
-				if [ -z "$n" ]; then n=$1; elif [ -z "$thread" ]; then thread=$1; else die "pr reply: unexpected $1"; fi
-				shift
-				;;
-			esac
-		done
-		[ -n "$n" ] && [ -n "$thread" ] && [ -n "$body" ] || die "usage: forge pr reply <n> <thread-id> --body-file F|-"
-		n=$(pr_number "$n")
-		if [ "$KIND" = github ]; then
-			ghapi graphql -f query="$GH_REPLY_MUTATION" -f threadID="$thread" -F body=@- <"$body" |
-				jq '.data.addPullRequestReviewThreadReply.comment | {id: .databaseId, url}'
-		else
-			jq -n --rawfile b "$body" '{body: $b}' |
-				glapi_write POST "projects/$PATH_ID/merge_requests/$n/discussions/$thread/notes" |
-				jq --arg mr "https://$HOST/$PROJECT/-/merge_requests/$n" '{id, url: "\($mr)#note_\(.id)"}'
-		fi
-		;;
-	merge)
-		local method=squash auto=0
-		n=""
-		while [ $# -gt 0 ]; do
-			case $1 in
-			--method) method=${2:?--method needs squash, merge or rebase}; shift 2 ;;
-			--auto) auto=1; shift ;;
-			*) [ -z "$n" ] || die "pr merge: unexpected $1"; n=$1; shift ;;
-			esac
-		done
-		[ -n "$n" ] || die "usage: forge pr merge <n> [--method squash|merge|rebase] [--auto]"
-		n=$(pr_number "$n")
-		case $method in squash | merge | rebase) ;; *) die "--method is squash, merge or rebase" ;; esac
-		if [ "$KIND" = github ]; then
-			local args=(pr merge "$n" -R "$REPO" "--$method")
-			[ "$auto" = 0 ] || args+=(--auto)
-			gh "${args[@]}" >&2
-		else
-			[ "$method" != rebase ] || die "GitLab merges with squash or merge; rebase the branch and merge instead"
-			# auto_merge arrived in GitLab 17.11, which deprecates
-			# merge_when_pipeline_succeeds; older servers read only the latter.
-			jq -n --argjson squash "$([ "$method" = squash ] && echo true || echo false)" --argjson auto "$([ "$auto" = 1 ] && echo true || echo false)" \
-				'{squash: $squash, auto_merge: $auto, merge_when_pipeline_succeeds: $auto}' | glapi_write PUT "projects/$PATH_ID/merge_requests/$n/merge" >/dev/null
-		fi
-		pr_view_json "$n"
-		;;
-	edit)
-		local base=""
-		n=""
-		while [ $# -gt 0 ]; do
-			case $1 in
-			--base) base=${2:?--base needs a branch}; shift 2 ;;
-			*) [ -z "$n" ] || die "pr edit: unexpected $1"; n=$1; shift ;;
-			esac
-		done
-		[ -n "$n" ] && [ -n "$base" ] || die "usage: forge pr edit <n> --base B"
-		n=$(pr_number "$n")
-		if [ "$KIND" = github ]; then
-			gh pr edit "$n" -R "$REPO" --base "$base" >/dev/null
-		else
-			jq -n --arg b "$base" '{target_branch: $b}' | glapi_write PUT "projects/$PATH_ID/merge_requests/$n" >/dev/null
-		fi
-		pr_view_json "$n"
-		;;
-	*) usage ;;
-	esac
-}
-
-cmd_ci() {
-	local sub=$1
-	shift
-	case $sub in
-	status)
-		local ref=${1:-}
-		[ -n "$ref" ] || ref=$(current_branch)
-		ci_status "$ref"
-		;;
-	log)
-		local id=${1:-}
-		case $id in '' | *[!0-9]*) die "usage: forge ci log <job-id>" ;; esac
-		if [ "$KIND" = github ]; then
-			ghapi "repos/$PROJECT/actions/jobs/$id/logs"
-		else
-			glapi "projects/$PATH_ID/jobs/$id/trace"
-		fi
-		;;
-	*) usage ;;
 	esac
 }
 
 main() {
-	# Help and a missing or unknown command need no checkout.
+	# Help and a call the script cannot run need no checkout, so they are
+	# answered before the remote is resolved.
+	local arg
+	for arg in "$@"; do
+		case $arg in -h | --help) show_help ;; esac
+	done
 	case ${1:-} in
-	'') usage ;;
-	-h | --help | help) show_help ;;
-	which | stack) ;;
-	pr | ci)
+	help) show_help ;;
+	which) [ $# -eq 1 ] || usage ;;
+	stack) [ $# -le 2 ] || usage ;;
+	pr)
 		case ${2:-} in
-		'') usage ;;
-		-h | --help | help) show_help ;;
+		help) show_help ;;
+		view | list | checks | commits | threads) ;;
+		*) usage ;;
 		esac
 		;;
 	*) usage ;;
@@ -681,9 +438,7 @@ main() {
 	case $cmd in
 	which) jq -n --arg forge "$KIND" --arg host "$HOST" --arg project "$PROJECT" --arg cli "$CLI" '{forge: $forge, host: $host, project: $project, cli: $cli}' ;;
 	pr) cmd_pr "$@" ;;
-	ci) cmd_ci "$@" ;;
 	stack)
-		[ $# -le 1 ] || die "usage: forge stack [<branch>]"
 		local branch=${1:-}
 		[ -n "$branch" ] || branch=$(current_branch)
 		stack "$branch"

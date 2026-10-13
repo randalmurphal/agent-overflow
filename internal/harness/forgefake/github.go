@@ -265,10 +265,7 @@ func ghPRCreate(e *Engine, c *call) response {
 	if !c.has("title") || !c.has("body") {
 		return response{exit: 1, stderr: "must provide `--title` and `--body` (or `--fill` or `fill-first` or `--fillverbose`) when not running interactively\n"}
 	}
-	r, head, refusal, err := e.createTarget("github", c)
-	if refusal != "" {
-		return unhandled("%s", refusal)
-	}
+	r, head, err := e.createTarget("github", c)
 	if err != nil {
 		return response{exit: 1, stderr: err.Error() + "\n"}
 	}

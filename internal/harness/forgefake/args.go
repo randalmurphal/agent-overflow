@@ -30,8 +30,8 @@ type call struct {
 	http    *httpCall
 	graphQL *graphQLRequest
 	body    []byte
-	// contentType is the body's media type: the Content-Type header of
-	// an HTTP request, or `api -H 'Content-Type: ...'`.
+	// contentType is the body's media type, an HTTP request's
+	// Content-Type header.
 	contentType string
 
 	flags      map[string][]string
