@@ -1585,8 +1585,8 @@ export class DeviceRevocationResult {
  * side is the only source needed). Scope mirrors the review pane's
  * scope selector; the extra fields disambiguate the new-side source
  * where the scope alone can't: CommitSHA for commit scope (a selected
- * commit in the workspace repo), HeadSHA for pr scope (the fetched
- * head commit).
+ * commit in the workspace repo), HeadSHA for pr scope (the head of the
+ * revision the diff was opened at).
  */
 export class DiffContextRequest {
     "scope": string;
@@ -4986,13 +4986,6 @@ export class ReviewDiffOpened {
     "chunk": ReviewDiffChunk;
 
     /**
-     * HeadSHA is the commit a pull request's diff was computed at, which
-     * the fetch can move past the head the caller last saw. Empty for
-     * every other diff.
-     */
-    "headSha"?: string;
-
-    /**
      * PayloadIDs are the edit payloads an edits diff joins, in patch
      * order; GetPayloadPatchSpans returns each one's highlight spans.
      * Empty for every other diff.
@@ -5016,13 +5009,13 @@ export class ReviewDiffOpened {
      */
     static createFrom($$source: any = {}): ReviewDiffOpened {
         const $$createField1_0 = $$createType81;
-        const $$createField3_0 = $$createType8;
+        const $$createField2_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunk" in $$parsedSource) {
             $$parsedSource["chunk"] = $$createField1_0($$parsedSource["chunk"]);
         }
         if ("payloadIds" in $$parsedSource) {
-            $$parsedSource["payloadIds"] = $$createField3_0($$parsedSource["payloadIds"]);
+            $$parsedSource["payloadIds"] = $$createField2_0($$parsedSource["payloadIds"]);
         }
         return new ReviewDiffOpened($$parsedSource as Partial<ReviewDiffOpened>);
     }

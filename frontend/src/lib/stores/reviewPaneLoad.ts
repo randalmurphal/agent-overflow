@@ -34,6 +34,7 @@ import { anchorRow, displayRowCount } from '../utils/patchRows';
 import { patchFileFromReviewFile, reviewFileFromPatchFile, whenResident, type ReviewFile } from '../utils/patchStore';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
+import { prRevision, type PRRevision } from '../utils/prRevision';
 
 /** Whether the diff for this selection comes from `internal/gitdiff`, the
  * only source that can apply `-w`: every scope but edits, whose patches
@@ -94,9 +95,9 @@ export interface LoadedPatch {
   /** The edit selection the diff was actually computed for — a pinned
    * or stale selection resolves against the fresh list. */
   selectedEdit?: EditSelection | null;
-  /** pr scope: the head the diff was computed at. The pane keeps it as
-   * the anchor `prStale` is measured from. */
-  prHeadSHA?: string;
+  /** pr scope: the revision the diff and commit list were computed at.
+   * The pane keeps its head as the anchor `prStale` is measured from. */
+  prRevision?: PRRevision;
 }
 
 /** The edits-scope selection reload should aim for: a freshly pinned
@@ -112,6 +113,8 @@ export interface ExistingLoad {
   commits: BranchCommit[];
   edits: EditDiffEntryView[];
   editTurnLabels: ReadonlyMap<number, string>;
+  /** pr scope: the revision the commit list was computed at. */
+  prRevision: PRRevision | null;
 }
 
 /** Decode a selector value (`item:<id>` / `turn:<n>`) against the
@@ -203,8 +206,8 @@ export async function loadPatch(
   selectedCommitSHA: string | null,
   prRef: PRRef | null,
   // pr scope: the shared PR snapshot the caller already awaited. The diff
-  // needs its base ref, so it is an input here rather than something this
-  // function fetches.
+  // is computed at its revision, so it is an input here rather than
+  // something this function fetches.
   prSnapshot: PRSnapshot | null,
   editDesire: EditDesire,
   // `-w`, applied only by the branches whose binding accepts it — see
@@ -217,27 +220,22 @@ export async function loadPatch(
   const diff = (open: ConstructorParameters<typeof ReviewDiffSource>[1]) => new ReviewDiffSource(backend, open);
   switch (scope) {
     case 'pr': {
-      const detail = prSnapshot?.detail;
-      if (!prRef || !detail) throw new Error('No PR or MR is available for this thread.');
+      // A selection-only reload stays at the revision its commit list was
+      // computed at, so the list and the diff describe one state of the PR;
+      // a PR that moved since is the stale banner's to offer.
+      const revision = existing ? existing.prRevision : prRevision(prSnapshot?.detail, prSnapshot?.headSHA);
+      if (!prRef || !revision) throw new Error('No PR or MR is available for this thread.');
       const pr = prReferenceWire(prRef);
-      // The backend diffs the PR head against the detail's base ref in the
-      // local clone.
-      const baseRef = detail.baseRefName ?? '';
-      const headSHA = String(prSnapshot.headSHA || detail.headSHA || '');
-      // Per-commit PR review needs the local clone; without one the backend
-      // returns an empty list and the selector stays hidden. The known head
-      // SHA lets the backend skip its fetch when the objects are local.
+      // The backend reads the revision from the local clone, fetching only
+      // the commits the clone lacks.
       const commits = existing
         ? existing.commits
-        : baseRef
-          ? (((await ListPRCommits(workspace, pr, baseRef, headSHA)) ??
-              []) as BranchCommit[])
-          : [];
+        : (((await ListPRCommits(workspace, pr, revision)) ?? []) as BranchCommit[]);
       const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
       const patch = commitSHA
-        ? diff(() => OpenPRCommitDiff(workspace, pr, commitSHA, ignoreWhitespace))
-        : diff(() => OpenPRDiff(workspace, pr, baseRef, ignoreWhitespace));
-      return { patch, commits, selectedCommitSHA: commitSHA, prHeadSHA: headSHA };
+        ? diff(() => OpenPRCommitDiff(workspace, pr, revision, commitSHA, ignoreWhitespace))
+        : diff(() => OpenPRDiff(workspace, pr, revision, ignoreWhitespace));
+      return { patch, commits, selectedCommitSHA: commitSHA, prRevision: revision };
     }
     case 'workspace':
       return { patch: diff(() => OpenWorkspaceDiff(workspace, ignoreWhitespace)) };

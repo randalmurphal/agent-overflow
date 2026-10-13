@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -48,6 +49,7 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 		c.prCacheMu.RUnlock()
 		return entry.url, entry.number, entry.lookupError
 	}
+	epoch := c.prCacheEpochs[cwd]
 	c.prCacheMu.RUnlock()
 
 	pushed, err := c.originHasBranch(ctx, cwd, branch)
@@ -55,7 +57,7 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 		return "", 0, err.Error()
 	}
 	if err == nil && !pushed {
-		c.storePRLookup(key, now, prCacheEntry{expiresAt: now.Add(prLookupTTL), origin: c.cachedOrigin(cwd)})
+		c.storePRLookup(cwd, key, epoch, now, prCacheEntry{expiresAt: now.Add(prLookupTTL), origin: c.cachedOrigin(cwd)})
 		return "", 0, ""
 	}
 	// A failed local check says nothing about the branch; the forge
@@ -108,7 +110,7 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 			}
 		}
 	}
-	c.storePRLookupLocked(key, now, prCacheEntry{
+	c.storePRLookupLocked(cwd, key, epoch, now, prCacheEntry{
 		url:         url,
 		number:      number,
 		lookupError: lookupError,
@@ -148,10 +150,10 @@ func (c *Core) originHasBranch(ctx context.Context, cwd, branch string) (bool, e
 	return false, commandFailure("git rev-parse --verify refs/remotes/origin/"+branch, result)
 }
 
-func (c *Core) storePRLookup(key string, now time.Time, entry prCacheEntry) {
+func (c *Core) storePRLookup(cwd, key string, epoch uint64, now time.Time, entry prCacheEntry) {
 	c.prCacheMu.Lock()
 	defer c.prCacheMu.Unlock()
-	c.storePRLookupLocked(key, now, entry)
+	c.storePRLookupLocked(cwd, key, epoch, now, entry)
 }
 
 // storePRLookupLocked caches one lookup answer and sweeps entries whose
@@ -160,8 +162,13 @@ func (c *Core) storePRLookup(key string, now time.Time, entry prCacheEntry) {
 // lifetime total. Entries past expiresAt but inside the retention window
 // are kept: they are no longer served as fresh answers (both lookup paths
 // gate on expiresAt) but are still the last thing we knew. Callers hold
-// prCacheMu.
-func (c *Core) storePRLookupLocked(key string, now time.Time, entry prCacheEntry) {
+// prCacheMu. epoch is cwd's prCacheEpochs count when the lookup started;
+// an invalidation of cwd since then discards the answer, which may
+// predate it.
+func (c *Core) storePRLookupLocked(cwd, key string, epoch uint64, now time.Time, entry prCacheEntry) {
+	if epoch != c.prCacheEpochs[cwd] {
+		return
+	}
 	c.prCache[key] = entry
 	sweepBefore := now.Add(-prStickyRetention)
 	for k, held := range c.prCache {
@@ -179,9 +186,26 @@ func (c *Core) InvalidatePRCache(cwd string) {
 	prefix := cwd + "\x00"
 	c.prCacheMu.Lock()
 	defer c.prCacheMu.Unlock()
+	c.prCacheEpochs[cwd]++
 	for key := range c.prCache {
 		if strings.HasPrefix(key, prefix) {
 			delete(c.prCache, key)
 		}
 	}
+}
+
+// prCreateCommand matches a shell command that runs the GitHub or GitLab
+// CLI's create subcommand (`gh pr create`, `glab mr create`, or their `new`
+// aliases), wherever it sits in a pipeline or behind a shell wrapper.
+var prCreateCommand = regexp.MustCompile(`(?:^|[\s;&|(/` + "`" + `"'])(?:gh\s+(?:\S+\s+)*?pr|glab\s+(?:\S+\s+)*?mr)\s+(?:create|new)(?:\s|$|[;&|)"'])`)
+
+// CreatesPullRequest reports whether command runs a forge CLI's create
+// subcommand. A match only prompts a fresh open-PR lookup, which answers
+// from the forge, so a command that merely mentions the words costs one
+// lookup and shows nothing.
+func CreatesPullRequest(command string) bool {
+	if !strings.Contains(command, "pr ") && !strings.Contains(command, "mr ") {
+		return false
+	}
+	return prCreateCommand.MatchString(command)
 }

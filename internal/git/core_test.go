@@ -98,6 +98,33 @@ func TestExecuteReturnsStdoutAndStderrOnNonZeroExit(t *testing.T) {
 	if strings.TrimSpace(stderr) != "err" {
 		t.Fatalf("stderr = %q, want err", stderr)
 	}
+	if err.Error() != "git status exited with code 4: err" {
+		t.Fatalf("err = %q, want the exit code and git's own diagnosis", err)
+	}
+}
+
+// The exit error keeps the tail of a long stderr, where git puts its
+// diagnosis, and stays bounded.
+func TestExecuteExitErrorKeepsTheTailOfLongStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock git is unix-only")
+	}
+	binDir := t.TempDir()
+	mockexec.Write(t, filepath.Join(binDir, "git"),
+		"#!/bin/sh\ni=0\nwhile [ $i -lt 2000 ]; do echo 'remote: noise' 1>&2; i=$((i+1)); done\necho 'fatal: the real reason' 1>&2\nexit 128\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, _, err := NewCore().Execute(t.TempDir(), "fetch", "origin")
+	if err == nil {
+		t.Fatal("expected non-zero exit error")
+	}
+	message := err.Error()
+	if !strings.HasPrefix(message, "git fetch origin exited with code 128: …") || !strings.HasSuffix(message, "fatal: the real reason") {
+		t.Fatalf("err = %.200q…, want the command, code and the stderr tail", message)
+	}
+	if len(message) > exitErrorStderrBytes+100 {
+		t.Fatalf("err is %d bytes, want it bounded near %d", len(message), exitErrorStderrBytes)
+	}
 }
 
 func TestParseWorktreeList(t *testing.T) {

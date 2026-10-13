@@ -21,8 +21,13 @@ the PR, not by the pane".
 Superseded in part 2026-09-27: standalone PR review (`pr://` threads
 started from a PR URL) and the forge CLI patch (`gh pr diff` /
 `glab mr diff`) were removed. The PR scope needs a local clone whose
-branch has the PR; it fetches the PR head and diffs it against the
-merge base (`OpenPRDiff`). Diffs of every scope are read in chunks with no
+branch has the PR. Every PR read (diff, commit list, merge conflicts) runs
+at the revision of the pane's PR snapshot, the head and base branch tip
+the forge reported (`git.PRRevision`), and fetches from origin only the
+commits the clone lacks (`Core.EnsurePRObjects`). A failed refresh keeps
+the diff on screen under its error; a failed read retries on the next
+frame of the PR's poll pump, which emits once after a failed read even
+when nothing changed. Diffs of every scope are read in chunks with no
 size limit, and the frontend holds patch text within a memory budget
 ([review diff streaming](review-diff-streaming.md)), replacing the
 constraint below that full patch text is parsed and held.
@@ -130,7 +135,10 @@ polling.
   instead holds every poll until its resume time, and one transient
   failure over a snapshot on screen is not shown unless the retry fails
   too; each kind has its own surface ([failure
-  presentation](forge-transport.md#failure-presentation)). The pane reads its PR from
+  presentation](forge-transport.md#failure-presentation)). A GitLab merge
+  request read with no base tip (`diff_refs` is null until GitLab has
+  computed a new MR's diff) also polls on the retry delay, and the pane
+  shows it as waiting until a frame carries the tip. The pane reads its PR from
   the workspace's git status; the fast first status marks its PR lookup
   pending (`openPrLookupPending`), and the pane waits on that too rather
   than reading empty PR fields as "no PR". No background polling in v1.

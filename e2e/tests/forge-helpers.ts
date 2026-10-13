@@ -54,7 +54,13 @@ export interface ForgePull {
   headRef?: string;
   baseRef?: string;
   headSha?: string;
+  /** GitLab's merge base. */
   baseSha?: string;
+  /** The base branch's tip: GitHub baseRefOid, GitLab start_sha. */
+  startSha?: string;
+  /** GitLab only: the merge request's diff is not computed yet, so
+   * diff_refs reads null. */
+  diffPending?: boolean;
   diff?: string;
   /** PR-level conversation comments. */
   comments?: ForgeComment[];
@@ -286,7 +292,7 @@ export async function publishPullRequest(
   git(workspace, 'update-ref', 'refs/remotes/origin/main', baseSha);
   git(workspace, 'update-ref', 'refs/remotes/origin/feature', headSha);
 
-  const seeded: ForgeRepo = { ...repo, pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha }, ...rest] };
+  const seeded: ForgeRepo = { ...repo, pulls: [{ ...pull, headRef: 'feature', baseRef: 'main', headSha, baseSha, startSha: baseSha }, ...rest] };
   await seedForge(harness, [seeded]);
   git(workspace, 'config', 'core.gitProxy', proxy);
   git(workspace, 'remote', 'add', 'origin', `git://${FORGE_HOST[repo.forge]}/${repo.project}.git`);

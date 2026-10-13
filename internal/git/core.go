@@ -137,6 +137,12 @@ type Core struct {
 	// invalidation take the writer lock.
 	prCacheMu sync.RWMutex
 	prCache   map[string]prCacheEntry
+	// prCacheEpochs counts InvalidatePRCache calls per cwd. A lookup
+	// caches its answer only when no invalidation of its cwd ran while it
+	// was in flight, so an answer read before a PR was created cannot
+	// outlive the invalidation that announced it. Bounded by the
+	// workspaces invalidated in this process.
+	prCacheEpochs map[string]uint64
 
 	// forgeCache memoizes origin-URL classification per cwd. TTL'd via
 	// forgeDetectionTTL (5 min); written by Core.Status each refresh
@@ -293,6 +299,7 @@ func NewCore(opts ...CoreOption) *Core {
 		timeout:        defaultTimeout,
 		maxOutputBytes: defaultMaxOutputBytes,
 		prCache:        make(map[string]prCacheEntry),
+		prCacheEpochs:  make(map[string]uint64),
 		forgeCache:     make(map[string]forgeCacheEntry),
 		gitDirCache:    make(map[string]string),
 		commonDirCache: make(map[string]string),
@@ -366,7 +373,7 @@ func (c *Core) executeInteractive(cwd string, args ...string) (stdout, stderr st
 // The nested git inherits our environment, so the opt-out has to be made
 // here rather than at a git call site we never see.
 func (c *Core) runBinaryInteractive(ctx context.Context, binary, cwd string, args ...string) (commandResult, error) {
-	return c.runSpec(commandSpec{ctx: ctx, binary: binary, cwd: cwd, allowCredentialPrompt: true, args: args})
+	return c.runSpec(commandSpec{ctx: ctx, binary: binary, cwd: cwd, allowCredentialPrompt: true, updatesRemoteRefs: true, args: args})
 }
 
 func (c *Core) executeSpec(spec commandSpec) (stdout, stderr string, err error) {
@@ -375,13 +382,28 @@ func (c *Core) executeSpec(spec commandSpec) (stdout, stderr string, err error) 
 		return "", "", err
 	}
 	if result.exitCode != 0 {
-		return result.stdout, result.stderr, fmt.Errorf(
-			"%s exited with code %d",
-			formatCommand(spec.binary, spec.args...),
-			result.exitCode,
-		)
+		return result.stdout, result.stderr, exitError(spec, result)
 	}
 	return result.stdout, result.stderr, nil
+}
+
+// exitErrorStderrBytes bounds the stderr an exit error carries. git prints
+// its diagnosis last, so the tail is the part kept.
+const exitErrorStderrBytes = 4 << 10
+
+// exitError describes a non-zero exit with the command's own diagnosis:
+// the exit code alone cannot tell a network failure from a lock or a
+// missing ref.
+func exitError(spec commandSpec, result commandResult) error {
+	command := formatCommand(spec.binary, spec.args...)
+	stderr := strings.TrimSpace(result.stderr)
+	if stderr == "" {
+		return fmt.Errorf("%s exited with code %d", command, result.exitCode)
+	}
+	if len(stderr) > exitErrorStderrBytes {
+		stderr = "…" + strings.ToValidUTF8(stderr[len(stderr)-exitErrorStderrBytes:], "")
+	}
+	return fmt.Errorf("%s exited with code %d: %s", command, result.exitCode, stderr)
 }
 
 // CreateWorktree creates a new worktree backed by a new branch.
@@ -664,10 +686,15 @@ type commandSpec struct {
 	// omission.
 	//
 	// Set it ONLY for commands a human just asked for and is waiting on:
-	// push, pull, explicit fetch/prune, and the forge CLIs' create paths
+	// push, pull, explicit fetch/prune, the commits an open review pane's
+	// PR read lacks (EnsurePRObjects), and the forge CLIs' create paths
 	// (which shell out to `git push` themselves). Never for anything on a
 	// timer, a watcher edge, or a picker's opportunistic warm-up.
 	allowCredentialPrompt bool
+	// updatesRemoteRefs takes the repository's remote-refs lock for a
+	// command lockRemoteRefs cannot recognize from its argv: a forge CLI
+	// that runs `git push` itself.
+	updatesRemoteRefs bool
 	// extraEnv is appended after the shared environment. os/exec keeps the
 	// last occurrence of a duplicated key, so entries here override both
 	// the inherited environment and the shared defaults below.
@@ -700,12 +727,17 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	}
 
 	// Taken before the timeout starts, so waiting for another worktree
-	// command does not spend this one's budget.
+	// or remote-refs command does not spend this one's budget.
 	unlockWorktreeAdmin, err := c.lockWorktreeAdmin(spec)
 	if err != nil {
 		return commandResult{}, err
 	}
 	defer unlockWorktreeAdmin()
+	unlockRemoteRefs, err := c.lockRemoteRefs(spec)
+	if err != nil {
+		return commandResult{}, err
+	}
+	defer unlockRemoteRefs()
 
 	parent := spec.ctx
 	if parent == nil {

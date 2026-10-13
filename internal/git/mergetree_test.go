@@ -1,14 +1,8 @@
 package git
 
 import (
-	"os"
-	"path/filepath"
 	"reflect"
-	"runtime"
-	"strings"
 	"testing"
-
-	"agent-overflow/internal/testutil/mockexec"
 )
 
 func TestParseMergeTreeNameOnly(t *testing.T) {
@@ -143,79 +137,5 @@ func TestPRHeadRef(t *testing.T) {
 	}
 	if _, err := PRHeadRef("github", 0); err == nil {
 		t.Fatal("expected non-positive number error")
-	}
-}
-
-func TestMergeTreeConflictSequenceUsesFetchHeadImmediately(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script mock git is unix-only")
-	}
-	binDir := t.TempDir()
-	logPath := filepath.Join(binDir, "git.log")
-	gitPath := filepath.Join(binDir, "git")
-	headOID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	treeOID := "cccccccccccccccccccccccccccccccccccccccc"
-	script := `#!/bin/sh
-printf '%s\n' "$*" >> "$AO_GIT_LOG"
-case "$*" in
-  "fetch origin pull/9/head")
-    exit 0
-    ;;
-  "rev-parse FETCH_HEAD")
-    echo "$AO_HEAD_OID"
-    exit 0
-    ;;
-  "fetch origin main")
-    exit 0
-    ;;
-  "merge-tree --write-tree --name-only origin/main $AO_HEAD_OID")
-    cat <<EOF
-$AO_TREE_OID
-main.go
-
-CONFLICT (content): Merge conflict in main.go
-EOF
-    exit 1
-    ;;
-  *)
-    echo "unexpected args: $*" >&2
-    exit 9
-    ;;
-esac
-`
-	mockexec.Write(t, gitPath, script)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("AO_GIT_LOG", logPath)
-	t.Setenv("AO_HEAD_OID", headOID)
-	t.Setenv("AO_TREE_OID", treeOID)
-
-	core := NewCore()
-	gotHead, err := core.FetchRefOID("", "origin", "pull/9/head")
-	if err != nil {
-		t.Fatalf("FetchRefOID: %v", err)
-	}
-	if gotHead != headOID {
-		t.Fatalf("head OID = %q, want %q", gotHead, headOID)
-	}
-	if err := core.FetchBranch("", "origin", "main"); err != nil {
-		t.Fatalf("FetchBranch: %v", err)
-	}
-	result, err := core.MergeTreeConflicts("", "origin/main", gotHead)
-	if err != nil {
-		t.Fatalf("MergeTreeConflicts: %v", err)
-	}
-	if !result.Conflicted || result.TreeOID != treeOID || strings.Join(result.Paths, ",") != "main.go" {
-		t.Fatalf("result = %+v", result)
-	}
-
-	gotLog := strings.TrimSpace(readFile(t, logPath))
-	wantLog := strings.Join([]string{
-		"fetch origin pull/9/head",
-		"rev-parse FETCH_HEAD",
-		"fetch origin main",
-		"merge-tree --write-tree --name-only origin/main " + headOID,
-	}, "\n")
-	if gotLog != wantLog {
-		t.Fatalf("git argv log:\n%s\nwant:\n%s", gotLog, wantLog)
 	}
 }

@@ -10,9 +10,10 @@ PR stores; components own presentation and interaction.
   panes without a thread row.
 - PR data is keyed by computer and repository identity. Route forge reads and
   mutations to that computer rather than current global focus.
-- A loaded diff records the head SHA it represents in pane-local state. Derive
-  staleness against the store's live head so two panes can hold different
-  snapshots safely.
+- A loaded diff records the PR revision (head and base tip) it represents in
+  pane-local state. Derive staleness against the store's live head so two
+  panes can hold different snapshots safely. PR reads take that revision,
+  never a branch name the backend resolves on its own.
 - Capture mutation targets before awaiting. Late replies update the captured
   PR or thread and must not navigate a pane whose target changed.
 

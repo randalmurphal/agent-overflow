@@ -261,7 +261,7 @@ func TestReadPRParsesRecordedTicks(t *testing.T) {
 func TestReadPRActorShapes(t *testing.T) {
 	t.Parallel()
 	const answer = `{"data":{"viewer":{"login":"me"},"repository":{"pullRequest":{
-		"number":5,"title":"t","body":"","state":"OPEN","isDraft":false,"baseRefName":"main","headRefName":"f","headRefOid":"abc","url":"u",
+		"number":5,"title":"t","body":"","state":"OPEN","isDraft":false,"baseRefName":"main","baseRefOid":"base1","headRefName":"f","headRefOid":"abc","url":"u",
 		"additions":0,"deletions":0,"changedFiles":0,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":null,
 		"author":{"login":"dependabot"},
 		"latestReviews":{"nodes":[
@@ -288,6 +288,9 @@ func TestReadPRActorShapes(t *testing.T) {
 		t.Fatalf("ReadPR: %v", err)
 	}
 	d := got.Detail
+	if d.BaseRefSHA != "base1" || d.HeadSHA != "abc" {
+		t.Fatalf("revision = base %q head %q, want baseRefOid and headRefOid", d.BaseRefSHA, d.HeadSHA)
+	}
 	if d.AuthorLogin != "dependabot" || d.AuthorName != "" || d.ViewerIsAuthor {
 		t.Fatalf("PR author = %q %q viewer %v", d.AuthorLogin, d.AuthorName, d.ViewerIsAuthor)
 	}

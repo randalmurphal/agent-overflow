@@ -31,6 +31,7 @@ function detailStub(overrides: Partial<PRDetail> = {}): PRDetail {
     state: 'open',
     draft: false,
     baseRefName: 'main',
+    baseRefSHA: 'base-main',
     headRefName: 'feature',
     headSHA: 'sha-a',
     url: 'https://gitlab.com/group/repo/-/merge_requests/5',

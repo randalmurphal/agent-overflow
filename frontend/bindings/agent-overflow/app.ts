@@ -1648,8 +1648,12 @@ export function GetPRDetail(pr: git$0.PRReference): $CancellablePromise<git$0.PR
     });
 }
 
-export function GetPRMergeConflicts(ws: app$0.WorkspaceRef, pr: git$0.PRReference, baseRef: string, headRefName: string): $CancellablePromise<app$0.PRMergeConflictsResult> {
-    return $Call.ByID(106351482, ws, pr, baseRef, headRefName).then(($result: any) => {
+/**
+ * GetPRMergeConflicts merges the PR at rev in the referenced clone and
+ * reports the conflicts.
+ */
+export function GetPRMergeConflicts(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, headRefName: string): $CancellablePromise<app$0.PRMergeConflictsResult> {
+    return $Call.ByID(106351482, ws, pr, rev, headRefName).then(($result: any) => {
         return $$createType62($result);
     });
 }
@@ -2809,17 +2813,11 @@ export function ListOwnDevices(): $CancellablePromise<app$0.OwnDeviceList> {
 }
 
 /**
- * ListPRCommits returns the commits a PR carries (`origin/base..head`,
+ * ListPRCommits returns the commits a PR carries at rev (`base..head`,
  * newest first), computed from the referenced clone.
- * 
- * headSHA is an optimization contract, not a filter: when the caller
- * already knows the PR head OID (OpenPRDiff fetched it moments earlier)
- * and that commit plus the base branch are present locally, the fetch
- * round-trips are skipped. Empty, unknown, or not-yet-fetched values
- * fall back to a full fetch.
  */
-export function ListPRCommits(ws: app$0.WorkspaceRef, pr: git$0.PRReference, baseRef: string, headSHA: string): $CancellablePromise<app$0.BranchCommit[]> {
-    return $Call.ByID(4110818691, ws, pr, baseRef, headSHA).then(($result: any) => {
+export function ListPRCommits(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision): $CancellablePromise<app$0.BranchCommit[]> {
+    return $Call.ByID(4110818691, ws, pr, rev).then(($result: any) => {
         return $$createType127($result);
     });
 }
@@ -3413,22 +3411,22 @@ export function OpenOwnComputerPairing(networkChoice: string): $CancellablePromi
 }
 
 /**
- * OpenPRCommitDiff opens the unified patch a single PR commit introduced
- * (first-parent diff), read from the referenced clone.
+ * OpenPRCommitDiff opens the unified patch a single commit of the PR at rev
+ * introduced (first-parent diff), read from the referenced clone.
  */
-export function OpenPRCommitDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, sha: string, ignoreWhitespace: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
-    return $Call.ByID(110447601, ws, pr, sha, ignoreWhitespace).then(($result: any) => {
+export function OpenPRCommitDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, sha: string, ignoreWhitespace: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
+    return $Call.ByID(110447601, ws, pr, rev, sha, ignoreWhitespace).then(($result: any) => {
         return $$createType163($result);
     });
 }
 
 /**
  * OpenPRDiff opens the PR's three-dot diff (merge base of the base branch
- * to the PR head), computed in the referenced clone after fetching the PR
- * head and base branch. The result names the head the diff was computed at.
+ * tip to the head) at rev, the revision of the PR snapshot the caller
+ * shows, computed in the referenced clone.
  */
-export function OpenPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, baseRef: string, ignoreWhitespace: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
-    return $Call.ByID(4075510992, ws, pr, baseRef, ignoreWhitespace).then(($result: any) => {
+export function OpenPRDiff(ws: app$0.WorkspaceRef, pr: git$0.PRReference, rev: git$0.PRRevision, ignoreWhitespace: boolean): $CancellablePromise<app$0.ReviewDiffOpened> {
+    return $Call.ByID(4075510992, ws, pr, rev, ignoreWhitespace).then(($result: any) => {
         return $$createType163($result);
     });
 }

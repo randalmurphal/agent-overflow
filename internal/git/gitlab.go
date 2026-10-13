@@ -297,6 +297,7 @@ func gitlabPRDetail(raw gitlabMRRaw, approvals []ReviewVerdict) PRDetail {
 		Draft:          raw.Draft || raw.WorkInProgress,
 		HeadRefName:    raw.SourceBranch,
 		BaseRefName:    raw.TargetBranch,
+		BaseRefSHA:     raw.DiffRefs.StartSHA,
 		HeadSHA:        raw.headSHA(),
 		URL:            raw.WebURL,
 		ChangedFiles:   parseGitLabChangesCount(raw.ChangesCount),

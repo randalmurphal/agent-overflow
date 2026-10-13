@@ -101,9 +101,16 @@ func glabMR(e *Engine, c *call, m []string) response {
 		"changes_count":         strconv.Itoa(len(diffFiles(p.Diff))),
 		"has_conflicts":         p.Mergeable == "conflicts",
 		"detailed_merge_status": gitlabMergeStatus[p.Mergeable],
-		"diff_refs":             map[string]any{"base_sha": p.BaseSHA, "head_sha": p.HeadSHA, "start_sha": p.StartSHA},
+		"diff_refs":             gitlabDiffRefs(p),
 		"head_pipeline":         pipeline,
 	}))
+}
+
+func gitlabDiffRefs(p *Pull) any {
+	if p.DiffPending {
+		return nil
+	}
+	return map[string]any{"base_sha": p.BaseSHA, "head_sha": p.HeadSHA, "start_sha": p.StartSHA}
 }
 
 func glabApprovals(e *Engine, c *call, m []string) response {

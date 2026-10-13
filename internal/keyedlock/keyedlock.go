@@ -12,7 +12,8 @@ import (
 // serialization (`App.threadLocks`), per-thread session-config apply
 // serialization (`App.configApplyLocks`), per-item workflow workspace
 // provisioning (`workflowhost.Runner.workspaceLocks`), and per-repository
-// `git worktree` commands (`git.worktreeAdminLocks`).
+// `git worktree` commands (`git.worktreeAdminLocks`) and remote-tracking
+// ref updates (`git.remoteRefsLocks`).
 type Registry struct {
 	mu    sync.Mutex
 	locks map[string]*entry

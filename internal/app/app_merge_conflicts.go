@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -21,43 +20,20 @@ type PRMergeConflictsResult struct {
 	Messages []string `json:"messages"`
 }
 
+// GetPRMergeConflicts merges the PR at rev in the referenced clone and
+// reports the conflicts.
+//
 //ao:scope git:operate
-func (a *App) GetPRMergeConflicts(ws WorkspaceRef, pr gitops.PRReference, baseRef, headRefName string) (PRMergeConflictsResult, error) {
-	if a.shuttingDown.Load() {
-		return PRMergeConflictsResult{}, ErrShuttingDown
-	}
-	if err := pr.Validate(); err != nil {
-		return PRMergeConflictsResult{}, err
-	}
-	baseRef = strings.TrimSpace(baseRef)
-	if baseRef == "" {
-		return PRMergeConflictsResult{}, errors.New("base branch is required")
-	}
-	if err := gitops.ValidateBranchName(baseRef); err != nil {
-		return PRMergeConflictsResult{}, err
-	}
-	workspace, err := a.prCloneWorkspace("get PR merge conflicts", ws)
+func (a *App) GetPRMergeConflicts(ws WorkspaceRef, pr gitops.PRReference, rev gitops.PRRevision, headRefName string) (PRMergeConflictsResult, error) {
+	workspace, err := a.prRevisionWorkspace("get PR merge conflicts", ws, pr, rev)
 	if err != nil {
 		return PRMergeConflictsResult{}, err
 	}
-
-	headRef, err := gitops.PRHeadRef(pr.Forge, pr.Number)
+	result, err := a.gitCore().MergeTreeConflicts(workspace, rev.BaseSHA, rev.HeadSHA)
 	if err != nil {
 		return PRMergeConflictsResult{}, err
 	}
-	core := a.gitCore()
-	headOID, err := core.FetchRefOID(workspace, "origin", headRef)
-	if err != nil {
-		return PRMergeConflictsResult{}, fmt.Errorf("fetch PR head: %w", err)
-	}
-	if err := core.FetchBranch(workspace, "origin", baseRef); err != nil {
-		return PRMergeConflictsResult{}, fmt.Errorf("fetch base branch: %w", err)
-	}
-	baseLabel := "origin/" + baseRef
-	result, err := core.MergeTreeConflicts(workspace, baseLabel, headOID)
-	if err != nil {
-		return PRMergeConflictsResult{}, err
-	}
+	baseLabel := "origin/" + rev.BaseRef
 	headLabel := strings.TrimSpace(headRefName)
 	if headLabel == "" {
 		headLabel = fmt.Sprintf("PR #%d head", pr.Number)
