@@ -1,10 +1,13 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"agent-overflow/internal/codexapp"
+	"agent-overflow/internal/codexskills"
 	"agent-overflow/internal/eventchan"
 )
 
@@ -62,5 +65,34 @@ func TestSkillsBindingsInstallIntoTheProviderHomes(t *testing.T) {
 	}
 	if err := f.app.InstallSkills("cursor"); err == nil {
 		t.Fatal("an unknown provider was not refused")
+	}
+}
+
+// The composer's Codex skill list is cached per workspace; a change to the
+// Codex home drops it so the next read sees the installed skills.
+func TestInstallSkillsDropsTheCachedCodexSkillList(t *testing.T) {
+	t.Parallel()
+	f := newOrganizeFixture(t)
+	cache := codexskills.New()
+	f.app.codexAppOnce.Do(func() {
+		f.app.codexApp = codexapp.New(codexapp.Deps{Binary: func() string { return "codex-test" }, SkillsCache: cache})
+	})
+	key := codexskills.Key("codex-test", t.TempDir())
+	reads := 0
+	fetch := func(context.Context) (codexskills.CwdSkills, error) {
+		reads++
+		return codexskills.CwdSkills{}, nil
+	}
+	if _, err := cache.Get(context.Background(), key, fetch); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.InstallSkills("codex"); err != nil {
+		t.Fatalf("InstallSkills: %v", err)
+	}
+	if _, err := cache.Get(context.Background(), key, fetch); err != nil {
+		t.Fatal(err)
+	}
+	if reads != 2 {
+		t.Fatalf("skill list reads = %d, want 2: the install left the cached list in place", reads)
 	}
 }
