@@ -20,6 +20,27 @@ import (
 // (startSessionNow), so neither a seeded path nor a restored thread row can
 // reach a real repository.
 
+// requireWorkspaceDir refuses a start whose workspace directory is gone (a
+// removed worktree, a moved checkout). The spawn would fail on it anyway, but
+// Go reports a missing working directory as the provider binary missing
+// (`fork/exec <binary>: no such file or directory`), which sends the reader
+// to the wrong path. Empty is no workspace, not a missing one.
+func requireWorkspaceDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	info, err := os.Stat(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("workspace %s no longer exists", dir)
+	case err != nil:
+		return fmt.Errorf("workspace %s: %w", dir, err)
+	case !info.IsDir():
+		return fmt.Errorf("workspace %s is not a directory", dir)
+	}
+	return nil
+}
+
 // requireIsolatedWorkspace refuses a path outside the isolated boot's
 // workspace root. No-op when no root is configured (unit tests).
 func (a *App) requireIsolatedWorkspace(path string) error {

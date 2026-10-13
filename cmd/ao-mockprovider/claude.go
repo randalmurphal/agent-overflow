@@ -122,7 +122,7 @@ type claudeAdapter struct {
 	sessionMirror bool
 
 	mu      sync.Mutex
-	waiters map[string]chan bool // approval request_id → decision
+	waiters map[string]chan approvalAnswer // approval request_id → decision
 	seq     int
 
 	// leafMu guards leafUUID, which the stdin goroutine reads when it
@@ -151,7 +151,7 @@ func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
 	a := &claudeAdapter{
 		e:             e,
 		w:             w,
-		waiters:       make(map[string]chan bool),
+		waiters:       make(map[string]chan approvalAnswer),
 		mcpServers:    claudeMCPServerSpecs(flagValue(args, "--mcp-config")),
 		sessionMirror: slices.Contains(args, "--session-mirror"),
 		tasks:         newClaudeTaskLedger(),
@@ -330,7 +330,13 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		}
 	case "control_response":
 		allow := env.Response.Subtype == "success" && env.Response.Response.Behavior == "allow"
-		a.deliverDecision(env.Response.RequestID, allow)
+		var raw struct {
+			Response struct {
+				Response json.RawMessage `json:"response"`
+			} `json:"response"`
+		}
+		_ = json.Unmarshal(line, &raw)
+		a.deliverDecision(env.Response.RequestID, approvalAnswer{allow: allow, response: string(raw.Response.Response)})
 	case "control_cancel_request":
 		// The app never abandons its own responses this way; log and drop.
 		log.Printf("claude: unexpected control_cancel_request from app (ignored)")
@@ -909,11 +915,11 @@ func writeClaudeControlError(w *lineWriter, requestID, message string) {
 // a `control_cancel_request` naming the request id, and the CLI never waits
 // for an answer to it. The app clears its pending prompt on that line, so
 // a scenario that is interrupted mid-approval leaves no prompt behind.
-func (a *claudeAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan bool, func(bool), error) {
+func (a *claudeAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan approvalAnswer, func(bool), error) {
 	a.mu.Lock()
 	a.seq++
 	requestID := fmt.Sprintf("mock-req-%d", a.seq)
-	ch := make(chan bool, 1)
+	ch := make(chan approvalAnswer, 1)
 	a.waiters[requestID] = ch
 	a.mu.Unlock()
 
@@ -958,7 +964,7 @@ func (a *claudeAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.
 	return ch, cancel, nil
 }
 
-func (a *claudeAdapter) deliverDecision(requestID string, allow bool) {
+func (a *claudeAdapter) deliverDecision(requestID string, answer approvalAnswer) {
 	a.mu.Lock()
 	ch, ok := a.waiters[requestID]
 	if ok {
@@ -969,7 +975,7 @@ func (a *claudeAdapter) deliverDecision(requestID string, allow bool) {
 		log.Printf("claude: control_response for unknown request_id %q (ignored)", requestID)
 		return
 	}
-	ch <- allow
+	ch <- answer
 }
 
 // mustJSON marshals a plain value that cannot fail (strings, numbers).

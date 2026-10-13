@@ -30,7 +30,8 @@ another computer forwarded here. The second entry point is the fan-out
 guard: a forwarded call sees no paired computers of its own, so a
 resolution, a search or a fan-out never crosses back to the computer that
 asked. `Forwarded(ctx)` is the read side, for the App decision that turns
-on where the call came from.
+on where the call came from. `thread_loop` and `thread_watch` schedule the
+calling thread on its own computer and refuse a forwarded call.
 
 ## Rules
 

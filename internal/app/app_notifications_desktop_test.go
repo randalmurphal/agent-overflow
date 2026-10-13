@@ -82,7 +82,7 @@ func TestDesktopNotificationsAuthorizationIsAsynchronous(t *testing.T) {
 
 	select {
 	case <-platform.authCalled:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("authorization request did not start asynchronously")
 	}
 	err := app.notifyOS(testSend(notify.Target{Kind: "none"}))

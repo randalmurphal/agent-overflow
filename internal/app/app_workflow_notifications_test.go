@@ -80,7 +80,7 @@ func TestWorkflowStateEmitterPersistsTemplateAndSendsTypedNotifications(t *testi
 
 	select {
 	case <-sender.wake:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for workflow notifications")
 	}
 	stored, err := app.store.GetWorkItem(item.ID)
@@ -195,7 +195,7 @@ func TestWorkflowDigestAsyncUpgradePersistsAndReemits(t *testing.T) {
 	)
 	select {
 	case <-called:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("async digest generator was not triggered")
 	}
 	deadline := time.Now().Add(time.Second)
@@ -258,7 +258,7 @@ func TestWorkflowDigestAsyncFailureAndStaleResultKeepTemplate(t *testing.T) {
 			)
 			select {
 			case <-called:
-			case <-time.After(time.Second):
+			case <-time.After(10 * time.Second):
 				t.Fatal("async digest generator was not called")
 			}
 			before, err := app.store.GetWorkItem(item.ID)

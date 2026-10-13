@@ -44,13 +44,17 @@ const (
 	// KindTurnComplete is the agent finishing a top-level turn: the thread
 	// is resting and there is something to read.
 	KindTurnComplete Kind = "turn-complete"
-	// KindApprovalNeeded is the agent blocked on the user's permission. The
-	// only one of the four where work has stopped and stays stopped until a
-	// person acts, which is why §6's default has it on.
+	// KindApprovalNeeded is the agent blocked on the user: their permission,
+	// or their answer to a question it asked. The only one of the four where
+	// work has stopped and stays stopped until a person acts, which is why
+	// §6's default has it on.
 	KindApprovalNeeded Kind = "approval-needed"
-	// KindError is a turn that ended badly, or a provider process that died
-	// under a thread. It shares KindTurnComplete's identifier because both
-	// describe the same fact — this thread stopped — and a thread stops once.
+	// KindError is a turn that ended badly, a provider process that died
+	// under a thread, or a session the app started for a message it queued
+	// there failing to start. The first two share KindTurnComplete's
+	// identifier because they describe the same fact — this thread stopped —
+	// and a thread stops once. A failed start has an identifier of its own
+	// (sessionStartNotificationID).
 	KindError Kind = "error"
 	// KindProviderSignedOut is a provider whose login is gone. Account-wide,
 	// not thread-scoped: nothing will run for anyone until it is fixed.
@@ -186,6 +190,10 @@ type TurnRest struct {
 	// an abort carries no error and a failure is not something anyone asked
 	// for.
 	Aborted bool
+	// QuietTick is a turn only a loop or watch started, on a thread whose
+	// standing agent row does not ask for tick notifications. A routine
+	// tick finishing is not news; one that failed still is.
+	QuietTick bool
 }
 
 // ProviderExit is the provider process dying under a thread — the
@@ -202,6 +210,30 @@ type ProviderExit struct {
 // asks retraction to cover.
 type ThreadResumed struct {
 	ThreadID string
+	// QuietTick is a quiet tick's turn starting (see TurnRest.QuietTick). It
+	// retracts nothing: a routine tick neither raises a notification nor
+	// takes away one the user has not read.
+	QuietTick bool
+}
+
+// SessionStartFailed is a session the app started on its own, to deliver a
+// message it queued in the thread (a loop or watch wake, an outside send, an
+// answer, a worker's prompt), failing to start. Nobody watched that start, so
+// the error row it leaves is unread until something says so, and nothing in
+// the thread runs until the person acts.
+type SessionStartFailed struct {
+	Thread ThreadRef
+}
+
+// SessionStarted is a thread's session starting, whoever started it. It is
+// the retraction moment for a start failure the thread was holding.
+type SessionStarted struct {
+	ThreadID string
+	// FailureRaised is the caller's edge state: a start failure was raised
+	// for the thread and has not been withdrawn. Sessions start far more
+	// often than they fail to, and every retraction reaches each paired
+	// phone as a push, so a start with nothing to withdraw sends nothing.
+	FailureRaised bool
 }
 
 // ApprovalMoment is an approval request or its answer — the two actions of
@@ -217,6 +249,17 @@ type ApprovalMoment struct {
 	// Answered is the resolve/fail action. Whoever answered — this device,
 	// another device, or the provider giving up on the request — the prompt
 	// is gone, so the notification about it must go too.
+	Answered bool
+}
+
+// QuestionMoment is a question put to the user or its answer — the two
+// actions of the `provider:user_input` transition. Like ApprovalMoment it has
+// nowhere to put the question's text: what was asked is the thread's to show.
+type QuestionMoment struct {
+	Thread    ThreadRef
+	RequestID string
+	// Answered is the resolve/fail action, for ApprovalMoment.Answered's
+	// reason.
 	Answered bool
 }
 
@@ -246,12 +289,24 @@ type ProviderAuthChange struct {
 // know which it was.
 func threadNotificationID(threadID string) string { return "thread:" + threadID }
 
+// sessionStartNotificationID is per thread, apart from the rest id. A failed
+// start is not a rest state: it can follow a turn's completion that is still
+// on screen, and its retraction is a session start, which must not withdraw
+// that completion (a session restarts after a settings change with the
+// completion still unread).
+func sessionStartNotificationID(threadID string) string { return "session-start:" + threadID }
+
 // approvalNotificationID is per REQUEST, not per thread: two approvals can
 // be outstanding in one thread (a subagent's and the main agent's), each
 // answered on its own, so each needs an identifier that can be retracted on
 // its own.
 func approvalNotificationID(threadID, requestID string) string {
 	return "approval:" + threadID + ":" + requestID
+}
+
+// questionNotificationID is per request, for approvalNotificationID's reason.
+func questionNotificationID(threadID, requestID string) string {
+	return "question:" + threadID + ":" + requestID
 }
 
 // providerAuthNotificationID is per provider. Claude being signed out says
@@ -265,6 +320,9 @@ func providerAuthNotificationID(providerName string) string {
 // user's to hear about: a subagent's round, or an abort they performed.
 func MapTurnRest(rest TurnRest) (Notification, bool) {
 	if rest.Thread.ID == "" || !rest.TopLevel || rest.Aborted {
+		return Notification{}, false
+	}
+	if rest.QuietTick && !rest.Failed {
 		return Notification{}, false
 	}
 	kind, body := KindTurnComplete, "Completed"
@@ -284,6 +342,31 @@ func MapProviderExit(exit ProviderExit) (Notification, bool) {
 	), true
 }
 
+// MapSessionStartFailed maps a failed start the app made on its own.
+func MapSessionStartFailed(failed SessionStartFailed) (Notification, bool) {
+	if failed.Thread.ID == "" {
+		return Notification{}, false
+	}
+	notification := threadNotification(
+		KindError, failed.Thread, "The agent could not start. Open the thread to see why.",
+	)
+	notification.Send.ID = sessionStartNotificationID(failed.Thread.ID)
+	return notification, true
+}
+
+// MapSessionStarted retracts a thread's start failure. Reports false when
+// the thread holds none.
+func MapSessionStarted(started SessionStarted) (Notification, bool) {
+	if started.ThreadID == "" || !started.FailureRaised {
+		return Notification{}, false
+	}
+	return Notification{Send: Send{
+		ID:      sessionStartNotificationID(started.ThreadID),
+		Kind:    KindError,
+		Retract: true,
+	}}, true
+}
+
 // MapThreadResumed retracts a thread's rest notification. The kind on a
 // retraction is KindTurnComplete because that is what the overwhelming
 // majority of retracted rest notifications are, and because a retraction's
@@ -291,7 +374,7 @@ func MapProviderExit(exit ProviderExit) (Notification, bool) {
 // turn completions has no rest notification of this shape to withdraw, and a
 // user who silenced errors keeps the gate they asked for either way.
 func MapThreadResumed(resumed ThreadResumed) (Notification, bool) {
-	if resumed.ThreadID == "" {
+	if resumed.ThreadID == "" || resumed.QuietTick {
 		return Notification{}, false
 	}
 	return Notification{Send: Send{
@@ -316,6 +399,23 @@ func MapApproval(moment ApprovalMoment) (Notification, bool) {
 		body += ": " + tool
 	}
 	notification := threadNotification(KindApprovalNeeded, moment.Thread, body)
+	notification.Send.ID = id
+	return notification, true
+}
+
+// MapQuestion maps a question put to the user to a notification and its
+// answer to that notification's retraction. It is KindApprovalNeeded: the
+// agent has stopped until a person answers, which is the moment that kind
+// names, so the preference and cue a person set for it apply.
+func MapQuestion(moment QuestionMoment) (Notification, bool) {
+	if moment.Thread.ID == "" || moment.RequestID == "" {
+		return Notification{}, false
+	}
+	id := questionNotificationID(moment.Thread.ID, moment.RequestID)
+	if moment.Answered {
+		return Notification{Send: Send{ID: id, Kind: KindApprovalNeeded, Retract: true}}, true
+	}
+	notification := threadNotification(KindApprovalNeeded, moment.Thread, "Waiting for your answer")
 	notification.Send.ID = id
 	return notification, true
 }

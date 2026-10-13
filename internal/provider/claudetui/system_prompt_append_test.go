@@ -16,7 +16,7 @@ import (
 // opt-out exactly as the headless argv does (2.1.284 PTY + wire capture).
 func TestBuildLaunchOptionsPassesTheAppendSystemPromptFileAndSnapshotFlag(t *testing.T) {
 	const guide = "APPENDED GUIDE"
-	path, err := claude.WriteSystemPromptFile(guide)
+	path, err := claude.WriteSystemPromptFile(t.TempDir(), guide)
 	if err != nil {
 		t.Fatalf("WriteSystemPromptFile: %v", err)
 	}
@@ -53,12 +53,12 @@ func TestBuildLaunchOptionsPassesTheAppendSystemPromptFileAndSnapshotFlag(t *tes
 // Close removes the append file alongside the replacement, and a second
 // Close stays a no-op.
 func TestSessionCloseRemovesBothPromptFiles(t *testing.T) {
-	replacement, err := claude.WriteSystemPromptFile("You are the agent.")
+	replacement, err := claude.WriteSystemPromptFile(t.TempDir(), "You are the agent.")
 	if err != nil {
 		t.Fatalf("WriteSystemPromptFile: %v", err)
 	}
 	t.Cleanup(func() { claude.RemoveSystemPromptFile(replacement) })
-	appended, err := claude.WriteSystemPromptFile("APPENDED GUIDE")
+	appended, err := claude.WriteSystemPromptFile(t.TempDir(), "APPENDED GUIDE")
 	if err != nil {
 		t.Fatalf("WriteSystemPromptFile: %v", err)
 	}
@@ -93,29 +93,19 @@ func TestSessionCloseRemovesBothPromptFiles(t *testing.T) {
 // here the launch is refused for lacking a binary, which happens after both
 // writes.
 func TestNewSessionRemovesBothPromptFilesWhenTheLaunchFails(t *testing.T) {
-	dir := privatePromptDir(t)
+	dir := t.TempDir()
 	_, err := NewSession(context.Background(), testThread, Config{
 		WorkDir:            t.TempDir(),
 		SystemPrompt:       "REPLACEMENT",
 		AppendSystemPrompt: "APPENDED GUIDE",
+		SystemPromptDir:    dir,
 	}, func(provider.ProviderEvent) {})
 	if err == nil {
 		t.Fatal("NewSession succeeded without a binary")
 	}
-	if left := promptFilesIn(t, dir); len(left) != 0 {
+	if left := promptFilesIn(t, dir); len(left) > 0 {
 		t.Fatalf("failed launch left prompt files behind: %v", left)
 	}
-}
-
-// privatePromptDir points TMPDIR, where the prompt files are written, at a
-// directory only the calling test writes, so prompt files from other tests
-// and other test processes never count against it. t.Setenv keeps the test
-// out of the parallel phase while TMPDIR is changed.
-func privatePromptDir(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("TMPDIR", dir)
-	return dir
 }
 
 func promptFilesIn(t *testing.T, dir string) []string {

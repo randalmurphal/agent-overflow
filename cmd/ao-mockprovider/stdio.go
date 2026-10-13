@@ -88,6 +88,18 @@ func (lw *lineWriter) writeLines(lines []string) {
 	}
 }
 
+// locked runs fn holding the write lock and hands it a writer of whole
+// lines, so a decision fn makes from what the observer has seen and the
+// lines it writes land with no other line between them.
+func (lw *lineWriter) locked(fn func(write func(line string))) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	fn(func(line string) {
+		lw.write(append([]byte(line), '\n'))
+		lw.observed(line)
+	})
+}
+
 // observed hands one written line to the observer. Callers hold the
 // write lock, so the observer sees lines in wire order.
 func (lw *lineWriter) observed(line string) {

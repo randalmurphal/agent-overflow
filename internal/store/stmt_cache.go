@@ -9,6 +9,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // stmtCacheSize bounds the statements one connection keeps compiled.
@@ -82,6 +83,9 @@ type stmtCacheConn struct {
 	// beforeClose, when set, releases what the connector attached to the
 	// connection (the writer's commit hook) before it closes.
 	beforeClose func()
+	// writes, when set, counts the row writes the connection runs; see
+	// Store.WriteCount. Only the writer's connections set it.
+	writes *atomic.Uint64
 }
 
 type cachedStmt struct {
@@ -101,6 +105,7 @@ func newStmtCacheConn(conn driver.Conn) (*stmtCacheConn, error) {
 }
 
 func (c *stmtCacheConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	c.countWrite(query, true)
 	entry, err := c.acquire(ctx, query)
 	if err != nil {
 		return nil, err
@@ -113,6 +118,7 @@ func (c *stmtCacheConn) ExecContext(ctx context.Context, query string, args []dr
 }
 
 func (c *stmtCacheConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	c.countWrite(query, false)
 	entry, err := c.acquire(ctx, query)
 	if err != nil {
 		return nil, err
@@ -126,6 +132,55 @@ func (c *stmtCacheConn) QueryContext(ctx context.Context, query string, args []d
 		return nil, err
 	}
 	return &cachedRows{Rows: rows, conn: c, entry: entry}, nil
+}
+
+// PrepareContext prepares query for database/sql's own statements
+// (tx.Prepare), which run outside ExecContext and QueryContext, so a row
+// write among them is counted on each run.
+func (c *stmtCacheConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	prepared, err := c.sqliteConn.PrepareContext(ctx, query)
+	if err != nil || c.writes == nil {
+		return prepared, err
+	}
+	stmt, ok := prepared.(sqliteStmt)
+	if !ok {
+		return nil, errors.Join(fmt.Errorf("store: driver statement %T cannot be counted", prepared), prepared.Close())
+	}
+	return countedStmt{sqliteStmt: stmt, conn: c, query: query}, nil
+}
+
+// countWrite counts query when it writes rows. A WITH statement writes
+// rows only when it is executed; run as a query, it reads them.
+func (c *stmtCacheConn) countWrite(query string, exec bool) {
+	if c.writes == nil {
+		return
+	}
+	switch leadingKeyword(query) {
+	case "INSERT", "UPDATE", "DELETE", "REPLACE":
+		c.writes.Add(1)
+	case "WITH":
+		if exec {
+			c.writes.Add(1)
+		}
+	}
+}
+
+// countedStmt is a statement database/sql prepared on a counting
+// connection.
+type countedStmt struct {
+	sqliteStmt
+	conn  *stmtCacheConn
+	query string
+}
+
+func (s countedStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	s.conn.countWrite(s.query, true)
+	return s.sqliteStmt.ExecContext(ctx, args)
+}
+
+func (s countedStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	s.conn.countWrite(s.query, false)
+	return s.sqliteStmt.QueryContext(ctx, args)
 }
 
 // acquire returns query's cached statement marked busy, compiling and caching
@@ -227,14 +282,19 @@ func (r *cachedRows) Close() error {
 // cacheableSQL reports whether query reads or writes rows, the statements a
 // connection runs repeatedly.
 func cacheableSQL(query string) bool {
+	switch leadingKeyword(query) {
+	case "SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "WITH":
+		return true
+	}
+	return false
+}
+
+// leadingKeyword is query's first word, upper-cased.
+func leadingKeyword(query string) string {
 	query = strings.TrimLeft(query, " \t\r\n")
 	end := strings.IndexFunc(query, func(r rune) bool { return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') })
 	if end < 0 {
 		end = len(query)
 	}
-	switch strings.ToUpper(query[:end]) {
-	case "SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "WITH":
-		return true
-	}
-	return false
+	return strings.ToUpper(query[:end])
 }

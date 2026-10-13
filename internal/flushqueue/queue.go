@@ -70,12 +70,18 @@ type Payload struct {
 	// re-dispatched row answering for the first member only, and a retry of
 	// any other member would send a duplicate.
 	JoinedSendIDs []string `json:"joinedSendIds,omitempty"`
+	// JoinedParts are that joined message's members as they appear in its
+	// text, which the session-death restore splits it by
+	// (usermessage.JoinedPart). Set on the same requeue path, when the
+	// dispatch that joined the message recorded them.
+	JoinedParts []usermessage.JoinedPart `json:"joinedParts,omitempty"`
 	// Origin and OriginThread attribute a queued message the app wrote on
 	// an agent's behalf. They ride the payload for the same reason SendID
 	// does: the dispatch that persists the row happens later, and the row
 	// must carry the same attribution the immediate send would have.
 	Origin       string                    `json:"origin,omitempty"`
 	OriginThread *usermessage.OriginThread `json:"originThread,omitempty"`
+	OriginWake   *usermessage.OriginWake   `json:"originWake,omitempty"`
 }
 
 // ItemFromTriage decodes a triage QueuedFlushItem back into the

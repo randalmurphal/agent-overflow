@@ -162,7 +162,8 @@ type Report struct {
 	Gate string `json:"gate,omitempty"`
 	// Result is the text an mcpCall step's tool returned, or the error
 	// text of a call that could not be made; on ReportMcpTools it is the
-	// listing JSON. Set only on those two. It is the server's own answer,
+	// listing JSON; on ReportApprovalDecided it is the response body the
+	// app answered the approval with. Set only on those three. It is the server's own answer,
 	// never the endpoint, headers or token the mock called it through.
 	Result string `json:"result,omitempty"`
 	// IsError marks a ReportMcpResult or ReportMcpTools whose call failed: a missing

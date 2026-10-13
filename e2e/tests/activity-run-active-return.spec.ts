@@ -1,7 +1,7 @@
 // A following viewport must reach the physical tail above the composer after
 // active work advances while the thread is switched away or its pane is closed.
 import { test, expect, type SeedResult } from './fixtures.js';
-import { advance, claudeScenario, emit, startMock, textLines, toolResultLine, toolUseLine, waitForGate } from './agent-visibility-helpers.js';
+import { advance, claudeScenario, emit, listItems, startMock, textLines, toolResultLine, toolUseLine, waitForGate } from './agent-visibility-helpers.js';
 
 const batch = (start: number, count: number) => Array.from({ length: count }, (_, j) => {
   const i = start + j;
@@ -48,6 +48,12 @@ for (const returnPath of ['switch', 'reopen'] as const) {
       }
       await advance(harness, mockId, 'away');
       await waitForGate(harness, 'back');
+      // The gate reports that the mock wrote the rows, not that the app has
+      // stored them. A row still on its way is painted when its live event
+      // lands, after the reopen's sync, so the return is measured once the
+      // backend lists the newest row.
+      const newest = `tool-${initialCount + awayCount - 1}`;
+      await expect.poll(async () => (await listItems(harness, threadId)).some(item => item.id === newest)).toBe(true);
       const returnSamples = awayCount === 1 ? page.evaluate(() => new Promise<Array<{ counts: string; later: boolean }>>(resolve => {
         const samples: Array<{ counts: string; later: boolean }> = [];
         let frames = 0;

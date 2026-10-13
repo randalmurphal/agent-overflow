@@ -173,12 +173,15 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 // ids, compacting window, sends pending), never the requests' prose or
 // the queued messages.
 type ThreadLiveActivity struct {
-	ThreadID              string               `json:"threadId"`
-	ActiveTurn            *LiveStateActiveTurn `json:"activeTurn,omitempty"`
-	ApprovalRequestIDs    []string             `json:"approvalRequestIds"`
-	UserInputRequestIDs   []string             `json:"userInputRequestIds"`
-	CompactingSinceUnixMs int64                `json:"compactingSinceUnixMs,omitempty"`
-	SendsPending          bool                 `json:"sendsPending,omitempty"`
+	ThreadID            string               `json:"threadId"`
+	ActiveTurn          *LiveStateActiveTurn `json:"activeTurn,omitempty"`
+	ApprovalRequestIDs  []string             `json:"approvalRequestIds"`
+	UserInputRequestIDs []string             `json:"userInputRequestIds"`
+	// PromptRoutes names, by request id, the standing agent a routed
+	// prompt went to instead of the user.
+	PromptRoutes          map[string]provider.PromptRoute `json:"promptRoutes,omitempty"`
+	CompactingSinceUnixMs int64                           `json:"compactingSinceUnixMs,omitempty"`
+	SendsPending          bool                            `json:"sendsPending,omitempty"`
 }
 
 // ListThreadLiveActivity returns every thread on this computer with live
@@ -209,6 +212,7 @@ func (a *App) ListThreadLiveActivity() ([]ThreadLiveActivity, error) {
 			ThreadID:              live.ThreadID,
 			ApprovalRequestIDs:    slicesx.OrEmpty(live.ApprovalRequestIDs),
 			UserInputRequestIDs:   slicesx.OrEmpty(live.UserInputRequestIDs),
+			PromptRoutes:          live.PromptRoutes,
 			CompactingSinceUnixMs: live.CompactingSinceUnixMs,
 		}
 		if _, pending := sendsPending[live.ThreadID]; pending {

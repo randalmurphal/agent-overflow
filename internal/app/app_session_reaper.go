@@ -197,5 +197,5 @@ func (a *App) idleCloseSession(threadID string, cutoffNano int64) error {
 	// Only this idle end suspends the thread's browser pages, and it does so
 	// under the thread lock, so a session starting next finds them
 	// suspended rather than suspended under it.
-	return errors.Join(a.teardownAndCloseSession(threadID, sess), a.suspendThreadBrowserPages(threadID))
+	return errors.Join(a.teardownAndCloseSessionHoldingMutations(threadID, sess), a.suspendThreadBrowserPages(threadID))
 }

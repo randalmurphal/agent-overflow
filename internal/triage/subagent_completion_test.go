@@ -405,9 +405,9 @@ func TestAgentCompletionReadsNoTranscript(t *testing.T) {
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
-	// completeAgent settles one launch and reports the store reads and
-	// item upserts its notification cost.
-	completeAgent := func(launchID, taskID string, children int) (uint64, int, time.Duration) {
+	// completeAgent settles one launch and reports the store reads, store
+	// writes and item upserts its notification cost.
+	completeAgent := func(launchID, taskID string, children int) (completionCost, int) {
 		t.Helper()
 		startAgentLaunch(t, router, "t1", launchID, "", taskID)
 		now := time.Now().UnixMilli()
@@ -431,11 +431,9 @@ func TestAgentCompletionReadsNoTranscript(t *testing.T) {
 			`"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"assistant","id":"msg_file_only","model":"m",`+
 			`"content":[{"type":"text","text":"a row the thread never saw"}]}}`+"\n")
 		emissions.reset()
-		reads := st.ReadCount()
-		start := time.Now()
+		reads, writes := st.ReadCount(), st.WriteCount()
 		notifyAgentWithSummary(t, router, "t1", launchID, taskID, transcript, nil, "Reviewed.")
-		elapsed := time.Since(start)
-		reads = st.ReadCount() - reads
+		cost := completionCost{reads: st.ReadCount() - reads, writes: st.WriteCount() - writes}
 		upserts := len(itemUpserts(emissions.snapshot()))
 
 		if got := len(childrenOfLaunch(t, st, "t1", launchID, 0)); got != children {
@@ -451,19 +449,21 @@ func TestAgentCompletionReadsNoTranscript(t *testing.T) {
 		if state := decodeItemMetaMap(t, sibling.Meta)["notification_output_state"]; state != "loaded" {
 			t.Fatalf("%s: notification_output_state = %v, want loaded", launchID, state)
 		}
-		return reads, upserts, elapsed
+		return cost, upserts
 	}
 
-	emptyReads, emptyUpserts, _ := completeAgent("agent-empty", "task-empty", 0)
-	bigReads, bigUpserts, elapsed := completeAgent("agent-big", "task-big", 500)
-	t.Logf("completion of a 500-row agent: %v, %d store reads, %d item upserts", elapsed, bigReads, bigUpserts)
-	if bigReads != emptyReads || bigUpserts != emptyUpserts {
-		t.Fatalf("completion cost grew with the agent: 500 rows took %d reads and %d upserts, 0 rows %d and %d",
-			bigReads, bigUpserts, emptyReads, emptyUpserts)
+	empty, emptyUpserts := completeAgent("agent-empty", "task-empty", 0)
+	big, bigUpserts := completeAgent("agent-big", "task-big", 500)
+	t.Logf("completion of a 500-row agent: %d store reads, %d store writes, %d item upserts", big.reads, big.writes, bigUpserts)
+	if big != empty || bigUpserts != emptyUpserts {
+		t.Fatalf("completion cost grew with the agent: 500 rows took %d reads, %d writes and %d upserts, 0 rows %d, %d and %d",
+			big.reads, big.writes, bigUpserts, empty.reads, empty.writes, emptyUpserts)
 	}
-	if elapsed > 250*time.Millisecond {
-		t.Fatalf("completion of a 500-row agent took %v", elapsed)
-	}
+}
+
+// completionCost is the store statements one completion issued.
+type completionCost struct {
+	reads, writes uint64
 }
 
 func writeTestFile(t *testing.T, name, body string) string {

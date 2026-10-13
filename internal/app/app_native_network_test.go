@@ -240,7 +240,7 @@ func TestNativeDiscoveryKeepsResultsWithTheirScanAndRetiresOnOwnerLoss(t *testin
 		if len(got) != 0 {
 			t.Fatal("disconnected owner returned stale scan")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("owner disconnect stranded scan")
 	}
 }

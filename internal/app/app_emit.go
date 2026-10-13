@@ -78,6 +78,7 @@ func (a *App) emitKeyed(name eventchan.Channel, data any) string {
 	// (app_notification_mapping.go). It projects and queues; it never
 	// blocks this goroutine.
 	a.tapNotification(name, data)
+	a.tapWorkerPrompt(name, data)
 	entityKey := ""
 	if entityFilteredChannels[string(name)] || (a.replay != nil && a.replay.Enabled()) {
 		entityKey = eventscope.ThreadIDFromEvent(data)

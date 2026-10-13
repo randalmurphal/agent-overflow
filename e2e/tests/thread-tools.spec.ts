@@ -8,8 +8,9 @@
 // output read in ranges; spawn with
 // its origin chip, footer and wake, without changing user defaults; send, reply, late reply and status;
 // ask on a hidden read-only fork that is deleted once it answers; cancel
-// by token and by thread; reminders; organizing threads and groups; and
-// the refusals (self-send, unrelated cancel, switch off).
+// by token and by thread; reminders; organizing threads and groups,
+// including archiving a thread whose session is live; and the refusals
+// (self-send, unrelated cancel, switch off).
 //
 // Everything a tool does here runs through a mock provider making REAL
 // MCP calls (scenario `mcpCall` / `mcpList`), so the assertions are about
@@ -50,6 +51,8 @@ const TOOL_NAMES = [
   'thread_update',
   'thread_group',
   'thread_remind',
+  'thread_loop',
+  'thread_watch',
 ];
 
 const APP_GUIDE_OPENING = 'You are running inside Agent Overflow';
@@ -60,7 +63,7 @@ interface McpRow {
   disabled: boolean;
 }
 
-test('both providers get the thirteen tools and the guide, in every runtime mode', async ({
+test('both providers get the fifteen tools and the guide, in every runtime mode', async ({
   harness,
 }) => {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
@@ -2107,6 +2110,81 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
   expect(after.find((row) => row.id === beta)!.groupId).toBeFalsy();
   expect(after.find((row) => row.id === beta)!.pinnedAt).toBeFalsy();
 });
+
+// An agent's thread_update archive of a thread whose session is live
+// returns, and ends that session as the archive binding does. The teardown
+// takes the thread's mutation lock to drop its queue, so an archive that
+// held that lock across it would never return, and every later send, Stop
+// or start on the thread would wait on it for good: unarchived, the thread
+// takes the person's next message and answers it.
+for (const provider of ['claude', 'codex'] as const) {
+  test(`${provider}: thread_update archives a thread whose session is live`, async ({ harness }) => {
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [
+        { name: `tt-live-archive-caller-${provider}`, repo: {}, threads: [{ title: 'Tidy caller', provider }] },
+        { name: `tt-live-archive-target-${provider}`, repo: {}, threads: [{ title: 'Finished work', provider }] },
+      ],
+    });
+    const { path: callerPath, threadIds: [caller] } = seed.projects[0];
+    const { path: targetPath, threadIds: [target] } = seed.projects[1];
+    const reply = (name: string, text: string) =>
+      threadToolsScenario({ name, provider, echoUserMessage: true, turns: [{ text }], afterTurns: 'silent' });
+
+    await setScenario(harness, targetPath, reply(`tt-live-archive-target-${provider}`, 'Done for today.'));
+    await harness.rpc('StartSession', target);
+    await harness.rpc('SendMessage', target, 'wrap up', null);
+    await awaitTurnCompleted(harness, target);
+    const live = await harness.waitForEvent<HarnessMockEvent>(
+      'harness:mock',
+      (ev) => ev.cwd === targetPath && ev.report.kind === 'user_input',
+    );
+
+    await setScenario(
+      harness,
+      callerPath,
+      threadToolsScenario({
+        name: `tt-live-archive-caller-${provider}`,
+        provider,
+        echoUserMessage: true,
+        turns: [
+          {
+            steps: [{ call: { tool: 'thread_update', args: { thread_ids: [target], archived: true } } }],
+            text: 'Archived the finished thread.',
+          },
+        ],
+        afterTurns: 'silent',
+      }),
+    );
+    await harness.rpc('StartSession', caller);
+    await harness.rpc('SendMessage', caller, 'archive the finished thread', null);
+    const archived = await awaitToolAnswer<{ results: Array<{ thread_id: string; updated: boolean; error?: string }> }>(
+      harness,
+      { tool: 'thread_update', cwd: callerPath, timeoutMs: 30_000 },
+    );
+    expect(archived.isError, archived.text).toBe(false);
+    expect(archived.value!.results).toEqual([expect.objectContaining({ thread_id: target, updated: true })]);
+    await harness.waitForEvent<HarnessMockEvent>(
+      'harness:mock',
+      (ev) => ev.mockId === live.mockId && ev.report.kind === 'exiting',
+      15_000,
+    );
+    await awaitTurnCompleted(harness, caller);
+    expect((await threadRows(harness)).some((row) => row.id === target)).toBe(false);
+    console.log(`${provider}: thread_update archived the live thread and its session ended`);
+
+    await harness.rpc('UnarchiveThread', target);
+    await setScenario(harness, targetPath, reply(`tt-live-archive-back-${provider}`, 'Back at it.'));
+    await harness.rpc('SendMessage', target, 'one more thing', null);
+    const next = await harness.waitForEvent<HarnessMockEvent>(
+      'harness:mock',
+      (ev) => ev.cwd === targetPath && ev.report.kind === 'user_input' && (ev.report.input ?? '').includes('one more thing'),
+      30_000,
+    );
+    expect(next.mockId).not.toBe(live.mockId);
+    await awaitTurnCompleted(harness, target, 30_000);
+    console.log(`${provider}: unarchived, the thread started a new session and answered the next message`);
+  });
+}
 
 test('thread_spawn cuts a worktree and forks an existing thread when asked to', async ({
   harness,

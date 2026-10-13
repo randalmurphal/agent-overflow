@@ -124,29 +124,53 @@ func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids []str
 	return changed, tx.Commit()
 }
 
-// DeleteFlushQueueItemsForThread drops every queued message of one thread.
-// Its callers are the wholesale DROPS — a session teardown whose triage
-// cleanup discards the in-memory queue, and the Codex rollback purge — where
-// leaving rows behind would resurrect at the next boot exactly the messages
-// the user's Stop or revert threw away.
-func (s *Store) DeleteFlushQueueItemsForThread(threadID string) error {
+// DeleteFlushQueueItemsForThread drops every queued message of one thread
+// but those whose send id starts with keepSendIDPrefix (empty keeps none)
+// and the rows keepIDs names. Its callers are the wholesale DROPS — a
+// session teardown whose triage cleanup discards the in-memory queue, and
+// the Codex rollback purge — where leaving rows behind would resurrect at
+// the next boot exactly the messages the user's Stop or revert threw away. A
+// row kept is the caller's to remove (RemoveFlushQueueItem, or its owner's
+// own withdrawal).
+func (s *Store) DeleteFlushQueueItemsForThread(threadID, keepSendIDPrefix string, keepIDs ...string) error {
 	if strings.TrimSpace(threadID) == "" {
 		return nil
+	}
+	kept, err := json.Marshal(append([]string{}, keepIDs...))
+	if err != nil {
+		return err
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	dropped := `thread_id = ? AND (? = '' OR substr(send_id, 1, ?) <> ?) AND id NOT IN (SELECT value FROM json_each(?))`
+	args := []any{threadID, keepSendIDPrefix, len(keepSendIDPrefix), keepSendIDPrefix, string(kept)}
 	if _, err := tx.Exec(`UPDATE async_questions SET state='unanswered',answer='',send_id='',user_item_id=''
       WHERE thread_id=? AND state='submitted' AND send_id<>'' AND send_id IN
-      (SELECT send_id FROM flush_queue_items WHERE thread_id=? AND send_id<>'')`, threadID, threadID); err != nil {
+      (SELECT send_id FROM flush_queue_items WHERE send_id<>'' AND `+dropped+`)`, append([]any{threadID}, args...)...); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE thread_id = ?`, threadID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE `+dropped, args...); err != nil {
 		return fmt.Errorf("store: delete flush queue items for thread %s: %w", threadID, err)
 	}
 	return tx.Commit()
+}
+
+// RemoveFlushQueueItem deletes one queued message and reports whether it was
+// still there, so of two callers that both mean to remove it exactly one
+// learns it did.
+func (s *Store) RemoveFlushQueueItem(id string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM flush_queue_items WHERE id = ?`, id)
+	if err != nil {
+		return false, fmt.Errorf("store: remove flush queue item %s: %w", id, err)
+	}
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: remove flush queue item %s: rows affected: %w", id, err)
+	}
+	return removed == 1, nil
 }
 
 // ListFlushQueueItems returns one thread's queued messages in queue order.

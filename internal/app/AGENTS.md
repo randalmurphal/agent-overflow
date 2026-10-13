@@ -90,7 +90,11 @@ operation. Uploads stage outside the thread mutation lock, then reacquire it
 for ownership-checked publication. Durable flush rows are written before the
 in-memory queue, removed only on settlement or an explicit drop, and restored
 to the composer at boot instead of being dispatched without a user present.
-See [turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
+A teardown's or a revert's drop holds the thread mutation lock that every queue
+write takes, so a message queued during it is in the queue the drop reads or
+queued whole after it. A caller releases that lock before it tears down; the
+idle reaper, which holds it, uses the HoldingMutations variant. See
+[turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
 
 Agent thread requests settle once. Every state change on a request or receipt
 is conditional on the state it expects to find, and a change that does not
@@ -98,9 +102,45 @@ apply is a lost race rather than an error. A settlement takes the token's
 settle lock before it writes, releases it before queue or provider work, and
 is handed to the caller by the same door
 (`app_thread_tools_settle.go`). A wake (`app_thread_tools_wake.go`) writes its durable queue row and its
-delivery mark in one store transaction. Settling runs off the provider event
+delivery mark in one store transaction. Every message the app writes into
+a thread for someone else goes through `queueAgentNotice`
+(`app_agent_notice.go`): it is accepted once queued, without the action
+lock, and the session start it needs runs afterwards on joined notice
+work. Nobody watches that start, so its failure notifies, once per run
+of failures, as well as writing the error row, and a later loop or watch
+fire tries it again. Settling runs off the provider event
 worker because it can stop or start a session, and a stop drains that
 worker's queue.
+
+Loops and watches run on the same sweep: registration and lifecycle in
+`app_agent_wakes.go`, runs and boot recovery in `app_agent_wake_runs.go`,
+rendering and queueing in `app_agent_wake_delivery.go`, promotion in
+`app_standing_agents.go`. The contract is
+[standing agents](../../docs/specs/standing-agents.md#wake-supervisor). A
+loop or watch wake is data, not something the person wrote: one still queued
+at boot or left unconfirmed by a session that ended never goes to the
+composer, and its row records `not delivered`; an outside `thread send` is
+handled the same way, with a notice in its thread. A request's answer or
+reminder and a remote job's completion that never reached the agent go
+back to their owners through one path (`giveBackToOwners`), from a Stop, a
+revert, a session end, a failed Codex resend and the boot sweep. A message
+Claude joined from a person's text and such parts is split by the lengths
+its dispatch recorded (`usermessage.JoinedPart`), and only the person's
+text goes back (`agentPartsNotTakenIn`). What the app's messages are owed
+is applied once that restore commits (`settleNotTakenIn`): a restore that
+fails requeues them whole. Whether a turn was a tick
+is read from the rows of the turn that ended, because a dispatch cannot know
+what the provider joined into it. The exception is a Claude turn the CLI
+started for messages queued during the previous turn, which keep their rows
+there: it is a tick when every one of them was a wake (`agentWakeQueued`).
+
+A standing agent's worker prompts are stamped with their route by triage
+(`SetPromptRouter`) and delivered, answered and settled in
+`app_worker_prompts.go`, off the emit path on one serial queue so a
+resolution never overtakes its delivery. A prompt whose wake cannot reach
+the agent (a failed delivery, a session that ended with it unconfirmed, a
+cleared queue) goes back to the user through `triage.UnroutePrompt`; it is
+never left routed to nobody.
 
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to

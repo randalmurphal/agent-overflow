@@ -323,6 +323,11 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	if err := repairStartupOwnedPaths(dbDir); err != nil {
 		return "", nil, err
 	}
+	// Before any session can start: every prompt file here belongs to a
+	// process that exited without closing its sessions.
+	if err := sweepClaudePromptFiles(dbDir); err != nil {
+		a.bootPhaseFailed(err)
+	}
 	dbPath := filepath.Join(dbDir, databaseFileName)
 	if err := prepareAppSensitiveFile(dbPath); err != nil {
 		return "", nil, fmt.Errorf("failed to prepare database file %s: %w", dbPath, err)
@@ -692,6 +697,9 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		return fmt.Errorf("restore replacement drafts: %w", err)
 	}
 	a.restoreDurableFlushQueueAtBoot()
+	if err := a.loadSessionStartFailures(); err != nil {
+		a.bootPhaseFailed(fmt.Errorf("load the threads whose start failed: %w", err))
+	}
 	endPhase()
 	browserSettings := a.currentSettings()
 	a.refreshBrowserAccelerators()

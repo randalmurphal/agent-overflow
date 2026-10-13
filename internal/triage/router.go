@@ -58,14 +58,25 @@ type Router struct {
 	// app-layer resolution); nil until then. Leaf lock.
 	generatedImageMu       sync.Mutex
 	generatedImageImporter GeneratedImageImporter
-	tracer                 trace.Tracer
-	metrics                TurnMetrics
+	// promptRouter names the standing agent a thread's approval and
+	// user-input prompts go to instead of the user, or nil. Installed by
+	// the app (SetPromptRouter); nil until then. Leaf lock.
+	promptRouterMu sync.Mutex
+	promptRouter   func(threadID string) *provider.PromptRoute
+	tracer         trace.Tracer
+	metrics        TurnMetrics
 	// deferredPersistGate is a test-only hook (same-package tests set it
 	// directly) called inside the anchored echo section AFTER the pending
 	// entry is popped and BEFORE its row persists — the window
 	// NextFlushSequence's anchor exists to close. Nil in production.
 	deferredPersistGate func()
-	mu                  sync.Mutex
+	// delays holds the router's debounce and throttle intervals, the
+	// production values from NewRouter. A same-package test lengthens
+	// one so its timer cannot fire inside a window that asserts what a
+	// call emitted or read; the deferred work then runs at the test's
+	// explicit flush.
+	delays routerDelays
+	mu     sync.Mutex
 	// threads holds the per-thread correlation state, one entry per
 	// thread with a live (or recently torn-down) session. Guarded by
 	// r.mu. cleanupThread drops the whole entry, which is what makes the
@@ -258,6 +269,27 @@ func (r *Router) SetUsageWorkItemResolver(resolve func(threadID string) string) 
 	r.usageResolverMu.Unlock()
 }
 
+// SetPromptRouter installs the lookup that stamps a prompt's RoutedTo. It
+// runs on the provider event worker once per prompt and must not block on
+// anything but a store read.
+func (r *Router) SetPromptRouter(route func(threadID string) *provider.PromptRoute) {
+	r.promptRouterMu.Lock()
+	r.promptRouter = route
+	r.promptRouterMu.Unlock()
+}
+
+// routePrompt answers where a new prompt of threadID goes. Whatever the
+// provider's meta carried is replaced, so only the app can route a prompt.
+func (r *Router) routePrompt(threadID string) *provider.PromptRoute {
+	r.promptRouterMu.Lock()
+	route := r.promptRouter
+	r.promptRouterMu.Unlock()
+	if route == nil {
+		return nil
+	}
+	return route(threadID)
+}
+
 // NewRouter creates a triage router. Telemetry is off by default; wire a
 // tracer and metrics via SetTelemetry to enable spans and counters.
 func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
@@ -284,7 +316,25 @@ func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 		settles:                    make(map[string]*threadSettles),
 		unknownSessionStatusLogged: make(map[string]struct{}),
 		flushStampApplied:          make(map[uint64]struct{}),
+		delays: routerDelays{
+			wireRefreshQuiet:     wireRefreshQuiet,
+			wireRefreshMaxWait:   wireRefreshMaxWait,
+			streamPersist:        streamPersistInterval,
+			commandOutputPersist: commandOutputPersistInterval,
+			usageEmit:            usageEmitMinInterval,
+		},
 	}
+}
+
+// routerDelays are the intervals of the router's timers: the deferred
+// wire refresh (wire_items.go), the stream persistence flush
+// (stream_buffers.go) and the usage emit throttle (usage_compaction.go).
+type routerDelays struct {
+	wireRefreshQuiet     time.Duration
+	wireRefreshMaxWait   time.Duration
+	streamPersist        time.Duration
+	commandOutputPersist time.Duration
+	usageEmit            time.Duration
 }
 
 // SetTelemetry wires tracer + metric instruments. Safe to call with nil

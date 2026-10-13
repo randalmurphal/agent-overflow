@@ -123,6 +123,11 @@ describe('AO tool presentation', () => {
       ['thread_group', { group: 'Bugs', pin: 'front' }, 'group', 'pin Bugs front'],
       ['thread_group', { group: 'Bugs', delete: true }, 'group', 'delete Bugs'],
       ['thread_remind', { note: 'check the queue' }, 'remind', 'check the queue'],
+      ['thread_loop', { label: 'board', note: 'check', every_seconds: 300 }, 'loop', 'board · every 5m'],
+      ['thread_loop', { label: 'board', stop: true }, 'loop', 'stop board'],
+      ['thread_watch', { label: 'mrs', command: './poll', every_seconds: 90 }, 'watch', 'mrs · every 90s'],
+      ['thread_watch', { label: 'tail', command: './tail', long_running: true }, 'watch', 'tail · long-running'],
+      ['thread_cancel', { label: 'board' }, 'cancel', 'board'],
     ])('%s', (tool, input, label, what) => {
       const p = aoToolPresentation(meta(THREAD_TOOLS_SERVER, tool, input), names)!;
       expect(p).toMatchObject({ icon: 'speech-bubble', label, what, headerLabel: `Thread ${label}` });

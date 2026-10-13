@@ -1430,6 +1430,26 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('marks a replay resumed only on a connection that replaced an earlier one', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const recovery: string[] = [];
+    client.onReplay((phase, resumed) => recovery.push(`${phase}:${resumed}`));
+    client.subscribe('provider:item_event', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    first.pushFrame({ type: 'replay' });
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    second.pushFrame({ type: 'replay' });
+    expect(recovery).toEqual(['start:false', 'complete:false', 'start:true', 'complete:true']);
+    client.close();
+  });
+
   it('retires stalled replay despite live traffic and retries unchanged cursors without resending a mutation', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);

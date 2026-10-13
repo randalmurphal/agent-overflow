@@ -90,6 +90,17 @@ export interface ApprovalRequest {
   availableDecisions?: unknown[];
   permissions?: PermissionProfile;
   elicitation?: ElicitationRequest;
+  /**
+   * The standing agent this prompt went to instead of the user: the thread
+   * that spawned this one (ruling 19). The user can still answer it here.
+   */
+  routedTo?: PromptRoute | null;
+}
+
+/** The standing agent a worker's prompt was delivered to. */
+export interface PromptRoute {
+  threadId: string;
+  title: string;
 }
 
 export interface ContextWindow {
@@ -134,6 +145,8 @@ export interface UserInputRequest {
   toolName: string;
   title: string;
   questions: UserInputQuestion[];
+  /** Same route as ApprovalRequest.routedTo. */
+  routedTo?: PromptRoute | null;
 }
 
 export interface UserInputEvent {

@@ -128,6 +128,13 @@ export class ApprovalRequest {
      */
     "permissionSuggestions"?: json$0.RawMessage;
 
+    /**
+     * RoutedTo is set when the prompt goes to the standing agent that
+     * spawned this thread instead of to the user. Triage stamps it; a
+     * provider never does.
+     */
+    "routedTo"?: PromptRoute | null;
+
     /** Creates a new ApprovalRequest instance. */
     constructor($$source: Partial<ApprovalRequest> = {}) {
         if (!("requestId" in $$source)) {
@@ -159,6 +166,7 @@ export class ApprovalRequest {
         const $$createField10_0 = $$createType1;
         const $$createField12_0 = $$createType3;
         const $$createField13_0 = $$createType5;
+        const $$createField15_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("permissions" in $$parsedSource) {
             $$parsedSource["permissions"] = $$createField10_0($$parsedSource["permissions"]);
@@ -168,6 +176,9 @@ export class ApprovalRequest {
         }
         if ("elicitation" in $$parsedSource) {
             $$parsedSource["elicitation"] = $$createField13_0($$parsedSource["elicitation"]);
+        }
+        if ("routedTo" in $$parsedSource) {
+            $$parsedSource["routedTo"] = $$createField15_0($$parsedSource["routedTo"]);
         }
         return new ApprovalRequest($$parsedSource as Partial<ApprovalRequest>);
     }
@@ -237,7 +248,7 @@ export class ApprovalResponse {
      */
     static createFrom($$source: any = {}): ApprovalResponse {
         const $$createField3_0 = $$createType1;
-        const $$createField5_0 = $$createType7;
+        const $$createField5_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("permissions" in $$parsedSource) {
             $$parsedSource["permissions"] = $$createField3_0($$parsedSource["permissions"]);
@@ -453,8 +464,8 @@ export class FileSystemPermissions {
      * Creates a new FileSystemPermissions instance from a string or object.
      */
     static createFrom($$source: any = {}): FileSystemPermissions {
-        const $$createField0_0 = $$createType8;
-        const $$createField1_0 = $$createType8;
+        const $$createField0_0 = $$createType10;
+        const $$createField1_0 = $$createType10;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("read" in $$parsedSource) {
             $$parsedSource["read"] = $$createField0_0($$parsedSource["read"]);
@@ -489,7 +500,7 @@ export class ModelCatalog {
      * Creates a new ModelCatalog instance from a string or object.
      */
     static createFrom($$source: any = {}): ModelCatalog {
-        const $$createField0_0 = $$createType10;
+        const $$createField0_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("models" in $$parsedSource) {
             $$parsedSource["models"] = $$createField0_0($$parsedSource["models"]);
@@ -541,10 +552,10 @@ export class ModelInfo {
      * Creates a new ModelInfo instance from a string or object.
      */
     static createFrom($$source: any = {}): ModelInfo {
-        const $$createField4_0 = $$createType8;
-        const $$createField5_0 = $$createType12;
-        const $$createField7_0 = $$createType14;
-        const $$createField8_0 = $$createType16;
+        const $$createField4_0 = $$createType10;
+        const $$createField5_0 = $$createType14;
+        const $$createField7_0 = $$createType16;
+        const $$createField8_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("capabilities" in $$parsedSource) {
             $$parsedSource["capabilities"] = $$createField4_0($$parsedSource["capabilities"]);
@@ -608,8 +619,8 @@ export class PendingInteractiveRequests {
      * Creates a new PendingInteractiveRequests instance from a string or object.
      */
     static createFrom($$source: any = {}): PendingInteractiveRequests {
-        const $$createField0_0 = $$createType18;
-        const $$createField1_0 = $$createType20;
+        const $$createField0_0 = $$createType20;
+        const $$createField1_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("approvals" in $$parsedSource) {
             $$parsedSource["approvals"] = $$createField0_0($$parsedSource["approvals"]);
@@ -638,8 +649,8 @@ export class PermissionProfile {
      * Creates a new PermissionProfile instance from a string or object.
      */
     static createFrom($$source: any = {}): PermissionProfile {
-        const $$createField0_0 = $$createType22;
-        const $$createField1_0 = $$createType24;
+        const $$createField0_0 = $$createType24;
+        const $$createField1_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("network" in $$parsedSource) {
             $$parsedSource["network"] = $$createField0_0($$parsedSource["network"]);
@@ -648,6 +659,35 @@ export class PermissionProfile {
             $$parsedSource["fileSystem"] = $$createField1_0($$parsedSource["fileSystem"]);
         }
         return new PermissionProfile($$parsedSource as Partial<PermissionProfile>);
+    }
+}
+
+/**
+ * PromptRoute names the standing agent a worker's prompt was delivered to.
+ * The prompt stays open in the worker, where the user can still answer it.
+ */
+export class PromptRoute {
+    "threadId": string;
+    "title": string;
+
+    /** Creates a new PromptRoute instance. */
+    constructor($$source: Partial<PromptRoute> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PromptRoute instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PromptRoute {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PromptRoute($$parsedSource as Partial<PromptRoute>);
     }
 }
 
@@ -784,7 +824,7 @@ export class RateLimitsSnapshot {
      * Creates a new RateLimitsSnapshot instance from a string or object.
      */
     static createFrom($$source: any = {}): RateLimitsSnapshot {
-        const $$createField2_0 = $$createType26;
+        const $$createField2_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("limits" in $$parsedSource) {
             $$parsedSource["limits"] = $$createField2_0($$parsedSource["limits"]);
@@ -983,7 +1023,7 @@ export class UserInputQuestion {
      * Creates a new UserInputQuestion instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputQuestion {
-        const $$createField3_0 = $$createType28;
+        const $$createField3_0 = $$createType30;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("options" in $$parsedSource) {
             $$parsedSource["options"] = $$createField3_0($$parsedSource["options"]);
@@ -1050,6 +1090,11 @@ export class UserInputRequest {
     "title": string;
     "questions": UserInputQuestion[];
 
+    /**
+     * RoutedTo is ApprovalRequest.RoutedTo's twin.
+     */
+    "routedTo"?: PromptRoute | null;
+
     /** Creates a new UserInputRequest instance. */
     constructor($$source: Partial<UserInputRequest> = {}) {
         if (!("requestId" in $$source)) {
@@ -1075,10 +1120,14 @@ export class UserInputRequest {
      * Creates a new UserInputRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputRequest {
-        const $$createField7_0 = $$createType30;
+        const $$createField7_0 = $$createType32;
+        const $$createField8_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("questions" in $$parsedSource) {
             $$parsedSource["questions"] = $$createField7_0($$parsedSource["questions"]);
+        }
+        if ("routedTo" in $$parsedSource) {
+            $$parsedSource["routedTo"] = $$createField8_0($$parsedSource["routedTo"]);
         }
         return new UserInputRequest($$parsedSource as Partial<UserInputRequest>);
     }
@@ -1113,7 +1162,7 @@ export class UserInputResponse {
      * Creates a new UserInputResponse instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputResponse {
-        const $$createField2_0 = $$createType31;
+        const $$createField2_0 = $$createType33;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answers" in $$parsedSource) {
             $$parsedSource["answers"] = $$createField2_0($$parsedSource["answers"]);
@@ -1129,29 +1178,31 @@ const $$createType2 = $Create.Array($Create.Any);
 const $$createType3 = $Create.Nullable($$createType2);
 const $$createType4 = ElicitationRequest.createFrom;
 const $$createType5 = $Create.Nullable($$createType4);
-const $$createType6 = ElicitationResolution.createFrom;
+const $$createType6 = PromptRoute.createFrom;
 const $$createType7 = $Create.Nullable($$createType6);
-const $$createType8 = $Create.Array($Create.Any);
-const $$createType9 = ModelInfo.createFrom;
-const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = FastModeTier.createFrom;
-const $$createType12 = $Create.Nullable($$createType11);
-const $$createType13 = ContextWindowOption.createFrom;
-const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = ReasoningEffortOption.createFrom;
+const $$createType8 = ElicitationResolution.createFrom;
+const $$createType9 = $Create.Nullable($$createType8);
+const $$createType10 = $Create.Array($Create.Any);
+const $$createType11 = ModelInfo.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = FastModeTier.createFrom;
+const $$createType14 = $Create.Nullable($$createType13);
+const $$createType15 = ContextWindowOption.createFrom;
 const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = ApprovalRequest.createFrom;
+const $$createType17 = ReasoningEffortOption.createFrom;
 const $$createType18 = $Create.Array($$createType17);
-const $$createType19 = UserInputRequest.createFrom;
+const $$createType19 = ApprovalRequest.createFrom;
 const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = NetworkPermissions.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = FileSystemPermissions.createFrom;
+const $$createType21 = UserInputRequest.createFrom;
+const $$createType22 = $Create.Array($$createType21);
+const $$createType23 = NetworkPermissions.createFrom;
 const $$createType24 = $Create.Nullable($$createType23);
-const $$createType25 = RateLimitEntry.createFrom;
-const $$createType26 = $Create.Array($$createType25);
-const $$createType27 = UserInputQuestionOption.createFrom;
+const $$createType25 = FileSystemPermissions.createFrom;
+const $$createType26 = $Create.Nullable($$createType25);
+const $$createType27 = RateLimitEntry.createFrom;
 const $$createType28 = $Create.Array($$createType27);
-const $$createType29 = UserInputQuestion.createFrom;
+const $$createType29 = UserInputQuestionOption.createFrom;
 const $$createType30 = $Create.Array($$createType29);
-const $$createType31 = $Create.Map($Create.Any, $Create.Any);
+const $$createType31 = UserInputQuestion.createFrom;
+const $$createType32 = $Create.Array($$createType31);
+const $$createType33 = $Create.Map($Create.Any, $Create.Any);

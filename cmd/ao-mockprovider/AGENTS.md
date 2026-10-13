@@ -72,7 +72,10 @@ control channel aligned with verified provider behavior.
   and reported as `mcp_result`, never as a scenario failure. `mcpList`
   runs the same session's `tools/list` and reports `mcp_tools`, writing
   no wire frame: a CLI reads a tool list at handshake, off the
-  transcript.
+  transcript. A call without `toolUseId` is numbered per process
+  (`mcp-<turn>-<seq>`), so a test that calls tools from two processes of
+  one thread gives the later calls their own `toolUseId`; otherwise a
+  repeated id overwrites the earlier call's timeline row.
 - A `capture` step binds a `${VAR}` from a regex over already-spellable
   text, for the rest of the process, so a scenario can name a value the
   app minted after the scenario was installed. A pattern that matches

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 
@@ -154,11 +155,13 @@ func (a *App) awaitAttachment(id string) {
 // this DEVICE, and the far side adopts its row again by thumbprint if
 // this installation ever pairs with that machine a second time.
 //
-// `abandon` is the confirmation for the agent thread requests this
-// computer still has open there. Without it they are listed and the call
-// refuses; with it they are settled locally as errored, their wakes are
-// dropped, and the pairing goes. The other computer is not told, because
-// forgetting it is exactly the decision to stop talking to it.
+// `abandon` is the confirmation for what forgetting drops: the agent thread
+// requests this computer still has open there, and the finished jobs whose
+// completions are held for archived conversations, which can no longer be
+// delivered. Without it they are named and the call refuses; with it the
+// requests are settled locally as errored, their wakes are dropped, the held
+// completions are discarded, and the pairing goes. The other computer is not
+// told, because forgetting it is exactly the decision to stop talking to it.
 //
 //ao:scope host
 //ao:route home
@@ -168,34 +171,44 @@ func (a *App) RemoveBackend(id string, abandon bool) error {
 	}
 	unlock := a.remoteStartLocks().Lock("computer:" + id)
 	defer unlock()
-	if pending, err := a.store.HasPendingRemoteWatchesForComputer(id); err != nil {
+	held, other, err := a.store.PendingRemoteWatchesForComputer(id)
+	if err != nil {
 		return err
-	} else if pending {
+	}
+	if other > 0 {
 		return errors.New("This computer has remote commands awaiting completion or confirmation. Stop them from their conversations and wait for confirmation before forgetting the computer. If it is offline, reconnect it first so cancellation remains available.")
 	}
-	if err := a.releaseThreadRequestsForComputer(id, abandon); err != nil {
+	if err := a.releaseForgottenComputerWork(id, held, abandon); err != nil {
 		return err
 	}
 	return a.backends.Remove(id)
 }
 
-// releaseThreadRequestsForComputer refuses once with the open requests
-// named, then settles them when the caller confirms.
-func (a *App) releaseThreadRequestsForComputer(id string, abandon bool) error {
+// releaseForgottenComputerWork refuses once with what forgetting drops
+// named, then drops it when the caller confirms: the open thread requests
+// are settled, and the held completions are discarded.
+func (a *App) releaseForgottenComputerWork(id string, held int, abandon bool) error {
 	rows, err := a.store.ListOpenThreadRequestsForComputer(id, threadForgetRequestListing)
 	if err != nil {
 		return err
 	}
-	if len(rows) == 0 {
+	if len(rows) == 0 && held == 0 {
 		return nil
 	}
 	if !abandon {
 		// Public, so the listing reaches a connected browser too and so
 		// the confirm affordance keys on the code rather than the prose.
+		if len(rows) == 0 {
+			return errorsx.Public("remote_completions_held", heldRemoteCompletions(held)+" Confirm to forget the computer anyway.", nil)
+		}
+		discarded := ""
+		if held > 0 {
+			discarded = " " + heldRemoteCompletions(held)
+		}
 		return errorsx.Public("thread_requests_open",
 			"This computer has agent thread requests still open there: "+
 				describeOpenThreadRequests(rows)+
-				". Forgetting it stops them from ever being collected. Confirm to forget it anyway; the other computer is not told and any work it started keeps running there.", nil)
+				". Forgetting it stops them from ever being collected."+discarded+" Confirm to forget it anyway; the other computer is not told and any work it started keeps running there.", nil)
 	}
 	for _, row := range rows {
 		// The wake goes first: the caller asked for an answer that can no
@@ -212,7 +225,22 @@ func (a *App) releaseThreadRequestsForComputer(id string, abandon bool) error {
 			return err
 		}
 	}
+	threads, err := a.store.DismissArchivedRemoteCompletions(id)
+	if err != nil {
+		return err
+	}
+	for _, threadID := range threads {
+		a.emitBackgroundChanged(threadID)
+	}
 	return nil
+}
+
+// heldRemoteCompletions names the completions forgetting a computer discards.
+func heldRemoteCompletions(n int) string {
+	if n == 1 {
+		return "1 finished job held for an archived conversation will be discarded."
+	}
+	return fmt.Sprintf("%d finished jobs held for archived conversations will be discarded.", n)
 }
 
 // threadForgetRequestListing bounds the refusal's list. More open requests

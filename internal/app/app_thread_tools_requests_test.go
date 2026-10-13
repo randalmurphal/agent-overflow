@@ -1,12 +1,18 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +29,7 @@ import (
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
+	"github.com/google/uuid"
 )
 
 // The request ledger end to end: a thread asks another thread for work, the
@@ -947,6 +954,209 @@ func TestThreadStatusReattachesAndCountsAsDelivery(t *testing.T) {
 	}
 }
 
+// settledAnswerOwingAWake leaves one request finished, with its wake armed
+// and not yet delivered: the state the retry pass hands over as a message,
+// and the one a status reply delivers by carrying the answer.
+func (f *requestFixture) settledAnswerOwingAWake(t *testing.T) string {
+	t.Helper()
+	f.mockClaude(t, "the index rebuild took nine minutes")
+	// The spawn's reply is dropped: a target that finished before the ack
+	// rendered would otherwise have its answer delivered by the ack.
+	ctx, pending := withThreadToolsPending(t.Context())
+	ack, err := f.adapter().Spawn(ctx, f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "how long did the rebuild take?", WaitSeconds: 0, Notify: false,
+	})
+	pending.run(false)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	if row := f.request(t, ack.Token); row.DeliveredAt != 0 {
+		t.Fatalf("the answer was delivered before its wake was armed: %q", row.DeliveredHow)
+	}
+	if _, err := f.app.store.SetThreadRequestNotify(ack.Token, true); err != nil {
+		t.Fatalf("arm the wake: %v", err)
+	}
+	return ack.Token
+}
+
+// A status reply that carries the answer holds the token until the reply is
+// written: a wake retry that runs while it is still on its way queues
+// nothing and books no attempt.
+func TestAStatusReplyOnItsWayHoldsOffTheWake(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	token := f.settledAnswerOwingAWake(t)
+
+	ctx, pending := withThreadToolsPending(t.Context())
+	report, err := f.adapter().RequestStates(ctx, f.callerIdentity(), threadtools.StatusCall{
+		Tokens: []string{token}, WaitSeconds: 5,
+	})
+	if err != nil {
+		t.Fatalf("RequestStates: %v", err)
+	}
+	if state := report.Requests[0]; state.Delivered != store.ThreadWakeInline || !strings.Contains(state.Answer, "nine minutes") {
+		t.Fatalf("state = %+v", state)
+	}
+
+	f.app.retryUndeliveredThreadWakes(time.Now())
+	f.app.threadRequestsWG.Wait()
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("a wake was queued while the reply carrying the answer was on its way: %+v", rows)
+	}
+	if row := f.request(t, token); row.DeliveredAt != 0 || row.WakeAttempts != 0 {
+		t.Fatalf("the retry acted on a held token: delivered %q at %d, attempts %d", row.DeliveredHow, row.DeliveredAt, row.WakeAttempts)
+	}
+
+	pending.run(true)
+	if f.app.requestWaitActive(token) {
+		t.Fatal("the reply was written and the token is still held")
+	}
+	f.app.retryUndeliveredThreadWakes(time.Now())
+	f.app.threadRequestsWG.Wait()
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("a wake was queued for an answer the reply delivered: %+v", rows)
+	}
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeInline || row.DeliveredAt == 0 {
+		t.Fatalf("delivery was not recorded: %q at %d", row.DeliveredHow, row.DeliveredAt)
+	}
+}
+
+// A reply that never reached the model delivered nothing, so releasing the
+// token leaves the wake owed, asks the sweep for a pass, and the retry hands
+// it over at once.
+func TestADroppedStatusReplyLeavesTheWakeOwed(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	token := f.settledAnswerOwingAWake(t)
+	// The sweep's nudge channel without the sweep, so the test reads the
+	// nudge itself.
+	nudge := make(chan struct{}, 1)
+	f.app.threadRequests.mu.Lock()
+	f.app.threadRequests.nudge = nudge
+	f.app.threadRequests.mu.Unlock()
+
+	ctx, pending := withThreadToolsPending(t.Context())
+	if _, err := f.adapter().RequestStates(ctx, f.callerIdentity(), threadtools.StatusCall{
+		Tokens: []string{token}, WaitSeconds: 5,
+	}); err != nil {
+		t.Fatalf("RequestStates: %v", err)
+	}
+	select {
+	case <-nudge:
+	default:
+	}
+	pending.run(false)
+	if f.app.requestWaitActive(token) {
+		t.Fatal("a dropped reply left the token held")
+	}
+	select {
+	case <-nudge:
+	default:
+		t.Fatal("releasing the token did not ask the sweep for a pass")
+	}
+	if row := f.request(t, token); row.DeliveredAt != 0 {
+		t.Fatalf("a dropped reply was recorded as delivered: %q", row.DeliveredHow)
+	}
+	f.app.retryUndeliveredThreadWakes(time.Now())
+	f.app.threadRequestsWG.Wait()
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued {
+		t.Fatalf("the owed wake was not handed over: %q at %d, attempts %d", row.DeliveredHow, row.DeliveredAt, row.WakeAttempts)
+	}
+}
+
+// An ack that waits holds its token the same way until its reply is written.
+func TestAWaitingAckHoldsItsTokenUntilTheReplyIsWritten(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.mockClaude(t, "done")
+	ctx, pending := withThreadToolsPending(t.Context())
+	ack, err := f.adapter().Spawn(ctx, f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "say done", WaitSeconds: 30, Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if ack.Delivered != store.ThreadWakeInline {
+		t.Fatalf("ack = %+v", ack)
+	}
+	if !f.app.requestWaitActive(ack.Token) {
+		t.Fatal("the ack carrying the answer released its token before its reply was written")
+	}
+	pending.run(true)
+	if f.app.requestWaitActive(ack.Token) {
+		t.Fatal("the token is still held after the reply was written")
+	}
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("a wake was queued for an answer the ack delivered: %+v", rows)
+	}
+}
+
+// A tool call that fails after it registered its wait releases it too: the
+// error carries no answer, and a registration left behind would hold off
+// the wakes of everything it named for the life of the process.
+func TestAThreadToolCallThatFailsReleasesItsWait(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	target := f.busyThread(t, "watched")
+	if err := f.app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: target.ID, TurnID: "watched-open", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	key := threadWatchKey(target.ID)
+
+	sessionToken := uuid.NewString()
+	f.app.sessionManager().put(f.caller.ID, session{Token: sessionToken, Provider: string(provider.Claude)})
+	endpoint := threadMCPEndpoint(t, f.app, f.caller, sessionToken)
+	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
+
+	type reply struct {
+		raw json.RawMessage
+		err error
+	}
+	done := make(chan reply, 1)
+	go func() {
+		body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
+			"name": "thread_status", "arguments": map[string]any{"thread_ids": []string{target.ID}, "wait_seconds": 60},
+		}})
+		response, err := (&http.Client{Timeout: 30 * time.Second}).Post(endpoint, "application/json", bytes.NewReader(body))
+		if err != nil {
+			done <- reply{err: err}
+			return
+		}
+		raw, err := io.ReadAll(response.Body)
+		done <- reply{raw: raw, err: errors.Join(err, response.Body.Close())}
+	}()
+	for parked := time.After(10 * time.Second); !f.app.requestWaitActive(key); {
+		select {
+		case got := <-done:
+			t.Fatalf("thread_status returned before it parked: %s %v", got.raw, got.err)
+		case <-parked:
+			t.Fatal("thread_status never parked")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// The thread the call watches goes away under it, so the next check
+	// fails the call.
+	if err := f.app.store.DeleteThread(target.ID); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("thread_status: %v", got.err)
+		}
+		if !strings.Contains(string(got.raw), `"isError":true`) {
+			t.Fatalf("the call did not fail: %s", got.raw)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("thread_status did not return")
+	}
+	waitUntil(t, 5*time.Second, func() bool { return !f.app.requestWaitActive(key) })
+}
+
 // mockClaudeHoldingTheTurn answers and then keeps the turn open, which is the
 // state a request is in while its agent is still working: the receipt is
 // running and a reply can still settle it.
@@ -1781,6 +1991,408 @@ func TestADisarmedReminderIsNotDeliveredAndLeavesTheThreadArchived(t *testing.T)
 	}
 }
 
+// owedWakeSeeds are the three kinds of thread-request wake: an answer, a
+// late reply after an answer read inline, and a fired reminder. Each seed
+// leaves its request settled and owing the wake, which is not yet queued.
+func owedWakeSeeds() []struct {
+	name string
+	late bool
+	seed func(*testing.T, *requestFixture) string
+} {
+	answer := func(t *testing.T, f *requestFixture) string {
+		token := uuid.NewString()
+		if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+			Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
+			State: store.ThreadRequestUnconfirmed, TargetComputerID: uuid.NewString(),
+			TargetThreadID: uuid.NewString(), Notify: true,
+		}); err != nil {
+			t.Fatalf("InsertThreadRequest: %v", err)
+		}
+		now := time.Now()
+		f.settleRemote(t, token, now, now.Add(threadLateReplyWindow))
+		return token
+	}
+	return []struct {
+		name string
+		late bool
+		seed func(*testing.T, *requestFixture) string
+	}{
+		{"answer", false, answer},
+		{"late reply", true, func(t *testing.T, f *requestFixture) string {
+			token := answer(t, f)
+			if _, err := f.app.store.MarkThreadRequestDelivered(token, store.ThreadWakeInline, 0, false); err != nil {
+				t.Fatalf("MarkThreadRequestDelivered: %v", err)
+			}
+			if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), time.Now().UnixMilli()); err != nil || !stored {
+				t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
+			}
+			return token
+		}},
+		{"reminder", false, func(t *testing.T, f *requestFixture) string {
+			ack, err := f.adapter().Remind(t.Context(), f.callerIdentity(), threadtools.RemindCall{
+				DueAtUnixMs: time.Now().Add(-time.Second).UnixMilli(), Note: "stand up",
+			})
+			if err != nil {
+				t.Fatalf("Remind: %v", err)
+			}
+			if !f.app.settleThreadReminder(f.request(t, ack.Token), time.Now()) {
+				t.Fatal("the reminder fired owing no wake")
+			}
+			return ack.Token
+		}},
+	}
+}
+
+// An answer, a late reply or a reminder whose wake was queued just before
+// an archive goes back to its request when the archive lands. A session
+// start in flight holds the thread's action lock, the archive queues on it,
+// the wake is written while the thread is still unarchived, and its start
+// queues behind the archive and starts nothing. When the start brought a
+// session up, the archive's teardown drops the queue under the lock instead.
+// Either way nothing may stay queued on the archived thread for its next
+// start or for the composer at the next boot, and the request may not read
+// delivered: the wake is owed but disarmed, as one the archive refused at
+// the queue write is, so the retry leaves the thread archived. Re-armed, it
+// is delivered and brings the thread back.
+func TestAWakeQueuedJustBeforeAnArchiveGoesBackToItsRequest(t *testing.T) {
+	t.Parallel()
+	for _, tc := range owedWakeSeeds() {
+		for _, live := range []bool{false, true} {
+			name := tc.name + ", no session"
+			if live {
+				name = tc.name + ", session live"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				f := newRequestFixture(t)
+				var starts atomic.Int32
+				f.app.startSessionFn = func(string) error {
+					starts.Add(1)
+					return nil
+				}
+				token := tc.seed(t, f)
+				sendID := threadWakeSendIDFor(token, tc.late)
+
+				unlock := f.app.threadLocks().Lock(f.caller.ID)
+				if live {
+					f.app.configureTriageQueueCallbacks()
+					// What the held start brings up once it lets go of the lock.
+					f.app.sessionManager().put(f.caller.ID, session{
+						Provider: string(provider.Codex),
+						Token:    "held-start",
+						Liveness: newSessionLiveness(time.Now()),
+					})
+				}
+				archived := make(chan error, 1)
+				go func() { archived <- f.app.ArchiveThread(f.caller.ID) }()
+				waitUntil(t, 10*time.Second, func() bool { return f.app.threadLocks().Refs(f.caller.ID) == 2 })
+				f.app.deliverThreadWake(token, tc.late)
+				if row := f.request(t, token); !threadRequestDelivered(row, tc.late) || row.DeliveredHow != store.ThreadWakeQueued {
+					unlock()
+					t.Fatalf("the wake was not queued before the archive: delivered as %q", row.DeliveredHow)
+				}
+				if live {
+					// The start's own flush, which hands the queue to a
+					// dispatch that waits for the lock behind the archive.
+					f.app.triage.FlushQueuedItems(f.caller.ID)
+				}
+				// The wake's start, or the dispatch, waits behind the archive.
+				waitUntil(t, 10*time.Second, func() bool { return f.app.threadLocks().Refs(f.caller.ID) == 3 })
+				unlock()
+				if err := <-archived; err != nil {
+					t.Fatalf("ArchiveThread: %v", err)
+				}
+				f.app.waitAgentNoticeWork()
+
+				owedAndDisarmed := func(when string) {
+					t.Helper()
+					durable, memory := queuedSendIDs(t, f.app, f.caller.ID)
+					row := f.request(t, token)
+					thread, err := f.app.store.GetThread(f.caller.ID)
+					if err != nil {
+						t.Fatalf("GetThread: %v", err)
+					}
+					if n := starts.Load(); n != 0 || len(durable) != 0 || len(memory) != 0 || threadRequestDelivered(row, tc.late) || row.Notify || !thread.Archived {
+						t.Fatalf("%s: %d starts, queue %q (in memory %q), delivered %v as %q, notify %v, archived %v; want no start, an empty queue, the wake owed and disarmed, the thread archived",
+							when, n, durable, memory, threadRequestDelivered(row, tc.late), row.DeliveredHow, row.Notify, thread.Archived)
+					}
+					if tc.late && row.DeliveredAt == 0 {
+						t.Fatalf("%s: taking the late reply back undid the first answer's delivery", when)
+					}
+				}
+				owedAndDisarmed("after the archive")
+				f.app.retryUndeliveredThreadWakes(time.Now().Add(time.Hour))
+				f.app.threadRequestsWG.Wait()
+				f.app.waitAgentNoticeWork()
+				owedAndDisarmed("after a retry pass")
+
+				if _, err := f.app.store.SetThreadRequestNotify(token, true); err != nil {
+					t.Fatalf("SetThreadRequestNotify: %v", err)
+				}
+				f.app.retryUndeliveredThreadWakes(time.Now().Add(time.Hour))
+				f.app.threadRequestsWG.Wait()
+				f.app.waitAgentNoticeWork()
+				thread, err := f.app.store.GetThread(f.caller.ID)
+				if err != nil {
+					t.Fatalf("GetThread: %v", err)
+				}
+				durable, _ := queuedSendIDs(t, f.app, f.caller.ID)
+				if row := f.request(t, token); thread.Archived || !threadRequestDelivered(row, tc.late) || !slices.Equal(durable, []string{sendID}) || starts.Load() != 1 {
+					t.Fatalf("re-armed: archived %v, delivered %v, queue %q, %d starts; want the wake delivered, the thread back and started once",
+						thread.Archived, threadRequestDelivered(row, tc.late), durable, starts.Load())
+				}
+			})
+		}
+	}
+}
+
+// A person's Stop drops an answer, a late reply or a reminder queued in the
+// live session with the rest of the queue, and gives it back to its request:
+// owed and disarmed, with no start, so the request does not read delivered
+// and nothing reaches the agent unasked. thread_status returns it, and a
+// re-armed wake delivers it.
+func TestAWakeAStopDropsGoesBackToItsRequest(t *testing.T) {
+	t.Parallel()
+	for _, tc := range owedWakeSeeds() {
+		for _, read := range []bool{false, true} {
+			name := tc.name + ", re-armed"
+			if read {
+				name = tc.name + ", read by thread_status"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				f := newRequestFixture(t)
+				var starts atomic.Int32
+				f.app.startSessionFn = func(string) error {
+					starts.Add(1)
+					return nil
+				}
+				token := tc.seed(t, f)
+				sendID := threadWakeSendIDFor(token, tc.late)
+
+				unlock := f.app.threadLocks().Lock(f.caller.ID)
+				f.app.configureTriageQueueCallbacks()
+				f.app.sessionManager().put(f.caller.ID, session{
+					Provider: string(provider.Codex),
+					Token:    "tok",
+					Liveness: newSessionLiveness(time.Now()),
+				})
+				f.app.deliverThreadWake(token, tc.late)
+				if row := f.request(t, token); !threadRequestDelivered(row, tc.late) || row.DeliveredHow != store.ThreadWakeQueued {
+					unlock()
+					t.Fatalf("the wake was not queued before the Stop: delivered as %q", row.DeliveredHow)
+				}
+				if err := f.app.StopSession(f.caller.ID); err != nil {
+					unlock()
+					t.Fatalf("StopSession: %v", err)
+				}
+				unlock()
+				f.app.flushDispatch.wg.Wait()
+				f.app.waitAgentNoticeWork()
+
+				owedAndDisarmed := func(when string) {
+					t.Helper()
+					durable, memory := queuedSendIDs(t, f.app, f.caller.ID)
+					row := f.request(t, token)
+					if n := starts.Load(); n != 0 || len(durable) != 0 || len(memory) != 0 || threadRequestDelivered(row, tc.late) || row.Notify {
+						t.Fatalf("%s: %d starts, queue %q (in memory %q), delivered %v as %q, notify %v; want no start, an empty queue and the wake owed and disarmed",
+							when, n, durable, memory, threadRequestDelivered(row, tc.late), row.DeliveredHow, row.Notify)
+					}
+					if tc.late && row.DeliveredAt == 0 {
+						t.Fatalf("%s: taking the late reply back undid the first answer's delivery", when)
+					}
+				}
+				owedAndDisarmed("after the Stop")
+				f.app.retryUndeliveredThreadWakes(time.Now().Add(time.Hour))
+				f.app.threadRequestsWG.Wait()
+				f.app.waitAgentNoticeWork()
+				owedAndDisarmed("after a retry pass")
+
+				if read {
+					report, err := f.adapter().RequestStates(t.Context(), f.callerIdentity(), threadtools.StatusCall{Tokens: []string{token}})
+					if err != nil {
+						t.Fatalf("RequestStates: %v", err)
+					}
+					if len(report.Requests) != 1 || report.Requests[0].Answer == "" || report.Requests[0].Delivered != store.ThreadWakeInline {
+						t.Fatalf("thread_status after the Stop = %+v, want the answer, delivered by this read", report.Requests)
+					}
+					return
+				}
+				if _, err := f.app.store.SetThreadRequestNotify(token, true); err != nil {
+					t.Fatalf("SetThreadRequestNotify: %v", err)
+				}
+				f.app.retryUndeliveredThreadWakes(time.Now().Add(time.Hour))
+				f.app.threadRequestsWG.Wait()
+				f.app.waitAgentNoticeWork()
+				durable, _ := queuedSendIDs(t, f.app, f.caller.ID)
+				if row := f.request(t, token); !threadRequestDelivered(row, tc.late) || !slices.Equal(durable, []string{sendID}) || starts.Load() != 1 {
+					t.Fatalf("re-armed: delivered %v, queue %q, %d starts; want the wake delivered and the thread started once",
+						threadRequestDelivered(row, tc.late), durable, starts.Load())
+				}
+			})
+		}
+	}
+}
+
+// A notice and a person's message queued while a Stop or a revert drops the
+// thread's queue, between the drop's read of the queue and its delete, wait
+// for the drop and land after it: durable and in memory, the answer's
+// request reading queued with the row that carries it. Queued inside the
+// drop, both rows would go with its delete, unread and so not given back,
+// and a Stop's memory cleanup would take the messages too.
+func TestAMessageQueuedDuringADropLandsAfterIt(t *testing.T) {
+	t.Parallel()
+	for _, drop := range []string{"Stop", "revert"} {
+		t.Run(drop, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.app.startSessionFn = func(string) error { return nil }
+			token := owedWakeSeeds()[0].seed(t, f)
+			queued := make(chan error, 2)
+			paused := false
+			f.app.queueDropReadForTest = func(threadID string) {
+				if threadID != f.caller.ID || paused {
+					return
+				}
+				paused = true
+				go func() {
+					f.app.deliverThreadWake(token, false)
+					queued <- nil
+				}()
+				go func() {
+					_, err := f.app.RegisterQueueItem(context.Background(), f.caller.ID, "my own words", SendMessageOptions{SendID: "person-send"})
+					queued <- err
+				}()
+				// Both wait on the drop's lock, or both land inside it.
+				waitUntil(t, 10*time.Second, func() bool {
+					return f.app.threadApplication().MutationRefs(f.caller.ID) == 3 || len(queued) == 2
+				})
+			}
+
+			// No dispatcher is configured, so triage keeps what is queued.
+			unlock := f.app.threadLocks().Lock(f.caller.ID)
+			f.app.sessionManager().put(f.caller.ID, session{
+				Provider: string(provider.Codex),
+				Token:    "tok",
+				Liveness: newSessionLiveness(time.Now()),
+			})
+			if drop == "Stop" {
+				if err := f.app.StopSession(f.caller.ID); err != nil {
+					unlock()
+					t.Fatalf("StopSession: %v", err)
+				}
+			} else {
+				f.app.clearFlushDispatchForRollback(f.caller.ID)
+			}
+			unlock()
+			if !paused {
+				t.Fatal("the drop never read the queue; the test proves nothing")
+			}
+			for range 2 {
+				select {
+				case err := <-queued:
+					if err != nil {
+						t.Fatalf("queue write: %v", err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("a queue write never finished after the drop")
+				}
+			}
+			f.app.waitAgentNoticeWork()
+
+			durable, memory := queuedSendIDs(t, f.app, f.caller.ID)
+			slices.Sort(durable)
+			slices.Sort(memory)
+			want := []string{"person-send", threadWakeSendID(token)}
+			if row := f.request(t, token); !slices.Equal(durable, want) || !slices.Equal(memory, want) || row.DeliveredHow != store.ThreadWakeQueued {
+				t.Fatalf("after the %s: queue %q (in memory %q), answer delivered as %q; want the answer and the person's message queued, durably and in memory",
+					drop, durable, memory, row.DeliveredHow)
+			}
+		})
+	}
+}
+
+// A revert drops the queue's durable rows, and gives an answer and a remote
+// completion back to their owners only when its drop took them: one a
+// dispatch held, which the revert discards, goes back owed and pending. One
+// still in triage's queue stays queued, as a revert that keeps its session
+// leaves it there to be delivered; a cold revert's Stop then drops it and
+// returns it.
+func TestARevertReturnsOnlyTheAnswersAndCompletionsItsDropTook(t *testing.T) {
+	t.Parallel()
+	for _, dispatched := range []bool{false, true} {
+		name := "still in the queue"
+		if dispatched {
+			name = "held by a dispatch"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			var starts atomic.Int32
+			f.app.startSessionFn = func(string) error {
+				starts.Add(1)
+				return nil
+			}
+			token := owedWakeSeeds()[0].seed(t, f)
+			w := completedRemoteWatch(t, f.app, f.caller)
+			want := []string{threadWakeSendID(token), remoteCompletionSendID(w)}
+
+			unlock := f.app.threadLocks().Lock(f.caller.ID)
+			if dispatched {
+				// With no dispatcher, triage keeps the queue.
+				f.app.configureTriageQueueCallbacks()
+			}
+			f.app.sessionManager().put(f.caller.ID, session{
+				Provider: string(provider.Codex),
+				Token:    "tok",
+				Liveness: newSessionLiveness(time.Now()),
+			})
+			f.app.deliverThreadWake(token, false)
+			if err := f.app.queueAgentNotice(f.app.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})); err != nil {
+				unlock()
+				t.Fatalf("queueAgentNotice: %v", err)
+			}
+			if dispatched {
+				f.app.triage.FlushQueuedItems(f.caller.ID)
+				waitUntil(t, 10*time.Second, func() bool { return len(f.app.triage.QueuedFlushItems(f.caller.ID)) == 0 })
+			}
+			// The rollback runs under the thread's action lock.
+			f.app.clearFlushDispatchForRollback(f.caller.ID)
+			durable, memory := queuedSendIDs(t, f.app, f.caller.ID)
+			row := f.request(t, token)
+			saved, err := f.app.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+			if err != nil {
+				unlock()
+				t.Fatal(err)
+			}
+			unlock()
+			if dispatched {
+				if len(durable) != 0 || len(memory) != 0 || threadRequestDelivered(row, false) || row.Notify || saved.Notification != "pending" {
+					t.Fatalf("after the revert: queue %q (in memory %q), answer delivered %v as %q, notify %v, watch %q; want an empty queue, the answer owed and disarmed and the watch pending",
+						durable, memory, threadRequestDelivered(row, false), row.DeliveredHow, row.Notify, saved.Notification)
+				}
+				return
+			}
+			if !slices.Equal(durable, want) || !slices.Equal(memory, want) || row.DeliveredHow != store.ThreadWakeQueued || saved.Notification != "queued" {
+				t.Fatalf("after the revert: queue %q (in memory %q), answer delivered as %q, watch %q; want both still queued",
+					durable, memory, row.DeliveredHow, saved.Notification)
+			}
+			if err := f.app.StopSession(f.caller.ID); err != nil {
+				t.Fatalf("StopSession: %v", err)
+			}
+			durable, memory = queuedSendIDs(t, f.app, f.caller.ID)
+			row = f.request(t, token)
+			if saved, err = f.app.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil {
+				t.Fatal(err)
+			}
+			if len(durable) != 0 || len(memory) != 0 || threadRequestDelivered(row, false) || row.Notify || saved.Notification != "pending" {
+				t.Fatalf("after the Stop that follows: queue %q (in memory %q), answer delivered %v, notify %v, watch %q; want an empty queue, the answer owed and disarmed and the watch pending",
+					durable, memory, threadRequestDelivered(row, false), row.Notify, saved.Notification)
+			}
+		})
+	}
+}
+
 // Archiving through the agents' organize patch is the same archive as the
 // sidebar's: the thread's parked calls end and its wakes are disarmed, or
 // the next answer brings it back out of the archive the user put it in.
@@ -2169,10 +2781,10 @@ func TestThreadRequestsListAndExport(t *testing.T) {
 	}
 }
 
-// A wake the previous process never delivered is restored into the composer
-// at boot, and the request says so rather than claiming the message was
-// delivered.
-func TestRestoredWakeIsRecordedAsADraft(t *testing.T) {
+// A wake the previous process never delivered goes back to its request at
+// boot, owed and disarmed, rather than into the composer: it is not the
+// person's to send, and thread_status still returns the answer.
+func TestAWakeQueuedAtQuitGoesBackToItsRequest(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaude(t, "the backup finished")
@@ -2191,16 +2803,14 @@ func TestRestoredWakeIsRecordedAsADraft(t *testing.T) {
 	after := f.restart(t)
 	after.app.restoreDurableFlushQueueAtBoot()
 
-	row := after.request(t, ack.Token)
-	if row.DeliveredHow != store.ThreadWakeDraft {
-		t.Fatalf("delivery = %q, want the draft correction", row.DeliveredHow)
+	if row := after.request(t, ack.Token); row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
+		t.Fatalf("delivered %q at %d, notify %v; want the answer owed and disarmed", row.DeliveredHow, row.DeliveredAt, row.Notify)
 	}
-	draft, found, err := after.app.store.GetThreadDraft(f.caller.ID)
-	if err != nil || !found || !strings.Contains(draft.Content, "the backup finished") {
-		t.Fatalf("draft = %+v found=%v err=%v", draft, found, err)
+	if draft, _, err := after.app.store.GetThreadDraft(f.caller.ID); err != nil || strings.Contains(draft.Content, "the backup finished") {
+		t.Fatalf("draft = %+v err=%v, want no answer in it", draft, err)
 	}
 	if rows := durableQueueRows(t, after.app, f.caller.ID); len(rows) != 0 {
-		t.Fatalf("the restored row was left in the queue: %+v", rows)
+		t.Fatalf("the returned row was left in the queue: %+v", rows)
 	}
 }
 
@@ -2573,4 +3183,251 @@ func (f *requestFixture) wakeRow(t *testing.T, token string) store.Item {
 		t.Fatalf("no wake message was written to the caller for %s", token)
 	}
 	return found
+}
+
+func TestAClaimedWakeTheAppStopsBeforeDeliveringIsReleased(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	life, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	f.app.appCtx = life
+	token := f.settledAnswerOwingAWake(t)
+	// No delivery slot ever frees.
+	f.app.threadRequests.mu.Lock()
+	f.app.threadRequests.deliveries = make(chan struct{})
+	f.app.threadRequests.mu.Unlock()
+
+	passed := make(chan struct{})
+	go func() {
+		defer close(passed)
+		f.app.retryUndeliveredThreadWakes(time.Now())
+	}()
+	waitFor(t, "the retry pass to claim the wake", func() bool {
+		unlock := f.app.threadRequestSettleLock(token)
+		defer unlock()
+		return f.app.threadWakeInFlight(token, false)
+	})
+	stop()
+	select {
+	case <-passed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the retry pass did not return once the app stopped")
+	}
+	if f.app.threadWakeInFlight(token, false) {
+		t.Fatal("a wake the app stopped before delivering is still marked in flight")
+	}
+	if row := f.request(t, token); row.DeliveredAt != 0 {
+		t.Fatalf("a wake with no slot was delivered: %q", row.DeliveredHow)
+	}
+}
+
+func TestAReplyDuringAWakesQueueWriteLeavesTheDeliveryToTheWake(t *testing.T) {
+	t.Parallel()
+	wakes := map[string]func(f *requestFixture, token string){
+		"collector": func(f *requestFixture, token string) { f.app.deliverThreadWake(token, false) },
+		"retry pass": func(f *requestFixture, _ string) {
+			f.app.retryUndeliveredThreadWakes(time.Now())
+			f.app.threadRequestsWG.Wait()
+		},
+	}
+	for source, wake := range wakes {
+		for _, tool := range []string{"thread_status", "thread_status list", "thread_show to_file"} {
+			t.Run(tool+" from the "+source, func(t *testing.T) {
+				t.Parallel()
+				testAReplyDuringAWakesQueueWrite(t, tool, wake)
+			})
+		}
+	}
+}
+
+func TestARetryThatBacksOffForACallBooksNoAttempt(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	token := f.settledAnswerOwingAWake(t)
+	nudge := make(chan struct{}, 1)
+	f.app.threadRequests.mu.Lock()
+	f.app.threadRequests.nudge = nudge
+	f.app.threadRequests.mu.Unlock()
+
+	// Holding the token's settle lock stops the pass where it takes it.
+	unlock := f.app.threadRequestSettleLock(token)
+	passed := make(chan struct{})
+	go func() {
+		defer close(passed)
+		f.app.retryUndeliveredThreadWakes(time.Now())
+	}()
+	waitFor(t, "the retry pass to wait for the settle lock", func() bool {
+		return f.app.threadRequests.settleLocks.Refs(token) == 2
+	})
+	// The call registers its wait before it reads the answer, which it
+	// does under the same lock, so it registers now and waits behind it.
+	ctx, pending := withThreadToolsPending(t.Context())
+	rendered := make(chan error, 1)
+	go func() {
+		_, err := f.adapter().RequestStates(ctx, f.callerIdentity(), threadtools.StatusCall{
+			Tokens: []string{token}, WaitSeconds: 5,
+		})
+		rendered <- err
+	}()
+	waitFor(t, "the status call to register its wait", func() bool { return f.app.requestWaitActive(token) })
+	unlock()
+	select {
+	case <-passed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the retry pass did not finish once the lock was released")
+	}
+	if err := <-rendered; err != nil {
+		t.Fatalf("RequestStates: %v", err)
+	}
+	f.app.threadRequestsWG.Wait()
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("a wake was queued while the call held the token: %+v", rows)
+	}
+	if row := f.request(t, token); row.DeliveredAt != 0 {
+		t.Fatalf("the wake delivered under a held token: %q", row.DeliveredHow)
+	} else if row.WakeAttempts != 0 {
+		t.Errorf("the pass that backed off booked attempt %d, next check in %s", row.WakeAttempts, time.Until(time.UnixMilli(row.WakeNextCheck)).Round(time.Second))
+	}
+
+	select {
+	case <-nudge:
+	default:
+	}
+	pending.run(false)
+	select {
+	case <-nudge:
+	default:
+		t.Fatal("releasing the token did not ask the sweep for a pass")
+	}
+	f.app.retryUndeliveredThreadWakes(time.Now())
+	f.app.threadRequestsWG.Wait()
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued || row.DeliveredAt == 0 {
+		t.Fatalf("the release's pass did not hand the wake over: %q at %d, attempts %d", row.DeliveredHow, row.DeliveredAt, row.WakeAttempts)
+	}
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 1 {
+		t.Fatalf("queue = %+v, want the one wake", rows)
+	}
+	if f.app.threadWakeInFlight(token, false) {
+		t.Fatal("a wake the retry pass delivered is still marked in flight")
+	}
+}
+
+func TestAWakeDecidedBeforeAReplyBacksOffWhileTheReplyHoldsTheAnswer(t *testing.T) {
+	t.Parallel()
+	for _, tool := range []string{"thread_status", "thread_status list", "thread_show to_file"} {
+		t.Run(tool, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			token := f.settledAnswerOwingAWake(t)
+
+			pending, state := f.renderOwedAnswer(t, tool, token)
+			if tool != "thread_show to_file" && state.Delivered != store.ThreadWakeInline {
+				t.Fatalf("state = %+v, want the reply to deliver the answer", state)
+			}
+			f.app.deliverThreadWake(token, false)
+			if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+				t.Fatalf("a wake was queued while the reply carrying the answer was on its way: %+v", rows)
+			}
+			if row := f.request(t, token); row.DeliveredAt != 0 {
+				t.Fatalf("the wake delivered under a held token: %q", row.DeliveredHow)
+			}
+			if f.app.threadWakeInFlight(token, false) {
+				t.Fatal("a wake that backed off is marked in flight")
+			}
+
+			pending.run(true)
+			if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeInline || row.DeliveredAt == 0 {
+				t.Fatalf("delivery = %q at %d, want the reply", row.DeliveredHow, row.DeliveredAt)
+			}
+			if f.app.requestWaitActive(token) {
+				t.Fatal("the token is still held after the reply was written")
+			}
+		})
+	}
+}
+
+func (f *requestFixture) renderOwedAnswer(t *testing.T, tool, token string) (*threadToolsPending, threadtools.RequestState) {
+	t.Helper()
+	ctx, pending := withThreadToolsPending(t.Context())
+	switch tool {
+	case "thread_status":
+		report, err := f.adapter().RequestStates(ctx, f.callerIdentity(), threadtools.StatusCall{Tokens: []string{token}})
+		if err != nil || len(report.Requests) != 1 {
+			t.Fatalf("RequestStates: %+v %v", report, err)
+		}
+		return pending, report.Requests[0]
+	case "thread_status list":
+		listing, err := f.adapter().ListRequests(ctx, f.callerIdentity(), threadtools.ListCall{})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		for _, state := range listing.Requests {
+			if state.Token == token {
+				return pending, state
+			}
+		}
+		t.Fatalf("the listing has no %s: %+v", token, listing)
+	case "thread_show to_file":
+		if _, err := f.adapter().ExportAnswer(ctx, f.callerIdentity(), token); err != nil {
+			t.Fatalf("ExportAnswer: %v", err)
+		}
+		return pending, threadtools.RequestState{}
+	}
+	t.Fatalf("no tool %q", tool)
+	return nil, threadtools.RequestState{}
+}
+
+func testAReplyDuringAWakesQueueWrite(t *testing.T, tool string, wake func(f *requestFixture, token string)) {
+	f := newRequestFixture(t)
+	token := f.settledAnswerOwingAWake(t)
+	// Queue registration takes the caller's mutation lock, so the
+	// wake stops between its claim and its queue write.
+	unlock, err := f.app.threadApplication().LockMutable(t.Context(), f.caller.ID)
+	if err != nil {
+		t.Fatalf("LockMutable: %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			unlock()
+		}
+	}
+	t.Cleanup(release)
+	delivered := make(chan struct{})
+	go func() {
+		defer close(delivered)
+		wake(f, token)
+	}()
+	waitFor(t, "the wake to claim its delivery", func() bool {
+		unlock := f.app.threadRequestSettleLock(token)
+		defer unlock()
+		return f.app.threadWakeInFlight(token, false)
+	})
+
+	pending, state := f.renderOwedAnswer(t, tool, token)
+	if tool != "thread_show to_file" {
+		if state.Delivered != store.ThreadWakeQueued || !state.WakeQueued || !strings.Contains(state.Answer, "nine minutes") {
+			t.Fatalf("a reply rendered while the wake was writing its message: %+v", state)
+		}
+	}
+	// A status call holds what it waited on until its reply is
+	// written; a listing or an export holds only what it claims.
+	if tool != "thread_status" && f.app.requestWaitActive(token) {
+		t.Fatal("a reply that did not deliver the answer holds its token")
+	}
+
+	release()
+	select {
+	case <-delivered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the wake did not finish once the lock was released")
+	}
+	pending.run(true)
+	if f.app.threadWakeInFlight(token, false) {
+		t.Fatal("a finished wake is still marked in flight")
+	}
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued || row.DeliveredAt == 0 {
+		t.Fatalf("delivery = %q at %d, want the wake", row.DeliveredHow, row.DeliveredAt)
+	}
 }

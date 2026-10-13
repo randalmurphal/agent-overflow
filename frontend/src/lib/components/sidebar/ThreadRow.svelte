@@ -32,7 +32,7 @@
     openThreadInPane,
   } from '../../stores/panes.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
-  import { getEffectiveThreadStatus } from '../../stores/threadStatuses.svelte';
+  import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import type { Thread } from '../../types/models';
   import FileText from '@lucide/svelte/icons/file-text';
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
@@ -127,7 +127,7 @@
   );
 
   let liveStatus = $derived(getEffectiveThreadStatus(thread));
-  let ownPill = $derived(resolveThreadStatusPill(thread, liveStatus));
+  let ownPill = $derived(resolveThreadStatusPill(thread, liveStatus, getThreadWaitingOn(thread.id)));
   let unread = $derived(hasUnread(thread));
 
   let forkParent = $derived.by<Thread | undefined>(() => {

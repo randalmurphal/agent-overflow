@@ -29,7 +29,7 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 		return err
 	}
 	defer unlock()
-	err = a.queueAgentNotice(ctx, agentNotice{
+	err = a.queueAgentNotice(agentNotice{
 		threadID: threadID, sendID: sendID,
 		prepare: func() (string, bool, error) {
 			thread, err := a.store.GetThread(threadID)
@@ -57,6 +57,8 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 		startFailed: func(err error) string {
 			return "Your answers are queued, but the agent could not start: " + err.Error()
 		},
+		// The person answering may have opened an archived thread to do it.
+		fromPerson: true,
 	})
 	if errors.Is(err, store.ErrAsyncQuestionHandled) {
 		return fmt.Errorf("%w: %v", transport.ErrAlreadyHandled, err)
