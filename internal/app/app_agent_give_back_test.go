@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -284,11 +285,12 @@ func TestTheBootSweepGivesBackWhatWasQueuedAtQuit(t *testing.T) {
 
 // A restore whose composer write fails requeues every item whole, the app's
 // messages included, so none of them is settled: no notice says an outside
-// send was not delivered, a loop wake's row records nothing, and an answer
-// still reads delivered; all four are queued again for delivery. With a
-// readable composer, each is settled once. Both restores run: a session
-// death's and a failed Codex resend's. The write fails on an existing draft
-// whose attachments do not decode, the seam
+// send was not delivered, a loop wake's row records nothing and its queue row
+// stays, a worker's prompt stays routed to the agent, and an answer still
+// reads delivered; all five are queued again for delivery. With a readable
+// composer, each is settled once. Both restores run: a session death's and a
+// failed Codex resend's. The write fails on an existing draft whose
+// attachments do not decode, the seam
 // TestCodexResendAfterInterrupt_DraftMergeFailureRequeues uses.
 func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
 	t.Parallel()
@@ -318,11 +320,24 @@ func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
 				if marked, err := f.app.store.MarkThreadRequestDelivered(token, store.ThreadWakeQueued, time.Now().UnixMilli(), false); err != nil || !marked {
 					t.Fatalf("MarkThreadRequestDelivered: marked=%v err=%v", marked, err)
 				}
-				sends := []struct{ sendID, text string }{
-					{"person-send", "my own words"},
-					{agentSendIDRoot + "deploy", "deploy 11 is done"},
-					{agentWakeSendID(wake.ID, 1000), "Loop board fired"},
-					{threadWakeSendID(token), "the notes are ready"},
+				prompt := f.app.workerPrompts.add(workerPrompt{
+					workerID: "worker-thread", agentID: f.caller.ID, requestID: "approval-1",
+				}, func(string, string) bool { return true })
+				// The loop wake never left the queue: its durable row is the
+				// only copy a quit would keep.
+				wakeRow := store.FlushQueueItem{
+					ID: "queue-wake-board", ThreadID: f.caller.ID, SendID: agentWakeSendID(wake.ID, 1000),
+					Message: "Loop board fired", EnqueuedAt: 1002,
+				}
+				if err := f.app.store.InsertFlushQueueItem(wakeRow); err != nil {
+					t.Fatal(err)
+				}
+				sends := []struct{ sendID, text, queueID string }{
+					{"person-send", "my own words", ""},
+					{agentSendIDRoot + "deploy", "deploy 11 is done", ""},
+					{wakeRow.SendID, wakeRow.Message, wakeRow.ID},
+					{threadWakeSendID(token), "the notes are ready", ""},
+					{prompt.sendID(), `Thread "worker" is waiting on your answer`, ""},
 				}
 				var want []string
 				for _, s := range sends {
@@ -337,7 +352,9 @@ func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
 							t.Fatal(err)
 						}
 						row := store.Item{ThreadID: f.caller.ID, ID: "user:death:" + s.sendID, Summary: s.text, Meta: meta}
-						items = append(items, triage.UnconfirmedFlushItem{UserItemID: row.ID, Message: s.text, EnqueuedAt: int64(1000 + i), QuietItem: &row})
+						items = append(items, triage.UnconfirmedFlushItem{
+							QueueItemID: s.queueID, UserItemID: row.ID, Message: s.text, EnqueuedAt: int64(1000 + i), QuietItem: &row,
+						})
 					}
 					f.app.restoreFlushItemsToDraftLocked(f.caller.ID, items, queueRestoredReasonSessionDied)
 				} else {
@@ -348,7 +365,7 @@ func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
 							t.Fatal(err)
 						}
 						persisted = append(persisted, triage.EagerPersistedFlush{
-							UserItemID: "user:eager:" + s.sendID, Content: s.text, Meta: meta, EnqueuedAt: int64(1000 + i),
+							QueueItemID: s.queueID, UserItemID: "user:eager:" + s.sendID, Content: s.text, Meta: meta, EnqueuedAt: int64(1000 + i),
 						})
 					}
 					f.app.restoreEagerPersistedFlushesToDraft(f.caller.ID, persisted)
@@ -359,8 +376,9 @@ func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
 				if err != nil || !found {
 					t.Fatalf("GetAgentWake: found=%v err=%v", found, err)
 				}
-				_, memory := queuedSendIDs(t, f.app, f.caller.ID)
+				durable, memory := queuedSendIDs(t, f.app, f.caller.ID)
 				request := f.request(t, token)
+				routed := f.app.workerPrompts.isRouted(prompt.token)
 				if fails {
 					if len(notices) != 0 {
 						t.Errorf("notices %q for a send queued again", notices)
@@ -370,6 +388,12 @@ func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
 					}
 					if request.DeliveredHow != store.ThreadWakeQueued || !request.Notify {
 						t.Errorf("the request reads delivered as %q, notify %v; want it still queued", request.DeliveredHow, request.Notify)
+					}
+					if !routed {
+						t.Errorf("the worker's prompt went back to the user for a wake queued again")
+					}
+					if !slices.Equal(durable, []string{wakeRow.SendID}) {
+						t.Errorf("queue rows %q for a wake queued again, want its row %q", durable, wakeRow.SendID)
 					}
 					if !slices.Equal(memory, want) {
 						t.Errorf("queued again %q, want %q", memory, want)
@@ -387,11 +411,95 @@ func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
 					t.Errorf("the wake row records %q, want %q", saved.Undelivered, outcome)
 				}
 				requireOwedAgain(t, f, token, false)
+				if routed {
+					t.Errorf("the worker's prompt is still routed to an agent that did not take it")
+				}
+				if len(durable) != 0 {
+					t.Errorf("queue rows %q, want none", durable)
+				}
 				if len(memory) != 0 {
 					t.Errorf("queued again %q, want nothing", memory)
 				}
 				requireDraft(t, f.app, f.caller.ID, "my own words")
 			})
 		}
+	}
+}
+
+// A joined message that holds an answer and whose dispatch recorded no
+// parts cannot be split, so all of its text goes back to the composer, an
+// outside send's and a wake's with it. The wake's row still records it, the
+// worker's prompt goes back to the user and the answer to its request, but
+// the send leaves no notice: its text is in front of the person, and a
+// notice would invite sending it twice.
+func TestAnUnsplittableJoinGoesToTheComposerWhole(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"session death", "failed resend"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.app.startSessionFn = func(string) error { return nil }
+			wake, err := f.app.store.RegisterAgentWake(store.AgentWake{
+				ID: "wake-board", ThreadID: f.caller.ID, Kind: store.AgentWakeLoop, Label: "board",
+				IntervalSeconds: 60, NextAt: time.Now().Add(time.Hour).UnixMilli(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			token := settledAnswerHolding(t, f, "the notes are ready")
+			if marked, err := f.app.store.MarkThreadRequestDelivered(token, store.ThreadWakeQueued, time.Now().UnixMilli(), false); err != nil || !marked {
+				t.Fatalf("MarkThreadRequestDelivered: marked=%v err=%v", marked, err)
+			}
+			prompt := f.app.workerPrompts.add(workerPrompt{
+				workerID: "worker-thread", agentID: f.caller.ID, requestID: "approval-1",
+				approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "run it"},
+			}, func(string, string) bool { return true })
+			ids := []string{"person-send", agentSendIDRoot + "deploy", agentWakeSendID(wake.ID, 1000), prompt.sendID(), threadWakeSendID(token)}
+			content := strings.Join([]string{
+				"my own words",
+				renderAgentSendWake("deploy 11 is done"),
+				renderAgentLoopWake(wake, agentWakeFire{}),
+				renderWorkerPromptWake("Worker", "worker-thread", prompt),
+				"the notes are ready",
+			}, usermessage.JoinSeparator)
+			meta, err := usermessage.Marshal(usermessage.Input{SendID: ids[0], JoinedSendIDs: ids})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if path == "session death" {
+				row := store.Item{ThreadID: f.caller.ID, ID: "user:death:joined", Summary: content, Meta: meta}
+				f.app.restoreFlushItemsToDraftLocked(f.caller.ID, []triage.UnconfirmedFlushItem{
+					{UserItemID: row.ID, Message: content, EnqueuedAt: 1000, QuietItem: &row},
+				}, queueRestoredReasonSessionDied)
+			} else {
+				f.app.restoreEagerPersistedFlushesToDraft(f.caller.ID, []triage.EagerPersistedFlush{
+					{UserItemID: "user:eager:joined", Content: content, Meta: meta, EnqueuedAt: 1000},
+				})
+			}
+
+			requireDraft(t, f.app, f.caller.ID, content)
+			if notices := noticeRows(t, f.app, f.caller.ID, "A message sent with agent-overflow thread send was not delivered"); len(notices) != 0 {
+				t.Errorf("notices %q for a send whose text is in the composer", notices)
+			}
+			saved, found, err := f.app.store.GetAgentWake(wake.ID)
+			if err != nil || !found {
+				t.Fatalf("GetAgentWake: found=%v err=%v", found, err)
+			}
+			outcome := agentWakeOutcomeSessionEnded
+			if path == "failed resend" {
+				outcome = agentWakeOutcomeNotDelivered
+			}
+			if saved.Undelivered != outcome {
+				t.Errorf("the wake row records %q, want %q", saved.Undelivered, outcome)
+			}
+			if f.app.workerPrompts.isRouted(prompt.token) {
+				t.Errorf("the worker's prompt is still routed to an agent that did not take it")
+			}
+			requireOwedAgain(t, f, token, false)
+			if _, memory := queuedSendIDs(t, f.app, f.caller.ID); len(memory) != 0 {
+				t.Errorf("queued again %q, want nothing", memory)
+			}
+		})
 	}
 }

@@ -498,7 +498,8 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 		// names, so none of it can be told apart from the person's: all of
 		// it goes back to the composer, an outside send's with it. Its wakes
 		// are still recorded, its prompts handed back and its answers and
-		// completions returned.
+		// completions returned. An outside send leaves no notice: its text
+		// is in front of the person, and a notice would invite a duplicate.
 		log.Printf("agent wakes: a message of %s does not split into the app messages it names; restoring all of it", threadID)
 		for _, id := range ids {
 			if agentAppPartRoot(id) != "" && !strings.HasPrefix(id, agentSendIDRoot) {

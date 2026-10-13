@@ -364,6 +364,9 @@ records each one's length, which splits the join exactly; an answer's
 or a completion's text can hold the separator the join puts between
 messages, so the first-line split older joins use refuses those and
 restores all of the text, giving the answer and completion back too.
+An outside send's and a wake's text then go to the composer whole with
+the person's, and the send leaves no `not delivered` notice: its text is
+in front of the person, and a notice would invite sending it twice.
 These records, notices and give-backs are written once the person's text
 is back in the composer; a composer write that fails queues every
 message again whole, and none of them is recorded.
