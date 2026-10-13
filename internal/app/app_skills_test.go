@@ -57,7 +57,8 @@ func TestSkillsBindingsInstallIntoTheProviderHomes(t *testing.T) {
 	if err := f.app.RemoveSkills("codex"); err != nil {
 		t.Fatalf("RemoveSkills: %v", err)
 	}
-	if entries, err := os.ReadDir(filepath.Join(home, ".codex", "skills")); err != nil || len(entries) != 0 {
+	// Only the lock file stays: removing a lock file races its users.
+	if entries, err := os.ReadDir(filepath.Join(home, ".codex", "skills")); err != nil || len(entries) != 1 || entries[0].Name() != ".agent-overflow-pstack.lock" {
 		t.Fatalf("after remove: %v %v", entries, err)
 	}
 	if err := f.app.UpdateSkills("claude"); err == nil {
