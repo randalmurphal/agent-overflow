@@ -121,7 +121,7 @@ export async function seedToolsProject(
   });
   const project = seed.projects[0];
   if (!project) throw new Error(`HarnessSeed returned no project for ${name}`);
-  return { projectId: project.projectId, path: project.path, threadId: project.threadIds[0] ?? '' };
+  return { projectId: project.projectId, path: project.path, threadId: project.threadIds?.[0] ?? '' };
 }
 
 /** Every mock of `provider` that has no cwd rule ends its turns done. */
@@ -316,11 +316,18 @@ export async function captureRunFromThread(
     await page.getByTestId('compact-back').click();
   }
   await page.getByTestId('thread-row').filter({ hasText: title }).click();
-  const startRow = page.getByTestId('tool-call-card').filter({ hasText: 'importer' }).first();
-  await expect(startRow).toBeVisible({ timeout: 30_000 });
+  // The turn's two tool calls fold into one activity run; open it so the
+  // run_start row is in the capture.
+  const run = page.getByTestId('activity-run').filter({ hasText: 'Workflow start' }).first();
+  await expect(run).toBeVisible({ timeout: 30_000 });
+  if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
+  const startRow = run.getByTestId('tool-call-card').filter({ hasText: 'importer' }).first();
+  await expect(startRow).toBeVisible();
   const wake = page.getByText(`Run "${runId}"`).last();
   await wake.scrollIntoViewIfNeeded();
   await expect(wake).toBeVisible({ timeout: 30_000 });
+  await run.evaluate((element) => element.scrollIntoView({ block: 'start' }));
+  await expect(startRow).toBeInViewport();
   await page.evaluate(() => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
