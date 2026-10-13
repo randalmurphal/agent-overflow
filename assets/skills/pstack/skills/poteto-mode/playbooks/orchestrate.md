@@ -33,10 +33,10 @@ Create `orchestrate/<project-slug>/` in the coordinator's store: its agent home 
 
 #### The brief
 
-Your prompts to agents are your only product, and a sloppy brief compounds into slop across the whole tree. Every spawn carries all of it. A field you cannot fill is a unit you have not scoped yet.
+Your prompts to agents are your only product, and a sloppy brief compounds into slop across the whole tree. Every spawn carries all of it. A field you cannot fill is a unit you have not scoped yet. The first line is poteto-mode's load line, which loads the skill on both providers (poteto-mode's Subagents section).
 
 ```
-/poteto-mode first line: loads the skill on both providers (poteto-mode's Subagents section)
+/poteto-mode Load the poteto-mode skill before any work.
 GOAL         one sentence, the outcome, executable by a stranger with no chat access
 SCOPE        paths this unit may write; paths it may not; its exclusive worktree or branch
 CONTEXT      pointers to files and PRs; upstream reports pasted in full when this unit
@@ -77,7 +77,7 @@ A dependency is a context relay, not just ordering. Undeclared upstream context 
 
 #### Stack safety
 
-- The frontier is a computed object, never narrative. Recompute `frontier.json` with `orch frontier set` after every merge and stack mutation: it reads `scripts/forge stack`, the chain of pull requests from the checkout's current branch down to the default branch through each request's base, and records the ordered PR list, branch names, head SHAs, a generation number, the lowest unmerged PR. Run it in a checkout on the stack's top branch, normally the stacker's. A branch on the chain with no pull request fails the command (`forge stack` exits 3) rather than guessing; open that pull request first. Base refs are the stack, so a restack retargets each moved child with `scripts/forge pr edit <n> --base <branch>` in the same unit that rebases it.
+- The frontier is a computed object, never narrative. Recompute `frontier.json` with `orch frontier set` after every merge and stack mutation: it reads `scripts/forge stack`, the chain of pull requests from the checkout's current branch down to the default branch through each request's base, and records the ordered PR list, branch names, head SHAs, a generation number, the lowest unmerged PR. Run it in a checkout on the stack's top branch, normally the stacker's. A branch on the chain with no pull request fails the command (`forge stack` exits 3) rather than guessing; open that pull request first. Base refs are the stack, so a restack retargets each moved child (`gh pr edit <n> --base <branch>`, `glab mr update <n> --target-branch <branch>`) in the same unit that rebases it.
 - Exactly one stacker per stack may rebase, force-push and retarget, serialized within its stack. Record the holder in the standing orders. Restacks run in the stacker's own thread and worktree, never in the coordinator's.
 - Workers never rebase and never retarget. Babysitters follow `playbooks/babysit.md`, one per stack, scoped to one immutable frontier generation. They report conflicts to the stacker rather than restacking.
 - PR closes and retargets go through the stacker only. Closing a base PR orphans every chain above it. Merges and stack surgery are units with briefs like any other.

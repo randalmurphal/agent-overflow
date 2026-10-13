@@ -532,21 +532,42 @@ func TestForgeScriptStack(t *testing.T) {
 
 // TestForgeScriptHelp: help asked for prints the usage on stdout and
 // exits 0; a call the script cannot run prints it on stderr and exits 2.
+// Help and a missing command need no checkout, so they also run in a
+// directory that is not one.
 func TestForgeScriptHelp(t *testing.T) {
 	r := newRig(t, forgeScriptFixture("github", "acme/widgets"))
 	f := newForgeCheckout(t, r, "https://github.com/acme/widgets.git", "main")
-	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}, {"pr", "--help"}, {"ci", "-h"}} {
-		out, stderr, err := f.try("", args...)
-		if err != nil || !strings.Contains(out, "forge pr view [<n>]") || stderr != "" {
-			t.Errorf("forge %s = %v, stdout %q, stderr %q; want the usage on stdout and exit 0", strings.Join(args, " "), err, out, stderr)
+	outside := *f
+	outside.dir = t.TempDir()
+	outside.env = append(append([]string(nil), f.env...), "GIT_CEILING_DIRECTORIES="+filepath.Dir(outside.dir))
+	help := [][]string{{"--help"}, {"-h"}, {"help"}, {"pr", "--help"}, {"pr", "help"}, {"ci", "-h"}, {"ci", "help"}}
+	misuse := [][]string{{}, {"bogus"}, {"pr"}, {"ci"}}
+	for _, c := range []struct {
+		name   string
+		f      *forgeCheckout
+		misuse [][]string
+	}{
+		{"in a checkout", f, append(misuse, []string{"pr", "bogus"}, []string{"ci", "bogus"})},
+		{"outside a checkout", &outside, misuse},
+	} {
+		for _, args := range help {
+			out, stderr, err := c.f.try("", args...)
+			if err != nil || !strings.Contains(out, "forge pr view [<n>]") || stderr != "" {
+				t.Errorf("%s: forge %s = %v, stdout %q, stderr %q; want the usage on stdout and exit 0", c.name, strings.Join(args, " "), err, out, stderr)
+			}
+		}
+		for _, args := range c.misuse {
+			out, stderr, err := c.f.try("", args...)
+			exit, _ := err.(*exec.ExitError)
+			if exit == nil || exit.ExitCode() != 2 || out != "" || !strings.Contains(stderr, "forge pr view [<n>]") {
+				t.Errorf("%s: forge %s = %v, stdout %q, stderr %q; want the usage on stderr and exit 2", c.name, strings.Join(args, " "), err, out, stderr)
+			}
 		}
 	}
-	for _, args := range [][]string{{}, {"bogus"}, {"pr"}, {"pr", "bogus"}, {"ci", "bogus"}} {
-		out, stderr, err := f.try("", args...)
-		exit, _ := err.(*exec.ExitError)
-		if exit == nil || exit.ExitCode() != 2 || out != "" || !strings.Contains(stderr, "forge pr view [<n>]") {
-			t.Errorf("forge %s = %v, stdout %q, stderr %q; want the usage on stderr and exit 2", strings.Join(args, " "), err, out, stderr)
-		}
+	// The directory really is outside a checkout: a call that needs the
+	// remote fails there.
+	if _, _, err := outside.try("", "which"); err == nil {
+		t.Error("forge which outside a checkout succeeded")
 	}
 }
 

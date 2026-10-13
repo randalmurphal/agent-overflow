@@ -31,10 +31,12 @@ is the map every other skill reads through. Choices a resync must keep:
   repository's guides; when the operator merges, the merge step ends at
   merge-ready with the PR and head SHA reported, and auto-merge is never
   armed.
-- Spawned briefs start with `/poteto-mode`, the user-message entry that
-  loads the skill on both providers; Claude's Skill tool refuses a
-  model's own invocation of a `disable-model-invocation` skill. A worker
-  with no slash entry reads `SKILL.md` by path.
+- Spawned briefs open with the load line, `/poteto-mode Load the
+  poteto-mode skill before any work.` Claude loads the skill from the
+  slash entry, since its Skill tool refuses a model's own invocation of a
+  `disable-model-invocation` skill; Codex matches the request to the
+  skill's description. A worker with no slash entry reads `SKILL.md` by
+  path.
 - Benny's skills read reports through a source adapter the agent
   configures; a standing agent runs them from a `thread_watch`.
 
@@ -98,7 +100,9 @@ the chain with no pull request exits 3, and a cycle of bases fails, so
   (`/loop`, `subagent_type`, provider home paths, `control-ui`, Graphite
   `gt` and the rest of the list) comes back, or when a script other than
   the forge script calls `gh` (`pr`, `api`, `run`, `repo`,
-  `issue`) or `glab` (`mr`, `api`, `ci`); `keptVerbatim` lists
+  `issue`) or `glab` (`mr`, `api`, `ci`), or when a skill's Markdown
+  routes `forge pr` or `forge ci` through the script instead of `gh` or
+  `glab` (prose names it only for `which`, `stack` and `--help`); `keptVerbatim` lists
   the upstream lines kept on purpose. `TestSkillsLinkOnlyFilesThatExist`
   fails when a relative Markdown link names a file the tree does not
   carry.

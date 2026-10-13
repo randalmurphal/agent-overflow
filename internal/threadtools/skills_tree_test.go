@@ -27,24 +27,32 @@ var (
 	markdownLink       = regexp.MustCompile(`\]\(([^)\s]+)\)`)
 )
 
+// Where a replaced primitive is refused.
+const (
+	everywhere = iota
+	inScripts  // every file but the Markdown and the forge script
+	inProse    // the Markdown only
+)
+
 // replacedPrimitives are the upstream host primitives the port rewrote,
-// each with what replaced it. A scriptsOnly primitive is allowed in the
-// skill prose (Markdown) and refused in the scripts.
+// each with what replaced it and where it is refused.
 var replacedPrimitives = []struct {
-	pattern     *regexp.Regexp
-	use         string
-	scriptsOnly bool
+	pattern *regexp.Regexp
+	use     string
+	scope   int
 }{
-	{regexp.MustCompile(`\bCursor\b|\.cursor/|\.mdc\b|cursor-team-kit|agent-transcripts`), "the thread tools and the agent's own instructions file", false},
-	{regexp.MustCompile(`(^|[^A-Za-z0-9_])/loop\b`), "thread_loop", false},
-	{regexp.MustCompile(`environment: "cloud"|\bcloud agents?\b|subagent_type|run_in_background|\bTask(?: tool| call)\b|` + "`Task`"), "a native subagent or thread_spawn", false},
-	{regexp.MustCompile(`AskQuestion|SessionStart`), "the provider's own question tool and the agent's instructions file", false},
-	{regexp.MustCompile(`~/\.(claude|codex|cursor|pi)\b`), "thread_show and thread_search, never a provider home", false},
-	{regexp.MustCompile(`\bcontrol-(ui|cli)\b`), "ao-browser-tools or the shell", false},
+	{regexp.MustCompile(`\bCursor\b|\.cursor/|\.mdc\b|cursor-team-kit|agent-transcripts`), "the thread tools and the agent's own instructions file", everywhere},
+	{regexp.MustCompile(`(^|[^A-Za-z0-9_])/loop\b`), "thread_loop", everywhere},
+	{regexp.MustCompile(`environment: "cloud"|\bcloud agents?\b|subagent_type|run_in_background|\bTask(?: tool| call)\b|` + "`Task`"), "a native subagent or thread_spawn", everywhere},
+	{regexp.MustCompile(`AskQuestion|SessionStart`), "the provider's own question tool and the agent's instructions file", everywhere},
+	{regexp.MustCompile(`~/\.(claude|codex|cursor|pi)\b`), "thread_show and thread_search, never a provider home", everywhere},
+	{regexp.MustCompile(`\bcontrol-(ui|cli)\b`), "ao-browser-tools or the shell", everywhere},
 	// Agents run gh and glab directly; the scripts read the forge through
-	// the forge script, the one script that runs them.
-	{regexp.MustCompile(`\bgh (pr|api|run|repo|issue)\b|\bglab (mr|api|ci)\b`), "the forge script", true},
-	{regexp.MustCompile(`(^|[^-A-Za-z0-9_])gt\b|\bGraphite\b`), "forge stack", false},
+	// the forge script, the one script that runs them. Prose names the
+	// forge script only for which, stack and --help.
+	{regexp.MustCompile(`\bgh (pr|api|run|repo|issue)\b|\bglab (mr|api|ci)\b`), "the forge script", inScripts},
+	{regexp.MustCompile(`\bforge (pr|ci)\b`), "gh or glab directly", inProse},
+	{regexp.MustCompile(`(^|[^-A-Za-z0-9_])gt\b|\bGraphite\b`), "forge stack", everywhere},
 }
 
 // forgeScript is the one script that runs gh and glab.
@@ -156,7 +164,8 @@ func TestSkillsCarryNoReplacedPrimitive(t *testing.T) {
 	for _, rel := range paths {
 		for i, line := range strings.Split(files[rel], "\n") {
 			for _, primitive := range replacedPrimitives {
-				if primitive.scriptsOnly && (rel == forgeScript || strings.HasSuffix(rel, ".md")) {
+				prose := strings.HasSuffix(rel, ".md")
+				if primitive.scope == inScripts && (prose || rel == forgeScript) || primitive.scope == inProse && !prose {
 					continue
 				}
 				if phrase, ok := keptVerbatim[rel]; ok && strings.Contains(line, phrase) {

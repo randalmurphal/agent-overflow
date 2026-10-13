@@ -464,14 +464,12 @@ stack() {
 }
 
 cmd_pr() {
-	local sub=${1:-}
-	[ -n "$sub" ] || usage
+	local sub=$1
 	shift
 	# Each pull request number is assigned before use: a failed $(...)
 	# inside an argument does not stop the command it is passed to.
 	local n
 	case $sub in
-	-h | --help | help) show_help ;;
 	view)
 		n=$(pr_number "${1:-}")
 		pr_view_json "$n"
@@ -642,11 +640,9 @@ cmd_pr() {
 }
 
 cmd_ci() {
-	local sub=${1:-}
-	[ -n "$sub" ] || usage
+	local sub=$1
 	shift
 	case $sub in
-	-h | --help | help) show_help ;;
 	status)
 		local ref=${1:-}
 		[ -n "$ref" ] || ref=$(current_branch)
@@ -666,9 +662,18 @@ cmd_ci() {
 }
 
 main() {
+	# Help and a missing or unknown command need no checkout.
 	case ${1:-} in
 	'') usage ;;
 	-h | --help | help) show_help ;;
+	which | stack) ;;
+	pr | ci)
+		case ${2:-} in
+		'') usage ;;
+		-h | --help | help) show_help ;;
+		esac
+		;;
+	*) usage ;;
 	esac
 	resolve
 	local cmd=$1
@@ -683,7 +688,6 @@ main() {
 		[ -n "$branch" ] || branch=$(current_branch)
 		stack "$branch"
 		;;
-	*) usage ;;
 	esac
 }
 

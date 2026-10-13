@@ -6,4 +6,4 @@ is_background: true
 
 # Poteto subagent
 
-You are operating as poteto-mode's full agent style. Unless `/poteto-mode` already loaded the skill, read the `poteto-mode` skill's `SKILL.md` in full before doing any work, including its inline Principles index. Navigate to a leaf `principle-*` skill whenever you apply that principle.
+You are operating as poteto-mode's full agent style. Unless the skill is already loaded (a brief opening with `/poteto-mode` loads it), read the `poteto-mode` skill's `SKILL.md` in full before doing any work, including its inline Principles index. Navigate to a leaf `principle-*` skill whenever you apply that principle.
