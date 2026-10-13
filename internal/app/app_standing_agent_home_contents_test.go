@@ -187,6 +187,23 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 				t.Fatalf("after the rewrite:\n%s\nwant:\n%s", got, want)
 			}
 
+			// ---- Past the caps: the head of each file and where it stopped.
+			line := strings.Repeat("x", 99) + "\n"
+			writeHomeFile(t, row.Home, agenthome.InstructionsFile, homeContentsRole+"\n"+strings.Repeat(line, 100)+"INSTRUCTIONS TAIL\n")
+			writeHomeFile(t, row.Home, agenthome.MemoryIndexFile, strings.Repeat(line, 50)+"INDEX TAIL\n")
+			capped := start(t)
+			for _, want := range []string{
+				"[instructions.md stops here, at byte 8135: the session start injects at most 8 KiB of it. Read the rest from that byte yourself.]",
+				"[MEMORY.md stops here, at byte 4000: the session start injects at most 4 KiB of it. Read the rest from that byte yourself.]",
+			} {
+				if !strings.Contains(capped, want) {
+					t.Fatalf("capped start has no %q:\n%s", want, capped)
+				}
+			}
+			if strings.Contains(capped, "INSTRUCTIONS TAIL") || strings.Contains(capped, "INDEX TAIL") {
+				t.Fatal("a capped start carries a file's tail")
+			}
+
 			// ---- Demoted: nothing of the home.
 			if err := app.DemoteStandingAgent(thread.ID); err != nil {
 				t.Fatalf("DemoteStandingAgent: %v", err)
