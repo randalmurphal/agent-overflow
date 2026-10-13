@@ -92,7 +92,7 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 			}
 			continue
 		}
-		r.observeCodexSpawnChildTerminalInMemory(threadID, launch.item.ID, allTerminal)
+		r.observeCodexSpawnChildTerminalInMemory(threadID, launch.item.ID, allTerminal, evt.SessionToken)
 		if !allTerminal {
 			continue
 		}

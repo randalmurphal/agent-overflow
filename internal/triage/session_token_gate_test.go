@@ -168,6 +168,43 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { return len(r.CodexAgentRuntimeSnapshot(threadID)) != 0 }},
+		{"codex tool start", func(t *testing.T, r *Router, token string) {
+			start := provider.ProviderEvent{Kind: provider.EventToolStart, ThreadID: threadID, ItemID: "exec-1", ItemType: "commandExecution", Meta: buildUnifiedExecStartMeta(t, "pid-1", "sleep 60"), Timestamp: time.Now()}
+			r.observeCodexToolStart(fromSession(start, token))
+		}, func(r *Router) bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			state := r.codexBackgroundIfPresent(threadID)
+			return state != nil && state.unifiedExec["exec-1"] != nil
+		}},
+		{"codex subagent status", func(t *testing.T, r *Router, token string) {
+			if err := r.store.UpdateProvider(threadID, "codex"); err != nil {
+				t.Fatal(err)
+			}
+			seedCodexSpawnCard(t, r, r.store, threadID, "spawn-1", "child-1")
+			status := provider.ProviderEvent{Kind: provider.EventSubagentStatus, ThreadID: threadID, ItemID: "spawn-1", Meta: json.RawMessage(`{"agent_path":"child-1","status":"completed"}`), Timestamp: time.Now()}
+			if err := r.observeCodexSubagentStatus(fromSession(status, token)); err != nil {
+				t.Fatal(err)
+			}
+		}, func(r *Router) bool {
+			// The child's completion ends the execution the live tray tracks.
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			state := r.codexBackgroundIfPresent(threadID)
+			return state == nil || state.spawnAgent["spawn-1"] == nil
+		}},
+		{"codex child terminal", func(t *testing.T, r *Router, token string) {
+			if err := r.store.UpdateProvider(threadID, "codex"); err != nil {
+				t.Fatal(err)
+			}
+			seedCodexSpawnCard(t, r, r.store, threadID, "spawn-1", "child-1")
+			r.observeCodexSpawnChildTerminalInMemory(threadID, "spawn-1", true, token)
+		}, func(r *Router) bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			state := r.codexBackgroundIfPresent(threadID)
+			return state == nil || state.spawnAgent["spawn-1"] == nil
+		}},
 		{"command lifecycle", func(t *testing.T, r *Router, token string) {
 			r.rememberCommandLifecycle(threadID, "command-1", commandLifecycleEntry{}, token)
 		}, func(r *Router) bool { _, ok := r.peekCommandLifecycle(threadID, "command-1"); return ok }},
@@ -188,6 +225,16 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			next, err := r.store.NextTurnIndex(threadID)
 			return r.HasInFlightTurnOrRound(threadID) || err != nil || next != 0
 		}},
+		{"turn complete", func(t *testing.T, r *Router, token string) {
+			// The live session's turn is open; a complete must close it only
+			// when it is that session's own.
+			if err := r.handleTurnStart(fromSession(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: threadID, TurnID: "turn-b", Timestamp: time.Now()}, "session-b")); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.handleTurnComplete(fromSession(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: "turn-b", TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now()}, token)); err != nil {
+				t.Fatal(err)
+			}
+		}, func(r *Router) bool { return r.openRoundID(threadID) == "" || !r.HasInFlightTurnOrRound(threadID) }},
 		{"open turn", func(t *testing.T, r *Router, token string) {
 			if _, err := r.setOpenTurn(threadID, 2, token); err != nil {
 				t.Fatal(err)
@@ -244,6 +291,26 @@ func TestInFlightRetiredTurnStartDoesNotOpenATurn(t *testing.T) {
 	}
 	if r.HasInFlightTurnOrRound(threadID) {
 		t.Fatalf("replacement holds an open turn opened by the retired session's in-flight frame (AnyUnfinishedWork=%v)", r.AnyUnfinishedWork(time.Minute))
+	}
+}
+
+// A Codex execution's live tool count belongs to the session that started
+// it: a child row a retired session's in-flight frame writes after the
+// replacement committed does not seed the replacement's progress.
+func TestInFlightRetiredChildRowDoesNotCountTowardTheReplacement(t *testing.T) {
+	t.Parallel()
+	r, st, _ := newTestRouter(t)
+	const threadID = "thread-inflight-tool-count"
+	createTestThread(t, st, threadID)
+	r.MarkThreadActive(threadID, "session-a")
+	launch := store.Item{ID: "launch-1", ThreadID: threadID, Kind: itemKindToolCall, TurnIndex: 1}
+	if err := r.startCodexExecutionTools(launch, 0, "session-a"); err != nil {
+		t.Fatal(err)
+	}
+	r.MarkThreadActive(threadID, "session-b")
+	r.countCodexExecutionToolCall(store.Item{ID: "child-tool-1", ThreadID: threadID, Kind: itemKindToolCall, ParentID: launch.ID, TurnIndex: 1, ItemIndex: 5})
+	if progress, ok := r.PeekSubagentProgress(threadID, launch.ID); ok {
+		t.Fatalf("the replacement carries the retired session's execution tool count: %+v", progress)
 	}
 }
 

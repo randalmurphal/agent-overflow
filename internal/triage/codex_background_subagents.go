@@ -418,6 +418,12 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 	}
 
 	r.mu.Lock()
+	// A retired session's status neither tracks nor completes the
+	// execution: the replacement's runtime owns it now.
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
+		r.mu.Unlock()
+		return nil
+	}
 	state := r.codexBackgroundForThread(evt.ThreadID)
 	if anyActive {
 		state.spawnAgent[launch.item.ID] = &spawnAgentTracker{backgrounded: true, hasRunningChildren: true, receiverThreadIDs: launch.meta.ReceiverThreadIDs}
@@ -483,9 +489,12 @@ func (r *Router) findPersistedCodexSpawnLaunchForStatus(threadID, launchID, chil
 	return persistedCodexSpawnLaunch{item: launch, meta: meta}, true, nil
 }
 
-func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID string, allTerminal bool) {
+func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID string, allTerminal bool, sessionToken string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return
+	}
 
 	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {

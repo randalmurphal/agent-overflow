@@ -55,9 +55,10 @@ of the thread's provider event queue. Every provider frame carries the
 token of the session that produced it. Once a session start commits the
 thread to a new token, an earlier session's frame is refused at triage's
 gate if it is still queued; if it was already being handled, every writer of
-process-bound state (schedule, live subagent progress, Codex runtime,
-command correlation, effective model, compacting window, open turn and
-round, turn settlement) refuses it under the lock it writes under, and
+process-bound state (schedule, live subagent progress, the Codex live
+tray, command correlation, effective model, compacting window, open turn
+and round, turn completion and settlement) refuses it under the lock it
+writes under, and
 the host does none of its own work on it. This holds when that drain
 gives up on a stalled worker. Rows a frame already being handled has
 persisted stay in the thread's history.

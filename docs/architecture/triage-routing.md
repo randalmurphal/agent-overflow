@@ -76,10 +76,12 @@ A frame that passed the gate can have its session retired while it is
 being handled. Every writer of state that belongs to the provider process
 takes the frame's token and refuses it under the `r.mu` it writes under
 (`frameRetiredLocked`): the wakeup and cron schedule, live subagent
-progress, the Codex agent runtime and execution tool counts, command
-lifecycle correlation, the effective model, the compacting window, the
-open turn and round, and turn settlement. Rows such a frame persisted
-before the commit stay in history. `HandleSessionFrame` reports to the
+progress, the Codex live tray (agent runtime, execution tool counts,
+spawn and command trackers), command lifecycle correlation, the effective
+model, the compacting window, the open turn and round, and turn completion
+and settlement. An execution's tool count carries the token of the session
+that started it, since the row writes that feed it have no frame. Rows such
+a frame persists stay in history. `HandleSessionFrame` reports to the
 host whether the frame's session still owned the thread once handling
 finished, and `sessionEventHandler` does no work of its own on a frame
 whose session did not, except at its disconnect: the queue's

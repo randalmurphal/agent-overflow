@@ -352,6 +352,11 @@ func isTurnIndexCollisionError(err error) bool {
 }
 
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
+	// A retired session's in-flight complete must not take the replacement's
+	// round, settle or fold into its turn, or flush its queue.
+	if r.frameRetired(evt.ThreadID, evt.SessionToken) {
+		return nil
+	}
 	flushQueueAtBoundary := true
 	defer func() {
 		if flushQueueAtBoundary {

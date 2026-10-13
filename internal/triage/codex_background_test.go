@@ -84,7 +84,9 @@ func buildCodexExecResultMeta(t *testing.T, result, processID, command string) j
 
 func seedOpenTurn(t *testing.T, router *Router, st *store.Store, threadID string, turnIndex int) {
 	t.Helper()
-	router.setOpenTurn(threadID, turnIndex, "")
+	if _, err := router.setOpenTurn(threadID, turnIndex, ""); err != nil {
+		t.Fatalf("open turn: %v", err)
+	}
 	startedAt := time.Now().UnixMilli()
 	router.setOpenRoundSnapshot(ActiveTurnSnapshot{
 		ThreadID:  threadID,
