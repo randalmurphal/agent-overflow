@@ -547,6 +547,8 @@ export interface MockSessionConfig {
   appendSystemPrompt?: string;
   systemPromptSnapshot?: string;
   developerInstructions?: string;
+  /** Codex: the report came from thread/resume in a process that only resumed. */
+  resumed?: boolean;
 }
 
 export interface MockInfo {

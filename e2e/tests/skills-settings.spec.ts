@@ -1,0 +1,84 @@
+// The Skills settings page (docs/specs/standing-agents.md, "Skills
+// library") against the provider homes the harness owns.
+//
+// Coverage: the page lists the shipped tree with its upstream version and
+// shows both homes not installed, and nothing installs on its own; Install
+// is refused, with nothing written, when a skill directory the manifest did
+// not write is in the way; Install copies the tree flattened, with the
+// scripts' modes, into one home and leaves the other alone; a stale install
+// offers Update, which makes it current; Remove deletes what the manifest
+// names and keeps a file the user added; screenshots before and after
+// Install.
+import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { test, expect } from './fixtures.js';
+import { capture } from './wake-rows-helpers.js';
+import { MANIFEST, expectInstalled, openSkillsPage, skillsDir, status } from './skills-settings-helpers.js';
+
+test('the Skills page installs, updates and removes the shipped tree per provider home', async ({ harness, page }) => {
+  test.setTimeout(120_000);
+  const claude = skillsDir(harness, 'claude');
+  const codex = skillsDir(harness, 'codex');
+  rmSync(claude, { recursive: true, force: true });
+  rmSync(codex, { recursive: true, force: true });
+
+  await harness.open(page);
+  await openSkillsPage(page);
+  const section = page.getByTestId('settings-skills');
+  await expect(section).toContainText(/Version \d+\.\d+\.\d+, upstream [0-9a-f]{7}/);
+  await expect(page.getByTestId('settings-skills-list')).toContainText('poteto-mode');
+  await expect(status(page, 'claude')).toHaveText('Not installed');
+  await expect(status(page, 'codex')).toHaveText('Not installed');
+  expect(existsSync(claude)).toBe(false);
+  expect(existsSync(codex)).toBe(false);
+  await capture(page, 'skills-before-install.png', section);
+
+  // ---- A skill of the user's own with a shipped name refuses the whole
+  // install and writes nothing.
+  mkdirSync(join(codex, 'tdd'), { recursive: true });
+  writeFileSync(join(codex, 'tdd', 'SKILL.md'), 'my own tdd skill');
+  await page.getByTestId('settings-skills-codex-install').click();
+  await expect(page.getByTestId('settings-skills-codex-error')).toContainText('Nothing was installed');
+  await expect(status(page, 'codex')).toHaveText('Not installed');
+  expect(existsSync(join(codex, MANIFEST))).toBe(false);
+  expect(existsSync(join(codex, 'poteto-mode'))).toBe(false);
+  expect(readFileSync(join(codex, 'tdd', 'SKILL.md'), 'utf8')).toBe('my own tdd skill');
+  rmSync(join(codex, 'tdd'), { recursive: true });
+
+  // ---- Install into each home.
+  await page.getByTestId('settings-skills-claude-install').click();
+  await expect(status(page, 'claude')).toHaveText('Installed');
+  expectInstalled(claude);
+  expect(existsSync(join(codex, 'poteto-mode'))).toBe(false);
+  await page.getByTestId('settings-skills-codex-install').click();
+  await expect(status(page, 'codex')).toHaveText('Installed');
+  await expect(page.getByTestId('settings-skills-codex-error')).toHaveCount(0);
+  expectInstalled(codex);
+  await capture(page, 'skills-after-install.png', section);
+
+  // ---- An install from an older tree offers Update, which replaces it.
+  const manifestPath = join(claude, MANIFEST);
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { digest: string; version: string };
+  writeFileSync(manifestPath, JSON.stringify({ ...manifest, digest: 'older', version: '0.0.1' }));
+  writeFileSync(join(claude, 'poteto-mode', 'SKILL.md'), 'stale text');
+  await page.reload();
+  await openSkillsPage(page);
+  await expect(status(page, 'claude')).toHaveText('0.0.1 installed, update available');
+  await page.getByTestId('settings-skills-claude-update').click();
+  await expect(status(page, 'claude')).toHaveText('Installed');
+  expect(readFileSync(join(claude, 'poteto-mode', 'SKILL.md'), 'utf8')).not.toBe('stale text');
+
+  // ---- Remove deletes what the manifest names and nothing else.
+  writeFileSync(join(claude, 'poteto-mode', 'my-notes.md'), 'mine');
+  mkdirSync(join(claude, 'my-skill'));
+  writeFileSync(join(claude, 'my-skill', 'SKILL.md'), 'mine');
+  await page.getByTestId('settings-skills-claude-remove').click();
+  await expect(status(page, 'claude')).toHaveText('Not installed');
+  expect(existsSync(join(claude, MANIFEST))).toBe(false);
+  expect(existsSync(join(claude, 'poteto-mode', 'SKILL.md'))).toBe(false);
+  expect(existsSync(join(claude, 'tdd'))).toBe(false);
+  expect(readFileSync(join(claude, 'poteto-mode', 'my-notes.md'), 'utf8')).toBe('mine');
+  expect(readFileSync(join(claude, 'my-skill', 'SKILL.md'), 'utf8')).toBe('mine');
+  await expect(status(page, 'codex')).toHaveText('Installed');
+});
