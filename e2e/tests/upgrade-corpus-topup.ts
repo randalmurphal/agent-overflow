@@ -165,7 +165,8 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
                 tool: 'thread_watch',
                 args: {
                   label: 'once',
-                  command: '[ -e once.done ] || { : > once.done; echo found; }',
+                  // The line on stderr is kept on the row (last_stderr).
+                  command: 'echo "once: checked the inbox" >&2; [ -e once.done ] || { : > once.done; echo found; }',
                   cwd: home,
                   every_seconds: 10,
                   timeout_seconds: 30,
