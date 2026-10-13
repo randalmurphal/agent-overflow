@@ -34,7 +34,8 @@ is the map every other skill reads through. Choices a resync must keep:
 output on both forges: `which`,
 `pr view|merge-state|list|create|comment|comments|checks|commits|threads|reply|merge|edit`,
 `ci status|log` and `stack`. `forge --help` lists the arguments. It needs
-bash 4.4 or later (for `inherit_errexit`), git, jq and `gh` or `glab`.
+bash 3.2 or later (stock macOS), git, jq and `gh` or `glab`. It sets
+`inherit_errexit` where bash has it, but its checks do not depend on it.
 
 It decides the forge from the checkout's remote (`FORGE_REMOTE`, default
 `origin`):

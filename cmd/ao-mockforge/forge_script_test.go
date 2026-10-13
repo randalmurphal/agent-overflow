@@ -62,6 +62,9 @@ type forgeCheckout struct {
 	r   *rig
 	dir string
 	env []string
+	// script is the forge script run; forgeScript unless a test swaps
+	// in a variant.
+	script string
 }
 
 func newForgeCheckout(t *testing.T, r *rig, remote, branch string) *forgeCheckout {
@@ -74,7 +77,7 @@ func newForgeCheckout(t *testing.T, r *rig, remote, branch string) *forgeCheckou
 	}
 	env := []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir(), "LC_ALL=C"}
 	env = append(env, r.env...)
-	f := &forgeCheckout{t: t, r: r, dir: t.TempDir(), env: env}
+	f := &forgeCheckout{t: t, r: r, dir: t.TempDir(), env: env, script: forgeScript}
 	f.git("init", "-q", "-b", branch)
 	f.git("remote", "add", "origin", remote)
 	f.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "start")
@@ -104,7 +107,7 @@ func (f *forgeCheckout) run(stdin string, args ...string) string {
 
 func (f *forgeCheckout) try(stdin string, args ...string) (string, string, error) {
 	f.t.Helper()
-	cmd := exec.Command("bash", append([]string{forgeScript}, args...)...)
+	cmd := exec.Command("bash", append([]string{f.script}, args...)...)
 	cmd.Dir = f.dir
 	cmd.Env = append(f.env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 	cmd.Stdin = strings.NewReader(stdin)
@@ -323,17 +326,34 @@ func TestForgeScript(t *testing.T) {
 
 // TestForgeScriptRefusesAnUnresolvedPull: a read that resolves the
 // current branch fails, printing nothing, on a detached HEAD and on a
-// branch with no open pull, rather than reading some other pull.
+// branch with no open pull, rather than reading some other pull. It holds
+// on a bash without inherit_errexit (bash 3.2, stock macOS), which the
+// script stands in for by asking for an option no bash has.
 func TestForgeScriptRefusesAnUnresolvedPull(t *testing.T) {
-	for _, fc := range []struct{ forge, project, remote string }{
-		{"github", "acme/widgets", "https://github.com/acme/widgets.git"},
-		{"gitlab", "grp/sub/tool", "git@gitlab.com:grp/sub/tool.git"},
+	const shopt = "shopt -s inherit_errexit 2>/dev/null || true\n"
+	source, err := os.ReadFile(forgeScript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), shopt) {
+		t.Fatalf("the forge script no longer sets inherit_errexit with %q", shopt)
+	}
+	without := filepath.Join(t.TempDir(), "forge")
+	if err := os.WriteFile(without, []byte(strings.Replace(string(source), shopt, "shopt -s no_such_option 2>/dev/null || true\n", 1)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, fc := range []struct{ name, script, forge, project, remote string }{
+		{"github", forgeScript, "github", "acme/widgets", "https://github.com/acme/widgets.git"},
+		{"gitlab", forgeScript, "gitlab", "grp/sub/tool", "git@gitlab.com:grp/sub/tool.git"},
+		{"github without inherit_errexit", without, "github", "acme/widgets", "https://github.com/acme/widgets.git"},
+		{"gitlab without inherit_errexit", without, "gitlab", "grp/sub/tool", "git@gitlab.com:grp/sub/tool.git"},
 	} {
-		t.Run(fc.forge, func(t *testing.T) {
+		t.Run(fc.name, func(t *testing.T) {
 			r := newRig(t, forgeScriptFixture(fc.forge, fc.project))
 			detached := newForgeCheckout(t, r, fc.remote, "feature")
 			detached.git("switch", "-q", "--detach")
 			lonely := newForgeCheckout(t, r, fc.remote, "lonely")
+			detached.script, lonely.script = fc.script, fc.script
 			reads := [][]string{{"pr", "view"}, {"pr", "merge-state"}, {"pr", "checks"}, {"pr", "commits"}, {"pr", "comments"}, {"pr", "threads"}}
 			for _, c := range []struct {
 				checkout *forgeCheckout

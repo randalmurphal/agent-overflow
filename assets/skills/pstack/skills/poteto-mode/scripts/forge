@@ -30,10 +30,12 @@
 # request's base names the branch below it. A head with an open request
 # uses it, else its newest merged one, else its newest closed one. Exits
 # 3 when a branch on the chain has no pull request.
-# Needs bash 4.4 or later, git, jq and gh or glab.
+# Needs bash 3.2 or later, git, jq and gh or glab.
 set -euo pipefail
-# A failure inside $(...) stops the script, not only the substitution.
-shopt -s inherit_errexit
+# From bash 4.4 a failure inside $(...) stops the script, not only the
+# substitution. Bash 3.2 (stock macOS) lacks the option, so every number
+# and branch is assigned before use and checked rather than relying on it.
+shopt -s inherit_errexit 2>/dev/null || true
 
 die() {
 	printf 'forge: %s\n' "$*" >&2
