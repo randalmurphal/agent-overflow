@@ -260,6 +260,19 @@ Mechanism in
   [claude-wire.md §Background task ownership](references/claude-wire.md#background-task-ownership).
 - Pre-existing dangling Codex child rows in old fork threads are left inert
   on purpose (`internal/store/AGENTS.md`).
+- A standing agent's home: the app reads two well-known files from it,
+  `instructions.md` and `MEMORY.md` (above its archive marker), when they
+  exist, injects them capped at every session start and resume, and
+  prescribes nothing else. This refines standing agents ruling 2; the
+  layout and the memory discipline are the optional `agent-home` skill's
+  ([agent home contents](specs/standing-agents.md#agent-home-contents)).
+  Unconditional, installed or not, the block tells the agent to load that
+  skill and, if it is missing, to ask the user to install the library.
+  A file that cannot be read is a warning row on the thread, not a failed
+  start. A standing agent is named with its role line on the footers it
+  sends and on the wakes of its replies to a caller on its own computer;
+  a caller on another computer gets no role, since cross-computer agents
+  are a non-goal.
 
 ## Providers and accounts
 

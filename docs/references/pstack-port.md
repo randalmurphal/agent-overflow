@@ -128,7 +128,8 @@ the chain with no pull request exits 3, and a cycle of bases fails, so
    `git diff <pinned>..<new> -- skills automations agents README.md LICENSE`.
 3. Apply the upstream changes here, keeping the port's edits. For a file
    `UPSTREAM.md` lists, reapply its change by hand. Leave the paths
-   `UPSTREAM.md` lists as not vendored out.
+   `UPSTREAM.md` lists as not vendored out. `skills/agent-home` is
+   Agent Overflow's own skill, not upstream's: leave it as it is.
 4. Run `make pstack-check`. Every hit names a file and line that brought
    back a replaced primitive or a tool name the app does not serve; port
    it to the mapping above.

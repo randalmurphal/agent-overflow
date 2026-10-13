@@ -39,7 +39,10 @@ user changes it.
    writes its own PreToolUse hook; the app adds nothing.
 2. **The agent builds its own systems.** The app never ships a Jira
    poller, an MR watcher, a memory format or a prescribed home layout.
-   It runs what the agent registers and delivers the output.
+   It runs what the agent registers and delivers the output. Refined in
+   slice 9: the app reads two well-known files from the home when they
+   exist and prescribes nothing else; the optional `agent-home` skill
+   teaches a layout ([Agent home contents](#agent-home-contents)).
 3. **Subagents or threads, never a third thing.** Work that belongs to
    the thread's own task (a review panel over its diff, a verifier of
    its change, a swarm over its investigation) runs as the provider's
@@ -177,10 +180,8 @@ The home path and the agent's standing instructions reach the provider
 beside the app guide: Claude's appended system prompt (claude-tui's
 too) and Codex's developer instructions, read at every session start
 and resume whatever the guide setting says (`standingAgentPrompt`). A
-session live at promotion gets it at its next start or resume. The
-injected block is short: the home path, the thread id, and the sentence
-that the agent owns the directory and keeps its durable state there. No
-layout is prescribed.
+session live at promotion gets it at its next start or resume. What the
+block carries is in [Agent home contents](#agent-home-contents).
 
 Deleting the thread deletes the agent row, its loops and watches; the
 home is removed only through the row action that asks. Archiving it
@@ -190,6 +191,91 @@ the loops and watches when it begins and drops the agent row when it
 commits, so the conversation arrives as an ordinary thread, and a copy
 is an ordinary thread while the original keeps its row and schedules.
 The transfer dialog says so before the user commits (`GetStandingAgent`).
+
+### Agent home contents
+
+A standing agent has to persist and improve across sessions: what it
+verifies and how, the rulings the user gave it, its grants, product
+context and lessons. It keeps them in its home; the app reads two files
+from there and prescribes nothing else (ruling 2). The `agent-home`
+skill, an Agent Overflow skill in the vendored tree
+([Skills library](#skills-library)), teaches the layout and the
+discipline; the app works the same whether or not it is installed.
+
+Layout the skill teaches (`assets/skills/pstack/skills/agent-home`):
+
+| Path | Holds | Written by |
+|---|---|---|
+| `instructions.md` | Line 1 the role; then grants with scope and date (ruling 1), standing rules, who it reports to | The agent, by hand, on a ruling |
+| `rulings.md` | Append-only dated rulings, each with the thread and item it came from | The agent |
+| `verification.md` | What the agent checks before calling work done and how, extended when a miss is found | The agent |
+| `memory/<slug>.md` | One fact per file; frontmatter `name`, `description`, `type` (user, feedback, project, reference), `source`, `last_verified` | The agent |
+| `MEMORY.md` | The index of `memory/`, one line per memory grouped by type, then an archive | The hygiene loop only |
+
+The skill creates what is missing on first load and keeps whatever the
+home already holds, the README promotion wrote included. Promotion
+seeds nothing beyond that README.
+
+**Injection.** At every session start and resume of a standing agent,
+on Claude, claude-tui and Codex, the block `standingAgentPrompt` joins
+to the app guide is: the home sentence (home path, thread id, that the
+agent owns the directory) and "Load the agent-home skill before any
+work. If it is not installed, tell the user to install the skills
+library from Settings, Agents, Skills, and keep your home files by hand
+until it is."; then, for each file that exists and is not empty,
+`instructions.md` under "Your standing instructions" and `MEMORY.md`
+under "Your memory index". Only the part of `MEMORY.md` above the line
+`<!-- agent-home:archive -->` is injected. Caps: 8 KiB of
+`instructions.md` and 4 KiB of `MEMORY.md`; past a cap the head is
+injected, cut after the last line break inside the cap, with a notice
+naming the file and the byte it stopped at, and the agent reads the
+rest itself. The text is cleaned the way an attached file is
+(`agenthome.CleanText`: invalid UTF-8 replaced, control and invisible
+formatting characters removed, tabs and line breaks kept). Reads go
+through an `os.Root` on the home, so a link out of it is not followed.
+The literals live in `internal/agenthome`, and a test holds the skill
+to them.
+
+The files are read when the session starts and never watched, so a
+session's prompt is fixed for its life and two starts over unchanged
+files carry the same bytes, which keeps the provider's prompt cache. An
+edit, the hygiene loop's rewrite included, reaches the next start or
+resume. A missing file injects nothing. A file that cannot be read for
+another reason injects a line saying so in its place, is logged with
+its path, and puts a warning row on the thread once the session is
+registered; the start proceeds. A demoted thread's next session carries
+none of it.
+
+**Hygiene loop.** The skill has the agent register one `thread_loop` on
+itself, labeled `agent-home hygiene`, every six hours unless it chooses
+otherwise. Each fire runs one pass: rebuild `MEMORY.md` from the
+frontmatter; for each memory, check its source still exists
+(`thread_show` around the item) and that no later ruling contradicts
+it, mark a failing one `stale: <reason>` and drop it from the index;
+merge duplicates; mark a memory with no source unverified in its line;
+keep the part above the archive marker under 4 KiB by moving the least
+recently verified lines below it; set `last_verified` on what it
+checked. It writes nothing else and ends the turn stating what changed,
+which is the wake's outcome. Only this pass writes `MEMORY.md`, never at
+the moment a memory is written, so the injected bytes change on the
+loop's schedule rather than on every write.
+
+**Agent-to-agent context.** What a receiver needs from the surfaces a
+standing agent reads and writes:
+
+| Surface | What the receiver lacked | Now |
+|---|---|---|
+| `thread_send` / `thread_spawn` footer | Whether the sender is a lead or a worker; for a worker, that its questions go to the agent (ruling 19) | A standing agent sender is named as one with its role line, the first line of its `instructions.md` (one cleaned line, at most 200 characters, quoted). When it spawned the receiver on this computer, the footer adds that the receiver's questions and approval requests go to it. A sender on another computer carries its role in the forwarded call and never routes. An ordinary sender's footer is unchanged |
+| A spawned thread's first message | The sender's standards, which it could only paste | `home_files` on `thread_spawn` and `thread_send`: files from the caller's home prepended under their names, framed as the sender's own text ([thread tools](agent-thread-tools.md#thread_spawn-q5-q6-q18)). The skill passes `verification.md` to every worker and reviewer |
+| Wake of a reply, final message or failure | Whether the answering thread is an agent | A standing agent on the caller's computer is named with its role line on the line after the status line. One on another computer is not: the request row records no role for it, and cross-computer agents are a non-goal |
+| `thread_search`, `thread_show` | Which rows are agents and whose workers | `standing_agent` and `spawned_by` on every row |
+| `thread_reply`, worker prompt wakes, loop and watch wakes | Nothing missing: a reply's text is the answer, a worker's prompt wake already names the worker, and a loop or watch wake is the agent's own | Unchanged |
+| `thread_status` | Nothing missing: it reports the caller's own requests and the live state of threads it names | Unchanged |
+
+The role line and the attached files are the sender's own text and
+carry no authority; the thread tools guide says so beside the rule for
+message bodies, and a body line that mimics the footer is quoted as
+before.
 
 ### Sidebar
 
@@ -565,7 +651,9 @@ call's own stamp, so the settled row reads the same on any later day.
 
 The vendored tree lives in the repository at `assets/skills/pstack/`
 with `UPSTREAM.md` pinning the upstream commit and listing every edit
-made for the port. Syncing is a manual diff against upstream; nothing
+made for the port. One skill in it, `agent-home`, is authored for Agent
+Overflow rather than vendored ([Agent home contents](#agent-home-contents));
+`UPSTREAM.md` lists it as added. Syncing is a manual diff against upstream; nothing
 pulls.
 
 The port rewrites every host primitive to a thread tool so both
@@ -702,6 +790,7 @@ ticket keys.
 | 6 | pstack vendored and ported | 3a, 5 | Every primitive in the port table is rewritten; the `forge` script passes against the fake `gh` and `glab`; `poteto-mode` completes a small real task in a Claude thread and in a Codex thread with the same steps | Manual provider smoke on a throwaway repo with the transcripts attached; forge script run log against the harness fake |
 | 7 | Workflows to MCP | 5 | No workflow verb in `aocli`; every workflow e2e spec passes through the MCP tool; starters and docs name the tool | Workflow e2e suite run; a screenshot of a run started and watched from a thread through the tool |
 | 8 | MR lead migration | 2, 3b, 5, 6 | The lead's notes live in its home, it is promoted, it set its own loop and watches, and it ran a week | The user |
+| 9 | Agent home contents | 5, 6 | The `agent-home` skill ships in the installed tree; a standing agent's sessions on Claude, claude-tui and Codex carry its `instructions.md` and the non-archive part of `MEMORY.md` within their caps, byte-identical over unchanged files, with a rewrite reaching the next start and nothing after demotion; an unreadable file starts the session with a warning row; footers and wakes name a standing agent with its role line and tell a worker its questions go to its agent; `home_files` attaches files on spawn and send and is refused for a non-agent, an escaping path, a missing file and a total past 32 KiB; thread rows carry `standing_agent` and `spawned_by` | `standing-agent-home-contents.spec.ts` on both mock providers (injected prompt, hygiene wake through `thread_loop` reaching the next start, a worker's first message carrying `home_files`, the footer role line between an agent and an ordinary thread); app tests reading the claude-tui argv and append file, since no mock speaks claude-tui; screenshots of the agent's session, the worker's first message and the hygiene wake, desktop and compact |
 
 Slices 1 and 3a start together, with the slice 4 spike beside them.
 Slice 7 is independent of 6 and runs after 5 so the tool lands on the
