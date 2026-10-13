@@ -34,7 +34,7 @@ func (r *Router) handleSessionWakeup(evt provider.ProviderEvent) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.frameRefusalLocked(evt) != "" {
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
 		// The timer belongs to a process the thread no longer runs.
 		return nil
 	}
@@ -68,7 +68,7 @@ func (r *Router) handleScheduledJobs(evt provider.ProviderEvent) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.frameRefusalLocked(evt) != "" {
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
 		// The jobs belong to a process the thread no longer runs.
 		return nil
 	}

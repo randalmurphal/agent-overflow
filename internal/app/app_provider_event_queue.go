@@ -107,6 +107,11 @@ type providerEventQueue struct {
 	// retireWhenIdle is set once the session's final event is handled; the
 	// worker then retires the queue when it next finds it empty.
 	retireWhenIdle bool
+	// lastSession is the session token of the latest provider frame
+	// queued. A session's end marks the queue for retirement only while
+	// it is that session: a replacement's frames queued behind a retired
+	// session's disconnect keep the queue.
+	lastSession string
 	// retired is set when the queue leaves the registry. A producer that
 	// looked the queue up just before must look again, or its event would
 	// land in a queue no later producer or drainer can see.
@@ -139,6 +144,9 @@ func (qs *providerEventQueues) enqueue(threadID string, evt provider.ProviderEve
 		}
 		q.pushLocked(item)
 		q.enqueued++
+		if evt.SessionToken != "" {
+			q.lastSession = evt.SessionToken
+		}
 		// An event queued after the retire mark belongs to a replacement
 		// session; that session's own end re-arms the mark.
 		q.retireWhenIdle = false
@@ -184,16 +192,20 @@ func (qs *providerEventQueues) drainAll() error {
 	return errors.Join(errs...)
 }
 
-// retireWhenIdle marks the thread's queue for retirement once it is empty.
-// The session event handler calls it after handling the session's final
-// event, on the worker itself.
-func (qs *providerEventQueues) retireWhenIdle(threadID string) {
+// retireWhenIdle marks the thread's queue for retirement once it is empty,
+// unless another session has queued frames since sessionToken's: the
+// queue then belongs to that session, whose own end marks it. The session
+// event handler calls it after handling the session's final event, on the
+// worker itself.
+func (qs *providerEventQueues) retireWhenIdle(threadID, sessionToken string) {
 	q := qs.lookup(threadID)
 	if q == nil {
 		return
 	}
 	q.mu.Lock()
-	q.retireWhenIdle = true
+	if q.lastSession == sessionToken {
+		q.retireWhenIdle = true
+	}
 	q.mu.Unlock()
 }
 

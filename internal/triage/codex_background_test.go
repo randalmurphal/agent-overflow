@@ -84,14 +84,14 @@ func buildCodexExecResultMeta(t *testing.T, result, processID, command string) j
 
 func seedOpenTurn(t *testing.T, router *Router, st *store.Store, threadID string, turnIndex int) {
 	t.Helper()
-	router.setOpenTurn(threadID, turnIndex)
+	router.setOpenTurn(threadID, turnIndex, "")
 	startedAt := time.Now().UnixMilli()
 	router.setOpenRoundSnapshot(ActiveTurnSnapshot{
 		ThreadID:  threadID,
 		TurnID:    threadID + ":" + strconv.Itoa(turnIndex) + ":round",
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
-	})
+	}, "")
 	if err := st.InsertTurn(store.Turn{
 		TurnID:    threadID + ":" + strconv.Itoa(turnIndex),
 		ThreadID:  threadID,
@@ -2879,7 +2879,7 @@ func TestCodexResumeGenerationDoesNotMutateHistory(t *testing.T) {
 		"codex_child_terminal_statuses":  map[string]string{"child-1": "completed"},
 	})
 	launch.Meta = mergeItemMetaJSON(launch.Meta, seeded)
-	if err := router.setCodexAgentRuntime(launch); err != nil {
+	if err := router.setCodexAgentRuntime(launch, ""); err != nil {
 		t.Fatal(err)
 	}
 

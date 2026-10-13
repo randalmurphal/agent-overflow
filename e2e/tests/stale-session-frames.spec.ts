@@ -13,6 +13,13 @@
 // On Claude the queued frames arm a ScheduleWakeup timer and a one-shot
 // CronCreate job; on Codex, which has no session schedule, they are the
 // turn's reply and its completion. Both carry a reply that must never render.
+//
+// Not covered here: a frame already being handled inside triage when the
+// replacement commits. Holding the worker inside one frame's handling needs
+// a hold point in triage's dispatch, which the harness does not have; that
+// case is proven by unit tests at every process-state writer
+// (internal/triage/session_token_gate_test.go) and in the host
+// (internal/app/app_provider_events_test.go).
 
 import { HARNESS_TIMING, launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test } from './fixtures.js';

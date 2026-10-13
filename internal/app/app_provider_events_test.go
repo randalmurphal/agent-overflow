@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/triage"
 )
@@ -672,5 +673,151 @@ func TestRetiredSessionFramesDoNotActOnTheReplacement(t *testing.T) {
 	case threadID := <-starts:
 		t.Fatalf("the retired session's death started an auto-reconnect for %s", threadID)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// The verifier's probe, kept as it found the gap: session A's frame is stuck
+// inside triage when the replacement commits the thread. Once it unsticks,
+// none of the host's effects after triage may run for it.
+func TestInFlightRetiredFrameDoesNotReachTurnObservers(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-probe-inflight")
+	thread.Provider = string(provider.Claude)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	inHandle := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	app.triage.SetEventHook(func(evt provider.ProviderEvent) {
+		if evt.SessionToken == "token-a" && evt.Kind == provider.EventTurnComplete {
+			once.Do(func() { close(inHandle); <-release })
+		}
+	})
+	var mu sync.Mutex
+	var seen []provider.EventKind
+	unsubscribe := app.subscribeThreadTurnObserver(thread.ID, func(_ string, evt provider.ProviderEvent) {
+		mu.Lock()
+		seen = append(seen, evt.Kind)
+		mu.Unlock()
+	})
+	t.Cleanup(unsubscribe)
+
+	dead := startedSessionEventHandler(app, thread.ID, "token-a", string(provider.Claude))
+	dead(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: thread.ID, TurnComplete: &provider.WireTurnCompleteMeta{}, Timestamp: time.Now()})
+	<-inHandle
+	mu.Lock()
+	seen = nil
+	mu.Unlock()
+	app.triage.MarkThreadActive(thread.ID, "token-b")
+	close(release)
+	waitProviderEvents(t, app, thread.ID)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 0 {
+		t.Fatalf("turn observers saw the retired session's in-flight frame after the replacement committed: %v", seen)
+	}
+}
+
+// The PR's race in one process: A's worker is stuck inside triage on one
+// frame while A's ScheduleWakeup ack queues behind it, and the replacement
+// commits. The ack reaches triage only after the commit, carrying A's token
+// from the read-loop callback, so the replacement holds no schedule.
+func TestFrameQueuedBehindAStuckHandlerNeverArmsTheReplacement(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-stuck-worker")
+	thread.Provider = string(provider.Claude)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	inHandle := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	app.triage.SetEventHook(func(evt provider.ProviderEvent) {
+		if evt.Kind == provider.EventTurnComplete {
+			once.Do(func() { close(inHandle); <-release })
+		}
+	})
+	dead := startedSessionEventHandler(app, thread.ID, "token-a", string(provider.Claude))
+	dead(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: thread.ID, TurnComplete: &provider.WireTurnCompleteMeta{}, Timestamp: time.Now()})
+	<-inHandle
+	wakeup, err := json.Marshal(provider.SessionWakeupMeta{ScheduledForUnixMs: time.Now().Add(30 * time.Minute).UnixMilli()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead(provider.ProviderEvent{Kind: provider.EventSessionWakeup, ThreadID: thread.ID, Meta: wakeup, Timestamp: time.Now()})
+	app.triage.MarkThreadActive(thread.ID, "token-b")
+	close(release)
+	waitProviderEvents(t, app, thread.ID)
+	if at, ok := app.triage.PendingWakeupAt(thread.ID); ok {
+		t.Fatalf("the replacement holds the retired session's wakeup until %s", at)
+	}
+}
+
+// A retired session's disconnect does not retire the thread's event queue
+// once the replacement has queued frames behind it: the queue is the
+// replacement's, and only the replacement's own end marks it.
+func TestRetiredDisconnectKeepsTheReplacementsQueue(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-retired-queue")
+	thread.Provider = string(provider.Claude)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	dead := startedSessionEventHandler(app, thread.ID, "token-a", string(provider.Claude))
+	if err := app.providerEvents.stall(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	dead(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "disconnected", Timestamp: time.Now()})
+	live := startedSessionEventHandler(app, thread.ID, "token-b", string(provider.Claude))
+	live(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "ready", Timestamp: time.Now()})
+	if err := app.providerEvents.releaseStall(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitProviderEvents(t, app, thread.ID)
+	waitForCondition(t, "the worker goes idle", func() bool {
+		q := app.providerEvents.lookup(thread.ID)
+		if q == nil {
+			return true
+		}
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		return !q.running
+	})
+	if app.providerEvents.lookup(thread.ID) == nil {
+		t.Fatal("the retired session's disconnect retired the replacement's queue")
+	}
+
+	// The replacement's own end still retires it.
+	live(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "disconnected", Timestamp: time.Now()})
+	waitProviderEvents(t, app, thread.ID)
+	waitForCondition(t, "the replacement's disconnect retires the queue", func() bool {
+		return app.providerEvents.lookup(thread.ID) == nil
+	})
+}
+
+// The host's own work before triage is gated on the same answer: a retired
+// session's init does not overwrite the live session's MCP status.
+func TestRetiredSessionInitDoesNotFeedTheMCPStatusCache(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-retired-init")
+	thread.Provider = string(provider.Claude)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	init, err := json.Marshal(provider.SessionInfo{MCPServers: []provider.MCPServer{{Name: "retired-server", Status: "connected"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := startedSessionEventHandler(app, thread.ID, "token-a", string(provider.Claude))
+	app.triage.MarkThreadActive(thread.ID, "token-b")
+	dead(provider.ProviderEvent{Kind: provider.EventInit, ThreadID: thread.ID, Meta: init, Timestamp: time.Now()})
+	waitProviderEvents(t, app, thread.ID)
+	if cached, ok := app.mcpStatus().Get(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "retired-server"}); ok {
+		t.Fatalf("a retired session's init fed the MCP status cache: %+v", cached)
 	}
 }

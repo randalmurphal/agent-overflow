@@ -172,7 +172,7 @@ func TestTerminalInteraction_DoubledResultPreservesInteractedSeq(t *testing.T) {
 	// the first seedOpenTurn (the production handleTurnStart is
 	// idempotent against an existing row but the seedOpenTurn helper
 	// uses InsertTurn directly which is not).
-	router.setOpenTurn("t1", 0)
+	router.setOpenTurn("t1", 0, "")
 
 	secondInteraction := provider.ProviderEvent{
 		Kind:      provider.EventTerminalInteraction,

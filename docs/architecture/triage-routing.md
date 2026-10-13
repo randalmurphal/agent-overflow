@@ -64,18 +64,28 @@ drops every wire event for a thread `CleanupThread` marked stopped, and
 every provider frame whose session token is not the one `MarkThreadActive`
 last committed the thread to: a frame of a session a replacement has
 claimed. Host-originated events carry no token and meet only the stopped
-check. Handlers that write state belonging to the provider process (the
-wakeup and cron schedule, the compacting window) repeat the token check
-under the lock they write under, so a frame already past the gate when a
-replacement starts cannot hand it that state. The carrier rewrite then
-replaces a `ParentToolUseID` naming a known §E6 resume CARRIER with that agent's transcript ROOT
+check. The carrier rewrite then replaces a `ParentToolUseID` naming a
+known §E6 resume CARRIER with that agent's transcript ROOT
 (`internal/triage/transcript_root.go`), so no handler can write a row
 parented to a lifecycle row. Both are cheap by construction — the rewrite
 short-circuits on an empty parent before taking the lock — and both apply
 to every kind, which is why they live above the switch rather than in a
-handler. The host applies the same token answer (`SessionCurrent`) to its
-own work on a frame in `sessionEventHandler`. This is the stopped-thread
-ownership contract described in
+handler.
+
+A frame that passed the gate can have its session retired while it is
+being handled. Every writer of state that belongs to the provider process
+takes the frame's token and refuses it under the `r.mu` it writes under
+(`frameRetiredLocked`): the wakeup and cron schedule, live subagent
+progress, the Codex agent runtime and execution tool counts, command
+lifecycle correlation, the effective model, the compacting window, the
+open turn and round, and turn settlement. Rows such a frame persisted
+before the commit stay in history. `HandleSessionFrame` reports to the
+host whether the frame's session still owned the thread once handling
+finished, and `sessionEventHandler` does no work of its own on a frame
+whose session did not, except at its disconnect: the queue's
+end-of-session mark (which stands only if no later session has queued a
+frame) and a workflow attempt's fold of a death it already observed.
+This is the stopped-thread ownership contract described in
 [`turn-lifecycle.md`](turn-lifecycle.md#turn--tool--task-lifecycles).
 
 ## Exhaustiveness Check

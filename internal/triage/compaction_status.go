@@ -59,7 +59,7 @@ func (r *Router) handleCompactionStatus(evt provider.ProviderEvent) error {
 	}
 
 	r.mu.Lock()
-	if r.frameRefusalLocked(evt) != "" {
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
 		// A replacement process is never mid-compaction.
 		r.mu.Unlock()
 		return nil

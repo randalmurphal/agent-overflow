@@ -315,7 +315,7 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 		}
 		r.mu.Unlock()
 		if shouldStamp {
-			return r.stampCodexItemBackgrounded(evt.ThreadID, itemID)
+			return r.stampCodexItemBackgrounded(evt.ThreadID, itemID, evt.SessionToken)
 		}
 	}
 

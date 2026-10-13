@@ -52,10 +52,15 @@ The provider process and its session files are the source of truth while a turn
 is running. One thread action runs at a time. Session start and teardown
 coordinate with that action lock, provider read-loop shutdown and the drain
 of the thread's provider event queue. Every provider frame carries the
-token of the session that produced it, and triage admits only the token
-the last session start committed the thread to, so a stale event cannot
-enter a replacement session even when that drain gives up on a stalled
-worker.
+token of the session that produced it. Once a session start commits the
+thread to a new token, an earlier session's frame is refused at triage's
+gate if it is still queued; if it was already being handled, every writer of
+process-bound state (schedule, live subagent progress, Codex runtime,
+command correlation, effective model, compacting window, open turn and
+round, turn settlement) refuses it under the lock it writes under, and
+the host does none of its own work on it. This holds when that drain
+gives up on a stalled worker. Rows a frame already being handled has
+persisted stay in the thread's history.
 
 Fork, resume, queued-send, stop, and recovery behavior is specified in
 [`turn-lifecycle.md`](turn-lifecycle.md),

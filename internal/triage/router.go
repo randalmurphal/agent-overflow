@@ -377,12 +377,28 @@ func (r *Router) SetEventHook(hook func(provider.ProviderEvent)) {
 
 // Handle processes a provider event: persists heavy payloads, forwards inline events.
 func (r *Router) Handle(evt provider.ProviderEvent) error {
+	_, err := r.HandleSessionFrame(evt)
+	return err
+}
+
+// HandleSessionFrame is Handle for a provider frame the host acts on after
+// triage. current reports whether the frame's session still owned the
+// thread once its handling finished: false for a frame of a session a
+// replacement retired before or while it was handled, which the host must
+// not act on either. The writers of process-bound state refuse such a frame
+// themselves (frameRetiredLocked); current carries the same answer to the
+// host. A stop alone does not retire a session, so a stopped thread's own
+// trailing frames still report true, as the host's teardown needs them.
+func (r *Router) HandleSessionFrame(evt provider.ProviderEvent) (current bool, err error) {
 	r.inflight.Add(1)
 	defer r.inflight.Done()
+	// Deferred before the hook so it runs after it: the final check sees
+	// every replacement committed while the frame was being handled.
+	defer func() { current = evt.SessionToken == "" || r.SessionCurrent(evt.ThreadID, evt.SessionToken) }()
 	defer r.fireEventHook(evt)
 
 	if refusal := r.frameRefusal(evt); refusal != "" {
-		// Drop — including EventInit. The readLoop could still be
+		// Drop, including EventInit. The readLoop could still be
 		// draining in-flight lines after StopSession returned, and a
 		// host drain that stalled can leave a dead session's frames
 		// queued behind a replacement start; persisting them would
@@ -393,7 +409,7 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		if evt.Kind != provider.EventSessionStatus || evt.Content != "disconnected" {
 			log.Printf("triage: dropping %s event for thread %s: %s", evt.Kind, evt.ThreadID, refusal)
 		}
-		return nil
+		return false, nil
 	}
 	// A §E6 resume carrier is a LIFECYCLE row, not a transcript root:
 	// the agent's own rows stay parented to the original launch across
@@ -403,7 +419,7 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 	if root := r.carrierRootRewrite(evt.ThreadID, evt.ParentToolUseID); root != "" {
 		evt.ParentToolUseID = root
 	}
-	return r.dispatchReportingRefusals(evt)
+	return true, r.dispatchReportingRefusals(evt)
 }
 
 // HandleSynthetic routes a host-synthesized event exactly like Handle
@@ -883,7 +899,9 @@ func (r *Router) maybeReopenSettledRound(evt provider.ProviderEvent) {
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
 	}
-	r.setOpenRoundSnapshot(snapshot)
+	if !r.setOpenRoundSnapshot(snapshot, evt.SessionToken) {
+		return
+	}
 	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 }
 

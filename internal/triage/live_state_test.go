@@ -100,7 +100,7 @@ func TestLiveActivitySnapshot_NamesOnlyThreadsWithLiveActivity(t *testing.T) {
 	router.state("idle")
 	router.mu.Unlock()
 
-	router.setOpenRoundSnapshot(ActiveTurnSnapshot{ThreadID: "running", TurnID: "round-1", TurnIndex: 3, StartedAt: 1_000})
+	router.setOpenRoundSnapshot(ActiveTurnSnapshot{ThreadID: "running", TurnID: "round-1", TurnIndex: 3, StartedAt: 1_000}, "")
 	router.setPendingApproval("blocked", pendingApprovalState{Request: provider.ApprovalRequest{RequestID: "approval-2"}})
 	router.setPendingApproval("blocked", pendingApprovalState{Request: provider.ApprovalRequest{RequestID: "approval-1"}})
 	router.setPendingUserInput("blocked", provider.UserInputRequest{RequestID: "question-1"})

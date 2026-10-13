@@ -451,7 +451,7 @@ func TestInterruptedQueuedPredecessorUsesErroredOutcome(t *testing.T) {
 		t.Fatalf("turn start: %v", err)
 	}
 
-	r.settleQueuedEchoPredecessor("thread-1", 1, time.Now().UnixMilli(), "interrupted")
+	r.settleQueuedEchoPredecessor("thread-1", 1, time.Now().UnixMilli(), "interrupted", "")
 
 	spans := telemetry.spans.Ended()
 	if len(spans) != 1 {
@@ -473,7 +473,7 @@ func TestQueuedPredecessorPersistenceFailureOverridesCompletionOutcome(t *testin
 	}
 	_ = st.Close()
 
-	r.settleQueuedEchoPredecessor("thread-1", 1, time.Now().UnixMilli(), "end_turn")
+	r.settleQueuedEchoPredecessor("thread-1", 1, time.Now().UnixMilli(), "end_turn", "")
 
 	spans := telemetry.spans.Ended()
 	if len(spans) != 1 {

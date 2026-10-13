@@ -35,6 +35,9 @@ import (
 // per-turn cascade. See internal/triage/AGENTS.md "Wire-round vs
 // logical-turn".
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
+	if r.frameRetired(evt.ThreadID, evt.SessionToken) {
+		return nil
+	}
 	turnIndex := r.resolveTurnIndexOnStart(evt)
 	startedAt := eventTimestampMillis(evt)
 
@@ -57,7 +60,10 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 
 	// A failed ownership read is reported once the turn is open: the turn
 	// starts either way.
-	openErr := r.setOpenTurn(evt.ThreadID, turnIndex)
+	opened, openErr := r.setOpenTurn(evt.ThreadID, turnIndex, evt.SessionToken)
+	if !opened {
+		return openErr
+	}
 	r.openTurnSpan(evt, turnIndex)
 
 	// Open the first wire round for this logical turn. Frontend
@@ -71,7 +77,9 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
 	}
-	r.setOpenRoundSnapshot(snapshot)
+	if !r.setOpenRoundSnapshot(snapshot, evt.SessionToken) {
+		return openErr
+	}
 	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 	return openErr
 }
@@ -488,7 +496,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		// here, subsequent invocations for the same (thread, turn) skip
 		// lifecycle settlement. Late usage on a duplicate is still folded
 		// into the existing turn row below so accounting is not lost.
-		if !r.claimTurnSettlement(evt.ThreadID, turnIndex) {
+		if !r.claimTurnSettlement(evt.ThreadID, turnIndex, evt.SessionToken) {
 			// Late-fold path: a second activity-counting result for an
 			// already-settled logical turn (the multi-result / re-round
 			// pattern). persistLateTurnPayload folds the late turns-row
@@ -984,9 +992,13 @@ func (r *Router) AnyInFlightTurnOrRound() bool {
 // once another turn starts, and is forgotten with its count; an agent's
 // streams are the agent's and stay. A failed ownership read forgets them
 // too, as before agents outlived turns, and is returned.
-func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
+func (r *Router) setOpenTurn(threadID string, turnIndex int, sessionToken string) (bool, error) {
 	agentScopes, scopeErr := r.agentOwnedOpenScopes(threadID)
 	r.mu.Lock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		r.mu.Unlock()
+		return false, nil
+	}
 	st := r.state(threadID)
 	st.openTurn = turnIndex
 	st.openTurnSet = true
@@ -1008,7 +1020,7 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
 	// there and the second complete returns early.
 	delete(st.settledTurns, turnIndex)
 	r.mu.Unlock()
-	return scopeErr
+	return true, scopeErr
 }
 
 // openQueuedEchoTurn establishes logical turn `turnIndex` when a queued
@@ -1064,8 +1076,12 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
 // drained the next message. The settlement claim blocks the eventual
 // wire result from correcting the reason later, so it must be right
 // here.
-func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt int64, interruptedTurnIndex int) {
+func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt int64, interruptedTurnIndex int, sessionToken string) {
 	r.mu.Lock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		r.mu.Unlock()
+		return
+	}
 	st := r.state(threadID)
 	open, hasOpen := st.openTurn, st.openTurnSet
 	if hasOpen && open == turnIndex {
@@ -1118,7 +1134,7 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 		if open == interruptedTurnIndex || open == markedInterruptTurn {
 			reason = "interrupted"
 		}
-		r.settleQueuedEchoPredecessor(threadID, open, startedAt, reason)
+		r.settleQueuedEchoPredecessor(threadID, open, startedAt, reason, sessionToken)
 	}
 
 	// Same deterministic id shape resolveTurnID synthesizes for Claude
@@ -1157,7 +1173,9 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
 	}
-	r.setOpenRoundSnapshot(snapshot)
+	if !r.setOpenRoundSnapshot(snapshot, sessionToken) {
+		return
+	}
 	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 }
 
@@ -1179,8 +1197,8 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 // round close may have beaten us) and routes any later wire result for
 // this index into persistLateTurnPayload instead of the orphan-error
 // path.
-func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, completedAt int64, stopReason string) {
-	if !r.claimTurnSettlement(threadID, turnIndex) {
+func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, completedAt int64, stopReason, sessionToken string) {
+	if !r.claimTurnSettlement(threadID, turnIndex, sessionToken) {
 		return
 	}
 	var persistErr error
@@ -1220,10 +1238,15 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 
 // claimTurnSettlement records that handleTurnComplete has begun logical-turn
 // settlement for (threadID, turnIndex). It returns true only for the first
-// claimant; later callers should take the duplicate/late-payload path.
-func (r *Router) claimTurnSettlement(threadID string, turnIndex int) bool {
+// claimant; later callers should take the duplicate/late-payload path. A
+// frame of a retired session claims nothing: the turn it would settle and
+// the round it would close belong to the session that replaced it.
+func (r *Router) claimTurnSettlement(threadID string, turnIndex int, sessionToken string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return false
+	}
 	st := r.state(threadID)
 	if st.settledTurns[turnIndex] {
 		return false
@@ -1270,15 +1293,19 @@ func (r *Router) isTurnSettled(threadID string, turnIndex int) bool {
 // if currentTurnIndex failed in the prior handleTurnComplete and the
 // round-end emit was skipped) cannot survive into the next round.
 // CleanupThread also sweeps this map.
-func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot) {
+func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot, sessionToken string) bool {
 	if snapshot.ThreadID == "" || snapshot.TurnID == "" {
-		return
+		return false
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.frameRetiredLocked(snapshot.ThreadID, sessionToken) {
+		return false
+	}
 	st := r.state(snapshot.ThreadID)
 	st.currentRound = snapshot
 	st.currentRoundOpen = true
-	r.mu.Unlock()
+	return true
 }
 
 // takeOpenRound returns the active wire-round snapshot for threadID and
@@ -1929,19 +1956,38 @@ func (r *Router) frameRefusal(evt provider.ProviderEvent) string {
 // token is not the one MarkThreadActive last committed the thread to: a
 // frame of a session a replacement has already claimed. Host-originated
 // events carry no token and are refused only while the thread is stopped.
-// A handler that writes state belonging to the provider process calls it
-// again under the r.mu it writes under, so a frame already in flight when
-// a replacement starts cannot write that state for the replacement.
 // Caller holds r.mu.
 func (r *Router) frameRefusalLocked(evt provider.ProviderEvent) string {
-	id := r.identityIfPresent(evt.ThreadID)
-	if id != nil && id.stopped {
+	if id := r.identityIfPresent(evt.ThreadID); id != nil && id.stopped {
 		return "stopped thread"
 	}
-	if evt.SessionToken != "" && (id == nil || id.sessionToken != evt.SessionToken) {
+	if r.frameRetiredLocked(evt.ThreadID, evt.SessionToken) {
 		return "retired session"
 	}
 	return ""
+}
+
+// frameRetiredLocked reports whether the session that produced a frame
+// (its token) no longer owns the thread: a replacement committed the
+// thread to another session, or a stop marked it stopped. Host-originated
+// writes carry no token and are never retired. Every writer of state that
+// belongs to the provider process (what MarkThreadActive clears, and the
+// open turn and round) asks it under the r.mu it writes under, so a frame
+// that passed Handle's gate before a replacement committed cannot write
+// that state for the replacement. Caller holds r.mu.
+func (r *Router) frameRetiredLocked(threadID, sessionToken string) bool {
+	if sessionToken == "" {
+		return false
+	}
+	id := r.identityIfPresent(threadID)
+	return id == nil || id.stopped || id.sessionToken != sessionToken
+}
+
+// frameRetired is frameRetiredLocked for a caller that does not hold r.mu.
+func (r *Router) frameRetired(threadID, sessionToken string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.frameRetiredLocked(threadID, sessionToken)
 }
 
 // SessionCurrent reports whether sessionToken is the session
@@ -1961,16 +2007,17 @@ func (r *Router) SessionCurrent(threadID, sessionToken string) bool {
 // MarkThreadActive commits the thread to the session sessionToken names:
 // it clears the stopped flag and makes that session's frames the only
 // ones Handle admits. The host calls this from the session-start path
-// BEFORE spawning the new subprocess — it must not wait for a wire
+// BEFORE spawning the new subprocess. It must not wait for a wire
 // signal, because a session that dies during startup (e.g. Claude
 // rejecting --resume-session-at pre-init) emits its only diagnostics
 // before anything init-like, and those must route. No stale frame passes
 // the gate after this call: every provider frame carries the token of
 // the session that produced it, and a frame of any earlier session no
 // longer matches, even when the host's drain of the prior session gave
-// up at its stall bound and left that session's frames queued. No wire
-// event may clear the stopped flag — see the threadIdentity.stopped
-// field comment.
+// up at its stall bound and left that session's frames queued. A frame
+// already being handled when this call lands is refused by every writer
+// of process-bound state (frameRetiredLocked). No wire event may clear
+// the stopped flag: see the threadIdentity.stopped field comment.
 //
 // Reactivation also resets the thread's logical-turn settlement ledger.
 // The context-repair restart deliberately skips CleanupThread, so
@@ -1979,7 +2026,7 @@ func (r *Router) SessionCurrent(threadID, sessionToken string) bool {
 // would misroute its first error result into persistLateTurnPayload
 // (folding into a finished turn's row) instead of the orphan error-item
 // branch the user actually needs to see. Clearing here is safe for the
-// soft-close late-fold path — the fold's trailing result rides the SAME
+// soft-close late-fold path: the fold's trailing result rides the SAME
 // session's read loop, whose frames the gate refuses once this call
 // names another session.
 //

@@ -38,13 +38,16 @@ type codexExecutionTools struct {
 // that starts after startIndex in the spawn's turn. It replaces the
 // previous execution's count, which the max rule of
 // mergeSubagentProgress would otherwise keep.
-func (r *Router) startCodexExecutionTools(launch store.Item, startIndex int) error {
+func (r *Router) startCodexExecutionTools(launch store.Item, startIndex int, sessionToken string) error {
 	count, last, err := r.store.SubagentExecutionToolCallsAfter(launch.ThreadID, launch.ID, launch.TurnIndex, startIndex)
 	if err != nil {
 		return fmt.Errorf("seed Codex execution tool count %s: %w", launch.ID, err)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(launch.ThreadID, sessionToken) {
+		return nil
+	}
 	state := r.codexBackgroundForThread(launch.ThreadID)
 	if _, exists := state.tools[launch.ID]; !exists && len(state.tools) >= subagentProgressCap {
 		return fmt.Errorf("Codex execution tool count limit reached for thread %s", launch.ThreadID)

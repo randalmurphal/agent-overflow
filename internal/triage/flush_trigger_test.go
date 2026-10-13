@@ -62,7 +62,7 @@ func setOpenRoundForTest(router *Router, threadID, roundID string) {
 		TurnID:    roundID,
 		TurnIndex: 0,
 		StartedAt: time.Now().UnixMilli(),
-	})
+	}, "")
 }
 
 func TestHandleToolStart_DoesNotFlushQueuedMessages(t *testing.T) {
