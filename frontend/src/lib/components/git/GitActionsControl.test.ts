@@ -2,6 +2,12 @@ import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import GitActionsControl from './GitActionsControl.svelte';
+// GitActionsControl imports its dialogs lazily. Loaded with the file, an open
+// renders within the flush window, so the cases wait for the mount rather
+// than for a first import transforming the dialog's component graph, and a
+// wrongly opened dialog cannot pass a negative check by still being in flight.
+import './CommitDialog.svelte';
+import './CreatePRDialog.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { GitStatus } from '../../types/git';
@@ -206,10 +212,6 @@ describe('<GitActionsControl> palette dialog event', () => {
   });
 
   it('opens the Commit dialog for its own pane and ignores other panes', async () => {
-    // The dialog is a lazy chunk. Load it first so a wrongly opened dialog
-    // renders within the flush window instead of passing the negative check
-    // by being still in flight.
-    await import('./CommitDialog.svelte');
     const pane = await buildPane();
     __seedGitStatusForTest(WORKSPACE, status({ hasChanges: true }));
     const { findByText, queryByText } = render(GitActionsControl, { props: { pane } });
@@ -224,8 +226,6 @@ describe('<GitActionsControl> palette dialog event', () => {
   });
 
   it('does not open a dialog for a view-only session', async () => {
-    await import('./CommitDialog.svelte');
-    await import('./CreatePRDialog.svelte');
     await pairViewOnly();
     const pane = await buildPane();
     __seedGitStatusForTest(WORKSPACE, status({ hasChanges: true, branch: 'feature', isDefaultBranch: false }));

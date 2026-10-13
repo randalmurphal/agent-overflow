@@ -6,6 +6,10 @@
 import { describe, expect, it, beforeAll, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../App.svelte';
+// The drawer is a lazy import. Loaded with the file, the cases wait for the
+// mount rather than for a first import transforming the drawer's component
+// graph, which is load-dependent.
+import '../../lib/components/terminal/ThreadTerminalDrawer.svelte';
 import type { Thread } from '../../lib/types/models';
 import type {
   TerminalHandle,
@@ -77,14 +81,10 @@ function pressModJOn(target: EventTarget) {
   );
 }
 
-// The drawer is a lazy import; its first-ever load in a suite run pays the
-// on-demand transform, which can exceed waitFor's default 1s under full suite
-// load. Every "the drawer opened" assertion goes through here so the budget
-// lives in one place.
 async function waitForTerminalDrawer(rendered: { getByTestId: (id: string) => HTMLElement }) {
   await waitFor(() => {
     expect(rendered.getByTestId('terminal-drawer')).toBeInTheDocument();
-  }, { timeout: 5000 });
+  });
 }
 
 async function mountWithActiveThread(thread: Thread = makeThread({ title: 'Terminal Thread' })) {
@@ -248,12 +248,9 @@ describe('App integration — terminal drawer', () => {
     // settle before asserting.
     await flush(30);
 
-    await waitFor(
-      () => {
-        expect(rendered.getByTestId('terminal-tab-tab-a')).toBeInTheDocument();
-      },
-      { timeout: 3000 },
-    );
+    await waitFor(() => {
+      expect(rendered.getByTestId('terminal-tab-tab-a')).toBeInTheDocument();
+    });
     await fireEvent.click(rendered.getByTestId('terminal-tab-close-tab-a'));
     await flush(5);
     await waitFor(() => expect(closeMock).toHaveBeenCalledWith('tab-a'));
