@@ -163,16 +163,23 @@ CREATE TABLE standing_agents (
 Promotion (`PromoteStandingAgent`) creates the home directory, writes a
 `README.md` naming the agent, its thread id, its project and the tools
 it can register with, and records the row. Demotion removes the row and
-leaves the home on disk; the row action says so. Promotion is refused
-for an archived thread, a thread with a running workflow binding, or a
-thread on another computer.
+leaves the home on disk; the row action says so. Its confirm also offers
+Demote and Delete Home (`DemoteStandingAgentAndDeleteHome`), which
+demotes and then deletes the row's recorded home, only when that is
+`<configDir>/agents/<thread-id>`; a deletion that fails leaves the
+demotion in place and names the folder. A promotion finds a kept home
+and keeps its README. Promotion is refused for an archived thread, a
+thread with a running workflow binding, or a thread on another
+computer.
 
 The home path and the agent's standing instructions reach the provider
-through the existing per-thread instruction injection used by the
-thread tools server (the `instructions` string for Claude, developer
-instructions on thread start for Codex). The injected block is short: the
-home path, the thread id, and the sentence that the agent owns the
-directory and keeps its durable state there. No layout is prescribed.
+beside the app guide: Claude's appended system prompt (claude-tui's
+too) and Codex's developer instructions, read at every session start
+and resume whatever the guide setting says (`standingAgentPrompt`). A
+session live at promotion gets it at its next start or resume. The
+injected block is short: the home path, the thread id, and the sentence
+that the agent owns the directory and keeps its durable state there. No
+layout is prescribed.
 
 Deleting the thread deletes the agent row, its loops and watches; the
 home is removed only through the row action that asks. Archiving it
@@ -555,6 +562,23 @@ skill directory `assets/skills/pstack/skills/<name>` to
 level under `skills/`, so the tree is flattened rather than nested
 under a `pstack` directory. Install never symlinks into the
 repository. Remove deletes only what Install wrote, by manifest.
+
+As built (`internal/skillsinstall`, `app_skills.go`): the manifest is
+`<provider home>/skills/.agent-overflow-pstack.json`, so every app
+profile sharing a home sees one install. It names every file and skill
+directory written; before the first write it names everything the run
+may leave, so a failure part way shows as an unfinished install that
+the next Install finishes and Remove clears. Install refuses the whole
+install, writing nothing, when a skill directory or file it would write
+is there and the manifest does not name it, and names them. Update
+replaces what the manifest names and deletes the named files the tree
+no longer has; it is refused for a home with no install. Remove deletes
+the named files and the directories they leave empty; a directory
+holding a file the user added stays. A home is current when its
+manifest's digest of the tree's paths, modes and content matches the
+shipped one, since the port edits files without moving the upstream
+pin. An embedded file has no mode, so a file starting with `#!` is
+installed executable.
 
 ### Workflows to MCP
 
