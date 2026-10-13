@@ -122,7 +122,8 @@
   // ── Standing agent ───────────────────────────────────────────────────────
   //
   // Promotion rides `threads:autonomy` (it lets the thread register
-  // watches that run scripts); demotion and the children's archive ride
+  // watches that run scripts), and so does deleting the home a demotion
+  // leaves; demotion and the children's archive ride
   // `threads:operate` like every other write here. Only a chat or plan
   // thread with a conversation can be promoted; the backend refuses the
   // rest, and the item stays off the menu for those.
@@ -721,6 +722,8 @@
   description="This thread becomes an ordinary thread. Its watches are cancelled; its loops and its home directory stay as they are."
   confirmLabel="Demote"
   alternateLabel="Demote and Delete Home"
+  alternateDisabled={autonomyUngranted}
+  alternateTitle={autonomyUngranted ? 'Not granted to this device' : undefined}
   onConfirm={() => {
     showDemoteConfirm = false;
     void demoteThreadAction(ctx());

@@ -553,7 +553,7 @@ export interface MockSessionConfig {
 
 export interface MockInfo {
   mockId: string;
-  registration: { protocol: string; cwd: string };
+  registration: { protocol: string; cwd: string; resumeRef?: string };
   sessionConfig?: MockSessionConfig;
 }
 

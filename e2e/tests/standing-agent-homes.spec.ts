@@ -20,12 +20,15 @@ import type { MockInfo, MockSessionConfig } from './workflows-helpers.js';
 
 const OWNS_SENTENCE = 'You own that directory and keep your durable state there.';
 
+/** A mock's launch: what it was configured with, and Claude's `--resume` value. */
+type SessionLaunch = MockSessionConfig & { resumeRef: string };
+
 /**
  * The session configs of the mocks spawned in cwd, in spawn order, once
  * there are at least `expected` of them.
  */
-async function configsIn(harness: HarnessApp, cwd: string, expected: number): Promise<MockSessionConfig[]> {
-  let seen: MockSessionConfig[] = [];
+async function configsIn(harness: HarnessApp, cwd: string, expected: number): Promise<SessionLaunch[]> {
+  let seen: SessionLaunch[] = [];
   await expect
     .poll(
       async () => {
@@ -33,7 +36,7 @@ async function configsIn(harness: HarnessApp, cwd: string, expected: number): Pr
         seen = mocks
           .filter((mock) => mock.registration.cwd === cwd && mock.sessionConfig)
           .sort((a, b) => Number(a.mockId.split('-')[1]) - Number(b.mockId.split('-')[1]))
-          .map((mock) => mock.sessionConfig as MockSessionConfig);
+          .map((mock) => ({ ...(mock.sessionConfig as MockSessionConfig), resumeRef: mock.registration.resumeRef ?? '' }));
         return seen.length;
       },
       { timeout: 20_000 },
@@ -92,11 +95,13 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(block).toContain(thread);
       expect(block).toContain(OWNS_SENTENCE);
       if (provider === 'codex') expect(started.resumed ?? false).toBe(false);
+      else expect(started.resumeRef).toBe('');
 
       // ---- A resume carries it again.
       await runSession(harness, thread, 'second');
       const resumed = (await configsIn(harness, cwd, 2))[1];
       if (provider === 'codex') expect(resumed.resumed).toBe(true);
+      else expect(resumed.resumeRef).not.toBe('');
       expect(appended(provider, resumed)).toContain(agent.home);
       expect(appended(provider, resumed)).toContain(OWNS_SENTENCE);
 

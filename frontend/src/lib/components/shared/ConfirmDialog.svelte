@@ -26,6 +26,8 @@
     cancelLabel = 'Cancel',
     destructive = false,
     alternateLabel,
+    alternateDisabled = false,
+    alternateTitle,
     onConfirm,
     onAlternate,
     onCancel,
@@ -37,6 +39,8 @@
     cancelLabel?: string;
     destructive?: boolean;
     alternateLabel?: string;
+    alternateDisabled?: boolean;
+    alternateTitle?: string;
     onConfirm: () => void;
     onAlternate?: () => void;
     onCancel: () => void;
@@ -66,7 +70,7 @@
       {#snippet children()}{cancelLabel}{/snippet}
     </Button>
     {#if alternateLabel && onAlternate}
-      <Button variant="danger" size="sm" onclick={onAlternate}>
+      <Button variant="danger" size="sm" disabled={alternateDisabled} title={alternateTitle} onclick={onAlternate}>
         {#snippet children()}{alternateLabel}{/snippet}
       </Button>
     {/if}

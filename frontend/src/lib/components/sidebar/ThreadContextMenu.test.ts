@@ -25,7 +25,7 @@ import {
 } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
-import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -906,6 +906,25 @@ describe('<ThreadContextMenu> standing agent', () => {
     await tick();
     expect(demoteAndDelete).toHaveBeenCalledWith('thread-1');
     expect(demote).not.toHaveBeenCalled();
+  });
+
+  it('leaves Demote live but Demote and Delete Home inert without threads:autonomy', async () => {
+    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
+    try {
+      const demoteAndDelete = setBindingMock('DemoteStandingAgentAndDeleteHome', async () => {});
+      const { baseElement } = renderAgentMenu(makeThread({ agentPromotedAt: 1 }));
+      await fireEvent.click(item(baseElement, 'Demote Standing Agent'));
+      await tick();
+      const buttons = Array.from(baseElement.querySelectorAll('button'));
+      const choice = buttons.find((b) => b.textContent?.trim() === 'Demote and Delete Home') as HTMLButtonElement;
+      expect(choice.disabled).toBe(true);
+      expect(choice.getAttribute('title')).toBe('Not granted to this device');
+      expect((buttons.find((b) => b.textContent?.trim() === 'Demote') as HTMLButtonElement).disabled).toBe(false);
+      await fireEvent.click(choice);
+      expect(demoteAndDelete).not.toHaveBeenCalled();
+    } finally {
+      resetToLocalPage();
+    }
   });
 
   it('hides the group items in bulk when the selection holds an agent or a spawned thread', () => {
