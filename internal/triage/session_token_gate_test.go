@@ -2,12 +2,15 @@ package triage
 
 import (
 	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 func fromSession(evt provider.ProviderEvent, token string) provider.ProviderEvent {
@@ -608,10 +611,11 @@ func TestLateSettleOfACleanedUpStreamKeepsTheReplacementsStreamCount(t *testing.
 	}
 }
 
-// The context-repair restart commits a new session without CleanupThread,
-// so a stream the old session opened stays on the live state. Whoever
-// settles it later releases its count: the release follows the state the
-// count was taken on, not the session that opened the stream.
+// The session-config restart (reconcileSessionConfig) commits a new
+// session without CleanupThread, so a stream the old session opened stays
+// on the live state. Whoever settles it later releases its count: the
+// release follows the state the count was taken on, not the session that
+// opened the stream.
 func TestSettleOfAStreamCarriedAcrossACommitReleasesItsCount(t *testing.T) {
 	r, st, _ := newTestRouter(t)
 	const threadID = "thread-carried-stream"
@@ -635,4 +639,89 @@ func TestSettleOfAStreamCarriedAcrossACommitReleasesItsCount(t *testing.T) {
 	if r.hasActiveStreamingItem(threadID) {
 		t.Fatal("settling the carried stream left its count on the live state")
 	}
+}
+
+// A frame that passed the gate can have its session retired before it
+// reaches its boundary's queue flush. Each boundary that flushes is driven
+// through HandleSessionFrame with the replacement committing at the first
+// emission of the frame's handling, which comes after the gate and before
+// the flush. The replacement's queued message must wait for a boundary of
+// its own. The same run without the commit dispatches it, so each case
+// reaches the flush it names.
+func TestInFlightRetiredBoundaryDoesNotSendTheReplacementsQueue(t *testing.T) {
+	t.Parallel()
+	const threadID = "thread-inflight-flush"
+	bash := func(id string, meta map[string]any) provider.ProviderEvent {
+		return provider.ProviderEvent{ItemID: id, ItemType: "Bash", Meta: parkMeta(t, meta)}
+	}
+	for _, c := range []struct {
+		name  string
+		codex bool
+		setup []provider.ProviderEvent
+		frame provider.ProviderEvent
+	}{
+		{"background task terminal", false, []provider.ProviderEvent{
+			withKind(bash("bg-1", map[string]any{"toolName": "Bash", "is_background": true, "input": map[string]any{"command": "sleep 60", "run_in_background": true}}), provider.EventToolStart),
+			withKind(bash("bg-1", map[string]any{"toolName": "Bash", "backgroundTaskId": "task-1"}), provider.EventToolComplete),
+		}, provider.ProviderEvent{Kind: provider.EventBackgroundTaskTerminal, ItemID: "bg-1", Meta: parkMeta(t, map[string]any{"task_id": "task-1", "tool_use_id": "bg-1", "status": "completed", "source": "task_updated"})}},
+		{"codex unified exec complete", true, []provider.ProviderEvent{
+			{Kind: provider.EventToolStart, ItemID: "exec-1", ItemType: "commandExecution", Meta: buildUnifiedExecStartMeta(t, "pid-1", "sleep 1")},
+		}, provider.ProviderEvent{Kind: provider.EventToolComplete, ItemID: "exec-1", ItemType: "commandExecution", Meta: buildUnifiedExecCompleteMeta(t, "completed", "pid-1", "sleep 1", 0)}},
+		{"tool complete", false, []provider.ProviderEvent{
+			{Kind: provider.EventToolStart, ItemID: "tool-1", ItemType: "Read", Meta: parkMeta(t, map[string]any{"toolName": "Read", "input": map[string]any{"file_path": "/tmp/x"}})},
+		}, provider.ProviderEvent{Kind: provider.EventToolComplete, ItemID: "tool-1", ItemType: "Read", Content: "contents", Meta: parkMeta(t, map[string]any{"toolName": "Read"})}},
+		{"turn complete", false, []provider.ProviderEvent{
+			{Kind: provider.EventTurnStart, TurnID: "turn-a"},
+		}, provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnID: "turn-a", TurnComplete: normalTurnCompleteMeta()}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			for _, commit := range []bool{true, false} {
+				st := storetest.Clone(t)
+				var r *Router
+				var armed atomic.Bool
+				var once sync.Once
+				r = NewRouter(st, func(eventchan.Channel, any) {
+					if commit && armed.Load() {
+						once.Do(func() { r.MarkThreadActive(threadID, "session-b") })
+					}
+				})
+				holdWireRefresh(r)
+				if c.codex {
+					createCodexBackgroundTestThread(t, st, threadID)
+				} else {
+					createTestThread(t, st, threadID)
+				}
+				r.MarkThreadActive(threadID, "session-a")
+				for _, e := range c.setup {
+					e.ThreadID, e.Timestamp = threadID, time.Now()
+					if _, err := r.HandleSessionFrame(fromSession(e, "session-a")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				rec := &recordingDispatcher{}
+				r.SetFlushDispatcher(rec.dispatch)
+				r.RegisterQueueItem(threadID, makeQueueItem("queue:0", "for the live session"))
+				armed.Store(true)
+				frame := c.frame
+				frame.ThreadID, frame.Timestamp = threadID, time.Now()
+				if _, err := r.HandleSessionFrame(fromSession(frame, "session-a")); err != nil {
+					t.Fatal(err)
+				}
+				r.DrainWireItemRefresh()
+				sent := len(rec.snapshot()) != 0 || !r.HasQueuedFlushItems(threadID)
+				if commit && sent {
+					t.Fatalf("a boundary of the retired session sent the replacement's queued message: %+v", rec.snapshot())
+				}
+				if !commit && !sent {
+					t.Fatal("control: the live session's own boundary did not send its queued message, so the case does not reach the flush")
+				}
+			}
+		})
+	}
+}
+
+func withKind(evt provider.ProviderEvent, kind provider.EventKind) provider.ProviderEvent {
+	evt.Kind = kind
+	return evt
 }

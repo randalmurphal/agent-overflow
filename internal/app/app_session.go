@@ -224,6 +224,12 @@ func (a *App) startSessionNow(threadID string) error {
 	defer func() {
 		if !registeredTools {
 			a.revokeSessionMCP(threadID, sessionToken)
+			// The commit above retired the session this start replaced,
+			// so that session's disconnect leaves the thread's event
+			// queue alone, and this start's own session never ran to
+			// disconnect. Mark the queue here, or it stays registered
+			// until a later session ends.
+			a.providerEvents.retireWhenIdle(threadID)
 		}
 	}()
 	browserServers, err := a.browserMCPConfigForThread(t, sessionToken)

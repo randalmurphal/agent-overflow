@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -765,6 +766,41 @@ func awaitHeldInHandle(t *testing.T, inHandle <-chan struct{}) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the frame never reached triage's event hook")
 	}
+}
+
+// A start that commits the thread and then fails to spawn has retired the
+// session it replaced, whose disconnect therefore leaves the event queue
+// alone, and has no session of its own to disconnect. The queue still
+// retires once the replaced session's frames are handled.
+func TestFailedReplacementStartStillRetiresTheEventQueue(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
+	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": filepath.Join(t.TempDir(), "missing-claude")}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+	dead := startedSessionEventHandler(app, thread.ID, "token-a", string(provider.Claude))
+	if err := app.providerEvents.stall(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	dead(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "disconnected", Timestamp: time.Now()})
+	if err := app.startSessionNow(thread.ID); err == nil {
+		t.Fatal("a start with no provider binary succeeded")
+	}
+	if app.triage.SessionCurrent(thread.ID, "token-a") {
+		t.Fatal("setup: the failed start did not commit the thread before its spawn")
+	}
+	if err := app.providerEvents.releaseStall(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitProviderEvents(t, app, thread.ID)
+	waitForCondition(t, "the event queue retires", func() bool {
+		return app.providerEvents.lookup(thread.ID) == nil
+	})
 }
 
 // The host's work before triage is skipped for a frame whose session was

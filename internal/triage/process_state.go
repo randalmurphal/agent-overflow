@@ -6,9 +6,12 @@ package triage
 // session token and refuses a retired one under the r.mu it writes under
 // (frameRetiredLocked). MarkThreadActive runs each entry's clear when it
 // commits the thread to a new session. An entry without a clear is not
-// reset by the commit: the context-repair restart reaches MarkThreadActive
-// without CleanupThread and keeps it live, and its own lifecycle or
-// CleanupThread ends it.
+// reset by the commit: a start that replaces a live session
+// (stopExistingSessionLocked, such as the session-config restart
+// reconcileSessionConfig schedules) reaches MarkThreadActive without
+// CleanupThread and keeps it live, and its own lifecycle or CleanupThread
+// ends it. TestMarkThreadActiveClearsOnlyThroughProcessBoundState fails
+// when MarkThreadActive clears anything outside this list.
 //
 // TestProcessStateWritersRefuseARetiredSessionsFrame is keyed by these
 // names and fails when an entry has no refusal case, so state added here

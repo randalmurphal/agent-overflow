@@ -2024,7 +2024,8 @@ func (r *Router) SessionCurrent(threadID, sessionToken string) bool {
 // the stopped flag: see the threadIdentity.stopped field comment.
 //
 // Reactivation also resets the thread's logical-turn settlement ledger.
-// The context-repair restart deliberately skips CleanupThread, so
+// A start that replaces a live session (the session-config restart
+// reconcileSessionConfig schedules) deliberately skips CleanupThread, so
 // settledTurns can still hold entries from the prior subprocess; a
 // replacement session reuses turn indexes, and a stale "settled" marker
 // would misroute its first error result into persistLateTurnPayload
@@ -2043,8 +2044,8 @@ func (r *Router) MarkThreadActive(threadID, sessionToken string) {
 	identity.stopped = false
 	identity.sessionToken = sessionToken
 	identity.epoch++
-	// This is NOT the cleanup sweep: the repair-restart path reaches here
-	// without CleanupThread, so the thread's state entry can be fully
+	// This is NOT the cleanup sweep: a start that replaces a live session
+	// reaches here without CleanupThread, so the thread's state entry can be fully
 	// live and must survive. Only the state bound to the process that
 	// just died is cleared, and processBoundState is that list.
 	st := r.threadStateIfPresent(threadID)

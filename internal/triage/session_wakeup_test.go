@@ -72,7 +72,8 @@ func TestSessionWakeupTransitions(t *testing.T) {
 // TestSessionWakeupClearedBySessionLifecycle pins the two lifecycle
 // sweeps: the wakeup timer is in-process CLI state, so both a session
 // teardown (CleanupThread) and a replacement-session commit
-// (MarkThreadActive, the repair-restart path that skips CleanupThread)
+// (MarkThreadActive, reached by a replacement start such as the
+// session-config restart, which skips CleanupThread)
 // must drop the record — a stale future fire time would shield a fresh
 // process that holds no timer.
 func TestSessionWakeupClearedBySessionLifecycle(t *testing.T) {

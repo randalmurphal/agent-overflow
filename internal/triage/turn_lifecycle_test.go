@@ -1104,8 +1104,9 @@ func TestLateErrorResultOnSettledTurnFoldsWithoutErrorItem(t *testing.T) {
 	}
 }
 
-// TestMarkThreadActiveResetsSettlementLedger pins the repair-restart
-// staleness hole: the context-repair restart skips CleanupThread, so
+// TestMarkThreadActiveResetsSettlementLedger pins the replacement-start
+// staleness hole: the session-config restart (reconcileSessionConfig)
+// replaces the live session without CleanupThread, so
 // without MarkThreadActive clearing settledTurns, a replacement session
 // dying pre-init would have its orphan error result misrouted into
 // persistLateTurnPayload by the PRIOR session's settlement marker —
