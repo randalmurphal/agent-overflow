@@ -1,11 +1,16 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -239,6 +244,118 @@ func TestRemoteWaitReplyIsTheOnlyDelivery(t *testing.T) {
 	if items, err := f.source.remoteTrayItems(f.thread.ID, 0); err != nil || len(items) != 0 {
 		t.Fatalf("dismissed job still in the tray: %+v %v", items, err)
 	}
+}
+
+// replyWriter is the client end of one reply: onWrite runs as the reply is
+// written and decides what the client did with it.
+type replyWriter struct {
+	*httptest.ResponseRecorder
+	onWrite func() error
+}
+
+func (w *replyWriter) Write(p []byte) (int, error) {
+	if err := w.onWrite(); err != nil {
+		return 0, err
+	}
+	return w.ResponseRecorder.Write(p)
+}
+
+// statusThrough parks a remote_status call on the job through the MCP
+// transport, settles the job, and returns once the call has finished,
+// including the work it deferred until its reply went out.
+func (f *remoteWaitFixture) statusThrough(t *testing.T, ctx context.Context, id string, w http.ResponseWriter) {
+	t.Helper()
+	for f.source.remoteWaitActive(f.peerID, id) {
+		time.Sleep(time.Millisecond)
+	}
+	endpoint, err := url.Parse(f.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
+		"name": "remote_status", "arguments": map[string]any{"computer_id": f.peerID, "request_id": id, "wait_seconds": 5},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, endpoint.Path, bytes.NewReader(body))
+	request.RemoteAddr = "[::1]:40000"
+	request.Header.Set("Content-Type", "application/json")
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		f.source.remoteMCPServer().ServeHTTP(w, request)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for !f.source.remoteWaitActive(f.peerID, id) {
+		if time.Now().After(deadline) {
+			t.Fatal("wait never registered")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(f.release)
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("parked call never returned")
+	}
+}
+
+// Whether the settled reply reached the client decides who delivers the
+// result, not whether the client is still connected afterwards. A client
+// that hangs up once it holds the reply has received it, so the watch is
+// dismissed; a reply that could not be written leaves the watch to deliver
+// the result once.
+func TestRemoteWaitReplyDeliveryIsTheTransportsAnswer(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	t.Run("read then hung up", func(t *testing.T) {
+		t.Parallel()
+		f := newRemoteWaitFixture(t)
+		id := uuid.NewString()
+		if receipt := f.run(t, id, 0.2); receipt.State != "running" {
+			t.Fatalf("expected a running receipt: %+v", receipt)
+		}
+		ctx, hangUp := context.WithCancel(context.Background())
+		defer hangUp()
+		w := &replyWriter{ResponseRecorder: httptest.NewRecorder(), onWrite: func() error {
+			// The client takes the bytes and leaves before the handler
+			// returns.
+			defer hangUp()
+			return nil
+		}}
+		f.statusThrough(t, ctx, id, w)
+		if ctx.Err() == nil || !strings.Contains(w.Body.String(), `\"notification\":\"dismissed\"`) {
+			t.Fatalf("reply was not the settled receipt read before the hang-up: %s", w.Body.String())
+		}
+		if watch := f.watch(t, id); watch.Notification != "dismissed" {
+			t.Fatalf("a reply the client read did not dismiss the watch: %+v", watch)
+		}
+		f.source.checkRemoteWatch(f.watch(t, id))
+		if rows := durableQueueRows(t, f.source, f.thread.ID); len(rows) != 0 {
+			t.Fatalf("result delivered twice: %+v", rows)
+		}
+	})
+	t.Run("write failed", func(t *testing.T) {
+		t.Parallel()
+		f := newRemoteWaitFixture(t)
+		id := uuid.NewString()
+		if receipt := f.run(t, id, 0.2); receipt.State != "running" {
+			t.Fatalf("expected a running receipt: %+v", receipt)
+		}
+		w := &replyWriter{ResponseRecorder: httptest.NewRecorder(), onWrite: func() error {
+			return errors.New("broken pipe")
+		}}
+		f.statusThrough(t, context.Background(), id, w)
+		if watch := f.watch(t, id); watch.Notification != "pending" || watch.Receipt.State != "succeeded" {
+			t.Fatalf("an undelivered reply settled the watch: %+v", watch)
+		}
+		f.source.checkRemoteWatch(f.watch(t, id))
+		rows := durableQueueRows(t, f.source, f.thread.ID)
+		if len(rows) != 1 || !strings.Contains(rows[0].Message, "Result: succeeded") {
+			t.Fatalf("the watcher did not deliver the result once: %+v", rows)
+		}
+	})
 }
 
 // The wait is bounded by the tool schema, and an interrupt ends a parked call
