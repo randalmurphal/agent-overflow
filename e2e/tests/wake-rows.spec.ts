@@ -91,7 +91,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     if ((await header.count()) > 0 && (await page.getByTestId('activity-run').first().getAttribute('data-collapsed')) === 'true') {
       await header.first().click();
     }
-    const scheduled = page.getByTestId('tool-call-card').filter({ hasText: /· next \d{1,2}:\d{2}/ });
+    // A fire on a later day carries its date (`next Oct 13, 2026 12:01 AM`).
+    const scheduled = page.getByTestId('tool-call-card').filter({ hasText: /· next ([A-Z][a-z]{2} \d{1,2}, \d{4} )?\d{1,2}:\d{2}/ });
     await expect(scheduled).toHaveCount(5);
     await expect(page.getByTestId('tool-call-card').filter({ hasText: 'events' })).not.toContainText('· next');
     await scheduled.first().scrollIntoViewIfNeeded();
