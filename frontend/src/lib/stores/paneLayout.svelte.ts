@@ -148,7 +148,7 @@ const paneMembershipKey = $derived(
 );
 
 const sourcePaneIdByPaneId = $derived.by(() => {
-  paneMembershipKey;
+  void paneMembershipKey;
   return untrack(() => {
     const bySource = new Map<string, string | null>();
     for (const item of layoutItems) bySource.set(item.paneId, item.sourcePaneId ?? null);
