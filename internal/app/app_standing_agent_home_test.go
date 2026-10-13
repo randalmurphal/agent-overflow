@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 )
 
@@ -215,6 +216,44 @@ func TestDemoteStandingAgentAndDeleteHomeRefusesAnEmptyHome(t *testing.T) {
 	err := f.app.DemoteStandingAgentAndDeleteHome(thread.ID)
 	if err == nil || !strings.Contains(err.Error(), "records no home") {
 		t.Fatalf("err = %v, want the empty home refused", err)
+	}
+	if _, found, _ := f.app.store.GetStandingAgent(thread.ID); found {
+		t.Fatal("the demotion must land")
+	}
+}
+
+// A deletion that fails reads, in its innermost layer (what a toast shows),
+// as a sentence with no path in it; the layer around it names the home and
+// where the removal stopped.
+func TestDemoteStandingAgentAndDeleteHomeFailureKeepsPathsInTheDetails(t *testing.T) {
+	t.Parallel()
+	f := newThreadToolsFixture(t)
+	thread := f.thread(t, "agent")
+	row, err := f.app.PromoteStandingAgent(thread.ID)
+	if err != nil {
+		t.Fatalf("PromoteStandingAgent: %v", err)
+	}
+	locked := filepath.Join(row.Home, "locked")
+	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	if os.Geteuid() == 0 {
+		t.Skip("root removes an unreadable folder")
+	}
+	err = f.app.DemoteStandingAgentAndDeleteHome(thread.ID)
+	chain := errorsx.Chain(err)
+	if len(chain) < 2 {
+		t.Fatalf("err = %v, chain = %q", err, chain)
+	}
+	if got := chain[len(chain)-1]; got != "the thread was demoted, but its home folder was not deleted: permission denied" {
+		t.Errorf("innermost layer = %q", got)
+	}
+	if !strings.Contains(chain[0], row.Home) || !strings.Contains(chain[0], locked) {
+		t.Errorf("outer layer %q does not name the home and %s", chain[0], locked)
 	}
 	if _, found, _ := f.app.store.GetStandingAgent(thread.ID); found {
 		t.Fatal("the demotion must land")

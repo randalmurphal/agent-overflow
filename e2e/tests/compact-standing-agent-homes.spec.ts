@@ -10,7 +10,7 @@ import { longPress } from './touch-helpers.js';
 
 test('compact: the Demote confirm offers Demote and Delete Home and fits the phone', async ({ harness, page }) => {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-    projects: [{ name: 'compact-agent-home', repo: {}, threads: [{ title: 'Release agent' }] }],
+    projects: [{ name: 'compact-agent-home', repo: {}, threads: [{ title: 'Release agent', turns: [{ userText: 'hi', items: [{ kind: 'assistant_text', summary: 'ready' }] }] }] }],
   });
   const [thread] = seed.projects[0].threadIds;
   const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);

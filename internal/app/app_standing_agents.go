@@ -185,7 +185,15 @@ func (a *App) deleteStandingAgentHome(threadID, home string) error {
 	if reason == nil {
 		return nil
 	}
-	return fmt.Errorf("delete the agent's home %q: %w", home,
+	// The toast shows the innermost layer, so the paths stay in the layer
+	// around it: the recorded home, and where a removal stopped.
+	at := ""
+	var pathErr *fs.PathError
+	if errors.As(reason, &pathErr) {
+		at = fmt.Sprintf(" (stopped at %s)", pathErr.Path)
+		reason = pathErr.Err
+	}
+	return fmt.Errorf("delete the agent's home %q%s: %w", home, at,
 		fmt.Errorf("the thread was demoted, but its home folder was not deleted: %v", reason))
 }
 

@@ -139,7 +139,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
 test('Demote and Delete Home whose home cannot be deleted still demotes and says why', async ({ harness, page }) => {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-    projects: [{ name: 'agent-home-locked', repo: {}, threads: [{ title: 'Release agent' }] }],
+    projects: [{ name: 'agent-home-locked', repo: {}, threads: [{ title: 'Release agent', turns: [{ userText: 'hi', items: [{ kind: 'assistant_text', summary: 'ready' }] }] }] }],
   });
   const [thread] = seed.projects[0].threadIds;
   const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
@@ -163,7 +163,11 @@ test('Demote and Delete Home whose home cannot be deleted still demotes and says
     const toast = page.getByTestId('toast').filter({ hasText: 'The thread was demoted, but its home folder was not deleted:' });
     await expect(toast).toBeVisible();
     await toast.getByTestId('error-details-toggle').click();
+    await expect(toast.getByTestId('toast-message')).toHaveText(
+      'The thread was demoted, but its home folder was not deleted: permission denied.',
+    );
     await expect(toast.getByTestId('error-details')).toContainText(agent.home);
+    await expect(toast.getByTestId('error-details')).toContainText(join(agent.home, 'locked'));
     await capture(page, 'demote-delete-home-failed.png', toast);
     await expect(agentRow).not.toHaveAttribute('data-sidebar-agent', '');
     expect(await harness.rpc('GetStandingAgent', thread)).toBeNull();
