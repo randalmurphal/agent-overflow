@@ -140,6 +140,7 @@ export {
     ThreadLiveState,
     ThreadMCPServer,
     ThreadPeerAck,
+    ThreadPeerAgent,
     ThreadPeerCall,
     ThreadPeerPoll,
     ThreadPeerPollReply,
