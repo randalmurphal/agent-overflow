@@ -219,8 +219,8 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     const item = await startWorkflow(harness, projectId, 'topup-flow', `Top-up run v${version}`);
     await awaitWorkflowState(harness, 'workflow run', item.id, 'done');
 
-    // A gated run approved by a human, a run that asks a question, a run
-    // cancelled while stepping, and a run an automation fired.
+    // A gated run approved by a human, a run that asks a question, and a
+    // run cancelled while stepping.
     const gated = await startWorkflow(harness, projectId, 'topup-gate', `Top-up gated run v${version}`);
     await awaitWorkflowState(harness, 'gated run', gated.id, 'needs-human', 'gate');
     await harness.rpc('WorkflowResolveGate', gated.id, 'approve', 'approved by the top-up');
@@ -238,19 +238,6 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     const stepped = await startWorkflow(harness, projectId, 'topup-flow', `Top-up cancelled run v${version}`, undefined, true);
     await harness.rpc('WorkflowCancelItem', stepped.id);
     await awaitWorkflowState(harness, 'cancelled run', stepped.id, 'cancelled');
-
-    await setClaudeScenario(harness, 'topup-workflow', done);
-    const automation = await harness.rpc<{ id: string }>('WorkflowCreateAutomation', {
-      projectId,
-      workflowScope: 'project',
-      enabled: true,
-      workflowId: 'topup-flow',
-      name: `Top-up nightly v${version}`,
-      trigger: { kind: 'cron', expr: '0 3 * * *' },
-      seeds: { goal: 'the top-up' },
-    });
-    const fired = await harness.rpc<{ id: string }>('WorkflowRunAutomationNow', automation.id);
-    await awaitWorkflowState(harness, 'automation run', fired.id, 'done');
     return item.id;
   });
   ms.workflow = workflow.ms;

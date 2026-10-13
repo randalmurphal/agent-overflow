@@ -5,6 +5,12 @@ were settled in a brainstorm session and a codex consult; the
 `(Qn)`/`(Dn)`/`(An)` tags are those sessions' ids and carry no other
 meaning.
 
+The forge trigger layer (webhook trigger kind, scheduler debounce,
+per-automation settings, boot reconciliation) was designed on the
+workflow scheduler, which [standing agents](standing-agents.md) ruling 13
+removed. It is redesigned on the wake supervisor before code review is
+built.
+
 ## Goal
 
 Native code review in agent-overflow on the user's own provider
@@ -430,7 +436,6 @@ summary. All of it is run state in the workflows UI, not log lines.
 | Old | New | Action |
 |-----|-----|--------|
 | `Phase.Capabilities`, `Phase.MCP`, `Phase.Commands` | `harness:`, `builtin:` | DELETE |
-| `poll-jira-and-start` `capabilities:` line | `grants: [start-run, update-notes]` | MIGRATE |
 | workflows-system.md "External sources: poll with authenticated CLIs, no webhooks" | webhook trigger section | MIGRATE |
 | prompt-tool-overrides.md "per-thread overrides: non-goal" | harness profiles | MIGRATE |
 
@@ -445,7 +450,7 @@ summary. All of it is run state in the workflows UI, not log lines.
 - [ ] a rule or model change invalidates reuse keys; a pure rename reuses
 - [ ] publication failure mid-batch leaves the status comment saying partial, and a rerun completes without duplicates
 - [ ] harness profile verified on the wire for Claude and Codex (prompt replaced, tools absent, network tools absent)
-- [ ] `poll-jira-and-start` runs with grants; `make check` and `make test` green
+- [ ] `make check` and `make test` green
 
 ## Testing
 

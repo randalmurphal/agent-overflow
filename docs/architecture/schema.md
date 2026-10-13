@@ -13,7 +13,7 @@ SQLite has three distinct responsibilities:
 | Class | Meaning |
 |---|---|
 | Provider-history cache | Conversation history and derived render data can be rebuilt from provider session files. Restore and retention may replace or remove it under their documented guards. |
-| Application records | Projects, settings, workflow records, automation state, drafts, and usage are durable application data. Their accessors define their lifecycle. They are not evidence that SQLite is an event store. |
+| Application records | Projects, settings, workflow records, drafts, and usage are durable application data. Their accessors define their lifecycle. They are not evidence that SQLite is an event store. |
 | Authoritative state | Identity, accepted-message queues, transfer ownership, remote command acceptance, and notification ownership have no provider-history replacement. Whole-store snapshot restore handles them deliberately; history retention and generic cleanup must not treat them as cache rows. |
 
 The phrase "SQLite is a history cache" applies to provider history. It does not
@@ -76,10 +76,9 @@ the kept history of a deleted one.
 | `chat_bar_favorites`, `chat_model_profiles` | Legacy favorite seeds and last-used provider/model settings. Profile constraints remain aligned with thread runtime and reasoning settings. |
 | `usage_ledger` | Append-only per-turn, per-model token and cost deltas. Deliberately denormalized without thread or project foreign keys so retained totals survive deletion. Any slice is safe to sum. Token-only rows are priced at read time from `internal/usagecost` by their UTC day. |
 | `usage_pending` | Reported token snapshots awaiting final accounting, keyed by thread, provider process scope, segment and model. Survives interruption, restart and thread deletion. Final deltas consume matching pending tokens atomically and retire the settled turn's remaining rows; `usage_records` unions the rest with the settled ledger for queries. Pending rows carry no wire cost and are estimated like token-only rows. |
-| `work_items`, `work_item_phases`, `work_item_units` | Durable workflow run, attempt, and fan-out records. State-machine and scheduling rules remain in `internal/workflow`; the store enforces structural relationships and atomic transitions. |
+| `work_items`, `work_item_phases`, `work_item_units` | Durable workflow run, attempt, and fan-out records. State-machine and scheduling rules remain in `internal/workflow`; the store enforces structural relationships and atomic transitions. `source` is `manual`, `agent` or `call`. Migration v144 rewrote each run the removed workflow scheduler had started as a `manual` run with an empty `source_ref`, and v145 rebuilt the table without that source. |
 | `work_item_effects` | Idempotency ledger for first-party workflow side effects, unique by run, phase, tool, and payload hash. |
 | `workflow_provider_usage_scopes`, `workflow_provider_usage_attention` | Durable attribution and notification ownership for provider-usage parks. They do not decide provider admission. |
-| `automations`, `automation_cursors` | Automation definitions, fire receipts, and source watermarks. Fire bookkeeping does not change definition `updated_at`. |
 | `scratch_threads` | Where an ephemeral `scratch` fork came from: source thread, the mode a Keep promotion returns it to, and the request it answers. The thread itself carries only mode `scratch`, which is hidden and refused by `threadmode.ValidateSet` in both directions; `PromoteScratchThread` is the only exit. Deleting the thread cascades the row. |
 | `ui_state` | Opaque user/device settings plus legacy frontend-state migration buckets. `internal/settings` owns key meaning and scope derivation. |
 | `push_tokens`, `push_sender` | Push destinations and sender credentials used by remote notification delivery. |
@@ -155,7 +154,7 @@ following families carry additional correctness or performance meaning:
 | Provider item index | `idx_items_provider_item` holds the rows whose meta carries a `provider_item_id`, keyed by thread, that id and turn. A settled assistant block that never streamed, which is every text and thinking block of a background agent, finds its row through it (`FindStreamItemByProviderItemID`) instead of reading the turn. |
 | Summary-only diff index | `idx_payloads_summary_only_diff` holds the `tool_result` payloads whose inline diff is `summary_only`. A Codex turn diff, which arrives after every file change, finds the live turn's upgradable rows among the thread's summary-only payloads through it (`ListTurnSummaryOnlyDiffItems`, predicate `summaryOnlyDiffPayloadSQL`) instead of reading the turn. |
 | Item relationship partial indexes | Parent, completion, live-background, running-foreground, and reader-authored-message indexes require their qualifying predicate to appear explicitly in query SQL. |
-| Workflow relationship indexes | Agent source references are unique; parent-run, phase-thread, unit-thread, automation, state, and usage indexes bound recovery and budget queries. Partial predicates such as `parent_item_id <> ''` and `source_ref <> ''` remain explicit. |
+| Workflow relationship indexes | Agent source references are unique; parent-run, phase-thread, unit-thread, state, and usage indexes bound recovery and budget queries. Partial predicates such as `parent_item_id <> ''` and `source_ref <> ''` remain explicit. |
 | Credential lookup indexes | Owner uniqueness, credential hashes, live sessions, passkey IDs, device proofs, channels, and refresh families make authorization and single-use consumption indexed atomic operations. |
 | Coordination indexes | Transfer ownership/retry, active and settled remote jobs, pending watches, and thread watch discovery bound recovery work independently of conversation size. |
 

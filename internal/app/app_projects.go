@@ -270,7 +270,7 @@ type ProjectDeletionResult struct {
 }
 
 // DeleteProject removes a project from Agent Overflow: every contained thread,
-// every workflow run and automation the project owns, the worktrees the app
+// every workflow run the project owns, the worktrees the app
 // created for those runs, and the project row. A project with active turns or
 // running background tasks is refused: deleting the workspace container must
 // never implicitly interrupt work in one of its threads.
@@ -358,7 +358,7 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	})
 	ids = lockedIDs
 	// The same guard for the workflow side: the cleanup above ran unlocked, and a
-	// cron automation firing in that window would start a run this deletion never
+	// run an agent started in that window would be one this deletion never
 	// described and never cleaned up after.
 	lockedFootprint, err := a.projectApplication().WorkflowFootprint(id)
 	if err != nil {
@@ -410,11 +410,6 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	}
 	if err := a.store.DeleteProjectWorkflowRecords(id); err != nil {
 		return ProjectDeletionResult{}, err
-	}
-	// Automations went with those rows; the scheduler still has them armed until
-	// it re-reads.
-	if err := a.refreshWorkflowSchedule(); err != nil {
-		return ProjectDeletionResult{}, fmt.Errorf("delete project %s: refresh automation schedule: %w", id, err)
 	}
 	if err := a.store.DeleteProject(id); err != nil {
 		if errors.Is(err, store.ErrProjectHasThreads) {

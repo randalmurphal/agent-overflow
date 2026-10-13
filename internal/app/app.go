@@ -152,7 +152,7 @@ type App struct {
 	settings       *settings.Service
 	triage         *triage.Router
 	// workflowApp owns persisted agent-facing workflow reads, wake/event
-	// coordination, and the engine/scheduler/autoresume application runtime.
+	// coordination, and the engine/autoresume application runtime.
 	workflowAppOnce sync.Once
 	workflowApp     *workflowapp.Service
 	// themeWatcher watches <configDir>/themes so an agent (or a text

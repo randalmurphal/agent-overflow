@@ -36,8 +36,7 @@ const (
 	// scope with "send a message".
 	ScopeApprovalsRespond Scope = "approvals:respond"
 	// ScopeThreadsAutonomy covers moving a thread into auto /
-	// auto-accept-edits / full-access, and running workflows and
-	// automations.
+	// auto-accept-edits / full-access, and running workflows.
 	ScopeThreadsAutonomy Scope = "threads:autonomy"
 	// ScopeTerminalOperate covers PTY create/attach/write/replay and
 	// worktree-setup output.

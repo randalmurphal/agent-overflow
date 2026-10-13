@@ -1334,27 +1334,21 @@ func TestWorkflowSpendSourceAddsEstimatedRowsToWireCost(t *testing.T) {
 }
 
 // startWorkflowEngineForTest boots the workflow runtime the way Start does:
-// the engine, then the automation that runs over it. The two are separate
-// functions in production because the automation half is behind the
-// activation gate (app_activation.go) and the engine half is not; a fixture
-// that took only the first would have no scheduler, which is a state no boot
+// the engine, then the self-resume timers that run over it. The two are
+// separate functions in production because the timers are behind the
+// activation gate (app_activation.go) and the engine is not; a fixture that
+// took only the first would have no armed resumes, which is a state no boot
 // ever produces.
 func startWorkflowEngineForTest(t *testing.T, app *App, configRoot string) {
 	t.Helper()
 	if err := app.initWorkflowEngine(configRoot); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.startWorkflowAutomation(); err != nil {
-		t.Fatal(err)
-	}
+	app.armWorkflowAutoResumes()
 	t.Cleanup(func() {
-		// The scheduler stops first for the same reason it does in production: a
-		// trigger must not be able to fire into an engine that is closing.
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := app.stopWorkflowScheduler(stopCtx); err != nil {
-			t.Errorf("stop workflow scheduler: %v", err)
-		}
+		// The timers stop first for the same reason they do in production: a
+		// resume must not be able to fire into an engine that is closing.
+		app.workflowApplication().StopAutoResumes()
 		if app.workflowApplication().Engine() != nil {
 			_ = app.workflowApplication().Engine().Close()
 		}

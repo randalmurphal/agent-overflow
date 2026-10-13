@@ -23,7 +23,6 @@ var names = []string{
 	"build-and-validate",
 	"converge-on-review",
 	"multi-lens-review",
-	"poll-jira-and-start",
 	"port-campaign",
 	"port-one-task",
 }

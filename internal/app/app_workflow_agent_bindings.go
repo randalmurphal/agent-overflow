@@ -9,7 +9,6 @@ import (
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/memory"
 	"agent-overflow/internal/workflow/profile"
-	"agent-overflow/internal/workflow/scheduler"
 	"agent-overflow/internal/workflowapp"
 	"bytes"
 	"context"
@@ -129,7 +128,7 @@ func workflowBudgetLine(view *engine.BudgetView, forItemID string) *WorkflowAgen
 // Every method the CLI can reach is authorized twice. The transport refuses a
 // method the token's scope may not name at all (grants → method, see
 // internal/transport/scopedtoken.go); this file enforces the part a method name
-// cannot express — WHICH runs, automations, and projects the caller may touch,
+// cannot express — WHICH runs and projects the caller may touch,
 // and the surface-and-skip ledger that makes a re-entered phase's side effects
 // fire once.
 
@@ -139,14 +138,10 @@ func workflowBudgetLine(view *engine.BudgetView, forItemID string) *WorkflowAgen
 // it is bound to), and a run a granted phase started carries its effect key.
 const workflowSourceAgent = "agent"
 
-// Effect tool names recorded in work_item_effects. They name the CLI operation,
+// The effect tool name recorded in work_item_effects. It names the CLI operation,
 // not the RPC, because the ledger is what the human reads when a re-entered
 // phase reports a skip.
-const (
-	workflowEffectStartRun = "run-start"
-	workflowEffectSchedule = "schedule"
-	workflowEffectSetNotes = "notes-set"
-)
+const workflowEffectStartRun = "run-start"
 
 // phaseSourceRefPrefix is what every run a given (item, phase) started shares.
 // It names the phase, deliberately not the attempt: a phase re-entered by
@@ -236,24 +231,6 @@ func (a *App) scopedRun(scope transport.CallerScope, itemID, action string, read
 	return store.WorkItem{}, fmt.Errorf(
 		"%s: run %s was not started by phase %q of run %s; this phase may only act on the runs it started",
 		action, itemID, scope.PhaseID, scope.ItemID)
-}
-
-// scopedAutomation loads an automation and refuses one outside the scope's
-// project. Both kinds are project-confined: an interactive thread drives the
-// project it is open in, and a phase the project its run belongs to.
-func (a *App) scopedAutomation(scope transport.CallerScope, automationID, action string) (store.Automation, error) {
-	automationID = strings.TrimSpace(automationID)
-	if automationID == "" {
-		return store.Automation{}, fmt.Errorf("%s: automation id is required", action)
-	}
-	automation, err := a.store.GetAutomation(automationID)
-	if err != nil {
-		return store.Automation{}, err
-	}
-	if automation.ProjectID != scope.ProjectID {
-		return store.Automation{}, fmt.Errorf("%s: automation %s belongs to another project", action, automationID)
-	}
-	return automation, nil
 }
 
 // workflowEffect is the payload persisted per (item, phase, tool, hash). It
@@ -1219,29 +1196,6 @@ type WorkflowAgentRunOutputs struct {
 	Artifacts []string       `json:"artifacts"`
 }
 
-// WorkflowAgentScheduleInput is `ao schedule`.
-type WorkflowAgentScheduleInput struct {
-	WorkflowID string          `json:"workflowId"`
-	Scope      string          `json:"scope,omitempty"`
-	Name       string          `json:"name,omitempty"`
-	Cron       string          `json:"cron"`
-	Seeds      json.RawMessage `json:"seeds,omitempty"`
-}
-
-// WorkflowAgentScheduleResult names the automation, skipped on a replay.
-type WorkflowAgentScheduleResult struct {
-	AutomationID string `json:"automationId"`
-	Name         string `json:"name"`
-	Cron         string `json:"cron"`
-	Skipped      bool   `json:"skipped,omitempty"`
-}
-
-// WorkflowAgentNotesResult is `ao notes set`.
-type WorkflowAgentNotesResult struct {
-	AutomationID string `json:"automationId"`
-	Skipped      bool   `json:"skipped,omitempty"`
-}
-
 // WorkflowAgentStartRun starts a run on behalf of an agent session. An
 // interactive caller's run binds to its thread (D17); a granted phase's run is
 // recorded in the effect ledger so re-entering the phase surfaces the prior
@@ -1431,129 +1385,6 @@ func (a *App) WorkflowAgentRunOutput(ctx context.Context, itemID string) (Workfl
 		ItemID: result.ItemID, State: result.State, Reason: result.Reason,
 		Resting: result.Resting, Outputs: result.Outputs, Artifacts: result.Artifacts,
 	}, nil
-}
-
-// WorkflowAgentSchedule is `ao schedule`: it creates one enabled cron
-// automation through the same validation the overlay's editor uses.
-//
-// LocalOnly: an automation is a standing instruction to start autonomous
-// provider sessions, like every other automation mutation.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentSchedule(ctx context.Context, input WorkflowAgentScheduleInput) (WorkflowAgentScheduleResult, error) {
-	scope, err := requireCallerScope(ctx)
-	if err != nil {
-		return WorkflowAgentScheduleResult{}, err
-	}
-	resolved, err := a.resolveAgentWorkflow(scope, input.WorkflowID, input.Scope)
-	if err != nil {
-		return WorkflowAgentScheduleResult{}, err
-	}
-	cronExpr := strings.TrimSpace(input.Cron)
-	if cronExpr == "" {
-		return WorkflowAgentScheduleResult{}, fmt.Errorf("create automation: a cron expression is required")
-	}
-	seedValues, seeds, err := decodeWorkflowSeeds(input.Seeds)
-	if err != nil {
-		return WorkflowAgentScheduleResult{}, fmt.Errorf("create automation: %w", err)
-	}
-	name := strings.TrimSpace(input.Name)
-	if name == "" {
-		name = strings.TrimSpace(resolved.Workflow.Name)
-	}
-	trigger, err := json.Marshal(scheduler.Trigger{Kind: scheduler.KindCron, Expr: cronExpr})
-	if err != nil {
-		return WorkflowAgentScheduleResult{}, fmt.Errorf("create automation: encode trigger: %w", err)
-	}
-	hash, err := effectPayloadHash(map[string]any{
-		"workflow": resolved.Workflow.ID, "scope": string(resolved.Scope),
-		"name": name, "cron": cronExpr, "seeds": seedValues,
-	})
-	if err != nil {
-		return WorkflowAgentScheduleResult{}, err
-	}
-	if prior, found, err := a.priorEffect(scope, workflowEffectSchedule, hash); err != nil {
-		return WorkflowAgentScheduleResult{}, err
-	} else if found {
-		automationID, _ := prior.Result["automationId"].(string)
-		if automationID == "" {
-			return WorkflowAgentScheduleResult{}, fmt.Errorf(
-				"create automation: a prior effect is recorded for these arguments but names no automation")
-		}
-		return WorkflowAgentScheduleResult{AutomationID: automationID, Name: name, Cron: cronExpr, Skipped: true}, nil
-	}
-	view, err := a.WorkflowCreateAutomation(WorkflowAutomationInput{
-		ProjectID: scope.ProjectID, WorkflowID: resolved.Workflow.ID,
-		WorkflowScope: string(resolved.Scope), Name: name, Enabled: true,
-		Trigger: trigger, Seeds: seeds,
-	})
-	if err != nil {
-		return WorkflowAgentScheduleResult{}, err
-	}
-	if err := a.recordEffect(scope, workflowEffectSchedule, hash, workflowEffect{
-		Args:   map[string]any{"workflow": view.WorkflowID, "cron": cronExpr},
-		Result: map[string]any{"automationId": view.ID},
-	}); err != nil {
-		return WorkflowAgentScheduleResult{}, err
-	}
-	return WorkflowAgentScheduleResult{AutomationID: view.ID, Name: view.Name, Cron: cronExpr}, nil
-}
-
-// WorkflowAgentGetNotes is `ao notes get`.
-//
-// LocalOnly: see WorkflowAgentRunStatus.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentGetNotes(ctx context.Context, automationID string) (string, error) {
-	scope, err := requireCallerScope(ctx)
-	if err != nil {
-		return "", err
-	}
-	automation, err := a.scopedAutomation(scope, automationID, "workflow job notes")
-	if err != nil {
-		return "", err
-	}
-	return automation.Notes, nil
-}
-
-// WorkflowAgentSetNotes is `ao notes set` — the §11 continuity-notes rewrite a
-// terminal phase performs. Rewriting the same notes twice is a skip, not a
-// second write, so a re-entered phase does not churn the row.
-//
-// LocalOnly: it mutates local automation state.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentSetNotes(ctx context.Context, automationID, notes string) (WorkflowAgentNotesResult, error) {
-	scope, err := requireCallerScope(ctx)
-	if err != nil {
-		return WorkflowAgentNotesResult{}, err
-	}
-	automation, err := a.scopedAutomation(scope, automationID, "workflow job notes")
-	if err != nil {
-		return WorkflowAgentNotesResult{}, err
-	}
-	hash, err := effectPayloadHash(map[string]any{"automation": automation.ID, "notes": notes})
-	if err != nil {
-		return WorkflowAgentNotesResult{}, err
-	}
-	if _, found, err := a.priorEffect(scope, workflowEffectSetNotes, hash); err != nil {
-		return WorkflowAgentNotesResult{}, err
-	} else if found {
-		return WorkflowAgentNotesResult{AutomationID: automation.ID, Skipped: true}, nil
-	}
-	if err := a.WorkflowSetJobNotes(automation.ID, notes); err != nil {
-		return WorkflowAgentNotesResult{}, err
-	}
-	if err := a.recordEffect(scope, workflowEffectSetNotes, hash, workflowEffect{
-		Args:   map[string]any{"automation": automation.ID},
-		Result: map[string]any{"automationId": automation.ID},
-	}); err != nil {
-		return WorkflowAgentNotesResult{}, err
-	}
-	return WorkflowAgentNotesResult{AutomationID: automation.ID}, nil
 }
 
 // `agent-overflow run watch` (D53): the one method that BLOCKS.

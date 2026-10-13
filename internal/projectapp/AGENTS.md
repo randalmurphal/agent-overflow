@@ -6,7 +6,7 @@ workspace membership, setup recipes, and deletion snapshots.
 `internal/app` retains Wails bindings, event projection, git mutation, async
 worktree setup, and the live deletion transaction. Project deletion must cancel
 workflows before acquiring thread locks, then coordinate session shutdown,
-filesystem cleanup, scheduler refresh, and thread teardown.
+filesystem cleanup, and thread teardown.
 
 ## Contracts
 

@@ -55,8 +55,6 @@ agent-overflow <command>
   run guide <run-id> "<text>" [--json]
   memory add --kind <kind> "<note>" [--file <path>]... [--run <id>] [--json]
   memory list [--kind <kind>] [--run <id>] [--json]
-  notes get|set <automation-id> [--file <path>] [--json]
-  schedule <workflow-id> --cron <expr> [--name|--scope|--seed k=v|--json]
   thread send <thread-id> <text> [--config-root|--wait <dur>]
                                                messages a thread on this computer from a script
                                                outside the app, through the owner's local control

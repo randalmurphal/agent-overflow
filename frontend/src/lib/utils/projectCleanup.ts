@@ -14,19 +14,12 @@ function countLabel(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? '' : 's'}`;
 }
 
-// cleanupSummary is the one line above the detail: what is deleted with the
-// project, and how much of it is still working. Returns '' when the project
-// owns no workflow work at all.
-export function cleanupSummary(
-  runCount: number,
-  liveCount: number,
-  automationCount: number,
-): string {
-  const parts: string[] = [];
-  if (runCount > 0) parts.push(countLabel(runCount, 'workflow run'));
-  if (automationCount > 0) parts.push(countLabel(automationCount, 'automation'));
-  if (parts.length === 0) return '';
-  const subject = parts.join(' and ');
+// cleanupSummary is the one line above the detail: how many runs are deleted
+// with the project, and how many of them are still working. Returns '' when
+// the project owns no workflow run.
+export function cleanupSummary(runCount: number, liveCount: number): string {
+  if (runCount === 0) return '';
+  const subject = countLabel(runCount, 'workflow run');
   if (liveCount === 0) return `${subject} will be deleted with it.`;
   return `${subject} will be deleted with it, including ${liveCount} still working — ${
     liveCount === 1 ? 'it is' : 'they are'

@@ -12,11 +12,8 @@ import (
 
 // `agent-overflow memory …` — the campaign-memory half of the execution surface.
 //
-// This is NOT `agent-overflow notes`. Notes are one automation's continuity
-// message to its own next occurrence: one mutable string, replaced wholesale.
 // Memory is a run TREE's accumulated lessons: append-only, many-authored, keyed
-// by the root run, and injected into every element's prompt. Two shapes, two
-// lifetimes, two verbs.
+// by the root run, and injected into every element's prompt.
 
 // memoryInput is the request body of `agent-overflow memory add`. It carries no
 // provenance field, which is the point: the app stamps who wrote a note and

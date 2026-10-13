@@ -14,7 +14,7 @@ import (
 
 // The execution surface's shared skeleton: the session contract, usage and exit
 // codes, and the refusal paths every command inherits. Per-command contracts
-// live in exec_run_test.go and exec_automation_test.go against this same fake
+// live in exec_run_test.go and exec_memory_test.go against this same fake
 // backend.
 
 // fakeBackend answers the scoped RPC route the way the app does, recording what
@@ -230,8 +230,6 @@ func TestExecutionCommandsRefuseToRunOutsideASession(t *testing.T) {
 		{"run", "start", "flow"},
 		{"run", "list"},
 		{"run", "status", "item"},
-		{"notes", "get", "automation"},
-		{"schedule", "flow", "--cron", "0 3 * * *"},
 	} {
 		code, stdout, stderr := runCLI(args, noEnv)
 		if code != exitError {
@@ -316,10 +314,6 @@ func TestUnknownCommandsAndMissingArgumentsExitTwo(t *testing.T) {
 		{"run", "resolve"},
 		{"run", "answer", "item"},
 		{"run", "list", "extra"},
-		{"notes"},
-		{"notes", "nonsense"},
-		{"notes", "get"},
-		{"schedule", "flow"},
 	} {
 		if code, _, _ := runCLI(args, backend.env()); code != exitError {
 			t.Fatalf("%v exit = %d, want %d", args, code, exitError)
@@ -332,8 +326,8 @@ func TestUnknownCommandsAndMissingArgumentsExitTwo(t *testing.T) {
 
 func TestHelpExitsZeroAndPrintsUsage(t *testing.T) {
 	for _, args := range [][]string{
-		{"help"}, {"workflow", "help"}, {"run", "help"}, {"notes", "help"},
-		{"run", "start", "--help"}, {"schedule", "--help"},
+		{"help"}, {"workflow", "help"}, {"run", "help"},
+		{"run", "start", "--help"},
 		{"run", "resolve", "--help"}, {"run", "answer", "--help"},
 		{"run", "watch", "--help"}, {"run", "amend", "--help"}, {"run", "guide", "--help"},
 	} {
@@ -348,16 +342,16 @@ func TestHelpExitsZeroAndPrintsUsage(t *testing.T) {
 }
 func TestGrantRefusalIsReportedWithItsMessage(t *testing.T) {
 	backend := newFakeBackend(t)
-	backend.refuse("WorkflowAgentSchedule", transport.ErrCodeGrantRequired,
-		`this phase was not granted "schedule"; add "schedule" to the phase's grants: to allow it`)
-	code, stdout, stderr := runCLI([]string{"schedule", "flow", "--cron", "0 3 * * *"}, backend.env())
+	backend.refuse("WorkflowAgentStartRun", transport.ErrCodeGrantRequired,
+		`this phase was not granted "start-run"; add "start-run" to the phase's grants: to allow it`)
+	code, stdout, stderr := runCLI([]string{"run", "start", "flow"}, backend.env())
 	if code != exitError {
 		t.Fatalf("exit = %d, want %d", code, exitError)
 	}
 	if stdout != "" {
 		t.Fatalf("a refusal printed to stdout: %q", stdout)
 	}
-	if !strings.Contains(stderr, `not granted "schedule"`) {
+	if !strings.Contains(stderr, `not granted "start-run"`) {
 		t.Fatalf("stderr did not carry the refusal: %q", stderr)
 	}
 }

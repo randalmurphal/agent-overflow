@@ -1,11 +1,11 @@
 <script lang="ts">
   // One project's group (UI-SPEC §3.2), in order: needs attention → running →
-  // workflows (definitions + their automations) → recent history, collapsed.
+  // workflow definitions → recent history, collapsed.
 
   import WorkflowRunRow from './WorkflowRunRow.svelte';
   import WorkflowDefinitionRow from './WorkflowDefinitionRow.svelte';
   import type { WorkflowProjectGroup } from '../../stores/workflowData';
-  import { getWorkflowAutomations, getWorkflowCatalog } from '../../stores/workflowRuns.svelte';
+  import { getWorkflowCatalog } from '../../stores/workflowRuns.svelte';
   import { pushWorkflowRunDetail } from '../../stores/workflowsOverlay.svelte';
   import { enterWorkflowSweep } from '../../stores/workflowSweep';
 
@@ -14,7 +14,6 @@
 
   let catalog = $derived(getWorkflowCatalog(group.projectId));
   let definitions = $derived(catalog?.workflows ?? []);
-  let automations = $derived(getWorkflowAutomations(group.projectId));
   let recentOpen = $state(false);
 </script>
 
@@ -40,10 +39,7 @@
   {#if definitions.length > 0}
     <div class="mt-2 space-y-0.5" data-testid="workflow-definition-list">
       {#each definitions as definition (definition.scope + ':' + definition.id)}
-        <WorkflowDefinitionRow
-          {definition}
-          automations={automations.filter((automation) => automation.workflowId === definition.id)}
-        />
+        <WorkflowDefinitionRow {definition} />
       {/each}
     </div>
   {/if}

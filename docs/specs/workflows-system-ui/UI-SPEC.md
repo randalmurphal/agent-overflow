@@ -92,8 +92,7 @@ expand in place; there is no third navigation depth.
 ## 3. Home: projects, workflows, runs
 
 Project-grouped, single column at every width. Groups ordered by project
-name; a project renders only if it has workflow definitions, runs, or
-automations.
+name; a project renders only if it has workflow definitions or runs.
 
 ### 3.1 Header controls
 
@@ -127,17 +126,13 @@ Within a group, in order:
 3. **Workflows** lists the project's definitions (and shared ones, marked
    `shared`): name + chain summary (`plan → port ⇉ merge → validate ↺`).
    Read-only. Editing a definition is file work, not a row action (D32).
-   Automations render inline on their workflow row: `every 6h · next in
-   3h 40m · 2 skipped` + enable/disable + **Run now**. A definition failing
-   dry-run validation renders its first error inline, hint-toned.
+   A definition failing dry-run validation renders its first error inline,
+   hint-toned.
 4. **Recent** is collapsed by default (`▶ Recent · 12`): terminal runs, most
    recent first, receipt meta (`merged · 2d · $1.75`, `cancelled · worktree
    kept`, `discarded — branch dropped, record kept`). Rows open historical
    run detail (§4.6).
 
-**Continuity notes** (jobs that declare them): one collapsed line on the
-workflow row, expanding to the editable markdown block, unchanged from
-rev 1.
 
 ---
 
@@ -157,8 +152,7 @@ where position is progress, not an expandable tree of rows.
   $3.10`. The position comes off the run map's frontier whenever the map view
   is loaded, and falls back to the frozen `phase N/M` counter only when it is
   not (the SQL ordinal lies for retried, looped and campaign runs). Cost is the
-  **root-tree total** (children included); automation runs add `spawned by
-  jira-poll · every 6h`; a bound run adds `→ <thread title>` (click opens the
+  **root-tree total** (children included); a bound run adds `→ <thread title>` (click opens the
   thread, R3).
 
 ### 4.2 The run map
@@ -406,8 +400,8 @@ open overlay; suppressed while a text field has focus.
 ## 10. Remote posture
 
 Remote browsers get **view-only** workflows: the overlay renders fully;
-every mutating affordance (pause-all, intake, action rows, notes, Run now,
-enable/disable, discard, bind) is disabled with tooltip "Local only".
+every mutating affordance (pause-all, intake, action rows, discard, bind)
+is disabled with tooltip "Local only".
 Mutation RPCs annotate `//ao:scope threads:autonomy`, so only a session
 granted it reaches them. Remote gate-approval is explicitly out.
 
@@ -428,8 +422,7 @@ granted it reaches them. Remote gate-approval is explicitly out.
 - NO chat proposal cards. Agents use the CLI; the wake message is a plain
   message.
 - NO kanban / global work board; NO inspection modal; NO workflow-settings
-  forms beyond enable/disable + Run now + notes (everything richer is studio
-  work over files).
+  forms (settings are file work).
 - NO un-previewed destructive action (§4.5).
 - NO remote mutation of any kind.
 
@@ -443,7 +436,7 @@ As shipped. Paths under `frontend/src/lib/` unless noted.
 |---|---|
 | Overlay frame (§2.1) | `components/workflows/WorkflowsOverlay.svelte`, mounted in `App.svelte` through `primitives/LazyOverlay.svelte` as a sibling of `<PaneHost>` (never a pane kind), framed by `primitives/OverlayShell.svelte` |
 | Navigation (§2.2) | `stores/workflowsOverlay.svelte.ts`: stack, project filter, sweep cursor, armed confirm, dialog; restart persistence via `stores/appStorage.ts` |
-| Data cache | `stores/workflowRuns.svelte.ts` (runs, catalogs, automations, costs, the FOCUSED run's detail only, session receipts) + the pure projections in `stores/workflowData.ts`. A run's tree/shape is not here. That is the run-map entity store's |
+| Data cache | `stores/workflowRuns.svelte.ts` (runs, catalogs, costs, the FOCUSED run's detail only, session receipts) + the pure projections in `stores/workflowData.ts`. A run's tree/shape is not here. That is the run-map entity store's |
 | Events / RPC | `stores/eventsWorkflow.ts` via `events.ts`; `stores/bindings.ts`; typed `workflow:*` channel |
 | Home (§3) | `WorkflowsHome.svelte`, `WorkflowsHomeControls.svelte`, `WorkflowProjectGroup.svelte`, `WorkflowRunRow.svelte`, `WorkflowDefinitionRow.svelte` |
 | Run detail (§4.1) | `WorkflowRunDetail.svelte` (coordinator), `WorkflowRunHeader.svelte` (position read off the map's frontier, `utils/workflowActionRows.ts` for the failed-unit lookup) |

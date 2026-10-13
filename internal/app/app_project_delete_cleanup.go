@@ -235,14 +235,3 @@ func (a *App) explainRetainedWorktree(path string, removeErr error) string {
 	}
 	return removeErr.Error()
 }
-
-// refreshWorkflowSchedule recomputes the automation schedule after rows have
-// been deleted, so the scheduler drops them from its in-memory arming instead
-// of firing a trigger whose definition is gone.
-//
-// A nil scheduler — a bare test App, or a boot that never reached workflow
-// init — has no schedule to correct, and neither does a stopped one: it arms
-// nothing, so the deleted automations are already unreachable.
-func (a *App) refreshWorkflowSchedule() error {
-	return a.workflowApplication().RefreshScheduler()
-}

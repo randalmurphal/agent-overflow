@@ -34,7 +34,7 @@ func TestWorkflowBoundMethodsRegisteredOnApp(t *testing.T) {
 		"WorkflowCompleteTakeover",
 		"WorkflowMergeItem", "WorkflowCreateItemPR", "WorkflowDiscardItem",
 		"WorkflowFetchPRReviewComments", "WorkflowSendPRReviewCommentsToThread", "WorkflowDiscussPR",
-		"WorkflowGetJobNotes", "WorkflowSetJobNotes", "WorkflowListDefinitions",
+		"WorkflowListDefinitions",
 	} {
 		if _, ok := appType.MethodByName(name); !ok {
 			t.Errorf("App method %s is not registered", name)

@@ -116,20 +116,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// Step 1a0: stop the workflow scheduler before anything else workflow-side.
-	// Pausing every active run (Step 1a) while a cron tick or a chained internal
-	// event can still start a new one is a race the human loses: the new run
-	// would be admitted after the pause sweep walked past it and would die
-	// mid-turn with the process. Stopping is bounded; a scheduler that misses the
-	// window is recorded, not waited on.
-	if a.workflowApplication().Scheduler() != nil {
-		record("stop workflow scheduler", a.stopWorkflowScheduler(ctx))
-	}
-
-	// Self-resume timers come down with it, and for the same reason: a schedule
-	// firing into the pause sweep below would resume a run this shutdown is
-	// parking. The schedules are durable, so the next boot re-arms every one of
-	// them.
+	// Step 1a0: stop the self-resume timers before anything else
+	// workflow-side. A schedule firing into the pause sweep below would resume
+	// a run this shutdown is parking. The schedules are durable, so the next
+	// boot re-arms every one of them.
 	a.workflowApplication().StopAutoResumes()
 
 	// Step 1a: pause every active workflow run. This runs while provider
