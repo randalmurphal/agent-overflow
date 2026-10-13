@@ -209,11 +209,13 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 }
 
 // observeFrameBeforeTriage is the host's work on a current session's frame
-// that runs before triage handles it, so it has only the entry check. Each
-// write here checks the session again where it lands: the live-config
-// applies go through the session registry under the frame's token, and the
-// worktree follow re-checks the registry's token under the thread lock a
-// replacement start holds through registration.
+// that runs before triage handles it, so it has only the entry check, which
+// keeps a retired session's frame from replacing the thread's one pending
+// ExitWorktree call. A commit that lands after the entry check reaches no
+// replacement state through here: the live-config applies go through the
+// session registry under the frame's token, and the worktree follow
+// re-checks the registry's token under the thread lock a replacement start
+// holds through registration.
 func (a *App) observeFrameBeforeTriage(threadID, sessionToken, providerType string, evt provider.ProviderEvent) {
 	// Claude command output settles live-config applies (/effort,
 	// /fast) and follows user-typed /effort; a cancelled command

@@ -767,6 +767,28 @@ func awaitHeldInHandle(t *testing.T, inHandle <-chan struct{}) {
 	}
 }
 
+// The host's work before triage is skipped for a frame whose session was
+// retired before it was handled. The pending ExitWorktree call is one entry
+// per thread: a retired session's call would replace the replacement's, so
+// a worktree removal the replacement is making would read as an outside one.
+func TestRetiredSessionsExitWorktreeKeepsTheReplacementsPendingCall(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithTriage(t)
+	thread := testThread("thread-retired-exit")
+	thread.Provider = string(provider.Claude)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	dead := startedSessionEventHandler(app, thread.ID, "token-a", string(provider.Claude))
+	app.triage.MarkThreadActive(thread.ID, "token-b")
+	app.pendingWorktreeExits.start(thread.ID, "token-b", "exit-b")
+	dead(provider.ProviderEvent{Kind: provider.EventToolStart, ThreadID: thread.ID, ItemID: "exit-a", ItemType: "ExitWorktree", Meta: json.RawMessage(`{"input":{"action":"remove"}}`), Timestamp: time.Now()})
+	waitProviderEvents(t, app, thread.ID)
+	if toolUseID, ok := app.pendingWorktreeExits.toolUseID(thread.ID, "token-b"); !ok || toolUseID != "exit-b" {
+		t.Fatalf("a retired session's ExitWorktree replaced the replacement's pending call: %q %v", toolUseID, ok)
+	}
+}
+
 // An init already inside triage when a replacement commits does not feed
 // the MCP status cache: the host's work on it waits for triage's answer.
 func TestInFlightRetiredInitDoesNotFeedTheMCPStatusCache(t *testing.T) {
