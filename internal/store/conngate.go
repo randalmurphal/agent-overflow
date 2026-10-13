@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	sqlite "modernc.org/sqlite"
 )
@@ -91,6 +92,9 @@ type gatedConnector struct {
 	// commits, when set, is signalled by every commit on the connections
 	// this connector opens: the writer's, for the checkpointer.
 	commits commitSignal
+	// writes, when set, counts the row writes on the connections this
+	// connector opens: the writer's, for Store.WriteCount.
+	writes *atomic.Uint64
 }
 
 // commitHooker is the modernc.org/sqlite connection's commit hook surface.
@@ -112,6 +116,7 @@ func (c gatedConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	cached.writes = c.writes
 	if c.commits != nil {
 		hooked, ok := conn.(commitHooker)
 		if !ok {
@@ -128,16 +133,17 @@ func (c gatedConnector) Connect(ctx context.Context) (driver.Conn, error) {
 
 // openPool opens one pool against dbPath with the given connection
 // pragmas, routed through gate. A non-nil commits is signalled by every
-// commit on the pool's connections.
+// commit on the pool's connections, and a non-nil writes counts their
+// row writes.
 //
 // sql.OpenDB rather than sql.Open: the gate has to sit in front of the
 // physical open, and interposing on Connect is the supported way to do
 // that (modernc.org/sqlite documents NewConnector for exactly this).
 // The DSN is unchanged, so the pragmas still ride every connection.
-func openPool(dbPath string, pragmas []connPragma, gate *connGate, commits commitSignal) (*sql.DB, error) {
+func openPool(dbPath string, pragmas []connPragma, gate *connGate, commits commitSignal, writes *atomic.Uint64) (*sql.DB, error) {
 	base, err := sqlite.NewConnector(poolDSN(dbPath, pragmas))
 	if err != nil {
 		return nil, fmt.Errorf("store: connector for %s: %w", dbPath, err)
 	}
-	return sql.OpenDB(gatedConnector{Connector: base, gate: gate, commits: commits}), nil
+	return sql.OpenDB(gatedConnector{Connector: base, gate: gate, commits: commits, writes: writes}), nil
 }

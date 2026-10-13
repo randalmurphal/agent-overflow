@@ -1130,6 +1130,9 @@ func (a *App) dropDurableFlushQueue(threadID string) (held []ownedMessage) {
 	if err := a.store.DeleteFlushQueueItemsForThread(threadID, agentSendIDRoot, keep...); err != nil {
 		log.Printf("flush queue: drop durable rows for thread %s: %v", threadID, err)
 	}
+	if a.queueDroppedForTest != nil {
+		a.queueDroppedForTest(threadID)
+	}
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 	return held
 }

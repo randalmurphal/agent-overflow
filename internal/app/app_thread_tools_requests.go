@@ -126,7 +126,10 @@ func (t threadToolsApp) ackRequest(ctx context.Context, caller threadtools.Calle
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	state := t.requestState(ctx, row)
+	state, err := t.requestState(ctx, row)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
 	return threadtools.RequestAck{
 		RequestState: state,
 		Outcome:      threadRequestOutcome(row, state.State == threadtools.RequestBlocked),
@@ -246,7 +249,11 @@ func (t threadToolsApp) RequestStates(ctx context.Context, caller threadtools.Ca
 		if !found {
 			row = rows[index]
 		}
-		report.Requests = append(report.Requests, t.requestState(ctx, row))
+		state, err := t.requestState(ctx, row)
+		if err != nil {
+			return threadtools.StatusReport{}, err
+		}
+		report.Requests = append(report.Requests, state)
 	}
 	return report, nil
 }
@@ -400,7 +407,7 @@ func threadToolsWord(what string, words map[string]string, stored string) string
 
 // requestState renders one source row, and records the inline delivery that
 // rendering it performs.
-func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadRequest) threadtools.RequestState {
+func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadRequest) (threadtools.RequestState, error) {
 	state := threadtools.RequestState{
 		Token:      row.Token,
 		Kind:       row.Kind,
@@ -441,17 +448,80 @@ func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadReques
 			}
 		}
 	}
-	state.WakeQueued = t.wakeQueued(row, late)
 	if len(answer) > 0 && threadRequestSettled(row) && !threadRequestDelivered(row, late) {
 		// Reading the answer here IS the delivery, but only once the model
 		// has it: the mark runs after the response is written. An open row
 		// can carry an answer before anything settles it (a reminder holds
 		// its note from the moment it is armed), and reading that is not a
 		// delivery: the wake it owes has not happened yet.
-		state.Delivered = store.ThreadWakeInline
-		t.markDeliveredInline(ctx, row.Token, late)
+		claim, err := t.claimInlineDelivery(ctx, row, late)
+		if err != nil {
+			return threadtools.RequestState{}, err
+		}
+		switch {
+		case claim.inline:
+			state.Delivered = store.ThreadWakeInline
+			return state, nil
+		case claim.inFlight:
+			// The reply still carries the answer, and says that the
+			// message carrying it is on its way.
+			state.Delivered, state.WakeQueued = store.ThreadWakeQueued, true
+			return state, nil
+		}
+		row = claim.row
+		state.Delivered = row.DeliveredHow
 	}
-	return state
+	state.WakeQueued = t.wakeQueued(row, late)
+	return state, nil
+}
+
+// inlineClaim is what a reply found when it went to deliver an answer.
+type inlineClaim struct {
+	// inline is set when this reply delivers the answer.
+	inline bool
+	// inFlight is set when a wake is writing the answer's message now.
+	inFlight bool
+	// row is the request as read under the settle lock.
+	row store.ThreadRequest
+}
+
+// claimInlineDelivery decides, under the token's settle lock, whether this
+// call's reply delivers an answer. The row is read again because a wake can
+// have queued the answer since the call read it, and the in-flight mark is
+// read because a wake the collector decided before this call registered can
+// be writing its message now. A claim holds the token until the reply is
+// written, so a wake that starts after it backs off (claimThreadWake), and
+// records the delivery once the reply is written.
+func (t threadToolsApp) claimInlineDelivery(ctx context.Context, row store.ThreadRequest, late bool) (inlineClaim, error) {
+	claim, release, err := func() (inlineClaim, func(), error) {
+		unlock := t.app.threadRequestSettleLock(row.Token)
+		defer unlock()
+		current, found, err := t.app.store.GetThreadRequest(row.Token)
+		if err != nil {
+			return inlineClaim{}, nil, fmt.Errorf("thread tools: read request %s for delivery: %w", row.Token, err)
+		}
+		if !found {
+			// Deleted with its caller thread since the call read it: no
+			// wake can be owed, and the reply is all the agent gets.
+			return inlineClaim{inline: true, row: row}, func() {}, nil
+		}
+		if threadRequestDelivered(current, late) {
+			return inlineClaim{row: current}, nil, nil
+		}
+		if t.app.threadWakeInFlight(row.Token, late) {
+			return inlineClaim{inFlight: true, row: current}, nil, nil
+		}
+		_, _, release := t.app.beginRequestWait(ctx, current.CallerThreadID, []string{row.Token})
+		return inlineClaim{inline: true, row: current}, release, nil
+	}()
+	if err != nil || !claim.inline {
+		return claim, err
+	}
+	// The mark before the release: a call with no response to wait for
+	// runs both now, and the hold must outlast the mark.
+	t.markDeliveredInline(ctx, row.Token, late)
+	t.releaseAfterResponse(ctx, release)
+	return claim, nil
 }
 
 // markDeliveredInline records that the model read an answer inside this
@@ -524,7 +594,11 @@ func (t threadToolsApp) ListRequests(ctx context.Context, caller threadtools.Cal
 		rows = rows[:limit]
 	}
 	for _, row := range rows {
-		listing.Requests = append(listing.Requests, t.requestState(ctx, row))
+		state, err := t.requestState(ctx, row)
+		if err != nil {
+			return threadtools.RequestListing{}, err
+		}
+		listing.Requests = append(listing.Requests, state)
 	}
 	return listing, nil
 }
@@ -563,7 +637,11 @@ func (t threadToolsApp) ExportAnswer(ctx context.Context, caller threadtools.Cal
 	}
 	digest := sha256.Sum256(answer)
 	if !threadRequestDelivered(row, late) {
-		t.markDeliveredInline(ctx, token, late)
+		// The file is the delivery unless a wake is already carrying the
+		// answer; either way the agent asked for the file and gets it.
+		if _, err := t.claimInlineDelivery(ctx, row, late); err != nil {
+			return threadtools.ExportFile{}, err
+		}
 	}
 	return threadtools.ExportFile{Path: path, Size: int64(len(answer)), SHA256: hex.EncodeToString(digest[:])}, nil
 }

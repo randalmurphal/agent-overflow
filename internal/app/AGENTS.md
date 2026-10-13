@@ -92,8 +92,9 @@ in-memory queue, removed only on settlement or an explicit drop, and restored
 to the composer at boot instead of being dispatched without a user present.
 A teardown's or a revert's drop holds the thread mutation lock that every queue
 write takes, so a message queued during it is in the queue the drop reads or
-queued whole after it.
-See [turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
+queued whole after it. A caller releases that lock before it tears down; the
+idle reaper, which holds it, uses the HoldingMutations variant. See
+[turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
 
 Agent thread requests settle once. Every state change on a request or receipt
 is conditional on the state it expects to find, and a change that does not

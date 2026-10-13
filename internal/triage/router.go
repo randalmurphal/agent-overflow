@@ -70,7 +70,13 @@ type Router struct {
 	// entry is popped and BEFORE its row persists — the window
 	// NextFlushSequence's anchor exists to close. Nil in production.
 	deferredPersistGate func()
-	mu                  sync.Mutex
+	// delays holds the router's debounce and throttle intervals, the
+	// production values from NewRouter. A same-package test lengthens
+	// one so its timer cannot fire inside a window that asserts what a
+	// call emitted or read; the deferred work then runs at the test's
+	// explicit flush.
+	delays routerDelays
+	mu     sync.Mutex
 	// threads holds the per-thread correlation state, one entry per
 	// thread with a live (or recently torn-down) session. Guarded by
 	// r.mu. cleanupThread drops the whole entry, which is what makes the
@@ -310,7 +316,25 @@ func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 		settles:                    make(map[string]*threadSettles),
 		unknownSessionStatusLogged: make(map[string]struct{}),
 		flushStampApplied:          make(map[uint64]struct{}),
+		delays: routerDelays{
+			wireRefreshQuiet:     wireRefreshQuiet,
+			wireRefreshMaxWait:   wireRefreshMaxWait,
+			streamPersist:        streamPersistInterval,
+			commandOutputPersist: commandOutputPersistInterval,
+			usageEmit:            usageEmitMinInterval,
+		},
 	}
+}
+
+// routerDelays are the intervals of the router's timers: the deferred
+// wire refresh (wire_items.go), the stream persistence flush
+// (stream_buffers.go) and the usage emit throttle (usage_compaction.go).
+type routerDelays struct {
+	wireRefreshQuiet     time.Duration
+	wireRefreshMaxWait   time.Duration
+	streamPersist        time.Duration
+	commandOutputPersist time.Duration
+	usageEmit            time.Duration
 }
 
 // SetTelemetry wires tracer + metric instruments. Safe to call with nil

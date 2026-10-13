@@ -298,7 +298,7 @@ func (r *Router) throttledEmitUsage(threadID string, evt provider.UsageEvent) {
 	}
 	throttle := *lane
 	throttle.pending = &evt
-	remaining := usageEmitMinInterval - time.Since(throttle.lastEmittedAt)
+	remaining := r.delays.usageEmit - time.Since(throttle.lastEmittedAt)
 	if remaining <= 0 {
 		event, _ := takeUsagePending(throttle)
 		r.mu.Unlock()

@@ -3184,3 +3184,250 @@ func (f *requestFixture) wakeRow(t *testing.T, token string) store.Item {
 	}
 	return found
 }
+
+func TestAClaimedWakeTheAppStopsBeforeDeliveringIsReleased(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	life, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	f.app.appCtx = life
+	token := f.settledAnswerOwingAWake(t)
+	// No delivery slot ever frees.
+	f.app.threadRequests.mu.Lock()
+	f.app.threadRequests.deliveries = make(chan struct{})
+	f.app.threadRequests.mu.Unlock()
+
+	passed := make(chan struct{})
+	go func() {
+		defer close(passed)
+		f.app.retryUndeliveredThreadWakes(time.Now())
+	}()
+	waitFor(t, "the retry pass to claim the wake", func() bool {
+		unlock := f.app.threadRequestSettleLock(token)
+		defer unlock()
+		return f.app.threadWakeInFlight(token, false)
+	})
+	stop()
+	select {
+	case <-passed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the retry pass did not return once the app stopped")
+	}
+	if f.app.threadWakeInFlight(token, false) {
+		t.Fatal("a wake the app stopped before delivering is still marked in flight")
+	}
+	if row := f.request(t, token); row.DeliveredAt != 0 {
+		t.Fatalf("a wake with no slot was delivered: %q", row.DeliveredHow)
+	}
+}
+
+func TestAReplyDuringAWakesQueueWriteLeavesTheDeliveryToTheWake(t *testing.T) {
+	t.Parallel()
+	wakes := map[string]func(f *requestFixture, token string){
+		"collector": func(f *requestFixture, token string) { f.app.deliverThreadWake(token, false) },
+		"retry pass": func(f *requestFixture, _ string) {
+			f.app.retryUndeliveredThreadWakes(time.Now())
+			f.app.threadRequestsWG.Wait()
+		},
+	}
+	for source, wake := range wakes {
+		for _, tool := range []string{"thread_status", "thread_status list", "thread_show to_file"} {
+			t.Run(tool+" from the "+source, func(t *testing.T) {
+				t.Parallel()
+				testAReplyDuringAWakesQueueWrite(t, tool, wake)
+			})
+		}
+	}
+}
+
+func TestARetryThatBacksOffForACallBooksNoAttempt(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	token := f.settledAnswerOwingAWake(t)
+	nudge := make(chan struct{}, 1)
+	f.app.threadRequests.mu.Lock()
+	f.app.threadRequests.nudge = nudge
+	f.app.threadRequests.mu.Unlock()
+
+	// Holding the token's settle lock stops the pass where it takes it.
+	unlock := f.app.threadRequestSettleLock(token)
+	passed := make(chan struct{})
+	go func() {
+		defer close(passed)
+		f.app.retryUndeliveredThreadWakes(time.Now())
+	}()
+	waitFor(t, "the retry pass to wait for the settle lock", func() bool {
+		return f.app.threadRequests.settleLocks.Refs(token) == 2
+	})
+	// The call registers its wait before it reads the answer, which it
+	// does under the same lock, so it registers now and waits behind it.
+	ctx, pending := withThreadToolsPending(t.Context())
+	rendered := make(chan error, 1)
+	go func() {
+		_, err := f.adapter().RequestStates(ctx, f.callerIdentity(), threadtools.StatusCall{
+			Tokens: []string{token}, WaitSeconds: 5,
+		})
+		rendered <- err
+	}()
+	waitFor(t, "the status call to register its wait", func() bool { return f.app.requestWaitActive(token) })
+	unlock()
+	select {
+	case <-passed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the retry pass did not finish once the lock was released")
+	}
+	if err := <-rendered; err != nil {
+		t.Fatalf("RequestStates: %v", err)
+	}
+	f.app.threadRequestsWG.Wait()
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("a wake was queued while the call held the token: %+v", rows)
+	}
+	if row := f.request(t, token); row.DeliveredAt != 0 {
+		t.Fatalf("the wake delivered under a held token: %q", row.DeliveredHow)
+	} else if row.WakeAttempts != 0 {
+		t.Errorf("the pass that backed off booked attempt %d, next check in %s", row.WakeAttempts, time.Until(time.UnixMilli(row.WakeNextCheck)).Round(time.Second))
+	}
+
+	select {
+	case <-nudge:
+	default:
+	}
+	pending.run(false)
+	select {
+	case <-nudge:
+	default:
+		t.Fatal("releasing the token did not ask the sweep for a pass")
+	}
+	f.app.retryUndeliveredThreadWakes(time.Now())
+	f.app.threadRequestsWG.Wait()
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued || row.DeliveredAt == 0 {
+		t.Fatalf("the release's pass did not hand the wake over: %q at %d, attempts %d", row.DeliveredHow, row.DeliveredAt, row.WakeAttempts)
+	}
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 1 {
+		t.Fatalf("queue = %+v, want the one wake", rows)
+	}
+	if f.app.threadWakeInFlight(token, false) {
+		t.Fatal("a wake the retry pass delivered is still marked in flight")
+	}
+}
+
+func TestAWakeDecidedBeforeAReplyBacksOffWhileTheReplyHoldsTheAnswer(t *testing.T) {
+	t.Parallel()
+	for _, tool := range []string{"thread_status", "thread_status list", "thread_show to_file"} {
+		t.Run(tool, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			token := f.settledAnswerOwingAWake(t)
+
+			pending, state := f.renderOwedAnswer(t, tool, token)
+			if tool != "thread_show to_file" && state.Delivered != store.ThreadWakeInline {
+				t.Fatalf("state = %+v, want the reply to deliver the answer", state)
+			}
+			f.app.deliverThreadWake(token, false)
+			if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+				t.Fatalf("a wake was queued while the reply carrying the answer was on its way: %+v", rows)
+			}
+			if row := f.request(t, token); row.DeliveredAt != 0 {
+				t.Fatalf("the wake delivered under a held token: %q", row.DeliveredHow)
+			}
+			if f.app.threadWakeInFlight(token, false) {
+				t.Fatal("a wake that backed off is marked in flight")
+			}
+
+			pending.run(true)
+			if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeInline || row.DeliveredAt == 0 {
+				t.Fatalf("delivery = %q at %d, want the reply", row.DeliveredHow, row.DeliveredAt)
+			}
+			if f.app.requestWaitActive(token) {
+				t.Fatal("the token is still held after the reply was written")
+			}
+		})
+	}
+}
+
+func (f *requestFixture) renderOwedAnswer(t *testing.T, tool, token string) (*threadToolsPending, threadtools.RequestState) {
+	t.Helper()
+	ctx, pending := withThreadToolsPending(t.Context())
+	switch tool {
+	case "thread_status":
+		report, err := f.adapter().RequestStates(ctx, f.callerIdentity(), threadtools.StatusCall{Tokens: []string{token}})
+		if err != nil || len(report.Requests) != 1 {
+			t.Fatalf("RequestStates: %+v %v", report, err)
+		}
+		return pending, report.Requests[0]
+	case "thread_status list":
+		listing, err := f.adapter().ListRequests(ctx, f.callerIdentity(), threadtools.ListCall{})
+		if err != nil {
+			t.Fatalf("ListRequests: %v", err)
+		}
+		for _, state := range listing.Requests {
+			if state.Token == token {
+				return pending, state
+			}
+		}
+		t.Fatalf("the listing has no %s: %+v", token, listing)
+	case "thread_show to_file":
+		if _, err := f.adapter().ExportAnswer(ctx, f.callerIdentity(), token); err != nil {
+			t.Fatalf("ExportAnswer: %v", err)
+		}
+		return pending, threadtools.RequestState{}
+	}
+	t.Fatalf("no tool %q", tool)
+	return nil, threadtools.RequestState{}
+}
+
+func testAReplyDuringAWakesQueueWrite(t *testing.T, tool string, wake func(f *requestFixture, token string)) {
+	f := newRequestFixture(t)
+	token := f.settledAnswerOwingAWake(t)
+	// Queue registration takes the caller's mutation lock, so the
+	// wake stops between its claim and its queue write.
+	unlock, err := f.app.threadApplication().LockMutable(t.Context(), f.caller.ID)
+	if err != nil {
+		t.Fatalf("LockMutable: %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			unlock()
+		}
+	}
+	t.Cleanup(release)
+	delivered := make(chan struct{})
+	go func() {
+		defer close(delivered)
+		wake(f, token)
+	}()
+	waitFor(t, "the wake to claim its delivery", func() bool {
+		unlock := f.app.threadRequestSettleLock(token)
+		defer unlock()
+		return f.app.threadWakeInFlight(token, false)
+	})
+
+	pending, state := f.renderOwedAnswer(t, tool, token)
+	if tool != "thread_show to_file" {
+		if state.Delivered != store.ThreadWakeQueued || !state.WakeQueued || !strings.Contains(state.Answer, "nine minutes") {
+			t.Fatalf("a reply rendered while the wake was writing its message: %+v", state)
+		}
+	}
+	// A status call holds what it waited on until its reply is
+	// written; a listing or an export holds only what it claims.
+	if tool != "thread_status" && f.app.requestWaitActive(token) {
+		t.Fatal("a reply that did not deliver the answer holds its token")
+	}
+
+	release()
+	select {
+	case <-delivered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the wake did not finish once the lock was released")
+	}
+	pending.run(true)
+	if f.app.threadWakeInFlight(token, false) {
+		t.Fatal("a finished wake is still marked in flight")
+	}
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued || row.DeliveredAt == 0 {
+		t.Fatalf("delivery = %q at %d, want the wake", row.DeliveredHow, row.DeliveredAt)
+	}
+}

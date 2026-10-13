@@ -546,6 +546,10 @@ type App struct {
 	// read of the durable queue and its delete (dropDurableFlushQueue), so
 	// a test can queue a message at that moment.
 	queueDropReadForTest func(threadID string)
+	// queueDroppedForTest, when set, runs in a wholesale drop after its
+	// delete of the durable queue (dropDurableFlushQueue), so a test can
+	// queue a message before the in-memory queue is cleared.
+	queueDroppedForTest func(threadID string)
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a
