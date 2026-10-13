@@ -36,7 +36,10 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 		return fmt.Errorf("text delta turn index: %w", err)
 	}
 	scope := eventParentID(evt)
-	firstBlock, itemID, offset := r.ensureTextBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID, len(evt.Content))
+	firstBlock, itemID, offset, ok := r.ensureTextBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID, len(evt.Content), evt.SessionToken)
+	if !ok {
+		return nil
+	}
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
 	}
@@ -113,7 +116,10 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 		return fmt.Errorf("thinking turn index: %w", err)
 	}
 	scope := eventParentID(evt)
-	firstBlock, itemID, offset := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID, len(evt.Content))
+	firstBlock, itemID, offset, ok := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID, len(evt.Content), evt.SessionToken)
+	if !ok {
+		return nil
+	}
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
 	}

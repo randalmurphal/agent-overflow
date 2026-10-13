@@ -127,48 +127,50 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 		return provider.ProviderEvent{ThreadID: threadID, ItemID: "launch-1", Meta: meta, Timestamp: time.Now()}
 	}
 	launch := store.Item{ID: "launch-1", ThreadID: threadID, Kind: itemKindToolCall, IsBackground: true}
-	for _, c := range []struct {
+	cases := []struct {
+		// state names the processBoundState entry the writer writes.
+		state string
 		name  string
 		write func(t *testing.T, r *Router, token string)
 		held  func(r *Router) bool
 	}{
-		{"session wakeup", func(t *testing.T, r *Router, token string) {
+		{"schedule", "session wakeup", func(t *testing.T, r *Router, token string) {
 			if err := r.handleSessionWakeup(fromSession(wakeupEvent(t, threadID, future.UnixMilli()), token)); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { _, ok := r.PendingWakeupAt(threadID); return ok }},
-		{"scheduled jobs", func(t *testing.T, r *Router, token string) {
+		{"schedule", "scheduled jobs", func(t *testing.T, r *Router, token string) {
 			jobs := scheduledJobsEvent(t, threadID, provider.ScheduledJob{ID: "a", Cron: "* * * * *", Recurring: true, FireByUnixMs: future.UnixMilli()})
 			if err := r.handleScheduledJobs(fromSession(jobs, token)); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { _, ok := r.PendingWakeupAt(threadID); return ok }},
-		{"compacting window", func(t *testing.T, r *Router, token string) {
+		{"compacting window", "compacting window", func(t *testing.T, r *Router, token string) {
 			if err := r.handleCompactionStatus(fromSession(compactionStatusEvent(t, threadID, provider.CompactionStatusMeta{Active: true}, time.Now()), token)); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { return compactingOpen(r, threadID) }},
-		{"subagent progress", func(t *testing.T, r *Router, token string) {
+		{"subagent progress", "subagent progress", func(t *testing.T, r *Router, token string) {
 			if err := r.handleSubagentProgress(fromSession(progressTick(t), token)); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { return len(r.LiveSubagentProgress(threadID)) != 0 }},
-		{"final subagent progress", func(t *testing.T, r *Router, token string) {
+		{"subagent progress", "final subagent progress", func(t *testing.T, r *Router, token string) {
 			if err := r.persistSubagentFinalProgress(launch, provider.SubagentProgressMeta{ToolUses: 3}, token); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { _, ok := r.PeekSubagentProgress(threadID, launch.ID); return ok }},
-		{"codex execution tools", func(t *testing.T, r *Router, token string) {
+		{"codex live tray", "codex execution tools", func(t *testing.T, r *Router, token string) {
 			if err := r.startCodexExecutionTools(launch, 0, token); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { _, ok := r.PeekSubagentProgress(threadID, launch.ID); return ok }},
-		{"codex agent runtime", func(t *testing.T, r *Router, token string) {
+		{"codex live tray", "codex agent runtime", func(t *testing.T, r *Router, token string) {
 			if err := r.setCodexAgentRuntime(launch, token); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { return len(r.CodexAgentRuntimeSnapshot(threadID)) != 0 }},
-		{"codex tool start", func(t *testing.T, r *Router, token string) {
+		{"codex live tray", "codex tool start", func(t *testing.T, r *Router, token string) {
 			start := provider.ProviderEvent{Kind: provider.EventToolStart, ThreadID: threadID, ItemID: "exec-1", ItemType: "commandExecution", Meta: buildUnifiedExecStartMeta(t, "pid-1", "sleep 60"), Timestamp: time.Now()}
 			r.observeCodexToolStart(fromSession(start, token))
 		}, func(r *Router) bool {
@@ -177,7 +179,7 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			state := r.codexBackgroundIfPresent(threadID)
 			return state != nil && state.unifiedExec["exec-1"] != nil
 		}},
-		{"codex subagent status", func(t *testing.T, r *Router, token string) {
+		{"codex live tray", "codex subagent status", func(t *testing.T, r *Router, token string) {
 			if err := r.store.UpdateProvider(threadID, "codex"); err != nil {
 				t.Fatal(err)
 			}
@@ -193,7 +195,7 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			state := r.codexBackgroundIfPresent(threadID)
 			return state == nil || state.spawnAgent["spawn-1"] == nil
 		}},
-		{"codex child terminal", func(t *testing.T, r *Router, token string) {
+		{"codex live tray", "codex child terminal", func(t *testing.T, r *Router, token string) {
 			if err := r.store.UpdateProvider(threadID, "codex"); err != nil {
 				t.Fatal(err)
 			}
@@ -205,18 +207,18 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			state := r.codexBackgroundIfPresent(threadID)
 			return state == nil || state.spawnAgent["spawn-1"] == nil
 		}},
-		{"command lifecycle", func(t *testing.T, r *Router, token string) {
+		{"command lifecycle", "command lifecycle", func(t *testing.T, r *Router, token string) {
 			r.rememberCommandLifecycle(threadID, "command-1", commandLifecycleEntry{}, token)
 		}, func(r *Router) bool { _, ok := r.peekCommandLifecycle(threadID, "command-1"); return ok }},
-		{"model fallback", func(t *testing.T, r *Router, token string) {
+		{"effective model", "model fallback", func(t *testing.T, r *Router, token string) {
 			if err := r.handleModelFallback(fromSession(modelFallback(t), token)); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { model, _ := r.EffectiveModelSnapshot(threadID); return model != "" }},
-		{"turn settlement", func(t *testing.T, r *Router, token string) {
+		{"turn settlement", "turn settlement", func(t *testing.T, r *Router, token string) {
 			r.claimTurnSettlement(threadID, 4, token)
 		}, func(r *Router) bool { return r.isTurnSettled(threadID, 4) }},
-		{"turn start", func(t *testing.T, r *Router, token string) {
+		{"open turn and round", "turn start", func(t *testing.T, r *Router, token string) {
 			if err := r.handleTurnStart(fromSession(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: threadID, TurnID: "turn-1", Timestamp: time.Now()}, token)); err != nil {
 				t.Fatal(err)
 			}
@@ -225,7 +227,7 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			next, err := r.store.NextTurnIndex(threadID)
 			return r.HasInFlightTurnOrRound(threadID) || err != nil || next != 0
 		}},
-		{"turn complete", func(t *testing.T, r *Router, token string) {
+		{"open turn and round", "turn complete", func(t *testing.T, r *Router, token string) {
 			// The live session's turn is open; a complete must close it only
 			// when it is that session's own.
 			if err := r.handleTurnStart(fromSession(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: threadID, TurnID: "turn-b", Timestamp: time.Now()}, "session-b")); err != nil {
@@ -235,18 +237,77 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { return r.openRoundID(threadID) == "" || !r.HasInFlightTurnOrRound(threadID) }},
-		{"open turn", func(t *testing.T, r *Router, token string) {
+		{"open turn and round", "turn complete queue flush", func(t *testing.T, r *Router, token string) {
+			// The live session is idle with a message queued: only its own
+			// turn boundary may send it.
+			r.SetFlushDispatcher((&recordingDispatcher{}).dispatch)
+			r.RegisterQueueItem(threadID, makeQueueItem("queue:0", "for the live session"))
+			if err := r.handleTurnComplete(fromSession(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: threadID, TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now()}, token)); err != nil {
+				t.Fatal(err)
+			}
+		}, func(r *Router) bool { return !r.HasQueuedFlushItems(threadID) }},
+		{"approvals", "approval request", func(t *testing.T, r *Router, token string) {
+			request := provider.ApprovalRequest{RequestID: "req-1", ThreadID: threadID, ToolUseID: "tool-1", ToolName: "Bash", Kind: "command", Input: []byte(`{"command":"make"}`)}
+			if err := r.handleApprovalRequest(fromSession(approvalRequestEvent(t, threadID, request, ""), token)); err != nil {
+				t.Fatal(err)
+			}
+		}, func(r *Router) bool { approvals, _ := pendingRequestIDs(r, threadID); return len(approvals) != 0 }},
+		{"user inputs", "user input request", func(t *testing.T, r *Router, token string) {
+			evt := provider.ProviderEvent{
+				Kind: provider.EventUserInputRequest, ThreadID: threadID, ItemID: "q-1", Timestamp: time.Now(),
+				Meta: parkMeta(t, map[string]any{
+					"requestId": "q-1", "threadId": threadID, "toolUseId": "tool-q", "toolName": "AskUserQuestion",
+					"questions": []provider.UserInputQuestion{{ID: "q1", Header: "Target", Question: "Which target?"}},
+				}),
+			}
+			if err := r.handleUserInputRequest(fromSession(evt, token)); err != nil {
+				t.Fatal(err)
+			}
+		}, func(r *Router) bool { _, questions := pendingRequestIDs(r, threadID); return len(questions) != 0 }},
+		{"streams", "text stream", func(t *testing.T, r *Router, token string) {
+			if err := r.handleTextDelta(fromSession(provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: threadID, Content: "text", Timestamp: time.Now()}, token)); err != nil {
+				t.Fatal(err)
+			}
+		}, func(r *Router) bool { return r.hasActiveStreamingItem(threadID) }},
+		{"streams", "thinking stream", func(t *testing.T, r *Router, token string) {
+			if err := r.handleThinking(fromSession(provider.ProviderEvent{Kind: provider.EventThinking, ThreadID: threadID, Content: "thinking", Timestamp: time.Now()}, token)); err != nil {
+				t.Fatal(err)
+			}
+		}, func(r *Router) bool { return r.hasActiveStreamingItem(threadID) }},
+		{"streams", "compaction reasoning stream", func(t *testing.T, r *Router, token string) {
+			if err := r.handleCompactionReasoning(fromSession(provider.ProviderEvent{Kind: provider.EventThinking, ThreadID: threadID, ParentToolUseID: provider.CompactionReasoningScope, Content: "summary", Timestamp: time.Now()}, token)); err != nil {
+				t.Fatal(err)
+			}
+		}, func(r *Router) bool { return r.hasActiveStreamingItem(threadID) }},
+		{"open turn and round", "open turn", func(t *testing.T, r *Router, token string) {
 			if _, err := r.setOpenTurn(threadID, 2, token); err != nil {
 				t.Fatal(err)
 			}
 		}, func(r *Router) bool { return r.HasInFlightTurnOrRound(threadID) }},
-		{"open round", func(t *testing.T, r *Router, token string) {
+		{"open turn and round", "open round", func(t *testing.T, r *Router, token string) {
 			r.setOpenRoundSnapshot(ActiveTurnSnapshot{ThreadID: threadID, TurnID: "round-1", TurnIndex: 2, StartedAt: 1}, token)
 		}, func(r *Router) bool { return r.openRoundID(threadID) != "" }},
-		{"queued echo turn", func(t *testing.T, r *Router, token string) {
+		{"open turn and round", "queued echo turn", func(t *testing.T, r *Router, token string) {
 			r.openQueuedEchoTurn(threadID, 1, time.Now().UnixMilli(), -1, token)
 		}, func(r *Router) bool { return r.HasInFlightTurnOrRound(threadID) }},
-	} {
+	}
+	// processBoundState is the list of what a retired frame must not
+	// write: every entry a frame can write has a case here, and every case
+	// names an entry.
+	covered := make(map[string]bool)
+	for _, c := range cases {
+		covered[c.state] = true
+	}
+	for _, entry := range processBoundState {
+		if covered[entry.name] == entry.hostWritten {
+			t.Errorf("processBoundState %q (hostWritten=%v) has refusal cases=%v: a frame-written entry needs one, a host-written entry has no frame writer", entry.name, entry.hostWritten, covered[entry.name])
+		}
+		delete(covered, entry.name)
+	}
+	for state := range covered {
+		t.Errorf("a case names %q, which is not in processBoundState", state)
+	}
+	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			for _, writer := range []string{"session-a", "session-b"} {
@@ -374,5 +435,199 @@ func TestGateKeepsARetiredSessionsRowsOutOfTheThread(t *testing.T) {
 	errorFrame("session-b")
 	if items, err = st.ListItems(threadID); err != nil || len(items) == 0 {
 		t.Fatalf("the live session's frame wrote no row: %v", err)
+	}
+}
+
+// The round-2 verifier probes, kept as they found the gaps.
+
+// A child row an in-flight retired frame persists stays in history but is
+// not counted; the replacement's own execution of the same launch counts
+// from its start.
+func TestRetiredChildRowStaysInHistoryAndTheReplacementCountsItsOwn(t *testing.T) {
+	r, st, _ := newTestRouter(t)
+	const threadID = "thread-r2-count"
+	createTestThread(t, st, threadID)
+	r.MarkThreadActive(threadID, "session-a")
+	now := time.Now().UnixMilli()
+	launch, err := r.persistItemQuietReturning(store.Item{ID: "launch-1", ThreadID: threadID, Kind: itemKindToolCall, Role: "assistant", TurnIndex: 1, Status: "running", CreatedAt: now, UpdatedAt: now}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.startCodexExecutionTools(launch, launch.ItemIndex, "session-a"); err != nil {
+		t.Fatal(err)
+	}
+	r.MarkThreadActive(threadID, "session-b")
+	// A's in-flight frame persists its child row after the commit.
+	childA, err := r.persistItemQuietReturning(store.Item{ID: "child-a", ThreadID: threadID, Kind: itemKindToolCall, Role: "assistant", ParentID: launch.ID, TurnIndex: 1, Status: "completed", CreatedAt: now, UpdatedAt: now}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := st.GetThreadItem(threadID, childA.ID); err != nil || !found {
+		t.Fatalf("the retired frame's child row is not in history: found=%v err=%v", found, err)
+	}
+	if p, ok := r.PeekSubagentProgress(threadID, launch.ID); ok && p.ToolUses != 0 {
+		t.Fatalf("the retired frame's child row counted: %+v", p)
+	}
+	// B starts its own execution of the launch after A's row.
+	if err := r.startCodexExecutionTools(launch, childA.ItemIndex, "session-b"); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := r.PeekSubagentProgress(threadID, launch.ID); p.ToolUses != 0 {
+		t.Fatalf("B's execution did not start from zero: %+v", p)
+	}
+	if _, err := r.persistItemQuietReturning(store.Item{ID: "child-b", ThreadID: threadID, Kind: itemKindToolCall, Role: "assistant", ParentID: launch.ID, TurnIndex: 1, Status: "completed", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := r.PeekSubagentProgress(threadID, launch.ID); p.ToolUses != 1 {
+		t.Fatalf("B's own child row did not count: %+v", p)
+	}
+}
+
+// A retired session's in-flight text delta opens no stream on the
+// replacement. Its block stop is queued behind it and refused at the gate,
+// so nothing of A's would ever settle it.
+func TestInFlightRetiredTextDeltaOpensNoStream(t *testing.T) {
+	r, st, _ := newTestRouter(t)
+	const threadID = "thread-r2-stream"
+	createTestThread(t, st, threadID)
+	r.MarkThreadActive(threadID, "session-a")
+	r.MarkThreadActive(threadID, "session-b")
+	delta := fromSession(provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: threadID, Content: "late text from A", Timestamp: time.Now()}, "session-a")
+	if err := r.handleTextDelta(delta); err != nil {
+		t.Fatal(err)
+	}
+	if r.hasActiveStreamingItem(threadID) {
+		t.Fatalf("the replacement holds a stream opened by the retired session's in-flight delta (AnyUnfinishedWork=%v)", r.AnyUnfinishedWork(time.Minute))
+	}
+}
+
+// After the replacement serves a full turn, nothing of the retired
+// session's in-flight delta holds the thread.
+func TestInFlightRetiredTextDeltaLeavesNothingAfterTheReplacementsTurn(t *testing.T) {
+	r, st, _ := newTestRouter(t)
+	const threadID = "thread-r2-stream-turn"
+	createTestThread(t, st, threadID)
+	r.MarkThreadActive(threadID, "session-a")
+	r.MarkThreadActive(threadID, "session-b")
+	if err := r.handleTextDelta(fromSession(provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: threadID, Content: "late text from A", Timestamp: time.Now()}, "session-a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Handle(fromSession(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: threadID, TurnID: "turn-b", Timestamp: time.Now()}, "session-b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Handle(fromSession(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: threadID, TurnID: "turn-b", TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now()}, "session-b")); err != nil {
+		t.Fatal(err)
+	}
+	r.DrainWireItemRefresh()
+	if r.hasActiveStreamingItem(threadID) || r.AnyUnfinishedWork(time.Minute) {
+		t.Fatalf("after B's own turn ended, A's in-flight stream still holds the thread: streaming=%v unfinished=%v", r.hasActiveStreamingItem(threadID), r.AnyUnfinishedWork(time.Minute))
+	}
+}
+
+// A retired session's in-flight approval request registers no prompt on
+// the replacement: only A's dead process could take the answer.
+func TestInFlightRetiredApprovalRequestRegistersNoPrompt(t *testing.T) {
+	r, st, _ := newTestRouter(t)
+	const threadID = "thread-r2-approval"
+	createTestThread(t, st, threadID)
+	r.MarkThreadActive(threadID, "session-a")
+	r.MarkThreadActive(threadID, "session-b")
+	evt := approvalRequestEvent(t, threadID, provider.ApprovalRequest{RequestID: "req-a", ThreadID: threadID, ToolUseID: "tool-a", ToolName: "Bash", Kind: "command", Input: []byte(`{"command":"make"}`)}, "")
+	if err := r.handleApprovalRequest(fromSession(evt, "session-a")); err != nil {
+		t.Fatal(err)
+	}
+	approvals, questions := pendingRequestIDs(r, threadID)
+	if len(approvals) != 0 || len(questions) != 0 {
+		t.Fatalf("the replacement holds the retired session's prompt: approvals=%v questions=%v unfinished=%v", approvals, questions, r.AnyUnfinishedWork(time.Minute))
+	}
+}
+
+func TestInFlightRetiredUserInputRequestRegistersNoQuestion(t *testing.T) {
+	r, st, _ := newTestRouter(t)
+	const threadID = "thread-r2-question"
+	createTestThread(t, st, threadID)
+	r.MarkThreadActive(threadID, "session-a")
+	r.MarkThreadActive(threadID, "session-b")
+	evt := provider.ProviderEvent{
+		Kind: provider.EventUserInputRequest, ThreadID: threadID, ItemID: "q-a", Timestamp: time.Now(),
+		Meta: parkMeta(t, map[string]any{
+			"requestId": "q-a", "threadId": threadID, "toolUseId": "tool-q", "toolName": "AskUserQuestion",
+			"questions": []provider.UserInputQuestion{{ID: "q1", Header: "Target", Question: "Which target?"}},
+		}),
+	}
+	if err := r.handleUserInputRequest(fromSession(evt, "session-a")); err != nil {
+		t.Fatal(err)
+	}
+	approvals, questions := pendingRequestIDs(r, threadID)
+	if len(approvals) != 0 || len(questions) != 0 {
+		t.Fatalf("the replacement holds the retired session's question: approvals=%v questions=%v unfinished=%v", approvals, questions, r.AnyUnfinishedWork(time.Minute))
+	}
+}
+
+// A settle goroutine outlives Handle, and CleanupThread does not wait for
+// it. When it finishes after the thread was cleaned up and a replacement
+// opened a stream of its own, it releases nothing: the count it would
+// release was dropped with the old state, and the live count is the
+// replacement's.
+func TestLateSettleOfACleanedUpStreamKeepsTheReplacementsStreamCount(t *testing.T) {
+	r, st, _ := newTestRouter(t)
+	const threadID = "thread-r2-settle"
+	createTestThread(t, st, threadID)
+	r.MarkThreadActive(threadID, "session-a")
+	if err := r.handleTextDelta(fromSession(provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: threadID, Content: "A streams", Timestamp: time.Now()}, "session-a")); err != nil {
+		t.Fatal(err)
+	}
+	// A's block stop takes the block; its settle goroutine has not run.
+	turnIndex, err := r.currentTurnIndex(threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockA, taken := r.takeActiveTextBlock(threadID, turnIndex, "", "")
+	if !taken {
+		t.Fatal("setup: A's stream is not open")
+	}
+	r.CleanupThread(threadID)
+	r.MarkThreadActive(threadID, "session-b")
+	if err := r.handleTextDelta(fromSession(provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: threadID, Content: "B streams", Timestamp: time.Now()}, "session-b")); err != nil {
+		t.Fatal(err)
+	}
+	if !r.hasActiveStreamingItem(threadID) {
+		t.Fatal("setup: B's stream did not open")
+	}
+	// The tail of A's settle goroutine.
+	if err := r.doSettleStreamingText(blockA, statusCompleted, "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !r.hasActiveStreamingItem(threadID) {
+		t.Fatal("a late settle of the cleaned-up session's stream released the replacement's live stream count")
+	}
+}
+
+// The context-repair restart commits a new session without CleanupThread,
+// so a stream the old session opened stays on the live state. Whoever
+// settles it later releases its count: the release follows the state the
+// count was taken on, not the session that opened the stream.
+func TestSettleOfAStreamCarriedAcrossACommitReleasesItsCount(t *testing.T) {
+	r, st, _ := newTestRouter(t)
+	const threadID = "thread-carried-stream"
+	createTestThread(t, st, threadID)
+	r.MarkThreadActive(threadID, "session-a")
+	if err := r.handleTextDelta(fromSession(provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: threadID, Content: "A streams", Timestamp: time.Now()}, "session-a")); err != nil {
+		t.Fatal(err)
+	}
+	r.MarkThreadActive(threadID, "session-b")
+	turnIndex, err := r.currentTurnIndex(threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, taken := r.takeActiveTextBlock(threadID, turnIndex, "", "")
+	if !taken {
+		t.Fatal("setup: the carried stream is not open")
+	}
+	if err := r.doSettleStreamingText(block, statusCompleted, "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if r.hasActiveStreamingItem(threadID) {
+		t.Fatal("settling the carried stream left its count on the live state")
 	}
 }

@@ -32,7 +32,10 @@ func (r *Router) handleCompactionReasoning(evt provider.ProviderEvent) error {
 		return fmt.Errorf("compaction reasoning turn index: %w", err)
 	}
 	scope := provider.CompactionReasoningScope
-	firstBlock, itemID, offset := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID, len(evt.Content))
+	firstBlock, itemID, offset, ok := r.ensureThinkingBlockStarted(evt.ThreadID, turnIndex, scope, evt.ItemID, len(evt.Content), evt.SessionToken)
+	if !ok {
+		return nil
+	}
 	if firstBlock {
 		defer r.drainInterruptQueueIfIdle(evt.ThreadID)
 	}

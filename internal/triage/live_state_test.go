@@ -101,9 +101,9 @@ func TestLiveActivitySnapshot_NamesOnlyThreadsWithLiveActivity(t *testing.T) {
 	router.mu.Unlock()
 
 	router.setOpenRoundSnapshot(ActiveTurnSnapshot{ThreadID: "running", TurnID: "round-1", TurnIndex: 3, StartedAt: 1_000}, "")
-	router.setPendingApproval("blocked", pendingApprovalState{Request: provider.ApprovalRequest{RequestID: "approval-2"}})
-	router.setPendingApproval("blocked", pendingApprovalState{Request: provider.ApprovalRequest{RequestID: "approval-1"}})
-	router.setPendingUserInput("blocked", provider.UserInputRequest{RequestID: "question-1"})
+	router.setPendingApproval("blocked", pendingApprovalState{Request: provider.ApprovalRequest{RequestID: "approval-2"}}, "")
+	router.setPendingApproval("blocked", pendingApprovalState{Request: provider.ApprovalRequest{RequestID: "approval-1"}}, "")
+	router.setPendingUserInput("blocked", provider.UserInputRequest{RequestID: "question-1"}, "")
 	router.mu.Lock()
 	router.state("compacting").compactingSince = 2_000
 	router.state("compacting").compactingSinceSet = true

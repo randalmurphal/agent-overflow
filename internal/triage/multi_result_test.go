@@ -929,12 +929,12 @@ func TestClearOpenTurnSweepsPendingApprovalsAndUserInputs(t *testing.T) {
 			ToolName:  "Bash",
 		},
 		ItemID: "tool-1",
-	})
+	}, "")
 	router.rememberApprovalDecision("t1", "tool-1", "approved", "")
 	router.setPendingUserInput("t1", provider.UserInputRequest{
 		RequestID: "req-input-1",
 		ThreadID:  "t1",
-	})
+	}, "")
 
 	// Fire EventTurnComplete — clearOpenTurn must sweep all three maps.
 	if err := router.Handle(provider.ProviderEvent{

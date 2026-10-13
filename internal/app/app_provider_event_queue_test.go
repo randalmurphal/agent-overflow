@@ -149,7 +149,7 @@ func TestProviderEventQueueKeepsEachThreadInOrderUnderLoad(t *testing.T) {
 			// once idle and the next event starts a fresh one, which must
 			// neither overlap nor reorder with the old worker.
 			if seq%1000 == 999 {
-				qs.retireWhenIdle(threadID, "")
+				qs.retireWhenIdle(threadID)
 			}
 			// Slow consumers fill their queue, so their producer blocks.
 			if slow && seq%16 == 0 {

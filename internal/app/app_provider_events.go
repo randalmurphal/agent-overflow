@@ -48,7 +48,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// the replacement armed.
 		current := a.triage == nil || a.triage.SessionCurrent(threadID, sessionToken)
 		if current {
-			a.observeFrameBeforeTriage(threadID, sessionToken, providerType, evt, &sawInit)
+			a.observeFrameBeforeTriage(threadID, sessionToken, providerType, evt)
 		}
 		if a.triage != nil {
 			stillCurrent, err := a.triage.HandleSessionFrame(evt)
@@ -58,16 +58,29 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			current = current && stillCurrent
 		}
 		if !current {
-			// Two things stand at a retired session's disconnect: the
-			// queue's end-of-session mark, since the provider emits nothing
-			// after it, and a workflow attempt's fold of a death it already
-			// observed from this session's own "error", handled while the
-			// session was still current.
+			// One thing stands at a retired session's disconnect: a
+			// workflow attempt's fold of a death it already observed from
+			// this session's own "error", handled while the session was
+			// still current. The event queue is not marked: it belongs to
+			// the session that owns the thread now, whether or not that
+			// session has queued a frame yet.
 			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
 				a.workflowApplication().SessionDisconnected(threadID)
-				a.providerEvents.retireWhenIdle(threadID, sessionToken)
 			}
 			return
+		}
+
+		// EventInit carries Claude's `system/init.mcp_servers` array
+		// via the SessionInfo meta. Feed each entry into the status
+		// cache so the popup shows authoritative provider state
+		// (with the provider's own credentials) without a separate
+		// fetch. Codex equivalents are wired in app_session.go via
+		// the dedicated startup-update handler.
+		if evt.Kind == provider.EventInit {
+			sawInit = true
+			if providerType == string(provider.Claude) {
+				a.ingestClaudeInitMCPStatus(evt.Meta)
+			}
 		}
 
 		// A TOP-LEVEL turn boundary: a subagent's completion is not the
@@ -173,8 +186,11 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 					a.attemptAutoReconnect(threadID)
 				}()
 			}
-			// The provider emits nothing after "disconnected".
-			a.providerEvents.retireWhenIdle(threadID, sessionToken)
+			// The provider emits nothing after "disconnected". The mark
+			// stands only while this session still owns the thread.
+			if a.triage == nil || a.triage.SessionCurrent(threadID, sessionToken) {
+				a.providerEvents.retireWhenIdle(threadID)
+			}
 		}
 	}
 	handleEvent := func(evt provider.ProviderEvent) { handle(evt, 0) }
@@ -194,21 +210,12 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 }
 
 // observeFrameBeforeTriage is the host's work on a current session's frame
-// that runs before triage handles it.
-func (a *App) observeFrameBeforeTriage(threadID, sessionToken, providerType string, evt provider.ProviderEvent, sawInit *bool) {
-	// EventInit carries Claude's `system/init.mcp_servers` array
-	// via the SessionInfo meta. Feed each entry into the status
-	// cache so the popup shows authoritative provider state
-	// (with the provider's own credentials) without a separate
-	// fetch. Codex equivalents are wired in app_session.go via
-	// the dedicated startup-update handler.
-	if evt.Kind == provider.EventInit {
-		*sawInit = true
-		if providerType == string(provider.Claude) {
-			a.ingestClaudeInitMCPStatus(evt.Meta)
-		}
-	}
-
+// that runs before triage handles it, so it has only the entry check. Each
+// write here checks the session again where it lands: the live-config
+// applies go through the session registry under the frame's token, and the
+// worktree follow re-checks the registry's token under the thread lock a
+// replacement start holds through registration.
+func (a *App) observeFrameBeforeTriage(threadID, sessionToken, providerType string, evt provider.ProviderEvent) {
 	// Claude command output settles live-config applies (/effort,
 	// /fast) and follows user-typed /effort; a cancelled command
 	// lifecycle reverts an apply whose output will never arrive. See

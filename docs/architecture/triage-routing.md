@@ -73,21 +73,25 @@ to every kind, which is why they live above the switch rather than in a
 handler.
 
 A frame that passed the gate can have its session retired while it is
-being handled. Every writer of state that belongs to the provider process
-takes the frame's token and refuses it under the `r.mu` it writes under
-(`frameRetiredLocked`): the wakeup and cron schedule, live subagent
-progress, the Codex live tray (agent runtime, execution tool counts,
-spawn and command trackers), command lifecycle correlation, the effective
-model, the compacting window, the open turn and round, and turn completion
-and settlement. An execution's tool count carries the token of the session
-that started it, since the row writes that feed it have no frame. Rows such
-a frame persists stay in history. `HandleSessionFrame` reports to the
-host whether the frame's session still owned the thread once handling
-finished, and `sessionEventHandler` does no work of its own on a frame
-whose session did not, except at its disconnect: the queue's
-end-of-session mark (which stands only if no later session has queued a
-frame) and a workflow attempt's fold of a death it already observed.
-This is the stopped-thread ownership contract described in
+being handled. `processBoundState` (`process_state.go`) is the one list of
+state that belongs to the provider process, and it is the contract: every
+writer of an entry takes the frame's token and refuses a retired one under
+the `r.mu` it writes under (`frameRetiredLocked`), and `MarkThreadActive`
+clears the entries the list marks for clearing at a commit.
+`TestProcessStateWritersRefuseARetiredSessionsFrame` is keyed by the same
+names and fails when an entry has no refusal case, so state added to the
+list, or to the commit's clears, needs a guarded writer. An execution's
+tool count carries the token of the session that started it, since the row
+writes that feed it have no frame. A stream's count is released only on
+the thread state it was taken on, so a settle that outlives
+`CleanupThread` releases nothing of a replacement's. Rows such a frame
+persists stay in history. `HandleSessionFrame` reports to the host whether
+the frame's session still owned the thread once handling finished, and
+`sessionEventHandler` does no work of its own on a frame whose session did
+not, except a workflow attempt's fold, at the disconnect, of a death it
+already observed. The event queue's end-of-session mark is set only by the
+disconnect of the session that owns the thread. This is the stopped-thread
+ownership contract described in
 [`turn-lifecycle.md`](turn-lifecycle.md#turn--tool--task-lifecycles).
 
 ## Exhaustiveness Check

@@ -24,6 +24,12 @@ type activeStreamBlock struct {
 	// streamed is the byte length of the text the block's deltas have
 	// carried: the next delta's ItemDeltaEvent.Offset.
 	streamed int64
+	// owner is the thread state the block's streaming count was taken
+	// on. A settle releases the count only while that state is still the
+	// thread's: CleanupThread drops it, and a settle that finishes after
+	// a replacement session opened its own streams on fresh state must
+	// not release theirs.
+	owner *threadState
 }
 
 func activeStreamKey(turnIndex int, scope, providerItemID string) string {
@@ -56,24 +62,30 @@ func withProviderItemMeta(existing string, providerItemID string) string {
 // ensureTextBlockStarted opens the stream's block unless it is open,
 // and reserves the next n bytes of its text for the delta being handled.
 // It returns whether the block is new, the row id, and the delta's offset.
-func (r *Router) ensureTextBlockStarted(threadID string, turnIndex int, scope, providerItemID string, n int) (bool, string, int64) {
+// It returns ok false, and writes nothing, for a retired session's delta:
+// the stream would hold the replacement busy with nothing of its own to
+// end it.
+func (r *Router) ensureTextBlockStarted(threadID string, turnIndex int, scope, providerItemID string, n int, sessionToken string) (opened bool, itemID string, offset int64, ok bool) {
 	key := activeStreamKey(turnIndex, scope, providerItemID)
 	counterKey := scopeCounterKey(turnIndex, scope)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return false, "", 0, false
+	}
 	st := r.state(threadID)
 	if st.activeTextBlocks[key] {
 		ref := st.activeTextBlockRefs[key]
 		offset := ref.streamed
 		ref.streamed += int64(n)
 		st.activeTextBlockRefs[key] = ref
-		return false, ref.itemID, offset
+		return false, ref.itemID, offset, true
 	}
 	if st.segmentIndexByScope == nil {
 		st.segmentIndexByScope = make(map[string]int)
 	}
 	st.segmentIndexByScope[counterKey] = st.segmentIndexByScope[counterKey] + 1
-	itemID := scopedStreamItemID("text", turnIndex, scope, providerItemID, TextItemID(turnIndex, scope, st.segmentIndexByScope[counterKey]))
+	itemID = scopedStreamItemID("text", turnIndex, scope, providerItemID, TextItemID(turnIndex, scope, st.segmentIndexByScope[counterKey]))
 	if st.activeTextBlocks == nil {
 		st.activeTextBlocks = make(map[string]bool)
 		st.activeTextBlockRefs = make(map[string]activeStreamBlock)
@@ -85,32 +97,39 @@ func (r *Router) ensureTextBlockStarted(threadID string, turnIndex int, scope, p
 		scope:     scope,
 		itemID:    itemID,
 		streamed:  int64(n),
+		owner:     st,
 	}
 	r.incStreamingCounts(threadID, scope)
-	return true, itemID, 0
+	return true, itemID, 0, true
 }
 
 // ensureThinkingBlockStarted opens the stream's block unless it is open,
 // and reserves the next n bytes of its text for the delta being handled.
 // It returns whether the block is new, the row id, and the delta's offset.
-func (r *Router) ensureThinkingBlockStarted(threadID string, turnIndex int, scope, providerItemID string, n int) (bool, string, int64) {
+// It returns ok false, and writes nothing, for a retired session's delta:
+// the stream would hold the replacement busy with nothing of its own to
+// end it.
+func (r *Router) ensureThinkingBlockStarted(threadID string, turnIndex int, scope, providerItemID string, n int, sessionToken string) (opened bool, itemID string, offset int64, ok bool) {
 	key := activeStreamKey(turnIndex, scope, providerItemID)
 	counterKey := scopeCounterKey(turnIndex, scope)
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.frameRetiredLocked(threadID, sessionToken) {
+		return false, "", 0, false
+	}
 	st := r.state(threadID)
 	if st.activeThinkingBlocks[key] {
 		ref := st.activeThinkingBlockRefs[key]
 		offset := ref.streamed
 		ref.streamed += int64(n)
 		st.activeThinkingBlockRefs[key] = ref
-		return false, ref.itemID, offset
+		return false, ref.itemID, offset, true
 	}
 	if st.blockIndexByScope == nil {
 		st.blockIndexByScope = make(map[string]int)
 	}
 	st.blockIndexByScope[counterKey] = st.blockIndexByScope[counterKey] + 1
-	itemID := scopedStreamItemID("think", turnIndex, scope, providerItemID, ThinkingItemID(turnIndex, scope, st.blockIndexByScope[counterKey]))
+	itemID = scopedStreamItemID("think", turnIndex, scope, providerItemID, ThinkingItemID(turnIndex, scope, st.blockIndexByScope[counterKey]))
 	if st.activeThinkingBlocks == nil {
 		st.activeThinkingBlocks = make(map[string]bool)
 		st.activeThinkingBlockRefs = make(map[string]activeStreamBlock)
@@ -122,9 +141,10 @@ func (r *Router) ensureThinkingBlockStarted(threadID string, turnIndex int, scop
 		scope:     scope,
 		itemID:    itemID,
 		streamed:  int64(n),
+		owner:     st,
 	}
 	r.incStreamingCounts(threadID, scope)
-	return true, itemID, 0
+	return true, itemID, 0, true
 }
 
 func (r *Router) hasActiveStreamingItem(threadID string) bool {
@@ -235,7 +255,7 @@ func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status stri
 		turnWG.Add(1)
 		r.goSettle(threadID, func() {
 			defer turnWG.Done()
-			captureErr(r.doSettleStreamingText(threadID, ref.scope, ref.itemID, status, "", false, nil))
+			captureErr(r.doSettleStreamingText(ref, status, "", false, nil))
 		})
 	}
 	for _, key := range thinkingKeys {
@@ -246,7 +266,7 @@ func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status stri
 		turnWG.Add(1)
 		r.goSettle(threadID, func() {
 			defer turnWG.Done()
-			captureErr(r.doSettleStreamingThinking(threadID, ref.scope, ref.itemID, status, "", false))
+			captureErr(r.doSettleStreamingThinking(ref, status, "", false))
 		})
 	}
 	turnWG.Wait()
@@ -286,16 +306,16 @@ func interruptedSummary(summary string) string {
 // FIFO), and drainInterruptQueueIfIdle holds off until the thread is
 // fully idle.
 //
-// Returns (itemID, true) when the caller should proceed to the heavy
+// Returns (block, true) when the caller should proceed to the heavy
 // body; (_, false) when another caller already settled this block.
-func (r *Router) takeActiveTextBlock(threadID string, turnIndex int, scope, providerItemID string) (itemID string, active bool) {
+func (r *Router) takeActiveTextBlock(threadID string, turnIndex int, scope, providerItemID string) (activeStreamBlock, bool) {
 	key := activeStreamKey(turnIndex, scope, providerItemID)
 	ref, active := r.takeActiveTextBlockByKey(threadID, key)
 	if active {
-		return ref.itemID, true
+		return ref, true
 	}
 	if providerItemID != "" {
-		return "", false
+		return activeStreamBlock{}, false
 	}
 	return r.takeFirstActiveTextBlock(threadID, turnIndex, scope)
 }
@@ -320,21 +340,21 @@ func (r *Router) takeActiveTextBlockByKey(threadID, key string) (activeStreamBlo
 	return ref, true
 }
 
-func (r *Router) takeFirstActiveTextBlock(threadID string, turnIndex int, scope string) (itemID string, active bool) {
+func (r *Router) takeFirstActiveTextBlock(threadID string, turnIndex int, scope string) (activeStreamBlock, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
-		return "", false
+		return activeStreamBlock{}, false
 	}
 	for key, ref := range st.activeTextBlockRefs {
 		if ref.turnIndex == turnIndex && ref.scope == scope && st.activeTextBlocks[key] {
 			delete(st.activeTextBlocks, key)
 			delete(st.activeTextBlockRefs, key)
-			return ref.itemID, true
+			return ref, true
 		}
 	}
-	return "", false
+	return activeStreamBlock{}, false
 }
 
 // finishSettle decrements streamingItemCounts and drains the interrupt
@@ -342,11 +362,30 @@ func (r *Router) takeFirstActiveTextBlock(threadID string, turnIndex int, scope 
 // SQLite write completes (or after a lookup miss / non-streaming row
 // short-circuit) so the count's "0 → drain" transition is durable.
 // Safe to call from any goroutine.
-func (r *Router) finishSettle(threadID, scope string) {
+//
+// The count belongs to the thread state the block was opened on. A
+// settle that finishes after CleanupThread dropped that state releases
+// nothing and drains nothing: the thread's current streams, a
+// replacement session's among them, are not the block's.
+func (r *Router) finishSettle(block activeStreamBlock) {
 	r.mu.Lock()
-	r.decStreamingCounts(threadID, scope)
+	if !r.releaseStreamCountLocked(block) {
+		r.mu.Unlock()
+		return
+	}
 	r.mu.Unlock()
-	r.drainInterruptQueueIfIdle(threadID)
+	r.drainInterruptQueueIfIdle(block.threadID)
+}
+
+// releaseStreamCountLocked releases block's streaming count if the thread
+// state it was taken on is still the thread's, and reports whether it
+// did. Caller holds r.mu.
+func (r *Router) releaseStreamCountLocked(block activeStreamBlock) bool {
+	if r.threadStateIfPresent(block.threadID) != block.owner {
+		return false
+	}
+	r.decStreamingCounts(block.threadID, block.scope)
+	return true
 }
 
 // doSettleStreamingText is the heavy body of the text-block settle:
@@ -360,13 +399,13 @@ func (r *Router) finishSettle(threadID, scope string) {
 // stop envelope's row-level meta (today only `delivery`, see
 // blockDeliveryMeta); it is merged onto the row so the persisted item
 // carries what the wire said about the block, not just what it streamed.
-func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalContent string, finalContentPresent bool, blockMeta json.RawMessage) error {
+func (r *Router) doSettleStreamingText(block activeStreamBlock, status, finalContent string, finalContentPresent bool, blockMeta json.RawMessage) error {
 	// finishSettle MUST fire whether we persist successfully, find no
 	// row, or find a row that already settled. Each of those still
 	// represents a streaming slot that just closed; without the drain,
 	// queued non-streaming rows behind the lock would leak.
-	defer r.finishSettle(threadID, scope)
-	return r.settleStreamingTextRow(threadID, itemID, status, interruptedSummary, finalContent, finalContentPresent, blockMeta)
+	defer r.finishSettle(block)
+	return r.settleStreamingTextRow(block.threadID, block.itemID, status, interruptedSummary, finalContent, finalContentPresent, blockMeta)
 }
 
 // settleStreamingTextRow is doSettleStreamingText without the count
@@ -469,7 +508,7 @@ func (r *Router) persistSettle(item store.Item, update store.ItemPartialUpdate) 
 // goroutine). The heavy body runs on a settle goroutine (goSettle), so
 // app shutdown can drain it.
 func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool, blockMeta json.RawMessage, at time.Time) {
-	itemID, active := r.takeActiveTextBlock(threadID, turnIndex, scope, providerItemID)
+	block, active := r.takeActiveTextBlock(threadID, turnIndex, scope, providerItemID)
 	if !active {
 		if finalContentPresent && finalContent != "" {
 			if err := r.persistOrUpdateCompletedTextItem(threadID, turnIndex, scope, providerItemID, finalContent, blockMeta, at); err != nil {
@@ -479,8 +518,8 @@ func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope,
 		return
 	}
 	r.goSettle(threadID, func() {
-		if err := r.doSettleStreamingText(threadID, scope, itemID, status, finalContent, finalContentPresent, blockMeta); err != nil {
-			r.providerWriteFailed(threadID, fmt.Sprintf("async settle text %s/%s", threadID, itemID), err)
+		if err := r.doSettleStreamingText(block, status, finalContent, finalContentPresent, blockMeta); err != nil {
+			r.providerWriteFailed(threadID, fmt.Sprintf("async settle text %s/%s", threadID, block.itemID), err)
 		}
 	})
 }
@@ -493,7 +532,7 @@ func (r *Router) settleStreamingTextScopeAsync(threadID string, turnIndex int, s
 			continue
 		}
 		r.goSettle(threadID, func() {
-			if err := r.doSettleStreamingText(threadID, scope, ref.itemID, status, "", false, nil); err != nil {
+			if err := r.doSettleStreamingText(ref, status, "", false, nil); err != nil {
 				r.providerWriteFailed(threadID, fmt.Sprintf("async settle text %s/%s", threadID, ref.itemID), err)
 			}
 		})
@@ -832,14 +871,14 @@ func mergePathRefsIntoMeta(meta string, refs []pathlinks.PathRef) (string, error
 // block lifecycle. Same lock discipline: clear the slot synchronously,
 // defer the count decrement to finishSettle so the streaming-active
 // signal survives the async heavy body.
-func (r *Router) takeActiveThinkingBlock(threadID string, turnIndex int, scope, providerItemID string) (itemID string, active bool) {
+func (r *Router) takeActiveThinkingBlock(threadID string, turnIndex int, scope, providerItemID string) (activeStreamBlock, bool) {
 	key := activeStreamKey(turnIndex, scope, providerItemID)
 	ref, active := r.takeActiveThinkingBlockByKey(threadID, key)
 	if active {
-		return ref.itemID, true
+		return ref, true
 	}
 	if providerItemID != "" {
-		return "", false
+		return activeStreamBlock{}, false
 	}
 	return r.takeFirstActiveThinkingBlock(threadID, turnIndex, scope)
 }
@@ -864,21 +903,21 @@ func (r *Router) takeActiveThinkingBlockByKey(threadID, key string) (activeStrea
 	return ref, true
 }
 
-func (r *Router) takeFirstActiveThinkingBlock(threadID string, turnIndex int, scope string) (itemID string, active bool) {
+func (r *Router) takeFirstActiveThinkingBlock(threadID string, turnIndex int, scope string) (activeStreamBlock, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
-		return "", false
+		return activeStreamBlock{}, false
 	}
 	for key, ref := range st.activeThinkingBlockRefs {
 		if ref.turnIndex == turnIndex && ref.scope == scope && st.activeThinkingBlocks[key] {
 			delete(st.activeThinkingBlocks, key)
 			delete(st.activeThinkingBlockRefs, key)
-			return ref.itemID, true
+			return ref, true
 		}
 	}
-	return "", false
+	return activeStreamBlock{}, false
 }
 
 // doSettleStreamingThinking is the heavy body of the thinking-block
@@ -893,9 +932,9 @@ func (r *Router) takeFirstActiveThinkingBlock(threadID string, turnIndex int, sc
 // on the hot path — that would block the next provider event (a
 // tool_use or text_delta following thinking) and produce the
 // perceived end-of-thinking freeze.
-func (r *Router) doSettleStreamingThinking(threadID, scope, itemID, status, finalContent string, finalContentPresent bool) error {
-	defer r.finishSettle(threadID, scope)
-	return r.settleStreamingThinkingRow(threadID, itemID, status, interruptedSummary, finalContent, finalContentPresent)
+func (r *Router) doSettleStreamingThinking(block activeStreamBlock, status, finalContent string, finalContentPresent bool) error {
+	defer r.finishSettle(block)
+	return r.settleStreamingThinkingRow(block.threadID, block.itemID, status, interruptedSummary, finalContent, finalContentPresent)
 }
 
 // settleStreamingThinkingRow is doSettleStreamingThinking without the
@@ -934,7 +973,7 @@ func (r *Router) settleStreamingThinkingRow(threadID, itemID, status string, sum
 }
 
 func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool, at time.Time) {
-	itemID, active := r.takeActiveThinkingBlock(threadID, turnIndex, scope, providerItemID)
+	block, active := r.takeActiveThinkingBlock(threadID, turnIndex, scope, providerItemID)
 	if !active {
 		if finalContentPresent && finalContent != "" {
 			if err := r.persistOrUpdateCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, finalContent, at); err != nil {
@@ -944,8 +983,8 @@ func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, sc
 		return
 	}
 	r.goSettle(threadID, func() {
-		if err := r.doSettleStreamingThinking(threadID, scope, itemID, status, finalContent, finalContentPresent); err != nil {
-			r.providerWriteFailed(threadID, fmt.Sprintf("async settle thinking %s/%s", threadID, itemID), err)
+		if err := r.doSettleStreamingThinking(block, status, finalContent, finalContentPresent); err != nil {
+			r.providerWriteFailed(threadID, fmt.Sprintf("async settle thinking %s/%s", threadID, block.itemID), err)
 		}
 	})
 }
@@ -958,7 +997,7 @@ func (r *Router) settleStreamingThinkingScopeAsync(threadID string, turnIndex in
 			continue
 		}
 		r.goSettle(threadID, func() {
-			if err := r.doSettleStreamingThinking(threadID, scope, ref.itemID, status, "", false); err != nil {
+			if err := r.doSettleStreamingThinking(ref, status, "", false); err != nil {
 				r.providerWriteFailed(threadID, fmt.Sprintf("async settle thinking %s/%s", threadID, ref.itemID), err)
 			}
 		})

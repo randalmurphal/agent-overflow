@@ -1975,9 +1975,8 @@ func (r *Router) frameRefusalLocked(evt provider.ProviderEvent) string {
 // frameRetiredLocked reports whether the session that produced a frame
 // (its token) no longer owns the thread: a replacement committed the
 // thread to another session, or a stop marked it stopped. Host-originated
-// writes carry no token and are never retired. Every writer of state that
-// belongs to the provider process (what MarkThreadActive clears, and the
-// open turn and round) asks it under the r.mu it writes under, so a frame
+// writes carry no token and are never retired. Every writer of an entry
+// of processBoundState asks it under the r.mu it writes under, so a frame
 // that passed Handle's gate before a replacement committed cannot write
 // that state for the replacement. Caller holds r.mu.
 func (r *Router) frameRetiredLocked(threadID, sessionToken string) bool {
@@ -2021,7 +2020,7 @@ func (r *Router) SessionCurrent(threadID, sessionToken string) bool {
 // longer matches, even when the host's drain of the prior session gave
 // up at its stall bound and left that session's frames queued. A frame
 // already being handled when this call lands is refused by every writer
-// of process-bound state (frameRetiredLocked). No wire event may clear
+// of process-bound state (processBoundState). No wire event may clear
 // the stopped flag: see the threadIdentity.stopped field comment.
 //
 // Reactivation also resets the thread's logical-turn settlement ledger.
@@ -2044,46 +2043,21 @@ func (r *Router) MarkThreadActive(threadID, sessionToken string) {
 	identity.stopped = false
 	identity.sessionToken = sessionToken
 	identity.epoch++
-	// This is NOT the cleanup sweep — the repair-restart path reaches
-	// here WITHOUT a CleanupThread, so the thread's state entry can be
-	// fully live and must survive. Only the fields whose meaning is
-	// bound to the process that just died are cleared, each for its own
-	// reason. Anything not listed here deliberately carries over.
-	var hadEffectiveModel bool
-	var effectiveModelRevision uint64
-	if st := r.threadStateIfPresent(threadID); st != nil {
-		// A stale settlement marker would misroute a replacement
-		// session's first error result into persistLateTurnPayload
-		// (see the doc comment above).
-		st.settledTurns = nil
-		hadEffectiveModel = st.effectiveModelSet
-		st.effectiveModel, st.effectiveModelSet = "", false
-		// A pending harness wakeup and armed cron jobs are in-process
-		// state of the PREVIOUS CLI process; the replacement session this
-		// call commits to never inherits them. Without this a stale
-		// deadline would shield the fresh session from the idle reaper.
-		st.clearProcessSchedule()
-		// The ticks belong to the provider PROCESS: a dead process will
-		// never deliver the terminal that would consume them.
-		st.subagentProgress = nil
-		// A replacement process is never mid-compaction; a stale window
-		// would pin a "Compacting" label onto the fresh session.
-		st.compactingSince, st.compactingSinceSet = 0, false
-		// Same reasoning for the command-lifecycle correlation: the acks
-		// it waits on can only come from the process that just died.
-		st.commandLifecycle = nil
+	// This is NOT the cleanup sweep: the repair-restart path reaches here
+	// without CleanupThread, so the thread's state entry can be fully
+	// live and must survive. Only the state bound to the process that
+	// just died is cleared, and processBoundState is that list.
+	st := r.threadStateIfPresent(threadID)
+	hadEffectiveModel := st != nil && st.effectiveModelSet
+	for _, entry := range processBoundState {
+		if entry.clear != nil {
+			entry.clear(st, identity)
+		}
 	}
+	var effectiveModelRevision uint64
 	if hadEffectiveModel {
 		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)
 	}
-	// Interrupt marks are session-scoped: an in-flight echo cannot
-	// survive the session whose read loop carries it, and a replacement
-	// session after revert REUSES turn indexes — a lingering mark would
-	// settle a reused-index predecessor "interrupted" with no new
-	// interrupt (round-11, CT11-2). Deletion is safe here (unlike the
-	// epoch maps): mark entries are keyed by router-unique seqs, so a
-	// stale restore's removal against the fresh list finds nothing.
-	identity.interruptMarks = nil
 	r.mu.Unlock()
 	if hadEffectiveModel {
 		r.emit(eventchan.ProviderModelFallback, ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})
