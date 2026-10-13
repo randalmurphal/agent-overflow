@@ -100,7 +100,10 @@ func writeManifest(root *os.Root, m manifest) error {
 func lockHome(home string, create, shared bool) (unlock func() error, found bool, err error) {
 	name := filepath.Join(home, LockName)
 	if create {
-		if err := os.MkdirAll(home, 0o755); err != nil {
+		// A provider home made here is private, as the app makes every
+		// provider home: the CLI later keeps credentials and transcripts in
+		// it.
+		if err := os.MkdirAll(home, 0o700); err != nil {
 			return nil, false, fmt.Errorf("create %s: %w", home, err)
 		}
 	}
@@ -111,7 +114,7 @@ func lockHome(home string, create, shared bool) (unlock func() error, found bool
 				return nil, false, nil
 			}
 		}
-		file, err = os.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o644)
+		file, err = os.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("open the skills lock: %w", err)

@@ -226,3 +226,51 @@ func TestASkillsLinkIsFollowed(t *testing.T) {
 		t.Fatalf("the link's target holds %v (%v)", entries, err)
 	}
 }
+
+// Update and Remove replace and unlink an installed file; neither writes
+// into it. A hard link to a file outside the home, which a root cannot
+// refuse, keeps that file as it was.
+func TestAHardLinkedFileIsNotWrittenThrough(t *testing.T) {
+	home := t.TempDir()
+	if err := Install(home, testTree(t, v1)); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "theirs.md")
+	if err := os.WriteFile(outside, []byte("theirs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installed := filepath.Join(home, "skills", "alpha", "SKILL.md")
+	if err := os.Remove(installed); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, installed); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	check := func(after string) {
+		t.Helper()
+		if raw, err := os.ReadFile(outside); err != nil || string(raw) != "theirs" {
+			t.Fatalf("after %s the outside file reads %q, %v", after, raw, err)
+		}
+	}
+	next := map[string]string{}
+	for name, body := range v1 {
+		next[name] = body + " v2"
+	}
+	if err := Update(home, testTree(t, next)); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	check("Update")
+	if got := readHome(t, home, "alpha/SKILL.md"); got != "alpha v1 v2" {
+		t.Fatalf("alpha = %q", got)
+	}
+	if err := os.Remove(installed); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(outside, installed); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(home); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	check("Remove")
+}

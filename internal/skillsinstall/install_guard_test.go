@@ -346,3 +346,56 @@ func TestGetStatusWaitsForAChangeInProgress(t *testing.T) {
 		t.Fatalf("GetStatus after the change = %+v, %v", got.status, got.err)
 	}
 }
+
+// A status read shares the lock with other reads: it completes while
+// another reader holds it.
+func TestGetStatusSharesTheLockWithOtherReads(t *testing.T) {
+	home := t.TempDir()
+	tree := testTree(t, v1)
+	if err := Install(home, tree); err != nil {
+		t.Fatal(err)
+	}
+	unlock, _, err := lockHome(home, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := unlock(); err != nil {
+			t.Error(err)
+		}
+	}()
+	read := make(chan error, 1)
+	go func() {
+		status, err := GetStatus(home, tree)
+		if err == nil && !status.Current {
+			err = fmt.Errorf("status = %+v", status)
+		}
+		read <- err
+	}()
+	select {
+	case err := <-read:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("GetStatus waited on another reader's shared lock")
+	}
+}
+
+// An Install into a provider home that does not exist yet makes it private
+// and the lock file in it readable only by the user.
+func TestInstallMakesAMissingHomePrivate(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".codex")
+	if err := Install(home, testTree(t, v1)); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]fs.FileMode{home: 0o700, filepath.Join(home, LockName): 0o600} {
+		info, err := os.Stat(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %v, want %v", name, got, want)
+		}
+	}
+}

@@ -593,7 +593,8 @@ advisory lock, and a status read a shared one, on
 `<provider home>/.agent-overflow-pstack-skills.lock` from reading the
 manifest to writing it, so two processes sharing a home cannot
 interleave and the page never shows a change part way. The lock file
-sits beside `skills/`; the first Install creates it, a read of a home
+sits beside `skills/`; the first Install creates it (readable only by
+the user, as is a provider home it has to create), a read of a home
 with nothing installed does not, and it stays after Remove, since
 removing a lock file races its users. A home is current when its
 manifest's digest of the tree's paths and content matches the
