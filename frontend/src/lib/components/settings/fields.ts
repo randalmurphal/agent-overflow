@@ -521,6 +521,22 @@ const STATIC_FIELDS = [
     keywords: ['system prompt', 'append', 'guide', 'mcp'],
   },
 
+  // --- Skills -------------------------------------------------------------
+  {
+    id: 'skills.claude',
+    section: 'skills',
+    label: 'Claude Code',
+    keywords: ['skills', 'pstack', 'install', 'update', 'remove'],
+    conditional: true,
+  },
+  {
+    id: 'skills.codex',
+    section: 'skills',
+    label: 'Codex',
+    keywords: ['skills', 'pstack', 'install', 'update', 'remove'],
+    conditional: true,
+  },
+
   // --- Projects -----------------------------------------------------------
   {
     id: 'projects.project',

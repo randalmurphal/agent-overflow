@@ -122,7 +122,8 @@
   // ── Standing agent ───────────────────────────────────────────────────────
   //
   // Promotion rides `threads:autonomy` (it lets the thread register
-  // watches that run scripts); demotion and the children's archive ride
+  // watches that run scripts), and so does deleting the home a demotion
+  // leaves; demotion and the children's archive ride
   // `threads:operate` like every other write here. Only a chat or plan
   // thread with a conversation can be promoted; the backend refuses the
   // rest, and the item stays off the menu for those.
@@ -713,15 +714,23 @@
 />
 
 <!-- Demotion keeps the home on disk (docs/specs/standing-agents.md,
-     "Standing agent"); the dialog is where the user is told so. -->
+     "Standing agent"); the dialog is where the user is told so, and the
+     one place that offers to delete it. -->
 <ConfirmDialog
   open={showDemoteConfirm}
   title="Demote Standing Agent"
-  description="This thread becomes an ordinary thread. Its watches are cancelled; its loops and its home directory stay as they are."
+  description="This thread becomes an ordinary thread. Its watches are cancelled; its loops stay as they are. Demote keeps its home directory; Demote and Delete Home removes it."
   confirmLabel="Demote"
+  alternateLabel="Demote and Delete Home"
+  alternateDisabled={autonomyUngranted}
+  alternateTitle={autonomyUngranted ? 'Not granted to this device' : undefined}
   onConfirm={() => {
     showDemoteConfirm = false;
     void demoteThreadAction(ctx());
+  }}
+  onAlternate={() => {
+    showDemoteConfirm = false;
+    void demoteThreadAction(ctx(), { deleteHome: true });
   }}
   onCancel={() => {
     showDemoteConfirm = false;

@@ -97,6 +97,18 @@ describe('userFacingError', () => {
     expect(userFacingError(err)).toBe('Stored provider uuid is missing from session /home/u/s.jsonl: refusing a slice.');
   });
 
+  it('shows a refused home deletion without the paths its outer layer names', () => {
+    const id = '550e8400-e29b-41d4-a716-446655440000';
+    const inner = "the thread was demoted, but its home folder was not deleted: it is not this agent's folder in the app's agents folder";
+    const outer = `delete the agent's home "/tmp/other/${id}" (expected /home/u/.config/agent-overflow/agents/${id})`;
+    const err = new TransportError('method_error', `${outer}: ${inner}`, {
+      detail: { ref: 'r3', method: 'DemoteStandingAgentAndDeleteHome', at: 1, chain: [outer, inner] },
+    });
+    expect(userFacingError(err)).toBe(
+      "The thread was demoted, but its home folder was not deleted: it is not this agent's folder in the app's agents folder.",
+    );
+  });
+
   it('shows a reviewed backend message whole', () => {
     const err = new TransportError('remote_connection_failed', 'Could not stop "build" on Mac: Could not get a response.', {
       detail: { ref: 'r2', method: 'StopRemoteJob', at: 1, chain: [] },

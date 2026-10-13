@@ -120,6 +120,8 @@ export {
     SendMessageOptions,
     SendsPendingAnswer,
     ServiceUpdateStatus,
+    SkillsHome,
+    SkillsLibrary,
     SourceDiffReview,
     SourceProposedPlan,
     StandingAgentWakes,

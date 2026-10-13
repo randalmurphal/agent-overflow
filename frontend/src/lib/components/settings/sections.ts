@@ -131,6 +131,13 @@ export const SETTINGS_SECTIONS = [
       "A short guide appended to each chat session's system prompt: what this app renders and which built-in tools are on. Workflow phases are left as their workflow wrote them.",
   },
   {
+    id: 'skills',
+    label: 'Skills',
+    group: 'Agents',
+    description:
+      'The skills library that ships with the app, installed into or removed from each provider. Nothing installs on its own.',
+  },
+  {
     id: 'projects',
     label: 'Projects',
     group: 'Workspace',
@@ -258,6 +265,6 @@ export function providerSettingsSection(provider: ProviderID): 'claude' | 'codex
 /** Pages that configure execution on a computer, rather than this frontend. */
 export function settingsUsesComputer(section: SettingsSection): boolean {
   return ['performance', 'notifications', 'claude', 'codex', 'commit-messages',
-    'browser', 'thread-tools', 'agent-guide', 'projects', 'git', 'editor', 'remote', 'agent-access',
+    'browser', 'thread-tools', 'agent-guide', 'skills', 'projects', 'git', 'editor', 'remote', 'agent-access',
     'observability', 'storage'].includes(section);
 }

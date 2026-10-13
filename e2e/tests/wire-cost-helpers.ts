@@ -31,7 +31,11 @@ export interface WireRecorder {
   arm(threadId: string): void;
   /** Stop counting and return what was counted. */
   stop(): WireTally;
-  /** Resolve at the next event on `channel` that `match` accepts. */
+  /**
+   * Resolve at the next event on `channel` that `match` accepts. A timeout
+   * names the sockets that closed and the gap frames that arrived while
+   * armed: a reconnect or an announced loss is what keeps an event away.
+   */
   awaitEvent(channel: string, match: (data: unknown) => boolean, timeoutMs?: number): Promise<void>;
 }
 
@@ -58,7 +62,13 @@ export function recordPageWire(page: Page): WireRecorder {
   let tally: WireTally | null = null;
   let threadId = '';
   const waiters = new Set<(channel: string, data: unknown) => void>();
+  // What can keep an awaited event from arriving, counted while armed.
+  let socketsClosed = 0;
+  let gapFrames = 0;
   page.on('websocket', (ws) => {
+    ws.on('close', () => {
+      if (tally) socketsClosed += 1;
+    });
     const methodById = new Map<string, string>();
     ws.on('framesent', (frame) => {
       if (!tally) return;
@@ -82,7 +92,8 @@ export function recordPageWire(page: Page): WireRecorder {
         id?: string;
         channel?: string;
         data?: unknown;
-        events?: Array<{ channel?: string; data?: unknown }>;
+        gap?: boolean;
+        events?: Array<{ channel?: string; data?: unknown; gap?: boolean }>;
       };
       try {
         parsed = JSON.parse(text) as typeof parsed;
@@ -96,11 +107,13 @@ export function recordPageWire(page: Page): WireRecorder {
         for (const waiter of [...waiters]) waiter(channel, data);
       };
       if (parsed.type === 'event') {
+        if (parsed.gap) gapFrames += 1;
         charge(parsed.channel, parsed.data, text.length);
         return;
       }
       if (parsed.type === 'batch') {
         for (const entry of parsed.events ?? []) {
+          if (entry.gap) gapFrames += 1;
           charge(entry.channel, entry.data, JSON.stringify(entry).length);
         }
         return;
@@ -116,6 +129,8 @@ export function recordPageWire(page: Page): WireRecorder {
     arm(id: string) {
       threadId = id;
       tally = emptyTally();
+      socketsClosed = 0;
+      gapFrames = 0;
     },
     stop(): WireTally {
       const out = tally ?? emptyTally();
@@ -126,7 +141,12 @@ export function recordPageWire(page: Page): WireRecorder {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           waiters.delete(waiter);
-          reject(new Error(`no ${channel} event reached the page within ${timeoutMs}ms`));
+          reject(
+            new Error(
+              `no ${channel} event reached the page within ${timeoutMs}ms ` +
+                `(while armed: ${socketsClosed} socket(s) closed, ${gapFrames} gap frame(s))`,
+            ),
+          );
         }, timeoutMs);
         const waiter = (got: string, data: unknown) => {
           if (got !== channel || !match(data)) return;

@@ -36,6 +36,8 @@ type codexAdapter struct {
 	// forkSeq numbers `thread/fork` answers so two forks of the same
 	// mock thread never claim the same id.
 	forkSeq atomic.Int64
+	// configReported is set once this process posted its session config.
+	configReported atomic.Bool
 	// queue backs the provider-owned user-message queue (`thread/queue/*`,
 	// codex >= 0.148) that `list` and `delete` answer over. Guarded by mu.
 	// Nothing fills it — `add` is a tripwire. See codex_queue.go.
@@ -193,15 +195,7 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// params rather than argv, so this is the earliest observable point.
 		// Reported before the response so a test that waits on the config
 		// cannot see the session make progress first.
-		a.e.rep.report(control.Report{
-			Kind: control.ReportSessionConfig,
-			SessionConfig: &control.SessionConfig{
-				Sandbox:               readParamString(params, "sandbox"),
-				ApprovalPolicy:        readParamString(params, "approvalPolicy"),
-				MCPServers:            codexMCPServerNames(params),
-				DeveloperInstructions: readParamString(params, "developerInstructions"),
-			},
-		})
+		a.reportSessionConfig(params, false)
 		a.noteMCPServers(params)
 		// The history contract is settled here and nowhere else — a resume
 		// can only report what the thread already is.
@@ -224,6 +218,11 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			a.e.setThreadID(tid)
 		}
 		a.noteThreadResume(a.e.currentVars()["THREAD_ID"])
+		// A process that only resumes reports what the resume asked for;
+		// one that started a thread first keeps that start's report.
+		if !a.configReported.Load() {
+			a.reportSessionConfig(params, true)
+		}
 		a.reportResumedHistory(a.e.currentVars()["THREAD_ID"])
 		a.markThreadLoaded()
 		a.respond(id, method, a.e.currentVars())
@@ -796,6 +795,23 @@ func readParamRaw(params json.RawMessage, key string) json.RawMessage {
 		return nil
 	}
 	return m[key]
+}
+
+// reportSessionConfig posts the configuration a thread/start or
+// thread/resume asked for. Reported before the response so a test that waits
+// on the config cannot see the session make progress first.
+func (a *codexAdapter) reportSessionConfig(params json.RawMessage, resumed bool) {
+	a.configReported.Store(true)
+	a.e.rep.report(control.Report{
+		Kind: control.ReportSessionConfig,
+		SessionConfig: &control.SessionConfig{
+			Sandbox:               readParamString(params, "sandbox"),
+			ApprovalPolicy:        readParamString(params, "approvalPolicy"),
+			MCPServers:            codexMCPServerNames(params),
+			DeveloperInstructions: readParamString(params, "developerInstructions"),
+			Resumed:               resumed,
+		},
+	})
 }
 
 func codexMCPServerNames(params json.RawMessage) []string {

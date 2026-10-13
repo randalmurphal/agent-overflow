@@ -17,6 +17,7 @@ import {
   ArchiveThread,
   DeleteThread,
   DemoteStandingAgent,
+  DemoteStandingAgentAndDeleteHome,
   PromoteStandingAgent,
   ForkThread,
   GitRemoveWorktree,
@@ -107,9 +108,15 @@ export async function promoteThreadAction(ctx: ThreadActionCtx): Promise<void> {
   }
 }
 
-export async function demoteThreadAction(ctx: ThreadActionCtx): Promise<void> {
+/**
+ * Demote the agent. With `deleteHome` its home directory goes too; the
+ * backend demotes first, so a deletion that fails is reported with the
+ * path while the demotion stands.
+ */
+export async function demoteThreadAction(ctx: ThreadActionCtx, opts: { deleteHome?: boolean } = {}): Promise<void> {
   try {
-    await DemoteStandingAgent(ctx.thread.id);
+    if (opts.deleteHome) await DemoteStandingAgentAndDeleteHome(ctx.thread.id);
+    else await DemoteStandingAgent(ctx.thread.id);
   } catch (err) {
     console.error('Failed to demote thread:', err);
     ctx.reportError(userFacingError(err), err);

@@ -163,16 +163,24 @@ CREATE TABLE standing_agents (
 Promotion (`PromoteStandingAgent`) creates the home directory, writes a
 `README.md` naming the agent, its thread id, its project and the tools
 it can register with, and records the row. Demotion removes the row and
-leaves the home on disk; the row action says so. Promotion is refused
-for an archived thread, a thread with a running workflow binding, or a
-thread on another computer.
+leaves the home on disk; the row action says so. Its confirm also offers
+Demote and Delete Home (`DemoteStandingAgentAndDeleteHome`), which
+demotes and then deletes the row's recorded home, only when that is
+`<configDir>/agents/<thread-id>` (a row that records no home or any
+other path is refused); a deletion that fails or is refused leaves the
+demotion in place and names the folder. A promotion finds a kept home
+and keeps its README. Promotion is refused for an archived thread, a
+thread with a running workflow binding, or a thread on another
+computer.
 
 The home path and the agent's standing instructions reach the provider
-through the existing per-thread instruction injection used by the
-thread tools server (the `instructions` string for Claude, developer
-instructions on thread start for Codex). The injected block is short: the
-home path, the thread id, and the sentence that the agent owns the
-directory and keeps its durable state there. No layout is prescribed.
+beside the app guide: Claude's appended system prompt (claude-tui's
+too) and Codex's developer instructions, read at every session start
+and resume whatever the guide setting says (`standingAgentPrompt`). A
+session live at promotion gets it at its next start or resume. The
+injected block is short: the home path, the thread id, and the sentence
+that the agent owns the directory and keeps its durable state there. No
+layout is prescribed.
 
 Deleting the thread deletes the agent row, its loops and watches; the
 home is removed only through the row action that asks. Archiving it
@@ -225,7 +233,10 @@ variant, not a new component. Differences from an ordinary thread row:
 - Context menu: Open, Rename, Loops and Watches (opens the thread with
   its background tray open), Archive Done Children (the spawned threads
   whose effective status is idle, behind a confirm), Demote (behind a
-  confirm that says the home stays on disk). An archived child listed
+  confirm that reads "This thread becomes an ordinary thread. Its
+  watches are cancelled; its loops stay as they are. Demote keeps its
+  home directory; Demote and Delete Home removes it.", with Demote and
+  Demote and Delete Home as its two choices). An archived child listed
   by the done footer offers Open, Rename, Unarchive, Copy and Delete:
   no pin, group or archive item. No pin
   item: an agent row sits in the groups section whatever pin its thread
@@ -580,6 +591,41 @@ skill directory `assets/skills/pstack/skills/<name>` to
 level under `skills/`, so the tree is flattened rather than nested
 under a `pstack` directory. Install never symlinks into the
 repository. Remove deletes only what Install wrote, by manifest.
+
+As built (`internal/skillsinstall`, `app_skills.go`): the manifest is
+`<provider home>/skills/.agent-overflow-pstack.json`, so every app
+profile sharing a home sees one install. It names every file and skill
+directory written; before the first write it names everything the run
+may leave, so a failure part way shows as an unfinished install that
+Update finishes and Remove clears. Install refuses the whole
+install, writing nothing in `skills/`, when a skill directory or file it
+would write is there and the manifest does not name it, and names them. Update
+replaces what the manifest names and deletes the named files the tree
+no longer has; it is refused for a home with no install. Remove deletes
+the named files and the directories they leave empty; a directory
+holding a file the user added stays. Update and Remove treat every file
+the manifest names as the app's, a user's edit to one included, and
+Remove asks no confirmation ([decisions](../decisions.md#miscellany)).
+A manifest naming anything outside its own skill directories (a `..`
+element, an absolute path, a file of a skill it does not list) is read
+as an error and nothing is deleted. Every read, write and delete in
+`skills/` goes through an `os.Root` opened on it (a `skills` link itself
+is followed), so nothing reaches through a link to outside it. A link or
+file where a directory of an owned skill should be refuses Install and
+Update as a named conflict, wherever it points, and Remove deletes the
+link, never through it. Install, Update and Remove hold an exclusive
+advisory lock, and a status read a shared one, on
+`<provider home>/.agent-overflow-pstack-skills.lock` from reading the
+manifest to writing it, so two processes sharing a home cannot
+interleave and the page never shows a change part way. The lock file
+sits beside `skills/`; the first Install creates it (readable only by
+the user, as is a provider home it has to create), a read of a home
+with nothing installed does not, and it stays after Remove, since
+removing a lock file races its users. A home is current when its
+manifest's digest of the tree's paths and content matches the
+shipped one, since the port edits files without moving the upstream
+pin. An embedded file has no mode, so a file starting with `#!` is
+installed executable.
 
 ### Workflows to MCP
 

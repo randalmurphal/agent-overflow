@@ -13,7 +13,7 @@
   import { createBackgroundController } from '../composer/activityRailBackground.svelte';
   import ActivityRailBackgroundToggle from '../composer/ActivityRailBackgroundToggle.svelte';
   import ActivityRailBackgroundBody from '../composer/ActivityRailBackgroundBody.svelte';
-  import { scopedTrayTasks } from '../../utils/backgroundTray';
+  import { createTrayTaskMemo, scopedTrayTasks } from '../../utils/backgroundTray';
   import { liveSubagentRunState } from '../../stores/subagentRunState.svelte';
   import { onMount } from 'svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
@@ -143,7 +143,8 @@
   // clock above runs the rows' elapsed labels and completion retention.
   const bg = createBackgroundController(() => pane, () => clock.now);
   onMount(() => bg.mount());
-  let trayTasks = $derived(scopedTrayTasks(bg.tasks, scopeId));
+  const keepTrayRows = createTrayTaskMemo();
+  let trayTasks = $derived(keepTrayRows(scopedTrayTasks(bg.tasks, scopeId)));
   let trayRunningCount = $derived(
     trayTasks.filter((task) => task.status === 'running'
       && liveSubagentRunState(bg.threadId, task.launch?.id)?.state !== 'parked').length,

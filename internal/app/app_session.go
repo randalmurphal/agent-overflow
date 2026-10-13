@@ -530,6 +530,13 @@ func (a *App) spawnProviderSession(
 	if err != nil {
 		return session{}, err
 	}
+	// A standing agent's home block (app_standing_agents.go) rides the same
+	// channels, spawn-only too, and whatever the guide setting says.
+	agentHome, err := a.standingAgentPrompt(t)
+	if err != nil {
+		return session{}, err
+	}
+	appGuide = joinPromptParts(appGuide, agentHome)
 
 	switch t.Provider {
 	case string(provider.Claude):
