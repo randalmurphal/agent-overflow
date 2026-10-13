@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -771,36 +772,76 @@ func awaitHeldInHandle(t *testing.T, inHandle <-chan struct{}) {
 // A start that commits the thread and then fails to spawn has retired the
 // session it replaced, whose disconnect therefore leaves the event queue
 // alone, and has no session of its own to disconnect. The queue still
-// retires once the replaced session's frames are handled.
+// retires, whether the replaced session's frames are handled after the
+// failed start's cleanup or before it, with the worker already gone.
 func TestFailedReplacementStartStillRetiresTheEventQueue(t *testing.T) {
 	t.Parallel()
-	app, _ := setupE2EApp(t)
-	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
-	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
-	if err != nil {
-		t.Fatalf("CreateThread: %v", err)
+	for _, c := range []struct {
+		name string
+		// framesFirst handles the replaced session's frames between the
+		// commit and the failed start's cleanup, at the start's first
+		// emission after its spawn failed.
+		framesFirst bool
+	}{
+		{"frames handled after the cleanup", false},
+		{"frames handled before the cleanup", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			app, _ := setupE2EApp(t)
+			t.Cleanup(func() { _ = app.threadMCPServer().Close() })
+			thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+			if err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": filepath.Join(t.TempDir(), "missing-claude")}); err != nil {
+				t.Fatalf("set binary: %v", err)
+			}
+			dead := startedSessionEventHandler(app, thread.ID, "token-a", string(provider.Claude))
+			if err := app.providerEvents.stall(thread.ID); err != nil {
+				t.Fatal(err)
+			}
+			dead(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "disconnected", Timestamp: time.Now()})
+			var released atomic.Bool
+			release := func() {
+				if err := app.providerEvents.releaseStall(thread.ID); err != nil {
+					t.Error(err)
+				}
+				waitProviderEvents(t, app, thread.ID)
+				waitForCondition(t, "the worker goes idle", func() bool {
+					q := app.providerEvents.lookup(thread.ID)
+					if q == nil {
+						return true
+					}
+					q.mu.Lock()
+					defer q.mu.Unlock()
+					return !q.running
+				})
+			}
+			if c.framesFirst {
+				app.testEmitHook = func(name string, _ any) {
+					if name == "provider:status" && !app.triage.SessionCurrent(thread.ID, "token-a") && released.CompareAndSwap(false, true) {
+						release()
+					}
+				}
+			}
+			if err := app.startSessionNow(thread.ID); err == nil {
+				t.Fatal("a start with no provider binary succeeded")
+			}
+			if app.triage.SessionCurrent(thread.ID, "token-a") {
+				t.Fatal("setup: the failed start did not commit the thread before its spawn")
+			}
+			if c.framesFirst != released.Load() {
+				t.Fatalf("setup: the replaced session's frames were handled before the cleanup: %v, want %v", released.Load(), c.framesFirst)
+			}
+			if !c.framesFirst {
+				release()
+			}
+			waitForCondition(t, "the event queue retires", func() bool {
+				return app.providerEvents.lookup(thread.ID) == nil
+			})
+		})
 	}
-	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": filepath.Join(t.TempDir(), "missing-claude")}); err != nil {
-		t.Fatalf("set binary: %v", err)
-	}
-	dead := startedSessionEventHandler(app, thread.ID, "token-a", string(provider.Claude))
-	if err := app.providerEvents.stall(thread.ID); err != nil {
-		t.Fatal(err)
-	}
-	dead(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "disconnected", Timestamp: time.Now()})
-	if err := app.startSessionNow(thread.ID); err == nil {
-		t.Fatal("a start with no provider binary succeeded")
-	}
-	if app.triage.SessionCurrent(thread.ID, "token-a") {
-		t.Fatal("setup: the failed start did not commit the thread before its spawn")
-	}
-	if err := app.providerEvents.releaseStall(thread.ID); err != nil {
-		t.Fatal(err)
-	}
-	waitProviderEvents(t, app, thread.ID)
-	waitForCondition(t, "the event queue retires", func() bool {
-		return app.providerEvents.lookup(thread.ID) == nil
-	})
 }
 
 // The host's work before triage is skipped for a frame whose session was

@@ -1,12 +1,17 @@
 package triage
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
 	"unsafe"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/provider"
 )
 
 // MarkThreadActive clears process-bound state only through
@@ -18,9 +23,14 @@ import (
 func TestMarkThreadActiveClearsOnlyThroughProcessBoundState(t *testing.T) {
 	t.Parallel()
 	const threadID = "thread-commit-clears"
+	fill := func(v any) {
+		for _, missing := range fillNonZero(reflect.ValueOf(v).Elem(), 0) {
+			t.Errorf("no filler for %s: add one to interfaceFillers so a clear of it shows", missing)
+		}
+	}
 	listState, listIdentity := &threadState{}, &threadIdentity{}
-	fillNonZero(reflect.ValueOf(listState).Elem(), 0)
-	fillNonZero(reflect.ValueOf(listIdentity).Elem(), 0)
+	fill(listState)
+	fill(listIdentity)
 	for _, entry := range processBoundState {
 		if entry.clear != nil {
 			entry.clear(listState, listIdentity)
@@ -29,8 +39,8 @@ func TestMarkThreadActiveClearsOnlyThroughProcessBoundState(t *testing.T) {
 
 	r := NewRouter(nil, func(eventchan.Channel, any) {})
 	commitState, commitIdentity := &threadState{}, &threadIdentity{}
-	fillNonZero(reflect.ValueOf(commitState).Elem(), 0)
-	fillNonZero(reflect.ValueOf(commitIdentity).Elem(), 0)
+	fill(commitState)
+	fill(commitIdentity)
 	r.threads[threadID] = commitState
 	r.identities[threadID] = commitIdentity
 	r.MarkThreadActive(threadID, "session-b")
@@ -42,17 +52,28 @@ func TestMarkThreadActiveClearsOnlyThroughProcessBoundState(t *testing.T) {
 		{reflect.ValueOf(listIdentity).Elem(), reflect.ValueOf(commitIdentity).Elem()},
 	} {
 		for i := range pair[0].NumField() {
-			if !reflect.DeepEqual(exported(pair[0].Field(i)).Interface(), exported(pair[1].Field(i)).Interface()) {
+			if !sameFill(pair[0].Field(i), pair[1].Field(i), 0) {
 				t.Errorf("%s.%s: MarkThreadActive and processBoundState's clears leave it different; clear it through the list", pair[0].Type().Name(), pair[0].Type().Field(i).Name)
 			}
 		}
 	}
 }
 
+// interfaceFillers holds a concrete value for each interface type reachable
+// from threadState and threadIdentity. fillNonZero reports an interface
+// type missing here, so a new interface field cannot go unseen.
+var interfaceFillers = map[reflect.Type]reflect.Value{
+	reflect.TypeFor[trace.Span]():                reflect.ValueOf(trace.SpanFromContext(context.Background())),
+	reflect.TypeFor[error]():                     reflect.ValueOf(errors.New("filled")),
+	reflect.TypeFor[provider.TurnCompleteMeta](): reflect.ValueOf(&provider.WireTurnCompleteMeta{}),
+}
+
 // fillNonZero sets every field reachable from v to a non-zero value, so a
-// clear of any of them shows. Locks, atomics, timers, funcs, channels and
-// interfaces stay zero: no clear resets them.
-func fillNonZero(v reflect.Value, depth int) {
+// clear of any of them shows, and returns the interface types it had no
+// filler for. A pointer to a lock, atomic or timer is set to a fresh zero
+// value; a lock or atomic held by value stays zero, since resetting one is
+// not a clear.
+func fillNonZero(v reflect.Value, depth int) (missing []string) {
 	v = exported(v)
 	switch v.Kind() {
 	case reflect.Bool:
@@ -65,40 +86,115 @@ func fillNonZero(v reflect.Value, depth int) {
 		v.SetFloat(7)
 	case reflect.String:
 		v.SetString("x")
+	case reflect.Func:
+		v.Set(reflect.MakeFunc(v.Type(), func([]reflect.Value) []reflect.Value {
+			out := make([]reflect.Value, v.Type().NumOut())
+			for i := range out {
+				out[i] = reflect.Zero(v.Type().Out(i))
+			}
+			return out
+		}))
+	case reflect.Chan:
+		v.Set(reflect.MakeChan(v.Type(), 0))
+	case reflect.Interface:
+		filler, ok := interfaceFillers[v.Type()]
+		if !ok {
+			return []string{v.Type().String()}
+		}
+		v.Set(filler)
 	case reflect.Pointer:
-		if depth > 3 || skippedType(v.Type().Elem()) {
-			return
+		if depth > 3 {
+			return nil
 		}
 		p := reflect.New(v.Type().Elem())
-		fillNonZero(p.Elem(), depth+1)
+		if !skippedType(v.Type().Elem()) {
+			missing = fillNonZero(p.Elem(), depth+1)
+		}
 		v.Set(p)
 	case reflect.Slice:
 		s := reflect.MakeSlice(v.Type(), 1, 1)
-		fillNonZero(s.Index(0), depth+1)
+		missing = fillNonZero(s.Index(0), depth+1)
 		v.Set(s)
 	case reflect.Map:
 		key, elem := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
-		fillNonZero(key, depth+1)
-		fillNonZero(elem, depth+1)
+		missing = append(fillNonZero(key, depth+1), fillNonZero(elem, depth+1)...)
 		m := reflect.MakeMap(v.Type())
 		m.SetMapIndex(key, elem)
 		v.Set(m)
 	case reflect.Array:
 		for i := range v.Len() {
-			fillNonZero(v.Index(i), depth+1)
+			missing = append(missing, fillNonZero(v.Index(i), depth+1)...)
 		}
 	case reflect.Struct:
 		if v.Type() == reflect.TypeFor[time.Time]() {
 			v.Set(reflect.ValueOf(time.Unix(7, 0)))
-			return
+			return nil
 		}
 		if skippedType(v.Type()) {
-			return
+			return nil
 		}
 		for i := range v.NumField() {
-			fillNonZero(v.Field(i), depth+1)
+			missing = append(missing, fillNonZero(v.Field(i), depth+1)...)
 		}
 	}
+	return missing
+}
+
+// sameFill compares two values filled by fillNonZero. Funcs and channels
+// compare by whether they are set, since two fills never share one.
+func sameFill(a, b reflect.Value, depth int) bool {
+	if a.Kind() != b.Kind() {
+		return false
+	}
+	switch a.Kind() {
+	case reflect.Bool:
+		return a.Bool() == b.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return a.Int() == b.Int()
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return a.Uint() == b.Uint()
+	case reflect.Float32, reflect.Float64:
+		return a.Float() == b.Float()
+	case reflect.String:
+		return a.String() == b.String()
+	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		return a.IsNil() == b.IsNil()
+	case reflect.Interface, reflect.Pointer:
+		if a.IsNil() || b.IsNil() {
+			return a.IsNil() == b.IsNil()
+		}
+		return depth > 4 || sameFill(a.Elem(), b.Elem(), depth+1)
+	case reflect.Slice, reflect.Array:
+		if a.Kind() == reflect.Slice && a.IsNil() != b.IsNil() || a.Len() != b.Len() {
+			return false
+		}
+		for i := range a.Len() {
+			if !sameFill(a.Index(i), b.Index(i), depth+1) {
+				return false
+			}
+		}
+		return true
+	case reflect.Map:
+		if a.IsNil() != b.IsNil() || a.Len() != b.Len() {
+			return false
+		}
+		// fillNonZero writes one entry with equal keys in both copies.
+		ak, bk := a.MapKeys(), b.MapKeys()
+		for i := range ak {
+			if !sameFill(ak[i], bk[i], depth+1) || !sameFill(a.MapIndex(ak[i]), b.MapIndex(bk[i]), depth+1) {
+				return false
+			}
+		}
+		return true
+	case reflect.Struct:
+		for i := range a.NumField() {
+			if !sameFill(a.Field(i), b.Field(i), depth+1) {
+				return false
+			}
+		}
+		return true
+	}
+	return true
 }
 
 func skippedType(t reflect.Type) bool {
@@ -109,7 +205,7 @@ func skippedType(t reflect.Type) bool {
 	return false
 }
 
-// exported makes an unexported field settable and readable.
+// exported makes an unexported field settable.
 func exported(v reflect.Value) reflect.Value {
 	if v.CanSet() || !v.CanAddr() {
 		return v

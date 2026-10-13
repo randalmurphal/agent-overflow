@@ -184,9 +184,12 @@ func (qs *providerEventQueues) drainAll() error {
 	return errors.Join(errs...)
 }
 
-// retireWhenIdle marks the thread's queue for retirement once it is empty.
-// The session event handler calls it after handling the final event of the
-// session that owns the thread, on the worker itself.
+// retireWhenIdle marks the thread's queue for retirement once it is empty,
+// and retires it now if it already is. The session event handler calls it
+// on the worker after handling the final event of the session that owns
+// the thread; the worker retires the queue when it next finds it empty. A
+// start that committed the thread and failed calls it from its own
+// goroutine, where the worker may already have exited.
 func (qs *providerEventQueues) retireWhenIdle(threadID string) {
 	q := qs.lookup(threadID)
 	if q == nil {
@@ -195,6 +198,7 @@ func (qs *providerEventQueues) retireWhenIdle(threadID string) {
 	q.mu.Lock()
 	q.retireWhenIdle = true
 	q.mu.Unlock()
+	qs.retireIfIdle(q)
 }
 
 func (qs *providerEventQueues) drainStallBound() time.Duration {
