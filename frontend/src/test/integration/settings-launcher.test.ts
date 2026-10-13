@@ -1,6 +1,12 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import App from '../../App.svelte';
+// App imports these overlays lazily. Loaded with the file, the cases wait for
+// the mount rather than for a first import transforming the overlay's
+// component graph, which is load-dependent.
+import '../../lib/components/settings/SettingsOverlay.svelte';
+import '../../lib/components/workflows/WorkflowsOverlay.svelte';
+import '../../lib/components/accounts/AccountSwitcher.svelte';
 import {
   flush,
   installAnimateShim,
@@ -27,32 +33,11 @@ const SETTINGS_TESTID = 'settings-overlay';
 
 type Rendered = { getByTestId: (id: string) => HTMLElement };
 
-// The lazy load's own wall-clock budget. 5s was still a TUNED value rather
-// than a tripwire, and the first case in the file — the one that pays the
-// on-demand transform for the whole suite run — spent 5.3s of it under a
-// full-suite fan-out and failed (2026-08-31, green in isolation every time,
-// and again once the run grew a few more files). Sized as the tripwire the
-// area guide asks for: far above any healthy transform, still under
-// LAZY_CASE_TIMEOUT_MS so this wait stays the thing that fails.
-const LAZY_LOAD_BUDGET_MS = 15_000;
-
-// A case that waits on the lazy load needs a WALL-CLOCK budget above that
-// wait's own, or the inner waitFor can never be the thing that fails: at
-// vitest's 5s default the two were equal, so a slow transform timed the
-// CASE out and reported a line number instead of the condition that was
-// not met (observed on the 2026-08-31 full run, green in isolation every
-// time). This is the wedged-runtime tripwire, ~15x the idle cost of the
-// whole file, not a tuned value.
-const LAZY_CASE_TIMEOUT_MS = 20_000;
-
 async function openSettingsFromSidebar(rendered: Rendered) {
   await fireEvent.click(rendered.getByTestId('sidebar-settings-button'));
-  // SettingsOverlay is a lazy import; its first-ever load in a suite run pays
-  // the on-demand transform, which can exceed waitFor's default 1s under full
-  // suite load.
   await waitFor(() => {
     expect(rendered.getByTestId(SETTINGS_TESTID)).toBeInTheDocument();
-  }, { timeout: LAZY_LOAD_BUDGET_MS });
+  });
 }
 
 describe('App integration — settings launcher', () => {
@@ -76,7 +61,7 @@ describe('App integration — settings launcher', () => {
       expect(rendered.queryByTestId(SETTINGS_TESTID)).not.toBeInTheDocument();
     });
     expect(rendered.getByTestId('pane-host')).toBeInTheDocument();
-  }, LAZY_CASE_TIMEOUT_MS);
+  });
 
   it('opens with focus on the card, not the search field, so no keyboard is raised', async () => {
     const rendered = render(App);
@@ -88,7 +73,7 @@ describe('App integration — settings launcher', () => {
     const card = rendered.getByTestId(SETTINGS_TESTID);
     expect(document.activeElement).toBe(card);
     expect(rendered.getByTestId('settings-search')).not.toBe(document.activeElement);
-  }, LAZY_CASE_TIMEOUT_MS);
+  });
 
   it('closes settings on a scrim click', async () => {
     const rendered = render(App);
@@ -100,7 +85,7 @@ describe('App integration — settings launcher', () => {
     await waitFor(() => {
       expect(rendered.queryByTestId(SETTINGS_TESTID)).not.toBeInTheDocument();
     });
-  }, LAZY_CASE_TIMEOUT_MS);
+  });
 
   // Deep links (the context-window meter, `/config`, the account switcher's
   // empty state) call the store directly — App has no listener of its own to
@@ -114,7 +99,7 @@ describe('App integration — settings launcher', () => {
     await waitFor(() => {
       expect(rendered.getByTestId(SETTINGS_TESTID)).toBeInTheDocument();
       expect(rendered.getByRole('tab', { name: 'Claude Code' })).toHaveAttribute('aria-selected', 'true');
-    }, { timeout: 5000 });
+    });
 
     openSettingsOverlay('observability');
 
@@ -163,7 +148,7 @@ describe('App integration — settings launcher', () => {
       expect(rendered.queryByTestId(SETTINGS_TESTID)).not.toBeInTheDocument();
     });
     expect(blurredWhileMounted).toBe(true);
-  }, LAZY_CASE_TIMEOUT_MS);
+  });
 
   // Two full-height layers over the pane strip means two focus traps and an
   // ambiguous Esc, so each open path closes the other surface.
@@ -180,9 +165,9 @@ describe('App integration — settings launcher', () => {
     openSettingsOverlay('theme');
     await waitFor(() => {
       expect(rendered.getByTestId(SETTINGS_TESTID)).toBeInTheDocument();
-    }, { timeout: 5000 });
+    });
     expect(isWorkflowsOverlayOpen()).toBe(false);
-  }, LAZY_CASE_TIMEOUT_MS);
+  });
 });
 
 // --- the overlay → anyModalOpen link ---

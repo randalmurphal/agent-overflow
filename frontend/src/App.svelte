@@ -491,6 +491,8 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         }
         addErrorToast(userFacingError(err, 'Failed to restore pane layout.'), err);
       } finally {
+        // A `return` inside finally would override the try and catch
+        // paths' outcomes; the tail only runs while the app is live.
         if (!disposed) {
           // Release the startup screen even when offline. Saved-pane restore
           // can retry on connection; notification resolution independently
@@ -562,11 +564,9 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 
     void loadKeybindings();
     const flushPaneLayout = () => {
+      // Writes the pending debounced resize. Every other layout change
+      // is saved synchronously when it happens.
       if (paneLayoutRestored) void flushPaneLayoutPersistence();
-      // Deliver any debounced appStorage writes (sidebar view state,
-      // width) before the page goes away. Best-effort — the WS send
-      // may not complete on a hard kill, and the same-session cache
-      // covers the reload case regardless.
       void flushAppStorage();
     };
     const handleVisibilityChange = () => {
