@@ -41,7 +41,7 @@ func listHome(t *testing.T, home string) []string {
 	root := filepath.Join(home, "skills")
 	var out []string
 	err := filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || entry.Name() == ManifestName {
+		if err != nil || entry.IsDir() || entry.Name() == ManifestName || entry.Name() == lockName {
 			return err
 		}
 		info, err := entry.Info()

@@ -2,7 +2,6 @@ package skillsinstall
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,23 +12,6 @@ import (
 	"strings"
 	"syscall"
 )
-
-// ManifestName is the file in `<home>/skills` that records an install. It
-// lives in the provider home, so every app profile sharing that home sees
-// the same install.
-const ManifestName = ".agent-overflow-pstack.json"
-
-type manifest struct {
-	Version string `json:"version"`
-	Commit  string `json:"commit"`
-	Digest  string `json:"digest"`
-	// Complete is false while an install or update is writing, and stays
-	// false when one failed: Skills and Files then name everything it may
-	// have written, so Remove and the next Install still find it.
-	Complete bool     `json:"complete"`
-	Skills   []string `json:"skills"`
-	Files    []string `json:"files"`
-}
 
 // Status is what a provider home holds of the tree.
 type Status struct {
@@ -54,38 +36,6 @@ func (e *ConflictError) Error() string {
 		strings.Join(e.Paths, ", ") + ". Nothing was installed."
 }
 
-// skillsDir is where both providers look for skills, one level down.
-func skillsDir(home string) string { return filepath.Join(home, "skills") }
-
-func manifestPath(home string) string { return filepath.Join(skillsDir(home), ManifestName) }
-
-// readManifest returns the home's manifest, or nil when there is none.
-func readManifest(home string) (*manifest, error) {
-	raw, err := os.ReadFile(manifestPath(home))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read the skills manifest: %w", err)
-	}
-	var m manifest
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, fmt.Errorf("read the skills manifest %s: %w", manifestPath(home), err)
-	}
-	return &m, nil
-}
-
-func writeManifest(home string, m manifest) error {
-	raw, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := writeFileAtomic(manifestPath(home), raw, 0o644); err != nil {
-		return fmt.Errorf("write the skills manifest: %w", err)
-	}
-	return nil
-}
-
 // GetStatus reads what home holds of tree.
 func GetStatus(home string, tree Tree) (Status, error) {
 	m, err := readManifest(home)
@@ -105,7 +55,12 @@ func GetStatus(home string, tree Tree) (Status, error) {
 // current install is left as it is; one that holds another or an
 // unfinished install is updated. A skill directory or file the manifest does
 // not name refuses the whole install before anything is written.
-func Install(home string, tree Tree) error {
+func Install(home string, tree Tree) (err error) {
+	unlock, _, err := lockHome(home, true)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, unlock()) }()
 	previous, err := readManifest(home)
 	if err != nil {
 		return err
@@ -118,7 +73,15 @@ func Install(home string, tree Tree) error {
 
 // Update replaces what the manifest names with tree, deleting the files the
 // manifest names that tree no longer has. Refused for a home with no install.
-func Update(home string, tree Tree) error {
+func Update(home string, tree Tree) (err error) {
+	unlock, found, err := lockHome(home, false)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotInstalled
+	}
+	defer func() { err = errors.Join(err, unlock()) }()
 	previous, err := readManifest(home)
 	if err != nil {
 		return err
@@ -138,9 +101,6 @@ func apply(home string, tree Tree, previous *manifest) error {
 	dir := skillsDir(home)
 	if err := conflicts(dir, tree, ownedSkills, ownedFiles); err != nil {
 		return err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", dir, err)
 	}
 	newFiles := tree.Files()
 	// Before the first write, the manifest names everything this run may
@@ -234,7 +194,12 @@ func copyFile(fsys fs.FS, file treeFile, dir string) error {
 // directories they leave empty, then the manifest. A directory still holding
 // a file the manifest does not name stays. A file that cannot be deleted is
 // reported, and the manifest keeps naming it so a later Remove finishes.
-func Remove(home string) error {
+func Remove(home string) (err error) {
+	unlock, found, err := lockHome(home, false)
+	if err != nil || !found {
+		return err
+	}
+	defer func() { err = errors.Join(err, unlock()) }()
 	m, err := readManifest(home)
 	if err != nil || m == nil {
 		return err
