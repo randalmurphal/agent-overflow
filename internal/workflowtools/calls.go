@@ -158,23 +158,23 @@ func (c *call) runStart(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, failed(err)
 	}
-	delivered := false
+	var returned *Rest
 	if started.Hold != nil {
-		defer func() { started.Hold.Release(delivered) }()
+		defer func() { started.Hold.Release(returned) }()
 	}
 	if args.WaitSeconds == 0 && !args.Notify {
 		return struct {
 			Start any `json:"start"`
 		}{started.Result}, nil
 	}
-	wait, err := c.wait(ctx, started.RunID, args.waitArgs)
+	wait, rest, err := c.wait(ctx, started.RunID, args.waitArgs)
 	if err != nil {
 		// The run started; a failed read must not read as a failed start, or
 		// the caller starts it again. An interactive start has no
 		// surface-and-skip to catch the second one.
 		return StartResult{Start: started.Result, Wait: Wait{Outcome: OutcomeUnknown, ReadError: publicMessage(err)}}, nil
 	}
-	delivered = wait.Outcome == OutcomeResting
+	returned = rest
 	return StartResult{Start: started.Result, Wait: wait}, nil
 }
 
@@ -206,45 +206,51 @@ func (c *call) runStatus(ctx context.Context, raw json.RawMessage) (any, error) 
 		return nil, err
 	}
 	runID := strings.TrimSpace(args.RunID)
-	delivered := false
+	var returned *Rest
 	if c.holdsWakes(args.waitArgs) {
 		hold := c.app.HoldWake(ctx, runID)
-		defer func() { hold.Release(delivered) }()
+		defer func() { hold.Release(returned) }()
 	}
-	wait, err := c.wait(ctx, runID, args.waitArgs)
+	wait, rest, err := c.wait(ctx, runID, args.waitArgs)
 	if err != nil {
 		return nil, err
 	}
-	delivered = wait.Outcome == OutcomeResting
+	returned = rest
 	return wait, nil
 }
 
 // wait blocks until the run rests or the wait passes, then reads its status.
 // The wait is spent in the app's own bounded holds, so a client that goes away
-// ends it at the next hold rather than at the deadline.
-func (c *call) wait(ctx context.Context, runID string, args waitArgs) (Wait, error) {
+// ends it at the next hold rather than at the deadline. A wait that ends at
+// rest also names the rest it read.
+func (c *call) wait(ctx context.Context, runID string, args waitArgs) (Wait, *Rest, error) {
 	resting := false
+	var rest *Rest
 	if args.WaitSeconds > 0 {
 		deadline := c.clock().Add(time.Duration(args.WaitSeconds) * time.Second)
 		var cursor int64
 		for {
 			watched, err := c.app.WatchRun(ctx, WatchInput{RunID: runID, Cursor: cursor, Wait: deadline.Sub(c.clock())})
 			if err != nil {
-				return Wait{}, failed(err)
+				return Wait{}, nil, failed(err)
 			}
 			cursor = watched.Cursor
 			resting = watched.Resting
-			if resting || !c.clock().Before(deadline) {
+			if resting {
+				rest = &Rest{Cursor: watched.Cursor, State: watched.State, Reason: watched.Reason}
+				break
+			}
+			if !c.clock().Before(deadline) {
 				break
 			}
 			if err := ctx.Err(); err != nil {
-				return Wait{}, failed(err)
+				return Wait{}, nil, failed(err)
 			}
 		}
 	}
 	status, err := c.app.RunStatus(ctx, runID)
 	if err != nil {
-		return Wait{}, failed(err)
+		return Wait{}, nil, failed(err)
 	}
 	if args.WaitSeconds == 0 {
 		// No wait was spent, so the state comes from the status read alone.
@@ -266,7 +272,7 @@ func (c *call) wait(ctx context.Context, runID string, args waitArgs) (Wait, err
 		}
 		result.Notify = &notify
 	}
-	return result, nil
+	return result, rest, nil
 }
 
 // statusResting reads the resting flag off the app's status document. The

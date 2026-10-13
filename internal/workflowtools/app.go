@@ -72,9 +72,20 @@ type Started struct {
 }
 
 // WakeHold is a waiting call's claim on a run's wake. Release ends it exactly
-// once; delivered says the call returned the run at rest.
+// once; returned is the rest the call handed back, nil when it handed back
+// none. The app counts it delivered only once the response carrying it is
+// written.
 type WakeHold interface {
-	Release(delivered bool)
+	Release(returned *Rest)
+}
+
+// Rest is a rest a wait read: the watch cursor it read the run at, and the
+// state and reason the run showed there. It names that one rest, so a later
+// rest that looks the same is not mistaken for it.
+type Rest struct {
+	Cursor int64
+	State  string
+	Reason string
 }
 
 // ControlDone is what an action reports before the run is read back.
@@ -97,6 +108,8 @@ type Watched struct {
 	Cursor      int64
 	Transitions int
 	Resting     bool
+	State       string
+	Reason      string
 	Result      any
 }
 

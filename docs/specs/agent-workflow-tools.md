@@ -197,19 +197,38 @@ A run's rest reaches a thread only through its binding (§5, D17): a run an
 interactive thread starts is bound to that thread, and the bound thread is
 woken whenever the run comes to rest. No tool call changes a binding.
 
-A wait that returns the rest is the delivery, as a thread tool's wait is: that
-rest does not also wake the thread. While an interactive call waits, the run's
-wakes to the caller's thread are held (`internal/workflowapp/wake_hold.go`).
-`run_start` takes the hold before it binds the run, so no rest can slip past
-it. The hold is released on the wake queue, behind any wake job already
-queued for the run, so such a job still finds it. When the call returns the
-run at rest, the rest is recorded as the thread's last delivered wake, and the
-wake-coalescing rule suppresses the same rest arriving after the call; when it returns `backgrounded`, fails or is
-cancelled, a rest held back during the call wakes the thread as it would
-have. The next rest, after the run is resumed, rerun or otherwise acted on,
-wakes the thread as usual. A hold is process memory: a crash between the rest
-and the call returning loses that one wake, as a crash between a rest and its
-wake always could.
+A wait that returns the rest is the delivery, as a thread tool's wait is:
+that rest does not also wake the thread. While an interactive call waits, the
+run's wakes to the caller's thread are held
+(`internal/workflowapp/wake_hold.go`). `run_start` takes the hold before it
+binds the run, so no rest can slip past it. A rest that arrives while the
+hold stands is kept back.
+
+The hold is released once the call's response has left the transport
+(`threadmcp.AfterResponse`), on the wake queue behind any wake job already
+queued, so such a job still finds it. A call that returned the run at rest
+names the rest it read: the watch cursor it read the run at, and the state
+and reason it saw. That rest counts as delivered only if the response was
+written and the run has not moved since: the watch ring holds no transition
+of the run after that cursor, and the stored state and reason are the ones
+returned. A delivered rest is recorded as the thread's last delivered wake,
+and the wake-coalescing rule suppresses the same rest arriving after the
+call. Otherwise, when the call backgrounded, failed, was cancelled, its
+response never reached the client, or the run moved on after the read, a
+rest the hold kept back wakes the thread as it would have, unless the run
+moved after it was kept back, in which case that move's own wakes settle it.
+The next rest, after the run is resumed, rerun or otherwise acted on, wakes
+the thread as usual.
+
+Limits:
+
+- A hold is process memory: a crash between the rest and the call returning
+  loses that one wake, as a crash between a rest and its wake always could.
+- A rest whose wake job ran before `run_start` bound the run found no binding
+  and is never woken; a `run_start` that waits still returns it.
+- The engine writes a transition before it records it in the ring. A rest
+  written before the call's store read but recorded after the cursor the call
+  read reads as a move, so it is returned and also wakes the thread once.
 
 A backgrounded wait, or any call with `notify: true` on a run not yet resting,
 carries `notify: {armed, detail}`. When the binding cannot be read, the status

@@ -2909,7 +2909,10 @@ each pinned by an incident-replay test:
   that returned the run's rest is that rest's delivery, as with the thread
   tools: the D17 wake for that rest is suppressed, and a later rest (after a
   resume or a rerun) wakes the thread as usual (product ruling, logged for
-  the user). Otherwise a run's rest reaches a thread only through its D17
+  the user). Delivered means the answer was written and the run has not
+  moved since the call read it, judged by the watch ring's cursor rather than
+  by what the rest looks like, so a later rest that looks the same still
+  wakes. Otherwise a run's rest reaches a thread only through its D17
   binding, and no tool call changes a binding, so a backgrounded result says
   whether the run is bound to the caller's thread, unbound, bound to another
   thread, or being watched by a phase session that receives no wakes.

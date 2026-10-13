@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -460,5 +462,75 @@ func TestABackgroundedWaitLeavesExactlyOneWake(t *testing.T) {
 	sends, queued, _, _ := h.snapshot()
 	if len(sends)+len(queued) != 1 {
 		t.Fatalf("a backgrounded wait's rest delivered sends=%d queued=%d, want one wake", len(sends), len(queued))
+	}
+}
+
+// failingWriter takes headers, but every body write fails, as a client that
+// hung up before the response went out leaves it.
+type failingWriter struct {
+	header http.Header
+	status int
+}
+
+func (f *failingWriter) Header() http.Header       { return f.header }
+func (f *failingWriter) WriteHeader(status int)    { f.status = status }
+func (f *failingWriter) Write([]byte) (int, error) { return 0, errors.New("write: broken pipe") }
+
+// A wait that read the rest delivers it only if its response reached the
+// client. One that was never written leaves the rest to wake the thread once;
+// one that was written is the delivery. Both response shapes the transport
+// writes are covered: plain JSON and the event stream both provider CLIs ask
+// for.
+func TestARestingAnswerDeliversOnlyOnceWritten(t *testing.T) {
+	t.Parallel()
+	for _, accept := range []string{"application/json", "application/json, text/event-stream"} {
+		for name, test := range map[string]struct {
+			writer func() http.ResponseWriter
+			wakes  int
+		}{
+			"never written": {func() http.ResponseWriter { return &failingWriter{header: http.Header{}} }, 1},
+			"written":       {func() http.ResponseWriter { return httptest.NewRecorder() }, 0},
+		} {
+			t.Run(accept+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				h := newWakeHarness(t)
+				t.Cleanup(func() { _ = h.app.workflowMCPServer().Close() })
+				thread := h.chatThread(t, "waiting-thread")
+				token := uuid.NewString()
+				h.app.sessionManager().put(thread.ID, session{Token: token, Provider: thread.Provider})
+				item := h.run(t, "held-run", engine.StateRunning, "")
+				if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.app.store.UpdateWorkItemState(item.ID, string(engine.StateDone), "", time.Now().UnixMilli()); err != nil {
+					t.Fatal(err)
+				}
+				endpoint, err := url.Parse(workflowMCPEndpoint(t, h.app, thread, token))
+				if err != nil {
+					t.Fatal(err)
+				}
+				body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_status","arguments":{"run_id":"held-run","wait_seconds":30}}}`
+				req := httptest.NewRequest(http.MethodPost, endpoint.Path, strings.NewReader(body))
+				req.RemoteAddr = "[::1]:40000"
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Accept", accept)
+				writer := test.writer()
+				h.app.workflowMCPServer().ServeHTTP(writer, req)
+				if recorder, ok := writer.(*httptest.ResponseRecorder); ok {
+					// The tool result is JSON text inside the JSON-RPC reply.
+					if answer := strings.ReplaceAll(recorder.Body.String(), `\"`, `"`); !strings.Contains(answer, `"resting":true`) {
+						t.Fatalf("the written answer does not carry the rest: %s", recorder.Body.String())
+					}
+				}
+
+				h.app.afterWorkflowStateEvent(engine.StateEvent{
+					ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateDone,
+				})
+				h.drain()
+				if sends, queued, _, _ := h.snapshot(); len(sends)+len(queued) != test.wakes {
+					t.Fatalf("delivered sends=%d queued=%d wakes, want %d", len(sends), len(queued), test.wakes)
+				}
+			})
+		}
 	}
 }

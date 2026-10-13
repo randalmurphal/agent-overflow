@@ -450,5 +450,12 @@ export async function captureRunFromThread(
   const last = (await page.getByTestId('message-timeline-node').last().boundingBox())!;
   const composer = (await page.getByTestId('composer-root').first().boundingBox())!;
   expect(last.y + last.height).toBeLessThanOrEqual(composer.y + 1);
-  await page.screenshot({ path: test.info().outputPath(name), animations: 'disabled' });
+  // The sidebar's system footer shows the host machine's own CPU and memory
+  // once its first sample lands, which a longer run reaches and a shorter one
+  // does not. It is not part of the evidence, so no capture shows it.
+  await page.screenshot({
+    path: test.info().outputPath(name),
+    animations: 'disabled',
+    style: '[data-testid="sidebar-system-stats"] { display: none !important; }',
+  });
 }

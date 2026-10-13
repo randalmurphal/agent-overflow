@@ -57,15 +57,18 @@ func (f *fakeApp) errFor(name string) error {
 
 // fakeHold records how a wake hold ended.
 type fakeHold struct {
-	runID     string
-	releases  int
-	delivered bool
+	runID    string
+	releases int
+	returned *Rest
 }
 
-func (h *fakeHold) Release(delivered bool) {
+func (h *fakeHold) Release(returned *Rest) {
 	h.releases++
-	h.delivered = delivered
+	h.returned = returned
 }
+
+// delivered says the call handed back a rest.
+func (h *fakeHold) delivered() bool { return h.returned != nil }
 
 func (f *fakeApp) HoldWake(_ context.Context, runID string) WakeHold {
 	f.record("HoldWake")
@@ -352,7 +355,10 @@ func TestStatusWithoutAWaitReadsOnce(t *testing.T) {
 }
 
 func TestWaitReturnsWhenTheRunRests(t *testing.T) {
-	app := &fakeApp{watches: []Watched{{Cursor: 4}, {Cursor: 6, Transitions: 1}, {Cursor: 7, Transitions: 1, Resting: true}}}
+	app := &fakeApp{watches: []Watched{
+		{Cursor: 4}, {Cursor: 6, Transitions: 1, State: "running"},
+		{Cursor: 7, Transitions: 1, Resting: true, State: "needs-human", Reason: "gate"},
+	}}
 	result, err := New(app).Call(context.Background(), interactive, "run_status", json.RawMessage(`{"run_id":"run-1","wait_seconds":600}`))
 	if err != nil {
 		t.Fatal(err)
@@ -364,6 +370,11 @@ func TestWaitReturnsWhenTheRunRests(t *testing.T) {
 	// Each hold continues from the cursor the previous one returned.
 	if len(app.watchInputs) != 3 || app.watchInputs[0].Cursor != 0 || app.watchInputs[1].Cursor != 4 || app.watchInputs[2].Cursor != 6 {
 		t.Fatalf("watch inputs = %+v", app.watchInputs)
+	}
+	// The rest it hands back is the one the last watch read, at that cursor.
+	want := Rest{Cursor: 7, State: "needs-human", Reason: "gate"}
+	if len(app.holds) != 1 || app.holds[0].returned == nil || *app.holds[0].returned != want {
+		t.Fatalf("holds = %+v, want released with %+v", app.holds, want)
 	}
 }
 
@@ -485,7 +496,7 @@ func TestStartKeepsTheRunWhenReadingItBackFails(t *testing.T) {
 			if !strings.Contains(started.ReadError, "store unavailable") {
 				t.Fatalf("readError = %q", started.ReadError)
 			}
-			if len(app.holds) != 1 || app.holds[0].releases != 1 || app.holds[0].delivered {
+			if len(app.holds) != 1 || app.holds[0].releases != 1 || app.holds[0].delivered() {
 				t.Fatalf("hold = %+v, want released once, not delivered", app.holds)
 			}
 		})
@@ -568,7 +579,7 @@ func TestWaitingCallsHoldTheWake(t *testing.T) {
 		if _, err := New(app).Call(ctx, interactive, "run_start", json.RawMessage(`{"workflow_id":"flow","wait_seconds":60}`)); err != nil {
 			t.Fatal(err)
 		}
-		if len(app.holds) != 1 || app.holds[0].releases != 1 || !app.holds[0].delivered {
+		if len(app.holds) != 1 || app.holds[0].releases != 1 || !app.holds[0].delivered() {
 			t.Fatalf("holds = %+v, want one released as delivered", app.holds)
 		}
 	})
@@ -580,7 +591,7 @@ func TestWaitingCallsHoldTheWake(t *testing.T) {
 		if _, err := server.Call(ctx, interactive, "run_start", json.RawMessage(`{"workflow_id":"flow","wait_seconds":30}`)); err != nil {
 			t.Fatal(err)
 		}
-		if len(app.holds) != 1 || app.holds[0].releases != 1 || app.holds[0].delivered {
+		if len(app.holds) != 1 || app.holds[0].releases != 1 || app.holds[0].delivered() {
 			t.Fatalf("holds = %+v, want one released as not delivered", app.holds)
 		}
 	})
@@ -589,7 +600,7 @@ func TestWaitingCallsHoldTheWake(t *testing.T) {
 		if _, err := New(app).Call(ctx, interactive, "run_status", json.RawMessage(`{"run_id":"run-1","wait_seconds":60}`)); err != nil {
 			t.Fatal(err)
 		}
-		if len(app.holds) != 1 || app.holds[0].runID != "run-1" || app.holds[0].releases != 1 || !app.holds[0].delivered {
+		if len(app.holds) != 1 || app.holds[0].runID != "run-1" || app.holds[0].releases != 1 || !app.holds[0].delivered() {
 			t.Fatalf("holds = %+v", app.holds)
 		}
 		if app.calls[0] != "HoldWake" {
@@ -601,7 +612,7 @@ func TestWaitingCallsHoldTheWake(t *testing.T) {
 		if _, err := New(app).Call(ctx, interactive, "run_status", json.RawMessage(`{"run_id":"run-1","wait_seconds":60}`)); err == nil {
 			t.Fatal("a failed wait answered")
 		}
-		if len(app.holds) != 1 || app.holds[0].releases != 1 || app.holds[0].delivered {
+		if len(app.holds) != 1 || app.holds[0].releases != 1 || app.holds[0].delivered() {
 			t.Fatalf("holds = %+v", app.holds)
 		}
 	})

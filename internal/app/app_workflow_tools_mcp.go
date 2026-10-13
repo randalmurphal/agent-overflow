@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workflow/catalog"
 	"agent-overflow/internal/workflow/def"
+	"agent-overflow/internal/workflowapp"
 	"agent-overflow/internal/workflowtools"
 )
 
@@ -225,7 +226,7 @@ func (w workflowToolsAdapter) StartRun(ctx context.Context, input workflowtools.
 	result, err := w.a.workflowAgentStartRun(ctx, start)
 	if err != nil {
 		if hold != nil {
-			hold.Release(false)
+			hold.Release(nil)
 		}
 		return workflowtools.Started{}, err
 	}
@@ -248,12 +249,32 @@ func (w workflowToolsAdapter) HoldWake(ctx context.Context, runID string) workfl
 	if err != nil || !scope.IsInteractive() {
 		return noWakeHold{}
 	}
-	return w.a.workflowApplication().HoldRestWake(runID, scope.ThreadID)
+	return responseWakeHold{ctx: ctx, hold: w.a.workflowApplication().HoldRestWake(runID, scope.ThreadID)}
+}
+
+// responseWakeHold releases once the call's response has left the transport
+// (threadmcp.AfterResponse). A returned rest is delivered only if that
+// response was written: a client that hung up, a stopped session or a failed
+// write never received it, so the rest the hold kept back still wakes the
+// thread.
+type responseWakeHold struct {
+	ctx  context.Context
+	hold *workflowapp.WakeHold
+}
+
+func (h responseWakeHold) Release(returned *workflowtools.Rest) {
+	threadmcp.AfterResponse(h.ctx, func(written bool) {
+		if returned == nil || !written {
+			h.hold.Release(nil)
+			return
+		}
+		h.hold.Release(&workflowapp.ReturnedRest{Cursor: returned.Cursor, State: returned.State, Reason: returned.Reason})
+	})
 }
 
 type noWakeHold struct{}
 
-func (noWakeHold) Release(bool) {}
+func (noWakeHold) Release(*workflowtools.Rest) {}
 
 func (w workflowToolsAdapter) WatchRun(ctx context.Context, input workflowtools.WatchInput) (workflowtools.Watched, error) {
 	result, err := w.a.workflowAgentWatchRun(ctx, WorkflowAgentWatchInput{
@@ -264,7 +285,8 @@ func (w workflowToolsAdapter) WatchRun(ctx context.Context, input workflowtools.
 		return workflowtools.Watched{}, err
 	}
 	return workflowtools.Watched{
-		Cursor: result.Cursor, Transitions: len(result.Transitions), Resting: result.Run.Resting, Result: result,
+		Cursor: result.Cursor, Transitions: len(result.Transitions), Resting: result.Run.Resting,
+		State: result.Run.State, Reason: result.Run.Reason, Result: result,
 	}, nil
 }
 
