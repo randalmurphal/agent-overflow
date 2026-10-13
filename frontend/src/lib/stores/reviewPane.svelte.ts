@@ -1898,6 +1898,10 @@ function createReviewPaneState(
     // has somewhere to land.
     if (!conversationOrder.includes(`t:${prThreadId}`)) captureConversationOrder(true);
     if (!conversationThreadExpanded(prThreadId)) conversationExpandOverrides.set(prThreadId, true);
+    // The jump decides where the section is scrolled. A remembered
+    // reading offset is restored a tick after the overview row remounts
+    // (ReviewResizableBody), which would land on top of the jump's scroll.
+    overviewScrollTops.delete('conversation');
     pendingConversationThreadId = prThreadId;
   }
 

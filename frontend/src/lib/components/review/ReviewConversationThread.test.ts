@@ -42,7 +42,6 @@ function withReplies(count: number): ReviewComment[] {
 function fakeReview(overrides: Partial<Record<keyof ReviewPaneState, unknown>> = {}) {
   const review = {
     files: [],
-    unresolvedCursor: null,
     isTurnActive: false,
     replyBodyFor: vi.fn(() => ''),
     replyErrorFor: vi.fn(() => null),
