@@ -1,10 +1,10 @@
 package app
 
 import (
-	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/untrustedtext"
+	"agent-overflow/internal/workflow/catalog"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/memory"
@@ -24,7 +24,7 @@ import (
 )
 
 // WorkflowAgentRunBudget is the ceiling in force for one run and where its run
-// TREE stands against it. Present only on a run that has one — most runs
+// TREE stands against it. Present only on a run that has one: most runs
 // declare no budget, and a field saying "no ceiling" on every one of them would
 // be noise on the surface a reader scans for what a run needs.
 //
@@ -46,7 +46,7 @@ type WorkflowAgentRunBudget struct {
 	// 100 would hide the one state the field exists to make visible.
 	Percent int `json:"percent"`
 	// Estimated says the dollar figure is not exactly what the providers
-	// reported — the rate table priced part of it (Codex reports tokens only),
+	// reported: the rate table priced part of it (Codex reports tokens only),
 	// or some rows could not be priced at all. Never set for a token or
 	// wall-clock ceiling: both are exact.
 	Estimated bool `json:"estimated,omitempty"`
@@ -55,7 +55,7 @@ type WorkflowAgentRunBudget struct {
 	// judged against a dollar ceiling it has not already crossed and will park
 	// at its next phase boundary, so the status surface has to name the reason.
 	UnpricedRows int64 `json:"unpricedRows,omitempty"`
-	// Exhausted is the ceiling already crossed — true only in the window
+	// Exhausted is the ceiling already crossed, true only in the window
 	// between the breach and the park it produces, and on a run parked for it.
 	Exhausted bool `json:"exhausted,omitempty"`
 	// RootItemID is set only when the ceiling belongs to an ANCESTOR: §12
@@ -91,7 +91,7 @@ func (a *App) workflowRunBudget(ctx context.Context, item store.WorkItem) (*Work
 // belongs to (§12). A nil view is a run under no ceiling and answers nil, which
 // is the ordinary case rather than an error.
 //
-// It is shared by the CLI/status surface and the run map so those two cannot
+// It is shared by the workflow tools' status read and the run map so those two cannot
 // render the same ceiling differently; the resolution itself is
 // `engine.ResolveBudget`'s in both, which is what keeps either from disagreeing
 // with the check that actually parks the run.
@@ -123,24 +123,24 @@ func workflowBudgetLine(view *engine.BudgetView, forItemID string) *WorkflowAgen
 	return budget
 }
 
-// Server side of the `ao` execution surface (spec §5, D15/D17).
+// Server side of the ao-workflow-tools execution surface (spec §5, D17, D77).
 //
-// Every method the CLI can reach is authorized twice. The transport refuses a
-// method the token's scope may not name at all (grants → method, see
-// internal/transport/scopedtoken.go); this file enforces the part a method name
-// cannot express — WHICH runs and projects the caller may touch,
-// and the surface-and-skip ledger that makes a re-entered phase's side effects
-// fire once.
+// Every call is authorized twice. The tool server refuses a tool the session's
+// grants do not admit at all (internal/workflowtools); this file enforces the
+// part a tool name cannot express: WHICH runs and projects the caller may
+// touch, and the surface-and-skip ledger that makes a re-entered phase's side
+// effects fire once.
 
-// workflowSourceAgent is the run provenance every CLI-started run carries. The
+// workflowSourceAgent is the run provenance every agent-started run carries. The
 // two kinds are told apart by the source ref, not by a second source value:
 // a run an interactive thread asked for has none (its provenance is the thread
 // it is bound to), and a run a granted phase started carries its effect key.
 const workflowSourceAgent = "agent"
 
-// The effect tool name recorded in work_item_effects. It names the CLI operation,
-// not the RPC, because the ledger is what the human reads when a re-entered
-// phase reports a skip.
+// The effect tool name recorded in work_item_effects. It names the operation,
+// not the method, because the ledger is what the human reads when a re-entered
+// phase reports a skip. The value predates the tool name and stays as written
+// because ledger rows already carry it.
 const workflowEffectStartRun = "run-start"
 
 // phaseSourceRefPrefix is what every run a given (item, phase) started shares.
@@ -162,14 +162,15 @@ func phaseSourceRef(scope transport.CallerScope, payloadHash string) string {
 	return phaseSourceRefPrefix(scope) + payloadHash
 }
 
-// requireCallerScope returns the authenticated scope for a CLI-only method. The
-// absence of a scope is not an authorization edge case — it means the method was
-// reached from the webview, which has no business calling the agent surface.
+// requireCallerScope returns the authenticated scope for an agent-only method.
+// The absence of a scope is not an authorization edge case: it means the method
+// was reached without the workflow tool server, which is the only caller that
+// attaches one.
 func requireCallerScope(ctx context.Context) (transport.CallerScope, error) {
 	scope, ok := transport.CallerScopeFrom(ctx)
 	if !ok {
 		return transport.CallerScope{}, fmt.Errorf(
-			"this method is part of the ao CLI surface and requires a session-scoped token")
+			"this method is part of the workflow tools surface and requires a session caller scope")
 	}
 	if strings.TrimSpace(scope.ProjectID) == "" {
 		return transport.CallerScope{}, fmt.Errorf("this session is not attached to a project")
@@ -177,8 +178,8 @@ func requireCallerScope(ctx context.Context) (transport.CallerScope, error) {
 	return scope, nil
 }
 
-// authorizeScopedRunAction gates a run-control RPC that both the overlay and
-// the CLI reach. A call carrying no caller scope is the user's own, through the
+// authorizeScopedRunAction gates a run-control method that both the overlay and
+// the workflow tools reach. A call carrying no caller scope is the user's own, through the
 // UI, and passes untouched; a call carrying one is an agent's and is confined
 // to what its scope allows.
 //
@@ -200,12 +201,12 @@ func (a *App) authorizeScopedRunAction(ctx context.Context, itemID, action strin
 // a run stays limited to the ones this phase started.
 //
 // It reads the SUMMARY projection. Authorization itself needs four columns —
-// project, source, source ref, id — and every verb on this surface calls this
+// project, source, source ref, id; every tool on this surface calls this
 // first, several of them per transition of a run a supervising agent is
 // watching; the full row would decode one frozen workflow snapshot each time to
-// answer a question no snapshot bears on. The two verbs that DO need a blob
-// (`run status`/`run inspect` for seeds and the run's own budget envelope,
-// `run output` for the declared-output map) read the full row for themselves,
+// answer a question no snapshot bears on. The two reads that DO need a blob
+// (run_status/run_inspect for seeds and the run's own budget envelope,
+// run_output for the declared-output map) read the full row for themselves,
 // so the cost lands on the callers that incur it rather than on all of them.
 func (a *App) scopedRun(scope transport.CallerScope, itemID, action string, readOnly bool) (store.WorkItem, error) {
 	itemID = strings.TrimSpace(itemID)
@@ -326,13 +327,13 @@ func (a *App) bindOriginThread(scope transport.CallerScope, item store.WorkItem)
 	return ""
 }
 
-// `agent-overflow run amend --seed k=v` (D53): changing a resting run's inputs
+// run_amend (D53): changing a resting run's inputs
 // without throwing the run away.
 //
 // It exists because the alternative was priced: one seed value wrong on a live
-// campaign cost a cancel, a respawn, and $14 of tokens, because no verb could
+// campaign cost a cancel, a respawn, and $14 of tokens, because nothing could
 // change a seed and the repair pattern that works for a prompt (edit the file,
-// `run resume --refresh-def`, D50) had no equivalent for an input.
+// resume with refresh_def, D50) had no equivalent for an input.
 //
 // The engine owns every rule — which states may be amended, which names are
 // amendable, and when the run will read the new value — because all three are
@@ -340,11 +341,11 @@ func (a *App) bindOriginThread(scope transport.CallerScope, item store.WorkItem)
 // file adds what the engine has no business knowing: who is allowed to ask, and
 // what a caller has to be told about a run that is not the root of its tree.
 
-// WorkflowAgentAmendSeedsInput is `run amend`. Seeds is a partial object: only
+// WorkflowAgentAmendSeedsInput is run_amend's input. Seeds is a partial object: only
 // the named keys change, every other seed the run froze is left alone. Clearing
 // a seed is deliberately not expressible — an absent optional input and one
-// explicitly set to null are different runs, and "remove this key" is a verb
-// nobody has asked for.
+// explicitly set to null are different runs, and "remove this key" is an
+// operation nobody has asked for.
 type WorkflowAgentAmendSeedsInput struct {
 	ItemID string          `json:"itemId"`
 	Seeds  json.RawMessage `json:"seeds"`
@@ -360,8 +361,8 @@ type WorkflowAgentAmendSeedsResult struct {
 	PhaseID string          `json:"phaseId,omitempty"`
 	Effect  string          `json:"effect"`
 	// AppliesNote is one sentence saying when the run reads the new values and,
-	// where it matters, which verb makes it read them sooner. It is composed here
-	// rather than by the CLI because the answer depends on the run record, and a
+	// where it matters, which call makes it read them sooner. It is composed here
+	// rather than by the caller because the answer depends on the run record, and a
 	// caller that had to derive it would be deriving the engine's dispatch.
 	AppliesNote string `json:"appliesNote"`
 	// CallerNote is set when the amended run was CALLED by another. Its seeds are
@@ -370,14 +371,10 @@ type WorkflowAgentAmendSeedsResult struct {
 	CallerNote string `json:"callerNote,omitempty"`
 }
 
-// WorkflowAgentAmendSeeds changes seed values on a run that is resting.
-//
-// LocalOnly: it mutates what autonomous provider sessions will be told to do,
-// which is the same authority as resuming the run.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentAmendSeeds(ctx context.Context, input WorkflowAgentAmendSeedsInput) (WorkflowAgentAmendSeedsResult, error) {
+// workflowAgentAmendSeeds changes seed values on a run that is resting. It
+// takes the start-run grant: it mutates what autonomous provider sessions will
+// be told to do, which is the same authority as resuming the run.
+func (a *App) workflowAgentAmendSeeds(ctx context.Context, input WorkflowAgentAmendSeedsInput) (WorkflowAgentAmendSeedsResult, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return WorkflowAgentAmendSeedsResult{}, err
@@ -430,19 +427,18 @@ func (a *App) WorkflowAgentAmendSeeds(ctx context.Context, input WorkflowAgentAm
 func workflowAmendmentNote(amendment engine.SeedAmendment) string {
 	if amendment.Effect == engine.SeedEffectFreshEntry {
 		return fmt.Sprintf(
-			"the parked attempt of phase %q is repaired in place by a bare resume and keeps the values it froze; the new values are read at the next FRESH phase entry — `agent-overflow run resume %s --phase %s` enters one now, and the run's next phase does so on its own",
+			"the parked attempt of phase %q is repaired in place by a bare resume and keeps the values it froze; the new values are read at the next FRESH phase entry; `run_control(run_id: %q, action: \"resume\", phase_id: %q)` enters one now, and the run's next phase does so on its own",
 			amendment.PhaseID, amendment.ItemID, amendment.PhaseID)
 	}
 	return "the next attempt this run starts renders the new values; if it continues a provider session that already ran with the old ones, say so in the resume — that session's earlier turns are unchanged"
 }
 
-// `agent-overflow run guide <run-id> "<text>"` — steering a run without parking
-// it.
+// run_guide: steering a run without parking it.
 //
 // It is the thread→run direction of `notify:` (D54): a `notify:` route tells the
 // watching thread what a run just decided, and this tells the run what the
 // watcher wants next. Before it existed, the only way to redirect a free-running
-// campaign was `run pause` → edit → `run resume`, which costs the turn in flight
+// campaign was pause, edit, resume, which costs the turn in flight
 // and, for a wave, the coordination of every unit under it.
 //
 // The engine owns every rule — which states may be guided, how many entries fit,
@@ -451,7 +447,7 @@ func workflowAmendmentNote(amendment engine.SeedAmendment) string {
 // entry, and what a caller has to be told about a run that is not the root of
 // its tree.
 
-// WorkflowAgentGuideRunInput is `run guide`. One entry per call: the slot is a
+// WorkflowAgentGuideRunInput is run_guide's input. One entry per call: the slot is a
 // list of instructions, and merging two calls into one entry would lose the
 // order and the times they were left at.
 type WorkflowAgentGuideRunInput struct {
@@ -461,7 +457,7 @@ type WorkflowAgentGuideRunInput struct {
 
 // WorkflowAgentGuideRunResult is what is now waiting for the run, and when the
 // run will read it. Entries are not echoed back: the caller wrote the newest one
-// and the older ones are the run's business, while `run inspect` is the read
+// and the older ones are the run's business, while run_inspect is the read
 // surface for the whole slot.
 type WorkflowAgentGuideRunResult struct {
 	ItemID string `json:"itemId"`
@@ -475,8 +471,8 @@ type WorkflowAgentGuideRunResult struct {
 	Reason  string `json:"reason,omitempty"`
 	PhaseID string `json:"phaseId,omitempty"`
 	// DeliversNote is one sentence saying when the run reads this, in the terms
-	// the operator's next command is expressed in. It is composed here rather
-	// than by the CLI because the answer depends on where the run is resting.
+	// the operator's next call is expressed in. It is composed here rather
+	// than by the caller because the answer depends on where the run is resting.
 	DeliversNote string `json:"deliversNote"`
 	// CallerNote is set when the guided run was CALLED by another. The entry
 	// reaches this run's own remaining phases and nothing else.
@@ -489,14 +485,11 @@ type WorkflowAgentGuideRunResult struct {
 	QuarantineNote string `json:"quarantineNote,omitempty"`
 }
 
-// WorkflowAgentGuideRun leaves one instruction for a run's next phase entry.
-//
-// LocalOnly: it changes what an autonomous provider session will be told to do,
-// which is the same authority as amending its seeds or resuming it.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentGuideRun(ctx context.Context, input WorkflowAgentGuideRunInput) (WorkflowAgentGuideRunResult, error) {
+// workflowAgentGuideRun leaves one instruction for a run's next phase entry. It
+// takes the start-run grant: it changes what an autonomous provider session
+// will be told to do, which is the same authority as amending its seeds or
+// resuming it.
+func (a *App) workflowAgentGuideRun(ctx context.Context, input WorkflowAgentGuideRunInput) (WorkflowAgentGuideRunResult, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return WorkflowAgentGuideRunResult{}, err
@@ -518,7 +511,7 @@ func (a *App) WorkflowAgentGuideRun(ctx context.Context, input WorkflowAgentGuid
 		result.By = string(state.Pending[len(state.Pending)-1].By)
 	}
 	// The row is re-read rather than trusted from before the write, for the same
-	// reason `run amend` re-reads it: the caller note is about linkage, which the
+	// reason `run_amend` re-reads it: the caller note is about linkage, which the
 	// guidance state does not carry.
 	item, err := a.store.GetWorkItem(state.ItemID)
 	if err != nil {
@@ -552,12 +545,12 @@ func guidanceDraftFor(ctx context.Context, text string) engine.GuidanceDraft {
 // workflowGuidanceNote states when the run reads what was just left, which is a
 // different sentence for each place a run can be resting.
 //
-// The trap it exists to close is the continuable park: a bare `run resume` of a
+// The trap it exists to close is the continuable park: a bare a bare resume of a
 // `paused`, `interrupted`, `checkpoint`, `unit-failed`,
 // `provider-retries-exhausted`, or legacy `retries-exhausted`
 // park CONTINUES the attempt that parked instead of entering a phase, and a
 // continuation is not a delivery boundary — the guidance would sit pending
-// through a resume the operator reasonably expected to consume it. The verb that
+// through a resume the operator reasonably expected to consume it. The call that
 // does enter a phase is named instead of left to be inferred. The sentence reads
 // `engine.ContinuableReason` rather than restating the set, so a new member
 // changes what this says without an edit here.
@@ -569,14 +562,14 @@ func workflowGuidanceNote(state engine.GuidanceState) string {
 			workflowGuidancePhaseClause(state.PhaseID))
 	case engine.ContinuableReason(state.Reason):
 		return fmt.Sprintf(
-			"the run is parked %s, which `agent-overflow run resume %s` CONTINUES rather than re-enters — a continuation is not a delivery boundary, so this is read at the next fresh phase entry after that, or immediately by `agent-overflow run resume %s --phase <id>`, which starts a phase over",
+			"the run is parked %s, which `run_control(run_id: %q, action: \"resume\")` CONTINUES rather than re-enters; a continuation is not a delivery boundary, so this is read at the next fresh phase entry after that, or immediately by `run_control(run_id: %q, action: \"resume\", phase_id: \"<phase-id>\")`, which starts a phase over",
 			state.Reason, state.ItemID, state.ItemID)
 	default:
-		// Which verb settles this park is the repair map's answer, not this
-		// method's — a `gate` park takes `run resolve`, a `stuck` one takes `run
-		// resume`, and naming the wrong one here would be worse than naming none.
+		// Which call settles this park is the repair map's answer, not this
+		// method's: a `gate` park takes run_resolve, a `stuck` one takes a
+		// resume, and naming the wrong one here would be worse than naming none.
 		return fmt.Sprintf(
-			"the run is parked %s%s; this is delivered at the fresh phase entry the verb that settles that park produces",
+			"the run is parked %s%s; this is delivered at the fresh phase entry the call that settles that park produces",
 			state.Reason, workflowGuidancePhaseClause(state.PhaseID))
 	}
 }
@@ -584,9 +577,8 @@ func workflowGuidanceNote(state engine.GuidanceState) string {
 // workflowGuidanceQuarantineNote says what this append cost, when it cost
 // anything. The engine hands back facts (how big the discarded column was, why
 // it would not decode, which log event holds it); the sentence is composed here
-// for the same reason `workflowGuidanceNote` is — the caller reads prose, not a
-// struct, and the CLI's job is to print what the app says rather than to know
-// what a quarantine means.
+// for the same reason `workflowGuidanceNote` is: the caller reads prose, not a
+// struct, and should not have to know what a quarantine means.
 //
 // It names what the operator has to DO, because the discard is not repairable
 // from the record: whatever was pending is in the log and not in the run, so any
@@ -607,7 +599,7 @@ func workflowGuidancePhaseClause(phaseID string) string {
 	return fmt.Sprintf(" (phase %q)", phaseID)
 }
 
-// WorkflowAgentGuidanceEntry is one pending entry as `run inspect` reports it.
+// WorkflowAgentGuidanceEntry is one pending entry as run_inspect reports it.
 // The text is bounded — the slot holds several kilobytes per entry and an
 // inspection is read by an agent paying per byte — and the age is computed here
 // rather than left as a timestamp for the reader to subtract, because "left four
@@ -624,18 +616,18 @@ type WorkflowAgentGuidanceEntry struct {
 	ByRun string `json:"byRun,omitempty"`
 }
 
-// `agent-overflow run inspect` — the whole picture of one run in one call.
+// run_inspect: the whole picture of one run in one call.
 //
 // Everything here was already persisted and already readable; what was missing
 // was a read that returns it together. An agent supervising a campaign asked
 // "which worktree, which branch, which seeds, which children, what did the
 // latest attempt output" before every gate decision, and answered it with raw
-// SQL against the production database because no verb exposed any of it. The
-// projection stays narrow for the same reason `run status` does — an agent's
-// context window pays for every byte — so envelope outputs arrive as a bounded
+// SQL against the production database because nothing exposed any of it. The
+// projection stays narrow for the same reason run_status does (an agent's
+// context window pays for every byte), so envelope outputs arrive as a bounded
 // digest until a caller names the attempt it actually wants.
 
-// WorkflowAgentInspectInput is `run inspect`. PhaseID selects a single attempt
+// WorkflowAgentInspectInput is run_inspect's input. PhaseID selects a single attempt
 // to read whole; Attempt narrows that to one try and is meaningless without it.
 type WorkflowAgentInspectInput struct {
 	ItemID  string `json:"itemId"`
@@ -643,13 +635,13 @@ type WorkflowAgentInspectInput struct {
 	Attempt int    `json:"attempt,omitempty"`
 }
 
-// WorkflowAgentRunInspection is what `run inspect` returns. Run is exactly the
-// `run status` document, so a reader that already parses one parses this; the
+// WorkflowAgentRunInspection is what run_inspect returns. Run is exactly the
+// run_status document, so a reader that already parses one parses this; the
 // rest is what a run record carries and that projection deliberately omits.
 type WorkflowAgentRunInspection struct {
 	Run WorkflowAgentRunView `json:"run"`
 	// WorktreePath, Branch, and BaseBranch are where the run's work actually
-	// happens. Nothing else on the CLI surface names them, and a supervising
+	// happens. Nothing else on the tools surface names them, and a supervising
 	// agent cannot inspect a diff, a log, or a commit without them.
 	WorktreePath string `json:"worktreePath,omitempty"`
 	Branch       string `json:"branch,omitempty"`
@@ -657,9 +649,9 @@ type WorkflowAgentRunInspection struct {
 	// Children are the runs this run called, oldest first. They are NOT bounded:
 	// a campaign's waves are its children, so eliding them would truncate the
 	// answer to the question that is being asked — and one row per child is the
-	// same cost `run list` already pays per run.
+	// same cost run_list already pays per run.
 	Children []WorkflowAgentChildRun `json:"children"`
-	// Guidance is what `run guide` left and the run has not reached a phase entry
+	// Guidance is what run_guide left and the run has not reached a phase entry
 	// to consume yet, oldest first. It is RUN-level rather than phase-level
 	// because the slot is: an entry is delivered at whichever phase the run
 	// enters next, not at one it is resting in. Absent when nothing is pending.
@@ -719,9 +711,9 @@ type WorkflowAgentUnitView struct {
 	UnitAttempt int    `json:"unitAttempt"`
 	// Note is the note the unit row carries: for a settled unit, how it ended;
 	// for one a repair reopened, what that repair told its next try. It is here
-	// because `failed` alone is ambiguous — a pause tears its in-flight units
+	// because `failed` alone is ambiguous (a pause tears its in-flight units
 	// down `failed` with an interrupted note, since there is no interrupted unit
-	// status and `failed` is what the repair verbs recover — so a drill-down
+	// status and `failed` is what the repair actions recover), so a drill-down
 	// without it reports the operator's own pause as a wave of agent failures.
 	Note         string `json:"note,omitempty"`
 	Branch       string `json:"branch,omitempty"`
@@ -729,14 +721,9 @@ type WorkflowAgentUnitView struct {
 	ThreadID     string `json:"threadId,omitempty"`
 }
 
-// WorkflowAgentInspectRun is `agent-overflow run inspect`.
-//
-// LocalOnly: see WorkflowAgentRunStatus. It additionally names local worktree
-// paths, which is a fact about this machine's filesystem.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentInspectRun(ctx context.Context, input WorkflowAgentInspectInput) (WorkflowAgentRunInspection, error) {
+// workflowAgentInspectRun is run_inspect. It names local worktree paths, which
+// is a fact about this machine's filesystem.
+func (a *App) workflowAgentInspectRun(ctx context.Context, input WorkflowAgentInspectInput) (WorkflowAgentRunInspection, error) {
 	inspection, err := a.workflowApplication().InspectRun(ctx, workflowapp.InspectInput{
 		ItemID: input.ItemID, PhaseID: input.PhaseID, Attempt: input.Attempt,
 	})
@@ -746,19 +733,16 @@ func (a *App) WorkflowAgentInspectRun(ctx context.Context, input WorkflowAgentIn
 	return projectWorkflowInspection(inspection), nil
 }
 
-// `agent-overflow memory add` / `memory list` — the CLI half of campaign memory
-// (Packet L).
+// memory_add / memory_list: the agent half of campaign memory (Packet L).
 //
-// Neither verb takes a grant. Recording what the work learned is part of doing
+// Neither tool takes a grant. Recording what the work learned is part of doing
 // the work, exactly as returning an envelope is: a phase that can run at all can
 // say what it found out, and a `grants:` line standing between an element and
 // its own campaign's memory would mean every workflow that forgot one silently
 // relearns everything each wave. The AUTHORITY that does apply is row-level and
 // enforced here: a phase writes into the tree of the run it is a phase of, and
-// into no other.
-//
-// These are LocalOnly for the same reason `run narrative` is — they read and
-// write a file under this machine's app-managed config root.
+// into no other. A read-only phase is withheld memory_add and keeps its
+// envelope memory field instead (D77).
 
 // WorkflowAgentMemoryInput is one recorded note. There is deliberately no
 // provenance or timestamp field: those are the system's answer to "who wrote
@@ -807,13 +791,9 @@ type WorkflowAgentMemoryLog struct {
 	Skipped int `json:"skipped"`
 }
 
-// WorkflowAgentAddMemory is `agent-overflow memory add`.
-//
-// LocalOnly: it appends to a file under this machine's app-managed config root.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentAddMemory(ctx context.Context, input WorkflowAgentMemoryInput) (WorkflowAgentMemoryResult, error) {
+// workflowAgentAddMemory is memory_add. It appends to a file under this
+// machine's app-managed config root.
+func (a *App) workflowAgentAddMemory(ctx context.Context, input WorkflowAgentMemoryInput) (WorkflowAgentMemoryResult, error) {
 	result, err := a.workflowApplication().AddMemory(ctx, workflowapp.MemoryInput{
 		ItemID: input.ItemID, Kind: input.Kind, Text: input.Text, Files: input.Files,
 	})
@@ -825,13 +805,9 @@ func (a *App) WorkflowAgentAddMemory(ctx context.Context, input WorkflowAgentMem
 	}, nil
 }
 
-// WorkflowAgentListMemory is `agent-overflow memory list`.
-//
-// LocalOnly: it reads a file under this machine's app-managed config root.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentListMemory(ctx context.Context, input WorkflowAgentMemoryListInput) (WorkflowAgentMemoryLog, error) {
+// workflowAgentListMemory is memory_list. It reads a file under this machine's
+// app-managed config root.
+func (a *App) workflowAgentListMemory(ctx context.Context, input WorkflowAgentMemoryListInput) (WorkflowAgentMemoryLog, error) {
 	result, err := a.workflowApplication().ListMemory(ctx, workflowapp.MemoryListInput{
 		ItemID: input.ItemID, Kind: input.Kind,
 	})
@@ -841,11 +817,10 @@ func (a *App) WorkflowAgentListMemory(ctx context.Context, input WorkflowAgentMe
 	return projectWorkflowMemoryLog(result), nil
 }
 
-// `agent-overflow run narrative` — the per-attempt account, by coordinate
-// rather than by path.
+// run_narrative: the per-attempt account, by coordinate rather than by path.
 //
 // The narrative is the one human-readable record of what an element did, and it
-// is the file a supervising agent reads most: the campaign this verb came out of
+// is the file a supervising agent reads most: the campaign this read came out of
 // opened twenty-seven of them, every one by hand-assembling
 // `workflow-runs/<id>/<phase>.<n>/units/<unit>.<n>/narrative.md` and discovering
 // the shape by trial. The path shape is ours, so naming it is our job.
@@ -886,14 +861,9 @@ type WorkflowAgentNarrative struct {
 	Content   string `json:"content,omitempty"`
 }
 
-// WorkflowAgentRunNarrative is `agent-overflow run narrative`.
-//
-// LocalOnly: it reads a file out of this machine's app-managed run directory,
-// like every other local-filesystem read on the agent surface.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentRunNarrative(ctx context.Context, input WorkflowAgentNarrativeInput) (WorkflowAgentNarrative, error) {
+// workflowAgentRunNarrative is run_narrative. It reads a file out of this
+// machine's app-managed run directory.
+func (a *App) workflowAgentRunNarrative(ctx context.Context, input WorkflowAgentNarrativeInput) (WorkflowAgentNarrative, error) {
 	narrative, err := a.workflowApplication().RunNarrative(ctx, workflowapp.NarrativeInput{
 		ItemID: input.ItemID, PhaseID: input.PhaseID, Attempt: input.Attempt, UnitID: input.UnitID,
 	})
@@ -903,7 +873,7 @@ func (a *App) WorkflowAgentRunNarrative(ctx context.Context, input WorkflowAgent
 	return projectWorkflowNarrative(narrative), nil
 }
 
-// The per-attempt provenance `ao run status` carries (D38). A campaign agent
+// The per-attempt provenance run_status carries (D38). A campaign agent
 // reading a parked run has two questions the run row cannot answer: which
 // attempt produced the outputs the gate consumed, and what each element
 // actually ran with. Both are already persisted — the attempt rows carry
@@ -914,7 +884,7 @@ func (a *App) WorkflowAgentRunNarrative(ctx context.Context, input WorkflowAgent
 // narrower than the phase row: no envelopes, no predicate trace, no narrative
 // path. The decision fields are the gate's OUTCOME — which way the run went and
 // which loop budgets it had spent — because that is what a reader deciding
-// between `run resolve`, `run resume --phase`, and `run rerun` needs; the
+// between run_resolve, a resume with phase_id, and a rerun needs; the
 // predicates that produced it are a debugging read, and they live in the app.
 type WorkflowAgentPhaseAttempt struct {
 	PhaseID string `json:"phaseId"`
@@ -947,10 +917,10 @@ type WorkflowAgentPhaseAttempt struct {
 	DecisionTarget string   `json:"decisionTarget,omitempty"`
 	ExhaustedLoops []string `json:"exhaustedLoops,omitempty"`
 	// Outputs is a bounded digest of the attempt's envelope outputs and
-	// OutputOverflow how many it left out. Only `run inspect` populates them, and
+	// OutputOverflow how many it left out. Only run_inspect populates them, and
 	// only for the LATEST attempt of each phase: the digest exists so a reader
-	// deciding a gate does not have to open every attempt, and `run inspect
-	// --phase` returns that attempt's outputs whole instead. `run status` carries
+	// deciding a gate does not have to open every attempt, and run_inspect with
+	// phase_id returns that attempt's outputs whole instead. run_status carries
 	// neither — its projection is deliberately envelope-free.
 	Outputs        []WorkflowAgentOutputDigest `json:"outputs,omitempty"`
 	OutputOverflow int                         `json:"outputOverflow,omitempty"`
@@ -1092,11 +1062,11 @@ func (a *App) workflowAgentPhaseAttempts(itemID string) ([]WorkflowAgentPhaseAtt
 	return attempts, nil
 }
 
-// The methods the `ao` CLI calls. Each one takes its project from the caller's
-// scope rather than from an argument: the credential is what says which project
-// this session may touch, and an argument would be the caller's claim about it.
+// The methods the workflow tools call. Each one takes its project from the
+// caller's scope rather than from an argument: the session is what says which
+// project it may touch, and an argument would be the caller's claim about it.
 
-// WorkflowAgentStartInput is `ao run start`. Scope is optional — omitted, the
+// WorkflowAgentStartInput is run_start's input. Scope is optional: omitted, the
 // workflow id resolves by §8 precedence (project scope wins over shared),
 // exactly as a call phase's static target does.
 type WorkflowAgentStartInput struct {
@@ -1106,9 +1076,13 @@ type WorkflowAgentStartInput struct {
 	Seeds      json.RawMessage `json:"seeds,omitempty"`
 	BaseBranch string          `json:"baseBranch,omitempty"`
 	StepMode   bool            `json:"stepMode,omitempty"`
+	// beforeBind runs once the run exists and before it is bound to the
+	// caller's thread, so a waiting call's wake hold stands before any rest
+	// of the run could wake that thread.
+	beforeBind func(itemID string)
 }
 
-// WorkflowAgentStartResult is what `ao run start` prints. Skipped marks a
+// WorkflowAgentStartResult is what run_start returns. Skipped marks a
 // surface-and-skip replay: the phase asked for something it had already done,
 // so nothing new started and ItemID names the original run.
 type WorkflowAgentStartResult struct {
@@ -1121,8 +1095,8 @@ type WorkflowAgentStartResult struct {
 	BindingWarning string `json:"bindingWarning,omitempty"`
 }
 
-// WorkflowAgentRunView is the compact run projection `ao run status` and
-// `ao run list` render. It deliberately excludes envelopes, snapshots, and
+// WorkflowAgentRunView is the compact run projection run_status and run_list
+// return. It deliberately excludes envelopes, snapshots, and
 // worktree paths: an agent asking "where is this run" does not need a run's
 // whole history crossing into its context.
 type WorkflowAgentRunView struct {
@@ -1143,15 +1117,15 @@ type WorkflowAgentRunView struct {
 	// wave was asked for has it without a second surface; the listing projection
 	// does not carry it at all, because a summary row blanks the column.
 	Seeds json.RawMessage `json:"seeds,omitempty"`
-	// FailedUnits names the units `run retry-unit` takes — the attempt's join
-	// among them when it is what failed — populated only by
-	// `run status` on a run resting needs-human(unit-failed). The reason already
-	// says a fan-out needs repair; without the ids the caller has to find them in
-	// the app, which is the one thing an agent holding a CLI cannot do. It is
-	// deliberately absent from `run list` — one extra query per run is a fan-out
+	// FailedUnits names the units the retry_unit action takes (the attempt's
+	// join among them when it is what failed), populated only by run_status on
+	// a run resting needs-human(unit-failed). The reason already says a fan-out
+	// needs repair; without the ids the caller has to find them in the app,
+	// which is the one thing an agent cannot do. It is deliberately absent from
+	// run_list: one extra query per run is a fan-out
 	// of its own, and a list is for locating a run, not for repairing one.
 	FailedUnits []WorkflowAgentFailedUnit `json:"failedUnits,omitempty"`
-	// Phases is the run's per-attempt provenance, populated only by `run status`
+	// Phases is the run's per-attempt provenance, populated only by run_status
 	// for the same reason FailedUnits is: it costs one extra query per run, and a
 	// list is for locating a run rather than reading one.
 	Phases []WorkflowAgentPhaseAttempt `json:"phases,omitempty"`
@@ -1161,11 +1135,11 @@ type WorkflowAgentRunView struct {
 	// the same tree-spend aggregate the engine's check runs, which is a per-run
 	// fan-out a listing must not pay.
 	Budget *WorkflowAgentRunBudget `json:"budget,omitempty"`
-	// PendingGuidance counts the `run guide` entries waiting for this run's next
+	// PendingGuidance counts the run_guide entries waiting for this run's next
 	// fresh phase entry. It is a COUNT here and the entries themselves are on
-	// `run inspect`: the number is what a reader of a run's state needs — an
+	// run_inspect: the number is what a reader of a run's state needs (an
 	// operator about to leave a fourth steer, or one wondering why the run has
-	// not turned yet — while the text of what somebody else left is a read of
+	// not turned yet), while the text of what somebody else left is a read of
 	// its own. Populated by the single-run reads only, like the two fields above.
 	PendingGuidance int `json:"pendingGuidance,omitempty"`
 }
@@ -1177,7 +1151,7 @@ type WorkflowAgentRunView struct {
 // Note is the note the unit rests with, and it is what keeps the status
 // honest: a pause tears its in-flight units down `failed` with an interrupted
 // note, because there is no interrupted unit status and `failed` is exactly
-// what the repair verbs recover. Without the note a run the operator paused
+// what the repair actions recover. Without the note a run the operator paused
 // reports a wave of "failed units" that never failed at anything.
 type WorkflowAgentFailedUnit struct {
 	UnitID      string `json:"unitId"`
@@ -1185,7 +1159,7 @@ type WorkflowAgentFailedUnit struct {
 	Note        string `json:"note,omitempty"`
 }
 
-// WorkflowAgentRunOutputs is `ao run output`: the run's declared outputs plus
+// WorkflowAgentRunOutputs is run_output's result: the run's declared outputs plus
 // the artifact file names it produced.
 type WorkflowAgentRunOutputs struct {
 	ItemID    string         `json:"itemId"`
@@ -1200,13 +1174,7 @@ type WorkflowAgentRunOutputs struct {
 // interactive caller's run binds to its thread (D17); a granted phase's run is
 // recorded in the effect ledger so re-entering the phase surfaces the prior
 // start instead of firing a second one (§5).
-//
-// LocalOnly: it starts autonomous provider sessions, like every other entry to
-// the workflow start path.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentStartRun(ctx context.Context, input WorkflowAgentStartInput) (WorkflowAgentStartResult, error) {
+func (a *App) workflowAgentStartRun(ctx context.Context, input WorkflowAgentStartInput) (WorkflowAgentStartResult, error) {
 	scope, err := requireCallerScope(ctx)
 	if err != nil {
 		return WorkflowAgentStartResult{}, err
@@ -1260,6 +1228,9 @@ func (a *App) WorkflowAgentStartRun(ctx context.Context, input WorkflowAgentStar
 	result := WorkflowAgentStartResult{
 		ItemID: item.ID, WorkflowID: item.WorkflowID, WorkflowScope: item.WorkflowScope,
 		State: item.State,
+	}
+	if input.beforeBind != nil {
+		input.beforeBind(item.ID)
 	}
 	if warning := a.bindOriginThread(scope, item); warning != "" {
 		result.BindingWarning = warning
@@ -1327,23 +1298,17 @@ func (a *App) resolveAgentWorkflow(scope transport.CallerScope, workflowID, work
 		if declared != def.ScopeProject && declared != def.ScopeShared {
 			return def.ResolvedWorkflow{}, fmt.Errorf("scope must be project or shared")
 		}
-		return aocli.ResolveWorkflow(a.workflowDataRoot(), projectRow.Slug, workflowID, declared)
+		return catalog.ResolveWorkflow(a.workflowDataRoot(), projectRow.Slug, workflowID, declared)
 	}
-	calls, err := aocli.NewCallResolver(a.workflowDataRoot(), projectRow.Slug)
+	calls, err := catalog.NewCallResolver(a.workflowDataRoot(), projectRow.Slug)
 	if err != nil {
 		return def.ResolvedWorkflow{}, err
 	}
 	return calls.ResolveCall(workflowID)
 }
 
-// WorkflowAgentRunStatus is `ao run status` / the poll behind `ao run wait`.
-//
-// LocalOnly: the whole ao surface is reachable only through credentials minted
-// for local provider processes.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentRunStatus(ctx context.Context, itemID string) (WorkflowAgentRunView, error) {
+// workflowAgentRunStatus is run_status and the read behind every tool wait.
+func (a *App) workflowAgentRunStatus(ctx context.Context, itemID string) (WorkflowAgentRunView, error) {
 	view, err := a.workflowApplication().RunStatus(ctx, itemID)
 	if err != nil {
 		return WorkflowAgentRunView{}, err
@@ -1351,13 +1316,8 @@ func (a *App) WorkflowAgentRunStatus(ctx context.Context, itemID string) (Workfl
 	return projectWorkflowRunView(view), nil
 }
 
-// WorkflowAgentListRuns is `ao run list`, scoped to the caller's project.
-//
-// LocalOnly: see WorkflowAgentRunStatus.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentListRuns(ctx context.Context, activeOnly bool) ([]WorkflowAgentRunView, error) {
+// workflowAgentListRuns is run_list, scoped to the caller's project.
+func (a *App) workflowAgentListRuns(ctx context.Context, activeOnly bool) ([]WorkflowAgentRunView, error) {
 	views, err := a.workflowApplication().ListRuns(ctx, activeOnly)
 	if err != nil {
 		return nil, err
@@ -1369,14 +1329,9 @@ func (a *App) WorkflowAgentListRuns(ctx context.Context, activeOnly bool) ([]Wor
 	return out, nil
 }
 
-// WorkflowAgentRunOutput is `ao run output` — the "different context that did
-// not start the run" path (D15).
-//
-// LocalOnly: see WorkflowAgentRunStatus.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentRunOutput(ctx context.Context, itemID string) (WorkflowAgentRunOutputs, error) {
+// workflowAgentRunOutput is run_output: the "different context that did not
+// start the run" path (D15).
+func (a *App) workflowAgentRunOutput(ctx context.Context, itemID string) (WorkflowAgentRunOutputs, error) {
 	result, err := a.workflowApplication().RunOutput(ctx, itemID)
 	if err != nil {
 		return WorkflowAgentRunOutputs{}, err
@@ -1387,7 +1342,7 @@ func (a *App) WorkflowAgentRunOutput(ctx context.Context, itemID string) (Workfl
 	}, nil
 }
 
-// `agent-overflow run watch` (D53): the one method that BLOCKS.
+// run_watch (D53): the one method that BLOCKS.
 //
 // Every other method on this surface answers from what is already persisted and
 // returns. This one holds the request until the run tree it names moves, which
@@ -1395,22 +1350,12 @@ func (a *App) WorkflowAgentRunOutput(ctx context.Context, itemID string) (Workfl
 // and polling is what produced 712 status reads and seven hand-rolled monitor
 // loops in one campaign — one of which died without saying so.
 //
-// It is a long poll rather than a subscription because the CLI's transport is
-// one scoped HTTP POST per invocation (`internal/transport/httprpc.go`). A
-// subscription would mean giving scoped tokens a WebSocket, a replay ring, and
-// a per-connection channel filter — a second wire for one verb. The hold is
-// bounded (maxWorkflowWatchHold) so that the caller's own HTTP timeout is never
-// what ends the call, and so a credential revoked mid-watch — the session that
-// minted it ended — is discovered by the next call's 401 rather than by a
-// watcher that hangs until someone kills it.
+// It is a long poll rather than a subscription: one call holds while the run
+// tree is quiet, and the tool server repeats it until the caller's wait runs
+// out. Each hold is bounded by workflowapp and ends early when the caller's
+// context does, so a session that went away never leaves a watcher hanging.
 
-// maxWorkflowWatchHold bounds one blocked call. It sits under the CLI's 30s RPC
-// timeout on purpose: the client must be the one still waiting when the server
-// answers, never the other way round, or every quiet minute would look like a
-// dead backend. It is also the worst case for noticing a revoked token.
-const maxWorkflowWatchHold = 25 * time.Second
-
-// WorkflowAgentWatchInput is `run watch`. Cursor is the sequence the caller
+// WorkflowAgentWatchInput is one run_watch poll. Cursor is the sequence the caller
 // already has: zero means "I have none", which is answered immediately with the
 // run's current state so a watch on an already-resting run exits instead of
 // blocking on a transition that has already happened.
@@ -1423,8 +1368,9 @@ type WorkflowAgentWatchInput struct {
 	// next call.
 	Tree bool `json:"tree,omitempty"`
 	// WaitMillis is how long the caller is willing to have this call block,
-	// clamped to maxWorkflowWatchHold. It exists so `--timeout` is exact: the
-	// last poll of a bounded watch waits the remainder and not a second more.
+	// clamped to workflowapp's hold bound. It exists so a tool wait is exact:
+	// the last poll of a bounded watch waits the remainder and not a second
+	// more.
 	WaitMillis int64 `json:"waitMillis,omitempty"`
 }
 
@@ -1438,7 +1384,7 @@ type WorkflowAgentTransition struct {
 	PhaseID string `json:"phaseId,omitempty"`
 	Attempt int    `json:"attempt,omitempty"`
 	// From is empty for the birth transition of a run that has just started,
-	// which is how a `--tree` watcher sees a new wave appear.
+	// which is how a tree watcher sees a new wave appear.
 	From    string `json:"from,omitempty"`
 	To      string `json:"to"`
 	Reason  string `json:"reason,omitempty"`
@@ -1457,10 +1403,10 @@ type WorkflowAgentWatchRunState struct {
 	Reason     string `json:"reason,omitempty"`
 	PhaseID    string `json:"phaseId,omitempty"`
 	Resting    bool   `json:"resting"`
-	// Repair is the sentence naming the verb that settles this park, composed by
+	// Repair is the sentence naming the call that settles this park, composed by
 	// the same helper every wake uses (`wake.RepairSentence`) so the two surfaces
-	// cannot send a reader to different commands for one reason. Present only
-	// once the run is resting, and empty for the reasons that have no one verb.
+	// cannot send a reader to different calls for one reason. Present only once
+	// the run is resting, and empty for the reasons that have no one call.
 	Repair string `json:"repair,omitempty"`
 }
 
@@ -1479,15 +1425,10 @@ type WorkflowAgentWatchResult struct {
 }
 
 // WorkflowAgentWatchRun blocks until a watched run transitions, the caller's
-// wait budget expires, or the run is already resting.
-//
-// LocalOnly: see WorkflowAgentRunStatus. It takes the same grants as reading a
-// run's status, because that is what it is — the same fact, delivered when it
-// changes instead of when it is asked for.
-//
-//ao:scope threads:autonomy
-//ao:route home
-func (a *App) WorkflowAgentWatchRun(ctx context.Context, input WorkflowAgentWatchInput) (WorkflowAgentWatchResult, error) {
+// wait budget expires, or the run is already resting. It takes the same grants
+// as reading a run's status, because that is what it is: the same fact,
+// delivered when it changes instead of when it is asked for.
+func (a *App) workflowAgentWatchRun(ctx context.Context, input WorkflowAgentWatchInput) (WorkflowAgentWatchResult, error) {
 	result, err := a.workflowApplication().WatchRun(ctx, workflowapp.WatchInput{
 		ItemID: input.ItemID, Cursor: input.Cursor, Tree: input.Tree, WaitMillis: input.WaitMillis,
 	})

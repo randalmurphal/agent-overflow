@@ -247,6 +247,10 @@ func (a *App) startSessionNow(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("start session: register thread tools: %w", err)
 	}
+	workflowServers, err := a.workflowMCPConfigForThread(t, sessionToken)
+	if err != nil {
+		return fmt.Errorf("start session: register workflow tools: %w", err)
+	}
 	if browserServers == nil {
 		browserServers = map[string]any{}
 	}
@@ -254,6 +258,9 @@ func (a *App) startSessionNow(threadID string) error {
 		browserServers[name] = remoteMCPServerConfig(t.Provider, config)
 	}
 	for name, config := range threadServers {
+		browserServers[name] = threadMCPServerConfig(t.Provider, config)
+	}
+	for name, config := range workflowServers {
 		browserServers[name] = threadMCPServerConfig(t.Provider, config)
 	}
 	if len(browserServers) == 0 {
@@ -455,7 +462,7 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 // the user's custom environment for that provider (settings, applied at spawn),
 // the boot-mode overrides (providerExtraEnv — the harness's mock-control
 // credentials), the session's CLI credential (AO_ENDPOINT / AO_TOKEN /
-// AO_THREAD_ID, plus AO_RUN_ID / AO_PHASE_ID for a workflow phase), and the
+// AO_THREAD_ID), and the
 // PATH entry that makes `agent-overflow` resolve to this executable (D30).
 //
 // Precedence is provider config < user custom env < boot-mode overrides < AO
@@ -563,6 +570,9 @@ func (a *App) spawnProviderSession(
 		// wildcarded over the server so a new tool needs no second edit.
 		if mcpServers[threadMCPName] != nil {
 			cfg.AllowedTools = append(cfg.AllowedTools, ThreadToolsAllowedTool)
+		}
+		if mcpServers[workflowMCPName] != nil {
+			cfg.AllowedTools = append(cfg.AllowedTools, WorkflowToolsAllowedTool)
 		}
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = mcpServers
@@ -750,6 +760,7 @@ func (a *App) spawnProviderSession(
 			a.sessionProcessEnv(string(provider.ClaudeTUI), nil, credential),
 		)
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
+		cfg.MCPServers, cfg.AllowedTools = claudeTUIMCPServers(mcpServers)
 		cfg.Upstream = a.claudetuiUpstream()
 		cfg.EventLogger = a.logger
 		cfg.SystemPromptDir, err = a.claudePromptFileDir()

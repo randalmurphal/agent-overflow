@@ -195,6 +195,8 @@ type App struct {
 	// threadMCP owns the ao-thread-tools server and the threadtools
 	// contract bound to this app. Zero value ready; built on first use.
 	threadMCP appThreadMCP
+	// workflowMCP is ao-workflow-tools (app_workflow_tools_mcp.go).
+	workflowMCP appWorkflowMCP
 	// threadRequests holds the agent thread-request ledger's in-process
 	// state: the parked waits, the per-token settle lock, and which
 	// threads own a receipt that a turn end could settle. Zero value

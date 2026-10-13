@@ -227,7 +227,7 @@ func TestWorkflowRunBudgetNamesTheAncestorWhoseCeilingItSpends(t *testing.T) {
 	}
 }
 
-// TestWorkflowRunStatusCarriesTheBudget — `run status` / `run inspect` carry
+// TestWorkflowRunStatusCarriesTheBudget: `run_status` / `run_inspect` carry
 // the line, and a run with no ceiling carries no field at all.
 func TestWorkflowRunStatusCarriesTheBudget(t *testing.T) {
 	t.Parallel()
@@ -245,7 +245,7 @@ func TestWorkflowRunStatusCarriesTheBudget(t *testing.T) {
 		Grants: []string{string(def.GrantIntrospect)},
 	})
 
-	view, err := app.WorkflowAgentRunStatus(ctx, budgeted.ID)
+	view, err := app.workflowAgentRunStatus(ctx, budgeted.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestWorkflowRunStatusCarriesTheBudget(t *testing.T) {
 		t.Fatalf("status budget = %+v", view.Budget)
 	}
 
-	plain, err := app.WorkflowAgentRunStatus(ctx, unbudgeted.ID)
+	plain, err := app.workflowAgentRunStatus(ctx, unbudgeted.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

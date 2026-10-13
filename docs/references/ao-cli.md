@@ -32,29 +32,13 @@ agent-overflow <command>
                                                serve; update stages a binary as a new version and
                                                restarts the unit, and is the only way to replace
                                                the supervisor itself
-  workflow new|validate|list|schema            offline (each takes --config-root; put it after
-                                               the subcommand: aocli's root FlagSet would accept
-                                               a leading one, but the binary's entry router only
-                                               recognises a leading verb, so a flag-first
-                                               invocation never reaches these commands)
-  run start <workflow-id> [--scope|--goal|--seed k=v|--base-branch|--step|--wait|--timeout|--json]
-  run status|wait|output <run-id> [--json] [--timeout]
-  run watch <run-id> [--tree] [--timeout <dur>] [--json]
-  run inspect <run-id> [--phase <id> [--attempt <n>]] [--json]
-  run narrative <run-id> --phase <id> [--attempt <n>] [--unit <id>] [--json]
-  run list [--active] [--json]
-  run pause|cancel <run-id> [--json]
-  run soft-stop <run-id> [--clear] [--json]
-  run resume <run-id> [--phase <id>] [--refresh-def] [--at <when>] [--json]
-  run rerun <run-id> [--guidance <text>] [--refresh-def] [--json]
-  run retry-unit <run-id> <unit-id> [--note <text>] [--json]
-  run retry-failed-units <run-id> [--note <text>] [--json]
-  run resolve <run-id> --approve|--reject [--note <text>] [--json]
-  run answer <run-id> <text> [--json]
-  run amend <run-id> --seed k=v [--seed k2=v2]... [--json]
-  run guide <run-id> "<text>" [--json]
-  memory add --kind <kind> "<note>" [--file <path>]... [--run <id>] [--json]
-  memory list [--kind <kind>] [--run <id>] [--json]
+  pair [--lan|--class browser|android|desktop|--json|--wait <dur>]
+                                               host command: pairs a device with this computer's
+                                               running app or service; the six-digit code is
+                                               confirmed on stdin. --json emits the invitation,
+                                               verification and paired records for SSH setup
+  remote list|run|status|cancel                session command: commands on an enabled paired
+                                               computer (below)
   thread send <thread-id> <text> [--config-root|--wait <dur>]
                                                messages a thread on this computer from a script
                                                outside the app, through the owner's local control
@@ -63,49 +47,9 @@ agent-overflow <command>
                                                (docs/specs/standing-agents.md#wake-supervisor)
 ```
 
-## `--json` documents
-
-`--json` forwards the app's own result document verbatim, so these shapes are
-the app's, not the CLI's. Human rendering decodes only the fields it prints.
-
-```
-run inspect  { run: <run status document, incl. seeds>,
-               worktreePath?, branch?, baseBranch?,
-               children: [{itemId, workflowId?, goal?, state, reason?,
-                           parentPhaseId?, parentUnitId?, parentAttempt?}],
-               guidance?: [{text, at, ageSeconds, by, byRun?}],
-               phase?:   {phaseId, attempt, status, provider?, model?, effort?,
-                          cause?,
-                          outputs?: {<name>: <raw JSON value>},
-                          decision?, decisionTarget?, exhaustedLoops?,
-                          units: [{unitId, kind, status, unitAttempt, note?,
-                                   branch?, worktreePath?, threadId?}]} }
-run narrative { itemId, phaseId, attempt, unitId?, unitAttempt?,
-                path, present, bytes?, truncated?, content? }
-```
-
-`run status --json` carries:
-
-- `budget`: `{kind, ceilingTokens|ceilingUsd|ceilingMillis, spentTokens,
-  spentUsd, elapsedMillis, percent, estimated, unpricedRows?, exhausted,
-  rootItemId?}`. Absent entirely for a run with no ceiling, and carried on `run
-  inspect`'s nested `run` document the same way.
-- `seeds`: the run's frozen input object.
-- `pendingGuidance`: how many `run guide` entries are waiting for the run's next
-  phase entry, absent at zero. `run inspect` carries the entries themselves
-  under `guidance`, bounded and aged.
-- `phases[]`: each entry carries `cause` (the engine's park diagnosis, absent
-  when there is none) and `session` (`"continued"`, absent for a cold attempt),
-  on both verbs. `outputs` / `outputOverflow` are populated by `run inspect`
-  alone and absent on `run status`, whose projection stays envelope-free.
-- `failedUnits[]`: each entry carries `note`, what the unit rests with (how it
-  ended, or what a repair told its next try), absent when the row carries none.
-  Each `phase.units` entry on `run inspect` carries it too.
-
-`run watch --json` is NDJSON: one line per transition forwarding the app's own
-objects, the run document last, because a stream cannot be one document. The
-CLI's own events (gap, timeout, disconnect) are objects on the same stream
-rather than prose, so every line parses.
+Workflows, runs and campaign memory are not CLI commands. Agents reach them
+through the `ao-workflow-tools` MCP server
+([agent-workflow-tools.md](../specs/agent-workflow-tools.md), D77).
 
 ## Commands on another computer
 

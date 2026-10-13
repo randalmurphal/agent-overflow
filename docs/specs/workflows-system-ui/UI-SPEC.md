@@ -103,7 +103,7 @@ name; a project renders only if it has workflow definitions or runs.
 | `+ New run` | Opens intake (§7). |
 
 `+ New run` is the only entry point. Authoring a workflow is work over the
-definition files (`agent-overflow workflow new`, then an editor or a thread the
+definition files (`workflow_new` from a thread, then an editor or a thread the
 human opens themselves), not a button here (D32).
 
 At narrow widths, controls past Pause-all collapse into `⋯`; row metadata
@@ -293,8 +293,7 @@ typed seed inputs as plain fields · step-mode checkbox. Footer: primary
 ### 5.2 From chat: the `/workflow` command
 
 Rev 1's proposal confirm card (§7.2) and its MCP plumbing are **removed**.
-Agents start runs through the `agent-overflow` CLI under normal bash approval
-(D17, D30). The only run-shaped UI in a chat timeline is the **wake message** a
+Agents start runs through the `ao-workflow-tools` MCP server (D17, D77). The only run-shaped UI in a chat timeline is the **wake message** a
 bound run delivers, which is an ordinary user-role message, with no custom card.
 
 **`/workflow` is a composer slash command (D31), not a palette action.** Typing
@@ -410,7 +409,7 @@ granted it reaches them. Remote gate-approval is explicitly out.
 ## 11. Non-goals (normative)
 
 - NO variables / envelope / JSON / schema / gate-trace rendering on any
-  human surface. Those exist for agents through the `agent-overflow` CLI.
+  human surface. Those exist for agents through `ao-workflow-tools`.
 - NO affordance that spawns a chat thread (D32): no "Continue with agent",
   no "Open in thread" seed+bind, no triage-agent shell, no studio thread.
   Opening a thread the run ALREADY has (phase, unit, bound) stays.
@@ -419,8 +418,8 @@ granted it reaches them. Remote gate-approval is explicitly out.
 - NO workflows pane, NO per-project sidebar section, NO pane-kind or
   pane-persistence integration. The overlay is the only surface and panes
   never unmount beneath it.
-- NO chat proposal cards. Agents use the CLI; the wake message is a plain
-  message.
+- NO chat proposal cards. Agents use `ao-workflow-tools`; the wake message is
+  a plain message.
 - NO kanban / global work board; NO inspection modal; NO workflow-settings
   forms (settings are file work).
 - NO un-previewed destructive action (§4.5).

@@ -289,7 +289,7 @@ type WorkItemNode struct {
 // The summary projection cannot serve this. Its phase-progress join parses each
 // row's snapshot SQLite-side to locate the current phase's ordinal, which is a
 // real cost per row and a total waste for a caller that only wants membership:
-// `agent-overflow run watch --tree` re-resolves its watched set on every wake of
+// `run_watch` with `tree` re-resolves its watched set on every wake of
 // a GLOBALLY broadcast loop, so one transition anywhere in the app would
 // otherwise re-parse a forty-run campaign's forty frozen workflows.
 func (s *Store) GetWorkItemNode(id string) (WorkItemNode, error) {
@@ -460,7 +460,7 @@ func (s *Store) ListWorkItemSummaries(filter WorkItemListFilter) ([]WorkItem, er
 
 // GetWorkItemSummary is the single-row form of ListWorkItemSummaries: the same
 // projection including phase progress, and the same omission of the snapshot,
-// seeds, and budget payloads. `ao run status` polls this, so it must stay a
+// seeds, and budget payloads. `run_status` polls this, so it must stay a
 // one-row read that never drags a run's snapshot along.
 func (s *Store) GetWorkItemSummary(id string) (WorkItem, error) {
 	item, err := scanWorkItem(s.reader().QueryRow(
@@ -766,7 +766,7 @@ func (s *Store) WorkItemPendingGuidance(id string) (json.RawMessage, error) {
 }
 
 // SetWorkItemPendingGuidance replaces the slot wholesale: with the appended
-// array when a `run guide` adds an entry, and with nothing when the phase entry
+// array when a `run_guide` adds an entry, and with nothing when the phase entry
 // that delivered it clears it. It is an assignment rather than an append because
 // the read-modify-write happens on the engine's command goroutine, which is what
 // makes "append" a serialized operation rather than a racy one — and because the

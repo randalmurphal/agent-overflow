@@ -7,19 +7,20 @@ this is the authoring layer above them: which shapes to reach for, why
 each one exists, and how to drive the thing while it runs.
 
 The shipped reference is a **pair** of starters, the campaign spine and
-the task lane it calls. Scaffold both and edit them:
+the task lane it calls. From a session in the project, scaffold both with
+the `ao-workflow-tools` calls below and edit them:
 
 ```
-agent-overflow workflow new port-one-task --id port-one-task --project <slug>
-agent-overflow workflow new port-campaign --id my-campaign  --project <slug>
-agent-overflow workflow validate --id my-campaign --project <slug>
+workflow_new(starter: "port-one-task", id: "port-one-task", scope: "project")
+workflow_new(starter: "port-campaign", id: "my-campaign", scope: "project")
+workflow_validate(id: "my-campaign")
 ```
 
 Scaffold the **lane first**, and under its own id: the spine's fan-out
-calls it by name, and `workflow new` renames only the definition it is
+calls it by name, and `workflow_new` renames only the definition it is
 creating. (It does rename a definition's calls to *itself*, which is how
-the spine's next-wave edge follows `--id`.) If you rename the lane, edit
-the one `call:` line in the spine to match. `workflow validate` names it
+the spine's next-wave edge follows `id`.) If you rename the lane, edit
+the one `call:` line in the spine to match. `workflow_validate` names it
 if you forget.
 
 ## One campaign is one call tree
@@ -160,16 +161,16 @@ built.
 
 Two more controls exist for *stopping*, not steering:
 
-**Stop after this wave.** `agent-overflow run soft-stop <root-run-id>`
+**Stop after this wave.** `run_control` with `soft_stop` on the root run
 arms a standing request on the root; the next wave boundary parks the run
 `needs-human(checkpoint)` instead of calling (D36). Nothing in flight is
-interrupted. The wave that is running finishes. `--clear` withdraws the
-request. `agent-overflow run resume <run-id>` takes the call the park
-skipped. A workflow with no call edge has no boundary to stop at, so the
+interrupted. The wave that is running finishes. `clear: true` withdraws the
+request. `run_control` with `resume` on the parked run takes the call the
+park skipped. A workflow with no call edge has no boundary to stop at, so the
 request is accepted and simply never fires; the campaign spine has one,
 at `next-wave`.
 
-**Scheduled checkpoints.** `--seed checkpoint-every=5` makes the planner
+**Scheduled checkpoints.** The seed `"checkpoint-every": 5` makes the planner
 mark every fifth wave, and `verify`'s gate turns that into a **human
 route**: approve continues into the next wave, reject carries your note
 back into a fresh plan for this wave (bounded at 2). `0` never asks. It
@@ -178,25 +179,25 @@ to look at periodically without watching it.
 
 ## Operating a running campaign
 
-**From a chat session.** Type `/workflow` anywhere in a message: it
-expands at send into the project's workflow sources, the available
-definitions, the active runs, and whether `agent-overflow` resolved on
-PATH (D31). That block is what an agent reads before it types anything.
-Every verb below works from any session in the project.
+**From a chat session.** Every session in the project has the
+`ao-workflow-tools` MCP server (D77). Type `/workflow` anywhere in a
+message: it expands at send into the project's workflow sources, the
+available definitions, the active runs, and whether this session has the
+tools yet. That block is what an agent reads before it calls anything.
 
 ```
-agent-overflow run start my-campaign --seed campaign-goal='...' \
-  --seed max-tasks=6 --seed wave-number=1 --seed checkpoint-every=0
-agent-overflow run list --active
-agent-overflow run status <run-id>
-agent-overflow run output <run-id>          # declared workflow outputs
-agent-overflow run soft-stop <run-id> [--clear]
-agent-overflow run pause <run-id>
-agent-overflow run resume <run-id> [--phase <id>]
-agent-overflow run retry-failed-units <run-id> [--note '...']
-agent-overflow run retry-unit <run-id> <unit-id> [--note '...']
-agent-overflow run rerun <run-id> [--guidance '...']
-agent-overflow run cancel <run-id>
+run_start(workflow_id: "my-campaign", seeds: {"campaign-goal": "...",
+  "max-tasks": 6, "wave-number": 1, "checkpoint-every": 0})
+run_list(active_only: true)
+run_status(run_id: "<run-id>")
+run_output(run_id: "<run-id>")                 # declared workflow outputs
+run_control(run_id: "<run-id>", action: "soft_stop")     # clear: true withdraws
+run_control(run_id: "<run-id>", action: "pause")
+run_control(run_id: "<run-id>", action: "resume")        # phase_id starts a phase over
+run_control(run_id: "<run-id>", action: "retry_failed_units", note: "...")
+run_control(run_id: "<run-id>", action: "retry_unit", unit_id: "<unit-id>", note: "...")
+run_control(run_id: "<run-id>", action: "rerun", guidance: "...")
+run_control(run_id: "<run-id>", action: "cancel")
 ```
 
 `wave-number` starts at 1 and every later wave is handed its number by
@@ -207,34 +208,34 @@ the wave before it. Keep `max-tasks` at or under the project's
 is bound to that thread (§5), and the binding is on the ROOT. When
 anything in the tree needs a human, the wake message arrives in that
 thread and **names the run to act on**, which matters here, because the
-run that parked is usually a descendant many waves down and the verb has
+run that parked is usually a descendant many waves down and the call has
 to be aimed at it, not at the root you started. Descendant runs never
 bind threads and never notify on their own; they surface through the
 root's binding and through the run tree in the overlay.
 
-**Which run takes which verb.**
+**Which run takes which action.**
 
-| Verb | Aim it at |
+| `run_control` action | Aim it at |
 |---|---|
-| `soft-stop`, `pause`, `cancel` | the **root**. All three act on the whole tree, and the engine refuses them on a called run, naming the run that called it. |
-| `resume`, `retry-unit`, `retry-failed-units`, `rerun`, answering a question | the run that **parked**: the id in the wake message. |
+| `soft_stop`, `pause`, `cancel` | the **root**. All three act on the whole tree, and the engine refuses them on a called run, naming the run that called it. |
+| `resume`, `retry_unit`, `retry_failed_units`, `rerun`, and `run_resolve` answering a question | the run that **parked**: the id in the wake message. |
 
 **Usage limits.** A wide fan-out hits a provider wall and most of its
 units fail against it within a minute. The wave parks
 `needs-human(unit-failed)`. Wait for the reset or switch account, then
-repair the whole attempt in one command:
+repair the whole attempt in one call:
 
 ```
-agent-overflow run retry-failed-units <run-id> --note 'quota reset'
+run_control(run_id: "<run-id>", action: "retry_failed_units", note: "quota reset")
 ```
 
 One engine command, not N (D33): the failed set is collected before the
 first write, so no other command sees a half-repaired fan-out. Repaired
 units re-queue through normal admission: twenty units against a provider
 bound of two starts two. Units under human takeover are left alone. The
-single-unit `run retry-unit` stays for the other shape: one unit failing
-on its own merits. From a bound thread the credential that reaches these
-verbs is the thread's own, which is why a descendant's park is actionable
+single-unit `retry_unit` stays for the other shape: one unit failing
+on its own merits. From a bound thread the session that makes these
+calls is the thread's own, which is why a descendant's park is actionable
 from the thread that started the campaign at all.
 
 **Take over.** A phase you want to drive yourself: open its thread from

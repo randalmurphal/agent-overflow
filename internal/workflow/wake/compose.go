@@ -82,8 +82,8 @@ func detailLine(run Run) string {
 
 // phaseCoordinate names a phase and, when it is known, which attempt of it. The
 // attempt is what tells a second wake about a retried phase from a repeat of
-// the first one, and it is the coordinate the drill-down verbs take. An unknown
-// attempt (0) renders the phase alone rather than an "attempt 0" no read verb
+// the first one, and it is the coordinate the drill-down tools take. An unknown
+// attempt (0) renders the phase alone rather than an "attempt 0" no read tool
 // would accept.
 func phaseCoordinate(phaseID string, attempt int) string {
 	phaseID = strings.TrimSpace(phaseID)
@@ -197,7 +197,7 @@ func writeOutputs(out *strings.Builder, outputs []Output) {
 
 // writeAttemptOutputs renders what the PARKED attempt produced — the verdict,
 // the severity, the count a gate is asking a human about. The app bounds the
-// list before it gets here (the same digest `run inspect` prints), so the
+// list before it gets here (the same digest `run_inspect` prints), so the
 // overflow tail restates the app's count rather than recomputing one, and names
 // the read that returns the attempt whole.
 func writeAttemptOutputs(out *strings.Builder, in Input) {

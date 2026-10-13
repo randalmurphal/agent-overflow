@@ -56,11 +56,9 @@ describe('familyBackend', () => {
   it('routes declared object fields without mistaking neighboring IDs for an owner', () => {
     __resetEntityIndexForTest();
     noteWorkflowItem('run', 'gpu');
-    noteWorkflowItem('phase', 'mac');
     noteProject('project', 'mac');
-    expect(familyBackend(1146143060, [{ itemId: 'run', phaseId: 'phase' }])).toBe('gpu');
-    expect(familyBackend(595194384, [{ projectId: 'project', workflowId: 'run' }])).toBe('mac');
-    expect(familyBackend(1146143060, [{ phaseId: 'run' }])).toBeUndefined();
+    expect(familyBackend(595194384, [{ projectId: 'project', itemId: 'run' }])).toBe('mac');
+    expect(familyBackend(595194384, [{ itemId: 'run', workflowId: 'run' }])).toBeUndefined();
     __resetEntityIndexForTest();
   });
   it('rechecks every thread in a group operation after one moves computers', () => {

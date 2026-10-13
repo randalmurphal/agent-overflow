@@ -25,7 +25,7 @@ func InlinePrompts(resolved ResolvedWorkflow) (Workflow, error) {
 		// A loop route's `prompt:` override is inlined and frozen exactly like the
 		// phase body it replaces, so the run that re-enters a phase through that
 		// route renders the file as it was when the definition was resolved — and
-		// `--refresh-def` re-reads it with everything else. The route slice is
+		// `refresh_def` re-reads it with everything else. The route slice is
 		// copied first: the phases were copied shallowly, so writing through it
 		// would edit the caller's authored workflow.
 		phase.Gate.Routes = append([]Route(nil), phase.Gate.Routes...)

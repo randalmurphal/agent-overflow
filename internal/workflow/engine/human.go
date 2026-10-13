@@ -356,7 +356,7 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 			// approve is still a live, declared answer to this gate. The run stays
 			// parked exactly as it was, gate trace intact.
 			return fmt.Errorf(
-				"resolve human gate %q: the reject route has spent its bound of %d; approve is still open, `run resume --phase %s` re-enters that phase with refilled loop budgets, and cancel stops the run",
+				"resolve human gate %q: the reject route has spent its bound of %d; approve is still open, a resume with phase_id %s re-enters that phase with refilled loop budgets, and cancel stops the run",
 				itemID, max, reject.Loop,
 			)
 		}

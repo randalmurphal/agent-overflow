@@ -145,7 +145,7 @@ func TestHumanRejectPastItsBoundIsRefusedAndLeavesTheGateDecidable(t *testing.T)
 	if err == nil {
 		t.Fatal("a reject past its bound was taken")
 	}
-	for _, want := range []string{"approve", "run resume --phase build", "cancel"} {
+	for _, want := range []string{"approve", "resume with phase_id build", "cancel"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("over-budget reject refusal %q does not name %q", err, want)
 		}

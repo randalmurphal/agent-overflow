@@ -1,7 +1,6 @@
 package aocli
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,9 +8,8 @@ import (
 	"os"
 	"strings"
 
+	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/buildvariant"
-	"agent-overflow/internal/slicesx"
-	"agent-overflow/internal/workflow/def"
 )
 
 const (
@@ -62,15 +60,6 @@ var topLevelCommands = []topLevelCommand{
 	{name: "service", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 		return serviceCommand(args, hostServiceEnv(lookupEnv), stdout, stderr)
 	}, remote: true},
-	{name: "workflow", run: func(args []string, configRoot string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
-		return runWorkflow(args, configRoot, lookupEnv, stdout, stderr)
-	}},
-	{name: "run", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
-		return runCommand(args, lookupEnv, stdout, stderr)
-	}},
-	{name: "memory", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
-		return memoryCommand(args, lookupEnv, stdout, stderr)
-	}},
 }
 
 // Commands names every top-level command, in the order the dispatch table
@@ -143,296 +132,13 @@ func RunWithEnv(args []string, lookupEnv func(string) (string, bool), stdout, st
 	return exitError
 }
 
-// runWorkflow dispatches the offline half. lookupEnv reaches the read commands
-// because AO_PROJECT is what supplies their project scope inside a session; the
-// scaffolder deliberately does not take it (see runNew).
-func runWorkflow(args []string, configRoot string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		_ = writeOutput(stderr, workflowUsage)
-		return exitError
+// resolveConfigRoot answers the data root a local command reads: the
+// --config-root override when given, else the platform default.
+func resolveConfigRoot(override string) (string, error) {
+	if strings.TrimSpace(override) != "" {
+		return override, nil
 	}
-	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		if err := writeOutput(stdout, workflowUsage); err != nil {
-			return operationalError(stderr, err)
-		}
-		return exitOK
-	}
-	switch args[0] {
-	case "new":
-		return runNew(args[1:], configRoot, stdout, stderr)
-	case "validate":
-		return runValidate(args[1:], configRoot, lookupEnv, stdout, stderr)
-	case "list":
-		return runList(args[1:], configRoot, lookupEnv, stdout, stderr)
-	case "schema":
-		return runSchema(args[1:], stdout, stderr)
-	default:
-		fmt.Fprintf(stderr, "agent-overflow workflow: unknown command %q\n", args[0])
-		_ = writeOutput(stderr, workflowUsage)
-		return exitError
-	}
-}
-
-// runSchema prints the embedded authoring schema. It takes no flags and no
-// config root: the schema is a property of the binary, not of an installation.
-func runSchema(args []string, stdout, stderr io.Writer) int {
-	for _, arg := range args {
-		if arg == "help" || arg == "--help" || arg == "-h" {
-			if err := writeOutput(stdout, schemaUsage); err != nil {
-				return operationalError(stderr, err)
-			}
-			return exitOK
-		}
-	}
-	if len(args) != 0 {
-		fmt.Fprintln(stderr, "agent-overflow workflow schema: unexpected arguments")
-		_ = writeOutput(stderr, schemaUsage)
-		return exitError
-	}
-	schema := def.AuthoringSchema()
-	if len(schema) == 0 || schema[len(schema)-1] != '\n' {
-		schema = append(schema, '\n')
-	}
-	if err := writeOutput(stdout, string(schema)); err != nil {
-		return operationalError(stderr, err)
-	}
-	return exitOK
-}
-
-func runValidate(args []string, inheritedConfigRoot string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("agent-overflow workflow validate", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	configRoot := flags.String("config-root", inheritedConfigRoot, "override the Agent Overflow config root")
-	id := flags.String("id", "", "resolve and validate a workflow by id")
-	projectSlug := flags.String("project", "", "include workflows for the project slug")
-	jsonOutput := flags.Bool("json", false, "write the typed validation result as JSON")
-	paths, err := parsePermuted(flags, args)
-	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			if writeErr := writeOutput(stdout, validateUsage); writeErr != nil {
-				return operationalError(stderr, writeErr)
-			}
-			return exitOK
-		}
-		fmt.Fprintf(stderr, "agent-overflow workflow validate: %v\n", err)
-		_ = writeOutput(stderr, validateUsage)
-		return exitError
-	}
-
-	if (*id == "" && len(paths) != 1) || (*id != "" && len(paths) != 0) {
-		fmt.Fprintln(stderr, "agent-overflow workflow validate: provide exactly one path or --id <id>")
-		return exitError
-	}
-
-	root, err := resolveConfigRoot(*configRoot)
-	if err != nil {
-		return operationalError(stderr, err)
-	}
-	// Both forms resolve a scope, and for the same reasons: a `call:` edge is
-	// resolved against it and the project profile's bindings come from it.
-	// Before, only `--id` did, so the same definition validated by path was
-	// checked against no call graph and no bindings at all — phantom
-	// `call.target` findings for a file `--id` called clean.
-	//
-	// The path form additionally DERIVES its scope from where the file sits,
-	// because that is a fact about the file rather than something a caller
-	// should have to restate: a definition in a project's source directory is
-	// project-scoped, and it names the project whose calls and bindings it runs
-	// under even when the session is working in a different one. A file in the
-	// shared directory is shared-scoped and keeps whatever project the caller
-	// (or AO_PROJECT) supplied, exactly as `--id` on that same shared definition
-	// does — a shared workflow is visible to every project and is checked
-	// against the one asking. That is the invariant
-	// TestValidateByIDAndByPathAgreeOverEveryStarter pins.
-	var resolved def.ResolvedWorkflow
-	scopeSlug, err := workflowProjectScope(*projectSlug, lookupEnv)
-	if err != nil {
-		return operationalError(stderr, err)
-	}
-	if *id == "" {
-		workflow, err := def.ParseFile(paths[0])
-		if err != nil {
-			return operationalError(stderr, err)
-		}
-		scope := def.ScopeShared
-		if derivedSlug, derivedScope, ok := workflowScopeForPath(root, paths[0]); ok {
-			scope = derivedScope
-			// An explicit --project still wins: it is how a definition drafted
-			// outside the config root names the project whose calls and bindings
-			// it is meant to run under.
-			if derivedSlug != "" && strings.TrimSpace(*projectSlug) == "" {
-				scopeSlug = derivedSlug
-			}
-		}
-		resolved = def.ResolvedWorkflow{
-			Workflow: workflow, Path: paths[0], Scope: scope,
-			HumanGateCount: def.CountHumanGates(workflow),
-		}
-	} else {
-		workflows, err := ResolveConfigured(root, scopeSlug)
-		if err != nil {
-			return operationalError(stderr, err)
-		}
-		var found bool
-		for _, workflow := range workflows {
-			if workflow.Workflow.ID == *id {
-				resolved = workflow
-				found = true
-				break
-			}
-		}
-		if !found {
-			// A skipped directory is the likeliest reason an id a human can see on
-			// disk resolves to nothing, so the failure carries the explanation
-			// rather than leaving it a directory listing away.
-			return operationalError(stderr, unresolvedWorkflowError(root, scopeSlug, *id))
-		}
-	}
-
-	bindings, err := loadProjectBindings(root, scopeSlug)
-	if err != nil {
-		return operationalError(stderr, err)
-	}
-	// A call edge is resolved against the same configured scopes a run start
-	// uses, so `agent-overflow workflow validate` sees the call graph the engine
-	// will.
-	calls, err := NewCallResolver(root, scopeSlug)
-	if err != nil {
-		return operationalError(stderr, err)
-	}
-	result := def.Validate(resolved, bindings, calls)
-	result.Findings = slicesx.OrEmpty(result.Findings)
-	if *jsonOutput {
-		if err := writeJSON(stdout, result); err != nil {
-			return operationalError(stderr, err)
-		}
-	} else {
-		var output strings.Builder
-		fmt.Fprintf(&output, "bindings: %s\n", result.BindingStatus)
-		for _, finding := range result.Findings {
-			fmt.Fprintf(&output, "%s: %s: %s\n", finding.Element, finding.Code, finding.Message)
-		}
-		// Reports never fail a validation — they describe what the run will do,
-		// not what is wrong with it — so they print under their own marker and
-		// leave the exit code alone.
-		for _, report := range result.Reports {
-			fmt.Fprintf(&output, "note: %s: %s: %s\n", report.Element, report.Code, report.Message)
-		}
-		if err := writeOutput(stdout, output.String()); err != nil {
-			return operationalError(stderr, err)
-		}
-	}
-	if result.Valid() {
-		return exitOK
-	}
-	return exitFindings
-}
-
-type listEntry struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	Scope         def.Scope         `json:"scope"`
-	Path          string            `json:"path"`
-	ShadowsShared bool              `json:"shadowsShared"`
-	BindingStatus def.BindingStatus `json:"bindingStatus"`
-	Findings      []def.Finding     `json:"findings"`
-}
-
-// unresolvedWorkflowError reports an id that resolved to nothing, carrying the
-// skipped-directory notes that explain the most common cause. A note that cannot
-// be gathered is appended as itself: the caller's problem is still the missing
-// id, and swallowing the second failure would hide a broken config root.
-func unresolvedWorkflowError(configRoot, projectSlug, id string) error {
-	message := fmt.Sprintf("workflow id %q was not found", id)
-	notes, err := skippedWorkflowDirNotes(configRoot, projectSlug)
-	if err != nil {
-		return errors.Join(errors.New(message), err)
-	}
-	if len(notes) == 0 {
-		return errors.New(message)
-	}
-	return errors.New(message + "\n" + strings.Join(notes, "\n"))
-}
-
-func runList(args []string, inheritedConfigRoot string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("agent-overflow workflow list", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	configRoot := flags.String("config-root", inheritedConfigRoot, "override the Agent Overflow config root")
-	projectSlug := flags.String("project", "", "include workflows for the project slug")
-	jsonOutput := flags.Bool("json", false, "write the resolved workflow list as JSON")
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			if writeErr := writeOutput(stdout, listUsage); writeErr != nil {
-				return operationalError(stderr, writeErr)
-			}
-			return exitOK
-		}
-		fmt.Fprintf(stderr, "agent-overflow workflow list: %v\n", err)
-		_ = writeOutput(stderr, listUsage)
-		return exitError
-	}
-	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "agent-overflow workflow list: unexpected positional arguments")
-		return exitError
-	}
-	root, err := resolveConfigRoot(*configRoot)
-	if err != nil {
-		return operationalError(stderr, err)
-	}
-	scopeSlug, err := workflowProjectScope(*projectSlug, lookupEnv)
-	if err != nil {
-		return operationalError(stderr, err)
-	}
-	bindings, err := loadProjectBindings(root, scopeSlug)
-	if err != nil {
-		return operationalError(stderr, err)
-	}
-	entries, err := listConfigured(root, scopeSlug, bindings)
-	if err != nil {
-		return operationalError(stderr, err)
-	}
-	// Notes go to stderr in both modes: they describe the state of the directory
-	// rather than the requested result, so --json's document stays exactly the
-	// list and a machine reader still cannot lose the information.
-	notes, err := skippedWorkflowDirNotes(root, scopeSlug)
-	if err != nil {
-		return operationalError(stderr, err)
-	}
-	for _, note := range notes {
-		fmt.Fprintln(stderr, note)
-	}
-	if *jsonOutput {
-		if err := writeJSON(stdout, entries); err != nil {
-			return operationalError(stderr, err)
-		}
-		return exitOK
-	}
-	var output strings.Builder
-	for _, entry := range entries {
-		fmt.Fprintf(&output, "id=%s\tname=%q\tscope=%s\tpath=%q\tshadows-shared=%t\tbindings=%s\tfindings=%d\n", entry.ID, entry.Name, entry.Scope, entry.Path, entry.ShadowsShared, entry.BindingStatus, len(entry.Findings))
-	}
-	// Printing nothing reads as a command that did not work — the same reason
-	// `run list` says so — and when no project scope was resolved at all, the
-	// blank answer has a specific cause worth naming.
-	if len(entries) == 0 {
-		output.WriteString("No workflows are configured here.\n")
-		if scopeSlug == "" {
-			fmt.Fprintf(&output, "Project workflows need --project <slug>, or a session that sets %s.\n", EnvProject)
-		}
-	}
-	if err := writeOutput(stdout, output.String()); err != nil {
-		return operationalError(stderr, err)
-	}
-	return exitOK
-}
-
-func writeJSON(output io.Writer, value any) error {
-	encoder := json.NewEncoder(output)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
-		return fmt.Errorf("write JSON output: %w", err)
-	}
-	return nil
+	return appdirs.Root()
 }
 
 func writeOutput(output io.Writer, value string) error {

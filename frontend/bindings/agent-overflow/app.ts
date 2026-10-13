@@ -5857,140 +5857,6 @@ export function WakeThreadWakeNow(threadID: string, kind: string, id: string): $
 }
 
 /**
- * WorkflowAgentAddMemory is `agent-overflow memory add`.
- * 
- * LocalOnly: it appends to a file under this machine's app-managed config root.
- */
-export function WorkflowAgentAddMemory(input: app$0.WorkflowAgentMemoryInput): $CancellablePromise<app$0.WorkflowAgentMemoryResult> {
-    return $Call.ByID(4000394635, input).then(($result: any) => {
-        return $$createType200($result);
-    });
-}
-
-/**
- * WorkflowAgentAmendSeeds changes seed values on a run that is resting.
- * 
- * LocalOnly: it mutates what autonomous provider sessions will be told to do,
- * which is the same authority as resuming the run.
- */
-export function WorkflowAgentAmendSeeds(input: app$0.WorkflowAgentAmendSeedsInput): $CancellablePromise<app$0.WorkflowAgentAmendSeedsResult> {
-    return $Call.ByID(4273669366, input).then(($result: any) => {
-        return $$createType201($result);
-    });
-}
-
-/**
- * WorkflowAgentGuideRun leaves one instruction for a run's next phase entry.
- * 
- * LocalOnly: it changes what an autonomous provider session will be told to do,
- * which is the same authority as amending its seeds or resuming it.
- */
-export function WorkflowAgentGuideRun(input: app$0.WorkflowAgentGuideRunInput): $CancellablePromise<app$0.WorkflowAgentGuideRunResult> {
-    return $Call.ByID(76499272, input).then(($result: any) => {
-        return $$createType202($result);
-    });
-}
-
-/**
- * WorkflowAgentInspectRun is `agent-overflow run inspect`.
- * 
- * LocalOnly: see WorkflowAgentRunStatus. It additionally names local worktree
- * paths, which is a fact about this machine's filesystem.
- */
-export function WorkflowAgentInspectRun(input: app$0.WorkflowAgentInspectInput): $CancellablePromise<app$0.WorkflowAgentRunInspection> {
-    return $Call.ByID(1146143060, input).then(($result: any) => {
-        return $$createType203($result);
-    });
-}
-
-/**
- * WorkflowAgentListMemory is `agent-overflow memory list`.
- * 
- * LocalOnly: it reads a file under this machine's app-managed config root.
- */
-export function WorkflowAgentListMemory(input: app$0.WorkflowAgentMemoryListInput): $CancellablePromise<app$0.WorkflowAgentMemoryLog> {
-    return $Call.ByID(1978122086, input).then(($result: any) => {
-        return $$createType204($result);
-    });
-}
-
-/**
- * WorkflowAgentListRuns is `ao run list`, scoped to the caller's project.
- * 
- * LocalOnly: see WorkflowAgentRunStatus.
- */
-export function WorkflowAgentListRuns(activeOnly: boolean): $CancellablePromise<app$0.WorkflowAgentRunView[]> {
-    return $Call.ByID(717593283, activeOnly).then(($result: any) => {
-        return $$createType206($result);
-    });
-}
-
-/**
- * WorkflowAgentRunNarrative is `agent-overflow run narrative`.
- * 
- * LocalOnly: it reads a file out of this machine's app-managed run directory,
- * like every other local-filesystem read on the agent surface.
- */
-export function WorkflowAgentRunNarrative(input: app$0.WorkflowAgentNarrativeInput): $CancellablePromise<app$0.WorkflowAgentNarrative> {
-    return $Call.ByID(3748461612, input).then(($result: any) => {
-        return $$createType207($result);
-    });
-}
-
-/**
- * WorkflowAgentRunOutput is `ao run output` — the "different context that did
- * not start the run" path (D15).
- * 
- * LocalOnly: see WorkflowAgentRunStatus.
- */
-export function WorkflowAgentRunOutput(itemID: string): $CancellablePromise<app$0.WorkflowAgentRunOutputs> {
-    return $Call.ByID(315193175, itemID).then(($result: any) => {
-        return $$createType208($result);
-    });
-}
-
-/**
- * WorkflowAgentRunStatus is `ao run status` / the poll behind `ao run wait`.
- * 
- * LocalOnly: the whole ao surface is reachable only through credentials minted
- * for local provider processes.
- */
-export function WorkflowAgentRunStatus(itemID: string): $CancellablePromise<app$0.WorkflowAgentRunView> {
-    return $Call.ByID(49502656, itemID).then(($result: any) => {
-        return $$createType205($result);
-    });
-}
-
-/**
- * WorkflowAgentStartRun starts a run on behalf of an agent session. An
- * interactive caller's run binds to its thread (D17); a granted phase's run is
- * recorded in the effect ledger so re-entering the phase surfaces the prior
- * start instead of firing a second one (§5).
- * 
- * LocalOnly: it starts autonomous provider sessions, like every other entry to
- * the workflow start path.
- */
-export function WorkflowAgentStartRun(input: app$0.WorkflowAgentStartInput): $CancellablePromise<app$0.WorkflowAgentStartResult> {
-    return $Call.ByID(1060823172, input).then(($result: any) => {
-        return $$createType209($result);
-    });
-}
-
-/**
- * WorkflowAgentWatchRun blocks until a watched run transitions, the caller's
- * wait budget expires, or the run is already resting.
- * 
- * LocalOnly: see WorkflowAgentRunStatus. It takes the same grants as reading a
- * run's status, because that is what it is — the same fact, delivered when it
- * changes instead of when it is asked for.
- */
-export function WorkflowAgentWatchRun(input: app$0.WorkflowAgentWatchInput): $CancellablePromise<app$0.WorkflowAgentWatchResult> {
-    return $Call.ByID(2308429865, input).then(($result: any) => {
-        return $$createType210($result);
-    });
-}
-
-/**
  * WorkflowAnswerQuestion and WorkflowResolveGate settle the two parks a
  * workflow author routed to a person. Both are reachable from the CLI as well
  * as the overlay, and both carry the `resolve` grant rather than `start-run`:
@@ -6014,7 +5880,7 @@ export function WorkflowAnswerQuestion(itemID: string, answer: string): $Cancell
  */
 export function WorkflowBindThread(itemID: string, threadID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(1931806823, itemID, threadID).then(($result: any) => {
-        return $$createType211($result);
+        return $$createType200($result);
     });
 }
 
@@ -6036,7 +5902,7 @@ export function WorkflowCompleteTakeover(itemID: string): $CancellablePromise<vo
  */
 export function WorkflowCreateItemPR(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(1792283305, itemID).then(($result: any) => {
-        return $$createType212($result);
+        return $$createType201($result);
     });
 }
 
@@ -6046,7 +5912,7 @@ export function WorkflowCreateItemPR(itemID: string): $CancellablePromise<app$0.
  */
 export function WorkflowDiscardItem(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(2163033761, itemID).then(($result: any) => {
-        return $$createType212($result);
+        return $$createType201($result);
     });
 }
 
@@ -6059,7 +5925,7 @@ export function WorkflowDiscardItem(itemID: string): $CancellablePromise<app$0.W
  */
 export function WorkflowDiscardPreview(itemID: string): $CancellablePromise<app$0.WorkflowDiscardPreview> {
     return $Call.ByID(2659721862, itemID).then(($result: any) => {
-        return $$createType213($result);
+        return $$createType202($result);
     });
 }
 
@@ -6090,7 +5956,7 @@ export function WorkflowDropUnit(itemID: string, unitID: string, note: string): 
  */
 export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromise<app$0.WorkflowPRReviewComments> {
     return $Call.ByID(819019128, itemID).then(($result: any) => {
-        return $$createType214($result);
+        return $$createType203($result);
     });
 }
 
@@ -6100,13 +5966,13 @@ export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromi
  */
 export function WorkflowGetEngineState(): $CancellablePromise<engine$0.EngineState> {
     return $Call.ByID(2130001947).then(($result: any) => {
-        return $$createType215($result);
+        return $$createType204($result);
     });
 }
 
 export function WorkflowGetItem(itemID: string): $CancellablePromise<app$0.WorkflowItemDetailView> {
     return $Call.ByID(70120675, itemID).then(($result: any) => {
-        return $$createType216($result);
+        return $$createType205($result);
     });
 }
 
@@ -6123,7 +5989,7 @@ export function WorkflowGetItem(itemID: string): $CancellablePromise<app$0.Workf
  */
 export function WorkflowGetRunMap(itemID: string): $CancellablePromise<app$0.WorkflowRunMapView> {
     return $Call.ByID(4156752389, itemID).then(($result: any) => {
-        return $$createType217($result);
+        return $$createType206($result);
     });
 }
 
@@ -6133,7 +5999,7 @@ export function WorkflowGetRunMap(itemID: string): $CancellablePromise<app$0.Wor
  */
 export function WorkflowListDefinitions(projectID: string): $CancellablePromise<app$0.WorkflowDefinitionCatalog> {
     return $Call.ByID(2064216126, projectID).then(($result: any) => {
-        return $$createType218($result);
+        return $$createType207($result);
     });
 }
 
@@ -6156,13 +6022,13 @@ export function WorkflowListDefinitions(projectID: string): $CancellablePromise<
  */
 export function WorkflowListItemCosts(projectID: string): $CancellablePromise<{ [_ in string]?: number }> {
     return $Call.ByID(1544440599, projectID).then(($result: any) => {
-        return $$createType219($result);
+        return $$createType208($result);
     });
 }
 
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
-        return $$createType220($result);
+        return $$createType209($result);
     });
 }
 
@@ -6173,7 +6039,7 @@ export function WorkflowListItems(projectID: string): $CancellablePromise<store$
  */
 export function WorkflowListUnresolvedItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3613211765, projectID).then(($result: any) => {
-        return $$createType220($result);
+        return $$createType209($result);
     });
 }
 
@@ -6183,7 +6049,7 @@ export function WorkflowListUnresolvedItems(projectID: string): $CancellableProm
  */
 export function WorkflowMergeItem(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(3006532931, itemID).then(($result: any) => {
-        return $$createType212($result);
+        return $$createType201($result);
     });
 }
 
@@ -6325,7 +6191,7 @@ export function WorkflowSetGlobalPause(paused: boolean): $CancellablePromise<voi
  */
 export function WorkflowStartRun(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, baseBranch: string, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(1009082601, projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode).then(($result: any) => {
-        return $$createType211($result);
+        return $$createType200($result);
     });
 }
 
@@ -6347,7 +6213,7 @@ export function WorkflowTakeOverUnit(itemID: string, unitID: string): $Cancellab
  */
 export function WorkflowUnbindThread(itemID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(2006703348, itemID).then(($result: any) => {
-        return $$createType211($result);
+        return $$createType200($result);
     });
 }
 
@@ -6574,24 +6440,13 @@ const $$createType196 = app$0.ThreadPeerPollReply.createFrom;
 const $$createType197 = threadtools$0.Resolution.createFrom;
 const $$createType198 = app$0.MCPAuthInitResult.createFrom;
 const $$createType199 = app$0.VerifyEditDiffsResult.createFrom;
-const $$createType200 = app$0.WorkflowAgentMemoryResult.createFrom;
-const $$createType201 = app$0.WorkflowAgentAmendSeedsResult.createFrom;
-const $$createType202 = app$0.WorkflowAgentGuideRunResult.createFrom;
-const $$createType203 = app$0.WorkflowAgentRunInspection.createFrom;
-const $$createType204 = app$0.WorkflowAgentMemoryLog.createFrom;
-const $$createType205 = app$0.WorkflowAgentRunView.createFrom;
-const $$createType206 = $Create.Array($$createType205);
-const $$createType207 = app$0.WorkflowAgentNarrative.createFrom;
-const $$createType208 = app$0.WorkflowAgentRunOutputs.createFrom;
-const $$createType209 = app$0.WorkflowAgentStartResult.createFrom;
-const $$createType210 = app$0.WorkflowAgentWatchResult.createFrom;
-const $$createType211 = store$0.WorkItem.createFrom;
-const $$createType212 = app$0.WorkflowDispositionReceipt.createFrom;
-const $$createType213 = app$0.WorkflowDiscardPreview.createFrom;
-const $$createType214 = app$0.WorkflowPRReviewComments.createFrom;
-const $$createType215 = engine$0.EngineState.createFrom;
-const $$createType216 = app$0.WorkflowItemDetailView.createFrom;
-const $$createType217 = app$0.WorkflowRunMapView.createFrom;
-const $$createType218 = app$0.WorkflowDefinitionCatalog.createFrom;
-const $$createType219 = $Create.Map($Create.Any, $Create.Any);
-const $$createType220 = $Create.Array($$createType211);
+const $$createType200 = store$0.WorkItem.createFrom;
+const $$createType201 = app$0.WorkflowDispositionReceipt.createFrom;
+const $$createType202 = app$0.WorkflowDiscardPreview.createFrom;
+const $$createType203 = app$0.WorkflowPRReviewComments.createFrom;
+const $$createType204 = engine$0.EngineState.createFrom;
+const $$createType205 = app$0.WorkflowItemDetailView.createFrom;
+const $$createType206 = app$0.WorkflowRunMapView.createFrom;
+const $$createType207 = app$0.WorkflowDefinitionCatalog.createFrom;
+const $$createType208 = $Create.Map($Create.Any, $Create.Any);
+const $$createType209 = $Create.Array($$createType200);

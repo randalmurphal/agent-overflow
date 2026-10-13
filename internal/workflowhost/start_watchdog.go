@@ -296,7 +296,7 @@ func (p *workflowStartProgress) reportDead() {
 
 	detail := workflowFailureDetail(fmt.Sprintf(
 		"the runner start never returned: it exceeded %s at step %q %s and was still blocked %s after cancellation; "+
-			"a fresh phase entry (bare `run resume`) starts on a new thread",
+			"a fresh phase entry (a resume without phase_id) starts on a new thread",
 		workflowStartDeadline, step, workflowStartThreadPhrase(threadID), workflowStartGrace,
 	))
 	log.Printf("workflow runner: reporting start %s dead without it: %s", p.runKey, detail)
@@ -376,7 +376,7 @@ func (p *workflowStartProgress) finish(err error) error {
 	// on a new thread instead of parking it — and a start that blew its deadline is
 	// a setup failure whatever the cancellation happened to surface as.
 	return fmt.Errorf(
-		"%w: runner start exceeded %s at step %q %s; a fresh phase entry (bare `run resume`) "+
+		"%w: runner start exceeded %s at step %q %s; a fresh phase entry (a resume without phase_id) "+
 			"starts on a new thread (cancellation surfaced as: %s)",
 		engine.ErrSetupFailed, workflowStartDeadline, step, workflowStartThreadPhrase(threadID), cause,
 	)

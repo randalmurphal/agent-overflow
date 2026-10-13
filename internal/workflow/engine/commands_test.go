@@ -10,12 +10,12 @@ import (
 )
 
 // An API caller waits for the runner starts its command produced, and that wait
-// used to be unbounded. The CLI's own call is not: `internal/aocli`'s rpcTimeout
-// is 30s, so a runner start that never reported turned a verb the engine had
-// COMMITTED into `context deadline exceeded` at the operator's terminal — and
-// the retry that followed met an FSM refusal for the state the first call had
-// already produced. The reply is bounded here so the engine is always the side
-// that answers first, and the answer is the verb's own outcome.
+// used to be unbounded. A caller's own wait is not, so a runner start that never
+// reported turned an operation the engine had COMMITTED into a deadline error
+// at the caller, and the retry that followed met an FSM refusal for the state
+// the first call had already produced. The reply is bounded here so the engine
+// is always the side that answers first, and the answer is the operation's own
+// outcome.
 func TestReplyStopsWaitingOnAWedgedRunnerStart(t *testing.T) {
 	h := newHarnessWith(t, harnessOptions{
 		workflows:  map[string]def.Workflow{"basic": onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})},

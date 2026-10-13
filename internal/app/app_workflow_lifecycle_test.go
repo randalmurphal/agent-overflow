@@ -325,7 +325,7 @@ func TestWorkflowAutoResumeSweepReArmsAcrossARestart(t *testing.T) {
 	}
 }
 
-// `run resume --at` takes both forms, and both are resolved against the clock
+// A scheduled resume (`at`) takes both forms, and both are resolved against the clock
 // the timer will actually run on.
 func TestParseWorkflowResumeAtAcceptsBothFormsAndRefusesTheRest(t *testing.T) {
 	t.Parallel()
@@ -356,7 +356,7 @@ func TestParseWorkflowResumeAtAcceptsBothFormsAndRefusesTheRest(t *testing.T) {
 	}
 }
 
-// The manual verb arms the same mechanism, and refuses everywhere a scheduled
+// The manual schedule arms the same mechanism, and refuses everywhere a scheduled
 // bare resume would have nothing to continue. The refusal names the engine's
 // own membership so it cannot fall behind a reason the engine later admits.
 func TestWorkflowScheduleResumeArmsAContinuableParkAndRefusesTheRest(t *testing.T) {

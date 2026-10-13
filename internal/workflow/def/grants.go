@@ -6,10 +6,11 @@ import (
 	"strings"
 )
 
-// Grant names one first-party capability a phase's agent may exercise through
-// the `ao` CLI (spec §5, D15). The set is closed: a grant is a token scope the
-// app hands the phase's provider session, so a name the app cannot enforce is a
-// validation finding rather than an ignored declaration.
+// Grant names one first-party capability a phase's agent may exercise (spec
+// §5, D77): through the ao-workflow-tools allowlist, or, for remote-commands,
+// the session token the `remote` command carries. The set is closed, so a name
+// the app cannot enforce is a validation finding rather than an ignored
+// declaration.
 type Grant string
 
 const (
@@ -28,8 +29,8 @@ const (
 	GrantRemoteCommands Grant = "remote-commands"
 )
 
-// grantSet is the closed membership test behind validation and the app's token
-// scoping. `report-back` from §5 is deliberately absent in v1: its shape
+// grantSet is the closed membership test behind validation and the app's tool
+// and token scoping. `report-back` from §5 is deliberately absent in v1: its shape
 // depends on profile-bound forge commands that are not settled, and admitting
 // the name before the behaviour exists would let a workflow declare a
 // capability nothing can honour.
@@ -46,8 +47,7 @@ func KnownGrant(name string) bool {
 	return ok
 }
 
-// GrantNames returns the closed grant set, sorted, for diagnostics and the
-// CLI's own help output.
+// GrantNames returns the closed grant set, sorted, for diagnostics.
 func GrantNames() []string {
 	names := make([]string, 0, len(grantSet))
 	for grant := range grantSet {

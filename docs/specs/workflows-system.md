@@ -24,7 +24,7 @@ explicit gates that need a human.
 
 - **A run is a background job, started directly.** There is no queue and no
   drain cycle. Three entry points share one start path:
-  - an **agent starts a run from a chat thread** (the §5 CLI) and keeps
+  - an **agent starts a run from a chat thread** (the §5 tools) and keeps
     working; the run's resting states wake that thread (§5);
   - a **human starts a run from the overlay** (§10);
   - a **standing agent** starts a run when its loop or watch wakes it
@@ -232,7 +232,7 @@ refusal is none.
     rest; its envelope is the phase's envelope. What a join *does* (synthesis
     or merge) is the author's choice (§9). A join that **fails is a unit
     failure** (D48): the attempt parks `needs-human(unit-failed)` with the
-    join in the failed set, and the retry verbs re-run the join alone over
+    join in the failed set, and the retry actions re-run the join alone over
     the preserved unit results. The wave's finished work, including entire
     called child runs, is never the price of a failed merge. Dropping a join
     stays refused: it is what consolidates the units, so its absence cannot
@@ -288,8 +288,8 @@ true of both edges, and where they differ is stated per point.
   phases keep the definition the run froze at start, but every call reads its
   target fresh (§8 scoping), which is what makes a campaign's next wave pick
   up a prompt the human edited while the previous wave ran. For a run parked
-  mid-flight, the freeze has an explicit escape (D50): `run resume
-  --refresh-def` / `run rerun --refresh-def` re-read the definition and its
+  mid-flight, the freeze has an explicit escape (D50): a resume or rerun
+  with `refresh_def` re-reads the definition and its
   prompt files from disk at that fresh entry, the repair for "I edited the
   prompt of a parked phase". Refresh never happens implicitly, only ever at
   a fresh phase entry (a continuation keeps the definition its attempt was
@@ -370,7 +370,7 @@ witness path); a producer on every done path stays exactly as strict as
 before. Artifact files are **copied into an app-managed
 per-run artifact store at the producing phase's completion**, so deliverables
 survive worktree discard (§9). Run detail lists them (§10); agents fetch them
-through the §5 CLI; a bound origin thread receives them in the wake message
+through the §5 tools; a bound origin thread receives them in the wake message
 (§5). A call phase's envelope carries the child's workflow outputs.
 
 **Campaign memory: the run tree shares one log (D57).** Every root run owns
@@ -382,9 +382,9 @@ modes, hand-offs to the next wave. A note is typed from a **closed kind set
 like a bad envelope status) with text and cited files bounded, and
 **provenance (run / phase / attempt / unit / wave) stamped by the system,
 structurally impossible to author**. Two write channels mirror the narrative
-precedent: a write-capable element (or a human, with `--run`) uses
-`agent-overflow memory add`; a read-only element (which cannot reach the CLI
-at all) puts entries in the envelope's optional **`memory` control field**,
+precedent: a write-capable element (or an interactive agent, naming the run)
+calls `memory_add`; a read-only element (withheld `memory_add`, D77) puts
+entries in the envelope's optional **`memory` control field**,
 stripped at the same seam as `narrative` and written with system-stamped
 provenance, so no gate or persisted envelope ever sees it. Every element's
 prompt carries the memory **path** (readable in every access mode) and a
@@ -471,7 +471,7 @@ feedback; **every loop route declares a mandatory bound**) · **park**
 
 **A loop bound is a literal or a reference.** `max: 2` is static; `max:
 inputs.fix-budget` resolves against the run's variables at evaluation time, so
-a campaign can seed retry budgets per run (`--seed fix-budget=4`) without
+a campaign can seed retry budgets per run (seeds `{"fix-budget": 4}`) without
 editing the definition. The resolved value must be an integer ≥ 1 (anything
 else is a `wiring-error` park, never a silent default), and the gate trace
 records the resolved bound, so a run's history says what budget it actually
@@ -487,8 +487,8 @@ iterations of any retry budget inside outer loops; batch-scale iteration
 belongs to call phases (§3a), whose child runs get fresh counters by
 construction.) An exhausted bound falls through to the next route; exhausting
 everything parks `needs-human(loop-limit-exhausted)`. A bare resume re-enters
-the parked phase without refilling the cycle; `run resume --phase <earlier-id>`
-enters the loop target from outside and restores its bound.
+the parked phase without refilling the cycle; a resume naming an earlier
+`phase_id` enters the loop target from outside and restores its bound.
 
 **Fall-through is the "on exhausted" hook. Author it, don't wish for it.**
 Because an exhausted loop route continues down the route list, the routes
@@ -513,10 +513,10 @@ gate:
 rest under `needs-human(gate)`, but a `human:` route declares an approve
 target and a reject loop (resolving it (D41) *completes* the parked attempt,
 so its outputs stay in the variable context), while a `park:` route declares
-no continuation at all: there is nothing an approve could select, `run
-resolve` refuses it by construction, and the repair is `run resume` (a fresh
+no continuation at all: there is nothing an approve could select,
+`run_resolve` refuses it by construction, and the repair is a resume (a fresh
 attempt of the phase) once the cause is addressed. Only *completed* attempts
-feed later phases' variables, so resuming with `--phase` past a parked
+feed later phases' variables, so resuming with `phase_id` past a parked
 attempt runs the target without the parked phase's outputs. If the final stop
 of a route list should be decidable ("a person confirms, or sends it back"),
 author it as a `human:` route, not a `park:`.
@@ -556,7 +556,7 @@ targets):
   guidance, and degradation note. A degraded reuse is never a park.
   Which mode actually ran is visible in provenance: two
   attempts sharing a thread id *is* the record, rendered as
-  `session=continued` on `run status`.
+  `session: "continued"` on `run_status`.
 - **`prompt: <file.md>`**. The re-entered attempt renders this file instead
   of the phase's own prompt. "Later rounds ask a narrower question" becomes
   authorable: a convergence loop's round-3+ edge carries a "only blocking or
@@ -569,12 +569,12 @@ targets):
 **A spent reject budget refuses the reject; it never converts the park.** A
 `human:` route's reject loop carries a bound like any loop; once it is spent
 the gate still declares an approve, so a further reject is **refused**, with
-the live options named: approve, `run resume --phase <target>` (entering the
+the live options named: approve, a resume with `phase_id` set to the target (entering the
 loop's target from outside is a fresh entry that refills its bound), or
 cancel. The run stays parked exactly as it was (D47; converting the park
 to `retries-exhausted`, as rev 1 did, destroyed the still-declared approve).
 A human-gate park likewise refuses a bare resume and a resume at the parked
-phase (the decision belongs to `run resolve`), while naming a *different*
+phase (the decision belongs to `run_resolve`), while naming a *different*
 phase is allowed: that is the human abandoning the gate to redo earlier work.
 
 **What a gate reads to decide:**
@@ -611,48 +611,78 @@ conservative backoff; do not conflate it with feedback-carrying loop-back.
 **Structure.** Because gates route among phases, a **workflow is a graph of
 phases connected by gated transitions**, not a straight line.
 
-## 5. Phase capabilities, the `ao` CLI, and thread binding
+## 5. Phase capabilities, the workflow tools, and thread binding
 
 **Structure is declared; agency is granted.** The phase graph is fixed and
 statically checkable. What an agent can *do dynamically* inside a phase is the
 set of **tools its phase is granted**. This is where side-effecting power
 lives, deliberately kept out of the graph so the graph stays analyzable.
 
-**First-party agency is a scoped CLI (`ao`), not an injected toolset, and not
-MCP.** Phases and interactive chat threads talk to the system through one
-short CLI; **nothing workflow-related sits in provider context until it is
-used** (an MCP server's tool schemas are always-loaded context; a CLI is zero
-until invoked, with depth discovered via `--help`, and it is provider-neutral
-by construction). The **per-phase credentials injected at phase entry
-authorize only the subcommands the workflow granted** that phase, and "tools
-granted to a phase" *is* that grant. From an interactive chat thread the same
-CLI rides the provider's normal bash-approval UX with the user's full
-authority.
+**First-party agency is the app-managed `ao-workflow-tools` MCP server
+(D77, reversing D15).** Phases and interactive chat threads talk to the
+system through one MCP server the app registers on every project session
+(Claude, claude-tui and Codex), on a per-session capability URL that dies
+with the session. It is one surface for agents, managed by the app, with no
+separate binary to keep in sync. **A phase session's tool list is its
+grants**: a tool its grants do not admit is absent from the list, and a call
+to it is refused by name with the grant it needs, never silently narrowed.
+An interactive thread in a project holds the full set with the user's
+authority; a thread with no project has none. Schemas, results and refusals:
+[agent-workflow-tools.md](agent-workflow-tools.md).
 
-**The CLI surface** (workflow-facing): `agent-overflow workflow validate | list | schema |
-new` (authoring) · `run | status | inspect | narrative | result | list-runs |
-watch` (execution: `watch` blocks SERVER-side and prints each transition as
-it happens, `--tree` widening to called runs; it exists because the
-alternative was 712 hand-rolled polls and one monitor that died silently, so
-its exit codes distinguish "the run rested" from "my timeout expired" from "I
-was cut off", D58) · `pause |
-resume | cancel | rerun | retry-unit | retry-failed-units | soft-stop |
-amend | guide` (control: `amend --seed k=v` is `--refresh-def`'s counterpart
-for inputs, D59: durable on a resting run, validated per key by the intake
-validator, its output stating when the run reads the change; `guide` is §7's
-pending-guidance slot, D62) ·
-`memory add | list` (the campaign memory log, §3/D57: writing memory is part
-of doing the work, so a phase's scoped token admits it without a declared
-grant; authority is row-level, its own tree only). `run`
-starts a run
-immediately and returns the run id; it does not block. **The read surface is a
-CLI obligation (D52):** everything an operator needs to decide a park is one
-verb away: worktree and branch, seeds, children, per-attempt provenance and
-envelope output digests (`run inspect`, with `--phase` drill-down), the
-engine's park cause (D53, bounded on attempt lines, whole under `--phase`),
-and the narrative prose (`run narrative`). That matters because the live
-campaign's supervisor otherwise answered those questions with raw SQL against
-the app's own database and hand-built file paths.
+**The tool surface:** `workflow_list | workflow_validate | workflow_schema |
+workflow_new` (authoring) · `run_start | run_status | run_watch | run_output |
+run_inspect | run_narrative | run_list` (execution and reads: `run_watch`
+blocks server-side until the watched run moves, `tree` widening it to called
+runs; it exists because the alternative was 712 hand-rolled polls and one
+monitor that died silently, D58) · `run_control` (pause, resume, cancel,
+rerun, soft_stop, retry_unit, retry_failed_units) · `run_amend | run_guide |
+run_resolve` (`run_amend` is `refresh_def`'s counterpart for inputs, D59:
+durable on a resting run, validated per key by the intake validator, its
+result stating when the run reads the change; `run_guide` is §7's
+pending-guidance slot, D62; `run_resolve` approves, rejects or answers a park,
+D41) · `memory_add | memory_list` (the campaign memory log, §3/D57; authority
+is row-level, its own tree only). `run_start` returns the run id at once; with
+`wait_seconds` (at most 900) it also waits for the run to rest. **The read
+surface is a tool obligation (D52):** everything an operator needs to decide a
+park is one call away: worktree and branch, seeds, children, per-attempt
+provenance and envelope output digests (`run_inspect`, with `phase_id`
+drill-down), the engine's park cause (D53, bounded on attempt lines, whole
+under `phase_id`), and the narrative prose (`run_narrative`). That matters
+because the live campaign's supervisor otherwise answered those questions
+with raw SQL against the app's own database and hand-built file paths.
+
+**Which grant admits which tool.** `start-run` admits `run_start`,
+`run_control`, `run_amend` and `run_guide`; `introspect` admits `run_list`;
+either admits the single-run reads (`run_status`, `run_watch`, `run_output`,
+`run_inspect`, `run_narrative`), row-level limited to the runs the phase
+started unless it holds `introspect`; `resolve` admits `run_resolve`. Memory
+and `workflow_list`/`workflow_validate`/`workflow_schema` are grant-free
+because a phase could already reach them through the offline CLI and the
+memory verb, so nothing a phase can do widened. **Grant-free tools never
+widen what a phase can do, and a read-only phase keeps exactly the envelope
+memory channel it had:** `memory_add` and `workflow_new` write, so they are
+withheld from a phase whose access is not `write`, and a call names the
+access level as the reason. **Grants take effect on read-only phases.** The
+author declared them and validation accepted them; that a read-only session
+could not reach the old CLI was a mechanism accident, not a rule.
+
+**Waiting and hearing back.** A waiting call (`run_start` or `run_status`
+with `wait_seconds`) returns `resting`, `running` or `backgrounded`, never
+past 900 seconds. A wait whose answer carrying the rest was written is that
+rest's delivery: the bound thread is not also woken for it, and the next rest
+wakes it as usual
+([agent workflow tools](agent-workflow-tools.md#hearing-back)). A run's rest
+otherwise reaches a thread only through its binding below, so a backgrounded
+result says which case holds, and no tool call changes a binding:
+
+- the run is bound to the caller's thread: its rest arrives there as a
+  message, so the caller need not poll;
+- the run is unbound: no message will come; the caller polls `run_status`,
+  or binds the run from the overlay;
+- the run is bound to another thread: its rest goes there, and the result
+  names that thread; the caller polls;
+- the caller is a phase session: phases receive no wakes; it polls.
 
 **Thread binding and wake: one mechanism, three entry points.** Every root
 run records an optional **bound thread**:
@@ -680,10 +710,10 @@ run records an optional **bound thread**:
   it needs: the **call chain** from the root down to the parked run (elided in
   the middle past six runs, with the elision stating its own size), the parked
   run's **own** failed units labelled as such, and a closing that names which
-  run to act on **and the literal command that acts on it** (D38). A campaign's
+  run to act on **and the literal call that acts on it** (D38). A campaign's
   sixth wave is a run the reader has never seen, so the message has to be enough
-  to issue `agent-overflow run retry-failed-units <child-run-id>` without a
-  second command to work out the tree (D36a).
+  to call `run_control` with `retry_failed_units` on the child run without a
+  second call to work out the tree (D36a).
 
 If a bound thread has been deleted, the run falls back to the unbound surface.
 A wake is never silently lost.
@@ -708,10 +738,10 @@ a duplicate is noise, a silent drop is an outage.
 digest, references, and engine cause, a wake carries the run's worktree path
 and branch (a descendant's only when they differ from the root's), and a
 needs-human gate park carries the parked attempt's **outputs digest**
-(bounded by the same helper `run inspect` uses, never a second bounding), with
-the overflow line naming the exact `run inspect` drill-down command. The
+(bounded by the same helper `run_inspect` uses, never a second bounding), with
+the overflow line naming the exact `run_inspect` drill-down call. The
 question bound is sized for real gate questions (2000 runes; 800 truncated
-live-campaign questions mid-sentence). The read verbs (D52) stay the
+live-campaign questions mid-sentence). The read tools (D52) stay the
 drill-down; the wake stays compact.
 
 Grantable first-party capabilities (phase-side):
@@ -732,8 +762,8 @@ Grantable first-party capabilities (phase-side):
   approve/reject a human gate, answer a question. Separate from start-run on
   purpose: starting and stopping work is routine, while answering a decision
   the workflow author routed to a human is authority an author hands out
-  deliberately. Interactive sessions (a human-driven thread, where every
-  invocation passes the provider's own approval UX) hold it implicitly.
+  deliberately. Interactive sessions (a human-driven thread) hold it
+  implicitly.
 
 **Side effects are idempotent across re-runs (surface-and-skip).** Loop-back
 (§4), take-over discard+re-run (§7), and crash-recovery re-runs (§12) all
@@ -745,9 +775,9 @@ arbitrary MCP side effects idempotent. Those it simply flags as "will replay"
 to the human.
 
 **Both.** Any **MCP server can be configured** (once set up) and granted to
-phases, **plus** the curated first-party CLI above for interacting with the
-system itself. MCP is a per-phase grant for *external* tools; the system's own
-surface stays CLI.
+phases, **plus** the curated first-party workflow tools above for interacting
+with the system itself. An external MCP server is a per-phase grant; the
+system's own tools follow the phase's `grants:`.
 
 ## 6. Concurrency & resources
 
@@ -835,10 +865,10 @@ finishes, and the run parks `needs-human(checkpoint)` instead of invoking the
 next one. It is the affordance for a long campaign a human wants to end
 cleanly rather than cut short, and **Resume** takes the call it skipped. The
 request is one piece of state (arming and withdrawing both go through one
-verb) and the boundary that fires consumes it, so the resume does not stop
+action) and the boundary that fires consumes it, so the resume does not stop
 again.
 
-**Guidance steers without parking (D62).** `run guide <run-id> "<text>"`
+**Guidance steers without parking (D62).** `run_guide`
 appends to a run's **pending-guidance slot**, the mirror of `notify:` (that
 is run→thread; this is thread→run). Entries wait for the run's next **fresh
 phase entry**, render there as a labelled, bounded, untrusted-quoted block,
@@ -846,11 +876,11 @@ clear on delivery (the attempt row persists first, so a crash in the gap
 **redelivers rather than loses**, since a lost instruction is the worse failure),
 and leave a feedback note on the attempt that ran with them. Delivery is
 only ever at that boundary: continuation resumes leave the slot pending
-(and say so: `guidance-pending=N` rides the run's status line), phases that
+(and say so: `pendingGuidance` rides the run's status), phases that
 render no prompt are skipped with entries retained, and **nothing is ever
 injected into an in-flight turn**. The mid-turn half of correction remains
 explicitly deferred. A called run may be guided directly (its row, its
-prompts, the same ownership truth as `run amend`). Entries are system-stamped
+prompts, the same ownership truth as `run_amend`). Entries are system-stamped
 with author and time; a phase's guidance names the run that wrote it.
 
 **Sending a message takes over.** If the turn is **in-flight**, sending
@@ -895,11 +925,11 @@ suspended provider-side. It surfaces (overlay + notification, §10) with its
 narrative**, never raw internals (below). A park the **engine** decided
 (a worktree that would not cut, a wiring error, a budget breach) additionally
 carries the engine's own diagnosis on the parked attempt row (D53): the wake
-renders it as one bounded line, run detail and `run status` / `run inspect`
+renders it as one bounded line, run detail and `run_status` / `run_inspect`
 show it, and it is never written into the envelope, which stays the agent's
 artifact. If the run is thread-bound (§5),
 the wake message carries the same digest to the origin agent, which may
-resolve it through the CLI (answer, retry-unit, retry-failed-units, rerun) or
+resolve it through the workflow tools (answer, retry_unit, retry_failed_units, rerun) or
 escalate to you.
 Resolve by:
 
@@ -915,10 +945,10 @@ Resolve by:
 - **Unit recovery**, for `unit-failed` parks: retry the unit (the join
   included, D48), retry every failed unit of the attempt at once, drop it
   (join proceeds over survivors; never the join itself), or open its thread.
-  One rule governs the resume verbs here (D48): **`run resume` continues and
+  One rule governs resume here (D48): **a bare resume continues and
   preserves** (on a `unit-failed` park it reopens the failed units and the
-  join over the attempt's finished work, exactly as the retry verbs do),
-  while **`run resume --phase <id>` (which may name the parked phase) is the
+  join over the attempt's finished work, exactly as the retry actions do),
+  while **a resume with `phase_id` (which may name the parked phase) is the
   one explicit "start over"**: a fresh attempt, the wave re-expanded, called
   child runs respawned. Discarding finished work always requires saying so.
   The whole-attempt repair (D33) is the usage-limit case:
@@ -948,10 +978,10 @@ never needs to know which produced it.
   path.
 - **Handing work to an agent is the wake, not a button (D32).** A run bound to
   a thread (§5) delivers its digest into that conversation on every resting
-  transition, and the agent there resolves it through the CLI. The overlay's
+  transition, and the agent there resolves it through the workflow tools. The overlay's
   one-click "spawn me a triage thread" affordances (per-run hand-off and the
   per-project triage agent) were removed: the useful hand-off already happens
-  through the binding the CLI made, and a button that opens a fresh
+  through the binding the agent's start made, and a button that opens a fresh
   conversation about a run was context transfer without a conversation to
   transfer it into. A better primitive may replace it later.
 - **Taking a run over is a send.** Open the phase's thread from the run tree
@@ -960,7 +990,7 @@ never needs to know which produced it.
 
 **No internals on human surfaces.** Variables, envelopes, JSON, and gate
 traces never render in the human UI. They exist to make workflows manageable
-*by agents* through the `agent-overflow` CLI. Human phase detail = narrative
+*by agents* through the workflow tools. Human phase detail = narrative
 digest, diff, checks, cost.
 
 ## 8. Intake: creating and starting runs
@@ -971,25 +1001,26 @@ required**. This app controls many repos; it scopes the item for display and
 is the repo its worktree is cut from.
 
 **Producers of that same shape, all calling one start path:** a human in the
-overlay (§10); **an agent from any chat thread** via `agent-overflow run start` (§5:
+overlay (§10); **an agent from any chat thread** via `run_start` (§5:
 the run binds to the thread and wakes it); a phase via the **start-run
 capability** (§5 decomposition); a **standing agent** woken by its loop or
 watch (§11), which is the agent case. Manual is
 just the n=1 case; every producer emits the identical item.
 
-**The `/workflow` composer command: context on demand, never standing.**
-Nothing workflow-related sits in a chat thread's context by default. When a
-thread is about to author or drive workflows, the user invokes `/workflow` in
-the composer (or the overlay's "author in a thread" button opens a thread
-pre-seeded the same way): it injects one compact block: the `ao` binary path,
-this project's workflow directory and scope rules, the §5 command cheat-sheet,
-the **reason→verb repair map** (D38; since D41 that map includes settling a
-gate or question via `run resolve` / `run answer`, under the `resolve` grant
-in a phase session), and links to the project's active runs. Everything deeper is
-discovered via `--help` and `agent-overflow workflow schema`. This replaces rev 1's chat-enqueue MCP
-server and its proposal/confirm flow entirely: the agent starts runs directly
-through the CLI under normal bash approval, and the human control point is the
-overlay and the workflow's own gates, not a pre-start confirmation click.
+**The `/workflow` composer command: project context on demand.** The
+workflow tools are on every project session (§5); what a thread does not
+carry by default is this project's state. When a thread is about to author or
+drive workflows, the user invokes `/workflow` in the composer (or the
+overlay's "author in a thread" button opens a thread pre-seeded the same way):
+it injects one compact block: whether this session has the tools yet, this
+project's workflow directories and scope rules, the §5 tool cheat-sheet, the
+**reason→call repair map** (D38; since D41 that map includes settling a gate
+or question via `run_resolve`, under the `resolve` grant in a phase session),
+and the project's active runs. Everything deeper is in the tool descriptions
+and `workflow_schema`. This replaces rev 1's chat-enqueue MCP server and its
+proposal/confirm flow entirely: the agent starts runs directly with
+`run_start`, and the human control point is the overlay and the workflow's own
+gates, not a pre-start confirmation click.
 
 **Step mode** is a per-item intake option ("pause at every gate"): every gate
 behaves as a human gate, the trust-building mode for a new workflow. A
@@ -1013,8 +1044,8 @@ file, not its filename; **resolution is project → shared**, project winning on
 `id` collision. Edit a file → the next start picks it up.
 
 **Authoring is file work, started by the human.** Creating or editing a
-workflow or profile means editing the definition files: `agent-overflow
-workflow new` scaffolds one, `agent-overflow workflow validate` dry-runs it,
+workflow or profile means editing the definition files: `workflow_new`
+scaffolds one, `workflow_validate` dry-runs it,
 and an agent can be pointed at them from any thread the human opens. There is
 no dedicated editor surface and **no button that spawns an authoring thread**:
 D32 removed the studio spawner from the overlay, because a surface that starts
@@ -1297,14 +1328,14 @@ makes the mock catch it from then on.
 The workflow system keeps no clock of its own. A run that starts on a
 schedule or on an outside event is started by a **standing agent**
 (`docs/specs/standing-agents.md`): its `thread_loop` or `thread_watch`
-wakes it, and it starts the run with `agent-overflow run start` like any
+wakes it, and it starts the run with `run_start` like any
 agent (§5). The wake supervisor is the app's only clock (D76).
 
 - **Results** reach the agent through the §5 binding: the run binds to the
   agent's thread and its resting states wake that thread. The overlay and
   notifications surface the run as they do any agent-started run.
 - **Overlap, conditions and continuity are the agent's.** It reads
-  `run list` / `run status` before starting another run, decides whether
+  `run_list` / `run_status` before starting another run, decides whether
   a wake warrants one, and keeps what it must carry between runs in its
   home (cursors, rulings, notes). There is no per-run-source overlap
   policy, condition language or notes store in the workflow system.
@@ -1352,7 +1383,7 @@ error, budget breach, not an agent outcome or a human verb), teardown also
 persists the engine's diagnosis as the attempt's **park cause** (D53): a
 separate column from the envelope, created together with the attempt row if
 the park fired before one existed, bounded, and surfaced through §7's wake
-and §5's read verbs. The same events land in the **engine log**
+and §5's read tools. The same events land in the **engine log**
 (`logs/engine-YYYY-MM-DD.ndjson`, D53a), always on, because a run parks
 once.
 
@@ -1425,7 +1456,7 @@ never leave a grandchild running or a sub-worktree stranded.
   immediately (`agent-error`), never retried. This is the no-feedback
   sibling of §4's feedback-carrying loop-back: a 529 carries no validation
   signal, it just waits and re-runs.
-  **The park is continuable (D70).** A bare `run resume` continues the parked
+  **The park is continuable (D70).** A bare resume continues the parked
   attempt on its own provider session with a continue message, the same
   contract as `paused`/`interrupted`, because an API-error death is the same
   shape: the turn stopped through no fault of the work with the session file
@@ -1433,8 +1464,8 @@ never leave a grandchild running or a sub-worktree stranded.
   retries. A turn that ran for an hour before the provider fell over costs a
   resume, not a re-run. The dead-session fallback reconstructs that same round
   in a new thread with its full original prompt and a context-loss note;
-  and `--phase <id>` as the explicit start-over apply as for every continuable
-  reason; `--refresh-def` is refused on the bare resume there like any
+  and `phase_id` as the explicit start-over apply as for every continuable
+  reason; `refresh_def` is refused on the bare resume there like any
   continuable park, since the attempt being continued rendered the frozen
   definition.
   **A typed usage-limit refusal always skips the ladder (D75).** The run parks
@@ -1447,7 +1478,7 @@ never leave a grandchild running or a sub-worktree stranded.
   run if the original source resolved. Start and explicit resume always make
   a real provider attempt. Returning to `running` re-arms
   attention so a delayed post-resume failure notifies once; there is no
-  automatic quota resume or resolution message. `run resume --at <time>`
+  automatic quota resume or resolution message. A resume with `at`
   remains an independent manual schedule for any continuable park.
   **Distinct from this allowlist:** an envelope **absent or invalid after §3
   engine post-validation** gets **feedback-carrying retry turns** ("your
@@ -1477,8 +1508,8 @@ never leave a grandchild running or a sub-worktree stranded.
   can only move the total up, and an unevaluable ceiling must not read as
   headroom); a breach already proven by the priced lower bound parks the
   run for its budget, the truthful reason. Display and enforcement resolve
-  through the SAME call: `run status`/`run inspect` render
-  `budget=<spent>/<ceiling> (<n>%)` with the estimated flag and unpriced
+  through the SAME call: `run_status`/`run_inspect` carry
+  the `budget` document (spent, ceiling, percent) with the estimated flag and unpriced
   count, the budget-exhausted wake carries the composed number, and the
   reserved read-only **`budget` prompt binding** ({kind, ceiling, spent,
   remaining, estimated} in the ceiling's own units, unbound when no ceiling

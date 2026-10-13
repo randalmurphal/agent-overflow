@@ -55,13 +55,13 @@ func TestAgentGuideTextListsOnlyTheServersThatAreOn(t *testing.T) {
 	if !strings.Contains(browserOnly, "`"+appbrowser.ServerName+"`") {
 		t.Errorf("browser-only guide does not name the browser server:\n%s", browserOnly)
 	}
-	for _, name := range []string{threadMCPName, remoteMCPName} {
+	for _, name := range []string{threadMCPName, remoteMCPName, workflowMCPName} {
 		if strings.Contains(browserOnly, name) {
 			t.Errorf("browser-only guide names %s:\n%s", name, browserOnly)
 		}
 	}
 
-	all := agentGuideText(map[string]bool{appbrowser.ServerName: true, threadMCPName: true, remoteMCPName: true})
+	all := agentGuideText(map[string]bool{appbrowser.ServerName: true, threadMCPName: true, remoteMCPName: true, workflowMCPName: true})
 	last := -1
 	for _, server := range agentGuideServers {
 		at := strings.Index(all, server.sentence)
@@ -91,6 +91,7 @@ func TestAgentGuideServersOnFollowTheEffectiveSwitches(t *testing.T) {
 		appbrowser.ServerName: map[string]any{"url": "http://127.0.0.1/browser/" + token},
 		threadMCPName:         map[string]any{"url": "http://127.0.0.1/threads/" + token},
 		remoteMCPName:         map[string]any{"url": "http://127.0.0.1/remote/" + token},
+		workflowMCPName:       map[string]any{"url": "http://127.0.0.1/workflows/" + token},
 	}
 
 	on := app.agentGuideServersOn(thread.ID, registered)

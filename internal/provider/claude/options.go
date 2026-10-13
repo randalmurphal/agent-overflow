@@ -745,11 +745,18 @@ func inlineSettingsEnvForCLI(cfg Config) map[string]string {
 // pass through any spec that already carries one. Stdio specs (those
 // with a "command") get backfilled to "stdio".
 func mcpConfigForCLI(cfg Config) (string, bool) {
-	if len(cfg.MCPServers) == 0 {
+	return MCPConfigJSON(cfg.MCPServers)
+}
+
+// MCPConfigJSON is mcpConfigForCLI over a bare server map, for the
+// interactive provider, which drives the same binary and passes the same
+// flag.
+func MCPConfigJSON(mcpServers map[string]any) (string, bool) {
+	if len(mcpServers) == 0 {
 		return "", false
 	}
-	servers := make(map[string]any, len(cfg.MCPServers))
-	for name, spec := range cfg.MCPServers {
+	servers := make(map[string]any, len(mcpServers))
+	for name, spec := range mcpServers {
 		servers[name] = withClaudeTransportType(spec)
 	}
 	payload := map[string]any{"mcpServers": servers}
@@ -758,7 +765,7 @@ func mcpConfigForCLI(cfg Config) (string, bool) {
 		// Same reasoning as inlineSettingsForCLI: nested maps with no
 		// custom marshalers can't fail in practice. Panic loudly to
 		// satisfy the "errors must never silently fail" rule.
-		panic(fmt.Sprintf("claude: mcpConfigForCLI marshal failed (unreachable): %v", err))
+		panic(fmt.Sprintf("claude: MCPConfigJSON marshal failed (unreachable): %v", err))
 	}
 	return string(data), true
 }

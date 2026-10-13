@@ -11,7 +11,7 @@ import (
 	"agent-overflow/internal/workflow/def"
 )
 
-// The pending-guidance slot: what `run guide` leaves, and the phase entry that
+// The pending-guidance slot: what `run_guide` leaves, and the phase entry that
 // consumes it.
 
 // guidanceWorkflow is `work` → `verify`, both agent phases, so a test can guide

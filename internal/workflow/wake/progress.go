@@ -16,7 +16,7 @@ import (
 // because the two answer the same reader with the same rules: the same data
 // notice, the same quoting, the same budgets, the same bounded lists. What it
 // deliberately does NOT share is the closing: a resting wake's last line names
-// the verb that unblocks the run, and a progress wake's has to say the opposite
+// the call that unblocks the run, and a progress wake's has to say the opposite
 // — nothing is blocked, nothing is owed.
 
 // ProgressRun is the ROOT run a progress wake is delivered for. Only a root
@@ -43,7 +43,7 @@ type ProgressGate struct {
 	Depth int
 	Chain []string
 	// PhaseID and Attempt are the attempt the gate consumed — the coordinate
-	// the read verbs take, and half of what tells one wave's notify from the
+	// the read tools take, and half of what tells one wave's notify from the
 	// next one's.
 	PhaseID string
 	Attempt int
@@ -130,7 +130,7 @@ func writeProgressOutputs(out *strings.Builder, in ProgressInput) {
 // progressClosing is the line that keeps this message from being read as a
 // park. A woken agent's default assumption is that it was woken because
 // something needs it; saying otherwise outright is cheaper than letting it
-// discover that by running `run status`.
+// discover that by running `run_status`.
 func progressClosing(gate ProgressGate) string {
 	closing := "Nothing is waiting on a reply — the run is still going. This message exists because the workflow asked to report at this gate."
 	if gate.Depth > 0 {

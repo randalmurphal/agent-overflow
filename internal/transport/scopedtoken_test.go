@@ -21,7 +21,7 @@ type scopedApp struct {
 	scopes []CallerScope
 }
 
-func (a *scopedApp) WorkflowAgentRunStatus(ctx context.Context, itemID string) (string, error) {
+func (a *scopedApp) AgentRemoteStatus(ctx context.Context, computerID, requestID string) (string, error) {
 	scope, ok := CallerScopeFrom(ctx)
 	if !ok {
 		return "", fmt.Errorf("no caller scope on the context")
@@ -29,14 +29,10 @@ func (a *scopedApp) WorkflowAgentRunStatus(ctx context.Context, itemID string) (
 	a.mu.Lock()
 	a.scopes = append(a.scopes, scope)
 	a.mu.Unlock()
-	return "status:" + itemID, nil
+	return "status:" + computerID + "/" + requestID, nil
 }
 
-func (a *scopedApp) WorkflowAgentListRuns(ctx context.Context, active bool) ([]string, error) {
-	return []string{"run"}, nil
-}
-
-// ListThreads stands in for the whole non-workflow surface: a real method, on
+// ListThreads stands in for the whole rest of the surface: a real method, on
 // the same receiver, that a scoped token must never reach.
 func (a *scopedApp) ListThreads() ([]string, error) { return []string{"thread"}, nil }
 
@@ -83,38 +79,9 @@ func TestScopedTokenMethodsNameOnlyKnownGrants(t *testing.T) {
 			t.Errorf("%s lists no grants; a method no grant admits is unreachable from a phase", method)
 		}
 		for _, grant := range grants {
-			if grant == GrantNotRequired {
-				continue
-			}
 			if !def.KnownGrant(grant) {
 				t.Errorf("%s requires grant %q, which is not in def's closed set %v", method, grant, def.GrantNames())
 			}
-		}
-	}
-	// GrantNotRequired must stay outside the grant vocabulary, or a workflow
-	// could declare it and every method in the table would be admitted.
-	if def.KnownGrant(GrantNotRequired) {
-		t.Fatalf("GrantNotRequired %q is a declarable grant; a workflow could name it and admit every method",
-			GrantNotRequired)
-	}
-}
-
-// TestGrantNotRequiredAdmitsEveryPhaseWhateverItsGrants pins the one thing the
-// marker is for: a phase whose workflow declared NO grants at all still reaches
-// the methods that are part of doing the work.
-func TestGrantNotRequiredAdmitsEveryPhaseWhateverItsGrants(t *testing.T) {
-	ungranted := CallerScope{Kind: ScopeKindPhase, ItemID: "run", PhaseID: "implement"}
-	for method, grants := range ScopedTokenMethods {
-		admitted := false
-		for _, grant := range grants {
-			admitted = admitted || grant == GrantNotRequired
-		}
-		err := AuthorizeScopedMethod(ungranted, method)
-		if admitted && err != nil {
-			t.Errorf("%s is marked GrantNotRequired but a grantless phase was refused: %v", method, err)
-		}
-		if !admitted && err == nil {
-			t.Errorf("%s admits a grantless phase without being marked GrantNotRequired", method)
 		}
 	}
 }
@@ -122,13 +89,13 @@ func TestGrantNotRequiredAdmitsEveryPhaseWhateverItsGrants(t *testing.T) {
 // TestScopedTokenMethodsAreNotObserveTier pins the pairing rule this
 // package's AGENTS.md states in prose, re-spelled in the vocabulary that
 // decides reachability now that the per-method origin partition is gone.
-// A method the `ao` CLI may call is by definition a method that drives
-// autonomous provider sessions; such a method must never be classified
-// observe-tier, because an observe scope is what a read-only session is
-// granted. The scoped route stays loopback-only on its own, but the same
-// method is also reachable over `/ws` — without this check a new entry
-// could land in `threads:read` and widen the read-only surface while
-// looking like a CLI-only change.
+// A method an agent session may call through this route acts on the
+// user's behalf without a person present; such a method must never be
+// classified observe-tier, because an observe scope is what a read-only
+// session is granted. The scoped route stays loopback-only on its own, but
+// the same method is also reachable over `/ws`, and without this check a new
+// entry could land in `threads:read` and widen the read-only surface while
+// looking like a command-only change.
 //
 // `classify` fails closed to `ScopeHost` for a name the generator never
 // emitted, which is not observe-tier, so a typo would pass here.
@@ -145,41 +112,34 @@ func TestAuthorizeScopedMethodByKindAndGrant(t *testing.T) {
 	interactive := CallerScope{Kind: ScopeKindInteractive, ThreadID: "t", ProjectID: "p"}
 	granted := CallerScope{
 		Kind: ScopeKindPhase, ThreadID: "t", ProjectID: "p", ItemID: "i", PhaseID: "build",
+		Grants: []string{string(def.GrantRemoteCommands)},
+	}
+	ungranted := CallerScope{
+		Kind: ScopeKindPhase, ThreadID: "t", ProjectID: "p", ItemID: "i", PhaseID: "build",
 		Grants: []string{string(def.GrantStartRun)},
 	}
-	ungranted := CallerScope{Kind: ScopeKindPhase, ThreadID: "t", ProjectID: "p", ItemID: "i", PhaseID: "build"}
 
-	if frameErr := AuthorizeScopedMethod(interactive, "WorkflowAgentStartRun"); frameErr != nil {
-		t.Fatalf("interactive scope refused a listed method: %#v", frameErr)
-	}
-	if frameErr := AuthorizeScopedMethod(granted, "WorkflowAgentStartRun"); frameErr != nil {
-		t.Fatalf("granted phase refused: %#v", frameErr)
-	}
-	// start-run also admits the per-run reads, so a phase that starts work can
-	// follow it without holding introspect.
-	if frameErr := AuthorizeScopedMethod(granted, "WorkflowAgentRunStatus"); frameErr != nil {
-		t.Fatalf("granted phase refused run status: %#v", frameErr)
-	}
-	// ... but not the project-wide listing.
-	frameErr := AuthorizeScopedMethod(granted, "WorkflowAgentListRuns")
-	if frameErr == nil || frameErr.Code != ErrCodeGrantRequired {
-		t.Fatalf("list runs for a start-run-only phase = %#v, want %s", frameErr, ErrCodeGrantRequired)
-	}
-	if !strings.Contains(frameErr.Message, `"introspect"`) {
-		t.Fatalf("refusal does not name the missing grant: %q", frameErr.Message)
-	}
-	frameErr = AuthorizeScopedMethod(ungranted, "WorkflowAgentStartRun")
-	if frameErr == nil || frameErr.Code != ErrCodeGrantRequired {
-		t.Fatalf("ungranted phase = %#v, want %s", frameErr, ErrCodeGrantRequired)
-	}
-	if !strings.Contains(frameErr.Message, `"start-run"`) {
-		t.Fatalf("refusal does not name the missing grant: %q", frameErr.Message)
+	for method := range ScopedTokenMethods {
+		if frameErr := AuthorizeScopedMethod(interactive, method); frameErr != nil {
+			t.Fatalf("interactive scope refused %s: %#v", method, frameErr)
+		}
+		if frameErr := AuthorizeScopedMethod(granted, method); frameErr != nil {
+			t.Fatalf("granted phase refused %s: %#v", method, frameErr)
+		}
+		frameErr := AuthorizeScopedMethod(ungranted, method)
+		if frameErr == nil || frameErr.Code != ErrCodeGrantRequired {
+			t.Fatalf("%s for an ungranted phase = %#v, want %s", method, frameErr, ErrCodeGrantRequired)
+		}
+		if !strings.Contains(frameErr.Message, `"remote-commands"`) {
+			t.Fatalf("refusal does not name the missing grant: %q", frameErr.Message)
+		}
 	}
 
 	// Both kinds are refused every method outside the table, and both are told
-	// the same thing an unregistered method would say.
+	// the same thing an unregistered method would say. The workflow methods are
+	// not on this route: agents reach them through ao-workflow-tools.
 	for _, scope := range []CallerScope{interactive, granted} {
-		for _, method := range []string{"ListThreads", "GetSettings", "OpenTerminal"} {
+		for _, method := range []string{"ListThreads", "GetSettings", "OpenTerminal", "WorkflowCancelItem", "WorkflowResolveGate"} {
 			frameErr := AuthorizeScopedMethod(scope, method)
 			if frameErr == nil || frameErr.Code != ErrCodeMethodNotFound {
 				t.Fatalf("%s scope on %s = %#v, want %s", scope.Kind, method, frameErr, ErrCodeMethodNotFound)
@@ -189,43 +149,12 @@ func TestAuthorizeScopedMethodByKindAndGrant(t *testing.T) {
 }
 
 func TestAuthorizeScopedMethodRefusesUnknownScopeKind(t *testing.T) {
-	frameErr := AuthorizeScopedMethod(CallerScope{Kind: "future"}, "WorkflowAgentRunStatus")
+	frameErr := AuthorizeScopedMethod(CallerScope{Kind: "future"}, "AgentRemoteStatus")
 	if frameErr == nil || frameErr.Code != ErrCodeInvalidScope {
 		t.Fatalf("unknown scope kind = %#v, want %s", frameErr, ErrCodeInvalidScope)
 	}
 	if !strings.Contains(frameErr.Message, `"future"`) {
 		t.Fatalf("unknown scope refusal does not name kind: %q", frameErr.Message)
-	}
-}
-
-// TestResolveGrantAdmitsTheHumanDecisionMethods pins the separation `resolve`
-// exists for: a phase that may start work and stop it is not thereby allowed to
-// answer the decision its author routed to a human. The row-level half — which
-// runs a resolve-granted phase may decide — is enforced by the bound methods
-// (TestResolvingAParkIsConfinedToWhatAPhaseStarted, repo root).
-func TestResolveGrantAdmitsTheHumanDecisionMethods(t *testing.T) {
-	starter := CallerScope{
-		Kind: ScopeKindPhase, ThreadID: "t", ProjectID: "p", ItemID: "i", PhaseID: "build",
-		Grants: []string{string(def.GrantStartRun)},
-	}
-	resolver := starter
-	resolver.Grants = []string{string(def.GrantStartRun), string(def.GrantResolve)}
-	interactive := CallerScope{Kind: ScopeKindInteractive, ThreadID: "t", ProjectID: "p"}
-
-	for _, method := range []string{"WorkflowResolveGate", "WorkflowAnswerQuestion"} {
-		frameErr := AuthorizeScopedMethod(starter, method)
-		if frameErr == nil || frameErr.Code != ErrCodeGrantRequired {
-			t.Fatalf("%s for a start-run-only phase = %#v, want %s", method, frameErr, ErrCodeGrantRequired)
-		}
-		if !strings.Contains(frameErr.Message, `"resolve"`) {
-			t.Fatalf("%s refusal does not name the missing grant: %q", method, frameErr.Message)
-		}
-		if frameErr := AuthorizeScopedMethod(resolver, method); frameErr != nil {
-			t.Fatalf("%s for a resolve-granted phase = %#v", method, frameErr)
-		}
-		if frameErr := AuthorizeScopedMethod(interactive, method); frameErr != nil {
-			t.Fatalf("%s for an interactive scope = %#v", method, frameErr)
-		}
 	}
 }
 
@@ -293,24 +222,27 @@ func TestScopedRPCRouteAuthorizesAndRevokes(t *testing.T) {
 	server, app, registry := newScopedRPCServer(t)
 	phase := CallerScope{
 		Kind: ScopeKindPhase, ThreadID: "thread", ProjectID: "project", ItemID: "item",
-		PhaseID: "build", Grants: []string{string(def.GrantStartRun)},
+		PhaseID: "build", Grants: []string{string(def.GrantRemoteCommands)},
 	}
 	registry.put("phase-token", phase)
+	registry.put("ungranted-token", CallerScope{
+		Kind: ScopeKindPhase, ThreadID: "other", ProjectID: "project", ItemID: "item", PhaseID: "review",
+	})
 	registry.put("chat-token", CallerScope{Kind: ScopeKindInteractive, ThreadID: "chat", ProjectID: "project"})
 
 	// A granted method dispatches, and the scope reaches the method body.
-	status, frame := postScoped(t, server, "phase-token", "WorkflowAgentRunStatus", "item")
+	status, frame := postScoped(t, server, "phase-token", "AgentRemoteStatus", "gpu", "job")
 	if status != http.StatusOK || frame.Error != nil {
 		t.Fatalf("granted call = %d %#v", status, frame.Error)
 	}
-	if string(frame.Result) != `"status:item"` {
+	if string(frame.Result) != `"status:gpu/job"` {
 		t.Fatalf("granted call result = %s", frame.Result)
 	}
 	if app.callCount() != 1 || app.scopes[0].PhaseID != "build" {
 		t.Fatalf("method did not observe the caller scope: %#v", app.scopes)
 	}
 
-	// ListThreads is a real registered method that no scoped token may reach —
+	// ListThreads is a real registered method that no scoped token may reach,
 	// for either kind.
 	for _, token := range []string{"phase-token", "chat-token"} {
 		status, frame := postScoped(t, server, token, "ListThreads")
@@ -323,31 +255,31 @@ func TestScopedRPCRouteAuthorizesAndRevokes(t *testing.T) {
 	}
 
 	// A method the phase's grants do not admit is refused with the typed code.
-	status, frame = postScoped(t, server, "phase-token", "WorkflowAgentListRuns", true)
+	status, frame = postScoped(t, server, "ungranted-token", "AgentRemoteStatus", "gpu", "job")
 	if status != http.StatusOK {
 		t.Fatalf("ungranted status = %d", status)
 	}
 	if frame.Error == nil || frame.Error.Code != ErrCodeGrantRequired {
 		t.Fatalf("ungranted call = %#v, want %s", frame, ErrCodeGrantRequired)
 	}
-	// The interactive token reaches the same method: the human approves it.
-	status, frame = postScoped(t, server, "chat-token", "WorkflowAgentListRuns", true)
+	// The interactive token reaches the same method.
+	status, frame = postScoped(t, server, "chat-token", "AgentRemoteStatus", "gpu", "job")
 	if status != http.StatusOK || frame.Error != nil {
-		t.Fatalf("interactive list runs = %d %#v", status, frame.Error)
+		t.Fatalf("interactive remote status = %d %#v", status, frame.Error)
 	}
 
 	// Revocation is what a session ending looks like. The same token that
 	// worked a moment ago is now indistinguishable from a forged one.
 	registry.revoke("phase-token")
-	status, _ = postScoped(t, server, "phase-token", "WorkflowAgentRunStatus", "item")
+	status, _ = postScoped(t, server, "phase-token", "AgentRemoteStatus", "gpu", "job")
 	if status != http.StatusUnauthorized {
 		t.Fatalf("revoked token status = %d, want 401", status)
 	}
-	status, _ = postScoped(t, server, "", "WorkflowAgentRunStatus", "item")
+	status, _ = postScoped(t, server, "", "AgentRemoteStatus", "gpu", "job")
 	if status != http.StatusUnauthorized {
 		t.Fatalf("missing token status = %d, want 401", status)
 	}
-	status, _ = postScoped(t, server, "never-minted", "WorkflowAgentRunStatus", "item")
+	status, _ = postScoped(t, server, "never-minted", "AgentRemoteStatus", "gpu", "job")
 	if status != http.StatusUnauthorized {
 		t.Fatalf("unknown token status = %d, want 401", status)
 	}
@@ -356,7 +288,7 @@ func TestScopedRPCRouteAuthorizesAndRevokes(t *testing.T) {
 func TestScopedRPCRouteRefusesUnknownScopeKind(t *testing.T) {
 	server, _, registry := newScopedRPCServer(t)
 	registry.put("future-token", CallerScope{Kind: "future", ThreadID: "t", ProjectID: "p"})
-	status, frame := postScoped(t, server, "future-token", "WorkflowAgentRunStatus", "item")
+	status, frame := postScoped(t, server, "future-token", "AgentRemoteStatus", "gpu", "job")
 	if status != http.StatusOK {
 		t.Fatalf("unknown scope status = %d, want 200", status)
 	}
@@ -445,7 +377,7 @@ func TestScopedRPCRouteAbsentWithoutRegistry(t *testing.T) {
 // the server's own session token authenticates the WebSocket, never this route.
 func TestWebviewTokenIsNotAScopedToken(t *testing.T) {
 	server, _, _ := newScopedRPCServer(t)
-	status, _ := postScoped(t, server, server.Token(), "WorkflowAgentRunStatus", "item")
+	status, _ := postScoped(t, server, server.Token(), "AgentRemoteStatus", "gpu", "job")
 	if status != http.StatusUnauthorized {
 		t.Fatalf("session token on the scoped route = %d, want 401", status)
 	}
@@ -454,11 +386,11 @@ func TestWebviewTokenIsNotAScopedToken(t *testing.T) {
 // TestScopedTokenMethodsExistInGeneratedTable keeps the scoped-token
 // allow-list from naming a method that is not there.
 //
-// The two tables move for unrelated reasons — one is the `ao` CLI's
-// surface, the other is every bound method — and a rename on the App
+// The two tables move for unrelated reasons (one is the session command's
+// surface, the other is every bound method), and a rename on the App
 // receiver leaves this one silently pointing at nothing. That failure is
 // quiet in the worst way: `AuthorizeScopedMethod` would keep admitting
-// the stale name while the CLI's real call became method_not_found, so
+// the stale name while the command's real call became method_not_found, so
 // the allow-list would look correct and grant nothing.
 func TestScopedTokenMethodsExistInGeneratedTable(t *testing.T) {
 	known := make(map[string]bool, len(GeneratedMethods))

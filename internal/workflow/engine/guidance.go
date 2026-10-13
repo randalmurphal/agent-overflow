@@ -55,7 +55,7 @@ func (e *Engine) guide(itemID string, draft GuidanceDraft) (GuidanceState, error
 	}
 	if len(text) > MaxGuidanceEntryBytes {
 		return GuidanceState{}, fmt.Errorf(
-			"guide run %q: this guidance is %d bytes; one entry may be at most %d. Say the steer in a sentence — a specification belongs in the phase's prompt file, which `run resume --refresh-def` re-reads",
+			"guide run %q: this guidance is %d bytes; one entry may be at most %d. Say the steer in a sentence; a specification belongs in the phase's prompt file, which a resume with refresh_def re-reads",
 			itemID, len(text), MaxGuidanceEntryBytes)
 	}
 	if draft.By != GuidanceByHuman && draft.By != GuidanceByPhase {
@@ -230,7 +230,7 @@ func (e *Engine) healGuidanceSlot(itemID string, raw json.RawMessage, decodeErr 
 			Bytes: len(raw), Reason: decodeErr.Error(), LogEvent: LogEventGuidanceUndecodable,
 		},
 		message: fmt.Sprintf(
-			"run %q had pending operator guidance that would not decode (%v); its raw content (%d bytes) is preserved in the engine log under event %q, and the slot has been cleared, so nothing will park on it again — re-issue any steer with `run guide`",
+			"run %q had pending operator guidance that would not decode (%v); its raw content (%d bytes) is preserved in the engine log under event %q, and the slot has been cleared, so nothing will park on it again; re-issue any steer with `run_guide`",
 			itemID, decodeErr, len(raw), LogEventGuidanceUndecodable),
 	}
 }

@@ -35,8 +35,13 @@ func TestDecideEntry(t *testing.T) {
 		{name: "bare invocation outside a session boots", args: nil, lookupEnv: noEnv, want: entryBoot},
 		{name: "boot flags outside a session boot", args: []string{"--harness", "--data-dir", "/tmp/x"}, lookupEnv: noEnv, want: entryBoot},
 		{name: "an unknown argument outside a session still boots", args: []string{"frobnicate"}, lookupEnv: noEnv, want: entryBoot},
-		{name: "an offline verb outside a session is the CLI", args: []string{"workflow", "list"}, lookupEnv: noEnv, want: entryCLI},
-		{name: "a session verb inside a session is the CLI", args: []string{"run", "start", "flow"}, lookupEnv: inSession, want: entryCLI},
+		{name: "an offline verb outside a session is the CLI", args: []string{"service", "status"}, lookupEnv: noEnv, want: entryCLI},
+		{name: "a session verb inside a session is the CLI", args: []string{"thread", "send", "t", "hi"}, lookupEnv: inSession, want: entryCLI},
+		// The workflow verbs moved to ao-workflow-tools (D77) and have no shim:
+		// inside a session they are unknown verbs, outside one unknown words.
+		{name: "a removed workflow verb inside a session is refused", args: []string{"run", "start", "flow"}, lookupEnv: inSession, want: entryRefuse},
+		{name: "a removed memory verb inside a session is refused", args: []string{"memory", "list"}, lookupEnv: inSession, want: entryRefuse},
+		{name: "a removed workflow verb outside a session boots", args: []string{"workflow", "list"}, lookupEnv: noEnv, want: entryBoot},
 		{name: "bare invocation inside a session is refused", args: nil, lookupEnv: inSession, want: entryRefuse},
 		{name: "an unknown verb inside a session is refused", args: []string{"frobnicate"}, lookupEnv: inSession, want: entryRefuse},
 		{name: "an unknown flag inside a session is refused", args: []string{"--help"}, lookupEnv: inSession, want: entryRefuse},
