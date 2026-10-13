@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 // MarkThreadActive clears process-bound state only through
@@ -24,7 +25,7 @@ func TestMarkThreadActiveClearsOnlyThroughProcessBoundState(t *testing.T) {
 	t.Parallel()
 	const threadID = "thread-commit-clears"
 	fill := func(v any) {
-		for _, missing := range fillNonZero(reflect.ValueOf(v).Elem(), 0) {
+		for _, missing := range fillNonZero(reflect.ValueOf(v).Elem(), map[reflect.Type]bool{}) {
 			t.Errorf("no filler for %s: add one to interfaceFillers so a clear of it shows", missing)
 		}
 	}
@@ -52,7 +53,7 @@ func TestMarkThreadActiveClearsOnlyThroughProcessBoundState(t *testing.T) {
 		{reflect.ValueOf(listIdentity).Elem(), reflect.ValueOf(commitIdentity).Elem()},
 	} {
 		for i := range pair[0].NumField() {
-			if !sameFill(pair[0].Field(i), pair[1].Field(i), 0) {
+			if !sameFill(pair[0].Field(i), pair[1].Field(i)) {
 				t.Errorf("%s.%s: MarkThreadActive and processBoundState's clears leave it different; clear it through the list", pair[0].Type().Name(), pair[0].Type().Field(i).Name)
 			}
 		}
@@ -70,10 +71,13 @@ var interfaceFillers = map[reflect.Type]reflect.Value{
 
 // fillNonZero sets every field reachable from v to a non-zero value, so a
 // clear of any of them shows, and returns the interface types it had no
-// filler for. A pointer to a lock, atomic or timer is set to a fresh zero
-// value; a lock or atomic held by value stays zero, since resetting one is
-// not a clear.
-func fillNonZero(v reflect.Value, depth int) (missing []string) {
+// filler for. A skippedType is left zero and a pointer to one is set to a
+// fresh zero value, since resetting a lock or atomic is not a clear. A
+// struct whose type is already on the path (a back-reference such as a
+// stream block's owner) is also left zero, which bounds the fill by the
+// type graph; a pointer to one is still set, so its clear shows. The result
+// is a tree, so sameFill needs no bound.
+func fillNonZero(v reflect.Value, path map[reflect.Type]bool) (missing []string) {
 	v = exported(v)
 	switch v.Kind() {
 	case reflect.Bool:
@@ -103,46 +107,45 @@ func fillNonZero(v reflect.Value, depth int) (missing []string) {
 		}
 		v.Set(filler)
 	case reflect.Pointer:
-		if depth > 3 {
-			return nil
-		}
 		p := reflect.New(v.Type().Elem())
 		if !skippedType(v.Type().Elem()) {
-			missing = fillNonZero(p.Elem(), depth+1)
+			missing = fillNonZero(p.Elem(), path)
 		}
 		v.Set(p)
 	case reflect.Slice:
 		s := reflect.MakeSlice(v.Type(), 1, 1)
-		missing = fillNonZero(s.Index(0), depth+1)
+		missing = fillNonZero(s.Index(0), path)
 		v.Set(s)
 	case reflect.Map:
 		key, elem := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
-		missing = append(fillNonZero(key, depth+1), fillNonZero(elem, depth+1)...)
+		missing = append(fillNonZero(key, path), fillNonZero(elem, path)...)
 		m := reflect.MakeMap(v.Type())
 		m.SetMapIndex(key, elem)
 		v.Set(m)
 	case reflect.Array:
 		for i := range v.Len() {
-			missing = append(missing, fillNonZero(v.Index(i), depth+1)...)
+			missing = append(missing, fillNonZero(v.Index(i), path)...)
 		}
 	case reflect.Struct:
 		if v.Type() == reflect.TypeFor[time.Time]() {
 			v.Set(reflect.ValueOf(time.Unix(7, 0)))
 			return nil
 		}
-		if skippedType(v.Type()) {
+		if skippedType(v.Type()) || path[v.Type()] {
 			return nil
 		}
+		path[v.Type()] = true
 		for i := range v.NumField() {
-			missing = append(missing, fillNonZero(v.Field(i), depth+1)...)
+			missing = append(missing, fillNonZero(v.Field(i), path)...)
 		}
+		delete(path, v.Type())
 	}
 	return missing
 }
 
 // sameFill compares two values filled by fillNonZero. Funcs and channels
 // compare by whether they are set, since two fills never share one.
-func sameFill(a, b reflect.Value, depth int) bool {
+func sameFill(a, b reflect.Value) bool {
 	if a.Kind() != b.Kind() {
 		return false
 	}
@@ -163,13 +166,13 @@ func sameFill(a, b reflect.Value, depth int) bool {
 		if a.IsNil() || b.IsNil() {
 			return a.IsNil() == b.IsNil()
 		}
-		return depth > 4 || sameFill(a.Elem(), b.Elem(), depth+1)
+		return sameFill(a.Elem(), b.Elem())
 	case reflect.Slice, reflect.Array:
 		if a.Kind() == reflect.Slice && a.IsNil() != b.IsNil() || a.Len() != b.Len() {
 			return false
 		}
 		for i := range a.Len() {
-			if !sameFill(a.Index(i), b.Index(i), depth+1) {
+			if !sameFill(a.Index(i), b.Index(i)) {
 				return false
 			}
 		}
@@ -181,14 +184,14 @@ func sameFill(a, b reflect.Value, depth int) bool {
 		// fillNonZero writes one entry with equal keys in both copies.
 		ak, bk := a.MapKeys(), b.MapKeys()
 		for i := range ak {
-			if !sameFill(ak[i], bk[i], depth+1) || !sameFill(a.MapIndex(ak[i]), b.MapIndex(bk[i]), depth+1) {
+			if !sameFill(ak[i], bk[i]) || !sameFill(a.MapIndex(ak[i]), b.MapIndex(bk[i])) {
 				return false
 			}
 		}
 		return true
 	case reflect.Struct:
 		for i := range a.NumField() {
-			if !sameFill(a.Field(i), b.Field(i), depth+1) {
+			if !sameFill(a.Field(i), b.Field(i)) {
 				return false
 			}
 		}
@@ -197,12 +200,15 @@ func sameFill(a, b reflect.Value, depth int) bool {
 	return true
 }
 
+// skippedType reports a type fillNonZero leaves zero: locks, atomics and
+// timers, and the store, a shared handle whose internals are not thread
+// state.
 func skippedType(t reflect.Type) bool {
 	switch t.PkgPath() {
 	case "sync", "sync/atomic", "time":
 		return true
 	}
-	return false
+	return t == reflect.TypeFor[store.Store]()
 }
 
 // exported makes an unexported field settable.
