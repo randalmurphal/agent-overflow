@@ -9,6 +9,7 @@ import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { setupEventListeners } from '../../stores/events';
 import { noteThread } from '../../transport/entityIndex';
 import { __resetActivityRailUiPrefsForTest } from '../../stores/liveTodoState.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ThreadWakeRow } from '../../stores/bindings';
 
 function row(id: string, over: Partial<ThreadWakeRow> = {}): ThreadWakeRow {
@@ -38,6 +39,7 @@ describe('wake rows in the background tray', () => {
     stopEvents = setupEventListeners();
   });
   afterEach(() => {
+    setCompactLayoutForTest(false);
     stopEvents();
     vi.restoreAllMocks();
   });
@@ -53,6 +55,31 @@ describe('wake rows in the background tray', () => {
     expect(rows[0].querySelector('[data-testid="wake-tray-row-outcome"]')?.textContent).toBe('woke the thread');
     expect(rows[1].querySelector('[data-testid="wake-tray-row-outcome"]')?.getAttribute('data-tone')).toBe('error');
     expect(view.getByTestId('wake-tray-more-reminders').textContent).toContain('4 more reminders');
+  });
+
+  it('under compact, gives the label its own line and puts when and the actions on the next', async () => {
+    setCompactLayoutForTest(true);
+    const { view, toggle } = await openTray([reminder]);
+    await fireEvent.click(toggle);
+    const r = await view.findByTestId('wake-tray-row');
+    const label = r.querySelector('[data-testid="wake-tray-row-label"]')!;
+    const controls = r.querySelector('[data-testid="wake-tray-row-controls"]')!;
+    expect(label.classList.contains('truncate')).toBe(false);
+    expect(label.classList.contains('line-clamp-2')).toBe(true);
+    expect(label.textContent).toBe('review the deploy');
+    expect(label.closest('[data-testid="wake-tray-row-controls"]')).toBeNull();
+    for (const id of ['wake-tray-row-when', 'wake-tray-row-wake-now', 'wake-tray-row-cancel']) {
+      expect(controls.querySelector(`[data-testid="${id}"]`), id).not.toBeNull();
+      expect(r.querySelectorAll(`[data-testid="${id}"]`).length, id).toBe(1);
+    }
+    expect(controls.querySelector('[data-testid="wake-tray-row-when"]')?.textContent).toBe('next 12m');
+
+    // Desktop keeps the one line.
+    setCompactLayoutForTest(false);
+    await tick();
+    expect(r.querySelector('[data-testid="wake-tray-row-controls"]')).toBeNull();
+    expect(r.querySelector('[data-testid="wake-tray-row-label"]')?.classList.contains('truncate')).toBe(true);
+    expect(r.querySelectorAll('[data-testid="wake-tray-row-cancel"]').length).toBe(1);
   });
 
   it('says running for a row in flight and refuses Wake now there with the reason', async () => {

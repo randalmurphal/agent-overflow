@@ -1,7 +1,8 @@
 // The background tray's wake rows under the compact layout
 // (docs/specs/standing-agents.md, "Activity rail"): a loop, an interval
-// watch, a long-running watch and a reminder each fit one phone-width row
-// with touch-sized Wake now and Cancel; a watch expands in place to its
+// watch, a long-running watch and a reminder each fit a phone-width row
+// with touch-sized Wake now and Cancel, the label whole on its first line
+// and when it fires and the actions on its second; a watch expands in place to its
 // command, directory and last stderr; and a tap on Wake now and Cancel acts
 // as a click does on desktop.
 import type { Locator } from '@playwright/test';
@@ -23,6 +24,28 @@ async function expectFits(row: Locator, viewportWidth: number): Promise<void> {
   }
 }
 
+/** The label reads whole across the row, above when it fires and the actions. */
+async function expectWholeLabel(row: Locator, label: string): Promise<void> {
+  const text = row.getByTestId('wake-tray-row-label');
+  await expect(text).toHaveText(label);
+  expect(await text.evaluate((el) => el.scrollHeight - el.clientHeight), 'label cut below').toBeLessThanOrEqual(1);
+  expect(await text.evaluate((el) => el.scrollWidth - el.clientWidth), 'label cut at the side').toBeLessThanOrEqual(1);
+  const labelBox = (await text.boundingBox())!;
+  const controls = (await row.getByTestId('wake-tray-row-controls').boundingBox())!;
+  expect(controls.y, 'controls below the label').toBeGreaterThanOrEqual(labelBox.y + labelBox.height - 1);
+  const when = row.getByTestId('wake-tray-row-when');
+  const cancel = (await row.getByTestId('wake-tray-row-cancel').boundingBox())!;
+  if (await when.count()) {
+    const whenBox = (await when.boundingBox())!;
+    expect(whenBox.x + whenBox.width, 'when left of the actions').toBeLessThan(cancel.x);
+  }
+  // The actions end at the row's right edge, as the label does.
+  expect(controls.x + controls.width - (cancel.x + cancel.width)).toBeLessThanOrEqual(8);
+}
+
+// Forty characters: past what fits beside a fire time and two buttons.
+const REMINDER = 'review the deploy notes before releasing';
+
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: wake rows fit a phone, expand in place and answer taps`, async ({ harness, page }) => {
     test.setTimeout(180_000);
@@ -31,7 +54,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       { tool: 'thread_loop', args: { label: 'standup', note: 'post the standup summary', every_seconds: 3600 } },
       { tool: 'thread_watch', args: { label: 'ci', command: run('ci.sh'), every_seconds: 3600 } },
       { tool: 'thread_watch', args: { label: 'events', command: 'exec sleep 3600', long_running: true } },
-      { tool: 'thread_remind', args: { after_seconds: 3600, note: 'review the deploy notes before the release window' } },
+      { tool: 'thread_remind', args: { after_seconds: 3600, note: REMINDER } },
     ]);
     await harness.open(page);
     await openTray(page, 'Phone agent');
@@ -39,11 +62,15 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const standup = trayRow(page, 'loop', 'standup');
     const ci = trayRow(page, 'watch', 'ci');
     const events = trayRow(page, 'watch', 'events');
-    const review = trayRow(page, 'reminder', 'review the deploy notes before the release window');
+    const review = trayRow(page, 'reminder', REMINDER);
     for (const row of [standup, ci, events, review]) {
       await expect(row).toBeVisible();
       await expectFits(row, width);
     }
+    await expectWholeLabel(review, REMINDER);
+    await expectWholeLabel(standup, 'standup');
+    await review.scrollIntoViewIfNeeded();
+    await capture(page, `${provider}-compact-tray-reminder.png`, review);
     await expect(events.getByTestId('wake-tray-row-when')).toHaveText('running');
     const body = page.getByTestId('activity-rail-background-body').filter({ visible: true });
     await capture(page, `${provider}-compact-tray-collapsed.png`, body);

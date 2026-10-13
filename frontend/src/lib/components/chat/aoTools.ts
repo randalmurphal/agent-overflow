@@ -475,12 +475,16 @@ function clip(text: string, max = WHAT_MAX): string {
  * A thread_loop, thread_watch or thread_remind call's summary with the next
  * fire time its reply named, which triage stamps on the row as
  * `next_fire_at` (internal/triage/thread_tools_schedule.go). The time is the
- * call's answer, so the line keeps it after the schedule moves on.
+ * call's answer, so the line keeps it after the schedule moves on: a fire on
+ * the row's own day (`next_fire_from`) reads as a time, any other as a date
+ * and time, the same whenever the row is read. The tray shows what is
+ * scheduled now.
  */
 function withNextFire(what: string, itemMeta: Record<string, unknown> | null): string {
   const at = itemMeta?.next_fire_at;
   if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) return what;
-  const sameDay = new Date(at).toDateString() === new Date().toDateString();
+  const from = itemMeta?.next_fire_from;
+  const sameDay = typeof from === 'number' && from > 0 && new Date(at).toDateString() === new Date(from).toDateString();
   const when = sameDay ? formatTimeOfDay(at) : `${formatCalendarDate(at)} ${formatTimeOfDay(at)}`;
   return [what, `next ${when}`].filter(Boolean).join(' · ');
 }

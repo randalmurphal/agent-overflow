@@ -20,6 +20,7 @@
   import { userFacingError } from '../../utils/userFacingError';
   import { formatCountdownSpan, formatTimeOfDay } from '../../utils/format';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import Icon from '../primitives/Icon.svelte';
   import TranscriptDisclosureHeader from '../chat/TranscriptDisclosureHeader.svelte';
   import CopyFooter from '../chat/CopyFooter.svelte';
@@ -45,6 +46,10 @@
   let kind = $derived(KINDS[row.kind] ?? KINDS.loop);
   let expandable = $derived(row.kind === 'watch');
   let running = $derived(row.state === 'running');
+  // Compact gives the label the header's whole width, up to two lines, and
+  // puts when it fires and the actions on a line of their own: a phone
+  // width cannot hold all of them beside a label worth reading.
+  let compact = $derived(isCompactLayout());
 
   // `next 12m`, or `running` while a run or fire is in flight. A
   // long-running watch is always running: its process is the schedule.
@@ -147,6 +152,34 @@
     'shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1.5 py-0.5 text-[0.6875rem] font-medium text-text-secondary transition-colors hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 compact:min-h-9 compact:select-none';
 </script>
 
+{#snippet whenLabel()}
+  {#if when}
+    <span class="ml-2 shrink-0 font-mono text-[0.6875rem] text-fg-hint compact:ml-0" title={whenTitle} data-testid="wake-tray-row-when">{when}</span>
+  {/if}
+{/snippet}
+
+{#snippet actionButtons()}
+  <span class="flex shrink-0 items-center gap-1">
+    <button
+      type="button"
+      class={actionClasses}
+      onclick={wakeNow}
+      disabled={waking || cancelling || wakeOff !== ''}
+      title={wakeOff || undefined}
+      aria-label={`Wake now: ${row.label}`}
+      data-testid="wake-tray-row-wake-now"
+    >{waking ? 'Waking…' : 'Wake now'}</button>
+    <button
+      type="button"
+      class={actionClasses}
+      onclick={cancel}
+      disabled={cancelling}
+      aria-label={`Cancel: ${row.label}`}
+      data-testid="wake-tray-row-cancel"
+    >{cancelling ? 'Cancelling…' : 'Cancel'}</button>
+  </span>
+{/snippet}
+
 <div
   class="group/tool rounded-[var(--radius-control)] border border-border-subtle bg-transparent px-1 py-1"
   data-testid="wake-tray-row"
@@ -171,33 +204,24 @@
     {/snippet}
     {#snippet label()}<span data-testid="wake-tray-row-kind">{kind.gutter}</span>{/snippet}
     {#snippet body()}
-      <span class="min-w-8 flex-1 truncate text-[0.75rem] text-fg-muted" title={row.label} data-testid="wake-tray-row-label">{row.label}</span>
-      {#if when}
-        <span class="ml-2 shrink-0 font-mono text-[0.6875rem] text-fg-hint" title={whenTitle} data-testid="wake-tray-row-when">{when}</span>
+      {#if compact}
+        <span class="line-clamp-2 min-w-0 flex-1 text-[0.75rem] text-fg-muted [overflow-wrap:anywhere]" data-testid="wake-tray-row-label">{row.label}</span>
+      {:else}
+        <span class="min-w-8 flex-1 truncate text-[0.75rem] text-fg-muted" title={row.label} data-testid="wake-tray-row-label">{row.label}</span>
+        {@render whenLabel()}
       {/if}
     {/snippet}
     {#snippet actions()}
-      <span class="flex shrink-0 items-center gap-1">
-        <button
-          type="button"
-          class={actionClasses}
-          onclick={wakeNow}
-          disabled={waking || cancelling || wakeOff !== ''}
-          title={wakeOff || undefined}
-          aria-label={`Wake now: ${row.label}`}
-          data-testid="wake-tray-row-wake-now"
-        >{waking ? 'Waking…' : 'Wake now'}</button>
-        <button
-          type="button"
-          class={actionClasses}
-          onclick={cancel}
-          disabled={cancelling}
-          aria-label={`Cancel: ${row.label}`}
-          data-testid="wake-tray-row-cancel"
-        >{cancelling ? 'Cancelling…' : 'Cancel'}</button>
-      </span>
+      {#if !compact}{@render actionButtons()}{/if}
     {/snippet}
   </TranscriptDisclosureHeader>
+
+  {#if compact}
+    <div class="flex items-center gap-2 pb-1 pl-5 pr-1" data-testid="wake-tray-row-controls">
+      {@render whenLabel()}
+      <span class="ml-auto">{@render actionButtons()}</span>
+    </div>
+  {/if}
 
   {#if outcome}
     <p
@@ -223,7 +247,7 @@
           </dl>
           <p class="mt-1.5 text-[0.6875rem] text-fg-hint">Last stderr</p>
           {#if detail.stderr}
-            <pre class="whitespace-pre-wrap break-all font-mono text-[0.6875rem] leading-relaxed text-fg-muted" data-testid="wake-tray-row-stderr">{detail.stderr}</pre>
+            <pre class="whitespace-pre-wrap font-mono [overflow-wrap:anywhere] text-[0.6875rem] leading-relaxed text-fg-muted" data-testid="wake-tray-row-stderr">{detail.stderr}</pre>
           {:else}
             <p class="text-[0.6875rem] text-fg-hint" data-testid="wake-tray-row-stderr-empty">Nothing on stderr.</p>
           {/if}

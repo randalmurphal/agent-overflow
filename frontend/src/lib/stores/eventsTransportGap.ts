@@ -178,8 +178,8 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       refreshAsyncQuestions(undefined, backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'thread:wakes_changed':
-      // The frame names only a thread, so every tray on that computer reads
-      // its list again; nothing else renders it.
+      // A lost frame could have named any thread's row, so every tray on
+      // that computer reads its list again; nothing else renders it.
       applyThreadWakesGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'backend:attach':

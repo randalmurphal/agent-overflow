@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -611,14 +612,25 @@ func (s *Store) ListOpenThreadReminders(callerThreadID string, limit int) (_ []T
 	if limit < 1 {
 		limit = 32
 	}
-	if err := s.reader().QueryRow(`SELECT count(*) FROM thread_requests
+	// One read transaction, so the count and the listing see the same rows
+	// and the count is never below what was listed.
+	tx, err := s.reader().BeginTx(context.Background(), nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) && err == nil {
+			err = fmt.Errorf("%s: end the read: %w", action, rollbackErr)
+		}
+	}()
+	if err := tx.QueryRow(`SELECT count(*) FROM thread_requests
 		  WHERE caller_thread_id = ? AND kind = 'remind' AND state = 'accepted'`, callerThreadID).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("%s: count: %w", action, err)
 	}
 	if total == 0 {
 		return nil, 0, nil
 	}
-	rows, err := s.reader().Query(
+	rows, err := tx.Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
 		  WHERE caller_thread_id = ? AND kind = 'remind' AND state = 'accepted'
 		  ORDER BY due_at ASC, token ASC LIMIT `+strconv.Itoa(limit), callerThreadID)

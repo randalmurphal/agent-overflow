@@ -430,9 +430,14 @@ existing background tray (`ActivityRailBackgroundBody`), one row each:
 kind glyph, label, `next 12m` or `running`, last outcome, a `Wake now`
 action that fires it immediately and a `Cancel` action. The tray toggle
 counts them with the other background work. Expanding a watch row shows
-its command, cwd and the tail of its last stderr. The tool call that
+its command, cwd and the tail of its last stderr. Under the compact
+layout a row takes two lines, so the label is never cut to fit the
+actions: the kind and the label across the row (an ellipsis only past
+two lines), then `next 12m` and the two actions. The tool call that
 registered it renders in the timeline like any thread tool call, with
-the next fire time in the summary line.
+the next fire time in the summary line: a time alone when it falls on
+the day of the call, and dated otherwise. The form is fixed by the
+call's own stamp, so the settled row reads the same on any later day.
 
 - **Reading.** `ListThreadWakes` returns the thread's live loops and
   watches and its 64 soonest reminders that have not fired; the tray

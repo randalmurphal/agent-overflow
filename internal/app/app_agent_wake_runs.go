@@ -245,7 +245,12 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 		a.finishAgentWakeFire(run, row, "error: unknown kind "+row.Kind, "", fire.missed, store.AgentWakeNoWake)
 		return
 	}
-	err := a.deliverAgentWake(ctx, row, fire.at, body)
+	a.settleAgentWakeDelivery(run, row, fire, body, a.deliverAgentWake(ctx, row, fire.at, body))
+}
+
+// settleAgentWakeDelivery records on its row what delivering one fire's wake
+// came to.
+func (a *App) settleAgentWakeDelivery(run *agentWakeRun, row store.AgentWake, fire agentWakeFire, body string, err error) {
 	// A watch's wake that did not reach the agent stays on its row.
 	kept := keptAgentWakeOutput(body)
 	switch {

@@ -139,6 +139,43 @@ export function dbWake(dataDir: string, thread: string, label: string): DbWake |
   }
 }
 
+export interface DbScheduleRow {
+  id: string;
+  tool: string;
+  next_fire_at: number;
+  next_fire_from: number;
+}
+
+/** The thread's schedule calls whose answers named a next fire, as triage stamped them. */
+export function dbScheduleRows(dataDir: string, thread: string): DbScheduleRow[] {
+  const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    return db
+      .prepare(
+        `SELECT id, json_extract(meta, '$.mcp.tool') AS tool, json_extract(meta, '$.next_fire_at') AS next_fire_at,
+                json_extract(meta, '$.next_fire_from') AS next_fire_from
+           FROM items WHERE thread_id = ? AND json_extract(meta, '$.next_fire_at') IS NOT NULL`,
+      )
+      .all(thread) as unknown as DbScheduleRow[];
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * The `· next …` a schedule row's summary ends with, formatted in the page
+ * as the app formats it: the time alone when the fire is on the row's own
+ * day, the date as well when it is not.
+ */
+export async function expectedNextFire(page: Page, row: DbScheduleRow): Promise<string> {
+  return await page.evaluate(({ at, from }) => {
+    const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(at);
+    if (new Date(at).toDateString() === new Date(from).toDateString()) return `next ${time}`;
+    const day = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' }).format(at);
+    return `next ${day} ${time}`;
+  }, { at: row.next_fire_at, from: row.next_fire_from });
+}
+
 /** A reminder's request state, or undefined once it is gone. */
 export function dbReminderState(dataDir: string, token: string): string | undefined {
   const db = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });

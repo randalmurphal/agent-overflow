@@ -27,7 +27,9 @@ import {
 import {
   capture,
   dbReminderState,
+  dbScheduleRows,
   dbWake,
+  expectedNextFire,
   holdNextRun,
   openTray,
   registerThrough,
@@ -83,6 +85,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(events.getByTestId('wake-tray-row-wake-now')).toHaveAttribute('title', /runs all the time/);
     await expect(standup.getByTestId('wake-tray-row-kind')).toHaveText('loop');
     await expect(review.getByTestId('wake-tray-row-kind')).toHaveText('remind');
+    // Desktop keeps one line: the label, when it fires and the actions side by side.
+    await expect(page.getByTestId('wake-tray-row-controls')).toHaveCount(0);
+    const [labelBox, whenBox, cancelBox] = await Promise.all(
+      ['wake-tray-row-label', 'wake-tray-row-when', 'wake-tray-row-cancel'].map(async (id) => (await review.getByTestId(id).boundingBox())!),
+    );
+    for (const box of [whenBox, cancelBox]) expect(Math.abs(box.y + box.height / 2 - (labelBox.y + labelBox.height / 2))).toBeLessThanOrEqual(2);
     await capture(page, `${provider}-tray-collapsed.png`, page.getByTestId('activity-rail-background-body').filter({ visible: true }));
 
     // The registering calls name their next fire in the timeline; the
@@ -91,8 +99,16 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     if ((await header.count()) > 0 && (await page.getByTestId('activity-run').first().getAttribute('data-collapsed')) === 'true') {
       await header.first().click();
     }
-    // A fire on a later day carries its date (`next Oct 13, 2026 12:01 AM`).
-    const scheduled = page.getByTestId('tool-call-card').filter({ hasText: /· next ([A-Z][a-z]{2} \d{1,2}, \d{4} )?\d{1,2}:\d{2}/ });
+    // Triage stamped each answer's next fire and the row's own time; the
+    // card says the time alone for a fire on the row's day and the date as
+    // well for a later one, whenever it is read.
+    const stamped = dbScheduleRows(agent.dataDir, agent.thread);
+    expect(stamped.map((row) => row.tool).sort()).toEqual(['thread_loop', 'thread_remind', 'thread_remind', 'thread_watch', 'thread_watch']);
+    for (const row of stamped) {
+      expect(row.next_fire_from, `${row.tool} row time`).toBeGreaterThan(0);
+      await expect(page.locator(`[data-item-id="${row.id}"]`).getByTestId('tool-call-card')).toContainText(`· ${await expectedNextFire(page, row)}`);
+    }
+    const scheduled = page.getByTestId('tool-call-card').filter({ hasText: '· next ' });
     await expect(scheduled).toHaveCount(5);
     await expect(page.getByTestId('tool-call-card').filter({ hasText: 'events' })).not.toContainText('· next');
     await scheduled.first().scrollIntoViewIfNeeded();
@@ -238,9 +254,18 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const taken = wakeInput(harness, agent.cwd, 'Loop "standup" fired.');
     await standup.getByTestId('wake-tray-row-wake-now').click();
     const mockId = provider === 'claude' ? (await taken).mockId : (await awaitGate(harness, 'hold', agent.cwd)).mockId;
-    await harness.rpc('HarnessMockCommand', mockId, { type: 'exit', code: 1 });
+    // The fire is over before the session dies: its row says delivered, and
+    // nothing else is due to write it. The one frame that can turn the row
+    // is the session end's.
     const outcome = standup.getByTestId('wake-tray-row-outcome');
+    await expect(outcome).toHaveText('delivered', { timeout: 30_000 });
+    await expect(standup).toHaveAttribute('data-state', 'armed');
+    const standupID = dbWake(agent.dataDir, agent.thread, 'standup')!.id;
+    const framesFor = () => harness.countEvents<{ id: string }>('thread:wakes_changed', (d) => d.id === standupID);
+    const settled = framesFor();
+    await harness.rpc('HarnessMockCommand', mockId, { type: 'exit', code: 1 });
     await expect(outcome).toHaveText(UNDELIVERED, { timeout: 30_000 });
+    expect(framesFor() - settled, 'frames for the row after the session ended').toBe(1);
     await expect(outcome).toHaveAttribute('data-tone', 'warning');
     expect(dbWake(agent.dataDir, agent.thread, 'standup')!.last_outcome).toBe(UNDELIVERED);
     await capture(page, `${provider}-tray-undelivered.png`, standup);

@@ -294,8 +294,8 @@ const (
 	ThreadRuntimeModeChanged Channel = "thread:runtime_mode_changed"
 	ThreadTitleGeneration    Channel = "thread:title_generation"
 	ThreadUpdated            Channel = "thread:updated"
-	// ThreadWakesChanged names a thread whose loops, watches or reminders
-	// changed; readers refetch ListThreadWakes.
+	// ThreadWakesChanged carries one changed loop, watch or reminder: its
+	// thread, its id, and the row as it stands or that it was removed.
 	ThreadWakesChanged Channel = "thread:wakes_changed"
 )
 
