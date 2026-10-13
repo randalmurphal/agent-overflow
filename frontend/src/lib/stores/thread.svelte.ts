@@ -129,11 +129,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // real row on first send is exactly the moment the backend would otherwise
   // keep withholding the whole first turn (2026-09-03). Same-id replacements
   // (metadata patches) change nothing the set reads, and the transport dedups
-  // the rest, so the recompute is keyed on identity alone.
+  // the rest, so the recompute is keyed on identity alone. The same edge is
+  // where the owner saves the pane layout, before any load the change starts.
   function assignThread(next: Thread | null): void {
     const before = thread?.id ?? null;
     thread = next;
-    if ((next?.id ?? null) !== before) refreshWatchedThreads();
+    if ((next?.id ?? null) === before) return;
+    refreshWatchedThreads();
+    options.onThreadChanged?.();
   }
   let contextWindow: ContextWindow | null = $state(null);
   let loading: boolean = $state(false);

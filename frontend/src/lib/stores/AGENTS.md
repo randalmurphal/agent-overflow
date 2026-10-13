@@ -43,8 +43,9 @@ actions, scope errors, and file errors remain visible.
 
 One thread may be mounted in only one pane. Enter through `mountThreadInPane`;
 `replaceThreadInPane` stays private. All writes to a pane's thread identity go
-through `assignThread`, which refreshes transport watches. Use `revealPane` for
-actions that expose a pane so compact layout moves to the thread screen.
+through `assignThread`, which refreshes transport watches and saves the pane
+layout before any load the change starts. Use `revealPane` for actions that
+expose a pane so compact layout moves to the thread screen.
 
 ## Events and convergence
 

@@ -455,4 +455,11 @@ export interface DraftPlaceholderDefaults {
 
 export interface ThreadPaneOptions {
   paneId?: string;
+  /**
+   * Called synchronously whenever the pane's thread identity changes: a
+   * switch, a draft placeholder, its materialization, or a clear. The pane
+   * registry saves the layout here, so what a reload restores never lags
+   * what the pane shows.
+   */
+  onThreadChanged?: () => void;
 }

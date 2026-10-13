@@ -503,20 +503,23 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
         }
         addErrorToast(userFacingError(err, 'Failed to restore pane layout.'), err);
       } finally {
-        if (disposed) return;
-        // Release the startup screen even when offline. Saved-pane restore
-        // can retry on connection; notification resolution independently
-        // fetches its thread and must not wait forever on this initial read.
-        // A starting computer is not offline: hold for it (above).
-        if (!heldForStartingBackend) {
-          paneLayoutRestored = true;
-          appReady = true;
-          void markNotificationHydrated();
+        // A `return` inside finally would override the try and catch
+        // paths' outcomes; the tail only runs while the app is live.
+        if (!disposed) {
+          // Release the startup screen even when offline. Saved-pane restore
+          // can retry on connection; notification resolution independently
+          // fetches its thread and must not wait forever on this initial read.
+          // A starting computer is not offline: hold for it (above).
+          if (!heldForStartingBackend) {
+            paneLayoutRestored = true;
+            appReady = true;
+            void markNotificationHydrated();
+          }
+          restoringLayout = false;
+          const retry = retryLayout;
+          retryLayout = false;
+          if (retry && !layoutSettled) void restoreStartupLayout();
         }
-        restoringLayout = false;
-        const retry = retryLayout;
-        retryLayout = false;
-        if (retry && !layoutSettled) void restoreStartupLayout();
       }
     }
     // A cold offline catalog is unknown, not proof that saved panes vanished.
@@ -574,11 +577,9 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 
     void loadKeybindings();
     const flushPaneLayout = () => {
+      // Writes the pending debounced resize. Every other layout change
+      // is saved synchronously when it happens.
       if (paneLayoutRestored) void flushPaneLayoutPersistence();
-      // Deliver any debounced appStorage writes (sidebar view state,
-      // width) before the page goes away. Best-effort — the WS send
-      // may not complete on a hard kill, and the same-session cache
-      // covers the reload case regardless.
       void flushAppStorage();
     };
     const handleVisibilityChange = () => {
