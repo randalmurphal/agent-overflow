@@ -223,12 +223,11 @@ func copyFile(fsys fs.FS, file treeFile, dir string) error {
 	if err != nil {
 		return err
 	}
-	defer source.Close()
 	mode := fs.FileMode(0o644)
 	if file.executable {
 		mode = 0o755
 	}
-	return writeAtomic(target, source, mode)
+	return errors.Join(writeAtomic(target, source, mode), source.Close())
 }
 
 // Remove deletes what home's manifest names: its files, then the

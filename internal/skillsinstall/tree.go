@@ -106,19 +106,21 @@ func LoadTree(fsys fs.FS, upstream []byte) (Tree, error) {
 // hashFile adds one file's path, mode and content to sum and reports whether
 // it is executable. WalkDir visits names in lexical order, so the digest does
 // not depend on the filesystem's order.
-func hashFile(fsys fs.FS, name string, sum io.Writer) (bool, error) {
+func hashFile(fsys fs.FS, name string, sum io.Writer) (executable bool, err error) {
 	file, err := fsys.Open(name)
 	if err != nil {
 		return false, err
 	}
-	defer file.Close()
+	defer func() { err = errors.Join(err, file.Close()) }()
 	reader := bufio.NewReader(file)
 	head, err := reader.Peek(2)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, err
 	}
-	executable := string(head) == "#!"
-	fmt.Fprintf(sum, "%s\x00%t\x00", name, executable)
+	executable = string(head) == "#!"
+	if _, err := fmt.Fprintf(sum, "%s\x00%t\x00", name, executable); err != nil {
+		return false, err
+	}
 	if _, err := io.Copy(sum, reader); err != nil {
 		return false, err
 	}
