@@ -43,3 +43,16 @@ export function expectInstalled(dir: string): void {
   expect(manifest.complete).toBe(true);
   expect(manifest.files).toContain('poteto-mode/SKILL.md');
 }
+
+/**
+ * Replaces the computer's host name the page header shows, so a screenshot
+ * names no real machine.
+ */
+export async function scrubComputerName(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.textContent?.startsWith('Computer: ')) node.textContent = 'Computer: this computer';
+    }
+  });
+}

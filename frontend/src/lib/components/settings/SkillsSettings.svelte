@@ -82,7 +82,7 @@
 </script>
 
 <div class="settings-sections" data-testid="settings-skills">
-  <section>
+  <section data-testid="settings-skills-homes">
     {#if library}
       <SettingsHeader
         title={library.name}

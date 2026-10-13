@@ -14,7 +14,7 @@ import { join } from 'node:path';
 
 import { test, expect } from './fixtures.js';
 import { capture } from './wake-rows-helpers.js';
-import { MANIFEST, expectInstalled, openSkillsPage, skillsDir, status } from './skills-settings-helpers.js';
+import { MANIFEST, expectInstalled, openSkillsPage, scrubComputerName, skillsDir, status } from './skills-settings-helpers.js';
 
 test('the Skills page installs, updates and removes the shipped tree per provider home', async ({ harness, page }) => {
   test.setTimeout(120_000);
@@ -28,11 +28,15 @@ test('the Skills page installs, updates and removes the shipped tree per provide
   const section = page.getByTestId('settings-skills');
   await expect(section).toContainText(/Version \d+\.\d+\.\d+, upstream [0-9a-f]{7}/);
   await expect(page.getByTestId('settings-skills-list')).toContainText('poteto-mode');
+  // The install belongs to the computer whose provider homes it writes, not
+  // to this browser.
+  await expect(page.getByText('Saved on this device.')).toHaveCount(0);
   await expect(status(page, 'claude')).toHaveText('Not installed');
   await expect(status(page, 'codex')).toHaveText('Not installed');
   expect(existsSync(claude)).toBe(false);
   expect(existsSync(codex)).toBe(false);
-  await capture(page, 'skills-before-install.png', section);
+  await scrubComputerName(page);
+  await capture(page, 'skills-before-install.png', page.getByTestId('settings-skills-homes'));
 
   // ---- A skill of the user's own with a shipped name refuses the whole
   // install and writes nothing.
@@ -55,7 +59,8 @@ test('the Skills page installs, updates and removes the shipped tree per provide
   await expect(status(page, 'codex')).toHaveText('Installed');
   await expect(page.getByTestId('settings-skills-codex-error')).toHaveCount(0);
   expectInstalled(codex);
-  await capture(page, 'skills-after-install.png', section);
+  await scrubComputerName(page);
+  await capture(page, 'skills-after-install.png', page.getByTestId('settings-skills-homes'));
 
   // ---- An install from an older tree offers Update, which replaces it.
   const manifestPath = join(claude, MANIFEST);

@@ -6,7 +6,7 @@ import { existsSync, rmSync } from 'node:fs';
 
 import { test, expect } from './fixtures.js';
 import { capture } from './wake-rows-helpers.js';
-import { expectInstalled, openSkillsPage, skillsDir, status } from './skills-settings-helpers.js';
+import { expectInstalled, openSkillsPage, scrubComputerName, skillsDir, status } from './skills-settings-helpers.js';
 
 test('compact: the Skills page fits the phone and installs from a tap', async ({ harness, page }) => {
   test.setTimeout(120_000);
@@ -30,6 +30,7 @@ test('compact: the Skills page fits the phone and installs from a tap', async ({
     return out;
   });
   expect(clipped).toEqual([]);
+  await scrubComputerName(page);
   await capture(page, 'compact-skills-before-install.png', install);
 
   await install.tap();
@@ -37,5 +38,6 @@ test('compact: the Skills page fits the phone and installs from a tap', async ({
   expectInstalled(claude);
   expect(existsSync(skillsDir(harness, 'codex'))).toBe(false);
   await expect(page.getByTestId('settings-skills-claude-remove')).toBeInViewport({ ratio: 1 });
+  await scrubComputerName(page);
   await capture(page, 'compact-skills-after-install.png', section.getByTestId('settings-skills-claude'));
 });
