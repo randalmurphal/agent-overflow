@@ -573,8 +573,8 @@ profile sharing a home sees one install. It names every file and skill
 directory written; before the first write it names everything the run
 may leave, so a failure part way shows as an unfinished install that
 Update finishes and Remove clears. Install refuses the whole
-install, writing nothing, when a skill directory or file it would write
-is there and the manifest does not name it, and names them. Update
+install, writing nothing in `skills/`, when a skill directory or file it
+would write is there and the manifest does not name it, and names them. Update
 replaces what the manifest names and deletes the named files the tree
 no longer has; it is refused for a home with no install. Remove deletes
 the named files and the directories they leave empty; a directory
@@ -583,10 +583,19 @@ the manifest names as the app's, a user's edit to one included, and
 Remove asks no confirmation ([decisions](../decisions.md#miscellany)).
 A manifest naming anything outside its own skill directories (a `..`
 element, an absolute path, a file of a skill it does not list) is read
-as an error and nothing is deleted. Install, Update and Remove hold an
-advisory lock on `<provider home>/skills/.agent-overflow-pstack.lock`
-from reading the manifest to writing it, so two processes sharing a
-home cannot interleave. A home is current when its
+as an error and nothing is deleted. Every read, write and delete in
+`skills/` goes through an `os.Root` opened on it (a `skills` link itself
+is followed), so nothing reaches through a link to outside it. A link or
+file where a directory of an owned skill should be refuses Install and
+Update as a named conflict, wherever it points, and Remove deletes the
+link, never through it. Install, Update and Remove hold an exclusive
+advisory lock, and a status read a shared one, on
+`<provider home>/.agent-overflow-pstack-skills.lock` from reading the
+manifest to writing it, so two processes sharing a home cannot
+interleave and the page never shows a change part way. The lock file
+sits beside `skills/`; the first Install creates it, a read of a home
+with nothing installed does not, and it stays after Remove, since
+removing a lock file races its users. A home is current when its
 manifest's digest of the tree's paths and content matches the
 shipped one, since the port edits files without moving the upstream
 pin. An embedded file has no mode, so a file starting with `#!` is

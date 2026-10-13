@@ -189,6 +189,15 @@ func TestDemoteStandingAgentAndDeleteHomeRefusesAnyOtherPath(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), home) || !strings.Contains(err.Error(), "was not deleted") {
 				t.Fatalf("err = %v, want a refusal naming %s", err, home)
 			}
+			// The toast line is the innermost layer: no path, so the UUID
+			// scrub cannot leave a broken one behind.
+			chain := errorsx.Chain(err)
+			if line := chain[len(chain)-1]; line != "the thread was demoted, but its home folder was not deleted: it is not this agent's folder in the app's agents folder" {
+				t.Fatalf("toast line = %q", line)
+			}
+			if !strings.Contains(err.Error(), "(expected "+filepath.Join(agents, thread.ID)+")") {
+				t.Fatalf("err = %v, want the expected folder in the outer layer", err)
+			}
 			for _, marker := range markers {
 				if !filepath.IsAbs(marker) {
 					continue

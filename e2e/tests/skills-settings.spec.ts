@@ -11,7 +11,7 @@
 // Update and Remove; a second client's page follows Install and Remove
 // without a reload; screenshots before and after Install, of a refusal
 // beside its row, and of the unfinished and update-available states.
-import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { test, expect } from './fixtures.js';
@@ -52,8 +52,8 @@ test('the Skills page installs, updates and removes the shipped tree per provide
   });
   await capture(page, 'skills-install-refused.png', page.getByTestId('settings-skills-homes'));
   await expect(status(page, 'codex')).toHaveText('Not installed');
-  expect(existsSync(join(codex, MANIFEST))).toBe(false);
-  expect(existsSync(join(codex, 'poteto-mode'))).toBe(false);
+  // Nothing in skills/ but the user's own skill: the lock sits beside it.
+  expect(readdirSync(codex)).toEqual(['tdd']);
   expect(readFileSync(join(codex, 'tdd', 'SKILL.md'), 'utf8')).toBe('my own tdd skill');
   rmSync(join(codex, 'tdd'), { recursive: true });
 

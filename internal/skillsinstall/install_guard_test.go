@@ -13,21 +13,19 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
-// helperEnv makes the test binary install one tree into a home and exit, so
-// a test can race installs from separate processes.
+// helperEnv makes the test binary run one change on a home and exit, so a
+// test can race changes from separate processes. Its value is
+// "home|variant|op", op one of install, update or remove.
 const helperEnv = "AO_TEST_SKILLS_INSTALL"
 
 func TestMain(m *testing.M) {
 	if spec := os.Getenv(helperEnv); spec != "" {
-		home, variant, _ := strings.Cut(spec, "|")
-		n, _ := strconv.Atoi(variant)
-		tree, err := LoadTree(variantTree(n), []byte(testUpstream))
-		if err == nil {
-			err = Install(home, tree)
-		}
-		if err != nil {
+		parts := strings.SplitN(spec, "|", 3)
+		n, _ := strconv.Atoi(parts[1])
+		if err := runChange(parts[2], parts[0], n); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -35,6 +33,36 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(m.Run())
 }
+
+// runChange runs one racing change racingRepeats times, so the racers'
+// changes overlap. An Update that finds nothing installed lost its race to
+// a Remove, which is not a failure.
+func runChange(op, home string, variant int) error {
+	tree, err := LoadTree(variantTree(variant), []byte(testUpstream))
+	if err != nil {
+		return err
+	}
+	for range racingRepeats {
+		switch op {
+		case "install":
+			err = Install(home, tree)
+		case "update":
+			if err = Update(home, tree); errors.Is(err, ErrNotInstalled) {
+				err = nil
+			}
+		case "remove":
+			err = Remove(home)
+		default:
+			err = fmt.Errorf("unknown op %q", op)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const racingRepeats = 4
 
 // variantTree is a tree of many files whose skills overlap with the other
 // variants' and differ from them, so racing installs touch the same names.
@@ -141,30 +169,42 @@ func TestInstallRefusesAUserFileInsideAnOwnedSkill(t *testing.T) {
 	}
 }
 
-// Installs racing from two processes and two goroutines on one home leave a
-// home whose manifest names every skill file on it.
-func TestRacingInstallsLeaveEveryFileNamed(t *testing.T) {
-	for round := range 4 {
+// Install, Update and Remove racing from separate processes and from
+// goroutines on one home leave it consistent after every round: the
+// manifest, when there is one, is complete, names every skill file on disk
+// and names nothing that is missing; with no manifest there is no skill file.
+func TestRacingChangesLeaveEveryFileNamed(t *testing.T) {
+	changes := []struct {
+		op      string
+		variant int
+		process bool
+	}{
+		{"install", 1, true}, {"update", 2, true}, {"remove", 0, true},
+		{"install", 3, false}, {"update", 4, false}, {"remove", 0, false},
+	}
+	for round := range 6 {
 		home := t.TempDir()
-		var wg sync.WaitGroup
-		errs := make(chan error, 4)
-		for n := 1; n <= 2; n++ {
-			cmd := exec.Command(os.Args[0], "-test.run=^$")
-			cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s|%d", helperEnv, home, n))
-			wg.Go(func() {
-				if out, err := cmd.CombinedOutput(); err != nil {
-					errs <- fmt.Errorf("process %d: %v: %s", n, err, out)
-				}
-			})
+		if err := runChange("install", home, 0); err != nil {
+			t.Fatal(err)
 		}
-		for n := 3; n <= 4; n++ {
+		var wg sync.WaitGroup
+		errs := make(chan error, len(changes))
+		for i, change := range changes {
+			// Rotate the start order so each change leads some rounds.
+			change = changes[(i+round)%len(changes)]
+			if change.process {
+				cmd := exec.Command(os.Args[0], "-test.run=^$")
+				cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s|%d|%s", helperEnv, home, change.variant, change.op))
+				wg.Go(func() {
+					if out, err := cmd.CombinedOutput(); err != nil {
+						errs <- fmt.Errorf("process %s %d: %v: %s", change.op, change.variant, err, out)
+					}
+				})
+				continue
+			}
 			wg.Go(func() {
-				tree, err := LoadTree(variantTree(n), []byte(testUpstream))
-				if err == nil {
-					err = Install(home, tree)
-				}
-				if err != nil {
-					errs <- fmt.Errorf("goroutine %d: %w", n, err)
+				if err := runChange(change.op, home, change.variant); err != nil {
+					errs <- fmt.Errorf("goroutine %s %d: %w", change.op, change.variant, err)
 				}
 			})
 		}
@@ -173,24 +213,136 @@ func TestRacingInstallsLeaveEveryFileNamed(t *testing.T) {
 		for err := range errs {
 			t.Errorf("round %d: %v", round, err)
 		}
-		m, err := readManifest(home)
-		if err != nil || m == nil || !m.Complete {
-			t.Fatalf("round %d: manifest = %+v, %v", round, m, err)
+		checkEveryFileNamed(t, home, round)
+	}
+}
+
+func checkEveryFileNamed(t *testing.T, home string, round int) {
+	t.Helper()
+	root, err := os.OpenRoot(filepath.Join(home, "skills"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	m, err := readManifest(root)
+	if err != nil || (m != nil && !m.Complete) {
+		t.Fatalf("round %d: manifest = %+v, %v", round, m, err)
+	}
+	var named map[string]bool
+	if m != nil {
+		named = setOf(m.Files)
+	}
+	onDisk := map[string]bool{}
+	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || name == ManifestName {
+			return err
 		}
-		named := setOf(m.Files)
-		root := filepath.Join(home, "skills")
-		err = filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() || entry.Name() == ManifestName || entry.Name() == lockName {
-				return err
+		onDisk[name] = true
+		if !named[name] {
+			t.Errorf("round %d: %s is on disk and not in the manifest", round, name)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range named {
+		if !onDisk[name] {
+			t.Errorf("round %d: the manifest names %s and it is missing", round, name)
+		}
+	}
+}
+
+// Install, Update and Remove each wait for a change holding the home's
+// lock, touching nothing until it is released.
+func TestChangesWaitForTheLock(t *testing.T) {
+	next := map[string]string{}
+	for name, body := range v1 {
+		next[name] = body + " v2"
+	}
+	for op, change := range map[string]func(home string) error{
+		"Install": func(home string) error { return Install(home, testTree(t, next)) },
+		"Update":  func(home string) error { return Update(home, testTree(t, next)) },
+		"Remove":  Remove,
+	} {
+		t.Run(op, func(t *testing.T) {
+			home := t.TempDir()
+			if err := Install(home, testTree(t, v1)); err != nil {
+				t.Fatal(err)
 			}
-			rel, _ := filepath.Rel(root, name)
-			if !named[filepath.ToSlash(rel)] {
-				t.Errorf("round %d: %s is on disk and not in the manifest", round, rel)
+			before := listHome(t, home)
+			unlock, _, err := lockHome(home, false, false)
+			if err != nil {
+				t.Fatal(err)
 			}
-			return nil
+			done := make(chan error, 1)
+			go func() { done <- change(home) }()
+			select {
+			case err := <-done:
+				t.Fatalf("%s returned while the lock was held: %v", op, err)
+			case <-time.After(200 * time.Millisecond):
+			}
+			if got := listHome(t, home); strings.Join(got, ",") != strings.Join(before, ",") || readHome(t, home, "alpha/SKILL.md") != "alpha v1" {
+				t.Fatalf("%s changed the home while the lock was held: %v", op, got)
+			}
+			if err := unlock(); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("%s after the lock was released: %v", op, err)
+			}
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+	}
+}
+
+// A status read while a change holds the lock waits for it and reports
+// what the change finished, never the unfinished install part way.
+func TestGetStatusWaitsForAChangeInProgress(t *testing.T) {
+	home := t.TempDir()
+	tree := testTree(t, v1)
+	if err := Install(home, tree); err != nil {
+		t.Fatal(err)
+	}
+	unlock, _, err := lockHome(home, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(filepath.Join(home, "skills"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	m, err := readManifest(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Complete = false
+	if err := writeManifest(root, *m); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		status Status
+		err    error
+	}
+	read := make(chan result, 1)
+	go func() {
+		status, err := GetStatus(home, tree)
+		read <- result{status, err}
+	}()
+	select {
+	case got := <-read:
+		t.Fatalf("GetStatus returned during the change: %+v, %v", got.status, got.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	m.Complete = true
+	if err := writeManifest(root, *m); err != nil {
+		t.Fatal(err)
+	}
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	got := <-read
+	if got.err != nil || !got.status.Complete || !got.status.Current {
+		t.Fatalf("GetStatus after the change = %+v, %v", got.status, got.err)
 	}
 }

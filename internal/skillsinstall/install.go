@@ -1,16 +1,13 @@
 package skillsinstall
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 )
 
 // Status is what a provider home holds of the tree.
@@ -36,9 +33,20 @@ func (e *ConflictError) Error() string {
 		strings.Join(e.Paths, ", ") + ". Nothing was installed."
 }
 
-// GetStatus reads what home holds of tree.
-func GetStatus(home string, tree Tree) (Status, error) {
-	m, err := readManifest(home)
+// GetStatus reads what home holds of tree. It waits for a change running
+// on the home, so it never reports one part way.
+func GetStatus(home string, tree Tree) (status Status, err error) {
+	unlock, found, err := lockHome(home, false, true)
+	if err != nil || !found {
+		return Status{}, err
+	}
+	defer func() { err = errors.Join(err, unlock()) }()
+	root, found, err := openSkills(home, false)
+	if err != nil || !found {
+		return Status{}, err
+	}
+	defer func() { err = errors.Join(err, root.Close()) }()
+	m, err := readManifest(root)
 	if err != nil || m == nil {
 		return Status{}, err
 	}
@@ -54,27 +62,35 @@ func GetStatus(home string, tree Tree) (Status, error) {
 // Install copies tree into home. A home that already holds a complete,
 // current install is left as it is; one that holds another or an
 // unfinished install is updated. A skill directory or file the manifest does
-// not name refuses the whole install before anything is written.
+// not name, or a link or file where a directory it writes into should be,
+// refuses the whole install before anything is written.
 func Install(home string, tree Tree) (err error) {
-	unlock, _, err := lockHome(home, true)
+	unlock, _, err := lockHome(home, true, false)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, unlock()) }()
-	previous, err := readManifest(home)
+	// A skills directory this creates holds nothing, so nothing in it can
+	// refuse the install.
+	root, _, err := openSkills(home, true)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, root.Close()) }()
+	previous, err := readManifest(root)
 	if err != nil {
 		return err
 	}
 	if previous != nil && previous.Complete && previous.Digest == tree.Digest {
 		return nil
 	}
-	return apply(home, tree, previous)
+	return apply(root, tree, previous)
 }
 
 // Update replaces what the manifest names with tree, deleting the files the
 // manifest names that tree no longer has. Refused for a home with no install.
 func Update(home string, tree Tree) (err error) {
-	unlock, found, err := lockHome(home, false)
+	unlock, found, err := lockHome(home, false, false)
 	if err != nil {
 		return err
 	}
@@ -82,24 +98,29 @@ func Update(home string, tree Tree) (err error) {
 		return ErrNotInstalled
 	}
 	defer func() { err = errors.Join(err, unlock()) }()
-	previous, err := readManifest(home)
+	root, found, err := openSkills(home, false)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotInstalled
+	}
+	defer func() { err = errors.Join(err, root.Close()) }()
+	previous, err := readManifest(root)
 	if err != nil {
 		return err
 	}
 	if previous == nil {
 		return ErrNotInstalled
 	}
-	return apply(home, tree, previous)
+	return apply(root, tree, previous)
 }
 
-func apply(home string, tree Tree, previous *manifest) error {
+func apply(root *os.Root, tree Tree, previous *manifest) error {
 	if previous == nil {
 		previous = &manifest{}
 	}
-	ownedSkills := setOf(previous.Skills)
-	ownedFiles := setOf(previous.Files)
-	dir := skillsDir(home)
-	if err := conflicts(dir, tree, ownedSkills, ownedFiles); err != nil {
+	if err := conflicts(root, tree, setOf(previous.Skills), setOf(previous.Files)); err != nil {
 		return err
 	}
 	newFiles := tree.Files()
@@ -110,11 +131,11 @@ func apply(home string, tree Tree, previous *manifest) error {
 		Skills: union(previous.Skills, tree.Skills),
 		Files:  union(previous.Files, newFiles),
 	}
-	if err := writeManifest(home, pending); err != nil {
+	if err := writeManifest(root, pending); err != nil {
 		return err
 	}
 	for _, file := range tree.files {
-		if err := copyFile(tree.fsys, file, dir); err != nil {
+		if err := copyFile(root, tree.fsys, file); err != nil {
 			return fmt.Errorf("install %s: %w", file.path, err)
 		}
 	}
@@ -125,46 +146,59 @@ func apply(home string, tree Tree, previous *manifest) error {
 			stale = append(stale, name)
 		}
 	}
-	if failed, err := removeFiles(dir, stale); err != nil {
+	if failed, err := removeFiles(root, stale); err != nil {
 		pending.Files = union(newFiles, failed)
-		return errors.Join(err, writeManifest(home, pending))
+		return errors.Join(err, writeManifest(root, pending))
 	}
-	pruneDirs(dir, previous.Skills, stale)
-	return writeManifest(home, manifest{
+	pruneDirs(root, previous.Skills, stale)
+	return writeManifest(root, manifest{
 		Version: tree.Version, Commit: tree.Commit, Digest: tree.Digest,
 		Complete: true, Skills: tree.Skills, Files: newFiles,
 	})
 }
 
-// conflicts refuses a skill directory or file in the way that the previous
-// manifest does not name.
-func conflicts(dir string, tree Tree, ownedSkills, ownedFiles map[string]bool) error {
-	// Stat, not Lstat: a skills directory linked elsewhere is the user's
-	// choice of where skills live, and the install goes there.
-	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", dir)
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
+// conflicts refuses what is in the way: a skill directory the previous
+// manifest does not own, a file it does not name inside one it does, and a
+// link or file where a directory of an owned skill should be. The root
+// would follow a link that stays inside it, and the manifest's names would
+// then no longer each mean one file.
+func conflicts(root *os.Root, tree Tree, ownedSkills, ownedFiles map[string]bool) error {
 	var found []string
+	seen := map[string]bool{}
+	add := func(name string) {
+		if !seen[name] {
+			seen[name] = true
+			found = append(found, rootPath(root, name))
+		}
+	}
 	for _, skill := range tree.Skills {
 		if ownedSkills[skill] {
 			continue
 		}
-		if _, err := os.Lstat(filepath.Join(dir, skill)); err == nil {
-			found = append(found, filepath.Join(dir, skill))
+		if _, err := root.Lstat(skill); err == nil {
+			add(skill)
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 	}
 	for _, file := range tree.files {
-		if !ownedSkills[skillOf(file.path)] || ownedFiles[file.path] {
+		if !ownedSkills[skillOf(file.path)] {
 			continue
 		}
-		target := filepath.Join(dir, filepath.FromSlash(file.path))
-		if _, err := os.Lstat(target); err == nil {
-			found = append(found, target)
-		} else if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+		blocked, err := blockedAt(root, file.path)
+		if err != nil {
+			return err
+		}
+		if blocked != "" {
+			add(blocked)
+			continue
+		}
+		if ownedFiles[file.path] {
+			continue
+		}
+		if _, err := root.Lstat(filepath.FromSlash(file.path)); err == nil {
+			add(file.path)
+		} else if !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 	}
@@ -174,112 +208,34 @@ func conflicts(dir string, tree Tree, ownedSkills, ownedFiles map[string]bool) e
 	return nil
 }
 
-func copyFile(fsys fs.FS, file treeFile, dir string) error {
-	target := filepath.Join(dir, filepath.FromSlash(file.path))
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	source, err := fsys.Open(file.path)
-	if err != nil {
-		return err
-	}
-	mode := fs.FileMode(0o644)
-	if file.executable {
-		mode = 0o755
-	}
-	return errors.Join(writeAtomic(target, source, mode), source.Close())
-}
-
 // Remove deletes what home's manifest names: its files, then the
 // directories they leave empty, then the manifest. A directory still holding
 // a file the manifest does not name stays. A file that cannot be deleted is
 // reported, and the manifest keeps naming it so a later Remove finishes.
 func Remove(home string) (err error) {
-	unlock, found, err := lockHome(home, false)
+	unlock, found, err := lockHome(home, false, false)
 	if err != nil || !found {
 		return err
 	}
 	defer func() { err = errors.Join(err, unlock()) }()
-	m, err := readManifest(home)
+	root, found, err := openSkills(home, false)
+	if err != nil || !found {
+		return err
+	}
+	defer func() { err = errors.Join(err, root.Close()) }()
+	m, err := readManifest(root)
 	if err != nil || m == nil {
 		return err
 	}
-	dir := skillsDir(home)
-	failed, err := removeFiles(dir, m.Files)
+	failed, err := removeFiles(root, m.Files)
 	if err != nil {
 		m.Complete = false
 		m.Files = failed
-		return errors.Join(err, writeManifest(home, *m))
+		return errors.Join(err, writeManifest(root, *m))
 	}
-	pruneDirs(dir, m.Skills, m.Files)
-	if err := os.Remove(manifestPath(home)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	pruneDirs(root, m.Skills, m.Files)
+	if err := root.Remove(ManifestName); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove the skills manifest: %w", err)
-	}
-	return nil
-}
-
-// removeFiles deletes each named file under dir, returning the ones that
-// could not be deleted. A file already gone is not a failure.
-func removeFiles(dir string, names []string) ([]string, error) {
-	var failed []string
-	var errs []error
-	for _, name := range names {
-		err := os.Remove(filepath.Join(dir, filepath.FromSlash(name)))
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			failed = append(failed, name)
-			errs = append(errs, err)
-		}
-	}
-	return failed, errors.Join(errs...)
-}
-
-// pruneDirs removes, deepest first, the directories the named files sat in
-// and the named skill directories, each only when it is empty.
-func pruneDirs(dir string, skills, files []string) {
-	seen := map[string]bool{}
-	var dirs []string
-	for _, name := range files {
-		for _, parent := range parentDirs(name) {
-			if !seen[parent] {
-				seen[parent] = true
-				dirs = append(dirs, parent)
-			}
-		}
-	}
-	for _, skill := range skills {
-		if !seen[skill] {
-			seen[skill] = true
-			dirs = append(dirs, skill)
-		}
-	}
-	sort.Slice(dirs, func(i, j int) bool {
-		return strings.Count(dirs[i], "/") > strings.Count(dirs[j], "/")
-	})
-	for _, name := range dirs {
-		// A directory that is not empty holds something the manifest does
-		// not name, and stays; one already gone needs nothing.
-		_ = os.Remove(filepath.Join(dir, filepath.FromSlash(name)))
-	}
-}
-
-func writeFileAtomic(target string, data []byte, mode fs.FileMode) error {
-	return writeAtomic(target, bytes.NewReader(data), mode)
-}
-
-// writeAtomic writes beside target and renames into place, so a reader never
-// sees half a file and a link at target is replaced, not written through.
-func writeAtomic(target string, source io.Reader, mode fs.FileMode) error {
-	temp, err := os.CreateTemp(filepath.Dir(target), ".ao-skill-*")
-	if err != nil {
-		return err
-	}
-	_, copyErr := io.Copy(temp, source)
-	closeErr := temp.Close()
-	if err := errors.Join(copyErr, closeErr, os.Chmod(temp.Name(), mode)); err != nil {
-		return errors.Join(err, os.Remove(temp.Name()))
-	}
-	if err := os.Rename(temp.Name(), target); err != nil {
-		return errors.Join(err, os.Remove(temp.Name()))
 	}
 	return nil
 }

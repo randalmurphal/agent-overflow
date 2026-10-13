@@ -75,6 +75,19 @@ describe('<SkillsSettings>', () => {
     await waitFor(() => expect(document.activeElement).toBe(getByTestId('settings-skills-claude-remove')));
   });
 
+  it('moves focus to the row\'s first enabled button when Remove gives way to Install', async () => {
+    let codex = home('codex', installed);
+    setBindingMock('GetSkillsLibrary', async () => library([home('claude'), codex]));
+    setBindingMock('RemoveSkills', async () => {
+      codex = home('codex');
+    });
+    const { findByTestId, getByTestId } = render(SkillsSettings);
+    const remove = await findByTestId('settings-skills-codex-remove');
+    remove.focus();
+    await fireEvent.click(remove);
+    await waitFor(() => expect(document.activeElement).toBe(getByTestId('settings-skills-codex-install')));
+  });
+
   it('keeps a refused install visible beside its row and reads the home again', async () => {
     let reads = 0;
     setBindingMock('GetSkillsLibrary', async () => {

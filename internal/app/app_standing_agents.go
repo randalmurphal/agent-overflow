@@ -167,9 +167,11 @@ func (a *App) demoteStandingAgent(threadID string) (home string, found bool, err
 // deleteStandingAgentHome removes a demoted agent's home. The recorded path
 // must be the one promotion creates for this thread; any other path is
 // refused rather than deleted. A failure's innermost layer, the one a toast
-// shows, says the demotion stood; the layer around it names the folder.
+// shows, says the demotion stood and carries no path; the layer around it
+// names the recorded home and the expected folder or where removal stopped.
 func (a *App) deleteStandingAgentHome(threadID, home string) error {
 	var reason error
+	at := ""
 	agents := filepath.Join(a.configDir, "agents")
 	want := filepath.Join(agents, threadID)
 	switch {
@@ -178,16 +180,14 @@ func (a *App) deleteStandingAgentHome(threadID, home string) error {
 	case a.configDir == "":
 		reason = errors.New("no config directory")
 	case filepath.Clean(home) != want || filepath.Dir(want) != agents:
-		reason = fmt.Errorf("it is not %s", want)
+		reason = errors.New("it is not this agent's folder in the app's agents folder")
+		at = fmt.Sprintf(" (expected %s)", want)
 	default:
 		reason = os.RemoveAll(want)
 	}
 	if reason == nil {
 		return nil
 	}
-	// The toast shows the innermost layer, so the paths stay in the layer
-	// around it: the recorded home, and where a removal stopped.
-	at := ""
 	var pathErr *fs.PathError
 	if errors.As(reason, &pathErr) {
 		at = fmt.Sprintf(" (stopped at %s)", pathErr.Path)

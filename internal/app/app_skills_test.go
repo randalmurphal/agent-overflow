@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/codexapp"
 	"agent-overflow/internal/codexskills"
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/skillsinstall"
 )
 
 // The Skills bindings resolve each provider's home through the provider-home
@@ -57,9 +58,13 @@ func TestSkillsBindingsInstallIntoTheProviderHomes(t *testing.T) {
 	if err := f.app.RemoveSkills("codex"); err != nil {
 		t.Fatalf("RemoveSkills: %v", err)
 	}
-	// Only the lock file stays: removing a lock file races its users.
-	if entries, err := os.ReadDir(filepath.Join(home, ".codex", "skills")); err != nil || len(entries) != 1 || entries[0].Name() != ".agent-overflow-pstack.lock" {
+	// Nothing stays in skills/; the lock beside it does, since removing a
+	// lock file races its users.
+	if entries, err := os.ReadDir(filepath.Join(home, ".codex", "skills")); err != nil || len(entries) != 0 {
 		t.Fatalf("after remove: %v %v", entries, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", skillsinstall.LockName)); err != nil {
+		t.Fatalf("the lock file: %v", err)
 	}
 	if err := f.app.UpdateSkills("claude"); err == nil {
 		t.Fatal("Update of a home with no install was not refused")

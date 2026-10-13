@@ -41,7 +41,7 @@ func listHome(t *testing.T, home string) []string {
 	root := filepath.Join(home, "skills")
 	var out []string
 	err := filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || entry.Name() == ManifestName || entry.Name() == lockName {
+		if err != nil || entry.IsDir() || entry.Name() == ManifestName {
 			return err
 		}
 		info, err := entry.Info()
@@ -159,8 +159,10 @@ func TestInstallRefusesSkillsItDidNotWrite(t *testing.T) {
 	if got := listHome(t, home); strings.Join(got, ",") != "beta/SKILL.md -rw-r--r--" {
 		t.Fatalf("a refused install wrote: %v", got)
 	}
-	if _, err := os.Stat(filepath.Join(home, "skills", ManifestName)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("a refused install wrote a manifest: %v", err)
+	// The lock sits beside skills/, so a refused install leaves the skills
+	// directory as it found it.
+	if entries, err := os.ReadDir(filepath.Join(home, "skills")); err != nil || len(entries) != 1 || entries[0].Name() != "beta" {
+		t.Fatalf("a refused install left skills/ holding %v (%v)", entries, err)
 	}
 }
 
@@ -212,6 +214,13 @@ func TestRemoveDeletesOnlyWhatTheManifestNames(t *testing.T) {
 	home := t.TempDir()
 	if err := Remove(home); err != nil {
 		t.Fatalf("Remove of an empty home: %v", err)
+	}
+	if status, err := GetStatus(home, testTree(t, v1)); err != nil || status.Installed {
+		t.Fatalf("GetStatus of an empty home = %+v, %v", status, err)
+	}
+	// Reading a home with nothing installed leaves no file in it.
+	if entries, _ := os.ReadDir(home); len(entries) != 0 {
+		t.Fatalf("a read of an empty home wrote %v", entries)
 	}
 	other := filepath.Join(home, "skills", "users-own", "SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
