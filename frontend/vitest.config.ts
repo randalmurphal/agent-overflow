@@ -161,6 +161,12 @@ export default defineConfig({
         test: {
           name: 'browser',
           include: ['src/**/*.browser.{test,spec}.{ts,js}'],
+          // Run after the unit projects, not beside them. Playwright drives
+          // Chromium from Vitest's main thread, which also transforms modules
+          // for every unit worker and stays saturated while they run. A pointer
+          // action is a chain of CDP round trips, each queued behind that work,
+          // so on a loaded host it outlives the test's deadline.
+          sequence: { groupOrder: 1 },
           // Chromium needs none of setup.ts's happy-dom polyfills — only the
           // cross-test resets of module-level stores/caches (see the file).
           setupFiles: ['./src/test/setup.browser.ts'],

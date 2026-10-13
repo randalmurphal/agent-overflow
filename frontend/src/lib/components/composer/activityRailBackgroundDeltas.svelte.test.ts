@@ -50,6 +50,25 @@ describe('tray deltas', () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps every row a delta does not name, so a stop re-renders only the stopped rows', async () => {
+    const ids = Array.from({ length: 50 }, (_, i) => `t${i}`);
+    const { threadId, controller } = await mount(async () => ids.map((id, i) => bash(id, { createdAt: i + 1 })));
+    const before = controller.tasks;
+    expect(before).toHaveLength(50);
+    applyBackgroundTrayEvent({
+      threadId, launchIds: ['t7'], rows: [
+        bash('t7', { threadId, createdAt: 8 }),
+        makeItem({ id: 't7:done', threadId, kind: 'tool_completion', status: 'killed', completionOf: 't7', createdAt: Date.now() }),
+      ],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const after = controller.tasks;
+    expect(after.map((task) => task.rowId)).toEqual(ids);
+    expect(after[7]).not.toBe(before[7]);
+    expect(after[7].status).toBe('killed');
+    expect(after.filter((task, i) => i !== 7 && task !== before[i])).toEqual([]);
+  });
+
   it('applies the deltas that land during a read again over its answer', async () => {
     let finish!: (items: Item[]) => void;
     const { threadId, controller } = await mount(() => new Promise((resolve) => { finish = resolve; }));
