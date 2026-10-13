@@ -2343,6 +2343,8 @@ async function giveBackCaller(app: () => HarnessApp, remote: HarnessApp, provide
           }),
     );
   };
+  // The mock can hold before the app settles the write that reached it, so
+  // the queue row a delivery removes is polled for, not read once.
   const heldMock = async (input: HarnessMockEventData) =>
     provider === 'claude' ? input.mockId : (await awaitGate(app(), 'hold', callerPath)).mockId;
   const healthy = (scenario: string) =>
@@ -2392,7 +2394,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await advanceGate(harness, g.responder.mockId, 'answer');
       const answerInput = await wakeInput(harness, g.callerPath, ANSWER, 60_000);
       const answerMock = await g.heldMock(answerInput);
-      expect(g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
+      await expect.poll(() => g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
       expect(g.marks().answer).toBe(0);
       await g.healthy(`give-back-death-answer-after-${provider}`);
       const answerDeath = harness.waitForEvent<NotificationSend>(
@@ -2415,7 +2417,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await writeFile(g.release, '');
       const completionInput = await wakeInput(harness, g.callerPath, g.completion, 60_000);
       const completionMock = await g.heldMock(completionInput);
-      expect(g.state()).toMatchObject({ watch: 'queued', rows: 0 });
+      await expect.poll(() => g.state()).toMatchObject({ watch: 'queued', rows: 0 });
       await g.healthy(`give-back-death-completion-after-${provider}`);
       // The first death's notification may still stand (Claude's held start
       // never retracts it), so this one is not waited for.
@@ -2477,7 +2479,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await g.holdNextSession(`give-back-stop-answer-held-${provider}`);
       await advanceGate(harness, g.responder.mockId, 'answer');
       await g.heldMock(await wakeInput(harness, g.callerPath, ANSWER, 60_000));
-      expect(g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
+      await expect.poll(() => g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
       expect(g.marks().answer).toBe(0);
       await harness.rpc('StopSession', g.caller);
       expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
@@ -2490,7 +2492,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await g.holdNextSession(`give-back-stop-completion-held-${provider}`);
       await writeFile(g.release, '');
       await g.heldMock(await wakeInput(harness, g.callerPath, g.completion, 60_000));
-      expect(g.state()).toMatchObject({ watch: 'queued', rows: 0 });
+      await expect.poll(() => g.state()).toMatchObject({ watch: 'queued', rows: 0 });
       expect(g.marks().completion).toBe(0);
       await g.healthy(`give-back-stop-completion-after-${provider}`);
       await harness.rpc('ArchiveThread', g.caller);
@@ -2558,7 +2560,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await g.holdNextSession(`give-back-crash-answer-held-${provider}`);
       await advanceGate(harness, g.responder.mockId, 'answer');
       await g.heldMock(await wakeInput(harness, g.callerPath, ANSWER, 60_000));
-      expect(g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
+      await expect.poll(() => g.state()).toMatchObject({ request: { delivered: 1, how: 'queued', notify: 1 }, rows: 0 });
       expect(g.marks().answer).toBe(0);
       let app = await relaunch();
       expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
@@ -2568,7 +2570,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await g.holdNextSession(`give-back-crash-completion-held-${provider}`);
       await writeFile(g.release, '');
       await g.heldMock(await wakeInput(app, g.callerPath, g.completion, 60_000));
-      expect(g.state()).toMatchObject({ watch: 'queued', rows: 0 });
+      await expect.poll(() => g.state()).toMatchObject({ watch: 'queued', rows: 0 });
       expect(g.marks().completion).toBe(0);
       app = await relaunch();
       const relaunched = app;
@@ -2666,7 +2668,7 @@ test('codex: a completion the provider took in before its session died reaches t
     });
     await writeFile(g.release, '');
     const held = await g.heldMock(await wakeInput(harness, g.callerPath, g.completion, 60_000));
-    expect(g.state()).toMatchObject({ watch: 'queued', rows: 0 });
+    await expect.poll(() => g.state()).toMatchObject({ watch: 'queued', rows: 0 });
     expect(g.marks().completion).toBe(0);
     await g.healthy('give-back-duplicate-after');
     await harness.rpc('HarnessMockCommand', held, { type: 'exit', code: 1 });
