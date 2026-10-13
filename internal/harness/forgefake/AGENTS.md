@@ -35,11 +35,16 @@ arrives as route `offline`, dropping it without a reply.
 `gh api` and `glab api` (`cli_api.go`) reach the same `api` routes and
 GraphQL operations from the CLI path: the call's `--hostname` (default
 `github.com` or `gitlab.com`) stands for the Host header, `--input -`
-supplies the body, `-f`/`-F` build a GraphQL request, and `--paginate`
-follows the route's own next page (GitHub's `Link`, GitLab's
-`X-Next-Page`; GraphQL through `$endCursor` and the outermost
-`pageInfo`). A REST field (`-f` without `graphql`) and an `-F @file` are
-unhandled. Status 400 and above exits 1 with the forge's message.
+supplies the body, `-H 'Content-Type: ...'` its media type, `-f`/`-F`
+build a GraphQL request, and `--paginate` follows the route's own next
+page (GitHub's `Link`, GitLab's `X-Next-Page`; GraphQL through
+`$endCursor` and the outermost `pageInfo`). `gh` prints each page in
+turn; `glab` prints each page's array straight after the last
+(`[...][...]`), as glab 1.117.0 does. A REST field (`-f` without
+`graphql`), an `-F @file` and any `-H` header but `Content-Type` are
+unhandled. A GitLab write whose body is not `application/json`, over
+either path, is unhandled. Status 400 and above exits 1 with the forge's
+message.
 
 The engine lives in the harness process, not the binary, so seeding and
 inspection go through the harness wire with no fixture files.
@@ -125,8 +130,8 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | `GET repos/O/R` (`gh repository identity`) | repository identity; the forge script's default branch (`forge stack`) |
 | GitLab | `GET projects/P` (`glab repository identity`) | repository identity; the forge script's default branch (`forge stack`) |
 | ssh | `-G -o CanonicalizeHostname=no -o PermitLocalCommand=no [-l U] H` | local SSH host resolution, from fixture `sshHosts` |
-| GitHub | `gh pr create --title T --body B [--base B] [--draft]` | GitCreatePR |
-| GitLab | `glab mr create --title T --description D --yes --no-editor [--target-branch B] [--draft]` | GitCreatePR |
+| GitHub | `gh pr create --title T --body B [-R [HOST/]O/R] [--head B] [--base B] [--draft]` | GitCreatePR; forge script `pr create` |
+| GitLab | `glab mr create --title T --description D --yes --no-editor [-R URL] [--head URL] [--source-branch B] [--target-branch B] [--draft]` | GitCreatePR; forge script `pr create` |
 | GitHub | GraphQL `PRTick(owner, name, number, wantDetail, wantThreads, wantChecks)` (`gh graphql PRTick`) | ReadPR: detail and viewer, threads and comments, head commit rollup (CI) |
 | GitHub | GraphQL `PRThreadsPage`, `PRCommentsPage(owner, name, number, after)` | ReadPR: review threads and comments past the first 100 |
 | GitHub | GraphQL `ThreadCommentsPage(threadID, after)`, `RollupContextsPage(commitID, after)` | ReadPR: one thread's comments, the rollup's contexts past 100 |
@@ -153,7 +158,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | GraphQL `ForgeReply(threadID, body)` | forge script `pr reply` (appends to the seeded thread) |
 | GitLab | `POST projects/P/merge_requests/N/notes` (`glab api note`) | forge script `pr comment` |
 | GitLab | `POST projects/P/merge_requests/N/discussions/D/notes` (`glab api discussion note`) | forge script `pr reply`, the app's thread reply |
-| GitLab | `PUT projects/P/merge_requests/N/merge` (`glab api merge`) | forge script `pr merge`: 406 on conflicts, arms `auto_merge` while the pipeline runs, 405 for any other unmergeable state |
+| GitLab | `PUT projects/P/merge_requests/N/merge` (`glab api merge`) | forge script `pr merge`: 406 on conflicts, arms auto-merge (`auto_merge` or `merge_when_pipeline_succeeds`) while the pipeline runs, 405 for any other unmergeable state |
 | GitLab | `PUT projects/P/merge_requests/N` (`glab api update merge request`) | forge script `pr edit` (`target_branch` only) |
 | GitLab | `GET projects/P/merge_requests/N/pipelines`, `GET projects/P/pipelines?ref=B` | forge script `pr commits`, `ci status` |
 
@@ -172,9 +177,13 @@ discussion resolve PUT.
   Host header as given, port included; a GraphQL node (a thread or commit
   id) resolves only among repositories on that host. Another host answers
   the forge's not-found.
-- `gh pr create` and `glab mr create` resolve the repository from the
-  call's cwd (`git config remote.origin.url`). The seeded `host` and
-  `project` must match that origin. An HTTP request names its project.
+- `gh pr create` and `glab mr create` resolve the repository from `-R`
+  (gh: `[HOST/]OWNER/REPO`; glab: a URL, since its path forms take the
+  host from glab's configuration), else from the call's cwd
+  (`git config remote.origin.url`). The seeded `host` and `project` must
+  match. gh's `--head` and glab's `--source-branch` may only name the
+  checked-out branch and glab's `--head` only the `-R` repository; any
+  other is unhandled. An HTTP request names its project.
 - A GitLab path may name the project by its numeric `id` instead of its
   path; both resolve.
 - A create opens the pull for the cwd's checked-out branch and commit

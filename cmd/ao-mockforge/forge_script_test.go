@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -284,11 +286,21 @@ func TestForgeScript(t *testing.T) {
 				t.Error("a merged pull has no merged_at")
 			}
 
-			topic := newForgeCheckout(t, r, fc.remote, "topic")
-			created := topic.json("Adds a topic.", "pr", "create", "--title", "Topic", "--body-file", "-", "--draft")
-			expect(t, "pr create number", pick(t, created, "number"), 5.0)
-			createdView := topic.json("", "pr", "view")
-			expect(t, "created pull", []any{pick(t, createdView, "number"), pick(t, createdView, "head"), pick(t, createdView, "draft"), pick(t, createdView, "body")}, []any{5.0, "topic", true, "Adds a topic."})
+			if fc.forge == "gitlab" {
+				// GitLab before 17.11 reads only merge_when_pipeline_succeeds.
+				armedBodies := 0
+				for _, inv := range r.engine.Invocations(0).Invocations {
+					if slices.ContainsFunc(inv.Args, func(arg string) bool { return strings.HasSuffix(arg, "/merge_requests/1/merge") }) {
+						var body map[string]any
+						if err := json.Unmarshal([]byte(inv.Stdin), &body); err != nil {
+							t.Fatalf("merge body %q: %v", inv.Stdin, err)
+						}
+						expect(t, "merge --auto body", []any{body["auto_merge"], body["merge_when_pipeline_succeeds"]}, []any{true, true})
+						armedBodies++
+					}
+				}
+				expect(t, "merge --auto requests", armedBodies, 1)
+			}
 
 			status := f.json("", "ci", "status")
 			expect(t, "ci status", []any{pick(t, status, "ref"), pick(t, status, "sha"), pick(t, status, "state")}, []any{"feature", strings.Repeat("1", 40), "pending"})
@@ -300,6 +312,130 @@ func TestForgeScript(t *testing.T) {
 			expect(t, "ci status ready", pick(t, f.json("", "ci", "status", "ready"), "state"), "pass")
 			expect(t, "ci status of a branch without CI", f.json("", "ci", "status", "nowhere"), map[string]any{"ref": "nowhere", "sha": nil, "state": "none", "runs": []any{}})
 			expect(t, "ci log", strings.TrimPrefix(f.run("", "ci", "log", "711"), "\ufeff"), "unit ok\n")
+			for _, inv := range r.engine.Invocations(0).Invocations {
+				if inv.Unhandled {
+					t.Errorf("unhandled invocation: %s %q: %s", inv.CLI, inv.Args, inv.Stderr)
+				}
+			}
+		})
+	}
+}
+
+// TestForgeScriptRefusesAnUnresolvedPull: a read that resolves the
+// current branch fails, printing nothing, on a detached HEAD and on a
+// branch with no open pull, rather than reading some other pull.
+func TestForgeScriptRefusesAnUnresolvedPull(t *testing.T) {
+	for _, fc := range []struct{ forge, project, remote string }{
+		{"github", "acme/widgets", "https://github.com/acme/widgets.git"},
+		{"gitlab", "grp/sub/tool", "git@gitlab.com:grp/sub/tool.git"},
+	} {
+		t.Run(fc.forge, func(t *testing.T) {
+			r := newRig(t, forgeScriptFixture(fc.forge, fc.project))
+			detached := newForgeCheckout(t, r, fc.remote, "feature")
+			detached.git("switch", "-q", "--detach")
+			lonely := newForgeCheckout(t, r, fc.remote, "lonely")
+			reads := [][]string{{"pr", "view"}, {"pr", "merge-state"}, {"pr", "checks"}, {"pr", "commits"}, {"pr", "comments"}, {"pr", "threads"}}
+			for _, c := range []struct {
+				checkout *forgeCheckout
+				reads    [][]string
+				stderr   string
+			}{
+				{detached, slices.Concat(reads, [][]string{{"ci", "status"}, {"stack"}}), "HEAD is detached"},
+				{lonely, reads, "no open pull request for branch lonely"},
+			} {
+				for _, args := range c.reads {
+					out, stderr, err := c.checkout.try("", args...)
+					if err == nil || out != "" || !strings.Contains(stderr, c.stderr) {
+						t.Errorf("forge %s = %v, stdout %q, stderr %q; want a failure naming %q", strings.Join(args, " "), err, out, stderr, c.stderr)
+					}
+				}
+			}
+			for _, inv := range r.engine.Invocations(0).Invocations {
+				if inv.Unhandled {
+					t.Errorf("unhandled invocation: %s %q: %s", inv.CLI, inv.Args, inv.Stderr)
+				}
+			}
+		})
+	}
+}
+
+// TestForgeScriptCreatesOnForgeRemote: create opens the pull in the
+// repository FORGE_REMOTE names, not in origin's.
+func TestForgeScriptCreatesOnForgeRemote(t *testing.T) {
+	for _, fc := range []struct{ forge, project, remote string }{
+		{"github", "acme/widgets", "https://github.com/acme/widgets.git"},
+		{"gitlab", "grp/sub/tool", "git@gitlab.com:grp/sub/tool.git"},
+	} {
+		t.Run(fc.forge, func(t *testing.T) {
+			r := newRig(t, forgeScriptFixture(fc.forge, fc.project))
+			topic := newForgeCheckout(t, r, otherRemote[fc.forge], "topic")
+			topic.git("remote", "add", "upstream", fc.remote)
+			topic.env = append(topic.env, "FORGE_REMOTE=upstream")
+			created := topic.json("Adds a topic.", "pr", "create", "--title", "Topic", "--body-file", "-", "--draft")
+			expect(t, "pr create number", pick(t, created, "number"), 5.0)
+			createdView := topic.json("", "pr", "view")
+			expect(t, "created pull", []any{pick(t, createdView, "number"), pick(t, createdView, "head"), pick(t, createdView, "draft"), pick(t, createdView, "body")}, []any{5.0, "topic", true, "Adds a topic."})
+			for _, inv := range r.engine.Invocations(0).Invocations {
+				if inv.Unhandled {
+					t.Errorf("unhandled invocation: %s %q: %s", inv.CLI, inv.Args, inv.Stderr)
+				}
+			}
+		})
+	}
+}
+
+// otherRemote is an origin naming a repository the fixtures do not seed.
+var otherRemote = map[string]string{"github": "https://github.com/other/proj.git", "gitlab": "git@gitlab.com:other/proj.git"}
+
+// TestForgeScriptReadsEveryPage seeds a pull with more jobs, review
+// threads and conversation comments than one page (100) holds and reads
+// them through each paginated subcommand.
+func TestForgeScriptReadsEveryPage(t *testing.T) {
+	const count = 101
+	for _, fc := range []struct{ forge, project, remote string }{
+		{"github", "acme/widgets", "https://github.com/acme/widgets.git"},
+		{"gitlab", "grp/sub/tool", "git@gitlab.com:grp/sub/tool.git"},
+	} {
+		t.Run(fc.forge, func(t *testing.T) {
+			pull := forgefake.Pull{Number: 1, Title: "Busy", Author: "dave", HeadRef: "busy", HeadSHA: strings.Repeat("b", 40), CI: &forgefake.Pipeline{ID: 81}}
+			for i := range count {
+				pull.CI.Jobs = append(pull.CI.Jobs, forgefake.Job{ID: int64(1000 + i), Name: fmt.Sprintf("job-%03d", i), Status: "success"})
+				id := fmt.Sprintf("PRRT_%03d", i)
+				if fc.forge == "gitlab" {
+					id = fmt.Sprintf("%040x", i+1)
+				}
+				pull.Threads = append(pull.Threads, forgefake.Thread{ID: id, Path: "app.go", Line: intPtr(i + 1), Comments: []forgefake.Comment{{Author: "erin", Body: fmt.Sprintf("thread %d", i)}}})
+				pull.Comments = append(pull.Comments, forgefake.Comment{Author: "erin", Body: fmt.Sprintf("comment %d", i)})
+			}
+			r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{{Forge: fc.forge, Project: fc.project, Pulls: []forgefake.Pull{pull}}}})
+			f := newForgeCheckout(t, r, fc.remote, "busy")
+
+			for _, read := range []struct {
+				args  []string
+				check func(t *testing.T, out any)
+			}{
+				{[]string{"pr", "checks"}, func(t *testing.T, out any) {
+					expect(t, "pr checks", []any{len(pick(t, out, "checks").([]any)), pick(t, out, "state")}, []any{count, "pass"})
+				}},
+				{[]string{"ci", "status"}, func(t *testing.T, out any) {
+					expect(t, "ci status jobs", []any{len(pick(t, out, "runs", 0, "jobs").([]any)), pick(t, out, "state")}, []any{count, "pass"})
+				}},
+				{[]string{"pr", "threads"}, func(t *testing.T, out any) {
+					expect(t, "pr threads", []any{len(out.([]any)), pick(t, out, count-1, "comments", 0, "body")}, []any{count, fmt.Sprintf("thread %d", count-1)})
+				}},
+				{[]string{"pr", "comments"}, func(t *testing.T, out any) {
+					expect(t, "pr comments", []any{len(out.([]any)), pick(t, out, count-1, "body")}, []any{count, fmt.Sprintf("comment %d", count-1)})
+				}},
+				{[]string{"pr", "commits"}, func(t *testing.T, out any) {
+					expect(t, "pr commits", out, []any{map[string]any{"sha": strings.Repeat("b", 40), "state": "pass"}})
+				}},
+			} {
+				t.Run(strings.Join(read.args, " "), func(t *testing.T) {
+					f.t = t
+					read.check(t, f.json("", read.args...))
+				})
+			}
+			f.t = t
 
 			for _, inv := range r.engine.Invocations(0).Invocations {
 				if inv.Unhandled {

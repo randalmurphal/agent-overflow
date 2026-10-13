@@ -19,13 +19,17 @@ import (
 // method, and --input - is the request body read from stdin. A GraphQL
 // call (`gh api graphql`) carries its document and variables as fields:
 // -f is a raw string, -F converts true, false, null and integers and reads
-// @- from stdin. A route lists input or paginate among its flags when it
-// takes a body or answers --paginate; any other flag on it is refused.
+// @- from stdin. -H sets the request's Content-Type, the one header
+// implemented; a write route refuses a body that is not application/json.
+// A route lists input or paginate among its flags when it takes a body or
+// answers --paginate; any other flag on it is refused.
 //
 // --paginate follows the forge's next-page signal and prints what the CLI
-// prints: gh writes each page's JSON in turn, glab merges array pages
-// into one array. A GraphQL --paginate follows the outermost connection's
-// pageInfo through the document's $endCursor variable.
+// prints: gh writes each page's JSON in turn, glab writes each page's
+// array straight after the last (`[...][...]`, glab 1.117.0), so a caller
+// reading one value slurps and adds the pages. A GraphQL --paginate
+// follows the outermost connection's pageInfo through the document's
+// $endCursor variable.
 
 var apiFlags = []flagDef{
 	{long: "hostname", value: true},
@@ -34,6 +38,7 @@ var apiFlags = []flagDef{
 	{long: "raw-field", short: "f", value: true},
 	{long: "field", short: "F", value: true},
 	{long: "paginate"},
+	{long: "header", short: "H", value: true},
 }
 
 // maxAPIPages bounds a --paginate walk, so a route whose next-page signal
@@ -53,6 +58,14 @@ func cliAPI(e *Engine, c *call) response {
 	if err != nil {
 		return unhandled("%v", err)
 	}
+	for _, header := range c.flags["header"] {
+		name, value, ok := strings.Cut(header, ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(name), "Content-Type") {
+			return unhandled("header %q is not implemented; only Content-Type is", header)
+		}
+		c.contentType = strings.TrimSpace(value)
+	}
+	delete(c.flags, "header")
 	if input, ok := c.flags["input"]; ok {
 		if len(input) != 1 || input[0] != "-" {
 			return unhandled("--input reads only stdin (-) here")
@@ -150,7 +163,6 @@ func apiFields(c *call) (map[string]any, error) {
 // paginateREST walks a REST list page by page.
 func (e *Engine) paginateREST(c *call, endpoint string) response {
 	var pages [][]byte
-	var merged []json.RawMessage
 	resp := response{}
 	for range maxAPIPages {
 		c.positional = []string{endpoint}
@@ -163,18 +175,12 @@ func (e *Engine) paginateREST(c *call, endpoint string) response {
 			if err := json.Unmarshal(resp.stdout, &items); err != nil {
 				return unhandled("--paginate over a non-array answer")
 			}
-			merged = append(merged, items...)
-		} else {
-			pages = append(pages, bytes.TrimRight(resp.stdout, "\n"))
 		}
+		pages = append(pages, bytes.TrimRight(resp.stdout, "\n"))
 		next := nextPage(resp.header)
 		if next == "" {
 			if c.cli == "glab" {
-				if merged == nil {
-					merged = []json.RawMessage{}
-				}
-				out, _ := json.Marshal(merged)
-				resp.stdout = out
+				resp.stdout = bytes.Join(pages, nil)
 			} else {
 				resp.stdout = append(bytes.Join(pages, []byte("\n")), '\n')
 			}

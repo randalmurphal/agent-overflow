@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,10 +17,14 @@ import (
 // implement is refused. Each changes the fixture the next read answers
 // from.
 
-// decodeRequestBody decodes a request body into target, refusing unknown keys.
+// decodeRequestBody decodes a request body into target, refusing unknown
+// keys and a body whose Content-Type is not application/json.
 func decodeRequestBody(c *call, target any) error {
 	if len(bytes.TrimSpace(c.body)) == 0 {
 		return fmt.Errorf("the request has no JSON body")
+	}
+	if mediaType, _, err := mime.ParseMediaType(c.contentType); err != nil || mediaType != "application/json" {
+		return fmt.Errorf("the request body's Content-Type is %q, not application/json", c.contentType)
 	}
 	dec := json.NewDecoder(bytes.NewReader(c.body))
 	dec.DisallowUnknownFields()
@@ -91,9 +96,11 @@ func glabDiscussionNote(e *Engine, c *call, m []string) response {
 }
 
 // glabMerge answers PUT projects/P/merge_requests/N/merge {squash,
-// auto_merge}. GitLab refuses a merge request that cannot merge now with
-// 405 (406 for conflicts); with auto_merge a merge request whose pipeline
-// has not passed is armed instead and answered as it stands.
+// auto_merge, merge_when_pipeline_succeeds}; either of the last two arms
+// auto-merge (auto_merge from GitLab 17.11, which deprecates the other).
+// GitLab refuses a merge request that cannot merge now with 405 (406 for
+// conflicts); an armed merge request whose pipeline has not passed is
+// left open and answered as it stands.
 func glabMerge(e *Engine, c *call, m []string) response {
 	_, p, fail, ok := e.glabMRFrom(c, m)
 	if !ok {
@@ -101,8 +108,9 @@ func glabMerge(e *Engine, c *call, m []string) response {
 	}
 	// squash shapes the merge commit, which the fixture does not record.
 	var req struct {
-		Squash    *bool `json:"squash"`
-		AutoMerge bool  `json:"auto_merge"`
+		Squash                    *bool `json:"squash"`
+		AutoMerge                 bool  `json:"auto_merge"`
+		MergeWhenPipelineSucceeds bool  `json:"merge_when_pipeline_succeeds"`
 	}
 	if err := decodeRequestBody(c, &req); err != nil {
 		return unhandled("%v", err)
@@ -111,7 +119,7 @@ func glabMerge(e *Engine, c *call, m []string) response {
 	switch {
 	case status == "conflict":
 		return glabStatus(http.StatusNotAcceptable, "406 Branch cannot be merged")
-	case req.AutoMerge && (status == "ci_still_running" || status == "checking"):
+	case (req.AutoMerge || req.MergeWhenPipelineSucceeds) && (status == "ci_still_running" || status == "checking"):
 		p.AutoMerge = true
 	case status != "mergeable":
 		return glabStatus(http.StatusMethodNotAllowed, "405 Method Not Allowed")

@@ -41,11 +41,13 @@ var commands = []command{
 	{cli: "gh", path: []string{"pr", "create"}, flags: []flagDef{
 		{long: "title", short: "t", value: true}, {long: "body", short: "b", value: true},
 		{long: "base", short: "B", value: true}, {long: "draft", short: "d"},
+		{long: "repo", short: "R", value: true}, {long: "head", short: "H", value: true},
 	}, run: ghPRCreate},
 	{cli: "glab", path: []string{"mr", "create"}, flags: []flagDef{
 		{long: "title", short: "t", value: true}, {long: "description", short: "d", value: true},
 		{long: "target-branch", short: "b", value: true}, {long: "draft"},
 		{long: "yes", short: "y"}, {long: "no-editor"},
+		{long: "repo", short: "R", value: true}, {long: "head", short: "H", value: true}, {long: "source-branch", short: "s", value: true},
 	}, run: glabMRCreate},
 	{cli: "gh", path: []string{"pr", "view"}, flags: []flagDef{{long: "repo", short: "R", value: true}, {long: "json", value: true}}, run: ghPRView},
 	{cli: "gh", path: []string{"pr", "list"}, flags: []flagDef{

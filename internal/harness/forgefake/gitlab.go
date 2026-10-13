@@ -415,7 +415,10 @@ func glabMRCreate(e *Engine, c *call) response {
 	if !c.has("title") || !c.has("description") {
 		return unhandled("mr create without --title and --description prompts")
 	}
-	r, head, err := e.createTarget("gitlab", c)
+	r, head, refusal, err := e.createTarget("gitlab", c)
+	if refusal != "" {
+		return unhandled("%s", refusal)
+	}
 	if err != nil {
 		return response{exit: 1, stderr: err.Error() + "\n"}
 	}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -398,6 +399,81 @@ func TestCreateOpensAPullForTheCheckoutsBranch(t *testing.T) {
 	}
 	if inv := gh("pr", "create", "--title", "Filled", "--body", "", "--fill"); !strings.Contains(inv.Stderr, "unhandled") {
 		t.Errorf("gh pr create --fill = %q, want unhandled", inv.Stderr)
+	}
+}
+
+func TestCreateHonorsTheRepositoryFlags(t *testing.T) {
+	e := New(Options{
+		APIToken: testAPIToken,
+		Origin:   func(string) (string, error) { return "git@gitlab.com:nowhere/else.git", nil },
+		Head: func(string) (CheckoutHead, error) {
+			return CheckoutHead{Branch: "topic", SHA: strings.Repeat("f", 40)}, nil
+		},
+	})
+	if _, err := seedJSON(e, `{"repos":[{"forge":"github","project":"acme/widgets"},{"forge":"gitlab","project":"grp/sub/tool"},{"forge":"gitlab","project":"other/proj"}]}`); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	gh := func(args ...string) control.ForgeResult {
+		return e.Handle(control.ForgeCall{CLI: "gh", Cwd: "/work", Args: append([]string{"pr", "create", "--title", "T", "--body", ""}, args...)})
+	}
+	glab := func(args ...string) control.ForgeResult {
+		return e.Handle(control.ForgeCall{CLI: "glab", Cwd: "/work", Args: append([]string{"mr", "create", "--title", "T", "--description", "", "--yes", "--no-editor"}, args...)})
+	}
+	const tool = "https://gitlab.com/grp/sub/tool"
+	for _, c := range []struct {
+		name string
+		got  control.ForgeResult
+		want string // stdout, or the stderr substring of a failure
+		exit int
+	}{
+		{"gh -R HOST/OWNER/REPO", gh("-R", "github.com/acme/widgets", "--head", "topic"), "https://github.com/acme/widgets/pull/1\n", 0},
+		{"gh -R OWNER/REPO", gh("-R", "acme/widgets", "--base", "release"), "https://github.com/acme/widgets/pull/2\n", 0},
+		{"gh origin unseeded", gh(), "no seeded github repository matches the origin remote", 1},
+		{"gh -R unseeded", gh("-R", "github.com/acme/nope"), "no seeded github repository acme/nope on github.com", 1},
+		{"gh -R malformed", gh("-R", "a/b/c/d"), "unhandled", 1},
+		{"gh --head another branch", gh("-R", "acme/widgets", "--head", "other"), "unhandled", 1},
+		{"glab -R URL", glab("-R", tool, "--head", tool, "--source-branch", "topic"), "https://gitlab.com/grp/sub/tool/-/merge_requests/1\n", 0},
+		{"glab -R git URL", glab("-R", "git@gitlab.com:other/proj.git"), "https://gitlab.com/other/proj/-/merge_requests/1\n", 0},
+		{"glab -R path", glab("-R", "grp/sub/tool"), "unhandled", 1},
+		{"glab --head another repository", glab("-R", tool, "--head", "https://gitlab.com/other/proj"), "unhandled", 1},
+		{"glab --source-branch another branch", glab("-R", tool, "--source-branch", "other"), "unhandled", 1},
+	} {
+		if c.got.ExitCode != c.exit || (c.exit == 0 && string(c.got.Stdout) != c.want) || (c.exit != 0 && !strings.Contains(c.got.Stderr, c.want)) {
+			t.Errorf("%s = %d %q %q, want %d %q", c.name, c.got.ExitCode, c.got.Stdout, c.got.Stderr, c.exit, c.want)
+		}
+	}
+}
+
+// glab api: --paginate prints each page's array after the last, and a
+// write body must be sent as application/json.
+func TestGlabAPIPagesAndContentType(t *testing.T) {
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"repos":[{"forge":"gitlab","project":"grp/tool","pulls":[{"number":1,"title":"x","comments":[{"id":1,"body":"a"},{"id":2,"body":"b"}]}]}]}`); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	glab := func(stdin string, args ...string) control.ForgeResult {
+		return e.Handle(control.ForgeCall{CLI: "glab", Cwd: "/work", Args: append([]string{"api", "--hostname", "gitlab.com"}, args...), Stdin: []byte(stdin)})
+	}
+	paged := glab("", "--paginate", "projects/grp%2Ftool/merge_requests/1/discussions?per_page=1")
+	if paged.ExitCode != 0 || !regexp.MustCompile(`^\[\{[^\n]*\}\]\[\{[^\n]*\}\]$`).Match(paged.Stdout) {
+		t.Fatalf("glab api --paginate = %d %q %q, want two arrays back to back", paged.ExitCode, paged.Stdout, paged.Stderr)
+	}
+	note := []string{"-X", "POST", "projects/grp%2Ftool/merge_requests/1/notes", "--input", "-"}
+	for _, c := range []struct {
+		name   string
+		header []string
+		want   string
+	}{
+		{"no Content-Type", nil, "Content-Type is \"\", not application/json"},
+		{"a form body", []string{"-H", "Content-Type: application/x-www-form-urlencoded"}, "not application/json"},
+		{"another header", []string{"-H", "Accept: application/json"}, "header \"Accept: application/json\" is not implemented"},
+	} {
+		if got := glab(`{"body":"hi"}`, append(note, c.header...)...); got.ExitCode != 1 || !strings.Contains(got.Stderr, "unhandled") || !strings.Contains(got.Stderr, c.want) {
+			t.Errorf("note with %s = %d %q, want unhandled naming %q", c.name, got.ExitCode, got.Stderr, c.want)
+		}
+	}
+	if got := glab(`{"body":"hi"}`, append(note, "--header", "content-type: application/json; charset=utf-8")...); got.ExitCode != 0 || !strings.Contains(string(got.Stdout), `"body":"hi"`) {
+		t.Errorf("note sent as JSON = %d %q %q", got.ExitCode, got.Stdout, got.Stderr)
 	}
 }
 

@@ -34,7 +34,7 @@ is the map every other skill reads through. Choices a resync must keep:
 output on both forges: `which`,
 `pr view|merge-state|list|create|comment|comments|checks|commits|threads|reply|merge|edit`,
 `ci status|log` and `stack`. `forge --help` lists the arguments. It needs
-git, jq and `gh` or `glab`.
+bash 4.4 or later (for `inherit_errexit`), git, jq and `gh` or `glab`.
 
 It decides the forge from the checkout's remote (`FORGE_REMOTE`, default
 `origin`):
@@ -49,9 +49,16 @@ It decides the forge from the checkout's remote (`FORGE_REMOTE`, default
 
 GitHub calls go through `gh` with `-R host/owner/repo` and `gh api
 --hostname`; GitLab calls go through `glab api --hostname` with the
-URL-encoded project path. Bodies reach the CLI on stdin or as one
-argument, never through a shell. `watch-pr`, `orch` and
-`worktree-audit.sh` read through the script, so they work on both forges.
+URL-encoded project path. `pr create` names the remote's repository on
+both CLIs (`-R`), so it opens in that repository whichever remote the
+CLI would pick. A paginated GitLab list is slurped into one array, since
+`glab --paginate` prints each page's array after the last, and a GitLab
+write sends `Content-Type: application/json`. Bodies reach the CLI on
+stdin or as one argument, never through a shell. A `pr` read that
+defaults to the current branch fails, printing nothing, on a branch with
+no open pull request; it, `ci status` and `stack` fail the same way on a
+detached HEAD. `watch-pr`, `orch` and `worktree-audit.sh` read through
+the script, so they work on both forges.
 
 `forge stack` replaces Graphite. It walks base links from a branch (the
 current one by default) down to the repository's default branch and

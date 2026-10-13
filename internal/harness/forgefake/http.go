@@ -149,6 +149,7 @@ func (e *Engine) httpCall(r *http.Request, forge, mount, rest string, body []byt
 	default:
 		return c, "", "no forge mount " + forge
 	}
+	c.contentType = r.Header.Get("Content-Type")
 	if spec := r.Header.Get("Range"); spec != "" {
 		// Only the log routes, which list it, answer Range.
 		c.flags["range"] = []string{spec}
