@@ -80,12 +80,13 @@ type WakeHold interface {
 }
 
 // Rest is a rest a wait read: the watch cursor it read the run at, and the
-// state and reason the run showed there. It names that one rest, so a later
-// rest that looks the same is not mistaken for it.
+// state, reason and current phase the run showed there. It names that one
+// rest, so a later rest that looks the same is not mistaken for it.
 type Rest struct {
-	Cursor int64
-	State  string
-	Reason string
+	Cursor  int64
+	State   string
+	Reason  string
+	PhaseID string
 }
 
 // ControlDone is what an action reports before the run is read back.
@@ -110,6 +111,7 @@ type Watched struct {
 	Resting     bool
 	State       string
 	Reason      string
+	PhaseID     string
 	Result      any
 }
 

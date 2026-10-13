@@ -219,7 +219,11 @@ rest the hold kept back wakes the thread as it would have, unless the run
 moved after that rest's wake was queued, in which case that move's own wakes
 settle it.
 The next rest, after the run is resumed, rerun or otherwise acted on, wakes
-the thread as usual.
+the thread as usual. The watch ring is bounded (512 transitions across all runs); when
+other runs' transitions have pushed it past a cursor, the store decides
+instead: a rest is still current if the stored run shows the same state,
+reason, phase and attempt as the rest kept back (and, for a returned rest,
+the state, reason and phase the call returned).
 
 Limits:
 
@@ -230,6 +234,9 @@ Limits:
   undelivered on the run instead.
 - A rest whose wake job ran before `run_start` bound the run found no binding
   and is never woken; a `run_start` that waits still returns it.
+- Past the ring, a later rest identical in state, reason, phase and attempt
+  to the one kept back or returned cannot be told from it: it is taken as the
+  same rest and does not wake again.
 - The engine writes a transition before it records it in the ring. A rest
   written before the call's store read but recorded after the cursor the call
   read reads as a move, so it is returned and also wakes the thread once.

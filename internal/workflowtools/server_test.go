@@ -357,7 +357,7 @@ func TestStatusWithoutAWaitReadsOnce(t *testing.T) {
 func TestWaitReturnsWhenTheRunRests(t *testing.T) {
 	app := &fakeApp{watches: []Watched{
 		{Cursor: 4}, {Cursor: 6, Transitions: 1, State: "running"},
-		{Cursor: 7, Transitions: 1, Resting: true, State: "needs-human", Reason: "gate"},
+		{Cursor: 7, Transitions: 1, Resting: true, State: "needs-human", Reason: "gate", PhaseID: "review"},
 	}}
 	result, err := New(app).Call(context.Background(), interactive, "run_status", json.RawMessage(`{"run_id":"run-1","wait_seconds":600}`))
 	if err != nil {
@@ -372,7 +372,7 @@ func TestWaitReturnsWhenTheRunRests(t *testing.T) {
 		t.Fatalf("watch inputs = %+v", app.watchInputs)
 	}
 	// The rest it hands back is the one the last watch read, at that cursor.
-	want := Rest{Cursor: 7, State: "needs-human", Reason: "gate"}
+	want := Rest{Cursor: 7, State: "needs-human", Reason: "gate", PhaseID: "review"}
 	if len(app.holds) != 1 || app.holds[0].returned == nil || *app.holds[0].returned != want {
 		t.Fatalf("holds = %+v, want released with %+v", app.holds, want)
 	}

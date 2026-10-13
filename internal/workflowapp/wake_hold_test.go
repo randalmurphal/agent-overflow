@@ -1,6 +1,7 @@
 package workflowapp
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -90,15 +91,16 @@ func (f *holdFixture) rest() {
 	f.service.WaitWake()
 }
 
-// read is what a waiting call reads: the ring head, then the run's state.
+// read is what a waiting call reads: the ring head, then the run's state as
+// the watch reports it.
 func (f *holdFixture) read() *ReturnedRest {
 	f.t.Helper()
 	cursor := f.service.watch.Head()
-	item, err := f.store.GetWorkItem(f.item.ID)
+	item, err := f.store.GetWorkItemSummary(f.item.ID)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	return &ReturnedRest{Cursor: cursor, State: item.State, Reason: item.Reason}
+	return &ReturnedRest{Cursor: cursor, State: item.State, Reason: item.Reason, PhaseID: item.CurrentPhaseID}
 }
 
 func (f *holdFixture) release(hold *WakeHold, returned *ReturnedRest) {
@@ -345,6 +347,134 @@ func TestAKeptBackRestIsMeasuredFromWhenItsWakeWasQueued(t *testing.T) {
 	unblock()
 	if f.wakes() != 1 {
 		t.Fatalf("the re-rest delivered %d wakes, want 1", f.wakes())
+	}
+}
+
+// others records n transitions of other runs, as a busy engine does between
+// a rest and the release of the call holding it, past the ring's reach.
+func (f *holdFixture) others(n int) {
+	for index := range n {
+		f.service.watch.Record(engine.StateEvent{
+			ItemID: fmt.Sprintf("other-%d", index), From: engine.StateRunning, To: engine.StateDone,
+		}, int64(index))
+	}
+}
+
+// Transitions of other runs pushed the ring past the kept-back rest. The
+// run itself never moved, so the store still shows that rest, and the thread
+// is owed it.
+func TestAKeptBackRestOutlivesTheRing(t *testing.T) {
+	f := newHoldFixture(t)
+	f.parkAt("work", 1)
+	hold := f.service.HoldRestWake(f.item.ID, f.thread)
+	f.rest()
+	f.others(600)
+	f.release(hold, nil)
+	if f.wakes() != 1 {
+		t.Fatalf("a kept-back rest past the ring delivered %d wakes, want 1", f.wakes())
+	}
+}
+
+// The same, with the call having returned the rest: it is still the run's
+// rest in the store, so it was delivered, and nothing wakes.
+func TestAReturnedRestOutlivesTheRing(t *testing.T) {
+	for name, held := range map[string]bool{"kept back": true, "read before its wake": false} {
+		t.Run(name, func(t *testing.T) {
+			f := newHoldFixture(t)
+			f.parkAt("work", 1)
+			hold := f.service.HoldRestWake(f.item.ID, f.thread)
+			if held {
+				f.rest()
+			}
+			returned := f.read()
+			f.others(600)
+			f.release(hold, returned)
+			if !held {
+				f.rest()
+			}
+			if f.wakes() != 0 {
+				t.Fatalf("a returned rest past the ring delivered %d wakes, want 0", f.wakes())
+			}
+		})
+	}
+}
+
+// Past the ring, a run that did move shows a different rest in the store:
+// the kept-back one is spent, and the move's own rest wakes once.
+func TestARestPastTheRingThatMovedOnIsNotWokenTwice(t *testing.T) {
+	for name, returned := range map[string]bool{"returned": true, "not returned": false} {
+		t.Run(name, func(t *testing.T) {
+			f := newHoldFixture(t)
+			hold := f.service.HoldRestWake(f.item.ID, f.thread)
+			f.rest()
+			var rest *ReturnedRest
+			if returned {
+				rest = f.read()
+			}
+			unblock := f.block()
+			hold.Release(rest)
+			f.others(600)
+			f.move(engine.StateRunning, "")
+			f.move(engine.StateDone, "")
+			f.others(600)
+			unblock()
+			if f.wakes() != 1 {
+				t.Fatalf("the move's rest delivered %d wakes, want 1", f.wakes())
+			}
+		})
+	}
+}
+
+// parkAt adds the phase attempt a gate park rests on; the run's current
+// phase and the attempt a wake reports both come from these rows.
+func (f *holdFixture) parkAt(phaseID string, attempt int) {
+	f.t.Helper()
+	if err := f.store.CreateWorkItemPhase(store.WorkItemPhase{
+		ItemID: f.item.ID, PhaseID: phaseID, Attempt: attempt, Status: "completed", StartedAt: int64(attempt),
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// Past the ring, the run was resumed and parked at the same gate on a new
+// attempt of the same phase. The store shows the same state and reason, so
+// only the attempt tells the later rest from the one the call had: the
+// later rest is news and wakes once.
+func TestARestPastTheRingOnAnotherAttemptStillWakes(t *testing.T) {
+	f := newHoldFixture(t)
+	f.parkAt("work", 1)
+	hold := f.service.HoldRestWake(f.item.ID, f.thread)
+	f.rest()
+	returned := f.read()
+	unblock := f.block()
+	hold.Release(returned)
+	f.write(engine.StateRunning, "")
+	f.parkAt("work", 2)
+	f.move(engine.StateNeedsHuman, engine.ReasonGate)
+	f.others(600)
+	unblock()
+	if f.wakes() != 1 {
+		t.Fatalf("the rest on the new attempt delivered %d wakes, want 1", f.wakes())
+	}
+}
+
+// Past the ring, a call that read the rest before its wake was queued, so
+// held nothing back, is checked against the phase it returned: a park at the
+// same gate on another phase is not the rest it delivered.
+func TestARestPastTheRingAtAnotherPhaseIsNotTheOneReturned(t *testing.T) {
+	f := newHoldFixture(t)
+	f.parkAt("work", 1)
+	hold := f.service.HoldRestWake(f.item.ID, f.thread)
+	returned := f.read()
+	unblock := f.block()
+	hold.Release(returned)
+	f.write(engine.StateRunning, "")
+	f.parkAt("review", 1)
+	f.move(engine.StateNeedsHuman, engine.ReasonGate)
+	f.others(600)
+	unblock()
+	if f.wakes() != 1 {
+		t.Fatalf("the park at the later phase delivered %d wakes, want 1", f.wakes())
 	}
 }
 

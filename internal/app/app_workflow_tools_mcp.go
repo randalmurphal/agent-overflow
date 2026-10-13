@@ -268,7 +268,9 @@ func (h responseWakeHold) Release(returned *workflowtools.Rest) {
 			h.hold.Release(nil)
 			return
 		}
-		h.hold.Release(&workflowapp.ReturnedRest{Cursor: returned.Cursor, State: returned.State, Reason: returned.Reason})
+		h.hold.Release(&workflowapp.ReturnedRest{
+			Cursor: returned.Cursor, State: returned.State, Reason: returned.Reason, PhaseID: returned.PhaseID,
+		})
 	})
 }
 
@@ -286,7 +288,7 @@ func (w workflowToolsAdapter) WatchRun(ctx context.Context, input workflowtools.
 	}
 	return workflowtools.Watched{
 		Cursor: result.Cursor, Transitions: len(result.Transitions), Resting: result.Run.Resting,
-		State: result.Run.State, Reason: result.Run.Reason, Result: result,
+		State: result.Run.State, Reason: result.Run.Reason, PhaseID: result.Run.PhaseID, Result: result,
 	}, nil
 }
 

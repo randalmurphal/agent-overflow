@@ -237,7 +237,7 @@ func (c *call) wait(ctx context.Context, runID string, args waitArgs) (Wait, *Re
 			cursor = watched.Cursor
 			resting = watched.Resting
 			if resting {
-				rest = &Rest{Cursor: watched.Cursor, State: watched.State, Reason: watched.Reason}
+				rest = &Rest{Cursor: watched.Cursor, State: watched.State, Reason: watched.Reason, PhaseID: watched.PhaseID}
 				break
 			}
 			if !c.clock().Before(deadline) {
