@@ -127,8 +127,12 @@ at boot or left unconfirmed by a session that ended never goes to the
 composer, and its row records `not delivered`; an outside `thread send` is
 handled the same way, with a notice in its thread. A request's answer or
 reminder and a remote job's completion that never reached the agent go
-back to their owners through one path (`giveBackToOwners`), from a Stop, a
-revert, a session end, a failed Codex resend and the boot sweep. A message
+back to their owners through one path (`giveBackToOwners`), from a Stop, an
+archive, a revert, a session end, a failed Codex resend and the boot sweep,
+whether still queued or handed to the provider and not confirmed. The
+provider's echo confirms the owner's delivery mark (`confirmOwnedDeliveries`,
+on triage's consumed hook), and a completion a session end returned is
+paced on the wake retry ladder (`completionRedelivery`). A message
 Claude joined from a person's text and such parts is split by the lengths
 its dispatch recorded (`usermessage.JoinedPart`), and only the person's
 text goes back (`agentPartsNotTakenIn`). What the app's messages are owed

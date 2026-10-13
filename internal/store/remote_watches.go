@@ -31,6 +31,14 @@ type RemoteWatch struct {
 	Notification string    `json:"notification"`
 	NextCheck    int64     `json:"-"`
 	CreatedAt    int64     `json:"createdAt"`
+	// ConfirmedAt records the provider's echo of the queued completion. A
+	// queued one without it may never have reached the agent.
+	ConfirmedAt int64 `json:"-"`
+	// WakeAttempts counts the completions a session end gave back, which
+	// pace the next delivery (WithdrawRemoteCompletion); WakeIssue says why
+	// delivery was given up, the completion kept on the watch.
+	WakeAttempts int64  `json:"-"`
+	WakeIssue    string `json:"wakeIssue,omitempty"`
 }
 
 const remoteWatchesV91SQL = `CREATE TABLE remote_watches (
@@ -46,12 +54,12 @@ CREATE INDEX idx_remote_watches_thread ON remote_watches(thread_id,created_at DE
 
 const remoteWatchesCommandV98SQL = `ALTER TABLE remote_watches ADD COLUMN command TEXT NOT NULL DEFAULT '';`
 
-const remoteWatchColumns = `computer_id,request_id,thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at`
+const remoteWatchColumns = `computer_id,request_id,thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at,coalesce(confirmed_at,0),wake_attempts,wake_issue`
 
 func scanRemoteWatch(row rowScanner) (RemoteWatch, error) {
 	var w RemoteWatch
 	var raw string
-	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt)
+	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt, &w.ConfirmedAt, &w.WakeAttempts, &w.WakeIssue)
 	if err == nil {
 		err = json.Unmarshal([]byte(raw), &w.Receipt)
 	}
@@ -225,13 +233,27 @@ func (s *Store) QueueRemoteCompletion(computerID, requestID string, item FlushQu
 	return tx.Commit()
 }
 
+// CompletionReturn is how a completion goes back to its watch: due at once
+// (the zero value), due at NextCheck as attempt Attempts, or given up with
+// Issue, which dismisses the watch with the completion kept on it.
+type CompletionReturn struct {
+	NextCheck int64
+	Attempts  int64
+	Issue     string
+}
+
 // WithdrawRemoteCompletion takes a completion's message that never reached
 // the agent back out of the queue and returns delivery to its watch, in ONE
 // durable transaction. The watch goes back to pending when the message was
 // still queued: one already dispatched has been delivered. One the provider
 // was handed and never confirmed (unconfirmed) has no row left and goes
-// back all the same, while the watch still reads queued.
-func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string, unconfirmed bool) error {
+// back all the same, while the watch still reads queued and no echo has
+// confirmed it.
+//
+// paced, when set, decides when the watcher delivers it again from the
+// completions given back so far (WakeAttempts), read in the same
+// transaction; nil makes it due at once.
+func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string, unconfirmed bool, paced func(attempts int64) CompletionReturn) error {
 	tx, release, err := s.beginDurableTx(context.Background())
 	if err != nil {
 		return err
@@ -246,12 +268,69 @@ func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string, un
 	if err != nil {
 		return err
 	}
-	if n == 1 || unconfirmed {
-		if _, err = tx.Exec(`UPDATE remote_watches SET notification='pending' WHERE computer_id=? AND request_id=? AND notification='queued'`, computerID, requestID); err != nil {
+	if n == 0 && !unconfirmed {
+		return tx.Commit()
+	}
+	where := ` WHERE computer_id=? AND request_id=? AND notification='queued'`
+	if n == 0 {
+		where += ` AND confirmed_at IS NULL`
+	}
+	back := CompletionReturn{}
+	if paced != nil {
+		var attempts int64
+		err = tx.QueryRow(`SELECT wake_attempts FROM remote_watches`+where, computerID, requestID).Scan(&attempts)
+		if errors.Is(err, sql.ErrNoRows) {
+			return tx.Commit()
+		}
+		if err != nil {
 			return err
 		}
+		back = paced(attempts)
+	}
+	switch {
+	case back.Issue != "":
+		_, err = tx.Exec(`UPDATE remote_watches SET notification='dismissed',confirmed_at=NULL,wake_issue=?`+where, back.Issue, computerID, requestID)
+	case back.NextCheck != 0:
+		_, err = tx.Exec(`UPDATE remote_watches SET notification='pending',confirmed_at=NULL,next_check=?,wake_attempts=?`+where, back.NextCheck, back.Attempts, computerID, requestID)
+	default:
+		_, err = tx.Exec(`UPDATE remote_watches SET notification='pending',confirmed_at=NULL`+where, computerID, requestID)
+	}
+	if err != nil {
+		return err
 	}
 	return tx.Commit()
+}
+
+// ConfirmRemoteCompletion records the provider's echo of a queued
+// completion: the second phase of its delivery mark, after which no
+// session end or restart gives it back. It reports whether the watch was
+// still unconfirmed.
+func (s *Store) ConfirmRemoteCompletion(computerID, requestID string, at int64) (bool, error) {
+	r, err := s.db.Exec(`UPDATE remote_watches SET confirmed_at=? WHERE computer_id=? AND request_id=? AND notification='queued' AND confirmed_at IS NULL`, at, computerID, requestID)
+	if err != nil {
+		return false, err
+	}
+	n, err := r.RowsAffected()
+	return n > 0, err
+}
+
+// UnconfirmedRemoteCompletions returns the watches whose completion was
+// queued and never confirmed: at boot, no session holds them, so the agent
+// may never have taken them in.
+func (s *Store) UnconfirmedRemoteCompletions() ([]RemoteWatch, error) {
+	rows, err := s.reader().Query(`SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE notification='queued' AND confirmed_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	var out []RemoteWatch
+	for rows.Next() {
+		w, err := scanRemoteWatch(rows)
+		if err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		out = append(out, w)
+	}
+	return out, errors.Join(rows.Err(), rows.Close())
 }
 
 func (s *Store) HasPendingRemoteWatches(threadID string) (bool, error) {

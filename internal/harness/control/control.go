@@ -205,6 +205,10 @@ const (
 	// symptom (a thread id that did or did not change) cannot say
 	// whether a refused revert was even attempted.
 	ReportHistoryCut = "history_cut"
+	// ReportHistoryResumed names one input a Codex thread/resume found in
+	// the thread's history (scenario.CodexOptions.KeepHistory): Input is
+	// the text, SessionRef the thread.
+	ReportHistoryResumed = "history_resumed"
 	// ReportAdvanceReleased is posted when an advance command actually
 	// opens a gate — either because the gate was already open when the
 	// advance arrived, or because a buffered advance was consumed the

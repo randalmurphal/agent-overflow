@@ -145,7 +145,8 @@ start a follow-up turn. User drafts remain intact. Source registration precedes
 the network mutation; one durable transaction inserts the completion message
 and transfers notification responsibility to the queue. Stable send identity
 and this handoff prevent repeated observations from injecting duplicates.
-`notification: queued` means queue ownership, not proof the agent read it.
+`notification: queued` means queue ownership, not proof the agent read it;
+the provider's echo of the message records it confirmed.
 A tool reply that carried the finished receipt is the delivery: the watcher
 leaves a job alone while a call is parked on it, and the watch is dismissed
 once that reply is written, so the agent never receives the same result twice.
@@ -155,9 +156,13 @@ job, retain the exact routing IDs, and include at most 1 KiB of the output's
 start plus 2 KiB of its end, untrusted. Log-tool guidance appears only when
 output is omitted; general usage instructions stay in tool descriptions.
 After handoff, a completion the queue could not deliver is not the person's to
-send and never goes to the composer: one still queued at a restart, or left
-queued or unconfirmed by a session that ended or a Codex resend that failed,
-goes back to its watch as `pending`, and the watcher delivers it again.
+send and never goes to the composer: one still queued, or handed to the
+provider and never confirmed, at a restart, or left queued or unconfirmed by a
+session that ended or a Codex resend that failed, goes back to its watch as
+`pending`, and the watcher delivers it again. After a session end or a failed
+resend it waits on the thread request wake retry's ladder first, and once that
+is spent the watch is dismissed with a `wakeIssue` and keeps the result
+([standing agents](../specs/standing-agents.md#wake-supervisor)).
 Finished workflow phases are not reopened.
 The conversation that called `remote_run` owns the job. Deleting or moving it
 cancels the commands it still owns and drops their pending notifications.
@@ -168,7 +173,8 @@ watch. The watcher skips an archived conversation's watches, and a completion
 it was delivering when the archive came is refused by the queue write before
 its watch moves, so a kept result arrives once the conversation is unarchived.
 A completion still queued when a Stop or a revert drops the conversation's
-queue goes back to its watch too, once the queue is gone, and the watcher
+queue goes back to its watch too, once the queue is gone, as does one a Stop
+or an archive finds handed to the provider and not confirmed, and the watcher
 delivers it again, starting the session for it. A copy waits for outstanding
 remote work and its notification handoff like the existing
 queued/background-work checks; the refusal for an archived conversation that
