@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"slices"
 	"strconv"
 	"testing"
@@ -16,32 +14,8 @@ import (
 // returns the reports it posts.
 func startReportingMock(t *testing.T, sc *scenario.Scenario, extraEnv ...string) (*mockProc, <-chan control.Report) {
 	t.Helper()
-	scenarioJSON, err := json.Marshal(sc)
-	if err != nil {
-		t.Fatalf("marshal scenario: %v", err)
-	}
 	reports := make(chan control.Report, 64)
-	srv, err := control.NewServer(control.ServerConfig{
-		Resolve: func(control.Registration) (control.Assignment, error) {
-			return control.Assignment{ScenarioName: sc.Name, ScenarioJSON: scenarioJSON}, nil
-		},
-		OnReport: func(_ control.MockInfo, report control.Report) { reports <- report },
-	})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-	})
-	p := startMock(t, []string{"app-server"}, append([]string{
-		control.EnvAddr + "=" + srv.Addr(),
-		control.EnvToken + "=" + srv.Token(),
-	}, extraEnv...), t.TempDir())
+	p, _ := startMockOnControl(t, sc, []string{"app-server"}, func(_ control.MockInfo, report control.Report) { reports <- report }, extraEnv...)
 	return p, reports
 }
 
