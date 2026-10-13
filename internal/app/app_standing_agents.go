@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
@@ -321,24 +322,46 @@ A script outside the app can message the agent:
 }
 
 // standingAgentPrompt is the block a standing agent's sessions carry beside
-// the app guide (docs/specs/standing-agents.md, "Standing agent"): its home,
-// its thread id and that the home is its own. "" for any other thread. It is
-// read at every start and resume, so a promotion reaches the next session and
-// a demotion leaves it out.
-func (a *App) standingAgentPrompt(thread store.Thread) (string, error) {
+// the app guide (docs/specs/standing-agents.md, "Agent home contents"): its
+// home, its thread id, that the home is its own and to load the agent-home
+// skill, then the text of the home's instructions.md and MEMORY.md under
+// their headings (agenthome.ReadSessionBlock). "" for any other thread. It is
+// read at every start and resume and never while a session runs, so a
+// promotion or a rewrite of either file reaches the next session, a demotion
+// leaves the block out, and a session's prompt is fixed for its life.
+// Problems are the file reads that failed for a reason other than absence;
+// the start proceeds without that file and the caller surfaces them.
+func (a *App) standingAgentPrompt(thread store.Thread) (block string, problems []error, err error) {
 	row, found, err := a.store.GetStandingAgent(thread.ID)
 	if err != nil {
-		return "", fmt.Errorf("read the standing agent row of %s: %w", thread.ID, err)
+		return "", nil, fmt.Errorf("read the standing agent row of %s: %w", thread.ID, err)
 	}
 	if !found {
-		return "", nil
+		return "", nil, nil
 	}
-	return standingAgentPromptText(row), nil
+	if row.Home == "" {
+		return standingAgentPromptText(row), nil, nil
+	}
+	home := agenthome.ReadSessionBlock(row.Home)
+	return joinPromptParts(standingAgentPromptText(row), home.Text), home.Problems, nil
 }
 
 func standingAgentPromptText(row store.StandingAgent) string {
-	return fmt.Sprintf("You are a standing agent: the user promoted this thread (id %s). Your home is %s. You own that directory and keep your durable state there.",
-		row.ThreadID, row.Home)
+	return fmt.Sprintf("You are a standing agent: the user promoted this thread (id %s). Your home is %s. You own that directory and keep your durable state there. %s",
+		row.ThreadID, row.Home, agenthome.LoadSkillSentence)
+}
+
+// reportStandingAgentHomeProblems logs each failed read of a standing agent's
+// home files with its path and puts it on the thread as a warning row, once
+// the session it was read for is registered: the session started without
+// that file, and the person watching the agent has to know.
+func (a *App) reportStandingAgentHomeProblems(threadID string, problems []error) {
+	for _, problem := range problems {
+		log.Printf("standing agent %s: %v", threadID, problem)
+		if err := a.emitNoticeToThread(threadID, "This standing agent's session started without one of its home files: "+problem.Error()+"."); err != nil {
+			log.Printf("standing agent %s: %v", threadID, err)
+		}
+	}
 }
 
 // joinPromptParts joins the non-empty parts of an appended prompt with a

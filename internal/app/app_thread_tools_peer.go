@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
@@ -54,11 +55,20 @@ type ThreadPeerCall struct {
 	// UserMessage is the source thread's latest message no agent wrote,
 	// which the request footer quotes and this computer cannot read.
 	UserMessage string `json:"userMessage,omitempty"`
+	// SourceAgent is set when the source thread is a standing agent, with
+	// the role line the footer quotes. A computer that does not send it
+	// is read as an ordinary thread.
+	SourceAgent *ThreadPeerAgent `json:"sourceAgent,omitempty"`
 	// Inherit is what a forwarded spawn takes from the calling thread where
 	// the call overrides nothing. It travels because the calling thread's
 	// row is on the other computer; this computer still validates every
 	// value against its own catalogs.
 	Inherit threadtools.SpawnDefaults `json:"inherit,omitzero"`
+}
+
+// ThreadPeerAgent is a forwarded request's standing agent sender.
+type ThreadPeerAgent struct {
+	Role string `json:"role,omitempty"`
 }
 
 // ThreadPeerReply is one forwarded call's answer.
@@ -343,6 +353,18 @@ func refuseForeignLedgerRead(ctx context.Context, what string) error {
 			" cannot be read from another computer. Call thread_status on your own computer.", nil)
 }
 
+// refuseForwardedHomeFiles refuses a forwarded spawn or send that still names
+// home_files: the files are read on the caller's computer and folded into the
+// text before it is forwarded, and this computer holds no home of the
+// caller's to read them from.
+func refuseForwardedHomeFiles(files []string) error {
+	if len(files) == 0 {
+		return nil
+	}
+	return errorsx.Public(threadtools.CodeInvalidRequest,
+		"home_files are read on the sender's computer and cannot be forwarded. Send the files' text in the message.", nil)
+}
+
 // publicThreadToolError keeps an unreviewed cause out of the wire. The
 // code and prose reach the calling model on the other computer, so an
 // internal failure is logged here and answered with a stable refusal.
@@ -383,6 +405,11 @@ func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call Threa
 		userMessage: call.UserMessage,
 		inherit:     call.Inherit,
 	}
+	if call.SourceAgent != nil {
+		// The role is the other computer's text going into this computer's
+		// footer: bounded to one cleaned line here, whatever was sent.
+		origin.agent = &threadtools.SenderAgent{Role: agenthome.BoundRole(call.SourceAgent.Role)}
+	}
 	if call.Tool == "thread_cancel" {
 		return a.cancelPeerThreadRequest(ctx, origin, token, call)
 	}
@@ -395,14 +422,18 @@ func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call Threa
 	case "thread_spawn":
 		var spawn threadtools.SpawnCall
 		if err = json.Unmarshal(call.Args, &spawn); err == nil {
-			spawn.ComputerID = ""
-			_, err = adapter.acceptSpawn(ctx, origin, token, spawn)
+			if err = refuseForwardedHomeFiles(spawn.HomeFiles); err == nil {
+				spawn.ComputerID = ""
+				_, err = adapter.acceptSpawn(ctx, origin, token, spawn)
+			}
 		}
 	case "thread_send":
 		var send threadtools.SendCall
 		if err = json.Unmarshal(call.Args, &send); err == nil {
-			send.ComputerID = ""
-			_, err = adapter.acceptSend(ctx, origin, token, send)
+			if err = refuseForwardedHomeFiles(send.HomeFiles); err == nil {
+				send.ComputerID = ""
+				_, err = adapter.acceptSend(ctx, origin, token, send)
+			}
 		}
 	case "thread_ask":
 		var ask threadtools.AskCall

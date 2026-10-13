@@ -72,6 +72,11 @@ type Thread struct {
 	// LastActivity is the newest completed turn in Unix milliseconds, or
 	// the thread's update time when it has never completed a turn.
 	LastActivity int64 `json:"last_activity,omitempty"`
+	// StandingAgent is true for a thread the user promoted, and SpawnedBy
+	// names the thread that spawned this one on its computer, so a reader
+	// can tell a lead from its workers without another call.
+	StandingAgent bool   `json:"standing_agent,omitempty"`
+	SpawnedBy     string `json:"spawned_by,omitempty"`
 
 	// The four derived columns State reads, named as the frontend's
 	// reference implementation names them.

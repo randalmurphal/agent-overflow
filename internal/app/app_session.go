@@ -282,7 +282,12 @@ func (a *App) startSessionNow(threadID string) error {
 		}
 	}
 
-	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, onEvent)
+	// Read once per start: the files' text is fixed for this session's life.
+	agentHome, homeProblems, err := a.standingAgentPrompt(t)
+	if err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
+	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agentHome, onEvent)
 	if err != nil {
 		a.emitProviderStatusOnSessionStartError(t.Provider)
 		return fmt.Errorf("start session: %w", err)
@@ -299,6 +304,7 @@ func (a *App) startSessionNow(threadID string) error {
 		a.signalRemotePeers()
 	}
 	a.emitProviderSessionAccount(threadID)
+	a.reportStandingAgentHomeProblems(threadID, homeProblems)
 
 	// Register the freshly-spawned process group with the orphan reaper so
 	// it's torn down if the app dies before the session closes cleanly
@@ -516,6 +522,7 @@ func (a *App) spawnProviderSession(
 	opts provider.SessionOptions,
 	mcpServers map[string]any,
 	credential aoSessionCredential,
+	agentHome string,
 	onEvent func(provider.ProviderEvent),
 ) (session, error) {
 	// liveness is initialized once and attached to whichever provider
@@ -538,10 +545,6 @@ func (a *App) spawnProviderSession(
 	}
 	// A standing agent's home block (app_standing_agents.go) rides the same
 	// channels, spawn-only too, and whatever the guide setting says.
-	agentHome, err := a.standingAgentPrompt(t)
-	if err != nil {
-		return session{}, err
-	}
 	appGuide = joinPromptParts(appGuide, agentHome)
 
 	switch t.Provider {

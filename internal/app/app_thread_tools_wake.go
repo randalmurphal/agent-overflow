@@ -402,6 +402,13 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 		if thread, err := a.store.GetThread(row.TargetThreadID); err == nil {
 			wake.Title = thread.Title
 		}
+		// A standing agent that answered is named as one. A thread on
+		// another computer is not: its row records no role.
+		agent, err := a.threadTools().senderAgent(row.TargetThreadID)
+		if err != nil {
+			return "", err
+		}
+		wake.Agent = agent
 	}
 	switch {
 	case late:
