@@ -8,11 +8,13 @@ import (
 	"testing"
 )
 
-// v147 over a populated database: every request row and every schema object
-// survive unchanged, the one new object is the partial index on a local
-// spawn's target, and the spawner lookup the sidebar makes uses it.
-func TestSpawnTargetIndexMigration(t *testing.T) {
-	path := fileDBThrough(t, spawnTargetIndexMigrationVersion-1)
+// v147 over a populated database: every request row survives unchanged and
+// reads lineage_only 0, every schema object but thread_requests is
+// unchanged, thread_requests gains exactly lineage_only, the one new object
+// is the partial index on a local spawn's target, and the spawner lookup
+// the sidebar makes uses it.
+func TestSpawnLineageMigration(t *testing.T) {
+	path := fileDBThrough(t, spawnLineageMigrationVersion-1)
 	db, err := sql.Open("sqlite", poolDSN(path, writerConnPragmas))
 	if err != nil {
 		t.Fatal(err)
@@ -39,15 +41,35 @@ func TestSpawnTargetIndexMigration(t *testing.T) {
 	rowsBefore := requestRows()
 	schemaBefore := migrationSchema(t, db)
 
-	if err := applyMigration(db, migrationByVersion(t, spawnTargetIndexMigrationVersion)); err != nil {
-		t.Fatalf("apply v%d: %v", spawnTargetIndexMigrationVersion, err)
+	if err := applyMigration(db, migrationByVersion(t, spawnLineageMigrationVersion)); err != nil {
+		t.Fatalf("apply v%d: %v", spawnLineageMigrationVersion, err)
 	}
 
 	if got := requestRows(); !slices.Equal(got, rowsBefore) {
 		t.Errorf("request rows changed:\n got %q\nwant %q", got, rowsBefore)
 	}
+	if got, err := queryIDs(db, `SELECT DISTINCT CAST(lineage_only AS TEXT) FROM thread_requests`); err != nil {
+		t.Fatal(err)
+	} else if want := []string{"0"}; !slices.Equal(got, want) {
+		t.Errorf("lineage_only on the existing rows = %q, want %q", got, want)
+	}
+	if got, err := queryIDs(db, `SELECT name || '|' || type || '|' || "notnull" || '|' || dflt_value
+		FROM pragma_table_info('thread_requests') WHERE name = 'lineage_only'`); err != nil {
+		t.Fatal(err)
+	} else if want := []string{"lineage_only|INTEGER|1|0"}; !slices.Equal(got, want) {
+		t.Errorf("lineage_only column = %q, want %q", got, want)
+	}
+	if _, err := db.Exec(`UPDATE thread_requests SET lineage_only = 2 WHERE token = 'tok-local'`); err == nil {
+		t.Error("lineage_only accepted 2")
+	}
 	schemaAfter := migrationSchema(t, db)
+	if got := schemaAfter["thread_requests"]; got == schemaBefore["thread_requests"] || !strings.Contains(got, "lineage_only") {
+		t.Errorf("thread_requests after v%d = %q, want lineage_only added", spawnLineageMigrationVersion, got)
+	}
 	for name, sqlText := range schemaBefore {
+		if name == "thread_requests" {
+			continue
+		}
 		if schemaAfter[name] != sqlText {
 			t.Errorf("schema object %s changed:\n got %q\nwant %q", name, schemaAfter[name], sqlText)
 		}
@@ -59,7 +81,7 @@ func TestSpawnTargetIndexMigration(t *testing.T) {
 		}
 	}
 	if want := []string{"idx_thread_requests_spawn_target"}; !slices.Equal(added, want) {
-		t.Errorf("v%d added %v, want %v", spawnTargetIndexMigrationVersion, added, want)
+		t.Errorf("v%d added %v, want %v", spawnLineageMigrationVersion, added, want)
 	}
 	if got, err := queryIDs(db, `SELECT name FROM pragma_index_info('idx_thread_requests_spawn_target') ORDER BY seqno`); err != nil {
 		t.Fatal(err)

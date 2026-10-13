@@ -620,7 +620,9 @@ func (s *Store) GetStandingAgent(threadID string) (StandingAgent, bool, error) {
 // StandingAgentSpawnerOf names the standing agent that spawned a thread on
 // this computer: the caller of a local `spawn` request whose target is the
 // thread, while that caller is promoted and not archived. Found is false for
-// every other thread, a worker past the request ledger's retention included.
+// every other thread. A worker past the request ledger's retention still
+// names its agent: the sweep keeps its spawn row as lineage
+// (spawnLineageSQL), so its prompts keep routing there.
 func (s *Store) StandingAgentSpawnerOf(threadID string) (agentID, title string, found bool, err error) {
 	err = s.reader().QueryRow(`SELECT t.id, t.title FROM standing_agents a
 		JOIN thread_requests r ON r.caller_thread_id = a.thread_id

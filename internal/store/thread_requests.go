@@ -119,8 +119,12 @@ type ThreadRequest struct {
 	WakeAttempts  int64  `json:"-"`
 	WakeNextCheck int64  `json:"-"`
 	WakeIssue     string `json:"wakeIssue,omitempty"`
-	CreatedAt     int64  `json:"createdAt"`
-	UpdatedAt     int64  `json:"updatedAt"`
+	// LineageOnly marks a local spawn row the retention sweep kept past
+	// the floor with its payload cleared: the record of which thread
+	// started its target, and nothing else. The ledger reads skip it.
+	LineageOnly bool  `json:"-"`
+	CreatedAt   int64 `json:"createdAt"`
+	UpdatedAt   int64 `json:"updatedAt"`
 }
 
 // ThreadRequestSettlement is one settled answer, written identically to the
@@ -152,11 +156,11 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     COALESCE(settled_at, 0), COALESCE(delivered_at, 0), delivered_how,
     COALESCE(late_delivered_at, 0), COALESCE(expires_at, 0),
     polling, next_check, attempts, issue,
-    wake_attempts, wake_next_check, wake_issue, created_at, updated_at`
+    wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	var r ThreadRequest
-	var notify, polling int
+	var notify, polling, lineageOnly int
 	err := row.Scan(
 		&r.Token, &r.CallerThreadID, &r.Kind, &r.DueAt,
 		&r.TargetComputerID, &r.TargetThreadID, &r.TargetThreadTitle, &r.OriginThreadID, &notify, &r.State,
@@ -164,10 +168,11 @@ func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 		&r.SettledAt, &r.DeliveredAt, &r.DeliveredHow,
 		&r.LateDeliveredAt, &r.ExpiresAt,
 		&polling, &r.NextCheck, &r.Attempts, &r.Issue,
-		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &r.CreatedAt, &r.UpdatedAt,
+		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
 	)
 	r.Notify = notify != 0
 	r.Polling = polling != 0
+	r.LineageOnly = lineageOnly != 0
 	return r, err
 }
 
@@ -214,11 +219,11 @@ func (s *Store) InsertThreadRequest(r ThreadRequest) error {
 		`INSERT INTO thread_requests (
 		    token, caller_thread_id, kind, due_at, target_computer_id, target_thread_id,
 		    origin_thread_id, notify, state, answer, answer_kind, revision,
-		    next_check, attempts, issue, created_at, updated_at
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    next_check, attempts, issue, lineage_only, created_at, updated_at
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Token, r.CallerThreadID, r.Kind, nilIfZero(r.DueAt), r.TargetComputerID, r.TargetThreadID,
 		r.OriginThreadID, boolToInt(r.Notify), r.State, nilIfEmptyBytes(r.Answer), r.AnswerKind, r.Revision,
-		r.NextCheck, r.Attempts, r.Issue, r.CreatedAt, r.UpdatedAt,
+		r.NextCheck, r.Attempts, r.Issue, boolToInt(r.LineageOnly), r.CreatedAt, r.UpdatedAt,
 	); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
@@ -292,7 +297,8 @@ func ThreadRequestOpenStates() []string {
 // StoreThreadRequestLateReply records a thread_reply that arrived after the
 // request had already settled. It is a new revision, so a `thread_status`
 // waiting past the collected revision returns and the wake path delivers a
-// second message. Only the first late reply is stored.
+// second message. Only the first late reply is stored, and never on a
+// lineage-only row, whose token the ledger no longer knows.
 func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64) (bool, error) {
 	action := fmt.Sprintf("store: store thread request late reply %s", token)
 	if at == 0 {
@@ -301,7 +307,7 @@ func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64
 	result, err := s.db.Exec(
 		`UPDATE thread_requests
 		    SET late_reply = ?, late_reply_at = ?, revision = revision + 1, updated_at = ?
-		  WHERE token = ? AND settled_at IS NOT NULL AND late_reply IS NULL`,
+		  WHERE token = ? AND settled_at IS NOT NULL AND late_reply IS NULL AND lineage_only = 0`,
 		nilIfEmptyBytes(reply), at, nowMillis(), token,
 	)
 	if err != nil {
@@ -393,11 +399,13 @@ func (s *Store) SetThreadRequestTarget(token, computerID, threadID, title string
 }
 
 // SetThreadRequestNotify arms or disarms the wake a settlement owes the
-// caller. A timed-out wait arms it; archiving the caller disarms it.
+// caller. A timed-out wait arms it; archiving the caller disarms it. A
+// lineage-only row owes nothing and is never re-armed.
 func (s *Store) SetThreadRequestNotify(token string, notify bool) (bool, error) {
 	action := fmt.Sprintf("store: set thread request %s notify", token)
 	result, err := s.db.Exec(
-		`UPDATE thread_requests SET notify = ?, updated_at = ? WHERE token = ? AND notify IS NOT ?`,
+		`UPDATE thread_requests SET notify = ?, updated_at = ?
+		  WHERE token = ? AND notify IS NOT ? AND lineage_only = 0`,
 		boolToInt(notify), nowMillis(), token, boolToInt(notify),
 	)
 	if err != nil {
@@ -408,12 +416,13 @@ func (s *Store) SetThreadRequestNotify(token string, notify bool) (bool, error) 
 
 // SetThreadRequestsNotifyForCaller disarms (or arms) every open request one
 // thread owns. Archiving, deleting or moving the caller uses it so no wake
-// lands on a thread that cannot receive it.
+// lands on a thread that cannot receive it. Lineage-only rows are left
+// disarmed.
 func (s *Store) SetThreadRequestsNotifyForCaller(callerThreadID string, notify bool) (int64, error) {
 	action := fmt.Sprintf("store: set thread requests notify for %s", callerThreadID)
 	result, err := s.db.Exec(
 		`UPDATE thread_requests SET notify = ?, updated_at = ?
-		  WHERE caller_thread_id = ? AND delivered_at IS NULL AND notify IS NOT ?`,
+		  WHERE caller_thread_id = ? AND delivered_at IS NULL AND notify IS NOT ? AND lineage_only = 0`,
 		boolToInt(notify), nowMillis(), callerThreadID, boolToInt(notify),
 	)
 	if err != nil {
@@ -514,9 +523,12 @@ func (s *Store) AbandonThreadRequestWake(token, issue string) (bool, error) {
 
 // GetThreadRequest reads one source row. The bool separates "no such token"
 // from a read failure, because the two get different answers on the wire.
+// A lineage-only row is no such token: past the retention floor a spawn's
+// token is unknown, as a deleted row's is. The ledger reads below skip it
+// the same way; the lineage reads (spawnLineageSQL, threadColumns) do not.
 func (s *Store) GetThreadRequest(token string) (ThreadRequest, bool, error) {
 	row, err := scanThreadRequest(s.reader().QueryRow(
-		`SELECT `+threadRequestColumns+` FROM thread_requests WHERE token = ?`, token))
+		`SELECT `+threadRequestColumns+` FROM thread_requests WHERE token = ? AND lineage_only = 0`, token))
 	if err == sql.ErrNoRows {
 		return ThreadRequest{}, false, nil
 	}
@@ -527,8 +539,8 @@ func (s *Store) GetThreadRequest(token string) (ThreadRequest, bool, error) {
 }
 
 // GetThreadRequests reads the named source rows in one query, newest first. A
-// token with no row is simply absent from the result; the caller reports it as
-// unknown.
+// token with no row, or only a lineage-only one, is simply absent from the
+// result; the caller reports it as unknown.
 func (s *Store) GetThreadRequests(tokens []string) ([]ThreadRequest, error) {
 	if len(tokens) == 0 {
 		return []ThreadRequest{}, nil
@@ -540,7 +552,8 @@ func (s *Store) GetThreadRequests(tokens []string) ([]ThreadRequest, error) {
 	}
 	rows, err := s.reader().Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
-		  WHERE token IN (`+placeholders+`) ORDER BY created_at DESC, token ASC`, args...)
+		  WHERE token IN (`+placeholders+`) AND lineage_only = 0
+		  ORDER BY created_at DESC, token ASC`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: get thread requests: %w", err)
 	}
@@ -560,7 +573,7 @@ func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset 
 	}
 	rows, err := s.reader().Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
-		  WHERE caller_thread_id = ?
+		  WHERE caller_thread_id = ? AND lineage_only = 0
 		  ORDER BY (settled_at IS NULL) DESC, created_at DESC, token ASC
 		  LIMIT `+strconv.Itoa(limit)+` OFFSET ?`,
 		callerThreadID, offset)
@@ -770,18 +783,18 @@ func (s *Store) DeleteThreadRequest(token string) (bool, error) {
 const spawnLineageSQL = `kind = 'spawn' AND target_computer_id = ''
 			AND target_thread_id IN (SELECT id FROM threads)`
 
-// clearLineagePayloadSQL empties everything a lineage row answered and
-// disarms its wake, so past the floor the row names its caller, kind,
-// target, state and times and nothing else: an old answer is not kept for
-// the life of the thread, and a wake it never handed over is not delivered
-// empty. The delivery marks stay, because a cleared delivered_at would read
-// as a wake still owed. The sweep appends its floor after the WHERE that
-// skips rows already cleared.
+// clearLineagePayloadSQL marks a lineage row lineage_only, empties
+// everything it answered and disarms its wake, so past the floor the row
+// names its caller, kind, target, state and times and nothing else: the
+// ledger reads skip it, an old answer is not kept for the life of the
+// thread, and a wake it never handed over is not delivered empty. The
+// delivery marks stay, because a cleared delivered_at would read as a wake
+// still owed. The sweep appends its floor to the WHERE, which skips rows
+// already marked.
 const clearLineagePayloadSQL = `UPDATE thread_requests
-	SET answer = NULL, answer_kind = '', late_reply = NULL, late_reply_at = NULL,
+	SET lineage_only = 1, answer = NULL, answer_kind = '', late_reply = NULL, late_reply_at = NULL,
 	    notify = 0, issue = '', wake_issue = '', expires_at = NULL
-	WHERE (answer IS NOT NULL OR answer_kind <> '' OR late_reply IS NOT NULL OR late_reply_at IS NOT NULL
-	    OR notify <> 0 OR issue <> '' OR wake_issue <> '' OR expires_at IS NOT NULL)`
+	WHERE lineage_only = 0`
 
 // DeleteThreadRequestsBefore removes both sides of every request that has
 // been settled longer than the retention floor, and reports how many rows
@@ -796,7 +809,8 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 // month is due in the future and older than the floor at the same time, and
 // an answer written yesterday on a request made last year has been readable
 // for a day. A local spawn request whose thread exists keeps its lineage
-// past the floor with its payload cleared (spawnLineageSQL).
+// past the floor, marked lineage_only with its payload cleared
+// (spawnLineageSQL).
 func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {

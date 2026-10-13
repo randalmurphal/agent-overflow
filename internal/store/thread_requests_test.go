@@ -17,6 +17,17 @@ func seedThreadRequest(t *testing.T, s *Store, token, caller, kind string, creat
 	}
 }
 
+// rawThreadRequest reads a row whatever it is, lineage-only included,
+// which the ledger reads skip.
+func rawThreadRequest(t *testing.T, s *Store, token string) ThreadRequest {
+	t.Helper()
+	row, err := scanThreadRequest(s.db.QueryRow(`SELECT `+threadRequestColumns+` FROM thread_requests WHERE token = ?`, token))
+	if err != nil {
+		t.Fatalf("read thread request %s: %v", token, err)
+	}
+	return row
+}
+
 // seedSettledThreadRequest is a request that has already settled with an
 // answer. Only a settled request can be delivered, so every delivery test
 // starts from one.
@@ -686,7 +697,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	if swept != 5 {
 		t.Errorf("swept = %d, want three settled requests and one receipt deleted and one lineage row cleared", swept)
 	}
-	for _, token := range []string{"tok-settled-recent", "tok-open-old", "tok-remind-later", "tok-spawn-lineage"} {
+	for _, token := range []string{"tok-settled-recent", "tok-open-old", "tok-remind-later"} {
 		if _, found, err := s.GetThreadRequest(token); err != nil || !found {
 			t.Errorf("%s was swept: found=%v err=%v", token, found, err)
 		}
@@ -696,10 +707,26 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 			t.Errorf("%s, settled before the floor, survived: found=%v err=%v", token, found, err)
 		}
 	}
-	// The lineage row keeps what names the spawn and nothing it answered.
-	lineage, _, err := s.GetThreadRequest("tok-spawn-lineage")
-	if err != nil {
+	// The lineage row keeps what names the spawn and nothing it answered,
+	// and the ledger no longer knows its token.
+	if _, found, err := s.GetThreadRequest("tok-spawn-lineage"); err != nil || found {
+		t.Errorf("the ledger still reads the lineage row: found=%v err=%v", found, err)
+	}
+	if rows, err := s.GetThreadRequests([]string{"tok-spawn-lineage", "tok-open-old"}); err != nil || len(rows) != 1 || rows[0].Token != "tok-open-old" {
+		t.Errorf("GetThreadRequests with the lineage token = %+v, %v; want tok-open-old alone", rows, err)
+	}
+	if rows, err := s.ListThreadRequestsByCaller("t-caller", 50, 0); err != nil {
 		t.Fatal(err)
+	} else {
+		for _, row := range rows {
+			if row.Token == "tok-spawn-lineage" {
+				t.Errorf("the caller's listing still shows the lineage row: %+v", row)
+			}
+		}
+	}
+	lineage := rawThreadRequest(t, s, "tok-spawn-lineage")
+	if !lineage.LineageOnly {
+		t.Errorf("the kept spawn row is not marked lineage-only: %+v", lineage)
 	}
 	if len(lineage.Answer) != 0 || lineage.AnswerKind != "" || len(lineage.LateReply) != 0 || lineage.LateReplyAt != 0 || lineage.Notify {
 		t.Errorf("lineage row past the floor = answer %q kind %q late reply %q at %d notify %v; want its payload cleared",
@@ -721,6 +748,19 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	// A second sweep finds nothing left to take.
 	if swept, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 0 {
 		t.Errorf("second sweep: swept=%d err=%v", swept, err)
+	}
+	// Nothing writes an answer or a wake back onto the lineage row.
+	if stored, err := s.StoreThreadRequestLateReply("tok-spawn-lineage", []byte("much later"), 2000); err != nil || stored {
+		t.Errorf("late reply on the lineage row: stored=%v err=%v", stored, err)
+	}
+	if armed, err := s.SetThreadRequestNotify("tok-spawn-lineage", true); err != nil || armed {
+		t.Errorf("arm the lineage row's wake: armed=%v err=%v", armed, err)
+	}
+	if _, err := s.SetThreadRequestsNotifyForCaller("t-caller", true); err != nil {
+		t.Fatal(err)
+	}
+	if row := rawThreadRequest(t, s, "tok-spawn-lineage"); row.Notify || len(row.LateReply) != 0 {
+		t.Errorf("lineage row after the writers = notify %v late reply %q; want neither", row.Notify, row.LateReply)
 	}
 	// Once the spawned thread is gone the lineage row is one more old
 	// settled request.

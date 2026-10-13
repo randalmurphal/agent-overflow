@@ -243,8 +243,11 @@ Mechanics, as built:
   unarchive and delete re-broadcast the child and its spawner, whose
   `archivedChildCount` they change. The
   partial index `idx_thread_requests_spawn_target` serves the lookup,
-  and the thread-request retention sweep keeps a local spawn row while
-  the thread it created exists.
+  and while the thread it created exists the thread-request retention
+  sweep keeps a local spawn row past the floor as `lineage_only`, its
+  answer, late reply and wake cleared. The ledger tools treat that
+  token as unknown; the lineage reads, and a worker's prompt routing
+  (`StandingAgentSpawnerOf`), still find the row.
 - `PromoteStandingAgent` ungroups the agent and its local spawned
   threads in the same transaction and deletes a group that is left
   empty. `SetThreadGroup` refuses an agent (`ErrStandingAgentGrouped`)
