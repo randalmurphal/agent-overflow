@@ -892,6 +892,22 @@ describe('<ThreadContextMenu> standing agent', () => {
     expect(demote).toHaveBeenCalledWith('thread-1');
   });
 
+  it('deletes the home only through the confirm\'s own destructive choice', async () => {
+    const demote = setBindingMock('DemoteStandingAgent', async () => {});
+    const demoteAndDelete = setBindingMock('DemoteStandingAgentAndDeleteHome', async () => {});
+    const { baseElement } = renderAgentMenu(makeThread({ agentPromotedAt: 1 }));
+    await fireEvent.click(item(baseElement, 'Demote Standing Agent'));
+    await tick();
+    const choice = Array.from(baseElement.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Demote and Delete Home',
+    );
+    expect(choice).toBeTruthy();
+    await fireEvent.click(choice!);
+    await tick();
+    expect(demoteAndDelete).toHaveBeenCalledWith('thread-1');
+    expect(demote).not.toHaveBeenCalled();
+  });
+
   it('hides the group items in bulk when the selection holds an agent or a spawned thread', () => {
     replaceAllThreads([
       makeThread({ id: 'a', projectId: 'project-1' }),

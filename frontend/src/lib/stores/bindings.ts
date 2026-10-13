@@ -83,6 +83,7 @@ export {
   ListArchivedSpawnedThreads,
   PromoteStandingAgent,
   DemoteStandingAgent,
+  DemoteStandingAgentAndDeleteHome,
   CreateThreadGroup,
   RenameThreadGroup,
   DeleteThreadGroup,
@@ -407,6 +408,13 @@ export {
   GetSoundFiles,
   PutSoundFile,
   DeleteSoundFile,
+
+  // The shipped skills tree and its install in each provider home
+  // (docs/specs/standing-agents.md, "Skills library").
+  GetSkillsLibrary,
+  InstallSkills,
+  UpdateSkills,
+  RemoveSkills,
 
   // Review pane diffs (workspace / branch / per-commit / edits). An Open*
   // call returns a connection-owned handle and the first chunk; the rest

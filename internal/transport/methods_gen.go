@@ -116,6 +116,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate", Route: "thread"},                                         // main.App.DeleteThread
 	{Name: "DeleteThreadGroup", ID: 4104302889, Scope: "threads:operate", Route: "home"},                                      // main.App.DeleteThreadGroup
 	{Name: "DemoteStandingAgent", ID: 2416251970, Scope: "threads:operate", Route: "thread"},                                  // main.App.DemoteStandingAgent
+	{Name: "DemoteStandingAgentAndDeleteHome", ID: 1239522167, Scope: "threads:autonomy", Route: "thread"},                    // main.App.DemoteStandingAgentAndDeleteHome
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                                        // main.App.DevicePairingStatus
 	{Name: "DisallowPreviewPort", ID: 1061100039, Scope: "access:admin", Route: "selected"},                                   // main.App.DisallowPreviewPort
 	{Name: "DiscardUnpreparedThreadTransfer", ID: 2309612888, Scope: "threads:operate", Route: "selected"},                    // main.App.DiscardUnpreparedThreadTransfer
@@ -171,6 +172,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetSSHConnection", ID: 324671375, Scope: "host", Route: "home"},                                                   // main.App.GetSSHConnection
 	{Name: "GetServiceUpdateStatus", ID: 2230314013, Scope: "access:admin", Route: "selected"},                                // main.App.GetServiceUpdateStatus
 	{Name: "GetSettings", ID: 2554697378, Scope: "settings:read", Route: "home"},                                              // main.App.GetSettings
+	{Name: "GetSkillsLibrary", ID: 2615616704, Scope: "settings:read", Route: "selected"},                                     // main.App.GetSkillsLibrary
 	{Name: "GetSoundFiles", ID: 3138117849, Scope: "settings:read", Route: "home"},                                            // main.App.GetSoundFiles
 	{Name: "GetSpinnerFiles", ID: 2622552651, Scope: "settings:read", Route: "home"},                                          // main.App.GetSpinnerFiles
 	{Name: "GetStandingAgent", ID: 634025932, Scope: "threads:read", Route: "thread"},                                         // main.App.GetStandingAgent
@@ -224,6 +226,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ImportSessions", ID: 786331585, Scope: "threads:operate", Route: "selected"},                                      // main.App.ImportSessions
 	{Name: "ImportThreadUpdates", ID: 535929682, Scope: "threads:operate", Route: "thread"},                                   // main.App.ImportThreadUpdates
 	{Name: "InspectProjectFolder", ID: 969607096, Scope: "git:operate", Route: "selected"},                                    // main.App.InspectProjectFolder
+	{Name: "InstallSkills", ID: 4029120194, Scope: "settings:write", Route: "selected"},                                       // main.App.InstallSkills
 	{Name: "InterruptAndRevertIfClean", ID: 753394581, Scope: "threads:operate", Route: "thread"},                             // main.App.InterruptAndRevertIfClean
 	{Name: "InterruptTurn", ID: 850013031, Scope: "threads:operate", Route: "thread"},                                         // main.App.InterruptTurn
 	{Name: "IntroduceOwnDevice", ID: 2219602920, Scope: "session", Route: "home", Remote: true},                               // main.App.IntroduceOwnDevice
@@ -347,6 +350,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RemoveOtherWorktree", ID: 2899196344, Scope: "git:operate", Route: "workspace"},                                   // main.App.RemoveOtherWorktree
 	{Name: "RemoveOwnDevice", ID: 3065006869, Scope: "access:admin", Route: "home"},                                           // main.App.RemoveOwnDevice
 	{Name: "RemoveProviderAccount", ID: 684418419, Scope: "access:admin", Route: "home"},                                      // main.App.RemoveProviderAccount
+	{Name: "RemoveSkills", ID: 2871723263, Scope: "settings:write", Route: "selected"},                                        // main.App.RemoveSkills
 	{Name: "RenameBackend", ID: 1528076361, Scope: "host", Route: "home"},                                                     // main.App.RenameBackend
 	{Name: "RenameProject", ID: 3728890856, Scope: "threads:operate", Route: "project"},                                       // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435, Scope: "threads:operate", Route: "thread"},                                          // main.App.RenameThread
@@ -450,6 +454,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UpdateProjectSortPositions", ID: 3717363955, Scope: "threads:operate", Route: "home"},                             // main.App.UpdateProjectSortPositions
 	{Name: "UpdateProposedPlanComment", ID: 2747956806, Scope: "threads:operate", Route: "thread"},                            // main.App.UpdateProposedPlanComment
 	{Name: "UpdateSettings", ID: 2894041249, Scope: "session", Route: "home"},                                                 // main.App.UpdateSettings
+	{Name: "UpdateSkills", ID: 2905127526, Scope: "settings:write", Route: "selected"},                                        // main.App.UpdateSkills
 	{Name: "UpdateThreadBranch", ID: 2929723500, Scope: "threads:operate", Route: "selected"},                                 // main.App.UpdateThreadBranch
 	{Name: "UpdateThreadContextSettings", ID: 2621473242, Scope: "threads:operate", Route: "thread"},                          // main.App.UpdateThreadContextSettings
 	{Name: "UpdateThreadContextWindow", ID: 2456875639, Scope: "threads:operate", Route: "thread"},                            // main.App.UpdateThreadContextWindow

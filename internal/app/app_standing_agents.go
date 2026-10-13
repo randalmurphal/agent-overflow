@@ -124,7 +124,11 @@ func (a *App) DemoteStandingAgentAndDeleteHome(threadID string) error {
 	if home == "" {
 		return err
 	}
-	return errors.Join(err, a.deleteStandingAgentHome(threadID, home))
+	deleteErr := a.deleteStandingAgentHome(threadID, home)
+	if err == nil {
+		return deleteErr
+	}
+	return errors.Join(err, deleteErr)
 }
 
 // demoteStandingAgent removes the row and cancels the watches, returning the
@@ -165,20 +169,25 @@ func (a *App) demoteStandingAgent(threadID string) (string, error) {
 
 // deleteStandingAgentHome removes a demoted agent's home. The recorded path
 // must be the one promotion creates for this thread; any other path is
-// refused rather than deleted.
+// refused rather than deleted. A failure's innermost layer, the one a toast
+// shows, says the demotion stood; the layer around it names the folder.
 func (a *App) deleteStandingAgentHome(threadID, home string) error {
-	if a.configDir == "" {
-		return fmt.Errorf("the home %s was not deleted: no config directory", home)
-	}
+	var reason error
 	agents := filepath.Join(a.configDir, "agents")
 	want := filepath.Join(agents, threadID)
-	if filepath.Clean(home) != want || filepath.Dir(want) != agents {
-		return fmt.Errorf("the home %s was not deleted: it is not %s", home, want)
+	switch {
+	case a.configDir == "":
+		reason = errors.New("no config directory")
+	case filepath.Clean(home) != want || filepath.Dir(want) != agents:
+		reason = fmt.Errorf("it is not %s", want)
+	default:
+		reason = os.RemoveAll(want)
 	}
-	if err := os.RemoveAll(want); err != nil {
-		return fmt.Errorf("delete the agent's home %s: %w", want, err)
+	if reason == nil {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("delete the agent's home %s: %w", home,
+		fmt.Errorf("the thread was demoted, but its home folder was not deleted: %v", reason))
 }
 
 // ListArchivedSpawnedThreads lists the archived threads a standing agent

@@ -713,15 +713,21 @@
 />
 
 <!-- Demotion keeps the home on disk (docs/specs/standing-agents.md,
-     "Standing agent"); the dialog is where the user is told so. -->
+     "Standing agent"); the dialog is where the user is told so, and the
+     one place that offers to delete it. -->
 <ConfirmDialog
   open={showDemoteConfirm}
   title="Demote Standing Agent"
   description="This thread becomes an ordinary thread. Its watches are cancelled; its loops and its home directory stay as they are."
   confirmLabel="Demote"
+  alternateLabel="Demote and Delete Home"
   onConfirm={() => {
     showDemoteConfirm = false;
     void demoteThreadAction(ctx());
+  }}
+  onAlternate={() => {
+    showDemoteConfirm = false;
+    void demoteThreadAction(ctx(), { deleteHome: true });
   }}
   onCancel={() => {
     showDemoteConfirm = false;

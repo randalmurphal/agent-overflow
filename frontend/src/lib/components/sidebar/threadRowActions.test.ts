@@ -161,6 +161,16 @@ describe('standing agent actions', () => {
     expect(demote).toHaveBeenCalledWith('thread-1');
     expect(ctx.reportError).not.toHaveBeenCalled();
 
+    const demoteAndDelete = setBindingMock('DemoteStandingAgentAndDeleteHome', async () => {
+      throw new Error('the thread was demoted, but its home folder was not deleted: permission denied');
+    });
+    await demoteThreadAction(ctx, { deleteHome: true });
+    expect(demoteAndDelete).toHaveBeenCalledWith('thread-1');
+    expect(demote).toHaveBeenCalledTimes(1);
+    expect(ctx.reportError).toHaveBeenCalledTimes(1);
+    expect(((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][1] as Error).message).toContain('home folder was not deleted');
+    (ctx.reportError as ReturnType<typeof vi.fn>).mockClear();
+
     promote.mockImplementation(async () => { throw new Error('only a chat or plan thread can be one'); });
     await promoteThreadAction(ctx);
     expect(ctx.reportError).toHaveBeenCalledTimes(1);
