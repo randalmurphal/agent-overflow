@@ -87,7 +87,7 @@ of the real-provider smoke tests.
 `.github/workflows/ci.yml` runs on every pull request and push to `main`.
 Every step calls a Make target, so the local command is the same check.
 The jobs fill the Free plan's 20 concurrent slots where the time is: one
-Linux job for `fmt-check`, `go-vet`, `go-build`, `provider-smoke-compile`
+Linux job for `fmt-check`, `tidy-check`, `go-vet`, `go-build`, `provider-smoke-compile`
 and `bindings-check`, a macOS `go-build`, one job for `go-lint` and
 `go-vuln`, the frontend job (`check`, `build`, `frontend-lint`), `go-test`
 in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`), the
