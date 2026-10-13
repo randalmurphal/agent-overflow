@@ -97,7 +97,8 @@ the chain with no pull request exits 3, and a cycle of bases fails, so
   `TestSkillsCarryNoReplacedPrimitive` fails when a replaced primitive
   (`/loop`, `subagent_type`, provider home paths, `control-ui`, Graphite
   `gt` and the rest of the list) comes back, or when a script other than
-  the forge script runs `gh` or `glab`; `keptVerbatim` lists
+  the forge script calls `gh` (`pr`, `api`, `run`, `repo`,
+  `issue`) or `glab` (`mr`, `api`, `ci`); `keptVerbatim` lists
   the upstream lines kept on purpose. `TestSkillsLinkOnlyFilesThatExist`
   fails when a relative Markdown link names a file the tree does not
   carry.
