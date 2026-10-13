@@ -198,3 +198,31 @@ func TestTheSkillsRootRefusesALinkOut(t *testing.T) {
 		t.Fatal("readManifest read through a link out of the skills directory")
 	}
 }
+
+// A `skills` link is the user's choice of where skills live: Install writes
+// into its target, and Remove leaves the link and the user's files there.
+func TestASkillsLinkIsFollowed(t *testing.T) {
+	home := t.TempDir()
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "mine.md"), []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(home, "skills")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := Install(home, testTree(t, v1)); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(target, "alpha", "SKILL.md")); err != nil || string(raw) != "alpha v1" {
+		t.Fatalf("the install did not land in the link's target: %q, %v", raw, err)
+	}
+	if err := Remove(home); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if info, err := os.Lstat(filepath.Join(home, "skills")); err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		t.Fatalf("the skills link did not stay: %v", err)
+	}
+	if entries, err := os.ReadDir(target); err != nil || len(entries) != 1 || entries[0].Name() != "mine.md" {
+		t.Fatalf("the link's target holds %v (%v)", entries, err)
+	}
+}

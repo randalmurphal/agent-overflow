@@ -2510,8 +2510,8 @@ export function InspectProjectFolder(path: string): $CancellablePromise<projecta
 
 /**
  * InstallSkills copies the shipped skills into a provider home's `skills/`.
- * Refused, with nothing written, when a skill directory it would write is
- * already there and Agent Overflow did not install it.
+ * Refused, with nothing written in `skills/`, when a skill directory it
+ * would write is already there and Agent Overflow did not install it.
  */
 export function InstallSkills(providerName: string): $CancellablePromise<void> {
     return $Call.ByID(4029120194, providerName);

@@ -87,8 +87,8 @@ func (a *App) GetSkillsLibrary() (SkillsLibrary, error) {
 }
 
 // InstallSkills copies the shipped skills into a provider home's `skills/`.
-// Refused, with nothing written, when a skill directory it would write is
-// already there and Agent Overflow did not install it.
+// Refused, with nothing written in `skills/`, when a skill directory it
+// would write is already there and Agent Overflow did not install it.
 //
 //ao:scope settings:write
 //ao:route selected
