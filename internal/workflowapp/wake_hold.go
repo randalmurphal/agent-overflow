@@ -21,7 +21,8 @@ import (
 // is queued, and a waiting call reads the run's state after the ring head it
 // returns. A call delivered the run's current rest only if the ring holds no
 // transition of the run after the cursor the call read it at; a kept-back rest
-// is still owed only if the ring holds none after the head it was kept at.
+// is still owed only if the ring holds none after the head when its wake was
+// queued.
 // Anything later is somebody acting on the run, whose own wake jobs settle it.
 //
 // A release takes effect on the wake queue, behind every wake job already
@@ -50,8 +51,8 @@ type WakeHold struct {
 	threadID string
 	once     sync.Once
 	// held says a rest of the run arrived while the hold stood and was kept
-	// back, at ring head keptAt; claim is the usage-attention claim that
-	// rest carried, if any.
+	// back; keptAt is the ring head when that rest's wake was queued, and
+	// claim the usage-attention claim it carried, if any.
 	held   bool
 	keptAt int64
 	claim  *store.WorkflowProviderUsageAttentionClaim
@@ -90,8 +91,7 @@ func (h *WakeHold) Release(returned *ReturnedRest) {
 // keepBackRest is the wake half's check, made for a root's rest before it is
 // composed: a call holding the run for its bound thread will hand the rest
 // over itself, or wake the thread with it when it ends without doing so.
-func (s *Service) keepBackRest(item store.WorkItem, claim *store.WorkflowProviderUsageAttentionClaim) bool {
-	keptAt := s.watch.Head()
+func (s *Service) keepBackRest(item store.WorkItem, claim *store.WorkflowProviderUsageAttentionClaim, restAt int64) bool {
 	s.holds.mu.Lock()
 	defer s.holds.mu.Unlock()
 	var replaced []*store.WorkflowProviderUsageAttentionClaim
@@ -103,7 +103,7 @@ func (s *Service) keepBackRest(item store.WorkItem, claim *store.WorkflowProvide
 		// This rest replaces any the hold kept before: that one is no longer
 		// what the thread is owed, and the attention it carried goes with it.
 		replaced = append(replaced, hold.claim)
-		hold.held, hold.keptAt, hold.claim = true, keptAt, nil
+		hold.held, hold.keptAt, hold.claim = true, restAt, nil
 		if !kept {
 			hold.claim = claim
 		}
@@ -145,7 +145,7 @@ func (s *Service) releaseWakeHold(hold *WakeHold, returned *ReturnedRest) {
 		}
 	}
 	if held && !s.runMovedSince(hold.itemID, keptAt) {
-		s.wakeKeptBackRest(hold, claim)
+		s.wakeKeptBackRest(hold, claim, keptAt)
 		return
 	}
 	s.releaseWorkflowUsageAttention(claim)
@@ -200,7 +200,7 @@ func (s *Service) recordCallDeliveredRest(item store.WorkItem, hold *WakeHold, c
 // without returning it, as the wake half would have when it arrived. It goes
 // through the wake half's own check, so another call from the thread still
 // waiting on the run keeps it back in turn.
-func (s *Service) wakeKeptBackRest(hold *WakeHold, claim *store.WorkflowProviderUsageAttentionClaim) {
+func (s *Service) wakeKeptBackRest(hold *WakeHold, claim *store.WorkflowProviderUsageAttentionClaim, restAt int64) {
 	item, err := s.deps.Store.GetWorkItem(hold.itemID)
 	if err != nil {
 		s.deps.Logf("workflow wake %s: load run to deliver a kept-back rest: %v", hold.itemID, err)
@@ -213,5 +213,5 @@ func (s *Service) wakeKeptBackRest(hold *WakeHold, claim *store.WorkflowProvider
 		s.releaseWorkflowUsageAttention(claim)
 		return
 	}
-	s.afterWorkflowResting(item, claim)
+	s.afterWorkflowResting(item, claim, restAt)
 }

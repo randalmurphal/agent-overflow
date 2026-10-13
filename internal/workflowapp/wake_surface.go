@@ -33,12 +33,13 @@ import (
 
 // afterWorkflowResting runs the wake half of a lifecycle transition. It is
 // called from the one app-side item-state listener, so a wake and a
-// notification are always decided from the same event.
-func (s *Service) afterWorkflowResting(item store.WorkItem, usageClaim *store.WorkflowProviderUsageAttentionClaim) bool {
+// notification are always decided from the same event. restAt is the ring
+// head when the rest's wake was queued.
+func (s *Service) afterWorkflowResting(item store.WorkItem, usageClaim *store.WorkflowProviderUsageAttentionClaim, restAt int64) bool {
 	if item.OriginThreadID == "" {
 		return false
 	}
-	if s.keepBackRest(item, usageClaim) {
+	if s.keepBackRest(item, usageClaim, restAt) {
 		// A waiting call has the rest (wake_hold.go). Reported as delivered:
 		// the hold carries the usage claim, and the call or its release
 		// settles it.

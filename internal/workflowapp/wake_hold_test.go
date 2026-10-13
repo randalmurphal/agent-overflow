@@ -330,6 +330,24 @@ func TestAnActionQueuedBehindTheReleaseLeavesItsRestOneWake(t *testing.T) {
 	}
 }
 
+// The rest's wake job runs after an action and a re-rest were recorded. The
+// kept-back rest is measured from when its wake was queued, not from when
+// the job ran, so the release sees the action and leaves the re-rest to its
+// own wake.
+func TestAKeptBackRestIsMeasuredFromWhenItsWakeWasQueued(t *testing.T) {
+	f := newHoldFixture(t)
+	hold := f.service.HoldRestWake(f.item.ID, f.thread)
+	unblock := f.block()
+	f.emit(engine.StateRunning) // the rest; its wake job waits
+	hold.Release(nil)
+	f.move(engine.StateRunning, "")
+	f.move(engine.StateNeedsHuman, engine.ReasonGate)
+	unblock()
+	if f.wakes() != 1 {
+		t.Fatalf("the re-rest delivered %d wakes, want 1", f.wakes())
+	}
+}
+
 // A rest named without the cursor it was read at cannot be shown to be the
 // run's current one, so it is not taken as delivered.
 func TestARestWithoutAReadPointIsNotDelivered(t *testing.T) {
@@ -440,7 +458,7 @@ func (f *holdFixture) keepWithClaim(claim store.WorkflowProviderUsageAttentionCl
 	done := make(chan struct{})
 	f.service.wake.Go(func() {
 		defer close(done)
-		if !f.service.afterWorkflowResting(item, &claim) {
+		if !f.service.afterWorkflowResting(item, &claim, f.service.watch.Head()) {
 			f.t.Error("a kept-back rest was reported undelivered")
 		}
 	})

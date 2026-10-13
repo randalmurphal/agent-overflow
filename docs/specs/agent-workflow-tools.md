@@ -216,7 +216,8 @@ and the wake-coalescing rule suppresses the same rest arriving after the
 call. Otherwise, when the call backgrounded, failed, was cancelled, its
 response never reached the client, or the run moved on after the read, a
 rest the hold kept back wakes the thread as it would have, unless the run
-moved after it was kept back, in which case that move's own wakes settle it.
+moved after that rest's wake was queued, in which case that move's own wakes
+settle it.
 The next rest, after the run is resumed, rerun or otherwise acted on, wakes
 the thread as usual.
 
