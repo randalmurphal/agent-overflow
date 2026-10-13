@@ -175,7 +175,13 @@ home path, the thread id, and the sentence that the agent owns the
 directory and keeps its durable state there. No layout is prescribed.
 
 Deleting the thread deletes the agent row, its loops and watches; the
-home is removed only through the row action that asks.
+home is removed only through the row action that asks. Archiving it
+cancels its loops and watches, and unarchiving re-arms none. A
+conversation transfer leaves the home on its computer: a move cancels
+the loops and watches when it begins and drops the agent row when it
+commits, so the conversation arrives as an ordinary thread, and a copy
+is an ordinary thread while the original keeps its row and schedules.
+The transfer dialog says so before the user commits (`GetStandingAgent`).
 
 ### Sidebar
 
@@ -242,10 +248,13 @@ CREATE TABLE agent_wakes (
     command          TEXT NOT NULL DEFAULT '',
     cwd              TEXT NOT NULL DEFAULT '',
     interval_seconds INTEGER,
+    timeout_seconds  INTEGER,
     long_running     INTEGER NOT NULL DEFAULT 0 CHECK(long_running IN (0,1)),
     next_at          INTEGER,
     last_run_at      INTEGER,
     last_outcome     TEXT NOT NULL DEFAULT '',
+    last_output      TEXT NOT NULL DEFAULT '',
+    undelivered      TEXT NOT NULL DEFAULT '',
     missed           INTEGER NOT NULL DEFAULT 0,
     state            TEXT NOT NULL CHECK(state IN ('armed','running','cancelled')),
     created_at       INTEGER NOT NULL
@@ -259,20 +268,117 @@ Kinds:
   register one; it is not limited to standing agents.
 - `watch`: runs `command` in `cwd` (default: the thread's workspace)
   with the agent's home in `AO_AGENT_HOME`. Interval mode runs it every
-  `interval_seconds` and wakes the thread when stdout is non-empty.
-  Long-running mode keeps it running and wakes the thread once per
-  stdout line, batching lines that arrive within one second. Stderr is
-  captured and shown with the wake; a non-zero exit is an outcome, not
-  a wake, and shows as an error on the row. Watches are limited to
-  standing agents.
+  `interval_seconds` and wakes the thread when stdout is non-empty; a
+  run longer than the watch's `timeout_seconds` is stopped with its
+  process group and recorded as timed out. Long-running mode keeps it
+  running and wakes the thread once per stdout line, batching lines
+  that arrive within one second. Stderr is captured and shown with the
+  wake; a non-zero exit is an outcome, not a wake, and shows as an
+  error on the row. Watches are limited to standing agents. Demotion
+  cancels a thread's watches and keeps its loops.
+
+Limits, enforced at registration:
+
+- An interval is at least 60 seconds and at most 30 days.
+- A thread keeps at most 64 live loops and watches together.
+- An interval watch's `timeout_seconds` defaults to 600 and is at most
+  3600; a long-running watch has none.
+- A wake carries at most 64 KiB of data and names the bytes it dropped.
 
 Delivery queues the wake into the thread's message queue through the
 path `thread_remind` uses today, so a thread with no live session starts
-one headless. The queued message is badged with the wake's kind and
-label, wrapped as untrusted text with a stated byte cap (64 KiB, with
-the dropped byte count named when it truncates), and carries no
-approval or user authority. A wake delivered while a turn is open waits
-for the turn, as a `thread_send` does.
+one headless. A wake is delivered once it is queued: the queue write
+never waits on the thread's action lock or on a session start, and the
+start runs after it. A start that fails leaves an error row and the
+wake queued for the next start, and raises an error notification
+naming the thread (`session-start:<thread>`), which the thread's next
+successful session start withdraws, after a restart too: the thread is
+marked in `session_start_failures` until then. Every message the app queues for someone else
+and starts a session for (a wake, an outside send, a reminder or an
+answer, a remote job's completion, a worker's prompt) does the same.
+The notification is raised once per run of failed starts. A failed
+start does not stall a loop or watch: each later fire that finds its
+previous wake still queued with no live session tries the start again,
+no sooner than half the 60-second floor after the last try, and writes
+no further row while the start keeps failing. When the start succeeds,
+the waiting wake and the new one are both delivered. Archiving a thread
+takes its queued wakes, outside sends and workers' prompts back out of
+the queue, and cancelling a loop or watch (by label, by demotion or by
+a move) takes back its queued wakes, whether or not a session is live,
+so no later start delivers them; a message a session has already taken
+is the session's. A message that could not be taken back is reported to
+the caller. A remote job's queued completion goes back to its watch
+instead and arrives once the thread is unarchived
+([remote-commands.md](../architecture/remote-commands.md)). A thread
+request's queued answer or reminder goes back to its request, owed and
+disarmed, as the archive leaves the thread's undelivered requests
+([agent-thread-tools.md](agent-thread-tools.md)). A person's Stop or a
+revert drops the whole queue, and returns these two kinds the same way
+once the queue is gone: an answer or reminder to its request, owed and
+disarmed, so `thread_status` still returns it; a remote job's
+completion to its watch, whose watcher delivers it again and starts the
+session for it, as for a completion that finishes after the Stop. A
+Stop does not quiet later wakes. A session that ends, or a Codex resend
+that fails, without taking in such an answer or completion, and a
+restart that finds one still queued, return it the same way; none goes
+to the composer. A Stop and a revert drop the queue under the thread's
+mutation lock, which every queue write takes, so a message queued
+during the drop is either dropped with it or queued after it.
+An archived thread takes none of these messages and starts no session
+for them: one that arrives after the archive is refused back to what
+sent it, and one queued just before it waits, without a start, for the
+archive to take it back. A person's answers to an agent's questions are
+the exception, as anything they type into an archived thread is.
+The queued message is badged with the wake's kind and
+label, wrapped as untrusted text with the byte cap above, and carries
+no approval or user authority. The timeline and the send queue show its
+quoted data decoded; the agent reads it escaped. A wake that arrives
+while a turn is open is delivered like a reminder: on Claude it is
+queued to the CLI, which takes it in at its next step or as a turn of
+its own after the current one, and on Codex it is steered into the
+running turn.
+
+A turn is a tick when only wakes started it. Whether a turn was a tick
+is read from the rows of the turn that ended; a Claude wake the CLI
+runs as a turn of its own keeps its row in the turn it was queued
+during, so that pickup turn is a tick when everything it was waiting
+on was a wake. A tick raises no notification at rest unless the agent's
+`notify_on_tick` is on (`SetStandingAgentNotifyOnTick`); a failed tick
+notifies.
+
+A wake that never reaches the agent is not put in the person's
+composer: a loop or watch wake still queued at boot, or left
+unconfirmed by a session that ended, is discarded and its row records
+`not delivered`. A watch keeps that wake's data as `last_output`
+(capped at 64 KiB), which `thread_status` shows, so the agent can
+recover the event at its next wake; a loop needs nothing beyond the
+row. An outside `thread send` message is handled the same way, with a
+`not delivered` row in the thread's timeline; so is one a Stop, an
+archive or a revert takes out of the queue. When Claude
+received a wake or an outside send joined with a person's queued
+message and the session ended before taking it in, the join is split:
+the person's own text goes back to the composer, and the wake and send
+parts are discarded with their `not delivered` records, the watch
+keeping only its own wake's data. The dispatch that joins the messages
+records each one's length, which splits the join exactly; an answer's
+or a completion's text can hold the separator the join puts between
+messages, so the first-line split older joins use refuses those and
+restores all of the text, giving the answer and completion back too.
+An outside send's and a wake's text then go to the composer whole with
+the person's, and the send leaves no `not delivered` notice: its text is
+in front of the person, and a notice would invite sending it twice.
+These records, notices and give-backs are written once the person's text
+is back in the composer; a composer write that fails queues every
+message again whole, and none of them is recorded.
+
+Other than that retry, a fire whose previous wake is still queued is
+skipped and counted missed, and its output is kept the same way. The outcome of the latest
+wake that did not reach the agent stays on the row as `undelivered`,
+with the fires a skip missed, until a later wake of the row reaches
+the queue: that wake says the previous one did not reach the agent
+and counts the missed fires. A run that wakes nothing, such as a watch
+run with no output or a failed one, records its own `last_outcome`
+and leaves them.
 
 Restart rules:
 
@@ -303,16 +409,19 @@ Thread tools:
   per thread; registering the same label replaces the interval; `stop`
   cancels. Returns the next fire time.
 - `thread_watch {label, command, every_seconds | long_running, cwd?,
-  stop}`: standing agents only; an ordinary thread is refused with the
-  reason. One watch per label.
+  timeout_seconds?, stop}`: standing agents only; an ordinary thread
+  is refused with the reason. One watch per label.
 - `thread_status` lists the caller's loops and watches with next fire,
-  last outcome and missed count alongside its open requests.
+  last outcome, the outcome and output of a wake that has not reached
+  the thread, and missed count alongside its open requests.
 - `thread_cancel` by label cancels a loop or watch.
 
 An outside poke, `agent-overflow thread send <thread-id> <text>`, queues
 a message to a local thread through the same badged, untrusted path, for
 scripts run by anything other than the supervisor. It is a CLI verb
-because its caller is not a session.
+because its caller is not a session. It returns once the message is
+queued, printing its send id, and never waits for a session start. It
+refuses an archived thread and a thread that is not on this computer.
 
 ### Activity rail
 

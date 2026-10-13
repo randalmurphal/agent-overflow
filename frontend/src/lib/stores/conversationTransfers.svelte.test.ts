@@ -164,3 +164,32 @@ it('reports a failed recurring-job check and stays quiet for a source without th
   expect(pendingConversationTransfer()?.recurringJobs).toBeUndefined();
   expect(pendingConversationTransfer()?.recurringJobsError).toBeUndefined();
 });
+
+it('asks the source whether the conversation is a standing agent when the dialog opens', async () => {
+  const get = setBindingMock('GetStandingAgent', async (threadId: string) => {
+    expect(takePinnedBackend()).toBe('tower');
+    return threadId === thread.id ? { threadId, home: '/agents/conversation', notifyOnTick: false, promotedAt: 1 } : null;
+  });
+  openConversationTransfer(thread);
+  await tick();
+  expect(get).toHaveBeenCalledTimes(1);
+  expect(pendingConversationTransfer()?.standingAgent).toBe(true);
+
+  setBindingMock('GetStandingAgent', async () => { takePinnedBackend(); return null; });
+  openConversationTransfer(makeThread({ id: 'ordinary', projectId: 'project-source' }));
+  await tick();
+  expect(pendingConversationTransfer()?.standingAgent).toBe(false);
+});
+
+it('reports a failed standing-agent check and stays quiet for a source without the method', async () => {
+  setBindingMock('GetStandingAgent', async () => { throw new Error('Database is locked'); });
+  openConversationTransfer(thread);
+  await tick();
+  expect(pendingConversationTransfer()?.standingAgentError).toContain('Database is locked');
+
+  setBindingMock('GetStandingAgent', async () => { throw new TransportError('method_not_found', 'unknown method'); });
+  openConversationTransfer(thread);
+  await tick();
+  expect(pendingConversationTransfer()?.standingAgent).toBeUndefined();
+  expect(pendingConversationTransfer()?.standingAgentError).toBeUndefined();
+});

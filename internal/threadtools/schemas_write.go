@@ -115,10 +115,22 @@ func askSchema(shape Shape) map[string]any {
 
 func replySchema() map[string]any {
 	properties := map[string]any{
-		"token": map[string]any{"type": "string", "description": "The token from the \"Agent request\" footer of the message you are answering. It resolves to one pending request on this computer; a token from anywhere else is refused."},
-		"text":  map[string]any{"type": "string", "minLength": 1, "description": "Your answer. The sender sees only this text and none of your thread, so make it self-contained."},
+		"token": map[string]any{"type": "string", "description": "The token from the \"Agent request\" footer of the message you are answering, or from a worker's question or approval that woke you. It resolves to one pending request on this computer; a token from anywhere else is refused."},
+		"text":  map[string]any{"type": "string", "minLength": 1, "description": "Your answer. The sender sees only this text and none of your thread, so make it self-contained. For a worker's question with one part this is the answer it receives; for a worker's approval it is your reason, kept with your decision."},
+		"decision": map[string]any{
+			"type":        "string",
+			"enum":        []string{DecisionAllow, DecisionDeny},
+			"description": "Only for a worker's approval: allow runs what it asked to run, deny refuses it.",
+		},
+		"answers": map[string]any{
+			"type":        "array",
+			"items":       map[string]any{"type": "string", "minLength": 1},
+			"minItems":    1,
+			"maxItems":    MaxReplyAnswers,
+			"description": "Only for a worker's question with several parts: one answer per part, in the order the wake lists them. text is then not sent to the worker.",
+		},
 	}
-	description := "Answer the agent in another thread that sent you a message. Call it once, when an answer is due. One reply per token: a retry with the same token and the same text returns the existing acceptance, a different second reply is refused, and an unknown token is an error. If you end your turn without replying, the sender receives your final text marked as not a reply, and a reply after that still reaches it as a follow-up. Your reply is stored where you are, so it succeeds even when the sender's computer is unreachable right now."
+	description := "Answer the agent in another thread that sent you a message, or a worker of yours that is waiting on your answer to its question or approval. Call it once, when an answer is due. One reply per token: a retry with the same token and the same text returns the existing acceptance, a different second reply is refused, and an unknown token is an error. If you end your turn without replying, the sender receives your final text marked as not a reply, and a reply after that still reaches it as a follow-up. Your reply is stored where you are, so it succeeds even when the sender's computer is unreachable right now. A worker's prompt is answered in the worker at once; if the user answered it there first, the reply is refused."
 	return tool("thread_reply", description, properties, "token", "text")
 }
 
@@ -160,7 +172,7 @@ func statusSchema() map[string]any {
 		"to_file": map[string]any{"type": "boolean", "default": false, "description": "Write a single request's whole answer to a file and return its path instead of inline text. Requires exactly one token."},
 		"cursor":  map[string]any{"type": "string", "description": "Opaque cursor from a previous thread_status result, passed back unchanged to continue a long answer or a listing."},
 	}
-	description := "Re-attach to the requests this thread made, or watch any thread. With tokens it returns each request's state (unconfirmed, accepted, running, blocked, replied, finished, errored, cancelled, interrupted, expired or refused), the target, the answer kind (reply, final, error or note) and the answer. With thread_ids it returns those threads' live states, so you can wait for a thread the user is running without having sent it anything. With neither it lists this thread's requests, open ones first then newest first, which is how you recover your tokens after losing context. An answer collected here IS the delivery, so no message is queued for it; a message already queued still lands and the reply says so. The answer stays available for the request's lifetime even after the thread that wrote it is gone."
+	description := "Re-attach to the requests this thread made, or watch any thread. With tokens it returns each request's state (unconfirmed, accepted, running, blocked, replied, finished, errored, cancelled, interrupted, expired or refused), the target, the answer kind (reply, final, error or note) and the answer. With thread_ids it returns those threads' live states, so you can wait for a thread the user is running without having sent it anything. With neither it lists this thread's requests, open ones first then newest first, which is how you recover your tokens after losing context, and this thread's loops and watches with their next fire, last outcome and missed count. An answer collected here IS the delivery, so no message is queued for it; a message already queued still lands and the reply says so. The answer stays available for the request's lifetime even after the thread that wrote it is gone."
 	return tool("thread_status", description, properties)
 }
 
@@ -168,9 +180,10 @@ func cancelSchema(shape Shape) map[string]any {
 	properties := map[string]any{
 		"token":     map[string]any{"type": "string", "description": "Cancel this request of yours: a message still queued is removed from the queue, a turn that request's message started is interrupted, a reminder is dropped. A turn the user or another request started is never interrupted through a token."},
 		"thread_id": map[string]any{"type": "string", "description": "Interrupt this thread's running turn. Allowed only for a thread you spawned, sent to or asked; any other thread is refused."},
+		"label":     map[string]any{"type": "string", "description": "Stop this thread's loop or watch with this label: it will not fire or run again, and a long-running watch's process is stopped."},
 	}
 	computerIDProperty(shape, properties, "the thread")
-	description := "Stop work you started. Pass exactly one of token or thread_id. This interrupts, it never reverts: nothing a thread already did is undone. A cancelled request settles cancelled and its answer, if any, is what it had at the time."
+	description := "Stop work you started. Pass exactly one of token, thread_id or label. This interrupts, it never reverts: nothing a thread already did is undone. A cancelled request settles cancelled and its answer, if any, is what it had at the time."
 	return tool("thread_cancel", description, properties)
 }
 

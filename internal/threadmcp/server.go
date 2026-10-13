@@ -54,6 +54,10 @@ type Server[T any] struct {
 	// broadcast on mu when a count reaches zero.
 	requests     map[string]int
 	requestsDone sync.Cond
+	// finalFlushedForTest, when set, runs after a call's response has been
+	// flushed and before its after-response work, so a test can hold the
+	// call there while the client reads the answer and hangs up.
+	finalFlushedForTest func()
 }
 
 // capability is what one token grants: the thread it acts for, the provider
@@ -294,39 +298,58 @@ var callKeepaliveInterval = 15 * time.Second
 // byte of the response has been written and flushed. On the streamed path
 // the handler's body reaches the socket in finish and not before, so a
 // handler that ran its own after-response work inline would run it while
-// its answer was still in a buffer.
+// its answer was still in a buffer. The response counts as delivered when
+// the client was still connected as each part of it began to go out and
+// every write and the flush succeeded. The context is not read afterwards: a
+// client that hangs up once it holds the answer has received it, and the
+// server can notice that hang-up before this line runs.
 func (s *Server[T]) serveCall(w http.ResponseWriter, r *http.Request, req Request, access T) {
 	ctx, hook := withAfterResponse(r.Context())
 	flusher, ok := w.(http.Flusher)
 	if !ok || !acceptsEventStream(r.Header.Get("Accept")) {
-		tracked := &trackedWriter{ResponseWriter: w}
+		tracked := &trackedWriter{ResponseWriter: w, ctx: r.Context()}
 		s.call(tracked, ctx, req, access)
 		if ok {
-			flusher.Flush()
+			tracked.note(http.NewResponseController(w).Flush())
 		}
-		hook.run(tracked.err == nil && r.Context().Err() == nil)
+		if s.finalFlushedForTest != nil {
+			s.finalFlushedForTest()
+		}
+		hook.run(tracked.err == nil)
 		return
 	}
 	stream := newCallStream(r.Context(), w, flusher)
 	s.call(stream, ctx, req, access)
 	err := stream.finish(req.ID)
-	hook.run(err == nil && r.Context().Err() == nil)
+	if s.finalFlushedForTest != nil {
+		s.finalFlushedForTest()
+	}
+	hook.run(err == nil)
 }
 
-// trackedWriter remembers whether the response actually went out. net/http
-// buffers, so a write error is the only thing this side can observe about a
-// client that is no longer there.
+// trackedWriter remembers whether the response went out to a client that was
+// still there. A client gone before a write begins cannot hold what that
+// write carries, so the request context is read as each write begins. net/http
+// buffers, and a write into a socket whose peer has just left can succeed, so
+// a write or flush error is the other half of what this side can observe.
 type trackedWriter struct {
 	http.ResponseWriter
+	ctx context.Context
 	err error
 }
 
 func (t *trackedWriter) Write(p []byte) (int, error) {
+	t.note(t.ctx.Err())
 	n, err := t.ResponseWriter.Write(p)
+	t.note(err)
+	return n, err
+}
+
+// note keeps the first failure.
+func (t *trackedWriter) note(err error) {
 	if err != nil && t.err == nil {
 		t.err = err
 	}
-	return n, err
 }
 
 // afterResponse collects the work one call deferred until its response has
@@ -395,6 +418,7 @@ func acceptsEventStream(accept string) bool {
 // buffered and sent as the final event. Writes to the underlying connection
 // are serialized so a keepalive never lands inside the final event.
 type callStream struct {
+	ctx     context.Context
 	w       http.ResponseWriter
 	flusher http.Flusher
 	header  http.Header
@@ -405,17 +429,17 @@ type callStream struct {
 }
 
 func newCallStream(ctx context.Context, w http.ResponseWriter, flusher http.Flusher) *callStream {
-	c := &callStream{w: w, flusher: flusher, header: make(http.Header), stop: make(chan struct{}), done: make(chan struct{})}
+	c := &callStream{ctx: ctx, w: w, flusher: flusher, header: make(http.Header), stop: make(chan struct{}), done: make(chan struct{})}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	c.keepalive()
-	go c.run(ctx)
+	go c.run()
 	return c
 }
 
-func (c *callStream) run(ctx context.Context) {
+func (c *callStream) run() {
 	defer close(c.done)
 	ticker := time.NewTicker(callKeepaliveInterval)
 	defer ticker.Stop()
@@ -423,7 +447,7 @@ func (c *callStream) run(ctx context.Context) {
 		select {
 		case <-c.stop:
 			return
-		case <-ctx.Done():
+		case <-c.ctx.Done():
 			// The client is gone; the handler still runs to completion
 			// under its own context and finish writes into the void.
 			return
@@ -450,8 +474,10 @@ func (c *callStream) Write(p []byte) (int, error) { return c.body.Write(p) }
 // event. A handler that wrote nothing would leave the client waiting for a
 // reply that never comes, so that becomes a JSON-RPC error instead.
 //
-// It reports the first write failure, which is what tells the caller the
-// response never left this computer.
+// It reports a client that was gone before the event began, or the first
+// write or flush failure, which is what tells the caller the response never
+// reached the client. A client that hangs up after the event has gone out
+// may already hold it, so the context is read only before the first byte.
 func (c *callStream) finish(id json.RawMessage) error {
 	close(c.stop)
 	<-c.done
@@ -461,7 +487,7 @@ func (c *callStream) finish(id json.RawMessage) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var failure error
+	failure := c.ctx.Err()
 	send := func(_ int, err error) {
 		if err != nil && failure == nil {
 			failure = err
@@ -482,7 +508,7 @@ func (c *callStream) finish(id json.RawMessage) error {
 		rest = remainder
 	}
 	send(io.WriteString(c.w, "\n"))
-	c.flusher.Flush()
+	send(0, http.NewResponseController(c.w).Flush())
 	return failure
 }
 

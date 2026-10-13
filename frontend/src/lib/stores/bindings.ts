@@ -43,6 +43,7 @@ export {
   ForkThreadFromMessage,
   ForkSideChat,
   PromoteScratchThread,
+  GetStandingAgent,
   BeginThreadTransfer,
   GetThreadTransferDestinationProject,
   BindThreadTransferDestination,

@@ -80,6 +80,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2725195951: 'home', // DeleteSoundFile
 	1186337974: 'thread', // DeleteThread
 	4104302889: 'home', // DeleteThreadGroup
+	2416251970: 'thread', // DemoteStandingAgent
 	604263015: 'home', // DevicePairingStatus
 	1061100039: 'selected', // DisallowPreviewPort
 	2309612888: 'selected', // DiscardUnpreparedThreadTransfer
@@ -137,6 +138,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2554697378: 'home', // GetSettings
 	3138117849: 'home', // GetSoundFiles
 	2622552651: 'home', // GetSpinnerFiles
+	634025932: 'thread', // GetStandingAgent
 	2329592604: 'home', // GetTerminalReplay
 	2000462111: 'home', // GetThemeFiles
 	1098302047: 'thread', // GetThread
@@ -267,6 +269,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2614227175: 'home', // ProbeCodexAccount
 	2575010484: 'project', // ProjectDeletionPreview
 	4079123887: 'thread', // PromoteScratchThread
+	3186469152: 'thread', // PromoteStandingAgent
 	1393518281: 'thread', // ProviderTerminalAttach
 	2584141779: 'thread', // ProviderTerminalDetach
 	1783659784: 'thread', // ProviderTerminalInput
@@ -342,6 +345,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3644945077: 'all', // SearchThreadMessages
 	3852272821: 'workspace', // SearchWorkspaceFiles
 	2317109106: 'thread', // SendDiffReviewComments
+	2956817699: 'thread', // SendExternalThreadMessage
 	1496882310: 'thread', // SendMessage
 	3632185196: 'thread', // SendMessageWithOptions
 	1407159655: 'thread', // SendPlanRevisionComments
@@ -358,6 +362,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	322092470: 'project', // SetProjectWorktreeSetup
 	2118904465: 'home', // SetProviderCustomEnvVar
 	719170063: 'home', // SetPushSenderCredential
+	2532132305: 'thread', // SetStandingAgentNotifyOnTick
 	2514763466: 'home', // SetThreadGroup
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup

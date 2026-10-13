@@ -21,6 +21,8 @@ export type ProviderName = 'claude' | 'codex';
 /** One tool call a turn makes. */
 export interface ToolCall {
   tool: string;
+  /** The built-in MCP server to call; ao-thread-tools when omitted. */
+  server?: string;
   args?: Record<string, unknown>;
   toolUseId?: string;
   /** Bounds the HTTP call. A parked wait needs its own value. */
@@ -37,6 +39,8 @@ export type TurnStep =
   | { gate: string }
   /** Ask the app for a decision and branch on it. */
   | { approval: ApprovalRequest }
+  /** Claude: take input held under `holdQueuedInput` into the running turn. */
+  | { drainQueuedInput: true }
   | { delayMs: number };
 
 /** One provider approval a turn raises, with the branches it takes. */
@@ -54,6 +58,10 @@ export interface ScriptedTurn {
   steps?: TurnStep[];
   /** Final assistant text. Empty keeps the turn silent but complete. */
   text?: string;
+  /** Overrides the scenario's echoUserMessage for this turn. */
+  echo?: boolean;
+  /** Ends the turn failed with this provider error instead of with `text`. */
+  fail?: string;
 }
 
 /**
@@ -101,12 +109,22 @@ function codexTurnLines(text: string): string[] {
   return lines;
 }
 
+/** The provider's frames for a turn that ends failed. */
+function failedTurnLines(provider: ProviderName, message: string): string[] {
+  if (provider === 'claude') {
+    return [`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":[${jsonString(message)}]}`];
+  }
+  return [
+    `{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"\${THREAD_ID}","turn":{"id":"\${TURN_ID}","status":"failed","error":{"message":${jsonString(message)}}}}}`,
+  ];
+}
+
 function stepJSON(step: TurnStep): Record<string, unknown> {
   if ('call' in step) {
-    const { tool, args, toolUseId, timeoutMs } = step.call;
+    const { tool, server, args, toolUseId, timeoutMs } = step.call;
     return {
       mcpCall: {
-        server: THREAD_TOOLS_SERVER,
+        server: server ?? THREAD_TOOLS_SERVER,
         tool,
         args: args ?? {},
         ...(toolUseId ? { toolUseId } : {}),
@@ -140,6 +158,7 @@ function stepJSON(step: TurnStep): Record<string, unknown> {
     };
   }
   if ('emitLines' in step) return { emit: { lines: step.emitLines } };
+  if ('drainQueuedInput' in step) return { drainQueuedInput: true };
   return { delayMs: step.delayMs };
 }
 
@@ -155,21 +174,37 @@ export function threadToolsScenario(opts: {
   provider: ProviderName;
   turns: ScriptedTurn[];
   afterTurns?: 'repeatLast' | 'silent' | 'exit';
+  /**
+   * Codex: echo the turn's `userMessage` item with the caller's client id,
+   * as a real app-server does for every turn. A queued message (a wake, a
+   * reply) persists its row only on that echo. Claude's mock echoes on its
+   * own.
+   */
+  echoUserMessage?: boolean;
 }): Record<string, unknown> {
   const turns = opts.turns.map((turn, index) => {
     const steps: Array<Record<string, unknown>> = [];
     if (opts.provider === 'codex') {
-      steps.push({
-        emit: {
-          lines: [
-            '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}',
-          ],
-        },
-      });
+      const lines = [
+        '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}',
+      ];
+      // The echo's text is a placeholder: the app keys a queued message's
+      // row on the client id and keeps its own text.
+      if (turn.echo ?? opts.echoUserMessage) {
+        lines.push(
+          '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"type":"userMessage","id":"user-${TURN}","clientId":"${CLIENT_ID}","content":[{"type":"text","text":"echo"}]}}}',
+        );
+      }
+      steps.push({ emit: { lines } });
     }
     for (const step of turn.steps ?? []) steps.push(stepJSON(step));
     const text = turn.text ?? '';
-    const lines = opts.provider === 'claude' ? claudeTurnLines(text) : codexTurnLines(text);
+    const lines =
+      turn.fail !== undefined
+        ? failedTurnLines(opts.provider, turn.fail)
+        : opts.provider === 'claude'
+          ? claudeTurnLines(text)
+          : codexTurnLines(text);
     steps.push({ emit: { lines } });
     return { label: `${opts.name}-${index + 1}`, steps };
   });

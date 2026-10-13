@@ -18,10 +18,18 @@ type Server struct {
 	// now is the clock thread_remind resolves after_seconds against.
 	// Tests replace it; nothing else does.
 	now func() time.Time
+	// wakeFloor is the shortest interval thread_loop and thread_watch
+	// accept, in seconds: WakeFloorSeconds unless a test boot lowered it
+	// (SetWakeFloor).
+	wakeFloor int
 }
 
 // New returns a server over app.
-func New(app App) *Server { return &Server{app: app, now: time.Now} }
+func New(app App) *Server { return &Server{app: app, now: time.Now, wakeFloor: WakeFloorSeconds} }
+
+// SetWakeFloor lowers the shortest loop and watch interval for a test boot,
+// whose App enforces the same floor. Call it before the server serves.
+func (s *Server) SetWakeFloor(seconds int) { s.wakeFloor = max(seconds, 1) }
 
 // Call runs one tool for one calling thread and returns the result value
 // the transport marshals. Every error it returns is public: the code and
@@ -64,7 +72,7 @@ func (s *Server) call(ctx context.Context, caller Caller, name string, args json
 	// because a forwarded call names the thread it came from and the App
 	// interface's Peer takes nothing but a context.
 	ctx = WithCaller(ctx, caller)
-	call := &session{app: s.app, caller: caller, computers: computers, now: s.now}
+	call := &session{app: s.app, caller: caller, computers: computers, now: s.now, wakeFloor: s.wakeFloor}
 	switch name {
 	case "thread_search":
 		return call.search(ctx, args)
@@ -92,6 +100,10 @@ func (s *Server) call(ctx context.Context, caller Caller, name string, args json
 		return call.group(ctx, args)
 	case "thread_remind":
 		return call.remind(ctx, args)
+	case "thread_loop":
+		return call.loop(ctx, args)
+	case "thread_watch":
+		return call.watch(ctx, args)
 	default:
 		return nil, invalidf("There is no tool named %q. The thread tools are: %s.", name, joinNames(ToolNames))
 	}
@@ -139,6 +151,7 @@ type session struct {
 	caller    Caller
 	computers []Computer
 	now       func() time.Time
+	wakeFloor int
 }
 
 func (c *session) paired() bool { return len(c.computers) > 0 }

@@ -94,6 +94,7 @@ func (r *Router) handleUserInputRequest(evt provider.ProviderEvent) error {
 		})
 	}
 
+	request.RoutedTo = r.routePrompt(evt.ThreadID)
 	r.setPendingUserInput(evt.ThreadID, request)
 	// User-input requests are a sidebar-bump boundary alongside
 	// user_text persist and turn settle: the agent is paused waiting

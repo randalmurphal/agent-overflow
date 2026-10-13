@@ -334,7 +334,9 @@ type WriteFileStep struct {
 // emits the tool_use + tool_result frames; OnDeny a denial result.
 type ApprovalStep struct {
 	// ToolName/Input shape the CanUseTool request (Claude) or the
-	// command approval (Codex).
+	// command approval (Codex). ToolName AskUserQuestion with
+	// input.questions asks a question on either provider: Claude's
+	// CanUseTool for that tool, Codex's item/tool/requestUserInput.
 	ToolName string          `json:"toolName"`
 	Input    json.RawMessage `json:"input,omitempty"`
 	// ToolUseID/AgentID are the Claude-only correlation fields the real

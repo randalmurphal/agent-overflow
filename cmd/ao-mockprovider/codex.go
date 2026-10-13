@@ -31,7 +31,7 @@ type codexAdapter struct {
 	responses map[string]string // method → full response template
 
 	mu          sync.Mutex
-	waiters     map[int64]chan bool // approval rpc id → decision
+	waiters     map[int64]chan approvalAnswer // approval rpc id → decision
 	approvalSeq atomic.Int64
 	// forkSeq numbers `thread/fork` answers so two forks of the same
 	// mock thread never claim the same id.
@@ -48,6 +48,9 @@ type codexAdapter struct {
 	// steerSeq numbers the `userMessage` echo each `turn/steer` produces, so
 	// several steers inside one turn never share an item id.
 	steerSeq atomic.Int64
+	// endedTurn is the id of the turn whose turn/completed was last
+	// written. Guarded by the writer's lock (noteTurnEnd).
+	endedTurn string
 	// historyMode is the thread's persisted history contract
 	// ("legacy" / "paginated"), decided at thread/start and merely echoed
 	// on thread/resume. It gates `thread/revert`. See codex_revert.go.
@@ -133,10 +136,11 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 		e:         e,
 		w:         w,
 		responses: responses,
-		waiters:   make(map[int64]chan bool),
+		waiters:   make(map[int64]chan approvalAnswer),
 		forkTurns: make(map[string][]string),
 	}
 	a.approvalSeq.Store(codexApprovalIDBase)
+	w.onLine(a.noteTurnEnd)
 	return a
 }
 
@@ -245,19 +249,37 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		a.respond(id, method, vars)
 		a.e.enqueueTurn(n)
 	case "turn/steer":
+		// Upstream refuses a steer once the turn it would join has ended
+		// (SteerInputError::NoActiveTurn, -32600), and the app answers that
+		// race by opening a fresh turn. The turn has ended once its
+		// turn/completed is on the wire, so the check and the lines it leads
+		// to are written under the writer's lock: an accepted steer's echo
+		// always precedes its turn's completion.
+		turn, vars, live := a.e.currentTurn(), a.e.currentVars(), a.e.turnLive()
+		expected := readParamString(params, "expectedTurnId")
+		accepted := false
+		a.w.locked(func(write func(string)) {
+			if !live || expected == a.endedTurn {
+				write(rpcErrorLine(id, -32600, "no active turn to steer"))
+				return
+			}
+			write(a.responseLine(id, method, vars))
+			write(steeredUserMessageLine(params, vars, a.steerSeq.Add(1)))
+			accepted = true
+		})
+		if !accepted {
+			return
+		}
 		// A steer is user text reaching the provider mid-turn. It reports on
 		// the same surface as a turn/start's input — a test asserting what the
 		// provider received must not have to know which path the app took —
 		// and carries the already-running turn's number, because a steer
 		// starts no scenario turn of its own. The response template stays the
 		// generic empty result the default branch would have produced.
-		turn, vars := a.e.currentTurn(), a.e.currentVars()
 		a.e.rep.report(control.Report{
 			Kind: control.ReportUserInput, Turn: turn,
 			Input: codexInputText(params), SessionRef: vars["THREAD_ID"],
 		})
-		a.respond(id, method, vars)
-		a.emitSteeredUserMessage(params, vars)
 	case "thread/fork":
 		a.forkThread(id, params)
 	case "thread/revert":
@@ -489,11 +511,33 @@ func (a *codexAdapter) writeRPCResult(id json.RawMessage, result string) {
 }
 
 func (a *codexAdapter) writeRPCError(id json.RawMessage, code int, message string) {
-	a.w.writeLine(mustJSON(map[string]any{
+	a.w.writeLine(rpcErrorLine(id, code, message), 0, 0)
+}
+
+func rpcErrorLine(id json.RawMessage, code int, message string) string {
+	return mustJSON(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"error":   map[string]any{"code": code, "message": message},
-	}), 0, 0)
+	})
+}
+
+// noteTurnEnd records the turn whose turn/completed was last written. It
+// is the writer's observer, so it runs under the write lock in wire order.
+func (a *codexAdapter) noteTurnEnd(line string) {
+	if !strings.Contains(line, `"method":"turn/completed"`) {
+		return
+	}
+	var frame struct {
+		Params struct {
+			Turn struct {
+				ID string `json:"id"`
+			} `json:"turn"`
+		} `json:"params"`
+	}
+	if json.Unmarshal([]byte(line), &frame) == nil {
+		a.endedTurn = frame.Params.Turn.ID
+	}
 }
 
 func (a *codexAdapter) sendInterruptedTurn(vars scenario.Vars) {
@@ -510,6 +554,11 @@ func (a *codexAdapter) sendInterruptedTurn(vars scenario.Vars) {
 }
 
 func (a *codexAdapter) respond(id json.RawMessage, method string, vars scenario.Vars) {
+	a.w.writeLine(a.responseLine(id, method, vars), 0, 0)
+}
+
+// responseLine is the response respond writes.
+func (a *codexAdapter) responseLine(id json.RawMessage, method string, vars scenario.Vars) string {
 	tmpl, ok := a.responses[method]
 	if !ok {
 		tmpl = `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{}}`
@@ -520,7 +569,7 @@ func (a *codexAdapter) respond(id json.RawMessage, method string, vars scenario.
 	}
 	sub["REQUEST_ID"] = string(id)
 	sub["HISTORY_MODE"] = a.currentHistoryMode()
-	a.w.writeLine(sub.Substitute(tmpl), 0, 0)
+	return sub.Substitute(tmpl)
 }
 
 // handleResponse routes an app response (to one of OUR approval
@@ -541,28 +590,33 @@ func (a *codexAdapter) handleResponse(id json.RawMessage, result, errRaw json.Ra
 		log.Printf("codex: response for unknown id %d (ignored)", rpcID)
 		return
 	}
-	ch <- codexDecisionAllows(result, errRaw)
+	ch <- approvalAnswer{allow: codexDecisionAllows(result, errRaw), response: string(result)}
 }
 
 // codexDecisionAllows interprets the app's approval answer. The normal
 // shape is {"decision":"accept"|"acceptForSession"|"decline"|"cancel"}
 // (internal/provider/codex/approval.go); permission grants use
-// {scope, permissions}; MCP elicitation uses {action}; drains arrive
+// {scope, permissions}; MCP elicitation uses {action}; a requestUserInput
+// answer is {answers}, an allow when it answers anything; drains arrive
 // as a JSON-RPC error with data.reason "turnTransition" — a deny.
 func codexDecisionAllows(result, errRaw json.RawMessage) bool {
 	if len(errRaw) > 0 && string(errRaw) != "null" {
 		return false
 	}
 	var body struct {
-		Decision string `json:"decision"`
-		Action   string `json:"action"`
-		Scope    string `json:"scope"`
+		Decision string          `json:"decision"`
+		Action   string          `json:"action"`
+		Scope    string          `json:"scope"`
+		Answers  json.RawMessage `json:"answers"`
 	}
 	if len(result) > 0 {
 		_ = json.Unmarshal(result, &body)
 	}
 	switch {
 	case strings.HasPrefix(body.Decision, "accept"):
+		return true
+	case len(body.Answers) > 0 && string(body.Answers) != "null" && string(body.Answers) != "{}":
+		// A requestUserInput answer: the question was answered.
 		return true
 	case body.Decision != "":
 		return false
@@ -577,9 +631,9 @@ func codexDecisionAllows(result, errRaw json.RawMessage) bool {
 // sendApproval emits a command-approval server request (Codex approvals
 // are requests FROM the server carrying a JSON-RPC id; the app answers
 // with a response we correlate by that id).
-func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan bool, func(bool), error) {
+func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan approvalAnswer, func(bool), error) {
 	rpcID := a.approvalSeq.Add(1)
-	ch := make(chan bool, 1)
+	ch := make(chan approvalAnswer, 1)
 	a.mu.Lock()
 	a.waiters[rpcID] = ch
 	a.mu.Unlock()
@@ -602,6 +656,25 @@ func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.V
 			"itemId":   fmt.Sprintf("approval-%d", rpcID),
 			"command":  approvalCommandString(step, vars),
 		},
+	}
+	// AskUserQuestion is Claude's question tool; on Codex the same step asks
+	// through requestUserInput with the step's questions, so one scenario
+	// raises a question on either provider.
+	if step.ToolName == "AskUserQuestion" {
+		var input struct {
+			Questions json.RawMessage `json:"questions"`
+		}
+		if err := json.Unmarshal([]byte(vars.Substitute(string(step.Input))), &input); err != nil || len(input.Questions) == 0 {
+			cancel(false)
+			return nil, nil, fmt.Errorf("AskUserQuestion step needs input.questions: %v", err)
+		}
+		msg["method"] = "item/tool/requestUserInput"
+		msg["params"] = map[string]any{
+			"threadId":  vars["THREAD_ID"],
+			"turnId":    vars["TURN_ID"],
+			"itemId":    fmt.Sprintf("question-%d", rpcID),
+			"questions": input.Questions,
+		}
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -631,8 +704,8 @@ func approvalCommandString(step *scenario.ApprovalStep, vars scenario.Vars) stri
 	return step.ToolName
 }
 
-// emitSteeredUserMessage writes the `userMessage` item a real app-server emits
-// when a steer lands in the running turn.
+// steeredUserMessageLine is the `userMessage` item a real app-server emits
+// when a steer lands in the running turn; seq numbers its item id.
 //
 // The ADAPTER owns this one, not a scenario step, for the same reason the
 // queue's dispatched echo used to be adapter-owned: the text and the
@@ -645,17 +718,17 @@ func approvalCommandString(step *scenario.ApprovalStep, vars scenario.Vars) stri
 // The item id counts steers rather than reusing the turn's, because several
 // steers can land in one turn and two items sharing an id is a shape no
 // app-server produces.
-func (a *codexAdapter) emitSteeredUserMessage(params json.RawMessage, vars scenario.Vars) {
+func steeredUserMessageLine(params json.RawMessage, vars scenario.Vars, seq int64) string {
 	item := map[string]any{
 		"type":    "userMessage",
-		"id":      fmt.Sprintf("umsg-steer-%d", a.steerSeq.Add(1)),
+		"id":      fmt.Sprintf("umsg-steer-%d", seq),
 		"status":  "completed",
 		"content": []any{map[string]any{"type": "text", "text": codexInputText(params)}},
 	}
 	if clientID := readParamString(params, "clientUserMessageId"); clientID != "" {
 		item["clientId"] = clientID
 	}
-	a.w.writeLine(mustJSON(map[string]any{
+	return mustJSON(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "item/completed",
 		"params": map[string]any{
@@ -663,7 +736,7 @@ func (a *codexAdapter) emitSteeredUserMessage(params json.RawMessage, vars scena
 			"turnId":   vars["TURN_ID"],
 			"item":     item,
 		},
-	}), 0, 0)
+	})
 }
 
 // codexInputText joins the text of a turn/start or turn/steer `input` vec in

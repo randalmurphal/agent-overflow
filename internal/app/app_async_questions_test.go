@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"agent-overflow/internal/store"
@@ -131,6 +132,36 @@ func TestAsyncAnswersRejectAnUnrelatedAcceptedSendIdentity(t *testing.T) {
 	rows, err := a.store.ListAsyncQuestions(thread.ID, "")
 	if err != nil || len(rows) != 1 || rows[0].State != "unanswered" {
 		t.Fatalf("collision changed question: %+v %v", rows, err)
+	}
+}
+
+// A person may answer in an archived thread they opened, as they may type
+// there: the archive holds only what the app writes.
+func TestAsyncAnswersReachAnArchivedThread(t *testing.T) {
+	t.Parallel()
+	a, _ := setupE2EApp(t)
+	var starts atomic.Int32
+	a.startSessionFn = func(string) error {
+		starts.Add(1)
+		return nil
+	}
+	thread, err := createTestThread(t, a, "codex", t.TempDir(), "gpt-5", threadmode.ModeChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := a.store.RecordAsyncQuestions(store.Item{ID: "question:ask", ThreadID: thread.ID, Kind: "assistant_text", Role: "assistant", Status: "completed", Meta: `{"delivery":"async","questions":[{"title":"Which?"}]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ArchiveThread(thread.ID); err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	if err := a.SubmitAsyncAnswers(context.Background(), thread.ID, "answers", []store.AsyncQuestionAnswer{{ItemID: item.ID, Index: 0, Answer: "One"}}); err != nil {
+		t.Fatalf("SubmitAsyncAnswers: %v", err)
+	}
+	a.waitAgentNoticeWork()
+	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 1 || rows[0].SendID != "answers" || starts.Load() != 1 {
+		t.Fatalf("queue %+v, %d starts; want the answers queued and one start", rows, starts.Load())
 	}
 }
 

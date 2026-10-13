@@ -326,6 +326,16 @@ func (a *App) settleThreadReceiptLocked(
 // after it, never inside it: an in-process caller runs the after-response
 // work on this same goroutine, and the lock is not reentrant.
 func (t threadToolsApp) Reply(ctx context.Context, caller threadtools.Caller, call threadtools.ReplyCall) (threadtools.ReplyAck, error) {
+	if ack, handled, err := t.app.answerWorkerPrompt(ctx, caller, call); handled {
+		if err != nil {
+			return threadtools.ReplyAck{}, err
+		}
+		return ack, nil
+	}
+	if call.Decision != "" || len(call.Answers) > 0 {
+		return threadtools.ReplyAck{}, errorsx.Public(threadtools.CodeInvalidRequest,
+			"decision and answers answer a worker's question or approval. That token is a request's: put your answer in text.", nil)
+	}
 	ack, work, err := t.replyLocked(caller, call)
 	if err != nil {
 		return threadtools.ReplyAck{}, err

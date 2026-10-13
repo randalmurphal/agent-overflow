@@ -174,8 +174,15 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'thread_requests', reason: "an agent's thread_send or thread_ask request" },
   { table: 'thread_request_receipts', reason: "an agent's thread_send or thread_ask request" },
   { table: 'async_questions', reason: "an agent's thread_ask question" },
+  {
+    table: 'agent_wakes',
+    columns: ['last_output', 'undelivered', 'missed'],
+    values: { state: ['running'] },
+    reason: "a wake that never reached the agent (last_output, undelivered), a skipped fire (missed) or a live run (state running): the top-up's one fire reaches the agent before another is due, and a run left live would keep its script running through every later boot of the corpus",
+  },
   { table: 'scratch_threads', reason: 'a side chat not yet promoted; the next boot sweeps every one, so the corpus keeps none' },
   { table: 'work_item_effects', reason: "an agent's workflow tool calls on a run" },
+  { table: 'session_start_failures', reason: "a session start that failed for a message the app queued for an agent (a wake, a remote completion, a thread request's answer); a later start that succeeds deletes it" },
 
   // Imports from a provider home.
   { table: 'import_history_items', reason: 'a provider session imported from a provider home' },

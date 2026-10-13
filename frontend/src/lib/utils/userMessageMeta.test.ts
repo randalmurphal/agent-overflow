@@ -4,6 +4,8 @@ import {
   parseUserMessageAttachments,
   parseUserMessageMeta,
   userMessageOriginThread,
+  userMessageOriginWake,
+  agentWakeOriginLabel,
 } from './userMessageMeta';
 import {
   DEFAULT_MAX_ATTACHMENT_SIZE,
@@ -151,5 +153,27 @@ describe('userMessageOriginThread', () => {
 
   it('survives meta that is not JSON at all', () => {
     expect(userMessageOriginThread(parseUserMessageMeta('{not json'))).toBeNull();
+  });
+});
+
+describe('userMessageOriginWake', () => {
+  it('reads a loop, a watch and an outside send, and labels each', () => {
+    const loop = userMessageOriginWake({ originWake: { kind: 'loop', label: 'board' } });
+    expect(loop).toEqual({ kind: 'loop', label: 'board' });
+    expect(agentWakeOriginLabel(loop!)).toBe('Loop · board');
+    const watch = userMessageOriginWake({ originWake: { kind: 'watch', label: 'mrs' } });
+    expect(agentWakeOriginLabel(watch!)).toBe('Watch · mrs');
+    const send = userMessageOriginWake({ originWake: { kind: 'send' } });
+    expect(agentWakeOriginLabel(send!)).toBe('Sent by a script');
+    const question = userMessageOriginWake({ originWake: { kind: 'question', label: 'Deploy worker', threadId: 't1' } });
+    expect(agentWakeOriginLabel(question!)).toBe('Question · Deploy worker');
+    const approval = userMessageOriginWake({ originWake: { kind: 'approval', label: 'Deploy worker' } });
+    expect(agentWakeOriginLabel(approval!)).toBe('Approval · Deploy worker');
+  });
+
+  it('refuses a kind it does not know, which is not attribution', () => {
+    expect(userMessageOriginWake({ originWake: { kind: 'cron', label: 'x' } })).toBeNull();
+    expect(userMessageOriginWake({ originWake: 'loop' })).toBeNull();
+    expect(userMessageOriginWake({})).toBeNull();
   });
 });

@@ -52,6 +52,9 @@ type fakeApp struct {
 	lists   []ListCall
 	cancels []CancelCall
 	rem     []RemindCall
+	loops   []LoopCall
+	watches []WatchCall
+	wakes   []WakeState
 	updates []UpdateCall
 	gcalls  []GroupCall
 
@@ -359,6 +362,28 @@ func (f *fakeApp) Cancel(_ context.Context, _ Caller, call CancelCall) (CancelRe
 func (f *fakeApp) Remind(_ context.Context, _ Caller, call RemindCall) (RequestAck, error) {
 	f.rem = append(f.rem, call)
 	return f.ack, nil
+}
+
+func (f *fakeApp) Loop(_ context.Context, _ Caller, call LoopCall) (WakeState, error) {
+	f.loops = append(f.loops, call)
+	return WakeState{Kind: KindLoop, Label: call.Label, State: "armed", Note: call.Note, EverySeconds: int64(call.EverySeconds)}, nil
+}
+
+func (f *fakeApp) Watch(_ context.Context, _ Caller, call WatchCall) (WakeState, error) {
+	f.watches = append(f.watches, call)
+	return WakeState{Kind: KindWatch, Label: call.Label, State: "armed", Command: call.Command, EverySeconds: int64(call.EverySeconds), LongRunning: call.LongRunning}, nil
+}
+
+func (f *fakeApp) ListWakes(context.Context, Caller) ([]WakeState, error) { return f.wakes, nil }
+
+func (f *fakeApp) CancelWake(_ context.Context, _ Caller, label, kind string) (WakeState, bool, error) {
+	for index, wake := range f.wakes {
+		if wake.Label == label && (kind == "" || wake.Kind == kind) && wake.State != "cancelled" {
+			f.wakes[index].State = "cancelled"
+			return wake, true, nil
+		}
+	}
+	return WakeState{}, false, nil
 }
 
 func (f *fakeApp) UpdateThreads(_ context.Context, _ Caller, call UpdateCall) (UpdateReport, error) {

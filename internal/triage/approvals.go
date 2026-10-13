@@ -291,6 +291,7 @@ func (r *Router) handleApprovalRequest(evt provider.ProviderEvent) error {
 
 	itemID := approvalItemID(evt, request)
 	request.ParentToolUseID = r.resolveInteractiveScope(evt, request.ParentToolUseID, itemID)
+	request.RoutedTo = r.routePrompt(evt.ThreadID)
 	r.setPendingApproval(evt.ThreadID, pendingApprovalState{
 		Request: request,
 		ItemID:  itemID,

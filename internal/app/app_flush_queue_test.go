@@ -1902,6 +1902,41 @@ func newAppForFlushQueueRPC(t *testing.T) (*App, *emitRecorder) {
 	return app, rec
 }
 
+// A Stop drops the thread's queue, the batch a dispatch already took from it
+// and is waiting on the thread's action lock to send among it. Once the
+// dispatch has the lock it sends nothing and puts nothing back, so the
+// message the Stop threw away is not delivered by the next start.
+func TestStopDropsTheBatchADispatchIsWaitingToSend(t *testing.T) {
+	t.Parallel()
+	app, _ := newAppForFlushQueueRPC(t)
+	thread := testThread("stop-waiting-batch")
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex),
+		Token:    "tok",
+		Liveness: newSessionLiveness(time.Now()),
+	})
+	unlock := app.threadLocks().Lock(thread.ID)
+	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "thrown away", SendMessageOptions{SendID: "person-send"}); err != nil {
+		unlock()
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
+	app.triage.FlushQueuedItems(thread.ID)
+	waitUntil(t, 10*time.Second, func() bool { return app.threadLocks().Refs(thread.ID) == 2 })
+	if err := app.StopSession(thread.ID); err != nil {
+		unlock()
+		t.Fatalf("StopSession: %v", err)
+	}
+	unlock()
+	app.flushDispatch.wg.Wait()
+	if durable, memory := queuedSendIDs(t, app, thread.ID); len(durable) != 0 || len(memory) != 0 {
+		t.Fatalf("after the Stop: queue %q (in memory %q), want both empty", durable, memory)
+	}
+}
+
 func TestRegisterQueueItem_AppendsAndEmitsState(t *testing.T) {
 	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
@@ -2119,6 +2154,8 @@ func TestSessionStatusErrorRestoresQueuedFlushItemsToDraft(t *testing.T) {
 			if app.triage.HasQueuedFlushItems(thread.ID) {
 				t.Fatal("queued flush items still live after handler restore")
 			}
+			// The restore writes the draft before it emits the event.
+			waitForCondition(t, "queue restored event", func() bool { return len(emittedQueueRestored(rec)) > 0 })
 			if restored := emittedQueueRestored(rec); len(restored) != 1 {
 				t.Fatalf("queue restored events = %+v, want one", restored)
 			}
@@ -3412,7 +3449,7 @@ func TestQueuePayloadFromUserItemPreservesComposerCommandProvenance(t *testing.T
 	t.Parallel()
 	raw := queuePayloadFromUserItem(store.Item{
 		Meta: `{"expandComposerCommands":true}`,
-	}, nil)
+	}, nil, nil)
 	var payload flushQueuePayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)

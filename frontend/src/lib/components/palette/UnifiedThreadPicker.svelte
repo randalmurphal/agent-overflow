@@ -6,6 +6,7 @@
   import { openThreadFromNavigation } from '../../stores/panes.svelte';
   import {
     getEffectiveThreadStatus,
+    getThreadWaitingOn,
   } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { computeHighlightSegments } from '../../utils/highlight';
@@ -179,7 +180,7 @@
           {#each hits as hit, i (hit.thread.id)}
             {@const status = getEffectiveThreadStatus(hit.thread)}
             {@const unreachableMachine = unreachableThreadMachineName(hit.thread.id, hit.thread.projectId)}
-            {@const resolvedPill = resolveThreadStatusPill(hit.thread, status)}
+            {@const resolvedPill = resolveThreadStatusPill(hit.thread, status, getThreadWaitingOn(hit.thread.id))}
             {@const statusPill = unreachableMachine !== null ? lastKnownThreadStatusPill(resolvedPill, unreachableMachine) : resolvedPill}
             {@const basename = pathBasename(hit.thread.projectPath)}
             {@const providerDefinition = getProviderDefinition(hit.thread.provider)}

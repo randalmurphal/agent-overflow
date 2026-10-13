@@ -1,11 +1,11 @@
 package app
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -29,6 +29,42 @@ func threadWakeSendIDFor(token string, late bool) string {
 		return threadWakeLateSendID(token)
 	}
 	return threadWakeSendID(token)
+}
+
+// threadWakeFromSendID reads a wake's request token back out of its send id.
+func threadWakeFromSendID(sendID string) (token string, late, ok bool) {
+	if token, ok := strings.CutPrefix(sendID, "thread-wake-late:"); ok {
+		return token, true, token != ""
+	}
+	token, ok = strings.CutPrefix(sendID, "thread-wake:")
+	return token, false, ok && token != ""
+}
+
+// withdrawHeldThreadWakes takes an archived thread's queued answers and
+// reminders back to their requests (store.WithdrawThreadWake): owed again
+// and disarmed, as a wake the archive refused at the queue write is, so
+// none reaches the agent when the thread is next started. thread_status
+// still returns each answer, and a wake re-armed by a later wait or
+// thread_status delivers it and unarchives the thread. A wake the dispatch
+// already took stays delivered.
+func (a *App) withdrawHeldThreadWakes(threadID string) error {
+	rows, err := a.store.ListFlushQueueItems(threadID)
+	if err != nil {
+		return fmt.Errorf("withdraw the queued thread wakes of %s: %w", threadID, err)
+	}
+	var errs []error
+	for _, row := range rows {
+		token, late, ok := threadWakeFromSendID(row.SendID)
+		if !ok {
+			continue
+		}
+		if _, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
+			return a.store.WithdrawThreadWake(token, late, row.ID, false)
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // deliverThreadWake puts the answer in the caller's message queue, as the
@@ -87,9 +123,7 @@ func (a *App) deliverThreadWake(token string, late bool) {
 		a.failThreadWake(token, "render the wake", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(a.lifeCtx(), threadWakeLockTimeout)
-	defer cancel()
-	if err := a.queueAgentNotice(ctx, agentNotice{
+	if err := a.queueAgentNotice(agentNotice{
 		threadID: thread.ID,
 		sendID:   threadWakeSendIDFor(token, late),
 		// The wake is a message the app wrote on the answering thread's
@@ -113,11 +147,6 @@ func (a *App) deliverThreadWake(token string, late bool) {
 	}
 }
 
-// threadWakeLockTimeout bounds the wait for the caller thread's lock. A wake
-// that cannot have it now is owed just the same, and the retry pass carries
-// it.
-const threadWakeLockTimeout = 10 * time.Second
-
 // failThreadWake records why one wake could not be handed over. The reason
 // is kept on the row, so the retry that gives up can say what stopped it and
 // a person reading the ledger can see the same thing.
@@ -134,7 +163,8 @@ func (a *App) failThreadWake(token, what string, cause error) {
 //
 // A settlement and its wake are two transactions, and the second one has ends
 // that deliver nothing: a crash between them, a caller thread that could not
-// be unarchived or locked in time, a render that failed. Nothing else revisits
+// be unarchived, a render or a queue write that failed, a tool call that held
+// the token and whose reply did not carry the answer. Nothing else revisits
 // those rows, because the pollers read open requests and this one is settled,
 // so the answer would sit in the ledger unread forever. The delivery mark is
 // conditional, so a retry of a wake that did land is a no-op.
@@ -155,14 +185,20 @@ func (a *App) retryUndeliveredThreadWakes(now time.Time) {
 		if len(owed) == 0 {
 			continue
 		}
+		if a.requestWaitActive(row.Token) {
+			// A call holding this token answers it in its reply, and its
+			// release nudges this pass if the reply did not. Booking an
+			// attempt now would push that retry out by the backoff.
+			continue
+		}
 		if row.WakeAttempts >= threadWakeRetryAttempts {
 			a.abandonThreadWake(row)
 			continue
 		}
 		attempts := row.WakeAttempts + 1
 		// Booked before the attempt: a delivery that fails, or that is
-		// still holding a lock when the next pass comes round, must not
-		// bring this row back at once.
+		// still in flight when the next pass comes round, must not bring
+		// this row back at once.
 		if err := a.store.ScheduleThreadRequestWake(row.Token,
 			now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), attempts); err != nil {
 			logThreadRequestSweep("schedule the wake retry for "+row.Token, err)

@@ -159,6 +159,52 @@ export function interactiveRequestsRevision(threadId: string): number {
 const approvalIDsByThread = new Map<string, Set<string>>();
 const awaitingInputIDsByThread = new Map<string, Set<string>>();
 const approvalThreadByID = new Map<string, string>();
+// A prompt routed to the standing agent that spawned its thread (ruling 19),
+// by request id: the agent's title. Entries leave with approvalThreadByID's.
+const routedPromptAgents = new Map<string, string>();
+// The agent a thread is waiting on: set while every open prompt of the
+// thread was routed, so the thread is not waiting on the user.
+const waitingOnAgents = createKeyedSignalRegistry<string>('');
+
+/** A prompt's route, as ApprovalRequest / UserInputRequest carry it. */
+export interface PromptRouteLike {
+  threadId: string;
+  title: string;
+}
+
+function forgetRequestOwner(requestId: string): void {
+  approvalThreadByID.delete(requestId);
+  routedPromptAgents.delete(requestId);
+}
+
+function rememberRequestRoute(requestId: string, routedTo: PromptRouteLike | null | undefined): void {
+  if (routedTo?.threadId) {
+    routedPromptAgents.set(requestId, routedTo.title || 'its agent');
+  } else {
+    routedPromptAgents.delete(requestId);
+  }
+}
+
+function threadWaitingOn(threadId: string): string {
+  let agent = '';
+  for (const ids of [approvalIDsByThread.get(threadId), awaitingInputIDsByThread.get(threadId)]) {
+    if (!ids) continue;
+    for (const requestId of ids) {
+      const routed = routedPromptAgents.get(requestId);
+      if (routed === undefined) return '';
+      agent ||= routed;
+    }
+  }
+  return agent;
+}
+
+/**
+ * The standing agent a thread's open prompts went to instead of the user,
+ * or '' when any open prompt is the user's (or there is none).
+ */
+export function getThreadWaitingOn(threadId: string): string {
+  return waitingOnAgents.get(threadId);
+}
 // activeTurns is the global per-thread ActiveTurn registry.
 // `isThreadWorking` combines it with pending-send and send-queue bridge
 // state to answer "is this thread working?". Idle threads are the
@@ -203,6 +249,14 @@ function removeTrackedID(map: Map<string, Set<string>>, threadId: string, id: st
 }
 
 function recalculateThreadStatus(threadId: string): void {
+  // A thread whose every open prompt went to its standing agent is not
+  // blocked on the user: it reads as working, waiting on that agent.
+  const waitingOn = threadWaitingOn(threadId);
+  waitingOnAgents.set(threadId, waitingOn);
+  if (waitingOn) {
+    setThreadStatus(threadId, 'idle');
+    return;
+  }
   // Blocking approvals
   // outrank everything else because the provider can't advance until
   // the user acts; awaiting-input is a softer call-to-action that
@@ -239,6 +293,7 @@ function recalculateThreadStatus(threadId: string): void {
  */
 export function getThreadStatus(threadId: string): ThreadLiveStatus {
   if (isThreadInterruptRestored(threadId)) return 'idle';
+  if (waitingOnAgents.get(threadId)) return 'running';
   const stored = statuses.get(threadId);
   if ((approvalIDsByThread.get(threadId)?.size ?? 0) > 0 || stored === 'pending-approval') {
     return 'pending-approval';
@@ -332,11 +387,12 @@ export function clearThreadStatus(threadId: string): void {
   ]) {
     if (!requestIdSet) continue;
     for (const requestId of requestIdSet) {
-      approvalThreadByID.delete(requestId);
+      forgetRequestOwner(requestId);
     }
   }
   approvalIDsByThread.delete(threadId);
   awaitingInputIDsByThread.delete(threadId);
+  waitingOnAgents.drop(threadId);
   interactiveRevisions.delete(threadId);
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
@@ -564,8 +620,8 @@ export function clearPendingSend(threadId: string): void {
 export function replaceInteractiveRequestsForThread(
   threadId: string,
   snapshot: {
-    approvals: readonly { requestId: string }[];
-    userInputs: readonly { requestId: string }[];
+    approvals: readonly { requestId: string; routedTo?: PromptRouteLike | null }[];
+    userInputs: readonly { requestId: string; routedTo?: PromptRouteLike | null }[];
   },
 ): void {
   if (!threadId) return;
@@ -574,13 +630,13 @@ export function replaceInteractiveRequestsForThread(
   const previousApprovalIDs = approvalIDsByThread.get(threadId);
   if (previousApprovalIDs) {
     for (const requestId of previousApprovalIDs) {
-      approvalThreadByID.delete(requestId);
+      forgetRequestOwner(requestId);
     }
   }
   const previousUserInputIDs = awaitingInputIDsByThread.get(threadId);
   if (previousUserInputIDs) {
     for (const requestId of previousUserInputIDs) {
-      approvalThreadByID.delete(requestId);
+      forgetRequestOwner(requestId);
     }
   }
 
@@ -589,12 +645,14 @@ export function replaceInteractiveRequestsForThread(
     if (!request.requestId) continue;
     nextApprovalIDs.add(request.requestId);
     approvalThreadByID.set(request.requestId, threadId);
+    rememberRequestRoute(request.requestId, request.routedTo);
   }
   const nextUserInputIDs = new Set<string>();
   for (const request of snapshot.userInputs) {
     if (!request.requestId) continue;
     nextUserInputIDs.add(request.requestId);
     approvalThreadByID.set(request.requestId, threadId);
+    rememberRequestRoute(request.requestId, request.routedTo);
   }
 
   if (nextApprovalIDs.size > 0) {
@@ -784,7 +842,7 @@ export function projectThreadReverted(threadId: string): void {
   ]) {
     if (!requestIdSet) continue;
     for (const requestId of requestIdSet) {
-      approvalThreadByID.delete(requestId);
+      forgetRequestOwner(requestId);
     }
   }
   approvalIDsByThread.delete(threadId);
@@ -893,10 +951,12 @@ export function projectApprovalRequest(
   threadId: string,
   requestId: string,
   kind?: ApprovalKind,
+  routedTo?: PromptRouteLike | null,
 ): void {
   if (!threadId || !requestId) return;
   interactiveRevisions.set(threadId, ++interactiveRevision);
   approvalThreadByID.set(requestId, threadId);
+  rememberRequestRoute(requestId, routedTo);
   void kind;
   trackedIDsFor(approvalIDsByThread, threadId).add(requestId);
   errorThreads.delete(threadId);
@@ -919,16 +979,21 @@ export function projectApprovalResolution(
   const ownerThreadId = threadId ?? approvalThreadByID.get(requestId);
   if (!ownerThreadId) return;
   interactiveRevisions.set(ownerThreadId, ++interactiveRevision);
-  approvalThreadByID.delete(requestId);
+  forgetRequestOwner(requestId);
   removeTrackedID(approvalIDsByThread, ownerThreadId, requestId);
   removeTrackedID(awaitingInputIDsByThread, ownerThreadId, requestId);
   recalculateThreadStatus(ownerThreadId);
 }
 
-export function projectUserInputRequest(threadId: string, requestId: string): void {
+export function projectUserInputRequest(
+  threadId: string,
+  requestId: string,
+  routedTo?: PromptRouteLike | null,
+): void {
   if (!threadId || !requestId) return;
   interactiveRevisions.set(threadId, ++interactiveRevision);
   approvalThreadByID.set(requestId, threadId);
+  rememberRequestRoute(requestId, routedTo);
   trackedIDsFor(awaitingInputIDsByThread, threadId).add(requestId);
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
@@ -943,7 +1008,7 @@ export function projectUserInputResolution(
   const ownerThreadId = threadId ?? approvalThreadByID.get(requestId);
   if (!ownerThreadId) return;
   interactiveRevisions.set(ownerThreadId, ++interactiveRevision);
-  approvalThreadByID.delete(requestId);
+  forgetRequestOwner(requestId);
   removeTrackedID(awaitingInputIDsByThread, ownerThreadId, requestId);
   recalculateThreadStatus(ownerThreadId);
 }
@@ -984,6 +1049,8 @@ export function resetForTest(): void {
   interactiveRevisions.clear();
   awaitingInputIDsByThread.clear();
   approvalThreadByID.clear();
+  routedPromptAgents.clear();
+  waitingOnAgents.reset();
   errorThreads.clear();
   interruptedThreads.clear();
   liveStateHydrationTokenByThread.clear();

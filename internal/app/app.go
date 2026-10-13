@@ -102,6 +102,9 @@ type App struct {
 	// ordered queue its moments dispatch on, and the small edge state the
 	// pure mapping is handed. See app_notification_mapping.go.
 	notifications notificationDispatch
+	// workerPrompts routes the prompts of a standing agent's workers to it
+	// (app_worker_prompts.go).
+	workerPrompts workerPrompts
 	// push is the PHONE half of the same path: its own ordered queue, the
 	// sender this backend wakes phones through, and the standing fault the
 	// owner reads. Its own queue because a send to Google can hang for its
@@ -200,6 +203,12 @@ type App struct {
 	// threadRequestsWG joins the request sweep goroutine at shutdown, the
 	// way remoteWatchWG joins the remote completion watcher.
 	threadRequestsWG sync.WaitGroup
+	// agentWakes is the wake supervisor's in-process state: the runs and
+	// long-running watch processes in flight. Zero value ready. See
+	// app_agent_wakes.go.
+	agentWakes agentWakeState
+	// agentNoticeWork joins what notices run after they are accepted.
+	agentNoticeWork appAgentNoticeWorkState
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
@@ -529,6 +538,14 @@ type App struct {
 	// downstream code emitted. name is the channel's WIRE spelling, for
 	// the reason given on emitEventFn above.
 	testEmitHook func(name string, data any)
+	// heldReturnedForTest, when set, runs after answers and completions
+	// have been given back to their owners (giveBackToOwners), so a test can
+	// land a watcher pass at that moment.
+	heldReturnedForTest func(threadID string)
+	// queueDropReadForTest, when set, runs in a wholesale drop between its
+	// read of the durable queue and its delete (dropDurableFlushQueue), so
+	// a test can queue a message at that moment.
+	queueDropReadForTest func(threadID string)
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a
@@ -549,6 +566,10 @@ type App struct {
 	// end-to-end test (IsolationConfig). Zero keeps the product intervals.
 	threadPollOverride   time.Duration
 	transferPendingRetry time.Duration
+	// remoteWatchPoll replaces the remote-job watcher's cadence for a
+	// running job (IsolationConfig.RemoteWatchPoll). Zero keeps the
+	// product cadence.
+	remoteWatchPoll time.Duration
 	// idleReap holds an isolated test boot's idle-session reaper timing
 	// (IsolationConfig). Zero fields keep the product values.
 	idleReap idleReapTiming

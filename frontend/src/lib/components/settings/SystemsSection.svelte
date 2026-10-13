@@ -101,9 +101,10 @@
   let connectionError = $state('');
   let acting = $state(false);
   let armedRemove: string | null = $state(null);
-  // The computer the host refused to forget because agent thread requests
-  // are still open there. The refusal toast says what confirming costs, so
-  // the next click carries the abandon the host asked for.
+  // The computer the host refused to forget until confirmed: agent thread
+  // requests are still open there, or finished jobs held for archived
+  // conversations would be discarded. The refusal toast says what confirming
+  // costs, so the next click carries the abandon the host asked for.
   let armedAbandon: string | null = $state(null);
 
   onMount(() => {
@@ -182,17 +183,16 @@
       armedAbandon = null;
     } catch (err) {
       addErrorToast(errString(err), err);
-      armedAbandon = openThreadRequests(err) ? id : null;
+      armedAbandon = forgetNeedsConfirmation(err) ? id : null;
     } finally {
       acting = false;
     }
   }
 
-  /** The one refusal a second confirm can answer. */
-  function openThreadRequests(err: unknown): boolean {
-    return (
-      !!err && typeof err === 'object' && (err as { code?: unknown }).code === 'thread_requests_open'
-    );
+  /** The refusals a second confirm can answer. */
+  const FORGET_CONFIRMATIONS: readonly unknown[] = ['thread_requests_open', 'remote_completions_held'];
+  function forgetNeedsConfirmation(err: unknown): boolean {
+    return !!err && typeof err === 'object' && FORGET_CONFIRMATIONS.includes((err as { code?: unknown }).code);
   }
 
   /**

@@ -117,6 +117,37 @@ func TestJoinRenumberedTextRenumbersAcrossMembers(t *testing.T) {
 	}
 }
 
+// The lengths split a joined text back into its members exactly, a member
+// that holds the separator itself and a marker renumbered past nine
+// included; lengths that do not describe the text split nothing.
+func TestJoinedPartsSplitTheJoinedTextExactly(t *testing.T) {
+	answer := "Reply:\nfirst" + JoinSeparator + "second"
+	joined, lengths := JoinRenumberedTextLengths([]TextPart{
+		{Text: "nine images", ImageCount: 9},
+		{Text: answer},
+		{Text: "and [Image #1]", ImageCount: 1},
+	})
+	parts := []JoinedPart{{SendID: "a", Bytes: lengths[0]}, {SendID: "thread-wake:t", Bytes: lengths[1]}, {Bytes: lengths[2]}}
+	members, ok := SplitJoinedParts(joined, parts)
+	nine := JoinRenumberedText([]TextPart{{Text: "nine images", ImageCount: 9}})
+	if want := []string{nine, answer, "and [Image #10]"}; !ok || !slices.Equal(members, want) {
+		t.Fatalf("split = %q (ok %v), want %q", members, ok, want)
+	}
+	if joined != JoinRenumberedText([]TextPart{{Text: "nine images", ImageCount: 9}, {Text: answer}, {Text: "and [Image #1]", ImageCount: 1}}) {
+		t.Fatal("the lengths changed the joined text")
+	}
+	for _, bad := range [][]JoinedPart{
+		nil,
+		{{Bytes: len(joined)}, {Bytes: 0}},
+		{{Bytes: lengths[0] + 1}, {Bytes: lengths[1]}, {Bytes: lengths[2]}},
+		{{Bytes: lengths[0]}, {Bytes: lengths[1]}},
+	} {
+		if members, ok := SplitJoinedParts(joined, bad); ok {
+			t.Errorf("parts %+v split the text into %q", bad, members)
+		}
+	}
+}
+
 func TestImageAttachmentCountTreatsEmptyKindAsImage(t *testing.T) {
 	got := ImageAttachmentCount([]AttachmentMeta{
 		{ID: "a"},

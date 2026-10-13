@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -125,7 +126,7 @@ func TestFlushQueueItemsAreScopedToTheirThread(t *testing.T) {
 		t.Fatalf("delete empty id: %v", err)
 	}
 
-	if err := s.DeleteFlushQueueItemsForThread("thread-a"); err != nil {
+	if err := s.DeleteFlushQueueItemsForThread("thread-a", ""); err != nil {
 		t.Fatalf("delete thread: %v", err)
 	}
 	remaining, err := s.ListFlushQueueItems("thread-a")
@@ -178,5 +179,74 @@ func TestFlushQueueItemInsertRefusesAnUnidentifiedRow(t *testing.T) {
 	}
 	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queue:x", Message: "x"}); err == nil {
 		t.Fatal("expected an error for a row with no thread")
+	}
+}
+
+// A wholesale drop keeps the rows it names by id, beside its prefix, so
+// their owners can take them back; a row of the same kind it did not name
+// goes with the rest.
+func TestDropKeepsTheRowsItNames(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "thread-a")
+	mustCreateThread(t, s, "thread-b")
+	for _, row := range []FlushQueueItem{
+		{ID: "queue:1", ThreadID: "thread-a", SendID: "person-1", Message: "mine", EnqueuedAt: 1},
+		{ID: "queue:2", ThreadID: "thread-a", SendID: "agent-send:x", Message: "outside", EnqueuedAt: 2},
+		{ID: "queue:3", ThreadID: "thread-a", SendID: "thread-wake:t1", Message: "answer", EnqueuedAt: 3},
+		{ID: "queue:4", ThreadID: "thread-a", SendID: "remote-completion:c:r", Message: "done", EnqueuedAt: 4},
+		{ID: "queue:5", ThreadID: "thread-a", SendID: "thread-wake:t2", Message: "later answer", EnqueuedAt: 5},
+		{ID: "queue:6", ThreadID: "thread-b", SendID: "person-2", Message: "other thread", EnqueuedAt: 6},
+	} {
+		if err := s.InsertFlushQueueItem(row); err != nil {
+			t.Fatalf("insert %s: %v", row.ID, err)
+		}
+	}
+	if err := s.DeleteFlushQueueItemsForThread("thread-a", "agent-send:", "queue:3", "queue:4", "queue:6"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	var kept []string
+	for _, thread := range []string{"thread-a", "thread-b"} {
+		rows, err := s.ListFlushQueueItems(thread)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range rows {
+			kept = append(kept, row.ID)
+		}
+	}
+	if want := []string{"queue:2", "queue:3", "queue:4", "queue:6"}; !slices.Equal(kept, want) {
+		t.Fatalf("kept %q, want %q", kept, want)
+	}
+}
+
+// A wholesale drop can keep the rows under one send id prefix for their
+// owner to remove, and of two removals of one row only one finds it.
+func TestDropKeepsAPrefixAndRemoveReportsWhoRemoved(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "thread-a")
+	for _, row := range []FlushQueueItem{
+		{ID: "queue:1", ThreadID: "thread-a", SendID: "person-1", Message: "mine", EnqueuedAt: 1},
+		{ID: "queue:2", ThreadID: "thread-a", SendID: "agent-send:x", Message: "outside", EnqueuedAt: 2},
+		{ID: "queue:3", ThreadID: "thread-a", Message: "no id", EnqueuedAt: 3},
+		{ID: "queue:4", ThreadID: "thread-a", SendID: "agent-wake:w:1", Message: "wake", EnqueuedAt: 4},
+	} {
+		if err := s.InsertFlushQueueItem(row); err != nil {
+			t.Fatalf("insert %s: %v", row.ID, err)
+		}
+	}
+	if err := s.DeleteFlushQueueItemsForThread("thread-a", "agent-send:"); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	rows, err := s.ListFlushQueueItems("thread-a")
+	if err != nil || len(rows) != 1 || rows[0].ID != "queue:2" {
+		t.Fatalf("kept %+v %v, want only the agent-send row", rows, err)
+	}
+	if removed, err := s.RemoveFlushQueueItem("queue:2"); err != nil || !removed {
+		t.Fatalf("first remove: %v %v", removed, err)
+	}
+	if removed, err := s.RemoveFlushQueueItem("queue:2"); err != nil || removed {
+		t.Fatalf("second remove: %v %v", removed, err)
 	}
 }

@@ -102,14 +102,15 @@ func (a *App) applyThreadOrganizePatch(ctx context.Context, threadID string, pat
 	}
 	if result.ArchivedChanged && result.Thread.Archived {
 		// The same cleanup the archive binding runs, through the same door:
-		// the requests this thread is waiting on end and its wakes are
-		// disarmed, then the commands it started elsewhere are cancelled.
-		// The archive itself is already durable, so a failure to reach the
-		// other computer is reported here rather than turned into a refusal
+		// the requests this thread is waiting on end, its wakes are disarmed
+		// and what the app queued for it is withdrawn, then the commands it
+		// started elsewhere are cancelled. The archive itself is already
+		// durable, so a failure to reach the other computer or to withdraw a
+		// queued message is reported here rather than turned into a refusal
 		// of a change that landed; the destination stops the work itself
 		// after the owner grace.
 		if err := a.stopArchivedThreadWork(ctx, threadID); err != nil {
-			log.Printf("thread tools: archive thread %s: cancel remote commands: %v", threadID, err)
+			log.Printf("thread tools: archive thread %s: %v", threadID, err)
 		}
 	}
 	return result, nil
@@ -126,6 +127,22 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 		unlockAction := a.threadLocks().Lock(threadID)
 		defer unlockAction()
 	}
+	result, err := a.applyThreadOrganizePatchMutable(ctx, threadID, patch)
+	if err != nil {
+		return threadapp.OrganizeResult{}, err
+	}
+	// The session stops after the mutation lock is released, as the archive
+	// binding's does: its teardown takes that lock to drop the queue, and a
+	// queue write after the flip refuses the archived thread.
+	if result.ArchivedChanged && result.Thread.Archived {
+		a.stopArchivedThreadSession(threadID, requestedAt)
+	}
+	return result, nil
+}
+
+// applyThreadOrganizePatchMutable writes the patch and announces it under
+// the thread's mutation lock.
+func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, error) {
 	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
 	if err != nil {
 		return threadapp.OrganizeResult{}, err
@@ -142,9 +159,6 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 		a.emitThreadGroup("create", *result.CreatedGroup)
 	}
 	a.broadcastThreadRowIfChanged(organizeThreadAction(result), result.Thread, result.Changed)
-	if result.ArchivedChanged && result.Thread.Archived {
-		a.stopArchivedThreadSession(threadID, requestedAt)
-	}
 	return result, nil
 }
 

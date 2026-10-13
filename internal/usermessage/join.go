@@ -48,12 +48,21 @@ type TextPart struct {
 // while its literal `#1` stays in the text. Re-emitting each marker from the
 // part's attachment offset keeps every image where the user dropped it.
 func JoinRenumberedText(parts []TextPart) string {
+	text, _ := JoinRenumberedTextLengths(parts)
+	return text
+}
+
+// JoinRenumberedTextLengths is JoinRenumberedText that also returns each
+// part's length in bytes in the joined text, which renumbering can change.
+func JoinRenumberedTextLengths(parts []TextPart) (string, []int) {
 	var text strings.Builder
+	lengths := make([]int, 0, len(parts))
 	base := 0
 	for i, part := range parts {
 		if i > 0 {
 			text.WriteString(JoinSeparator)
 		}
+		start := text.Len()
 		for _, split := range provider.SplitContentByImageMarkers(part.Text, part.ImageCount) {
 			if split.ImageIndex >= 0 {
 				text.WriteString(provider.ImagePlaceholderLabel(base + split.ImageIndex + 1))
@@ -61,9 +70,44 @@ func JoinRenumberedText(parts []TextPart) string {
 			}
 			text.WriteString(split.Text)
 		}
+		lengths = append(lengths, text.Len()-start)
 		base += part.ImageCount
 	}
-	return text.String()
+	return text.String(), lengths
+}
+
+// JoinedPart is one member of a joined message as it appears in the joined
+// text: its send id, empty for a member without one, and its length in
+// bytes, separator excluded. A joined message's member texts are free text,
+// an answer's or a job output's included, and can hold the separator, so
+// only these lengths split one back into its members.
+type JoinedPart struct {
+	SendID string `json:"sendId,omitempty"`
+	Bytes  int    `json:"bytes"`
+}
+
+// SplitJoinedParts cuts text into the members parts describe. ok is false
+// when parts do not describe text exactly.
+func SplitJoinedParts(text string, parts []JoinedPart) (members []string, ok bool) {
+	if len(parts) == 0 {
+		return nil, false
+	}
+	members = make([]string, 0, len(parts))
+	at := 0
+	for i, part := range parts {
+		if i > 0 {
+			if !strings.HasPrefix(text[at:], JoinSeparator) {
+				return nil, false
+			}
+			at += len(JoinSeparator)
+		}
+		if part.Bytes < 0 || part.Bytes > len(text)-at {
+			return nil, false
+		}
+		members = append(members, text[at:at+part.Bytes])
+		at += part.Bytes
+	}
+	return members, at == len(text)
 }
 
 // ImageAttachmentCount reports how many of a row's persisted attachments are
@@ -111,6 +155,7 @@ func (in Input) Projection() Meta {
 		JoinedSendIDs:                in.JoinedSendIDs,
 		Origin:                       in.Origin,
 		OriginThread:                 in.OriginThread,
+		OriginWake:                   in.OriginWake,
 	}
 }
 
@@ -162,7 +207,7 @@ func JoinMetas(members []Meta) Meta {
 		// one message with one author, and a merge that mixed two senders
 		// would label the row with whichever happened to sort first.
 		if joined.Origin == "" {
-			joined.Origin, joined.OriginThread = member.Origin, member.OriginThread
+			joined.Origin, joined.OriginThread, joined.OriginWake = member.Origin, member.OriginThread, member.OriginWake
 		}
 		ids := member.JoinedSendIDs
 		if len(ids) == 0 {
@@ -217,6 +262,7 @@ func (m Meta) isZero() bool {
 		len(m.JoinedSendIDs) == 0 &&
 		m.Origin == "" &&
 		m.OriginThread == nil &&
+		m.OriginWake == nil &&
 		!m.ExpandComposerCommands
 }
 
@@ -241,6 +287,7 @@ var metaTypedKeys = []string{
 	"joinedSendIds",
 	"origin",
 	"originThread",
+	"originWake",
 }
 
 // MergeJoinedMeta rewrites the typed usermessage fields of `existing` to those

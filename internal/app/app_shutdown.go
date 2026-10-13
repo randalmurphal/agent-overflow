@@ -213,6 +213,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// Notification jobs read the thread title out of SQLite, so they drain
 	// with the other reactors rather than after the database closes.
 	record("drain notifications", a.drainNotifications(ctx, notificationDrainTimeout))
+	// Worker prompt deliveries are fed by triage too, and read SQLite.
+	record("drain worker prompts", a.drainWorkerPrompts(ctx, notificationDrainTimeout))
 	// The push fan-out reads registrations out of the same database, so it
 	// drains here too — and after the notification queue, because that is
 	// what feeds it.
@@ -246,6 +248,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// The request sweep writes rows and can queue a wake, so it is joined
 	// beside the remote watches and before the store is closed.
 	a.threadRequestsWG.Wait()
+	// After every producer of a notice: a session start a notice began
+	// registers its session, and Step 4 must see it to close it.
+	a.stopAgentNoticeWork()
 	// The project identity refresh writes project rows. appCtx is already
 	// cancelled, which kills its git read and stops the pass unrecorded.
 	a.projectIdentityWG.Wait()

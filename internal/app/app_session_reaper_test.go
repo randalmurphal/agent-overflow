@@ -221,6 +221,38 @@ func TestReapIdleSessionsClosesStaleSession(t *testing.T) {
 	}
 }
 
+// The reaper holds the thread's mutation lock from its checks through the
+// teardown, so the teardown's queue drop, which a Stop runs under that lock,
+// must not take it again: the lock is not reentrant.
+func TestReapIdleSessionsDropsTheQueueUnderTheLockItHolds(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.ensureTriageRouter()
+	thread := testThread("thread-reap-drop")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now()
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex),
+		Token:    "tok",
+		Liveness: newSessionLiveness(now.Add(-idleReapThreshold - time.Minute)),
+	})
+	reaped := make(chan struct{})
+	go func() {
+		app.reapIdleSessions(now)
+		close(reaped)
+	}()
+	select {
+	case <-reaped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reaper's teardown is waiting on the mutation lock the reaper holds")
+	}
+	if _, present := app.sessionManager().get(thread.ID); present {
+		t.Fatal("expected idle session to be reaped")
+	}
+}
+
 // TestReapIdleSessionsSkipsRecentActivity confirms the threshold is a
 // floor: a session whose last bump is inside the window stays alive.
 func TestReapIdleSessionsSkipsRecentActivity(t *testing.T) {
