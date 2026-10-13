@@ -719,7 +719,7 @@
 <ConfirmDialog
   open={showDemoteConfirm}
   title="Demote Standing Agent"
-  description="This thread becomes an ordinary thread. Its watches are cancelled; its loops and its home directory stay as they are."
+  description="This thread becomes an ordinary thread. Its watches are cancelled; its loops stay as they are. Demote keeps its home directory; Demote and Delete Home removes it."
   confirmLabel="Demote"
   alternateLabel="Demote and Delete Home"
   alternateDisabled={autonomyUngranted}

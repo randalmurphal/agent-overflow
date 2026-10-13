@@ -7,8 +7,10 @@
 // not write is in the way; Install copies the tree flattened, with the
 // scripts' modes, into one home and leaves the other alone; a stale install
 // offers Update, which makes it current; Remove deletes what the manifest
-// names and keeps a file the user added; screenshots before and after
-// Install.
+// names and keeps a file the user added; an unfinished install offers
+// Update and Remove; a second client's page follows Install and Remove
+// without a reload; screenshots before and after Install, of a refusal
+// beside its row, and of the unfinished and update-available states.
 import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -44,6 +46,11 @@ test('the Skills page installs, updates and removes the shipped tree per provide
   writeFileSync(join(codex, 'tdd', 'SKILL.md'), 'my own tdd skill');
   await page.getByTestId('settings-skills-codex-install').click();
   await expect(page.getByTestId('settings-skills-codex-error')).toContainText('Nothing was installed');
+  await scrubComputerName(page);
+  await page.getByTestId('settings-skills-codex-error').evaluate((el) => {
+    el.textContent = (el.textContent ?? '').replace(/\/\S*\/skills\//g, '<home>/skills/');
+  });
+  await capture(page, 'skills-install-refused.png', page.getByTestId('settings-skills-homes'));
   await expect(status(page, 'codex')).toHaveText('Not installed');
   expect(existsSync(join(codex, MANIFEST))).toBe(false);
   expect(existsSync(join(codex, 'poteto-mode'))).toBe(false);
@@ -70,9 +77,25 @@ test('the Skills page installs, updates and removes the shipped tree per provide
   await page.reload();
   await openSkillsPage(page);
   await expect(status(page, 'claude')).toHaveText('0.0.1 installed, update available');
+  await scrubComputerName(page);
+  await capture(page, 'skills-update-available.png', page.getByTestId('settings-skills-homes'));
   await page.getByTestId('settings-skills-claude-update').click();
   await expect(status(page, 'claude')).toHaveText('Installed');
   expect(readFileSync(join(claude, 'poteto-mode', 'SKILL.md'), 'utf8')).not.toBe('stale text');
+
+  // ---- An install that did not finish offers Update and Remove.
+  const finished = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+  writeFileSync(manifestPath, JSON.stringify({ ...finished, complete: false }));
+  await page.reload();
+  await openSkillsPage(page);
+  await expect(status(page, 'claude')).toHaveText('Install did not finish');
+  await expect(page.getByTestId('settings-skills-claude-update')).toBeVisible();
+  await expect(page.getByTestId('settings-skills-claude-remove')).toBeVisible();
+  await expect(page.getByTestId('settings-skills-claude-install')).toHaveCount(0);
+  await scrubComputerName(page);
+  await capture(page, 'skills-install-unfinished.png', page.getByTestId('settings-skills-homes'));
+  await page.getByTestId('settings-skills-claude-update').click();
+  await expect(status(page, 'claude')).toHaveText('Installed');
 
   // ---- Remove deletes what the manifest names and nothing else.
   writeFileSync(join(claude, 'poteto-mode', 'my-notes.md'), 'mine');
@@ -86,4 +109,27 @@ test('the Skills page installs, updates and removes the shipped tree per provide
   expect(readFileSync(join(claude, 'poteto-mode', 'my-notes.md'), 'utf8')).toBe('mine');
   expect(readFileSync(join(claude, 'my-skill', 'SKILL.md'), 'utf8')).toBe('mine');
   await expect(status(page, 'codex')).toHaveText('Installed');
+});
+
+test('a second client follows Install and Remove without a reload', async ({ harness, page, browser }) => {
+  rmSync(skillsDir(harness, 'claude'), { recursive: true, force: true });
+  const other = await browser.newContext();
+  try {
+    const second = await other.newPage();
+    await harness.open(page);
+    await harness.open(second);
+    await openSkillsPage(page);
+    await openSkillsPage(second);
+    await expect(status(second, 'claude')).toHaveText('Not installed');
+
+    await page.getByTestId('settings-skills-claude-install').click();
+    await expect(status(page, 'claude')).toHaveText('Installed');
+    await expect(status(second, 'claude')).toHaveText('Installed');
+
+    await second.getByTestId('settings-skills-claude-remove').click();
+    await expect(status(second, 'claude')).toHaveText('Not installed');
+    await expect(status(page, 'claude')).toHaveText('Not installed');
+  } finally {
+    await other.close();
+  }
 });

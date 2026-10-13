@@ -879,14 +879,14 @@ describe('<ThreadContextMenu> standing agent', () => {
     expect(labels).not.toContain('Demote Standing Agent');
   });
 
-  it('demotes behind a confirm that says the home stays, and only after it', async () => {
+  it('demotes behind a confirm that says Demote keeps the home, and only after it', async () => {
     const demote = setBindingMock('DemoteStandingAgent', async () => {});
     const { baseElement } = renderAgentMenu(makeThread({ agentPromotedAt: 1 }));
     await fireEvent.click(item(baseElement, 'Demote Standing Agent'));
     await tick();
     expect(demote).not.toHaveBeenCalled();
     const dialog = baseElement.querySelector('[role="alertdialog"], [role="dialog"]');
-    expect(dialog?.textContent).toContain('home directory stay');
+    expect(dialog?.textContent).toContain('This thread becomes an ordinary thread. Its watches are cancelled; its loops stay as they are. Demote keeps its home directory; Demote and Delete Home removes it.');
     await fireEvent.click(Array.from(baseElement.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Demote')!);
     await tick();
     expect(demote).toHaveBeenCalledWith('thread-1');

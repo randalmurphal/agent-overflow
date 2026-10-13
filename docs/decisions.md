@@ -522,6 +522,11 @@ and anti-changes that live only here:
   thread lifecycle, `iterations[-1]` context usage, prompt stash, claude.ai
   connectors, app-hosted MCP, classifier-row usage labeling, MCP toggle
   fan-out and per-thread pinning.
+- The Skills settings page's Remove asks no confirmation: it deletes
+  only what Install wrote, and Install puts it back. Update and Remove
+  treat every file the install manifest names as the app's, a user's
+  edit to one included; a file the manifest does not name is never
+  touched ([skills library](specs/standing-agents.md#skills-library)).
 - Proposed skills the owner declined: a commit skill, a standalone light
   review skill, a standalone unslop skill, handoff riders, a wait-what
   micro-skill. Artifacts are never offered unprompted.

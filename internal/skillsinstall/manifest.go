@@ -21,7 +21,7 @@ type manifest struct {
 	Digest  string `json:"digest"`
 	// Complete is false while an install or update is writing, and stays
 	// false when one failed: Skills and Files then name everything it may
-	// have written, so Remove and the next Install still find it.
+	// have written, so Update and Remove still find it.
 	Complete bool     `json:"complete"`
 	Skills   []string `json:"skills"`
 	Files    []string `json:"files"`

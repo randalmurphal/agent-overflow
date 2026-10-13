@@ -166,7 +166,8 @@ it can register with, and records the row. Demotion removes the row and
 leaves the home on disk; the row action says so. Its confirm also offers
 Demote and Delete Home (`DemoteStandingAgentAndDeleteHome`), which
 demotes and then deletes the row's recorded home, only when that is
-`<configDir>/agents/<thread-id>`; a deletion that fails leaves the
+`<configDir>/agents/<thread-id>` (a row that records no home or any
+other path is refused); a deletion that fails or is refused leaves the
 demotion in place and names the folder. A promotion finds a kept home
 and keeps its README. Promotion is refused for an archived thread, a
 thread with a running workflow binding, or a thread on another
@@ -232,7 +233,10 @@ variant, not a new component. Differences from an ordinary thread row:
 - Context menu: Open, Rename, Loops and Watches (opens the thread with
   its background tray open), Archive Done Children (the spawned threads
   whose effective status is idle, behind a confirm), Demote (behind a
-  confirm that says the home stays on disk). An archived child listed
+  confirm that reads "This thread becomes an ordinary thread. Its
+  watches are cancelled; its loops stay as they are. Demote keeps its
+  home directory; Demote and Delete Home removes it.", with Demote and
+  Demote and Delete Home as its two choices). An archived child listed
   by the done footer offers Open, Rename, Unarchive, Copy and Delete:
   no pin, group or archive item. No pin
   item: an agent row sits in the groups section whatever pin its thread
@@ -568,13 +572,21 @@ As built (`internal/skillsinstall`, `app_skills.go`): the manifest is
 profile sharing a home sees one install. It names every file and skill
 directory written; before the first write it names everything the run
 may leave, so a failure part way shows as an unfinished install that
-the next Install finishes and Remove clears. Install refuses the whole
+Update finishes and Remove clears. Install refuses the whole
 install, writing nothing, when a skill directory or file it would write
 is there and the manifest does not name it, and names them. Update
 replaces what the manifest names and deletes the named files the tree
 no longer has; it is refused for a home with no install. Remove deletes
 the named files and the directories they leave empty; a directory
-holding a file the user added stays. A home is current when its
+holding a file the user added stays. Update and Remove treat every file
+the manifest names as the app's, a user's edit to one included, and
+Remove asks no confirmation ([decisions](../decisions.md#miscellany)).
+A manifest naming anything outside its own skill directories (a `..`
+element, an absolute path, a file of a skill it does not list) is read
+as an error and nothing is deleted. Install, Update and Remove hold an
+advisory lock on `<provider home>/skills/.agent-overflow-pstack.lock`
+from reading the manifest to writing it, so two processes sharing a
+home cannot interleave. A home is current when its
 manifest's digest of the tree's paths and content matches the
 shipped one, since the port edits files without moving the upstream
 pin. An embedded file has no mode, so a file starting with `#!` is

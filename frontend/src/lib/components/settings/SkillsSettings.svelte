@@ -3,7 +3,7 @@
   // skills tree that ships with the app, whether each provider home holds
   // it, and Install, Update and Remove per provider. Nothing installs
   // unless the user presses a button here.
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import { settingsComputer } from './settingsComputer';
   import SettingsHeader from './SettingsHeader.svelte';
   import SettingsField from './SettingsField.svelte';
@@ -43,7 +43,10 @@
     }
   }
 
+  let rows = $state<Record<string, HTMLElement | undefined>>({});
+
   async function run(provider: string, action: Action): Promise<void> {
+    const pressed = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     busy = { ...busy, [provider]: action };
     actionErrors = { ...actionErrors, [provider]: undefined };
     try {
@@ -57,6 +60,12 @@
       // A refused change wrote nothing and a failed one may have written
       // part; read the home either way rather than guess.
       await read();
+      // The pressed button is gone once the state changes (Install becomes
+      // Remove); keep keyboard focus on the row instead of the page body.
+      await tick();
+      if (pressed && !pressed.isConnected) {
+        rows[provider]?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+      }
     }
   }
 
@@ -94,7 +103,11 @@
           {@const action = busy[home.provider]}
           {#if meta}
             <SettingsField id={meta.field} label={meta.label}>
-              <div class="flex flex-wrap items-center justify-end gap-2" data-testid="settings-skills-{home.provider}">
+              <div
+                class="flex flex-wrap items-center justify-end gap-2"
+                data-testid="settings-skills-{home.provider}"
+                bind:this={rows[home.provider]}
+              >
                 <span class="text-[0.75rem] text-fg-muted" data-testid="settings-skills-{home.provider}-status">
                   {action ? BUSY_LABEL[action] : statusText(home, library.version)}
                 </span>

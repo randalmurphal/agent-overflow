@@ -7,14 +7,17 @@
 // provider on a start and on a resume, as Claude's appended system prompt
 // and as Codex's developer instructions, with the app guide switched off so
 // the block cannot ride on it; a demoted thread's next session carries no
-// block and keeps its home on disk; and the Demote confirm's "Demote and
-// Delete Home" removes the home and leaves an ordinary row.
-import { existsSync, readFileSync } from 'node:fs';
+// block and keeps its home on disk; the Demote confirm's "Demote and
+// Delete Home" removes the home and leaves an ordinary row; and one whose
+// home cannot be deleted still demotes, with a toast saying the folder was
+// not deleted and the folder named in its details.
+import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
+import { capture } from './wake-rows-helpers.js';
 import { awaitTurnCompleted, plainScenario, setScenario, type ProviderName } from './thread-tools-helpers.js';
 import type { MockInfo, MockSessionConfig } from './workflows-helpers.js';
 
@@ -126,10 +129,46 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await agentRow.click({ button: 'right' });
     await page.getByRole('menuitem', { name: 'Demote Standing Agent' }).click();
     const dialog = page.getByRole('dialog').or(page.getByRole('alertdialog'));
-    await expect(dialog).toContainText('home directory stay');
+    await expect(dialog).toContainText('Demote keeps its home directory');
     await dialog.getByRole('button', { name: 'Demote and Delete Home' }).click();
     await expect(agentRow).not.toHaveAttribute('data-sidebar-agent', '');
     await expect.poll(() => existsSync(agent.home)).toBe(false);
     expect(await harness.rpc('GetStandingAgent', thread)).toBeNull();
   });
 }
+
+test('Demote and Delete Home whose home cannot be deleted still demotes and says why', async ({ harness, page }) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'agent-home-locked', repo: {}, threads: [{ title: 'Release agent' }] }],
+  });
+  const [thread] = seed.projects[0].threadIds;
+  const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+  // A folder this user cannot list: removing the home fails inside it.
+  const locked = join(agent.home, 'locked');
+  mkdirSync(join(locked, 'inner'), { recursive: true });
+  chmodSync(locked, 0o000);
+  try {
+    await harness.open(page);
+    const agentRow = row(page, thread);
+    await expect(agentRow).toHaveAttribute('data-sidebar-agent', '');
+    await agentRow.click({ button: 'right' });
+    await page.getByRole('menuitem', { name: 'Demote Standing Agent' }).click();
+    const dialog = page.getByRole('dialog').or(page.getByRole('alertdialog'));
+    await expect(dialog).toContainText(
+      'This thread becomes an ordinary thread. Its watches are cancelled; its loops stay as they are. Demote keeps its home directory; Demote and Delete Home removes it.',
+    );
+    await capture(page, 'demote-dialog.png', dialog);
+    await dialog.getByRole('button', { name: 'Demote and Delete Home' }).click();
+
+    const toast = page.getByTestId('toast').filter({ hasText: 'The thread was demoted, but its home folder was not deleted:' });
+    await expect(toast).toBeVisible();
+    await toast.getByTestId('error-details-toggle').click();
+    await expect(toast.getByTestId('error-details')).toContainText(agent.home);
+    await capture(page, 'demote-delete-home-failed.png', toast);
+    await expect(agentRow).not.toHaveAttribute('data-sidebar-agent', '');
+    expect(await harness.rpc('GetStandingAgent', thread)).toBeNull();
+    expect(existsSync(agent.home)).toBe(true);
+  } finally {
+    chmodSync(locked, 0o700);
+  }
+});
