@@ -36,7 +36,7 @@ import { transportGapChannel, type TransportGap } from '../../transport/wsClient
 import type { BackgroundTrayEvent } from '../../types/events';
 import type { Item } from '../../types/models';
 import { asProviderID, type ProviderID } from '../../types/providers';
-import { applyTrayDelta, deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
+import { applyTrayDelta, createTrayTaskMemo, deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
 import { createRefreshScheduler } from '../../utils/refreshScheduler';
 import { createTrayLatestToolProjection } from '../../utils/codexTrayProjection';
 import { subagentRunStateFromMeta, type SubagentRunState } from '../../utils/subagentRunState';
@@ -204,8 +204,9 @@ export function createBackgroundController(
     refresh.request({ immediate: true });
   });
 
+  const keepRows = createTrayTaskMemo();
   const tasks = $derived<TrayTask[]>(
-    deriveTrayTasks(backgroundItems, getNow(), COMPLETION_RETENTION_MS),
+    keepRows(deriveTrayTasks(backgroundItems, getNow(), COMPLETION_RETENTION_MS)),
   );
   const count = $derived(tasks.length);
   // A parked agent (reported, waiting on its own background commands) is

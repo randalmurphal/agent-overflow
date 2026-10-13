@@ -40,8 +40,9 @@
 // differ — how a thread is opened, how Settings is reached — the surface
 // is a PARAMETER (`PreviewSurface`), never a fork in the flow.
 
+import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
-import { connect } from 'node:net';
+import { connect, createServer as createTCPServer } from 'node:net';
 import { hostname } from 'node:os';
 import {
   expect,
@@ -145,15 +146,7 @@ async function startFakeDevServer(): Promise<FakeDevServer> {
     res.end('no such route\n');
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve());
-  });
-  const address = server.address();
-  if (address === null || typeof address === 'string') {
-    throw new Error('the fake dev server did not bind a TCP port');
-  }
-  port = address.port;
+  port = await listenOnSharablePort(server);
 
   return {
     port,
@@ -168,6 +161,59 @@ async function startFakeDevServer(): Promise<FakeDevServer> {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
+}
+
+/**
+ * The machine's own list row for `port`, for a failure message: whether it
+ * is allowed, and the note the gateway left when it could not serve it.
+ */
+async function previewRowOf(harness: HarnessApp, port: number): Promise<string> {
+  try {
+    const list = await harness.rpc<{ previewHost?: string; servers?: Array<{ port: number }> }>('GetDevServers');
+    const row = (list.servers ?? []).find((server) => server.port === port);
+    return JSON.stringify({ previewHost: list.previewHost ?? '', row: row ?? null });
+  } catch (err) {
+    return `GetDevServers failed: ${String(err)}`;
+  }
+}
+
+/**
+ * Binds `server` on loopback at a port the gateway can also bind on the
+ * LAN address. A loopback bind reserves its port on 127.0.0.1 only, so an
+ * ephemeral port can already be held on the LAN address or on ::1 by
+ * another socket in the suite's namespace, or be handed to one later:
+ * the gateway's bind then fails, or the scan attributes the port to the
+ * backend, and the port is never shared. A port below the kernel's
+ * ephemeral range is handed to nothing, and one free on the dual-stack
+ * wildcard is held by nothing.
+ */
+async function listenOnSharablePort(server: Server): Promise<number> {
+  const floor = 10_000;
+  const ephemeralLow = await readFile('/proc/sys/net/ipv4/ip_local_port_range', 'utf8')
+    .then((text) => Number(text.trim().split(/\s+/)[0]))
+    .catch(() => 32_768);
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const port = floor + Math.floor(Math.random() * (ephemeralLow - floor));
+    if (!(await bindsOnWildcard(port))) continue;
+    const bound = await new Promise<boolean>((resolve, reject) => {
+      const onError = (err: NodeJS.ErrnoException) => (err.code === 'EADDRINUSE' ? resolve(false) : reject(err));
+      server.once('error', onError);
+      server.listen(port, '127.0.0.1', () => {
+        server.off('error', onError);
+        resolve(true);
+      });
+    });
+    if (bound) return port;
+  }
+  throw new Error(`no port below ${ephemeralLow} was free on every address`);
+}
+
+async function bindsOnWildcard(port: number): Promise<boolean> {
+  const probe = createTCPServer();
+  return new Promise<boolean>((resolve, reject) => {
+    probe.once('error', (err: NodeJS.ErrnoException) => (err.code === 'EADDRINUSE' ? resolve(false) : reject(err)));
+    probe.listen(port, '::', () => probe.close(() => resolve(true)));
+  });
 }
 
 /**
@@ -571,9 +617,13 @@ export function definePreviewGatewaySuite(surface: PreviewSurface): void {
       // The next `devserver:list` frame is the answer; nothing is applied
       // optimistically, because the machine decides whether it can open a
       // listener on that port at all.
-      await expect(anchor()).toHaveAttribute('data-preview-state', 'open', {
-        timeout: PAIRED_APP_MOUNT_MS,
-      });
+      await expect(anchor())
+        .toHaveAttribute('data-preview-state', 'open', { timeout: PAIRED_APP_MOUNT_MS })
+        .catch(async (err: Error) => {
+          throw new Error(`${err.message}\nthe machine's answer: ${await previewRowOf(harness, devServer.port)}`, {
+            cause: err,
+          });
+        });
 
       // Which is also the settle that closes case 1: an allow round trip
       // is the same delegate, the same socket and the same store as a
