@@ -21,7 +21,6 @@ const SUMMARY = Array.from({ length: 5 }, (_, i) =>
 
 it.each(['patch', 'upsert', 'background-sibling', 'prose-status-last', 'mid-drain'] as const)(
   'withholds a completed command throughout preceding prose reveal (%s)',
-  { timeout: 30000 },
   async (completion) => {
     const threadId = 'completed-command';
     const seed = seedTimelineItems(threadId, {

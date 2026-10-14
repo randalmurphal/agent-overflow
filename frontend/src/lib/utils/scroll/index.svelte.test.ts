@@ -2921,7 +2921,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 1300);
 
       expect(geom.scrollTop).toBeLessThan(900); // target - clientHeight = 900
-    }, 5000);
+    });
 
     it('restore forceStick re-arms the warm gate so post-restore settle stays silent', async () => {
       const ro = getRO();
