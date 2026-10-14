@@ -619,8 +619,8 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 // restoreDurableFlushQueueAtBoot puts every queued message the previous
 // process did not deliver back into its thread's composer draft, and deletes
 // the rows. What the app wrote is not the person's to send and goes
-// elsewhere: a loop or watch wake, an outside send or a worker's prompt is
-// discarded (discardAgentWakeAtBoot), and an answer, a reminder or a remote
+// elsewhere: a loop or watch wake, an outside send, a worker's prompt or
+// another thread's request is discarded (discardAgentWakeAtBoot), and an answer, a reminder or a remote
 // completion goes back to its owner (giveBackToOwners), as does one the
 // previous process handed a provider that never confirmed it
 // (giveBackUnconfirmedAtBoot).

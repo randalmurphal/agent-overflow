@@ -1016,11 +1016,12 @@ func (s *Store) QueueThreadWake(token string, late bool, item FlushQueueItem) er
 // Otherwise a row already gone means the wake was sent, and changes
 // nothing. A wake the provider was handed and never confirmed
 // (unconfirmed) has no row left and goes back all the same, while the
-// request still reads queued and the provider has not confirmed it. A late
-// wake clears only its own mark; the first answer's delivery stands. A
+// request still reads queued and the provider has not confirmed it, and one
+// whose turn a Stop un-sent (WithdrawUnsent) goes back confirmed or not. A
+// late wake clears only its own mark; the first answer's delivery stands. A
 // lineage-only row keeps its marks (clearLineagePayloadSQL): a cleared
 // delivered_at would read as a wake still owed.
-func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, unconfirmed bool) error {
+func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, scope WakeWithdrawal) error {
 	action := fmt.Sprintf("store: withdraw thread wake %s", token)
 	tx, release, err := s.beginDurableTx(context.Background())
 	if err != nil {
@@ -1036,7 +1037,7 @@ func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, unconf
 	if err != nil {
 		return err
 	}
-	if removed || unconfirmed {
+	if removed || scope != WithdrawQueued {
 		delivered, confirmed, clear := "delivered_at", "confirmed_at", "delivered_how = '', "
 		if late {
 			delivered, confirmed, clear = "late_delivered_at", "late_confirmed_at", ""
@@ -1045,7 +1046,7 @@ func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, unconf
 		           WHERE token = ? AND ` + delivered + ` IS NOT NULL AND delivered_how = ? AND lineage_only = 0`
 		// A message still in the queue never reached the provider. One that
 		// left it goes back only while no echo has confirmed it.
-		if !removed {
+		if !removed && scope == WithdrawUnconfirmed {
 			query += ` AND ` + confirmed + ` IS NULL`
 		}
 		if _, err := tx.Exec(query, nowMillis(), token, ThreadWakeQueued); err != nil {

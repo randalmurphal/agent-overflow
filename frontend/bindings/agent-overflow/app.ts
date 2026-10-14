@@ -2526,7 +2526,11 @@ export function InstallSkills(providerName: string): $CancellablePromise<void> {
  * restored, `user_message:reverted` event emitted). When the predicate
  * does not match the method falls back to a plain interrupt
  * (provider Interrupt + triage.MarkUserInterrupt) so the caller can
- * roll back any optimistic UI it applied.
+ * roll back any optimistic UI it applied. A row Claude joined from the
+ * person's message and agents' messages gives the composer the person's
+ * text alone; each agent's message goes back to its owner, and a request
+ * is owed again without its sender being told anything
+ * (returnUnsentRequests).
  * 
  * The frontend pre-checks its local predicate before calling so it
  * can paint instant optimistic state; this method re-checks under the

@@ -1088,6 +1088,11 @@ type injectedQueueOptions struct {
 	// persist atomically transfers an injector’s delivery responsibility to the
 	// ordinary durable queue. Nil uses the standard queue insert.
 	persist func(store.FlushQueueItem) error
+	// held queues the message without flushing it into a live session: the
+	// thread's next turn boundary or session start sends it. A message given
+	// back by a Stop or a session end sets it, so the giving back does not
+	// start the turn the Stop ended or resend into a session that failed it.
+	held bool
 	// heldWhileArchived refuses the message with errThreadArchived when the
 	// thread is archived, before persist runs. App-written notices set it
 	// (queueAgentNotice); a person's message is taken by an archived thread
@@ -1333,7 +1338,7 @@ func (a *App) registerQueueItem(
 		}
 	}
 	a.emitQueueStateChanged(threadID)
-	if _, ok := a.sessionManager().get(threadID); ok {
+	if _, ok := a.sessionManager().get(threadID); ok && !injected.held {
 		a.triage.FlushQueuedItems(threadID)
 	}
 	return wireItem, nil

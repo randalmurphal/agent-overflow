@@ -161,7 +161,7 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "restartOf": "",
+          "stoppedBy": "",
           "clipped": false
         }
       }
@@ -182,7 +182,7 @@
           "age": "5m",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": "Runs the builds.",
-          "restartOf": "",
+          "stoppedBy": "",
           "clipped": false
         }
       }
@@ -203,7 +203,7 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "restartOf": "",
+          "stoppedBy": "",
           "clipped": false
         }
       }
@@ -224,7 +224,7 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": "",
-          "restartOf": "",
+          "stoppedBy": "",
           "clipped": false
         }
       }
@@ -245,7 +245,7 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "restartOf": "",
+          "stoppedBy": "",
           "clipped": false
         }
       }
@@ -266,7 +266,7 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "restartOf": "this computer",
+          "stoppedBy": "A restart of this computer",
           "clipped": false
         }
       }
@@ -287,7 +287,49 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "restartOf": "desk",
+          "stoppedBy": "A restart of desk",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "stopped by the person with its last message",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The person stopped this turn before it answered. Its last message:\nHalf done.\nSecond line.",
+    "parts": [
+      {
+        "body": "Half done.\nSecond line.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the person",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "stopped by the person before it said anything, standing agent",
+    "text": "\"Worker\" (t-work, on desk) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The person stopped this turn before it answered.\nThat thread is a standing agent, a thread the user promoted. Its role, in its own words: \"Runs the builds.\"",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "desk",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": "Runs the builds.",
+          "stoppedBy": "the person",
           "clipped": false
         }
       }
@@ -308,7 +350,7 @@
           "age": "1d",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "restartOf": "",
+          "stoppedBy": "",
           "clipped": false
         }
       }
@@ -329,7 +371,7 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "restartOf": "",
+          "stoppedBy": "",
           "clipped": false
         }
       }
@@ -350,7 +392,7 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "restartOf": "",
+          "stoppedBy": "",
           "clipped": true
         }
       }
@@ -407,7 +449,7 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "restartOf": "",
+          "stoppedBy": "",
           "clipped": false
         }
       },
@@ -422,7 +464,7 @@
           "age": "",
           "token": "tok-2",
           "agentRole": null,
-          "restartOf": "",
+          "stoppedBy": "",
           "clipped": false
         }
       }

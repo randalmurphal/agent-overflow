@@ -245,23 +245,29 @@ func (r *Router) resolveMergedFlushRow(threadID, aoItemID string) (mergedFlushRo
 // joinMergedFlushContent builds the survivor's new summary and meta: the
 // members' texts in queue order joined by the shared separator with their
 // `[Image #N]` markers renumbered into the combined attachment list, and the
-// union of their metadata merged onto the survivor's existing blob so its
-// provider correlation keys and promotion markers survive.
+// union of their metadata, with the members' parts, merged onto the
+// survivor's existing blob so its provider correlation keys and promotion
+// markers survive.
 func joinMergedFlushContent(survivorMetaJSON string, members []mergedFlushRow) (string, string, error) {
 	parts := make([]usermessage.TextPart, 0, len(members))
 	metas := make([]usermessage.Meta, 0, len(members))
+	texts := make([]string, 0, len(members))
 	for _, member := range members {
 		parts = append(parts, usermessage.TextPart{
 			Text:       member.summary,
 			ImageCount: usermessage.ImageAttachmentCount(member.meta.Attachments),
 		})
 		metas = append(metas, member.meta)
+		texts = append(texts, member.summary)
 	}
-	meta, err := usermessage.MergeJoinedMeta(survivorMetaJSON, usermessage.JoinMetas(metas))
+	summary, lengths := usermessage.JoinRenumberedTextLengths(parts)
+	joined := usermessage.JoinMetas(metas)
+	joined.JoinedParts = usermessage.PartsOf(metas, texts, lengths)
+	meta, err := usermessage.MergeJoinedMeta(survivorMetaJSON, joined)
 	if err != nil {
 		return "", "", err
 	}
-	return usermessage.JoinRenumberedText(parts), meta, nil
+	return summary, meta, nil
 }
 
 func withFoldedContent(row store.Item, summary, meta string, now int64) store.Item {

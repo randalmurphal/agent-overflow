@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import agentMessageMetas from '../../../../internal/usermessage/testdata/agent_message_metas.json';
+import personParts from '../../../../internal/usermessage/testdata/person_parts.json';
 
 import {
   isAgentMessageMeta,
   isReaderAuthoredUserText,
   parseUserMessageAttachments,
+  personTextOfUserMessage,
   parseUserMessageMeta,
   userMessageOriginThread,
   userMessageOriginWake,
@@ -209,6 +212,16 @@ describe('isAgentMessageMeta and isReaderAuthoredUserText', () => {
     expect(isReaderAuthoredUserText(row({ origin: 'agent-thread', expandComposerCommands: true }))).toBe(true);
   });
 
+  // The same rows Go's IsAgentMessage, the store's SQL filter and Stop's
+  // un-send predicate are held to (TestAgentMessageClassifierAgreesInGoAndSQL).
+  for (const tc of agentMessageMetas) {
+    it(`agrees with Go and SQL: ${tc.name}`, () => {
+      const meta = tc.meta === '' ? {} : (JSON.parse(tc.meta) as Record<string, unknown>);
+      expect(isAgentMessageMeta(meta)).toBe(tc.agent);
+      expect(isReaderAuthoredUserText(row(meta))).toBe(!tc.agent);
+    });
+  }
+
   it('counts only the person\'s top-level rows', () => {
     expect(isReaderAuthoredUserText(row({}))).toBe(true);
     expect(isReaderAuthoredUserText(row({ origin: 'agent-thread' }))).toBe(false);
@@ -216,4 +229,16 @@ describe('isAgentMessageMeta and isReaderAuthoredUserText', () => {
     expect(isReaderAuthoredUserText(row({ wire_only: true }))).toBe(false);
     expect(isReaderAuthoredUserText(row({}, 'tool-1'))).toBe(false);
   });
+});
+
+describe('personTextOfUserMessage', () => {
+  // The rows Go's usermessage.SplitPersonParts is held to
+  // (TestSplitPersonPartsFixture): Stop's un-send gives the composer the
+  // same text on both sides.
+  for (const tc of personParts) {
+    it(`agrees with Go: ${tc.name}`, () => {
+      const meta = tc.meta === '' ? {} : (JSON.parse(tc.meta) as Record<string, unknown>);
+      expect(personTextOfUserMessage(tc.text, meta)).toBe(tc.person);
+    });
+  }
 });

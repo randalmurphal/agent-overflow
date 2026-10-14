@@ -284,7 +284,12 @@ Mechanism in
   sender. A Claude join holding the person's composer message stays the
   person's, and so do a workflow phase prompt, which is a phase thread's
   only user message, and the messages the person starts from a button
-  (answers, review comments, triage and PR discussion). Mechanism:
+  (answers, review comments, triage and PR discussion). A Stop that
+  un-sends such a join gives the person their text alone and gives each
+  agent's message back to its owner; a request is owed again and its
+  sender is told nothing. A person's Stop on a turn a request started
+  reaches the sender as the person's Stop, never as a restart (ruling
+  2026-10-14). Mechanism:
   [how agent messages appear](specs/agent-thread-tools.md#how-agent-messages-appear).
 
 ## Providers and accounts

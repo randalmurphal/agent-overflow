@@ -426,10 +426,15 @@ func (a *App) noteAgentWakeUndelivered(threadID, wakeID, outcome, body string) {
 // A worker's prompt still queued is discarded too: the prompt it carried
 // died with the worker's session when the app quit. So is an outside
 // `thread send`, for the reason a wake is: its text is a script's, and the
-// thread gets a notice that it was not delivered.
+// thread gets a notice that it was not delivered. So is another thread's
+// request, whose sender the boot sweep tells.
 func (a *App) discardAgentWakeAtBoot(row store.FlushQueueItem) bool {
 	switch {
 	case strings.HasPrefix(row.SendID, workerPromptSendIDRoot):
+		return true
+	case threadRequestSendIDToken(row.SendID) != "":
+		// Another thread's request: the boot sweep settles its receipt
+		// interrupted, which tells its sender.
 		return true
 	case strings.HasPrefix(row.SendID, agentSendIDRoot):
 		a.noteAgentSendNotDelivered(row.ThreadID, "the app quit before the agent took it in")
@@ -473,8 +478,9 @@ func (a *App) noteAgentSendNotDelivered(threadID, why string) {
 // keeps its schedule, and a watch keeps the wake's own text. An outside send
 // is thrown away with a notice, as at boot, and a worker's prompt goes back
 // to the user in the worker. An answer, a reminder or a completion goes back
-// to its request or watch, as a Stop's does. When a person's message was
-// joined with them, the person's text alone goes back to the composer.
+// to its request or watch, as a Stop's does, and another thread's request
+// goes back to its queue, owed again (returnRequest). When a person's message
+// was joined with them, the person's text alone goes back to the composer.
 func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlushItem, part composerdraft.Part, reason string) (composerdraft.Part, bool, notTakenIn) {
 	wakeOutcome, sendWhy := agentWakeOutcomeSessionEnded, "the session ended before the agent took it in"
 	if reason != queueRestoredReasonSessionDied && reason != queueRestoredReasonNotDelivered {
@@ -518,6 +524,9 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 		if agentAppPartRoot(id) != "" {
 			owed.messages = append(owed.messages, appMessageOutcome{sendID: id, wakeOutcome: wakeOutcome, body: bodies[id], sendWhy: sendWhy})
 		}
+		if token := threadRequestSendIDToken(id); token != "" {
+			owed.requests = append(owed.requests, returnedRequest{token: token, body: bodies[id]})
+		}
 	}
 	if person != nil {
 		part.Content = *person
@@ -529,6 +538,36 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 	return composerdraft.Part{}, false, owed
 }
 
+// returnUnsentRequests is what the agents' members of a message a person's
+// Stop un-sends are owed, as agentPartsNotTakenIn finds for a session end:
+// the caller applies it (settleNotTakenIn) once the cut commits. An answer,
+// a reminder or a completion goes back to its owner whether or not the
+// provider confirmed it, since the turn that took it in is cut. A request's
+// receipt goes back to `accepted` here, before the interrupt, and the
+// request back on its queue once settled; one already settled owes nothing.
+func (a *App) returnUnsentRequests(parts []usermessage.AgentPart) notTakenIn {
+	var owed notTakenIn
+	for _, part := range parts {
+		switch {
+		case ownedSendID(part.SendID):
+			owed.owned = append(owed.owned, ownedMessage{sendID: part.SendID, unsent: true})
+		case agentAppPartRoot(part.SendID) != "":
+			owed.messages = append(owed.messages, appMessageOutcome{
+				sendID: part.SendID, wakeOutcome: agentWakeOutcomeDropped, body: part.Text,
+				sendWhy: "a Stop took back the turn it started before the agent answered",
+			})
+		case threadRequestSendIDToken(part.SendID) != "":
+			token := threadRequestSendIDToken(part.SendID)
+			if a.threadTools().returnRequest(token) {
+				owed.requests = append(owed.requests, returnedRequest{token: token, body: part.Text, returned: true})
+			}
+		default:
+			log.Printf("interrupt-and-revert: an agent's message %q has no owner to go back to", part.SendID)
+		}
+	}
+	return owed
+}
+
 // notTakenIn is what the app-written messages of unconfirmed items are owed
 // when the provider did not take them in (agentPartsNotTakenIn), held until
 // the restore of the rest commits.
@@ -538,9 +577,21 @@ type notTakenIn struct {
 	messages []appMessageOutcome
 	// owned are the answers, reminders and completions, for their owners.
 	owned []ownedMessage
+	// requests are other threads' requests, which go back to their queue.
+	requests []returnedRequest
 	// rowID is the queue row of an item wholly the app's, which no composer
 	// restore retires.
 	rowID string
+}
+
+// returnedRequest is another thread's request whose message the agent did not
+// take in: by its token, with its message's text. returned marks one whose
+// receipt is already back in `accepted` (a Stop's un-send returns it before
+// the interrupt, so the turn end does not settle it).
+type returnedRequest struct {
+	token    string
+	body     string
+	returned bool
 }
 
 // appMessageOutcome is one app-written message the agent did not take in: a
@@ -576,6 +627,12 @@ func (a *App) settleNotTakenIn(threadID string, owed []notTakenIn) {
 			}
 		}
 		owned = append(owned, item.owned...)
+		for _, r := range item.requests {
+			if !r.returned && !a.threadTools().returnRequest(r.token) {
+				continue
+			}
+			logThreadRequestSweep("requeue the request "+r.token, a.threadTools().requeueRequest(r.token, threadID, r.body))
+		}
 	}
 	if len(owned) > 0 {
 		a.giveBackToOwners(threadID, owned)
@@ -583,10 +640,20 @@ func (a *App) settleNotTakenIn(threadID string, owed []notTakenIn) {
 }
 
 // appWrittenSendID reports a message the app wrote for a thread rather than
-// a person: the app parts agentAppPartRoot names, and the answers,
-// reminders and completions that belong to a request or a watch.
+// a person: the app parts agentAppPartRoot names, the answers, reminders
+// and completions that belong to a request or a watch, and other threads'
+// requests.
 func appWrittenSendID(sendID string) bool {
-	return agentAppPartRoot(sendID) != "" || ownedSendID(sendID)
+	return agentAppPartRoot(sendID) != "" || ownedSendID(sendID) || threadRequestSendIDToken(sendID) != ""
+}
+
+// threadRequestSendIDToken is the token of a request's send id, or empty.
+func threadRequestSendIDToken(sendID string) string {
+	token, _ := strings.CutPrefix(sendID, threadRequestSendIDPrefix)
+	if token == sendID {
+		return ""
+	}
+	return token
 }
 
 // splitSessionEndParts splits an unconfirmed item's text into the bodies of
@@ -595,7 +662,8 @@ func appWrittenSendID(sendID string) bool {
 // part. A joined one splits by the parts its dispatch recorded, exactly. A
 // joined one without them splits by each app part's first line
 // (splitJoinedAgentParts), which needs a part to hold no separator: an
-// answer's or a completion's text can, so one of those makes it unsplittable.
+// answer's, a completion's or a request's text can, so one of those makes it
+// unsplittable.
 func splitSessionEndParts(ids []string, parts []usermessage.JoinedPart, content string) (app map[string]string, person *string, ok bool) {
 	if len(ids) == 1 {
 		return map[string]string{ids[0]: content}, nil, true
@@ -616,7 +684,7 @@ func splitSessionEndParts(ids []string, parts []usermessage.JoinedPart, content 
 		joined := strings.Join(kept, usermessage.JoinSeparator)
 		return app, &joined, true
 	}
-	if slices.ContainsFunc(ids, ownedSendID) {
+	if slices.ContainsFunc(ids, func(id string) bool { return ownedSendID(id) || threadRequestSendIDToken(id) != "" }) {
 		return nil, nil, false
 	}
 	return splitJoinedAgentParts(ids, content)
@@ -804,7 +872,21 @@ type ownedMessage struct {
 	sendID      string
 	rowID       string
 	unconfirmed bool
-	ended       bool
+	// unsent marks one whose turn a Stop un-sent: it goes back whether or
+	// not the provider confirmed it.
+	unsent bool
+	ended  bool
+}
+
+// withdrawal is the store scope that gives m back.
+func (m ownedMessage) withdrawal() store.WakeWithdrawal {
+	switch {
+	case m.unsent:
+		return store.WithdrawUnsent
+	case m.unconfirmed:
+		return store.WithdrawUnconfirmed
+	}
+	return store.WithdrawQueued
 }
 
 // ownedSendID reports an answer's, a reminder's or a remote completion's
@@ -841,7 +923,7 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 	returned := false
 	for _, m := range messages {
 		if token, late, ok := threadWakeFromSendID(m.sendID); ok {
-			logThreadRequestSweep("return "+m.sendID+" to its request", a.store.WithdrawThreadWake(token, late, m.rowID, m.unconfirmed))
+			logThreadRequestSweep("return "+m.sendID+" to its request", a.store.WithdrawThreadWake(token, late, m.rowID, m.withdrawal()))
 			continue
 		}
 		if computerID, requestID, ok := remoteCompletionFromSendID(m.sendID); ok {
@@ -854,7 +936,7 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 					return back
 				}
 			}
-			err := a.store.WithdrawRemoteCompletion(computerID, requestID, m.rowID, m.unconfirmed, paced)
+			err := a.store.WithdrawRemoteCompletion(computerID, requestID, m.rowID, m.withdrawal(), paced)
 			logThreadRequestSweep("return "+m.sendID+" to its watch", err)
 			if err == nil && gaveUp {
 				log.Printf("remote completion watches: giving up on delivering %s after %d session ends", m.sendID, threadWakeRetryAttempts+1)

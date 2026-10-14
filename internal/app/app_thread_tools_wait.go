@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"log"
 	"sync"
 	"time"
 
@@ -40,6 +41,11 @@ type threadRequestState struct {
 	// and no query. Written only where a receipt enters and leaves
 	// `running`, so it cannot claim a receipt the store does not have.
 	running map[string]map[string]struct{}
+	// personStops maps a thread with an entry in running to the turn a
+	// person's Stop cut there, so that turn's receipts settle as the
+	// person's Stop rather than as a restart (turnSettlement). It goes
+	// with the thread's running entry.
+	personStops map[string]personStop
 	// settleLocks serializes everything that can settle or deliver one
 	// token, so a settlement and a timing-out wait never both deliver the
 	// answer and never neither.
@@ -262,7 +268,60 @@ func (a *App) forgetReceiptRunning(threadID, token string) {
 	delete(tokens, token)
 	if len(tokens) == 0 {
 		delete(a.threadRequests.running, threadID)
+		delete(a.threadRequests.personStops, threadID)
 	}
+}
+
+// personStop names the turn a person's Stop cut: its index and when it
+// started, since an un-send gives the next turn the same index.
+type personStop struct {
+	turnIndex int
+	startedAt int64
+}
+
+// notePersonStop records that a person's Stop is cutting the thread's open
+// turn (turnIndex), before the interrupt is sent, so the turn end that
+// follows settles its receipts as the person's Stop. A thread whose turns
+// settle no receipt records nothing.
+func (a *App) notePersonStop(threadID string, turnIndex int) {
+	if turnIndex < 0 {
+		return
+	}
+	if _, ok := a.runningReceiptTokens(threadID); !ok {
+		return
+	}
+	turn, found, err := a.store.GetTurnByThreadIndex(threadID, turnIndex)
+	if err != nil {
+		log.Printf("thread tools: read the stopped turn %d of %s: %v", turnIndex, threadID, err)
+		return
+	}
+	if !found {
+		return
+	}
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	if len(a.threadRequests.running[threadID]) == 0 {
+		return
+	}
+	if a.threadRequests.personStops == nil {
+		a.threadRequests.personStops = make(map[string]personStop)
+	}
+	a.threadRequests.personStops[threadID] = personStop{turnIndex: turnIndex, startedAt: turn.StartedAt}
+}
+
+// forgetPersonStop drops the mark of a Stop whose interrupt did not go out.
+func (a *App) forgetPersonStop(threadID string) {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	delete(a.threadRequests.personStops, threadID)
+}
+
+// personStopped reports whether a person's Stop cut turn.
+func (a *App) personStopped(threadID string, turn store.Turn) bool {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	stop, ok := a.threadRequests.personStops[threadID]
+	return ok && stop.turnIndex == turn.TurnIndex && stop.startedAt == turn.StartedAt
 }
 
 // runningReceiptTokens returns the tokens a turn end on this thread could

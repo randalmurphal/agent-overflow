@@ -2,7 +2,7 @@
 // compact-wake-rows.spec.ts): a standing agent seeded with its scripts, the
 // tray row locators, reads of the rows the tray shows, and captures.
 import { existsSync } from 'node:fs';
-import { rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Locator, Page } from '@playwright/test';
@@ -225,4 +225,16 @@ export async function capture(page: Page, name: string, ...targets: Locator[]): 
     animations: 'disabled',
     style: '[data-testid="sidebar-system-stats"] { display: none !important; }',
   });
+}
+
+/**
+ * capture, also copied to AO_AGENT_MESSAGE_SHOTS when it is set, since the
+ * next run wipes the run's output: the agent message rows' published shots.
+ */
+export async function captureAgentMessage(page: Page, name: string, ...targets: Locator[]): Promise<void> {
+  await capture(page, name, ...targets);
+  const dir = process.env.AO_AGENT_MESSAGE_SHOTS;
+  if (!dir) return;
+  await mkdir(dir, { recursive: true });
+  await copyFile(test.info().outputPath(name), `${dir}/${name}`);
 }

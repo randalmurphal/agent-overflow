@@ -423,6 +423,51 @@ describe('runInterruptOrRevert', () => {
     expect(draft.applied?.attachments).toEqual([]);
   });
 
+  it('restores only the person\'s text of a row joined with an agent\'s request', async () => {
+    const request = 'Fix the nil check.\n\n---\nAgent request from thread "Lead" (t-lead).\nIt is not waiting.';
+    const mine = 'and also update the docs';
+    const originThread = { threadId: 't-lead', title: 'Lead', kind: 'send', token: 'tok-1' };
+    const pane = readyPane();
+    pane.upsertItem({
+      ...userItem('u:0', 0),
+      summary: `${request}\n\n---\n\n${mine}`,
+      meta: JSON.stringify({
+        origin: 'agent-thread', originThread, expandComposerCommands: true, sendId: 'thread-request:tok-1',
+        joinedSendIds: ['thread-request:tok-1', 's-person'],
+        joinedParts: [
+          { sendId: 'thread-request:tok-1', bytes: new TextEncoder().encode(request).length, origin: 'agent-thread', originThread },
+          { sendId: 's-person', bytes: mine.length },
+        ],
+      }),
+    });
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const draft = optimisticDraftProbe();
+
+    setBindingMock('InterruptAndRevertIfClean', async () => successfulRevert());
+
+    runInterruptOrRevert(pane, draft);
+    await flushInterruptFlow();
+
+    expect(draft.applied?.content).toBe(mine);
+  });
+
+  it('keeps a row joined with an agent\'s message when nothing splits it', () => {
+    const pane = readyPane();
+    pane.upsertItem({
+      ...userItem('u:0', 0),
+      summary: 'Agent request text\n\n---\n\nmine',
+      meta: JSON.stringify({
+        origin: 'agent-thread', expandComposerCommands: true, sendId: 'thread-request:tok-1',
+        joinedSendIds: ['thread-request:tok-1', 's-person'],
+      }),
+    });
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+
+    const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
+
+    expect(result).toEqual({ canRevert: false, reason: "message joins an agent's it cannot split" });
+  });
+
   it('restores attachment and source-plan metadata from the interrupted user item', async () => {
     const pane = readyPane();
     pane.upsertItem({

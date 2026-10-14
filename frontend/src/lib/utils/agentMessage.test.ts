@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fixture from '../../../../internal/threadtools/testdata/agent_messages.json';
+import labels from '../../../../internal/app/testdata/agent_message_labels.json';
 import type { Item } from '../types/models';
 import {
   agentMessageFromItem,
@@ -70,7 +71,7 @@ describe('parseWakeText', () => {
       footer: null,
       wake: {
         kind: 'cancelled', title: 'W', threadId: 't-w', computer: '', age: '', token: 'k',
-        agentRole: null, restartOf: '', clipped: false,
+        agentRole: null, stoppedBy: '', clipped: false,
       },
     });
   });
@@ -205,4 +206,17 @@ describe('agentMessageFromItem', () => {
     expect(message.parts).toEqual([{ body: 'free text', footer: null, wake: null }]);
     expect(message.senderThread).toBeNull();
   });
+});
+
+describe('the Edits selector labels (internal/app/testdata/agent_message_labels.json)', () => {
+  // Go names a turn an agent's message started by the row's sender and
+  // first line (agentMessageLabel); these are the row's own.
+  for (const tc of labels) {
+    it(`agrees with Go: ${tc.name}`, () => {
+      const message = agentMessageFromItem({ kind: 'user_text', meta: tc.meta, summary: tc.text });
+      expect(message).not.toBeNull();
+      const label = message!.firstLine === '' ? message!.sender : `${message!.sender}: ${message!.firstLine}`;
+      expect(label).toBe(tc.label);
+    });
+  }
 });

@@ -75,10 +75,10 @@ func (a *SenderAgent) sentence(who string) string {
 	return fmt.Sprintf("%s is a standing agent, a thread the user promoted. Its role, in its own words: %q", who, a.Role)
 }
 
-// footerMarker opens every footer. The receiver is told the last `---`
+// FooterMarker opens every footer. The receiver is told the last `---`
 // block of a message is the footer, and a body line that starts this way
 // is quoted before delivery so nothing above the footer reads as one.
-const footerMarker = "Agent request from thread "
+const FooterMarker = "Agent request from thread "
 
 // QuoteFooterMimics quote-prefixes every line of a request body that opens
 // like the footer marker. The body is the sender's own text and carries no
@@ -87,12 +87,12 @@ const footerMarker = "Agent request from thread "
 // left alone: a rule between paragraphs is ordinary Markdown, and only the
 // last block is the footer.
 func QuoteFooterMimics(body string) string {
-	if !strings.Contains(body, footerMarker) {
+	if !strings.Contains(body, FooterMarker) {
 		return body
 	}
 	lines := strings.Split(body, "\n")
 	for index, line := range lines {
-		if strings.HasPrefix(strings.TrimLeft(line, " \t"), footerMarker) {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), FooterMarker) {
 			lines[index] = "> " + line
 		}
 	}
@@ -104,7 +104,7 @@ func QuoteFooterMimics(body string) string {
 // unchanged. The footer is the last block opening with the marker, which
 // QuoteFooterMimics keeps unique.
 func StripFooter(text string) string {
-	opening := "---\n" + footerMarker
+	opening := "---\n" + FooterMarker
 	if strings.HasPrefix(text, opening) {
 		return ""
 	}
@@ -118,7 +118,7 @@ func StripFooter(text string) string {
 // String renders the footer. It always starts with the "Agent request"
 // marker the server instructions tell the receiver to look for.
 func (f Footer) String() string {
-	lines := []string{"---", fmt.Sprintf("%s%q (%s%s).", footerMarker, f.Title, f.ThreadID, onComputer(f.Computer))}
+	lines := []string{"---", fmt.Sprintf("%s%q (%s%s).", FooterMarker, f.Title, f.ThreadID, onComputer(f.Computer))}
 	if f.Agent != nil {
 		line := f.Agent.sentence("The sender")
 		if f.RoutesPrompts {
@@ -152,8 +152,11 @@ const (
 	WakeErrored     = "errored"
 	WakeCancelled   = "cancelled"
 	WakeInterrupted = "interrupted"
-	WakeExpired     = "expired"
-	WakeReminder    = "reminder"
+	// WakeStopped is an interruption a person's Stop made; its Text is what
+	// the turn said before it, possibly nothing.
+	WakeStopped  = "stopped"
+	WakeExpired  = "expired"
+	WakeReminder = "reminder"
 )
 
 // Wake is the status line and body of a message delivered to the thread
@@ -208,6 +211,12 @@ func (w Wake) status() string {
 		return fmt.Sprintf("%s%s was cancelled.", who, token)
 	case WakeInterrupted:
 		return fmt.Sprintf("%s%s was interrupted by a restart of %s.", who, token, restartedComputer(w.Computer))
+	case WakeStopped:
+		status := fmt.Sprintf("%s%s: %s", who, token, WakePersonStopped)
+		if w.Text == "" {
+			return status
+		}
+		return fmt.Sprintf("%s Its last message:\n%s", status, w.body())
 	case WakeExpired:
 		return fmt.Sprintf("%s%s did not answer within a day.", who, token)
 	case WakeReminder:
@@ -216,6 +225,10 @@ func (w Wake) status() string {
 		return fmt.Sprintf("%s%s settled.", who, token)
 	}
 }
+
+// WakePersonStopped is the status of a request whose turn a person's Stop
+// cut before it answered.
+const WakePersonStopped = "The person stopped this turn before it answered."
 
 func (w Wake) body() string { return WakeBody(w.Text, w.Token) }
 

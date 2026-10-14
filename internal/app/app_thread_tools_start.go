@@ -626,27 +626,88 @@ func (t threadToolsApp) dispatchRequest(
 		PreserveDraft: true,
 		Origin:        usermessage.OriginAgentThread,
 		OriginThread:  attribution,
-		onDurable: func() {
-			record, found, err := t.app.findRecordedSend(targetThreadID, sendID)
-			if err != nil {
-				log.Printf("thread tools: resolve dispatched request %s: %v", token, err)
-				return
-			}
-			if !found || !record.dispatched {
-				// The message was restored into the composer instead of
-				// being sent (a session death, a restart). Nothing ran, so
-				// the receipt stays `accepted` and the boot sweep settles it
-				// interrupted.
-				return
-			}
-			t.markRequestRunning(token, targetThreadID, record.item)
-		},
+		onDurable:     func() { t.requestDispatched(token, targetThreadID) },
 	})
 	if err != nil {
 		return err
 	}
 	if item.ID != "" {
 		t.markRequestRunning(token, targetThreadID, item)
+	}
+	return nil
+}
+
+// requestDispatched settles a queued request message once it is durable: it
+// binds the receipt to the turn that consumed the message.
+func (t threadToolsApp) requestDispatched(token, targetThreadID string) {
+	record, found, err := t.app.findRecordedSend(targetThreadID, threadRequestSendID(token))
+	if err != nil {
+		log.Printf("thread tools: resolve dispatched request %s: %v", token, err)
+		return
+	}
+	if !found || !record.dispatched {
+		// The message did not reach the provider: a restart, or a session
+		// end that gave it back to its queue (requeueRequest). Nothing ran,
+		// so the receipt stays `accepted`.
+		return
+	}
+	t.markRequestRunning(token, targetThreadID, record.item)
+}
+
+// returnRequest takes a request whose message a turn did not take in back to
+// `accepted`: a person's Stop un-sent the turn, or the session ended before
+// the agent read it. Nothing answered it, so its sender is told nothing; the
+// request is owed again and requeueRequest puts its message back on the
+// queue. It reports false when the request was settled or cancelled first,
+// and then it owes nothing. It takes the token's settle lock, so a turn end
+// reading the receipt sees it running or accepted, never in between.
+func (t threadToolsApp) returnRequest(token string) bool {
+	unlock := t.app.threadRequestSettleLock(token)
+	defer unlock()
+	returned, err := t.app.store.ReturnThreadReceipt(token)
+	if err != nil {
+		log.Printf("thread tools: return request %s: %v", token, err)
+		return false
+	}
+	if !returned {
+		return false
+	}
+	// A request another computer made has no row here; its caller reads
+	// the receipt.
+	if _, err := t.app.store.AdvanceThreadRequestState(token, store.ThreadRequestRunning, store.ThreadRequestAccepted); err != nil {
+		log.Printf("thread tools: return request %s to accepted: %v", token, err)
+	}
+	return true
+}
+
+// requeueRequest puts a returned request's message (body, footer included)
+// back on its target's queue, attributed as dispatchRequest attributed it. It
+// is held: the Stop or the session end that gave it back does not start a
+// turn for it, and the thread's next turn boundary or session start sends it.
+func (t threadToolsApp) requeueRequest(token, targetThreadID, body string) error {
+	receipt, found, err := t.app.store.GetThreadRequestReceipt(token)
+	if err != nil {
+		return fmt.Errorf("requeue request %s: %w", token, err)
+	}
+	if !found || receipt.State != store.ThreadReceiptAccepted {
+		return nil
+	}
+	_, err = t.app.registerQueueItem(targetThreadID, body, SendMessageOptions{SendID: threadRequestSendID(token)}, injectedQueueOptions{
+		preserveDraft: true,
+		held:          true,
+		origin:        usermessage.OriginAgentThread,
+		originThread: &usermessage.OriginThread{
+			ComputerID:   receipt.SourceComputerID,
+			ComputerName: receipt.SourceComputerName,
+			ThreadID:     receipt.SourceThreadID,
+			Title:        receipt.SourceThreadTitle,
+			Token:        token,
+			Kind:         receipt.Kind,
+		},
+		onDurable: func() { t.requestDispatched(token, targetThreadID) },
+	})
+	if err != nil {
+		return fmt.Errorf("requeue request %s: %w", token, err)
 	}
 	return nil
 }

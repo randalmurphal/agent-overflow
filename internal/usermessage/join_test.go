@@ -2,6 +2,7 @@ package usermessage
 
 import (
 	"encoding/json"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -156,5 +157,52 @@ func TestImageAttachmentCountTreatsEmptyKindAsImage(t *testing.T) {
 	})
 	if got != 2 {
 		t.Errorf("ImageAttachmentCount = %d, want 2 (empty kind is an image, a file is not)", got)
+	}
+}
+
+// The frontend's personTextOfUserMessage reads the same fixture, so the
+// un-send's composer text agrees on both sides of the Stop.
+func TestSplitPersonPartsFixture(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile("testdata/person_parts.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name   string  `json:"name"`
+		Text   string  `json:"text"`
+		Meta   string  `json:"meta"`
+		Person *string `json:"person"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		meta, err := FromItem(store.Item{Meta: tc.Meta})
+		if err != nil {
+			t.Fatalf("%s: meta: %v", tc.Name, err)
+		}
+		person, agents, ok := SplitPersonParts(tc.Text, meta)
+		if (tc.Person != nil) != ok {
+			t.Errorf("%s: ok = %v, want %v", tc.Name, ok, tc.Person != nil)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if person != *tc.Person {
+			t.Errorf("%s: person = %q, want %q", tc.Name, person, *tc.Person)
+		}
+		// What is not the person's is the agents', whole.
+		rebuilt := 0
+		for _, agent := range agents {
+			if !agent.IsAgent() || len(agent.Text) != agent.Bytes {
+				t.Errorf("%s: agent part %+v", tc.Name, agent)
+			}
+			rebuilt += agent.Bytes
+		}
+		if len(meta.JoinedParts) > 0 && rebuilt+len(person) > len(tc.Text) {
+			t.Errorf("%s: parts overlap", tc.Name)
+		}
 	}
 }

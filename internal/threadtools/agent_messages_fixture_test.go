@@ -39,7 +39,7 @@ type fixtureWake struct {
 	Age       string  `json:"age"`
 	Token     string  `json:"token"`
 	AgentRole *string `json:"agentRole"`
-	RestartOf string  `json:"restartOf"`
+	StoppedBy string  `json:"stoppedBy"`
 	Clipped   bool    `json:"clipped"`
 }
 
@@ -98,14 +98,21 @@ func wakePart(wake Wake) (string, fixturePart) {
 		}
 	}
 	switch wake.Kind {
-	case WakeReply, WakeFinished, WakeErrored, WakeReminder:
+	case WakeReply, WakeFinished, WakeErrored, WakeReminder, WakeStopped:
 		part.Body = wake.Text
 		if len(wake.Text) > WakePreviewBytes {
 			part.Body = clipBytes(wake.Text, WakePreviewBytes)
 			part.Wake.Clipped = true
 		}
+	}
+	switch wake.Kind {
 	case WakeInterrupted:
-		part.Wake.RestartOf = restartedComputer(wake.Computer)
+		part.Wake.StoppedBy = "A restart of " + restartedComputer(wake.Computer)
+	case WakeStopped:
+		// The frontend reads both as an interrupted request, told apart by
+		// who stopped it.
+		part.Wake.Kind = WakeInterrupted
+		part.Wake.StoppedBy = "the person"
 	}
 	return wake.String(), part
 }
@@ -169,6 +176,12 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("cancelled", wake(Wake{Kind: WakeCancelled, Title: "Worker", ThreadID: "t-work", Token: token})),
 		one("interrupted locally", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token})),
 		one("interrupted on another computer", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Computer: "desk", Token: token})),
+		one("stopped by the person with its last message", wake(Wake{
+			Kind: WakeStopped, Title: "Worker", ThreadID: "t-work", Token: token, Text: "Half done.\nSecond line.",
+		})),
+		one("stopped by the person before it said anything, standing agent", wake(Wake{
+			Kind: WakeStopped, Title: "Worker", ThreadID: "t-work", Computer: "desk", Token: token, Agent: &SenderAgent{Role: "Runs the builds."},
+		})),
 		one("expired", wake(Wake{Kind: WakeExpired, Title: "Worker", ThreadID: "t-work", Token: token, Age: 26 * time.Hour})),
 		one("reminder", wake(Wake{Kind: WakeReminder, Token: token, Text: "Check the build."})),
 		one("clipped reply", wake(Wake{Kind: WakeReply, Title: "Worker", ThreadID: "t-work", Token: token, Text: long})),

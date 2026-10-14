@@ -1376,6 +1376,52 @@ func TestThreadRequestSettlesErroredWhenTheTurnFails(t *testing.T) {
 	}
 }
 
+// A person's Stop on a turn a request started is reported to its sender as
+// the person's, with what the turn said by then; it is not a restart. Every
+// other interruption keeps the restart's wording, and a later turn the
+// un-send gave the same index is not the stopped one.
+func TestAPersonsStopReachesTheSenderAsThePersons(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	threadID := f.caller.ID
+	started := time.Now().UnixMilli()
+	if err := f.app.store.InsertTurn(store.Turn{TurnID: threadID + ":0", ThreadID: threadID, TurnIndex: 0, StartedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	appendTurnRow(t, f.app.store, store.Item{ID: "a:0", ThreadID: threadID, TurnIndex: 0, Kind: "assistant_text", Summary: "Half done."})
+	f.app.noteReceiptRunning(threadID, "tok-1")
+	f.app.notePersonStop(threadID, 0)
+
+	wakeFor := func(turn store.Turn) string {
+		t.Helper()
+		settlement, err := f.app.turnSettlement(threadID, turn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := f.app.threadWakeBody(store.ThreadRequest{
+			Token: "tok-1", TargetThreadID: threadID, State: settlement.State,
+			Answer: settlement.Answer, AnswerKind: settlement.AnswerKind,
+		}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	stopped := store.Turn{ThreadID: threadID, TurnIndex: 0, StartedAt: started, StopReason: "interrupted"}
+	if body := wakeFor(stopped); !strings.Contains(body, threadtools.WakePersonStopped+" Its last message:\nHalf done.") || strings.Contains(body, "restart") {
+		t.Fatalf("a person's Stop reaches the sender as %q", body)
+	}
+	reused := stopped
+	reused.StartedAt = started + 1
+	if body := wakeFor(reused); !strings.Contains(body, "interrupted by a restart") {
+		t.Fatalf("another turn at the stopped index reaches the sender as %q", body)
+	}
+	f.app.forgetReceiptRunning(threadID, "tok-1")
+	if body := wakeFor(stopped); !strings.Contains(body, "interrupted by a restart") {
+		t.Fatalf("with the request settled, the mark should be gone; the wake reads %q", body)
+	}
+}
+
 // A target that has stopped to ask a person something ends the wait without
 // settling: the person owns the answer now.
 func TestThreadStatusReturnsBlockedWhenTheTargetNeedsAPerson(t *testing.T) {

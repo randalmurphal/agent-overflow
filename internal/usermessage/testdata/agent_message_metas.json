@@ -1,0 +1,52 @@
+[
+  {
+    "name": "the person's",
+    "meta": "",
+    "agent": false
+  },
+  {
+    "name": "the person's with a send id",
+    "meta": "{\"sendId\":\"s1\"}",
+    "agent": false
+  },
+  {
+    "name": "outside queue",
+    "meta": "{\"origin\":\"external-queue\"}",
+    "agent": false
+  },
+  {
+    "name": "scheduled",
+    "meta": "{\"origin\":\"scheduled\"}",
+    "agent": false
+  },
+  {
+    "name": "agent thread request",
+    "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-x\",\"kind\":\"send\"},\"sendId\":\"thread-request:k\"}",
+    "agent": true
+  },
+  {
+    "name": "agent thread wake",
+    "meta": "{\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-x\",\"kind\":\"wake\"},\"sendId\":\"thread-wake:k\"}",
+    "agent": true
+  },
+  {
+    "name": "loop wake",
+    "meta": "{\"origin\":\"agent-wake\",\"originWake\":{\"kind\":\"loop\",\"label\":\"l\"}}",
+    "agent": true
+  },
+  {
+    "name": "remote job completion",
+    "meta": "{\"origin\":\"agent-wake\",\"originWake\":{\"kind\":\"completion\",\"label\":\"build\",\"computer\":\"box\"}}",
+    "agent": true
+  },
+  {
+    "name": "workflow wake",
+    "meta": "{\"origin\":\"agent-wake\",\"originWake\":{\"kind\":\"workflow\",\"label\":\"wf-1\"}}",
+    "agent": true
+  },
+  {
+    "name": "the person's joined after a wake",
+    "meta": "{\"origin\":\"agent-wake\",\"originWake\":{\"kind\":\"loop\"},\"expandComposerCommands\":true}",
+    "agent": false
+  }
+]

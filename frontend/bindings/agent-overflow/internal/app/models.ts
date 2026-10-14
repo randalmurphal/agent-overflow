@@ -1788,7 +1788,7 @@ export class EditDiffList {
 
 /**
  * EditDiffTurnLabel captions a selector turn group with the turn's
- * first user prompt.
+ * first user prompt (promptLabel).
  */
 export class EditDiffTurnLabel {
     "turnIndex": number;

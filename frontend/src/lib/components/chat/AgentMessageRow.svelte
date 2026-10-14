@@ -127,7 +127,7 @@
       }
       if (wake.agentRole !== null) facts.push({ label: 'Role', value: wake.agentRole || 'Standing agent' });
       if (wake.age) facts.push({ label: 'Answered', value: `${wake.age} ago` });
-      if (wake.restartOf) facts.push({ label: 'Stopped by', value: `A restart of ${wake.restartOf}` });
+      if (wake.stoppedBy) facts.push({ label: 'Stopped by', value: wake.stoppedBy });
       if (wake.clipped) facts.push({ label: 'Preview', value: `thread_status ${wake.token} returns the whole answer` });
       if (wake.token) facts.push({ label: 'Token', value: wake.token });
     }

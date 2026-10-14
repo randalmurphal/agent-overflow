@@ -77,13 +77,83 @@ func JoinRenumberedTextLengths(parts []TextPart) (string, []int) {
 }
 
 // JoinedPart is one member of a joined message as it appears in the joined
-// text: its send id, empty for a member without one, and its length in
-// bytes, separator excluded. A joined message's member texts are free text,
-// an answer's or a job output's included, and can hold the separator, so
-// only these lengths split one back into its members.
+// text: its send id, empty for a member without one, its length in bytes,
+// separator excluded, and its attribution. A joined message's member texts
+// are free text, an answer's or a job output's included, and can hold the
+// separator, so only these lengths split one back into its members, and
+// only the attribution tells an agent's member from the person's.
 type JoinedPart struct {
-	SendID string `json:"sendId,omitempty"`
-	Bytes  int    `json:"bytes"`
+	SendID       string        `json:"sendId,omitempty"`
+	Bytes        int           `json:"bytes"`
+	Origin       string        `json:"origin,omitempty"`
+	OriginThread *OriginThread `json:"originThread,omitempty"`
+	OriginWake   *OriginWake   `json:"originWake,omitempty"`
+}
+
+// IsAgent reports whether the part is a message an agent or the app wrote.
+func (p JoinedPart) IsAgent() bool {
+	return IsAgentMessage(Meta{Origin: p.Origin})
+}
+
+// PartsOf names the members of a joined message: one part per member with
+// its length in the joined text (lengths, from JoinRenumberedTextLengths) and
+// attribution. A member that is itself a joined message contributes its own
+// parts while they still describe its text; when it has none, or renumbering
+// its image markers changed its length, the message's parts are unknown and
+// PartsOf returns nil.
+func PartsOf(members []Meta, texts []string, lengths []int) []JoinedPart {
+	parts := make([]JoinedPart, 0, len(members))
+	for i, member := range members {
+		if len(member.JoinedSendIDs) == 0 {
+			parts = append(parts, JoinedPart{
+				SendID: member.SendID, Bytes: lengths[i],
+				Origin: member.Origin, OriginThread: member.OriginThread, OriginWake: member.OriginWake,
+			})
+			continue
+		}
+		if lengths[i] != len(texts[i]) {
+			return nil
+		}
+		if _, ok := SplitJoinedParts(texts[i], member.JoinedParts); !ok {
+			return nil
+		}
+		parts = append(parts, member.JoinedParts...)
+	}
+	return parts
+}
+
+// SplitPersonParts cuts a joined row's text into the person's text and the
+// agents' members, by the parts recorded on its meta. ok is false when the
+// row holds an agent's member and no recorded parts describe its text and
+// name it: then nothing can tell the person's words from the agent's. A row
+// with no agent's member is the person's whole.
+func SplitPersonParts(text string, meta Meta) (person string, agents []AgentPart, ok bool) {
+	agentOrigin := meta.Origin == OriginAgentThread || meta.Origin == OriginAgentWake
+	if len(meta.JoinedParts) == 0 {
+		if agentOrigin {
+			return "", nil, false
+		}
+		return text, nil, true
+	}
+	members, fits := SplitJoinedParts(text, meta.JoinedParts)
+	if !fits || agentOrigin && !slices.ContainsFunc(meta.JoinedParts, JoinedPart.IsAgent) {
+		return "", nil, false
+	}
+	var kept []string
+	for i, part := range meta.JoinedParts {
+		if part.IsAgent() {
+			agents = append(agents, AgentPart{JoinedPart: part, Text: members[i]})
+			continue
+		}
+		kept = append(kept, members[i])
+	}
+	return strings.Join(kept, JoinSeparator), agents, true
+}
+
+// AgentPart is an agent's member of a joined message and its text.
+type AgentPart struct {
+	JoinedPart
+	Text string
 }
 
 // SplitJoinedParts cuts text into the members parts describe. ok is false
@@ -263,6 +333,7 @@ func (m Meta) isZero() bool {
 		m.Origin == "" &&
 		m.OriginThread == nil &&
 		m.OriginWake == nil &&
+		len(m.JoinedParts) == 0 &&
 		!m.ExpandComposerCommands
 }
 
@@ -288,6 +359,7 @@ var metaTypedKeys = []string{
 	"origin",
 	"originThread",
 	"originWake",
+	"joinedParts",
 }
 
 // MergeJoinedMeta rewrites the typed usermessage fields of `existing` to those

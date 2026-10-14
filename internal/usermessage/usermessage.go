@@ -84,6 +84,13 @@ type Meta struct {
 	// OriginWake names the loop, watch or outside send that wrote this row,
 	// on an `agent-wake` row. Absent on every other origin.
 	OriginWake *OriginWake `json:"originWake,omitempty"`
+	// JoinedParts are a joined row's members as they appear in its text,
+	// each with its attribution (JoinedPart), written when the row is
+	// joined. Origin above is the first attributed member's; these say
+	// which words are whose, so a Stop that un-sends the row gives the
+	// person back their own text and an agent's member back to its owner.
+	// Absent on a row of one message and on rows joined before it existed.
+	JoinedParts []JoinedPart `json:"joinedParts,omitempty"`
 }
 
 // OriginAgentThread is the Origin value of a row one thread's agent wrote

@@ -1194,7 +1194,7 @@ func TestWithdrawThreadWakeOwesTheAnswerAgainDisarmed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("QueueThreadWake: %v", err)
 	}
-	if err := s.WithdrawThreadWake("tok-back", false, "queue:back", false); err != nil {
+	if err := s.WithdrawThreadWake("tok-back", false, "queue:back", WithdrawQueued); err != nil {
 		t.Fatalf("WithdrawThreadWake: %v", err)
 	}
 	row := mustGetThreadRequest(t, s, "tok-back")
@@ -1220,7 +1220,7 @@ func TestWithdrawThreadWakeOwesTheAnswerAgainDisarmed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("QueueThreadWake(late): %v", err)
 	}
-	if err := s.WithdrawThreadWake("tok-back", true, "queue:back-late", false); err != nil {
+	if err := s.WithdrawThreadWake("tok-back", true, "queue:back-late", WithdrawQueued); err != nil {
 		t.Fatalf("WithdrawThreadWake(late): %v", err)
 	}
 	row = mustGetThreadRequest(t, s, "tok-back")
@@ -1233,7 +1233,7 @@ func TestWithdrawThreadWakeOwesTheAnswerAgainDisarmed(t *testing.T) {
 	if _, err := s.SetThreadRequestNotify("tok-back", true); err != nil {
 		t.Fatalf("SetThreadRequestNotify: %v", err)
 	}
-	if err := s.WithdrawThreadWake("tok-back", false, "queue:absent", false); err != nil {
+	if err := s.WithdrawThreadWake("tok-back", false, "queue:absent", WithdrawQueued); err != nil {
 		t.Fatalf("WithdrawThreadWake(absent): %v", err)
 	}
 	if row := mustGetThreadRequest(t, s, "tok-back"); !row.Notify || row.DeliveredAt != 920 {
@@ -1260,7 +1260,7 @@ func TestWithdrawThreadWakeReturnsAnUnconfirmedWakeWithNoRow(t *testing.T) {
 	if err := s.DeleteDispatchedFlushQueueItem("queue:sent"); err != nil {
 		t.Fatalf("DeleteDispatchedFlushQueueItem: %v", err)
 	}
-	if err := s.WithdrawThreadWake("tok-sent", false, "queue:sent", true); err != nil {
+	if err := s.WithdrawThreadWake("tok-sent", false, "queue:sent", WithdrawUnconfirmed); err != nil {
 		t.Fatalf("WithdrawThreadWake: %v", err)
 	}
 	if row := mustGetThreadRequest(t, s, "tok-sent"); row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify {
@@ -1271,7 +1271,7 @@ func TestWithdrawThreadWakeReturnsAnUnconfirmedWakeWithNoRow(t *testing.T) {
 	if _, err := s.MarkThreadRequestDelivered("tok-inline", ThreadWakeInline, 920, false); err != nil {
 		t.Fatalf("MarkThreadRequestDelivered: %v", err)
 	}
-	if err := s.WithdrawThreadWake("tok-inline", false, "", true); err != nil {
+	if err := s.WithdrawThreadWake("tok-inline", false, "", WithdrawUnconfirmed); err != nil {
 		t.Fatalf("WithdrawThreadWake(inline): %v", err)
 	}
 	if row := mustGetThreadRequest(t, s, "tok-inline"); row.DeliveredAt != 920 || row.DeliveredHow != ThreadWakeInline {
@@ -1399,7 +1399,7 @@ func TestThreadWakeDeliveryIsConfirmedByItsEcho(t *testing.T) {
 	if got := unconfirmed(); len(got) != 0 {
 		t.Fatalf("unconfirmed after the echo = %q, want none", got)
 	}
-	if err := s.WithdrawThreadWake("tok-queued", false, "queue:queued", true); err != nil {
+	if err := s.WithdrawThreadWake("tok-queued", false, "queue:queued", WithdrawUnconfirmed); err != nil {
 		t.Fatalf("WithdrawThreadWake: %v", err)
 	}
 	if row := mustGetThreadRequest(t, s, "tok-queued"); row.DeliveredAt == 0 || row.ConfirmedAt != 950 {
@@ -1415,7 +1415,7 @@ func TestThreadWakeDeliveryIsConfirmedByItsEcho(t *testing.T) {
 	if got := unconfirmed(); !slices.Equal(got, []string{"tok-inline:late"}) {
 		t.Fatalf("unconfirmed after the late queue write = %q, want [tok-inline:late]", got)
 	}
-	if err := s.WithdrawThreadWake("tok-inline", true, "queue:late", true); err != nil {
+	if err := s.WithdrawThreadWake("tok-inline", true, "queue:late", WithdrawUnconfirmed); err != nil {
 		t.Fatalf("WithdrawThreadWake(late): %v", err)
 	}
 	if row := mustGetThreadRequest(t, s, "tok-inline"); row.LateDeliveredAt != 0 || row.DeliveredAt != 920 || row.ConfirmedAt != 920 {
@@ -1432,7 +1432,7 @@ func TestThreadWakeDeliveryIsConfirmedByItsEcho(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("QueueThreadWake: %v", err)
 	}
-	if err := s.WithdrawThreadWake("tok-again", false, "queue:again", false); err != nil {
+	if err := s.WithdrawThreadWake("tok-again", false, "queue:again", WithdrawQueued); err != nil {
 		t.Fatalf("WithdrawThreadWake: %v", err)
 	}
 	queue("tok-again", false, "queue:again2")
@@ -1487,14 +1487,14 @@ func TestALineageOnlyRowIsNeverGivenBackOrConfirmed(t *testing.T) {
 		t.Errorf("unconfirmed at boot = %q, want the lineage-only row left out", got)
 	}
 	for _, late := range []bool{false, true} {
-		if err := s.WithdrawThreadWake("tok", late, "", true); err != nil {
+		if err := s.WithdrawThreadWake("tok", late, "", WithdrawUnconfirmed); err != nil {
 			t.Fatalf("WithdrawThreadWake(late=%v, unconfirmed): %v", late, err)
 		}
 		if confirmed, err := s.ConfirmThreadWake("tok", late, 1000); err != nil || confirmed {
 			t.Errorf("ConfirmThreadWake(late=%v) on the lineage-only row: confirmed=%v err=%v", late, confirmed, err)
 		}
 	}
-	if err := s.WithdrawThreadWake("tok", false, "queue:tok", false); err != nil {
+	if err := s.WithdrawThreadWake("tok", false, "queue:tok", WithdrawQueued); err != nil {
 		t.Fatalf("WithdrawThreadWake with its row: %v", err)
 	}
 	after := rawThreadRequest(t, s, "tok")
@@ -1522,7 +1522,7 @@ func TestWithdrawThreadWakeWithItsRowIgnoresTheConfirmation(t *testing.T) {
 	if _, err := s.ConfirmThreadWake("tok", false, 950); err != nil {
 		t.Fatalf("ConfirmThreadWake: %v", err)
 	}
-	if err := s.WithdrawThreadWake("tok", false, "queue:tok", false); err != nil {
+	if err := s.WithdrawThreadWake("tok", false, "queue:tok", WithdrawQueued); err != nil {
 		t.Fatalf("WithdrawThreadWake: %v", err)
 	}
 	if row := mustGetThreadRequest(t, s, "tok"); row.DeliveredAt != 0 || row.ConfirmedAt != 0 {

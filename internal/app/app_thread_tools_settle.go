@@ -125,12 +125,26 @@ func (a *App) settleReceiptOnTurnEnd(threadID, token string) error {
 // A turn that answered without thread_reply still said something, and that
 // last message is the most useful thing this computer has; it is reported as
 // `final` so the caller is never told a fallback is the answer it asked for.
+// A turn a person's Stop cut (notePersonStop) is `interrupted` with what it
+// said by then as its `final` answer, which is how the wake tells it from a
+// restart: every other interruption's answer is an `error`.
 func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequestSettlement, error) {
 	settledAt := time.Now().UnixMilli()
 	if turn.CompletedAt != nil {
 		settledAt = *turn.CompletedAt
 	}
 	switch {
+	case turn.StopReason == "interrupted" && a.personStopped(threadID, turn):
+		text, err := a.lastAssistantText(threadID, turn.TurnIndex)
+		if err != nil {
+			return store.ThreadRequestSettlement{}, err
+		}
+		return store.ThreadRequestSettlement{
+			State:      store.ThreadReceiptInterrupted,
+			Answer:     []byte(text),
+			AnswerKind: store.ThreadAnswerFinal,
+			SettledAt:  settledAt,
+		}, nil
 	case turn.StopReason == "interrupted":
 		return store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptInterrupted,

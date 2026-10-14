@@ -62,6 +62,11 @@ export interface UserMessageMeta {
   /** What wrote an `agent-wake` row. See userMessageOriginWake. */
   originWake?: unknown;
   /**
+   * A joined row's members in its text, each `{sendId, bytes, origin}`:
+   * bytes is the member's UTF-8 length. See personTextOfUserMessage.
+   */
+  joinedParts?: unknown;
+  /**
    * The peer session's registered display name, on a `peer-session` row.
    * May be absent — an older CLI reports only a socket address — in which
    * case the row is labelled without a name rather than with an empty one.
@@ -220,6 +225,54 @@ export function isReaderAuthoredUserText(item: Item): boolean {
   if ((item.parentId ?? '') !== '') return false;
   const meta = parseUserMessageMeta(item.meta);
   return meta.wire_only !== true && !isAgentMessageMeta(meta);
+}
+
+const JOIN_SEPARATOR_BYTES = new TextEncoder().encode('\n\n---\n\n');
+
+interface JoinedPartMeta {
+  bytes: number;
+  agent: boolean;
+}
+
+function joinedPartsOf(meta: UserMessageMeta): JoinedPartMeta[] | null {
+  if (!Array.isArray(meta.joinedParts)) return null;
+  const parts: JoinedPartMeta[] = [];
+  for (const part of meta.joinedParts as unknown[]) {
+    if (typeof part !== 'object' || part === null) return null;
+    const { bytes, origin } = part as { bytes?: unknown; origin?: unknown };
+    if (typeof bytes !== 'number' || !Number.isInteger(bytes)) return null;
+    parts.push({ bytes, agent: origin === 'agent-thread' || origin === 'agent-wake' });
+  }
+  return parts;
+}
+
+/**
+ * The person's text of a row a Stop un-sends: the whole row, or for a row
+ * headless Claude joined from the person's messages and agents', the
+ * person's members cut by the lengths the row recorded. null when the row
+ * holds an agent's message nothing tells apart from the person's; the
+ * un-send declines then. The Go twin is usermessage.SplitPersonParts.
+ */
+export function personTextOfUserMessage(text: string, meta: UserMessageMeta): string | null {
+  const origin = typeof meta.origin === 'string' ? meta.origin : '';
+  const agentOrigin = origin === 'agent-thread' || origin === 'agent-wake';
+  const parts = joinedPartsOf(meta);
+  if (parts === null || parts.length === 0) return agentOrigin ? null : text;
+  if (agentOrigin && !parts.some((part) => part.agent)) return null;
+  const bytes = new TextEncoder().encode(text);
+  const decoder = new TextDecoder();
+  const kept: string[] = [];
+  let at = 0;
+  for (const [i, part] of parts.entries()) {
+    if (i > 0) {
+      if (!JOIN_SEPARATOR_BYTES.every((byte, j) => bytes[at + j] === byte)) return null;
+      at += JOIN_SEPARATOR_BYTES.length;
+    }
+    if (part.bytes < 0 || part.bytes > bytes.length - at) return null;
+    if (!part.agent) kept.push(decoder.decode(bytes.subarray(at, at + part.bytes)));
+    at += part.bytes;
+  }
+  return at === bytes.length ? kept.join('\n\n---\n\n') : null;
 }
 
 /**

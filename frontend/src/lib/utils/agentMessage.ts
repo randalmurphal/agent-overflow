@@ -69,8 +69,8 @@ export interface WakeFacts {
   age: string;
   token: string;
   agentRole: string | null;
-  /** The computer whose restart interrupted the request, on `interrupted`. */
-  restartOf: string;
+  /** Who stopped an `interrupted` request: a computer's restart or the person. */
+  stoppedBy: string;
   /** The answer was cut to the wake's preview; thread_status has the rest. */
   clipped: boolean;
 }
@@ -290,12 +290,17 @@ export function parseRequestText(text: string): AgentMessagePart[] | null {
   return parts;
 }
 
+/** A person's Stop, in place of the restart line; its last message may follow. */
+const PERSON_STOPPED = ': The person stopped this turn before it answered.';
+const PERSON_STOPPED_ANSWER = ' Its last message:';
+
 const WAKE_TAILS: ReadonlyArray<{ kind: WakeKind; opening: string; body: 'line' | 'next' | 'none' }> = [
   { kind: 'finished', opening: ' finished its turn without calling thread_reply. Its final message:', body: 'next' },
   { kind: 'errored', opening: ' errored: ', body: 'line' },
   { kind: 'cancelled', opening: ' was cancelled: ', body: 'line' },
   { kind: 'cancelled', opening: ' was cancelled.', body: 'none' },
   { kind: 'interrupted', opening: ' was interrupted by a restart of ', body: 'none' },
+  { kind: 'interrupted', opening: PERSON_STOPPED, body: 'none' },
   { kind: 'expired', opening: ' did not answer within a day.', body: 'none' },
   { kind: 'settled', opening: ' settled.', body: 'none' },
 ];
@@ -313,7 +318,7 @@ export function parseWakeText(text: string): AgentMessagePart | null {
   let after = newline < 0 ? '' : text.slice(newline + 1);
   const facts: WakeFacts = {
     kind: 'settled', title: '', threadId: '', computer: '', age: '', token: '',
-    agentRole: null, restartOf: '', clipped: false,
+    agentRole: null, stoppedBy: '', clipped: false,
   };
   let body = '';
   if (head.startsWith('Reminder you set')) {
@@ -346,9 +351,13 @@ export function parseWakeText(text: string): AgentMessagePart | null {
       if (!tail) return null;
       facts.kind = tail.kind;
       const inline = rest.slice(tail.opening.length);
-      if (tail.kind === 'interrupted') {
+      if (tail.opening === PERSON_STOPPED) {
+        facts.stoppedBy = 'the person';
+        if (inline === PERSON_STOPPED_ANSWER) body = after;
+        else if (inline !== '' || after !== '') return null;
+      } else if (tail.kind === 'interrupted') {
         if (!inline.endsWith('.')) return null;
-        facts.restartOf = inline.slice(0, -1);
+        facts.stoppedBy = `A restart of ${inline.slice(0, -1)}`;
       } else if (tail.body === 'line') {
         body = after === '' ? inline : `${inline}\n${after}`;
       } else if (tail.body === 'next') {

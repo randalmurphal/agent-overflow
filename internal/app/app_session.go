@@ -985,6 +985,9 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		}
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
+	if consent != nil {
+		a.notePersonStop(threadID, interruptedTurn)
+	}
 	var interruptErr error
 	interruptSent := true
 	if sess.Codex != nil && sess.Codex == fencedCodex {
@@ -996,6 +999,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
+		a.forgetPersonStop(threadID)
 		return false, interruptErr
 	}
 	if !interruptSent {
@@ -1005,6 +1009,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
+		a.forgetPersonStop(threadID)
 		return false, nil
 	}
 	if a.triage != nil {

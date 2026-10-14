@@ -12,7 +12,7 @@ import (
 // the full record reads it through the references.
 func Compose(in Input) string {
 	var out strings.Builder
-	out.WriteString(dataNotice)
+	out.WriteString(DataNotice)
 	out.WriteString("\n\n")
 	out.WriteString(headline(in.Run, in.Descendant != nil))
 	if in.Descendant != nil {

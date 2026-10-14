@@ -262,6 +262,25 @@ func (s *Store) MarkThreadReceiptRunning(token, messageItemID, turnID string) (b
 	return rowsChanged(result, action)
 }
 
+// ReturnThreadReceipt takes a receipt back to `accepted` when the turn its
+// message started was un-sent before it answered: the message goes back on
+// the queue, and the next turn that consumes it binds the receipt again
+// (MarkThreadReceiptRunning). It reports whether the receipt is open and
+// accepted afterwards; a settled or cancelled one is left as it is.
+func (s *Store) ReturnThreadReceipt(token string) (bool, error) {
+	action := fmt.Sprintf("store: return thread receipt %s", token)
+	result, err := s.db.Exec(
+		`UPDATE thread_request_receipts
+		    SET state = 'accepted', message_item_id = '', turn_id = '', updated_at = ?
+		  WHERE token = ? AND state IN ('accepted', 'running')`,
+		nowMillis(), token,
+	)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return rowsChanged(result, action)
+}
+
 // SettleThreadRequestReceipt stores the whole answer on the destination row
 // and bumps the revision, provided the row is still in one of `from`. The
 // turn-end observer passes {running} so a thread_reply that landed first

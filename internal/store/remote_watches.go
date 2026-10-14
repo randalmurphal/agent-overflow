@@ -233,6 +233,21 @@ func (s *Store) QueueRemoteCompletion(computerID, requestID string, item FlushQu
 	return tx.Commit()
 }
 
+// WakeWithdrawal is which delivered message a withdrawal of an answer or a
+// completion takes back to its owner.
+type WakeWithdrawal int
+
+const (
+	// WithdrawQueued takes back only a message still on the queue.
+	WithdrawQueued WakeWithdrawal = iota
+	// WithdrawUnconfirmed also takes back one the provider was handed and
+	// never confirmed.
+	WithdrawUnconfirmed
+	// WithdrawUnsent also takes back one the provider confirmed, whose turn
+	// a Stop un-sent: the conversation no longer holds it.
+	WithdrawUnsent
+)
+
 // CompletionReturn is how a completion goes back to its watch: due at once
 // (the zero value), due at NextCheck as attempt Attempts, or given up with
 // Issue, which dismisses the watch with the completion kept on it.
@@ -248,12 +263,13 @@ type CompletionReturn struct {
 // still queued: one already dispatched has been delivered. One the provider
 // was handed and never confirmed (unconfirmed) has no row left and goes
 // back all the same, while the watch still reads queued and no echo has
-// confirmed it.
+// confirmed it; one whose turn a Stop un-sent (WithdrawUnsent) goes back
+// confirmed or not.
 //
 // paced, when set, decides when the watcher delivers it again from the
 // completions given back so far (WakeAttempts), read in the same
 // transaction; nil makes it due at once.
-func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string, unconfirmed bool, paced func(attempts int64) CompletionReturn) error {
+func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string, scope WakeWithdrawal, paced func(attempts int64) CompletionReturn) error {
 	tx, release, err := s.beginDurableTx(context.Background())
 	if err != nil {
 		return err
@@ -268,11 +284,11 @@ func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string, un
 	if err != nil {
 		return err
 	}
-	if n == 0 && !unconfirmed {
+	if n == 0 && scope == WithdrawQueued {
 		return tx.Commit()
 	}
 	where := ` WHERE computer_id=? AND request_id=? AND notification='queued'`
-	if n == 0 {
+	if n == 0 && scope == WithdrawUnconfirmed {
 		where += ` AND confirmed_at IS NULL`
 	}
 	back := CompletionReturn{}

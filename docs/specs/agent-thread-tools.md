@@ -777,7 +777,8 @@ and approval requests go to it rather than to the user. A sender on
 another computer carries its role in the forwarded call; it never
 routes the receiver's questions. A footer from an ordinary thread is
 unchanged. A wake starts with one line: reply,
-finished without replying, errored, cancelled, interrupted, or expired,
+finished without replying, errored, cancelled, interrupted by a
+restart, stopped by the person (with the turn's last message), or expired,
 with the thread's title and id, the token, its computer and the
 answer's age when they apply, then the text. When the answering thread
 is a standing agent, the line after it says so and quotes its role line
@@ -913,7 +914,9 @@ What settles a request, in order:
    command costs the caller nothing.
 3. An errored turn settles `errored` with the error text.
 4. `thread_cancel` settles `cancelled`; a restart of the responder's
-   computer mid-turn settles `interrupted`.
+   computer mid-turn settles `interrupted`. So does the person's Stop,
+   with what the turn said by then as its `final` answer; its wake says
+   the person stopped the turn, not a restart.
 
 A request settles once and its wake fires once, plus one more for a
 late reply. Every settlement and late reply bumps the request's
@@ -1008,7 +1011,8 @@ it), a standing agent's role line, and the message's first line. Opened,
 it shows the message and the routing parsed into facts: whether the
 sender waits, whether a reply reaches it, its role, where its spawned
 thread's prompts go, the sender's user message it quoted and the token;
-on an answer, who answered, how long ago, a restart that stopped it and
+on an answer, who answered, how long ago, the restart or the person that
+stopped it and
 where the clipped rest is. The footer and a wake's status line never
 render raw; a loop, watch, outside send or worker wake shows its data
 decoded without the line written for the agent. A remote job's
@@ -1019,13 +1023,28 @@ carries one of these origins; the person's answers to a Codex question,
 review comments they send, the workflow messages they start from a
 button and a workflow phase prompt stay theirs. The parser reads the
 Go templates, pinned by `internal/threadtools/testdata/agent_messages.json`.
-Rows written before this render the same way.
+Agent-thread and agent-wake rows written before this render the same way;
+a remote job's completion or a workflow wake written before it carries no
+origin and renders as the person's.
 
 Such a row is not a tick on the message navigator, not recalled by the
-composer, not put back in the composer when Stop un-sends a turn, and
-not listed in the send-queue preview; the queue wire marks it `agentMessage`, with its
-origin, so the Agents rail can list it as incoming. Title generation
-and worktree branch naming read a request without its footer.
+composer, never un-sent by Stop, and not listed in the send-queue
+preview; the queue wire marks it `agentMessage`, with its origin, so the
+Agents rail can list it as incoming. The review pane's Edits selector
+names a turn one started by the row's sender and first line. Title
+generation and worktree branch naming read a request without its footer.
+
+Headless Claude can join a person's queued message with an agent's into
+one row. The row records each member's length and origin when it is
+joined (`joinedParts`), so a Stop that un-sends it puts only the
+person's text back in the composer and gives each agent's message back
+to its owner: an answer or a completion to its request or watch, a loop
+or watch wake to its row, and a request to its queue, owed again, its
+receipt `accepted` and its sender told nothing. A session that ends
+before the agent took such a message in does the same. A row with no
+recorded parts that holds an agent's message is not un-sent. A request
+still queued when the app quits is not put in the composer at the next
+start; the boot sweep tells its sender.
 
 ## Availability and permissions (Q13, Q17, Q27)
 

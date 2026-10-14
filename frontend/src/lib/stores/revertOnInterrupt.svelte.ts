@@ -1,7 +1,7 @@
 import { conversationMutationReconciler } from './reconcileConversationMutation';
 import { isTransportClassError } from './transportStatus.svelte';
 import { getUndoableSend, retireUndoableSend } from './composerSendUndo';
-import { parseUserMessageMeta } from '../utils/userMessageMeta';
+import { parseUserMessageMeta, personTextOfUserMessage } from '../utils/userMessageMeta';
 // Early Stop restores presentation synchronously. The original send, background
 // checks and provider rollback finish behind a thread-scoped Send gate. A refusal
 // restores the transcript; a committed cut fences delayed item and turn events.
@@ -154,6 +154,9 @@ export function canRevertEarlyInterrupt(
   // Multiple user_text rows on one turn means the user steered mid-
   // round; reverting one would break ordering. Defer to plain interrupt.
   if (userCount > 1) return { canRevert: false, reason: 'turn has steered user messages' };
+  if (personTextOfUserMessage(userItem.summary, parseUserMessageMeta(userItem.meta)) === null) {
+    return { canRevert: false, reason: "message joins an agent's it cannot split" };
+  }
 
   return { canRevert: true, userItem };
 }
@@ -328,8 +331,13 @@ async function runEarlyInterrupt(
   const undo = getUndoableSend(threadId);
   const matchesSend = undo && parseUserMessageMeta(userItem.meta).sendId === undo.sendId;
   if (matchesSend) undo.undoRequested = true;
+  // Only the person's text goes back; the backend gives an agent's message
+  // Claude joined into the row back to its owner.
   const restoredDraft = shouldRestoreDraft
-    ? (matchesSend ? undo.snapshot : restoredDraftSnapshotFromUserItem(userItem))
+    ? (matchesSend
+      ? undo.snapshot
+      : restoredDraftSnapshotFromUserItem(
+        userItem, personTextOfUserMessage(userItem.summary, parseUserMessageMeta(userItem.meta)) ?? userItem.summary))
     : null;
   if (restoredDraft) {
     draft.applyOptimisticRestoredDraft?.(threadId, restoredDraft);

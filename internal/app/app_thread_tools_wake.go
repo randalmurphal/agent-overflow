@@ -59,7 +59,7 @@ func (a *App) withdrawHeldThreadWakes(threadID string) error {
 			continue
 		}
 		if _, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
-			return a.store.WithdrawThreadWake(token, late, row.ID, false)
+			return a.store.WithdrawThreadWake(token, late, row.ID, store.WithdrawQueued)
 		}); err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))
 		}
@@ -431,6 +431,10 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 		wake.Kind, wake.Text = threadtools.WakeErrored, string(row.Answer)
 	case row.State == store.ThreadRequestCancelled:
 		wake.Kind = threadtools.WakeCancelled
+	case row.State == store.ThreadRequestInterrupted && row.AnswerKind == store.ThreadAnswerFinal:
+		// A person's Stop: the answer is what the turn said before it
+		// (turnSettlement).
+		wake.Kind, wake.Text = threadtools.WakeStopped, string(row.Answer)
 	case row.State == store.ThreadRequestInterrupted:
 		wake.Kind = threadtools.WakeInterrupted
 	case row.State == store.ThreadRequestExpired:

@@ -117,17 +117,17 @@ func joinFlushMembers(members []flushMember) (joinedFlushMessage, error) {
 	joined.content, lengths = joinRenumberedTextLengths(members, func(member flushMember) string {
 		return member.resolved.content
 	})
-	joined.parts = joinedFlushParts(members, lengths)
 	joined.providerContent = joinRenumberedText(members, func(member flushMember) string {
 		return member.resolved.providerContent
 	})
 	joined.attachments = joinProviderAttachments(members)
 
-	meta, sendID, err := joinFlushMeta(members)
+	meta, parts, sendID, err := joinFlushMeta(members, lengths)
 	if err != nil {
 		return joinedFlushMessage{}, err
 	}
 	joined.meta = meta
+	joined.parts = parts
 	joined.sendID = sendID
 	return joined, nil
 }
@@ -156,29 +156,6 @@ func joinRenumberedTextLengths(members []flushMember, pick func(flushMember) str
 	return usermessage.JoinRenumberedTextLengths(parts)
 }
 
-// joinedFlushParts names the members of a joined message by send id and
-// length. A member that is itself a joined message requeued after a session
-// death contributes its own parts while they still describe it: its parts
-// are unknown when it carries none, and when renumbering its image markers
-// changed its length. Then the message's are too, and it gets none.
-func joinedFlushParts(members []flushMember, lengths []int) []usermessage.JoinedPart {
-	parts := make([]usermessage.JoinedPart, 0, len(members))
-	for i, member := range members {
-		if len(member.payload.JoinedSendIDs) == 0 {
-			parts = append(parts, usermessage.JoinedPart{SendID: member.payload.SendID, Bytes: lengths[i]})
-			continue
-		}
-		if lengths[i] != len(member.resolved.content) {
-			return nil
-		}
-		if _, ok := usermessage.SplitJoinedParts(member.resolved.content, member.payload.JoinedParts); !ok {
-			return nil
-		}
-		parts = append(parts, member.payload.JoinedParts...)
-	}
-	return parts
-}
-
 // joinProviderAttachments is the image list those renumbered markers index
 // into: every member's images in queue order, the same order joinFlushMeta
 // keeps the persisted records in.
@@ -191,12 +168,15 @@ func joinProviderAttachments(members []flushMember) []provider.ImageAttachment {
 }
 
 // joinFlushMeta unions the members' row metadata (usermessage.JoinMetas) and
-// returns it with the send id that names the joined row.
-func joinFlushMeta(members []flushMember) (string, string, error) {
+// returns it with the joined message's parts (usermessage.PartsOf), which it
+// also records on the row, and the send id that names the joined row.
+// lengths are the members' lengths in the joined text.
+func joinFlushMeta(members []flushMember, lengths []int) (string, []usermessage.JoinedPart, string, error) {
 	metas := make([]usermessage.Meta, 0, len(members))
+	texts := make([]string, 0, len(members))
 	for _, member := range members {
 		resolved := member.resolved
-		metas = append(metas, usermessage.Input{
+		meta := usermessage.Input{
 			Attachments:            resolved.persistedAttachments,
 			SourcePlan:             resolved.sourcePlan,
 			RevisionSourcePlan:     resolved.revisionSourcePlan,
@@ -213,12 +193,16 @@ func joinFlushMeta(members []flushMember) (string, string, error) {
 			Origin:       member.payload.Origin,
 			OriginThread: member.payload.OriginThread,
 			OriginWake:   member.payload.OriginWake,
-		}.Projection())
+		}.Projection()
+		meta.JoinedParts = member.payload.JoinedParts
+		metas = append(metas, meta)
+		texts = append(texts, resolved.content)
 	}
 	joined := usermessage.JoinMetas(metas)
+	joined.JoinedParts = usermessage.PartsOf(metas, texts, lengths)
 	meta, err := usermessage.MarshalMeta(joined)
 	if err != nil {
-		return "", "", err
+		return "", nil, "", err
 	}
-	return meta, joined.SendID, nil
+	return meta, joined.JoinedParts, joined.SendID, nil
 }

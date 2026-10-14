@@ -6,9 +6,8 @@
 // navigator; the send-queue preview is the same component on both layouts
 // and is checked on desktop.
 import type { Locator, Page } from '@playwright/test';
-import { copyFile, mkdir } from 'node:fs/promises';
 import { test, expect } from './fixtures.js';
-import { capture } from './wake-rows-helpers.js';
+import { captureAgentMessage as keep } from './wake-rows-helpers.js';
 import { expectUncovered, showTextUncovered } from './standing-agent-home-contents-helpers.js';
 import {
   AUDIT,
@@ -34,14 +33,6 @@ const openThread = async (page: Page, title: string) => {
 
 const agentRow = (page: Page, kind: string) =>
   page.locator(`[data-testid="agent-message-row"][data-agent-message-kind="${kind}"]`);
-
-async function keep(page: Page, name: string, ...targets: Locator[]): Promise<void> {
-  await capture(page, name, ...targets);
-  const dir = process.env.AO_AGENT_MESSAGE_SHOTS;
-  if (!dir) return;
-  await mkdir(dir, { recursive: true });
-  await copyFile(test.info().outputPath(name), `${dir}/${name}`);
-}
 
 /** Taps a folded row open and shows `text` of its body clear of the composer. */
 async function open(page: Page, row: Locator, text: string): Promise<void> {

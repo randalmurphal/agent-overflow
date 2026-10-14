@@ -60,7 +60,11 @@ type InterruptAndRevertResult struct {
 // restored, `user_message:reverted` event emitted). When the predicate
 // does not match the method falls back to a plain interrupt
 // (provider Interrupt + triage.MarkUserInterrupt) so the caller can
-// roll back any optimistic UI it applied.
+// roll back any optimistic UI it applied. A row Claude joined from the
+// person's message and agents' messages gives the composer the person's
+// text alone; each agent's message goes back to its owner, and a request
+// is owed again without its sender being told anything
+// (returnUnsentRequests).
 //
 // The frontend pre-checks its local predicate before calling so it
 // can paint instant optimistic state; this method re-checks under the
@@ -124,32 +128,56 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 			return InterruptAndRevertResult{}, err
 		}
 	}
+	if a.triage != nil {
+		a.notePersonStop(threadID, a.triage.OpenTurnIndex(threadID))
+	}
 	if !eligible {
 		// Frontend predicate disagreed (race) or queue carries
 		// follow-up intent. Fall back to plain interrupt semantics so
 		// the user's Stop click still takes effect. The caller will
 		// undo any optimistic timeline / composer state.
 		if err := a.runPlainInterruptLocked(threadID); err != nil {
+			a.forgetPersonStop(threadID)
 			return InterruptAndRevertResult{Reverted: false, Reason: reason}, err
 		}
 		return InterruptAndRevertResult{Reverted: false, Reason: reason}, nil
 	}
 
-	promptDraft, err := composerdraft.FromUserItem(threadID, userItem, time.Now().UnixMilli())
+	// Only the person's text goes back to the composer. The agents'
+	// messages Claude joined into the row go back to their owners once the
+	// cut commits, and a request's receipt goes back to `accepted` now,
+	// before the interrupt ends its turn: a turn end that found it running
+	// would tell its sender the request was interrupted.
+	personText, agentParts, _ := splitUnsentMessage(userItem)
+	personItem := userItem
+	personItem.Summary = personText
+	promptDraft, err := composerdraft.FromUserItem(threadID, personItem, time.Now().UnixMilli())
 	if err != nil {
 		return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: build prompt draft: %w", err)
 	}
-
 	if opts.Draft != nil && opts.ExpectedSendID != "" {
 		promptDraft, err = encodeThreadDraft(threadID, *opts.Draft)
 		if err != nil {
 			return InterruptAndRevertResult{}, err
 		}
 	}
+	owed := a.returnUnsentRequests(agentParts)
 	markedReverted := false
 	if a.triage != nil {
 		a.triage.MarkTurnReverted(threadID)
 		markedReverted = true
+	}
+	// declined undoes what the un-send set up when it does not happen: the
+	// message stays, so its requests are running in its turn again.
+	declined := func() {
+		if markedReverted {
+			a.triage.ClearTurnReverted(threadID)
+		}
+		for _, r := range owed.requests {
+			if r.returned {
+				a.threadTools().markRequestRunning(r.token, threadID, userItem)
+			}
+		}
 	}
 
 	// Codex thread/revert owns active-turn shutdown and the history cut as one
@@ -164,9 +192,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 						// claude-tui: the Esc is the native revert
 						// (rollbackConversationLocked). Without it the TUI
 						// keeps the turn, so AO must not cut its own copy.
-						if markedReverted {
-							a.triage.ClearTurnReverted(threadID)
-						}
+						declined()
 						return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: provider interrupt: %w", err)
 					}
 					// Headless Claude: the session stop below ends the turn
@@ -186,9 +212,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 	// would; the next send resumes the unmodified session.
 	if thread.Provider == string(provider.Claude) {
 		if err := a.stopSession(threadID); err != nil {
-			if markedReverted {
-				a.triage.ClearTurnReverted(threadID)
-			}
+			declined()
 			return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: stop session: %w", err)
 		}
 		settledUserItem, reason, err := a.unsendTurnMessage(threadID, userItem.TurnIndex)
@@ -196,9 +220,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 			reason = "latest message changed"
 		}
 		if err != nil || reason != "" {
-			if markedReverted {
-				a.triage.ClearTurnReverted(threadID)
-			}
+			declined()
 			if err != nil {
 				return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: recheck stopped turn: %w", err)
 			}
@@ -220,11 +242,11 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		errorPrefix: "interrupt-and-revert",
 	})
 	if err != nil {
-		if markedReverted {
-			a.triage.ClearTurnReverted(threadID)
-		}
+		declined()
 		return InterruptAndRevertResult{}, err
 	}
+	a.forgetPersonStop(threadID)
+	a.settleNotTakenIn(threadID, []notTakenIn{owed})
 
 	cutEvent := UserMessageRevertedEvent{
 		TurnStartedSequence:   a.eventSequence(eventchan.ProviderTurnStarted),

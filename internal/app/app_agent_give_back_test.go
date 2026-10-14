@@ -766,3 +766,75 @@ func TestTheBootSweepOfUnconfirmedDeliveriesLeavesQueuedRows(t *testing.T) {
 		t.Fatalf("queued rows %q, want all three kept", durable)
 	}
 }
+
+// queueRequestFromAnotherComputer accepts a request a thread on another
+// computer made of the caller and queues its message there, as
+// dispatchRequest queues one for a busy thread. It returns the token and
+// the message.
+func queueRequestFromAnotherComputer(t *testing.T, f *requestFixture) (string, string) {
+	t.Helper()
+	token := uuid.NewString()
+	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: token, OwnerDeviceID: "device-desk", SourceComputerID: "c-desk", SourceComputerName: "desk",
+		SourceThreadID: "t-lead", SourceThreadTitle: "Lead", Kind: store.ThreadRequestSend, TargetThreadID: f.caller.ID,
+	}); err != nil {
+		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
+	}
+	body := "Fix the nil check.\n\n---\nAgent request from thread \"Lead\" (t-lead, on desk).\nIt is not waiting."
+	if err := f.app.threadTools().requeueRequest(token, f.caller.ID, body); err != nil {
+		t.Fatal(err)
+	}
+	return token, body
+}
+
+// A session that ends before the agent took in a request Claude joined with
+// the person's message gives the person their text and the request back to
+// its queue, owed again: its receipt is `accepted` and its sender is told
+// nothing.
+func TestASessionDeathGivesAJoinedRequestBackToItsQueue(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	if _, err := f.app.RegisterQueueItem(context.Background(), f.caller.ID, "my own words", SendMessageOptions{SendID: "person-send"}); err != nil {
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
+	token, body := queueRequestFromAnotherComputer(t, f)
+	dispatchUnconfirmed(t, f)
+	waitUntil(t, 10*time.Second, func() bool { return f.receipt(t, token).State == store.ThreadReceiptRunning })
+
+	f.app.restoreUnconfirmedQueueOnSessionDeath(f.caller.ID)
+
+	requireDraft(t, f.app, f.caller.ID, "my own words")
+	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptAccepted || receipt.TurnID != "" {
+		t.Fatalf("receipt = %q bound to %q, want accepted and unbound", receipt.State, receipt.TurnID)
+	}
+	rows := durableQueueRows(t, f.app, f.caller.ID)
+	if len(rows) != 1 || rows[0].SendID != threadRequestSendID(token) || rows[0].Message != body {
+		t.Fatalf("queue = %+v, want the request alone", rows)
+	}
+}
+
+// A request still queued at quit is not the person's to send: the boot
+// restore leaves it out of the composer, and the boot sweep tells its
+// sender the request was interrupted by the restart.
+func TestTheBootRestoreLeavesAQueuedRequestOutOfTheComposer(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	if _, err := f.app.RegisterQueueItem(context.Background(), f.caller.ID, "my own words", SendMessageOptions{SendID: "person-send"}); err != nil {
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
+	token, _ := queueRequestFromAnotherComputer(t, f)
+
+	after := f.restart(t)
+	after.app.restoreDurableFlushQueueAtBoot()
+	after.app.sweepThreadRequestsAtBoot()
+
+	requireDraft(t, after.app, f.caller.ID, "my own words")
+	if rows := durableQueueRows(t, after.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("queue = %+v, want it empty", rows)
+	}
+	if receipt := after.receipt(t, token); receipt.State != store.ThreadReceiptInterrupted {
+		t.Fatalf("receipt = %q, want interrupted by the restart", receipt.State)
+	}
+}

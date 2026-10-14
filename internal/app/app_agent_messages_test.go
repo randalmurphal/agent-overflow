@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,36 +19,41 @@ import (
 )
 
 // agentMessageMetas is every attribution a user row can carry, with whether
-// it is an agent's message (usermessage.IsAgentMessage).
-var agentMessageMetas = []struct {
-	name  string
-	meta  string
-	agent bool
-}{
-	{"the person's", ``, false},
-	{"the person's with a send id", `{"sendId":"s1"}`, false},
-	{"outside queue", `{"origin":"external-queue"}`, false},
-	{"scheduled", `{"origin":"scheduled"}`, false},
-	{"agent thread request", `{"origin":"agent-thread","originThread":{"threadId":"t-x","kind":"send"},"sendId":"thread-request:k"}`, true},
-	{"agent thread wake", `{"origin":"agent-thread","originThread":{"threadId":"t-x","kind":"wake"},"sendId":"thread-wake:k"}`, true},
-	{"loop wake", `{"origin":"agent-wake","originWake":{"kind":"loop","label":"l"}}`, true},
-	{"remote job completion", `{"origin":"agent-wake","originWake":{"kind":"completion","label":"build","computer":"box"}}`, true},
-	{"workflow wake", `{"origin":"agent-wake","originWake":{"kind":"workflow","label":"wf-1"}}`, true},
-	{"the person's joined after a wake", `{"origin":"agent-wake","originWake":{"kind":"loop"},"expandComposerCommands":true}`, false},
+// it is an agent's message. The frontend's tests read the same file, so the
+// Go, SQL and TypeScript classifiers are held to one answer per row.
+type agentMessageMeta struct {
+	Name  string `json:"name"`
+	Meta  string `json:"meta"`
+	Agent bool   `json:"agent"`
+}
+
+func loadAgentMessageMetas(t *testing.T) []agentMessageMeta {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("internal", "usermessage", "testdata", "agent_message_metas.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []agentMessageMeta
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	return cases
 }
 
 // The classifier exists three times: usermessage.IsAgentMessage, the store's
 // AgentMessageFilterFor behind the nav rail's ticks, and the frontend's
-// isAgentMessageMeta (pinned by its own tests against the same cases). This
-// holds the first two to one answer per row.
+// isAgentMessageMeta (userMessageMeta.test.ts reads the same cases). This
+// holds the first two to one answer per row, and Stop's un-send predicate
+// to the same: an agent's message is never the person's to take back.
 func TestAgentMessageClassifierAgreesInGoAndSQL(t *testing.T) {
 	t.Parallel()
+	agentMessageMetas := loadAgentMessageMetas(t)
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "classify")
 	items := make([]store.Item, 0, len(agentMessageMetas))
 	for i, tc := range agentMessageMetas {
-		item := textItem("row-"+string(rune('a'+i)), "user_text", tc.name)
-		item.Meta = tc.meta
+		item := textItem("row-"+string(rune('a'+i)), "user_text", tc.Name)
+		item.Meta = tc.Meta
 		items = append(items, item)
 	}
 	f.turn(t, thread.ID, 0, 1_000, items...)
@@ -70,22 +76,25 @@ func TestAgentMessageClassifierAgreesInGoAndSQL(t *testing.T) {
 	}
 	for i, tc := range agentMessageMetas {
 		id := items[i].ID
-		meta, decodeErr := usermessage.FromItem(store.Item{Meta: tc.meta})
+		meta, decodeErr := usermessage.FromItem(store.Item{Meta: tc.Meta})
 		goAgent := decodeErr == nil && usermessage.IsAgentMessage(meta)
-		if goAgent != tc.agent {
-			t.Errorf("%s: IsAgentMessage = %v, want %v", tc.name, goAgent, tc.agent)
+		if goAgent != tc.Agent {
+			t.Errorf("%s: IsAgentMessage = %v, want %v", tc.Name, goAgent, tc.Agent)
 		}
-		if ticked[id] == tc.agent || recalled[id] == tc.agent {
-			t.Errorf("%s: ticked %v, recalled %v; an agent's message is neither and the person's is both", tc.name, ticked[id], recalled[id])
+		if ticked[id] == tc.Agent || recalled[id] == tc.Agent {
+			t.Errorf("%s: ticked %v, recalled %v; an agent's message is neither and the person's is both", tc.Name, ticked[id], recalled[id])
+		}
+		if isReaderAuthoredUserItem(items[i]) == tc.Agent {
+			t.Errorf("%s: un-send predicate reads it as the person's = %v", tc.Name, !tc.Agent)
 		}
 		// The send-identity read still finds an agent's row by its send id:
 		// that is how a retried request or wake is recognised.
 		var ids struct {
 			SendID string `json:"sendId"`
 		}
-		if json.Unmarshal([]byte(tc.meta), &ids) == nil && ids.SendID != "" {
+		if json.Unmarshal([]byte(tc.Meta), &ids) == nil && ids.SendID != "" {
 			if found, ok, err := f.app.store.FindUserTextItemBySendID(thread.ID, ids.SendID); err != nil || !ok || found.ID != id {
-				t.Errorf("%s: FindUserTextItemBySendID = %s %v %v", tc.name, found.ID, ok, err)
+				t.Errorf("%s: FindUserTextItemBySendID = %s %v %v", tc.Name, found.ID, ok, err)
 			}
 		}
 	}

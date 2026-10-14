@@ -135,7 +135,10 @@ on triage's consumed hook), and a completion a session end returned is
 paced on the wake retry ladder (`completionRedelivery`). A message
 Claude joined from a person's text and such parts is split by the lengths
 its dispatch recorded (`usermessage.JoinedPart`), and only the person's
-text goes back (`agentPartsNotTakenIn`). What the app's messages are owed
+text goes back (`agentPartsNotTakenIn`); another thread's request in it
+goes back to its queue, owed again (`returnRequest`). A Stop that un-sends
+such a row does the same from the parts the row records
+(`returnUnsentRequests`). What the app's messages are owed
 is applied once that restore commits (`settleNotTakenIn`): a restore that
 fails requeues them whole. Whether a turn was a tick
 is read from the rows of the turn that ended, because a dispatch cannot know

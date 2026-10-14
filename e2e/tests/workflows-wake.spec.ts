@@ -1,10 +1,9 @@
 import { existsSync, writeFileSync } from 'node:fs';
-import { copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
-import { capture } from './wake-rows-helpers.js';
+import { captureAgentMessage } from './wake-rows-helpers.js';
 import {
   assistantText,
   callChildren,
@@ -198,10 +197,7 @@ test('a bound run wakes its origin thread when it rests', async ({ harness, page
   await expect(body).toContainText('"verdict": "true"');
   await expect(body).not.toContainText('untrusted run data');
   await row.scrollIntoViewIfNeeded();
-  await capture(page, 'workflow-wake-row.png', row);
-  if (process.env.AO_AGENT_MESSAGE_SHOTS) {
-    await copyFile(test.info().outputPath('workflow-wake-row.png'), `${process.env.AO_AGENT_MESSAGE_SHOTS}/workflow-wake-row.png`);
-  }
+  await captureAgentMessage(page, 'workflow-wake-row.png', row);
 
   // Unbinding is the off switch: the next resting transition reports nowhere.
   const unbound = await harness.rpc<{ originThreadId?: string }>(

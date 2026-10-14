@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/maphash"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"agent-overflow/internal/textgen"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
 
 // EditDiffEntry is one edit tool call in the review pane's Edits
@@ -34,7 +36,7 @@ type EditDiffEntry struct {
 }
 
 // EditDiffTurnLabel captions a selector turn group with the turn's
-// first user prompt.
+// first user prompt (promptLabel).
 type EditDiffTurnLabel struct {
 	TurnIndex int    `json:"turnIndex"`
 	Label     string `json:"label"`
@@ -126,9 +128,16 @@ func (a *App) ListThreadEditDiffs(threadID string) (EditDiffList, error) {
 			return EditDiffList{}, fmt.Errorf("%s: %w", action, err)
 		}
 		for _, summary := range summaries {
-			if turnsWithEdits[summary.TurnIndex] {
-				labels = append(labels, EditDiffTurnLabel{TurnIndex: summary.TurnIndex, Label: editSelectorLabel(summary.Summary)})
+			if !turnsWithEdits[summary.TurnIndex] {
+				continue
 			}
+			label := summary.Summary
+			if meta, err := usermessage.FromItem(store.Item{Meta: summary.Meta}); err != nil {
+				log.Printf("%s: turn %d of %s keeps its whole text as its label: %v", action, summary.TurnIndex, threadID, err)
+			} else {
+				label = promptLabel(summary.Summary, meta)
+			}
+			labels = append(labels, EditDiffTurnLabel{TurnIndex: summary.TurnIndex, Label: editSelectorLabel(label)})
 		}
 	}
 	return EditDiffList{Entries: entries, TurnLabels: labels}, nil
