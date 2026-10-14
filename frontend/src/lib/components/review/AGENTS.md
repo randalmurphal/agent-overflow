@@ -44,6 +44,13 @@ PR stores; components own presentation and interaction.
   and the diff row (`ReviewPRThreadRow`) render the same card.
 - A jump to a row inside a file lands under the sticky file bar: scroll it
   with `offset: -REVIEW_FILE_HEADER_BAR_PX`.
+- A jump to a thread pulses the destination card once and leaves nothing
+  lit: the jump's owner (`ReviewDiffBody` for rows, `ReviewConversation`
+  for cards) holds the target and a generation for `REVIEW_JUMP_PULSE_MS`
+  and the card runs `utils/reviewJumpPulse.ts`. Do not render a standing
+  highlight from the stepper's `unresolvedCursor`.
+- The unresolved stepper on the title bar and the Conversation header is
+  `ReviewUnresolvedStepper`, one segmented control under one border.
 - Embedded forge HTML uses `ChatMarkdown`'s opt-in sanitized mode. Do not render
   arbitrary HTML or bypass URL transformation.
 - `ReviewPane` publishes `FORGE_ATTACHMENT_SOURCE_CONTEXT`

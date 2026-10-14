@@ -744,23 +744,25 @@
               consumeFocus={(nextAnchor) => review?.consumeDraftEditorFocus(nextAnchor) ?? false}
             />
           {/snippet}
-          {#snippet commentThread(threadKey, _anchor)}
+          {#snippet commentThread(threadKey, _anchor, pulse)}
             {@const comment = commentById(threadKey)}
             {#if comment}
               <ReviewCommentThread
                 {comment}
+                {pulse}
                 orphaned={review?.orphanedDraftIds().has(comment.id) ?? false}
                 onUpdate={(commentId, body) => review?.updateComment(commentId, body)}
                 onDelete={(commentId) => review?.deleteComment(commentId)}
               />
             {/if}
           {/snippet}
-          {#snippet prThread(thread, anchor, collapsed, orphaned)}
+          {#snippet prThread(thread, anchor, collapsed, orphaned, pulse)}
             <ReviewPRThreadRow
               {thread}
               {anchor}
               {collapsed}
               {orphaned}
+              {pulse}
               body={review?.replyBodyFor(thread.id) ?? ''}
               error={review?.replyErrorFor(thread.id) ?? null}
               sending={review?.sendingReply(thread.id) ?? false}

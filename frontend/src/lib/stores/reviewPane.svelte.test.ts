@@ -3496,10 +3496,14 @@ describe('reviewPane store — conversation section and resolve', () => {
     const resolved = convThread('t-1', { isResolved: true });
     const state = await statePRWithThreads([resolved]);
 
+    state.setOverviewSectionScrollTop('conversation', 140);
     state.openConversationAt('t-1');
     expect(state.conversationOpen).toBe(true);
     expect(state.conversationThreadExpanded('t-1')).toBe(true);
     expect(state.pendingConversationThreadId).toBe('t-1');
+    // The jump's scroll replaces the remembered reading offset, which a
+    // remounting overview row would otherwise restore over it.
+    expect(state.overviewSectionScrollTop('conversation')).toBe(0);
     state.consumePendingConversationThreadId();
     expect(state.pendingConversationThreadId).toBeNull();
 
