@@ -5842,9 +5842,9 @@ export class ThreadAgentRow {
     "nestedHidden"?: boolean;
 
     /**
-     * NestedUnavailable says why a spawn on a paired computer shows none of
-     * that thread's own agents: the computer did not answer, or runs a
-     * version that cannot list them.
+     * NestedUnavailable says why a spawn on another computer shows none of
+     * that thread's own agents: the computer did not answer, runs a version
+     * that cannot list them, or is no longer paired.
      */
     "nestedUnavailable"?: string;
 

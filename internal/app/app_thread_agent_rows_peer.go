@@ -67,6 +67,10 @@ type threadAgentPeerArgs struct {
 // unreachable at once.
 var errThreadAgentPeerTimedOut = errors.New("the call timed out")
 
+// errThreadAgentPeerUnpaired marks a spawn whose computer is no longer
+// paired: nothing is asked of it.
+var errThreadAgentPeerUnpaired = errors.New("that computer is no longer paired")
+
 // errThreadAgentPeerOlder marks a paired computer that predates the
 // forwarded Agents tools.
 var errThreadAgentPeerOlder = errors.New("that computer runs an older version: its background work and agents are not shown or stopped from here")

@@ -113,9 +113,9 @@ type ThreadAgentRow struct {
 	// NestedHidden marks a row at the depth bound whose thread has agents
 	// of its own that the listing does not show.
 	NestedHidden bool `json:"nestedHidden,omitempty"`
-	// NestedUnavailable says why a spawn on a paired computer shows none of
-	// that thread's own agents: the computer did not answer, or runs a
-	// version that cannot list them.
+	// NestedUnavailable says why a spawn on another computer shows none of
+	// that thread's own agents: the computer did not answer, runs a version
+	// that cannot list them, or is no longer paired.
 	NestedUnavailable string `json:"nestedUnavailable,omitempty"`
 	// OwnerComputerID is the paired computer whose ledger holds a nested
 	// row's request; empty for this computer's own rows.
@@ -295,11 +295,32 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, threadID string, maxDept
 }
 
 // remoteAgentAnswers reads each remote spawn's rows: the last answer, with
-// another asked in the background, or every computer now, concurrently.
+// another asked in the background, or every computer now, concurrently. A
+// spawn whose computer is no longer paired is asked nothing and answers
+// that it is not.
 func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemoteSlot, maxDepth int, peers threadAgentPeerMode) []threadAgentPeerAnswer {
 	answers := make([]threadAgentPeerAnswer, len(remote))
+	pairing := map[string]error{}
+	ask := make([]int, 0, len(remote))
+	for i, slot := range remote {
+		computer := slot.spawn.TargetComputerID
+		err, seen := pairing[computer]
+		if !seen {
+			var paired bool
+			if paired, err = a.peerPaired(computer); err == nil && !paired {
+				err = errThreadAgentPeerUnpaired
+			}
+			pairing[computer] = err
+		}
+		if err != nil {
+			answers[i] = threadAgentPeerAnswer{err: err}
+			continue
+		}
+		ask = append(ask, i)
+	}
 	if peers == threadAgentPeersLive {
-		runBounded(len(remote), threadAgentPeerListsInFlight, func(i int) {
+		runBounded(len(ask), threadAgentPeerListsInFlight, func(n int) {
+			i := ask[n]
 			call, cancel := context.WithTimeout(ctx, threadAgentPeerServeTimeout)
 			defer cancel()
 			listing, err := a.peerThreadAgentRows(call, remote[i].spawn.TargetComputerID, remote[i].spawn.CallerThreadID,
@@ -309,11 +330,11 @@ func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemote
 		})
 		return answers
 	}
-	for i, slot := range remote {
-		if answer, ok := a.cachedPeerAgentRows(slot.spawn); ok {
+	for _, i := range ask {
+		if answer, ok := a.cachedPeerAgentRows(remote[i].spawn); ok {
 			answers[i] = answer
 		}
-		a.refreshPeerAgentRows(slot.spawn, threadAgentPeerRefreshEvery)
+		a.refreshPairedPeerAgentRows(remote[i].spawn, threadAgentPeerRefreshEvery)
 	}
 	return answers
 }
@@ -370,6 +391,9 @@ func threadAgentPeerUnavailable(computer string, err error) string {
 	}
 	if errors.Is(err, errThreadAgentPeerOlder) {
 		return computer + " runs an older version: its agents are not shown or stopped from here"
+	}
+	if errors.Is(err, errThreadAgentPeerUnpaired) {
+		return computer + " is no longer paired"
 	}
 	log.Printf("agent rows: %s did not list its agents: %v", computer, err)
 	return computer + " did not answer; its agents are not shown"

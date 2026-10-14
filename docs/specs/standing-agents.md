@@ -765,9 +765,11 @@ closes up their spacing so the row holds at a phone width.
   timed out is not asked again for 5 s, doubling to a minute, until it
   answers; at most 256 answers are kept. A computer no longer paired,
   however its pairing ended, is forgotten with its spawns' open work, and
-  an answer from it that lands afterwards is dropped. Each poll of an open
-  remote spawn asks again; so does the sweep, at the poll's pace, for a settled one
-  whose last answer listed open work (`thread_requests.nested_open`),
+  an answer from it that lands afterwards is dropped; nothing more is
+  asked of it, and its spawns' rows say `<computer> is no longer paired`.
+  Each poll of an open remote spawn asks again; so does the sweep, at the
+  poll's pace, for a settled one whose last answer listed open work
+  (`thread_requests.nested_open`),
   until it lists none. A computer that does not answer is said on the row
   (`<computer> did not answer; its agents are not shown`). A computer
   that predates the calls has the request cancelled and the turn

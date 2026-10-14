@@ -129,11 +129,22 @@ func (a *App) cachedPeerSpawnFor(token string) (store.ThreadRequest, bool) {
 }
 
 // refreshPeerAgentRows queues the spawn to be asked about in the
-// background, unless it is queued, its answer is newer than minAge, or its
-// computer is backing off. A spawn being asked now is marked to be asked
-// once more when its call returns. A full queue drops its oldest spawn,
-// whose caller is told to read again once there is room.
+// background, unless its computer is no longer paired.
 func (a *App) refreshPeerAgentRows(spawn store.ThreadRequest, minAge time.Duration) {
+	if paired, err := a.peerPaired(spawn.TargetComputerID); err != nil {
+		log.Printf("agent rows: look up computer %s: %v", spawn.TargetComputerID, err)
+	} else if paired {
+		a.refreshPairedPeerAgentRows(spawn, minAge)
+	}
+}
+
+// refreshPairedPeerAgentRows is refreshPeerAgentRows for a spawn whose
+// computer the caller found paired. It queues the spawn unless it is
+// queued, its answer is newer than minAge, or its computer is backing off.
+// A spawn being asked now is marked to be asked once more when its call
+// returns. A full queue drops its oldest spawn, whose caller is told to
+// read again once there is room.
+func (a *App) refreshPairedPeerAgentRows(spawn store.ThreadRequest, minAge time.Duration) {
 	c := &a.threadAgentPeers
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -240,7 +251,7 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 		}
 		clear(c.rereadCallers)
 	}
-	if askAgain {
+	if askAgain && record {
 		a.queuePeerAgentRowsLocked(again)
 	}
 	a.startPeerAgentRowsLocked()
@@ -281,14 +292,21 @@ func (a *App) notePeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentRo
 // after this answer is recorded. An answer whose lookup fails is dropped;
 // the next read asks again.
 func (a *App) peerStillPaired(computerID string) bool {
-	if a.backends == nil {
-		return false
-	}
-	_, found, err := a.backends.Lookup(computerID)
+	paired, err := a.peerPaired(computerID)
 	if err != nil {
 		log.Printf("agent rows: look up computer %s: %v", computerID, err)
 	}
-	return err == nil && found
+	return paired
+}
+
+// peerPaired reports whether computerID is paired here, false with the
+// error when the lookup fails.
+func (a *App) peerPaired(computerID string) (bool, error) {
+	if a.backends == nil {
+		return false, nil
+	}
+	_, found, err := a.backends.Lookup(computerID)
+	return err == nil && found, err
 }
 
 // recordPeerOpenWork writes whether an answer listed open work on the
@@ -470,7 +488,7 @@ func (a *App) refreshNestedOpenRemoteSpawns() {
 			}
 		}
 		if known {
-			a.refreshPeerAgentRows(row, a.threadPollNormal())
+			a.refreshPairedPeerAgentRows(row, a.threadPollNormal())
 		}
 	}
 }

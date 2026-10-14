@@ -553,7 +553,8 @@ func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) 
 	}
 	other := pair.spawn
 	other.Token, other.TargetComputerID = "other-computer", uuid.NewString()
-	a.refreshPeerAgentRows(other, 0)
+	// Only the queue's bounds are under test: no second computer is paired.
+	a.refreshPairedPeerAgentRows(other, 0)
 	a.threadAgentPeers.mu.Lock()
 	waiting := a.threadAgentPeers.queued[other.Token]
 	a.threadAgentPeers.mu.Unlock()
@@ -1007,5 +1008,55 @@ func TestThreadAgentRowsForgetWaitsForAnAnswerBeingRecorded(t *testing.T) {
 	<-forgot
 	if pair.request(t, pair.spawn.Token).NestedOpen {
 		t.Fatal("an answer recorded during the forget left open work there")
+	}
+}
+
+// A spawn on a computer no longer paired is asked nothing: each read of its
+// row says so, queues no call and keeps no answer.
+func TestThreadAgentRowsAskNothingOfAComputerNoLongerPaired(t *testing.T) {
+	t.Parallel()
+	var peer *stalledAgentsPeer
+	pair := newAgentPeerPair(t, serveSlowAgentsPeer(&peer, 10*time.Millisecond))
+	a := pair.source
+	pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
+		_, ok := agentRowByToken(rows.Rows, pair.grand)
+		return ok
+	})
+	if err := a.RemoveBackend(pair.computer, true); err != nil {
+		t.Fatalf("forget the computer: %v", err)
+	}
+	a.threadRequestsWG.Wait()
+	calls := peer.calls.Load()
+	for read := range 3 {
+		listing := pair.listRows(t)
+		row, ok := agentRowByToken(listing.Rows, pair.spawn.Token)
+		if !ok {
+			t.Fatalf("read %d: the spawn is not listed: %+v", read, listing.Rows)
+		}
+		if want := "That computer is no longer paired"; row.NestedUnavailable != want {
+			t.Fatalf("read %d: the row says %q, want %q", read, row.NestedUnavailable, want)
+		}
+		if _, nested := agentRowByToken(listing.Rows, pair.grand); nested {
+			t.Fatalf("read %d: the forgotten computer's rows are still nested", read)
+		}
+		requireNothingQueued(t, a)
+		if _, cached := a.cachedPeerAgentRows(pair.spawn); cached {
+			t.Fatalf("read %d: an answer is cached for a computer no longer paired", read)
+		}
+	}
+	// A poll's refresh asks nothing either. Held, a call it started could
+	// not finish before the check.
+	a.threadAgentPeers.recording.Lock()
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	a.threadAgentPeers.mu.Lock()
+	started := len(a.threadAgentPeers.running) + len(a.threadAgentPeers.waiting)
+	a.threadAgentPeers.mu.Unlock()
+	a.threadAgentPeers.recording.Unlock()
+	if started != 0 {
+		t.Fatalf("a poll's refresh queued %d calls to a computer no longer paired", started)
+	}
+	a.threadRequestsWG.Wait()
+	if got := peer.calls.Load(); got != calls {
+		t.Fatalf("the computer no longer paired was asked %d times", got-calls)
 	}
 }
