@@ -41,7 +41,7 @@ The CLI emits newline-delimited JSON. Every line has a top-level
 | `stream_event` | `parseStreamEvent` | Incremental deltas (requires `include_partial_messages:true`). |
 | `result` | `parseResult` | **Turn-complete signal.** One per CLI turn. |
 | `control_request` | `parseControlRequest` | Bidirectional. Inbound: `can_use_tool`, `exit_plan_mode`. Outbound (client → CLI): `interrupt`, `stop_task`, `set_permission_mode`, `mcp_set_servers`, `mcp_authenticate`, `mcp_oauth_callback_url`, `mcp_status`. |
-| `rate_limit_event` | `parseRateLimitEvent` | Rate limit state changes. The quota numbers AO renders come from [`/api/oauth/usage`](#apioauthusage), not from this envelope. |
+| `rate_limit_event` | ignored (`parser.go`) | Rate limit state changes. AO reads quota only from [`/api/oauth/usage`](#apioauthusage); see [`rate_limit_event`](#rate_limit_event) for why. |
 | `command_lifecycle` | `parseCommandLifecycle` | Delivery ack for a user message written to stdin, keyed by the client-minted `uuid`. See [§command_lifecycle](#command_lifecycle-stdin-message-delivery-acks-verified-21219). |
 
 Unknown `type` values are dropped silently by the dispatcher, logged
@@ -4131,16 +4131,17 @@ restart.
  }}
 ```
 
-camelCase wire fields (`resetsAt`, `rateLimitType`, etc.). See
-`parse_control.go` (`parseRateLimitEvent`).
+camelCase wire fields (`resetsAt`, `rateLimitType`, etc.).
 
-**Important consumer note**: `utilization` is an optional field on the
-wire, present only when Claude has signal to share (warning band,
-overload). The parser uses `*float64` to distinguish absent (drop the
-snapshot, preserve last-known good in the global store) from explicit
-`0.0` (a real "0% used" reading). Don't synthesize 0% when the field is
-missing: the empty ring would be visually identical to "no data" and
-could clobber a previously-known good reading.
+**AO ignores this envelope.** It reports the quota of whichever credential
+sent the request it answers, and nothing in it names the account. After an
+account switch, responses to requests sent before the switch still arrive,
+so attributing the event to the session's current account files one
+account's usage under another. The CLI's warning band makes this visible
+early in a week: `seven_day` carries `utilization` once 25% is used in the
+first 15% of the window (thresholds 0.25/0.15, 0.5/0.35, 0.75/0.6; 2.1.284).
+A refused turn is typed by the `assistant` envelope's `error: "rate_limit"`,
+not by this event.
 
 ### `unifiedWindows` (claude 2.1.257, observed 2026-09-01)
 
@@ -4168,11 +4169,6 @@ Utilization is a FRACTION here (0.12 = 12%), matching the top-level field.
 Each of the three windows is optional: the installed binary builds this
 object by spreading only the windows the usage response returned, so
 `seven_day_overage_included` comes and goes between consecutive events.
-
-`parseRateLimitEvent` does not read it, so on this release every
-steady-state `rate_limit_event` is dropped and the polled `/api/oauth/usage`
-probe is the only source of Claude quota numbers. That is correct but
-lossy — these events land on every turn.
 
 ---
 

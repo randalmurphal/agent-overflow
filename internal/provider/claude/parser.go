@@ -556,7 +556,13 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		// A heartbeat proves process activity, not a new tool or turn.
 		return toolProgressActivity(threadID, now), nil
 	case "rate_limit_event":
-		return parseRateLimitEvent(threadID, raw, now)
+		// Not a quota source. The event cannot say which account it reports:
+		// a response to a request sent before an account switch lands after
+		// it, so attributing it to the session's current account files one
+		// account's usage under another. The meters read /api/oauth/usage
+		// (ratelimits_probe.go); a refused turn is typed by the assistant
+		// envelope's error enum, not by this event.
+		return nil, nil
 	case "command_lifecycle":
 		// Delivery ack for a user message we wrote to stdin, keyed by the
 		// uuid we minted. Send-to-row correlation lives in triage (the

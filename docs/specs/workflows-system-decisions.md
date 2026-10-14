@@ -2083,7 +2083,8 @@ on a spent reject budget silently destroyed the gate's still-declared approve.
   `usageLimitExceeded`) plus the rate-limit windows the SAME session
   reported (Claude `rate_limit_event` `status: rejected` + `resetsAt`;
   Codex `account/rateLimits/updated`, Unix seconds on both, evidenced
-  against both CLIs' sources). A recognized pair skips the remaining
+  against both CLIs' sources). AO no longer reads Claude's
+  `rate_limit_event` at all: it names no account (`docs/decisions.md`). A recognized pair skips the remaining
   ladder and parks `retries-exhausted` immediately; a refusal missing
   either half falls through to the ordinary ladder unchanged. Along the
   way a real drop was fixed: AO's Claude parser discarded the rejected

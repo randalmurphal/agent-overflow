@@ -67,10 +67,10 @@ describe('rateLimitsInfo', () => {
     ).toEqual({ primary: null, limits: [] });
   });
 
-  // Claude wires emit ONE window per `rate_limit_event` (5h XOR 7d).
-  // The store must merge new windows alongside existing ones rather
-  // than replacing — otherwise toggling between 5h and 7d events
-  // alternately wipes the other window.
+  // A partial reading (Claude's header fallback, a Codex notification)
+  // can carry one window. The store must merge new windows alongside
+  // existing ones rather than replacing; otherwise alternating 5h and
+  // 7d readings wipe the other window.
   it('merges Claude single-window updates across separate calls', () => {
     setProviderRateLimits({
       provider: 'claude',
@@ -191,10 +191,11 @@ describe('rateLimitsInfo', () => {
 
   // The window-reset stale-event defense.
   //
-  // Around a window-reset boundary, multiple Claude sessions
-  // emit independently. A long-running session can keep emitting
-  // its pre-reset reading for several requests after a fresher
-  // session has observed the post-reset reading. Without a guard
+  // Around a window-reset boundary, multiple sessions (Codex
+  // app-servers) emit partial readings independently. A long-running
+  // session can keep emitting its pre-reset reading for several
+  // requests after a fresher session has observed the post-reset
+  // reading. Without a guard
   // these events overwrite each other and the ring visibly
   // oscillates between the old high percent and the new low one.
   //
@@ -391,6 +392,37 @@ describe('rateLimitsInfo', () => {
 
     expect(getProviderRateLimits('claude').map((entry) => entry.limitId)).toEqual(['weekly_all']);
     expect(getProviderRateLimit('claude', 10080)?.usedPercent).toBe(0);
+  });
+
+  // A whole-answer reading replaces a stored entry even when the stored
+  // boundary is later. A wrong later boundary (a reading filed under the
+  // wrong account) would otherwise reject every true reading until it
+  // passed, showing 28% while the server reported 100%. MergeSnapshot in
+  // internal/providerlifecycleapp is this rule's twin.
+  it('replaces a later stored boundary with a whole-answer reading', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'acct',
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 28, windowMins: 10080, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776284000,
+    });
+    const partial = {
+      provider: 'claude',
+      accountId: 'acct',
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 100, windowMins: 10080, resetsAt: 1776855600 },
+      ],
+      updatedAt: 1776285000,
+    };
+    setProviderRateLimits(partial);
+    expect(getProviderRateLimit('claude', 10080, 'acct')?.usedPercent).toBe(28);
+
+    setProviderRateLimits({ ...partial, complete: true });
+    const limit = getProviderRateLimit('claude', 10080, 'acct');
+    expect(limit?.usedPercent).toBe(100);
+    expect(limit?.resetsAt).toBe(1776855600);
   });
 
   // The same omission from a partial reading proves nothing: a wire event

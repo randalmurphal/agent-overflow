@@ -284,9 +284,10 @@ Mechanism in
   (`opus`, `sonnet`) is refused as input with the offered IDs, and a Codex
   slug is passed as written for Codex to judge. An alias the CLI reports back
   is read only through its own model list (`internal/provider/AGENTS.md`).
-- Claude 2.1.257 `rate_limit_info.unifiedWindows`: not parsed yet by
-  ruling (revisit once the shape is stable; supporting it adds a visible
-  overage row, its own decision).
+- Claude usage meters read only `/api/oauth/usage`. The stdio
+  `rate_limit_event` (including 2.1.257 `unifiedWindows`) is not a quota
+  source: it names no account, and responses to requests sent before an
+  account switch land after it.
 - Binary upgrades under a running app: per-thread restart button, never an
   auto-recycle of sessions; no version ranking or auto-default.
 - Session import (`internal/sessionimport/AGENTS.md`): one AO thread per

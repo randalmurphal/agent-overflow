@@ -3102,10 +3102,9 @@ describe('setupEventListeners', () => {
     expect(fiveHour?.resetsAt).toBe(4102444800);
   });
 
-  // Claude emits one window per `rate_limit_event` (5h XOR 7d). A
-  // subsequent event for the OTHER window must merge into the same
-  // provider slot, not replace it. Codex emits both together; we test
-  // the harder Claude case here because it's the merge-correctness pin.
+  // A partial reading can carry one window (5h XOR 7d). A subsequent
+  // reading for the OTHER window must merge into the same provider
+  // slot, not replace it.
   it('merges Claude single-window updates without clobbering the other window', async () => {
     await buildPane();
 

@@ -53,7 +53,11 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot, backend: Bac
     let candidate = entry;
     if (prior) {
       const resetDelta = entry.resetsAt - prior.resetsAt;
-      if (resetDelta < -RESET_JITTER_TOLERANCE_SECONDS) continue;
+      // A partial reading from an older window is stale. A complete reading
+      // is the server's whole answer and replaces the stored entry even when
+      // the stored boundary is later: a wrong later boundary would otherwise
+      // reject every true reading until it passed.
+      if (resetDelta < -RESET_JITTER_TOLERANCE_SECONDS && !snapshot.complete) continue;
       // Same window: the NEWEST reading wins, even when its used-percent is
       // lower. Every event carries the server's current answer, and the
       // server legitimately lowers same-window utilization — a limit
@@ -79,9 +83,7 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot, backend: Bac
     // A provider drops a bucket once it has no usage, which is what a
     // mid-window reset produces, and merging alone kept the pre-reset
     // percentage for the rest of the window (2026-09-01: a Fable weekly row
-    // stuck at 90% while session and all-models read 0%). A limit the loop
-    // above rejected still counts as named — the server listed it, so its
-    // stored value stays the better answer. MergeSnapshot in
+    // stuck at 90% while session and all-models read 0%). MergeSnapshot in
     // internal/providerlifecycleapp is this rule's twin; change both.
     const present = new Set<string>();
     for (const entry of snapshot.limits) {

@@ -17,13 +17,14 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// Claude's `rate_limit_event` NDJSON envelope only carries `utilization`
-// once usage crosses the warning band (>=0.89). The authenticated
-// `/api/oauth/usage` endpoint is the complete source used by Claude Code's
-// own `/usage` view. In addition to the familiar session and weekly limits it
-// exposes dynamic scoped limits (for example a Fable-only weekly bucket)
-// through a `limits[]` array. We parse that array rather than hardcoding model
-// names. Older response shapes can still be read from unified headers:
+// The authenticated `/api/oauth/usage` endpoint is the only source of Claude
+// quota, the same one Claude Code's own `/usage` view reads. The stdio
+// `rate_limit_event` is not used: it cannot say which account it reports
+// (see the parser's `rate_limit_event` case). Besides the session and weekly
+// limits, the endpoint exposes dynamic scoped limits (for example a
+// Fable-only weekly bucket) through a `limits[]` array. We parse that array
+// rather than hardcoding model names. Older response shapes can still be
+// read from unified headers:
 //
 //	anthropic-ratelimit-unified-5h-utilization: 0.19
 //	anthropic-ratelimit-unified-5h-reset: 1778479200

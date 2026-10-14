@@ -60,7 +60,7 @@ envelope. Concretely:
 - The `user`-with-`tool_result` envelope is exactly what a `PostToolUse` hook
   payload reconstructs (`tool_response` is the same object the CLI writes as the
   transcript's `toolUseResult`).
-- `system:init`, `result`, `compact_boundary`, and `rate_limit_event` envelopes
+- `system:init`, `result`, and `compact_boundary` envelopes
   are small synthetic shapes assembled from wire + hook data.
 
 So the TUI provider does **not** reimplement the ~150 KB of ProviderEvent
@@ -92,7 +92,7 @@ cross-provider abstraction (Core Principle 6).
               reconstruct.go  │  raw SSE  ─┐
               hookrelay.go    │  hook JSON ─┤── synthesize stream-json envelopes
                               ▼            │   {stream_event, assistant, user,
-                       ┌─────────────┐     │    result, system, rate_limit_event}
+                       ┌─────────────┐     │    result, system}
                        │ claude.Parser│◀────┘   (one instance, serialized feed)
                        └──────┬───────┘
                               │ provider.ProviderEvent  (identical to headless)
@@ -119,7 +119,7 @@ session is resumed, where latency is irrelevant).
 
 | Source | Mechanism | Carries (→ reconstructed envelope) |
 |---|---|---|
-| ① **Wire** | Per-session loopback reverse proxy on `ANTHROPIC_BASE_URL`, parses `/v1/messages` SSE | streaming text + thinking deltas, content-block boundaries (→ `stream_event`); tool **starts** + durable text + usage (→ assembled `assistant`); turn-complete (→ synthesized `result`); rate-limit headers (→ `rate_limit_event`); background-Bash completion (`<task-notification>` in the next request body); the interrupt marker |
+| ① **Wire** | Per-session loopback reverse proxy on `ANTHROPIC_BASE_URL`, parses `/v1/messages` SSE | streaming text + thinking deltas, content-block boundaries (→ `stream_event`); tool **starts** + durable text + usage (→ assembled `assistant`); turn-complete (→ synthesized `result`); background-Bash completion (`<task-notification>` in the next request body); the interrupt marker |
 | ② **Hooks** | One relay command (a hidden AO subcommand) registered via `--settings` for ~6 events | tool **completions**: `PostToolUse` (`tool_response`) + `PostToolUseFailure` (`error`) (→ `user`/`tool_result`); session identity: `SessionStart` (→ `system:init`); compaction: `PreCompact`/`PostCompact` (→ `system:compact_boundary`); AskUserQuestion answer-back |
 
 Wire and hooks are complementary, neither redundant:
@@ -520,8 +520,8 @@ internal/provider/claudetui/
                     Interrupt / RespondToUserInput / PID / Close
   gateway.go        per-session loopback proxy; classify + stream /v1/messages SSE
   reconstruct.go    raw SSE → stream-json envelopes (stream_event passthrough,
-                    assemble assistant, synthesize result / system:init /
-                    rate_limit_event) — ao_transform.py logic, real-time
+                    assemble assistant, synthesize result / system:init);
+                    ao_transform.py logic, real-time
   hookrelay.go      loopback relay endpoint + capability token; hook payload →
                     envelope (PostToolUse* → user/tool_result; SessionStart →
                     system:init; Pre/PostCompact → compact_boundary;
