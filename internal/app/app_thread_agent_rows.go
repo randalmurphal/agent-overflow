@@ -273,11 +273,11 @@ func (a *App) nestPeerAgentRows(ctx context.Context, out *ThreadAgentRows, entri
 		}
 		row.Depth += depth
 		row.OwnerComputerID = spawn.TargetComputerID
-		switch {
-		case row.ComputerID == "":
+		switch row.ComputerID {
+		case "":
 			// A thread on that computer.
 			row.ComputerID, row.Computer = spawn.TargetComputerID, peerName
-		case row.ComputerID == self:
+		case self:
 			// A thread that computer reached back here on.
 			row.ComputerID, row.Computer = "", ""
 		}

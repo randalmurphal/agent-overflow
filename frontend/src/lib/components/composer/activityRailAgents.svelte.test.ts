@@ -8,6 +8,11 @@ import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { noteThread } from '../../transport/entityIndex';
 import { setupEventListeners } from '../../stores/events';
 import type { ThreadAgentRow } from '../../stores/bindings';
+import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem } from '../../stores/sendQueue.svelte';
+
+function queued(id: string, over: Partial<QueueItem> = {}): QueueItem {
+  return { id, sendId: id, threadId: '', message: id, attachmentIds: [], enqueuedAt: 1_000, ...over } as QueueItem;
+}
 
 function row(token: string, over: Partial<ThreadAgentRow> = {}): ThreadAgentRow {
   return {
@@ -26,6 +31,7 @@ describe('agents controller', () => {
     stopEvents = () => {};
     vi.useRealTimers();
     vi.restoreAllMocks();
+    resetSendQueue();
   });
 
   async function mountAgents(rows: ThreadAgentRow[], hidden = false) {
@@ -120,6 +126,24 @@ describe('agents controller', () => {
     emitWailsEvent('transport:gap', { channel: 'thread:agent_rows_changed' }, '');
     await vi.advanceTimersByTimeAsync(500);
     expect(read).toHaveBeenCalledTimes(4);
+  });
+
+  it('lists an agent\'s queued message as incoming until it leaves the queue, and not a person\'s', async () => {
+    const { pane, controller } = await mountAgents([row('child')]);
+    const request = queued('thread-request:tok', {
+      origin: 'agent-thread',
+      originThread: { computerId: '', computerName: '', threadId: 'sender', title: 'Sender', token: 'tok' },
+    });
+    replaceQueueForThread(pane.threadId!, [queued('composer-1'), request]);
+    expect(controller.incoming.map((m) => [m.item.sendId, m.kind])).toEqual([['thread-request:tok', 'request']]);
+    expect(controller.count).toBe(2);
+    expect(controller.shown).toBe(2);
+    const first = controller.incoming[0];
+    replaceQueueForThread(pane.threadId!, [queued('composer-1'), request]);
+    expect(controller.incoming[0].item).toBe(first.item);
+    replaceQueueForThread(pane.threadId!, [queued('composer-1')]);
+    expect(controller.incoming).toEqual([]);
+    expect(controller.count).toBe(1);
   });
 
   it('keeps the last list through a failed read', async () => {

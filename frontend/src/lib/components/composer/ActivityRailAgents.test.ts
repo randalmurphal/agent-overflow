@@ -9,6 +9,7 @@ import { noteThread } from '../../transport/entityIndex';
 import { __resetActivityRailUiPrefsForTest } from '../../stores/liveTodoState.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ThreadAgentRow, ThreadAgentStop } from '../../stores/bindings';
+import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem } from '../../stores/sendQueue.svelte';
 
 const navigate = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../stores/threadItemNavigation', () => ({ navigateToThreadItem: navigate }));
@@ -60,6 +61,7 @@ describe('the Agents segment', () => {
   });
   afterEach(() => {
     setCompactLayoutForTest(false);
+    resetSendQueue();
     stopEvents();
     vi.restoreAllMocks();
   });
@@ -184,6 +186,32 @@ describe('the Agents segment', () => {
     const controls = within(r).getByTestId('agent-tray-row-controls');
     expect(within(controls).getByTestId('agent-tray-row-state')).toBeTruthy();
     expect(within(controls).getByTestId('agent-tray-row-stop')).toBeTruthy();
+  });
+
+  it('shows an incoming message with its sender and kind, opens the sender, and withdraws it on Stop', async () => {
+    noteThread('thread-1', '', 2);
+    const pane = await buildPane();
+    setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+    replaceQueueForThread(pane.threadId!, [{
+      id: 'q1', sendId: 'thread-request:tok', threadId: pane.threadId!, message: 'Check the changelog.',
+      attachmentIds: [], enqueuedAt: Date.now() - 5_000, origin: 'agent-thread',
+      originThread: { computerId: '', computerName: '', threadId: 'sender', title: 'Sender', token: 'tok' },
+    } as QueueItem]);
+    const view = render(ActivityRailHost, { props: { pane } });
+    await waitFor(() => expect(view.getByTestId('activity-rail-agents-count').textContent).toBe('1'));
+    await fireEvent.click(view.getByTestId('activity-rail-agents-toggle'));
+    const r = await view.findByTestId('agent-incoming-row');
+    expect(r.getAttribute('data-kind')).toBe('request');
+    expect(within(r).getByTestId('agent-incoming-row-sender').textContent).toBe('chip');
+    await fireEvent.click(within(r).getByTestId('agent-incoming-row-open'));
+    expect(opened).toHaveBeenCalledWith('sender');
+    const withdraw = vi.fn(async (): Promise<ThreadAgentStop> => ({ token: 'thread-request:tok', outcome: 'stopped', incoming: true }) as ThreadAgentStop);
+    setBindingMock('StopThreadAgentIncoming', withdraw);
+    await fireEvent.click(within(r).getByTestId('agent-incoming-row-stop'));
+    await waitFor(() => expect(withdraw).toHaveBeenCalledWith(pane.threadId, 'thread-request:tok'));
+    await waitFor(() => expect(toastTexts()).toEqual([
+      'success: Withdrew the incoming request before this thread\'s agent read it.',
+    ]));
   });
 
   it('is not shown for a thread waiting on nobody', async () => {
