@@ -264,6 +264,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListStandingAgentWakes", ID: 2939129659, Scope: "threads:read", Route: "all"},                                     // main.App.ListStandingAgentWakes
 	{Name: "ListSubagentDescendants", ID: 1299118478, Scope: "threads:read", Route: "thread"},                                 // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506, Scope: "terminal:operate", Route: "thread"},                                       // main.App.ListTerminals
+	{Name: "ListThreadAgentRows", ID: 2323998099, Scope: "threads:read", Route: "thread"},                                     // main.App.ListThreadAgentRows
 	{Name: "ListThreadEditDiffs", ID: 2243533007, Scope: "threads:read", Route: "thread"},                                     // main.App.ListThreadEditDiffs
 	{Name: "ListThreadGroups", ID: 2176447381, Scope: "threads:read", Route: "all"},                                           // main.App.ListThreadGroups
 	{Name: "ListThreadLiveActivity", ID: 2177219062, Scope: "threads:read", Route: "all"},                                     // main.App.ListThreadLiveActivity
@@ -424,6 +425,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "StopClaudeTask", ID: 536320598, Scope: "threads:operate", Route: "thread"},                                        // main.App.StopClaudeTask
 	{Name: "StopCodexSubagent", ID: 4232843083, Scope: "threads:operate", Route: "thread"},                                    // main.App.StopCodexSubagent
 	{Name: "StopSession", ID: 3838500111, Scope: "threads:operate", Route: "thread"},                                          // main.App.StopSession
+	{Name: "StopThreadAgentRow", ID: 2507523326, Scope: "threads:operate", Route: "thread"},                                   // main.App.StopThreadAgentRow
+	{Name: "StopThreadAgentRows", ID: 3580127735, Scope: "threads:operate", Route: "thread"},                                  // main.App.StopThreadAgentRows
 	{Name: "StopThreadBackgroundWork", ID: 2155771620, Scope: "threads:operate", Route: "thread"},                             // main.App.StopThreadBackgroundWork
 	{Name: "SubmitAsyncAnswers", ID: 1219107798, Scope: "threads:operate", Route: "thread"},                                   // main.App.SubmitAsyncAnswers
 	{Name: "SubmitPRReview", ID: 2692607191, Scope: "git:operate", Route: "selected"},                                         // main.App.SubmitPRReview

@@ -230,6 +230,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2939129659: 'all', // ListStandingAgentWakes
 	1299118478: 'thread', // ListSubagentDescendants
 	2445206506: 'thread', // ListTerminals
+	2323998099: 'thread', // ListThreadAgentRows
 	2243533007: 'thread', // ListThreadEditDiffs
 	2176447381: 'all', // ListThreadGroups
 	2177219062: 'all', // ListThreadLiveActivity
@@ -390,6 +391,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	536320598: 'thread', // StopClaudeTask
 	4232843083: 'thread', // StopCodexSubagent
 	3838500111: 'thread', // StopSession
+	2507523326: 'thread', // StopThreadAgentRow
+	3580127735: 'thread', // StopThreadAgentRows
 	2155771620: 'thread', // StopThreadBackgroundWork
 	1219107798: 'thread', // SubmitAsyncAnswers
 	2692607191: 'selected', // SubmitPRReview
