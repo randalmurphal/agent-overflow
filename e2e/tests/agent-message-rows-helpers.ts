@@ -67,7 +67,8 @@ interface TimelineItem {
  * and `release` lets it end. Codex has no such wait: a request into a
  * running turn is steered in and echoed at once, and a steer starts no
  * scripted turn to answer it, so there the busy thread is idle when the
- * request lands and `release` does nothing. Whether a waiting request is
+ * request lands and its answering turn is held instead, until `release`.
+ * Whether a waiting request is
  * listed in the send queue is checked by `runQueuedRequest`.
  */
 export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, tag: string): Promise<AgentFlow> {
@@ -94,6 +95,10 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
         { steps: hold ? [{ gate: 'hold-busy' }] : [], text: 'Still on the first task.' },
         {
           steps: [
+            // Codex starts this turn at once: held until the request's
+            // thread_send has answered, so the reply wakes the lead
+            // instead of riding back inside that call's answer.
+            ...(hold ? [] : [{ gate: 'hold-reply' }]),
             { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
             { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: REPLY } } },
           ],
@@ -158,6 +163,7 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
   expect(spawn.isError, spawn.text).toBe(false);
   const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', timeoutMs: 60_000 });
   expect(send.isError, send.text).toBe(false);
+  const replyMock = hold ? null : await awaitGate(harness, 'hold-reply', busyProject.path);
 
   const items = (thread: string) => harness.rpc<TimelineItem[]>('ListItems', thread, true);
   const has = async (thread: string, text: string) =>
@@ -172,6 +178,7 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
     token: send.value!.token,
     release: async () => {
       if (busyMock) await advanceGate(harness, busyMock.mockId, 'hold-busy');
+      if (replyMock) await advanceGate(harness, replyMock.mockId, 'hold-reply');
     },
     settled: async () => {
       const reply = await awaitToolAnswer(harness, { tool: 'thread_reply', timeoutMs: 60_000 });
@@ -189,9 +196,15 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
             await new Promise((resolve) => setTimeout(resolve, 1_000));
             return await idle();
           },
-          { timeout: 60_000 },
+          { timeout: 60_000, message: 'the reply woke the lead and its turn ended' },
         )
-        .toBe(true);
+        .toBe(true)
+        .catch(async (error: unknown) => {
+          // What the lead holds, for a run that never got there.
+          const live = await harness.rpc<{ activeTurn?: unknown; queueItems?: unknown[]; flushedItems?: unknown[] }>('GetThreadLiveState', lead);
+          const rows = (await items(lead)).map((item: TimelineItem) => `${item.kind}: ${(item.summary ?? '').slice(0, 80)}`);
+          throw new Error(`${String(error)}\nlead items: ${JSON.stringify(rows)}\nlead live: ${JSON.stringify({ activeTurn: live.activeTurn, queueItems: live.queueItems, flushedItems: live.flushedItems })}`);
+        });
       await expect.poll(() => has(busy, REQUEST), { timeout: 30_000 }).toBe(true);
     },
     followUp: async () => {
