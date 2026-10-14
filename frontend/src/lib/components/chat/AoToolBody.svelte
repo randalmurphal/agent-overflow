@@ -3,25 +3,40 @@
   // could not show, then the result. The header keeps one clipped line, so
   // the full text goes first when it was clipped; the inputs the header
   // left out follow, each named for a person (the computer, the job, the
-  // page) rather than by id; and a remote reply renders as its outcome and
-  // output instead of the JSON the model read.
+  // page, the thread, the run) rather than by id; then the reply as its
+  // server's decoder reads it (chat/aoToolResults.ts): the outcome, a link
+  // to what the call touched, its facts, one line per listed entity and
+  // long text folded behind "show more". A failed call shows its message.
+  // Nothing here renders the JSON the model read.
   import type { PayloadExpansionHandle } from '../../utils/payloadExpansion.svelte';
   import type {
     PaneSession,
     RowUiRegistry,
     ScrollHost,
   } from '../../stores/threadPaneRoles';
+  import type { BackendKey } from '../../transport/backendKey';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import AnsiText from './AnsiText.svelte';
+  import AoFoldedText from './AoFoldedText.svelte';
+  import AoToolLink from './AoToolLink.svelte';
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
+  import RowError from './RowError.svelte';
+  import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import {
+    FACT_MAX,
     REMOTE_TOOLS_SERVER,
-    THREAD_TOOLS_SERVER,
-    remoteResultView,
-    threadResultView,
     type AoToolFact,
+    type AoToolNames,
     type AoToolPresentation,
   } from './aoTools';
+  import {
+    LIST_LINES,
+    PREVIEW_LINES,
+    PREVIEW_MAX,
+    aoResultView,
+    aoToolError,
+    remoteResultView,
+  } from './aoToolResults';
 
   let {
     pane,
@@ -29,6 +44,11 @@
     id,
     tool,
     facts,
+    input,
+    names,
+    viewer,
+    failed = false,
+    live = '',
     hasPayload,
     emptyMessage,
     deferredOutputState = '',
@@ -39,14 +59,25 @@
     id: string;
     tool: AoToolPresentation;
     facts: AoToolFact[];
+    input: Record<string, unknown>;
+    names: AoToolNames;
+    viewer: BackendKey;
+    /** The call failed: the reply is an error message, not a result. */
+    failed?: boolean;
+    /** Where a request stands now, when the row follows one ("answer arrived"). */
+    live?: string;
     hasPayload: boolean;
     emptyMessage: string;
     deferredOutputState?: string;
     deferredOutputError?: string;
   } = $props();
 
+  // A fact value folds once it runs past a few lines.
+  const FACT_LINES = 4;
+
   let clipped = $derived(tool.fullWhat !== tool.what);
-  let hasDetails = $derived(clipped || facts.length > 0);
+  let hasDetails = $derived(clipped || facts.length > 0 || live !== '');
+  let allLines = $state(false);
 </script>
 
 {#if hasDetails}
@@ -62,10 +93,18 @@
           <dd class="whitespace-pre-wrap break-all font-mono" data-testid="tool-call-card-ao-full">{tool.fullWhat}</dd>
         </div>
       {/if}
+      {#if live}
+        <div class="flex gap-2">
+          <dt class="shrink-0 text-fg-hint">now</dt>
+          <dd class="min-w-0" data-testid="tool-call-card-ao-live">{live}</dd>
+        </div>
+      {/if}
       {#each facts as fact (fact.label)}
         <div class="flex gap-2">
           <dt class="shrink-0 text-fg-hint">{fact.label}</dt>
-          <dd class="min-w-0 whitespace-pre-wrap break-all" data-testid="tool-call-card-ao-fact" data-fact={fact.label}>{fact.value}</dd>
+          <dd class="min-w-0 break-all" data-testid="tool-call-card-ao-fact" data-fact={fact.label}>
+            <AoFoldedText {pane} text={fact.value} lines={FACT_LINES} max={FACT_MAX} testId="tool-call-card-ao-fact-text" />
+          </dd>
         </div>
       {/each}
     </dl>
@@ -84,34 +123,108 @@
     copyLabel="Copy result"
   >
     {#snippet renderContent({ data, testId })}
-      {@const view = tool.server === REMOTE_TOOLS_SERVER ? remoteResultView(data) : null}
-      {@const thread = tool.server === THREAD_TOOLS_SERVER ? threadResultView(data) : null}
+      {@const error = failed ? aoToolError(data) : null}
+      {@const remote = !failed && tool.server === REMOTE_TOOLS_SERVER ? remoteResultView(data) : null}
+      {@const view = failed || remote ? null : aoResultView(tool.server, tool.tool, data, input, names)}
       <div
-        class="ansi-body min-w-0 max-w-full max-h-60 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words px-3 py-2 text-[0.6875rem] leading-relaxed text-fg-muted"
+        class="ansi-body min-w-0 max-w-full max-h-60 overflow-y-auto overflow-x-hidden px-3 py-2 text-[0.6875rem] leading-relaxed text-fg-muted"
         use:nestedScroll
         data-testid={testId}
       >
-        {#if thread}
-          <p class="mb-1 text-fg-hint" data-testid="tool-call-card-thread-title">
-            {thread.title || thread.summary}{thread.state ? ` · ${thread.state}` : ''}
-          </p>
-          <AnsiText source={data} class="whitespace-pre-wrap break-all" />
-        {:else if view}
-          <p class="mb-1 text-fg-hint" data-testid="tool-call-card-remote-outcome">{view.outcome}</p>
-          {#if view.error}
-            <p class="mb-1 break-words text-error">{view.error}</p>
+        {#if error}
+          <div data-testid="tool-call-card-ao-error">
+            <RowError tone="error" msg={error.message} code={error.code || undefined} />
+          </div>
+        {:else if remote}
+          <p class="mb-1 text-fg-hint" data-testid="tool-call-card-remote-outcome">{remote.outcome}</p>
+          {#if remote.error}
+            <p class="mb-1 break-words text-error">{remote.error}</p>
           {/if}
-          {#if view.head}
-            <AnsiText source={view.head} class="whitespace-pre-wrap break-all font-mono" />
+          {#if remote.head}
+            <AnsiText source={remote.head} class="whitespace-pre-wrap break-all font-mono" />
             <p class="my-1 text-fg-hint">…</p>
           {/if}
-          {#if view.output}
-            <AnsiText source={view.output} class="whitespace-pre-wrap break-all font-mono" />
-          {:else if !view.head}
+          {#if remote.output}
+            <AnsiText source={remote.output} class="whitespace-pre-wrap break-all font-mono" />
+          {:else if !remote.head}
             <p class="text-fg-hint">No output.</p>
           {/if}
-          {#if view.hint}
-            <p class="mt-1 text-fg-hint">{view.hint}</p>
+          {#if remote.hint}
+            <p class="mt-1 text-fg-hint">{remote.hint}</p>
+          {/if}
+        {:else if view}
+          {#if view.outcome || view.link}
+            <p class="mb-1 flex min-w-0 items-baseline gap-1.5" data-testid="tool-call-card-ao-outcome">
+              {#if view.link}
+                <AoToolLink link={view.link} {viewer} testId="tool-call-card-ao-link" />
+              {/if}
+              {#if view.outcome}
+                <span class="min-w-0 truncate text-fg-hint">{view.link ? `· ${view.outcome}` : view.outcome}</span>
+              {/if}
+            </p>
+          {/if}
+          {#if view.facts.length > 0}
+            <dl class="mb-1">
+              {#each view.facts as fact, index (`${fact.label}:${index}`)}
+                <div class="flex gap-2">
+                  <dt class="shrink-0 text-fg-hint">{fact.label}</dt>
+                  <dd class="min-w-0 break-words" data-testid="tool-call-card-ao-result-fact" data-fact={fact.label}>
+                    <AoFoldedText {pane} text={fact.value} lines={FACT_LINES} max={FACT_MAX} testId="tool-call-card-ao-result-fact-text" />
+                  </dd>
+                </div>
+              {/each}
+            </dl>
+          {/if}
+          {#if view.lines.length > 0}
+            <ul class="mb-1 space-y-1" data-testid="tool-call-card-ao-lines">
+              {#each allLines ? view.lines : view.lines.slice(0, LIST_LINES) as line, index (`${line.key}:${index}`)}
+                <li class="min-w-0" data-testid="tool-call-card-ao-line">
+                  <div class="flex min-w-0 items-baseline gap-1.5">
+                    {#if line.link}
+                      <AoToolLink link={line.link} {viewer} testId="tool-call-card-ao-line-link" />
+                    {:else}
+                      <span class="min-w-0 truncate text-fg-muted">{line.title}</span>
+                    {/if}
+                    {#if line.detail}
+                      <span class="min-w-0 truncate text-fg-hint">· {line.detail}</span>
+                    {/if}
+                  </div>
+                  {#if line.text}
+                    <p class="line-clamp-2 whitespace-pre-wrap break-words text-fg-subtle">{line.text}</p>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+            {#if view.lines.length > LIST_LINES}
+              <button
+                type="button"
+                class="mb-1 text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded compact:select-none"
+                aria-expanded={allLines}
+                data-testid="tool-call-card-ao-lines-toggle"
+                onclick={(event) => {
+                  event.stopPropagation();
+                  preservePaneScrollAnchor(pane, event, () => {
+                    allLines = !allLines;
+                  });
+                }}
+              >{allLines ? 'Show fewer' : `Show all ${view.lines.length}`}</button>
+            {/if}
+          {/if}
+          {#if view.preview}
+            <div class="mb-1">
+              <p class="text-fg-hint">{view.preview.label}</p>
+              <AoFoldedText
+                {pane}
+                text={view.preview.text}
+                lines={PREVIEW_LINES}
+                max={PREVIEW_MAX}
+                mono
+                testId="tool-call-card-ao-preview"
+              />
+            </div>
+          {/if}
+          {#if view.note}
+            <p class="text-fg-hint" data-testid="tool-call-card-ao-note">{view.note}</p>
           {/if}
         {:else}
           <AnsiText source={data} class="whitespace-pre-wrap break-all" />
