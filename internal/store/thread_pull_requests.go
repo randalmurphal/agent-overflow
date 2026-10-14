@@ -112,16 +112,15 @@ func (s *Store) ListPendingThreadPullRequests() ([]ThreadPullRequest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: list pending thread pull requests: %w", err)
 	}
-	defer rows.Close()
 	var out []ThreadPullRequest
 	for rows.Next() {
 		pr, err := scanThreadPullRequest(rows.Scan)
 		if err != nil {
-			return nil, fmt.Errorf("store: scan pending thread pull request: %w", err)
+			return nil, errors.Join(fmt.Errorf("store: scan pending thread pull request: %w", err), rows.Close())
 		}
 		out = append(out, pr)
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("store: list pending thread pull requests: %w", err)
 	}
 	return out, nil
