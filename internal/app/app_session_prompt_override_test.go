@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/testutil"
 )
 
@@ -35,6 +37,112 @@ func seedPromptOverrideThread(t *testing.T, app *App, id, providerName, model st
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 	return id, workDir
+}
+
+// testPromptEntry is one prompt override as a test configures it: the row
+// fields and the text its file holds.
+type testPromptEntry struct {
+	Enabled bool
+	Models  []string
+	Prompt  string
+}
+
+// setPromptOverrides replaces one provider's override list the way a user
+// does (see updatePromptFileSettings).
+func setPromptOverrides(t *testing.T, app *App, key string, entries ...testPromptEntry) []settings.PromptOverride {
+	t.Helper()
+	rows := make([]map[string]any, len(entries))
+	for i, entry := range entries {
+		models := entry.Models
+		if models == nil {
+			models = []string{}
+		}
+		rows[i] = map[string]any{"enabled": entry.Enabled, "models": models, "prompt": entry.Prompt}
+	}
+	saved, err := updatePromptFileSettings(t, app, map[string]any{key: rows})
+	if err != nil {
+		t.Fatalf("set %s: %v", key, err)
+	}
+	return promptOverridesForKey(saved, key)
+}
+
+// updatePromptFileSettings applies a settings patch the way a user changes
+// prompt overrides: the rows (without text) through the settings service,
+// which creates each new entry's file, then each entry's text written into
+// its file, then the reload the prompts watcher runs on an edit. A row's
+// "prompt" value is the text its file gets. Rows without an id take the id
+// of the entry at the same position in the current list, so an edit is an
+// edit of the same entry. Keys other than the two override lists pass
+// through unchanged.
+func updatePromptFileSettings(t *testing.T, app *App, patch map[string]any) (settings.Settings, error) {
+	t.Helper()
+	attachPromptFileStore(t, app)
+	current := app.settings.Get()
+	texts := map[string][]string{}
+	stripped := make(map[string]any, len(patch))
+	for key, value := range patch {
+		if key != "claudePromptOverrides" && key != "codexPromptOverrides" {
+			stripped[key] = value
+			continue
+		}
+		var rows []map[string]any
+		switch typed := value.(type) {
+		case []map[string]any:
+			rows = typed
+		case []any:
+			for _, row := range typed {
+				rows = append(rows, row.(map[string]any))
+			}
+		default:
+			t.Fatalf("%s patch is %T, want a list of rows", key, value)
+		}
+		existing := promptOverridesForKey(current, key)
+		out := make([]map[string]any, len(rows))
+		list := make([]string, len(rows))
+		for i, row := range rows {
+			clone := maps.Clone(row)
+			list[i], _ = clone["prompt"].(string)
+			delete(clone, "prompt")
+			if _, has := clone["id"]; !has && i < len(existing) {
+				clone["id"] = existing[i].ID
+			}
+			out[i] = clone
+		}
+		texts[key] = list
+		stripped[key] = out
+	}
+	saved, err := app.settings.Update(stripped)
+	if err != nil || len(texts) == 0 {
+		return saved, err
+	}
+	for key, list := range texts {
+		entries := promptOverridesForKey(saved, key)
+		for i, text := range list {
+			if err := os.WriteFile(entries[i].Path, []byte(text+"\n"), 0o600); err != nil {
+				t.Fatalf("write %s prompt file: %v", key, err)
+			}
+		}
+	}
+	app.settings.ReloadPromptFiles()
+	return app.settings.Get(), nil
+}
+
+// attachPromptFileStore attaches the settings tier store the way boot does,
+// which is what puts override texts in files.
+func attachPromptFileStore(t *testing.T, app *App) {
+	t.Helper()
+	if app.settingsAttached.Load() {
+		return
+	}
+	app.settings.AttachTierStore(app.store, "client:prompt-files-test")
+	app.settingsAttached.Store(true)
+}
+
+func promptOverridesForKey(snapshot settings.Settings, key string) []settings.PromptOverride {
+	if key == "codexPromptOverrides" {
+		return snapshot.CodexPromptOverrides
+	}
+	return snapshot.ClaudePromptOverrides
 }
 
 // promptOverrideOptions builds the options bundle exactly the way the SPAWN
@@ -75,7 +183,7 @@ func TestBuildSessionOptionsRendersThePromptOverrideForTheThreadProvider(t *test
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-compose", string(provider.Codex), "gpt-5.4")
 
-	if _, err := app.settings.Update(map[string]any{
+	if _, err := updatePromptFileSettings(t, app, map[string]any{
 		"claudePromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "claude prompt"},
 		},
@@ -111,7 +219,7 @@ func TestBuildSessionOptionsRendersTheClaudeOverrideIntoTheLaunchConfig(t *testi
 		t.Fatalf("UpdateRuntimeMode() error = %v", err)
 	}
 
-	if _, err := app.settings.Update(map[string]any{
+	if _, err := updatePromptFileSettings(t, app, map[string]any{
 		"claudePromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"claude-opus-5"}, "prompt": "You work in {{WORKDIR}} as {{MODEL_NAME}}."},
 		},
@@ -158,7 +266,7 @@ func TestBuildSessionOptionsAppliesBothAxesToClaudeTUI(t *testing.T) {
 	app := newTestAppWithStore(t)
 	id, workDir := seedPromptOverrideThread(t, app, "thread-prompt-override-tui", string(provider.ClaudeTUI), "claude-opus-5")
 
-	if _, err := app.settings.Update(map[string]any{
+	if _, err := updatePromptFileSettings(t, app, map[string]any{
 		"claudePromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"claude-opus-5"}, "prompt": "You work in {{WORKDIR}} as {{MODEL_NAME}}."},
 		},
@@ -203,20 +311,17 @@ func TestBuildSessionOptionsAppliesBothAxesToClaudeTUI(t *testing.T) {
 // The reconcile half of the pair on a claude-tui thread: claudetui has no
 // live-update surface, so any diff the reconciler sees becomes a deferred
 // RESTART. reconcileSettingsOwnedAxes runs before the diff and PINS every
-// settings-owned axis for a transport that cannot swap a system prompt live,
-// so a settings edit (or a workspace's git state moving under a rendered
-// {{GIT_BLOCK}}) must leave the freshly built options equal to what the live
-// session launched with. Without the pin, including claude-tui in the feature
-// would queue a restart on every running TUI session the next time anything
-// reconciled. Only headless Claude — which has `set_model.system_prompt` —
-// converges the prompt axis; see
-// TestReconcileSettingsOwnedAxesConvergesAnEditedClaudeOverride.
+// spawn-only settings-owned axis, so a settings edit (or a workspace's git
+// state moving under a rendered {{GIT_BLOCK}}) must leave the freshly built
+// options equal to what the live session launched with. Without the pin,
+// including claude-tui in the feature would queue a restart on every running
+// TUI session the next time anything reconciled.
 func TestPinSettingsOwnedAxesKeepsAClaudeTUISessionOffTheRestartPath(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-tui-pin", string(provider.ClaudeTUI), "claude-opus-5")
 
-	if _, err := app.settings.Update(map[string]any{
+	if _, err := updatePromptFileSettings(t, app, map[string]any{
 		"claudePromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"claude-opus-5"}, "prompt": "launched prompt"},
 		},
@@ -227,7 +332,7 @@ func TestPinSettingsOwnedAxesKeepsAClaudeTUISessionOffTheRestartPath(t *testing.
 	launch := promptOverrideOptions(t, app, id)
 
 	// The user edits all three settings-owned axes while the session is live.
-	if _, err := app.settings.Update(map[string]any{
+	if _, err := updatePromptFileSettings(t, app, map[string]any{
 		"claudePromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"claude-opus-5"}, "prompt": "edited prompt"},
 		},
@@ -245,7 +350,7 @@ func TestPinSettingsOwnedAxesKeepsAClaudeTUISessionOffTheRestartPath(t *testing.
 	if err != nil {
 		t.Fatalf("buildSessionOptions() error = %v", err)
 	}
-	app.reconcileSettingsOwnedAxes(stored, "session-token", &rebuilt, launch)
+	app.reconcileSettingsOwnedAxes(stored, &rebuilt, launch)
 
 	if rebuilt.SystemPrompt != launch.SystemPrompt {
 		t.Fatalf("SystemPrompt = %q, want the launched %q", rebuilt.SystemPrompt, launch.SystemPrompt)
@@ -305,7 +410,7 @@ func TestBuildSessionOptionsKeepsAFeatureOwnedSystemPrompt(t *testing.T) {
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-feature", string(provider.Codex), "gpt-5.4")
 	app.setThreadSystemPrompt(id, "deliberation prompt")
 
-	if _, err := app.settings.Update(map[string]any{
+	if _, err := updatePromptFileSettings(t, app, map[string]any{
 		"codexPromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "settings prompt"},
 		},
@@ -348,7 +453,7 @@ func TestApplySettingsOwnedAxesRefusesAnOversizedRenderedPrompt(t *testing.T) {
 		}
 	}
 
-	if _, err := app.settings.Update(map[string]any{
+	if _, err := updatePromptFileSettings(t, app, map[string]any{
 		"codexPromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": strings.Repeat("{{GIT_BLOCK}}\n", 200)},
 		},
@@ -385,7 +490,7 @@ func TestPromptOverrideGitFacts(t *testing.T) {
 		if err := app.store.UpdateWorkspacePath(id, repo); err != nil {
 			t.Fatalf("UpdateWorkspacePath() error = %v", err)
 		}
-		if _, err := app.settings.Update(map[string]any{
+		if _, err := updatePromptFileSettings(t, app, map[string]any{
 			"codexPromptOverrides": []map[string]any{
 				{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "repo={{IS_GIT_REPO}}\n{{GIT_BLOCK}}"},
 			},
@@ -403,7 +508,7 @@ func TestPromptOverrideGitFacts(t *testing.T) {
 
 	t.Run("outside a repository", func(t *testing.T) {
 		id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-git-none", string(provider.Codex), "gpt-5.4")
-		if _, err := app.settings.Update(map[string]any{
+		if _, err := updatePromptFileSettings(t, app, map[string]any{
 			"codexPromptOverrides": []map[string]any{
 				{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "repo={{IS_GIT_REPO}}|block={{GIT_BLOCK}}|"},
 			},
@@ -419,7 +524,7 @@ func TestPromptOverrideGitFacts(t *testing.T) {
 	// the same Yes/No answer PromptSnapshot would, from a repository AND
 	// from a linked worktree (which gitroot resolves to its main repo).
 	t.Run("is-git-repo only", func(t *testing.T) {
-		if _, err := app.settings.Update(map[string]any{
+		if _, err := updatePromptFileSettings(t, app, map[string]any{
 			"codexPromptOverrides": []map[string]any{
 				{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "repo={{IS_GIT_REPO}}"},
 			},
@@ -574,7 +679,7 @@ func startOverrideSessionIn(t *testing.T, app *App, id string, providerName prov
 		binaryKey = "claudeBinaryPath"
 		binary = testutil.WriteMockClaudeScript(t, t.TempDir(), nil)
 	}
-	if _, err := app.settings.Update(map[string]any{
+	if _, err := updatePromptFileSettings(t, app, map[string]any{
 		settingsKey: []map[string]any{
 			{"enabled": true, "models": []string{model}, "prompt": prompt},
 		},
@@ -602,7 +707,7 @@ func TestPromptOverrideChangeDoesNotDisturbALiveSession(t *testing.T) {
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-live", string(provider.Codex), "gpt-5.4")
 
-	if _, err := app.settings.Update(map[string]any{
+	if _, err := updatePromptFileSettings(t, app, map[string]any{
 		"codexPromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "launched prompt"},
 		},
@@ -623,7 +728,7 @@ func TestPromptOverrideChangeDoesNotDisturbALiveSession(t *testing.T) {
 	app.sessionManager().runtime.SetConfigReconnectPollOverride(10 * time.Millisecond)
 	app.sessionManager().runtime.SetConfigReconnectQuietOverride(time.Nanosecond)
 
-	if _, err := app.settings.Update(map[string]any{
+	if _, err := updatePromptFileSettings(t, app, map[string]any{
 		"codexPromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "edited prompt"},
 		},
@@ -719,7 +824,7 @@ func TestNextSpawnAfterACodexForkStillCarriesTheOverrideAxes(t *testing.T) {
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-fork", string(provider.Codex), "gpt-5.4")
 
-	if _, err := app.settings.Update(map[string]any{
+	if _, err := updatePromptFileSettings(t, app, map[string]any{
 		"codexPromptOverrides": []map[string]any{
 			{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "forked instructions"},
 		},
@@ -780,92 +885,4 @@ func registerLiveCodexSession(t *testing.T, app *App, threadID string, launchOpt
 		LaunchOptions: launchOpts,
 		Liveness:      newSessionLiveness(time.Now()),
 	})
-}
-
-// B19: the non-Claude early return pins the prompt, and the pin has to be
-// CONDITIONAL. SystemPrompt is a shared axis — discussions
-// own it for their threads through threadSystemPrompts, and after
-// buildSessionOptions a non-empty value means exactly that. An unconditional
-// pin overwrote the freshly built feature prompt with the launched one, so
-// the reconciler saw no diff and the feature-owned prompt froze on its first
-// value forever.
-//
-// Driven per non-Claude provider rather than for one representative: the two
-// reach the early return from different Config types, and neither has
-// `set_model.system_prompt` to converge with.
-func TestReconcileSettingsOwnedAxesKeepsFeaturePromptsConvergingOffClaude(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct{ providerName, model string }{
-		{string(provider.Codex), "gpt-5.4"},
-		{string(provider.ClaudeTUI), "claude-opus-5"},
-	} {
-		t.Run(tc.providerName, func(t *testing.T) {
-			app := newTestAppWithStore(t)
-			id, _ := seedPromptOverrideThread(t, app, "thread-feature-prompt-"+tc.providerName, tc.providerName, tc.model)
-			app.setThreadSystemPrompt(id, "deliberation prompt v1")
-			launch := promptOverrideOptions(t, app, id)
-			if launch.SystemPrompt != "deliberation prompt v1" {
-				t.Fatalf("launch SystemPrompt = %q, want the feature-owned prompt", launch.SystemPrompt)
-			}
-
-			app.setThreadSystemPrompt(id, "deliberation prompt v2")
-
-			stored, err := app.store.GetThread(id)
-			if err != nil {
-				t.Fatalf("GetThread() error = %v", err)
-			}
-			rebuilt, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
-			if err != nil {
-				t.Fatalf("buildSessionOptions() error = %v", err)
-			}
-			app.reconcileSettingsOwnedAxes(stored, "session-token", &rebuilt, launch)
-
-			if rebuilt.SystemPrompt != "deliberation prompt v2" {
-				t.Fatalf("SystemPrompt = %q, want the edited feature prompt to survive the reconcile", rebuilt.SystemPrompt)
-			}
-		})
-	}
-}
-
-// The other side of the same conditional: with NO feature prompt, a
-// non-Claude session still pins what it launched with, so a settings edit
-// cannot queue a restart on a transport that could not have applied it live.
-func TestReconcileSettingsOwnedAxesStillPinsTheSettingsOverrideOffClaude(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	id, _ := seedPromptOverrideThread(t, app, "thread-feature-prompt-pin", string(provider.Codex), "gpt-5.4")
-
-	if _, err := app.settings.Update(map[string]any{
-		"codexPromptOverrides": []map[string]any{
-			{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "launched prompt"},
-		},
-	}); err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
-	launch := promptOverrideOptions(t, app, id)
-
-	if _, err := app.settings.Update(map[string]any{
-		"codexPromptOverrides": []map[string]any{
-			{"enabled": true, "models": []string{"gpt-5.4"}, "prompt": "edited prompt"},
-		},
-	}); err != nil {
-		t.Fatalf("Update() error = %v", err)
-	}
-
-	stored, err := app.store.GetThread(id)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	rebuilt, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
-	if err != nil {
-		t.Fatalf("buildSessionOptions() error = %v", err)
-	}
-	app.reconcileSettingsOwnedAxes(stored, "session-token", &rebuilt, launch)
-
-	if rebuilt.SystemPrompt != launch.SystemPrompt {
-		t.Fatalf("SystemPrompt = %q, want the launched %q — Codex converges on the next spawn", rebuilt.SystemPrompt, launch.SystemPrompt)
-	}
-	if rebuilt.SystemPromptOverrideSource != launch.SystemPromptOverrideSource {
-		t.Fatalf("SystemPromptOverrideSource = %q, want the launched %q", rebuilt.SystemPromptOverrideSource, launch.SystemPromptOverrideSource)
-	}
 }

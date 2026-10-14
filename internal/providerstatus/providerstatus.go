@@ -51,6 +51,16 @@ type Event struct {
 	// value here needs its frontend branch in the same change.
 	Kind string `json:"kind,omitempty"`
 
+	// WithdrawKind names the thread-scoped banner a `status:"ready"`
+	// withdrawal clears (KindBinaryStale or KindPromptStale), so a pane
+	// showing both session banners drops only that one.
+	WithdrawKind string `json:"withdrawKind,omitempty"`
+
+	// Revision orders KindPromptStale raises for one thread. It increases on
+	// every change the banner reports and is never reused, so a dismissed
+	// revision never hides a later change.
+	Revision int `json:"revision,omitempty"`
+
 	// ThreadID scopes the event to one pane. Empty means the event is
 	// provider-global and fans out to every pane on that provider —
 	// which is what every binary-detect emission is.
@@ -69,6 +79,12 @@ type Event struct {
 // upgraded the CLI underneath a running session. Thread-scoped by
 // construction: the process, not the provider, is what went stale.
 const KindBinaryStale = "binary_stale"
+
+// KindPromptStale marks a live thread whose settings-level system prompt
+// would differ at its next session start. A prompt change never applies to
+// a running session, so the banner offers a restart. Thread-scoped and
+// pinned to the session that earned it.
+const KindPromptStale = "prompt_stale"
 
 // VersionToken extracts the leading dotted-decimal version token from a
 // version string. `claude --version` prints "2.1.257 (Claude Code)",

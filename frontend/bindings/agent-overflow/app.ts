@@ -980,6 +980,17 @@ export function DiscoverComputers(): $CancellablePromise<attachedbackends$0.Disc
 }
 
 /**
+ * DismissSessionBanner hides a thread's session banner of one kind until
+ * the condition behind it changes again: `prompt_stale` until the prompt
+ * the next start would use changes again, `binary_stale` until the
+ * installed CLI version changes again. Either way the change still applies
+ * when the session next restarts. Every attached client gets the withdraw.
+ */
+export function DismissSessionBanner(threadID: string, kind: string): $CancellablePromise<void> {
+    return $Call.ByID(1317713039, threadID, kind);
+}
+
+/**
  * DismissThreadWorktreeSetup retires a thread's failed worktree setup: the
  * panel and the sidebar pill clear in every client and do not come back. A run
  * still in flight is refused, not cancelled.

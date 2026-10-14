@@ -68,11 +68,11 @@ func (a *App) startSessionTakingLock(ctx context.Context, threadID string) error
 // from Settings rather than projected from the thread row, so the two
 // callers need opposite treatment — the spawn path applies today's values
 // (applySettingsOwnedAxes), the reconcile path resolves against the live
-// session's (reconcileSettingsOwnedAxes: tool lists pin, a headless-Claude
-// prompt override converges live only when its STORED text actually
-// changed). Both live in app_session_prompt_override.go. Leaving them out
-// here is what keeps the reconciler from composing an override — up to two
-// git subprocesses under the per-thread config lock — on every model,
+// session's (reconcileSettingsOwnedAxes: the tool lists and the
+// settings-level prompt pin, since a prompt change applies only at the next
+// session start). Both live in app_session_prompt_override.go. Leaving them
+// out here is what keeps the reconciler from composing an override (up to
+// two git subprocesses under the per-thread config lock) on every model,
 // effort, and runtime-mode change.
 func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, error) {
 	systemPrompt := a.featureOwnedSystemPrompt(t)
@@ -295,6 +295,9 @@ func (a *App) startSessionNow(threadID string) error {
 		a.signalRemotePeers()
 	}
 	a.emitProviderSessionAccount(threadID)
+	// The fresh session launched with today's prompt, which clears any
+	// prompt change flag; a save that landed while it spawned flags it.
+	a.reconcileStalePromptSession(threadID)
 
 	// Register the freshly-spawned process group with the orphan reaper so
 	// it's torn down if the app dies before the session closes cleanly

@@ -186,6 +186,8 @@ type Settings struct {
 	// Prompt text may carry `{{...}}` placeholders (workdir, git snapshot,
 	// platform, model, Claude memory dir) rendered at spawn — see
 	// internal/promptoverride, which owns both the match and the render.
+	// Each entry's text is stored in <configDir>/prompts/<id>.md, not in
+	// the row (promptfiles.go).
 	ClaudePromptOverrides []PromptOverride `json:"claudePromptOverrides,omitempty"`
 	CodexPromptOverrides  []PromptOverride `json:"codexPromptOverrides,omitempty"`
 
@@ -805,6 +807,15 @@ type Service struct {
 	// because one caller's screen is not every caller's answer.
 	cached      *Settings
 	cachedState fileState
+	// cachedPromptFiles stamps every prompt file the cached snapshot's
+	// entries name, so an external edit to one invalidates the cache the
+	// way an edit to settings.json does (promptfiles.go).
+	cachedPromptFiles []promptFileStamp
+	// promptDir is <configDir>/prompts, the home of the override texts.
+	promptDir string
+	// promptLoad is what the last loadFromFile learned about the prompt
+	// files. Written under s.mu, like unknownFields.
+	promptLoad promptLoad
 	// store and backendBucket are the user/device residency, nil and empty
 	// until AttachTierStore runs. A store-less service keeps every tier in
 	// the file — the pre-phase-4 behaviour the pre-database boot readers in
@@ -838,11 +849,13 @@ type fileState struct {
 	size    int64
 }
 
-// NewService creates a settings service that reads/writes configDir/settings.json.
-// The file is not created until the first write.
+// NewService creates a settings service that reads/writes configDir/settings.json
+// and keeps prompt override texts in configDir/prompts. Neither is created
+// until the first write.
 func NewService(configDir string) *Service {
 	return &Service{
-		path: filepath.Join(configDir, "settings.json"),
+		path:      filepath.Join(configDir, "settings.json"),
+		promptDir: filepath.Join(configDir, promptFilesDirName),
 	}
 }
 
@@ -889,11 +902,13 @@ func (s *Service) RetiredString(field string) string {
 
 // Get returns the current settings, merging file contents over defaults.
 // If the file is missing or malformed, defaults are returned.
+//
+// The cache is checked against settings.json AND every prompt file the
+// cached entries name, so an edit to either is seen by the next read, even
+// before the prompts watcher's debounce fires.
 func (s *Service) Get() Settings {
-	currentState := readFileState(s.path)
-
 	s.mu.RLock()
-	if s.cached != nil && s.cachedState.equal(currentState) {
+	if s.cached != nil && s.cacheFreshLocked(readFileState(s.path)) {
 		result := *s.cached
 		s.mu.RUnlock()
 		return result
@@ -905,15 +920,23 @@ func (s *Service) Get() Settings {
 	defer s.mu.Unlock()
 
 	// Double-check after acquiring write lock.
-	currentState = readFileState(s.path)
-	if s.cached != nil && s.cachedState.equal(currentState) {
+	currentState := readFileState(s.path)
+	if s.cached != nil && s.cacheFreshLocked(currentState) {
 		return *s.cached
 	}
 
 	loaded := s.loadFromFile()
 	s.cached = &loaded
 	s.cachedState = currentState
+	s.cachedPromptFiles = s.promptLoad.stamps
 	return loaded
+}
+
+// cacheFreshLocked reports whether the cached snapshot still matches the
+// settings file state given and every prompt file it was read from. Must be
+// called with s.mu held.
+func (s *Service) cacheFreshLocked(settingsState fileState) bool {
+	return s.cachedState.equal(settingsState) && promptFilesUnchanged(s.cachedPromptFiles)
 }
 
 // Update applies a partial patch to the current settings, persists the result
@@ -960,10 +983,14 @@ func (s *Service) update(bucket string, class DeviceClass, patch map[string]any)
 		if err != nil {
 			return Settings{}, fmt.Errorf("settings: apply patch: %w", err)
 		}
+		// A prompt override's text lives in its file, which the user edits;
+		// a write never takes it from the caller (promptoverrides.go).
+		dropClientPromptFields(patch, &patched)
 		patched, err = validateSettings(patched)
 		if err != nil {
 			return Settings{}, fmt.Errorf("settings: validate: %w", err)
 		}
+		restoreStoredPromptTexts(patch, current, &patched)
 		return patched, nil
 	})
 }
@@ -1057,7 +1084,7 @@ func (s *Service) loadFromFile() Settings {
 		// that moved a key still resident in it, so an install whose owner
 		// has only ever changed preferences has no file at all.
 		s.unknownFields = nil
-		return sanitizeLoadedSettings(s.overlayUserTier(copyDefaults()))
+		return s.finishLoad(copyDefaults())
 	}
 
 	// Start from defaults, then overlay file values.
@@ -1070,10 +1097,24 @@ func (s *Service) loadFromFile() Settings {
 			log.Printf("settings: malformed JSON in %s; original preserved at %s, falling back to defaults: %v", s.path, preservedPath, err)
 		}
 		s.unknownFields = nil
-		return sanitizeLoadedSettings(s.overlayUserTier(copyDefaults()))
+		return s.finishLoad(copyDefaults())
 	}
 	s.unknownFields = captureUnknownFields(data)
-	return sanitizeLoadedSettings(s.overlayUserTier(result))
+	return s.finishLoad(result)
+}
+
+// finishLoad is the shared tail of loadFromFile's three exits: the user tier
+// over the file values, the load-time sanitizer, and then, with the store
+// attached, the prompt override texts from their files (promptfiles.go).
+// Records what the files said in s.promptLoad. Must be called with s.mu
+// held.
+func (s *Service) finishLoad(fileValues Settings) Settings {
+	loaded := sanitizeLoadedSettings(s.overlayUserTier(fileValues))
+	s.promptLoad = promptLoad{}
+	if s.store != nil {
+		s.promptLoad = s.fillPromptFiles(&loaded)
+	}
+	return loaded
 }
 
 // overlayUserTier applies the user tier over whatever the FILE produced, and

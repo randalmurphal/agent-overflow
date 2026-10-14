@@ -3,9 +3,11 @@
   import { fade } from 'svelte/transition';
   import type { ErrorSurface } from '../../stores/threadPaneRoles';
   import {
+    DismissSessionBanner,
     GetProviderStatuses,
     ReconnectSession,
   } from '../../stores/bindings';
+  import type { SessionBannerKind } from '../../types/events';
   import { userFacingError } from '../../utils/userFacingError';
   import ErrorReportActions from '../shared/ErrorReportActions.svelte';
   import ErrorReportDetails from '../shared/ErrorReportDetails.svelte';
@@ -99,11 +101,38 @@
       case 'version_too_old':
       case 'unauthenticated':
       case 'binary_stale':
+      case 'prompt_stale':
         return 'bg-warning/15 border-warning/30 text-warning';
       default:
         return '';
     }
   });
+  const SESSION_BANNER_CLASSES = 'bg-warning/15 border-warning/30 text-warning';
+
+  // The thread-owned rows (stale binary, stale prompt): each is a claim
+  // about the running session, answered by the same Restart, and each can be
+  // dismissed on its own. A dismiss is backend-owned so every screen on the
+  // thread agrees; the backend answers with the withdrawal that removes the
+  // row, and the next change raises it again.
+  let dismissing = $state<Partial<Record<SessionBannerKind, boolean>>>({});
+  function sessionBannerMessage(status: ProviderStatusEvent): string {
+    if (status.kind === 'prompt_stale') return 'System prompt changed. Restart the session to use it.';
+    return binaryStaleMessage(status);
+  }
+  async function handleDismiss(kind: SessionBannerKind) {
+    const threadID = pane.threadId;
+    if (!threadID || dismissing[kind] || operateUngranted) return;
+    dismissing[kind] = true;
+    try {
+      await DismissSessionBanner(threadID, kind);
+      if (pane.threadId === threadID) pane.setSessionBanner(kind, null);
+    } catch (err) {
+      console.error('Failed to dismiss session banner:', err);
+      if (pane.threadId === threadID) pane.setGeneralError(userFacingError(err), err);
+    } finally {
+      dismissing[kind] = false;
+    }
+  }
 
   // `binary_stale`: the CLI was replaced under a session that is still
   // running the old one. Either version can be missing, so the parenthetical
@@ -116,7 +145,7 @@
     if (from && to) versions = ` (${from} → ${to})`;
     else if (to) versions = ` (${to})`;
     else if (from) versions = ` (was ${from})`;
-    return `${label} updated${versions} — restart the session to use it.`;
+    return `${label} updated${versions}. Restart the session to use it.`;
   }
 
   let providerBannerMessage = $derived.by(() => {
@@ -131,7 +160,8 @@
           || `${label} not found at the configured path.`;
       }
       case 'binary_stale':
-        return binaryStaleMessage(providerStatus);
+      case 'prompt_stale':
+        return sessionBannerMessage(providerStatus);
       case 'version_too_old':
       case 'unauthenticated':
       case 'error':
@@ -285,6 +315,43 @@
   class="absolute inset-x-0 top-0 z-20 flex flex-col"
   data-testid="provider-status-overlay"
 >
+  {#if pane.thread}
+    {#each pane.sessionBanners as banner (banner.kind)}
+      {@const kind = banner.kind as SessionBannerKind}
+      <div
+        transition:fade={{ duration: 150 }}
+        role="alert"
+        aria-live="polite"
+        data-testid="provider-status-banner"
+        data-status={kind}
+        data-kind={kind}
+        class="border-b {SESSION_BANNER_CLASSES} px-4 py-2 flex items-center gap-2"
+      >
+        <p class="text-xs flex-1 line-clamp-2" title={sessionBannerMessage(banner)}>
+          {sessionBannerMessage(banner)}
+        </p>
+        <button
+          onclick={handleReconnect}
+          disabled={reconnecting || operateUngranted}
+          title={operateUngranted ? 'Not granted to this device' : undefined}
+          data-testid="provider-status-restart"
+          class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          {reconnecting ? 'Restarting…' : 'Restart session'}
+        </button>
+        <button
+          onclick={() => void handleDismiss(kind)}
+          disabled={dismissing[kind] || operateUngranted}
+          title={operateUngranted ? 'Not granted to this device' : 'Dismiss'}
+          data-testid="provider-status-dismiss"
+          aria-label="Dismiss"
+          class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+        >
+          Dismiss
+        </button>
+      </div>
+    {/each}
+  {/if}
   {#if providerStatus && pane.thread}
     <div
       transition:fade={{ duration: 150 }}
@@ -317,17 +384,6 @@
           class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
           {signingIn ? 'Signing in…' : 'Sign in'}
-        </button>
-      {/if}
-      {#if providerStatus?.status === 'binary_stale'}
-        <button
-          onclick={handleReconnect}
-          disabled={reconnecting || operateUngranted}
-          title={operateUngranted ? 'Not granted to this device' : undefined}
-          data-testid="provider-status-restart"
-          class="text-xs px-2 py-0.5 compact:px-3 compact:py-2 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          {reconnecting ? 'Restarting…' : 'Restart session'}
         </button>
       {/if}
       {#if providerStatus?.actionable && primaryActionLabel}

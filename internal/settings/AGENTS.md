@@ -44,7 +44,7 @@ Remove a retired setting from validation, residency, generated defaults, binding
 ## Feature ownership
 
 - `providerenv.go`: provider subprocess environment and redacted projections.
-- `promptoverrides.go`: bounded provider prompt overrides and disabled-tool selections.
+- `promptoverrides.go`: bounded provider prompt overrides and disabled-tool selections; `promptfiles.go` keeps each override's text only in `<configDir>/prompts/<id>.md` and the row without it. The text never crosses the wire (`PromptOverridesForWire`) and a write never takes it from a caller.
 - `claudesession.go`, `claudecrosssession.go`: Claude-only session axes and live reconciliation inputs.
 - `network.go`: LAN, domain/TLS, tailnet, and configured preview ports. Validate independent halves independently.
 - `spinner.go`: custom verbs, animation exclusions, and compaction selection.

@@ -169,6 +169,10 @@ type App struct {
 	// spinnerWatcher it also suppresses this process's own cue writes,
 	// which are RPCs rather than hand edits.
 	soundWatcher *assetwatch.SoundWatcher
+	// promptWatcher watches <configDir>/prompts so a system prompt override
+	// edited as a file reaches attached screens and live Claude sessions
+	// without a save in the app. Nil on the same terms as themeWatcher.
+	promptWatcher *assetwatch.PromptWatcher
 	// turnObservers fans provider events out to internal App features after
 	// triage handling has been attempted.
 	turnObservers appTurnObserverState
@@ -452,6 +456,10 @@ type App struct {
 	// reported and the live threads flagged stale against it. Zero value
 	// ready; the watcher goroutine only runs from Start.
 	providerBinaries appProviderBinaryWatchState
+	// promptStale is the set of live threads whose settings-level system
+	// prompt would differ at their next session start
+	// (app_prompt_stale.go).
+	promptStale appPromptStaleState
 	// claudeApp owns application-facing reads and controls for live Claude
 	// sessions. Account and process lifecycle stay with their own services.
 	claudeAppOnce sync.Once

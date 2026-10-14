@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/assetwatch"
+	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/attachment"
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/errorsx"
@@ -19,6 +21,7 @@ import (
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/promptoverride"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -405,6 +408,13 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	// `theme` key further down the boot.
 	a.settings.AttachTierStore(st, "client:"+EnsureClientIDIn(dbDir))
 	a.settingsAttached.Store(true)
+	// Prompt override texts move out of the user-tier rows into
+	// <configDir>/prompts once the rows are in the store, and before the
+	// prompts watcher starts (initPromptDirectory). A failure leaves the
+	// text inline, where it still applies, and the next save retries.
+	if err := a.settings.MigratePromptFiles(); err != nil {
+		a.bootPhaseFailed(err)
+	}
 	// The phone-push sender, if this backend has one (docs/specs/
 	// remote-access.md §9). Absent is the resting state and costs nothing;
 	// it is read here because the fan-out's own no-credential branch must
@@ -759,6 +769,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.initThemeDirectory()
 	a.initSpinnerDirectory()
 	a.initSoundDirectory()
+	a.initPromptDirectory()
 	a.startDeviceNameWatcher()
 	return nil
 }
@@ -837,4 +848,56 @@ func (a *App) initSoundDirectory() {
 		log.Printf("sound directory setup: %v", err)
 	}
 	a.startSoundWatcher(service.Dir())
+}
+
+// initPromptDirectory creates <configDir>/prompts, the home of the system
+// prompt override texts (internal/settings/promptfiles.go), writes its
+// README (promptoverride.ReadmeMarkdown) and arms the watcher over it.
+// Nothing fails boot: without the README the files still work, and without
+// the watcher an edit made outside the app still reaches the next settings
+// read through the cache check; only the refresh of attached screens and
+// the prompt changed banners wait for the next save.
+func (a *App) initPromptDirectory() {
+	if a.settings == nil {
+		return
+	}
+	dir := a.settings.PromptFilesDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		log.Printf("prompt directory unavailable: %v", err)
+		return
+	}
+	if err := writePromptReadme(dir); err != nil {
+		log.Printf("prompt directory setup: %v", err)
+	}
+	a.startPromptWatcher(dir)
+}
+
+// writePromptReadme writes the prompts directory reference, skipping the
+// write when the file already holds it.
+func writePromptReadme(dir string) error {
+	path := filepath.Join(dir, settings.PromptReadmeName)
+	want := promptoverride.ReadmeMarkdown()
+	if have, err := os.ReadFile(path); err == nil && string(have) == want {
+		return nil
+	}
+	if err := atomicfile.Write(path, []byte(want)); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+// startPromptWatcher arms the prompts-directory watcher. An external edit
+// reloads the prompt texts, which announces both override keys to attached
+// clients and flags the live threads whose next start would use a
+// different prompt (registerSettingsBroadcast). A running session's prompt
+// never changes.
+func (a *App) startPromptWatcher(dir string) {
+	watcher, err := assetwatch.NewPromptWatcher(dir, func() {
+		a.settings.ReloadPromptFiles()
+	})
+	if err != nil {
+		log.Printf("prompt watcher unavailable: %v", err)
+		return
+	}
+	a.promptWatcher = watcher
 }

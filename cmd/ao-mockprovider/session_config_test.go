@@ -40,18 +40,27 @@ func TestSessionConfigDoesNotRetainMCPDetails(t *testing.T) {
 	}
 }
 
-// The app guide reaches Claude as a file; the mock reads it at launch the way
-// the CLI does, so a test asserts the text the model would see.
-func TestClaudeSessionConfigReportsTheAppendPromptAndSnapshotFlag(t *testing.T) {
+// The override and the app guide reach Claude as files; the mock reads them
+// at launch the way the CLI does, so a test asserts the text the model would
+// see.
+func TestClaudeSessionConfigReportsThePromptFilesAndSnapshotFlag(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "append.txt")
 	if err := os.WriteFile(path, []byte("APPENDED GUIDE"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	replacement := filepath.Join(dir, "system.txt")
+	if err := os.WriteFile(replacement, []byte("REPLACED PROMPT"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	config := claudeSessionConfig([]string{
+		"--system-prompt-file", replacement,
 		"--append-system-prompt-file", path,
 		"--system-prompt-snapshot", "off",
 	})
+	if config.SystemPrompt != "REPLACED PROMPT" {
+		t.Errorf("SystemPrompt = %q, want the file's content", config.SystemPrompt)
+	}
 	if config.AppendSystemPrompt != "APPENDED GUIDE" {
 		t.Errorf("AppendSystemPrompt = %q, want the file's content", config.AppendSystemPrompt)
 	}
@@ -60,7 +69,7 @@ func TestClaudeSessionConfigReportsTheAppendPromptAndSnapshotFlag(t *testing.T) 
 	}
 
 	bare := claudeSessionConfig(nil)
-	if bare.AppendSystemPrompt != "" || bare.SystemPromptSnapshot != "" {
+	if bare.SystemPrompt != "" || bare.AppendSystemPrompt != "" || bare.SystemPromptSnapshot != "" {
 		t.Errorf("flags omitted, yet config = %+v", bare)
 	}
 	missing := claudeSessionConfig([]string{"--append-system-prompt-file", filepath.Join(dir, "absent.txt")})

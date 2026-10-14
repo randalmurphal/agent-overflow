@@ -8,7 +8,8 @@ remain on `provider:item_event`; application detection and emission remain in
 Keep `Event` JSON fields synchronized with the frontend type and router. A new
 `Kind` needs a frontend branch in the same change because unknown kinds are
 dropped. A thread-scoped status raise may use a kind; withdrawal uses
-`status:"ready"` without a kind.
+`status:"ready"` without a kind, and names the withdrawn session banner
+(`binary_stale`, `prompt_stale`) in `withdrawKind`.
 
 `VersionToken` normalizes provider version strings. `BinaryStale` compares
 only when both versions are known and treats trailing zero segments as equal.

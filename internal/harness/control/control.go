@@ -280,6 +280,10 @@ type SessionConfig struct {
 	// Codex's thread/start config.mcp_servers. URLs, headers and credentials
 	// stay out of harness reports and evidence logs.
 	MCPServers []string `json:"mcpServers,omitempty"`
+	// SystemPrompt is the content of the file Claude's --system-prompt-file
+	// named, read at launch ("" when the flag was omitted). This is the
+	// rendered system prompt override as the model would see it.
+	SystemPrompt string `json:"systemPrompt,omitempty"`
 	// AppendSystemPrompt is the content of the file Claude's
 	// --append-system-prompt-file named, read the way the CLI reads it ("" when
 	// the flag was omitted). This is the app guide as the model would see it.

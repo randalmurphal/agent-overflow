@@ -350,9 +350,22 @@ export type ProviderStatusKind =
   // The installed provider CLI was replaced while this thread's session was
   // already running it. Thread-scoped and warning-severity: nothing is
   // broken, the session is just pinned to the old binary until it restarts.
-  // There is no matching CLEAR kind — a withdrawal has nothing new to say,
-  // so the backend clears with the legacy thread-scoped `status: 'ready'`.
-  | 'binary_stale';
+  // There is no matching CLEAR kind: a withdrawal has nothing new to say,
+  // so the backend clears with a thread-scoped `status: 'ready'` naming
+  // the kind it withdraws in `withdrawKind`.
+  | 'binary_stale'
+  // The system prompt this thread's next session would start with differs
+  // from the one its running session launched with (an override file was
+  // edited, or an entry toggled, rescoped or removed). Same shape and
+  // lifecycle as `binary_stale`: thread-scoped, restart is the action,
+  // withdrawn when the session restarts or ends.
+  | 'prompt_stale';
+
+/**
+ * The thread-scoped kinds a pane keeps side by side, each its own banner
+ * row with Restart and Dismiss. Both can be true of one session at once.
+ */
+export type SessionBannerKind = 'binary_stale' | 'prompt_stale';
 
 export interface ProviderStatusEvent {
   /**
@@ -367,10 +380,11 @@ export interface ProviderStatusEvent {
     | 'version_too_old'
     | 'unauthenticated'
     | 'error'
-    // No legacy counterpart — the binary-detect pipeline has no notion of a
+    // No legacy counterpart: the binary-detect pipeline has no notion of a
     // session outliving the binary it started on. Carried in the same union
     // so the banner branches on one vocabulary.
-    | 'binary_stale';
+    | 'binary_stale'
+    | 'prompt_stale';
   message?: string;
   version?: string;
   actionable: boolean;
@@ -392,10 +406,20 @@ export interface ProviderStatusEvent {
   installedVersion?: string;
   /**
    * threadId is attached by the new chat-rewrite router so the banner can
-   * scope to a specific pane. Legacy binary-detect emissions omit it —
+   * scope to a specific pane. Legacy binary-detect emissions omit it:
    * those are provider-global and the banner fans out to every matching pane.
    */
   threadId?: string;
+  /**
+   * On a thread-scoped `status: 'ready'`: the session banner kind this event
+   * withdraws. Absent, the event withdraws every banner the thread owns.
+   */
+  withdrawKind?: SessionBannerKind;
+  /**
+   * `prompt_stale` only: the backend's per-thread change counter. A dismiss
+   * names it, and the next change bumps it so the banner shows again.
+   */
+  revision?: number;
 }
 
 /**

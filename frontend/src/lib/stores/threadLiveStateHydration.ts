@@ -74,6 +74,12 @@ export interface ThreadLiveStateHydrationOptions {
    * clears stay with the `provider:status` / disconnect events.
    */
   hydrateBinaryStaleBanner(sessionVersion: string, installedVersion: string): void;
+  /**
+   * Snapshot leg of the stale-prompt banner: the backend's change revision
+   * while the thread's next session would start with a different system
+   * prompt, 0 otherwise. Set-only like the binary leg.
+   */
+  hydratePromptStaleBanner(revision: number): void;
 }
 
 export interface LiveStateFetchResult {
@@ -231,6 +237,7 @@ export function createThreadLiveStateHydration(
       snapshot.sessionCliVersion ?? '',
       snapshot.installedCliVersion ?? '',
     );
+    options.hydratePromptStaleBanner(snapshot.promptStale ? (snapshot.promptStaleRevision ?? 1) : 0);
   }
 
   async function startLiveStateFetch(

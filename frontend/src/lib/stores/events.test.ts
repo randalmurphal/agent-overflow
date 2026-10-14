@@ -3306,21 +3306,20 @@ describe('setupEventListeners', () => {
       installedVersion: '2.1.257',
     } as unknown as ProviderStatusEvent);
 
-    expect(pane.providerBanner?.status).toBe('binary_stale');
-    expect(pane.providerBanner?.sessionVersion).toBe('2.1.219');
-    expect(pane.providerBanner?.installedVersion).toBe('2.1.257');
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['binary_stale']);
+    expect(pane.sessionBanners[0].sessionVersion).toBe('2.1.219');
+    expect(pane.sessionBanners[0].installedVersion).toBe('2.1.257');
+    expect(pane.providerBanner).toBeUndefined();
     // A second pane on the same provider is running its own session on its
     // own binary — a thread-scoped status must not leak into it.
-    expect(other.providerBanner).toBeUndefined();
+    expect(other.sessionBanners).toEqual([]);
     // Nor into the provider-global cache the next thread switch seeds from.
     expect(getProviderStatus('claude')?.status).not.toBe('binary_stale');
   });
 
-  // The withdrawal speaks the legacy vocabulary: a thread-scoped
-  // `status: 'ready'` with no kind. It withdraws the pane's own banner
-  // (undefined) rather than pinning it empty (null), so the pane falls
-  // back to the provider-global status like every unflagged pane.
-  it('clears a thread-scoped banner on a ready event for that thread', async () => {
+  // The withdrawal is a thread-scoped `status: 'ready'` naming the kind it
+  // withdraws; without a name it takes every thread-owned banner down.
+  it('withdraws one session banner by kind and leaves the other', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
     emitWailsEvent('provider:status', {
       kind: 'binary_stale',
@@ -3328,7 +3327,49 @@ describe('setupEventListeners', () => {
       threadId: 'thread-1',
       installedVersion: '2.1.257',
     } as unknown as ProviderStatusEvent);
-    expect(pane.providerBanner?.status).toBe('binary_stale');
+    emitWailsEvent('provider:status', {
+      kind: 'prompt_stale',
+      provider: 'claude',
+      threadId: 'thread-1',
+      revision: 3,
+    } as unknown as ProviderStatusEvent);
+    // Prompt first: it is the row the user caused.
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['prompt_stale', 'binary_stale']);
+    expect(pane.sessionBanners[0].revision).toBe(3);
+
+    emitWailsEvent('provider:status', {
+      provider: 'claude',
+      status: 'ready',
+      threadId: 'thread-1',
+      withdrawKind: 'prompt_stale',
+    } as unknown as ProviderStatusEvent);
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['binary_stale']);
+
+    // A later change re-raises the same kind in place, revision and all.
+    emitWailsEvent('provider:status', {
+      kind: 'prompt_stale',
+      provider: 'claude',
+      threadId: 'thread-1',
+      revision: 4,
+    } as unknown as ProviderStatusEvent);
+    expect(pane.sessionBanners.map((b) => b.revision ?? 0)).toEqual([4, 0]);
+  });
+
+  it('clears every thread-scoped banner on an unnamed ready event for that thread', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+    emitWailsEvent('provider:status', {
+      kind: 'binary_stale',
+      provider: 'claude',
+      threadId: 'thread-1',
+      installedVersion: '2.1.257',
+    } as unknown as ProviderStatusEvent);
+    emitWailsEvent('provider:status', {
+      kind: 'prompt_stale',
+      provider: 'claude',
+      threadId: 'thread-1',
+      revision: 1,
+    } as unknown as ProviderStatusEvent);
+    expect(pane.sessionBanners).toHaveLength(2);
 
     emitWailsEvent('provider:status', {
       provider: 'claude',
@@ -3336,19 +3377,26 @@ describe('setupEventListeners', () => {
       threadId: 'thread-1',
     } as unknown as ProviderStatusEvent);
 
+    expect(pane.sessionBanners).toEqual([]);
     expect(pane.providerBanner).toBeUndefined();
   });
 
   // The banner claims a RUNNING session is pinned to the old binary. Once
   // the session is gone the claim is false however it ended, and no ready
   // event is owed for a session that no longer exists.
-  it('clears binary_stale when the session disconnects', async () => {
+  it('clears the session banners when the session disconnects', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
     emitWailsEvent('provider:status', {
       kind: 'binary_stale',
       provider: 'claude',
       threadId: 'thread-1',
       installedVersion: '2.1.257',
+    } as unknown as ProviderStatusEvent);
+    emitWailsEvent('provider:status', {
+      kind: 'prompt_stale',
+      provider: 'claude',
+      threadId: 'thread-1',
+      revision: 1,
     } as unknown as ProviderStatusEvent);
 
     emitWailsEvent('provider:session_account', {
@@ -3358,7 +3406,7 @@ describe('setupEventListeners', () => {
       account: {},
     });
 
-    expect(pane.providerBanner).toBeUndefined();
+    expect(pane.sessionBanners).toEqual([]);
   });
 
   // A withdrawn thread-scoped banner must not hide the provider-global one:
@@ -3376,14 +3424,16 @@ describe('setupEventListeners', () => {
       provider: 'claude',
       message: 'Re-authenticate',
     } as unknown as ProviderStatusEvent);
-    expect(pane.providerBanner?.status).toBe('binary_stale');
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['binary_stale']);
 
     emitWailsEvent('provider:status', {
       provider: 'claude',
       status: 'ready',
       threadId: 'thread-1',
+      withdrawKind: 'binary_stale',
     } as unknown as ProviderStatusEvent);
 
+    expect(pane.sessionBanners).toEqual([]);
     expect(pane.providerBanner).toBeUndefined();
     expect(getProviderStatus('claude')?.status).toBe('unauthenticated');
   });

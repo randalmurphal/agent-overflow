@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -257,6 +259,26 @@ func keyValues(current Settings) (map[string]string, error) {
 		out[key] = string(value)
 	}
 	return out, nil
+}
+
+// rowValue encodes one key's field of current the way keyValues would if the
+// field were not omitempty. keyValues leaves out an omitempty field at its
+// zero value, and a store row needs the value itself.
+func rowValue(current Settings, key string) (string, error) {
+	value := reflect.ValueOf(current)
+	fields := value.Type()
+	for i := range fields.NumField() {
+		name, _, _ := strings.Cut(fields.Field(i).Tag.Get("json"), ",")
+		if name != key {
+			continue
+		}
+		encoded, err := json.Marshal(value.Field(i).Interface())
+		if err != nil {
+			return "", fmt.Errorf("encode %s: %w", key, err)
+		}
+		return string(encoded), nil
+	}
+	return "", fmt.Errorf("no settings field is named %q", key)
 }
 
 // changedKeys reports the keys whose value differs between two projections,

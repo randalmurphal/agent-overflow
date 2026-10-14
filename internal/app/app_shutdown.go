@@ -186,6 +186,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.soundWatcher != nil {
 		record("close sound watcher", a.soundWatcher.Close())
 	}
+	if a.promptWatcher != nil {
+		record("close prompt watcher", a.promptWatcher.Close())
+	}
 	// Joins the reattach sweeps in flight. They take thread locks with the
 	// app context, cancelled above, so a sweep waiting on a lock returns
 	// here rather than after the sessions it would restart are gone.

@@ -23,7 +23,7 @@ import (
 //     that the backend, the CLI, and the settings file all accept.
 //
 // Same two-sided-copy pin as TestReservedEnvNamesMatchTheProviderPins and
-// TestPlaceholderTokensMatchTheFrontendMirror. Reading the numbers out of
+// TestPlaceholdersMatchTheFrontendMirror. Reading the numbers out of
 // the mirror rather than restating them here is the point: a third copy
 // would drift exactly the way this test exists to catch.
 const claudeSessionAxesMirror = "frontend/src/lib/utils/claudeSessionAxes.ts"
