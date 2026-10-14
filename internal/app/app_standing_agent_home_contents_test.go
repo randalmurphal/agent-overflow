@@ -322,3 +322,54 @@ func requireHomeWarningRow(t *testing.T, app *App, threadID, path, why string) {
 	}
 	t.Fatalf("no warning row naming %s (%s) in %+v", path, why, items)
 }
+
+// homeAtTheRawBound is an instructions.md the read stops at the 1 MiB raw
+// bound inside the cap: two MiB of NUL, which cleaning removes.
+func homeAtTheRawBound(t *testing.T, home string) {
+	t.Helper()
+	writeHomeFile(t, home, agenthome.InstructionsFile, strings.Repeat("\x00", 2*agenthome.MaxRawRead))
+}
+
+// A home file the raw bound stops inside its cap starts the session, from
+// StartSession and from a queued notice's start, with the notice in its
+// place.
+func TestAHomeFileStoppedByTheRawBoundStartsTheSession(t *testing.T) {
+	t.Parallel()
+	notice := "[instructions.md stops here, inside line 1: the session start reads at most the first 1 MiB of a file and the rest of it was not read. Read it yourself from line 1.]"
+
+	app, thread, home, argvPath := unreadableHomeFixture(t)
+	homeAtTheRawBound(t, home)
+	if got := claudeInjected(app, thread.ID, argvPath)(t); !strings.Contains(got, notice) || !strings.Contains(got, "index line") {
+		t.Fatalf("StartSession injected:\n%s", got)
+	}
+
+	queued, thread, home, argvPath := unreadableHomeFixture(t)
+	homeAtTheRawBound(t, home)
+	if err := queued.queueAgentNotice(agentNotice{
+		threadID:    thread.ID,
+		sendID:      agentSendIDRoot + "raw-bound",
+		prepare:     func() (string, bool, error) { return "the deploy finished", true, nil },
+		startFailed: func(err error) string { return "the agent could not start: " + err.Error() },
+	}); err != nil {
+		t.Fatalf("queueAgentNotice: %v", err)
+	}
+	queued.waitAgentNoticeWork()
+	if rows := threadErrorRows(t, queued.store, thread.ID, ""); len(rows) > 0 {
+		t.Fatalf("the notice's start failed: %q", rows)
+	}
+	argv := spawnedClaudeArgv(t, argvPath)
+	appendPath, found := argValue(argv, "--append-system-prompt-file")
+	if !found {
+		t.Fatalf("no append file in %v", argv)
+	}
+	content, err := os.ReadFile(appendPath)
+	if err != nil {
+		t.Fatalf("read the append file: %v", err)
+	}
+	if !strings.Contains(string(content), notice) {
+		t.Fatalf("the notice's start injected:\n%s", content)
+	}
+	if err := queued.StopSession(thread.ID); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+}

@@ -128,7 +128,7 @@ func readCapped(root *os.Root, name string, limit int, archive bool) (_ string, 
 	defer closeInto(file, &err)
 	// Enough to see a marker line that starts inside the cap, and past the
 	// cap to know there is more.
-	text, more, err := readCleaned(file, limit+1<<10)
+	text, end, err := readCleaned(file, limit+1<<10)
 	if err != nil {
 		return "", err
 	}
@@ -137,8 +137,16 @@ func readCapped(root *os.Root, name string, limit int, archive bool) (_ string, 
 			return strings.TrimRight(text[:at], "\n"), nil
 		}
 	}
-	if !more && len(text) <= limit {
-		return strings.TrimRight(text, "\n"), nil
+	if len(text) <= limit {
+		head := strings.TrimRight(text, "\n")
+		if end != readRawBound {
+			return head, nil
+		}
+		// The raw bound stopped the read inside the cap: what was read is
+		// all of it the session gets, and the agent is told where to go on.
+		return joinNotice(head, fmt.Sprintf(
+			"[%s stops here, inside line %d: the session start reads at most the first %d MiB of a file and the rest of it was not read. Read it yourself from line %d.]",
+			name, strings.Count(text, "\n")+1, MaxRawRead>>20, strings.Count(text, "\n")+1)), nil
 	}
 	cut, whole := cutAt(text, limit)
 	line := strings.Count(text[:cut], "\n")
@@ -148,9 +156,17 @@ func readCapped(root *os.Root, name string, limit int, archive bool) (_ string, 
 		line++
 		where, from = fmt.Sprintf("inside line %d", line), line
 	}
-	return strings.TrimRight(text[:cut], "\n") + "\n" + fmt.Sprintf(
+	return joinNotice(strings.TrimRight(text[:cut], "\n"), fmt.Sprintf(
 		"[%s stops here, %s (byte %d of its text with hidden characters removed): the session start injects at most %d KiB of it. Read it yourself from line %d.]",
-		name, where, cut, limit>>10, from), nil
+		name, where, cut, limit>>10, from)), nil
+}
+
+// joinNotice puts a cut notice on the line after what was injected.
+func joinNotice(head, notice string) string {
+	if head == "" {
+		return notice
+	}
+	return head + "\n" + notice
 }
 
 // archiveAt is the offset of the line holding the archive marker alone, or
@@ -174,8 +190,9 @@ func archiveAt(text string) int {
 	}
 }
 
-// cutAt is where a head of at most limit bytes ends: after the last line
-// break inside it (whole is true), else on the last rune boundary.
+// cutAt is where a head of at most limit bytes of text, which is longer than
+// limit, ends: after the last line break inside it (whole is true), else on
+// the last rune boundary.
 func cutAt(text string, limit int) (cut int, whole bool) {
 	if at := strings.LastIndexByte(text[:limit], '\n'); at > 0 {
 		return at + 1, true
@@ -319,11 +336,14 @@ func readAttachedFile(root *os.Root, name string, left int) (_ string, err error
 		return "", fmt.Errorf("home_files: %s: %w", name, err)
 	}
 	defer closeInto(file, &err)
-	text, more, err := readCleaned(file, left)
+	text, end, err := readCleaned(file, left)
 	if err != nil {
 		return "", fmt.Errorf("home_files: %s: %w", name, err)
 	}
-	if more || len(text) > left {
+	if end == readRawBound {
+		return "", fmt.Errorf("home_files: %s goes on past the first %d MiB a read takes; attach a smaller file", name, MaxRawRead>>20)
+	}
+	if end == readPastKeep || len(text) > left {
 		return "", fmt.Errorf("home_files come to more than %d KiB; attach fewer or smaller files, or point the receiver at a path it can read", HomeFilesCap>>10)
 	}
 	return text, nil
@@ -383,37 +403,64 @@ func openRegular(root *os.Root, name string) (*os.File, error) {
 	return file, nil
 }
 
-// maxRawRead bounds the bytes one read takes from a file, whatever cleaning
+// MaxRawRead bounds the bytes one read takes from a file, whatever cleaning
 // removes from them, so a file of nothing but invisible characters is not
-// read without end.
-const maxRawRead = 1 << 20
+// read without end. Past it the rest of the file is not read.
+const MaxRawRead = 1 << 20
+
+// readEnd is why readCleaned stopped.
+type readEnd int
+
+const (
+	// readWhole: the input ended.
+	readWhole readEnd = iota
+	// readPastKeep: the cleaned text grew past keep bytes.
+	readPastKeep
+	// readRawBound: MaxRawRead raw bytes were read and the input goes on.
+	readRawBound
+)
 
 // readCleaned reads r as cleaned text, byte for byte what CleanText makes of
-// the same input, until it holds more than
-// keep bytes or the input ends. more is true when the input was not read to
-// its end: past keep, or past maxRawRead.
-func readCleaned(r io.Reader, keep int) (text string, more bool, err error) {
-	limited := &io.LimitedReader{R: r, N: maxRawRead}
+// the same input, until it holds more than keep bytes, the input ends, or
+// MaxRawRead raw bytes are read. A character the raw bound splits is dropped,
+// not read as invalid UTF-8.
+func readCleaned(r io.Reader, keep int) (string, readEnd, error) {
+	limited := &io.LimitedReader{R: r, N: MaxRawRead}
 	reader := bufio.NewReader(limited)
 	var out strings.Builder
 	afterCR := false
 	for out.Len() <= keep {
+		if limited.N == 0 {
+			// The raw bound is all buffered. Peek of what is buffered
+			// cannot fail.
+			pending, _ := reader.Peek(reader.Buffered())
+			if len(pending) > 0 && !utf8.FullRune(pending) {
+				goesOn, err := inputGoesOn(r)
+				if err != nil {
+					return "", readWhole, err
+				}
+				if goesOn {
+					return out.String(), readRawBound, nil
+				}
+			}
+		}
 		// Invalid UTF-8 reads as utf8.RuneError, which is U+FFFD.
 		value, _, err := reader.ReadRune()
 		if errors.Is(err, io.EOF) {
 			if limited.N > 0 {
-				return out.String(), false, nil
+				return out.String(), readWhole, nil
 			}
-			// The raw bound ran out: more when the file goes on.
-			var probe [1]byte
-			n, err := r.Read(probe[:])
-			if err != nil && !errors.Is(err, io.EOF) {
-				return "", false, err
+			goesOn, err := inputGoesOn(r)
+			if err != nil {
+				return "", readWhole, err
 			}
-			return out.String(), n > 0, nil
+			if goesOn {
+				return out.String(), readRawBound, nil
+			}
+			return out.String(), readWhole, nil
 		}
 		if err != nil {
-			return "", false, err
+			return "", readWhole, err
 		}
 		if afterCR && value == '\n' {
 			afterCR = false
@@ -428,7 +475,18 @@ func readCleaned(r io.Reader, keep int) (text string, more bool, err error) {
 		}
 		out.WriteRune(value)
 	}
-	return out.String(), true, nil
+	return out.String(), readPastKeep, nil
+}
+
+// inputGoesOn reports whether r holds another byte past the raw bound. The
+// byte it reads is not wanted: the read stops there either way.
+func inputGoesOn(r io.Reader) (bool, error) {
+	var probe [1]byte
+	n, err := r.Read(probe[:])
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // CleanText is a file's text as a prompt carries it: invalid UTF-8 replaced,

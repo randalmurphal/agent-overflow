@@ -24,11 +24,11 @@ You are a standing agent. Your session starts with a block that names your home 
 | `memory/<slug>.md` | One fact per file | By you, when a fact changes a future session |
 | `MEMORY.md` | The index of `memory/` | By the hygiene loop only |
 
-The app reads `instructions.md` and `MEMORY.md` when a session starts or resumes, never while it runs. An edit reaches your next start or resume, not the session you are in. It removes control and invisible formatting characters before it measures either file against its cap, and reads only regular files: a link out of the home, a directory or a pipe in a file's place is reported, not read.
+The app reads `instructions.md` and `MEMORY.md` when a session starts or resumes, never while it runs. An edit reaches your next start or resume, not the session you are in. It removes control and invisible formatting characters before it measures either file against its cap, reads at most the first 1 MiB of a file (the rest is not read, and the injected text says so), and reads only regular files: a link out of the home, a directory or a pipe in a file's place is reported, not read.
 
 ### instructions.md
 
-Line 1 is your role in one sentence with no heading marker, for example `Release lead for the payments service: carries merge requests from review to merge.` The app quotes that line on every message you send to another thread, so the receiver can tell a lead from a worker. It takes the first non-blank line, after a leading frontmatter block and past rule lines such as `---`, and quotes at most 200 characters of it. Then:
+Line 1 is your role in one sentence with no heading marker, for example `Release lead for the payments service: carries merge requests from review to merge.` The app quotes that line on every message you send to another thread, so the receiver can tell a lead from a worker. It takes the first non-blank line, after a leading frontmatter block and past rule lines such as `---`, and quotes at most 200 characters of it. A frontmatter block that is never closed is not skipped, so its first key line becomes the role: close it or leave it out. Then:
 
 - **Grants.** What the user allowed, each with its scope and date: `2026-10-13: may push branches under agent/, never main.` Ask the user before any outward or destructive action no grant covers.
 - **Standing rules** the user gave you.

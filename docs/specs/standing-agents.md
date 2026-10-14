@@ -240,9 +240,13 @@ it stopped at and the line to read on from, and the agent reads the
 rest itself. Reads go through an `os.Root` on the home, so a link out of
 it is not followed, and only a regular file is read: the open does not
 wait (`O_NONBLOCK` on Unix) and the mode is checked on the opened file,
-so a FIFO cannot hang the start. The
-literals live in `internal/agenthome`, and a test holds the skill to
-them.
+so a FIFO cannot hang the start. A read takes at most the first 1 MiB
+of a file (`agenthome.MaxRawRead`), so a file of characters cleaning
+removes is not read without end; when that bound stops a read with the
+cleaned text inside the cap, what was read is injected with a notice
+that the rest past 1 MiB was not read and the line to read on from, and
+`home_files` refuses such a file. The literals live in
+`internal/agenthome`, and a test holds the skill to them.
 
 The files are read when the session starts and never watched, so a
 session's prompt is fixed for its life and two starts over unchanged
@@ -276,7 +280,7 @@ standing agent reads and writes:
 
 | Surface | What the receiver lacked | Now |
 |---|---|---|
-| `thread_send` / `thread_spawn` footer | Whether the sender is a lead or a worker; for a worker, that its questions go to the agent (ruling 19) | A standing agent sender is named as one with its role line, the first non-blank line of its `instructions.md` after a leading frontmatter block and rule lines (one cleaned line, at most 200 characters, quoted), read when the message is sent. When it spawned the receiver on this computer, the footer adds that the receiver's questions and approval requests go to it. A sender on another computer carries its role in the forwarded call and never routes. An ordinary sender's footer is unchanged |
+| `thread_send` / `thread_spawn` footer | Whether the sender is a lead or a worker; for a worker, that its questions go to the agent (ruling 19) | A standing agent sender is named as one with its role line, the first non-blank line of its `instructions.md` after a leading frontmatter block and rule lines (one cleaned line, at most 200 characters, quoted), read when the message is sent. A frontmatter block that is never closed is not skipped, so its first key line is the role. When it spawned the receiver on this computer, the footer adds that the receiver's questions and approval requests go to it. A sender on another computer carries its role in the forwarded call and never routes. An ordinary sender's footer is unchanged |
 | A spawned thread's first message | The sender's standards, which it could only paste | `home_files` on `thread_spawn` and `thread_send`: files from the caller's home prepended under their names, framed as the sender's own text ([thread tools](agent-thread-tools.md#thread_spawn-q5-q6-q18)). The skill passes `verification.md` to every worker and reviewer |
 | Wake of a reply, final message or failure | Whether the answering thread is an agent | A standing agent on the caller's computer is named with its role line on the line after the status line. One on another computer is not: the request row records no role for it, and cross-computer agents are a non-goal |
 | `thread_search`, `thread_show` | Which rows are agents and whose workers | `standing_agent` and `spawned_by` on every row |

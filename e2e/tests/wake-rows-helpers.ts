@@ -202,7 +202,8 @@ export async function holdNextRun(home: string): Promise<{ running: () => Promis
  * Captures the window once every target is visible and wholly in it. The
  * harness's temporary root, which a watch's directory shows, is written as
  * `<harness root>` in the capture: the spec asserts the real path before it,
- * and the captures are published.
+ * and the captures are published. The sidebar's system footer, the host
+ * machine's own CPU and memory, is not evidence and is hidden.
  */
 export async function capture(page: Page, name: string, ...targets: Locator[]): Promise<void> {
   for (const target of targets) {
@@ -219,5 +220,9 @@ export async function capture(page: Page, name: string, ...targets: Locator[]): 
   await page.evaluate(
     () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
   );
-  await page.screenshot({ path: test.info().outputPath(name), animations: 'disabled' });
+  await page.screenshot({
+    path: test.info().outputPath(name),
+    animations: 'disabled',
+    style: '[data-testid="sidebar-system-stats"] { display: none !important; }',
+  });
 }

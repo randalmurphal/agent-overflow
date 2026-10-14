@@ -373,9 +373,9 @@ cleaned text together;
 the composed prompt is held to the prompt bound. Refused before any
 request exists, each with its reason: a caller that is not a standing
 agent, a path that is absolute or leaves the home (by `..` or through a
-link), a duplicate, a path that is missing or not a regular file, and a
-total past the cap. The bounds and the reader are
-`internal/agenthome`. A forwarded call carries the composed text, so a
+link), a duplicate, a path that is missing or not a regular file, a file
+that goes on past the 1 MiB a read takes, and a total past the cap.
+The bounds and the reader are `internal/agenthome`. A forwarded call carries the composed text, so a
 destination that receives `home_files` refuses it.
 
 ### `thread_send` (Q9, Q15)

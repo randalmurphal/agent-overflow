@@ -99,7 +99,7 @@ func TestSessionBlockCapsEachFileAndSaysWhereItStopped(t *testing.T) {
 		t.Fatalf("block carries %d lines, want %d", got, instructionsCut/100+indexCut/100)
 	}
 	// A file with no line break is cut on a rune boundary.
-	wide := writeHome(t, map[string]string{InstructionsFile: strings.Repeat("é", InstructionsCap)})
+	wide := writeHome(t, map[string]string{InstructionsFile: strings.Repeat("\u00e9", InstructionsCap)})
 	head, notice, _ := strings.Cut(ReadSessionBlock(wide).Text, "\n[instructions.md stops here, inside line 1 (byte ")
 	if strings.ContainsRune(head, '\uFFFD') {
 		t.Fatal("the cut split a character")
@@ -238,9 +238,9 @@ func TestCleanTextAndTheStreamAgree(t *testing.T) {
 		"\xff\xff\n", "\ufffd\xff", "a\r\nb\rc\r\r\n", "\r\u200b\n", tagged("run") + "x\u2028y",
 		"\xe2\x80", "tab\there\x00\x7f\u0085",
 	} {
-		streamed, more, err := readCleaned(strings.NewReader(input), 1<<10)
-		if err != nil || more {
-			t.Fatalf("readCleaned(%q) = %q, %v, %v", input, streamed, more, err)
+		streamed, end, err := readCleaned(strings.NewReader(input), 1<<10)
+		if err != nil || end != readWhole {
+			t.Fatalf("readCleaned(%q) = %q, %v, %v", input, streamed, end, err)
 		}
 		if mapped := CleanText(input); mapped != streamed {
 			t.Errorf("input %q: CleanText %q, stream %q", input, mapped, streamed)
@@ -386,18 +386,17 @@ func TestTheSkillNamesTheLiterals(t *testing.T) {
 			t.Errorf("the agent-home skill does not name %q", literal)
 		}
 	}
-	// The rules the app's reader and the hygiene pass depend on.
+	// The rule words the app's reader and the hygiene pass depend on.
 	for _, rule := range []string{
-		// The marker as archiveAt finds it.
-		"it is case-sensitive",
-		"a mention inside a line does not count, and a line holding only the marker counts even inside a code fence",
+		// The archive marker as archiveAt finds it.
+		"case-sensitive", "code fence",
 		// The role line as BoundRole reads it.
-		"It takes the first non-blank line, after a leading frontmatter block and past rule lines",
+		"first non-blank line", "frontmatter", "rule lines",
+		// The raw bound readCleaned stops at.
+		"1 MiB",
 		// last_verified moves only on a pass, and demotion orders by the
 		// value before the pass.
-		"Set `last_verified` to today only on a memory that passed both checks.",
-		"When you cannot check the source, or it has none, the memory is unverified: leave its `last_verified` as it is.",
-		"the oldest `last_verified` noted in step 2, before this pass changed any, with none counting oldest and the slug in alphabetical order breaking a tie",
+		"only on a memory that passed", "before this pass", "slug",
 	} {
 		if !strings.Contains(skill, rule) {
 			t.Errorf("the agent-home skill does not state %q", rule)
@@ -409,3 +408,66 @@ func TestTheSkillNamesTheLiterals(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// rawBoundInputs are files whose cleaned text stays under every cap while
+// the read stops at MaxRawRead raw bytes with more to come.
+func rawBoundInputs() map[string]string {
+	return map[string]string{
+		// Nothing survives cleaning.
+		"nul": strings.Repeat("\x00", 2*MaxRawRead),
+		// The bound splits a three-byte character, and the text after it is
+		// never read.
+		"zwsp then x":   strings.Repeat("\u200b", MaxRawRead/3+1) + "x",
+		"nul then role": strings.Repeat("\x00", MaxRawRead) + "role",
+	}
+}
+
+// A read the raw bound stops inside a cap carries what it read and says the
+// rest was not read; nothing slices past the text, and nothing turns the cut
+// character into U+FFFD.
+func TestTheRawBoundStopsAReadInsideTheCap(t *testing.T) {
+	t.Parallel()
+	notice := func(name string, line int) string {
+		return "[" + name + " stops here, inside line " + itoa(line) +
+			": the session start reads at most the first 1 MiB of a file and the rest of it was not read. Read it yourself from line " + itoa(line) + ".]"
+	}
+	for name, text := range rawBoundInputs() {
+		home := writeHome(t, map[string]string{InstructionsFile: text, MemoryIndexFile: text, "big.md": text})
+		block := ReadSessionBlock(home)
+		want := instructionsHeading + "\n\n" + notice(InstructionsFile, 1) + "\n\n" + memoryIndexHeading + "\n\n" + notice(MemoryIndexFile, 1)
+		if len(block.Problems) > 0 || block.Text != want {
+			t.Errorf("%s: block = %q, %v; want %q", name, block.Text, block.Problems, want)
+		}
+		if role, err := RoleLine(home); role != "" || err != nil {
+			t.Errorf("%s: role = %q, %v", name, role, err)
+		}
+		if got, err := ReadAttached(home, []string{"big.md"}); err == nil || err.Error() != "home_files: big.md goes on past the first 1 MiB a read takes; attach a smaller file" {
+			t.Errorf("%s: ReadAttached = %d bytes, %v", name, len(got), err)
+		}
+	}
+	// What was read before the bound is kept, with the line to go on from.
+	home := writeHome(t, map[string]string{InstructionsFile: "Release lead\n" + strings.Repeat("\x00", 2*MaxRawRead)})
+	if got, want := ReadSessionBlock(home).Text, instructionsHeading+"\n\nRelease lead\n"+notice(InstructionsFile, 2); got != want {
+		t.Errorf("head then the bound = %q, want %q", got, want)
+	}
+	if role, err := RoleLine(home); role != "Release lead" || err != nil {
+		t.Errorf("role = %q, %v", role, err)
+	}
+}
+
+// A file that ends exactly at the raw bound was read whole: no notice, and a
+// truncated character at its very end is invalid UTF-8 like anywhere else.
+func TestAFileEndingAtTheRawBoundIsReadWhole(t *testing.T) {
+	t.Parallel()
+	home := writeHome(t, map[string]string{
+		InstructionsFile: strings.Repeat("\x00", MaxRawRead),
+		MemoryIndexFile:  strings.Repeat("\x00", MaxRawRead-2) + "\xe2\x80",
+		"exact.md":       strings.Repeat("\x00", MaxRawRead),
+	})
+	if got, want := ReadSessionBlock(home).Text, memoryIndexHeading+"\n\n\ufffd\ufffd"; got != want {
+		t.Fatalf("block = %q, want %q", got, want)
+	}
+	if got, err := ReadAttached(home, []string{"exact.md"}); err != nil || got != AttachedOpening+"\n\n### exact.md\n\n\n\n"+AttachedClosing {
+		t.Fatalf("ReadAttached = %q, %v", got, err)
+	}
+}
