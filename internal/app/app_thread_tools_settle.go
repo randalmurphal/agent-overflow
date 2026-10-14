@@ -30,6 +30,8 @@ import (
 // subscription would have to follow spawns.
 func (a *App) installThreadRequestObserver() {
 	a.threadRequests.observerOnce.Do(func() {
+		// Every write to a request reaches the Agents rows of its caller.
+		a.store.OnThreadRequestChanged(a.noteThreadRequestChanged)
 		a.subscribeGlobalTurnObserver(func(threadID string, evt provider.ProviderEvent) {
 			// Top-level turn ends only: a subagent finishing inside the turn
 			// is not the turn ending, and settling there would answer with a

@@ -202,6 +202,9 @@ type App struct {
 	// threads own a receipt that a turn end could settle. Zero value
 	// ready. See app_thread_tools_wait.go.
 	threadRequests threadRequestState
+	// threadAgentEmits coalesces the Agents rows' change frames
+	// (app_thread_agent_rows.go).
+	threadAgentEmits threadAgentEmits
 	// threadRequestsWG joins the request sweep goroutine at shutdown, the
 	// way remoteWatchWG joins the remote completion watcher.
 	threadRequestsWG sync.WaitGroup

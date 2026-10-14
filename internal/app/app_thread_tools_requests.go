@@ -408,47 +408,9 @@ func threadToolsWord(what string, words map[string]string, stored string) string
 // requestState renders one source row, and records the inline delivery that
 // rendering it performs.
 func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadRequest) (threadtools.RequestState, error) {
-	state := threadtools.RequestState{
-		Token:      row.Token,
-		Kind:       row.Kind,
-		ThreadID:   row.TargetThreadID,
-		ComputerID: row.TargetComputerID,
-		State:      threadRequestStateWord(row.State),
-		AnswerKind: threadAnswerKindWord(row.AnswerKind),
-		Revision:   row.Revision,
-		Notify:     row.Notify,
-		Delivered:  row.DeliveredHow,
-		ExpiresAt:  row.ExpiresAt,
-		DueAt:      row.DueAt,
-	}
-	// The newest revision is the answer: a late reply supersedes the final
-	// message the caller was already told about.
-	answer, late := row.Answer, false
-	if len(row.LateReply) > 0 {
-		answer, late = row.LateReply, true
-		state.AnswerKind = threadtools.AnswerReply
-	}
-	state.Answer = string(answer)
-	if !threadRequestSettled(row) && t.app.threadRequestBlocked(row) {
-		state.State = threadtools.RequestBlocked
-	}
-	if row.TargetThreadID != "" && row.TargetComputerID != "" {
-		// A thread on another computer has no row here. Its title is what
-		// that computer reported when the target was recorded.
-		state.Title = row.TargetThreadTitle
-	} else if row.TargetThreadID != "" {
-		if thread, err := t.app.store.GetThread(row.TargetThreadID); err == nil {
-			state.Title = thread.Title
-		} else if row.OriginThreadID != "" {
-			// An ask's scratch fork is deleted once it has answered. The
-			// thread it was forked from is what the caller asked about, and
-			// naming it is more useful than naming nothing.
-			if origin, err := t.app.store.GetThread(row.OriginThreadID); err == nil {
-				state.Title = origin.Title
-			}
-		}
-	}
-	if len(answer) > 0 && threadRequestSettled(row) && !threadRequestDelivered(row, late) {
+	state := t.requestStateView(row)
+	late := len(row.LateReply) > 0
+	if len(state.Answer) > 0 && threadRequestSettled(row) && !threadRequestDelivered(row, late) {
 		// Reading the answer here IS the delivery, but only once the model
 		// has it: the mark runs after the response is written. An open row
 		// can carry an answer before anything settles it (a reminder holds
@@ -473,6 +435,54 @@ func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadReques
 	}
 	state.WakeQueued = t.wakeQueued(row, late)
 	return state, nil
+}
+
+// requestStateView renders one source row as thread_status reports it, and
+// does nothing else: it records no delivery, so a reader that is not the
+// calling agent (the activity rail) can show a settled answer without
+// taking the wake it owes.
+func (t threadToolsApp) requestStateView(row store.ThreadRequest) threadtools.RequestState {
+	state := threadtools.RequestState{
+		Token:      row.Token,
+		Kind:       row.Kind,
+		ThreadID:   row.TargetThreadID,
+		ComputerID: row.TargetComputerID,
+		State:      threadRequestStateWord(row.State),
+		AnswerKind: threadAnswerKindWord(row.AnswerKind),
+		Revision:   row.Revision,
+		Notify:     row.Notify,
+		Delivered:  row.DeliveredHow,
+		ExpiresAt:  row.ExpiresAt,
+		DueAt:      row.DueAt,
+	}
+	// The newest revision is the answer: a late reply supersedes the final
+	// message the caller was already told about.
+	answer := row.Answer
+	if len(row.LateReply) > 0 {
+		answer = row.LateReply
+		state.AnswerKind = threadtools.AnswerReply
+	}
+	state.Answer = string(answer)
+	if !threadRequestSettled(row) && t.app.threadRequestBlocked(row) {
+		state.State = threadtools.RequestBlocked
+	}
+	if row.TargetThreadID != "" && row.TargetComputerID != "" {
+		// A thread on another computer has no row here. Its title is what
+		// that computer reported when the target was recorded.
+		state.Title = row.TargetThreadTitle
+	} else if row.TargetThreadID != "" {
+		if thread, err := t.app.store.GetThread(row.TargetThreadID); err == nil {
+			state.Title = thread.Title
+		} else if row.OriginThreadID != "" {
+			// An ask's scratch fork is deleted once it has answered. The
+			// thread it was forked from is what the caller asked about, and
+			// naming it is more useful than naming nothing.
+			if origin, err := t.app.store.GetThread(row.OriginThreadID); err == nil {
+				state.Title = origin.Title
+			}
+		}
+	}
+	return state
 }
 
 // inlineClaim is what a reply found when it went to deliver an answer.
@@ -672,7 +682,7 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 		return report, nil
 	}
 	if row.TargetComputerID != "" {
-		return t.cancelRemoteRequest(ctx, caller, row)
+		return t.cancelRemoteRequest(ctx, caller, row, false)
 	}
 	// A reminder is nothing but a row: there is no work to stop, and the
 	// caller cancelling it wants it gone rather than settled as cancelled.
@@ -716,7 +726,11 @@ const threadCancelTimeout = 20 * time.Second
 // can take back a queued message or interrupt a turn. The source row is
 // settled from the receipt the reply carries, through the same collector a
 // poll would have used.
-func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadtools.Caller, row store.ThreadRequest) (threadtools.CancelReport, error) {
+//
+// userStop is a person's Stop in the Agents tray: the wake stays armed, so
+// the caller's agent is told, and the destination words the settlement as
+// the user's.
+func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadtools.Caller, row store.ThreadRequest, userStop bool) (threadtools.CancelReport, error) {
 	report := threadtools.CancelReport{Token: row.Token, ThreadID: row.TargetThreadID, ComputerID: row.TargetComputerID}
 	if _, err := t.Peer(ctx, row.TargetComputerID); err != nil {
 		return threadtools.CancelReport{}, err
@@ -732,9 +746,10 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 		source.ThreadID = row.CallerThreadID
 	}
 	err := t.app.backends.CallThreadPeer(call, row.TargetComputerID, "ThreadToolCall", &reply, ThreadPeerCall{
-		Tool:   "thread_cancel",
-		Token:  row.Token,
-		Source: source,
+		Tool:     "thread_cancel",
+		Token:    row.Token,
+		Source:   source,
+		UserStop: userStop,
 	})
 	if err != nil {
 		// The wake stays armed: the destination was not reached, so the work
@@ -746,7 +761,7 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 	// Disarmed only now, and before the reply's settlement is applied: the
 	// report the caller is about to read says what happened, so the same
 	// cancellation must not arrive again as an unread message.
-	if row.Notify {
+	if row.Notify && !userStop {
 		if _, err := t.app.store.SetThreadRequestNotify(row.Token, false); err != nil {
 			return threadtools.CancelReport{}, err
 		}

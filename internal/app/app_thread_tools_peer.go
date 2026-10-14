@@ -64,6 +64,10 @@ type ThreadPeerCall struct {
 	// row is on the other computer; this computer still validates every
 	// value against its own catalogs.
 	Inherit threadtools.SpawnDefaults `json:"inherit,omitzero"`
+	// UserStop marks a thread_cancel a person made from the source thread's
+	// Agents tray rather than the source's agent: the receipt settles saying
+	// so. A computer that does not read it words it as the sender's cancel.
+	UserStop bool `json:"userStop,omitempty"`
 }
 
 // ThreadPeerAgent is a forwarded request's standing agent sender.
@@ -499,7 +503,11 @@ func (a *App) cancelPeerThreadRequest(ctx context.Context, origin threadRequestO
 	if err := a.refuseForeignToken(token, origin.ownerDevice); err != nil {
 		return ThreadPeerReply{}, err
 	}
-	effect, err := a.stopThreadRequestWork(ctx, token)
+	answer := threadRequestSenderCancel
+	if call.UserStop {
+		answer = threadRequestUserStop
+	}
+	effect, err := a.stopThreadRequestWorkFor(ctx, token, answer)
 	if err != nil {
 		return ThreadPeerReply{}, a.publicThreadToolError("thread_cancel", origin.caller.ThreadID, err)
 	}

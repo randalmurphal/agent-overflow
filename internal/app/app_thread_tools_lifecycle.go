@@ -20,6 +20,20 @@ import (
 // `running` receipt, cannot race the interrupt and report the interrupted
 // turn as this request's answer.
 func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, error) {
+	return a.stopThreadRequestWorkFor(ctx, token, threadRequestSenderCancel)
+}
+
+// Settlement answers of a cancelled request: the sender's own cancel, and a
+// person's Stop in the sender's Agents tray, which the sender's agent is
+// woken with (its notify stays armed) so it knows the stop was not its own.
+const (
+	threadRequestSenderCancel = "The sender cancelled this request."
+	threadRequestUserStop     = "The user stopped it from the Agents tray in your thread; you did not cancel it."
+)
+
+// stopThreadRequestWorkFor is stopThreadRequestWork with the answer the
+// cancelled receipt settles with.
+func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string) (string, error) {
 	receipt, found, err := a.store.GetThreadRequestReceipt(token)
 	if err != nil {
 		return "", err
@@ -33,7 +47,7 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 	// neither settles anything.
 	if err := a.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 		State:      store.ThreadReceiptCancelled,
-		Answer:     []byte("The sender cancelled this request."),
+		Answer:     []byte(answer),
 		AnswerKind: store.ThreadAnswerError,
 	}); err != nil {
 		return "", err

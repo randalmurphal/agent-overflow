@@ -189,6 +189,9 @@ func (w Wake) status() string {
 	case WakeErrored:
 		return fmt.Sprintf("%s%s errored: %s", who, token, w.body())
 	case WakeCancelled:
+		if w.Text != "" {
+			return fmt.Sprintf("%s%s was cancelled: %s", who, token, w.body())
+		}
 		return fmt.Sprintf("%s%s was cancelled.", who, token)
 	case WakeInterrupted:
 		return fmt.Sprintf("%s%s was interrupted by a restart of %s.", who, token, restartedComputer(w.Computer))

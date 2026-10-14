@@ -113,6 +113,11 @@ func TestWakeTemplates(t *testing.T) {
 			want: "\"Parser\" (7f3a) [token tok] was cancelled.",
 		},
 		{
+			name: "cancelled for the agent says by whom",
+			wake: Wake{Kind: WakeCancelled, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "The user stopped it."},
+			want: "\"Parser\" (7f3a) [token tok] was cancelled: The user stopped it.",
+		},
+		{
 			name: "interrupted by a restart of another computer",
 			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Token: "tok"},
 			want: "\"Parser\" (7f3a, on Studio) [token tok] was interrupted by a restart of Studio.",

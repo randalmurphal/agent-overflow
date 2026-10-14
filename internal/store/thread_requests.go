@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -234,6 +235,7 @@ func (s *Store) InsertThreadRequest(r ThreadRequest) error {
 	); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
+	s.noteThreadRequestChanged(ThreadRequestChange{Token: r.Token, CallerThreadID: r.CallerThreadID})
 	return nil
 }
 
@@ -256,7 +258,7 @@ func (s *Store) AdvanceThreadRequestState(token, from, to string) (bool, error) 
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	return s.changedThreadRequest(token, result, action)
 }
 
 // threadRequestOpenStates is the set a settlement may replace: everything
@@ -293,7 +295,7 @@ func (s *Store) SettleThreadRequest(token string, from []string, settlement Thre
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	return s.changedThreadRequest(token, result, action)
 }
 
 // ThreadRequestOpenStates returns the states a settlement may replace.
@@ -320,7 +322,7 @@ func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	return s.changedThreadRequest(token, result, action)
 }
 
 // MarkThreadRequestDelivered records how the answer reached the caller. It
@@ -386,6 +388,9 @@ func (s *Store) MarkThreadRequestDelivered(token, how string, at int64, late boo
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("store: commit mark thread request %s delivered: %w", token, err)
 	}
+	if changed {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
+	}
 	return changed, nil
 }
 
@@ -394,7 +399,9 @@ func (s *Store) MarkThreadRequestDelivered(token, how string, at int64, late boo
 // `ask` is the scratch fork the destination reports back. It is unconditional
 // on state because the target moves for reasons the state says nothing about:
 // a conversation transferred to another computer is re-pointed while the
-// request is still running. It reports whether the row existed.
+// request is still running. It reports whether the row existed. A write
+// that changes nothing is not reported as a change (OnThreadRequestChanged):
+// the poller restates the target on every visit.
 //
 // `title` names that thread on another computer, where this store has no row
 // to read it from. A local target is named from its own row, so it passes an
@@ -404,13 +411,21 @@ func (s *Store) SetThreadRequestTarget(token, computerID, threadID, title string
 	result, err := s.db.Exec(
 		`UPDATE thread_requests
 		    SET target_computer_id = ?, target_thread_id = ?, target_thread_title = ?, updated_at = ?
-		  WHERE token = ?`,
-		computerID, threadID, title, nowMillis(), token,
+		  WHERE token = ? AND (target_computer_id IS NOT ? OR target_thread_id IS NOT ? OR target_thread_title IS NOT ?)`,
+		computerID, threadID, title, nowMillis(), token, computerID, threadID, title,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	changed, err := s.changedThreadRequest(token, result, action)
+	if err != nil || changed {
+		return changed, err
+	}
+	var exists bool
+	if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM thread_requests WHERE token = ?)`, token).Scan(&exists); err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return exists, nil
 }
 
 // SetThreadRequestNotify arms or disarms the wake a settlement owes the
@@ -426,7 +441,7 @@ func (s *Store) SetThreadRequestNotify(token string, notify bool) (bool, error) 
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	return s.changedThreadRequest(token, result, action)
 }
 
 // SetThreadRequestsNotifyForCaller disarms (or arms) every open request one
@@ -446,6 +461,9 @@ func (s *Store) SetThreadRequestsNotifyForCaller(callerThreadID string, notify b
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("%s: rows affected: %w", action, err)
+	}
+	if affected > 0 {
+		s.noteThreadRequestChanged(ThreadRequestChange{CallerThreadID: callerThreadID})
 	}
 	return affected, nil
 }
@@ -533,7 +551,7 @@ func (s *Store) AbandonThreadRequestWake(token, issue string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	return s.changedThreadRequest(token, result, action)
 }
 
 // GetThreadRequest reads one source row. The bool separates "no such token"
@@ -596,6 +614,60 @@ func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset 
 		return nil, fmt.Errorf("store: list thread requests for %s: %w", callerThreadID, err)
 	}
 	return collectThreadRequests(rows, fmt.Sprintf("store: list thread requests for %s", callerThreadID))
+}
+
+// ListThreadAgentRequests returns the spawns, sends and asks one thread
+// made that its activity rail lists as agents, oldest first: every spawn,
+// and a send or ask whose answer the thread is still owed a wake for
+// (`notify`) or is parked waiting on (one of `waiting`). Each is open,
+// settled at or after settledSince, or a local spawn whose thread, or a
+// thread that one spawned, still has such a request open: the row the open
+// work nests under. At most limit rows, and whether there were more.
+func (s *Store) ListThreadAgentRequests(callerThreadID string, waiting []string, settledSince int64, limit int) (_ []ThreadRequest, more bool, err error) {
+	action := "store: list agent requests for " + callerThreadID
+	if limit < 1 {
+		limit = 64
+	}
+	if waiting == nil {
+		waiting = []string{}
+	}
+	tokens, err := json.Marshal(waiting)
+	if err != nil {
+		return nil, false, fmt.Errorf("%s: encode waiting tokens: %w", action, err)
+	}
+	rows, err := s.reader().Query(
+		`SELECT `+threadRequestColumns+` FROM thread_requests r
+		  WHERE r.caller_thread_id = ? AND r.lineage_only = 0
+		    AND r.kind IN ('spawn','send','ask')
+		    AND (r.kind = 'spawn' OR r.notify = 1 OR r.token IN (SELECT value FROM json_each(?)))
+		    AND (r.settled_at IS NULL OR r.settled_at >= ?
+		      OR (r.kind = 'spawn' AND r.target_computer_id = '' AND (
+		        EXISTS (SELECT 1 FROM thread_requests c
+		                 WHERE c.caller_thread_id = r.target_thread_id AND `+openAgentRequestSQL("c")+`)
+		        OR EXISTS (SELECT 1 FROM thread_requests c CROSS JOIN thread_requests g
+		                    WHERE c.caller_thread_id = r.target_thread_id AND c.kind = 'spawn'
+		                      AND c.target_computer_id = '' AND c.lineage_only = 0
+		                      AND g.caller_thread_id = c.target_thread_id AND `+openAgentRequestSQL("g")+`))))
+		  ORDER BY r.created_at ASC, r.token ASC LIMIT `+strconv.Itoa(limit+1),
+		callerThreadID, string(tokens), settledSince)
+	if err != nil {
+		return nil, false, fmt.Errorf("%s: %w", action, err)
+	}
+	out, err := collectThreadRequests(rows, action)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(out) > limit {
+		return out[:limit], true, nil
+	}
+	return out, false, nil
+}
+
+// openAgentRequestSQL matches an open request the activity rail lists as an
+// agent: a spawn, or a send or ask whose wake is armed.
+func openAgentRequestSQL(alias string) string {
+	return alias + `.lineage_only = 0 AND ` + alias + `.settled_at IS NULL AND (` + alias + `.kind = 'spawn' OR (` +
+		alias + `.kind IN ('send','ask') AND ` + alias + `.notify = 1))`
 }
 
 // ListOpenThreadRequestsForComputer returns the unsettled requests one
@@ -784,7 +856,7 @@ func (s *Store) DeleteThreadRequest(token string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	return s.changedThreadRequest(token, result, action)
 }
 
 // spawnLineageSQL matches a local spawn request whose thread still exists.
@@ -962,6 +1034,7 @@ func (s *Store) QueueThreadWake(token string, late bool, item FlushQueueItem) er
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("%s: commit: %w", action, err)
 	}
+	s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	return nil
 }
 
@@ -1012,6 +1085,7 @@ func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, unconf
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("%s: commit: %w", action, err)
 	}
+	s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	return nil
 }
 
@@ -1031,7 +1105,7 @@ func (s *Store) ConfirmThreadWake(token string, late bool, at int64) (bool, erro
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	return s.changedThreadRequest(token, result, action)
 }
 
 // UnconfirmedThreadWakes returns the requests whose answer or late reply
@@ -1048,4 +1122,40 @@ func (s *Store) UnconfirmedThreadWakes() ([]ThreadRequest, error) {
 		return nil, fmt.Errorf("store: list unconfirmed thread wakes: %w", err)
 	}
 	return collectThreadRequests(rows, "store: list unconfirmed thread wakes")
+}
+
+// ThreadRequestChange names a source row a committed write changed: by
+// token, or every row of one caller when Token is empty.
+type ThreadRequestChange struct {
+	Token          string
+	CallerThreadID string
+}
+
+// OnThreadRequestChanged sets the function the store calls after it commits
+// a write that changed a source row: inserted, moved state, settled, took a
+// late reply, re-targeted, armed or disarmed its wake, delivered, confirmed
+// or withdrew it, or deleted it. The retention sweep is not reported: it
+// takes rows long settled. fn must not block. nil clears it.
+func (s *Store) OnThreadRequestChanged(fn func(ThreadRequestChange)) {
+	if fn == nil {
+		s.threadRequestChanged.Store(nil)
+		return
+	}
+	s.threadRequestChanged.Store(&fn)
+}
+
+func (s *Store) noteThreadRequestChanged(change ThreadRequestChange) {
+	if fn := s.threadRequestChanged.Load(); fn != nil {
+		(*fn)(change)
+	}
+}
+
+// changedThreadRequest is rowsChanged for a write to one source row, which
+// it reports when the write applied.
+func (s *Store) changedThreadRequest(token string, result sql.Result, action string) (bool, error) {
+	changed, err := rowsChanged(result, action)
+	if changed {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
+	}
+	return changed, err
 }
