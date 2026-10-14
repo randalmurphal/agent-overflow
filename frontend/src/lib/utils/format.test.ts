@@ -100,10 +100,12 @@ describe('formatResetCountdown', () => {
     expect(formatResetCountdown(NOW_SEC + 3600 * 24 * 7)).toBe('Resets in 7d');
   });
 
-  it('renders past timestamps as "Resetting now" (wire is stale, next event refreshes)', () => {
-    expect(formatResetCountdown(NOW_SEC - 1)).toBe('Resetting now');
-    expect(formatResetCountdown(NOW_SEC - 3600)).toBe('Resetting now');
-    expect(formatResetCountdown(NOW_SEC)).toBe('Resetting now');
+  // A passed boundary says nothing about when the next window ends: it
+  // starts at the account's next request.
+  it('renders past timestamps as nothing', () => {
+    expect(formatResetCountdown(NOW_SEC - 1)).toBe('');
+    expect(formatResetCountdown(NOW_SEC - 3600)).toBe('');
+    expect(formatResetCountdown(NOW_SEC)).toBe('');
   });
 
   it('returns empty string for unset / non-finite inputs', () => {

@@ -391,6 +391,16 @@ func TestStoreResetsExpiredLastKnownLimitsWithoutMutatingPersistedReading(t *tes
 	if got.RateLimits.Limits[0].UsedPercent != 0 {
 		t.Fatalf("expired UsedPercent = %v, want 0", got.RateLimits.Limits[0].UsedPercent)
 	}
+	// The next window starts at the account's next request, so no boundary
+	// is known; a projected one would be wrong.
+	if got.RateLimits.Limits[0].ResetsAt != 0 {
+		t.Fatalf("expired ResetsAt = %d, want 0", got.RateLimits.Limits[0].ResetsAt)
+	}
+	// Many windows later, still no projected boundary.
+	later, _ := store.Active("claude", reset.Add(26*time.Hour))
+	if later.RateLimits.Limits[0].ResetsAt != 0 {
+		t.Fatalf("expired ResetsAt after several windows = %d, want 0", later.RateLimits.Limits[0].ResetsAt)
+	}
 	if account.RateLimits.Limits[0].UsedPercent != 88 {
 		t.Fatal("read normalization mutated the caller's snapshot")
 	}

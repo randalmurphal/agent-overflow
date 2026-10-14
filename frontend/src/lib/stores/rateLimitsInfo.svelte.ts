@@ -127,16 +127,15 @@ function limitsForAccount(provider: ProviderID, accountId: string | undefined, b
   return accounts.get(key) ?? (key !== LEGACY_ACCOUNT ? accounts.get(LEGACY_ACCOUNT) : undefined);
 }
 
-// Every getter reads through this accessor: it projects entries whose reset
-// boundary has passed to 0% used, and re-runs consumers when a boundary
-// passes (expiryGeneration). The projection is read-time only — the stored
-// entry keeps the server-reported boundary untouched, because the next
-// window's boundary is server-assigned and cannot be derived from the old
-// one (Claude re-anchors 5h windows; a fabricated `old + window` boundary
-// sat 10 minutes past the real next boundary on 2026-08-07 and made the
-// stale-window guard in setProviderRateLimits reject every real post-reset
-// snapshot for the entire window). formatResetCountdown renders the passed
-// boundary as "Resetting now" until the next snapshot lands.
+// Every getter reads through this accessor: it projects an entry whose reset
+// boundary has passed to 0% used with no reset time, and re-runs consumers
+// when a boundary passes (expiryGeneration). The next window starts at the
+// account's first request after the reset, so its boundary is unknown until a
+// reading reports it (Claude anchors both 5h and weekly windows on first use;
+// a fabricated `old + window` boundary sat 10 minutes past the real one on
+// 2026-08-07). The projection is read-time only: the stored entry keeps the
+// server-reported boundary for the stale-reading guard in
+// setProviderRateLimits.
 function entriesForAccount(provider: ProviderID, accountId: string | undefined, backend: BackendKey): RateLimitEntry[] {
   void expiryGeneration;
   const nowSeconds = Date.now() / 1000;
@@ -145,8 +144,8 @@ function entriesForAccount(provider: ProviderID, accountId: string | undefined, 
 }
 
 function projectExpired(entry: RateLimitEntry, nowSeconds: number): RateLimitEntry {
-  if (entry.resetsAt <= 0 || entry.resetsAt > nowSeconds || entry.usedPercent === 0) return entry;
-  return { ...entry, usedPercent: 0 };
+  if (entry.resetsAt <= 0 || entry.resetsAt > nowSeconds) return entry;
+  return { ...entry, usedPercent: 0, resetsAt: 0 };
 }
 
 function defaultLimit(provider: ProviderID, entries: RateLimitEntry[]): RateLimitEntry | null {

@@ -592,12 +592,12 @@ describe('rateLimitsInfo', () => {
   });
 
   // Reset-boundary expiry. The stored entry is never rewritten when its
-  // boundary passes: getters project it to 0% used at read time and keep
-  // the server-reported boundary. Fabricating a `old + window` boundary
-  // instead is what broke the 5h ring on 2026-08-07 — Claude re-anchors
-  // 5h windows, so the real next boundary landed 10 minutes EARLIER than
-  // the fabricated one and the stale-window guard rejected every real
-  // post-reset snapshot for the entire window.
+  // boundary passes: getters project it to 0% used with no reset time at
+  // read time, because the next window starts at the account's first
+  // request and its boundary is unknown until a reading reports it.
+  // Fabricating `old + window` broke the 5h ring on 2026-08-07: the real
+  // next boundary landed 10 minutes EARLIER than the fabricated one and
+  // the stale-window guard rejected every real post-reset snapshot.
   describe('reset boundary expiry', () => {
     // Real numbers from the incident: previous window closed 23:40:00Z,
     // the next window closed 04:30:00Z — 4h50m later, not 5h.
@@ -616,18 +616,28 @@ describe('rateLimitsInfo', () => {
       });
     });
 
-    it('shows 0% once the boundary passes, keeping the stored boundary', () => {
+    it('shows 0% with no reset time once the boundary passes', () => {
       vi.setSystemTime(new Date((OLD_BOUNDARY + 30) * 1000));
       const limit = getProviderRateLimit('claude', 300, 'acct');
       expect(limit?.usedPercent).toBe(0);
-      expect(limit?.resetsAt).toBe(OLD_BOUNDARY);
+      expect(limit?.resetsAt).toBe(0);
     });
 
     it('fires the expiry timer at the boundary without rewriting entries', () => {
       vi.advanceTimersByTime(3601 * 1000);
       const limit = getProviderRateLimit('claude', 300, 'acct');
       expect(limit?.usedPercent).toBe(0);
-      expect(limit?.resetsAt).toBe(OLD_BOUNDARY);
+      expect(limit?.resetsAt).toBe(0);
+      // The stored boundary still guards against a stale pre-reset reading.
+      setProviderRateLimits({
+        provider: 'claude',
+        accountId: 'acct',
+        limits: [
+          { limitId: 'session', limitName: 'Current session', usedPercent: 90, windowMins: 300, resetsAt: OLD_BOUNDARY - 3 * 3600 },
+        ],
+        updatedAt: (OLD_BOUNDARY + 1) * 1000,
+      });
+      expect(getProviderRateLimit('claude', 300, 'acct')?.usedPercent).toBe(0);
     });
 
     it('accepts the re-anchored next window whose boundary lands earlier than old + window', () => {
@@ -671,7 +681,7 @@ describe('rateLimitsInfo', () => {
       vi.setSystemTime(new Date((weeklyBoundary + 30) * 1000));
       const limit = getProviderRateLimit('claude', 10080, 'acct');
       expect(limit?.usedPercent).toBe(0);
-      expect(limit?.resetsAt).toBe(weeklyBoundary);
+      expect(limit?.resetsAt).toBe(0);
     });
 
     it('shows 0% for a snapshot hydrated with an already-passed boundary', () => {
