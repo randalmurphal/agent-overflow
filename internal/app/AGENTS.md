@@ -69,6 +69,14 @@ Events describing one caller's failed attempt carry the connection ID, not a
 device ID. An empty ID means an in-process or older caller and remains
 applicable. Entity state changes remain broadcasts.
 
+Thread session banners are `provider:status` events owned by their trackers:
+`binary_stale` by `app_provider_binary_watch.go`, `prompt_stale` by
+`app_prompt_stale.go`. Each flag is pinned to the session token that earned
+it, mirrored into `GetThreadLiveState`, dismissed through
+`DismissSessionBanner`, and withdrawn with a `withdrawKind` naming it. The
+contract is in
+[prompt-tool-overrides.md](../../docs/specs/prompt-tool-overrides.md#prompt-changed-banner).
+
 A method that arms a connection-owned resource registers its release with
 `transport.ConnState.RegisterCleanup`. If registration reports that teardown
 already began, release immediately. A resource the client can also release

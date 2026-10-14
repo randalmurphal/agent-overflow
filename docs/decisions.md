@@ -312,9 +312,16 @@ Mechanism in
   known to be 2.1.267 or newer, guide or not, so a resume runs the current
   prompt; the default body is stable across resumes of one build, so the
   prompt cache is unaffected (same spec §Claude prompt snapshot).
-- System prompt overrides are files under `<configDir>/prompts` so the user or
-  an agent edits them directly; the settings row holds id, enabled and models
-  only (decided with the user 2026-10-11; same spec §Prompt files).
+- System prompt override text lives only in its file under
+  `<configDir>/prompts`, which the user or an agent edits; Settings has no
+  text editor and its row holds id, enabled and models (decided with the user
+  2026-10-11, text-only-in-file ruling 2026-10-14; same spec §Prompt files).
+- A prompt change never applies to a running session: no live swap and no
+  automatic restart. It applies at the thread's next session start. Each live
+  thread whose next start would use a different prompt shows a dismissible
+  "system prompt changed" banner with Restart; a later change shows it again,
+  and a restart or the session's death withdraws it. The stale-binary banner
+  is dismissible the same way (2026-10-14; same spec §Reconcile semantics).
 - Cursor as a provider: `docs/specs/cursor-provider.md`.
 
 ## Workflows

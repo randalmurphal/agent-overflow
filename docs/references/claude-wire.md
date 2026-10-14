@@ -3334,14 +3334,16 @@ CLI binary; the subtypes we use or plan to use:
     one for another.
   - **Old builds and other transports ack without applying.** The
     field's own schema doc says so. That is the one failure mode with no
-    wire signal at all, which is why AO version-gates
-    (`minLiveSystemPromptCLIVersion`) and treats an unknown version as
-    too old.
+    wire signal at all.
   - **Success says nothing.** The payload is a bare `{ok:true}`, with no
     applied model, no confirmation the prompt landed. A family-alias
     step-down also answers ok (telemetry `model_switch:
     "family_alias_stepped_down"`), so `get_settings` is the only channel
     that reports what is actually running.
+
+  AO never sends `system_prompt`: a prompt change applies at the
+  thread's next session start
+  ([prompt-tool-overrides.md §Reconcile semantics](../specs/prompt-tool-overrides.md#reconcile-semantics-what-a-settings-edit-does-to-a-live-session)).
 - `subtype: "set_max_thinking_tokens"`: set the live session's thinking
   budget and/or display. Takes `max_thinking_tokens` (int or null) and
   `thinking_display` (`"summarized"` / `"omitted"` / null); both are
@@ -5033,8 +5035,9 @@ PTY. Each point holds on both transports unless it names one.
   `error: unknown option` and exits 1.
 
 AO passes the append file on both transports for its app guide, and the
-snapshot opt-out only when the binary is known to be 2.1.267 or newer
-([prompt-tool-overrides.md §App guide](../specs/prompt-tool-overrides.md#app-guide)).
+snapshot opt-out only when the binary is known to be 2.1.267 or newer, so a
+restarted session picks up an edited override or guide
+([prompt-tool-overrides.md §Claude prompt snapshot](../specs/prompt-tool-overrides.md#claude-prompt-snapshot)).
 
 ---
 
