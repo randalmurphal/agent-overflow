@@ -24,6 +24,7 @@ import {
   PEER,
   agentRow,
   approvalTool,
+  backgroundShellSteps,
   agentsBody,
   ledgerRow,
   mockInput,
@@ -182,7 +183,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const peer = peerProject.threadIds[0];
     await setScenario(harness, peerProject.path, threadToolsScenario({
       name: `incoming-${provider}-peer`, provider, echoUserMessage: true,
-      turns: [{ steps: [{ gate: 'peer-busy' }], text: 'Busy work done.' }, { text: 'Noted.' }],
+      turns: [{ steps: [...backgroundShellSteps(provider), { gate: 'peer-busy' }], text: 'Busy work done.' }, { text: 'Noted.' }],
     }));
     await setScenario(harness, leadProject.path, threadToolsScenario({
       name: `incoming-${provider}-lead`, provider, echoUserMessage: true,
@@ -191,7 +192,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         { text: 'Noted.' },
       ],
     }));
-    // The peer is mid-turn, so the request waits in its queue.
+    // The peer's shell is work the queue waits behind, so the request
+    // waits there.
     await harness.rpc('StartSession', peer);
     await harness.rpc('SendMessage', peer, 'do the busy work', null);
     const busy = await awaitGate(harness, 'peer-busy', peerProject.path);
