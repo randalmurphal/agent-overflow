@@ -52,6 +52,7 @@ var holderClearedRows = []struct{ table, column string }{
 	{"thread_drafts", "thread_id"},
 	{"thread_fork_lineage", "thread_id"},
 	{"thread_import_state", "thread_id"},
+	{"thread_pull_requests", "thread_id"},
 	{"thread_request_receipts", "target_thread_id"},
 	{"thread_requests", "caller_thread_id"},
 }

@@ -89,7 +89,9 @@ func (s *Service) CreatePR(ctx context.Context, ref WorkspaceRef, title, body st
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}
-	s.core.InvalidatePRCache(workspace)
+	// Look the new PR up now: the badge shows it without waiting out the
+	// cached "no PR", and the merged-PR cleanup tracks it from that answer.
+	s.RefreshPR(ctx, workspace)
 	return gitops.GitActionResult{
 		Action:  "pr",
 		Branch:  s.core.CurrentBranch(workspace),

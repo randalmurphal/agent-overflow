@@ -49,12 +49,14 @@ type IsolationConfig struct {
 	// processes it was given.
 	ScanScopePIDs []int
 	// ThreadRequestPoll, TransferPendingRetry, PRUpdateInterval,
-	// PRUpdateRetryBase, PRCILiveInterval, PRCIFollowInterval and
-	// PRCILogWaitInterval replace the agent thread request poll cadence,
-	// threadtransfer.PendingRetry, the pull request poll cadence and its
-	// first retry delay, and the CI phase's three cadences, so an
-	// end-to-end test does not wait out a production interval it is not
-	// about. Zero keeps the product value; only a harness boot sets them
+	// PRUpdateRetryBase, PRCILiveInterval, PRCIFollowInterval,
+	// PRCILogWaitInterval and MergedPRPollInterval replace the agent thread
+	// request poll cadence, threadtransfer.PendingRetry, the pull request
+	// poll cadence and its first retry delay, the CI phase's three
+	// cadences, and the merged-PR worktree cleanup's per-repository poll
+	// (which also bounds its tick and first poll), so an end-to-end test
+	// does not wait out a production interval it is not about. Zero keeps
+	// the product value; only a harness boot sets them
 	// (diagenv.HarnessTiming).
 	ThreadRequestPoll    time.Duration
 	TransferPendingRetry time.Duration
@@ -63,6 +65,7 @@ type IsolationConfig struct {
 	PRCILiveInterval     time.Duration
 	PRCIFollowInterval   time.Duration
 	PRCILogWaitInterval  time.Duration
+	MergedPRPollInterval time.Duration
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -88,6 +91,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.prUpdates.ciLiveInterval = config.PRCILiveInterval
 	a.prUpdates.ciFollowInterval = config.PRCIFollowInterval
 	a.prUpdates.ciLogWaitInterval = config.PRCILogWaitInterval
+	a.mergedPRs.interval = config.MergedPRPollInterval
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.

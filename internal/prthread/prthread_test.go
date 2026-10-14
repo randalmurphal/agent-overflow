@@ -16,6 +16,23 @@ func TestForgeNoun(t *testing.T) {
 	}
 }
 
+func TestLabel(t *testing.T) {
+	cases := []struct {
+		id     string
+		number int
+		want   string
+	}{
+		{"gitlab", 12, "MR !12"},
+		{"github", 90, "PR #90"},
+		{"", 7, "PR #7"},
+	}
+	for _, tc := range cases {
+		if got := Label(tc.id, tc.number); got != tc.want {
+			t.Errorf("Label(%q, %d) = %q, want %q", tc.id, tc.number, got, tc.want)
+		}
+	}
+}
+
 func TestForgeNounLong(t *testing.T) {
 	cases := []struct{ id, want string }{
 		{"gitlab", "merge request"},

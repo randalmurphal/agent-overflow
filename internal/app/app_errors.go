@@ -48,16 +48,25 @@ func (a *App) emitWireErrorToThread(threadID, content string) {
 	a.routeErrorToThread(threadID, content, false)
 }
 
-// emitNoticeToThread persists a warning notification row on the thread: an
+// The notice kinds the app posts itself (notification meta.kind). A warning
+// is a standing fact the user should act on or know (the timeline row's
+// amber tone); a worktree cleanup reports what the app did on its own (the
+// row's neutral tone).
+const (
+	noticeKindWarning         = "warning"
+	noticeKindWorktreeCleanup = "worktree_cleanup"
+)
+
+// emitNoticeToThread persists a notification row of kind on the thread: an
 // app-side event the user must know about that is not a failure, so it does
 // not paint the thread Failed the way an error row does. Routed through
 // HandleSynthetic for the reason emitErrorToThread is: its callers fire
 // right after stopping the thread's session.
-func (a *App) emitNoticeToThread(threadID, content string) error {
+func (a *App) emitNoticeToThread(threadID, kind, content string) error {
 	if a.triage == nil {
 		return fmt.Errorf("thread %s notice not recorded: event router not wired", threadID)
 	}
-	meta, err := json.Marshal(map[string]string{"kind": "warning"})
+	meta, err := json.Marshal(map[string]string{"kind": kind})
 	if err != nil {
 		return fmt.Errorf("thread %s notice not recorded: %w", threadID, err)
 	}

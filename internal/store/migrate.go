@@ -1732,6 +1732,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: groupedThreadPinsMigrationVersion, Name: "grouped_thread_pins", SQL: groupedThreadPinsV139SQL, Rebuild: true},
 	{Version: projectIdentityErrorMigrationVersion, Name: "project_identity_error", SQL: projectIdentityErrorV140SQL},
 	{Version: 141, Name: "repository_identity", SQL: repositoryIdentityV141SQL, Fix: scrubRepositoryCoordinates},
+	{Version: threadPullRequestsMigrationVersion, Name: "thread_pull_requests", SQL: threadPullRequestsV142SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

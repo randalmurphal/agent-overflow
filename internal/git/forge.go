@@ -38,6 +38,10 @@ type Forge interface {
 	// preview's squash-merge detection: a gone local branch whose tip
 	// matches a merged PR head was fully pushed before the merge.
 	ListMergedPRHeads(ctx context.Context, cwd string, limit int) ([]MergedPRHead, error)
+	// ReadPRStates reads the state and merge time of every PR in prs, all
+	// of repo's repository, in one request per 100 PRs. A PR the forge does
+	// not resolve is absent from the answer. See pr_state.go.
+	ReadPRStates(ctx context.Context, repo PRReference, prs []TrackedPR) (map[int]PRState, error)
 	// CreatePR opens a PR/MR for the current branch in cwd. Returns the URL.
 	CreatePR(ctx context.Context, cwd, title, body, base string, draft bool) (string, error)
 	// ReadPR reads the parts of a PR/MR want names, the PR pump's one
@@ -355,6 +359,10 @@ func (nullForge) ListOpenPRs(context.Context, string, string) ([]GitPR, error) {
 }
 
 func (nullForge) ListMergedPRHeads(context.Context, string, int) ([]MergedPRHead, error) {
+	return nil, ErrUnsupportedForge
+}
+
+func (nullForge) ReadPRStates(context.Context, PRReference, []TrackedPR) (map[int]PRState, error) {
 	return nil, ErrUnsupportedForge
 }
 

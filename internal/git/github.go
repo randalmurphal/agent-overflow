@@ -14,6 +14,9 @@ import (
 // GitPR describes an open pull or merge request. Fields are shared across
 // forges; per-forge wrappers map their native shapes onto this struct.
 type GitPR struct {
+	// ID is the PR's GitHub GraphQL node id, which ReadPRStates addresses
+	// it by. Empty on GitLab, whose merge requests are read by iid.
+	ID     string `json:"id,omitempty"`
 	URL    string `json:"url"`
 	Number int    `json:"number"`
 	Title  string `json:"title"`
@@ -88,7 +91,7 @@ func (f *githubForge) githubOriginRepo(cwd string) (client *forgeapi.Client, own
 // so a fork's branch resolves without OWNER:branch.
 const githubOpenPRsQuery = `query OpenPRsByHead($owner: String!, $name: String!, $head: String!) {
   repository(owner: $owner, name: $name) {
-    pullRequests(headRefName: $head, states: [OPEN], first: 10) { nodes { url number title state } }
+    pullRequests(headRefName: $head, states: [OPEN], first: 10) { nodes { id url number title state } }
   }
 }`
 

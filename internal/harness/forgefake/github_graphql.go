@@ -45,6 +45,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
 	{kind: "query", name: "OpenPRsByHead", required: []string{"owner", "name", "head"}, run: ghOpenPRsByHead},
 	{kind: "query", name: "MergedPRs", required: []string{"owner", "name", "first"}, optional: []string{"after"}, run: ghMergedPRs},
+	{kind: "query", name: "PRStates", required: []string{"ids"}, run: ghPRStates},
 }
 
 // graphQLRequest is the body of a POST to /github/graphql.
@@ -120,6 +121,22 @@ func (v graphQLVars) integer(name string) (int, error) {
 		return 0, fmt.Errorf("variable %q is not an integer", name)
 	}
 	return int(f), nil
+}
+
+func (v graphQLVars) strs(name string) ([]string, error) {
+	list, ok := v[name].([]any)
+	if !ok {
+		return nil, fmt.Errorf("variable %q is not a list", name)
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("variable %q holds a non-string", name)
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 func (v graphQLVars) boolean(name string) (bool, error) {
@@ -578,9 +595,59 @@ func ghOpenPRsByHead(e *Engine, c *call, v graphQLVars) response {
 		if p.State != "open" || p.HeadRef != head || len(nodes) == 10 {
 			continue
 		}
-		nodes = append(nodes, map[string]any{"url": githubPullURL(r, p), "number": p.Number, "title": p.Title, "state": "OPEN"})
+		nodes = append(nodes, map[string]any{"id": p.NodeID, "url": githubPullURL(r, p), "number": p.Number, "title": p.Title, "state": "OPEN"})
 	}
 	return graphQLData(map[string]any{"repository": map[string]any{"pullRequests": map[string]any{"nodes": nodes}}})
+}
+
+// ghPRStates answers pull requests by node id, at most 100, each resolved
+// among the GitHub repositories on the request's host. An id that does
+// not resolve answers null at its position beside a NOT_FOUND error, as
+// nodes(ids:) does.
+func ghPRStates(e *Engine, c *call, v graphQLVars) response {
+	ids, err := v.strs("ids")
+	if err != nil {
+		return unhandled("PRStates: %v", err)
+	}
+	if len(ids) < 1 || len(ids) > 100 {
+		return unhandled("PRStates names %d ids; nodes(ids:) takes 1 to 100", len(ids))
+	}
+	nodes := make([]any, len(ids))
+	var problems []map[string]any
+	for i, id := range ids {
+		if node := e.githubPullNode(c, id); node != nil {
+			nodes[i] = node
+			continue
+		}
+		problems = append(problems, map[string]any{"type": "NOT_FOUND", "path": []any{"nodes", i}, "message": fmt.Sprintf("Could not resolve to a node with the global id of '%s'.", id)})
+	}
+	if len(problems) > 0 {
+		return jsonResponse(map[string]any{"data": map[string]any{"nodes": nodes}, "errors": problems})
+	}
+	return graphQLData(map[string]any{"nodes": nodes})
+}
+
+// githubPullNode is the PRStates selection of the pull whose node id is
+// id on the request's host, or nil.
+func (e *Engine) githubPullNode(c *call, id string) map[string]any {
+	for _, key := range sortedKeys(e.repos) {
+		r := e.repos[key]
+		if r.Forge != "github" || !strings.EqualFold(r.Host, c.http.host) {
+			continue
+		}
+		for i := range r.Pulls {
+			p := &r.Pulls[i]
+			if p.NodeID != id {
+				continue
+			}
+			var mergedAt any
+			if p.MergedAt != "" {
+				mergedAt = p.MergedAt
+			}
+			return map[string]any{"id": p.NodeID, "number": p.Number, "state": strings.ToUpper(p.State), "mergedAt": mergedAt}
+		}
+	}
+	return nil
 }
 
 // ghMergedPRs answers merged pull requests a page of first (1 to 100) at

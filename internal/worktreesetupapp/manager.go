@@ -665,6 +665,19 @@ func (s *Service) WaitThread(ctx context.Context, threadID string) bool {
 	}
 }
 
+// HasRunningPath reports whether a recipe is executing in worktreePath,
+// whichever thread started it.
+func (s *Service) HasRunningPath(worktreePath string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, run := range s.runs {
+		if run.state == runRunning && gitops.SameFilesystemPath(run.worktreePath, worktreePath) {
+			return true
+		}
+	}
+	return false
+}
+
 // HasThreadRun reports whether a retained or live record is owned by threadID.
 func (s *Service) HasThreadRun(threadID string) bool {
 	s.mu.Lock()

@@ -157,13 +157,34 @@ Mechanism in
   refuses busy threads; a workflow's cleanup keeps its own force rules. A
   removal that did not wait for idle threads stops a running turn as
   interrupted, its background tasks show as died like an app restart, and
-  queued messages return to the composer. Only a removal the app did not
+  queued messages return to the composer. A removal the app did not
   perform (Claude's, or one made outside) puts a warning notice on each
   moved thread, at its own timeline position, saying who removed the
-  worktree and that it now runs in Base. Terminals opened in the worktree
+  worktree and that it now runs in Base; so does the merged-PR cleanup
+  below, with a neutral notice. A removal the user asked for says nothing.
+  Notices name the worktree by its directory and the project root as Base,
+  never by path. Terminals opened in the worktree
   close, and one `worktree:removed` event moves draft placeholders on it to
   Base on every client. A project whose root is itself gone is left alone;
   there is nothing to reattach to.
+- When a thread's pull request merges, its linked worktree is removed and
+  its threads move to Base (user ruling 2026-10-13). The app tracks the PR
+  a thread's worktree branch has OPEN when a lookup finds it (git status,
+  the app's own create, an agent's `gh pr create` / `glab mr create`), and
+  never adopts a merged or closed PR found by branch name. A merge is the
+  forge's merged state; a PR closed without merging changes nothing. It
+  acts once per PR, and only when the thread runs in a linked worktree
+  (never the project root), no user message in it is newer than the merge,
+  the branch has no open PR now, and every thread in the worktree is idle
+  (it waits while one is busy). Unpushed commits do not block, since the
+  branch is kept locally and on the remote; uncommitted changes, untracked
+  files included, keep the worktree with one warning notice and are never
+  forced. Moved threads get "PR #90 merged. Removed worktree
+  fix-pr-diff-fetch; this thread now runs in Base." (GitLab "MR !12"); a
+  kept worktree gets "PR #90 merged. Kept worktree fix-pr-diff-fetch: 3
+  uncommitted files." once. No card, banner, toast or button. A worktree
+  already gone counts as done and git's registration is pruned. Mechanism:
+  [forge transport](architecture/forge-transport.md#merged-pr-worktree-cleanup).
 - Draft worktree and branch operations are DISK state, not thread state:
   project-scoped RPCs, bound to the thread at send or creation. Accepted
   consequences: an abandoned draft's worktree stays in pickers; a restart

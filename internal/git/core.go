@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -143,6 +144,8 @@ type Core struct {
 	// outlive the invalidation that announced it. Bounded by the
 	// workspaces invalidated in this process.
 	prCacheEpochs map[string]uint64
+	// openPRObserver receives every fresh open-PR answer (pr_state.go).
+	openPRObserver atomic.Pointer[func(OpenPRObservation)]
 
 	// forgeCache memoizes origin-URL classification per cwd. TTL'd via
 	// forgeDetectionTTL (5 min); written by Core.Status each refresh

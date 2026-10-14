@@ -48,6 +48,10 @@ export interface ForgePull {
   title: string;
   body?: string;
   state?: 'open' | 'closed' | 'merged';
+  /** RFC 3339; a merged pull only. Defaults to the time it was seeded. */
+  mergedAt?: string;
+  /** GitHub's GraphQL node id; defaults to one derived from the repository and number. */
+  nodeId?: string;
   draft?: boolean;
   author?: string;
   authorName?: string;

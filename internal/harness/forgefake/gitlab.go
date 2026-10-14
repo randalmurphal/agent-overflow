@@ -248,17 +248,20 @@ func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 	return note
 }
 
-// glabMRList answers the two merge request lists the app makes: the open
-// MR for a source branch and recently merged MRs, of the project the path
-// names.
+// glabMRList answers the three merge request lists the app makes, of the
+// project the path names: the open MR for a source branch, recently merged
+// MRs, and named MRs in any state (iids[] with state=all).
 func glabMRList(e *Engine, c *call, m []string) response {
 	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {
 		return fail
 	}
-	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "view", "order_by", "sort")
+	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "view", "order_by", "sort", "iids[]")
 	if err != nil {
 		return unhandled("%v", err)
+	}
+	if iids, named := query["iids[]"]; named {
+		return glabMRsByIID(r, query, iids, perPage, page)
 	}
 	if view := query.Get("view"); view != "" && view != "simple" {
 		return unhandled("view=%q is not implemented", view)
@@ -282,21 +285,63 @@ func glabMRList(e *Engine, c *call, m []string) response {
 		if gitlabStates[p.State] != state || (branch != "" && p.HeadRef != branch) {
 			continue
 		}
-		matches = append(matches, map[string]any{
-			"iid":           p.Number,
-			"title":         p.Title,
-			"state":         gitlabStates[p.State],
-			"web_url":       gitlabMRURL(r, p),
-			"source_branch": p.HeadRef,
-			"target_branch": p.BaseRef,
-			"sha":           p.HeadSHA,
-		})
+		matches = append(matches, gitlabMRListItem(r, p))
 	}
 	items, next := paginate(matches, perPage, page)
 	if items == nil {
 		items = []map[string]any{}
 	}
 	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
+}
+
+// glabMRsByIID answers the merge requests iids names, in any state, newest
+// first. An iid the project does not have is absent, as GitLab answers it.
+func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) response {
+	if state := query.Get("state"); state != "all" {
+		return unhandled("iids[] with state=%q is not implemented", state)
+	}
+	for _, key := range []string{"source_branch", "view", "order_by", "sort"} {
+		if query.Has(key) {
+			return unhandled("iids[] with %s is not implemented", key)
+		}
+	}
+	wanted := make(map[int]bool, len(iids))
+	for _, raw := range iids {
+		iid, err := strconv.Atoi(raw)
+		if err != nil || iid <= 0 {
+			return unhandled("iids[] %q is not a positive integer", raw)
+		}
+		wanted[iid] = true
+	}
+	var matches []map[string]any
+	for i := len(r.Pulls) - 1; i >= 0; i-- {
+		if p := &r.Pulls[i]; wanted[p.Number] {
+			matches = append(matches, gitlabMRListItem(r, p))
+		}
+	}
+	items, next := paginate(matches, perPage, page)
+	if items == nil {
+		items = []map[string]any{}
+	}
+	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
+}
+
+// gitlabMRListItem is one merge request as the list endpoint answers it.
+func gitlabMRListItem(r *Repo, p *Pull) map[string]any {
+	var mergedAt any
+	if p.MergedAt != "" {
+		mergedAt = p.MergedAt
+	}
+	return map[string]any{
+		"iid":           p.Number,
+		"title":         p.Title,
+		"state":         gitlabStates[p.State],
+		"web_url":       gitlabMRURL(r, p),
+		"source_branch": p.HeadRef,
+		"target_branch": p.BaseRef,
+		"sha":           p.HeadSHA,
+		"merged_at":     mergedAt,
+	}
 }
 
 func glabPipelineJobs(e *Engine, c *call, m []string) response {

@@ -304,6 +304,34 @@ func TestCancelThreadOnALiveRunEmitsOneCancelledFrame(t *testing.T) {
 	assertSetupCleared(t, service, storage, thread.ID)
 }
 
+// HasRunningPath sees a live recipe in its directory and nothing once it is
+// cancelled or has failed.
+func TestHasRunningPathSeesOnlyALiveRecipe(t *testing.T) {
+	service, _, _, thread := newCancelTestService(t, "sleep 30")
+	if service.HasRunningPath(thread.WorktreePath) {
+		t.Fatal("a directory with no recipe reported one running")
+	}
+	if err := service.LaunchThread(thread, true); err != nil {
+		t.Fatalf("LaunchThread: %v", err)
+	}
+	if !service.HasRunningPath(thread.WorktreePath) {
+		t.Fatal("the live recipe's directory reported none running")
+	}
+	if service.HasRunningPath(thread.WorktreePath + "-other") {
+		t.Fatal("another directory reported the recipe")
+	}
+	service.CancelPath(thread.WorktreePath)
+	if service.HasRunningPath(thread.WorktreePath) {
+		t.Fatal("a cancelled recipe still reported running")
+	}
+
+	failed, storage, _, failing := newCancelTestService(t, "exit 1")
+	failSetup(t, failed, storage, failing)
+	if failed.HasRunningPath(failing.WorktreePath) {
+		t.Fatal("a failed recipe reported running")
+	}
+}
+
 // Dismissal retires a failure the same way cancellation does: one cancelled
 // frame for every client and no durable state left to restore it.
 func TestDismissThreadRetiresARetainedFailure(t *testing.T) {

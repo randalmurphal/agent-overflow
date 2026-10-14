@@ -212,10 +212,42 @@ included and never longer. A failed lookup is retried after 20s, doubling
 per consecutive failure of that (workspace, branch) up to 15 minutes, and
 keeps showing the PR it last found; a success resets the count.
 `InvalidatePRCache` drops a workspace's answers, and a lookup in flight
-across it does not cache its result. The app's create action invalidates,
-and so does an agent command that settles running `gh pr create` or
-`glab mr create` (`git.CreatesPullRequest`), so the new PR shows without
-waiting out a cached "no open PR".
+across it does not cache its result. The app's create action, and an
+agent command that settles running `gh pr create` or `glab mr create`
+(`git.CreatesPullRequest`), invalidate and look the branch up again at
+once (`Core.RefreshOpenPR`), so the new PR shows without waiting out a
+cached "no open PR" and is tracked whether or not a pane watches it.
+
+## Merged PR worktree cleanup
+
+`internal/app/app_worktree_merge_cleanup.go` removes a linked worktree
+when the PR its threads track merges; the product rules are in
+[decisions](../decisions.md). Every fresh `lookupOpenPR` answer (not a
+cache hit) reaches the app through `Core.SetOpenPRObserver`. An open PR
+seen for a thread's linked worktree is recorded in `thread_pull_requests`
+(one row per thread, with the GitHub node id). A lookup that answers "no
+open PR" for a branch whose tracked PR is still unmerged reads that PR's
+state once.
+
+States are read in one request per repository, batched by
+`Forge.ReadPRStates`: GitHub `PRStates` (`nodes(ids:)` over the tracked
+node ids, `state` and `mergedAt`), GitLab
+`projects/P/merge_requests?iids[]=N&state=all`. Up to 100 PRs per request.
+A PR the forge no longer has counts as closed.
+
+| Trigger | Requests |
+|---|---|
+| A repository with no unmerged tracked PR whose thread is in its worktree | none |
+| Poll, per repository with one (every 5 minutes, first after 45s) | 1 state read |
+| A watched lookup that stops finding the tracked PR | 1 state read |
+| Acting on a merged PR, after the local checks pass | 1 open-PR lookup of the branch |
+
+A failed poll backs off per repository, doubling up to 30 minutes; a
+`*forgeapi.RateLimitedError` waits until its `Until`. The worker runs
+whether or not background fetch is enabled, and waits for the first
+client's reads like other unattended work. An act pass that finds a
+thread busy marks itself waiting and runs again when a turn completes.
+`AO_HARNESS_TIMING` `merged-pr-poll` shortens the poll for specs.
 
 ## Requests
 

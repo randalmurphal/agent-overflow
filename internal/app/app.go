@@ -440,6 +440,9 @@ type App struct {
 	// prUpdates is the PR-scope review-pane polling concern
 	// (`app_pr_updates.go`).
 	prUpdates appPRUpdateState
+	// mergedPRs removes a thread's worktree once its pull request merges
+	// (`app_worktree_merge_cleanup.go`).
+	mergedPRs mergedPRCleanupState
 	// reviewDiffs holds the review diffs clients are reading
 	// (`app_review_diff_handles.go`).
 	reviewDiffs appReviewDiffState
