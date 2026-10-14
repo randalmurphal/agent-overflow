@@ -7,33 +7,24 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// version.go — the CLI-version gates behind the live-update axes, and the
-// parser that reads a Claude version string.
+// version.go: the CLI-version gate behind the live thinking axis and the
+// prompt snapshot flag, and the parser that reads a Claude version string.
 //
-// WHY THERE ARE FLOORS AT ALL, once, for both axes below.
+// WHY THE THINKING AXIS HAS A FLOOR AT ALL. `set_max_thinking_tokens` appears
+// in no changelog entry, so its floor is set by DIRECT INSPECTION of the
+// shipped bundles rather than by release notes: 2.1.214, 2.1.219 and 2.1.237
+// all carry the stdin-transport handler, and 2.1.214 is simply the oldest
+// build available to inspect, not a boundary anyone observed.
 //
-// Neither `set_max_thinking_tokens` nor `set_model.system_prompt` appears in
-// any changelog entry (the latter's field is `@internal`), so both floors are
-// set by DIRECT INSPECTION of the shipped bundles rather than by release
-// notes: 2.1.214, 2.1.219 and 2.1.237 all carry the stdin-transport handler,
-// and 2.1.214 is simply the oldest build available to inspect — not a boundary
-// anyone observed.
-//
-// AN UNKNOWN VERSION IS TOO OLD, on both axes and on `supportsSlashCommand`.
-// The version arrives on `system/init`, so "unknown" means the session has not
-// reached init yet; the fallback in every case is the deferred restart that
-// would converge the change anyway, so there is nothing to buy by being
-// optimistic. The two axes' failure modes below the floor differ in severity
-// but not in remedy: an unknown control subtype is answered with an ERROR
-// response (thread error state for a change the user cannot connect to it),
-// while `set_model.system_prompt`'s own doc states that older builds and other
-// transports ACK SUCCESS WITHOUT APPLYING IT — AO would believe the session
-// runs the new prompt while it runs the old one, with no wire signal either
-// way. That second one is precisely the failure a version floor exists to
-// prevent.
+// AN UNKNOWN VERSION IS TOO OLD, here and on `supportsSlashCommand`. The
+// version arrives on `system/init`, so "unknown" means the session has not
+// reached init yet; the fallback is the deferred restart that would converge
+// the change anyway, so there is nothing to buy by being optimistic. Below
+// the floor an unknown control subtype is answered with an ERROR response,
+// thread error state for a change the user cannot connect to it.
 //
 // Prefer a `system/init.capabilities` token to a version gate whenever one
-// exists for the behaviour (AGENTS.md §Capabilities); neither of these has one.
+// exists for the behaviour (AGENTS.md §Capabilities); this one has none.
 
 // minLiveThinkingCLIVersion is the oldest Claude Code build AO will send
 // `set_max_thinking_tokens` to. See the file comment for how it was set.
@@ -43,28 +34,6 @@ const minLiveThinkingCLIVersion = "2.1.214"
 // `set_max_thinking_tokens` handler.
 func (s *Session) supportsLiveThinking() bool {
 	return claudeCLIVersionAtLeast(s.CLIVersion(), minLiveThinkingCLIVersion)
-}
-
-// minLiveSystemPromptCLIVersion is the oldest Claude Code build AO will send
-// `set_model.system_prompt` to. See the file comment for how it was set and
-// for why an older build's silent success is the dangerous case.
-const minLiveSystemPromptCLIVersion = "2.1.214"
-
-// supportsLiveSystemPrompt reports whether this process's CLI will APPLY
-// (not merely ack) a `set_model.system_prompt`: new enough to carry the
-// handler, and not running under a prompt snapshot that would mask the
-// swap on the next request (see spawnedWithSnapshotOff). The fallback for
-// either is the restart, whose respawn passes the opt-out once the
-// installed version is known.
-func (s *Session) supportsLiveSystemPrompt() bool {
-	version := s.CLIVersion()
-	if !claudeCLIVersionAtLeast(version, minLiveSystemPromptCLIVersion) {
-		return false
-	}
-	if claudeCLIVersionAtLeast(version, minSystemPromptSnapshotCLIVersion) && !s.spawnedWithSnapshotOff {
-		return false
-	}
-	return true
 }
 
 // claudeCLIVersionAtLeast compares two dotted Claude Code versions. An

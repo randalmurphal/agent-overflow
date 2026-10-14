@@ -875,7 +875,6 @@ func (a *App) initPromptDirectory() {
 func (a *App) startPromptWatcher(dir string) {
 	watcher, err := assetwatch.NewPromptWatcher(dir, func() {
 		a.settings.ReloadPromptFiles()
-		a.scheduleLiveClaudeReconcile()
 	})
 	if err != nil {
 		log.Printf("prompt watcher unavailable: %v", err)

@@ -214,34 +214,11 @@ func promptFilesIn(t *testing.T, dir string) []string {
 	return matches
 }
 
-// On a build that snapshots the prompt by default, a live
-// `set_model.system_prompt` only lands when the process was spawned with the
-// opt-out; otherwise the swap is acked and masked, which is exactly the
-// silent-success case the version floor exists to prevent, so it routes to
-// the restart instead.
-func TestSupportsLiveSystemPromptRequiresTheSnapshotOptOutOnSnapshottingBuilds(t *testing.T) {
-	t.Parallel()
-	s := &Session{}
-	s.noteCLIVersion("2.1.284")
-	if s.supportsLiveSystemPrompt() {
-		t.Fatal("2.1.284 spawned without --system-prompt-snapshot off must not swap live")
-	}
-	s = &Session{spawnedWithSnapshotOff: true}
-	s.noteCLIVersion("2.1.284")
-	if !s.supportsLiveSystemPrompt() {
-		t.Fatal("2.1.284 spawned with the opt-out must swap live")
-	}
-	// Below the snapshot floor there is nothing to mask the swap.
-	s = &Session{}
-	s.noteCLIVersion("2.1.266")
-	if !s.supportsLiveSystemPrompt() {
-		t.Fatal("2.1.266 has no snapshot and must swap live")
-	}
-}
-
-// The spawn records whether the opt-out was passed, from the same gate that
-// builds the argv.
-func TestNewSessionRecordsTheSnapshotOptOut(t *testing.T) {
+// The spawned process carries the snapshot opt-out exactly when the
+// installed version is known to accept it. Without it a --resume reuses the
+// transcript's recorded prompt, and a restart after a prompt file edit would
+// not pick the edit up.
+func TestNewSessionPassesTheSnapshotOptOutToTheProcess(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		version string
@@ -255,9 +232,16 @@ func TestNewSessionRecordsTheSnapshotOptOut(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSession(%q): %v", tc.version, err)
 		}
-		if s.spawnedWithSnapshotOff != tc.want {
-			t.Errorf("InstalledCLIVersion %q: spawnedWithSnapshotOff = %v, want %v", tc.version, s.spawnedWithSnapshotOff, tc.want)
+		if err := s.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
 		}
-		_ = s.Close()
+		raw, err := os.ReadFile(argvPath)
+		if err != nil {
+			t.Fatalf("read argv: %v", err)
+		}
+		argv := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+		if got := hasArgPair(argv, "--system-prompt-snapshot", "off"); got != tc.want {
+			t.Errorf("InstalledCLIVersion %q: argv has --system-prompt-snapshot off = %v, want %v: %v", tc.version, got, tc.want, argv)
+		}
 	}
 }

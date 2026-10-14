@@ -178,15 +178,12 @@ func TestPlanLiveUpdate(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			// A prompt landing on a non-empty value rides
-			// set_model.system_prompt. Only the empty NEXT side (an
-			// override turned off) still needs a restart — see
-			// TestPlanLiveUpdateSystemPromptTransitions, which owns that
+			// A prompt change is never live; see
+			// TestPlanLiveUpdateNeverCarriesASystemPrompt, which owns that
 			// whole axis.
-			name:       "system prompt swap is live",
-			mutate:     func(o *provider.SessionOptions) { o.SystemPrompt = "different prompt" },
-			wantOK:     true,
-			wantUpdate: LiveUpdate{SystemPrompt: "different prompt"},
+			name:   "system prompt change requires restart",
+			mutate: func(o *provider.SessionOptions) { o.SystemPrompt = "different prompt" },
+			wantOK: false,
 		},
 	}
 

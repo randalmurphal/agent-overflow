@@ -57,13 +57,13 @@ done
 	return s, capturePath
 }
 
-// A prompt+thinking update where set_model lands and
+// A model+thinking update where set_model lands and
 // set_max_thinking_tokens is refused. The session is genuinely running the
-// new prompt on the old thinking budget, and the restart that converges the
-// rest is deferred until the thread is quiet — so the outcome has to SAY
-// the prompt applied. Reporting nothing applied would make the caller
+// new model on the old thinking budget, and the restart that converges the
+// rest is deferred until the thread is quiet, so the outcome has to SAY
+// the model applied. Reporting nothing applied would make the caller
 // record a config the session is not running, and make the live-first retry
-// re-send the prompt instead of the axis that failed.
+// re-send the model instead of the axis that failed.
 func TestApplyLiveUpdateReportsThePartiallyAppliedAxes(t *testing.T) {
 	s, capturePath := liveUpdatePartialSession(t, Config{
 		BasePermissionMode: "default",
@@ -73,34 +73,31 @@ func TestApplyLiveUpdateReportsThePartiallyAppliedAxes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	applied, err := s.ApplyLiveUpdate(ctx, LiveUpdate{
-		SystemPrompt: "new prompt",
-		Thinking:     ThinkingUpdate{Apply: true, SendBudget: true, Budget: 2048, Display: ThinkingDisplaySummarized},
+		Model:    "claude-fable-5-fast",
+		Thinking: ThinkingUpdate{Apply: true, SendBudget: true, Budget: 2048, Display: ThinkingDisplaySummarized},
 	}, nil)
 	if err == nil {
 		t.Fatal("ApplyLiveUpdate returned no error for a refused thinking request")
 	}
-	if !applied.SystemPrompt {
-		t.Fatal("the prompt swap landed on the wire but the outcome does not report it applied")
+	if !applied.Model {
+		t.Fatal("set_model landed on the wire but the outcome does not report it applied")
 	}
 	if applied.Thinking {
 		t.Fatal("the outcome reports a thinking axis the CLI refused")
 	}
-	if applied.Model {
-		t.Fatal("the outcome reports a model change the update never carried")
-	}
 
-	// Both requests really were written — the prompt one first.
+	// Both requests really were written, set_model first.
 	lines := waitCapturedLines(t, capturePath, 2)
-	if !strings.Contains(lines[0], "set_model") || !strings.Contains(lines[0], "new prompt") {
-		t.Fatalf("first wire line is not the prompt-carrying set_model: %s", lines[0])
+	if !strings.Contains(lines[0], "set_model") || !strings.Contains(lines[0], "claude-fable-5-fast") {
+		t.Fatalf("first wire line is not the set_model: %s", lines[0])
 	}
 	if !strings.Contains(lines[1], "set_max_thinking_tokens") {
 		t.Fatalf("second wire line is not the thinking request: %s", lines[1])
 	}
 }
 
-// A refusal on the FIRST axis must report nothing applied — the caller
-// would otherwise commit a prompt the CLI rejected.
+// A refusal on the FIRST axis must report nothing applied: the caller
+// would otherwise commit a model the CLI rejected.
 func TestApplyLiveUpdateReportsNothingWhenTheFirstAxisFails(t *testing.T) {
 	s, _ := liveUpdatePartialSession(t, Config{
 		BasePermissionMode: "default",
@@ -110,8 +107,8 @@ func TestApplyLiveUpdateReportsNothingWhenTheFirstAxisFails(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	applied, err := s.ApplyLiveUpdate(ctx, LiveUpdate{
-		SystemPrompt: "new prompt",
-		Thinking:     ThinkingUpdate{Apply: true, SendBudget: true, Budget: 2048, Display: ThinkingDisplaySummarized},
+		Model:    "claude-fable-5-fast",
+		Thinking: ThinkingUpdate{Apply: true, SendBudget: true, Budget: 2048, Display: ThinkingDisplaySummarized},
 	}, nil)
 	if err == nil {
 		t.Fatal("ApplyLiveUpdate returned no error for a refused set_model")
@@ -152,7 +149,6 @@ func TestCommitLiveUpdateCoversEveryLiveAppliableAxis(t *testing.T) {
 		WorkDir:         "/w",
 		RuntimeMode:     "approval-required",
 		ReasoningEffort: "low",
-		SystemPrompt:    "old prompt",
 		ClaudeThinking:  provider.ClaudeThinking{Mode: string(ThinkingBudget), BudgetTokens: 1024, Display: ThinkingDisplaySummarized},
 	}
 	next := prev
@@ -160,7 +156,6 @@ func TestCommitLiveUpdateCoversEveryLiveAppliableAxis(t *testing.T) {
 	next.RuntimeMode = "auto-accept-edits"
 	next.ReasoningEffort = "high"
 	next.FastMode = true
-	next.SystemPrompt = "new prompt"
 	next.ClaudeThinking = provider.ClaudeThinking{Mode: string(ThinkingBudget), BudgetTokens: 4096, Display: ThinkingDisplayOmitted}
 
 	full, ok := PlanLiveUpdate(prev, next)
@@ -172,7 +167,7 @@ func TestCommitLiveUpdateCoversEveryLiveAppliableAxis(t *testing.T) {
 	}
 
 	everything := LiveApplyOutcome{
-		Model: true, SystemPrompt: true, BasePermissionMode: true,
+		Model: true, BasePermissionMode: true,
 		Thinking: true, Effort: true, FastMode: true,
 	}
 	committed := CommitLiveUpdate(prev, next, everything)
@@ -192,7 +187,6 @@ func TestCommitLiveUpdateCoversEveryLiveAppliableAxis(t *testing.T) {
 		gone    func(LiveUpdate) bool
 	}{
 		{"model", LiveApplyOutcome{Model: true}, func(u LiveUpdate) bool { return u.Model == "" }},
-		{"prompt", LiveApplyOutcome{SystemPrompt: true}, func(u LiveUpdate) bool { return u.SystemPrompt == "" }},
 		{"permission mode", LiveApplyOutcome{BasePermissionMode: true}, func(u LiveUpdate) bool { return u.BasePermissionMode == "" }},
 		{"thinking", LiveApplyOutcome{Thinking: true}, func(u LiveUpdate) bool { return !u.Thinking.Apply }},
 		{"effort", LiveApplyOutcome{Effort: true}, func(u LiveUpdate) bool { return u.Effort == "" }},

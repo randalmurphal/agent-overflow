@@ -36,10 +36,9 @@ func observeReconcileSteps(app *App) chan string {
 }
 
 // A settings save that owns a LIVE Claude axis must converge sessions that
-// are already running. Prompt overrides are the axis that motivated the live
-// path at all: reconcileSettingsOwnedAxes RESOLVES the prompt rather than
-// pinning it, so an edited entry lands over set_model.system_prompt — but
-// only if something fires the reconcile, and nothing else does on a save.
+// are already running: the thinking axis lands over set_max_thinking_tokens,
+// but only if something fires the reconcile, and nothing else does on a
+// save.
 func TestSettingsSaveReconcilesLiveClaudeSessions(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -47,14 +46,7 @@ func TestSettingsSaveReconcilesLiveClaudeSessions(t *testing.T) {
 	steps := observeReconcileSteps(app)
 
 	if _, err := app.UpdateSettings(context.Background(), map[string]any{
-		"claudePromptOverrides": []any{
-			map[string]any{
-				"name":    "House style",
-				"enabled": true,
-				"models":  []any{"claude-fable-5"},
-				"prompt":  "Answer in the house style.",
-			},
-		},
+		"claudeThinking": map[string]any{"mode": "budget", "budgetTokens": 2048},
 	}); err != nil {
 		t.Fatalf("UpdateSettings() error = %v", err)
 	}
@@ -65,13 +57,13 @@ func TestSettingsSaveReconcilesLiveClaudeSessions(t *testing.T) {
 			t.Fatalf("reconciled %q, want thread-live-claude", got)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("a prompt-override save never reconciled the live Claude session")
+		t.Fatal("a thinking save never reconciled the live Claude session")
 	}
 }
 
 // Each key in liveClaudeSettingsAxes is a separate convergence route
-// (control request / deferred restart / live prompt swap), so each one is
-// pinned rather than trusting one representative.
+// (control request / deferred restart), so each one is pinned rather than
+// trusting one representative.
 func TestEveryLiveClaudeAxisTriggersTheSweep(t *testing.T) {
 	t.Parallel()
 	for _, key := range liveClaudeSettingsAxes {
@@ -83,12 +75,13 @@ func TestEveryLiveClaudeAxisTriggersTheSweep(t *testing.T) {
 
 // The inverse half. A spawn-only axis has no live consequence, so firing the
 // fan-out for it would put one control request on every live Claude process
-// to converge nothing. codexPromptOverrides is the sharp case: the reconcile
-// PINS the prompt on every non-Claude provider, so the sweep could only be a
-// no-op.
+// to converge nothing. Both prompt override keys are the sharp case: a
+// prompt change never applies to a running session and the reconcile pins
+// it on every provider, so the sweep could only be a no-op.
 func TestSpawnOnlySettingsDoNotTriggerTheSweep(t *testing.T) {
 	t.Parallel()
 	for _, key := range []string{
+		"claudePromptOverrides",
 		"codexPromptOverrides",
 		"claudeOutputStyle",
 		"claudeSubagentLimits",
@@ -274,10 +267,9 @@ func drainReconcileSteps(steps chan string) map[string]bool {
 }
 
 // writeClaudeControlCaptureCLI is a fake `claude` that announces a version
-// new enough for a live `set_model.system_prompt` (the swap is gated on
-// `system/init.claude_code_version`, and an older build ACKs it without
-// applying it), records every control_request it is sent, and answers all of
-// them with success. It never spawns anything, reads no provider home, and
+// new enough for a live `set_max_thinking_tokens` (gated on
+// `system/init.claude_code_version`), records every control_request it is
+// sent, and answers all of them with success. It never spawns anything, reads no provider home, and
 // makes no API call (root AGENTS.md §Permanent invariants).
 func writeClaudeControlCaptureCLI(t *testing.T) (binary, capture string) {
 	t.Helper()
@@ -322,12 +314,12 @@ func waitForCaptured(t *testing.T, capture, want, whatFailed string) string {
 // lands the saved setting on the session that registered.
 //
 //	T0  a Claude spawn is in flight; it snapshotted Settings already
-//	T1  the user saves claudePromptOverrides; the sweep enumerates ids —
+//	T1  the user saves claudeThinking; the sweep enumerates ids, and
 //	    `sessions` does not hold this thread yet — and its per-thread
 //	    reconcile parks in waitForStartingSession
 //	T2  the session registers carrying T0's options and the start clears
 //	T3  the parked reconcile diffs the session that actually exists and
-//	    swaps the prompt over set_model
+//	    sends set_max_thinking_tokens
 //
 // The seam here observes the DISPATCH only and then runs the production
 // reconcile, which is also what makes the interleaving deterministic: nothing
@@ -339,8 +331,8 @@ func TestSettingsSaveReachesTheWireOfASessionThatWasStillStarting(t *testing.T) 
 		app, "thread-starting-wire", string(provider.Claude), "claude-opus-5")
 	// What the spawn snapshotted: options built BEFORE the save lands.
 	launch := promptOverrideOptions(t, app, threadID)
-	if launch.SystemPrompt != "" {
-		t.Fatalf("launch SystemPrompt = %q, want none — the save is what introduces one", launch.SystemPrompt)
+	if launch.ClaudeThinking.Mode != "" {
+		t.Fatalf("launch ClaudeThinking = %+v, want Claude's own choice; the save is what sets one", launch.ClaudeThinking)
 	}
 
 	startState, leader := app.sessionManager().beginStart(threadID)
@@ -354,16 +346,8 @@ func TestSettingsSaveReachesTheWireOfASessionThatWasStillStarting(t *testing.T) 
 		app.reconcileSessionConfig(id, false)
 	})
 
-	const housePrompt = "Answer in the house style."
 	if _, err := app.UpdateSettings(context.Background(), map[string]any{
-		"claudePromptOverrides": []any{
-			map[string]any{
-				"name":    "House style",
-				"enabled": true,
-				"models":  []any{"claude-opus-5"},
-				"prompt":  housePrompt,
-			},
-		},
+		"claudeThinking": map[string]any{"mode": "budget", "budgetTokens": 2048},
 	}); err != nil {
 		t.Fatalf("UpdateSettings() error = %v", err)
 	}
@@ -395,7 +379,7 @@ func TestSettingsSaveReachesTheWireOfASessionThatWasStillStarting(t *testing.T) 
 		t.Fatalf("claude.NewSession() error = %v", err)
 	}
 	t.Cleanup(func() { _ = sess.Close() })
-	// Register only once the handshake has landed: the prompt swap is
+	// Register only once the handshake has landed: the thinking apply is
 	// version-gated, and a session that has not read its own init line yet
 	// would take the restart path for a reason this test is not about.
 	select {
@@ -412,20 +396,17 @@ func TestSettingsSaveReachesTheWireOfASessionThatWasStillStarting(t *testing.T) 
 	})
 	app.sessionManager().finishStart(threadID, startState)
 
-	body := waitForCaptured(t, capture, housePrompt,
-		"the saved prompt override never reached the session that registered after the sweep started")
-	if !strings.Contains(body, `"set_model"`) {
-		t.Fatalf("prompt landed on something other than set_model: %s", body)
-	}
-	// The live swap is what the session is running now, so launchOpts has to
-	// say so — otherwise the next reconcile re-sends it and a deferred
+	waitForCaptured(t, capture, `"set_max_thinking_tokens"`,
+		"the saved thinking setting never reached the session that registered after the sweep started")
+	// The live apply is what the session is running now, so launchOpts has to
+	// say so; otherwise the next reconcile re-sends it and a deferred
 	// restart would see "already converged" and skip.
 	current, ok := app.sessionManager().get(threadID)
 	if !ok {
 		t.Fatal("session vanished after the reconcile")
 	}
-	if current.LaunchOptions.SystemPrompt != housePrompt {
-		t.Fatalf("launchOpts.SystemPrompt = %q, want the applied override",
-			current.LaunchOptions.SystemPrompt)
+	if current.LaunchOptions.ClaudeThinking.Mode != "budget" || current.LaunchOptions.ClaudeThinking.BudgetTokens != 2048 {
+		t.Fatalf("launchOpts.ClaudeThinking = %+v, want the applied budget",
+			current.LaunchOptions.ClaudeThinking)
 	}
 }

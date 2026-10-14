@@ -15,10 +15,9 @@ import (
 	"agent-overflow/internal/provider/claude"
 )
 
-// An override edited as a file reaches a running Claude session: the
-// prompts watcher reloads the texts, announces both keys to attached
-// clients, and reconciles, which swaps the live prompt over set_model. The
-// app's own saves are suppressed and do not come back as a reload.
+// An override edited as a file is announced to attached clients by the
+// prompts watcher and never reaches a running Claude session. The app's own
+// saves are suppressed and do not come back as a reload.
 func TestAnEditedPromptFileReachesALiveClaudeSession(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -114,8 +113,8 @@ func TestAnEditedPromptFileReachesALiveClaudeSession(t *testing.T) {
 	if got := app.settings.Get().ClaudePromptOverrides[0].Prompt; got != edited {
 		t.Fatalf("settings prompt after the edit = %q", got)
 	}
-	body := waitForCaptured(t, capture, edited, "the edited prompt file never reached the live session")
-	if !strings.Contains(body, `"set_model"`) {
-		t.Fatalf("the edit landed on something other than set_model: %s", body)
+	// A prompt change never applies to a running session.
+	if body, err := os.ReadFile(capture); err == nil && strings.Contains(string(body), `"control_request"`) {
+		t.Fatalf("the edited prompt file reached the live session: %s", body)
 	}
 }
