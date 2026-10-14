@@ -54,7 +54,8 @@ func TestWriteLineLeavesTheCallersBufferAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawn cat: %v", err)
 	}
-	defer p.Kill()
+	// Kill reports the SIGKILL exit it caused.
+	t.Cleanup(func() { _ = p.Kill() })
 
 	backing := []byte("lineXYZ")
 	if err := p.WriteLine(backing[:4]); err != nil {
