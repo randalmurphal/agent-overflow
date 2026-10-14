@@ -153,9 +153,13 @@ func TestATombstoneForThisDeviceRetiresThePeerProfile(t *testing.T) {
 	}}
 	var accepted []owndevices.List
 	changed := 0
+	var removed []SetChange
 	manager.SetChanged(func(change SetChange) {
-		if change.Action == SetMembership {
+		switch change.Action {
+		case SetMembership:
 			changed++
+		case SetRemoved:
+			removed = append(removed, change)
 		}
 	})
 	hooks := OwnDeviceHooks{
@@ -176,6 +180,11 @@ func TestATombstoneForThisDeviceRetiresThePeerProfile(t *testing.T) {
 	}
 	if changed != 1 {
 		t.Errorf("changed fired %d times, want once for the retired profile", changed)
+	}
+	// The retire is a removal like any other, named, so every owner of the
+	// machine's state hears it.
+	if len(removed) != 1 || removed[0].ID != "peer" || removed[0].Reason != RemovedHere {
+		t.Errorf("removals announced %+v, want peer's once", removed)
 	}
 	if manager.Carrier("peer") != nil {
 		t.Error("a retired own-device profile still has a carrier")

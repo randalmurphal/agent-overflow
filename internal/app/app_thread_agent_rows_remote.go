@@ -57,10 +57,13 @@ type threadAgentPeerCache struct {
 	mu      sync.Mutex
 	entries map[string]*threadAgentPeerEntry
 	// waiting is the spawns to ask about, oldest first; queued holds
-	// their tokens, and running the tokens being asked now.
+	// their tokens, and running the tokens being asked now. again holds the
+	// running spawns a refresh asked about meanwhile: a change may have
+	// landed after their call read the rows, so each is asked once more.
 	waiting []store.ThreadRequest
 	queued  map[string]bool
 	running map[string]bool
+	again   map[string]store.ThreadRequest
 	// inFlight counts the calls running, and perComputer those to each
 	// computer.
 	inFlight    int
@@ -122,24 +125,36 @@ func (a *App) cachedPeerSpawnFor(token string) (store.ThreadRequest, bool) {
 }
 
 // refreshPeerAgentRows queues the spawn to be asked about in the
-// background, unless it is queued or being asked, its answer is newer than
-// minAge, or its computer is backing off. A full queue drops its oldest
-// spawn, whose caller is told to read again once there is room.
+// background, unless it is queued, its answer is newer than minAge, or its
+// computer is backing off. A spawn being asked now is marked to be asked
+// once more when its call returns. A full queue drops its oldest spawn,
+// whose caller is told to read again once there is room.
 func (a *App) refreshPeerAgentRows(spawn store.ThreadRequest, minAge time.Duration) {
 	c := &a.threadAgentPeers
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if a.lifeCtx().Err() != nil || c.queued[spawn.Token] || c.running[spawn.Token] {
+	if a.lifeCtx().Err() != nil || c.queued[spawn.Token] {
 		return
 	}
 	if entry, ok := c.entries[spawn.Token]; ok && time.Since(entry.at) < minAge {
 		return
 	}
+	if c.running[spawn.Token] {
+		c.again[spawn.Token] = spawn
+		return
+	}
+	a.queuePeerAgentRowsLocked(spawn)
+}
+
+// queuePeerAgentRowsLocked queues one spawn and starts what there is room
+// for, unless its computer is backing off.
+func (a *App) queuePeerAgentRowsLocked(spawn store.ThreadRequest) {
+	c := &a.threadAgentPeers
 	if c.backingOffLocked(spawn.TargetComputerID) {
 		return
 	}
 	if c.queued == nil {
-		c.queued, c.running = map[string]bool{}, map[string]bool{}
+		c.queued, c.running, c.again = map[string]bool{}, map[string]bool{}, map[string]store.ThreadRequest{}
 		c.perComputer, c.backoff = map[string]int{}, map[string]threadAgentPeerBackoff{}
 		c.rereadCallers = map[string]struct{}{}
 	}
@@ -206,6 +221,8 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 		delete(c.perComputer, spawn.TargetComputerID)
 	}
 	delete(c.running, spawn.Token)
+	again, askAgain := c.again[spawn.Token]
+	delete(c.again, spawn.Token)
 	changed := false
 	if !shutdown {
 		changed = c.noteAnswerLocked(spawn, listing, err)
@@ -216,6 +233,9 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 			reread = append(reread, caller)
 		}
 		clear(c.rereadCallers)
+	}
+	if askAgain && !shutdown {
+		a.queuePeerAgentRowsLocked(again)
 	}
 	a.startPeerAgentRowsLocked()
 	c.mu.Unlock()
@@ -338,6 +358,11 @@ func (a *App) forgetPeerAgentRows(computerID string) {
 	}
 	clear(c.waiting[len(kept):])
 	c.waiting = kept
+	for token, spawn := range c.again {
+		if spawn.TargetComputerID == computerID {
+			delete(c.again, token)
+		}
+	}
 	delete(c.backoff, computerID)
 	c.mu.Unlock()
 	callers, err := a.store.ClearThreadRequestsNestedOpenForComputer(computerID)
@@ -349,6 +374,35 @@ func (a *App) forgetPeerAgentRows(computerID string) {
 	}
 	for _, caller := range callers {
 		a.noteThreadRequestChanged(store.ThreadRequestChange{CallerThreadID: caller})
+	}
+}
+
+// forgetUnpairedPeerAgentRows forgets every computer this cache knows that
+// is no longer paired: the backstop for a set change that names no
+// machine. Spawns no answer here mentions are left to the sweep.
+func (a *App) forgetUnpairedPeerAgentRows() {
+	if a.backends == nil {
+		return
+	}
+	c := &a.threadAgentPeers
+	c.mu.Lock()
+	known := map[string]bool{}
+	for _, entry := range c.entries {
+		known[entry.spawn.TargetComputerID] = true
+	}
+	for _, spawn := range c.waiting {
+		known[spawn.TargetComputerID] = true
+	}
+	for computer := range c.backoff {
+		known[computer] = true
+	}
+	c.mu.Unlock()
+	for computer := range known {
+		if _, found, err := a.backends.Lookup(computer); err != nil {
+			log.Printf("agent rows: look up computer %s: %v", computer, err)
+		} else if !found {
+			a.forgetPeerAgentRows(computer)
+		}
 	}
 }
 

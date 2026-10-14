@@ -295,8 +295,11 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 // backendSetChanged is the attached-machine set's one observer: a removed
 // machine's Agents rows are forgotten, then every client is told.
 func (a *App) backendSetChanged(change attachedbackends.SetChange) {
-	if change.Action == attachedbackends.SetRemoved {
+	switch change.Action {
+	case attachedbackends.SetRemoved:
 		a.forgetPeerAgentRows(change.ID)
+	case attachedbackends.SetMembership:
+		a.forgetUnpairedPeerAgentRows()
 	}
 	a.emit(eventchan.BackendSetChanged, change)
 	a.signalRemotePeers()

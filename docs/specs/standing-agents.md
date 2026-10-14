@@ -759,11 +759,12 @@ closes up their spacing so the row holds at a phone width.
   last answer for each remote spawn and asks again in the background, and
   an answer that changes the rows sends a `thread:agent_rows_changed`
   frame. The asking is bounded: at most 256 spawns wait to be asked, each
-  once, the oldest dropped with its caller told to read again; at most
+  once, the oldest dropped with its caller told to read again; a spawn
+  asked about again while its call runs is asked once more after it; at most
   eight calls run, two of them to one computer; a computer whose call
   timed out is not asked again for 5 s, doubling to a minute, until it
-  answers; at most 256 answers are kept. A computer no longer paired is
-  forgotten with its spawns' open work. Each poll of an open remote spawn
+  answers; at most 256 answers are kept. A computer no longer paired,
+  however its pairing ended, is forgotten with its spawns' open work. Each poll of an open remote spawn
   asks again; so does the sweep, at the poll's pace, for a settled one
   whose last answer listed open work (`thread_requests.nested_open`),
   until it lists none. A computer that does not answer is said on the row

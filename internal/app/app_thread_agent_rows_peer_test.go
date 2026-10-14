@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -252,18 +253,26 @@ func TestThreadAgentPeerCallsRefuseOtherThreads(t *testing.T) {
 	}
 }
 
-// stalledAgentsPeer is a destination whose agent_rows answer does not come.
-// calls counts the agent_rows calls it was sent.
+// stalledAgentsPeer is a destination whose agent_rows answer comes after
+// delay, or not at all when delay is zero. calls counts the agent_rows
+// calls it was sent.
 type stalledAgentsPeer struct {
 	*App
 	calls atomic.Int32
+	delay time.Duration
 }
 
-// serveStalledAgentsPeer serves app as a stalledAgentsPeer, which it
-// returns through peer.
+// serveStalledAgentsPeer serves app as a stalledAgentsPeer that never
+// answers, which it returns through peer.
 func serveStalledAgentsPeer(peer **stalledAgentsPeer) func(*testing.T, *App) *pairedBackend {
+	return serveSlowAgentsPeer(peer, 0)
+}
+
+// serveSlowAgentsPeer serves app as a stalledAgentsPeer answering after
+// delay.
+func serveSlowAgentsPeer(peer **stalledAgentsPeer, delay time.Duration) func(*testing.T, *App) *pairedBackend {
 	return func(t *testing.T, app *App) *pairedBackend {
-		stalled := &stalledAgentsPeer{App: app}
+		stalled := &stalledAgentsPeer{App: app, delay: delay}
 		if peer != nil {
 			*peer = stalled
 		}
@@ -282,8 +291,12 @@ func serveStalledAgentsPeer(peer **stalledAgentsPeer) func(*testing.T, *App) *pa
 func (p *stalledAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
 	if call.Tool == threadAgentPeerRows {
 		p.calls.Add(1)
+		wait := p.delay
+		if wait == 0 {
+			wait = 20 * time.Second
+		}
 		select {
-		case <-time.After(20 * time.Second):
+		case <-time.After(wait):
 		case <-ctx.Done():
 		}
 	}
@@ -600,41 +613,84 @@ func TestThreadAgentPeerBackoffDoublesAndAnAnswerClearsIt(t *testing.T) {
 	}
 }
 
-// However many spawns are refreshed together, the calls in flight, the
-// spawns waiting and the answers kept stay bounded, and a spawn already
-// being asked about still gets its answer.
+// However many spawns are refreshed together, the calls in flight, those
+// to one computer, the spawns waiting and the answers kept stay bounded; a
+// spawn dropped from the full queue has its caller told to read again, and
+// the read that follows gets its answer.
 func TestThreadAgentPeerRefreshesStayBounded(t *testing.T) {
 	t.Parallel()
-	pair := newAgentPeerPair(t, serveStalledAgentsPeer(nil))
+	pair := newAgentPeerPair(t, serveSlowAgentsPeer(new(*stalledAgentsPeer), 30*time.Millisecond))
 	a := pair.source
-	live := pair.spawn
-	a.refreshPeerAgentRows(live, 0)
-	for i := range 300 {
-		spawn := pair.spawn
-		spawn.Token, spawn.TargetComputerID = fmt.Sprintf("gone-%d", i), uuid.NewString()
-		a.refreshPeerAgentRows(spawn, 0)
-		a.threadAgentPeers.mu.Lock()
-		inFlight, waiting := a.threadAgentPeers.inFlight, len(a.threadAgentPeers.waiting)
-		a.threadAgentPeers.mu.Unlock()
-		if inFlight > threadAgentPeerListsInFlight || waiting > threadAgentPeerCacheLimit {
-			t.Fatalf("after %d spawns: %d calls in flight, %d waiting", i+1, inFlight, waiting)
+	frames := recordAgentRowFrames(a)
+	check := func(when string) {
+		c := &a.threadAgentPeers
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		perComputer := 0
+		for _, n := range c.perComputer {
+			perComputer = max(perComputer, n)
+		}
+		if c.inFlight > threadAgentPeerListsInFlight || perComputer > threadAgentPeerListsPerComputer ||
+			len(c.waiting) > threadAgentPeerCacheLimit || len(c.entries) > threadAgentPeerCacheLimit {
+			t.Fatalf("%s: %d in flight, %d to one computer, %d waiting, %d answers",
+				when, c.inFlight, perComputer, len(c.waiting), len(c.entries))
 		}
 	}
-	waitForPeerAnswer(t, a, live, 2*threadAgentPeerListTimeout)
-	a.threadRequestsWG.Wait()
-	a.threadAgentPeers.mu.Lock()
-	entries := len(a.threadAgentPeers.entries)
-	a.threadAgentPeers.mu.Unlock()
-	if entries > threadAgentPeerCacheLimit {
-		t.Fatalf("the cache holds %d answers; bound %d", entries, threadAgentPeerCacheLimit)
+	spawns := make([]store.ThreadRequest, threadAgentPeerCacheLimit+45)
+	for i := range spawns {
+		spawns[i] = pair.spawn
+		if i > 0 {
+			spawns[i].Token, spawns[i].CallerThreadID = fmt.Sprintf("many-%03d", i), fmt.Sprintf("caller-%03d", i)
+		}
+		a.refreshPeerAgentRows(spawns[i], 0)
+		check(fmt.Sprintf("after %d spawns", i+1))
 	}
+	// The first spawns run at once; the oldest still waiting is dropped.
+	dropped := spawns[threadAgentPeerListsPerComputer+1]
+	waitForPeerAnswer(t, a, spawns[0], 10*time.Second)
+	waitUntil(t, 60*time.Second, func() bool {
+		check("draining")
+		a.threadAgentPeers.mu.Lock()
+		defer a.threadAgentPeers.mu.Unlock()
+		return len(a.threadAgentPeers.waiting) == 0 && a.threadAgentPeers.inFlight == 0
+	})
+	a.threadRequestsWG.Wait()
+	check("drained")
+	waitUntil(t, 5*time.Second, func() bool { return frames.count(dropped.CallerThreadID) > 0 })
+	a.refreshPeerAgentRows(dropped, threadAgentPeerRefreshEvery)
+	waitForPeerAnswer(t, a, dropped, 10*time.Second)
 }
 
-// Forgetting a computer forgets its spawns' open work: a settled spawn
-// whose computer last listed open work leaves the listing and the sweep.
-func TestThreadAgentRowsForgetAForgottenComputersOpenWork(t *testing.T) {
-	t.Parallel()
-	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+// agentRowFrames counts the thread:agent_rows_changed frames each thread
+// is sent.
+type agentRowFrames struct {
+	mu  sync.Mutex
+	got map[string]int
+}
+
+func recordAgentRowFrames(app *App) *agentRowFrames {
+	frames := &agentRowFrames{got: map[string]int{}}
+	app.testEmitHook = func(name string, data any) {
+		if change, ok := data.(ThreadAgentRowChange); ok && name == string(eventchan.ThreadAgentRowsChanged) && change.ThreadID != "" {
+			frames.mu.Lock()
+			frames.got[change.ThreadID]++
+			frames.mu.Unlock()
+		}
+	}
+	return frames
+}
+
+func (f *agentRowFrames) count(threadID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.got[threadID]
+}
+
+// settleWithOpenWorkThere leaves the pair's spawn settled an hour ago with
+// open work recorded there and its answer cached, every background call
+// done, and returns a recorder of the frames sent from then on.
+func settleWithOpenWorkThere(t *testing.T, pair *agentPeerPair) *agentRowFrames {
+	t.Helper()
 	a := pair.source
 	pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
 		_, ok := agentRowByToken(rows.Rows, pair.grand)
@@ -646,23 +702,107 @@ func TestThreadAgentRowsForgetAForgottenComputersOpenWork(t *testing.T) {
 	}); err != nil || !settled {
 		t.Fatalf("settle: %v %v", settled, err)
 	}
+	// The emit drain joins the same group: no frame from before is left.
+	a.threadRequestsWG.Wait()
 	if !pair.request(t, pair.spawn.Token).NestedOpen {
 		t.Fatal("the spawn does not record open work there")
 	}
-	if err := a.RemoveBackend(pair.computer, true); err != nil {
-		t.Fatalf("forget the computer: %v", err)
+	if _, cached := a.cachedPeerAgentRows(pair.spawn); !cached {
+		t.Fatal("the spawn's answer is not cached")
 	}
+	return recordAgentRowFrames(a)
+}
+
+// requireForgotten checks a computer's open work is gone from the spawn:
+// the row, the sweep, the listing and the cache, with the caller told.
+func requireForgotten(t *testing.T, pair *agentPeerPair, frames *agentRowFrames) {
+	t.Helper()
+	a := pair.source
 	if pair.request(t, pair.spawn.Token).NestedOpen {
 		t.Fatal("a forgotten computer's spawn still records open work there")
 	}
 	if schedule, err := a.store.NextThreadRequestWork(); err != nil || schedule.NestedOpen {
 		t.Fatalf("schedule = %+v, %v; the sweep still asks a forgotten computer", schedule, err)
 	}
+	if _, cached := a.cachedPeerAgentRows(pair.spawn); cached {
+		t.Fatal("a forgotten computer's answer is still cached")
+	}
+	a.threadAgentPeers.mu.Lock()
+	_, backingOff := a.threadAgentPeers.backoff[pair.computer]
+	a.threadAgentPeers.mu.Unlock()
+	if backingOff {
+		t.Fatal("a forgotten computer's backoff is kept")
+	}
+	waitUntil(t, 5*time.Second, func() bool { return frames.count(pair.caller.ID) > 0 })
 	if _, listed := agentRowByToken(pair.listRows(t).Rows, pair.spawn.Token); listed {
 		t.Fatal("a forgotten computer's settled spawn is still listed")
 	}
-	if _, cached := a.cachedPeerAgentRows(pair.spawn); cached {
-		t.Fatal("a forgotten computer's answer is still cached")
+}
+
+// Forgetting a computer forgets its spawns' open work: a settled spawn
+// whose computer last listed open work leaves the listing and the sweep,
+// and its caller's pane is told to read again.
+func TestThreadAgentRowsForgetAForgottenComputersOpenWork(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	frames := settleWithOpenWorkThere(t, pair)
+	pair.source.threadAgentPeers.mu.Lock()
+	pair.source.threadAgentPeers.backoff[pair.computer] = threadAgentPeerBackoff{until: time.Now().Add(time.Minute)}
+	pair.source.threadAgentPeers.mu.Unlock()
+	if err := pair.source.RemoveBackend(pair.computer, true); err != nil {
+		t.Fatalf("forget the computer: %v", err)
+	}
+	requireForgotten(t, pair, frames)
+}
+
+// A computer gone from the paired set without a removal this computer
+// heard is forgotten by the next sweep.
+func TestThreadAgentSweepForgetsAComputerNoLongerPaired(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	frames := settleWithOpenWorkThere(t, pair)
+	pair.manager.SetChanged(func(attachedbackends.SetChange) {})
+	if err := pair.manager.Remove(pair.computer); err != nil {
+		t.Fatal(err)
+	}
+	pair.manager.SetChanged(pair.source.backendSetChanged)
+	pair.source.refreshNestedOpenRemoteSpawns()
+	pair.source.threadRequestsWG.Wait()
+	requireForgotten(t, pair, frames)
+}
+
+// A membership change names no machine: every computer the cache knows
+// that is no longer paired is forgotten.
+func TestThreadAgentMembershipChangeForgetsComputersNoLongerPaired(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	frames := settleWithOpenWorkThere(t, pair)
+	pair.manager.SetChanged(func(attachedbackends.SetChange) {})
+	if err := pair.manager.Remove(pair.computer); err != nil {
+		t.Fatal(err)
+	}
+	pair.manager.SetChanged(pair.source.backendSetChanged)
+	pair.source.backendSetChanged(attachedbackends.SetChange{Action: attachedbackends.SetMembership})
+	requireForgotten(t, pair, frames)
+}
+
+// A refresh asked for while the spawn's own call is running reads again
+// once that call returns: a change may have landed after it read the rows.
+func TestThreadAgentPeerRefreshAskedDuringACallReadsAgain(t *testing.T) {
+	t.Parallel()
+	var peer *stalledAgentsPeer
+	pair := newAgentPeerPair(t, serveSlowAgentsPeer(&peer, 400*time.Millisecond))
+	a := pair.source
+	a.threadRequestsWG.Wait()
+	before := peer.calls.Load()
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() == before+1 })
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() == before+2 })
+	a.threadRequestsWG.Wait()
+	if got := peer.calls.Load() - before; got != 2 {
+		t.Fatalf("one refresh and two asked during its call made %d calls; want 2", got)
 	}
 }
 
