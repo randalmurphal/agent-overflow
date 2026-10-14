@@ -262,7 +262,12 @@ func TestRoleLine(t *testing.T) {
 		"rule":        {"* * *\n___\nRelease lead\n---\n", "Release lead"},
 		"unclosed":    {"---\nRelease lead\n", "Release lead"},
 		"two markers": {"# # Title\n", "Title"},
-		"tab marker":  {"#\t#Hash role\n", "Hash role"},
+		"tab marker":  {"#\t#Hash role\n", "#Hash role"},
+		"number":      {"#1 reviewer\n", "#1 reviewer"},
+		"hashtag":     {"#hashtag lover\n", "#hashtag lover"},
+		"text after":  {"# #1 reviewer\n", "#1 reviewer"},
+		"only marks":  {"# # #\nRelease lead\n", "Release lead"},
+		"nbsp marker": {"#\u00a0# lead\n", "lead"},
 	} {
 		home := writeHome(t, map[string]string{InstructionsFile: tc.text})
 		got, err := RoleLine(home)
@@ -438,7 +443,7 @@ var boundRoleSeeds = []string{
 	"# # Title", "#\t#Hash role", "## Release lead", "#Hash", "# ---\nRole", "  #  lead  ", "# \u00a0# lead",
 	"---\nname: lead\n---\n# Role", "---\nRole\n", "* * *\nRole", "lead\u202e\x07 role", "\xff\xfe role",
 	strings.Repeat("r", RoleRunes+5), strings.Repeat("r", RoleRunes-1) + " # tail", "# " + strings.Repeat("é", RoleRunes+1),
-	"Role\r\nnext", "",
+	"Role\r\nnext", "", "#1 reviewer", "#hashtag lover", "# #1 x", "# # #", "# # x", "  ## \t# x",
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }

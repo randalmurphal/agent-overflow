@@ -233,8 +233,8 @@ func RoleLine(home string) (_ string, err error) {
 
 // BoundRole makes a role line of text: its first non-blank line after a
 // leading frontmatter block, skipping bare rule lines (`---`, `***`, `___`),
-// cleaned, with every leading `#` and the white space among them dropped and
-// runs of white space folded, at most RoleRunes runes. It is also what a role
+// cleaned, with runs of white space folded and every leading ATX heading
+// marker (a run of `#` followed by a space or the end of the line) dropped, at most RoleRunes runes. It is also what a role
 // carried from another computer passes through, so it is a fixed point:
 // BoundRole(BoundRole(x)) == BoundRole(x), and a role bounded on the computer
 // that read it reads the same after this one bounds it again.
@@ -253,7 +253,7 @@ func BoundRole(text string) string {
 		}
 	}
 	for _, line := range lines[start:] {
-		line = strings.Join(strings.Fields(strings.TrimLeftFunc(line, headingRune)), " ")
+		line = stripHeadingMarkers(strings.Join(strings.Fields(line), " "))
 		if line == "" || ruleLine(line) {
 			continue
 		}
@@ -266,9 +266,20 @@ func BoundRole(text string) string {
 	return ""
 }
 
-// headingRune is what a role line drops from its start: heading markers and
-// the white space around them, all of it, so a second pass finds none.
-func headingRune(r rune) bool { return r == '#' || unicode.IsSpace(r) }
+// stripHeadingMarkers drops leading ATX heading markers from a line whose
+// white space is already folded to single spaces, until none is left, so a
+// second pass finds none. A `#` run followed by anything else is text:
+// "#1 reviewer" stays as it is.
+func stripHeadingMarkers(line string) string {
+	for strings.HasPrefix(line, "#") {
+		rest := strings.TrimLeft(line, "#")
+		if rest != "" && rest[0] != ' ' {
+			return line
+		}
+		line = strings.TrimPrefix(rest, " ")
+	}
+	return line
+}
 
 // ruleLine reports a Markdown thematic break: three or more of one of `-`,
 // `*` or `_`, spaces allowed between them.
