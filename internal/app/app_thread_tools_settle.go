@@ -305,6 +305,9 @@ func (a *App) settleThreadReceiptLocked(
 	if !found {
 		return threadSettlementWork{}, false, nil
 	}
+	// The answer records whether its thread is a standing agent now, and
+	// the source row copies it, on this computer or another.
+	settlement.Agent = a.threadTools().answerAgent(token, receipt.TargetThreadID)
 	settled, err := a.store.SettleThreadRequestReceipt(token, from, settlement)
 	if err != nil {
 		return threadSettlementWork{}, false, err
@@ -424,7 +427,7 @@ func (t threadToolsApp) replyLocked(caller threadtools.Caller, call threadtools.
 			return threadtools.ReplyAck{}, work, errorsx.Public(threadtools.CodeInvalidRequest,
 				"That request finished more than a day ago and its sender has stopped listening for a reply. Use thread_send to reach it.", nil)
 		}
-		stored, err := t.app.store.StoreThreadReceiptLateReply(call.Token, text, now)
+		stored, err := t.app.store.StoreThreadReceiptLateReply(call.Token, text, now, t.answerAgent(call.Token, receipt.TargetThreadID))
 		if err != nil {
 			return threadtools.ReplyAck{}, work, err
 		}
@@ -520,7 +523,7 @@ func (a *App) collectLocalThreadRequest(token string, late bool) bool {
 		return false
 	}
 	if late {
-		if _, err := a.store.StoreThreadRequestLateReply(token, receipt.LateReply, receipt.LateReplyAt); err != nil {
+		if _, err := a.store.StoreThreadRequestLateReply(token, receipt.LateReply, receipt.LateReplyAt, receipt.AnswerAgent); err != nil {
 			log.Printf("thread tools: store late reply %s: %v", token, err)
 			return false
 		}
@@ -531,6 +534,7 @@ func (a *App) collectLocalThreadRequest(token string, late bool) bool {
 			AnswerKind: receipt.AnswerKind,
 			SettledAt:  receipt.SettledAt,
 			ExpiresAt:  receipt.ExpiresAt,
+			Agent:      receipt.AnswerAgent,
 		})
 		if err != nil {
 			log.Printf("thread tools: settle request %s: %v", token, err)

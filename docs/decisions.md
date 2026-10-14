@@ -270,9 +270,8 @@ Mechanism in
   skill and, if it is missing, to ask the user to install the library.
   A file that cannot be read is a warning row on the thread, not a failed
   start. A standing agent is named with its role line on the footers it
-  sends and on the wakes of its replies to a caller on its own computer;
-  a caller on another computer gets no role, since cross-computer agents
-  are a non-goal.
+  sends and on the wakes of its replies, on either computer: a thread on
+  another computer behaves as a local one does.
 - Requests to other threads and agent messages queued for a thread list
   in the activity rail's Agents segment, apart from Background, with a
   user Stop that keeps the caller's wake armed and cascades into what a

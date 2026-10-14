@@ -51,6 +51,99 @@ func mustGetThreadRequest(t *testing.T, s *Store, token string) ThreadRequest {
 	return row
 }
 
+// The settlement records the answering thread as a standing agent, an agent
+// with no role line apart from an ordinary thread; a late reply replaces it
+// with the agent it was written under; a settlement with no agent records
+// none. A receipt records it the same way, and a new row is never read as
+// written before v149.
+func TestThreadRequestRecordsTheAnsweringAgent(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	settle := func(token string, agent *ThreadAnswerAgent) ThreadRequest {
+		t.Helper()
+		seedThreadRequest(t, s, token, "t-caller", ThreadRequestSend, 100)
+		settled, err := s.SettleThreadRequest(token, ThreadRequestOpenStates(), ThreadRequestSettlement{
+			State: ThreadRequestFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 200, Agent: agent,
+		})
+		if err != nil || !settled {
+			t.Fatalf("settle %s: settled=%v err=%v", token, settled, err)
+		}
+		return mustGetThreadRequest(t, s, token)
+	}
+	seedThreadRequest(t, s, "tok-open", "t-caller", ThreadRequestSend, 100)
+	if row := mustGetThreadRequest(t, s, "tok-open"); row.AnswerAgentUnrecorded || row.AnswerAgent != nil {
+		t.Errorf("open row = unrecorded %v agent %+v, want no agent recorded", row.AnswerAgentUnrecorded, row.AnswerAgent)
+	}
+	if row := settle("tok-agent", &ThreadAnswerAgent{Role: "Reviewer"}); row.AnswerAgent == nil || row.AnswerAgent.Role != "Reviewer" {
+		t.Errorf("agent with a role = %+v", row.AnswerAgent)
+	}
+	if row := settle("tok-roleless", &ThreadAnswerAgent{}); row.AnswerAgent == nil || row.AnswerAgent.Role != "" {
+		t.Errorf("agent with no role line = %+v, want an agent with an empty role", row.AnswerAgent)
+	}
+	if row := settle("tok-ordinary", nil); row.AnswerAgent != nil {
+		t.Errorf("ordinary thread = %+v, want no agent", row.AnswerAgent)
+	}
+
+	if stored, err := s.StoreThreadRequestLateReply("tok-agent", []byte("more"), 300, &ThreadAnswerAgent{Role: "Second role"}); err != nil || !stored {
+		t.Fatalf("late reply: stored=%v err=%v", stored, err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-agent"); row.AnswerAgent == nil || row.AnswerAgent.Role != "Second role" {
+		t.Errorf("agent after the late reply = %+v", row.AnswerAgent)
+	}
+	if stored, err := s.StoreThreadRequestLateReply("tok-roleless", []byte("more"), 300, nil); err != nil || !stored {
+		t.Fatalf("late reply: stored=%v err=%v", stored, err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-roleless"); row.AnswerAgent != nil {
+		t.Errorf("agent after a late reply from an ordinary thread = %+v", row.AnswerAgent)
+	}
+
+	for _, token := range []string{"tok-agent", "tok-roleless", "tok-ordinary"} {
+		if row := mustGetThreadRequest(t, s, token); row.AnswerAgentUnrecorded {
+			t.Errorf("%s reads as written before v149", token)
+		}
+	}
+
+	receipt := func(token string) ThreadRequestReceipt {
+		t.Helper()
+		row, found, err := s.GetThreadRequestReceipt(token)
+		if err != nil || !found {
+			t.Fatalf("receipt %s: found=%v err=%v", token, found, err)
+		}
+		return row
+	}
+	for token, agent := range map[string]*ThreadAnswerAgent{"rcpt-agent": {Role: "Reviewer"}, "rcpt-roleless": {}, "rcpt-ordinary": nil} {
+		if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+			Token: token, OwnerDeviceID: "device-1", Kind: ThreadRequestSend, TargetThreadID: "t-caller", CreatedAt: 100, UpdatedAt: 100,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if row := receipt(token); row.AnswerAgent != nil {
+			t.Errorf("open receipt %s records agent %+v", token, row.AnswerAgent)
+		}
+		if settled, err := s.SettleThreadRequestReceipt(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+			State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, Agent: agent,
+		}); err != nil || !settled {
+			t.Fatalf("settle receipt %s: settled=%v err=%v", token, settled, err)
+		}
+		got := receipt(token).AnswerAgent
+		if (got == nil) != (agent == nil) || (got != nil && got.Role != agent.Role) {
+			t.Errorf("receipt %s agent = %+v, want %+v", token, got, agent)
+		}
+	}
+	if stored, err := s.StoreThreadReceiptLateReply("rcpt-agent", []byte("more"), 0, &ThreadAnswerAgent{Role: "Second role"}); err != nil || !stored {
+		t.Fatalf("receipt late reply: stored=%v err=%v", stored, err)
+	}
+	if got := receipt("rcpt-agent").AnswerAgent; got == nil || got.Role != "Second role" {
+		t.Errorf("receipt agent after the late reply = %+v", got)
+	}
+	if stored, err := s.StoreThreadReceiptLateReply("rcpt-roleless", []byte("more"), 0, nil); err != nil || !stored {
+		t.Fatalf("receipt late reply: stored=%v err=%v", stored, err)
+	}
+	if got := receipt("rcpt-roleless").AnswerAgent; got != nil {
+		t.Errorf("receipt agent after an ordinary thread's late reply = %+v", got)
+	}
+}
+
 // Every state change on a request is conditional on the state it expects to
 // find. A change that does not apply is a lost race with another observer,
 // which is a normal outcome and must not read as an error or as a second
@@ -142,7 +235,7 @@ func TestThreadRequestLateReplyIsANewRevision(t *testing.T) {
 		t.Fatalf("settle: %v", err)
 	}
 
-	stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("second thoughts"), 300)
+	stored, err := s.StoreThreadRequestLateReply("tok-late", []byte("second thoughts"), 300, nil)
 	if err != nil || !stored {
 		t.Fatalf("store late reply: stored=%v err=%v", stored, err)
 	}
@@ -154,7 +247,7 @@ func TestThreadRequestLateReplyIsANewRevision(t *testing.T) {
 		t.Errorf("late reply overwrote the answer: %q", row.Answer)
 	}
 
-	stored, err = s.StoreThreadRequestLateReply("tok-late", []byte("third"), 400)
+	stored, err = s.StoreThreadRequestLateReply("tok-late", []byte("third"), 400, nil)
 	if err != nil {
 		t.Fatalf("second late reply: %v", err)
 	}
@@ -176,7 +269,7 @@ func TestThreadRequestLateReplyIsANewRevision(t *testing.T) {
 
 	// A request that never settled has nothing to reply late to.
 	seedThreadRequest(t, s, "tok-open", "t-caller", ThreadRequestAsk, 100)
-	stored, err = s.StoreThreadRequestLateReply("tok-open", []byte("early"), 500)
+	stored, err = s.StoreThreadRequestLateReply("tok-open", []byte("early"), 500, nil)
 	if err != nil {
 		t.Fatalf("late reply on an open request: %v", err)
 	}
@@ -543,7 +636,7 @@ func TestExpireThreadRequestAnswersOnlyDropsUncollected(t *testing.T) {
 
 	// A late reply inside the hold is a new uncollected revision with its
 	// own hold.
-	stored, err := s.StoreThreadReceiptLateReply("tok-collected", []byte("more"), 1900)
+	stored, err := s.StoreThreadReceiptLateReply("tok-collected", []byte("more"), 1900, nil)
 	if err != nil || !stored {
 		t.Fatalf("store receipt late reply: stored=%v err=%v", stored, err)
 	}
@@ -574,7 +667,7 @@ func TestStoreThreadReceiptLateReplyRefusesPastTheHold(t *testing.T) {
 		t.Fatalf("settle: %v", err)
 	}
 	for _, at := range []int64{2000, 2001} {
-		stored, err := s.StoreThreadReceiptLateReply("tok-stale", []byte("too late"), at)
+		stored, err := s.StoreThreadReceiptLateReply("tok-stale", []byte("too late"), at, nil)
 		if err != nil {
 			t.Fatalf("late reply at %d: %v", at, err)
 		}
@@ -582,7 +675,7 @@ func TestStoreThreadReceiptLateReplyRefusesPastTheHold(t *testing.T) {
 			t.Fatalf("a late reply at %d was stored past the hold ending at 2000", at)
 		}
 	}
-	stored, err := s.StoreThreadReceiptLateReply("tok-stale", []byte("in time"), 1999)
+	stored, err := s.StoreThreadReceiptLateReply("tok-stale", []byte("in time"), 1999, nil)
 	if err != nil || !stored {
 		t.Fatalf("late reply inside the hold: stored=%v err=%v", stored, err)
 	}
@@ -643,7 +736,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	if _, err := s.SetThreadRequestNotify("tok-spawn-lineage", true); err != nil {
 		t.Fatal(err)
 	}
-	if stored, err := s.StoreThreadRequestLateReply("tok-spawn-lineage", []byte("one more thing"), 300); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-spawn-lineage", []byte("one more thing"), 300, &ThreadAnswerAgent{Role: "Reviewer"}); err != nil || !stored {
 		t.Fatalf("late reply: stored=%v err=%v", stored, err)
 	}
 	owesWake := func() bool {
@@ -728,9 +821,14 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	if !lineage.LineageOnly {
 		t.Errorf("the kept spawn row is not marked lineage-only: %+v", lineage)
 	}
-	if len(lineage.Answer) != 0 || lineage.AnswerKind != "" || len(lineage.LateReply) != 0 || lineage.LateReplyAt != 0 || lineage.Notify {
-		t.Errorf("lineage row past the floor = answer %q kind %q late reply %q at %d notify %v; want its payload cleared",
-			lineage.Answer, lineage.AnswerKind, lineage.LateReply, lineage.LateReplyAt, lineage.Notify)
+	if len(lineage.Answer) != 0 || lineage.AnswerKind != "" || len(lineage.LateReply) != 0 || lineage.LateReplyAt != 0 || lineage.Notify ||
+		lineage.AnswerAgent != nil {
+		t.Errorf("lineage row past the floor = answer %q kind %q late reply %q at %d notify %v agent %+v; want its payload cleared",
+			lineage.Answer, lineage.AnswerKind, lineage.LateReply, lineage.LateReplyAt, lineage.Notify, lineage.AnswerAgent)
+	}
+	var agentRole string
+	if err := s.db.QueryRow(`SELECT answer_agent_role FROM thread_requests WHERE token = ?`, "tok-spawn-lineage").Scan(&agentRole); err != nil || agentRole != "" {
+		t.Errorf("lineage row kept its answer agent role %q (%v)", agentRole, err)
 	}
 	if lineage.CallerThreadID != "t-caller" || lineage.Kind != ThreadRequestSpawn || lineage.TargetThreadID != "t-child" ||
 		lineage.State != ThreadRequestFinished || lineage.SettledAt != 200 || lineage.CreatedAt != 100 {
@@ -750,7 +848,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		t.Errorf("second sweep: swept=%d err=%v", swept, err)
 	}
 	// Nothing writes an answer or a wake back onto the lineage row.
-	if stored, err := s.StoreThreadRequestLateReply("tok-spawn-lineage", []byte("much later"), 2000); err != nil || stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-spawn-lineage", []byte("much later"), 2000, nil); err != nil || stored {
 		t.Errorf("late reply on the lineage row: stored=%v err=%v", stored, err)
 	}
 	if armed, err := s.SetThreadRequestNotify("tok-spawn-lineage", true); err != nil || armed {
@@ -1067,7 +1165,7 @@ func TestQueueThreadWakeWritesTheRowAndTheMarkTogether(t *testing.T) {
 	if err := s.QueueThreadWake("tok-wake", true, late); err == nil {
 		t.Fatal("a late wake was queued before there was a late reply")
 	}
-	if stored, err := s.StoreThreadRequestLateReply("tok-wake", []byte("on reflection"), 940); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-wake", []byte("on reflection"), 940, nil); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 	late = item
@@ -1111,7 +1209,7 @@ func TestWithdrawThreadWakeOwesTheAnswerAgainDisarmed(t *testing.T) {
 	if _, err := s.MarkThreadRequestDelivered("tok-back", ThreadWakeInline, 920, false); err != nil {
 		t.Fatalf("MarkThreadRequestDelivered: %v", err)
 	}
-	if stored, err := s.StoreThreadRequestLateReply("tok-back", []byte("on reflection"), 940); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok-back", []byte("on reflection"), 940, nil); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 	if _, err := s.SetThreadRequestNotify("tok-back", true); err != nil {
@@ -1310,7 +1408,7 @@ func TestThreadWakeDeliveryIsConfirmedByItsEcho(t *testing.T) {
 
 	// A late reply after an inline answer: only the late slot is owed a
 	// confirmation.
-	if _, err := s.StoreThreadRequestLateReply("tok-inline", []byte("more"), 1000); err != nil {
+	if _, err := s.StoreThreadRequestLateReply("tok-inline", []byte("more"), 1000, nil); err != nil {
 		t.Fatalf("StoreThreadRequestLateReply: %v", err)
 	}
 	queue("tok-inline", true, "queue:late")
@@ -1352,7 +1450,7 @@ func TestALineageOnlyRowIsNeverGivenBackOrConfirmed(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
 	seedSettledThreadRequest(t, s, "tok", "t-caller", ThreadRequestSpawn, 100, "the answer")
-	if stored, err := s.StoreThreadRequestLateReply("tok", []byte("one more thing"), 300); err != nil || !stored {
+	if stored, err := s.StoreThreadRequestLateReply("tok", []byte("one more thing"), 300, nil); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 	for _, late := range []bool{false, true} {

@@ -180,7 +180,7 @@ func TestThreadRequestChangesAreReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect("settle", ThreadRequestChange{Token: "tok"})
-	if _, err := s.StoreThreadRequestLateReply("tok", []byte("late"), 0); err != nil {
+	if _, err := s.StoreThreadRequestLateReply("tok", []byte("late"), 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	expect("late reply", ThreadRequestChange{Token: "tok"})
