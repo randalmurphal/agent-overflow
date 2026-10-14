@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -148,16 +149,15 @@ func (s *Store) ParkingCommandIDs(threadID, rootID string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: list the commands %s/%s waits on: %w", threadID, rootID, err)
 	}
-	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: scan a command %s/%s waits on: %w", threadID, rootID, err)
+			return nil, errors.Join(fmt.Errorf("store: scan a command %s/%s waits on: %w", threadID, rootID, err), rows.Close())
 		}
 		ids = append(ids, id)
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("store: iterate the commands %s/%s waits on: %w", threadID, rootID, err)
 	}
 	return ids, nil
