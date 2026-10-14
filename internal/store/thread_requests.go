@@ -91,6 +91,13 @@ type ThreadRequest struct {
 	// as that computer reported it. A local target has a row here and is
 	// named from it, so this stays empty for one.
 	TargetThreadTitle string `json:"targetThreadTitle,omitempty"`
+	// TargetProvider is that thread's provider on another computer, as its
+	// computer reported it; empty for a local target, read from its row.
+	TargetProvider string `json:"targetProvider,omitempty"`
+	// NestedOpen is whether the last agent_rows answer for a spawn on
+	// another computer listed open work, which keeps the settled spawn
+	// listed in the Agents segment.
+	NestedOpen bool `json:"-"`
 	// OriginThreadID is the thread an `ask` forked; empty otherwise.
 	OriginThreadID string `json:"originThreadId,omitempty"`
 	// Notify is whether a wake is owed on settlement. Every positive wait
@@ -180,11 +187,12 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     COALESCE(late_delivered_at, 0), COALESCE(expires_at, 0),
     polling, next_check, attempts, issue,
     wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at,
-    COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role`
+    COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
+    target_provider, nested_open`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	var r ThreadRequest
-	var notify, polling, lineageOnly int
+	var notify, polling, lineageOnly, nestedOpen int
 	var answerAgent sql.NullInt64
 	var answerAgentRole string
 	err := row.Scan(
@@ -196,7 +204,9 @@ func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 		&polling, &r.NextCheck, &r.Attempts, &r.Issue,
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
+		&r.TargetProvider, &nestedOpen,
 	)
+	r.NestedOpen = nestedOpen != 0
 	r.AnswerAgent = answerAgentOf(answerAgent.Int64, answerAgentRole)
 	r.AnswerAgentUnrecorded = !answerAgent.Valid
 	r.Notify = notify != 0
@@ -429,16 +439,17 @@ func (s *Store) MarkThreadRequestDelivered(token, how string, at int64, late boo
 // that changes nothing is not reported as a change (OnThreadRequestChanged):
 // the poller restates the target on every visit.
 //
-// `title` names that thread on another computer, where this store has no row
-// to read it from. A local target is named from its own row, so it passes an
-// empty title.
-func (s *Store) SetThreadRequestTarget(token, computerID, threadID, title string) (bool, error) {
+// `title` and `provider` name that thread on another computer, where this
+// store has no row to read them from. A local target is named from its own
+// row, so it passes them empty.
+func (s *Store) SetThreadRequestTarget(token, computerID, threadID, title, provider string) (bool, error) {
 	action := fmt.Sprintf("store: set thread request %s target", token)
 	result, err := s.db.Exec(
 		`UPDATE thread_requests
-		    SET target_computer_id = ?, target_thread_id = ?, target_thread_title = ?, updated_at = ?
-		  WHERE token = ? AND (target_computer_id IS NOT ? OR target_thread_id IS NOT ? OR target_thread_title IS NOT ?)`,
-		computerID, threadID, title, nowMillis(), token, computerID, threadID, title,
+		    SET target_computer_id = ?, target_thread_id = ?, target_thread_title = ?, target_provider = ?, updated_at = ?
+		  WHERE token = ? AND (target_computer_id IS NOT ? OR target_thread_id IS NOT ? OR target_thread_title IS NOT ?
+		    OR target_provider IS NOT ?)`,
+		computerID, threadID, title, provider, nowMillis(), token, computerID, threadID, title, provider,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
@@ -468,6 +479,40 @@ func (s *Store) SetThreadRequestNotify(token string, notify bool) (bool, error) 
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
 	return s.changedThreadRequest(token, result, action)
+}
+
+// SetThreadRequestNestedOpen records whether the last agent_rows answer for
+// a spawn on another computer listed open work. It reports whether the row
+// changed; a lineage-only row is left alone.
+func (s *Store) SetThreadRequestNestedOpen(token string, open bool) (bool, error) {
+	action := fmt.Sprintf("store: set thread request %s nested open", token)
+	result, err := s.db.Exec(
+		`UPDATE thread_requests SET nested_open = ?, updated_at = ?
+		  WHERE token = ? AND nested_open IS NOT ? AND lineage_only = 0`,
+		boolToInt(open), nowMillis(), token, boolToInt(open),
+	)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return s.changedThreadRequest(token, result, action)
+}
+
+// ListNestedOpenRemoteSpawns returns the settled spawns on other computers
+// whose last agent_rows answer listed open work, oldest first: the rows the
+// poller reads agent_rows for again until that work is done.
+func (s *Store) ListNestedOpenRemoteSpawns(limit int) ([]ThreadRequest, error) {
+	if limit < 1 {
+		limit = 32
+	}
+	rows, err := s.reader().Query(
+		`SELECT ` + threadRequestColumns + ` FROM thread_requests
+		  WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
+		    AND target_computer_id <> '' AND lineage_only = 0
+		  ORDER BY settled_at ASC, token ASC LIMIT ` + strconv.Itoa(limit))
+	if err != nil {
+		return nil, fmt.Errorf("store: list nested-open remote spawns: %w", err)
+	}
+	return collectThreadRequests(rows, "store: list nested-open remote spawns")
 }
 
 // SetThreadRequestsNotifyForCaller disarms (or arms) every open request one
@@ -646,13 +691,19 @@ func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset 
 // made that its activity rail lists as agents, oldest first: every spawn,
 // and a send or ask whose answer the thread is still owed a wake for
 // (`notify`) or is parked waiting on (one of `waiting`). Each is open,
-// settled at or after settledSince, or a local spawn whose thread, or a
-// thread that one spawned, still has such a request open: the row the open
-// work nests under. At most limit rows, and whether there were more.
-func (s *Store) ListThreadAgentRequests(callerThreadID string, waiting []string, settledSince int64, limit int) (_ []ThreadRequest, more bool, err error) {
+// settled at or after settledSince, or a spawn something under it is still
+// open in: a local spawn whose thread, or a thread under it through local
+// spawns down to depth levels, has a request open or a remote spawn whose
+// computer last reported open work; or a remote spawn whose computer last
+// reported open work (`nested_open`). That is the row the open work nests
+// under. At most limit rows, and whether there were more.
+func (s *Store) ListThreadAgentRequests(callerThreadID string, waiting []string, settledSince int64, depth, limit int) (_ []ThreadRequest, more bool, err error) {
 	action := "store: list agent requests for " + callerThreadID
 	if limit < 1 {
 		limit = 64
+	}
+	if depth < 1 {
+		depth = 1
 	}
 	if waiting == nil {
 		waiting = []string{}
@@ -661,21 +712,8 @@ func (s *Store) ListThreadAgentRequests(callerThreadID string, waiting []string,
 	if err != nil {
 		return nil, false, fmt.Errorf("%s: encode waiting tokens: %w", action, err)
 	}
-	rows, err := s.reader().Query(
-		`SELECT `+threadRequestColumns+` FROM thread_requests r
-		  WHERE r.caller_thread_id = ? AND r.lineage_only = 0
-		    AND r.kind IN ('spawn','send','ask')
-		    AND (r.kind = 'spawn' OR r.notify = 1 OR r.token IN (SELECT value FROM json_each(?)))
-		    AND (r.settled_at IS NULL OR r.settled_at >= ?
-		      OR (r.kind = 'spawn' AND r.target_computer_id = '' AND (
-		        EXISTS (SELECT 1 FROM thread_requests c
-		                 WHERE c.caller_thread_id = r.target_thread_id AND `+openAgentRequestSQL("c")+`)
-		        OR EXISTS (SELECT 1 FROM thread_requests c CROSS JOIN thread_requests g
-		                    WHERE c.caller_thread_id = r.target_thread_id AND c.kind = 'spawn'
-		                      AND c.target_computer_id = '' AND c.lineage_only = 0
-		                      AND g.caller_thread_id = c.target_thread_id AND `+openAgentRequestSQL("g")+`))))
-		  ORDER BY r.created_at ASC, r.token ASC LIMIT `+strconv.Itoa(limit+1),
-		callerThreadID, string(tokens), settledSince)
+	rows, err := s.reader().Query(threadAgentRequestsSQL+strconv.Itoa(limit+1),
+		callerThreadID, string(tokens), settledSince, depth)
 	if err != nil {
 		return nil, false, fmt.Errorf("%s: %w", action, err)
 	}
@@ -688,6 +726,33 @@ func (s *Store) ListThreadAgentRequests(callerThreadID string, waiting []string,
 	}
 	return out, false, nil
 }
+
+// threadAgentRequestsSQL is ListThreadAgentRequests' read, its LIMIT
+// appended. `sub` walks the caller's local spawns down to ?4 levels, each
+// step probing the queued thread's requests by caller and carrying the
+// path of threads above it; the threads on the path of one with work open
+// in it are the ones a settled spawn into is kept for.
+var threadAgentRequestsSQL = `WITH RECURSIVE
+  sub(thread_id, path, depth) AS (
+    SELECT ?1, json_array(?1), 0
+    UNION
+    SELECT r.target_thread_id, json_insert(sub.path, '$[#]', r.target_thread_id), sub.depth + 1
+      FROM sub CROSS JOIN thread_requests r
+     WHERE r.caller_thread_id = sub.thread_id AND r.kind = 'spawn' AND r.target_computer_id = ''
+       AND r.target_thread_id <> '' AND r.lineage_only = 0 AND sub.depth < ?4),
+  hot(thread_id) AS (
+    SELECT json_each.value FROM sub, json_each(sub.path)
+     WHERE EXISTS (SELECT 1 FROM thread_requests c
+                    WHERE c.caller_thread_id = sub.thread_id AND (` + openAgentRequestSQL("c") + `
+                      OR (c.kind = 'spawn' AND c.target_computer_id <> '' AND c.lineage_only = 0 AND c.nested_open = 1))))
+SELECT ` + threadRequestColumns + ` FROM thread_requests r
+ WHERE r.caller_thread_id = ?1 AND r.lineage_only = 0
+   AND r.kind IN ('spawn','send','ask')
+   AND (r.kind = 'spawn' OR r.notify = 1 OR r.token IN (SELECT value FROM json_each(?2)))
+   AND (r.settled_at IS NULL OR r.settled_at >= ?3
+     OR (r.kind = 'spawn' AND r.target_computer_id = '' AND r.target_thread_id IN (SELECT thread_id FROM hot))
+     OR (r.kind = 'spawn' AND r.target_computer_id <> '' AND r.nested_open = 1))
+ ORDER BY r.created_at ASC, r.token ASC LIMIT `
 
 // openAgentRequestSQL matches an open request the activity rail lists as an
 // agent: a spawn, or a send or ask whose wake is armed.
@@ -831,15 +896,20 @@ type ThreadRequestSchedule struct {
 	Reminder ScheduledMoment
 	Poll     ScheduledMoment
 	Wake     ScheduledMoment
+	// NestedOpen is whether a settled spawn on another computer still has
+	// open work there, which the poller reads agent_rows for at its pace.
+	NestedOpen bool
 }
 
 // NextThreadRequestWork reports when the unattended passes next have work.
 // On most computers nothing is scheduled, and the sweep sleeps on that answer
 // rather than asking three questions a second for the life of the process.
 //
-// One query, three indexed minima, so the answer describes one snapshot.
+// One query, three indexed minima and one probe, so the answer describes
+// one snapshot.
 func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 	var reminder, poll, wake sql.NullInt64
+	var nestedOpen bool
 	if err := s.reader().QueryRow(
 		`SELECT
 		   (SELECT MIN(due_at) FROM thread_requests
@@ -850,14 +920,17 @@ func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 		   (SELECT MIN(wake_next_check) FROM thread_requests
 		     WHERE notify = 1
 		       AND ((settled_at IS NOT NULL AND delivered_at IS NULL)
-		         OR (late_reply IS NOT NULL AND late_delivered_at IS NULL)))`,
-	).Scan(&reminder, &poll, &wake); err != nil {
+		         OR (late_reply IS NOT NULL AND late_delivered_at IS NULL))),
+		   EXISTS (SELECT 1 FROM thread_requests
+		     WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
+		       AND target_computer_id <> '' AND lineage_only = 0)`,
+	).Scan(&reminder, &poll, &wake, &nestedOpen); err != nil {
 		return ThreadRequestSchedule{}, fmt.Errorf("store: read next thread request work: %w", err)
 	}
 	moment := func(value sql.NullInt64) ScheduledMoment {
 		return ScheduledMoment{At: value.Int64, Set: value.Valid}
 	}
-	return ThreadRequestSchedule{Reminder: moment(reminder), Poll: moment(poll), Wake: moment(wake)}, nil
+	return ThreadRequestSchedule{Reminder: moment(reminder), Poll: moment(poll), Wake: moment(wake), NestedOpen: nestedOpen}, nil
 }
 
 // HasOpenThreadRequests reports whether a thread still owns an undelivered
@@ -906,7 +979,8 @@ const spawnLineageSQL = `kind = 'spawn' AND target_computer_id = ''
 // already marked.
 const clearLineagePayloadSQL = `UPDATE thread_requests
 	SET lineage_only = 1, answer = NULL, answer_kind = '', late_reply = NULL, late_reply_at = NULL,
-	    answer_agent = 0, answer_agent_role = '', notify = 0, issue = '', wake_issue = '', expires_at = NULL
+	    answer_agent = 0, answer_agent_role = '', notify = 0, issue = '', wake_issue = '', expires_at = NULL,
+	    nested_open = 0, target_provider = ''
 	WHERE lineage_only = 0`
 
 // DeleteThreadRequestsBefore removes both sides of every request that has

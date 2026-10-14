@@ -298,17 +298,18 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
     'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === child.path, 90_000);
   const grandInterrupted = bench!.waitForEvent<HarnessMockEventData>(
     'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === grand.path, 90_000);
-  // The studio's child is woken with its bench spawn cancelled by the user.
+  // The cascade disarms the child's own spawn there: the person stopped
+  // the child's work, so the child takes no new turn for it.
   const childWoken = studio.waitForEvent<HarnessMockEventData>(
     'harness:mock',
-    (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path
-      && (ev.report.input ?? '').includes(nested.value!.token) && (ev.report.input ?? '').includes('The user stopped it'),
-    90_000);
+    (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path && (ev.report.input ?? '').includes(nested.value!.token),
+    30_000).then(() => true, () => false);
   await childRow.getByTestId('agent-tray-row-stop').click();
-  await expect(page.getByTestId('toast').filter({ hasText: 'Stopped Studio child: its turn, 1 background task and 1 agent of its own.' })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId('toast-message').filter({ hasText: 'Stopped Studio child' }))
+    .toHaveText('Stopped Studio child: its turn, 1 background task and 1 agent of its own.', { timeout: 60_000 });
   await childInterrupted;
   await grandInterrupted;
-  await childWoken;
+  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
 });
 

@@ -28,6 +28,10 @@ export const CHILD = 'Child worker';
 export const GRAND = 'Grand worker';
 export const PEER = 'Peer desk';
 
+// The lead's first answer is longer than the pane, so a wake row after it
+// starts out of view.
+const LEAD_REPORT = ['Started the release work.', ...Array.from({ length: 60 }, (_, i) => `Release step ${i + 1} is queued.`)].join('\n\n');
+
 /** The tool name each provider gives the grandchild's command approval. */
 export function approvalTool(provider: ProviderName): string {
   return provider === 'claude' ? 'Bash' : 'command';
@@ -117,7 +121,7 @@ export async function seedAgentsTree(
           { call: { tool: 'thread_spawn', args: { prompt: 'Build the release.', title: CHILD, project_id: childProject.projectId, provider, notify: true } } },
           { call: { tool: 'thread_send', args: { thread_id: tree.peer, message: 'Check the changelog.', notify: true } } },
           ...(opts.leadHolds ? [...backgroundShellSteps(provider), { gate: 'lead-hold' }] : []),
-        ], text: 'Started the release work.' },
+        ], text: LEAD_REPORT },
         { text: 'Noted.' },
       ],
     }),

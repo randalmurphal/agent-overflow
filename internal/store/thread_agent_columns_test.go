@@ -13,7 +13,7 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	spawn := func(token, caller, computer, target string, at int64) {
 		t.Helper()
 		seedThreadRequest(t, s, token, caller, ThreadRequestSpawn, at)
-		if _, err := s.SetThreadRequestTarget(token, computer, target, ""); err != nil {
+		if _, err := s.SetThreadRequestTarget(token, computer, target, "", ""); err != nil {
 			t.Fatalf("target %s: %v", token, err)
 		}
 	}
@@ -23,7 +23,7 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	spawn("tok-far", "far-spawner", "laptop", "far-child", 300)
 	// A send to a thread is not a spawn of it.
 	seedThreadRequest(t, s, "tok-send", "plain", ThreadRequestSend, 400)
-	if _, err := s.SetThreadRequestTarget("tok-send", "", "plain", ""); err != nil {
+	if _, err := s.SetThreadRequestTarget("tok-send", "", "plain", "", ""); err != nil {
 		t.Fatal(err)
 	}
 

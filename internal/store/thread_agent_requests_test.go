@@ -54,7 +54,7 @@ func TestListThreadAgentRequestsInclusion(t *testing.T) {
 	seedThreadRequest(t, s, "remind", "lead", ThreadRequestRemind, 106)
 	seedAgentRequest(t, s, "other-caller", "peer", ThreadRequestSpawn, "child", false, 107)
 
-	rows, more, err := s.ListThreadAgentRequests("lead", []string{"ask-waiting"}, 4_000, 64)
+	rows, more, err := s.ListThreadAgentRequests("lead", []string{"ask-waiting"}, 4_000, 4, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestListThreadAgentRequestsInclusion(t *testing.T) {
 
 	// The lineage-only rows the retention sweep keeps are not requests.
 	mustExec(t, s.db, `UPDATE thread_requests SET lineage_only = 1 WHERE token = 'spawn-quiet'`)
-	rows, _, err = s.ListThreadAgentRequests("lead", nil, 4_000, 64)
+	rows, _, err = s.ListThreadAgentRequests("lead", nil, 4_000, 4, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestListThreadAgentRequestsKeepsSpawnsWithOpenDescendants(t *testing.T) {
 	settleAgentRequest(t, s, "child-grand", 210)
 	seedAgentRequest(t, s, "grand-great", "grandchild", ThreadRequestSpawn, "great", false, 120)
 
-	rows, _, err := s.ListThreadAgentRequests("lead", nil, 10_000, 64)
+	rows, _, err := s.ListThreadAgentRequests("lead", nil, 10_000, 4, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,12 +99,104 @@ func TestListThreadAgentRequestsKeepsSpawnsWithOpenDescendants(t *testing.T) {
 		t.Fatalf("with a grandchild's spawn open: %v; want [lead-child]", got)
 	}
 	settleAgentRequest(t, s, "grand-great", 300)
-	rows, _, err = s.ListThreadAgentRequests("lead", nil, 10_000, 64)
+	rows, _, err = s.ListThreadAgentRequests("lead", nil, 10_000, 4, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 0 {
 		t.Fatalf("with every descendant done: %v", agentRequestTokens(rows))
+	}
+}
+
+// A settled spawn chain keeps its rows down to the depth bound while work
+// below it is open: open work three spawns down still lists the whole chain
+// at the root, and nothing past the bound keeps it.
+func TestListThreadAgentRequestsKeepsADeepSettledChain(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "child", "grand", "great", "ggreat"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "l-c", "lead", ThreadRequestSpawn, "child", false, 100)
+	settleAgentRequest(t, s, "l-c", 200)
+	seedAgentRequest(t, s, "c-g", "child", ThreadRequestSpawn, "grand", false, 110)
+	settleAgentRequest(t, s, "c-g", 210)
+	seedAgentRequest(t, s, "g-gg", "grand", ThreadRequestSpawn, "great", false, 120)
+	settleAgentRequest(t, s, "g-gg", 220)
+	seedAgentRequest(t, s, "gg-open", "great", ThreadRequestSpawn, "ggreat", false, 130)
+	for caller, want := range map[string][]string{"lead": {"l-c"}, "child": {"c-g"}, "grand": {"g-gg"}, "great": {"gg-open"}} {
+		rows, _, err := s.ListThreadAgentRequests(caller, nil, 10_000, 4, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := agentRequestTokens(rows); !slices.Equal(got, want) {
+			t.Errorf("%s lists %v with gg-open open; want %v", caller, got, want)
+		}
+	}
+	// The open request sits three spawns below the lead: a bound of two
+	// levels does not reach it.
+	if rows, _, err := s.ListThreadAgentRequests("lead", nil, 10_000, 2, 64); err != nil || len(rows) != 0 {
+		t.Errorf("a two-level bound lists %v, %v; want nothing", agentRequestTokens(rows), err)
+	}
+	settleAgentRequest(t, s, "gg-open", 300)
+	if rows, _, err := s.ListThreadAgentRequests("lead", nil, 10_000, 4, 64); err != nil || len(rows) != 0 {
+		t.Errorf("with the chain done the lead lists %v, %v", agentRequestTokens(rows), err)
+	}
+}
+
+// A settled spawn on another computer stays listed past the settled window
+// while that computer last reported open work under it, and leaves once it
+// reports none; a local spawn above it is kept for it too.
+func TestListThreadAgentRequestsKeepsARemoteSpawnWithOpenWork(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "child"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "l-c", "lead", ThreadRequestSpawn, "child", false, 100)
+	settleAgentRequest(t, s, "l-c", 200)
+	if err := s.InsertThreadRequest(ThreadRequest{Token: "remote", CallerThreadID: "child", Kind: ThreadRequestSpawn,
+		TargetThreadID: "remote-child", TargetComputerID: "peer-1", State: ThreadRequestRunning, CreatedAt: 110, UpdatedAt: 110}); err != nil {
+		t.Fatal(err)
+	}
+	settleAgentRequest(t, s, "remote", 210)
+	list := func(caller string) []string {
+		rows, _, err := s.ListThreadAgentRequests(caller, nil, 10_000, 4, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agentRequestTokens(rows)
+	}
+	if got := list("child"); len(got) != 0 {
+		t.Fatalf("with nothing open there the settled remote spawn lists %v", got)
+	}
+	if changed, err := s.SetThreadRequestNestedOpen("remote", true); err != nil || !changed {
+		t.Fatalf("SetThreadRequestNestedOpen = %v, %v", changed, err)
+	}
+	if changed, err := s.SetThreadRequestNestedOpen("remote", true); err != nil || changed {
+		t.Fatalf("setting it again = %v, %v; want no change", changed, err)
+	}
+	if got := list("child"); !slices.Equal(got, []string{"remote"}) {
+		t.Errorf("with open work there the child lists %v", got)
+	}
+	if got := list("lead"); !slices.Equal(got, []string{"l-c"}) {
+		t.Errorf("with open work two levels down the lead lists %v", got)
+	}
+	open, err := s.ListNestedOpenRemoteSpawns(8)
+	if err != nil || len(open) != 1 || open[0].Token != "remote" {
+		t.Fatalf("ListNestedOpenRemoteSpawns = %v, %v", agentRequestTokens(open), err)
+	}
+	if schedule, err := s.NextThreadRequestWork(); err != nil || !schedule.NestedOpen {
+		t.Fatalf("schedule = %+v, %v; want nested open work", schedule, err)
+	}
+	if _, err := s.SetThreadRequestNestedOpen("remote", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := list("lead"); len(got) != 0 {
+		t.Errorf("with the remote work done the lead lists %v", got)
+	}
+	if schedule, err := s.NextThreadRequestWork(); err != nil || schedule.NestedOpen {
+		t.Fatalf("schedule = %+v, %v; want none", schedule, err)
 	}
 }
 
@@ -116,7 +208,7 @@ func TestListThreadAgentRequestsBound(t *testing.T) {
 	for i, token := range []string{"a", "b", "c"} {
 		seedAgentRequest(t, s, token, "lead", ThreadRequestSpawn, "", false, int64(100+i))
 	}
-	rows, more, err := s.ListThreadAgentRequests("lead", nil, 0, 2)
+	rows, more, err := s.ListThreadAgentRequests("lead", nil, 0, 4, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,11 +254,11 @@ func TestThreadRequestChangesAreReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect("an advance that did not apply")
-	if _, err := s.SetThreadRequestTarget("tok", "", "child", ""); err != nil {
+	if _, err := s.SetThreadRequestTarget("tok", "", "child", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	expect("target", ThreadRequestChange{Token: "tok"})
-	if existed, err := s.SetThreadRequestTarget("tok", "", "child", ""); err != nil || !existed {
+	if existed, err := s.SetThreadRequestTarget("tok", "", "child", "", ""); err != nil || !existed {
 		t.Fatalf("restating the target: existed=%v err=%v", existed, err)
 	}
 	expect("restating the target")

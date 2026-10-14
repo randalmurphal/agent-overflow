@@ -5780,8 +5780,9 @@ export class ThreadAgentRow {
     "title": string;
 
     /**
-     * Provider is a local target's provider; a paired computer's thread
-     * carries none.
+     * Provider is the target's provider: a local target's row, or what a
+     * paired computer reported with its acknowledgement or its agent_rows
+     * answer.
      */
     "provider"?: string;
 
@@ -6696,6 +6697,12 @@ export class ThreadPeerRequest {
     "kind"?: string;
     "targetThreadId"?: string;
     "title"?: string;
+
+    /**
+     * Provider is the target thread's provider, for the caller's Agents
+     * row; a computer that does not send it leaves the row without one.
+     */
+    "provider"?: string;
     "state"?: string;
     "answer"?: string;
     "answerKind"?: string;
@@ -6741,10 +6748,10 @@ export class ThreadPeerRequest {
      * Creates a new ThreadPeerRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerRequest {
-        const $$createField14_0 = $$createType113;
+        const $$createField15_0 = $$createType119;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answerAgent" in $$parsedSource) {
-            $$parsedSource["answerAgent"] = $$createField14_0($$parsedSource["answerAgent"]);
+            $$parsedSource["answerAgent"] = $$createField15_0($$parsedSource["answerAgent"]);
         }
         return new ThreadPeerRequest($$parsedSource as Partial<ThreadPeerRequest>);
     }

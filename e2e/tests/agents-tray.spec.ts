@@ -4,16 +4,24 @@
 // Coverage: a spawn appears as a running row with its title and provider; a
 // send with notify appears; the spawn's own spawn nests under it; a row
 // blocked on an approval says so, and runs again once it is answered; a
-// settled row shows its outcome, lingers and leaves; a click opens the
-// target in a pane; a row's Stop cancels the request for the user, keeps
-// the caller's wake armed with the user named, interrupts the spawned
-// child, stops the child's background shell and cascades into the
-// grandchild, whose own caller is woken the same way; Stop All cascades;
+// settled row shows its outcome, and its click lands on the wake item that
+// carried its answer; a click opens the target in a pane; a row's Stop
+// cancels the request for the user, keeps the caller's wake armed with the
+// user named, interrupts the spawned child, stops the child's background
+// shell and cascades into the grandchild, whose request is cancelled with
+// its wake disarmed, so the child takes no new turn; the stopped row
+// lingers and leaves; Stop All cascades;
 // Background's Stop All leaves the rows; the thread's own Stop does not
 // cascade; and an answer held in the caller's queue (its session cannot
 // start) is an incoming row there, named by its sender and kind, whose Stop
-// withdraws it and leaves the answer owed with its wake disarmed. The cross-computer rows are
-// thread-tools-paired.spec.ts's.
+// withdraws it and leaves the answer owed with its wake disarmed. The
+// cross-computer rows are thread-tools-paired.spec.ts's.
+//
+// A Codex background terminal's row is not checked to leave the tray after
+// a Stop: the mock answers thread/backgroundTerminals/terminate and clean
+// with -32601 by policy (cmd/ao-mockprovider/AGENTS.md), these specs script
+// `{terminated:true}` for them, and no captured frame says what the CLI
+// writes for the terminal after the kill, so the mock writes none.
 import { test, expect, type SeedResult } from './fixtures.js';
 import { rename } from 'node:fs/promises';
 import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
@@ -72,7 +80,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await awaitGate(harness, 'grand-hold', tree.grandPath);
     await expect(grand.getByTestId('agent-tray-row-state')).toHaveText('running');
 
-    // The peer answers: its row shows the outcome, lingers, then leaves.
+    // The peer answers: its row shows the outcome, and once the lead took
+    // the answer in, its click leaves the tray and lands on the wake item.
     const peerHold = await awaitGate(harness, 'peer-hold', tree.peerPath);
     await advanceGate(harness, peerHold.mockId, 'peer-hold');
     await expect(send).toHaveAttribute('data-settled', 'true', { timeout: 30_000 });
@@ -80,9 +89,18 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(send.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', provider);
     await capture(page, `agents-${provider}-settled.png`, agentsBody(page));
     await expect(page.getByTestId('activity-rail-agents-count').filter({ visible: true })).toHaveText('2');
-    const settledAt = Date.now();
-    await expect(send).toHaveCount(0, { timeout: 20_000 });
-    expect(Date.now() - settledAt, 'the settled row lingered').toBeGreaterThan(5_000);
+    const sendOpen = send.getByTestId('agent-tray-row-open');
+    await expect(sendOpen).toHaveAttribute('aria-label', `Show the answer from ${PEER}`, { timeout: 30_000 });
+    const listing = await harness.rpc<{ rows: { token: string; wakeItemId?: string }[] }>('ListThreadAgentRows', tree.lead);
+    const wakeItemId = listing.rows.find((row) => row.token === started.sendToken)?.wakeItemId;
+    expect(wakeItemId, 'the settled send names its wake item').toBeTruthy();
+    const timeline = page.getByTestId('message-timeline-scroll').filter({ visible: true }).first();
+    const wakeItem = timeline.locator(`[data-item-id="${wakeItemId}"]`);
+    await timeline.evaluate((el) => el.scrollTo({ top: 0 }));
+    await expect(wakeItem).not.toBeInViewport();
+    await sendOpen.click();
+    await expect(wakeItem).toBeInViewport({ timeout: 10_000 });
+    await expect(send).toHaveCount(0);
 
     // A click opens the child in a pane.
     await child.getByTestId('agent-tray-row-open').click();
@@ -94,32 +112,39 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect.poll(async () => (await harness.rpc<{ status: string }[]>('ListLiveBackgroundTasks', started.child))
       .filter((item) => item.status === 'running').length, { timeout: 30_000 }).toBe(1);
 
-    // Stop on the child's row: the request is cancelled for the user, the
-    // child's turn is interrupted, its shell stopped, and the grandchild's
-    // request cancelled and its turn interrupted; each caller is woken with
-    // the user named.
+    // Stop on the child's row: the request is cancelled for the user and
+    // the lead woken with the user named; the child's turn is interrupted,
+    // its shell stopped, and the grandchild's request cancelled with its
+    // wake disarmed and its turn interrupted, so the child, whose work the
+    // person stopped, takes no new turn for it.
     const childInterrupted = mockInterrupt(harness, tree.childPath);
     const grandInterrupted = mockInterrupt(harness, tree.grandPath);
     const leadWoken = mockInput(harness, tree.leadPath, [started.childToken, USER_STOP]);
-    const childWoken = mockInput(harness, tree.childPath, [started.grandToken, USER_STOP]);
+    const childWoken = mockInput(harness, tree.childPath, [started.grandToken], 20_000).then(() => true, () => false);
     await child.getByTestId('agent-tray-row-stop').click();
-    await expect(page.getByTestId('toast').filter({ hasText: `Stopped ${CHILD}: its turn, 1 background task and 1 agent of its own.` })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('toast-message').filter({ hasText: `Stopped ${CHILD}` }))
+      .toHaveText(`Stopped ${CHILD}: its turn, 1 background task and 1 agent of its own.`, { timeout: 30_000 });
     await childInterrupted;
     await grandInterrupted;
     await leadWoken;
-    await childWoken;
-    for (const token of [started.childToken, started.grandToken]) {
-      const row = ledgerRow(harness, token)!;
-      expect(row.state, token).toBe('cancelled');
-      expect(row.answer, token).toContain(USER_STOP);
-      expect(row.notify, `${token} keeps its wake armed`).toBe(1);
-    }
+    const lead = ledgerRow(harness, started.childToken)!;
+    expect(lead.state).toBe('cancelled');
+    expect(lead.answer).toContain(USER_STOP);
+    expect(lead.notify, 'the pressed row keeps its wake armed').toBe(1);
+    const nested = ledgerRow(harness, started.grandToken)!;
+    expect(nested.state).toBe('cancelled');
+    expect(nested.answer).toContain(USER_STOP);
+    expect(nested.notify, 'the cascade disarms the nested wake').toBe(0);
+    expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
     if (provider === 'claude') {
       await expect.poll(async () => (await harness.rpc<{ status: string }[]>('ListLiveBackgroundTasks', started.child))
         .filter((item) => item.status === 'running').length, { timeout: 30_000 }).toBe(0);
     }
+    // The stopped row lingers, then leaves.
     await expect(child.getByTestId('agent-tray-row-state')).toHaveText('stopped');
+    const settledAt = Date.now();
     await expect(agentsBody(page).getByTestId('agent-tray-row')).toHaveCount(0, { timeout: 30_000 });
+    expect(Date.now() - settledAt, 'the settled row lingered').toBeGreaterThan(5_000);
     await expect(page.getByTestId('activity-rail-agents-toggle')).toHaveCount(0);
   });
 
@@ -160,13 +185,16 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const childInterrupted = mockInterrupt(harness, tree.childPath);
     const grandInterrupted = mockInterrupt(harness, tree.grandPath);
     await agentsBody(page).getByTestId('activity-rail-agents-stop-all').click();
-    await expect(page.getByTestId('toast').filter({ hasText: 'Stopped 2 agents (2 turns, 1 background task and 1 agent of its own).' })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('toast-message').filter({ hasText: 'Stopped 2 agents' }))
+      .toHaveText('Stopped 2 agents (2 turns, 1 background task and 1 agent of its own).', { timeout: 30_000 });
     await childInterrupted;
     await grandInterrupted;
     for (const token of [started.childToken, started.grandToken, started.sendToken]) {
       const row = ledgerRow(harness, token)!;
       expect(row.state, token).toBe('cancelled');
       expect(row.answer, token).toContain(USER_STOP);
+      // The lead's own rows tell it; the child is not woken for its spawn.
+      expect(row.notify, token).toBe(token === started.grandToken ? 0 : 1);
     }
     await expect(agentsBody(page).getByTestId('agent-tray-row')).toHaveCount(0, { timeout: 30_000 });
   });

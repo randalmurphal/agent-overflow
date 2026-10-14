@@ -10,7 +10,9 @@
 // A settled row stays AGENT_ROW_SETTLED_LINGER_MS from when this pane first
 // saw it settled, then leaves; the thread's wake item is the durable record.
 // Clicking it dismisses it early. A settled row with an open row nested under
-// it stays while that row does.
+// it stays while that row does. Both are kept per thread for the last
+// REMEMBERED_THREADS threads the pane showed, so a row that left does not
+// come back when the pane returns to its thread.
 //
 // It also lists the incoming messages: what other threads' agents, wakes
 // and workers queued for this thread and still held there, read from the
@@ -40,6 +42,14 @@ import { AGENT_ROW_SETTLED_LINGER_MS } from './activityRailBackground.svelte';
 
 const REFRESH_DELAY_MS = 100;
 const REFRESH_MAX_WAIT_MS = 400;
+// Threads whose settled rows' first sight and dismissals the pane keeps
+// after it moves to another thread; the least recently shown goes first.
+const REMEMBERED_THREADS = 64;
+
+interface SettledMemory {
+  readonly seen: ReadonlyMap<string, number>;
+  readonly dismissed: ReadonlySet<string>;
+}
 
 /** A message queued for the thread by an agent or a wake, with its kind. */
 export interface IncomingAgentMessage {
@@ -82,6 +92,19 @@ export function createAgentController(
   // The threads whose frames can change this list; read by the frame
   // filter, not rendered.
   let callers = new Set<string>();
+  // The other threads' settledSeen and dismissed, in least recently shown
+  // order, and the thread the state above is for.
+  const remembered = new Map<string, SettledMemory>();
+  let shownFor: string | null = null;
+
+  function remember(id: string): void {
+    remembered.delete(id);
+    remembered.set(id, { seen: settledSeen, dismissed });
+    if (remembered.size > REMEMBERED_THREADS) {
+      const oldest = remembered.keys().next();
+      if (!oldest.done) remembered.delete(oldest.value);
+    }
+  }
 
   // A draft pane's placeholder thread exists on no computer.
   const threadId = $derived.by(() => {
@@ -135,9 +158,16 @@ export function createAgentController(
   $effect(() => {
     const id = threadId;
     untrack(() => {
-      settledSeen = new Map();
-      dismissed = new Set();
-      replace(id, [], false);
+      if (shownFor) remember(shownFor);
+      const kept = id ? remembered.get(id) : undefined;
+      if (id) remembered.delete(id);
+      shownFor = id;
+      settledSeen = kept?.seen ?? new Map();
+      dismissed = kept?.dismissed ?? new Set();
+      // Not replace(): an empty list would forget what kept holds.
+      listed = [];
+      hidden = false;
+      callers = new Set();
       refresh.reset();
       refresh.request({ immediate: true });
     });

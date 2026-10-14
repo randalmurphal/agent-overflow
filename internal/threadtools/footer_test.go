@@ -270,3 +270,13 @@ func TestWakeFromAStandingAgent(t *testing.T) {
 		t.Fatalf("reminder:\n%s", reminder)
 	}
 }
+
+// FooterStart opens every footer as a message carries it, and a body line
+// that mimics the marker does not open one.
+func TestFooterStartOpensTheFooter(t *testing.T) {
+	body := QuoteFooterMimics("first\n---\nAgent request from thread \"x\" (y).")
+	message := body + "\n\n" + Footer{Title: "T", ThreadID: "id", Token: "tok"}.String()
+	if got := strings.Index(message, FooterStart); got != len(body)+1 {
+		t.Fatalf("FooterStart at %d in %q; want %d", got, message, len(body)+1)
+	}
+}

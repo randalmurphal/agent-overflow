@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -107,6 +108,32 @@ func TestThreadAgentRowsListAndNestBySpawn(t *testing.T) {
 	// The child lists its own spawn on its own, unnested.
 	if got := agentRowTokens(f.agentRows(t, child.ThreadID).Rows); !slices.Equal(got, []string{grand.Token}) {
 		t.Fatalf("the child's own rows = %v", got)
+	}
+}
+
+// A target whose last message is the request it was sent shows that
+// request's text, not the footer the app appended to it, however long the
+// footer is.
+func TestThreadAgentRowsShowTheLastAskWithoutItsFooter(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	target := f.plainThread(t)
+	if err := f.app.store.InsertTurn(store.Turn{TurnID: "ask", ThreadID: target.ID, TurnIndex: 0, StartedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	footer := threadtools.Footer{Title: "Lead", ThreadID: f.caller.ID, Token: "row", AnswerRequested: true,
+		SenderReachable: true, UserMessage: strings.Repeat("why ", 100)}
+	if err := f.app.store.InsertItem(store.Item{
+		ID: "ask-row", ThreadID: target.ID, Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "Rebuild the index.\n\n" + footer.String(), CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.seedAgentRow(t, "row", f.caller.ID, store.ThreadRequestSpawn, target.ID, true)
+
+	rows := f.agentRows(t, f.caller.ID).Rows
+	if len(rows) != 1 || rows[0].LastMessage != "Rebuild the index." || rows[0].LastMessageRole != "user" {
+		t.Fatalf("rows = %+v; want the ask without its footer", rows)
 	}
 }
 
@@ -319,8 +346,85 @@ func TestThreadAgentRowsStopAllCascades(t *testing.T) {
 		stops[0].Nested != 1 || len(stops[0].Failures) != 0 {
 		t.Fatalf("stops = %+v; want the child stopped with its one nested agent", stops)
 	}
-	f.awaitRequestState(t, child.Token, store.ThreadRequestCancelled)
-	f.awaitRequestState(t, grand.Token, store.ThreadRequestCancelled)
+	// The pressed row's caller is told; the child, whose agent the Stop
+	// also stopped, is not woken for its own spawn.
+	if row := f.awaitRequestState(t, child.Token, store.ThreadRequestCancelled); !row.Notify {
+		t.Fatal("the pressed row's wake was disarmed")
+	}
+	if row := f.awaitRequestState(t, grand.Token, store.ThreadRequestCancelled); row.Notify {
+		t.Fatal("the cascade left the child's wake armed: the child would take a new turn")
+	}
+}
+
+// Stop All reaches open work three settled spawns down, which the pane
+// lists under the chain that leads to it.
+func TestThreadAgentRowsStopAllReachesDeepOpenWork(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "working")
+	chain := []string{f.caller.ID}
+	for range 3 {
+		chain = append(chain, f.plainThread(t).ID)
+	}
+	long := time.Now().Add(-time.Hour).UnixMilli()
+	tokens := []string{"lead-child", "child-grand", "grand-great"}
+	for index, token := range tokens {
+		f.seedAgentRow(t, token, chain[index], store.ThreadRequestSpawn, chain[index+1], false)
+		if settled, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+			State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: long,
+		}); err != nil || !settled {
+			t.Fatalf("settle %s: %v %v", token, settled, err)
+		}
+	}
+	open, err := f.adapter().Spawn(t.Context(), f.targetIdentity(t, chain[3]), threadtools.SpawnCall{Prompt: "keep going", Notify: true})
+	if err != nil {
+		t.Fatalf("deep Spawn: %v", err)
+	}
+	f.awaitRequestState(t, open.Token, store.ThreadRequestRunning)
+	if got, want := agentRowTokens(f.agentRows(t, f.caller.ID).Rows), append(tokens, open.Token); !slices.Equal(got, want) {
+		t.Fatalf("rows %v; want the chain to the open request %v", got, want)
+	}
+
+	stops, err := f.app.StopThreadAgentRows(t.Context(), f.caller.ID)
+	if err != nil || len(stops) != 1 || stops[0].Nested != 1 || len(stops[0].Failures) != 0 {
+		t.Fatalf("StopThreadAgentRows = %+v, %v; want the chain's one open agent stopped", stops, err)
+	}
+	if row := f.awaitRequestState(t, open.Token, store.ThreadRequestCancelled); row.Notify {
+		t.Fatal("the cascade left the deep request's wake armed")
+	}
+}
+
+// A settled row whose answer the caller's provider took in names the
+// timeline row that carried it, which the pane opens.
+func TestThreadAgentRowsNameTheWakeThatDeliveredTheAnswer(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	token := owedWakeSeeds()[0].seed(t, f)
+	f.app.deliverThreadWake(token, false)
+	f.app.waitAgentNoticeWork()
+	envelope := dispatchUnconfirmed(t, f)
+	listed := func() ThreadAgentRow {
+		row, ok := agentRowByToken(f.agentRows(t, f.caller.ID).Rows, token)
+		if !ok {
+			t.Fatalf("the settled send is not listed")
+		}
+		return row
+	}
+	if row := listed(); row.WakeItemID != "" {
+		t.Fatalf("an unconfirmed wake is named: %q", row.WakeItemID)
+	}
+	wireID, _ := envelope["uuid"].(string)
+	text, _ := envelopeText(t, envelope)
+	meta, _ := json.Marshal(map[string]any{"provider_item_id": wireID})
+	if err := f.app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: f.caller.ID, Content: text, Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	if row, wake := listed(), f.wakeRow(t, token); row.WakeItemID != wake.ID {
+		t.Fatalf("WakeItemID = %q; want the wake row %q", row.WakeItemID, wake.ID)
+	}
 }
 
 // Every request transition reaches the caller's pane as a frame with the row
@@ -413,5 +517,40 @@ func TestThreadAgentBlockedOnNamesTheToolOnce(t *testing.T) {
 		if on, detail, _ := threadAgentBlockedOn(snapshot); on != "approval" || detail != tc.want {
 			t.Errorf("title %q, description %q: %s %q, want approval %q", tc.title, tc.description, on, detail, tc.want)
 		}
+	}
+}
+
+// A row's line is bounded before its whitespace is folded: a streamed
+// summary of any length costs what a short one does.
+//
+// Serial: it measures the process's allocations.
+func TestClipLineBoundsItsWork(t *testing.T) {
+	huge := strings.Repeat("word  ", 1<<18)
+	line := clipLine(huge)
+	if utf8.RuneCountInString(line) != threadAgentLineMax+1 || !strings.HasSuffix(line, "…") {
+		t.Fatalf("clipped to %d runes: %q", utf8.RuneCountInString(line), line[:40])
+	}
+	result := testing.Benchmark(func(b *testing.B) {
+		for range b.N {
+			clipLine(huge)
+		}
+	})
+	if bytes := result.AllocedBytesPerOp(); bytes > 32<<10 {
+		t.Fatalf("clipping a %d-byte summary allocated %d bytes", len(huge), bytes)
+	}
+	if got := clipLine(strings.Repeat("é", threadAgentLineMax*utf8.UTFMax*2)); !utf8.ValidString(got) {
+		t.Fatal("the byte cut split a rune")
+	}
+}
+
+// A row of a thread no request runs on costs nothing: the running check
+// comes before the line is read.
+//
+// Serial: it measures the process's allocations.
+func TestThreadAgentActivityIgnoresThreadsNoRequestRuns(t *testing.T) {
+	a := &App{}
+	item := store.Item{Kind: "tool_call", Summary: strings.Repeat("output ", 4096)}
+	if allocs := testing.AllocsPerRun(20, func() { a.noteThreadAgentActivity("idle-thread", item) }); allocs != 0 {
+		t.Fatalf("a row of a thread nothing runs on allocated %v times", allocs)
 	}
 }

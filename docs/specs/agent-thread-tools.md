@@ -1071,10 +1071,13 @@ there, directly or through that computer's own spawn lineage:
 to the nesting depth left, so the caller nests them under its spawn named
 by their computer, and `agent_stop` over `ThreadToolCall` runs a Stop's
 cascade there, for the whole thread (its Backgrounded items, its turn and
-its own rows) or for one nested row by token. A computer that predates
-them answers that they are not thread tools calls; the caller then stops
-the request and the turn alone and says so on the row and in the Stop's
-report.
+its own rows) or for one nested row by token. A request inside that
+lineage is cancelled with its wake disarmed. A forwarded spawn, send or
+ask acknowledges with the target thread's provider beside its title, so
+the caller's row shows it. A computer that predates them answers that
+they are not thread tools calls; the caller then stops the request and
+the turn alone, records it as the user's stop, and says so on the row
+and in the Stop's report.
 
 Errors follow the remote-commands shape: stable codes, prose that names
 the operation, the computer and the thread with the ids beside the

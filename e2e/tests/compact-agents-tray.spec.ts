@@ -67,7 +67,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // A tap on Stop cascades into the child's work.
     const childInterrupted = mockInterrupt(harness, tree.childPath);
     await child.getByTestId('agent-tray-row-stop').tap();
-    await expect(page.getByTestId('toast').filter({ hasText: `Stopped ${CHILD}: its turn, 1 background task and 1 agent of its own.` })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('toast-message').filter({ hasText: `Stopped ${CHILD}` }))
+      .toHaveText(`Stopped ${CHILD}: its turn, 1 background task and 1 agent of its own.`, { timeout: 30_000 });
     await childInterrupted;
     expect(ledgerRow(harness, started.childToken)!.state).toBe('cancelled');
     expect(ledgerRow(harness, started.grandToken)!.state).toBe('cancelled');

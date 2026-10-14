@@ -205,6 +205,9 @@ type App struct {
 	// threadAgentEmits coalesces the Agents rows' change frames
 	// (app_thread_agent_rows.go).
 	threadAgentEmits threadAgentEmits
+	// threadAgentPeers is the last agent_rows answer for each spawn on a
+	// paired computer (app_thread_agent_rows_remote.go).
+	threadAgentPeers threadAgentPeerCache
 	// threadRequestsWG joins the request sweep goroutine at shutdown, the
 	// way remoteWatchWG joins the remote completion watcher.
 	threadRequestsWG sync.WaitGroup

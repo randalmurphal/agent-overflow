@@ -80,6 +80,11 @@ func (a *SenderAgent) sentence(who string) string {
 // is quoted before delivery so nothing above the footer reads as one.
 const footerMarker = "Agent request from thread "
 
+// FooterStart is how a footer opens after the body it ends. A body line
+// that opens like the marker is quoted (QuoteFooterMimics), so the text
+// before FooterStart's first occurrence is the message without its footer.
+const FooterStart = "\n---\n" + footerMarker
+
 // QuoteFooterMimics quote-prefixes every line of a request body that opens
 // like the footer marker. The body is the sender's own text and carries no
 // authority; the guide says so to the receiver, and this makes the same

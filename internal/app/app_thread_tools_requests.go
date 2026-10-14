@@ -771,7 +771,14 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 		report.Effect = threadtools.EffectNothing
 	}
 	if reply.Request != nil {
-		if err := t.app.collectThreadPeerReply(row.Token, row.TargetComputerID, *reply.Request); err != nil {
+		settlement := *reply.Request
+		// A person stopped it: the source says so whatever the destination
+		// wrote, since a computer that predates the user Stop words the
+		// cancel as the sender's.
+		if userStop && settlement.State == store.ThreadReceiptCancelled {
+			settlement.Answer = threadRequestUserStop
+		}
+		if err := t.app.collectThreadPeerReply(row.Token, row.TargetComputerID, settlement); err != nil {
 			return threadtools.CancelReport{}, err
 		}
 	}

@@ -92,6 +92,43 @@ describe('agents controller', () => {
     expect(controller.rows.map((r) => r.token)).toEqual(['child']);
   });
 
+  it('keeps a settled row out when the pane returns to its thread, for the last 64 threads it showed', async () => {
+    vi.useFakeTimers();
+    await buildPane();
+    const done = row('done', { callerThreadId: 'thread-a', state: 'finished', settledAt: Date.now() });
+    const clicked = row('clicked', { callerThreadId: 'thread-a', state: 'replied', settledAt: Date.now() });
+    setBindingMock('ListThreadAgentRows', async (id: string) => ({ rows: id === 'thread-a' ? [done, clicked] : [], hidden: false }));
+    stopEvents = setupEventListeners();
+    const current = $state({ id: 'thread-a' });
+    const clock = $state({ now: Date.now() });
+    let controller!: AgentController;
+    release = $effect.root(() => {
+      controller = createAgentController(() => ({ thread: { id: current.id }, hasDraftPlaceholder: false }) as never, () => clock.now);
+      return controller.mount();
+    });
+    const show = async (id: string) => {
+      noteThread(id, '', 2);
+      current.id = id;
+      await vi.advanceTimersByTimeAsync(500);
+      clock.now = Date.now();
+    };
+    await show('thread-a');
+    controller.dismiss('clicked');
+    expect(controller.rows.map((r) => r.token)).toEqual(['done']);
+    await vi.advanceTimersByTimeAsync(AGENT_ROW_SETTLED_LINGER_MS);
+    clock.now = Date.now();
+    expect(controller.rows).toEqual([]);
+
+    await show('thread-b');
+    await show('thread-a');
+    expect(controller.rows.map((r) => r.token), 'a row came back after its linger or its click').toEqual([]);
+
+    // Past the bound the thread is forgotten, and its rows linger afresh.
+    for (let index = 0; index < 64; index++) await show(`thread-${index}`);
+    await show('thread-a');
+    expect(controller.rows.map((r) => r.token)).toEqual(['done', 'clicked']);
+  });
+
   it('keeps a settled row while a row nested under it is shown', async () => {
     const { controller, clock } = await mountAgents([
       row('child', { state: 'finished', settledAt: 1 }),

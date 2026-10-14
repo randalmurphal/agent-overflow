@@ -391,7 +391,7 @@ func TestListThreadLastMessagesReadsEachThreadsLatestTurnInOneStatement(t *testi
 	}
 
 	before := s.ReadCount()
-	got, err := s.ListThreadLastMessages(append(threads, "last-message-draft", "last-message-open", "no-such-thread"))
+	got, err := s.ListThreadLastMessages(append(threads, "last-message-draft", "last-message-open", "no-such-thread"), "")
 	if err != nil {
 		t.Fatalf("ListThreadLastMessages: %v", err)
 	}

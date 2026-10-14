@@ -179,21 +179,17 @@ func TestWakeNowFiresAWatchThroughTheSweep(t *testing.T) {
 	if err := a.WakeThreadWakeNow(context.Background(), thread.ID, store.AgentWakeWatch, watch.ID); err != nil {
 		t.Fatalf("wake now: %v", err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	var row store.AgentWake
-	for {
-		var err error
-		row, _, err = a.store.GetAgentWake(watch.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if row.State == store.AgentWakeArmed && row.LastRunAt != 0 && row.LastOutcome != "" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the run did not finish: %+v", row)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The finish's frame follows its write: wait for the frame, so the
+	// frames counted below are all of them.
+	waitUntil(t, 10*time.Second, func() bool {
+		changes := wakeChanges(rec, thread.ID)[before:]
+		last := len(changes) - 1
+		return last >= 0 && changes[last].Row != nil && changes[last].Row.State == store.AgentWakeArmed &&
+			changes[last].Row.LastRunAt != 0 && changes[last].Row.LastOutcome != ""
+	})
+	row, _, err := a.store.GetAgentWake(watch.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if !strings.HasPrefix(row.LastOutcome, agentWakeOutcomeNoOutput) || row.LastStderr != "quiet: nothing new\n" || row.NextAt != next {
 		t.Fatalf("row after wake now = %+v; want a quiet run, its stderr kept and the schedule unchanged", row)

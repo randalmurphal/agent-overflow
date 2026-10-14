@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -76,8 +78,9 @@ type ThreadAgentRow struct {
 	ComputerID string `json:"computerId,omitempty"`
 	Computer   string `json:"computer,omitempty"`
 	Title      string `json:"title"`
-	// Provider is a local target's provider; a paired computer's thread
-	// carries none.
+	// Provider is the target's provider: a local target's row, or what a
+	// paired computer reported with its acknowledgement or its agent_rows
+	// answer.
 	Provider string `json:"provider,omitempty"`
 	// State is the request state thread_status reports: running, blocked,
 	// replied, finished, errored, cancelled, interrupted, expired, refused,
@@ -169,16 +172,32 @@ type ThreadAgentStop struct {
 
 // ListThreadAgentRows lists the requests a thread made of other threads that
 // it is waiting on, with their nested rows, those a paired computer holds
-// included.
+// included. It reads this computer's ledger only: a spawn on a paired
+// computer nests that computer's last answer, asked again in the
+// background, and a changed answer arrives as a change frame.
 //
 //ao:scope threads:read
 func (a *App) ListThreadAgentRows(ctx context.Context, threadID string) (ThreadAgentRows, error) {
 	if _, err := a.store.GetThread(threadID); err != nil {
 		return ThreadAgentRows{}, fmt.Errorf("read the thread: %w", err)
 	}
-	listing, _, err := a.threadAgentTreeDepth(ctx, threadID, threadAgentRowDepth)
+	listing, _, err := a.threadAgentTreeDepth(ctx, threadID, threadAgentRowDepth, threadAgentPeersCached)
 	return listing, err
 }
+
+// threadAgentPeerMode is how a listing reads a spawn's rows on a paired
+// computer.
+type threadAgentPeerMode int
+
+const (
+	// threadAgentPeersCached nests the last answer and asks again in the
+	// background: a pane's read.
+	threadAgentPeersCached threadAgentPeerMode = iota
+	// threadAgentPeersLive asks each computer now, concurrently: an
+	// agent_rows answer for another computer, which asked off its pane's
+	// path.
+	threadAgentPeersLive
+)
 
 // threadAgentEntry is one listed row and what stops it: the request here,
 // or, for a row a paired computer listed, that computer, the thread here
@@ -191,17 +210,22 @@ type threadAgentEntry struct {
 	peerRoot   string
 }
 
-// threadAgentTree reads the listing and what stops each row.
-func (a *App) threadAgentTree(ctx context.Context, threadID string) (ThreadAgentRows, []threadAgentEntry, error) {
-	return a.threadAgentTreeDepth(ctx, threadID, threadAgentRowDepth)
+// threadAgentRemoteSlot is a spawn on a paired computer in a listing: its
+// row's index and the depth its nested rows start at.
+type threadAgentRemoteSlot struct {
+	index int
+	depth int
+	spawn store.ThreadRequest
 }
 
-// threadAgentTreeDepth is threadAgentTree nested at most maxDepth levels: a
-// paired computer listing for a caller's nested row has fewer left.
-func (a *App) threadAgentTreeDepth(ctx context.Context, threadID string, maxDepth int) (ThreadAgentRows, []threadAgentEntry, error) {
+// threadAgentTreeDepth reads a listing nested at most maxDepth levels, and
+// what stops each row: a paired computer listing for a caller's nested row
+// has fewer left.
+func (a *App) threadAgentTreeDepth(ctx context.Context, threadID string, maxDepth int, peers threadAgentPeerMode) (ThreadAgentRows, []threadAgentEntry, error) {
 	view := newThreadAgentView(a)
 	out := ThreadAgentRows{Rows: []ThreadAgentRow{}}
 	var entries []threadAgentEntry
+	var remote []threadAgentRemoteSlot
 	visited := map[string]bool{threadID: true}
 	var walk func(caller string, depth int) error
 	walk = func(caller string, depth int) error {
@@ -210,7 +234,7 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, threadID string, maxDept
 			out.Hidden = true
 			return nil
 		}
-		rows, more, err := a.store.ListThreadAgentRequests(caller, view.waiting, view.since, budget)
+		rows, more, err := a.store.ListThreadAgentRequests(caller, view.waiting, view.since, threadAgentRowDepth, budget)
 		if err != nil {
 			return err
 		}
@@ -229,7 +253,7 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, threadID string, maxDept
 			}
 			if row.TargetComputerID != "" {
 				if depth+1 < maxDepth {
-					a.nestPeerAgentRows(ctx, &out, &entries, index, row, depth+1, maxDepth)
+					remote = append(remote, threadAgentRemoteSlot{index: index, depth: depth + 1, spawn: row})
 				}
 				continue
 			}
@@ -238,7 +262,7 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, threadID string, maxDept
 			}
 			visited[child] = true
 			if depth+1 >= maxDepth {
-				nested, _, err := a.store.ListThreadAgentRequests(child, view.waiting, view.since, 1)
+				nested, _, err := a.store.ListThreadAgentRequests(child, view.waiting, view.since, threadAgentRowDepth, 1)
 				if err != nil {
 					return err
 				}
@@ -255,44 +279,100 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, threadID string, maxDept
 		return ThreadAgentRows{}, nil, err
 	}
 	view.attachLastMessages(out.Rows)
+	answers := a.remoteAgentAnswers(ctx, remote, maxDepth, peers)
+	// Spliced from the last, so each slot's index still names its row.
+	for i := len(remote) - 1; i >= 0; i-- {
+		rows, rowEntries := a.nestPeerAgentRows(&out.Rows[remote[i].index], remote[i], answers[i], maxDepth)
+		at := remote[i].index + 1
+		out.Rows = append(out.Rows[:at], append(rows, out.Rows[at:]...)...)
+		entries = append(entries[:at], append(rowEntries, entries[at:]...)...)
+		out.Hidden = out.Hidden || answers[i].listing.Hidden
+	}
+	if len(out.Rows) > threadAgentRowLimit {
+		out.Rows, entries, out.Hidden = out.Rows[:threadAgentRowLimit], entries[:threadAgentRowLimit], true
+	}
 	return out, entries, nil
 }
 
-// nestPeerAgentRows nests the rows a paired computer lists for the thread a
-// spawn made there under that spawn's row, named by that computer. A
-// computer that cannot answer leaves the reason on the row.
-func (a *App) nestPeerAgentRows(ctx context.Context, out *ThreadAgentRows, entries *[]threadAgentEntry, index int, spawn store.ThreadRequest, depth, maxDepth int) {
-	listing, err := a.peerThreadAgentRows(ctx, spawn.TargetComputerID, spawn.CallerThreadID, spawn.TargetThreadID, maxDepth-depth)
-	if err != nil {
-		out.Rows[index].NestedUnavailable = err.Error()
-		return
+// remoteAgentAnswers reads each remote spawn's rows: the last answer, with
+// another asked in the background, or every computer now, concurrently.
+func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemoteSlot, maxDepth int, peers threadAgentPeerMode) []threadAgentPeerAnswer {
+	answers := make([]threadAgentPeerAnswer, len(remote))
+	if peers == threadAgentPeersLive {
+		runBounded(len(remote), threadAgentPeerListsInFlight, func(i int) {
+			call, cancel := context.WithTimeout(ctx, threadAgentPeerServeTimeout)
+			defer cancel()
+			listing, err := a.peerThreadAgentRows(call, remote[i].spawn.TargetComputerID, remote[i].spawn.CallerThreadID,
+				remote[i].spawn.TargetThreadID, maxDepth-remote[i].depth)
+			a.notePeerAgentRows(remote[i].spawn, listing, err)
+			answers[i] = threadAgentPeerAnswer{listing: listing, err: err}
+		})
+		return answers
 	}
-	if out.Rows[index].Provider == "" {
-		out.Rows[index].Provider = listing.ThreadProvider
-	}
-	peerName := out.Rows[index].Computer
-	self, _ := a.backendIdentity()
-	for _, row := range listing.Rows {
-		if len(out.Rows) >= threadAgentRowLimit {
-			out.Hidden = true
-			return
+	for i, slot := range remote {
+		if answer, ok := a.cachedPeerAgentRows(slot.spawn); ok {
+			answers[i] = answer
 		}
-		row.Depth += depth
-		row.OwnerComputerID = spawn.TargetComputerID
+		a.refreshPeerAgentRows(slot.spawn, threadAgentPeerRefreshEvery)
+	}
+	return answers
+}
+
+// nestPeerAgentRows renders a paired computer's answer as the rows nested
+// under its spawn's row, named by that computer, deeper than the bound left
+// out with their parent marked. A computer that did not answer leaves the
+// reason on the spawn's row.
+func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSlot, answer threadAgentPeerAnswer, maxDepth int) ([]ThreadAgentRow, []threadAgentEntry) {
+	if answer.err != nil {
+		parent.NestedUnavailable = threadAgentPeerUnavailable(parent.Computer, answer.err)
+		return nil, nil
+	}
+	if parent.Provider == "" {
+		parent.Provider = answer.listing.ThreadProvider
+	}
+	self, _ := a.backendIdentity()
+	rows := make([]ThreadAgentRow, 0, len(answer.listing.Rows))
+	entries := make([]threadAgentEntry, 0, len(answer.listing.Rows))
+	for _, row := range answer.listing.Rows {
+		row.Depth += slot.depth
+		if row.Depth >= maxDepth {
+			for i := len(rows) - 1; i >= 0; i-- {
+				if rows[i].Depth == row.Depth-1 {
+					rows[i].NestedHidden = true
+					break
+				}
+			}
+			continue
+		}
+		row.OwnerComputerID = slot.spawn.TargetComputerID
 		switch row.ComputerID {
 		case "":
 			// A thread on that computer.
-			row.ComputerID, row.Computer = spawn.TargetComputerID, peerName
+			row.ComputerID, row.Computer = slot.spawn.TargetComputerID, parent.Computer
 		case self:
 			// A thread that computer reached back here on.
 			row.ComputerID, row.Computer = "", ""
 		}
-		out.Rows = append(out.Rows, row)
-		*entries = append(*entries, threadAgentEntry{
-			peer: spawn.TargetComputerID, peerSource: spawn.CallerThreadID, peerRoot: spawn.TargetThreadID,
+		rows = append(rows, row)
+		entries = append(entries, threadAgentEntry{
+			peer: slot.spawn.TargetComputerID, peerSource: slot.spawn.CallerThreadID, peerRoot: slot.spawn.TargetThreadID,
 		})
 	}
-	out.Hidden = out.Hidden || listing.Hidden
+	return rows, entries
+}
+
+// threadAgentPeerUnavailable words, for the tray, why a spawn on a paired
+// computer shows none of that thread's own agents. The error itself goes to
+// the log.
+func threadAgentPeerUnavailable(computer string, err error) string {
+	if computer == "" {
+		computer = "That computer"
+	}
+	if errors.Is(err, errThreadAgentPeerOlder) {
+		return computer + " runs an older version: its agents are not shown or stopped from here"
+	}
+	log.Printf("agent rows: %s did not list its agents: %v", computer, err)
+	return computer + " did not answer; its agents are not shown"
 }
 
 // threadAgentView renders request rows for one read: the parked waits and
@@ -326,6 +406,7 @@ func (v threadAgentView) row(row store.ThreadRequest, depth int) ThreadAgentRow 
 	}
 	if row.TargetComputerID != "" {
 		out.Computer, _ = v.tools.threadToolsBackendName(row.TargetComputerID)
+		out.Provider = row.TargetProvider
 	}
 	settled := threadRequestSettled(row)
 	if settled {
@@ -365,7 +446,7 @@ func (v threadAgentView) attachLastMessages(rows []ThreadAgentRow) {
 	if len(ids) == 0 {
 		return
 	}
-	messages, err := v.app.store.ListThreadLastMessages(ids)
+	messages, err := v.app.store.ListThreadLastMessages(ids, threadtools.FooterStart)
 	if err != nil {
 		// The line is a convenience beside the row; the row stands.
 		log.Printf("agent rows: read last messages: %v", err)
@@ -427,13 +508,25 @@ func firstNonEmpty(values ...string) string {
 }
 
 // clipLine is one line of text bounded for a row.
+// The text is cut to a byte bound before its whitespace is folded, so a
+// streamed summary of any length costs the same.
 func clipLine(text string) string {
-	text = strings.Join(strings.Fields(text), " ")
-	if utf8.RuneCountInString(text) <= threadAgentLineMax {
-		return text
+	cut := false
+	if limit := threadAgentLineMax * utf8.UTFMax * 2; len(text) > limit {
+		end := limit
+		for end > 0 && !utf8.RuneStart(text[end]) {
+			end--
+		}
+		text, cut = text[:end], true
 	}
-	runes := []rune(text)
-	return string(runes[:threadAgentLineMax]) + "…"
+	text = strings.Join(strings.Fields(text), " ")
+	if utf8.RuneCountInString(text) > threadAgentLineMax {
+		return string([]rune(text)[:threadAgentLineMax]) + "…"
+	}
+	if cut {
+		return text + "…"
+	}
+	return text
 }
 
 // threadAgentWakeItem is the caller's timeline row that delivered a
@@ -478,77 +571,119 @@ func (a *App) parkedRequestTokens() []string {
 // request, as thread_cancel does, with the caller's wake left armed so its
 // agent learns a person stopped it. When the row's caller spawned the target,
 // the Stop cascades into it as stopping a provider subagent does: its
-// Backgrounded items, its running turn, and its own Agents rows, each by the
-// same rule, on whichever computer it runs (agent_stop). A computer that
-// predates agent_stop has its request cancelled and its turn interrupted,
-// and the result names it in Failures. A nested row a paired computer
-// listed is stopped through that computer. A row that had already settled
-// reports ended.
+// Backgrounded items, its running turn, and its own Agents rows, on
+// whichever computer it runs (agent_stop). A request inside that lineage is
+// cancelled with its wake disarmed: the thread that made it was stopped
+// too, and a wake would start it again. A computer that predates agent_stop
+// has its request cancelled and its turn interrupted, and the result names
+// it in Failures. A nested row a paired computer listed is stopped through
+// that computer. A row that had already settled reports ended.
 //
 //ao:scope threads:operate
 func (a *App) StopThreadAgentRow(ctx context.Context, threadID, token string) (ThreadAgentStop, error) {
 	return a.stopThreadAgentRowIn(ctx, threadID, token)
 }
 
-// stopThreadAgentRowIn stops the row of threadID's listing with token: here,
-// or through the paired computer that listed it, which finds it the same way
-// under the thread the spawn made there.
+// stopThreadAgentRowIn stops the row of threadID's listing with token from
+// the ledger, without reading the listing: a request here whose caller is
+// threadID or a thread its spawns made here, or a row the last answer of
+// one of those spawns on a paired computer listed, stopped through that
+// computer, which finds it the same way under the thread the spawn made
+// there.
 func (a *App) stopThreadAgentRowIn(ctx context.Context, threadID, token string) (ThreadAgentStop, error) {
-	listing, entries, err := a.threadAgentTree(ctx, threadID)
-	if err != nil {
-		return ThreadAgentStop{}, err
-	}
-	for index, row := range listing.Rows {
-		if row.Token != token {
-			continue
-		}
-		entry := entries[index]
-		if entry.request != nil {
-			return a.stopThreadAgentRequest(ctx, *entry.request, map[string]bool{threadID: true}), nil
-		}
-		stop, err := a.peerThreadAgentStop(ctx, entry.peer, entry.peerSource, entry.peerRoot, token)
-		if err != nil {
-			return ThreadAgentStop{Token: token, Outcome: threadAgentFailed, Failures: []string{err.Error()}}, nil
-		}
-		stop.Token = token
-		return stop, nil
-	}
-	// Not listed: settled past the window, or never this thread's.
 	row, found, err := a.store.GetThreadRequest(token)
 	if err != nil {
 		return ThreadAgentStop{}, err
 	}
-	if found && threadRequestSettled(row) {
-		return ThreadAgentStop{Token: token, Outcome: threadAgentEnded}, nil
+	if found {
+		mine, err := a.threadAgentLineageHolds(threadID, row.CallerThreadID)
+		if err != nil {
+			return ThreadAgentStop{}, err
+		}
+		if mine {
+			return a.stopThreadAgentRequest(ctx, row, map[string]bool{threadID: true}, true), nil
+		}
+	}
+	if spawn, ok := a.cachedPeerSpawnFor(token); ok {
+		mine, err := a.threadAgentLineageHolds(threadID, spawn.CallerThreadID)
+		if err != nil {
+			return ThreadAgentStop{}, err
+		}
+		if mine {
+			stop, err := a.peerThreadAgentStop(ctx, spawn.TargetComputerID, spawn.CallerThreadID, spawn.TargetThreadID, token)
+			if err != nil {
+				return ThreadAgentStop{Token: token, Outcome: threadAgentFailed, Failures: []string{err.Error()}}, nil
+			}
+			stop.Token = token
+			return stop, nil
+		}
 	}
 	return ThreadAgentStop{}, errorsx.Public(threadtools.CodeRequestUnknown,
 		"That agent is not one this thread is waiting on.", nil)
+}
+
+// threadAgentLineageHolds reports whether caller is threadID or a thread
+// spawned under it on this computer, within the listing's depth.
+func (a *App) threadAgentLineageHolds(threadID, caller string) (bool, error) {
+	current := caller
+	for range threadAgentRowDepth {
+		if current == threadID {
+			return true, nil
+		}
+		thread, err := a.store.GetThread(current)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, nil
+			}
+			return false, err
+		}
+		if thread.SpawnedByThreadID == "" {
+			return false, nil
+		}
+		current = thread.SpawnedByThreadID
+	}
+	return current == threadID, nil
 }
 
 // StopThreadAgentRows stops every Agents row of the thread as
 // StopThreadAgentRow stops one, and reports each top-level row with what
 // its cascade stopped beneath it, then withdraws the incoming messages
 // queued for the thread as StopThreadAgentIncoming does, each reported.
+// The rows come from the ledger; the Stops of rows here start at once,
+// beside those that wait on a paired computer.
 //
 //ao:scope threads:operate
 func (a *App) StopThreadAgentRows(ctx context.Context, threadID string) ([]ThreadAgentStop, error) {
-	listing, entries, err := a.threadAgentTree(ctx, threadID)
+	view := newThreadAgentView(a)
+	top, _, err := a.store.ListThreadAgentRequests(threadID, view.waiting, view.since, threadAgentRowDepth, threadAgentRowLimit)
 	if err != nil {
 		return nil, err
-	}
-	var top []store.ThreadRequest
-	for index, row := range listing.Rows {
-		if row.Depth == 0 && entries[index].request != nil {
-			top = append(top, *entries[index].request)
-		}
 	}
 	// The incoming rows are the ones shown now: the wakes the Stops below
 	// queue tell the agent what the person stopped, and are not withdrawn.
 	incoming := a.incomingAgentSendIDs(threadID)
 	out := make([]ThreadAgentStop, len(top))
-	runBounded(len(top), threadAgentStopsInFlight, func(index int) {
-		out[index] = a.stopThreadAgentRequest(ctx, top[index], map[string]bool{threadID: true})
-	})
+	var here, there []int
+	for index, row := range top {
+		if row.TargetComputerID == "" {
+			here = append(here, index)
+		} else {
+			there = append(there, index)
+		}
+	}
+	stopEach := func(indexes []int) {
+		runBounded(len(indexes), threadAgentStopsInFlight, func(i int) {
+			out[indexes[i]] = a.stopThreadAgentRequest(ctx, top[indexes[i]], map[string]bool{threadID: true}, true)
+		})
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		stopEach(there)
+	}()
+	stopEach(here)
+	wg.Wait()
 	for _, sendID := range incoming {
 		out = append(out, a.withdrawIncomingAgentMessage(ctx, threadID, sendID))
 	}
@@ -556,9 +691,11 @@ func (a *App) StopThreadAgentRows(ctx context.Context, threadID string) ([]Threa
 }
 
 // stopThreadAgentRequest stops one request for a person and, for a spawn,
-// what the spawned thread is running, wherever it runs. visited holds the
+// what the spawned thread is running, wherever it runs. pressed is the row
+// the person stopped, whose caller's wake stays armed; a request reached
+// through the cascade has its wake disarmed first. visited holds the
 // threads this Stop already reached here, so a spawn cycle ends.
-func (a *App) stopThreadAgentRequest(ctx context.Context, row store.ThreadRequest, visited map[string]bool) ThreadAgentStop {
+func (a *App) stopThreadAgentRequest(ctx context.Context, row store.ThreadRequest, visited map[string]bool, pressed bool) ThreadAgentStop {
 	result := ThreadAgentStop{Token: row.Token, Outcome: threadAgentStopped}
 	current, found, err := a.store.GetThreadRequest(row.Token)
 	if err != nil {
@@ -573,6 +710,10 @@ func (a *App) stopThreadAgentRequest(ctx context.Context, row store.ThreadReques
 	settled := threadRequestSettled(current)
 	if settled {
 		result.Outcome = threadAgentEnded
+	} else if !pressed && current.Notify {
+		if _, err := a.store.SetThreadRequestNotify(current.Token, false); err != nil {
+			result.Failures = append(result.Failures, "disarm its wake: "+err.Error())
+		}
 	}
 	spawned := current.Kind == store.ThreadRequestSpawn && current.TargetThreadID != ""
 	if current.TargetComputerID != "" {
@@ -639,7 +780,7 @@ func (a *App) stopRemoteAgentRequest(ctx context.Context, current store.ThreadRe
 // stopThreadAgentTarget stops what a spawned thread on this computer is
 // running: its Backgrounded items, as a provider subagent's Stop stops the
 // tasks it owns, then its turn, then the threads it is waiting on, each by
-// the row rule.
+// the row rule with its wake disarmed.
 func (a *App) stopThreadAgentTarget(ctx context.Context, target string, visited map[string]bool, result *ThreadAgentStop) {
 	stopped, err := a.StopThreadBackgroundWork(ctx, target)
 	result.Background += stopped
@@ -651,7 +792,8 @@ func (a *App) stopThreadAgentTarget(ctx context.Context, target string, visited 
 	} else if effect == threadtools.EffectInterrupted {
 		result.Interrupted = true
 	}
-	nested, _, err := a.store.ListThreadAgentRequests(target, a.parkedRequestTokens(), time.Now().Add(-threadAgentSettledWindow).UnixMilli(), threadAgentRowLimit)
+	nested, _, err := a.store.ListThreadAgentRequests(target, a.parkedRequestTokens(),
+		time.Now().Add(-threadAgentSettledWindow).UnixMilli(), threadAgentRowDepth, threadAgentRowLimit)
 	if err != nil {
 		result.Failures = append(result.Failures, "list its agents: "+err.Error())
 		return
@@ -660,7 +802,7 @@ func (a *App) stopThreadAgentTarget(ctx context.Context, target string, visited 
 		if threadRequestSettled(child) && child.Kind != store.ThreadRequestSpawn {
 			continue
 		}
-		stop := a.stopThreadAgentRequest(ctx, child, visited)
+		stop := a.stopThreadAgentRequest(ctx, child, visited, false)
 		if stop.Outcome == threadAgentStopped {
 			result.Nested++
 		}
@@ -864,11 +1006,16 @@ func (a *App) noteThreadAgentActivity(threadID string, item store.Item) {
 	case "user_text", "thinking", "reasoning":
 		return
 	}
-	line := clipLine(item.Summary)
-	if line == "" || threadID == "" {
+	if threadID == "" {
 		return
 	}
+	// Every top-level row of every thread passes here: only a thread a
+	// request runs on pays for the line.
 	if _, running := a.runningReceiptTokens(threadID); !running {
+		return
+	}
+	line := clipLine(item.Summary)
+	if line == "" {
 		return
 	}
 	e := &a.threadAgentEmits

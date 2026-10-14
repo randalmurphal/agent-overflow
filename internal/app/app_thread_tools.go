@@ -515,7 +515,7 @@ func (t threadToolsApp) attachLastMessages(rows []threadtools.Hit) error {
 			ids = append(ids, row.Thread.ID)
 		}
 	}
-	messages, err := t.app.store.ListThreadLastMessages(ids)
+	messages, err := t.app.store.ListThreadLastMessages(ids, "")
 	if err != nil {
 		return err
 	}

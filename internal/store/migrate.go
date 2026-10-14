@@ -1738,6 +1738,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: spawnLineageMigrationVersion, Name: "spawn_lineage", SQL: spawnLineageV147SQL},
 	{Version: deliveryConfirmationsMigrationVersion, Name: "delivery_confirmations", SQL: deliveryConfirmationsV148SQL},
 	{Version: answerAgentMigrationVersion, Name: "answer_agent", SQL: answerAgentV149SQL},
+	{Version: agentRowsRemoteMigrationVersion, Name: "agent_rows_remote", SQL: agentRowsRemoteV150SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

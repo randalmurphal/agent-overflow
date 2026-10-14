@@ -71,6 +71,18 @@ func (p *agentPeerPair) listRows(t *testing.T) ThreadAgentRows {
 	return listing
 }
 
+// listRowsUntil reads the listing until done holds of it: a spawn's rows on
+// the paired computer arrive with a read after the background call returns.
+func (p *agentPeerPair) listRowsUntil(t *testing.T, done func(ThreadAgentRows) bool) ThreadAgentRows {
+	t.Helper()
+	var listing ThreadAgentRows
+	waitUntil(t, 10*time.Second, func() bool {
+		listing = p.listRows(t)
+		return done(listing)
+	})
+	return listing
+}
+
 func agentRowByToken(rows []ThreadAgentRow, token string) (ThreadAgentRow, bool) {
 	for _, row := range rows {
 		if row.Token == token {
@@ -87,7 +99,16 @@ func TestThreadAgentRowsNestAPairedComputersAgents(t *testing.T) {
 	t.Parallel()
 	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
 
-	listing := pair.listRows(t)
+	// The first read returns this computer's rows at once; the nested rows
+	// arrive with a later read.
+	first := pair.listRows(t)
+	if _, ok := agentRowByToken(first.Rows, pair.spawn.Token); !ok {
+		t.Fatalf("the first read does not list the spawn: %+v", first.Rows)
+	}
+	listing := pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
+		_, ok := agentRowByToken(rows.Rows, pair.grand)
+		return ok
+	})
 	parent, ok := agentRowByToken(listing.Rows, pair.spawn.Token)
 	if !ok || parent.Depth != 0 || parent.ComputerID != pair.computer || parent.NestedUnavailable != "" {
 		t.Fatalf("the spawn row = %+v (listed %v)", parent, ok)
@@ -107,7 +128,9 @@ func TestThreadAgentRowsNestAPairedComputersAgents(t *testing.T) {
 }
 
 // Stop on the spawn's row runs the cascade there: the child's own spawn is
-// cancelled as a user Stop, not only the request and the turn.
+// cancelled as a user Stop, not only the request and the turn, with its
+// wake disarmed, since the child was stopped with it; the pressed row's own
+// wake stays armed.
 func TestThreadAgentStopCascadesOnAPairedComputer(t *testing.T) {
 	t.Parallel()
 	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
@@ -124,8 +147,8 @@ func TestThreadAgentStopCascadesOnAPairedComputer(t *testing.T) {
 		grand, _, _ = pair.dest.store.GetThreadRequest(pair.grand)
 		return threadRequestSettled(grand)
 	})
-	if grand.State != store.ThreadRequestCancelled || !strings.Contains(string(grand.Answer), "The user stopped it") || !grand.Notify {
-		t.Fatalf("the child's spawn = %s %q notify %v, want cancelled by the user with its wake armed", grand.State, grand.Answer, grand.Notify)
+	if grand.State != store.ThreadRequestCancelled || !strings.Contains(string(grand.Answer), "The user stopped it") || grand.Notify {
+		t.Fatalf("the child's spawn = %s %q notify %v, want cancelled by the user with its wake disarmed", grand.State, grand.Answer, grand.Notify)
 	}
 	if spawn, _, err := pair.source.store.GetThreadRequest(pair.spawn.Token); err != nil || !spawn.Notify {
 		t.Fatalf("the stopped spawn's wake = %v, %v; a person's Stop keeps it armed", spawn.Notify, err)
@@ -137,6 +160,10 @@ func TestThreadAgentStopCascadesOnAPairedComputer(t *testing.T) {
 func TestThreadAgentStopOfANestedRemoteRowStopsItThere(t *testing.T) {
 	t.Parallel()
 	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
+		_, ok := agentRowByToken(rows.Rows, pair.grand)
+		return ok
+	})
 
 	stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, pair.grand)
 	if err != nil {
@@ -182,8 +209,98 @@ func TestThreadAgentPeerCallsRefuseOtherThreads(t *testing.T) {
 			t.Fatalf("%s from another device = %q, want %q", method.tool, code, threadtools.CodeNotYours)
 		}
 	}
+	// A sibling thread on the asking device does not reach the caller's
+	// child, and the caller does not reach a grandchild an unrelated thread
+	// spawned there.
+	sibling := reachThread(t, pair.source, uuid.NewString(), "Sibling on source")
+	destID, _ := pair.dest.backendIdentity()
+	other := reachThread(t, pair.dest, uuid.NewString(), "Unrelated parent")
+	foreign, err := threadToolsApp{app: pair.dest}.Spawn(t.Context(),
+		threadtools.Caller{ThreadID: other.ID, ComputerID: destID, ComputerName: "destination"},
+		threadtools.SpawnCall{Prompt: "elsewhere", Title: "Other grandchild", Notify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignThread := pair.receipt(t, foreign.Token).TargetThreadID
+	callFrom := func(source, method, tool, threadID string) error {
+		var reply ThreadPeerReply
+		return pair.manager.CallThreadPeer(ctx, pair.computer, method, &reply, ThreadPeerCall{
+			Tool: tool, Token: newThreadRequestToken(),
+			Source: threadtools.Caller{ThreadID: source, ComputerID: pair.sourceID},
+			Args:   json.RawMessage(fmt.Sprintf(`{"thread_id":%q}`, threadID)),
+		})
+	}
+	for _, method := range []struct{ name, tool string }{
+		{"ThreadToolQuery", threadAgentPeerRows}, {"ThreadToolCall", threadAgentPeerStop},
+	} {
+		if code := peerCode(t, callFrom(sibling.ID, method.name, method.tool, pair.child)); code != threadtools.CodeNotYours {
+			t.Fatalf("%s from a sibling on the child = %q, want %q", method.tool, code, threadtools.CodeNotYours)
+		}
+		if code := peerCode(t, callFrom(pair.caller.ID, method.name, method.tool, foreignThread)); code != threadtools.CodeNotYours {
+			t.Fatalf("%s on an unrelated parent's grandchild = %q, want %q", method.tool, code, threadtools.CodeNotYours)
+		}
+	}
+	// The caller's own grandchild, through its child there, is reachable.
+	if err := callFrom(pair.caller.ID, "ThreadToolQuery", threadAgentPeerRows, pair.receipt(t, pair.grand).TargetThreadID); err != nil {
+		t.Fatalf("the caller's own grandchild was refused: %v", err)
+	}
 	if grand, _, _ := pair.dest.store.GetThreadRequest(pair.grand); threadRequestSettled(grand) {
 		t.Fatalf("a refused stop stopped the child's spawn: %s", grand.State)
+	}
+}
+
+// stalledAgentsPeer is a destination whose agent_rows answer does not come.
+type stalledAgentsPeer struct{ *App }
+
+func (p *stalledAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	if call.Tool == threadAgentPeerRows {
+		select {
+		case <-time.After(20 * time.Second):
+		case <-ctx.Done():
+		}
+	}
+	return p.App.ThreadToolQuery(ctx, call)
+}
+
+// A computer that does not answer holds up neither the pane's read nor a
+// Stop: this computer's rows come back at once, the row says that computer
+// did not answer once its call gives up, and a Stop works from the ledger.
+func TestThreadAgentRowsDoNotWaitOnAComputerThatDoesNotAnswer(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend {
+		return servePairedApp(t, app, func(cfg *transport.Config) {
+			dispatcher := transport.NewDispatcher()
+			if _, err := dispatcher.Register(&stalledAgentsPeer{App: app}, transport.RegisterOptions{
+				Package: "main", TypeName: "App", AllowList: transport.NewMethodAllowList(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			cfg.Dispatcher = dispatcher
+		})
+	})
+	start := time.Now()
+	listing := pair.listRows(t)
+	if took := time.Since(start); took > 100*time.Millisecond {
+		t.Fatalf("ListThreadAgentRows took %v with one computer not answering", took)
+	}
+	if _, ok := agentRowByToken(listing.Rows, pair.spawn.Token); !ok {
+		t.Fatalf("the spawn is not listed: %+v", listing.Rows)
+	}
+	listing = pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
+		parent, _ := agentRowByToken(rows.Rows, pair.spawn.Token)
+		return parent.NestedUnavailable != ""
+	})
+	parent, _ := agentRowByToken(listing.Rows, pair.spawn.Token)
+	if want := parent.Computer + " did not answer; its agents are not shown"; parent.NestedUnavailable != want {
+		t.Fatalf("the spawn row says %q, want %q", parent.NestedUnavailable, want)
+	}
+	start = time.Now()
+	stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, pair.spawn.Token)
+	if err != nil || stop.Outcome != threadAgentStopped {
+		t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
+	}
+	if took := time.Since(start); took >= threadAgentPeerListTimeout {
+		t.Fatalf("the Stop took %v: it waited on a listing", took)
 	}
 }
 
@@ -202,6 +319,8 @@ func (p *olderAgentsPeer) ThreadToolCall(ctx context.Context, call ThreadPeerCal
 	if call.Tool == threadAgentPeerStop {
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest, call.Tool+" is not a thread tools write call.", nil)
 	}
+	// It predates the user Stop too, and words every cancel as the sender's.
+	call.UserStop = false
 	return p.App.ThreadToolCall(ctx, call)
 }
 
@@ -219,15 +338,19 @@ func serveOlderAgentsPeer(t *testing.T, app *App) *pairedBackend {
 }
 
 // An older computer degrades to the request and the turn, and says so on
-// the row and in the Stop's report.
+// the row and in the Stop's report; the caller's wake still says the user
+// stopped it, whatever that computer wrote.
 func TestThreadAgentRowsSayWhenAPairedComputerIsOlder(t *testing.T) {
 	t.Parallel()
 	pair := newAgentPeerPair(t, serveOlderAgentsPeer)
 
-	listing := pair.listRows(t)
-	parent, ok := agentRowByToken(listing.Rows, pair.spawn.Token)
-	if !ok || parent.NestedUnavailable != errThreadAgentPeerOlder.Error() {
-		t.Fatalf("the spawn row = %+v, want it to say the computer is older", parent)
+	listing := pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
+		parent, _ := agentRowByToken(rows.Rows, pair.spawn.Token)
+		return parent.NestedUnavailable != ""
+	})
+	parent, _ := agentRowByToken(listing.Rows, pair.spawn.Token)
+	if want := parent.Computer + " runs an older version: its agents are not shown or stopped from here"; parent.NestedUnavailable != want {
+		t.Fatalf("the spawn row says %q, want %q", parent.NestedUnavailable, want)
 	}
 	if _, nested := agentRowByToken(listing.Rows, pair.grand); nested {
 		t.Fatal("an older computer's nested row is listed")
@@ -240,13 +363,15 @@ func TestThreadAgentRowsSayWhenAPairedComputerIsOlder(t *testing.T) {
 	if stop.Outcome != threadAgentStopped || len(stop.Failures) != 1 || !strings.Contains(stop.Failures[0], errThreadAgentPeerOlder.Error()) {
 		t.Fatalf("stop = %+v, want the request stopped and the older computer named", stop)
 	}
-	if row := pair.request(t, pair.spawn.Token); row.State != store.ThreadRequestCancelled {
-		t.Fatalf("the spawn is %s, want cancelled", row.State)
+	if row := pair.request(t, pair.spawn.Token); row.State != store.ThreadRequestCancelled ||
+		!strings.Contains(string(row.Answer), threadRequestUserStop) || !row.Notify {
+		t.Fatalf("the spawn is %s %q notify %v, want cancelled by the user with its wake armed", row.State, row.Answer, row.Notify)
 	}
 }
 
 // Nothing here learns of a change on the paired computer by itself, so each
-// poll of an open remote spawn has its caller's rows read again.
+// poll of an open remote spawn asks for its rows again, and an answer that
+// changed what the pane shows emits a frame for the caller.
 func TestThreadAgentRowsReadAgainOnEachPollOfARemoteSpawn(t *testing.T) {
 	t.Parallel()
 	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
@@ -267,5 +392,47 @@ func TestThreadAgentRowsReadAgainOnEachPollOfARemoteSpawn(t *testing.T) {
 		case <-deadline:
 			t.Fatal("a poll of the remote spawn did not have its caller's rows read again")
 		}
+	}
+}
+
+// A remote spawn that settled while work under it there is still open
+// stays listed past the settled window, and the sweep asks that computer
+// again until it lists none.
+func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
+		_, ok := agentRowByToken(rows.Rows, pair.grand)
+		return ok
+	})
+	if !pair.request(t, pair.spawn.Token).NestedOpen {
+		t.Fatal("an answer listing open work did not record it on the spawn")
+	}
+	long := time.Now().Add(-time.Hour).UnixMilli()
+	settle := func(app *App, token string) {
+		if settled, err := app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+			State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: long,
+		}); err != nil || !settled {
+			t.Fatalf("settle %s: %v %v", token, settled, err)
+		}
+	}
+	settle(pair.source, pair.spawn.Token)
+	if _, ok := agentRowByToken(pair.listRows(t).Rows, pair.spawn.Token); !ok {
+		t.Fatal("a settled remote spawn with open work under it left the listing")
+	}
+
+	settle(pair.dest, pair.grand)
+	waitUntil(t, 10*time.Second, func() bool {
+		// The answer is as old as the sweep's pace allows.
+		cache := &pair.source.threadAgentPeers
+		cache.mu.Lock()
+		cache.entries[pair.spawn.Token].at = time.Time{}
+		cache.mu.Unlock()
+		pair.source.refreshNestedOpenRemoteSpawns()
+		pair.source.threadRequestsWG.Wait()
+		return !pair.request(t, pair.spawn.Token).NestedOpen
+	})
+	if _, ok := agentRowByToken(pair.listRows(t).Rows, pair.spawn.Token); ok {
+		t.Fatal("the spawn is still listed once its computer lists no open work")
 	}
 }

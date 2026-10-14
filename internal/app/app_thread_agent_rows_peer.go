@@ -45,6 +45,11 @@ const (
 const (
 	threadAgentPeerListTimeout = 5 * time.Second
 	threadAgentPeerStopTimeout = 45 * time.Second
+	// threadAgentPeerServeTimeout bounds the listing an agent_rows answer
+	// reads from a computer further on: the computer that asked gives the
+	// whole answer threadAgentPeerListTimeout, and a computer that does not
+	// answer there must not use it all up.
+	threadAgentPeerServeTimeout = threadAgentPeerListTimeout / 2
 )
 
 // threadAgentPeerArgs are the forwarded Agents tools' arguments.
@@ -143,7 +148,7 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 		if depth <= 0 || depth > threadAgentRowDepth {
 			depth = threadAgentRowDepth
 		}
-		listing, _, err := a.threadAgentTreeDepth(ctx, args.ThreadID, depth)
+		listing, _, err := a.threadAgentTreeDepth(ctx, args.ThreadID, depth, threadAgentPeersLive)
 		if err != nil {
 			return ThreadPeerReply{}, err
 		}
