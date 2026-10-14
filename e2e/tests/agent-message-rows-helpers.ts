@@ -173,7 +173,22 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
     settled: async () => {
       const reply = await awaitToolAnswer(harness, { tool: 'thread_reply', timeoutMs: 60_000 });
       expect(reply.isError, reply.text).toBe(false);
-      await expect.poll(() => has(lead, 'Read the answer.'), { timeout: 60_000 }).toBe(true);
+      // The reply wakes the lead. On Codex it can land while the lead's
+      // turn that sent the request is still running, and is then steered
+      // into it rather than starting a turn of its own: either way the
+      // lead is done once its row is there and no turn runs.
+      const idle = async () => !(await harness.rpc<{ activeTurn?: unknown }>('GetThreadLiveState', lead)).activeTurn;
+      await expect
+        .poll(
+          async () => {
+            if (await has(lead, 'Read the answer.')) return true;
+            if (!(await has(lead, REPLY)) || !(await idle())) return false;
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            return await idle();
+          },
+          { timeout: 60_000 },
+        )
+        .toBe(true);
       await expect.poll(() => has(busy, REQUEST), { timeout: 30_000 }).toBe(true);
     },
     followUp: async () => {
