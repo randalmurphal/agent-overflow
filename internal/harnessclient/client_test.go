@@ -447,3 +447,63 @@ func TestTheLongestWaitingWaiterConsumesTheEvent(t *testing.T) {
 		}
 	}
 }
+
+// The backend answers HarnessShutdown and then shuts down on its own, so the
+// shutdown can close the socket before the reply is written. Once the request
+// is on the wire, that close is the acknowledgement.
+func TestShutdownTakesTheBackendsCloseAsTheAcknowledgement(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.closeOn = "HarnessShutdown"
+	backend.unanswered = "HarnessInfo"
+	client := backend.dial(t)
+
+	cutOff := make(chan error, 1)
+	go func() {
+		_, err := client.Call(testContext(t), "HarnessInfo")
+		cutOff <- err
+	}()
+	waitForPendingCalls(t, client, 1)
+
+	if err := client.Shutdown(testContext(t)); err != nil {
+		t.Fatalf("Shutdown = %v, want the close to acknowledge it", err)
+	}
+	if err := <-cutOff; err == nil {
+		t.Fatal("a call the close cut off succeeded; only the shutdown is answered by a close")
+	}
+	if err := client.Shutdown(testContext(t)); err == nil {
+		t.Fatal("Shutdown on a closed connection succeeded; its request was never written")
+	}
+}
+
+func TestShutdownSurfacesAnErrorReply(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.handle = func(frame transport.ClientFrame) (json.RawMessage, *transport.FrameError) {
+		return nil, &transport.FrameError{Code: "internal", Message: "shutdown refused"}
+	}
+	client := backend.dial(t)
+
+	err := client.Shutdown(testContext(t))
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Message != "shutdown refused" {
+		t.Fatalf("Shutdown = %v, want the backend's error reply", err)
+	}
+}
+
+// waitForPendingCalls returns once the client has n calls registered, so a
+// test can order a close after a call's request.
+func waitForPendingCalls(t *testing.T, client *Client, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		client.mu.Lock()
+		count := len(client.pending)
+		client.mu.Unlock()
+		if count >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d calls pending after 5s, want %d", count, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

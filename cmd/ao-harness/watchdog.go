@@ -432,7 +432,7 @@ func handleDetachedWatchdogEvent(bootstrap harnessclient.Bootstrap, identity ins
 		if err != nil {
 			shutdownErr = fmt.Errorf("authenticated watchdog shutdown: %w", err)
 		} else {
-			if _, err := client.Call(ctx, "HarnessShutdown"); err != nil {
+			if err := client.Shutdown(ctx); err != nil {
 				shutdownErr = fmt.Errorf("authenticated watchdog shutdown: %w", err)
 			}
 			if closeErr := client.Close(); closeErr != nil {
