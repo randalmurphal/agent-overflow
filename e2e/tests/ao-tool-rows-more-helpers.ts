@@ -16,6 +16,7 @@ import {
   FOOTER_TOKEN_PATTERN,
   TOOL_ROW_ID_PATTERN,
   awaitToolAnswer,
+  awaitTurnCompleted,
   setScenario,
   threadToolsScenario,
   type ProviderName,
@@ -199,12 +200,14 @@ export async function driveMoreAoToolRows(app: HarnessApp, remote: HarnessApp, p
   }));
 
   await app.rpc('StartSession', leadThreadId);
+  const spawnTurn = awaitTurnCompleted(app, leadThreadId);
   await app.rpc('SendMessage', leadThreadId, 'spawn the crash triage', null);
   // The spawned thread answers inside the call's wait, so no wake will
   // take the next turn.
   const spawn = await awaitToolAnswer<{ outcome: string }>(app, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
   expect(spawn.value?.outcome, spawn.text).toBe('settled');
+  await spawnTurn;
   // A watch runs a script from a standing agent's home, so the lead is one.
   await app.rpc('PromoteStandingAgent', leadThreadId);
   await app.rpc('SendMessage', leadThreadId, 'run every tool once', null);
@@ -286,7 +289,7 @@ export async function readMoreRows(app: HarnessApp, page: Page, shot: (name: str
     memory_list: (row) => expect(row.getByTestId('tool-call-card-ao-line').filter({ hasText: 'The digest needs the schema first.' })).toHaveCount(1),
     memory_add: (row) => expect(row.getByTestId('tool-call-card-ao-outcome')).toContainText('learning added'),
     run_list: (row) => expect(row.getByTestId('tool-call-card-ao-line-link').first()).toHaveAttribute('data-link-kind', 'run'),
-    thread_status: (row) => expect(row.getByTestId('tool-call-card-ao-line-title').filter({ hasText: /^remind\w* · / })).toHaveCount(1),
+    thread_status: (row) => expect(row.getByTestId('tool-call-card-ao-line-title').filter({ hasText: /^remind · accepted/ })).toHaveCount(1),
     thread_item: (row) => expect(row.getByTestId('tool-call-card-ao-outcome')).toContainText('1 match'),
     thread_ask: async (row) => {
       await expect(row.getByTestId('tool-call-card-preview')).toHaveText(`${MORE_TARGET_TITLE} · What changed in the parser?`);

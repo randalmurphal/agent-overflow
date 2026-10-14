@@ -246,7 +246,7 @@
                         <span class="min-w-0 shrink-[999] truncate text-fg-hint">· {line.detail}</span>
                       {/if}
                     {:else}
-                      <span class="min-w-0 truncate text-fg-muted" data-testid="tool-call-card-ao-line-title">{line.title}{#if line.detail}<span class="text-fg-hint"> · {line.detail}</span>{/if}</span>
+                      <span class="min-w-0 truncate text-fg-muted" data-testid="tool-call-card-ao-line-title">{line.title}{#if line.detail}<span class="text-fg-hint">{` · ${line.detail}`}</span>{/if}</span>
                     {/if}
                   </div>
                   {#if line.text}

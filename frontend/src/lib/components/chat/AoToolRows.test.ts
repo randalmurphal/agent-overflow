@@ -323,17 +323,19 @@ describe('AO tool replies past the payload preview, and replies nothing decodes'
   it('stops reading a reply whose next chunk failed, and offers a retry', async () => {
     const full = JSON.stringify({ thread_id: CHILD, title: 'Docs slice', transcript: 'x'.repeat(40 * 1024) });
     setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: full.slice(0, 32 * 1024), nextOffset: 32 * 1024, totalSize: full.length, isComplete: false })));
-    const chunk = vi.fn(async () => { throw new Error('chunk read failed'); });
+    // The read fails a timer later, so a retry loop runs at the pace of
+    // the test's own wait rather than starving it.
+    const chunk = vi.fn(() => new Promise<never>((_, reject) => setTimeout(() => reject(new Error('chunk read failed')), 1)));
     setBindingMock('GetPayloadChunk', chunk);
     const item = thread('thread_show', { input: { thread_id: CHILD } }, { payloadId: 'p-chunk-fails' });
     const { getByTestId, findByTestId } = render(GenericToolCallRow, { props: { item } });
     await fireEvent.click(getByTestId('tool-call-card-toggle'));
     await findByTestId('tool-call-card-retry');
     expect(getByTestId('tool-call-card-body').textContent).toContain('Failed to load: chunk read failed');
-    // Give a retry loop the turns it would need to show itself.
-    for (let i = 0; i < 10; i++) await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Give a retry loop the time it would need to show itself.
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(chunk).toHaveBeenCalledTimes(1);
+    expect(getByTestId('tool-call-card-retry')).toBeTruthy();
   });
 
   it('says a reply past the read limit is too large instead of loading or painting it', async () => {
@@ -392,6 +394,14 @@ describe('AO tool replies past the payload preview, and replies nothing decodes'
     await view.rerender({ item: { ...item, meta: item.meta!.replace('"one"', '"three"').replace('"two"', '"four"') } });
     expect(read()).toEqual(['three', 'four']);
     expect(reported).not.toHaveBeenCalled();
+  });
+
+  it('titles a request with no thread by its kind, with its detail after a space', async () => {
+    replyWith(JSON.stringify({ requests: [{ token: 'r1', kind: 'remind', state: 'accepted', answer_kind: 'note' }] }));
+    const item = thread('thread_status', { input: {} }, { payloadId: 'p-remind' });
+    const { getByTestId, findByTestId } = render(GenericToolCallRow, { props: { item } });
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    expect((await findByTestId('tool-call-card-ao-line-title')).textContent).toBe('remind · accepted · note');
   });
 
   it('lists a fact the input and the reply both state once, as the reply says it', async () => {
