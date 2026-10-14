@@ -17,8 +17,8 @@
 // This spec is the composite: the real wire, the real triage/store hop, and
 // the real SPA revealing text WHILE the deliveries land, the exact flush
 // the incident aborted. Three verdicts, each observable only here:
-//   1. zero page errors (nothing threw inside a flush; the page fixture
-//      fails the test on any),
+//   1. zero page errors (nothing threw inside a flush; the pageErrors
+//      fixture fails the test on any),
 //   2. text emitted AFTER the deliveries fully reveals (the drain never froze),
 //   3. one card per stop with no `[subagentGrouping] duplicate` repair
 //      warning (the fix holds at the root; the tripwire stayed idle).
@@ -99,8 +99,8 @@ interface RenderWatch {
 }
 
 /**
- * Arm the repair-warning listener. Call before streaming. The page fixture
- * owns the page-error verdict.
+ * Arm the repair-warning listener. Call before streaming. The pageErrors
+ * fixture owns the page-error verdict.
  */
 function watchRender(page: Page): RenderWatch {
   const watch: RenderWatch = { duplicateKeyWarnings: [] };

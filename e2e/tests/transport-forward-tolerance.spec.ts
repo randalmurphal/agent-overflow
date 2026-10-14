@@ -129,7 +129,7 @@ test('the SPA keeps running when the backend speaks a future dialect', async ({
   expect(pane, 'the seeded thread must still be mounted').toBeDefined();
   expect(pane!.rows.some((row) => row.textHead.includes('never seen'))).toBe(true);
 
-  // A page error fails the test through the page fixture.
+  // A page error fails the test through the pageErrors fixture.
   expect(watch.errorLines).toEqual([]);
 
   // Quiet, not merely alive. A per-frame warn would turn a routine
