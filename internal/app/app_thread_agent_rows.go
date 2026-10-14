@@ -567,10 +567,12 @@ func (a *App) stopThreadAgentRequest(ctx context.Context, row store.ThreadReques
 		return result
 	}
 	if !settled {
-		if _, err := a.stopThreadRequestWorkFor(ctx, current.Token, threadRequestUserStop); err != nil {
+		effect, err := a.stopThreadRequestWorkFor(ctx, current.Token, threadRequestUserStop)
+		if err != nil {
 			result.Outcome = threadAgentFailed
 			result.Failures = append(result.Failures, "cancel the request: "+err.Error())
 		}
+		result.Interrupted = effect == threadtools.EffectInterrupted
 	}
 	// Only the caller's own spawn: a thread it sent to belongs to someone
 	// else, and the cancel above already stopped the turn the request
