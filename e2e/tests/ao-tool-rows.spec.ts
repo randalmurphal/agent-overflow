@@ -17,6 +17,7 @@ import {
   driveAoToolRows,
   expandRow,
   openLead,
+  shootRow,
   toolRow,
 } from './ao-tool-rows-helpers.js';
 
@@ -24,8 +25,8 @@ for (const provider of ['claude', 'codex'] as const) {
   test(`${provider}: AO tool rows say what the call did and show its result as facts`, async ({ harness, page }) => {
     const run = await driveAoToolRows(harness, provider, `desktop-${provider}`);
     await openLead(harness, page);
-    const shot = async (name: string, target: import('@playwright/test').Locator) =>
-      target.screenshot({ path: test.info().outputPath(`${provider}-${name}.png`), animations: 'disabled' });
+    const shot = (name: string, target: import('@playwright/test').Locator) =>
+      shootRow(target, test.info().outputPath(`${provider}-${name}.png`));
 
     // Spawn: the new thread's title, from the reply. The answer's wake
     // lands once the spawned thread answers.

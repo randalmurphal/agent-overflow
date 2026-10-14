@@ -338,6 +338,14 @@ describe('AO tool presentation', () => {
       expect(facts.find((f) => f.label === 'computer')!.value).toBe('mac');
     });
 
+    it('reads an object input as one key and value per line and a list as its items, never JSON', () => {
+      const facts = aoToolFacts(meta(WORKFLOW_TOOLS_SERVER, 'run_start', {
+        workflow_id: 'digest', goal: 'Weekly summary', seeds: { goal: 'Weekly summary', budget: 4 }, tags: ['a', 'b'],
+      }));
+      expect(facts.find((f) => f.label === 'seeds')!.value).toBe('goal: Weekly summary\nbudget: 4');
+      expect(facts.find((f) => f.label === 'tags')!.value).toBe('a, b');
+    });
+
     it('lists what the header and the reply leave out: the threads of a list, the requests, never ids', () => {
       // The header names the one thread; the reply says whether notify armed.
       expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_send', { thread_id: named, message: 'hi', notify: true }), names)).toEqual([

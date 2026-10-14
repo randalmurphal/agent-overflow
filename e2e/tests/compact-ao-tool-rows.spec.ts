@@ -6,7 +6,7 @@
 
 import { test, expect } from './fixtures.js';
 import type { Locator } from '@playwright/test';
-import { SPAWN_TITLE, TARGET_TITLE, driveAoToolRows, expandRow, openLead, toolRow } from './ao-tool-rows-helpers.js';
+import { SPAWN_TITLE, TARGET_TITLE, driveAoToolRows, expandRow, openLead, shootRow, toolRow } from './ao-tool-rows-helpers.js';
 
 for (const provider of ['claude', 'codex'] as const) {
   test(`${provider}: AO tool rows read on the compact thread screen`, async ({ harness, page }) => {
@@ -18,10 +18,7 @@ for (const provider of ['claude', 'codex'] as const) {
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
     };
-    const shot = async (name: string, row: Locator) => {
-      await row.scrollIntoViewIfNeeded();
-      await row.screenshot({ path: test.info().outputPath(`compact-${provider}-${name}.png`), animations: 'disabled' });
-    };
+    const shot = (name: string, row: Locator) => shootRow(row, test.info().outputPath(`compact-${provider}-${name}.png`));
 
     const rows: Array<[string, Locator]> = [
       ['spawn', toolRow(page, 'spawn', SPAWN_TITLE)],

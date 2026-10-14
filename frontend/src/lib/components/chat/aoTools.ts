@@ -687,6 +687,22 @@ function valueText(value: unknown): string {
   }
 }
 
+/**
+ * An input value as a person reads it: a list as its items, an object as
+ * one `key: value` line per key (the fact keeps newlines), JSON only for
+ * what nests deeper.
+ */
+function factText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map((entry) => (typeof entry === 'string' ? entry : valueText(entry))).join(', ');
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Input)
+      .map(([key, entry]) => `${key}: ${typeof entry === 'string' ? entry : valueText(entry)}`)
+      .join('\n');
+  }
+  return valueText(value);
+}
+
 function clip(text: string, max = WHAT_MAX): string {
   const oneLine = text.replace(/\s*\n\s*/g, ' ').trim();
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
@@ -825,7 +841,7 @@ export function aoToolFacts(
   for (const [key, value] of Object.entries(input)) {
     if (HIDDEN_FACTS.has(key) || value === undefined || value === null || value === '') continue;
     if (shown?.has(key)) continue;
-    const text = typeof value === 'string' ? value : valueText(value);
+    const text = factText(value);
     facts.push({ label: FACT_LABELS[key] ?? key.replace(/_/g, ' '), value: text.length > FACT_MAX ? `${text.slice(0, FACT_MAX - 1)}…` : text });
   }
   const script = str(input, 'script');

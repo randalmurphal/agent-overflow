@@ -165,3 +165,28 @@ export async function expandRow(row: Locator): Promise<void> {
   await row.getByTestId('tool-call-card-toggle').click();
   await expect(row.getByTestId('tool-call-card-toggle')).toHaveAttribute('aria-expanded', 'true');
 }
+
+/**
+ * Screenshots a row centred in the timeline once nothing is moving it. A
+ * row merely scrolled into view can sit under the composer, which floats
+ * over the timeline's bottom edge, and a timeline following a live tail
+ * pulls a script-scrolled row away again: a wheel turn escapes the follow
+ * as a reader does, then the row is centred and must hold still on screen.
+ */
+export async function shootRow(row: Locator, path: string): Promise<void> {
+  const page = row.page();
+  await page.getByTestId('message-timeline-scroll').hover();
+  await page.mouse.wheel(0, -40);
+  await row.evaluate((element) => element.scrollIntoView({ block: 'center' }));
+  let last = '';
+  await expect.poll(async () => {
+    const box = await row.boundingBox();
+    const viewport = page.viewportSize()!;
+    const onScreen = box !== null && box.y >= 0 && box.y + box.height <= viewport.height;
+    const at = onScreen ? `${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.height)}` : '';
+    const still = at !== '' && at === last;
+    last = at;
+    return still;
+  }, { intervals: [150], timeout: 10_000 }).toBe(true);
+  await row.screenshot({ path, animations: 'disabled' });
+}
