@@ -25,6 +25,7 @@
     renderContent,
     copyLabel = 'Copy output',
     offerMore = true,
+    holdWhileLoading = false,
   }: {
     pane?: PaneSession & RowUiRegistry & ScrollHost;
     expansion: PayloadExpansionHandle;
@@ -55,6 +56,11 @@
      * caller that loads the rest itself or shows the text only on request.
      */
     offerMore?: boolean;
+    /**
+     * Keep rendering what has loaded while more of it loads, for a caller
+     * that shows its own progress; otherwise the body reads "Loading…".
+     */
+    holdWhileLoading?: boolean;
   } = $props();
 </script>
 
@@ -63,7 +69,7 @@
   class="ml-5 border-l border-border-subtle bg-surface-0/35"
   data-testid={bodyTestId}
 >
-  {#if expansion.loading}
+  {#if expansion.loading && !(holdWhileLoading && expansion.displayData !== null)}
     <p class="px-3 py-2 text-[0.6875rem] text-fg-subtle animate-pulse" role="status" aria-live="polite">
       Loading…
     </p>

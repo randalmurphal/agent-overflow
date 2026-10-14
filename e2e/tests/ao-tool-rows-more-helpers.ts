@@ -15,6 +15,7 @@ import type { SeedResult } from './fixtures.js';
 import {
   FOOTER_TOKEN_PATTERN,
   TOOL_ROW_ID_PATTERN,
+  awaitToolAnswer,
   setScenario,
   threadToolsScenario,
   type ProviderName,
@@ -26,10 +27,11 @@ import {
   doneFlowYaml,
   otherProvider,
 } from './workflows-agent-tools-helpers.js';
-import { shootRow } from './ao-tool-rows-helpers.js';
+import { expectRowTextWhole, shootRow } from './ao-tool-rows-helpers.js';
 
 export const MORE_LEAD_TITLE = 'Lead thread';
 export const MORE_TARGET_TITLE = 'Parser work';
+export const MORE_SPAWN_TITLE = 'Crash triage';
 
 const BROWSER = 'ao-browser-tools';
 const REMOTE = 'ao-remote-tools';
@@ -139,9 +141,16 @@ export async function driveMoreAoToolRows(app: HarnessApp, remote: HarnessApp, p
     provider,
     echoUserMessage: true,
     turns: [
+      // A standing agent may not spawn, so the spawn runs before the lead
+      // is promoted, in a turn of its own.
       {
         steps: [
-          { call: { tool: 'thread_spawn', args: { prompt: 'Triage the crash report.', title: 'Crash triage', project_id: target.projectId, group: 'Bugs' } } },
+          { call: { tool: 'thread_spawn', args: { prompt: 'Triage the crash report.', title: MORE_SPAWN_TITLE, project_id: target.projectId, group: 'Bugs', wait_seconds: 30 } } },
+        ],
+        text: 'Spawned.',
+      },
+      {
+        steps: [
           { call: { tool: 'thread_send', args: { thread_id: targetThreadId, message: 'Rebase onto main.', notify: true } } },
           { call: { tool: 'thread_ask', args: { thread_id: targetThreadId, question: 'What changed in the parser?', wait_seconds: 30 } } },
           { call: { tool: 'thread_show', args: { thread_id: targetThreadId, window: 'tail', turns: 5, include: ['tool_calls'] } } },
@@ -189,9 +198,15 @@ export async function driveMoreAoToolRows(app: HarnessApp, remote: HarnessApp, p
     ],
   }));
 
+  await app.rpc('StartSession', leadThreadId);
+  await app.rpc('SendMessage', leadThreadId, 'spawn the crash triage', null);
+  // The spawned thread answers inside the call's wait, so no wake will
+  // take the next turn.
+  const spawn = await awaitToolAnswer<{ outcome: string }>(app, { tool: 'thread_spawn', cwd: lead.path, timeoutMs: 60_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  expect(spawn.value?.outcome, spawn.text).toBe('settled');
   // A watch runs a script from a standing agent's home, so the lead is one.
   await app.rpc('PromoteStandingAgent', leadThreadId);
-  await app.rpc('StartSession', leadThreadId);
   await app.rpc('SendMessage', leadThreadId, 'run every tool once', null);
   const last = await app.awaitMcpResult({ server: REMOTE, tool: 'remote_run', cwd: lead.path, timeoutMs: 120_000 });
   expect(last.report.isError, last.report.result).toBeFalsy();
@@ -245,6 +260,7 @@ export async function readRow(page: Page, tool: string, shot: (name: string) => 
   await expect(body.getByText('Loading…')).toHaveCount(0);
   await expect(row.getByTestId('tool-call-card-ao-undecoded')).toHaveCount(0);
   await expect(body).not.toHaveText(/"[A-Za-z_]+":/);
+  await expectRowTextWhole(row);
   await shootRow(row, shot(`${tool}-expanded`));
   return row;
 }
@@ -270,11 +286,16 @@ export async function readMoreRows(app: HarnessApp, page: Page, shot: (name: str
     memory_list: (row) => expect(row.getByTestId('tool-call-card-ao-line').filter({ hasText: 'The digest needs the schema first.' })).toHaveCount(1),
     memory_add: (row) => expect(row.getByTestId('tool-call-card-ao-outcome')).toContainText('learning added'),
     run_list: (row) => expect(row.getByTestId('tool-call-card-ao-line-link').first()).toHaveAttribute('data-link-kind', 'run'),
-    thread_status: (row) => expect(row.getByTestId('tool-call-card-ao-line').first()).toBeVisible(),
+    thread_status: (row) => expect(row.getByTestId('tool-call-card-ao-line-title').filter({ hasText: /^remind\w* · / })).toHaveCount(1),
     thread_item: (row) => expect(row.getByTestId('tool-call-card-ao-outcome')).toContainText('1 match'),
     thread_ask: async (row) => {
       await expect(row.getByTestId('tool-call-card-preview')).toHaveText(`${MORE_TARGET_TITLE} · What changed in the parser?`);
       await expect(row.getByTestId('tool-call-card-ao-link')).toHaveText(MORE_TARGET_TITLE);
+    },
+    thread_spawn: async (row) => {
+      await expect(row.getByTestId('tool-call-card-preview')).toHaveText(MORE_SPAWN_TITLE);
+      await expect(row.getByTestId('tool-call-card-ao-link')).toHaveText(MORE_SPAWN_TITLE);
+      await expect(row.locator('[data-testid="tool-call-card-ao-result-fact"][data-fact="group"]')).toHaveText('Bugs');
     },
     thread_group: (row) => expect(row.getByTestId('tool-call-card-preview')).toHaveText('rename Bugs → Bug sweep'),
     thread_watch: (row) => expect(row.getByTestId('tool-call-card-ao-outcome')).toBeVisible(),

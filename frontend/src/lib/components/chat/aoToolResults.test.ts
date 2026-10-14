@@ -17,6 +17,7 @@ const rid = '1a2b3c4d-aaaa-bbbb-cccc-dddddddddddd';
 const names: AoToolNames = {
   ...NO_AO_NAMES,
   thread: (id) => (id === tid ? 'Docs slice' : ''),
+  threadId: (id) => (id === tid || (id.length >= 6 && tid.startsWith(id)) ? tid : ''),
   run: (id) => (id === rid ? 'digest · Weekly summary' : ''),
 };
 
@@ -91,6 +92,16 @@ describe('thread tool results', () => {
     const view = threadResultView('thread_ask', json({ token: 't', thread_id: 'fork-1', title: 'Docs slice (ask)', state: 'running', outcome: 'backgrounded' }), { thread_id: tid, question: 'Why?' }, names)!;
     expect(view.link).toMatchObject({ kind: 'thread', id: tid, label: 'Docs slice' });
     expect(view.facts).toContainEqual({ label: 'asked', value: 'a read-only copy' });
+  });
+
+  it('links an ask addressed by an id prefix to the full id, and leaves an unknown prefix as text', () => {
+    const ack = json({ token: 't', thread_id: 'fork-1', state: 'running', outcome: 'backgrounded' });
+    const byPrefix = threadResultView('thread_ask', ack, { thread_id: tid.slice(0, 8), question: 'Why?' }, names)!;
+    expect(byPrefix.link).toMatchObject({ kind: 'thread', id: tid, label: 'Docs slice' });
+    expect(byPrefix.facts.find((f) => f.label === 'thread')).toBeUndefined();
+    const unknown = threadResultView('thread_ask', ack, { thread_id: 'target-thr', question: 'Why?' }, names)!;
+    expect(unknown.link).toBeNull();
+    expect(unknown.facts).toContainEqual({ label: 'thread', value: 'target-thr' });
   });
 
   it('reads a list reply as lines, never as JSON', () => {
@@ -181,11 +192,12 @@ describe('thread tool results', () => {
   });
 
   it('reads a reply it has no decoder for as facts, never as JSON', () => {
-    const view = threadResultView('thread_options', json({ provider: 'claude', models: ['a', 'b'], nested: { x: 1 } }), {}, names)!;
+    const view = threadResultView('thread_options', json({ provider: 'claude', models: ['a', 'b'], nested: { x: 1, deep: { a: 1, b: { c: 2 } } } }), {}, names)!;
     expect(view.facts).toEqual([
       { label: 'provider', value: 'claude' },
       { label: 'models', value: 'a, b' },
-      { label: 'nested', value: 'x: 1' },
+      // An object nested in a fact reads as its field count, never its JSON.
+      { label: 'nested', value: 'x: 1\ndeep: 2 fields' },
     ]);
   });
 
@@ -350,9 +362,20 @@ describe('browser tool results', () => {
   });
 
   it('reads an evaluation\'s value and the note after it', () => {
-    const view = browserResultView('browser_evaluate', '{"off":true,"top":900}\nThe page navigated.', names)!;
-    expect(view.preview?.text).toBe('{\n  "off": true,\n  "top": 900\n}');
+    // An object reads as facts and a list as lines, never as JSON.
+    const view = browserResultView('browser_evaluate', '{"off":true,"top":900,"box":{"w":10,"h":20}}\nThe page navigated.', names)!;
+    expect(view.outcome).toBe('returned');
+    expect(view.facts).toEqual([
+      { label: 'off', value: 'true' },
+      { label: 'top', value: '900' },
+      { label: 'box', value: 'w: 10\nh: 20' },
+    ]);
+    expect(view.preview).toBeNull();
     expect(view.note).toBe('The page navigated.');
+    const rows = browserResultView('browser_evaluate_readonly', json([{ name: 'Save', state: 'enabled' }, 'plain']), names)!;
+    expect(rows.outcome).toBe('returned · 2 items');
+    expect(rows.lines.map((l) => [l.title, l.detail])).toEqual([['Save', 'enabled'], ['plain', '']]);
+    expect(rows.preview).toBeNull();
     // A scalar reads as itself, and the WebKit note after it is the note.
     const title = browserResultView('browser_evaluate', '"a title"\nWebKit evaluates in an isolated world.', names)!;
     expect(title.preview?.text).toBe('a title');
@@ -382,8 +405,55 @@ describe('remote tool results', () => {
 
   it('reads the other remote replies as lines and facts', () => {
     expect(aoResultView(REMOTE_TOOLS_SERVER, 'remote_run', json({ id, state: 'running' }), {}, NO_AO_NAMES)).toBeNull();
-    const computers = aoResultView(REMOTE_TOOLS_SERVER, 'remote_computers', json([{ id: 'mac', name: 'Laptop', status: 'online' }]), {}, NO_AO_NAMES)!;
-    expect(computers.lines[0]).toMatchObject({ title: 'Laptop', detail: 'online' });
+    const logs = aoResultView(REMOTE_TOOLS_SERVER, 'remote_jobs', json([{ id: 'j1', name: 'Go tests', status: 'running' }]), {}, NO_AO_NAMES)!;
+    expect(logs.lines[0]).toMatchObject({ title: 'Go tests', detail: 'running' });
+  });
+
+  it('reads each computer as offline with its error, or as its system, projects and tools', () => {
+    const view = aoResultView(REMOTE_TOOLS_SERVER, 'remote_computers', json([
+      {
+        id: 'c1', name: 'Build box', enabled: true,
+        projects: [{ id: 'p1', name: 'app', path: '/w/app', worktrees: [] }],
+        environment: { executionOS: 'linux', architecture: 'amd64', hostOS: 'windows', environment: 'wsl', distribution: 'Ubuntu', executables: { git: '/usr/bin/git', go: '/usr/bin/go' } },
+      },
+      { id: 'c2', name: 'Laptop', enabled: true, projects: [], error: 'The computer is not reachable.' },
+      { id: 'c3', name: 'Mini', enabled: true, projects: [], environment: null, environmentError: 'environment read timed out' },
+    ]), {}, NO_AO_NAMES)!;
+    expect(view.outcome).toBe('3 computers · 1 offline');
+    expect(view.lines.map((l) => [l.title, l.detail, l.text])).toEqual([
+      ['Build box', 'linux/amd64 · WSL Ubuntu · 1 project', 'git, go'],
+      ['Laptop', 'offline', 'The computer is not reachable.'],
+      ['Mini', '0 projects', 'environment read timed out'],
+    ]);
+  });
+});
+
+describe('workflow_schema', () => {
+  it('reads the authoring schema as its fields and one line per definition, never as JSON', () => {
+    const schema = {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      title: 'Agent Overflow Workflow',
+      type: 'object',
+      required: ['id', 'name', 'phases'],
+      properties: { id: { type: 'string' }, name: { type: 'string' }, phases: { type: 'array' } },
+      $defs: {
+        phase: { type: 'object', properties: { id: {}, prompt: {}, gate: {} } },
+        effort: { description: 'Reasoning tier.', enum: ['low', 'high'] },
+        loopBound: { description: 'How many times.', anyOf: [{ type: 'integer' }, { type: 'string' }] },
+      },
+    };
+    const view = workflowResultView('workflow_schema', json(schema), names)!;
+    expect(view.outcome).toBe('Agent Overflow Workflow · 3 fields · 3 definitions');
+    expect(view.facts).toEqual([
+      { label: 'required', value: 'id, name, phases' },
+      { label: 'fields', value: 'id, name, phases' },
+    ]);
+    expect(view.lines.map((l) => [l.title, l.detail, l.text])).toEqual([
+      ['phase', 'object', 'id, prompt, gate'],
+      ['effort', '2 values', 'low, high'],
+      ['loopBound', '2 forms', 'How many times.'],
+    ]);
+    expect(view.preview).toBeNull();
   });
 });
 

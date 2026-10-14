@@ -51,6 +51,11 @@ export interface AoToolNames {
   page(pageId: string): string;
   /** A thread's title. `id` may be the unambiguous prefix the model typed. */
   thread(id: string): string;
+  /**
+   * The full id of the thread `id` names, which may be a prefix: '' when
+   * the prefix is ambiguous or names no thread this client knows.
+   */
+  threadId(id: string): string;
   /** A workflow run's name: its workflow and goal. */
   run(runId: string): string;
 }
@@ -60,8 +65,14 @@ export const NO_AO_NAMES: AoToolNames = {
   job: () => '',
   page: () => '',
   thread: () => '',
+  threadId: (id) => (isFullThreadId(id) ? id : ''),
   run: () => '',
 };
+
+/** Whether `id` is a whole thread id rather than a prefix of one. */
+export function isFullThreadId(id: string): boolean {
+  return id.length === 36;
+}
 
 /**
  * What a thread or workflow tool's reply said, as triage stamped it on the
@@ -256,14 +267,14 @@ const BROWSER_TOOLS: Record<string, AoToolSpec> = {
       return label ? `${page ? `${page} as ` : ''}${quoted(label)}` : page;
     },
   },
-  browser_session: { label: 'session', what: (input) => str(input, 'name') },
+  browser_session: { label: 'name', what: (input) => str(input, 'name') },
   browser_visibility: {
     label: 'show',
     what: (input, names) =>
       input.visible === false ? `hide ${pageRef(input, names) || 'companion'}` : withPage('', input, names),
   },
   browser_viewport: {
-    label: 'viewport',
+    label: 'size',
     what: (input) => {
       const action = str(input, 'action');
       const width = num(input, 'width');
@@ -273,9 +284,9 @@ const BROWSER_TOOLS: Record<string, AoToolSpec> = {
     },
   },
   browser_close_page: { label: 'close', what: pageRef },
-  browser_snapshot: { label: 'snapshot', what: pageRef },
+  browser_snapshot: { label: 'read', what: pageRef },
   browser_screenshot: {
-    label: 'capture',
+    label: 'shot',
     what: (input, names) => withPage(input.full_page === true ? 'full page' : '', input, names),
   },
   browser_locator: {
@@ -343,15 +354,15 @@ const BROWSER_TOOLS: Record<string, AoToolSpec> = {
   browser_evaluate: { label: 'eval', what: (input) => str(input, 'expression') },
   browser_evaluate_readonly: { label: 'eval', what: (input) => str(input, 'expression') },
   browser_clipboard: {
-    label: 'clipboard',
+    label: 'clip',
     what: (input) => {
       const action = str(input, 'action');
       const text = str(input, 'text');
       return [action, text ? quoted(text) : ''].filter(Boolean).join(' ');
     },
   },
-  browser_console_logs: { label: 'console', what: (input) => str(input, 'filter') },
-  browser_downloads: { label: 'download', what: (input) => str(input, 'action') },
+  browser_console_logs: { label: 'logs', what: (input) => str(input, 'filter') },
+  browser_downloads: { label: 'files', what: (input) => str(input, 'action') },
   browser_assets: { label: 'assets', what: (input) => str(input, 'action') },
 };
 
@@ -462,7 +473,7 @@ const THREAD_TOOLS: Record<string, AoToolSpec> = {
         .join(' · ');
     },
   },
-  thread_options: { label: 'options', what: () => 'spawn options' },
+  thread_options: { label: 'list', what: () => 'spawn options' },
   thread_spawn: {
     label: 'spawn',
     what: (input, _names, result) => result.title || str(input, 'title') || firstLine(input, 'prompt'),
@@ -555,8 +566,8 @@ function seedNames(input: Input): string {
 
 const WORKFLOW_TOOLS: Record<string, AoToolSpec> = {
   workflow_list: { label: 'list', what: () => 'workflows' },
-  workflow_validate: { label: 'validate', what: (input) => str(input, 'id') || str(input, 'path') },
-  workflow_schema: { label: 'schema', what: () => 'workflow schema' },
+  workflow_validate: { label: 'check', what: (input) => str(input, 'id') || str(input, 'path') },
+  workflow_schema: { label: 'read', what: () => 'workflow schema' },
   workflow_new: {
     label: 'new',
     what: (input) => {
@@ -579,8 +590,8 @@ const WORKFLOW_TOOLS: Record<string, AoToolSpec> = {
       [runRef(input, names, result), input.tree === true ? 'and its called runs' : ''].filter(Boolean).join(' '),
   },
   run_output: { label: 'output', what: runWithState },
-  run_inspect: { label: 'inspect', what: runPhaseRef },
-  run_narrative: { label: 'narrative', what: runPhaseRef },
+  run_inspect: { label: 'probe', what: runPhaseRef },
+  run_narrative: { label: 'story', what: runPhaseRef },
   run_list: { label: 'list', what: (input) => (input.active_only === true ? 'active runs' : 'runs') },
   run_control: {
     label: 'control',
@@ -596,18 +607,18 @@ const WORKFLOW_TOOLS: Record<string, AoToolSpec> = {
     what: (input, names, result) => [runRef(input, names, result), firstLine(input, 'text')].filter(Boolean).join(' · '),
   },
   run_resolve: {
-    label: 'resolve',
+    label: 'decide',
     what: (input, names, result) => [str(input, 'decision'), runRef(input, names, result)].filter(Boolean).join(' '),
   },
   memory_add: {
-    label: 'remember',
+    label: 'note',
     what: (input) => {
       const kind = str(input, 'kind');
       const text = firstLine(input, 'text');
       return kind && text ? `${kind}: ${text}` : kind || text;
     },
   },
-  memory_list: { label: 'memory', what: (input, names) => str(input, 'kind') || runRef(input, names) || 'campaign notes' },
+  memory_list: { label: 'notes', what: (input, names) => str(input, 'kind') || runRef(input, names) || 'campaign notes' },
 };
 
 export const AO_TOOL_SERVERS: Record<string, AoToolServer> = {
@@ -738,19 +749,26 @@ export function aoToolServer(itemMeta: Record<string, unknown> | null): string |
 }
 
 /**
+ * An ask's reply names the hidden read-only copy that answers it, which is
+ * deleted once it has. The row is about the thread asked: its header, link
+ * and live state follow the call's own target, resolved from the id or
+ * prefix the model typed ('' when it names no one thread).
+ */
+function askTarget(tool: string, input: Input, result: AoResultStamp, names: AoToolNames): AoResultStamp {
+  if (tool !== 'thread_ask') return result;
+  const computer = str(input, 'computer_id');
+  return {
+    ...result,
+    threadId: names.threadId(str(input, 'thread_id')),
+    title: '',
+    computer: computer ? names.computer(computer) : '',
+  };
+}
+
+/**
  * The presentation for an AO tool row, or null when the row is not one
  * (a native tool, or a user-configured MCP server).
  */
-/**
- * An ask's reply names the hidden read-only copy that answers it, which is
- * deleted once it has. The row is about the thread asked: its header, link
- * and live state follow the call's own target.
- */
-function askTarget(tool: string, input: Input, result: AoResultStamp): AoResultStamp {
-  if (tool !== 'thread_ask') return result;
-  return { ...result, threadId: str(input, 'thread_id'), title: '', computer: str(input, 'computer_id') };
-}
-
 export function aoToolPresentation(
   itemMeta: Record<string, unknown> | null,
   names: AoToolNames = NO_AO_NAMES,
@@ -760,7 +778,7 @@ export function aoToolPresentation(
   const server = AO_TOOL_SERVERS[mcp.server];
   if (!server) return null;
   const input = readInput(itemMeta);
-  const result = askTarget(mcp.tool, input, readAoResultStamp(itemMeta));
+  const result = askTarget(mcp.tool, input, readAoResultStamp(itemMeta), names);
   const spec = server.tools[mcp.tool];
   const label = spec
     ? spec.label

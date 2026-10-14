@@ -214,20 +214,22 @@ describe('AO thread tool rows', () => {
     expect((await findByTestId('tool-call-card-ao-error')).textContent).toContain('shown above');
   });
 
-  it('shows the whole message in the body when the header\'s copy was clipped', async () => {
-    const message = `Branch "feature/x" is checked out elsewhere. ${'More detail. '.repeat(40)}`;
+  it('shows a long message whole in the header once the body has read it, and never twice', async () => {
+    const message = `Branch "feature/x" is checked out elsewhere. ${'More detail. '.repeat(40)}The end of it.`;
     replyWith(`[thread_invalid_request] ${message}`);
     const item = thread('thread_spawn', { input: { prompt: 'p', worktree: 'feature/x' }, is_error: true }, {
       status: 'errored',
       payloadId: 'p-err',
-      payloadMeta: JSON.stringify({ isError: true, preview: `[thread_invalid_request] ${message.slice(0, 120)}…` }),
+      payloadMeta: JSON.stringify({ isError: true, preview: `[thread_invalid_request] ${message.slice(0, 214)}…` }),
     });
-    const { getByTestId, findByTestId } = render(GenericToolCallRow, { props: { item } });
+    const { getAllByTestId, getByTestId, findByTestId, container } = render(GenericToolCallRow, { props: { item } });
+    expect(getAllByTestId('row-error-msg')[0].textContent).not.toContain('The end of it.');
     await fireEvent.click(getByTestId('tool-call-card-toggle'));
-    const body = await findByTestId('tool-call-card-ao-error');
-    expect(body.textContent).toContain(message.trim());
-    expect(body.textContent).toContain('thread_invalid_request');
-    expect(body.textContent).not.toContain('[thread_invalid_request]');
+    expect((await findByTestId('tool-call-card-ao-error')).textContent).toContain('shown above');
+    const [header] = getAllByTestId('row-error-msg');
+    expect(header.textContent).toBe(message);
+    expect(getAllByTestId('row-error-code')).toHaveLength(1);
+    expect(container.textContent!.split('The end of it.').length - 1).toBe(1);
   });
 
   it('lists a status call\'s requests and folds past the list limit', async () => {
@@ -307,6 +309,8 @@ describe('AO tool replies past the payload preview, and replies nothing decodes'
     // Until the rest arrives the body says what it is doing, not the JSON.
     await waitFor(() => expect(chunk).toHaveBeenCalled());
     const output = getByTestId('tool-call-card-body');
+    expect(getByTestId('tool-call-card-ao-undecoded').textContent).toMatch(/^Reading the whole reply \(\d+(\.\d)? KB\)…$/);
+    expect(output.textContent).not.toContain('Loading…');
     expect(output.textContent).not.toContain('"transcript"');
     expect(queryByTestId('tool-call-card-show-full')).toBeNull();
     release();
@@ -314,6 +318,22 @@ describe('AO tool replies past the payload preview, and replies nothing decodes'
     expect(getByTestId('tool-call-card-ao-link').textContent).toBe('Docs slice');
     expect(getByTestId('tool-call-card-ao-preview').textContent).toContain('line 0 of the answer');
     expect(output.textContent).not.toContain('"transcript"');
+  });
+
+  it('stops reading a reply whose next chunk failed, and offers a retry', async () => {
+    const full = JSON.stringify({ thread_id: CHILD, title: 'Docs slice', transcript: 'x'.repeat(40 * 1024) });
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: full.slice(0, 32 * 1024), nextOffset: 32 * 1024, totalSize: full.length, isComplete: false })));
+    const chunk = vi.fn(async () => { throw new Error('chunk read failed'); });
+    setBindingMock('GetPayloadChunk', chunk);
+    const item = thread('thread_show', { input: { thread_id: CHILD } }, { payloadId: 'p-chunk-fails' });
+    const { getByTestId, findByTestId } = render(GenericToolCallRow, { props: { item } });
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    await findByTestId('tool-call-card-retry');
+    expect(getByTestId('tool-call-card-body').textContent).toContain('Failed to load: chunk read failed');
+    // Give a retry loop the turns it would need to show itself.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(chunk).toHaveBeenCalledTimes(1);
   });
 
   it('says a reply past the read limit is too large instead of loading or painting it', async () => {
@@ -374,6 +394,17 @@ describe('AO tool replies past the payload preview, and replies nothing decodes'
     expect(reported).not.toHaveBeenCalled();
   });
 
+  it('lists a fact the input and the reply both state once, as the reply says it', async () => {
+    replyWith(JSON.stringify({ thread_id: CHILD, effect: 'cancelled', state: 'cancelled', label: 'nightly board', token: TOKEN }));
+    const item = thread('thread_cancel', { input: { thread_id: CHILD, label: 'nightly board', token: TOKEN } }, { payloadId: 'p-cancel' });
+    const { getByTestId, findByTestId, container } = render(GenericToolCallRow, { props: { item } });
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    await findByTestId('tool-call-card-ao-outcome');
+    const labels = [...container.querySelectorAll('[data-fact]')].map((el) => [el.getAttribute('data-testid'), el.getAttribute('data-fact')]);
+    expect(labels.filter(([, label]) => label === 'label')).toEqual([['tool-call-card-ao-result-fact', 'label']]);
+    expect(labels.filter(([, label]) => label === 'request')).toEqual([['tool-call-card-ao-result-fact', 'request']]);
+  });
+
   it('heads and links an ask by the thread asked, not the copy that answers', async () => {
     replyWith(JSON.stringify({ token: TOKEN, kind: 'ask', thread_id: 'fork-9', title: 'Copy of Docs slice', state: 'running', outcome: 'backgrounded', revision: 0, notify: true }));
     const item = thread('thread_ask', {
@@ -388,6 +419,34 @@ describe('AO tool replies past the payload preview, and replies nothing decodes'
     const link = getByTestId('tool-call-card-ao-link');
     expect(link.textContent).toBe('Docs slice');
     expect(link.getAttribute('title')).toBe('Open Docs slice');
+  });
+
+  it('links an ask addressed by an id prefix to the full id, and leaves an ambiguous prefix as text', async () => {
+    const target = 'target-thr-aaaa-bbbb-cccc-dddddddddd';
+    replyWith(JSON.stringify({ token: TOKEN, kind: 'ask', thread_id: 'fork-9', state: 'running', outcome: 'backgrounded', revision: 0, notify: true }));
+    replaceAllThreads([makeThread({ id: target, title: 'Release notes' })]);
+    const item = thread('thread_ask', {
+      input: { thread_id: 'target-thr', question: 'What shipped?' },
+      ao_result: { token: TOKEN, thread_id: 'fork-9', state: 'running', outcome: 'backgrounded' },
+    }, { payloadId: 'p-ask-prefix' });
+    const view = render(GenericToolCallRow, { props: { item, pane: paneWith([item]) } });
+    expect(view.getByTestId('tool-call-card-preview').textContent).toContain('Release notes · What shipped?');
+    await fireEvent.click(view.getByTestId('tool-call-card-toggle'));
+    await view.findByTestId('tool-call-card-ao-outcome');
+    const link = view.getByTestId('tool-call-card-ao-link');
+    expect(link.dataset.linkId).toBe(target);
+    expect(link.tagName).toBe('BUTTON');
+    view.unmount();
+
+    // Two threads share the prefix: no one thread is named, so no link.
+    replaceAllThreads([makeThread({ id: target, title: 'Release notes' }), makeThread({ id: 'target-thr-eeee-bbbb-cccc-dddddddddd', title: 'Other' })]);
+    const ambiguous = render(GenericToolCallRow, { props: { item, pane: paneWith([item]) } });
+    expect(ambiguous.getByTestId('tool-call-card-preview').textContent).toContain('thread target-t · What shipped?');
+    await fireEvent.click(ambiguous.getByTestId('tool-call-card-toggle'));
+    await ambiguous.findByTestId('tool-call-card-ao-outcome');
+    expect(ambiguous.queryByTestId('tool-call-card-ao-link')).toBeNull();
+    const shown = ambiguous.getAllByTestId('tool-call-card-ao-result-fact').map((el) => [el.dataset.fact, el.textContent?.trim()]);
+    expect(shown).toContainEqual(['thread', 'target-thr']);
   });
 });
 

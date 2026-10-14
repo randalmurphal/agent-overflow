@@ -190,3 +190,31 @@ export async function shootRow(row: Locator, path: string): Promise<void> {
   }, { intervals: [150], timeout: 10_000 }).toBe(true);
   await row.screenshot({ path, animations: 'disabled' });
 }
+
+/** Whether an element's first text runs to its end inside the element's own box. */
+export function firstTextFits(element: Locator): Promise<boolean> {
+  return element.evaluate((el) => {
+    const text = document.createTreeWalker(el, NodeFilter.SHOW_TEXT).nextNode();
+    if (!text) return true;
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    return range.getBoundingClientRect().right <= el.getBoundingClientRect().right + 0.5;
+  });
+}
+
+/**
+ * Checks the row's gutter verb shows whole in its fixed column and, once
+ * open, that every listed line's title shows whole: a line's detail is
+ * what truncation cuts.
+ */
+export async function expectRowTextWhole(row: Locator): Promise<void> {
+  const label = row.getByTestId('tool-call-card-toggle-label-slot').first();
+  const verb = (await label.textContent())?.trim() ?? '';
+  expect(await label.evaluate((el) => el.scrollWidth <= el.clientWidth), `gutter verb "${verb}" clipped`).toBe(true);
+  for (const title of await row.getByTestId('tool-call-card-ao-line-title').all()) {
+    expect(await firstTextFits(title), `line title "${await title.textContent()}" clipped`).toBe(true);
+  }
+  for (const link of await row.getByTestId('tool-call-card-ao-line-link').all()) {
+    expect(await link.evaluate((el) => el.scrollWidth <= el.clientWidth), `line link "${await link.textContent()}" clipped`).toBe(true);
+  }
+}

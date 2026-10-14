@@ -6,7 +6,7 @@
 
 import { test, expect } from './fixtures.js';
 import type { Locator } from '@playwright/test';
-import { SPAWN_TITLE, TARGET_TITLE, driveAoToolRows, expandRow, openLead, shootRow, toolRow } from './ao-tool-rows-helpers.js';
+import { SPAWN_TITLE, TARGET_TITLE, driveAoToolRows, expandRow, expectRowTextWhole, firstTextFits, openLead, shootRow, toolRow } from './ao-tool-rows-helpers.js';
 
 for (const provider of ['claude', 'codex'] as const) {
   test(`${provider}: AO tool rows read on the compact thread screen`, async ({ harness, page }) => {
@@ -40,13 +40,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(rows[0][1].getByTestId('tool-call-card-ao-live-hint')).toHaveText('(answer arrived)', { timeout: 30_000 });
     // The header's own text keeps its room; the hint after it is what the
     // row's truncation cuts.
-    const textFits = await rows[0][1].getByTestId('tool-call-card-preview').evaluate((el) => {
-      const text = document.createTreeWalker(el, NodeFilter.SHOW_TEXT).nextNode()!;
-      const range = document.createRange();
-      range.selectNodeContents(text);
-      return range.getBoundingClientRect().right <= el.getBoundingClientRect().right + 0.5;
-    });
-    expect(textFits, 'spawn header text clipped beside its hint').toBe(true);
+    expect(await firstTextFits(rows[0][1].getByTestId('tool-call-card-preview')), 'spawn header text clipped beside its hint').toBe(true);
     // What each row's result must say once open. Checked as each row opens:
     // the timeline windows rows that scroll far off screen.
     const opened: Record<string, (row: Locator) => Promise<void>> = {
@@ -65,6 +59,7 @@ for (const provider of ['claude', 'codex'] as const) {
       await expandRow(row);
       await opened[name](row);
       await fits(row);
+      await expectRowTextWhole(row);
       await shot(`${name}-expanded`, row);
     }
   });

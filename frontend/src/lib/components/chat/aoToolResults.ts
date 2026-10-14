@@ -258,8 +258,12 @@ function threadAckView(tool: string, reply: Input, input: Input, names: AoToolNa
   const outcome = str(reply, 'outcome');
   view.outcome = join(requestState(state), outcome !== 'settled' ? words(outcome) : '');
   if (tool === 'thread_ask') {
-    const id = str(input, 'thread_id');
+    // The model may address the thread by an id prefix; the link needs the
+    // full id, and a prefix this client cannot resolve stays text.
+    const typed = str(input, 'thread_id');
+    const id = names.threadId(typed);
     view.link = threadLink(id, threadName(id, names), str(input, 'computer_id'), '');
+    if (!id) fact(view.facts, 'thread', typed);
     fact(view.facts, 'asked', 'a read-only copy');
   } else {
     const id = str(reply, 'thread_id');
@@ -830,15 +834,41 @@ function validationView(reply: Input): AoResultView {
 }
 
 /**
+ * The authoring schema (`internal/workflow/def/workflow.schema.json`): its
+ * top-level fields, then one line per definition naming its fields, its
+ * values or what it describes.
+ */
+function schemaView(reply: Input): AoResultView {
+  const view = emptyView();
+  const fields = Object.keys(obj(reply.properties) ?? {});
+  const defs = Object.entries(obj(reply.$defs) ?? {});
+  view.outcome = join(str(reply, 'title') || 'authoring schema', plural(fields.length, 'field'), plural(defs.length, 'definition'));
+  fact(view.facts, 'required', strings(reply.required).join(', '));
+  fact(view.facts, 'fields', fields.join(', '));
+  for (const [name, value] of defs) {
+    const def = obj(value) ?? {};
+    const props = Object.keys(obj(def.properties) ?? {});
+    const values = Array.isArray(def.enum) ? def.enum : null;
+    const forms = Array.isArray(def.anyOf) ? def.anyOf.length : Array.isArray(def.oneOf) ? def.oneOf.length : 0;
+    view.lines.push({
+      key: name,
+      title: name,
+      detail: values ? plural(values.length, 'value') : forms ? plural(forms, 'form') : str(def, 'type'),
+      text: clipText(props.length ? props.join(', ') : values ? values.map(valueLines).join(', ') : str(def, 'description'), LINE_TEXT_MAX),
+      link: null,
+    });
+  }
+  return view;
+}
+
+/**
  * Reads a workflow tools reply (`internal/workflowtools`), routed by the
  * tool that answered: several replies carry a run id, and each has its own
  * shape.
  */
 export function workflowResultView(tool: string, data: string, names: AoToolNames): AoResultView | null {
   const parsed = parseFirstJson(data);
-  if (tool === 'workflow_schema' && parsed !== undefined) {
-    return { ...emptyView(), outcome: 'authoring schema', preview: { label: 'schema', text: data } };
-  }
+  if (tool === 'workflow_schema' && obj(parsed)) return schemaView(obj(parsed)!);
   if (Array.isArray(parsed)) return tool === 'run_list' ? runListView(list(parsed), names) : arrayView(parsed, names);
   const reply = obj(parsed);
   if (!reply) return null;
@@ -894,11 +924,12 @@ export function browserResultView(tool: string, data: string, names: AoToolNames
     // Any JSON value is a result here, a bare string or number included;
     // the note the server appends after it is guidance.
     if (!first) return null;
-    const view = emptyView();
-    view.outcome = 'returned';
     const value = first.value;
-    view.preview = { label: 'value', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? String(value) };
-    view.note = first.rest;
+    const record = obj(value);
+    const view = record ? factsView(record, names) : Array.isArray(value) ? arrayView(value, names) : emptyView();
+    if (!record && !Array.isArray(value)) view.preview = { label: 'value', text: valueLines(value) || String(value) };
+    view.outcome = join('returned', view.outcome);
+    view.note = join(view.note, first.rest);
     return view;
   }
   const parsed = first?.value;
@@ -956,9 +987,40 @@ export function remoteResultView(data: string): RemoteResultView | null {
   };
 }
 
+/**
+ * A `remote_computers` listing (`internal/app/app_remote_jobs.go`
+ * AgentComputer): one line per computer, an unreachable one reading as
+ * offline with its error, a reachable one as its system, environment and
+ * projects with the tools it found.
+ */
+function remoteComputersView(rows: Input[]): AoResultView {
+  const view = emptyView();
+  let offline = 0;
+  for (const row of rows) {
+    const error = str(row, 'error');
+    if (error) offline++;
+    const env = obj(row.environment);
+    const system = env ? join(
+      [str(env, 'executionOS'), str(env, 'architecture')].filter(Boolean).join('/'),
+      str(env, 'environment') === 'wsl' ? `WSL ${str(env, 'distribution')}`.trim() : '',
+    ) : '';
+    const projects = list(row.projects);
+    view.lines.push({
+      key: str(row, 'id'),
+      title: str(row, 'name') || `computer ${shortId(str(row, 'id'))}`,
+      detail: error ? 'offline' : row.enabled === false ? 'not enabled' : join(system, plural(projects.length, 'project')),
+      text: clipText(error || str(row, 'environmentError') || Object.keys(obj(env?.executables) ?? {}).join(', '), LINE_TEXT_MAX),
+      link: null,
+    });
+  }
+  view.outcome = join(rows.length ? plural(rows.length, 'computer') : 'no computers', offline ? `${offline} offline` : '');
+  return view;
+}
+
 /** The other remote replies (listings, logs, fetches): their facts and lines. */
-function remoteOtherView(data: string, names: AoToolNames): AoResultView | null {
+function remoteOtherView(tool: string, data: string, names: AoToolNames): AoResultView | null {
   const parsed = parseFirstJson(data);
+  if (tool === 'remote_computers' && Array.isArray(parsed)) return remoteComputersView(list(parsed));
   if (Array.isArray(parsed)) return arrayView(parsed, names);
   const reply = obj(parsed);
   return reply ? factsView(reply, names) : null;
@@ -1065,7 +1127,7 @@ export function aoResultView(
     case BROWSER_TOOLS_SERVER:
       return browserResultView(tool, data, names);
     case REMOTE_TOOLS_SERVER:
-      return remoteResultView(data) ? null : remoteOtherView(data, names);
+      return remoteResultView(data) ? null : remoteOtherView(tool, data, names);
     default:
       return null;
   }

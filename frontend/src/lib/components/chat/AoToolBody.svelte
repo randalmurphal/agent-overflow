@@ -89,12 +89,21 @@
   // this size. A thread_show or thread_item read is at most 1 MiB of text.
   const AO_REPLY_MAX = 2 * 1024 * 1024;
 
-  let clipped = $derived(tool.fullWhat !== tool.what);
-  let hasDetails = $derived(clipped || facts.length > 0);
-  let allLines = $state(false);
-  let rawShown = $state(false);
   let partial = $derived(expansion.displayData !== null && !expansion.isComplete);
   let tooLarge = $derived(partial && expansion.totalSize > AO_REPLY_MAX);
+  let data = $derived(partial ? null : expansion.displayData);
+  let error = $derived(failed && data !== null ? aoToolError(data) : null);
+  let remote = $derived(!failed && data !== null && tool.server === REMOTE_TOOLS_SERVER ? remoteResultView(data) : null);
+  let view = $derived(failed || remote || data === null ? null : aoResultView(tool.server, tool.tool, data, input, names));
+  // An input the reply also states is listed once, as the reply says it.
+  let inputFacts = $derived.by(() => {
+    const replied = new Set(view?.facts.map((fact) => fact.label));
+    return replied.size ? facts.filter((fact) => !replied.has(fact.label)) : facts;
+  });
+  let clipped = $derived(tool.fullWhat !== tool.what);
+  let hasDetails = $derived(clipped || inputFacts.length > 0);
+  let allLines = $state(false);
+  let rawShown = $state(false);
 
   $effect(() => {
     if (!expansion.expanded || !partial || tooLarge) return;
@@ -133,7 +142,7 @@
           <dd class="whitespace-pre-wrap break-all font-mono" data-testid="tool-call-card-ao-full">{tool.fullWhat}</dd>
         </div>
       {/if}
-      {#each facts as fact, index (index)}
+      {#each inputFacts as fact, index (index)}
         <div class="flex gap-2">
           <dt class="shrink-0 text-fg-hint">{fact.label}</dt>
           <dd class="min-w-0 break-all" data-testid="tool-call-card-ao-fact" data-fact={fact.label}>
@@ -156,11 +165,9 @@
     {deferredOutputError}
     copyLabel="Copy result"
     offerMore={tooLarge && rawShown}
+    holdWhileLoading
   >
-    {#snippet renderContent({ data, testId })}
-      {@const error = failed && !partial ? aoToolError(data) : null}
-      {@const remote = !failed && !partial && tool.server === REMOTE_TOOLS_SERVER ? remoteResultView(data) : null}
-      {@const view = failed || remote || partial ? null : aoResultView(tool.server, tool.tool, data, input, names)}
+    {#snippet renderContent({ data: shown, testId })}
       <div
         class="ansi-body min-w-0 max-w-full max-h-60 overflow-y-auto overflow-x-hidden px-3 py-2 text-[0.6875rem] leading-relaxed text-fg-muted"
         use:nestedScroll
@@ -176,7 +183,7 @@
             {/if}
           </p>
           {#if rawShown}
-            <AnsiText source={data} class="whitespace-pre-wrap break-all font-mono" />
+            <AnsiText source={shown} class="whitespace-pre-wrap break-all font-mono" />
           {/if}
         {:else if error}
           <div data-testid="tool-call-card-ao-error">
@@ -230,14 +237,16 @@
             <ul class="mb-1 space-y-1" data-testid="tool-call-card-ao-lines">
               {#each allLines ? view.lines : view.lines.slice(0, LIST_LINES) as line, index (`${line.key}:${index}`)}
                 <li class="min-w-0" data-testid="tool-call-card-ao-line">
+                  <!-- Truncation cuts the detail before the title: it runs on
+                       inside the title's text, or beside a link it gives way first. -->
                   <div class="flex min-w-0 items-baseline gap-1.5">
                     {#if line.link}
                       <AoToolLink link={line.link} {viewer} testId="tool-call-card-ao-line-link" />
+                      {#if line.detail}
+                        <span class="min-w-0 shrink-[999] truncate text-fg-hint">· {line.detail}</span>
+                      {/if}
                     {:else}
-                      <span class="min-w-0 truncate text-fg-muted">{line.title}</span>
-                    {/if}
-                    {#if line.detail}
-                      <span class="min-w-0 truncate text-fg-hint">· {line.detail}</span>
+                      <span class="min-w-0 truncate text-fg-muted" data-testid="tool-call-card-ao-line-title">{line.title}{#if line.detail}<span class="text-fg-hint"> · {line.detail}</span>{/if}</span>
                     {/if}
                   </div>
                   {#if line.text}
@@ -280,11 +289,11 @@
         {:else}
           <!-- Text no decoder reads: said, not painted, until asked for. -->
           <p class="mb-1 flex flex-wrap items-baseline gap-x-1.5 text-fg-hint" data-testid="tool-call-card-ao-undecoded">
-            <span>Reply not decoded, {formatPayloadSize(new TextEncoder().encode(data).length)}.</span>
+            <span>Reply not decoded, {formatPayloadSize(new TextEncoder().encode(shown).length)}.</span>
             {@render rawToggle()}
           </p>
           {#if rawShown}
-            <AnsiText source={data} class="whitespace-pre-wrap break-all font-mono" />
+            <AnsiText source={shown} class="whitespace-pre-wrap break-all font-mono" />
           {/if}
         {/if}
       </div>

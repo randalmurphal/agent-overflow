@@ -28,13 +28,14 @@
     {title}
     data-testid={testId}
     data-link-kind={link.kind}
+    data-link-id={link.id}
     onclick={(event) => {
       event.stopPropagation();
       target.open?.();
     }}
   >{link.label}</button>
 {:else}
-  <span class="min-w-0 truncate text-fg-muted" data-testid={testId} data-link-kind={link.kind}>{link.label}</span>
+  <span class="min-w-0 truncate text-fg-muted" data-testid={testId} data-link-kind={link.kind} data-link-id={link.id}>{link.label}</span>
 {/if}
 {#if computer}
   <span class="shrink-0 text-fg-hint" data-testid="{testId}-computer">on {computer}</span>

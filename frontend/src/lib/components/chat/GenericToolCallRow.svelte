@@ -37,6 +37,7 @@
     aoToolPresentation,
     aoToolServer,
     computerName as aoComputerName,
+    isFullThreadId,
     REMOTE_TOOLS_SERVER,
     THREAD_TOOLS_SERVER,
     type AoToolNames,
@@ -97,6 +98,14 @@
     const held = attachRemoteJobs(item.threadId);
     return () => held.release();
   });
+  /** The thread an id or the unambiguous prefix `thread_id` accepts (six characters or more) names. */
+  function namedThread(id: string) {
+    const thread = getThreadById(id);
+    if (thread || id.length < 6 || isFullThreadId(id)) return thread;
+    const matches = getThreads().filter((t) => t.id.startsWith(id));
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+
   const aoNames: AoToolNames = {
     computer: (id) => {
       const entry = attachedBackendEntry(id);
@@ -107,14 +116,8 @@
       const page = browserCompanionState(item.threadId)?.pages?.find((p) => p.id === pageId);
       return page?.label || page?.title || '';
     },
-    thread: (id) => {
-      const thread = getThreadById(id);
-      if (thread) return thread.title;
-      // `thread_id` accepts an unambiguous prefix of at least six characters.
-      if (id.length < 6 || id.length >= 36) return '';
-      const matches = getThreads().filter((t) => t.id.startsWith(id));
-      return matches.length === 1 ? matches[0].title : '';
-    },
+    thread: (id) => namedThread(id)?.title ?? '',
+    threadId: (id) => namedThread(id)?.id ?? (isFullThreadId(id) ? id : ''),
     run: (runId) => {
       const run = getWorkflowRun(runId);
       if (!run) return '';
@@ -278,10 +281,13 @@
   );
   // An AO tool call that failed: its reply is the server's message, with a
   // `[code]` prefix on the thread and workflow servers. The payload's
-  // preview carries it, so the row says what went wrong without a read.
+  // preview carries its opening, so the row says what went wrong without a
+  // read; once the body has read the reply, the header shows it whole and
+  // the body does not repeat it.
   let aoRowError = $derived.by(() => {
     if (!aoTool || !rowError || rowError.code) return rowError;
-    const preview = statusMeta?.preview;
+    const read = expansion.expanded && expansion.isComplete ? expansion.displayData : null;
+    const preview = read?.trim() ? read : statusMeta?.preview;
     if (typeof preview !== 'string' || !preview.trim()) return rowError;
     const error = aoToolError(preview);
     return { tone: rowError.tone, msg: error.message, code: error.code || undefined };

@@ -998,7 +998,9 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
   shows the target and the message's first line; a read shows the thread
   and its window; a status or search shows what it asked; a loop, watch or
   reminder shows its label, cadence and next fire. Every id reads as the
-  name this client knows it by, else a short form.
+  name this client knows it by, else a short form. The gutter verb fits
+  the header's fixed label column on desktop and compact
+  (`aoToolLabels.browser.test.ts`).
 - The wire projection clips a long input to its opening
   (`internal/itemwire`), which is all the header needs; the expanded body
   reads the full input from the stored row.
@@ -1007,14 +1009,23 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
   its computer when it is another one) or the run in the workflows
   overlay, the facts a person reads, one line per request or hit, and long
   text folded behind "show more". Each tool's reply has its own decoder;
-  a reply shape none knows reads as facts and lines, and text that is not
-  JSON reads "Reply not decoded" with its size and a "Show raw" control.
-  A reply past the 32 KB payload preview loads whole (up to 2 MiB) before
-  it is decoded; a larger one says so and offers the raw text. The JSON
-  the model read is never the default view. A failed call shows its
-  message with the `[code]` as a chip.
+  a reply shape none knows reads as facts and lines (an object nested in a
+  fact as its field count), and text that is not JSON reads "Reply not
+  decoded" with its size and a "Show raw" control. The authoring schema
+  reads as its fields and one line per definition; an evaluation's object
+  or list value reads as facts or lines; `remote_computers` lists each
+  computer as offline with its error, or as its system, projects and
+  tools. A reply past the 32 KB payload preview loads whole (up to 2 MiB)
+  before it is decoded, with "Reading the whole reply" and its size
+  meanwhile; a larger one says so and offers the raw text, and a failed
+  read offers a retry. The JSON the model read is never the default view.
+  An input fact the reply also states is listed once, as the reply says
+  it. A failed call shows its message with the `[code]` as a chip; the
+  header shows the preview's opening until the body has read the reply,
+  then the whole message, which the body does not repeat.
 - An ask names and links the thread asked, not the hidden read-only copy
-  that answers it.
+  that answers it; an id prefix links the one thread it names, and a
+  prefix that names none or several stays text.
 - A spawn, send or ask that returned before its answer follows the
   request: the target thread's state (an ask: waiting on the answer) until
   the answer's wake row (the user row carrying the request's token, joined
