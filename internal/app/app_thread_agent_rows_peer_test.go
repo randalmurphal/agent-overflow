@@ -531,7 +531,11 @@ func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) 
 		stalled[i].Token = fmt.Sprintf("stalled-%d", i)
 		a.refreshPeerAgentRows(stalled[i], 0)
 	}
-	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() == threadAgentPeerListsPerComputer })
+	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() >= threadAgentPeerListsPerComputer })
+	time.Sleep(200 * time.Millisecond)
+	if calls := peer.calls.Load(); calls != threadAgentPeerListsPerComputer {
+		t.Fatalf("one computer was sent %d calls at once; want %d", calls, threadAgentPeerListsPerComputer)
+	}
 	other := pair.spawn
 	other.Token, other.TargetComputerID = "other-computer", uuid.NewString()
 	a.refreshPeerAgentRows(other, 0)
