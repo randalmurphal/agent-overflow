@@ -17,6 +17,8 @@ import (
 func TestThreadAgentIncomingRequestWithdrawTellsTheSender(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
+	// The sender's wake starts its session once queued.
+	f.mockClaudeHoldingTheTurn(t, "working")
 	f.holdCallerTurn(t)
 	target := f.busyThread(t, "busy")
 	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
@@ -62,6 +64,7 @@ func TestThreadAgentIncomingRequestWithdrawTellsTheSender(t *testing.T) {
 	if again, err := f.app.StopThreadAgentIncoming(t.Context(), target.ID, sendID); err != nil || again.Outcome != threadAgentEnded {
 		t.Fatalf("a second withdraw = %+v, %v; want ended", again, err)
 	}
+	f.app.waitAgentNoticeWork()
 }
 
 // An answer queued for this thread's own request is an incoming row too;
@@ -97,6 +100,8 @@ func TestThreadAgentIncomingReplyWithdrawLeavesTheAnswerOwed(t *testing.T) {
 func TestThreadAgentStopAllWithdrawsIncomingAndRefusesAPersonsMessage(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
+	// The sender's wake starts its session once queued.
+	f.mockClaudeHoldingTheTurn(t, "working")
 	f.holdCallerTurn(t)
 	target := f.busyThread(t, "busy")
 	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
@@ -117,6 +122,7 @@ func TestThreadAgentStopAllWithdrawsIncomingAndRefusesAPersonsMessage(t *testing
 		t.Fatalf("Stop All = %+v, want the incoming request withdrawn", stops)
 	}
 	f.awaitRequestState(t, ack.Token, store.ThreadRequestCancelled)
+	f.app.waitAgentNoticeWork()
 }
 
 // A loop's wake, a script's outside send and a worker's question are
