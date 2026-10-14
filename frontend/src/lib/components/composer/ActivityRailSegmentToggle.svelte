@@ -59,6 +59,7 @@
     <span
       class="h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
       aria-hidden="true"
+      data-activity-rail-pulse
       data-testid="{testIdPrefix}-{segment}-pulse"
     ></span>
   {/if}

@@ -32,7 +32,7 @@ export function visibleAgentRows(
   now: number,
   lingerMs: number,
 ): ThreadAgentRow[] {
-  const keep = new Array<boolean>(rows.length).fill(false);
+  const keep: boolean[] = Array.from({ length: rows.length }, () => false);
   // shownBelow[d]: a row at depth d, after the current one and before the
   // next row at a shallower depth, is shown.
   const shownBelow: boolean[] = [];

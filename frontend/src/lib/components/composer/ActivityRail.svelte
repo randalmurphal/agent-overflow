@@ -350,4 +350,17 @@
   :global([data-activity-rail-row]:is([data-density='minimal'], [data-compact])) {
     column-gap: 0.25rem;
   }
+  /* The densest rung: the running pulse goes (the body says what runs),
+     and the segments and the row's edges close up. */
+  :global([data-activity-rail-row][data-density='tight'] [data-activity-rail-pulse]),
+  :global([data-activity-rail-row][data-density='tight'] [data-activity-rail-separator]),
+  :global([data-activity-rail-row][data-density='tight'] [data-activity-rail-name]),
+  :global([data-activity-rail-row][data-density='tight'] [data-activity-rail-preview]),
+  :global([data-activity-rail-row][data-density='tight'] [data-activity-rail-verb]) {
+    display: none;
+  }
+  :global([data-activity-rail-row][data-density='tight']) {
+    column-gap: 0.125rem;
+    padding-inline: 0.375rem;
+  }
 </style>
