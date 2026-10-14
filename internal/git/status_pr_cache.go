@@ -108,16 +108,20 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 	// leaves a fresh identity in the forge cache. Unknown here (cold or
 	// expired entry) means "not observed" and never invalidates below.
 	origin := c.cachedOrigin(cwd)
+	// The answer's lifetime, and a failure's wait before the forge is asked
+	// again, run from when the forge answered: a request that hung for most
+	// of the read timeout must not use up the wait that follows it.
+	answered := c.nowFn()
 
 	c.prCacheMu.Lock()
-	expiresAt := now.Add(prLookupTTL)
+	expiresAt := answered.Add(prLookupTTL)
 	failures := 0
 	if lookupError != "" {
 		failures = 1
 		if prev, ok := c.prCache[key]; ok {
 			failures = prev.failures + 1
 		}
-		expiresAt = now.Add(c.prLookupErrorDelay(failures))
+		expiresAt = answered.Add(c.prLookupErrorDelay(failures))
 		// A transient forge failure (rate limit, expired token, CLI upgrade)
 		// must not blank the PR badge: keep serving the last PR seen for this
 		// (cwd, branch) next to the error. The backoff still governs how
@@ -134,7 +138,7 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 			}
 		}
 	}
-	c.storePRLookupLocked(cwd, key, epoch, now, prCacheEntry{
+	c.storePRLookupLocked(cwd, key, epoch, answered, prCacheEntry{
 		url:         url,
 		number:      number,
 		lookupError: lookupError,

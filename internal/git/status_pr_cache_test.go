@@ -729,3 +729,47 @@ func TestStatusReportsWhenAFailedLookupIsRecheckedNext(t *testing.T) {
 		t.Fatalf("recovered status = PR %d recheck %v, want PR 7 and no recheck", recovered.OpenPRNumber, recovered.OpenPRRecheckAt)
 	}
 }
+
+// An answer's lifetime, and a failure's wait, run from when the forge
+// answered, not from when the request went out: a request that hangs for
+// longer than the wait must not be followed at once by another. The fake
+// clock moves only inside the forge's handler, standing in for the time the
+// request took.
+func TestLookupOpenPRTimesItsAnswerFromWhenTheForgeAnswered(t *testing.T) {
+	t.Parallel()
+	const took = 45 * time.Second
+	start := time.Now()
+	var clock atomic.Int64
+	clock.Store(start.UnixNano())
+	var mode atomic.Value
+	mode.Store("fail")
+	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op != "OpenPRsByHead" {
+			return forgeUnexpected(t, call)
+		}
+		clock.Add(int64(took))
+		if mode.Load().(string) == "pr7" {
+			return githubData(`{"repository":{"pullRequests":{"nodes":[{"url":"https://example.com/pr/7","number":7,"title":"seven","state":"OPEN"}]}}}`)
+		}
+		return forgeAPIAnswer{Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`}
+	})
+	core.nowFn = func() time.Time { return time.Unix(0, clock.Load()) }
+	cwd := t.TempDir()
+	seedForgeCacheGitHub(t, core, cwd)
+
+	core.lookupOpenPR(t.Context(), cwd, "feat")
+	if got, want := core.openPRRecheckAt(cwd, "feat"), start.Add(took+prLookupErrorBase); !got.Equal(want) {
+		t.Fatalf("failed lookup re-checked at %v, want %v: the wait must start when the forge answered", got, want)
+	}
+
+	mode.Store("pr7")
+	clock.Add(int64(prLookupErrorBase))
+	answered := time.Unix(0, clock.Load()).Add(took)
+	core.lookupOpenPR(t.Context(), cwd, "feat")
+	core.prCacheMu.RLock()
+	expiresAt := core.prCache[prCacheKey(cwd, "feat")].expiresAt
+	core.prCacheMu.RUnlock()
+	if want := answered.Add(prLookupTTL); !expiresAt.Equal(want) {
+		t.Fatalf("successful lookup expires at %v, want %v", expiresAt, want)
+	}
+}

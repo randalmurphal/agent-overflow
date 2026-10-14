@@ -218,7 +218,9 @@ one lacks it; paged by 100 until one is found, at most
 forge request. An answer is cached for `prLookupTTL` (30s), a "no open PR"
 included and never longer. A failed lookup is retried after 20s, doubling
 per consecutive failure of that (workspace, branch) up to 15 minutes, and
-keeps showing the PR it last found; a success resets the count. The
+keeps showing the PR it last found; a success resets the count. Both the
+TTL and the wait run from when the forge answered, so a request that hung
+does not use up the wait after it. The
 status watcher re-runs the lookup when that retry is due
 (`GitStatus.OpenPRRecheckAt`), since a forge that recovers changes nothing
 on disk; `AO_HARNESS_TIMING` `pr-lookup-retry` shortens the first retry
