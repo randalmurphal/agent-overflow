@@ -177,13 +177,16 @@ func (a *App) ThreadToolResolve(ctx context.Context, resolve ThreadPeerResolve) 
 //ao:scope threads:read
 //ao:route selected
 func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
-	if _, err := a.remoteCommandOwner(ctx); err != nil {
+	owner, err := a.remoteCommandOwner(ctx)
+	if err != nil {
 		return ThreadPeerReply{}, err
 	}
 	if err := a.requireScope(ctx, transport.ScopeThreadsRead, "read a thread"); err != nil {
 		return ThreadPeerReply{}, err
 	}
 	switch call.Tool {
+	case threadAgentPeerRows:
+		return a.serveThreadAgentPeer(ctx, owner, call)
 	case "thread_search", "thread_show", "thread_item", "thread_options", "thread_status":
 	default:
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
@@ -211,6 +214,8 @@ func (a *App) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPe
 		return a.runThreadPeerTool(ctx, call)
 	case "thread_spawn", "thread_send", "thread_ask", "thread_cancel":
 		return a.runThreadPeerRequest(ctx, owner, call)
+	case threadAgentPeerStop:
+		return a.serveThreadAgentPeer(ctx, owner, call)
 	}
 	return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 		fmt.Sprintf("%s is not a thread tools write call.", call.Tool), nil)

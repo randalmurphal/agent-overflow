@@ -35,7 +35,7 @@ func (f *requestFixture) watchAgentRows() {
 
 func (f *requestFixture) agentRows(t *testing.T, threadID string) ThreadAgentRows {
 	t.Helper()
-	rows, err := f.app.ListThreadAgentRows(threadID)
+	rows, err := f.app.ListThreadAgentRows(t.Context(), threadID)
 	if err != nil {
 		t.Fatalf("ListThreadAgentRows(%s): %v", threadID, err)
 	}
@@ -183,7 +183,7 @@ func TestThreadAgentRowStopCancelsForTheUser(t *testing.T) {
 	ack := f.runningRequest(t, "rebuild the index")
 
 	stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
-	if err != nil || stop.Outcome != threadAgentStopped {
+	if err != nil || stop.Outcome != threadAgentStopped || len(stop.Failures) != 0 {
 		t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
 	}
 	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestCancelled)
@@ -312,11 +312,10 @@ func TestThreadAgentRowsStopAllCascades(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StopThreadAgentRows: %v", err)
 	}
-	slices.SortFunc(stops, func(a, b ThreadAgentStop) int { return strings.Compare(a.Token, b.Token) })
-	want := []ThreadAgentStop{{Token: child.Token, Outcome: threadAgentStopped}, {Token: grand.Token, Outcome: threadAgentStopped}}
-	slices.SortFunc(want, func(a, b ThreadAgentStop) int { return strings.Compare(a.Token, b.Token) })
-	if !slices.Equal(stops, want) {
-		t.Fatalf("stops = %+v; want %+v", stops, want)
+	// One result per top-level row; the child's Stop reached its own spawn.
+	if len(stops) != 1 || stops[0].Token != child.Token || stops[0].Outcome != threadAgentStopped ||
+		stops[0].Nested != 1 || len(stops[0].Failures) != 0 {
+		t.Fatalf("stops = %+v; want the child stopped with its one nested agent", stops)
 	}
 	f.awaitRequestState(t, child.Token, store.ThreadRequestCancelled)
 	f.awaitRequestState(t, grand.Token, store.ThreadRequestCancelled)
@@ -379,4 +378,22 @@ func TestThreadAgentRowsChangesAreEmitted(t *testing.T) {
 	frame(func(c ThreadAgentRowChange) bool {
 		return c.ID == ack.Token && c.Row != nil && c.Row.State == threadtools.RequestCancelled
 	})
+}
+
+// The thread's own Stop ends its turn and leaves the threads it is waiting
+// on running: a Stop does not quiet later wakes.
+func TestThreadStopLeavesItsAgentRows(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "working")
+	child := f.runningRequest(t, "lead the fix")
+	if err := f.app.interruptTurnCtx(t.Context(), f.caller.ID); err != nil {
+		t.Fatalf("interrupt the caller: %v", err)
+	}
+	if row := f.request(t, child.Token); row.State != store.ThreadRequestRunning || !row.Notify {
+		t.Fatalf("after the caller's Stop the child's request is %q, notify %v", row.State, row.Notify)
+	}
+	if rows := f.agentRows(t, f.caller.ID).Rows; len(rows) != 1 || rows[0].State != threadtools.RequestRunning {
+		t.Fatalf("rows after the caller's Stop = %+v", rows)
+	}
 }

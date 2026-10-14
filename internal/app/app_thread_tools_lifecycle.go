@@ -28,7 +28,7 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 // woken with (its notify stays armed) so it knows the stop was not its own.
 const (
 	threadRequestSenderCancel = "The sender cancelled this request."
-	threadRequestUserStop     = "The user stopped it from the Agents tray in your thread; you did not cancel it."
+	threadRequestUserStop     = "The user stopped it from the Agents tray; you did not cancel it."
 )
 
 // stopThreadRequestWorkFor is stopThreadRequestWork with the answer the
