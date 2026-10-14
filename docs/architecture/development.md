@@ -90,7 +90,8 @@ The jobs fill the Free plan's 20 concurrent slots where the time is: one
 Linux job for `fmt-check`, `tidy-check`, `go-vet`, `go-build`, `provider-smoke-compile`
 and `bindings-check`, a macOS `go-build`, one job for `go-lint` and
 `go-vuln`, the frontend job (`check`, `build`, `frontend-lint`), `go-test`
-in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`), the
+in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`) plus
+one with `GO_TEST_FLAGS='-tags noremote'`, the
 Vitest unit and browser projects as two jobs under `bin/ao-netns`, and
 `make e2e` in eight Playwright shards with three workers each (`E2E_ARGS`,
 `AO_E2E_WORKERS`), and `make release-upgrade-check` as `upgrade-lineage`
