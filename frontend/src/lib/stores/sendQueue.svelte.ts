@@ -65,6 +65,12 @@ export interface QueueItem {
   revisionSourceDiffReview?: SourceDiffReview | null;
   revisionSourceDiffCommentIds?: readonly string[];
   enqueuedAt: number;
+  /** Attribution of a message the app queued for an agent or a wake; read
+   * through `agentMessageKind` (utils/userMessageMeta.ts). Absent on a
+   * person's message. */
+  origin?: string;
+  originThread?: unknown;
+  originWake?: unknown;
 }
 
 /** What the provider has told us about a flushed message's delivery.
@@ -533,6 +539,7 @@ export function queueItemFromWire(item: WireQueuedItem): QueueItem {
       ? [...item.revisionSourceDiffCommentIds]
       : undefined,
     enqueuedAt: item.enqueuedAt,
+    ...(item.origin ? { origin: item.origin, originThread: item.originThread ?? undefined, originWake: item.originWake ?? undefined } : {}),
   };
 }
 

@@ -515,6 +515,7 @@ export {
   WakeThreadWakeNow,
   CancelThreadWake,
   ListThreadAgentRows,
+  StopThreadAgentIncoming,
   StopThreadAgentRow,
   StopThreadAgentRows,
   CancelThreadRemoteCommand,

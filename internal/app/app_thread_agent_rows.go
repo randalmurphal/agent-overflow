@@ -463,7 +463,7 @@ func (a *App) parkedRequestTokens() []string {
 
 // StopThreadAgentRow stops one Agents row of the thread: it cancels the
 // request, as thread_cancel does, with the caller's wake left armed so its
-// agent learns a person stopped it. When the row's caller spawned the target
+// agent learns a person stopped it. When the row's caller spawned the target,
 // the Stop cascades into it as stopping a provider subagent does: its
 // Backgrounded items, its running turn, and its own Agents rows, each by the
 // same rule, on whichever computer it runs (agent_stop). A computer that

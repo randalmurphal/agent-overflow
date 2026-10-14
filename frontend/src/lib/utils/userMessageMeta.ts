@@ -152,6 +152,37 @@ export function agentWakeOriginLabel(wake: UserMessageOriginWake): string {
   return wake.label ? `${kind} · ${wake.label}` : kind;
 }
 
+/**
+ * What an agent's message to this thread is, or null for a person's own:
+ *
+ * - `request`: a spawn's first message or a `thread_send` from another
+ *   thread (`agent-thread`).
+ * - `reply`: the answer to a request this thread made, which carries the
+ *   answering thread (`agent-thread` with a `thread-wake` send id).
+ * - `question`: a worker's question or approval put to the standing agent
+ *   that spawned it (`agent-wake`).
+ * - `wake`: a loop's fire, a watch's output, a script's outside send, or
+ *   this thread's own reminder.
+ *
+ * Reads a `user_text` row's meta and a queued message alike: both carry
+ * the origin fields and the send id the app gave the message
+ * (internal/app/app_thread_tools_wake.go#threadWakeSendID).
+ */
+export type AgentMessageKind = 'request' | 'reply' | 'question' | 'wake';
+
+export function agentMessageKind(meta: Pick<UserMessageMeta, 'origin' | 'originThread' | 'originWake' | 'sendId'>): AgentMessageKind | null {
+  const origin = userMessageOrigin(meta);
+  if (origin === 'agent-wake') {
+    const wake = userMessageOriginWake(meta);
+    return wake?.kind === 'question' || wake?.kind === 'approval' ? 'question' : 'wake';
+  }
+  if (origin !== 'agent-thread') return null;
+  const sendId = stringField(meta.sendId);
+  if (!sendId.startsWith('thread-wake:') && !sendId.startsWith('thread-wake-late:')) return 'request';
+  // A reminder is this thread's own wake: it names no other thread.
+  return userMessageOriginThread(meta) ? 'reply' : 'wake';
+}
+
 function stringField(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }

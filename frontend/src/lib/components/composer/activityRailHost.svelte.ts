@@ -1,5 +1,6 @@
-// Host-side state for the ActivityRail: the background-tasks controller,
-// the shared 1Hz clock, and the rail's visibility predicate. Owned by the
+// Host-side state for the ActivityRail: the background-tasks, wake and
+// agents controllers, the shared 1Hz clock, and the rail's visibility
+// predicate. Owned by the
 // HOST (Composer), not the rail, because visibility is load-bearing
 // geometry there: the composer mounts the rail iff `railVisible` and
 // renders its transparent height-reservation spacer as the exact
@@ -32,17 +33,22 @@ import {
   type BackgroundController,
 } from './activityRailBackground.svelte';
 import { createWakeController, type WakeController } from './activityRailWakes.svelte';
+import { createAgentController, type AgentController } from './activityRailAgents.svelte';
 
 export interface ActivityRailHost {
   readonly bg: BackgroundController;
   /** The thread's loops, watches and reminders, listed in the same tray. */
   readonly wakes: WakeController;
+  /** The threads this thread is waiting on and the messages queued for it
+   *  by other agents: the Agents segment. */
+  readonly agents: AgentController;
   readonly clock: SharedNowClock;
   /** The thread's lifetime usage, fetched only under compact, where the
    *  rail carries the usage chip; the chip renders from this same query. */
   readonly usage: UsageStats;
   readonly railVisible: boolean;
-  /** Subscribe the background and wake controllers; returns a disposer. */
+  /** Subscribe the background, wake and agents controllers; returns a
+   *  disposer. */
   mount(): () => void;
 }
 
@@ -60,12 +66,17 @@ export function createActivityRailHost(
   // prune.
   const bg = createBackgroundController(getPane, () => clock.now);
   const wakes = createWakeController(getPane);
+  const agents = createAgentController(getPane, () => clock.now);
+  // The Agents body's elapsed labels need the clock while it is open, and a
+  // settled row's linger needs it until the row leaves.
   const clock = createSharedNowClock(() => {
     const wantsClockForWorking =
       getActiveTurn(getPane().threadId) !== null && !hasInputRequest();
     const wantsClockForBackground =
       getPane().activityRailBackgroundOpen || bg.hasPendingCompletion;
-    return wantsClockForWorking || wantsClockForBackground;
+    const wantsClockForAgents =
+      (getPane().activityRailAgentsOpen && agents.shown > 0) || agents.hasPendingSettled;
+    return wantsClockForWorking || wantsClockForBackground || wantsClockForAgents;
   });
 
   // Under compact the rail also carries the thread's usage chip (the
@@ -86,21 +97,25 @@ export function createActivityRailHost(
       getPane().liveTodo !== null ||
       bg.count > 0 ||
       wakes.count > 0 ||
+      agents.shown > 0 ||
       hasSpend,
   );
 
   return {
     get bg() { return bg; },
     get wakes() { return wakes; },
+    get agents() { return agents; },
     get clock() { return clock; },
     get usage() { return usage; },
     get railVisible() { return railVisible; },
     mount: () => {
       const disposeBg = bg.mount();
       const disposeWakes = wakes.mount();
+      const disposeAgents = agents.mount();
       return () => {
         disposeBg();
         disposeWakes();
+        disposeAgents();
       };
     },
   };

@@ -12,6 +12,11 @@
 // Clicking it dismisses it early. A settled row with an open row nested under
 // it stays while that row does.
 //
+// It also lists the incoming messages: what other threads' agents, wakes
+// and workers queued behind this thread's current turn, read from the send
+// queue's store and classified by agentMessageKind. Each leaves when it is
+// dispatched.
+//
 // Owned beside the background and wake controllers by the composer's rail
 // host, which counts it in the rail's visibility. One controller per
 // composer; it holds one list, at most the backend's 128 rows.
@@ -19,6 +24,8 @@
 import { untrack } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { ListThreadAgentRows, type ThreadAgentRow } from '../../stores/bindings';
+import { getQueueForThread, type QueueItem } from '../../stores/sendQueue.svelte';
+import { agentMessageKind, type AgentMessageKind } from '../../utils/userMessageMeta';
 import { onThreadAgentRowsChanged } from '../../stores/eventsThreadAgentRows';
 import { getTransportStatusFor, onBackendStatusChange } from '../../stores/transportStatus.svelte';
 import { threadBackend } from '../../transport/entityIndex';
@@ -34,14 +41,22 @@ import { AGENT_ROW_SETTLED_LINGER_MS } from './activityRailBackground.svelte';
 const REFRESH_DELAY_MS = 100;
 const REFRESH_MAX_WAIT_MS = 400;
 
+/** A message queued for the thread by an agent or a wake, with its kind. */
+export interface IncomingAgentMessage {
+  readonly item: QueueItem;
+  readonly kind: AgentMessageKind;
+}
+
 export interface AgentController {
   /** The rows the tray shows, in tree order, identity kept per token. */
   readonly rows: ThreadAgentRow[];
+  /** Incoming messages, in queue order. */
+  readonly incoming: IncomingAgentMessage[];
   /** Whether the backend left rows out at its bound. */
   readonly hidden: boolean;
-  /** Open rows: the segment's count. */
+  /** Open rows and incoming messages: the segment's count. */
   readonly count: number;
-  /** Rows shown at all: whether the segment renders. */
+  /** Rows and incoming messages shown at all: whether the segment renders. */
   readonly shown: number;
   /** Rows running: the toggle's pulse and the body's `N running`. */
   readonly runningCount: number;
@@ -129,15 +144,26 @@ export function createAgentController(
   const rows = $derived(
     keepRows(visibleAgentRows(listed, settledSeen, dismissed, getNow(), AGENT_ROW_SETTLED_LINGER_MS)),
   );
-  const count = $derived(rows.filter((row) => !isSettledAgentRow(row)).length);
+  // Identity per queue item comes from the queue store, which replaces an
+  // entry only when its snapshot does.
+  const incoming = $derived.by<IncomingAgentMessage[]>(() => {
+    const out: IncomingAgentMessage[] = [];
+    for (const item of getQueueForThread(threadId)) {
+      const kind = agentMessageKind(item);
+      if (kind) out.push({ item, kind });
+    }
+    return out;
+  });
+  const count = $derived(rows.filter((row) => !isSettledAgentRow(row)).length + incoming.length);
   const runningCount = $derived(rows.filter((row) => row.state === 'running').length);
   const hasPendingSettled = $derived(rows.some(isSettledAgentRow));
 
   return {
     get rows() { return rows; },
+    get incoming() { return incoming; },
     get hidden() { return hidden; },
     get count() { return count; },
-    get shown() { return rows.length; },
+    get shown() { return rows.length + incoming.length; },
     get runningCount() { return runningCount; },
     get hasPendingSettled() { return hasPendingSettled; },
     get threadId() { return threadId; },
