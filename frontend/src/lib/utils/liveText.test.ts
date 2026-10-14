@@ -28,6 +28,17 @@ function makeStream(length: number, newlineEvery: number, seed: number): string 
   return parts.join('').slice(0, length);
 }
 
+// The window contract one append broke, or null. Checked with plain
+// comparisons: a feed makes tens of thousands of appends, and an `expect`
+// per check per append costs seconds.
+function contractBreak(w: TextWindow, stream: string, previousEnd: number, end: number): string | null {
+  if (w.start + w.text.length !== end) return `window ends at ${w.start + w.text.length}, text at ${end}`;
+  if (w.start !== 0 && stream[w.start - 1] !== '\n') return `window starts at ${w.start}, not at a line start`;
+  if (previousEnd > 0 && w.start >= previousEnd) return `window starts at ${w.start}, at or past the previous end ${previousEnd}`;
+  if (w.start > 0 && w.text.length < LIVE_WINDOW_KEEP_CHARS) return `window keeps ${w.text.length} characters`;
+  return null;
+}
+
 // Feed `stream` to a window in deltas of 1..maxDelta characters, checking the
 // window's contract after every append.
 function feed(stream: string, maxDelta: number, seed: number): TextWindow[] {
@@ -39,10 +50,8 @@ function feed(stream: string, maxDelta: number, seed: number): TextWindow[] {
     const previousEnd = end;
     end = Math.min(stream.length, end + 1 + next(maxDelta));
     const w = window.append(stream.slice(previousEnd, end));
-    expect(w.start + w.text.length).toBe(end);
-    expect(w.start === 0 || stream[w.start - 1] === '\n').toBe(true);
-    if (previousEnd > 0) expect(w.start).toBeLessThan(previousEnd);
-    if (w.start > 0) expect(w.text.length).toBeGreaterThanOrEqual(LIVE_WINDOW_KEEP_CHARS);
+    const broken = contractBreak(w, stream, previousEnd, end);
+    if (broken) expect(broken).toBeNull();
     windows.push(w);
   }
   for (const w of windows.filter((_, i) => i % 97 === 0).concat(windows.at(-1)!)) {

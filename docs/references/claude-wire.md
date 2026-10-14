@@ -2328,6 +2328,48 @@ ever binds the wake prompt.
 - A FOREGROUND agent is unchanged: its exit kills its shells (§Background
   task ownership), so there is nothing to park.
 
+**Dropped wake.** Captured live against claude 2.1.284 (2026-10-14,
+`local_agent_dropped_wake_20261014.ndjson`; the delivered counterpart is
+`local_agent_mirror_wake_20261014.ndjson`). When the owned shell reports
+and the CLI cannot resume the parked agent (the capture removes the
+agent's `isolation:"worktree"` worktree while it is parked), the shell's
+own `task_updated` + `task_notification` arrive as usual and then
+nothing else on stdout: no `task_started`, no `task_updated` for the
+agent, no level-set change. The only record is in the session file,
+which `--session-mirror` streams (§`--session-mirror`): the wake prompt
+is enqueued and then removed with a reason.
+
+```json
+{"type":"transcript_mirror","filePath":"…/<session>.jsonl","entries":[{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>bn191xeyo</task-id>\n<tool-use-id>toolu_01KiGqDdgbxy144W69pHVtUK</tool-use-id>…"},{"type":"queue-operation","operation":"remove","reason":"agent_stopped","content":"<task-notification>…"}]}
+```
+
+The 2.1.284 bundle's wake router removes a queued wake with
+`agent_stopped` when the resume is refused or the agent was stopped by
+the user, and with `resume_failed` after five failed resumes; both drop
+the wake for good. `delivered_to_agent` and `absorbed_mid_turn` mark a
+wake that reached the agent. Nothing retries a dropped wake, so the
+agent never runs again. A later `stop_task` naming it acks `success`
+with no frames, as it does for any task the CLI no longer has.
+
+The parser (`parse_queue_operation.go`) strips every `queue-operation`
+entry from a mirror batch and emits `agent_wake_dropped` for each
+`<task-notification>` a drop reason removes, naming the command's task
+and tool_use. Triage (`agent_wake_dropped.go`) resolves the command's
+agent and, once no other owned command of that agent is still live, ends
+each of its parked runs with an `errored` sibling, `status_source:
+wake_dropped`. The dropped command counts as finished even when its own
+terminal has not been written yet, so the order of the two records does
+not matter. A later wake would still run the agent, so a drop while
+another owned command runs leaves it parked.
+
+**Stop of a task the CLI no longer has.** Because that ack carries no
+frames, the parser emits `background_task_stop_acked` from the
+`control_response` of a successful `stop_task`, on the read loop after
+every frame before it. Triage (`background_stop_ack.go`) settles any
+named run still open at that point as `killed`, `status_source:
+stop_acked`. When the CLI did stop the task, its kill frames came first
+and already settled it, so the ack writes nothing.
+
 **AO's park model (triage, `agent_stops.go`).** Every stop of a
 background agent's run writes a completion-shaped `tool_completion`
 sibling at the write head, `completion_of` = the row that started the
@@ -2351,7 +2393,8 @@ agent end (`agent_end.go`) fires only for the ending sibling.
 The wake drops the stash and persists the parser's wake row under the
 ROOT on the launch's turn, opening the next run. The ending sibling is
 written on the first stop with no live owned shell, on
-`task_updated{killed}`, and on session end; a `TaskOutput` observation
+`task_updated{killed}`, on a dropped wake, on a `stop_task` ack that
+found the run still open, and on session end; a `TaskOutput` observation
 of a parked agent writes nothing. A §E6 rebind of a parked agent
 retires the rows it was bound to (`RetireParkedAgentLaunches`): their
 parked sibling already records the run, and the carrier's runs write
@@ -2368,7 +2411,7 @@ that is still open.
 agent launch it returns with its run state, read by the same statement
 (`serveAgentRunStates`), as `subagentRunState`: `done` or `ended` (an
 ending sibling exists; `ended` when its `status_source` is
-`session_died`), else `parked` when the launch's newest stop is a parked
+`session_died` or `wake_dropped`), else `parked` when the launch's newest stop is a parked
 sibling no wake has followed (the predicate `Store.CurrentParkedStop`
 reads), else `running`. A parked launch also carries what that sibling
 recorded: `subagentParkedCommands` (N) and, when the run wrote a report,
@@ -3883,6 +3926,12 @@ mirrored scope. Ownerless `agent_metadata` plus `isSidechain:true` and
 the buffer and leaves the command unprojected. If the file, entry, or byte bound
 drops any prefix data, AO persists a warning beneath the command row instead of
 leaving the gap silent.
+
+The main session file's mirror also carries its uuid-less
+`queue-operation` rows (enqueue, dequeue, remove with a `reason`). The
+parser reads them before any routing or buffering and never projects
+them; a `remove` with a drop reason is the only signal of a dropped
+wake (§E6b).
 
 No capture yet shows a moved agent that parks (§E6b) and later wakes.
 The code assumes its woken rounds continue in the same mirrored file:

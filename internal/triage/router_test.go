@@ -99,6 +99,8 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventSubagentProgress:           true, // live per-subagent counters; in-memory + provider:subagent_progress, final numbers persisted at terminal
 		provider.EventSubagentBackgrounded:       true, // Claude task_updated is_backgrounded patch; stamps the launch row's streaming cut
 		provider.EventBackgroundTasksChanged:     true, // Claude level set of live background tasks; forwarded as a tray refresh with the set
+		provider.EventAgentWakeDropped:           true, // Claude mirrored queue-operation drop; ends a parked agent the CLI will not wake
+		provider.EventBackgroundTaskStopAcked:    true, // Claude stop_task success reply; settles a named task the CLI no longer had
 		provider.EventTerminalInteraction:        true, // Codex polling marker; triage persists empty-stdin variant
 		provider.EventUserText:                   true, // Phase A: dispatch case wired; full handler lands in Phase E
 		provider.EventCommandLifecycle:           true, // Claude stdin delivery ack; live UI state only, never persisted

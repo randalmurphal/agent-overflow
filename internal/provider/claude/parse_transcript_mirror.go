@@ -78,9 +78,19 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 	if err := json.Unmarshal(raw["entries"], &envelope.Entries); err != nil {
 		return nil, fmt.Errorf("parse transcript_mirror entries: %w", err)
 	}
-	if len(envelope.Entries) == 0 {
-		return nil, nil
+	// Queue operations are session records, not transcript rows; only a
+	// dropped agent wake among them is an event (parse_queue_operation.go).
+	entries, dropped := takeQueueOperations(threadID, envelope.Entries, now)
+	if len(entries) == 0 {
+		return dropped, nil
 	}
+	envelope.Entries = entries
+	events, err := p.parseTranscriptMirrorEntries(threadID, envelope, now)
+	return append(dropped, events...), err
+}
+
+// parseTranscriptMirrorEntries routes a mirror batch's transcript rows.
+func (p *Parser) parseTranscriptMirrorEntries(threadID string, envelope transcriptMirrorEnvelope, now time.Time) ([]provider.ProviderEvent, error) {
 	if envelope.FilePath == "" {
 		envelope.FilePath = envelope.LegacyFilePath
 	}

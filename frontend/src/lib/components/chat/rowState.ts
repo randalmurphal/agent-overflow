@@ -55,22 +55,36 @@ function backgroundLaunchSettled(item: Pick<Item, 'meta'>): boolean {
   return parseJsonObject(item.meta)?.live_background_active === false;
 }
 
-/**
- * A background agent's completion sibling that the session's death wrote
- * (triage stamps `status_source: "session_died"`, tool_lifecycle.go): the
- * agent was neither stopped by the user nor failed; the session ended under
- * it. Read off the sibling's `meta`, never its payload meta.
- */
-export function completionEndedBySessionDeath(
-  meta: Record<string, unknown> | null | undefined,
-): boolean {
-  return meta?.status_source === 'session_died';
-}
-
 export const SESSION_DIED_ROW_ERROR: RowErrorData = {
   tone: 'error',
   msg: 'Session ended before the agent finished',
 };
+
+export const WAKE_DROPPED_ROW_ERROR: RowErrorData = {
+  tone: 'error',
+  msg: 'Claude could not resume the agent',
+};
+
+/**
+ * The line of a background agent's completion sibling that something other
+ * than the agent ended, by the `status_source` triage stamps on it; null
+ * for any other sibling. Read off the sibling's `meta`, never its payload
+ * meta.
+ *
+ * - `session_died` (tool_lifecycle.go): the session ended under the agent;
+ *   it was neither stopped by the user nor failed.
+ * - `wake_dropped` (agent_wake_dropped.go): the agent was parked on a
+ *   command it started, and when the command finished Claude could not
+ *   resume it.
+ */
+export function agentEndedRowError(
+  status: ItemStatus,
+  meta: Record<string, unknown> | null | undefined,
+): RowErrorData | null {
+  if (status === 'killed' && meta?.status_source === 'session_died') return SESSION_DIED_ROW_ERROR;
+  if (status === 'errored' && meta?.status_source === 'wake_dropped') return WAKE_DROPPED_ROW_ERROR;
+  return null;
+}
 
 /**
  * `stopped` is the copy for a `killed` row: a provider stop or kill, distinct

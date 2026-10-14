@@ -49,13 +49,14 @@ type controlResponseResult struct {
 }
 
 // pendingControlRequest is the pendingControlRequests map value: the
-// waiter's channel plus whether this round-trip is an `interrupt`
-// (derived from the request's wire subtype in sendControlRequest — only
-// Session.Interrupt sends it). The read loop uses the flag to call
-// Parser.MarkInterruptAcked on a successful ack.
+// waiter's channel plus what the read loop does with a successful ack,
+// both derived from the request's wire subtype in sendControlRequest.
+// isInterrupt calls Parser.MarkInterruptAcked; stopTaskID is the task a
+// `stop_task` named, whose ack becomes EventBackgroundTaskStopAcked.
 type pendingControlRequest struct {
 	ch          chan *controlResponseResult
 	isInterrupt bool
+	stopTaskID  string
 }
 
 // normalizeClaudePermissionMode keeps only permission modes the CLI accepts
@@ -142,8 +143,11 @@ func (s *Session) SetInteractionMode(ctx context.Context, mode provider.Interact
 func (s *Session) sendControlRequest(ctx context.Context, opName string, request map[string]any) (*controlResponseResult, error) {
 	requestID := s.allocateControlRequestID()
 	ch := make(chan *controlResponseResult, 1)
-	isInterrupt := request["subtype"] == "interrupt"
-	if !s.registerControlRequest(requestID, pendingControlRequest{ch: ch, isInterrupt: isInterrupt}) {
+	pending := pendingControlRequest{ch: ch, isInterrupt: request["subtype"] == "interrupt"}
+	if request["subtype"] == "stop_task" {
+		pending.stopTaskID, _ = request["task_id"].(string)
+	}
+	if !s.registerControlRequest(requestID, pending) {
 		return nil, fmt.Errorf("claude: %s: session closing", opName)
 	}
 
@@ -294,10 +298,9 @@ func (s *Session) releaseControlRequest(requestID string) {
 // deliverControlResponse is the read-loop-side half: it matches an
 // inbound control_response to a pending outbound control_request and delivers the
 // result. Unknown request_ids are returned as delivered=false so the
-// caller can log once and drop. wasInterrupt reports whether the
-// matched request was Session.Interrupt's — the read loop uses it to
-// flag the parser before the CLI's result line is parsed.
-func (s *Session) deliverControlResponse(requestID string, res *controlResponseResult) (wasInterrupt, delivered bool) {
+// caller can log once and drop. The matched request tells the read loop
+// what a successful ack also means (pendingControlRequest).
+func (s *Session) deliverControlResponse(requestID string, res *controlResponseResult) (pendingControlRequest, bool) {
 	s.controlRequestMu.Lock()
 	pending, ok := s.pendingControlRequests[requestID]
 	if ok {
@@ -305,14 +308,14 @@ func (s *Session) deliverControlResponse(requestID string, res *controlResponseR
 	}
 	s.controlRequestMu.Unlock()
 	if !ok {
-		return false, false
+		return pendingControlRequest{}, false
 	}
 	select {
 	case pending.ch <- res:
 	default:
 		// Channel already drained by timeout — nothing to do.
 	}
-	return pending.isInterrupt, true
+	return pending, true
 }
 
 // clearPendingControlRequests closes every outstanding control-request waiter so
@@ -386,10 +389,26 @@ func (s *Session) handleControlResponseLine(line []byte) {
 		res.errMsg = fmt.Sprintf("unexpected control_response subtype %q", raw.Response.Subtype)
 	}
 
-	wasInterrupt, delivered := s.deliverControlResponse(requestID, res)
+	pending, delivered := s.deliverControlResponse(requestID, res)
 	if !delivered {
 		log.Printf("claude: control_response with no pending request_id %q (subtype=%s)", requestID, raw.Response.Subtype)
 		return
+	}
+	// A stop_task's kill frames precede its ack on stdout, and this runs
+	// on the read loop after their events were delivered, so the ack event
+	// lands behind them (claude-wire.md §E6b, stop of an ended task).
+	if pending.stopTaskID != "" && res.ok {
+		meta, err := json.Marshal(provider.BackgroundTaskStopAckedMeta{TaskID: pending.stopTaskID})
+		if err != nil {
+			log.Printf("claude: encode stop_task ack for %s: %v", pending.stopTaskID, err)
+		} else {
+			s.onEvent(provider.ProviderEvent{
+				Kind:      provider.EventBackgroundTaskStopAcked,
+				ThreadID:  s.threadID,
+				Meta:      meta,
+				Timestamp: time.Now(),
+			})
+		}
 	}
 	// A successful interrupt ack flags the parser so the upcoming result
 	// envelope classifies as user-aborted even when its `errors[]`
@@ -400,7 +419,7 @@ func (s *Session) handleControlResponseLine(line []byte) {
 	// claude-wire.md §result). A timed-out interrupt whose ack arrives
 	// after releaseControlRequest is NOT delivered and never marks — the
 	// classification then falls back to the errors[] heuristic.
-	if wasInterrupt && res.ok {
+	if pending.isInterrupt && res.ok {
 		s.parser.MarkInterruptAcked()
 	}
 }

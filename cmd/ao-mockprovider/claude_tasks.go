@@ -45,8 +45,8 @@ import (
 // and no notification, a shell with `task_updated{killed}` and
 // `task_notification{stopped}`. A running agent's stop_task is written as
 // the interrupt writes that agent's kill; no capture has it on its own. A
-// task that is not running gets the ack alone: the CLI's answer to it is
-// not captured.
+// task that is not running gets the ack alone, as the CLI answers a task it
+// no longer has (§E6b, dropped wake capture of 2026-10-14).
 //
 // A task's ownership comes from the frames: a shell belongs to the agent
 // whose launch `tool_use` its own `tool_use` hangs under

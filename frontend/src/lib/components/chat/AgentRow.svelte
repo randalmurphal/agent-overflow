@@ -66,10 +66,9 @@
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
   import {
-    completionEndedBySessionDeath,
+    agentEndedRowError,
     indicatorStateForItem,
     rowErrorWithFallback,
-    SESSION_DIED_ROW_ERROR,
     type IndicatorState,
   } from './rowState';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
@@ -181,13 +180,13 @@
   let indicatorState = $derived(
     indicatorOverride ?? indicatorStateForItem(effectiveStatusItem, { payloadMeta: statusPayloadMeta }),
   );
-  // A completion the session's death wrote is neither a failure nor a
-  // user's stop; its own line says what happened.
+  // A completion something other than the agent wrote (its session's
+  // death, a wake Claude dropped) is neither a failure nor a user's stop;
+  // its own line says what happened.
   let statusItemMeta = $derived(parseJsonObject(effectiveStatusItem.meta));
   let rowError = $derived(
-    completionEndedBySessionDeath(statusItemMeta) && effectiveStatusItem.status === 'killed'
-      ? SESSION_DIED_ROW_ERROR
-      : rowErrorWithFallback(effectiveStatusItem, { meta: statusPayloadMeta, fallback: 'Agent failed', stopped: 'Agent stopped' }),
+    agentEndedRowError(effectiveStatusItem.status, statusItemMeta)
+      ?? rowErrorWithFallback(effectiveStatusItem, { meta: statusPayloadMeta, fallback: 'Agent failed', stopped: 'Agent stopped' }),
   );
 
   // Same door the card uses: the PANE decides where opening routes (the
