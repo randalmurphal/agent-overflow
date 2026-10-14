@@ -218,9 +218,18 @@ one lacks it; paged by 100 until one is found, at most
 forge request. An answer is cached for `prLookupTTL` (30s), a "no open PR"
 included and never longer. A failed lookup is retried after 20s, doubling
 per consecutive failure of that (workspace, branch) up to 15 minutes, and
-keeps showing the PR it last found; a success resets the count.
-`InvalidatePRCache` drops a workspace's answers, and a lookup in flight
-across it does not cache its result. The app's create action, and an
+keeps showing the PR it last found; a success resets the count. The
+status watcher re-runs the lookup when that retry is due
+(`GitStatus.OpenPRRecheckAt`), since a forge that recovers changes nothing
+on disk; `AO_HARNESS_TIMING` `pr-lookup-retry` shortens the first retry
+for specs. An answer outlives its expiry as the branch's last known PR:
+only an answer from the forge replaces it, and the fast status a
+subscribe returns carries it, marked pending, while the lookup runs. The
+cache is bounded by `prCacheMaxEntries` (evicting the entry stored
+longest ago), not by age. `InvalidatePRCache` (a subscribe, an explicit
+refresh) makes a workspace's answers stale, and a lookup in flight
+across it does not cache its result; `ForgetPRCache` drops them when the
+worktree is removed, in the app or outside it. The app's create action, and an
 agent command that settles running `gh pr create` or `glab mr create`
 (`git.CreatesPullRequest`), invalidate and look the branch up again at
 once (`Core.RefreshOpenPR`), so the new PR shows without waiting out a

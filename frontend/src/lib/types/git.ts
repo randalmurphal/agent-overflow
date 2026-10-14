@@ -39,8 +39,9 @@ export interface GitStatus {
   openPrLookupError?: string;
   /**
    * The fast first status answers before the forge has been asked: the
-   * open-PR fields above say nothing yet, and the follow-up status that
-   * warms the lookup replaces them. Absent once the lookup has settled.
+   * open-PR fields above are the branch's last known PR (empty when none),
+   * not an answer, and the follow-up status that asks the forge replaces
+   * them. Absent once the lookup has settled.
    */
   openPrLookupPending?: boolean;
   /**

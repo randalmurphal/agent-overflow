@@ -14,8 +14,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   (`diagenv.HarnessTiming`), which shortens product cadences a spec should
   not wait out (pairing probe, thread poll, transfer retry, PR update retry,
   PR CI live, follow and log wait polls); a spec that needs another value,
-  or the PR update poll cadence (`pr-update`) or the merged-PR cleanup poll
-  (`merged-pr-poll`), passes its own through `env`.
+  or the PR update poll cadence (`pr-update`), the merged-PR cleanup poll
+  (`merged-pr-poll`) or the first retry of a failed open-PR lookup
+  (`pr-lookup-retry`), passes its own through `env`.
 - `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
   wait until the previous context's page registration is gone; a leaked page is
   a test failure.

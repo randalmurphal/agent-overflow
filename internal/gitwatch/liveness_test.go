@@ -69,6 +69,7 @@ func TestStatusDiffersIgnoringPR(t *testing.T) {
 	prOnly.OpenPRNumber = 7
 	prOnly.OpenPRLookupError = "boom"
 	prOnly.OpenPRLookupPending = true
+	prOnly.OpenPRRecheckAt = time.Now()
 	if statusDiffersIgnoringPR(base, prOnly) {
 		t.Fatalf("PR-only delta must not count as a non-PR change")
 	}
@@ -229,4 +230,32 @@ func TestFailedRefreshIsRetried(t *testing.T) {
 		t.Fatalf("retried refresh delivered %+v, want the changed status", got)
 	}
 	expectNoUpdate(t, sub, 200*time.Millisecond)
+}
+
+// A failed open-PR lookup is asked again at the time the status reports
+// (OpenPRRecheckAt), with no filesystem event: a forge that recovers
+// changes nothing on disk. Once a lookup succeeds, nothing is re-checked.
+func TestFailedPRLookupIsRecheckedAtItsRecheckTime(t *testing.T) {
+	t.Parallel()
+	h := newLivenessHarness(t, nil)
+	sub := h.w.addSubscriber(gitops.GitStatus{Branch: "main"})
+	waitFor(t, 3*time.Second, func() bool { return h.installs.count() == 1 }, "initial install")
+
+	failed := gitops.GitStatus{Branch: "main", Forge: "gitlab", OpenPRLookupError: "forge unreachable", OpenPRRecheckAt: time.Now().Add(150 * time.Millisecond)}
+	h.stub.setStatus(failed)
+	h.w.requestRefresh()
+	if got := recvWithin(t, sub, 3*time.Second); got.OpenPRLookupError == "" {
+		t.Fatalf("first refresh delivered %+v, want the failed lookup", got)
+	}
+
+	recovered := gitops.GitStatus{Branch: "main", Forge: "gitlab", OpenPRURL: "https://gitlab.com/o/r/-/merge_requests/4", OpenPRNumber: 4}
+	h.stub.setStatus(recovered)
+	if got := recvWithin(t, sub, 3*time.Second); got.OpenPRNumber != 4 || got.OpenPRLookupError != "" {
+		t.Fatalf("re-check delivered %+v, want MR !4 with no error", got)
+	}
+	calls := h.stub.completedCallCount()
+	expectNoUpdate(t, sub, 400*time.Millisecond)
+	if got := h.stub.completedCallCount(); got != calls {
+		t.Fatalf("status was read %d more times after the lookup succeeded, want none", got-calls)
+	}
 }

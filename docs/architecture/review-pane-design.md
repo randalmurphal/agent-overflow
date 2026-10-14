@@ -140,8 +140,9 @@ polling.
   computed a new MR's diff) also polls on the retry delay, and the pane
   shows it as waiting until a frame carries the tip. The pane reads its PR from
   the workspace's git status; the fast first status marks its PR lookup
-  pending (`openPrLookupPending`), and the pane waits on that too rather
-  than reading empty PR fields as "no PR". No background polling in v1.
+  pending (`openPrLookupPending`) and carries the branch's last known PR,
+  which the pane loads; with none, it waits on the lookup rather than
+  reading empty PR fields as "no PR". No background polling in v1.
 - **CI rides the same pump** (`internal/app/app_forge_ci.go`). The pump
   reads the head pipeline on start and re-reads it only while something
   can change: every 10s while a job is queued or running, every 5s while

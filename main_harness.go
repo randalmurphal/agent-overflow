@@ -277,6 +277,10 @@ type harnessTiming struct {
 	// repository's tracked pull requests
 	// (app.IsolationConfig.MergedPRPollInterval).
 	MergedPRPoll time.Duration
+	// PRLookupRetry is how long a first failed open-PR lookup is cached
+	// before the forge is asked again
+	// (app.IsolationConfig.PRLookupRetryBase).
+	PRLookupRetry time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -295,6 +299,7 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"pr-ci-follow":    &timing.PRCIFollow,
 		"pr-ci-log-wait":  &timing.PRCILogWait,
 		"merged-pr-poll":  &timing.MergedPRPoll,
+		"pr-lookup-retry": &timing.PRLookupRetry,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -394,6 +399,7 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		PRCIFollowInterval:   opts.Timing.PRCIFollow,
 		PRCILogWaitInterval:  opts.Timing.PRCILogWait,
 		MergedPRPollInterval: opts.Timing.MergedPRPoll,
+		PRLookupRetryBase:    opts.Timing.PRLookupRetry,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

@@ -352,10 +352,11 @@ export class GitStatus {
 
     /**
      * OpenPRLookupPending is set by StatusFast when the PR cache holds no
-     * live entry for the branch: the open-PR fields above are not an
-     * answer yet, and the follow-up Status call that warms the cache
-     * broadcasts the real ones. A reader that needs the answer (the review
-     * pane choosing between "no PR" and "not yet") waits on it.
+     * current entry for the branch: the open-PR fields above are the last
+     * PR the branch was known to have (empty when none), not an answer
+     * yet, and the follow-up Status call that asks the forge broadcasts
+     * the answer. A reader that needs the answer (the review pane choosing
+     * between "no PR" and "not yet") waits on it.
      */
     "openPrLookupPending"?: boolean;
 
