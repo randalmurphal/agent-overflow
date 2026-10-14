@@ -27,15 +27,24 @@ const (
 	MetaMaxBytes = 2 << 10
 
 	// LeafFloorBytes is the smallest `meta.input` leaf the projection
-	// will drop. Outside the identity keys retained below, every surface
+	// will clip. Outside the identity keys retained below, every surface
 	// that renders such a leaf caps its own output far under this (80
 	// runes for the persisted summary preview, 120 for an MCP argument
-	// list, 60 per MCP value, 160 for a collab prompt preview), so no
-	// leaf small enough to be rendered whole is ever a candidate and the
-	// projection cannot change a pixel through them. The frontend keeps
+	// list, 60 per MCP value, 160 for a collab prompt preview or an AO
+	// tool row's header), so no leaf small enough to be rendered whole
+	// is ever a candidate, and a clipped leaf keeps the opening those
+	// readers show (ClippedLeafBytes). The frontend keeps
 	// that inventory honest with a tripwire rather than trusting it:
 	// metaInputLeafRenderCaps.test.ts.
 	LeafFloorBytes = 1 << 10
+
+	// ClippedLeafBytes is how much of an elided `meta.input` string
+	// stays on the wire, followed by an ellipsis. Every capped reader
+	// shows at most 160 characters of a leaf; 512 bytes holds that many
+	// in any script short of four-byte runes, where the ellipsis still
+	// says the value goes on. Half the floor, so each clip frees at
+	// least as much as it keeps.
+	ClippedLeafBytes = 1 << 9
 
 	// InlinePreviewMaxBytes is the per-item ceiling on inline diff
 	// preview text. `collapseDiffPreviews` defaults on, so the usual
@@ -56,8 +65,10 @@ const MarkerKey = "wireElision"
 // can tell "this value is not set" from "this value did not fit", and
 // so the recovery route has something to be asked for.
 type Elision struct {
-	// Input lists the dropped `meta.input` leaves by path, e.g.
-	// `content` or `edits/0/new_string`.
+	// Input lists the elided `meta.input` leaves by path, e.g.
+	// `content` or `edits/0/new_string`. Each is clipped to its opening
+	// and an ellipsis, or absent when the row was still over budget with
+	// every candidate clipped; either way the value is not whole.
 	Input []string `json:"input,omitempty"`
 }
 
@@ -113,7 +124,7 @@ var retainedIdentityKeys = []string{
 // `payloadMeta.command` before `meta.input.command`, and triage stamps
 // that copy onto every command row that produced output. For those rows
 // the meta leaf is a duplicate of a string the same item already ships,
-// so dropping it renders byte-identically — the one identity key with a
+// so clipping it renders byte-identically, the one identity key with a
 // second copy to fall back on, and the one that is regularly large
 // enough to matter.
 const retainedCommandPath = "command"
@@ -199,12 +210,12 @@ func ProjectMeta(meta string, payloadMeta string) string {
 	if hasKey(payloadMeta, retainedCommandPath) {
 		retain = retainIdentityLessCommand
 	}
-	projected, dropped := elideLargestLeaves(input, len(meta)-MetaMaxBytes, LeafFloorBytes, retain)
-	if len(dropped) == 0 {
+	projected, elided := elideLargestLeaves(input, len(meta)-MetaMaxBytes, LeafFloorBytes, retain)
+	if len(elided) == 0 {
 		return meta
 	}
 
-	marker, err := json.Marshal(Elision{Input: dropped})
+	marker, err := json.Marshal(Elision{Input: elided})
 	if err != nil {
 		return meta
 	}

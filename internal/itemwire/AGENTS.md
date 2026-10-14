@@ -14,6 +14,9 @@ the wire budget.
   replacement for field-aware elision.
 - `inlinePreviews` is a request parameter because clients connected to one
   backend may choose differently. Do not read the backend setting here.
+- An elided `meta.input` string keeps its opening (`ClippedLeafBytes`) so
+  capped readers still render; values are removed only when clipping every
+  candidate leaves the row over budget.
 - Preserve `retainedIdentityKeys` regardless of size. Any new uncapped
   frontend metadata reader must update that inventory and
   `metaInputLeafRenderCaps.test.ts`.
