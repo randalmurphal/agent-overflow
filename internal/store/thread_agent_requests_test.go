@@ -2,6 +2,7 @@ package store
 
 import (
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -182,7 +183,7 @@ func TestListThreadAgentRequestsKeepsARemoteSpawnWithOpenWork(t *testing.T) {
 	if got := list("lead"); !slices.Equal(got, []string{"l-c"}) {
 		t.Errorf("with open work two levels down the lead lists %v", got)
 	}
-	open, err := s.ListNestedOpenRemoteSpawns(8)
+	open, err := s.ListNestedOpenRemoteSpawns(0, "", 8)
 	if err != nil || len(open) != 1 || open[0].Token != "remote" {
 		t.Fatalf("ListNestedOpenRemoteSpawns = %v, %v", agentRequestTokens(open), err)
 	}
@@ -293,4 +294,41 @@ func TestThreadRequestChangesAreReported(t *testing.T) {
 	s.OnThreadRequestChanged(nil)
 	seedThreadRequest(t, s, "after", "lead", ThreadRequestSpawn, 102)
 	expect("a cleared hook")
+}
+
+// The sweep pages through the settled remote spawns with open work by the
+// last row it read, on their partial index, so one that stays open does
+// not keep the rest from being asked.
+func TestListNestedOpenRemoteSpawnsPagesFromTheLastRow(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "lead")
+	for i, token := range []string{"a", "b", "c"} {
+		if err := s.InsertThreadRequest(ThreadRequest{Token: token, CallerThreadID: "lead", Kind: ThreadRequestSpawn,
+			TargetThreadID: "there-" + token, TargetComputerID: "peer-1", State: ThreadRequestRunning, CreatedAt: 100, UpdatedAt: 100}); err != nil {
+			t.Fatal(err)
+		}
+		settleAgentRequest(t, s, token, int64(200+i/2))
+		if _, err := s.SetThreadRequestNestedOpen(token, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page := func(at int64, after string) []string {
+		rows, err := s.ListNestedOpenRemoteSpawns(at, after, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agentRequestTokens(rows)
+	}
+	if got := page(0, ""); !slices.Equal(got, []string{"a", "b"}) {
+		t.Fatalf("first page %v", got)
+	}
+	// b and c settled at the same moment: the token breaks the tie.
+	if got := page(200, "b"); !slices.Equal(got, []string{"c"}) {
+		t.Fatalf("page after b %v", got)
+	}
+	plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+nestedOpenRemoteSpawnsSQL(2), int64(0), "")
+	if !strings.Contains(plan, "idx_thread_requests_nested_open") {
+		t.Fatalf("the page reads %s", plan)
+	}
 }

@@ -436,3 +436,49 @@ func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
 		t.Fatal("the spawn is still listed once its computer lists no open work")
 	}
 }
+
+// The sweep asks about the settled remote spawns with open work a page at
+// a time, starting each sweep after the last one it asked about, so the
+// spawns past the first page are asked too.
+func TestThreadAgentSweepPagesThroughRemoteSpawnsWithOpenWork(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	f := pair.source
+	tokens := make([]string, threadRequestPollBatch+1)
+	for index := range tokens {
+		tokens[index] = fmt.Sprintf("remote-%02d", index)
+		if err := f.store.InsertThreadRequest(store.ThreadRequest{
+			Token: tokens[index], CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSpawn,
+			TargetComputerID: pair.computer, TargetThreadID: "there", State: store.ThreadRequestRunning,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if settled, err := f.store.SettleThreadRequest(tokens[index], store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+			State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: int64(1000 + index),
+		}); err != nil || !settled {
+			t.Fatalf("settle: %v %v", settled, err)
+		}
+		if _, err := f.store.SetThreadRequestNestedOpen(tokens[index], true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	asked := func(token string) bool {
+		cache := &f.threadAgentPeers
+		cache.mu.Lock()
+		defer cache.mu.Unlock()
+		_, ok := cache.entries[token]
+		return ok
+	}
+	f.refreshNestedOpenRemoteSpawns()
+	f.threadRequestsWG.Wait()
+	last := tokens[len(tokens)-1]
+	if !asked(tokens[0]) || asked(last) {
+		t.Fatalf("the first sweep asked the first page: first %v, last %v", asked(tokens[0]), asked(last))
+	}
+	f.refreshNestedOpenRemoteSpawns()
+	f.threadRequestsWG.Wait()
+	if !asked(last) {
+		t.Fatal("the second sweep did not reach the spawn past the first page")
+	}
+}

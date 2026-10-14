@@ -96,10 +96,16 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(wakeItemId, 'the settled send names its wake item').toBeTruthy();
     const timeline = page.getByTestId('message-timeline-scroll').filter({ visible: true }).first();
     const wakeItem = timeline.locator(`[data-item-id="${wakeItemId}"]`);
-    await timeline.evaluate((el) => el.scrollTo({ top: 0 }));
-    await expect(wakeItem).not.toBeInViewport();
+    // At the top, with the lead's turn done writing, the wake row is out of
+    // view; only the click can bring it in.
+    await expect(async () => {
+      await timeline.evaluate((el) => el.scrollTo({ top: 0 }));
+      await page.waitForTimeout(300);
+      expect(await timeline.evaluate((el) => el.scrollTop)).toBe(0);
+    }).toPass({ timeout: 15_000 });
     await sendOpen.click();
     await expect(wakeItem).toBeInViewport({ timeout: 10_000 });
+    expect(await timeline.evaluate((el) => el.scrollTop), 'the click scrolled the timeline').toBeGreaterThan(0);
     await expect(send).toHaveCount(0);
 
     // A click opens the child in a pane.

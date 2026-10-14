@@ -498,21 +498,30 @@ func (s *Store) SetThreadRequestNestedOpen(token string, open bool) (bool, error
 }
 
 // ListNestedOpenRemoteSpawns returns the settled spawns on other computers
-// whose last agent_rows answer listed open work, oldest first: the rows the
-// poller reads agent_rows for again until that work is done.
-func (s *Store) ListNestedOpenRemoteSpawns(limit int) ([]ThreadRequest, error) {
+// whose last agent_rows answer listed open work, after the one settled at
+// afterSettledAt with afterToken, in settled order: the rows the poller
+// reads agent_rows for again until that work is done. The poller pages
+// through them by the last row of each page, so a row that stays open
+// does not keep the ones after it from being asked.
+func (s *Store) ListNestedOpenRemoteSpawns(afterSettledAt int64, afterToken string, limit int) ([]ThreadRequest, error) {
 	if limit < 1 {
 		limit = 32
 	}
-	rows, err := s.reader().Query(
-		`SELECT ` + threadRequestColumns + ` FROM thread_requests
-		  WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
-		    AND target_computer_id <> '' AND lineage_only = 0
-		  ORDER BY settled_at ASC, token ASC LIMIT ` + strconv.Itoa(limit))
+	rows, err := s.reader().Query(nestedOpenRemoteSpawnsSQL(limit), afterSettledAt, afterToken)
 	if err != nil {
 		return nil, fmt.Errorf("store: list nested-open remote spawns: %w", err)
 	}
 	return collectThreadRequests(rows, "store: list nested-open remote spawns")
+}
+
+// nestedOpenRemoteSpawnsSQL reads one page of
+// idx_thread_requests_nested_open, whose predicate it states.
+func nestedOpenRemoteSpawnsSQL(limit int) string {
+	return `SELECT ` + threadRequestColumns + ` FROM thread_requests
+	  WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
+	    AND target_computer_id <> '' AND lineage_only = 0
+	    AND (settled_at, token) > (?, ?)
+	  ORDER BY settled_at ASC, token ASC LIMIT ` + strconv.Itoa(limit)
 }
 
 // SetThreadRequestsNotifyForCaller disarms (or arms) every open request one

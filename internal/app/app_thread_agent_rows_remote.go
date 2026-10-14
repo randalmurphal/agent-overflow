@@ -40,6 +40,9 @@ type threadAgentPeerCache struct {
 	mu      sync.Mutex
 	entries map[string]*threadAgentPeerEntry
 	slots   chan struct{}
+	// sweepAfter is the last spawn the sweep asked about; the next sweep
+	// starts after it, and from the start once a page comes back short.
+	sweepAfter store.ThreadRequest
 }
 
 type threadAgentPeerEntry struct {
@@ -204,11 +207,22 @@ func (a *App) refreshNestedOpenRemoteSpawns() {
 	if a.backends == nil {
 		return
 	}
-	rows, err := a.store.ListNestedOpenRemoteSpawns(threadRequestPollBatch)
+	c := &a.threadAgentPeers
+	c.mu.Lock()
+	after := c.sweepAfter
+	c.mu.Unlock()
+	rows, err := a.store.ListNestedOpenRemoteSpawns(after.SettledAt, after.Token, threadRequestPollBatch)
 	if err != nil {
 		logThreadRequestSweep("read remote spawns with open work", err)
 		return
 	}
+	next := store.ThreadRequest{}
+	if len(rows) == threadRequestPollBatch {
+		next = rows[len(rows)-1]
+	}
+	c.mu.Lock()
+	c.sweepAfter = store.ThreadRequest{SettledAt: next.SettledAt, Token: next.Token}
+	c.mu.Unlock()
 	for _, row := range rows {
 		a.refreshPeerAgentRows(row, a.threadPollNormal())
 	}
