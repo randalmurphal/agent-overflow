@@ -32,7 +32,11 @@ var providerBinaryDetectFn = provider.DetectProvider
 // It is process-local by nature — a stale session is a fact about a running
 // subprocess, so it dies with the process and is never persisted.
 type appProviderBinaryWatchState struct {
-	mu sync.Mutex
+	// emitMu serializes the stale reconcile with a dismissal, each from its
+	// state change through its emission, so a dismissal's withdraw cannot
+	// land after the enter of a newer version. Taken before mu.
+	emitMu sync.Mutex
+	mu     sync.Mutex
 	// installed is keyed by provider name. An entry exists only for a
 	// binary whose version was read successfully; a failed read leaves the
 	// previous entry (or none) in place so the next tick retries.
@@ -61,6 +65,19 @@ type staleProviderBinary struct {
 	// answers only while that exact session is still live, so a restart or
 	// reap that lands between two ticks cannot resurrect a withdrawn banner.
 	token string
+	// dismissed is the installed version the user dismissed the banner for,
+	// "" for none. The banner shows while installed != dismissed, so a
+	// further version change shows it again.
+	dismissed string
+}
+
+func (s staleProviderBinary) visible() bool { return s.installed != s.dismissed }
+
+// sameFlag compares two flags apart from the dismissal, which is the user's
+// answer to a flag rather than part of it.
+func (s staleProviderBinary) sameFlag(other staleProviderBinary) bool {
+	s.dismissed, other.dismissed = "", ""
+	return s == other
 }
 
 // startProviderBinaryWatcher runs the provider-binary upgrade watcher.
@@ -209,6 +226,8 @@ func (a *App) refreshProviderCatalogAfterUpgrade(providerName string) error {
 // a provider whose version could not be read are both "unknown", and unknown
 // never raises a banner.
 func (a *App) reconcileStaleProviderSessions() {
+	a.providerBinaries.emitMu.Lock()
+	defer a.providerBinaries.emitMu.Unlock()
 	live := a.sessionManager().runtime.Snapshot()
 	// Allocated only if something is actually stale: the common tick finds
 	// nothing and should cost no map.
@@ -254,15 +273,28 @@ func (a *App) reconcileStaleProviderSessions() {
 		})
 	}
 	for threadID, providerName := range cleared {
-		// "ready" is the existing clear-the-banner signal, and a
-		// thread-scoped one clears exactly this pane. No kind: there is
-		// nothing new to say, only something to withdraw.
-		a.emitProviderStatus(providerstatus.Event{
-			Provider: providerName,
-			Status:   "ready",
-			ThreadID: threadID,
-		})
+		a.emitSessionBannerWithdraw(threadID, providerName, providerstatus.KindBinaryStale)
 	}
+}
+
+// dismissBinaryStale records the user's dismissal of the thread's stale
+// binary banner for the installed version it names, and withdraws it. A
+// no-op when no banner shows.
+func (a *App) dismissBinaryStale(threadID string) {
+	a.providerBinaries.emitMu.Lock()
+	defer a.providerBinaries.emitMu.Unlock()
+	a.providerBinaries.mu.Lock()
+	versions, ok := a.providerBinaries.stale[threadID]
+	ok = ok && versions.visible()
+	if ok {
+		versions.dismissed = versions.installed
+		a.providerBinaries.stale[threadID] = versions
+	}
+	a.providerBinaries.mu.Unlock()
+	if !ok {
+		return
+	}
+	a.emitSessionBannerWithdraw(threadID, versions.provider, providerstatus.KindBinaryStale)
 }
 
 // liveSessionCLIVersion asks a live session what build its own process
@@ -287,7 +319,7 @@ func (a *App) staleProviderBinaryVersions(threadID string) (sessionVersion, inst
 	a.providerBinaries.mu.Lock()
 	versions, ok := a.providerBinaries.stale[threadID]
 	a.providerBinaries.mu.Unlock()
-	if !ok {
+	if !ok || !versions.visible() {
 		return "", ""
 	}
 	// The flag is a claim about one running process. If that session is gone
@@ -331,9 +363,10 @@ func (s *appProviderBinaryWatchState) storeInstalled(providerName string, entry 
 
 // reconcileStale swaps in the tick's flagged set and reports the two
 // transitions worth an event: threads that just became stale (or whose
-// versions changed while stale), and threads that stopped being stale —
+// versions changed while stale), and threads that stopped being stale,
 // including the ones whose session simply ended, since a pane whose session
-// is gone must not keep a banner about it.
+// is gone must not keep a banner about it. An unchanged flag keeps its
+// dismissal.
 //
 // The cleared map carries each thread's provider name so the caller can emit
 // without a second lookup into a session map the thread has already left.
@@ -344,7 +377,8 @@ func (s *appProviderBinaryWatchState) reconcileStale(
 	defer s.mu.Unlock()
 
 	for threadID, versions := range current {
-		if previous, ok := s.stale[threadID]; ok && previous == versions {
+		if previous, ok := s.stale[threadID]; ok && previous.sameFlag(versions) {
+			current[threadID] = previous
 			continue
 		}
 		if entered == nil {

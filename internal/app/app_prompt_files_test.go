@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/promptoverride"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/settings"
 )
 
@@ -128,8 +129,9 @@ func TestBootWritesThePromptsReadme(t *testing.T) {
 }
 
 // A prompt file edited outside the app is announced to attached clients by
-// the prompts watcher, while the running session receives nothing.
-func TestAnEditedPromptFileIsAnnouncedAndNeverReachesALiveSession(t *testing.T) {
+// the prompts watcher and flags the live thread whose next start would use
+// it, while the running session receives nothing.
+func TestAnEditedPromptFileFlagsTheLiveThreadAndNeverReachesIt(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	threadID, workspace := seedPromptOverrideThread(t, app, "thread-prompt-file", string(provider.Claude), "claude-opus-5")
@@ -148,6 +150,15 @@ func TestAnEditedPromptFileIsAnnouncedAndNeverReachesALiveSession(t *testing.T) 
 		testPromptEntry{Enabled: true, Models: []string{"claude-opus-5"}, Prompt: "First house prompt."})[0]
 	<-reloads // the fixture's own reload
 	capture := registerLiveClaudeCaptureSession(t, app, threadID, workspace, promptOverrideOptions(t, app, threadID))
+	// The reconcile runs on the watcher's goroutine right after the reload
+	// is announced, so its event is awaited rather than read at once.
+	stale := make(chan providerstatus.Event, 16)
+	app.testEmitHook = func(name string, data any) {
+		if event, ok := data.(providerstatus.Event); ok && name == string(eventchan.ProviderStatus) && event.Kind == providerstatus.KindPromptStale {
+			stale <- event
+		}
+	}
+
 	app.initPromptDirectory()
 	if app.promptWatcher == nil {
 		t.Fatal("the prompts watcher did not start")
@@ -168,6 +179,12 @@ func TestAnEditedPromptFileIsAnnouncedAndNeverReachesALiveSession(t *testing.T) 
 	}
 	if got := app.settings.Get().ClaudePromptOverrides[0].Prompt; got != edited {
 		t.Fatalf("settings prompt after the edit = %q", got)
+	}
+	select {
+	case event := <-stale:
+		expectOnePromptStale(t, []providerstatus.Event{event}, threadID, string(provider.Claude))
+	case <-time.After(10 * time.Second):
+		t.Fatal("an external edit never flagged the live thread")
 	}
 	if body, err := os.ReadFile(capture); err == nil && strings.Contains(string(body), `"control_request"`) {
 		t.Fatalf("the edited prompt file reached the live session: %s", body)
