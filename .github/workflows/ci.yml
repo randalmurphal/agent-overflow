@@ -176,7 +176,9 @@ jobs:
 
   # Three shards: internal/store is the longest package by far, app and
   # triage are the next two, and the rest fits beside them. The release
-  # candidate script test rides with the rest.
+  # candidate and installer script tests ride with the rest. The noremote
+  # shard runs every package compiled without remote access
+  # (docs/architecture/noremote-build.md).
   go-test:
     name: Go tests (${{ matrix.shard }})
     needs: toolchain
@@ -195,12 +197,19 @@ jobs:
           - shard: store
             packages: ./internal/store/...
             exclude: ""
+            flags: ""
           - shard: app-triage
             packages: . ./internal/app/... ./internal/triage/...
             exclude: ""
+            flags: ""
           - shard: rest
             packages: . ./cmd/... ./internal/...
             exclude: ^agent-overflow(/internal/(store|app|triage)(/.*)?)?$
+            flags: ""
+          - shard: noremote
+            packages: . ./cmd/... ./internal/...
+            exclude: ""
+            flags: -tags noremote
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
@@ -211,10 +220,13 @@ jobs:
           frontend-dist: "true"
           netns: "true"
           cache-name: test-${{ matrix.shard }}
-      - run: make go-test GO_TEST_PKGS="${{ matrix.packages }}" GO_TEST_EXCLUDE="${{ matrix.exclude }}"
+      - run: make go-test GO_TEST_PKGS="${{ matrix.packages }}" GO_TEST_EXCLUDE="${{ matrix.exclude }}" GO_TEST_FLAGS="${{ matrix.flags }}"
       - name: Release candidate script tests
         if: matrix.shard == 'rest'
         run: bin/ao-netns node --test scripts/release-candidate.test.mjs
+      - name: Installer download tests
+        if: matrix.shard == 'rest'
+        run: bin/ao-netns sh scripts/test-install-download.sh
 
   vitest:
     name: Vitest (${{ matrix.project }})
