@@ -197,7 +197,7 @@ func claudeSessionConfig(args []string) *control.SessionConfig {
 }
 
 // promptFileContent reads a prompt file the way the real CLI does, at launch.
-// The app rewrites the file at the thread's next spawn, so it is read here, not
+// The app removes the file when the session closes, so it is read here, not
 // when a test later asks for the config. An unreadable path is reported as
 // its error text so the assertion fails on the cause rather than on "".
 func promptFileContent(path string) string {

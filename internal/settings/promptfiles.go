@@ -16,13 +16,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// Prompt files: each prompt override's text lives in
-// <configDir>/prompts/<id>.md, so the user or an agent edits it as a file.
+// Prompt files: each prompt override's text lives only in
+// <configDir>/prompts/<id>.md, which the user or an agent edits as a file.
 //
-// The settings row keeps the id, Enabled and Models. Prompt stays populated
-// in memory and on the wire: the load fills it from the file, and mutate
-// writes it back to the file and strips it from the row. Path and Problem
-// are computed on load and never persisted.
+// The settings row keeps the id, Enabled and Models. The load fills Prompt
+// from the file in memory; it never crosses the wire and a write never takes
+// it from a caller. The only files the service writes are an added entry's
+// empty file (and, once, the migration of inline text); it removes the file
+// of an entry the write drops. Path and Problem are computed on load and
+// never persisted.
 //
 // All of this applies once the tier store is attached. Before that, the
 // user tier still lives in settings.json and the pre-database boot readers
@@ -32,10 +34,20 @@ import (
 const (
 	promptFilesDirName = "prompts"
 	promptFileExt      = ".md"
+	// PromptReadmeName is the reference the app writes into the prompts
+	// directory at every boot (promptoverride.WriteReadme). It is not an
+	// entry's file: entry files are named by UUID.
+	PromptReadmeName = "README.md"
 )
 
 // promptOverrideKeys are the settings keys whose entries own prompt files.
 var promptOverrideKeys = [...]string{"claudePromptOverrides", "codexPromptOverrides"}
+
+// IsPromptOverrideKey reports whether key is one of the two prompt override
+// lists.
+func IsPromptOverrideKey(key string) bool {
+	return slices.Contains(promptOverrideKeys[:], key)
+}
 
 // promptFileStamp records one prompt file's state at load time.
 type promptFileStamp struct {
@@ -62,25 +74,6 @@ type promptEntryState struct {
 type promptFileWrite struct {
 	path string
 	text string
-}
-
-// SetPromptFileWriteObserver installs the hook told about every prompt file
-// path this service is about to write or remove, right before it does. The
-// app wires it to the prompts watcher's suppression so the service's own
-// writes do not echo back as external edits. Passing nil clears it.
-func (s *Service) SetPromptFileWriteObserver(observe func(path string)) {
-	s.observerMu.Lock()
-	defer s.observerMu.Unlock()
-	s.promptFileWriteObserver = observe
-}
-
-func (s *Service) notePromptFileWrite(path string) {
-	s.observerMu.RLock()
-	observe := s.promptFileWriteObserver
-	s.observerMu.RUnlock()
-	if observe != nil {
-		observe(path)
-	}
 }
 
 // PromptFilesDir returns <configDir>/prompts.
@@ -301,13 +294,15 @@ func promptEntriesByID(current Settings) map[string]promptEntryState {
 }
 
 // settlePromptOverrides runs in mutate after apply and before the change
-// projection. It mints the ids of new entries, recomputes Path, and keeps a
-// Problem only for an entry whose text did not change, so a client value
-// for either computed field is ignored and a repeat save moves nothing.
+// projection. It mints the ids of new entries, recomputes Path, and keeps
+// each kept entry's Problem, so a repeat save moves nothing.
 //
-// It answers the files to write (an entry whose text changed, a new entry,
-// or one whose file is missing) and the files to remove (entries no longer
-// in either list). It touches no file itself.
+// It answers the files to write and the files to remove (entries no longer
+// in either list), and touches no file itself. A write never carries a
+// caller's text (restoreStoredPromptTexts), so the files to write are a new
+// entry's empty file and the file of a known entry that has none, written
+// with the text the entry already had: empty, or the inline text of a row
+// that predates the files (MigratePromptFiles).
 func (s *Service) settlePromptOverrides(prior map[string]promptEntryState, next *Settings) ([]promptFileWrite, []string) {
 	var writes []promptFileWrite
 	kept := make(map[string]bool, len(prior))
@@ -340,15 +335,13 @@ func (s *Service) settlePromptOverrides(prior map[string]promptEntryState, next 
 	return writes, removes
 }
 
-// writePromptFiles writes each file atomically (0600, directory 0700),
-// telling the write observer first.
+// writePromptFiles writes each file atomically (0600, directory 0700).
 func (s *Service) writePromptFiles(writes []promptFileWrite) error {
 	for _, write := range writes {
 		data := []byte(nil)
 		if write.text != "" {
 			data = []byte(write.text + "\n")
 		}
-		s.notePromptFileWrite(write.path)
 		if err := atomicfile.Write(write.path, data); err != nil {
 			return fmt.Errorf("settings: write prompt file: %w", err)
 		}
@@ -362,16 +355,15 @@ func (s *Service) writePromptFiles(writes []promptFileWrite) error {
 // more, so it is ignored, but it stays visible.
 func (s *Service) removePromptFiles(paths []string) {
 	for _, path := range paths {
-		s.notePromptFileWrite(path)
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			log.Printf("settings: remove prompt file of a deleted entry: %v", err)
 		}
 	}
 }
 
-// persistedPromptOverrides answers next as it is stored: Path and Problem
-// dropped always, and Prompt dropped once the store is attached, since the
-// text then lives in its file.
+// persistedPromptOverrides answers next as it is stored: Path, Problem and
+// Blank dropped always, and Prompt dropped once the store is attached,
+// since the text then lives in its file.
 func persistedPromptOverrides(next Settings, stripPrompt bool) Settings {
 	strip := func(entries []PromptOverride) []PromptOverride {
 		if entries == nil {
@@ -379,7 +371,7 @@ func persistedPromptOverrides(next Settings, stripPrompt bool) Settings {
 		}
 		out := make([]PromptOverride, len(entries))
 		for i, entry := range entries {
-			entry.Path, entry.Problem = "", ""
+			entry.Path, entry.Problem, entry.Blank = "", "", false
 			if stripPrompt {
 				entry.Prompt = ""
 			}

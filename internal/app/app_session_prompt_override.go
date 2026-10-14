@@ -43,17 +43,6 @@ import (
 // Comparing rendered prompts would report a change every time the
 // workspace's git state moved under a {{GIT_BLOCK}}.
 
-// maxRenderedSystemPromptBytes bounds what a rendered override may grow to.
-// The stored prompt is already length-validated in Settings, but rendering
-// is multiplicative: {{GIT_BLOCK}} expands to a repository snapshot, so a
-// stored prompt repeating the token can render to tens of megabytes — every
-// byte of which is context the model pays for on every turn, and which the
-// user never sees before the session starts. 256KB is far above any real
-// prompt (Claude's own default body is ~12KB) and far below the point where
-// a session becomes unusable. Exceeding it fails the spawn with both sizes
-// named; truncating instead would hand the model a prompt cut mid-sentence.
-const maxRenderedSystemPromptBytes = 256_000
-
 // claudeThinkingOption crosses the settings → provider boundary for the
 // thinking axis. Two structurally identical types exist because
 // internal/settings may not import internal/provider (see that package's
@@ -128,11 +117,11 @@ func (a *App) applySettingsOwnedAxes(t store.Thread, opts *provider.SessionOptio
 	}
 
 	rendered := promptoverride.Render(entry.Prompt, a.promptOverrideFacts(t, entry.Prompt, opts.WorkDir))
-	if len(rendered) > maxRenderedSystemPromptBytes {
+	if len(rendered) > promptoverride.MaxRenderedPromptBytes {
 		return promptOverrideResolution{}, fmt.Errorf(
 			"system prompt override renders to %d bytes from a %d-byte prompt, over the %d-byte limit: "+
 				"check for a repeated {{GIT_BLOCK}} placeholder",
-			len(rendered), len(entry.Prompt), maxRenderedSystemPromptBytes,
+			len(rendered), len(entry.Prompt), promptoverride.MaxRenderedPromptBytes,
 		)
 	}
 	opts.SystemPrompt = rendered

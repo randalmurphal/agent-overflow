@@ -11,6 +11,8 @@ import (
 	"testing"
 )
 
+// The rows round-trip through Update; the text a caller sends never does:
+// it lives in the entry's file, which the caller does not write.
 func TestPromptOverridesRoundTripThroughUpdate(t *testing.T) {
 	svc := NewService(t.TempDir())
 
@@ -31,8 +33,8 @@ func TestPromptOverridesRoundTripThroughUpdate(t *testing.T) {
 	if len(updated.ClaudePromptOverrides) != 2 {
 		t.Fatalf("claude overrides = %d, want 2", len(updated.ClaudePromptOverrides))
 	}
-	if got := updated.ClaudePromptOverrides[0]; !got.Enabled || got.Prompt != "opus prompt" {
-		t.Fatalf("first claude override = %+v", got)
+	if got := updated.ClaudePromptOverrides[0]; !got.Enabled || got.Prompt != "" {
+		t.Fatalf("first claude override = %+v, want enabled with no text taken from the caller", got)
 	}
 	if updated.ClaudePromptOverrides[1].Enabled {
 		t.Fatal("second claude override must stay disabled")
@@ -40,8 +42,12 @@ func TestPromptOverridesRoundTripThroughUpdate(t *testing.T) {
 
 	// A fresh service over the same file must read back what was written.
 	reread := NewService(filepath.Dir(svc.Path())).Get()
-	if len(reread.CodexPromptOverrides) != 1 || reread.CodexPromptOverrides[0].Prompt != "codex prompt" {
+	if len(reread.CodexPromptOverrides) != 1 || reread.CodexPromptOverrides[0].Models[0] != "gpt-5.6-sol" ||
+		reread.CodexPromptOverrides[0].Prompt != "" {
 		t.Fatalf("codex overrides after reload = %+v", reread.CodexPromptOverrides)
+	}
+	if data, err := os.ReadFile(svc.Path()); err != nil || strings.Contains(string(data), "prompt\"") {
+		t.Fatalf("settings file carries a prompt (%v): %s", err, data)
 	}
 	if len(reread.ClaudeDisabledTools) != 2 || reread.ClaudeDisabledTools[0] != "Workflow" {
 		t.Fatalf("claude disabled tools after reload = %v", reread.ClaudeDisabledTools)
@@ -403,5 +409,42 @@ func TestAnOverrideWithNoModelsCrossesTheWireAsAnEmptyList(t *testing.T) {
 		if !strings.Contains(string(raw), `"models":[]`) {
 			t.Errorf("%s: wire %s carries the model list as something other than an empty array", name, raw)
 		}
+	}
+}
+
+// The wire projection leaves the text out and says whether the file has
+// text that applies, without touching the entries it was given.
+func TestPromptOverridesForWireDropsTheTextAndReportsBlank(t *testing.T) {
+	entries := []PromptOverride{
+		{ID: "a", Prompt: "real text", Models: []string{"m"}},
+		{ID: "b", Prompt: ""},
+		{ID: "c", Prompt: " \n\t "},
+		{ID: "d", Prompt: "", Problem: "over the limit"},
+	}
+	wire := PromptOverridesForWire(entries)
+	wantBlank := []bool{false, true, true, true}
+	for i, entry := range wire {
+		if entry.Prompt != "" {
+			t.Errorf("entry %s carries its text on the wire", entry.ID)
+		}
+		if entry.Blank != wantBlank[i] {
+			t.Errorf("entry %s Blank = %v, want %v", entry.ID, entry.Blank, wantBlank[i])
+		}
+		if entry.Models == nil {
+			t.Errorf("entry %s models is nil on the wire, want []", entry.ID)
+		}
+	}
+	if entries[0].Prompt != "real text" || entries[1].Blank {
+		t.Fatal("the projection modified the entries it was given")
+	}
+	raw, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"prompt"`) {
+		t.Fatalf("wire JSON carries a prompt key: %s", raw)
+	}
+	if PromptOverridesForWire(nil) != nil {
+		t.Fatal("an absent list must stay absent")
 	}
 }

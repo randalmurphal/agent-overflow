@@ -841,9 +841,6 @@ type Service struct {
 	// would put the read back inside the section it just left.
 	observerMu sync.RWMutex
 	observer   ChangeObserver
-	// promptFileWriteObserver hears every prompt file path this service is
-	// about to write or remove. Guarded by observerMu.
-	promptFileWriteObserver func(path string)
 }
 
 type fileState struct {
@@ -986,10 +983,14 @@ func (s *Service) update(bucket string, class DeviceClass, patch map[string]any)
 		if err != nil {
 			return Settings{}, fmt.Errorf("settings: apply patch: %w", err)
 		}
+		// A prompt override's text lives in its file, which the user edits;
+		// a write never takes it from the caller (promptoverrides.go).
+		dropClientPromptFields(patch, &patched)
 		patched, err = validateSettings(patched)
 		if err != nil {
 			return Settings{}, fmt.Errorf("settings: validate: %w", err)
 		}
+		restoreStoredPromptTexts(patch, current, &patched)
 		return patched, nil
 	})
 }

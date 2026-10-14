@@ -445,13 +445,24 @@ func decodeObject(target *Settings, object map[string]json.RawMessage) error {
 // deliberate: an absent row is what SEEDING treats as "not migrated yet", so
 // deleting one would let the next boot re-seed the stale file value over a
 // preference the user just cleared.
-func (s *Service) persistScope(store TierStore, scope string, keys []string, values map[string]string) error {
+//
+// A key the projection omits (an omitempty field at its zero value, such as
+// a list emptied by the write) is written as that zero value's own encoding
+// (rowValue), never as an empty row, which no read could decode.
+func (s *Service) persistScope(store TierStore, scope string, keys []string, current Settings, values map[string]string) error {
 	if scope == "" {
 		return fmt.Errorf("settings: no %d-key scope to write to", len(keys))
 	}
 	entries := make(map[string]string, len(keys))
 	for _, key := range keys {
-		entries[key] = values[key]
+		value, ok := values[key]
+		if !ok {
+			var err error
+			if value, err = rowValue(current, key); err != nil {
+				return fmt.Errorf("settings: persist %q: %w", scope, err)
+			}
+		}
+		entries[key] = value
 	}
 	if err := store.SetUIState(scope, entries); err != nil {
 		return fmt.Errorf("settings: persist %q: %w", scope, err)

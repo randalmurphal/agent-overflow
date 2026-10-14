@@ -329,10 +329,11 @@ export class NetworkSettings {
  * models it names. Zero value is inert: a disabled entry, or one with no
  * models, never matches.
  * 
- * The entry's text lives in its own file, <configDir>/prompts/<ID>.md, so
- * the user or an agent can edit it directly (promptfiles.go). Once the tier
- * store is attached the settings row holds ID, Enabled and Models only;
- * Prompt stays populated in memory and on the wire, filled from the file.
+ * The entry's text lives only in its own file, <configDir>/prompts/<ID>.md,
+ * which the user or an agent edits directly (promptfiles.go). Once the tier
+ * store is attached the settings row holds ID, Enabled and Models only.
+ * Prompt is filled from the file in memory and never crosses the wire
+ * (PromptOverridesForWire); a write never takes it from a caller.
  */
 export class PromptOverride {
     /**
@@ -354,9 +355,10 @@ export class PromptOverride {
     "models": string[];
 
     /**
-     * Prompt is the replacement text, placeholders unrendered. Persisted
-     * only in the prompt file; a row still carrying it predates the file
-     * (MigratePromptFiles).
+     * Prompt is the replacement text, placeholders unrendered, as read
+     * from the prompt file. A row still carrying it predates the file
+     * (MigratePromptFiles), which is why the field still decodes. Cleared
+     * on the wire, and a caller's value is ignored on write.
      */
     "prompt"?: string;
 
@@ -371,6 +373,13 @@ export class PromptOverride {
      * limit). Computed on load, never persisted; a client value is ignored.
      */
     "problem"?: string;
+
+    /**
+     * Blank reports that the entry's file holds no text that applies: it
+     * is empty, whitespace only, or has a Problem. Set only on the wire
+     * (PromptOverridesForWire), never persisted; a client value is ignored.
+     */
+    "blank"?: boolean;
 
     /** Creates a new PromptOverride instance. */
     constructor($$source: Partial<PromptOverride> = {}) {

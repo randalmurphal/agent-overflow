@@ -2,26 +2,136 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/promptoverride"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/settings"
 )
 
-// An override edited as a file is announced to attached clients by the
-// prompts watcher and never reaches a running Claude session. The app's own
-// saves are suppressed and do not come back as a reload.
-func TestAnEditedPromptFileReachesALiveClaudeSession(t *testing.T) {
+// The Settings wire never carries a prompt override's text: it lives in the
+// entry's file, which the user edits. An added entry gets an empty file and
+// reads as blank; text written to the file is what the next read reports as
+// not blank; text a client sends is ignored; a removed entry's file is
+// deleted.
+func TestPromptOverrideTextStaysOffTheSettingsWire(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	app.settings.AttachTierStore(app.store, "client:prompt-files-test")
+	attachPromptFileStore(t, app)
+	ctx := context.Background()
+
+	saved, err := app.UpdateSettings(ctx, map[string]any{
+		"claudePromptOverrides": []any{
+			map[string]any{"enabled": true, "models": []any{"claude-opus-5"}, "prompt": "client text"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+	added := saved.ClaudePromptOverrides[0]
+	if added.Prompt != "" || !added.Blank || added.ID == "" {
+		t.Fatalf("added entry on the wire = %+v, want no text, blank, and an id", added)
+	}
+	if filepath.Dir(added.Path) != filepath.Join(app.configDir, "prompts") {
+		t.Fatalf("added entry path = %q, want a file under the config dir", added.Path)
+	}
+	if data, err := os.ReadFile(added.Path); err != nil || len(data) != 0 {
+		t.Fatalf("added entry's file = %q (%v), want an empty file", data, err)
+	}
+
+	if err := os.WriteFile(added.Path, []byte("Written by hand.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read, err := app.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	entry := read.ClaudePromptOverrides[0]
+	if entry.Prompt != "" || entry.Blank {
+		t.Fatalf("entry after the file was written = %+v, want not blank and no text", entry)
+	}
+	raw, err := json.Marshal(read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "Written by hand") || strings.Contains(string(raw), `"prompt"`) {
+		t.Fatalf("GetSettings JSON carries the prompt text: %s", raw)
+	}
+	if got := app.settings.Get().ClaudePromptOverrides[0].Prompt; got != "Written by hand." {
+		t.Fatalf("the service's own read = %q, want the file's text", got)
+	}
+
+	// A client that sends text changes nothing in the file.
+	if _, err := app.UpdateSettings(ctx, map[string]any{
+		"claudePromptOverrides": []any{
+			map[string]any{"id": entry.ID, "enabled": false, "models": []any{"claude-opus-5"}, "prompt": "overwrite attempt"},
+		},
+	}); err != nil {
+		t.Fatalf("UpdateSettings toggle: %v", err)
+	}
+	if data, err := os.ReadFile(entry.Path); err != nil || string(data) != "Written by hand.\n" {
+		t.Fatalf("file after a write carrying text = %q (%v), want it untouched", data, err)
+	}
+
+	// An oversized file is blank on the wire and names its problem.
+	if err := os.WriteFile(entry.Path, []byte(strings.Repeat("x", settings.MaxPromptOverrideLen+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read, err = app.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	if got := read.ClaudePromptOverrides[0]; !got.Blank || got.Problem == "" || got.Prompt != "" {
+		t.Fatalf("oversized entry on the wire = %+v, want blank with a problem", got)
+	}
+
+	if _, err := app.UpdateSettings(ctx, map[string]any{"claudePromptOverrides": []any{}}); err != nil {
+		t.Fatalf("UpdateSettings remove: %v", err)
+	}
+	if _, err := os.Stat(entry.Path); !os.IsNotExist(err) {
+		t.Fatalf("removed entry's file: %v, want it deleted", err)
+	}
+}
+
+// Boot writes the prompts directory README, and restores it when it was
+// edited.
+func TestBootWritesThePromptsReadme(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.initPromptDirectory()
+	t.Cleanup(func() { _ = app.promptWatcher.Close() })
+
+	path := filepath.Join(app.settings.PromptFilesDir(), settings.PromptReadmeName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if string(data) != promptoverride.ReadmeMarkdown() {
+		t.Fatalf("README = %q, want the generated reference", data)
+	}
+	if err := os.WriteFile(path, []byte("edited"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePromptReadme(app.settings.PromptFilesDir()); err != nil {
+		t.Fatalf("writePromptReadme: %v", err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != promptoverride.ReadmeMarkdown() {
+		t.Fatalf("README after an edit and a boot = %q (%v), want the generated reference", data, err)
+	}
+}
+
+// A prompt file edited outside the app is announced to attached clients by
+// the prompts watcher, while the running session receives nothing.
+func TestAnEditedPromptFileIsAnnouncedAndNeverReachesALiveSession(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
 	threadID, workspace := seedPromptOverrideThread(t, app, "thread-prompt-file", string(provider.Claude), "claude-opus-5")
 	// Installed before any save so no emitter races the assignment. A save
 	// of the Claude list names only that key; a reload names both.
@@ -34,69 +144,15 @@ func TestAnEditedPromptFileReachesALiveClaudeSession(t *testing.T) {
 			reloads <- evt.Keys
 		}
 	}
-
-	saved, err := app.UpdateSettings(context.Background(), map[string]any{
-		"claudePromptOverrides": []any{
-			map[string]any{"enabled": true, "models": []any{"claude-opus-5"}, "prompt": "First house prompt."},
-		},
-	})
-	if err != nil {
-		t.Fatalf("UpdateSettings: %v", err)
-	}
-	entry := saved.ClaudePromptOverrides[0]
-	if entry.Path == "" || filepath.Dir(entry.Path) != filepath.Join(app.configDir, "prompts") {
-		t.Fatalf("saved entry = %+v, want a file under the config dir", entry)
-	}
-
-	binary, capture := writeClaudeControlCaptureCLI(t)
-	initSeen := make(chan struct{})
-	var once sync.Once
-	sess, err := claude.NewSession(context.Background(), threadID, claude.Config{
-		Binary:  binary,
-		Model:   "claude-opus-5",
-		WorkDir: workspace,
-	}, func(evt provider.ProviderEvent) {
-		if evt.Kind == provider.EventInit {
-			once.Do(func() { close(initSeen) })
-		}
-	})
-	if err != nil {
-		t.Fatalf("claude.NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	select {
-	case <-initSeen:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the fake CLI never announced its version")
-	}
-	app.sessionManager().put(threadID, session{
-		Provider:      string(provider.Claude),
-		Token:         "prompt-file-token",
-		Claude:        sess,
-		LaunchOptions: promptOverrideOptions(t, app, threadID),
-		Liveness:      newSessionLiveness(time.Now()),
-	})
-
+	entry := setPromptOverrides(t, app, "claudePromptOverrides",
+		testPromptEntry{Enabled: true, Models: []string{"claude-opus-5"}, Prompt: "First house prompt."})[0]
+	<-reloads // the fixture's own reload
+	capture := registerLiveClaudeCaptureSession(t, app, threadID, workspace, promptOverrideOptions(t, app, threadID))
 	app.initPromptDirectory()
 	if app.promptWatcher == nil {
 		t.Fatal("the prompts watcher did not start")
 	}
 	t.Cleanup(func() { _ = app.promptWatcher.Close() })
-
-	// A save in the app rewrites the file, and the watcher must not echo it
-	// back as an external edit. Only a reload names the codex key here.
-	if _, err := app.UpdateSettings(context.Background(), map[string]any{
-		"claudePromptOverrides": []any{
-			map[string]any{"id": entry.ID, "enabled": true, "models": []any{"claude-opus-5"}, "prompt": "Saved in the app."},
-		},
-	}); err != nil {
-		t.Fatalf("UpdateSettings: %v", err)
-	}
-	select {
-	case keys := <-reloads:
-		t.Fatalf("the app's own save came back as a reload: %v", keys)
-	case <-time.After(time.Second):
-	}
 
 	const edited = "Edited outside the app."
 	if err := os.WriteFile(entry.Path, []byte(edited+"\n"), 0o600); err != nil {
@@ -113,7 +169,6 @@ func TestAnEditedPromptFileReachesALiveClaudeSession(t *testing.T) {
 	if got := app.settings.Get().ClaudePromptOverrides[0].Prompt; got != edited {
 		t.Fatalf("settings prompt after the edit = %q", got)
 	}
-	// A prompt change never applies to a running session.
 	if body, err := os.ReadFile(capture); err == nil && strings.Contains(string(body), `"control_request"`) {
 		t.Fatalf("the edited prompt file reached the live session: %s", body)
 	}

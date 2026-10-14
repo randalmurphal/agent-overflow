@@ -71,6 +71,10 @@ func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
 // redactedSettings is the projection every bound method returning a full
 // Settings value goes through.
 //
+// Prompt override texts are left out: each lives in its file, which the
+// user edits there, and the entry carries Blank instead
+// (settings.PromptOverridesForWire).
+//
 // SECURITY: the values of custom environment variables flagged sensitive
 // are cleared. A LAN-attached token-holder calling GetSettings must not be
 // able to harvest credentials — a sensitive environment value has no read
@@ -82,6 +86,8 @@ func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
 func redactedSettings(current settings.Settings) settings.Settings {
 	current.ClaudeCustomEnv = settings.RedactProviderEnvVars(current.ClaudeCustomEnv)
 	current.CodexCustomEnv = settings.RedactProviderEnvVars(current.CodexCustomEnv)
+	current.ClaudePromptOverrides = settings.PromptOverridesForWire(current.ClaudePromptOverrides)
+	current.CodexPromptOverrides = settings.PromptOverridesForWire(current.CodexPromptOverrides)
 	return current
 }
 

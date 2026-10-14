@@ -164,12 +164,12 @@ func (s *Service) mutate(bucket string, class DeviceClass, apply func(current Se
 			}
 		}
 		if len(userKeys) > 0 {
-			if err := s.persistScope(s.store, UserScope, userKeys, persisted); err != nil {
+			if err := s.persistScope(s.store, UserScope, userKeys, stored, persisted); err != nil {
 				return Settings{}, err
 			}
 		}
 		if len(deviceKeys) > 0 {
-			if err := s.persistScope(s.store, deviceScope, deviceKeys, persisted); err != nil {
+			if err := s.persistScope(s.store, deviceScope, deviceKeys, stored, persisted); err != nil {
 				return Settings{}, err
 			}
 		}

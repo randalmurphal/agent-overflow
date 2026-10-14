@@ -10,7 +10,9 @@ const promptDebounce = 250 * time.Millisecond
 
 // PromptWatcher watches the flat <configDir>/prompts directory, which holds
 // one system prompt override text per file, and emits one debounced
-// notification when a prompt file is added, edited or removed.
+// notification when a prompt file is added, edited or removed. It does not
+// suppress the app's own writes: those are an added entry's empty file and
+// a removed entry's deletion, and the reload they cause changes nothing.
 type PromptWatcher struct {
 	core *watcher
 }
@@ -26,17 +28,6 @@ func newPromptWatcher(dir string, debounce time.Duration, emit func()) (*PromptW
 		return nil, err
 	}
 	return &PromptWatcher{core: core}, nil
-}
-
-// Suppress marks path as written by this process. The settings service
-// writes and removes prompt files on every save, and its own observer
-// already announces those, so their filesystem events must not echo back
-// as an external edit.
-func (w *PromptWatcher) Suppress(path string) {
-	if w == nil || w.core == nil {
-		return
-	}
-	w.core.suppress(path)
 }
 
 func (w *PromptWatcher) Close() error {

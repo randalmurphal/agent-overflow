@@ -3,6 +3,7 @@ package settings
 import (
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -13,10 +14,11 @@ import (
 // models it names. Zero value is inert: a disabled entry, or one with no
 // models, never matches.
 //
-// The entry's text lives in its own file, <configDir>/prompts/<ID>.md, so
-// the user or an agent can edit it directly (promptfiles.go). Once the tier
-// store is attached the settings row holds ID, Enabled and Models only;
-// Prompt stays populated in memory and on the wire, filled from the file.
+// The entry's text lives only in its own file, <configDir>/prompts/<ID>.md,
+// which the user or an agent edits directly (promptfiles.go). Once the tier
+// store is attached the settings row holds ID, Enabled and Models only.
+// Prompt is filled from the file in memory and never crosses the wire
+// (PromptOverridesForWire); a write never takes it from a caller.
 type PromptOverride struct {
 	// ID names the entry's prompt file: a canonical lowercase UUID, minted
 	// by Service.mutate when empty. A client never chooses the filename.
@@ -27,9 +29,10 @@ type PromptOverride struct {
 	// (`claude-opus-5`, not `claude-opus-5[1m]`). Matching normalizes both
 	// sides, so a marker that slips in still compares equal.
 	Models []string `json:"models"`
-	// Prompt is the replacement text, placeholders unrendered. Persisted
-	// only in the prompt file; a row still carrying it predates the file
-	// (MigratePromptFiles).
+	// Prompt is the replacement text, placeholders unrendered, as read
+	// from the prompt file. A row still carrying it predates the file
+	// (MigratePromptFiles), which is why the field still decodes. Cleared
+	// on the wire, and a caller's value is ignored on write.
 	Prompt string `json:"prompt,omitempty"`
 	// Path is the absolute prompt file path, for the UI to show and open.
 	// Computed on load, never persisted; a client value is ignored.
@@ -37,6 +40,85 @@ type PromptOverride struct {
 	// Problem says why the file's text is not applied (it is over a size
 	// limit). Computed on load, never persisted; a client value is ignored.
 	Problem string `json:"problem,omitempty"`
+	// Blank reports that the entry's file holds no text that applies: it
+	// is empty, whitespace only, or has a Problem. Set only on the wire
+	// (PromptOverridesForWire), never persisted; a client value is ignored.
+	Blank bool `json:"blank,omitempty"`
+}
+
+// PromptOverridesForWire answers a list as it crosses the wire: the text is
+// left out, since it lives in the entry's file and the user edits it
+// there, and Blank says whether that file holds text that applies. A copy,
+// so the caller's cached entries are untouched. An empty list stays empty.
+func PromptOverridesForWire(entries []PromptOverride) []PromptOverride {
+	if entries == nil {
+		return nil
+	}
+	out := make([]PromptOverride, len(entries))
+	for i, entry := range entries {
+		entry.Blank = entry.Problem != "" || strings.TrimSpace(entry.Prompt) == ""
+		entry.Prompt = ""
+		entry.Models = wireModels(entry.Models)
+		out[i] = entry
+	}
+	return out
+}
+
+// dropClientPromptFields clears what a caller cannot set on the override
+// lists its patch names: the text (which lives in the file) and the
+// computed fields. Runs before validation, so text a client sent can
+// neither be stored nor fail the save.
+func dropClientPromptFields(patch map[string]any, patched *Settings) {
+	for _, key := range promptOverrideKeys {
+		if _, ok := patch[key]; !ok {
+			continue
+		}
+		list := patched.promptOverrideList(key)
+		entries := slices.Clone(*list)
+		for i := range entries {
+			entries[i].Prompt, entries[i].Path, entries[i].Problem, entries[i].Blank = "", "", "", false
+		}
+		*list = entries
+	}
+}
+
+// restoreStoredPromptTexts gives each entry of a patched list the text its
+// id already had, after validation has made the ids canonical. An id that
+// names no current entry is cleared, so the write mints a fresh one and a
+// client never picks the file an entry writes: an entry the patch adds
+// starts with an empty file.
+func restoreStoredPromptTexts(patch map[string]any, current Settings, patched *Settings) {
+	stored := make(map[string]string)
+	for _, entries := range [][]PromptOverride{current.ClaudePromptOverrides, current.CodexPromptOverrides} {
+		for _, entry := range entries {
+			if entry.ID != "" {
+				stored[entry.ID] = entry.Prompt
+			}
+		}
+	}
+	for _, key := range promptOverrideKeys {
+		if _, ok := patch[key]; !ok {
+			continue
+		}
+		list := patched.promptOverrideList(key)
+		entries := slices.Clone(*list)
+		for i := range entries {
+			text, known := stored[entries[i].ID]
+			if !known {
+				entries[i].ID = ""
+			}
+			entries[i].Prompt = text
+		}
+		*list = entries
+	}
+}
+
+// promptOverrideList answers the field behind one override key.
+func (s *Settings) promptOverrideList(key string) *[]PromptOverride {
+	if key == "codexPromptOverrides" {
+		return &s.CodexPromptOverrides
+	}
+	return &s.ClaudePromptOverrides
 }
 
 // Limits on the override lists. They exist to keep a hand-edited or

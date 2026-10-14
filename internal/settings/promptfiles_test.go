@@ -52,24 +52,31 @@ func writeExternally(t *testing.T, path, text string, at time.Time) {
 	}
 }
 
-func TestPromptOverrideTextIsStoredInItsFileAndNeverInTheRow(t *testing.T) {
-	svc, store := tieredService(t)
-	updated, err := svc.Update(claudeOverridesPatch(
-		map[string]any{"enabled": true, "models": []string{"claude-opus-5"}, "prompt": "  opus prompt  "},
-	))
+// addClaudeOverrides adds entries through Update, the way Settings adds
+// them, and answers the saved entries. Each starts with an empty file.
+func addClaudeOverrides(t *testing.T, svc *Service, entries ...map[string]any) []PromptOverride {
+	t.Helper()
+	updated, err := svc.Update(claudeOverridesPatch(entries...))
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	entry := updated.ClaudePromptOverrides[0]
+	return updated.ClaudePromptOverrides
+}
+
+func TestPromptOverrideTextIsStoredInItsFileAndNeverInTheRow(t *testing.T) {
+	svc, store := tieredService(t)
+	entry := addClaudeOverrides(t, svc,
+		map[string]any{"enabled": true, "models": []string{"claude-opus-5"}, "prompt": "a caller's text"},
+	)[0]
 	if entry.ID == "" || entry.ID != strings.ToLower(entry.ID) {
 		t.Fatalf("id = %q, want a minted canonical id", entry.ID)
 	}
 	wantPath := filepath.Join(filepath.Dir(svc.Path()), "prompts", entry.ID+".md")
-	if entry.Path != wantPath || entry.Prompt != "opus prompt" {
-		t.Fatalf("entry = %+v, want path %s and the trimmed prompt", entry, wantPath)
+	if entry.Path != wantPath || entry.Prompt != "" {
+		t.Fatalf("entry = %+v, want path %s and no text from the caller", entry, wantPath)
 	}
-	if got := readText(t, wantPath); got != "opus prompt\n" {
-		t.Fatalf("prompt file = %q", got)
+	if got := readText(t, wantPath); got != "" {
+		t.Fatalf("an added entry's file = %q, want empty", got)
 	}
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(wantPath)
@@ -88,11 +95,16 @@ func TestPromptOverrideTextIsStoredInItsFileAndNeverInTheRow(t *testing.T) {
 		}
 	}
 
+	writeExternally(t, wantPath, "  opus prompt  \n", time.Now().Add(time.Hour))
+	if got := svc.Get().ClaudePromptOverrides[0].Prompt; got != "opus prompt" {
+		t.Fatalf("prompt after the file was written = %q, want the trimmed file text", got)
+	}
+
 	rows := rawUserRow(t, store, "claudePromptOverrides")
 	if len(rows) != 1 {
 		t.Fatalf("rows = %v", rows)
 	}
-	for _, key := range []string{"prompt", "path", "problem"} {
+	for _, key := range []string{"prompt", "path", "problem", "blank"} {
 		if _, present := rows[0][key]; present {
 			t.Errorf("persisted row carries %q: %v", key, rows[0])
 		}
@@ -111,17 +123,60 @@ func TestPromptOverrideTextIsStoredInItsFileAndNeverInTheRow(t *testing.T) {
 	}
 }
 
+// A write never takes text from the caller: a toggle that sends some keeps
+// the file as it is, and an id the service did not mint is replaced, so a
+// caller cannot point an entry at a file of its choosing.
+func TestAWriteIgnoresTheCallersPromptAndUnknownIDs(t *testing.T) {
+	svc, _ := tieredService(t)
+	entry := addClaudeOverrides(t, svc, map[string]any{"enabled": true, "models": []string{"m"}})[0]
+	writeExternally(t, entry.Path, "file text\n", time.Now().Add(time.Hour))
+
+	toggled, err := svc.Update(claudeOverridesPatch(map[string]any{
+		"id": entry.ID, "enabled": false, "models": []string{"m"}, "prompt": "client text", "blank": true,
+	}))
+	if err != nil {
+		t.Fatalf("toggle Update: %v", err)
+	}
+	if got := readText(t, entry.Path); got != "file text\n" {
+		t.Fatalf("file after a write carrying text = %q, want it untouched", got)
+	}
+	if got := toggled.ClaudePromptOverrides[0]; got.Prompt != "file text" || got.Enabled || got.Blank {
+		t.Fatalf("toggled entry = %+v, want the file's text and the new toggle", got)
+	}
+
+	const orphanID = "0b7a2c4e-9f1d-4e3a-8c5b-2d6f7a8e9b0c"
+	orphan := svc.promptFilePath(orphanID)
+	writeExternally(t, orphan, "someone else's text\n", time.Now().Add(2*time.Hour))
+	added, err := svc.Update(claudeOverridesPatch(
+		map[string]any{"id": entry.ID, "enabled": false, "models": []string{"m"}},
+		map[string]any{"id": orphanID, "enabled": true, "models": []string{"m"}, "prompt": "client text"},
+	))
+	if err != nil {
+		t.Fatalf("add Update: %v", err)
+	}
+	second := added.ClaudePromptOverrides[1]
+	if second.ID == orphanID || second.ID == "" {
+		t.Fatalf("added entry id = %q, want a fresh id rather than the caller's", second.ID)
+	}
+	if got := readText(t, second.Path); got != "" {
+		t.Fatalf("added entry's file = %q, want empty", got)
+	}
+	if got := readText(t, orphan); got != "someone else's text\n" {
+		t.Fatalf("the file the caller named = %q, want it untouched", got)
+	}
+}
+
 func TestPromptOverrideIDsAreValidatedAsFilenames(t *testing.T) {
 	const id = "0b7a2c4e-9f1d-4e3a-8c5b-2d6f7a8e9b0c"
 	cases := map[string]map[string]any{
-		"not a uuid": claudeOverridesPatch(map[string]any{"id": "../escape", "prompt": "p"}),
+		"not a uuid": claudeOverridesPatch(map[string]any{"id": "../escape"}),
 		"duplicate": claudeOverridesPatch(
-			map[string]any{"id": id, "prompt": "a"},
-			map[string]any{"id": id, "prompt": "b"},
+			map[string]any{"id": id},
+			map[string]any{"id": id},
 		),
 		"shared across providers": {
-			"claudePromptOverrides": []map[string]any{{"id": id, "prompt": "a"}},
-			"codexPromptOverrides":  []map[string]any{{"id": id, "prompt": "b"}},
+			"claudePromptOverrides": []map[string]any{{"id": id}},
+			"codexPromptOverrides":  []map[string]any{{"id": id}},
 		},
 	}
 	for name, patch := range cases {
@@ -136,14 +191,15 @@ func TestPromptOverrideIDsAreValidatedAsFilenames(t *testing.T) {
 		})
 	}
 
-	// A non-canonical spelling of a valid UUID is stored canonically.
+	// A non-canonical spelling of an entry's id names the same entry.
 	svc, _ := tieredService(t)
-	updated, err := svc.Update(claudeOverridesPatch(map[string]any{"id": "{" + strings.ToUpper(id) + "}", "prompt": "p"}))
+	entry := addClaudeOverrides(t, svc, map[string]any{"enabled": true})[0]
+	updated, err := svc.Update(claudeOverridesPatch(map[string]any{"id": "{" + strings.ToUpper(entry.ID) + "}"}))
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if got := updated.ClaudePromptOverrides[0].ID; got != id {
-		t.Fatalf("id = %q, want %q", got, id)
+	if got := updated.ClaudePromptOverrides[0].ID; got != entry.ID {
+		t.Fatalf("id = %q, want %q", got, entry.ID)
 	}
 }
 
@@ -180,15 +236,12 @@ func TestSanitizeClearsPromptOverrideIDsThatCannotNameAFile(t *testing.T) {
 
 func TestAnExternalPromptFileEditIsSeenByTheNextGet(t *testing.T) {
 	svc, _ := tieredService(t)
-	updated, err := svc.Update(claudeOverridesPatch(map[string]any{"enabled": true, "models": []string{"m"}, "prompt": "first"}))
-	if err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-	path := updated.ClaudePromptOverrides[0].Path
+	path := addClaudeOverrides(t, svc, map[string]any{"enabled": true, "models": []string{"m"}})[0].Path
+	writeExternally(t, path, "first\n", time.Now().Add(time.Hour))
 	if got := svc.Get().ClaudePromptOverrides[0].Prompt; got != "first" {
-		t.Fatalf("cached prompt = %q", got)
+		t.Fatalf("prompt = %q", got)
 	}
-	writeExternally(t, path, "edited outside\n", time.Now().Add(time.Hour))
+	writeExternally(t, path, "edited outside\n", time.Now().Add(2*time.Hour))
 	if got := svc.Get().ClaudePromptOverrides[0].Prompt; got != "edited outside" {
 		t.Fatalf("prompt after external edit = %q, want the file's text", got)
 	}
@@ -201,111 +254,112 @@ func TestAnExternalPromptFileEditIsSeenByTheNextGet(t *testing.T) {
 	}
 }
 
-func TestPromptFileWritesAreAnnouncedBeforeTheyLand(t *testing.T) {
+// Adding entries creates their empty files; removing one deletes its file
+// and leaves the others alone.
+func TestAddingCreatesAnEmptyFileAndRemovingDeletesIt(t *testing.T) {
 	svc, _ := tieredService(t)
-	type note struct {
-		path    string
-		content string
-		exists  bool
+	entries := addClaudeOverrides(t, svc, map[string]any{"enabled": true}, map[string]any{"enabled": true})
+	for _, entry := range entries {
+		if got := readText(t, entry.Path); got != "" {
+			t.Fatalf("new entry file %s = %q, want empty", entry.Path, got)
+		}
 	}
-	var notes []note
-	svc.SetPromptFileWriteObserver(func(path string) {
-		data, err := os.ReadFile(path)
-		notes = append(notes, note{path: path, content: string(data), exists: err == nil})
-	})
-	first, err := svc.Update(claudeOverridesPatch(
-		map[string]any{"prompt": "one"},
-		map[string]any{"prompt": "two"},
-	))
-	if err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-	if len(notes) != 2 || notes[0].exists || notes[1].exists {
-		t.Fatalf("notes = %+v, want two paths reported before their files existed", notes)
-	}
-	entries := first.ClaudePromptOverrides
+	writeExternally(t, entries[0].Path, "kept\n", time.Now().Add(time.Hour))
 
-	// Editing one entry rewrites only its file, announced while the old
-	// text is still there.
-	notes = nil
-	if _, err := svc.Update(claudeOverridesPatch(
-		map[string]any{"id": entries[0].ID, "prompt": "one edited"},
-		map[string]any{"id": entries[1].ID, "prompt": "two"},
-	)); err != nil {
-		t.Fatalf("edit Update: %v", err)
-	}
-	if len(notes) != 1 || notes[0].path != entries[0].Path || notes[0].content != "one\n" {
-		t.Fatalf("notes = %+v, want only the edited file, before the write", notes)
-	}
-	if got := readText(t, entries[0].Path); got != "one edited\n" {
-		t.Fatalf("edited file = %q", got)
-	}
-
-	// Dropping an entry removes its file, announced first.
-	notes = nil
-	if _, err := svc.Update(claudeOverridesPatch(
-		map[string]any{"id": entries[0].ID, "prompt": "one edited"},
-	)); err != nil {
+	if _, err := svc.Update(claudeOverridesPatch(map[string]any{"id": entries[0].ID, "enabled": true})); err != nil {
 		t.Fatalf("remove Update: %v", err)
-	}
-	if len(notes) != 1 || notes[0].path != entries[1].Path || !notes[0].exists {
-		t.Fatalf("notes = %+v, want the removed entry's file before removal", notes)
 	}
 	if _, err := os.Stat(entries[1].Path); !os.IsNotExist(err) {
 		t.Fatalf("removed entry's file still exists: %v", err)
 	}
-	if _, err := os.Stat(entries[0].Path); err != nil {
-		t.Fatalf("kept entry's file: %v", err)
+	if got := readText(t, entries[0].Path); got != "kept\n" {
+		t.Fatalf("kept entry's file = %q", got)
+	}
+
+	if _, err := svc.Update(claudeOverridesPatch()); err != nil {
+		t.Fatalf("remove all Update: %v", err)
+	}
+	if _, err := os.Stat(entries[0].Path); !os.IsNotExist(err) {
+		t.Fatalf("last entry's file still exists: %v", err)
+	}
+	if got := svc.Get().ClaudePromptOverrides; len(got) != 0 {
+		t.Fatalf("entries after removing all = %+v", got)
 	}
 }
 
-// Saving back exactly what GetSettings answered, computed fields included,
-// must move nothing: no announcement and no file write.
-func TestARepeatSaveOfTheLoadedEntriesMovesNothing(t *testing.T) {
+// Emptying a list stores a row a read can decode. An omitempty field at its
+// zero value has no projection, and the row used to be stored empty, which
+// every later read logged as unreadable and dropped.
+func TestEmptyingAListStoresADecodableRow(t *testing.T) {
 	svc, store := tieredService(t)
-	if _, err := svc.Update(claudeOverridesPatch(map[string]any{"enabled": true, "models": []string{"m"}, "prompt": "p"})); err != nil {
+	addClaudeOverrides(t, svc, map[string]any{"enabled": true})
+	if _, err := svc.Update(map[string]any{"claudeHiddenModels": []string{"claude-opus-5"}}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
+	if _, err := svc.Update(map[string]any{"claudePromptOverrides": []any{}, "claudeHiddenModels": []string{}}); err != nil {
+		t.Fatalf("clear Update: %v", err)
+	}
+	for _, key := range []string{"claudePromptOverrides", "claudeHiddenModels"} {
+		value, ok := store.scopes[UserScope][key]
+		if !ok || value == "" {
+			t.Fatalf("%s row = %q (present %v), want the empty value's encoding", key, value, ok)
+		}
+	}
+	fresh := NewService(filepath.Dir(svc.Path()))
+	fresh.AttachTierStore(store, testBackendBucket)
+	var got Settings
+	if logged := captureLog(t, func() { got = fresh.Get() }); strings.Contains(logged, "unreadable") {
+		t.Fatalf("reading the emptied rows logged %q", logged)
+	}
+	if len(got.ClaudePromptOverrides) != 0 || len(got.ClaudeHiddenModels) != 0 {
+		t.Fatalf("emptied lists read back as %+v and %v", got.ClaudePromptOverrides, got.ClaudeHiddenModels)
+	}
+}
+
+// Saving back exactly what was loaded, computed fields included, must move
+// nothing: no announcement and no file write.
+func TestARepeatSaveOfTheLoadedEntriesMovesNothing(t *testing.T) {
+	svc, store := tieredService(t)
+	path := addClaudeOverrides(t, svc, map[string]any{"enabled": true, "models": []string{"m"}})[0].Path
+	past := time.Now().Add(-time.Hour)
+	writeExternally(t, path, "p\n", past)
 	var announced [][]TierChange
-	var written []string
 	fresh := NewService(filepath.Dir(svc.Path()))
 	fresh.AttachTierStore(store, testBackendBucket)
 	fresh.SetChangeObserver(func(changes []TierChange) { announced = append(announced, changes) })
-	fresh.SetPromptFileWriteObserver(func(path string) { written = append(written, path) })
 	loaded := fresh.Get().ClaudePromptOverrides
-	if _, err := fresh.Update(map[string]any{"claudePromptOverrides": loaded}); err != nil {
+	if _, err := fresh.Update(map[string]any{"claudePromptOverrides": PromptOverridesForWire(loaded)}); err != nil {
 		t.Fatalf("repeat Update: %v", err)
 	}
-	if len(announced) != 0 || len(written) != 0 {
-		t.Fatalf("repeat save announced %+v and wrote %v", announced, written)
+	if len(announced) != 0 {
+		t.Fatalf("repeat save announced %+v", announced)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.ModTime().Equal(past) || readText(t, path) != "p\n" {
+		t.Fatalf("repeat save rewrote the prompt file (mtime %v)", info.ModTime())
 	}
 }
 
 // A client cannot set the computed fields: they are recomputed.
 func TestAClientPathOrProblemIsIgnored(t *testing.T) {
 	svc, store := tieredService(t)
-	updated, err := svc.Update(claudeOverridesPatch(map[string]any{
-		"prompt": "p", "path": "/etc/passwd", "problem": "made up",
-	}))
-	if err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-	entry := updated.ClaudePromptOverrides[0]
-	if entry.Path != svc.promptFilePath(entry.ID) || entry.Problem != "" {
+	entry := addClaudeOverrides(t, svc, map[string]any{
+		"path": "/etc/passwd", "problem": "made up", "blank": true,
+	})[0]
+	if entry.Path != svc.promptFilePath(entry.ID) || entry.Problem != "" || entry.Blank {
 		t.Fatalf("entry = %+v, want recomputed fields", entry)
 	}
-	if rows := rawUserRow(t, store, "claudePromptOverrides"); rows[0]["path"] != nil || rows[0]["problem"] != nil {
+	if rows := rawUserRow(t, store, "claudePromptOverrides"); rows[0]["path"] != nil || rows[0]["problem"] != nil || rows[0]["blank"] != nil {
 		t.Fatalf("row = %v", rows[0])
 	}
 }
 
 func TestAnOversizedPromptFileIsReportedAndKept(t *testing.T) {
 	svc, _ := tieredService(t)
-	updated, err := svc.Update(claudeOverridesPatch(map[string]any{"enabled": true, "models": []string{"m"}, "prompt": "short"}))
-	if err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-	path := updated.ClaudePromptOverrides[0].Path
+	path := addClaudeOverrides(t, svc, map[string]any{"enabled": true, "models": []string{"m"}})[0].Path
 	big := strings.Repeat("x", MaxPromptOverrideLen+1)
 	writeExternally(t, path, big, time.Now().Add(time.Hour))
 
@@ -329,7 +383,7 @@ func TestAnOversizedPromptFileIsReportedAndKept(t *testing.T) {
 
 	// Toggling the entry leaves the user's file alone and keeps the problem.
 	toggled, err := svc.Update(claudeOverridesPatch(map[string]any{
-		"id": entry.ID, "enabled": false, "models": []string{"m"}, "prompt": "",
+		"id": entry.ID, "enabled": false, "models": []string{"m"},
 	}))
 	if err != nil {
 		t.Fatalf("toggle Update: %v", err)
@@ -340,13 +394,10 @@ func TestAnOversizedPromptFileIsReportedAndKept(t *testing.T) {
 	if toggled.ClaudePromptOverrides[0].Problem == "" {
 		t.Fatal("toggle dropped the problem")
 	}
-	// Typing new text replaces the file and clears the problem.
-	fixed, err := svc.Update(claudeOverridesPatch(map[string]any{"id": entry.ID, "prompt": "fixed"}))
-	if err != nil {
-		t.Fatalf("fix Update: %v", err)
-	}
-	if fixed.ClaudePromptOverrides[0].Problem != "" || readText(t, path) != "fixed\n" {
-		t.Fatalf("fix = %+v, file %q", fixed.ClaudePromptOverrides[0], readText(t, path))
+	// Shortening the file clears the problem.
+	writeExternally(t, path, "fixed\n", time.Now().Add(2*time.Hour))
+	if fixed := svc.Get().ClaudePromptOverrides[0]; fixed.Problem != "" || fixed.Prompt != "fixed" {
+		t.Fatalf("after the fix = %+v", fixed)
 	}
 }
 
@@ -356,14 +407,11 @@ func TestPromptFilesPastTheProviderTotalAreReportedNotDropped(t *testing.T) {
 	svc, _ := tieredService(t)
 	entries := make([]map[string]any, 0, 9)
 	for range 9 {
-		entries = append(entries, map[string]any{"prompt": "x"})
+		entries = append(entries, map[string]any{"enabled": true})
 	}
-	updated, err := svc.Update(claudeOverridesPatch(entries...))
-	if err != nil {
-		t.Fatalf("Update: %v", err)
-	}
+	added := addClaudeOverrides(t, svc, entries...)
 	later := time.Now().Add(time.Hour)
-	for _, entry := range updated.ClaudePromptOverrides {
+	for _, entry := range added {
 		writeExternally(t, entry.Path, strings.Repeat("y", MaxPromptOverrideLen), later)
 	}
 	loaded := svc.Get().ClaudePromptOverrides
@@ -416,7 +464,8 @@ func TestMigratePromptFilesMovesInlineTextOutOfTheRow(t *testing.T) {
 	if claude.Prompt != "legacy claude" || readText(t, claude.Path) != "legacy claude\n" {
 		t.Fatalf("migrated claude entry = %+v", claude)
 	}
-	if got := readText(t, svc.promptFilePath(withID)); got != "legacy codex\n" {
+	codexPath := svc.promptFilePath(withID)
+	if got := readText(t, codexPath); got != "legacy codex\n" {
 		t.Fatalf("migrated codex file = %q", got)
 	}
 	if len(announced) != 1 || announced[0][0].Tier != TierUser {
@@ -428,32 +477,38 @@ func TestMigratePromptFilesMovesInlineTextOutOfTheRow(t *testing.T) {
 
 	// Nothing pending: a second call writes and announces nothing.
 	announced = nil
-	var written []string
-	svc.SetPromptFileWriteObserver(func(path string) { written = append(written, path) })
+	past := time.Now().Add(-time.Hour)
+	for _, path := range []string{claude.Path, codexPath} {
+		if err := os.Chtimes(path, past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := svc.MigratePromptFiles(); err != nil {
 		t.Fatalf("second MigratePromptFiles: %v", err)
 	}
-	if len(announced) != 0 || len(written) != 0 {
-		t.Fatalf("idle migration announced %+v and wrote %v", announced, written)
+	if len(announced) != 0 {
+		t.Fatalf("idle migration announced %+v", announced)
+	}
+	for _, path := range []string{claude.Path, codexPath} {
+		if info, err := os.Stat(path); err != nil || !info.ModTime().Equal(past) {
+			t.Fatalf("idle migration rewrote %s (%v)", path, err)
+		}
 	}
 	if _, err := os.Stat(svc.Path()); !os.IsNotExist(err) {
 		t.Fatalf("idle migration wrote settings.json: %v", err)
 	}
 }
 
-// Before AttachTierStore the user tier is still settings.json: a store-less
-// write keeps the text inline and creates no prompt file, and migration
-// waits for the store. The harness seeder and the boot readers are this
-// service.
+// Before AttachTierStore the user tier is still settings.json, where a row
+// from before the files keeps its text inline: a store-less service reads
+// it, creates no prompt file, and migration waits for the store.
 func TestAStoreLessServiceKeepsPromptTextInline(t *testing.T) {
 	dir := t.TempDir()
+	legacy := `{"claudePromptOverrides":[{"enabled":true,"models":["m"],"prompt":"inline"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	svc := NewService(dir)
-	if _, err := svc.Update(map[string]any{"claudeBinaryPath": "/bin/true"}); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-	if _, err := svc.Update(claudeOverridesPatch(map[string]any{"prompt": "inline"})); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
 	if err := svc.MigratePromptFiles(); err != nil {
 		t.Fatalf("MigratePromptFiles: %v", err)
 	}
@@ -481,10 +536,8 @@ func TestAStoreLessServiceKeepsPromptTextInline(t *testing.T) {
 
 func TestReloadPromptFilesAnnouncesBothKeysAndDropsTheCache(t *testing.T) {
 	svc, _ := tieredService(t)
-	updated, err := svc.Update(claudeOverridesPatch(map[string]any{"prompt": "first"}))
-	if err != nil {
-		t.Fatalf("Update: %v", err)
-	}
+	path := addClaudeOverrides(t, svc, map[string]any{"enabled": true})[0].Path
+	writeExternally(t, path, "first\n", time.Now().Add(time.Hour))
 	var announced [][]TierChange
 	svc.SetChangeObserver(func(changes []TierChange) { announced = append(announced, changes) })
 	svc.ReloadPromptFiles()
@@ -495,12 +548,13 @@ func TestReloadPromptFilesAnnouncesBothKeysAndDropsTheCache(t *testing.T) {
 	}
 	// Same size and an mtime restored to the cached one: only the dropped
 	// cache can make this edit visible.
-	path := updated.ClaudePromptOverrides[0].Path
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc.Get()
+	if got := svc.Get().ClaudePromptOverrides[0].Prompt; got != "first" {
+		t.Fatalf("prompt = %q", got)
+	}
 	writeExternally(t, path, "other\n", info.ModTime())
 	if got := svc.Get().ClaudePromptOverrides[0].Prompt; got != "first" {
 		t.Fatalf("a same-stamp edit was visible without a reload: %q", got)

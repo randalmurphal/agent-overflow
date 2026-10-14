@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"agent-overflow/internal/atomicfile"
 )
 
 func newTestPromptWatcher(t *testing.T) (*PromptWatcher, string, <-chan struct{}) {
@@ -74,26 +72,6 @@ func TestPromptWatcherDebouncesWritesAndIgnoresNonPromptFiles(t *testing.T) {
 	observed.releaseOneEmit(t, "a prompt removal")
 }
 
-// The settings service writes prompt files through atomicfile and reports
-// each path first. Those events must not come back as an external edit.
-func TestPromptWatcherSuppressesItsOwnWrites(t *testing.T) {
-	watcher, dir, emitted := newTestPromptWatcher(t)
-
-	own := filepath.Join(dir, testPromptName)
-	watcher.Suppress(own)
-	if err := atomicfile.Write(own, []byte("saved in the app\n")); err != nil {
-		t.Fatal(err)
-	}
-	expectNoPromptChange(t, emitted, "a suppressed self-write")
-
-	// Suppression is per path, so a different prompt edited by hand still
-	// reaches the app.
-	if err := os.WriteFile(filepath.Join(dir, "1b7a2c4e-9f1d-4e3a-8c5b-2d6f7a8e9b0c.md"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	waitForPromptChanged(t, emitted)
-}
-
 func TestPromptWatcherIgnoresAtomicfileTempNames(t *testing.T) {
 	watcher := &PromptWatcher{core: &watcher{dir: filepath.Clean(t.TempDir())}}
 
@@ -156,7 +134,6 @@ func TestPromptWatcherRejectsInvalidSetupAndClosesCleanly(t *testing.T) {
 		t.Fatalf("second close: %v", err)
 	}
 	var nilWatcher *PromptWatcher
-	nilWatcher.Suppress("x")
 	if err := nilWatcher.Close(); err != nil {
 		t.Fatalf("nil close: %v", err)
 	}
