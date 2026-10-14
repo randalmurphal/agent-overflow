@@ -28,15 +28,6 @@ func waitForPromptChanged(t *testing.T, emitted <-chan struct{}) {
 	}
 }
 
-func expectNoPromptChange(t *testing.T, emitted <-chan struct{}, why string) {
-	t.Helper()
-	select {
-	case <-emitted:
-		t.Fatalf("%s emitted a prompt-changed event", why)
-	case <-time.After(100 * time.Millisecond):
-	}
-}
-
 const testPromptName = "0b7a2c4e-9f1d-4e3a-8c5b-2d6f7a8e9b0c.md"
 
 func TestPromptWatcherDebouncesWritesAndIgnoresNonPromptFiles(t *testing.T) {
