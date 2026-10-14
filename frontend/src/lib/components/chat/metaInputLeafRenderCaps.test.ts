@@ -65,6 +65,13 @@ describe('every rendered meta.input leaf is capped below the projection floor', 
       render: () => previewFor('wait_agent', { agent_ids: [OVERSIZED], timeout: OVERSIZED }),
     },
     {
+      reader: 'AO tool header (aoToolPresentation what)',
+      render: () => {
+        const meta = { mcp: { server: 'ao-thread-tools', tool: 'thread_spawn' }, input: { prompt: OVERSIZED } };
+        return presentToolCardInputPreview(toolItem('MCP/thread_spawn', meta.input), null, meta, '/workspace').text;
+      },
+    },
+    {
       reader: 'collab row preview (previewText)',
       render: () => {
         const input = collabInputFromMeta({ input: { prompt: OVERSIZED } }, null);
@@ -78,6 +85,21 @@ describe('every rendered meta.input leaf is capped below the projection floor', 
       expect(render().length).toBeLessThan(LEAF_FLOOR_BYTES);
     });
   }
+
+  // A leaf the projection elided arrives as its opening plus an ellipsis
+  // (itemwire.ClippedLeafBytes), so a reader that shows a bounded preview
+  // of it renders what it would have rendered from the whole value. The
+  // shape that once left a thread_spawn header empty.
+  it('a clipped leaf still renders its opening in a capped reader', () => {
+    const prompt = `Own the reporting slice.\n${'context '.repeat(60)}`.slice(0, 512) + '\u2026';
+    const meta = {
+      mcp: { server: 'ao-thread-tools', tool: 'thread_spawn' },
+      input: { prompt },
+      wireElision: { input: ['prompt'] },
+    };
+    const item = toolItem('MCP/thread_spawn', meta.input);
+    expect(presentToolCardInputPreview(item, null, meta, '/workspace').text).toBe('Own the reporting slice.');
+  });
 
   // The summary fallback is the widest path through the preview: when no
   // structured reader claims the row, the card renders `item.summary`,

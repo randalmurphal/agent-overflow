@@ -56,6 +56,12 @@ export interface UserMessageMeta {
   origin?: unknown;
   /** The source thread of an `agent-thread` row. See userMessageOriginThread. */
   originThread?: unknown;
+  /**
+   * Every member's request token, when one row joins two or more answers
+   * that queued together (`internal/usermessage` JoinMetas). `originThread`
+   * keeps only the first member's.
+   */
+  joinedOriginTokens?: unknown;
   /** What wrote an `agent-wake` row. See userMessageOriginWake. */
   originWake?: unknown;
   /**
@@ -115,6 +121,21 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
     title: stringField(record.title),
     token: stringField(record.token),
   };
+}
+
+/**
+ * The request tokens a user row answers: every joined member's (whatever
+ * the row's attribution, since a wake may have joined first), else an
+ * `agent-thread` row's own.
+ */
+export function userMessageOriginTokens(meta: UserMessageMeta): string[] {
+  const joined = Array.isArray(meta.joinedOriginTokens)
+    ? meta.joinedOriginTokens.filter((token): token is string => typeof token === 'string' && token !== '')
+    : [];
+  if (joined.length > 0) return joined;
+  if (userMessageOrigin(meta) !== 'agent-thread') return [];
+  const token = userMessageOriginThread(meta)?.token;
+  return token ? [token] : [];
 }
 
 /**

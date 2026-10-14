@@ -9,9 +9,7 @@ import {
   aoToolPresentation,
   aoToolServer,
   isAoToolMeta,
-  remoteResultView,
   remoteRunCommand,
-  threadResultView,
   type AoToolNames,
 } from './aoTools';
 
@@ -21,10 +19,15 @@ function meta(server: string, tool: string, input: Record<string, unknown> = {})
 
 const id = '98312d67-1111-2222-3333-444444444444';
 // What a row can name: an attached computer, the thread's jobs, its live pages.
+const named = 'feedbeef-1111-2222-3333-444444444444';
+const namedRun = 'c0ffee00-1111-2222-3333-444444444444';
 const names: AoToolNames = {
   computer: (computer) => (computer === 'mac' ? 'Macaroni-air' : ''),
   job: (request) => (request === id ? 'Go tests' : ''),
   page: (page) => (page === 'p1' ? 'Checkout' : ''),
+  thread: (thread) => (named.startsWith(thread) ? 'Release notes' : ''),
+  threadId: (thread) => (named.startsWith(thread) ? named : ''),
+  run: (run) => (run === namedRun ? 'digest · Weekly summary' : ''),
 };
 
 describe('AO tool presentation', () => {
@@ -104,20 +107,34 @@ describe('AO tool presentation', () => {
 
     it.each([
       ['thread_search', { query: 'flaky test' }, 'search', '"flaky test"'],
-      ['thread_search', {}, 'search', 'threads'],
-      ['thread_search', { thread_id: tid }, 'search', 'thread 7f2c9a41'],
-      ['thread_show', { thread_id: '7f2c9a41' }, 'read', 'thread 7f2c9a41'],
-      ['thread_item', { thread_id: tid, item_id: 'it-9' }, 'item', 'it-9 in thread 7f2c9a41'],
+      ['thread_search', {}, 'search', 'recent threads'],
+      ['thread_search', { state: 'running', spawned_by_me: true }, 'search', 'running threads spawned here'],
+      ['thread_search', { group: 'Bugs' }, 'search', 'threads in Bugs'],
+      ['thread_search', { thread_id: tid }, 'search', 'in thread 7f2c9a41'],
+      ['thread_search', { thread_id: named, query: 'deploy' }, 'search', '"deploy" in Release notes'],
+      ['thread_show', { thread_id: '7f2c9a41' }, 'read', 'thread 7f2c9a41 · last 20 turns'],
+      // A typed prefix reads whole: the short form would cut what the model wrote.
+      ['thread_show', { thread_id: '7f2c9a41-aaaa' }, 'read', 'thread 7f2c9a41-aaaa · last 20 turns'],
+      ['thread_show', { thread_id: named, window: 'last_answer' }, 'read', 'Release notes · last answer'],
+      ['thread_show', { thread_id: tid, window: 'around', item_id: 'it-9' }, 'read', 'thread 7f2c9a41 · around it-9'],
+      ['thread_show', { thread_id: tid, window: 'head', turns: 5 }, 'read', 'thread 7f2c9a41 · first 5 turns'],
+      ['thread_show', { thread_id: tid, window: 'all', to_file: true }, 'read', 'thread 7f2c9a41 · whole thread'],
+      ['thread_item', { thread_id: tid, item_id: 'it-9' }, 'item', 'thread 7f2c9a41 · item it-9'],
+      ['thread_item', { thread_id: tid, item_id: 'toolu_0123456789', query: 'FAIL' }, 'item', 'thread 7f2c9a41 · item toolu_01 · find "FAIL"'],
+      ['thread_item', { thread_id: tid, item_id: 'it-9', lines: '10-20' }, 'item', 'thread 7f2c9a41 · item it-9 · lines 10-20'],
       ['thread_item', { thread_id: tid }, 'item', 'thread 7f2c9a41'],
-      ['thread_options', {}, 'options', 'spawn options'],
+      ['thread_options', {}, 'opts', 'spawn options'],
       ['thread_spawn', { prompt: 'Port the fix\nto Windows' }, 'spawn', 'Port the fix'],
-      ['thread_send', { thread_id: tid, message: 'ping' }, 'send', 'ping → thread 7f2c9a41'],
+      ['thread_spawn', { prompt: 'Port the fix', title: 'Windows port' }, 'spawn', 'Windows port'],
+      ['thread_send', { thread_id: tid, message: 'ping' }, 'send', 'thread 7f2c9a41 · ping'],
+      ['thread_send', { thread_id: named.slice(0, 8), message: 'rebase\nplease' }, 'send', 'Release notes · rebase'],
       ['thread_send', { message: 'ping' }, 'send', 'ping'],
-      ['thread_ask', { thread_id: tid, question: 'which branch?' }, 'ask', 'which branch? → thread 7f2c9a41'],
+      ['thread_ask', { thread_id: tid, question: 'which branch?' }, 'ask', 'thread 7f2c9a41 · which branch?'],
       ['thread_reply', { token: 't', text: 'done' }, 'reply', 'done'],
       ['thread_status', { tokens: ['a', 'b'] }, 'status', '2 requests'],
-      ['thread_status', {}, 'status', 'requests'],
-      ['thread_cancel', { token: 't' }, 'cancel', 'request'],
+      ['thread_status', { thread_ids: [named], wait_seconds: 120 }, 'status', 'Release notes · wait 2m'],
+      ['thread_status', {}, 'status', 'all requests'],
+      ['thread_cancel', { token: 'abcdef0123456789' }, 'cancel', 'request abcdef01'],
       ['thread_cancel', { thread_id: tid }, 'cancel', 'thread 7f2c9a41'],
       ['thread_update', { thread_ids: [tid, tid] }, 'update', '2 threads'],
       ['thread_update', { thread_ids: [tid] }, 'update', 'thread 7f2c9a41'],
@@ -164,17 +181,32 @@ describe('AO tool presentation', () => {
       expect(p).toMatchObject({ computerId: 'mac', computerName: 'Macaroni-air' });
     });
 
-    it('reads a reply for the thread name the arguments could only abbreviate', () => {
-      expect(threadResultView(JSON.stringify({ thread_id: tid, title: 'Windows launcher', state: 'running' })))
-        .toEqual({ title: 'Windows launcher', state: 'running', summary: '' });
-      expect(threadResultView(JSON.stringify({ rows: [{ thread_id: tid }, { thread_id: tid }] })))
-        .toEqual({ title: '', state: '', summary: '2 threads' });
-      expect(threadResultView(JSON.stringify({ computers: [{ rows: [{}] }, { rows: [{}, {}] }] })))
-        .toEqual({ title: '', state: '', summary: '3 threads' });
-      expect(threadResultView(JSON.stringify({ rows: [{}] }))!.summary).toBe('1 thread');
-      expect(threadResultView('not json')).toBeNull();
-      expect(threadResultView(JSON.stringify({ ok: true }))).toBeNull();
-      expect(threadResultView(JSON.stringify([1, 2]))).toBeNull();
+    it('names what the reply named, from the stamp triage put on the row', () => {
+      const stamped = (tool: string, input: Record<string, unknown>, aoResult: Record<string, unknown>) => ({
+        ...meta(THREAD_TOOLS_SERVER, tool, input),
+        ao_result: aoResult,
+      });
+      // The new thread's title beats the prompt's first line.
+      const spawn = aoToolPresentation(stamped('thread_spawn', { prompt: 'You own the docs slice.\nRead first' }, {
+        token: 'tok-1', thread_id: tid, title: 'Docs slice', state: 'running', outcome: 'backgrounded',
+      }), names)!;
+      expect(spawn.what).toBe('Docs slice');
+      expect(spawn.result).toMatchObject({ token: 'tok-1', threadId: tid, state: 'running', outcome: 'backgrounded' });
+      // A prefix the model typed reads as the title the reply resolved.
+      expect(aoToolPresentation(stamped('thread_send', { thread_id: '7f2c9a', message: 'rebase' }, { title: 'Windows launcher' }), names)!.what)
+        .toBe('Windows launcher · rebase');
+      // A reply names its receiver through the thread list.
+      expect(aoToolPresentation(stamped('thread_reply', { token: 't', text: 'Done.\nDetails' }, { thread_id: named }), names)!.what)
+        .toBe('Release notes · Done.');
+      // No stamp: the prompt's first line, as before the reply was read.
+      expect(aoToolPresentation(meta(THREAD_TOOLS_SERVER, 'thread_spawn', { prompt: 'You own the docs slice.\nRead first' }), names)!.what)
+        .toBe('You own the docs slice.');
+    });
+
+    it('reads a prompt the wire projection clipped to its opening', () => {
+      const clipped = `${'Own the reporting slice.'}\n${'context '.repeat(50)}`.slice(0, 512) + '…';
+      const p = aoToolPresentation({ ...meta(THREAD_TOOLS_SERVER, 'thread_spawn', { prompt: clipped }), wireElision: { input: ['prompt'] } })!;
+      expect(p.what).toBe('Own the reporting slice.');
     });
 
     it('still presents a tool the table does not know', () => {
@@ -188,30 +220,44 @@ describe('AO tool presentation', () => {
 
     it.each([
       ['workflow_list', {}, 'list', 'workflows'],
-      ['workflow_validate', { id: 'release' }, 'validate', 'release'],
-      ['workflow_validate', { path: '/cfg/workflows/draft.yaml' }, 'validate', '/cfg/workflows/draft.yaml'],
-      ['workflow_schema', {}, 'schema', 'workflow schema'],
+      ['workflow_validate', { id: 'release' }, 'check', 'release'],
+      ['workflow_validate', { path: '/cfg/workflows/draft.yaml' }, 'check', '/cfg/workflows/draft.yaml'],
+      ['workflow_schema', {}, 'read', 'workflow schema'],
       ['workflow_new', { starter: 'blank', id: 'release', scope: 'project' }, 'new', 'release from blank'],
       ['run_start', { workflow_id: 'release', goal: 'Ship 2.4\nthen tag' }, 'start', 'release · "Ship 2.4"'],
       ['run_start', { workflow_id: 'release' }, 'start', 'release'],
       ['run_status', { run_id: rid, wait_seconds: 120 }, 'status', 'run 1a2b3c4d'],
       ['run_watch', { run_id: rid, tree: true }, 'watch', 'run 1a2b3c4d and its called runs'],
       ['run_output', { run_id: rid }, 'output', 'run 1a2b3c4d'],
-      ['run_inspect', { run_id: rid, phase_id: 'review' }, 'inspect', 'run 1a2b3c4d · phase review'],
-      ['run_narrative', { run_id: rid, phase_id: 'build' }, 'narrative', 'run 1a2b3c4d · phase build'],
+      ['run_inspect', { run_id: rid, phase_id: 'review' }, 'probe', 'run 1a2b3c4d · phase review'],
+      ['run_narrative', { run_id: rid, phase_id: 'build' }, 'story', 'run 1a2b3c4d · phase build'],
       ['run_list', { active_only: true }, 'list', 'active runs'],
       ['run_list', {}, 'list', 'runs'],
       ['run_control', { run_id: rid, action: 'retry_failed_units' }, 'control', 'retry failed units run 1a2b3c4d'],
       ['run_control', { run_id: rid, action: 'resume', phase_id: 'plan' }, 'control', 'resume run 1a2b3c4d · phase plan'],
       ['run_amend', { run_id: rid, seeds: { budget: 4, target: 'main' } }, 'amend', 'run 1a2b3c4d · budget, target'],
       ['run_guide', { run_id: rid, text: 'Skip the docs\nfor now' }, 'guide', 'run 1a2b3c4d · Skip the docs'],
-      ['run_resolve', { run_id: rid, decision: 'approve' }, 'resolve', 'approve run 1a2b3c4d'],
-      ['memory_add', { kind: 'warning', text: 'The CI cache lies' }, 'remember', 'warning: The CI cache lies'],
-      ['memory_list', { kind: 'handoff' }, 'memory', 'handoff'],
-      ['memory_list', {}, 'memory', 'campaign notes'],
+      ['run_resolve', { run_id: rid, decision: 'approve' }, 'decide', 'approve run 1a2b3c4d'],
+      ['memory_add', { kind: 'warning', text: 'The CI cache lies' }, 'note', 'warning: The CI cache lies'],
+      ['memory_list', { kind: 'handoff' }, 'notes', 'handoff'],
+      ['memory_list', {}, 'notes', 'campaign notes'],
     ])('%s', (tool, input, label, what) => {
       const p = aoToolPresentation(meta(WORKFLOW_TOOLS_SERVER, tool, input))!;
       expect(p).toMatchObject({ icon: 'checklist', label, what, headerLabel: `Workflow ${label}` });
+    });
+
+    it('names a run by this client\'s name for it, else by the workflow the reply named', () => {
+      expect(aoToolPresentation(meta(WORKFLOW_TOOLS_SERVER, 'run_status', { run_id: namedRun }), names)!.what).toBe('digest · Weekly summary');
+      const stamped = {
+        ...meta(WORKFLOW_TOOLS_SERVER, 'run_status', { run_id: rid }),
+        ao_result: { run_id: rid, workflow_id: 'release', state: 'running', outcome: 'backgrounded' },
+      };
+      expect(aoToolPresentation(stamped, names)!.what).toBe('release run 1a2b3c4d · running');
+      const started = {
+        ...meta(WORKFLOW_TOOLS_SERVER, 'run_start', { workflow_id: 'release', goal: 'Ship 2.4' }),
+        ao_result: { run_id: rid, workflow_id: 'release', state: 'queued' },
+      };
+      expect(aoToolPresentation(started, names)!.what).toBe('release · "Ship 2.4" · queued');
     });
 
     it('still presents a tool the table does not know, by its own name', () => {
@@ -229,13 +275,13 @@ describe('AO tool presentation', () => {
       ['browser_select_page', { page_id: 'p1' }, 'select', 'Checkout'],
       ['browser_select_page', { page_id: 'p9' }, 'select', 'page'],
       ['browser_label_page', { page_id: 'p1', label: 'checkout' }, 'label', 'Checkout as "checkout"'],
-      ['browser_session', { name: 'Signup flow' }, 'session', 'Signup flow'],
+      ['browser_session', { name: 'Signup flow' }, 'use', 'Signup flow'],
       ['browser_visibility', { visible: true, page_id: 'p1' }, 'show', 'Checkout'],
       ['browser_visibility', { visible: false }, 'show', 'hide companion'],
-      ['browser_viewport', { action: 'set', width: 1280, height: 720 }, 'viewport', '1280×720'],
+      ['browser_viewport', { action: 'set', width: 1280, height: 720 }, 'size', '1280×720'],
       ['browser_close_page', { page_id: 'p1' }, 'close', 'Checkout'],
-      ['browser_snapshot', {}, 'snapshot', ''],
-      ['browser_screenshot', { full_page: true }, 'capture', 'full page'],
+      ['browser_snapshot', {}, 'read', ''],
+      ['browser_screenshot', { full_page: true }, 'shot', 'full page'],
       ['browser_locator', { action: 'click', locator: { role: 'button', name: 'Save' } }, 'locate', 'click button "Save"'],
       ['browser_locator', { action: 'fill', locator: { css: '#email' }, value: 'a@b' }, 'locate', 'fill #email'],
       ['browser_click', { selector: '#submit' }, 'click', '#submit'],
@@ -252,9 +298,9 @@ describe('AO tool presentation', () => {
       ['browser_history', { action: 'back' }, 'history', 'back'],
       ['browser_evaluate', { expression: 'document.title' }, 'eval', 'document.title'],
       ['browser_evaluate_readonly', { expression: 'location.href' }, 'eval', 'location.href'],
-      ['browser_clipboard', { action: 'write_text', text: 'abc' }, 'clipboard', 'write_text "abc"'],
-      ['browser_console_logs', { filter: 'error' }, 'console', 'error'],
-      ['browser_downloads', { action: 'wait' }, 'download', 'wait'],
+      ['browser_clipboard', { action: 'write_text', text: 'abc' }, 'clip', 'write_text "abc"'],
+      ['browser_console_logs', { filter: 'error' }, 'logs', 'error'],
+      ['browser_downloads', { action: 'wait' }, 'files', 'wait'],
       ['browser_assets', { action: 'list' }, 'assets', 'list'],
     ])('%s', (tool, input, label, what) => {
       const p = aoToolPresentation(meta(BROWSER_TOOLS_SERVER, tool, input), names)!;
@@ -295,13 +341,44 @@ describe('AO tool presentation', () => {
       expect(facts.find((f) => f.label === 'computer')!.value).toBe('mac');
     });
 
-    it('reads a remote reply as its outcome and output, and leaves other text alone', () => {
-      const reply = JSON.stringify({ id, computerId: 'mac', state: 'succeeded', exitCode: 0, startedAt: 1000, finishedAt: 13500, output: 'ok\n', outputHead: 'go: downloading\n', outputHint: 'Older output was discarded.' });
-      expect(remoteResultView(reply)).toEqual({ outcome: 'succeeded · exit 0 · 12.5s', error: '', head: 'go: downloading\n', output: 'ok\n', hint: 'Older output was discarded.' });
-      expect(remoteResultView(JSON.stringify({ id, state: 'running', backgrounded: true, exitCode: -1, startedAt: 1000 }))).toMatchObject({ outcome: 'running in the background' });
-      expect(remoteResultView(JSON.stringify({ id, state: 'failed', exitCode: 2, error: 'tests failed' }))).toMatchObject({ outcome: 'failed · exit 2', error: 'tests failed' });
-      expect(remoteResultView('plain text')).toBeNull();
-      expect(remoteResultView(JSON.stringify({ pages: [] }))).toBeNull();
+    it('reads an object input as one key and value per line and a list as its items, never JSON', () => {
+      const facts = aoToolFacts(meta(WORKFLOW_TOOLS_SERVER, 'run_start', {
+        workflow_id: 'digest', goal: 'Weekly summary', seeds: { goal: 'Weekly summary', budget: 4 }, tags: ['a', 'b'],
+      }));
+      expect(facts.find((f) => f.label === 'seeds')!.value).toBe('goal: Weekly summary\nbudget: 4');
+      expect(facts.find((f) => f.label === 'tags')!.value).toBe('a, b');
+    });
+
+    it('lists what the header and the reply leave out: the threads of a list, the requests, never ids', () => {
+      // The header names the one thread; the reply says whether notify armed.
+      expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_send', { thread_id: named, message: 'hi', notify: true }), names)).toEqual([
+        { label: 'message', value: 'hi' },
+      ]);
+      expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_update', { thread_ids: [named, '7f2c9a41-x'], archived: true }), names)).toEqual([
+        { label: 'threads', value: 'Release notes, thread 7f2c9a41-x' },
+        { label: 'archived', value: 'true' },
+      ]);
+      expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_status', { tokens: ['abcdef0123456789', 'fedcba9876543210'] }), names)).toEqual([
+        { label: 'requests', value: 'abcdef01, fedcba98' },
+      ]);
+      expect(aoToolFacts(meta(WORKFLOW_TOOLS_SERVER, 'run_output', { run_id: namedRun }), names)).toEqual([]);
+      // A spawn's overrides show in the reply's facts, its title as the link.
+      expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_spawn', { prompt: 'p', title: 't', model: 'opus', notify: true }), names)).toEqual([
+        { label: 'prompt', value: 'p' },
+      ]);
+    });
+
+    it('counts the home files a spawn or send attaches rather than listing their paths', () => {
+      expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_spawn', { prompt: 'p', home_files: ['/home/a.md', '/home/b.md'] }))).toEqual([
+        { label: 'files', value: '2 files attached' },
+        { label: 'prompt', value: 'p' },
+      ]);
+    });
+
+    it('keeps a long input\'s lines for the body to fold', () => {
+      const prompt = 'First line\nSecond line';
+      const facts = aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_spawn', { prompt }));
+      expect(facts).toEqual([{ label: 'prompt', value: prompt }]);
     });
   });
 

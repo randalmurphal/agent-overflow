@@ -979,7 +979,60 @@ spawn's first message, on every `thread_send`, and on every wake. Both
 ends record it: the destination's thread shows where a message came
 from, and the caller's wake shows where the answer came from. Every
 agent-written row also carries `meta.originThread.token`, so three
-requests from one thread to another stay distinguishable.
+requests from one thread to another stay distinguishable. When Claude
+joins messages that queued together into one row, the attribution is the
+first member's (a thread or a wake) and `meta.joinedOriginTokens` lists
+every answering member's token.
+
+## How calls surface in the timeline
+
+A call is a tool row in the calling thread, presented by
+`frontend/src/lib/components/chat/aoTools.ts` (the same table serves the
+workflow, browser and remote tools). Both providers stamp `meta.mcp` and
+`meta.input` on the row; triage adds what the reply said as
+`meta.ao_result` (thread id, title, computer, token, state, outcome;
+`internal/triage/ao_tool_result.go`) on the live path and on import.
+
+- The collapsed header is one sentence: a spawn shows the new thread's
+  title (the prompt's first line before the reply lands); a send or ask
+  shows the target and the message's first line; a read shows the thread
+  and its window; a status or search shows what it asked; a loop, watch or
+  reminder shows its label, cadence and next fire. Every id reads as the
+  name this client knows it by, else a short form. The gutter verb fits
+  the header's fixed label column on desktop and compact
+  (`aoToolLabels.browser.test.ts`).
+- The wire projection clips a long input to its opening
+  (`internal/itemwire`), which is all the header needs; the expanded body
+  reads the full input from the stored row.
+- The expanded body decodes the reply (`aoToolResults.ts`, one decoder per
+  server): an outcome line, a link that opens the thread in a pane (naming
+  its computer when it is another one) or the run in the workflows
+  overlay, the facts a person reads, one line per request or hit, and long
+  text folded behind "show more". Each tool's reply has its own decoder;
+  a reply shape none knows reads as facts and lines (an object nested in a
+  fact as its field count), and text that is not JSON reads "Reply not
+  decoded" with its size and a "Show raw" control. The authoring schema
+  reads as its fields and one line per definition; an evaluation's object
+  or list value reads as facts or lines; `remote_computers` lists each
+  computer as offline with its error, or as its system, projects and
+  tools. A reply past the 32 KB payload preview loads whole (up to 2 MiB)
+  before it is decoded, with "Reading the whole reply" and its size
+  meanwhile; a larger one says so and offers the raw text, and a failed
+  read offers a retry. The JSON the model read is never the default view.
+  An input fact the reply also states is listed once, as the reply says
+  it. A failed call shows its message with the `[code]` as a chip; the
+  header shows the preview's opening until the body has read the reply,
+  then the whole message, which the body does not repeat.
+- An ask names and links the thread asked, not the hidden read-only copy
+  that answers it; an id prefix links the one thread it names, and a
+  prefix that names none or several stays text.
+- A spawn, send or ask that returned before its answer follows the
+  request: the target thread's state (an ask: waiting on the answer) until
+  the answer's wake row (the user row carrying the request's token, joined
+  or not) lands, then "answer arrived". The wake row is found among the
+  rows the pane has loaded, so an answer outside the loaded window, or a
+  target on another computer, shows no "answer arrived"; slice 10's
+  request store replaces this scan.
 
 ## Availability and permissions (Q13, Q17, Q27)
 
