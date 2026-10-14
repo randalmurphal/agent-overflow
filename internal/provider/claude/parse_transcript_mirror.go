@@ -226,6 +226,10 @@ func (p *Parser) parseTranscriptMirrorEntries(threadID string, envelope transcri
 			if commandState.command.Argument != "" {
 				input["args"] = commandState.command.Argument
 			}
+			// The fork's agentId is its task id. Its task_started named no
+			// tool_use, so this is where the command row learns the task it
+			// can be stopped by and the fork's terminal finds its row.
+			p.rememberTaskToolUse(facts.agentID, launchID)
 			metaFields := map[string]any{
 				"toolName":          "Skill",
 				"input":             input,
@@ -234,6 +238,8 @@ func (p *Parser) parseTranscriptMirrorEntries(threadID string, envelope transcri
 					"agentId":     facts.agentID,
 					"commandName": skillName,
 				},
+				"task_id":                          facts.agentID,
+				"task_type":                        "local_agent",
 				provider.MetaTranscriptMirroredKey: true,
 			}
 			if commandState.provisional {
@@ -524,13 +530,18 @@ func (p *Parser) finishMirroredTask(threadID, taskID string, final bool) []provi
 	return events
 }
 
-// rememberProjectedToolParents records the scope of each tool call a
-// projection emitted, as the stdout path records a forwarded tool_use's
-// parent, so a background task a projected call starts resolves to the
-// agent that owns it (ownsLiveBackgroundTask).
+// rememberProjectedToolParents records the scope and name of each tool
+// call a projection emitted, as the stdout path records a forwarded
+// tool_use, so a background task a projected call starts resolves to the
+// agent that owns it (ownsLiveBackgroundTask) and its task_started is
+// classified by the call that started it.
 func (p *Parser) rememberProjectedToolParents(events []provider.ProviderEvent) {
 	for _, event := range events {
-		if event.Kind == provider.EventToolStart && event.ItemID != "" && event.ParentToolUseID != "" {
+		if event.Kind != provider.EventToolStart || event.ItemID == "" {
+			continue
+		}
+		p.rememberToolUseName(event.ItemID, event.ItemType)
+		if event.ParentToolUseID != "" {
 			p.rememberToolUseParent(event.ItemID, event.ParentToolUseID)
 		}
 	}

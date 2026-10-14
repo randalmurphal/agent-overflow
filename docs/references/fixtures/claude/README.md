@@ -91,6 +91,38 @@ behavior. These back parser replay tests and the reference docs in
   dropped; main-file mirror batches keep only their `queue-operation`
   entries; assistant text cut to its first 40 characters; host paths
   synthetic.
+- Forked skills on 2.1.284 (claude-wire.md §E9), live haiku probes of a
+  throwaway `context: fork` skill driven by the Skill tool unless noted:
+  - `forked_skill_task_started_20261014.ndjson`: the fork's
+    `task_started` bound to the Skill call, a depth-2 awaited Agent, the
+    fork's lone `task_notification`, the forked result. No mirror. Backs
+    `TestReplay_ForkedSkillTaskStartedIsALaunch` and triage's
+    `TestForkedSkillTaskSettlesTheSkillRow`.
+  - `forked_skill_background_children_20261014.ndjson`: the fork starts a
+    background Bash and an async Agent and returns; the shell is killed
+    at its stop, the Agent outlives it and wakes the main agent. Backs
+    `TestForkedSkillBackgroundChildrenOutliveTheFork`.
+  - `forked_skill_stop_task_20261014.ndjson` /
+    `forked_skill_interrupt_20261014.ndjson`: a running fork stopped by
+    `stop_task` and by `interrupt` (the control requests themselves are
+    not in the files).
+  - `forked_skill_background_refused_20261014.ndjson`: `background_tasks`
+    on a running fork answers `{backgrounded:false}`.
+  - `forked_skill_direct_command_20261014.ndjson`: `/probe-fork` typed
+    as the user message: `task_started` with no `tool_use_id`, and the
+    fork's Agent announced before the mirror delivers its tool_use. Backs
+    `TestReplay_ForkedSkillDirectCommandTaskAndChild`.
+- `local_agent_backgrounded_midrun_20261014.ndjson`: an awaited Agent
+  moved to the background with `background_tasks` mid-run, then the
+  session mirror carries its rows; its background shell is killed at
+  its stop and nothing wakes it. Backs `TestBackgroundedAgentKeepsItsLabel`.
+- `local_agent_foreground_stop_task_20261014.ndjson`: `stop_task` on a
+  running awaited Agent, the same shape as the fork's.
+
+  All of these: `system/init` and `rate_limit_event` dropped, mirror
+  `attachment` entries dropped (account and environment context), host
+  paths synthetic, string values longer than 320 characters truncated
+  with a `…[trimmed for fixture]` marker.
 - `send_message_ack_20260904.ndjson`: two `SendMessage` round-trips on
   2.1.257, a refusal (`to: "A"`, no such agent) and a queued send to a
   live agent by id. Proves the `tool_result` block is `is_error:false`

@@ -16,14 +16,15 @@
 //     so a foreground launch is the ABSENCE of the flag, never `false`).
 //   - Claude forked `Skill` tool_call — structural detection only, never
 //     a skill-name list (claude-wire.md §E9). A fork is proven by any of
-//     three signals, in cost order: a loaded child row attributed to the
-//     Skill tool_use, the `skillFork` stamp the parser writes from the
-//     completion's `tool_use_result {status:"forked", agentId,
-//     commandName}`, or the backend's `subagentDescendantCount`
-//     decoration (the main timeline loads no children at all, so a live
-//     fork shows through the meta signals; a history window has only the
-//     decoration). An INLINE skill has none of them and is not a launch;
-//     it stays a plain tool row.
+//     four signals, in cost order: a loaded child row attributed to the
+//     Skill tool_use, the local_agent `task_type` the fork's own
+//     `system/task_started` stamps (Claude 2.1.284+), the `skillFork`
+//     stamp the parser writes from the completion's `tool_use_result
+//     {status:"forked", agentId, commandName}`, or the backend's
+//     `subagentDescendantCount` decoration (the main timeline loads no
+//     children at all, so a live fork shows through the meta signals; a
+//     history window has only the decoration). An INLINE skill has none
+//     of them and is not a launch; it stays a plain tool row.
 //   - Claude `SendMessage` background carrier — the §E6 resume rebind.
 //     The parser marks the resuming tool_use backgrounded and triage
 //     stamps the rebound `task_id` on it, so "backgrounded SendMessage
@@ -326,13 +327,15 @@ function trimmedInputString(
 /**
  * Structural fork detection (claude-wire.md §E9) — "did this Skill fork"
  * is answered by attribution and by the completion's `status:"forked"`,
- * never by a skill-name list. Three signals, checked cheapest first:
+ * never by a skill-name list. Four signals, checked cheapest first:
  *
  *  1. a loaded row is attributed to the Skill tool_use;
- *  2. `meta.skillFork` — what the parser stamps from the fork's
+ *  2. `meta.task_type: "local_agent"` — the fork's own task, which its
+ *     `system/task_started` stamps before any child row exists;
+ *  3. `meta.skillFork` — what the parser stamps from the fork's
  *     completion (`{agentId, commandName}`), which survives on the launch
  *     row because triage merges completion meta into it;
- *  3. the backend's descendant-count decoration, stamped on history loads
+ *  4. the backend's descendant-count decoration, stamped on history loads
  *     and on the row triage re-pushes once children are written; the main
  *     timeline loads no child rows at all.
  */
@@ -341,12 +344,15 @@ function isForkedSkillLaunch(item: Item, ctx: SubagentLaunchContext): boolean {
 }
 
 /**
- * Signals 2 and 3 of `isForkedSkillLaunch`: the ones a `Skill` row carries
+ * Signals 2 to 4 of `isForkedSkillLaunch`: the ones a `Skill` row carries
  * on itself. Shared with `itemTimelineStructureChanged`, because a Skill
  * row that gains one becomes a card with no child row loading.
  */
 export function hasForkedSkillMeta(item: Item): boolean {
   const meta = parseJsonObject(item.meta);
+  // A fork's own `system/task_started` (Claude 2.1.284+) stamps its
+  // local_agent task before any child row exists.
+  if (meta?.task_type === 'local_agent') return true;
   const fork = meta?.skillFork;
   if (fork !== null && typeof fork === 'object' && !Array.isArray(fork)) return true;
   return subagentDescendantCountFromMeta(meta) > 0;

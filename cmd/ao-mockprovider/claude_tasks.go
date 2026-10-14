@@ -31,7 +31,9 @@ import (
 //   - is then acknowledged with `{"still_queued":[]}`;
 //   - stops a foreground command still running, the main thread's or an
 //     agent's, with `task_notification{stopped}` carrying
-//     `output_file:""` and no `task_updated`, after the ack;
+//     `output_file:""` and no `task_updated`, after the ack; an awaited
+//     agent or forked skill still running gets the same notification
+//     naming its output file (2.1.284, forked_skill_interrupt_20261014);
 //   - leaves the main thread's own background shells running.
 //
 // The CLI writes an agent's shell terminals on either side of the ack
@@ -44,8 +46,13 @@ import (
 // agent with the shells it owns, a parked agent with `task_updated{killed}`
 // and no notification, a shell with `task_updated{killed}` and
 // `task_notification{stopped}`. A running agent's stop_task is written as
-// the interrupt writes that agent's kill; no capture has it on its own. A
-// task that is not running gets the ack alone, as the CLI answers a task it
+// the interrupt writes that agent's kill; no capture has it on its own. An
+// awaited agent or forked skill gets `task_updated{killed}` and
+// `task_notification{stopped}` before the ack and, after it, the
+// `[Request interrupted by user]` row in its sidechain and its launch's
+// error tool_result, after which the main turn goes on (2.1.284,
+// forked_skill_stop_task_20261014 and local_agent_foreground_stop_task_20261014).
+// A task that is not running gets the ack alone, as the CLI answers a task it
 // no longer has (§E6b, dropped wake capture of 2026-10-14).
 //
 // A task's ownership comes from the frames: a shell belongs to the agent
@@ -235,14 +242,14 @@ func (l *claudeTaskLedger) killForInterrupt(now time.Time) []string {
 }
 
 // killForStopTask marks the task a stop_task names, with the shells it
-// owns when it is an agent, and returns the frames that report it. The
-// caller writes them before the ack.
-func (l *claudeTaskLedger) killForStopTask(taskID string, now time.Time) []string {
+// owns when it is an agent, and returns the frames that report it: the
+// caller writes beforeAck before the ack and afterAck after it.
+func (l *claudeTaskLedger) killForStopTask(taskID string, now time.Time) (beforeAck, afterAck []string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	t := l.tasks[taskID]
 	if t == nil {
-		return nil
+		return nil, nil
 	}
 	endTime := now.UnixMilli()
 	var frames []string
@@ -253,16 +260,45 @@ func (l *claudeTaskLedger) killForStopTask(taskID string, now time.Time) []strin
 			frames = append(frames, next)
 		}
 	}
+	if t.taskType == "local_agent" && !t.background {
+		return l.stopAwaitedAgentLocked(t, endTime, emitLevelSet)
+	}
 	if t.taskType == "local_agent" {
 		l.killAgentLocked(t, endTime, emitLevelSet, &frames)
-		return frames
+		return frames, nil
 	}
 	if !t.background || t.stopped || t.killed {
-		return nil
+		return nil, nil
 	}
 	t.killed = true
 	emitLevelSet()
-	return append(frames, taskUpdatedKilledFrame(t.id, endTime), taskNotificationStoppedFrame(t, l.writeOutputFile(t.id)))
+	return append(frames, taskUpdatedKilledFrame(t.id, endTime), taskNotificationStoppedFrame(t, l.writeOutputFile(t.id))), nil
+}
+
+// stopAwaitedAgentLocked stops a running awaited agent or forked skill
+// with the background shells it owns. Its launch answers with an error
+// tool_result, so the main turn goes on.
+func (l *claudeTaskLedger) stopAwaitedAgentLocked(agent *claudeTask, endTime int64, emitLevelSet func()) (beforeAck, afterAck []string) {
+	if agent.stopped || agent.killed || agent.toolUseID == "" {
+		return nil, nil
+	}
+	agent.killed = true
+	beforeAck = append(beforeAck,
+		taskUpdatedKilledFrame(agent.id, endTime),
+		taskNotificationStoppedFrame(agent, l.outputFilePath(agent.id)))
+	for _, shellID := range l.order {
+		shell := l.tasks[shellID]
+		if !l.liveShellOwnedByLocked(shell, agent) {
+			continue
+		}
+		shell.killed = true
+		emitLevelSet()
+		beforeAck = append(beforeAck,
+			taskUpdatedKilledFrame(shell.id, endTime),
+			taskNotificationStoppedFrame(shell, l.writeOutputFile(shell.id)))
+	}
+	afterAck = append(afterAck, awaitedAgentStoppedFrames(agent)...)
+	return beforeAck, afterAck
 }
 
 // killAgentLocked kills a running or parked background agent and the
@@ -305,11 +341,15 @@ func (l *claudeTaskLedger) stopForegroundCommands() []string {
 	var frames []string
 	for _, id := range l.order {
 		t := l.tasks[id]
-		if t.taskType == "local_agent" || t.background || t.stopped || t.killed || t.toolUseID == "" {
+		if t.background || t.stopped || t.killed || t.toolUseID == "" {
 			continue
 		}
 		t.killed = true
-		frames = append(frames, taskNotificationStoppedFrame(t, ""))
+		outputFile := ""
+		if t.taskType == "local_agent" {
+			outputFile = l.outputFilePath(t.id)
+		}
+		frames = append(frames, taskNotificationStoppedFrame(t, outputFile))
 	}
 	return frames
 }
@@ -387,6 +427,40 @@ func taskUpdatedKilledFrame(taskID string, endTime int64) string {
 		"task_id": taskID,
 		"patch":   map[string]any{"status": "killed", "end_time": endTime},
 	})
+}
+
+// awaitedAgentStoppedFrames are what a stopped awaited agent's launch
+// answers with: the interrupted row its sidechain ends on, then the
+// launch's error tool_result on the stream that launched it.
+func awaitedAgentStoppedFrames(agent *claudeTask) []string {
+	var launchParent any
+	if agent.parentToolUseID != "" {
+		launchParent = agent.parentToolUseID
+	}
+	return []string{
+		mustJSON(map[string]any{
+			"type": "user",
+			"message": map[string]any{
+				"role":    "user",
+				"content": []map[string]any{{"type": "text", "text": "[Request interrupted by user]"}},
+			},
+			"parent_tool_use_id": agent.toolUseID,
+		}),
+		mustJSON(map[string]any{
+			"type": "user",
+			"message": map[string]any{
+				"role": "user",
+				"content": []map[string]any{{
+					"type":        "tool_result",
+					"content":     "[Request interrupted by user for tool use]",
+					"is_error":    true,
+					"tool_use_id": agent.toolUseID,
+				}},
+			},
+			"parent_tool_use_id": launchParent,
+			"tool_use_result":    "Error: [Request interrupted by user for tool use]",
+		}),
+	}
 }
 
 func taskNotificationStoppedFrame(t *claudeTask, outputFile string) string {

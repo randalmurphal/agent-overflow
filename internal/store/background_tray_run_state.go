@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,8 +45,10 @@ func IsCommandOutputToolName(toolName string) bool {
 // tool, "Agent" or "Task" on older CLIs (the parser's isAgentLaunchToolName
 // set), or a §E6 resume carrier, the SendMessage row that runs a resumed
 // agent's round, which the parser stamps with the agent it resumes (the
-// keys triage's isResumeCarrierMeta reads). backgroundOutputPayload
-// splits on the same test.
+// keys triage's isResumeCarrierMeta reads). A forked Skill is an agent
+// too: its local_agent task id, or the `skillFork` stamp its completion
+// writes, tells it from an inline skill, which has neither.
+// backgroundOutputPayload splits on the same test.
 func IsAgentTranscriptLaunch(launch Item) bool {
 	if launch.Kind != "tool_call" {
 		return false
@@ -55,13 +58,18 @@ func IsAgentTranscriptLaunch(launch Item) bool {
 		return true
 	}
 	var carrier struct {
-		TranscriptRootID string `json:"transcript_root_id"`
-		ResumesToolUseID string `json:"resumes_tool_use_id"`
-		Description      string `json:"description"`
-		SubagentType     string `json:"subagent_type"`
+		TranscriptRootID string          `json:"transcript_root_id"`
+		ResumesToolUseID string          `json:"resumes_tool_use_id"`
+		Description      string          `json:"description"`
+		SubagentType     string          `json:"subagent_type"`
+		TaskType         string          `json:"task_type"`
+		SkillFork        json.RawMessage `json:"skillFork"`
 	}
 	if json.Unmarshal([]byte(launch.Meta), &carrier) != nil {
 		return false
+	}
+	if strings.TrimSpace(launch.ToolName) == "Skill" {
+		return carrier.TaskType == "local_agent" || bytes.HasPrefix(carrier.SkillFork, []byte("{"))
 	}
 	return carrier.TranscriptRootID != "" || carrier.ResumesToolUseID != "" ||
 		carrier.Description != "" || carrier.SubagentType != ""

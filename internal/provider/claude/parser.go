@@ -96,24 +96,23 @@ type Parser struct {
 	// tool_use id and parent so we can target and group the right
 	// timeline row.
 	taskToolUses map[string]taskToolUseRef
-	// agentLaunchToolUses flags tool_use IDs whose block.Name is
-	// Claude's subagent-launching tool (see isAgentLaunchToolName in
-	// parse_assistant.go — "Agent" on current CLIs, "Task" on older
-	// builds; task_type:"local_agent" on system/task_started is a
-	// conceptual classification, not a tool name). system/task_started's resume
-	// detection (parse_system.go) uses this to recognize a task_id
-	// rebind to a NON-launch tool_use — the harness's resume call (e.g.
-	// SendMessage) — even when taskToolUses has no prior binding for
-	// the task_id at all (a parser restart mid-life lost it). See
-	// claude-wire.md §E6 and local_agent_async_resume.ndjson.
+	// toolUseNames records the tool name of every observed tool_use,
+	// forwarded on stdout or projected from the session mirror. Two
+	// readers need it. system/task_started's resume detection
+	// (parse_system.go) recognizes a task_id rebind to a NON-launch
+	// tool_use, the harness's resume call (e.g. SendMessage), even when
+	// taskToolUses has no prior binding for the task_id (a parser
+	// restart mid-life lost it); a forked Skill's own task_started binds
+	// a launch-capable call, and a call not observed yet is a launch the
+	// mirror has not delivered (claude-wire.md §E6, §E9). The §E5b
+	// sidechain ack gate (parse_user.go) asks whether a call was an
+	// Agent launch.
 	//
-	// Unlike backgroundToolUses this is NOT one-shot: a resume can
-	// arrive minutes or hours after the launch (the captured fixture
-	// has a ~20min gap), so entries are never explicitly released —
-	// only bounded by parserTaskMapCap with wholesale reset on
-	// overflow, matching the other session-lifetime correlation maps
-	// (taskToolUses, toolUseParents).
-	agentLaunchToolUses map[string]bool
+	// Every reader asks about a call within a few envelopes of its
+	// tool_use, so entries are never explicitly released. The two
+	// generations keep at least the last parserTaskMapCap calls, so a
+	// rotation can never drop the call a reader is about to ask about.
+	toolUseNames recentToolUseNames
 	// taskTranscriptRoots records, per local_agent task_id, the tool_use
 	// id that is that agent's TRANSCRIPT ROOT: the FIRST tool_use the
 	// task bound to, which is the original `Agent` launch. A §E6 resume
@@ -126,7 +125,7 @@ type Parser struct {
 	// write-once per task_id: a rebind must never overwrite it.
 	//
 	// Bounded by parserTaskMapCap with wholesale reset, like
-	// taskToolUses and agentLaunchToolUses; an entry lost that way
+	// taskToolUses; an entry lost that way
 	// degrades to triage's persisted-meta fallbacks
 	// (resumes_tool_use_id, then items.meta.task_id).
 	taskTranscriptRoots map[string]string
@@ -432,7 +431,7 @@ func (p *Parser) Close() {
 	p.advisorMessages = nil
 	p.toolUseParents = nil
 	p.taskToolUses = nil
-	p.agentLaunchToolUses = nil
+	p.toolUseNames = recentToolUseNames{}
 	p.taskTranscriptRoots = nil
 	p.liveAgentTaskToolUses = nil
 	p.ownedBackgroundTasks = nil
@@ -915,29 +914,65 @@ func (p *Parser) hasLiveAgentTask(toolUseID string) bool {
 	return p.liveAgentTaskToolUses[toolUseID]
 }
 
-// markAgentLaunchTool records that toolUseID's tool_use block was
-// Claude's subagent-launching tool. See the agentLaunchToolUses field
-// doc for why this map exists and why it is never explicitly released.
-func (p *Parser) markAgentLaunchTool(toolUseID string) {
-	if p == nil || toolUseID == "" {
+// recentToolUseNames maps tool_use ids to tool names across two bounded
+// generations. When the current generation fills it becomes the previous
+// one, so a lookup always finds the last parserTaskMapCap insertions.
+type recentToolUseNames struct {
+	current  map[string]string
+	previous map[string]string
+}
+
+func (r *recentToolUseNames) remember(toolUseID, name string) {
+	if toolUseID == "" || name == "" {
 		return
 	}
-	if p.agentLaunchToolUses == nil {
-		p.agentLaunchToolUses = make(map[string]bool)
+	if r.current == nil {
+		r.current = make(map[string]string)
 	}
-	if len(p.agentLaunchToolUses) >= parserTaskMapCap {
-		p.agentLaunchToolUses = make(map[string]bool)
+	if _, ok := r.current[toolUseID]; !ok && len(r.current) >= parserTaskMapCap {
+		r.previous = r.current
+		r.current = make(map[string]string)
 	}
-	p.agentLaunchToolUses[toolUseID] = true
+	r.current[toolUseID] = name
+}
+
+func (r *recentToolUseNames) name(toolUseID string) string {
+	if name, ok := r.current[toolUseID]; ok {
+		return name
+	}
+	return r.previous[toolUseID]
+}
+
+// rememberToolUseName records the tool name of an observed tool_use. See
+// the toolUseNames field doc.
+func (p *Parser) rememberToolUseName(toolUseID, name string) {
+	if p == nil {
+		return
+	}
+	p.toolUseNames.remember(toolUseID, name)
 }
 
 // isAgentLaunchTool reports whether toolUseID was observed as an
 // Agent-launch tool_use. Read-only (has*/is* convention).
 func (p *Parser) isAgentLaunchTool(toolUseID string) bool {
-	if p == nil || toolUseID == "" || p.agentLaunchToolUses == nil {
+	if p == nil || toolUseID == "" {
 		return false
 	}
-	return p.agentLaunchToolUses[toolUseID]
+	return isAgentLaunchToolName(p.toolUseNames.name(toolUseID))
+}
+
+// isTaskResumeTool reports whether a local_agent task_started that binds
+// toolUseID with no prior binding for its task can only be a §E6 resume:
+// the call was observed, and it is not one that starts an agent. An Agent
+// or Task launch starts one, so does a forked Skill (§E9), and a call not
+// observed yet is a launch whose tool_use the session mirror delivers
+// after its task_started.
+func (p *Parser) isTaskResumeTool(toolUseID string) bool {
+	if p == nil || toolUseID == "" {
+		return false
+	}
+	name := p.toolUseNames.name(toolUseID)
+	return name != "" && !isAgentLaunchToolName(name) && name != skillToolName
 }
 
 // rememberTaskTranscriptRoot records taskID's transcript root the FIRST

@@ -831,11 +831,14 @@ func (p *Parser) parseTaskStartedEvent(
 	//  1. In-memory: taskID is already bound to a DIFFERENT
 	//     tool_use_id than this envelope carries.
 	//  2. Reconnect: taskID has NO binding at all (a parser restart
-	//     lost it), but toolUseID was never observed as an
-	//     Agent-launch tool_use either (see isAgentLaunchTool) — the
-	//     only way a "local_agent" task_started binds to a
-	//     non-launch tool is a resume whose original launch
-	//     predates this parser instance.
+	//     lost it), and toolUseID was observed as a call that starts
+	//     no agent (see isTaskResumeTool) — the only way a
+	//     "local_agent" task_started binds to such a call is a resume
+	//     whose original launch predates this parser instance. A
+	//     forked Skill's task_started binds its Skill call (§E9), and a
+	//     call not observed yet is a launch inside a mirrored scope
+	//     whose tool_use the mirror delivers after its task_started:
+	//     both are launches.
 	var resumesToolUseID string
 	var isResume, reannounced bool
 	if taskType == "local_agent" {
@@ -851,7 +854,7 @@ func (p *Parser) parseTaskStartedEvent(
 		case existingRef.ToolUseID != "":
 			resumesToolUseID = existingRef.ToolUseID
 			isResume = true
-		case existingRef.ToolUseID == "" && !p.isAgentLaunchTool(toolUseID):
+		case existingRef.ToolUseID == "" && p.isTaskResumeTool(toolUseID):
 			// No binding at all: the original launch predates this
 			// parser instance. Real trigger: a fresh process
 			// resumed the session and the model re-resumed an
@@ -861,20 +864,12 @@ func (p *Parser) parseTaskStartedEvent(
 			// resumesToolUseID stays "" since there is no original
 			// tool_use_id to point triage at.
 			//
-			// Inferring "resume" from ABSENT state is sound here
-			// because a fresh launch cannot reach this branch:
-			// parser lifetime == CLI process lifetime (stdio), the
-			// CLI emits task_started only AFTER the assistant
-			// envelope carrying the tool_use, and ParseLine is
-			// sequential — so any launch tool_use whose
-			// task_started this process sees is already in
-			// agentLaunchToolUses. local_agent tasks die with
-			// their CLI process, so no pre-restart in-flight agent
-			// can re-emit task_started on the new process either.
-			// The only in-process loss window is the bounded-map
-			// wholesale reset at parserTaskMapCap (1024 live
-			// launches between a tool_use and its ~ms-later
-			// task_started — practically unreachable).
+			// Inferring "resume" from ABSENT binding state is sound
+			// here because a fresh launch cannot reach this branch:
+			// its call is an Agent, Task or Skill, or not observed
+			// yet. local_agent tasks die with their CLI process, so
+			// no pre-restart in-flight agent can re-emit task_started
+			// on the new process either.
 			isResume = true
 		}
 	}
@@ -1426,6 +1421,13 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 		UUID:            readRawString(raw["uuid"]),
 	}
 	fields.Usage, fields.UsageSet = readTaskUsage(raw["usage"])
+	// A forked Skill's run ends with this notification alone, no
+	// task_updated (claude-wire.md §E9), so a terminal status releases the
+	// liveness flag as the task_updated terminal does: a depth-2 fork's
+	// result carries no tool_use_result and would otherwise read as an ack.
+	if NormalizeTaskTerminalStatus(fields.Status) != "" {
+		p.clearLiveAgentTask(firstNonEmpty(fields.ToolUseID, p.taskToolUseRef(taskID).ToolUseID))
+	}
 	events := p.finishMirroredTask(threadID, taskID, false)
 	return append(events, p.buildBackgroundTaskNotificationEvent(threadID, fields, now)), nil
 }

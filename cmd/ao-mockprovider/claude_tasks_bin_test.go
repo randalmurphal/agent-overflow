@@ -368,3 +368,58 @@ func TestClaudeStopTaskKillsOneShell(t *testing.T) {
 	expectStopTaskAck(t, p.expectLine(testTimeout), "stop-2")
 	endHeldTurn(t, p)
 }
+
+// A forked skill as 2.1.284 announces it: a local_agent task bound to the
+// Skill call, not backgrounded, with its rows on the Skill's sidechain.
+var claudeForkLaunchLines = []string{
+	`{"type":"assistant","message":{"id":"msg-skill","role":"assistant","content":[{"type":"tool_use","id":"tu-skill","name":"Skill","input":{"skill":"review"}}]}}`,
+	`{"type":"system","subtype":"task_started","task_id":"task-fork","tool_use_id":"tu-skill","description":"/review","subagent_type":"general-purpose","is_backgrounded":false,"spawn_depth":1,"task_type":"local_agent"}`,
+	`{"type":"assistant","parent_tool_use_id":"tu-skill","message":{"id":"msg-fork","role":"assistant","content":[{"type":"tool_use","id":"tu-fork-bash","name":"Bash","input":{"command":"git diff"}}]}}`,
+}
+
+// forked_skill_stop_task_20261014: stop_task on a running fork kills it
+// before the ack; after it the fork's sidechain ends on the interrupted
+// row and the Skill call answers with an error result.
+func TestClaudeStopTaskStopsAnAwaitedFork(t *testing.T) {
+	env := writeScenarioFile(t, claudeHoldScenario("claude-stop-fork", claudeTextBlockLines, claudeForkLaunchLines), "")
+	p := startMock(t, claudeSessionArgs, env, t.TempDir())
+
+	p.send(userLine)
+	p.expectLineContaining(`"id":"tu-fork-bash"`, testTimeout)
+	p.send(stopTaskLine("stop-1", "task-fork"))
+	expectKilled(t, p.expectLine(testTimeout), "task-fork")
+	if file := expectStopped(t, p.expectLine(testTimeout), "task-fork", "tu-skill", "/review"); file == "" {
+		t.Fatal("the stopped fork's notification names no output file")
+	}
+	expectStopTaskAck(t, p.expectLine(testTimeout), "stop-1")
+	interrupted := p.expectLine(testTimeout)
+	if !strings.Contains(interrupted, `"parent_tool_use_id":"tu-skill"`) || !strings.Contains(interrupted, `[Request interrupted by user]`) {
+		t.Fatalf("want the fork's interrupted sidechain row, got %s", interrupted)
+	}
+	result := p.expectLine(testTimeout)
+	if !strings.Contains(result, `"tool_use_id":"tu-skill"`) || !strings.Contains(result, `"is_error":true`) || !strings.Contains(result, `"parent_tool_use_id":null`) {
+		t.Fatalf("want the Skill call's error result, got %s", result)
+	}
+
+	p.send(stopTaskLine("stop-2", "task-fork"))
+	expectStopTaskAck(t, p.expectLine(testTimeout), "stop-2")
+	endHeldTurn(t, p)
+}
+
+// forked_skill_interrupt_20261014: an interrupt stops a running fork with
+// a notification after the ack, naming its output file.
+func TestClaudeInterruptStopsAnAwaitedFork(t *testing.T) {
+	env := writeScenarioFile(t, claudeHoldScenario("claude-interrupt-fork", claudeTextBlockLines, claudeForkLaunchLines), "")
+	p := startMock(t, claudeSessionArgs, env, t.TempDir())
+
+	p.send(userLine)
+	p.expectLineContaining(`"id":"tu-fork-bash"`, testTimeout)
+	p.send(interruptLine)
+	expectInterruptAck(t, p.expectLine(testTimeout))
+	if file := expectStopped(t, p.expectLine(testTimeout), "task-fork", "tu-skill", "/review"); file == "" {
+		t.Fatal("the interrupted fork's notification names no output file")
+	}
+	expectInterruptedResult(t, p.expectLine(testTimeout), 0)
+	p.closeStdinAndExpectExit(0, testTimeout)
+	validateClaudeFrames(t, p.all)
+}

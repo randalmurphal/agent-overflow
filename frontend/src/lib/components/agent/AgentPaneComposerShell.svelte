@@ -176,11 +176,13 @@
   let stopTaskId = $derived.by(() => {
     if (!lifecycle || !isRunning) return null;
     if (codexInfo) return lifecycle.id;
-    // Agent/Task launches, backgrounded Bash, and a SendMessage resume
-    // carrier (triage rebinds the fresh task_id onto it) all name a live
-    // Claude task. Anything else has no stop primitive.
+    // Agent/Task launches, a forked Skill, backgrounded Bash, and a
+    // SendMessage resume carrier (triage rebinds the fresh task_id onto it)
+    // all name a live Claude task. A fork from a CLI that gave it no task
+    // (claude-wire.md §E9) and an inline skill carry no task_id. Anything
+    // else has no stop primitive.
     const tool = lifecycle.toolName ?? '';
-    if (tool !== 'Agent' && tool !== 'Task' && tool !== 'Bash' && tool !== 'SendMessage') {
+    if (tool !== 'Agent' && tool !== 'Task' && tool !== 'Skill' && tool !== 'Bash' && tool !== 'SendMessage') {
       return null;
     }
     return extractClaudeTaskID(lifecycle);

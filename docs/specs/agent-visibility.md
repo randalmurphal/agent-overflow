@@ -219,14 +219,20 @@ own stop (`agentStopScope`, `internal/triage/agent_stops.go`;
   timeline: a jump would release bottom-follow, which a reader pinned to
   a streaming tail did not ask for (2026-08-31), so a launch outside the
   loaded window resolves through the digest or agent pane's independent
-  paged scope without changing the main window. Forks appear without a kill button (Q8).
+  paged scope without changing the main window. A fork never appears
+  there: it is awaited and cannot be backgrounded (Q8).
 - Background action: icon button on a running inline agent or Bash row
   (Claude only: `background_tasks` control_request by `tool_use_id`);
   no keyboard shortcut (Q9). Claude stops forwarding the node through the
   ordinary sidechain stream, but AO's always-on session mirror continues its
-  pane live.
+  pane live. Never on a fork: the CLI refuses to background one
+  ([claude-wire.md §E9](../references/claude-wire.md#e9-forked-skill-skill-tool-context-fork)).
 - Kill only where the wire can: Claude nodes with a task id
-  (`stop_task`) and owned Codex child turns (`turn/interrupt`); never forks.
+  (`stop_task`) and owned Codex child turns (`turn/interrupt`). A fork has
+  one from Claude 2.1.284; an older CLI's fork has none and no Stop. A fork
+  is stopped as an awaited agent is: from its agent pane, or with the
+  rest of the turn by the turn's Stop; its card has no Stop of its own
+  (ruling 2026-10-14).
   A reusable Codex agent reads current execution metadata for its spinner,
   elapsed timer, waiting label, and Stop action, independently of older answers.
 - A direct Claude slash command appears as a running Command row on its

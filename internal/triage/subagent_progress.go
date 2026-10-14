@@ -364,7 +364,9 @@ func (r *Router) handleSubagentBackgrounded(evt provider.ProviderEvent) error {
 	if itemID == "" {
 		return nil
 	}
-	launch, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
+	// Read for write: the launch is an agent anchor, and a plain read
+	// serves its card in the meta, which the write below would freeze.
+	launch, found, err := r.store.GetThreadItemForWrite(evt.ThreadID, itemID)
 	if err != nil {
 		return fmt.Errorf("triage: subagent backgrounded lookup %s: %w", itemID, err)
 	}

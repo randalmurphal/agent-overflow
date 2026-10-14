@@ -328,8 +328,8 @@ CARRIER is what surfaces there during round 2, with the agent-centric
 summary.
 
 **Known edge**: if the parser restarts and loses BOTH the
-`taskToolUses` binding AND the `agentLaunchToolUses` launch-tool
-marker for the resuming tool (a double restart mid-stream), the resume
+`taskToolUses` binding AND the `toolUseNames` record of the resuming
+call (a double restart mid-stream), the resume
 is undetectable from that instance's state alone and the round is
 reaper-unprotected. Not engineered around. See the parser's
 `task_started` case comment.

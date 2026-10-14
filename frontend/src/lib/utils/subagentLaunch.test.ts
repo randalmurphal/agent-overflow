@@ -155,6 +155,26 @@ describe('subagentLaunchInfo — forked Skill (claude-wire.md §E9)', () => {
     expect(info?.name).toBe('code-review');
   });
 
+  it('detects the fork from its own local_agent task before any child row', () => {
+    // Claude 2.1.284+ announces the fork with a task_started bound to the
+    // Skill call; triage stamps its task on the launch row.
+    const info = subagentLaunchInfo(
+      skill({
+        meta: meta({
+          toolName: 'Skill',
+          input: { skill: 'code-review' },
+          task_id: 'a54d4ffe0c745a254',
+          task_type: 'local_agent',
+        }),
+      }),
+      NO_CHILDREN,
+    );
+
+    expect(info?.kind).toBe('skill');
+    expect(info?.background).toBe(false);
+    expect(info?.name).toBe('code-review');
+  });
+
   it('names the fork from skillFork.commandName when the input is unavailable', () => {
     const info = subagentLaunchInfo(
       skill({
