@@ -206,7 +206,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
   // Workflow runs add a thread per phase beside the threads listed here,
   // so the thread counts are floors.
   const growth: CensusGrowth = {
-    exact: { projects: project.value.created ? 1 : 0, archivedProjects: 1, pinned: 2, groups: 1 },
+    exact: { projects: (project.value.created ? 1 : 0) + (unverified.value.created ? 1 : 0), archivedProjects: 1, pinned: 2, groups: 1 },
     atLeast: { threads: threadIds.length - 1, archived: 1 },
   };
   return { projectId, growth, threadIds, scenarioThreads, workItemId: workflow.value, ms };
@@ -228,10 +228,10 @@ const THREAD_VARIANTS: Array<{ title: string; provider?: 'claude' | 'codex'; mod
  * read fails and the row carries an identity error. A checkout with no
  * origin carries none: it is a plain folder.
  */
-async function ensureUnverifiedProject(harness: HarnessApp, version: string): Promise<void> {
+async function ensureUnverifiedProject(harness: HarnessApp, version: string): Promise<{ created: boolean }> {
   const name = `topup-unverified-v${version}`;
   const rows = (await harness.rpc<Array<{ project: { path: string } }> | null>('ListProjects')) ?? [];
-  if (rows.some((row) => path.basename(row.project.path) === name)) return;
+  if (rows.some((row) => path.basename(row.project.path) === name)) return { created: false };
   const seeded = await harness.rpc<{ projects: Array<{ projectId: string; path: string }> }>('HarnessSeed', {
     projects: [{ name, repo: { commits: [{ message: 'init', files: { 'README.md': `# Unverified v${version}\n` } }] } }],
   });
@@ -240,6 +240,7 @@ async function ensureUnverifiedProject(harness: HarnessApp, version: string): Pr
   execFileSync('git', ['remote', 'add', 'origin', `https://github.com/ao-corpus/${name}.git`], { cwd: project.path, env, stdio: 'ignore' });
   const refreshed = await harness.rpc<{ identityError?: string }>('RefreshProjectIdentity', project.projectId);
   expect(refreshed.identityError, 'an origin the forge does not have left no identity error').toBeTruthy();
+  return { created: true };
 }
 
 async function ensureTopUpProject(harness: HarnessApp, version: string): Promise<{ projectId: string; created: boolean }> {
