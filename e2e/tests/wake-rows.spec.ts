@@ -201,16 +201,18 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const beat = trayRow(page, 'loop', 'beat');
     await expect(beat).toBeVisible();
     interface Change { threadId: string; id: string; row?: { label: string; nextAt?: number }; removed?: boolean }
-    const changes = () => harness.countEvents<Change>('thread:wakes_changed', (d) => d.threadId === agent.thread);
+    // A frame for the fire the page shows: counting frames before and after
+    // races the page, since the frame can land before the count is taken.
+    const pushed = (nextAt: number) =>
+      harness.countEvents<Change>('thread:wakes_changed', (d) => d.threadId === agent.thread && d.row?.label === 'beat' && d.row.nextAt === nextAt);
 
     // Two fires, each moving the row's next fire and recording its outcome,
     // with nothing but the pushed changes to tell the page.
     let next = Number(await beat.getAttribute('data-next-at'));
     for (let fire = 0; fire < 2; fire++) {
-      const before = changes();
       await expect.poll(async () => Number(await beat.getAttribute('data-next-at')), { timeout: 30_000 }).toBeGreaterThan(next);
       next = Number(await beat.getAttribute('data-next-at'));
-      expect(changes()).toBeGreaterThan(before);
+      await expect.poll(() => pushed(next)).toBeGreaterThan(0);
     }
     await expect(beat.getByTestId('wake-tray-row-outcome')).toHaveText(/\S/);
     // Each frame carries the row as it stands: the newest is the one shown.

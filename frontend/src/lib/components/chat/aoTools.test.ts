@@ -237,7 +237,7 @@ describe('AO tool presentation', () => {
       ['run_guide', { run_id: rid, text: 'Skip the docs\nfor now' }, 'guide', 'run 1a2b3c4d · Skip the docs'],
       ['run_resolve', { run_id: rid, decision: 'approve' }, 'decide', 'approve run 1a2b3c4d'],
       ['memory_add', { kind: 'warning', text: 'The CI cache lies' }, 'note', 'warning: The CI cache lies'],
-      ['memory_list', { kind: 'handoff' }, 'memory', 'handoff'],
+      ['memory_list', { kind: 'handoff' }, 'notes', 'handoff'],
       ['memory_list', {}, 'notes', 'campaign notes'],
     ])('%s', (tool, input, label, what) => {
       const p = aoToolPresentation(meta(WORKFLOW_TOOLS_SERVER, tool, input))!;
