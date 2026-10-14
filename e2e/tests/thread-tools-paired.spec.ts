@@ -418,18 +418,28 @@ test('a standing agent on the other computer is named on its wake as a local one
   expect(localLine).toBe(want);
   expect(remoteLine).toBe(localLine);
 
-  // Both wakes in the caller's timeline, the remote one naming its computer.
+  // Both wakes are agent rows in the caller's timeline
+  // (docs/specs/agent-thread-tools.md, "How agent messages appear"), each
+  // naming its standing agent's role, the remote one its computer. Two
+  // wakes the provider joined are one row with a part each.
   await home.open(page);
   await page.getByTestId('thread-row-title').filter({ hasText: 'Wake role caller' }).first().click();
-  const bubble = (answer: string) => page.getByTestId('user-message-bubble').filter({ hasText: answer });
-  const localWake = bubble('Local review: the parser is fine.');
-  const remoteWake = bubble('Remote review: the parser is fine.');
+  const rows = page.getByTestId('agent-message-row');
+  await expect(rows.first()).toBeVisible();
+  for (const toggle of await rows.getByTestId('agent-message-toggle').all()) {
+    if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+  }
+  const wakeRow = (answer: string) => rows.filter({ has: page.getByTestId('agent-message-text').getByText(answer, { exact: true }) });
+  const localWake = wakeRow('Local review: the parser is fine.');
+  const remoteWake = wakeRow('Remote review: the parser is fine.');
   await expect(localWake).toHaveCount(1);
   await expect(remoteWake).toHaveCount(1);
-  await expect(localWake).toContainText(want);
-  await expect(remoteWake).toContainText(want);
-  await expect(remoteWake.getByTestId('user-message-thread-origin')).toHaveText('from Remote reviewer on GPU computer');
-  await expect(localWake.getByTestId('user-message-thread-origin')).toHaveText('from Local reviewer');
+  await expect(page.getByTestId('user-message-bubble').filter({ hasText: 'review: the parser is fine.' })).toHaveCount(0);
+  for (const wake of [localWake, remoteWake]) {
+    await expect(wake.locator('[data-fact="Role"]').filter({ hasText: role }).first()).toBeVisible();
+  }
+  await expect(localWake).toContainText('Local reviewer');
+  await expect(remoteWake).toContainText('Remote reviewer on GPU computer');
   // Tall enough for both wakes above the composer.
   await page.setViewportSize({ width: 1280, height: 1100 });
   await centerInTimeline(localWake);
