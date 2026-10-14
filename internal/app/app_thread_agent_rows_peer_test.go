@@ -3,8 +3,11 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -250,10 +253,35 @@ func TestThreadAgentPeerCallsRefuseOtherThreads(t *testing.T) {
 }
 
 // stalledAgentsPeer is a destination whose agent_rows answer does not come.
-type stalledAgentsPeer struct{ *App }
+// calls counts the agent_rows calls it was sent.
+type stalledAgentsPeer struct {
+	*App
+	calls atomic.Int32
+}
+
+// serveStalledAgentsPeer serves app as a stalledAgentsPeer, which it
+// returns through peer.
+func serveStalledAgentsPeer(peer **stalledAgentsPeer) func(*testing.T, *App) *pairedBackend {
+	return func(t *testing.T, app *App) *pairedBackend {
+		stalled := &stalledAgentsPeer{App: app}
+		if peer != nil {
+			*peer = stalled
+		}
+		return servePairedApp(t, app, func(cfg *transport.Config) {
+			dispatcher := transport.NewDispatcher()
+			if _, err := dispatcher.Register(stalled, transport.RegisterOptions{
+				Package: "main", TypeName: "App", AllowList: transport.NewMethodAllowList(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			cfg.Dispatcher = dispatcher
+		})
+	}
+}
 
 func (p *stalledAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
 	if call.Tool == threadAgentPeerRows {
+		p.calls.Add(1)
 		select {
 		case <-time.After(20 * time.Second):
 		case <-ctx.Done():
@@ -266,18 +294,8 @@ func (p *stalledAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeer
 // Stop: this computer's rows come back at once, the row says that computer
 // did not answer once its call gives up, and a Stop works from the ledger.
 func TestThreadAgentRowsDoNotWaitOnAComputerThatDoesNotAnswer(t *testing.T) {
-	t.Parallel()
-	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend {
-		return servePairedApp(t, app, func(cfg *transport.Config) {
-			dispatcher := transport.NewDispatcher()
-			if _, err := dispatcher.Register(&stalledAgentsPeer{App: app}, transport.RegisterOptions{
-				Package: "main", TypeName: "App", AllowList: transport.NewMethodAllowList(),
-			}); err != nil {
-				t.Fatal(err)
-			}
-			cfg.Dispatcher = dispatcher
-		})
-	})
+	// Serial: it times a read to 100 ms, which parallel tests would load.
+	pair := newAgentPeerPair(t, serveStalledAgentsPeer(nil))
 	start := time.Now()
 	listing := pair.listRows(t)
 	if took := time.Since(start); took > 100*time.Millisecond {
@@ -480,5 +498,190 @@ func TestThreadAgentSweepPagesThroughRemoteSpawnsWithOpenWork(t *testing.T) {
 	f.threadRequestsWG.Wait()
 	if !asked(last) {
 		t.Fatal("the second sweep did not reach the spawn past the first page")
+	}
+}
+
+// waitForPeerAnswer waits until the spawn's answer is cached.
+func waitForPeerAnswer(t *testing.T, app *App, spawn store.ThreadRequest, within time.Duration) time.Duration {
+	t.Helper()
+	start := time.Now()
+	for {
+		if _, ok := app.cachedPeerAgentRows(spawn); ok {
+			return time.Since(start)
+		}
+		if time.Since(start) > within {
+			t.Fatalf("no answer for %s after %v", spawn.Token, within)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A computer that does not answer holds two of the calls, not all of them:
+// another computer's spawn is asked at once beside nine stalled ones. Once
+// the stalled computer's calls time out, it is not asked again until its
+// backoff passes.
+func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) {
+	// Serial: it times a read to 100 ms, which parallel tests would load.
+	var peer *stalledAgentsPeer
+	pair := newAgentPeerPair(t, serveStalledAgentsPeer(&peer))
+	a := pair.source
+	stalled := make([]store.ThreadRequest, 9)
+	for i := range stalled {
+		stalled[i] = pair.spawn
+		stalled[i].Token = fmt.Sprintf("stalled-%d", i)
+		a.refreshPeerAgentRows(stalled[i], 0)
+	}
+	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() == threadAgentPeerListsPerComputer })
+	other := pair.spawn
+	other.Token, other.TargetComputerID = "other-computer", uuid.NewString()
+	a.refreshPeerAgentRows(other, 0)
+	if took := waitForPeerAnswer(t, a, other, 5*time.Second); took > 100*time.Millisecond {
+		t.Fatalf("another computer's answer took %v behind a stalled computer", took)
+	}
+
+	// The two calls time out; the computer backs off, so the seven still
+	// waiting are dropped and no refresh asks it again.
+	waitForPeerAnswer(t, a, stalled[0], 2*threadAgentPeerListTimeout)
+	a.threadRequestsWG.Wait()
+	asked := peer.calls.Load()
+	for _, spawn := range stalled {
+		a.refreshPeerAgentRows(spawn, 0)
+	}
+	a.threadRequestsWG.Wait()
+	if got := peer.calls.Load(); got != asked {
+		t.Fatalf("a computer backing off was asked %d more times", got-asked)
+	}
+	a.threadAgentPeers.mu.Lock()
+	backoff := a.threadAgentPeers.backoff[pair.computer]
+	a.threadAgentPeers.mu.Unlock()
+	if until := time.Until(backoff.until); until <= 0 || until > threadAgentPeerBackoffFirst {
+		t.Fatalf("backoff ends in %v; want within %v", until, threadAgentPeerBackoffFirst)
+	}
+}
+
+// A timeout lengthens a computer's backoff, doubling to its cap, and an
+// answer clears it.
+func TestThreadAgentPeerBackoffDoublesAndAnAnswerClearsIt(t *testing.T) {
+	t.Parallel()
+	var cache threadAgentPeerCache
+	spawn := store.ThreadRequest{Token: "spawn", TargetComputerID: "computer"}
+	timedOut := fmt.Errorf("%w: no answer", errThreadAgentPeerTimedOut)
+	var waits []time.Duration
+	for range 6 {
+		before := time.Now()
+		cache.noteAnswerLocked(spawn, ThreadAgentRows{}, timedOut)
+		backoff := cache.backoff["computer"]
+		waits = append(waits, backoff.until.Sub(before).Round(time.Second))
+		// A second call timing out within the backoff is the same outage.
+		cache.noteAnswerLocked(spawn, ThreadAgentRows{}, timedOut)
+		if cache.backoff["computer"] != backoff {
+			t.Fatal("a timeout inside the backoff lengthened it")
+		}
+		// The backoff passes; the next timeout is a new one.
+		backoff.until = before
+		cache.backoff["computer"] = backoff
+	}
+	want := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 40 * time.Second, time.Minute, time.Minute}
+	if !slices.Equal(waits, want) {
+		t.Fatalf("backoffs %v; want %v", waits, want)
+	}
+	cache.noteAnswerLocked(spawn, ThreadAgentRows{}, timedOut)
+	cache.noteAnswerLocked(spawn, ThreadAgentRows{}, errors.New("refused"))
+	if !cache.backingOffLocked("computer") {
+		t.Fatal("a refusal cleared the backoff")
+	}
+	cache.noteAnswerLocked(spawn, ThreadAgentRows{}, nil)
+	if cache.backingOffLocked("computer") {
+		t.Fatal("an answer left the computer backing off")
+	}
+}
+
+// However many spawns are refreshed together, the calls in flight, the
+// spawns waiting and the answers kept stay bounded, and a spawn already
+// being asked about still gets its answer.
+func TestThreadAgentPeerRefreshesStayBounded(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, serveStalledAgentsPeer(nil))
+	a := pair.source
+	live := pair.spawn
+	a.refreshPeerAgentRows(live, 0)
+	for i := range 300 {
+		spawn := pair.spawn
+		spawn.Token, spawn.TargetComputerID = fmt.Sprintf("gone-%d", i), uuid.NewString()
+		a.refreshPeerAgentRows(spawn, 0)
+		a.threadAgentPeers.mu.Lock()
+		inFlight, waiting := a.threadAgentPeers.inFlight, len(a.threadAgentPeers.waiting)
+		a.threadAgentPeers.mu.Unlock()
+		if inFlight > threadAgentPeerListsInFlight || waiting > threadAgentPeerCacheLimit {
+			t.Fatalf("after %d spawns: %d calls in flight, %d waiting", i+1, inFlight, waiting)
+		}
+	}
+	waitForPeerAnswer(t, a, live, 2*threadAgentPeerListTimeout)
+	a.threadRequestsWG.Wait()
+	a.threadAgentPeers.mu.Lock()
+	entries := len(a.threadAgentPeers.entries)
+	a.threadAgentPeers.mu.Unlock()
+	if entries > threadAgentPeerCacheLimit {
+		t.Fatalf("the cache holds %d answers; bound %d", entries, threadAgentPeerCacheLimit)
+	}
+}
+
+// Forgetting a computer forgets its spawns' open work: a settled spawn
+// whose computer last listed open work leaves the listing and the sweep.
+func TestThreadAgentRowsForgetAForgottenComputersOpenWork(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	a := pair.source
+	pair.listRowsUntil(t, func(rows ThreadAgentRows) bool {
+		_, ok := agentRowByToken(rows.Rows, pair.grand)
+		return ok
+	})
+	if settled, err := a.store.SettleThreadRequest(pair.spawn.Token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal,
+		SettledAt: time.Now().Add(-time.Hour).UnixMilli(),
+	}); err != nil || !settled {
+		t.Fatalf("settle: %v %v", settled, err)
+	}
+	if !pair.request(t, pair.spawn.Token).NestedOpen {
+		t.Fatal("the spawn does not record open work there")
+	}
+	if err := a.RemoveBackend(pair.computer, true); err != nil {
+		t.Fatalf("forget the computer: %v", err)
+	}
+	if pair.request(t, pair.spawn.Token).NestedOpen {
+		t.Fatal("a forgotten computer's spawn still records open work there")
+	}
+	if schedule, err := a.store.NextThreadRequestWork(); err != nil || schedule.NestedOpen {
+		t.Fatalf("schedule = %+v, %v; the sweep still asks a forgotten computer", schedule, err)
+	}
+	if _, listed := agentRowByToken(pair.listRows(t).Rows, pair.spawn.Token); listed {
+		t.Fatal("a forgotten computer's settled spawn is still listed")
+	}
+	if _, cached := a.cachedPeerAgentRows(pair.spawn); cached {
+		t.Fatal("a forgotten computer's answer is still cached")
+	}
+}
+
+// A send to a thread on another computer shows that thread's provider, from
+// the acknowledgement: no agent_rows call is made for a send.
+func TestThreadAgentRowsShowARemoteSendsProvider(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	target := reachThread(t, pair.dest, uuid.NewString(), "Remote peer")
+	ack, err := pair.adapter().Send(t.Context(), pair.callerIdentity(), threadtools.SendCall{
+		ThreadID: target.ID, ComputerID: pair.computer, Message: "check the changelog", Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("remote Send: %v", err)
+	}
+	listing, err := pair.source.ListThreadAgentRows(t.Context(), pair.caller.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := agentRowByToken(listing.Rows, ack.Token)
+	if !ok || row.Kind != store.ThreadRequestSend || row.Provider != target.Provider {
+		t.Fatalf("send row = %+v (listed %v); want the target's provider %q", row, ok, target.Provider)
 	}
 }

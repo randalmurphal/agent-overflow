@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -495,6 +496,38 @@ func (s *Store) SetThreadRequestNestedOpen(token string, open bool) (bool, error
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
 	return s.changedThreadRequest(token, result, action)
+}
+
+// ClearThreadRequestsNestedOpenForComputer clears nested_open on every
+// spawn to one computer, for a computer no longer paired: nothing will
+// answer for it again. It returns the callers whose rows changed. A
+// forgotten computer is rare, so the read is the table's.
+func (s *Store) ClearThreadRequestsNestedOpenForComputer(computerID string) ([]string, error) {
+	rows, err := s.db.Query(
+		`UPDATE thread_requests SET nested_open = 0, updated_at = ?
+		  WHERE target_computer_id = ? AND target_computer_id <> '' AND nested_open = 1 AND lineage_only = 0
+		  RETURNING caller_thread_id`,
+		nowMillis(), computerID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: clear nested open for computer %s: %w", computerID, err)
+	}
+	var callers []string
+	for rows.Next() {
+		var caller string
+		if err := rows.Scan(&caller); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("store: clear nested open for computer %s: %w", computerID, err)
+		}
+		if !slices.Contains(callers, caller) {
+			callers = append(callers, caller)
+		}
+	}
+	// The update finishes when its rows close: either error is the write's.
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: clear nested open for computer %s: %w", computerID, err)
+	}
+	return callers, nil
 }
 
 // ListNestedOpenRemoteSpawns returns the settled spawns on other computers

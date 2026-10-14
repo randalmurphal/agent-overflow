@@ -129,6 +129,40 @@ describe('agents controller', () => {
     expect(controller.rows.map((r) => r.token)).toEqual(['done', 'clicked']);
   });
 
+  it('remembers a thread through 63 others and forgets it after 64', async () => {
+    vi.useFakeTimers();
+    await buildPane();
+    const done = row('done', { callerThreadId: 'thread-a', state: 'finished', settledAt: Date.now() });
+    noteThread('thread-a', '', 2);
+    for (let i = 0; i < 70; i++) noteThread(`other-${i}`, '', 2);
+    setBindingMock('ListThreadAgentRows', async (id: string) => ({ rows: id === 'thread-a' ? [done] : [], hidden: false }));
+    stopEvents = setupEventListeners();
+    const current = $state({ id: 'thread-a' });
+    const clock = $state({ now: Date.now() });
+    let controller!: AgentController;
+    release = $effect.root(() => {
+      controller = createAgentController(() => ({ thread: { id: current.id }, hasDraftPlaceholder: false }) as never, () => clock.now);
+      return controller.mount();
+    });
+    await vi.advanceTimersByTimeAsync(AGENT_ROW_SETTLED_LINGER_MS + 100);
+    clock.now = Date.now();
+    expect(controller.rows).toEqual([]);
+    const visit = async (others: number) => {
+      for (let i = 0; i < others; i++) {
+        current.id = `other-${i}`;
+        await vi.advanceTimersByTimeAsync(20);
+      }
+      current.id = 'thread-a';
+      await vi.advanceTimersByTimeAsync(500);
+      clock.now = Date.now();
+      return controller.rows.map((r) => r.token);
+    };
+    expect(await visit(63), 'after 63 other threads').toEqual([]);
+    await vi.advanceTimersByTimeAsync(AGENT_ROW_SETTLED_LINGER_MS + 100);
+    clock.now = Date.now();
+    expect(await visit(64), 'after 64 other threads').toEqual(['done']);
+  });
+
   it('keeps a settled row while a row nested under it is shown', async () => {
     const { controller, clock } = await mountAgents([
       row('child', { state: 'finished', settledAt: 1 }),

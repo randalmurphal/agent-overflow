@@ -62,6 +62,11 @@ type threadAgentPeerArgs struct {
 	Depth int `json:"depth,omitempty"`
 }
 
+// errThreadAgentPeerTimedOut marks a forwarded call that ran out its own
+// time: the computer did not answer, as against refusing or being
+// unreachable at once.
+var errThreadAgentPeerTimedOut = errors.New("the call timed out")
+
 // errThreadAgentPeerOlder marks a paired computer that predates the
 // forwarded Agents tools.
 var errThreadAgentPeerOlder = errors.New("that computer runs an older version: its background work and agents are not shown or stopped from here")
@@ -101,7 +106,11 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 		if threadAgentPeerOlder(err) {
 			return errThreadAgentPeerOlder
 		}
-		return a.threadOperationError(tool, computerID, args.ThreadID, err)
+		err = a.threadOperationError(tool, computerID, args.ThreadID, err)
+		if errors.Is(call.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return fmt.Errorf("%w: %w", errThreadAgentPeerTimedOut, err)
+		}
+		return err
 	}
 	if err := json.Unmarshal(reply.Result, out); err != nil {
 		return fmt.Errorf("read %s from %s: %w", tool, computerID, err)

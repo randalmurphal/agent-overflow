@@ -332,3 +332,63 @@ func TestListNestedOpenRemoteSpawnsPagesFromTheLastRow(t *testing.T) {
 		t.Fatalf("the page reads %s", plan)
 	}
 }
+
+// A spawn cycle with nothing open ends the walk and lists nothing.
+func TestListThreadAgentRequestsEndsASpawnCycle(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"a", "b"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "a-b", "a", ThreadRequestSpawn, "b", false, 100)
+	settleAgentRequest(t, s, "a-b", 200)
+	seedAgentRequest(t, s, "b-a", "b", ThreadRequestSpawn, "a", false, 110)
+	settleAgentRequest(t, s, "b-a", 210)
+	seedAgentRequest(t, s, "b-self", "b", ThreadRequestSpawn, "b", false, 111)
+	settleAgentRequest(t, s, "b-self", 211)
+	rows, _, err := s.ListThreadAgentRequests("a", nil, 10_000, 4, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := agentRequestTokens(rows); len(got) != 0 {
+		t.Fatalf("a settled cycle lists %v", got)
+	}
+}
+
+// Forgetting a computer clears open work on every spawn to it, and names
+// the callers whose rows changed.
+func TestClearThreadRequestsNestedOpenForComputer(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "other"} {
+		mustCreateThread(t, s, id)
+	}
+	for _, seed := range []struct{ token, caller, computer string }{
+		{"gone-1", "lead", "gone"}, {"gone-2", "other", "gone"}, {"kept", "lead", "kept"},
+	} {
+		if err := s.InsertThreadRequest(ThreadRequest{Token: seed.token, CallerThreadID: seed.caller, Kind: ThreadRequestSpawn,
+			TargetThreadID: "there", TargetComputerID: seed.computer, State: ThreadRequestRunning, CreatedAt: 100, UpdatedAt: 100}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.SetThreadRequestNestedOpen(seed.token, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	callers, err := s.ClearThreadRequestsNestedOpenForComputer("gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(callers)
+	if !slices.Equal(callers, []string{"lead", "other"}) {
+		t.Fatalf("callers %v", callers)
+	}
+	for token, want := range map[string]bool{"gone-1": false, "gone-2": false, "kept": true} {
+		row, _, err := s.GetThreadRequest(token)
+		if err != nil || row.NestedOpen != want {
+			t.Fatalf("%s nested open = %v, %v; want %v", token, row.NestedOpen, err, want)
+		}
+	}
+	if again, err := s.ClearThreadRequestsNestedOpenForComputer("gone"); err != nil || len(again) != 0 {
+		t.Fatalf("a second clear = %v, %v; want no change", again, err)
+	}
+}

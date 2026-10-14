@@ -288,10 +288,17 @@ func SetAttachedBackends(a *App, manager *attachedbackends.Manager) {
 		if a.netReach.LoopbackOnly() {
 			manager.DisableLANDiscovery()
 		}
-		manager.SetChanged(func(change attachedbackends.SetChange) {
-			a.emit(eventchan.BackendSetChanged, change)
-			a.signalRemotePeers()
-			a.emit(eventchan.AgentComputersChanged, struct{}{})
-		})
+		manager.SetChanged(a.backendSetChanged)
 	}
+}
+
+// backendSetChanged is the attached-machine set's one observer: a removed
+// machine's Agents rows are forgotten, then every client is told.
+func (a *App) backendSetChanged(change attachedbackends.SetChange) {
+	if change.Action == attachedbackends.SetRemoved {
+		a.forgetPeerAgentRows(change.ID)
+	}
+	a.emit(eventchan.BackendSetChanged, change)
+	a.signalRemotePeers()
+	a.emit(eventchan.AgentComputersChanged, struct{}{})
 }

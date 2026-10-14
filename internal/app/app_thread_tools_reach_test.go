@@ -100,6 +100,7 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 	}
 	pair.manager = pair.pairWith(t, "source")
 	source.backends = pair.manager
+	pair.manager.SetChanged(source.backendSetChanged)
 	pair.computer = pair.attachedID(t, pair.manager)
 
 	caller, err := createTestThread(t, source, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)

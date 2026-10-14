@@ -1109,6 +1109,7 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
   const caller = await seed(home, 'agents-remote-caller', ['Agents remote caller']);
   const child = await seed(remote, 'agents-remote-child', []);
   const grand = await seed(remote, 'agents-remote-grand', []);
+  const peer = await seed(remote, 'agents-remote-peer', ['Remote peer']);
   await remote.rpc('UpdateNewThreadDefaults', {
     projectId: child.projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
   });
@@ -1121,6 +1122,10 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
       { steps: [{ call: {
         tool: 'thread_spawn',
         args: { prompt: 'Build it over there.', title: 'Remote child', computer_id: remoteID, project_id: child.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }, { call: {
+        tool: 'thread_send',
+        args: { thread_id: peer.threadIds[0], computer_id: remoteID, message: 'Check the changelog.', notify: true },
         timeoutMs: 120_000,
       } }], text: 'Started it over there.' },
       { text: 'Noted.' },
@@ -1143,11 +1148,17 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
     name: 'agents-remote-grand-script', provider: 'claude',
     turns: [{ steps: [{ gate: 'remote-grand-hold' }], text: 'Packaged.' }, { text: 'Noted.' }],
   }));
+  await setScenario(remote, peer.path, threadToolsScenario({
+    name: 'agents-remote-peer-script', provider: 'claude',
+    turns: [{ steps: [{ gate: 'remote-peer-hold' }], text: 'Fine.' }],
+  }));
 
   await home.rpc('StartSession', caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build it', null);
   const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', timeoutMs: 120_000 });
   expect(spawn.isError, spawn.text).toBe(false);
+  const sent = await awaitToolAnswer<{ token: string }>(home, { tool: 'thread_send', timeoutMs: 120_000 });
+  expect(sent.isError, sent.text).toBe(false);
   const nested = await awaitToolAnswer<{ token: string; thread_id: string }>(remote, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
   expect(nested.isError, nested.text).toBe(false);
   await awaitGate(remote, 'remote-child-hold', child.path);
@@ -1166,6 +1177,11 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
   await expect(childRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
   await expect(childRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
   await expect(grandRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
+  // A send there shows its target's provider, from the acknowledgement.
+  const sendRow = row(sent.value!.token);
+  await expect(sendRow).toHaveAttribute('data-kind', 'send');
+  await expect(sendRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+  await expect(sendRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
   await expect(grandRow).toHaveAttribute('data-depth', '1');
   await expect(grandRow.getByTestId('agent-tray-row-title')).toHaveText('Remote grandchild');
   await expect(grandRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
