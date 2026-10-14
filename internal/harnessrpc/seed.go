@@ -558,6 +558,13 @@ func (h *Harness) HarnessReset() (err error) {
 	// pointing at a workspace this reset is about to delete.
 	h.mutate.Lock()
 	defer h.mutate.Unlock()
+	// The merged pull request cleanup polls the forge and removes
+	// worktrees from rows the cascade below deletes: a pass it began for
+	// the previous test would read the forge after its log is cleared, or
+	// act on a project being deleted. It resumes, from nothing, last.
+	if h.config.Host != nil {
+		defer h.config.Host.PauseMergedPRCleanup()()
+	}
 	// Harness-owned state first: a running replay emits events and an
 	// in-flight recording holds a capture window — both must die before
 	// the state they reference does. A perf run is the same shape one

@@ -691,6 +691,77 @@ func TestMergedPRPollFollowsTheBackgroundFetchSetting(t *testing.T) {
 	}
 }
 
+// A pause (HarnessReset's) stops and joins the poll and the worker and
+// makes no request while paused; resume starts both from empty state; once
+// Shutdown stopped the cleanup, resume starts nothing.
+func TestMergedPRCleanupPauseJoinsAndResumesFromNothing(t *testing.T) {
+	t.Parallel()
+	m := newMergeCase(t, "feature/pause")
+	c := &m.app.mergedPRs
+	c.interval = 20 * time.Millisecond
+	m.app.maintenance.firstReadsFallback = time.Millisecond
+	m.unmerge(t)
+	m.seed(t, "open")
+	m.app.startMergedPRCleanup()
+	t.Cleanup(m.app.stopMergedPRCleanup)
+	// The poll reads the open PR before the pause.
+	deadline := time.Now().Add(10 * time.Second)
+	for m.requests.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the poll never read the PR")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	c.pollMu.Lock()
+	pollDone := c.pollDone
+	c.pollMu.Unlock()
+	c.mu.Lock()
+	workerDone := c.done
+	c.mu.Unlock()
+
+	resume := m.app.pauseMergedPRCleanup()
+	for name, done := range map[string]chan struct{}{"poll": pollDone, "worker": workerDone} {
+		select {
+		case <-done:
+		default:
+			t.Fatalf("the pause returned before the %s ended", name)
+		}
+	}
+	m.seed(t, "merged")
+	before := m.requests.Load()
+	// A lookup backoff left from before the pause; nothing else prunes one
+	// for a repository nobody tracks.
+	backoffFor(&c.lookups, "stale").next = time.Now().Add(time.Hour)
+	time.Sleep(10 * c.interval)
+	if n := m.requests.Load(); n != before {
+		t.Fatalf("%d forge requests while paused", n-before)
+	}
+	if row := m.row(t, m.thread.ID); row.MergedAt != 0 {
+		t.Fatalf("the merge was read while paused: %+v", row)
+	}
+
+	resume()
+	c.pass.Lock()
+	stale := c.lookups["stale"]
+	c.pass.Unlock()
+	if stale != nil {
+		t.Fatal("resume kept the previous state")
+	}
+	if row := m.awaitHandled(t); row.Outcome != store.PROutcomeRemoved {
+		t.Fatalf("outcome = %q, want removed", row.Outcome)
+	}
+
+	resume = m.app.pauseMergedPRCleanup()
+	m.app.stopMergedPRCleanup()
+	resume()
+	c.mu.Lock()
+	running := c.stop != nil
+	c.mu.Unlock()
+	if running || c.mergedPRPollRunning() {
+		t.Fatal("resume started a cleanup Shutdown stopped")
+	}
+}
+
 // With the setting off, a lookup that stops finding the tracked PR still
 // reads its state once, and the merge it finds is acted on.
 func TestMergedPRWatchedReadRunsWithTheSettingOff(t *testing.T) {

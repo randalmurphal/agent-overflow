@@ -110,6 +110,11 @@ type mergedPRCleanupState struct {
 	// pass serializes the worker's and the poll's passes.
 	pass sync.Mutex
 
+	// life serializes starting, pausing and stopping the cleanup. closed
+	// is set by Shutdown's stop; nothing starts it again after that.
+	life   sync.Mutex
+	closed bool
+
 	// pollMu guards running and the poll's channels. running is set from
 	// the worker's start to its stop; the poll runs only inside it.
 	pollMu   sync.Mutex
@@ -206,6 +211,11 @@ func (a *App) wakeMergedPRCleanup() {
 // the first client's catalog reads like every unattended scan.
 func (a *App) startMergedPRCleanup() {
 	c := &a.mergedPRs
+	c.life.Lock()
+	defer c.life.Unlock()
+	if c.closed {
+		return
+	}
 	c.mu.Lock()
 	if c.stop != nil {
 		c.mu.Unlock()
@@ -249,6 +259,39 @@ func (a *App) startMergedPRCleanup() {
 // remove worktrees and stop sessions, so Shutdown joins them before the
 // session close and the store close. Safe before start and twice.
 func (a *App) stopMergedPRCleanup() {
+	c := &a.mergedPRs
+	c.life.Lock()
+	defer c.life.Unlock()
+	c.closed = true
+	a.haltMergedPRCleanupLocked()
+}
+
+// pauseMergedPRCleanup stops the poll and the worker, joins them and
+// drops what they hold in memory; resume starts them again, from nothing,
+// unless Shutdown stopped the cleanup meanwhile. HarnessReset brackets
+// its reset with it, so no pass begun for one test reads the forge or
+// acts during the next.
+func (a *App) pauseMergedPRCleanup() (resume func()) {
+	c := &a.mergedPRs
+	c.life.Lock()
+	a.haltMergedPRCleanupLocked()
+	c.life.Unlock()
+	return func() {
+		c.life.Lock()
+		// Observations made while paused belong to the state just reset.
+		c.mu.Lock()
+		c.observed, c.act, c.logged = nil, false, nil
+		c.mu.Unlock()
+		c.reads, c.lookups, c.removals, c.noneRead = nil, nil, nil, nil
+		c.waitingIdle.Store(false)
+		c.life.Unlock()
+		a.startMergedPRCleanup()
+	}
+}
+
+// haltMergedPRCleanupLocked stops and joins the poll and the worker.
+// Callers hold life.
+func (a *App) haltMergedPRCleanupLocked() {
 	c := &a.mergedPRs
 	c.pollMu.Lock()
 	c.running = false
