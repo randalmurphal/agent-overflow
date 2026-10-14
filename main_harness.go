@@ -273,6 +273,10 @@ type harnessTiming struct {
 	// published is asked for once the quick retries ran out
 	// (app.IsolationConfig.PRCILogWaitInterval).
 	PRCILogWait time.Duration
+	// MergedPRPoll is how often the merged-PR worktree cleanup reads one
+	// repository's tracked pull requests
+	// (app.IsolationConfig.MergedPRPollInterval).
+	MergedPRPoll time.Duration
 }
 
 // parseHarnessTiming reads a diagenv.HarnessTiming value. Empty is the
@@ -290,6 +294,7 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"pr-ci-live":      &timing.PRCILive,
 		"pr-ci-follow":    &timing.PRCIFollow,
 		"pr-ci-log-wait":  &timing.PRCILogWait,
+		"merged-pr-poll":  &timing.MergedPRPoll,
 	}
 	for _, entry := range strings.Split(value, ",") {
 		entry = strings.TrimSpace(entry)
@@ -388,6 +393,7 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		PRCILiveInterval:     opts.Timing.PRCILive,
 		PRCIFollowInterval:   opts.Timing.PRCIFollow,
 		PRCILogWaitInterval:  opts.Timing.PRCILogWait,
+		MergedPRPollInterval: opts.Timing.MergedPRPoll,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

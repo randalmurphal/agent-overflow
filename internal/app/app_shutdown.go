@@ -264,6 +264,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// goroutine returns.
 	a.stopRetentionCleanup()
 	record("stop retention cleanup", nil)
+	// The merged-PR worktree cleanup removes worktrees and stops the
+	// sessions in them, so it is joined for the sweep's reasons too.
+	a.stopMergedPRCleanup()
+	record("stop merged PR worktree cleanup", nil)
 	// The boot-time completion of interrupted deletes takes the same
 	// path as the sweep, and is joined beside it for the same reasons.
 	a.waitPendingThreadDeletes()

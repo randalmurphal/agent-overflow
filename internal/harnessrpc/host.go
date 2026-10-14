@@ -60,6 +60,9 @@ type Host interface {
 	RecoverOrphanedBackgroundTasks() error
 	ClearUIState() error
 	ResetSessionImporter()
+	// PauseMergedPRCleanup stops the merged pull request cleanup, joins it
+	// and drops its in-memory state; resume starts it again from nothing.
+	PauseMergedPRCleanup() (resume func())
 	// DropRetainedEvents empties the event bus replay rings so nothing
 	// emitted before a reset is replayable by the next test's page.
 	DropRetainedEvents()

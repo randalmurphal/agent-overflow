@@ -927,8 +927,10 @@ export class Settings {
      * 
      * Turn it off for a metered or VPN-gated connection, or for a
      * monorepo whose fetch is expensive. Off means the counts are only
-     * as fresh as the last explicit fetch/pull/prune — nothing else
-     * changes. See app_git_background_fetch.go for the cadence.
+     * as fresh as the last explicit fetch/pull/prune, and the merged
+     * pull request poll (app_worktree_merge_cleanup.go) stops too, so the
+     * app makes no background check. See app_git_background_fetch.go for
+     * the cadence.
      */
     "backgroundGitFetch": boolean;
 

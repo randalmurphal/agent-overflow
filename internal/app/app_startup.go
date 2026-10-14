@@ -264,6 +264,11 @@ func (a *App) startUnattendedWork() error {
 	// harness mode. See app_git_background_fetch.go.
 	a.startBackgroundGitFetch()
 
+	// Remove a thread's worktree once its pull request merges. Its poll
+	// follows Settings.BackgroundGitFetch, started and stopped live by
+	// UpdateSettings. See app_worktree_merge_cleanup.go.
+	a.startMergedPRCleanup()
+
 	// Serve the canonical domain's certificate, and keep serving it: the
 	// loop loads what is on disk, orders one when the user configured
 	// issuance and there is none (or it is inside the renewal window),
@@ -386,6 +391,9 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 		)
 	}
 	a.git = core
+	// Every fresh open-PR answer reaches the merged-PR worktree cleanup,
+	// which queues it until its worker starts.
+	a.git.SetOpenPRObserver(a.observeOpenPR)
 	a.gitWatch = gitwatch.NewManager(gitwatch.ManagerConfig{
 		StatusFn: a.git.Status,
 		// StatusFast reads only the PR cache, so it has nothing for a

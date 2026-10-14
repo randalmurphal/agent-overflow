@@ -79,6 +79,35 @@ func TestHarnessSeedProviderHomeFilesWriteAndResetWipes(t *testing.T) {
 	}
 }
 
+// Reset pauses the merged pull request cleanup before it deletes anything
+// and resumes it after the cascade, so no pass begun for one test reads the
+// forge or acts during the next.
+func TestHarnessResetPausesTheMergedPRCleanupAroundTheCascade(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	if _, err := host.CreateProject(filepath.Join(t.TempDir(), "ws")); err != nil {
+		t.Fatal(err)
+	}
+	projects := func() int {
+		list, err := host.store.ListProjectsWithThreadCounts()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(list)
+	}
+	atPause, atResume := -1, -1
+	host.onPause = func() { atPause = projects() }
+	host.onResume = func() { atResume = projects() }
+	if err := receiver.HarnessReset(); err != nil {
+		t.Fatalf("HarnessReset: %v", err)
+	}
+	if host.mergedPRPauses != 1 || host.mergedPRResumes != 1 {
+		t.Fatalf("pauses = %d, resumes = %d, want 1 each", host.mergedPRPauses, host.mergedPRResumes)
+	}
+	if atPause != 1 || atResume != 0 {
+		t.Fatalf("projects at pause = %d, at resume = %d; want the pause before the cascade and the resume after", atPause, atResume)
+	}
+}
+
 func TestHarnessSeedWorkflowTargetValidationNamesTarget(t *testing.T) {
 	receiver, _ := newHarnessTestHost(t)
 	_, err := receiver.seedWorkflowItems("project", HarnessSeedWorkflowItem{

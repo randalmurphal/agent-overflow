@@ -1,10 +1,16 @@
 package app
 
 import (
+	"context"
 	"log"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 )
+
+// prLookupAfterCreateTimeout bounds the forge lookup an agent's PR create
+// command prompts.
+const prLookupAfterCreateTimeout = time.Minute
 
 // observeCommandSettled re-asks the forge for the thread's open PR when an
 // agent's command ran `gh pr create` or `glab mr create`. The push before
@@ -33,5 +39,7 @@ func (a *App) refreshThreadPR(threadID string) {
 		log.Printf("pr lookup after create: thread %s workspace: %v", threadID, err)
 		return
 	}
-	a.gitApplication().RefreshPR(workspace)
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), prLookupAfterCreateTimeout)
+	defer cancel()
+	a.gitApplication().RefreshPR(ctx, workspace)
 }

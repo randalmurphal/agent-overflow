@@ -1,12 +1,15 @@
 package forgefake
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Fixture is the forge state a test declares. Field names are the JSON a
@@ -49,7 +52,15 @@ type Pull struct {
 	Title  string `json:"title"`
 	Body   string `json:"body,omitempty"`
 	// State is "open" (default), "closed" or "merged".
-	State  string `json:"state,omitempty"`
+	State string `json:"state,omitempty"`
+	// MergedAt is when a merged pull merged, RFC 3339 (GitHub mergedAt,
+	// GitLab merged_at). Only a merged pull has one; it defaults to the
+	// time the fixture was seeded.
+	MergedAt string `json:"mergedAt,omitempty"`
+	// NodeID is a GitHub pull's GraphQL node id. Defaults to an id derived
+	// from the repository and number, so a reseed, or the same seed in a
+	// relaunched harness, answers the id a real pull keeps.
+	NodeID string `json:"nodeId,omitempty"`
 	Draft  bool   `json:"draft,omitempty"`
 	Author string `json:"author,omitempty"`
 	// AuthorName is the author's display name. Empty answers as a user
@@ -58,6 +69,13 @@ type Pull struct {
 	// HeadRef and BaseRef default to "feature" and "main".
 	HeadRef string `json:"headRef,omitempty"`
 	BaseRef string `json:"baseRef,omitempty"`
+	// HeadRepo is the fork the head branch lives in ("owner/repo" or a
+	// GitLab path); empty is the repository itself. A fork's pull answers
+	// isCrossRepository (GitHub) and a source_project_id of its own
+	// (GitLab).
+	HeadRepo string `json:"headRepo,omitempty"`
+	// headRepoID is the fork's generated project id.
+	headRepoID int64
 	// HeadSHA, BaseSHA and StartSHA are generated when omitted. StartSHA is
 	// the base branch's tip (GitHub baseRefOid, GitLab start_sha); BaseSHA
 	// is GitLab's merge base.
@@ -285,6 +303,13 @@ func (r *Repo) normalize(ids *idSource) error {
 			return fmt.Errorf("pull #%d is declared twice", pull.Number)
 		}
 		numbers[pull.Number] = true
+		r.defaultNodeID(pull)
+		if pull.HeadRepo != "" {
+			if !strings.Contains(pull.HeadRepo, "/") || strings.EqualFold(pull.HeadRepo, r.Project) {
+				return fmt.Errorf("pulls[%d] (#%d): headRepo %q is not another repository's path", i, pull.Number, pull.HeadRepo)
+			}
+			pull.headRepoID = ids.next()
+		}
 	}
 	for i := range r.Attachments {
 		if err := r.Attachments[i].normalize(r.Forge); err != nil {
@@ -292,6 +317,16 @@ func (r *Repo) normalize(ids *idSource) error {
 		}
 	}
 	return nil
+}
+
+// defaultNodeID gives a GitHub pull without one the node id derived from
+// its repository and number.
+func (r *Repo) defaultNodeID(p *Pull) {
+	if r.Forge != "github" || p.NodeID != "" {
+		return
+	}
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s/%s#%d", strings.ToLower(r.Host), strings.ToLower(r.Project), p.Number))
+	p.NodeID = "PR_ao" + hex.EncodeToString(sum[:10])
 }
 
 func (p *Pull) normalize(forge string, ids *idSource) error {
@@ -310,6 +345,19 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 	case "open", "closed", "merged":
 	default:
 		return fmt.Errorf("state %q is not open, closed or merged", p.State)
+	}
+	switch {
+	case p.State != "merged" && p.MergedAt != "":
+		return errors.New("mergedAt is set on a pull that did not merge")
+	case p.State == "merged" && p.MergedAt == "":
+		p.MergedAt = time.Now().UTC().Format(time.RFC3339)
+	case p.State == "merged":
+		if _, err := time.Parse(time.RFC3339, p.MergedAt); err != nil {
+			return fmt.Errorf("mergedAt %q is not RFC 3339", p.MergedAt)
+		}
+	}
+	if p.NodeID != "" && forge != "github" {
+		return errors.New("nodeId is a GitHub pull's")
 	}
 	switch p.Mergeable {
 	case "":

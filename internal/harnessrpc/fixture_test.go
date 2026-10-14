@@ -36,6 +36,10 @@ type testHost struct {
 	pushSent          []PushMessage
 	droppedRetained   int
 	broadcastRows     []string
+	mergedPRPauses    int
+	mergedPRResumes   int
+	onPause           func()
+	onResume          func()
 }
 
 func newHarnessTestHost(t *testing.T) (*Harness, *testHost) {
@@ -148,7 +152,22 @@ func (h *testHost) ClearUIState() error {
 	}
 	return h.store.ClearUIState()
 }
-func (h *testHost) ResetSessionImporter()        {}
+func (h *testHost) ResetSessionImporter() {}
+
+// PauseMergedPRCleanup counts pauses and resumes and, through onPause and
+// onResume, lets a test see what the reset had done by then.
+func (h *testHost) PauseMergedPRCleanup() func() {
+	h.mergedPRPauses++
+	if h.onPause != nil {
+		h.onPause()
+	}
+	return func() {
+		h.mergedPRResumes++
+		if h.onResume != nil {
+			h.onResume()
+		}
+	}
+}
 func (h *testHost) DropRetainedEvents()          { h.droppedRetained++ }
 func (h *testHost) HasWorkflowEngine() bool      { return false }
 func (h *testHost) RequireWorkflowEngine() error { return fmt.Errorf("workflow engine unavailable") }

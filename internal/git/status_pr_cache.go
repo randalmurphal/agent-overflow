@@ -58,6 +58,7 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 	}
 	if err == nil && !pushed {
 		c.storePRLookup(cwd, key, epoch, now, prCacheEntry{expiresAt: now.Add(prLookupTTL), origin: c.cachedOrigin(cwd)})
+		c.observeOpenPR(cwd, branch, nil)
 		return "", 0, ""
 	}
 	// A failed local check says nothing about the branch; the forge
@@ -68,6 +69,7 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 	// concurrent caller may double-fetch in the rare race window; the second
 	// writer wins and both end up with the same value.
 	url, number, lookupError := "", 0, ""
+	var open *GitPR
 	pulls, err := c.ListOpenPRs(ctx, cwd, branch)
 	if err != nil && ctx.Err() != nil {
 		// The caller gave up. That says nothing about the forge, so the
@@ -79,6 +81,7 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 	} else if len(pulls) > 0 {
 		url = pulls[0].URL
 		number = pulls[0].Number
+		open = &pulls[0]
 	}
 	// Read after ListOpenPRs: its forge dispatch runs DetectForge, which
 	// leaves a fresh identity in the forge cache. Unknown here (cold or
@@ -119,6 +122,9 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 		failures:    failures,
 	})
 	c.prCacheMu.Unlock()
+	if lookupError == "" {
+		c.observeOpenPR(cwd, branch, open)
+	}
 	return url, number, lookupError
 }
 
