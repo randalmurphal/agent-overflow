@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2643,6 +2644,12 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 			args:  []any{"thread-plan", "root-plan"},
 		},
 		{
+			// ParkingCommandIDs.
+			name:  "live command ids under one root",
+			query: parkingCommandIDsSQL,
+			args:  []any{"thread-plan", "root-plan"},
+		},
+		{
 			// ListIncompleteCodexSubagentOwnerships.
 			name: "compact ownership list",
 			query: `SELECT items.id, items.meta
@@ -2782,8 +2789,17 @@ func TestCountParkingCommandsCountsOnlyLiveDirectCommands(t *testing.T) {
 	if got, err := s.CountParkingCommands("t-park", ""); err != nil || got != 0 {
 		t.Fatalf("empty root: got %d, %v; want 0, nil", got, err)
 	}
+	ids, err := s.ParkingCommandIDs("t-park", "root")
+	if err != nil {
+		t.Fatalf("ParkingCommandIDs: %v", err)
+	}
+	slices.Sort(ids)
+	if !slices.Equal(ids, []string{"live-shell", "watch"}) {
+		t.Fatalf("ParkingCommandIDs = %v, want the commands CountParkingCommands counts", ids)
+	}
 
 	assertPlanUses(t, s.db, "idx_items_parent", `EXPLAIN QUERY PLAN `+countParkingCommandsSQL, "t-park", "root")
+	assertPlanUses(t, s.db, "idx_items_parent", `EXPLAIN QUERY PLAN `+parkingCommandIDsSQL, "t-park", "root")
 }
 
 func TestUpsertUnsettledItemPreservesTerminalRowAndPayloadUnderConcurrentReplay(t *testing.T) {

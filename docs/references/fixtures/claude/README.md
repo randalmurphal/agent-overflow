@@ -74,6 +74,23 @@ behavior. These back parser replay tests and the reference docs in
 
   Both: `system/init` and `rate_limit_event` dropped; host paths
   synthetic; every other line byte-identical to the capture.
+- `local_agent_dropped_wake_20261014.ndjson`: a background agent on
+  2.1.284 with `--session-mirror`, parked on its own backgrounded Bash
+  in an `isolation:"worktree"` worktree that is removed while it is
+  parked. The shell's terminal arrives and the agent never wakes: the
+  main file's mirror enqueues the wake and removes it with
+  `reason:"agent_stopped"` (claude-wire.md §E6b, dropped wake). The last
+  line is the bare `success` ack of a later `stop_task` naming the
+  agent. Backs `TestReplayDroppedAgentWake`.
+- `local_agent_mirror_wake_20261014.ndjson`: the same run with the
+  worktree kept. The wake is removed with `reason:"delivered_to_agent"`
+  and the agent runs again. Backs
+  `TestReplayMirroredDeliveredWakeIsNoDrop`.
+
+  Both: `system/init`, `rate_limit_event` and subagent mirror batches
+  dropped; main-file mirror batches keep only their `queue-operation`
+  entries; assistant text cut to its first 40 characters; host paths
+  synthetic.
 - `send_message_ack_20260904.ndjson`: two `SendMessage` round-trips on
   2.1.257, a refusal (`to: "A"`, no such agent) and a queued send to a
   live agent by id. Proves the `tool_result` block is `is_error:false`

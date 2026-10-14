@@ -313,6 +313,31 @@ export function taskNotificationLine(
   return j(envelope);
 }
 
+/**
+ * The CLI's record that it dropped a parked agent's wake: the session
+ * file's `queue-operation` removal of the command's notification, as
+ * `--session-mirror` streams it (claude-wire.md §E6b, dropped wake;
+ * `local_agent_dropped_wake_20261014.ndjson`).
+ */
+export function wakeDroppedMirrorLine(taskId: string, toolUseId: string, summary: string): string {
+  const notification = [
+    '<task-notification>',
+    `<task-id>${taskId}</task-id>`,
+    `<tool-use-id>${toolUseId}</tool-use-id>`,
+    '<status>completed</status>',
+    `<summary>${summary}</summary>`,
+    '</task-notification>',
+  ].join('\n');
+  return j({
+    type: 'transcript_mirror',
+    filePath: '/home/user/.claude/projects/-work-repo/session.jsonl',
+    entries: [
+      { type: 'queue-operation', operation: 'enqueue', content: notification },
+      { type: 'queue-operation', operation: 'remove', reason: 'agent_stopped', content: notification },
+    ],
+  });
+}
+
 /** A subagent's `can_use_tool`, scoped by `agent_id` and nothing else. */
 export function canUseToolLine(
   requestId: string,

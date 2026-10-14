@@ -145,6 +145,22 @@ const (
 	// carries no Meta: the store's rows answer which tasks are live.
 	EventBackgroundTasksChanged EventKind = "background_tasks_changed"
 
+	// EventAgentWakeDropped is Claude's record that it dropped a
+	// notification meant to wake a background agent instead of waking it
+	// (claude-wire.md §E6b, dropped wake): the session file's
+	// `queue-operation` `remove` row with a drop reason, which
+	// --session-mirror streams live. No other frame reports the drop.
+	// Meta is AgentWakeDroppedMeta, whose TaskID names the task whose
+	// notification was dropped, not the agent.
+	EventAgentWakeDropped EventKind = "agent_wake_dropped"
+
+	// EventBackgroundTaskStopAcked is the Claude CLI's success reply to a
+	// `stop_task` control_request, placed in the event stream after every
+	// frame the CLI wrote before it. The CLI writes a stop's kill frames
+	// before its reply, so a task the reply finds still open had nothing
+	// left to kill. Meta is BackgroundTaskStopAckedMeta.
+	EventBackgroundTaskStopAcked EventKind = "background_task_stop_acked"
+
 	// EventCodexExecResult is a Codex-only internal signal derived from the
 	// raw `exec_command` function-call output. It records whether the model
 	// was told the process exited during the initial wait or yielded with a
@@ -255,6 +271,8 @@ var AllEventKinds = []EventKind{
 	EventSubagentProgress,
 	EventSubagentBackgrounded,
 	EventBackgroundTasksChanged,
+	EventAgentWakeDropped,
+	EventBackgroundTaskStopAcked,
 	EventTerminalInteraction,
 	EventUserText,
 	EventCommandLifecycle,
@@ -726,6 +744,22 @@ type SubagentProgressMeta struct {
 // EventSubagentBackgrounded. ItemID on the event is the launch tool_use.
 type SubagentBackgroundedMeta struct {
 	TaskID string `json:"taskId,omitempty"`
+}
+
+// AgentWakeDroppedMeta is the typed payload for EventAgentWakeDropped.
+// TaskID is the task whose notification the CLI dropped (a shell or watch
+// the agent owns), ToolUseID that task's launch when the notification
+// names it, and Reason the CLI's drop reason.
+type AgentWakeDroppedMeta struct {
+	TaskID    string `json:"taskId"`
+	ToolUseID string `json:"toolUseId,omitempty"`
+	Reason    string `json:"reason"`
+}
+
+// BackgroundTaskStopAckedMeta is the typed payload for
+// EventBackgroundTaskStopAcked: the task the acknowledged stop named.
+type BackgroundTaskStopAckedMeta struct {
+	TaskID string `json:"taskId"`
 }
 
 // MetaUserContentBlockDigestKey carries an `EventUserText` echo's content

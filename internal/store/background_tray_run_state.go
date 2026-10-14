@@ -83,7 +83,7 @@ func AgentRunState(item Item) string {
 	return state
 }
 
-// countParkingCommandsSQL counts the live background commands under a
+// parkingCommandsSQL selects the live background commands under a
 // transcript root that an agent stopping now would wait on. An async agent
 // that stops while one of those is still running is idle, not done: the
 // CLI wakes it when the command reports (claude-wire.md §E6b), and these
@@ -101,12 +101,12 @@ func AgentRunState(item Item) string {
 // round, is parented to its transcript ROOT (triage's transcript_root.go),
 // so the caller passes the root. Served by the partial idx_items_parent,
 // which is why the empty-parent guard is repeated beside the root.
-var countParkingCommandsSQL = func() string {
+var parkingCommandsSQL = func() string {
 	names := make([]string, len(commandOutputToolNames))
 	for i, name := range commandOutputToolNames {
 		names[i] = "'" + name + "'"
 	}
-	return `SELECT COUNT(*) FROM items w
+	return ` FROM items w
 		  WHERE w.thread_id = ?
 		    AND w.parent_id = ` + boundText + `
 		    AND w.parent_id <> ''
@@ -123,6 +123,11 @@ var countParkingCommandsSQL = func() string {
 		         OR json_type(w.meta, '$.watch_task') = 'true')`
 }()
 
+var (
+	countParkingCommandsSQL = `SELECT COUNT(*)` + parkingCommandsSQL
+	parkingCommandIDsSQL    = `SELECT w.id` + parkingCommandsSQL
+)
+
 // CountParkingCommands counts the live background commands under rootID,
 // a transcript root, that an agent stopping now would wait on: a stop
 // with any is a pause, and its parked sibling records the count
@@ -133,6 +138,29 @@ func (s *Store) CountParkingCommands(threadID, rootID string) (int, error) {
 		return 0, fmt.Errorf("store: count the commands %s/%s waits on: %w", threadID, rootID, err)
 	}
 	return waiting, nil
+}
+
+// ParkingCommandIDs lists the launch ids CountParkingCommands counts, for
+// a caller that must also discount commands whose completion is written
+// but not yet persisted.
+func (s *Store) ParkingCommandIDs(threadID, rootID string) ([]string, error) {
+	rows, err := s.reader().Query(parkingCommandIDsSQL, threadID, rootID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the commands %s/%s waits on: %w", threadID, rootID, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan a command %s/%s waits on: %w", threadID, rootID, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate the commands %s/%s waits on: %w", threadID, rootID, err)
+	}
+	return ids, nil
 }
 
 // parkedRun is what a tray statement read of one row's parked stop
@@ -150,7 +178,8 @@ type parkedRun struct {
 // read for items[i]. It is the park model's own state (agent_stops.go):
 //
 //   - an ending sibling settles the launch: "ended" when a session death
-//     wrote it (status_source session_died), "done" otherwise. The read
+//     or a dropped wake wrote it (status_source session_died or
+//     wake_dropped), "done" otherwise. The read
 //     returns a settled launch together with that sibling;
 //   - else the launch is parked while its newest stop is a parked sibling
 //     no wake has followed (Store.CurrentParkedStop). A parked launch also
@@ -171,7 +200,8 @@ func serveAgentRunStates(items []Item, stops []parkedRun) error {
 		fields := map[string]any{MetaKeySubagentRunState: AgentRunRunning}
 		if sibling, settled := siblings[item.ID]; settled {
 			fields[MetaKeySubagentRunState] = AgentRunDone
-			if completionStatusSource(sibling.Meta) == "session_died" {
+			switch completionStatusSource(sibling.Meta) {
+			case "session_died", "wake_dropped":
 				fields[MetaKeySubagentRunState] = AgentRunEnded
 			}
 		} else if stop := stops[i]; stop.parked {

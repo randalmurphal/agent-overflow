@@ -505,6 +505,10 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		return nil
 	case provider.EventBackgroundTaskNotification:
 		return r.handleBackgroundTaskNotification(evt)
+	case provider.EventAgentWakeDropped:
+		return r.handleAgentWakeDropped(evt)
+	case provider.EventBackgroundTaskStopAcked:
+		return r.handleBackgroundTaskStopAcked(evt)
 	case provider.EventCompactionStatus:
 		return r.handleCompactionStatus(evt)
 	case provider.EventSessionWakeup:

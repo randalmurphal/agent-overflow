@@ -375,8 +375,11 @@ already knows.
   statusless report. A killed, stopped or failed report ends the agent
   however many shells it owns (`taskStatusEnds`).
 - The ending sibling: the first stop with no live owned shell, any
-  ending status above (a Stop's `task_updated{killed}` included), and
-  session end. A §E6 rebind onto a parked agent writes no sibling for
+  ending status above (a Stop's `task_updated{killed}` included), a
+  dropped wake once no other owned command is live (`agent_wake_dropped.go`,
+  `errored`, source `wake_dropped`), a `stop_task` ack that finds the run
+  still open (`background_stop_ack.go`, `killed`, source `stop_acked`),
+  and session end. A §E6 rebind onto a parked agent writes no sibling for
   the bound row, whose parked stop already records its run
   (`retireParkedLaunchesForRebind`); the carrier's runs then park, wake
   and end by the same rules. A `TaskOutput` observation of a parked
@@ -859,6 +862,8 @@ cases only. It must not feed turn detection.
 | Claude `system/task_progress` | `EventSubagentProgress` | `provider:subagent_progress` | LIVE ONLY: merged into an in-memory entry per launch, fanned out, never persisted per tick; final numbers persist on the launch row at its terminal |
 | Claude `system/task_updated` `patch.is_backgrounded` (no status) | `EventSubagentBackgrounded` | `provider:item_event` patch | Flip `is_background` on the LAUNCH row + stamp `meta.subagentBackgroundedAt`; not a terminal, liveness stays armed |
 | Claude `system/background_tasks_changed` | `EventBackgroundTasksChanged` (no payload) | `provider:background_tasks_changed` | Forwarded as a payload-free refetch nudge; no row written |
+| Claude mirrored `queue-operation` remove with a drop reason | `EventAgentWakeDropped` | `provider:item_event` upsert (completion sibling) | End the command's parked agent once no other owned command is live |
+| Claude `control_response` success to `stop_task` | `EventBackgroundTaskStopAcked` | `provider:item_event` upsert (completion sibling) | Settle the named run if no kill frame settled it |
 | Claude `result` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
 | Codex `item/started` | `EventToolStart` | `provider:item_event` upsert for persisted items | Upsert item row; `unifiedExecStartup` starts stay transient tray state |
 | Codex `item/completed` | `EventToolComplete` | `provider:item_event` upsert for persisted items | Update item row; unifiedExec completion clears live state and only persists while a Codex wire round is active |

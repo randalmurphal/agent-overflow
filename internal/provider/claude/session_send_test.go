@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -300,6 +302,82 @@ func TestInterruptAckFlowsIntoResultClassification(t *testing.T) {
 		case <-deadline:
 			t.Fatal("no EventTurnComplete within 3s")
 		}
+	}
+}
+
+// A successful stop_task reply becomes EventBackgroundTaskStopAcked,
+// delivered after the events of every frame the CLI wrote before it; an
+// error reply becomes none (claude-wire.md §E6b).
+func TestStopTaskAckFollowsTheFramesBeforeIt(t *testing.T) {
+	for _, subtype := range []string{"success", "error"} {
+		t.Run(subtype, func(t *testing.T) {
+			var mu sync.Mutex
+			var kinds []provider.EventKind
+			var acked provider.BackgroundTaskStopAckedMeta
+			ctx, cancel := context.WithCancel(context.Background())
+			proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+				Binary: "sh",
+				Args: []string{"-c", `
+					IFS= read -r line || exit 1
+					reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+					printf '{"type":"system","subtype":"background_tasks_changed","tasks":[]}\n'
+					printf '{"type":"control_response","response":{"subtype":"%s","request_id":"%s","error":"refused","response":{}}}\n' "$SUBTYPE" "$reqid"
+					printf '{"type":"system","subtype":"background_tasks_changed","tasks":[]}\n'
+					cat >/dev/null
+				`},
+				Env: map[string]string{"SUBTYPE": subtype},
+			})
+			if err != nil {
+				t.Fatalf("spawn: %v", err)
+			}
+			s := &Session{
+				proc:     proc,
+				threadID: testThread,
+				parser:   NewParser(),
+				onEvent: func(evt provider.ProviderEvent) {
+					mu.Lock()
+					defer mu.Unlock()
+					kinds = append(kinds, evt.Kind)
+					if evt.Kind == provider.EventBackgroundTaskStopAcked {
+						_ = json.Unmarshal(evt.Meta, &acked)
+					}
+				},
+				cancel:                cancel,
+				readDone:              make(chan struct{}),
+				controlRequestTimeout: 2 * time.Second,
+			}
+			go s.readLoop()
+			t.Cleanup(func() { _ = s.Close() })
+
+			err = s.StopTask(context.Background(), "task-abc")
+			if (err == nil) != (subtype == "success") {
+				t.Fatalf("StopTask = %v for a %s reply", err, subtype)
+			}
+			want := []provider.EventKind{provider.EventBackgroundTasksChanged, provider.EventBackgroundTasksChanged}
+			if subtype == "success" {
+				want = []provider.EventKind{provider.EventBackgroundTasksChanged, provider.EventBackgroundTaskStopAcked, provider.EventBackgroundTasksChanged}
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				mu.Lock()
+				got := slices.Clone(kinds)
+				gotAck := acked
+				mu.Unlock()
+				if len(got) >= len(want) {
+					if !slices.Equal(got, want) {
+						t.Fatalf("events = %v, want %v", got, want)
+					}
+					if subtype == "success" && gotAck.TaskID != "task-abc" {
+						t.Fatalf("ack meta = %+v, want task-abc", gotAck)
+					}
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("events = %v, want %v", got, want)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
 	}
 }
 
