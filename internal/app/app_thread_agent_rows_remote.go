@@ -167,6 +167,19 @@ func (a *App) notePeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentRo
 		a.abandonPeerAgentRows(spawn.Token)
 		return
 	}
+	if err == nil {
+		// What the computer lists is open work while any row there has not
+		// settled; a computer that did not answer leaves the last record.
+		// It is recorded before the rows are, so a read that nests them
+		// finds the spawn kept for them.
+		open := false
+		for _, row := range listing.Rows {
+			open = open || row.SettledAt == 0
+		}
+		if _, setErr := a.store.SetThreadRequestNestedOpen(spawn.Token, open); setErr != nil {
+			log.Printf("agent rows: record open work under %s: %v", spawn.Token, setErr)
+		}
+	}
 	c := &a.threadAgentPeers
 	c.mu.Lock()
 	entry := c.entryLocked(spawn)
@@ -177,17 +190,6 @@ func (a *App) notePeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentRo
 		entry.listing = listing
 	}
 	c.mu.Unlock()
-	if err == nil {
-		// What the computer lists is open work while any row there has not
-		// settled; a computer that did not answer leaves the last record.
-		open := false
-		for _, row := range listing.Rows {
-			open = open || row.SettledAt == 0
-		}
-		if _, setErr := a.store.SetThreadRequestNestedOpen(spawn.Token, open); setErr != nil {
-			log.Printf("agent rows: record open work under %s: %v", spawn.Token, setErr)
-		}
-	}
 	if changed {
 		a.noteThreadRequestChanged(store.ThreadRequestChange{CallerThreadID: spawn.CallerThreadID})
 	}

@@ -1186,10 +1186,10 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
     .toHaveText('Stopped Remote child: its turn, 1 background task and 1 agent of its own.', { timeout: 60_000 });
   await childInterrupted;
   await grandInterrupted;
-  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
   await expect.poll(async () => (await remote.rpc<{ status: string }[]>('ListLiveBackgroundTasks', spawn.value!.thread_id))
     .filter((item) => item.status === 'running').length).toBe(0);
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
+  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
 });
 
 test('a thread moved to the other computer resolves there by its bare id', async () => {

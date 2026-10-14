@@ -26,6 +26,7 @@ import { test, expect, type SeedResult } from './fixtures.js';
 import { rename } from 'node:fs/promises';
 import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
+import { scrollTimelineToTop } from './standing-agent-home-contents-helpers.js';
 import {
   CHILD,
   GRAND,
@@ -94,18 +95,16 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const listing = await harness.rpc<{ rows: { token: string; wakeItemId?: string }[] }>('ListThreadAgentRows', tree.lead);
     const wakeItemId = listing.rows.find((row) => row.token === started.sendToken)?.wakeItemId;
     expect(wakeItemId, 'the settled send names its wake item').toBeTruthy();
+    // Scrolled up to the lead's first message, past a report longer than
+    // the pane, the wake row is out of view; only the click can bring it in.
     const timeline = page.getByTestId('message-timeline-scroll').filter({ visible: true }).first();
     const wakeItem = timeline.locator(`[data-item-id="${wakeItemId}"]`);
-    // At the top, with the lead's turn done writing, the wake row is out of
-    // view; only the click can bring it in.
-    await expect(async () => {
-      await timeline.evaluate((el) => el.scrollTo({ top: 0 }));
-      await page.waitForTimeout(300);
-      expect(await timeline.evaluate((el) => el.scrollTop)).toBe(0);
-    }).toPass({ timeout: 15_000 });
+    const firstAsk = timeline.getByText('run the release', { exact: true });
+    await scrollTimelineToTop(page, firstAsk);
+    await expect(firstAsk).toBeInViewport();
+    if (await wakeItem.count() > 0) await expect(wakeItem).not.toBeInViewport();
     await sendOpen.click();
     await expect(wakeItem).toBeInViewport({ timeout: 10_000 });
-    expect(await timeline.evaluate((el) => el.scrollTop), 'the click scrolled the timeline').toBeGreaterThan(0);
     await expect(send).toHaveCount(0);
 
     // A click opens the child in a pane.
@@ -141,7 +140,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(nested.state).toBe('cancelled');
     expect(nested.answer).toContain(USER_STOP);
     expect(nested.notify, 'the cascade disarms the nested wake').toBe(0);
-    expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
     if (provider === 'claude') {
       await expect.poll(async () => (await harness.rpc<{ status: string }[]>('ListLiveBackgroundTasks', started.child))
         .filter((item) => item.status === 'running').length, { timeout: 30_000 }).toBe(0);
@@ -152,6 +150,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(agentsBody(page).getByTestId('agent-tray-row')).toHaveCount(0, { timeout: 30_000 });
     expect(Date.now() - settledAt, 'the settled row lingered').toBeGreaterThan(5_000);
     await expect(page.getByTestId('activity-rail-agents-toggle')).toHaveCount(0);
+    expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
   });
 
   test(`${provider}: Stop All cascades; Background's Stop All and the thread's own Stop leave the rows`, async ({ harness, page }) => {

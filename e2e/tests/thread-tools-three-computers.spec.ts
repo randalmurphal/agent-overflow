@@ -309,8 +309,8 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
     .toHaveText('Stopped Studio child: its turn, 1 background task and 1 agent of its own.', { timeout: 60_000 });
   await childInterrupted;
   await grandInterrupted;
-  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
+  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
 });
 
 test('a paired computer that is down becomes an errors row beside the live rows', async () => {
