@@ -258,9 +258,18 @@ test.describe('a spec that provokes page errors on purpose', () => {
     } finally {
       await own.close();
     }
+
+    const standalone = await browser.newPage();
+    try {
+      await throwFrom(standalone, 'collector probe from browser.newPage');
+      await expect.poll(() => pageErrors.length).toBe(5);
+    } finally {
+      await standalone.close();
+    }
     expect(pageErrors[0]).toContain('collector probe before reload');
     expect(pageErrors[1]).toContain('collector probe after reload');
     expect(pageErrors[2]).toContain('collector probe from a second page');
     expect(pageErrors[3]).toContain('collector probe from a spec-created context');
+    expect(pageErrors[4]).toContain('collector probe from browser.newPage');
   });
 });
