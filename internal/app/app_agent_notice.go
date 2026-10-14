@@ -48,8 +48,9 @@ type agentNotice struct {
 	// sendID is the notice's identity for send admission, so a repeated
 	// observation of the same event cannot queue it twice.
 	sendID string
-	// origin and originThread attribute the message in the timeline. Empty
-	// for a notice the app writes in its own voice.
+	// origin, originThread and originWake attribute the message in the
+	// timeline. Every notice that is not the person's own words (fromPerson)
+	// carries one, so it reads as an agent's message and not as theirs.
 	origin       string
 	originThread *usermessage.OriginThread
 	originWake   *usermessage.OriginWake

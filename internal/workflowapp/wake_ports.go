@@ -12,8 +12,10 @@ type LifecyclePorts struct {
 // root send path has made the message durable.
 type WakeDeliveryPorts struct {
 	HasLiveSession func(threadID string) bool
-	QueueMessage   func(threadID, message string, onDurable func()) error
-	SendMessage    func(threadID, message string) error
+	// QueueMessage and SendMessage deliver a run's wake, attributed to the
+	// workflow it came from.
+	QueueMessage func(threadID, workflowID, message string, onDurable func()) error
+	SendMessage  func(threadID, workflowID, message string) error
 }
 
 // AttentionPorts keeps OS notification and optional model-upgraded digest work

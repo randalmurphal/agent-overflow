@@ -31,6 +31,8 @@ var agentMessageMetas = []struct {
 	{"agent thread request", `{"origin":"agent-thread","originThread":{"threadId":"t-x","kind":"send"},"sendId":"thread-request:k"}`, true},
 	{"agent thread wake", `{"origin":"agent-thread","originThread":{"threadId":"t-x","kind":"wake"},"sendId":"thread-wake:k"}`, true},
 	{"loop wake", `{"origin":"agent-wake","originWake":{"kind":"loop","label":"l"}}`, true},
+	{"remote job completion", `{"origin":"agent-wake","originWake":{"kind":"completion","label":"build","computer":"box"}}`, true},
+	{"workflow wake", `{"origin":"agent-wake","originWake":{"kind":"workflow","label":"wf-1"}}`, true},
 	{"the person's joined after a wake", `{"origin":"agent-wake","originWake":{"kind":"loop"},"expandComposerCommands":true}`, false},
 }
 
@@ -106,9 +108,13 @@ func TestThreadShowLabelsAgentMessagesWithTheirSender(t *testing.T) {
 	script.Meta = `{"origin":"agent-wake","originWake":{"kind":"send"}}`
 	peer := textItem("peer", "user_text", "hi from beta")
 	peer.Meta = `{"origin":"peer-session","wire_only":true,"cross_session_from_name":"BETA"}`
+	job := textItem("job", "user_text", "Remote job finished")
+	job.Meta = `{"origin":"agent-wake","originWake":{"kind":"completion","label":"nightly build","computer":"GPU box"}}`
+	flow := textItem("flow", "user_text", "Workflow wake")
+	flow.Meta = `{"origin":"agent-wake","originWake":{"kind":"workflow","label":"release"}}`
 	mixed := textItem("mixed", "user_text", "wake then mine")
 	mixed.Meta = `{"origin":"agent-wake","originWake":{"kind":"loop"},"expandComposerCommands":true}`
-	f.turn(t, thread.ID, 0, 1_000, person, request, loop, worker, script, peer, mixed)
+	f.turn(t, thread.ID, 0, 1_000, person, request, loop, worker, script, peer, job, flow, mixed)
 
 	bounds, err := f.adapter.ResolveWindow(t.Context(), threadtools.WindowQuery{ThreadID: thread.ID, Kind: threadtools.WindowAll})
 	if err != nil {
@@ -125,6 +131,8 @@ func TestThreadShowLabelsAgentMessagesWithTheirSender(t *testing.T) {
 		"worker":  `[agent worker from "Builder" (t-w), its approval]`,
 		"script":  `[agent script from a script (agent-overflow thread send)]`,
 		"peer":    `[agent peer from Claude session "BETA"]`,
+		"job":     `[agent job from remote job "nightly build" on GPU box]`,
+		"flow":    `[agent flow from workflow "release"]`,
 		"mixed":   "[user mixed]",
 	}
 	if len(page.Items) != len(want) {
@@ -281,4 +289,39 @@ func TestFlushAcknowledgementClassifiesTheJoinedRow(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A finished remote job's report is the app's message, not the person's:
+// it queues attributed to the job and its computer, and both the queue push
+// and the live-state snapshot mark it as an agent's message, so the
+// composer's preview leaves it out.
+func TestRemoteCompletionQueuesAsAnAgentMessage(t *testing.T) {
+	t.Parallel()
+	a, rec := newAppForFlushQueueRPC(t)
+	a.startSessionFn = func(string) error { return nil }
+	thread := remoteWatchThread(t, a, string(provider.Claude))
+	w := completedRemoteWatch(t, a, thread)
+	if err := a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
+		t.Fatal(err)
+	}
+	want := usermessage.OriginWake{Kind: usermessage.OriginWakeKindCompletion, Label: w.Label, Computer: w.ComputerID}
+	check := func(source string, item QueuedItem) {
+		t.Helper()
+		if !item.AgentMessage || item.Origin != usermessage.OriginAgentWake || item.OriginWake == nil || *item.OriginWake != want {
+			t.Fatalf("%s: queued completion = agent %v origin %q wake %+v, want an agent message from %+v", source, item.AgentMessage, item.Origin, item.OriginWake, want)
+		}
+	}
+	state := rec.lastQueueState(t)
+	if len(state.Items) != 1 {
+		t.Fatalf("queue push: %+v", state)
+	}
+	check("queue push", state.Items[0])
+	live, err := a.GetThreadLiveState(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live.QueueItems) != 1 {
+		t.Fatalf("live state queue: %+v", live.QueueItems)
+	}
+	check("live state", live.QueueItems[0])
 }

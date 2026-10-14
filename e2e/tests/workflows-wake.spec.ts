@@ -160,6 +160,15 @@ test('a bound run wakes its origin thread when it rests', async ({ harness }) =>
   const wake = await waitForUserMessage(harness, thread.id, (summary) =>
     summary.includes(`Run "${item.id}"`),
   );
+  // The wake is the workflow's report, not the person's: it renders as an
+  // agent row naming the workflow (docs/specs/agent-thread-tools.md, "How
+  // agent messages appear").
+  const items = (await harness.rpc<Array<ThreadItem & { meta?: string }>>('ListItems', thread.id, true)) ?? [];
+  const wakeItem = items.find((entry) => entry.kind === 'user_text' && entry.summary === wake)!;
+  expect(JSON.parse(wakeItem.meta ?? '{}')).toMatchObject({
+    origin: 'agent-wake',
+    originWake: { kind: 'workflow', label: 'wake-flow' },
+  });
   expect(wake).toContain('untrusted run data');
   expect(wake).toContain('is done');
   expect(wake).toContain('Outputs:');

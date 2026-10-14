@@ -20,10 +20,12 @@
   import Eye from '@lucide/svelte/icons/eye';
   import GitBranchPlus from '@lucide/svelte/icons/git-branch-plus';
   import Inbox from '@lucide/svelte/icons/inbox';
+  import Monitor from '@lucide/svelte/icons/monitor';
   import OctagonX from '@lucide/svelte/icons/octagon-x';
   import Repeat from '@lucide/svelte/icons/repeat';
   import Reply from '@lucide/svelte/icons/reply';
   import Terminal from '@lucide/svelte/icons/terminal';
+  import Workflow from '@lucide/svelte/icons/workflow';
   import type { Item } from '../../types/models';
   import type { PaneSession, RowUiRegistry, ScrollHost } from '../../stores/threadPaneRoles';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
@@ -63,6 +65,8 @@
     script: Terminal,
     'worker-question': CircleQuestionMark,
     'worker-approval': CircleQuestionMark,
+    job: Monitor,
+    workflow: Workflow,
     message: Bot,
     task: Bot,
     'final-answer': Bot,

@@ -163,9 +163,9 @@ describe('userMessageOriginThread', () => {
 });
 
 describe('userMessageOriginWake', () => {
-  it('reads a loop, a watch and an outside send, and labels each', () => {
+  it('reads every wake kind and labels each', () => {
     const loop = userMessageOriginWake({ originWake: { kind: 'loop', label: 'board' } });
-    expect(loop).toEqual({ kind: 'loop', label: 'board', threadId: '' });
+    expect(loop).toEqual({ kind: 'loop', label: 'board', threadId: '', computer: '' });
     expect(agentWakeOriginLabel(loop!)).toBe('Loop · board');
     const watch = userMessageOriginWake({ originWake: { kind: 'watch', label: 'mrs' } });
     expect(agentWakeOriginLabel(watch!)).toBe('Watch · mrs');
@@ -176,6 +176,11 @@ describe('userMessageOriginWake', () => {
     expect(agentWakeOriginLabel(question!)).toBe('Question · Deploy worker');
     const approval = userMessageOriginWake({ originWake: { kind: 'approval', label: 'Deploy worker' } });
     expect(agentWakeOriginLabel(approval!)).toBe('Approval · Deploy worker');
+    const job = userMessageOriginWake({ originWake: { kind: 'completion', label: 'build', computer: 'GPU box' } });
+    expect(job).toEqual({ kind: 'completion', label: 'build', threadId: '', computer: 'GPU box' });
+    expect(agentWakeOriginLabel(job!)).toBe('Remote job · build');
+    const run = userMessageOriginWake({ originWake: { kind: 'workflow', label: 'release' } });
+    expect(agentWakeOriginLabel(run!)).toBe('Workflow · release');
   });
 
   it('refuses a kind it does not know, which is not attribution', () => {

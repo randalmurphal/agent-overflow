@@ -56,6 +56,7 @@ import { productBinary, spawnProduct } from '../src/product-process.js';
 import { codexTransferScenario } from './conversation-transfer-helpers.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
+import { pairBuildBox } from './build-box-helpers.js';
 import {
   advanceGate,
   awaitGate,
@@ -232,32 +233,6 @@ function countInputs(harness: HarnessApp, cwd: string, prefix: string): number {
   );
 }
 
-/**
- * Pairs `remote` with `harness` as Build box, which agents may use, and
- * returns its computer id. Both computers are named so no capture shows the
- * host's own name.
- */
-async function pairBuildBox(harness: HarnessApp, remote: HarnessApp): Promise<string> {
-  await harness.rpc('SetDeviceName', 'Agent computer');
-  await remote.rpc('SetDeviceName', 'Other computer');
-  const invite = await remote.rpc<{ url: string; linkId: string }>('MintDevicePairing', 'desktop', 'full');
-  const attachment = await harness.rpc<{ id: string }>('AddBackend', invite.url);
-  await remote.rpc('ConfirmDevicePairing', invite.linkId);
-  const computer = attachment.id;
-  await harness.rpc('RenameBackend', computer, 'Build box');
-  await expect
-    .poll(async () => {
-      try {
-        await harness.rpc('SetAgentComputerEnabled', computer, true);
-        return 'enabled';
-      } catch (error) {
-        return String(error);
-      }
-    }, { timeout: 30_000 })
-    .toBe('enabled');
-  return computer;
-}
-
 async function threadSend(dataDir: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return await new Promise((resolve, reject) => {
     const child = spawnProduct(productBinary('agent-overflow'), ['thread', 'send', '--config-root', dataDir, ...args], {
@@ -309,6 +284,17 @@ async function wakeBubble(page: Page, title: string, badge: string, contains: st
   // The template line written for the agent is the header's to say.
   await expect(row).not.toContainText(DATA_NOTICE);
   return row;
+}
+
+/**
+ * The agent rows the nightly build's completions became: a job row naming
+ * the job and its computer (docs/specs/agent-thread-tools.md, "How agent
+ * messages appear").
+ */
+function completionRows(page: Page): Locator {
+  return page
+    .locator('[data-testid="agent-message-row"][data-agent-message-kind="job"]')
+    .filter({ has: page.getByTestId('agent-message-sender').getByText('nightly build on Build box', { exact: true }) });
 }
 
 /**
@@ -2197,7 +2183,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await shoot(
         page,
         `${provider}-boot-returns-a-completion-to-its-watch.png`,
-        page.getByText('Remote job finished on Build box: nightly build').last(),
+        completionRows(page).last(),
       );
       await shoot(page, `${provider}-boot-returns-an-answer-to-its-request.png`, page.getByText('Read the notes.').last());
     } finally {
@@ -2475,7 +2461,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await shoot(
         page,
         `${provider}-death-returns-a-completion-to-its-watch.png`,
-        page.getByText('Remote job finished on Build box: nightly build').last(),
+        completionRows(page).last(),
       );
     } finally {
       await Promise.allSettled([harness.close(), remote.close()]);
@@ -2542,7 +2528,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await shoot(
         page,
         `${provider}-archive-returns-an-unconfirmed-completion-to-its-watch.png`,
-        page.getByText('Remote job finished on Build box: nightly build').last(),
+        completionRows(page).last(),
       );
     } finally {
       await Promise.allSettled([harness.close(), remote.close()]);
@@ -2655,7 +2641,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await shoot(
         page,
         `${provider}-crash-returns-an-unconfirmed-completion-to-its-watch.png`,
-        page.getByText('Remote job finished on Build box: nightly build').last(),
+        completionRows(page).last(),
       );
       await shoot(page, `${provider}-crash-returns-an-unconfirmed-answer-to-its-request.png`, page.getByText('Read the notes.').last());
     } finally {
@@ -2733,7 +2719,7 @@ test('codex: a completion the provider took in before its session died reaches t
 
     await harness.open(page);
     await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
-    const completion = page.getByText('Remote job finished on Build box: nightly build');
+    const completion = completionRows(page);
     await expect(completion).toHaveCount(1);
     await expect(page.getByTestId('composer-root').locator('textarea')).toHaveValue('');
     await shoot(page, 'codex-duplicate-after-death-shows-one-completion.png', completion);
@@ -3372,7 +3358,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Remote builder', { exact: true }).click();
-      await shoot(page, `${provider}-stop-returns-a-dropped-remote-completion.png`, page.getByText('Remote job finished on Build box: nightly build').last());
+      await shoot(page, `${provider}-stop-returns-a-dropped-remote-completion.png`, completionRows(page).last());
     } finally {
       await breaker?.cleanup();
       await Promise.allSettled([harness.close(), remote.close()]);
@@ -4056,7 +4042,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await shoot(
         page,
         `${provider}-archive-keeps-held-remote-completion.png`,
-        page.getByText('Remote job finished on Build box: nightly build').last(),
+        completionRows(page).last(),
       );
     } finally {
       await breaker?.cleanup();
@@ -4210,7 +4196,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Nightly checks', { exact: true }).click();
-      await shoot(page, `${provider}-archive-keeps-finished-remote-job.png`, page.getByText('Remote job finished on Build box: nightly build').last());
+      await shoot(page, `${provider}-archive-keeps-finished-remote-job.png`, completionRows(page).last());
     } finally {
       await Promise.allSettled([harness.close(), remote.close()]);
     }

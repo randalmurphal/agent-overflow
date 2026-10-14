@@ -76,6 +76,9 @@ type sendMessageOptions struct {
 	// tools' request send; every other caller leaves them empty.
 	Origin       string
 	OriginThread *usermessage.OriginThread
+	// OriginWake attributes a report the app writes (usermessage.OriginWake),
+	// with Origin usermessage.OriginAgentWake.
+	OriginWake *usermessage.OriginWake
 	// onDurable runs once a QUEUED message has either reached the provider
 	// or been restored into the composer after a session death. It is the
 	// only hook an app-internal injector gets on the queued path, where the
@@ -474,6 +477,7 @@ func (a *App) sendMessageLocked(
 			preserveDraft:          opts.PreserveDraft,
 			origin:                 opts.Origin,
 			originThread:           opts.OriginThread,
+			originWake:             opts.OriginWake,
 			onDurable:              opts.onDurable,
 		})
 		return store.Item{}, err
@@ -529,6 +533,7 @@ func (a *App) sendMessageLocked(
 		sendID:                       opts.SendID,
 		origin:                       opts.Origin,
 		originThread:                 opts.OriginThread,
+		originWake:                   opts.OriginWake,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)

@@ -99,15 +99,24 @@ const OriginAgentWake = "agent-wake"
 // OriginWake identifies what wrote an `agent-wake` row: what its badge
 // renders.
 type OriginWake struct {
-	// Kind is `loop`, `watch` or `send`, or `question` or `approval` for a
-	// worker's prompt put to the agent that spawned it.
+	// Kind is `loop`, `watch` or `send`, `question` or `approval` for a
+	// worker's prompt put to the agent that spawned it, `completion` for a
+	// remote job's report, or `workflow` for a workflow run's wake.
 	Kind string `json:"kind"`
-	// Label is the loop or watch label, or the worker's title; empty for an
-	// outside send.
+	// Label is the loop or watch label, the worker's title, the remote
+	// job's label or the workflow's id; empty for an outside send.
 	Label string `json:"label,omitempty"`
 	// ThreadID is the worker of a `question` or `approval` wake.
 	ThreadID string `json:"threadId,omitempty"`
+	// Computer names the computer a `completion`'s job ran on.
+	Computer string `json:"computer,omitempty"`
 }
+
+// The OriginWake kinds of the app's own reports into a thread.
+const (
+	OriginWakeKindCompletion = "completion"
+	OriginWakeKindWorkflow   = "workflow"
+)
 
 // OriginThread identifies the sending thread of an `agent-thread` row: what
 // the row's header names, and the request token that keeps three requests

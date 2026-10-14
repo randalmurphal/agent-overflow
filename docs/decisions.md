@@ -275,8 +275,9 @@ Mechanism in
   are a non-goal.
 - Messages between agents are not the person's messages (ruling
   2026-10-13). A thread tool's spawn prompt, request or question, the
-  answer that comes back, a loop, watch, outside send or worker wake, and
-  a provider's own agent message stay user-role on the wire and
+  answer that comes back, a loop, watch, outside send or worker wake, a
+  remote job's completion, a workflow run's wake, and a provider's own
+  agent message stay user-role on the wire and
   `user_text` rows in the store, and render as a folded agent row naming
   the sender, never as the user bubble; their footer is shown as facts,
   never raw. They are not navigator ticks, composer recall or send-queue

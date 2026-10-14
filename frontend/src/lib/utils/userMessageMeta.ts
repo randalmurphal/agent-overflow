@@ -122,18 +122,23 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
  * refused.
  */
 export interface UserMessageOriginWake {
-  kind: 'loop' | 'watch' | 'send' | 'question' | 'approval';
+  kind: 'loop' | 'watch' | 'send' | 'question' | 'approval' | 'completion' | 'workflow';
+  /** The loop, watch or worker; a `completion`'s job; a `workflow`'s id. */
   label: string;
   /** The worker of a `question` or `approval` wake; empty otherwise. */
   threadId: string;
+  /** The computer a `completion`'s job ran on; empty otherwise. */
+  computer: string;
 }
 
-const WAKE_KINDS: ReadonlySet<string> = new Set(['loop', 'watch', 'send', 'question', 'approval']);
+const WAKE_KINDS: ReadonlySet<string> = new Set(['loop', 'watch', 'send', 'question', 'approval', 'completion', 'workflow']);
 const WAKE_KIND_LABELS: Record<Exclude<UserMessageOriginWake['kind'], 'send'>, string> = {
   loop: 'Loop',
   watch: 'Watch',
   question: 'Question',
   approval: 'Approval',
+  completion: 'Remote job',
+  workflow: 'Workflow',
 };
 
 export function userMessageOriginWake(meta: UserMessageMeta): UserMessageOriginWake | null {
@@ -145,6 +150,7 @@ export function userMessageOriginWake(meta: UserMessageMeta): UserMessageOriginW
     kind: kind as UserMessageOriginWake['kind'],
     label: stringField(record.label),
     threadId: stringField(record.threadId),
+    computer: stringField(record.computer),
   };
 }
 

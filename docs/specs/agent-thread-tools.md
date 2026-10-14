@@ -989,7 +989,8 @@ A message another agent wrote is not the person's message. It stays a
 user-role turn on the wire and a `user_text` row in the store, so
 history never changes, and is told apart by its meta: `origin` is
 `agent-thread` or `agent-wake` (a loop, watch, outside send or worker
-prompt wake), or the row is a provider's own agent message, a Claude
+prompt wake, a remote job's completion or a workflow run's wake), or
+the row is a provider's own agent message, a Claude
 peer session's (`origin = peer-session`) or a Codex collab agent's
 (`meta.agent_message`). A row Claude joined from an agent's message and
 the person's queued composer message carries the composer's
@@ -1010,7 +1011,13 @@ thread's prompts go, the sender's user message it quoted and the token;
 on an answer, who answered, how long ago, a restart that stopped it and
 where the clipped rest is. The footer and a wake's status line never
 render raw; a loop, watch, outside send or worker wake shows its data
-decoded without the line written for the agent. The parser reads the
+decoded without the line written for the agent. A remote job's
+completion names the job and its computer and leads with its result; a
+workflow wake names the workflow and leads with the run's headline. Every
+message the app writes into a thread that is not the person's own words
+carries one of these origins; the person's answers to a Codex question,
+review comments they send and the workflow messages they start from a
+button stay theirs. The parser reads the
 Go templates, pinned by `internal/threadtools/testdata/agent_messages.json`.
 Rows written before this render the same way.
 

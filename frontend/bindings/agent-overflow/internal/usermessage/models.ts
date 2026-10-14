@@ -49,14 +49,15 @@ export class OriginThread {
  */
 export class OriginWake {
     /**
-     * Kind is `loop`, `watch` or `send`, or `question` or `approval` for a
-     * worker's prompt put to the agent that spawned it.
+     * Kind is `loop`, `watch` or `send`, `question` or `approval` for a
+     * worker's prompt put to the agent that spawned it, `completion` for a
+     * remote job's report, or `workflow` for a workflow run's wake.
      */
     "kind": string;
 
     /**
-     * Label is the loop or watch label, or the worker's title; empty for an
-     * outside send.
+     * Label is the loop or watch label, the worker's title, the remote
+     * job's label or the workflow's id; empty for an outside send.
      */
     "label"?: string;
 
@@ -64,6 +65,11 @@ export class OriginWake {
      * ThreadID is the worker of a `question` or `approval` wake.
      */
     "threadId"?: string;
+
+    /**
+     * Computer names the computer a `completion`'s job ran on.
+     */
+    "computer"?: string;
 
     /** Creates a new OriginWake instance. */
     constructor($$source: Partial<OriginWake> = {}) {

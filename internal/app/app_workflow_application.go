@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflowapp"
 )
@@ -131,16 +132,23 @@ func (a *App) workflowApplication() *workflowapp.Service {
 					_, live := a.sessionManager().get(threadID)
 					return live
 				},
-				QueueMessage: func(threadID, message string, onDurable func()) error {
+				// A run's wake is the workflow's report, not the person's.
+				QueueMessage: func(threadID, workflowID, message string, onDurable func()) error {
 					_, err := a.registerQueueItem(
 						threadID, message, SendMessageOptions{},
-						injectedQueueOptions{preserveDraft: true, onDurable: onDurable},
+						injectedQueueOptions{
+							preserveDraft: true, onDurable: onDurable,
+							origin: usermessage.OriginAgentWake, originWake: workflowWakeOrigin(workflowID),
+						},
 					)
 					return err
 				},
-				SendMessage: func(threadID, message string) error {
+				SendMessage: func(threadID, workflowID, message string) error {
 					_, err := a.sendMessageWithOptions(
-						context.Background(), threadID, message, sendMessageOptions{PreserveDraft: true},
+						context.Background(), threadID, message, sendMessageOptions{
+							PreserveDraft: true,
+							Origin:        usermessage.OriginAgentWake, OriginWake: workflowWakeOrigin(workflowID),
+						},
 					)
 					return err
 				},
@@ -320,4 +328,9 @@ func projectWorkflowWatch(value workflowapp.WatchResult) WorkflowAgentWatchResul
 		})
 	}
 	return out
+}
+
+// workflowWakeOrigin attributes a run's wake to its workflow.
+func workflowWakeOrigin(workflowID string) *usermessage.OriginWake {
+	return &usermessage.OriginWake{Kind: usermessage.OriginWakeKindWorkflow, Label: workflowID}
 }

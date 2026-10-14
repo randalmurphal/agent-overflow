@@ -338,6 +338,10 @@ func agentMessageSender(row store.Item) (from string, ok bool) {
 			return "a script (agent-overflow thread send)", true
 		case workerPromptKindQuestion, workerPromptKindApproval:
 			return fmt.Sprintf("%q (%s), its %s", wake.Label, wake.ThreadID, wake.Kind), true
+		case usermessage.OriginWakeKindCompletion:
+			return fmt.Sprintf("remote job %q on %s", wake.Label, wake.Computer), true
+		case usermessage.OriginWakeKindWorkflow:
+			return fmt.Sprintf("workflow %q", wake.Label), true
 		default:
 			return fmt.Sprintf("%s %q", wake.Kind, wake.Label), true
 		}

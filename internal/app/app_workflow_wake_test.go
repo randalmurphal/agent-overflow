@@ -2,12 +2,14 @@ package app
 
 import (
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/untrustedtext"
+	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
 	workflowrunner "agent-overflow/internal/workflow/runner"
 	"agent-overflow/internal/workflow/wake"
@@ -272,6 +274,14 @@ func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
 		if !strings.Contains(queued[0], want) {
 			t.Fatalf("queued wake missing %q:\n%s", want, queued[0])
 		}
+	}
+	// The wake is the workflow's report, not the person's message.
+	h.mu.Lock()
+	wake := flushqueue.ItemFromTriage(thread.ID, h.queuedItems[0])
+	h.mu.Unlock()
+	if !wake.AgentMessage || wake.Origin != usermessage.OriginAgentWake || wake.OriginWake == nil ||
+		*wake.OriginWake != (usermessage.OriginWake{Kind: usermessage.OriginWakeKindWorkflow, Label: item.WorkflowID}) {
+		t.Fatalf("queued wake attribution = agent %v origin %q wake %+v, want the workflow's", wake.AgentMessage, wake.Origin, wake.OriginWake)
 	}
 }
 

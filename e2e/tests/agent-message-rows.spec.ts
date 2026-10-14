@@ -12,16 +12,23 @@
 // on demand (a question, a worker's question, a loop wake, an error, a
 // reminder) and checks the navigator's first and latest jumps skip them.
 // A thread longer than the loaded window checks the same of the ticks the
-// server lists for history not yet loaded.
+// server lists for history not yet loaded. A remote job run on a paired
+// computer finishes while its thread is busy: its completion is a job row,
+// stays out of the send-queue preview and puts no tick on the navigator.
 import { copyFile, mkdir } from 'node:fs/promises';
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
+import { launchHarness } from '../src/harness.js';
+import { startTogether } from './launch-helpers.js';
 import { capture } from './wake-rows-helpers.js';
 import {
   AUDIT,
   AUDIT_ANSWER,
   BUSY,
   BUSY_TASK,
+  BUILD_ASK,
+  BUILD_OUTPUT,
+  BUILDER,
   FOLLOW_UP,
   INBOX,
   LEAD,
@@ -35,6 +42,7 @@ import {
   SPAWN_PROMPT,
   runAgentFlow,
   runQueuedRequest,
+  runRemoteCompletion,
   seedInbox,
 } from './agent-message-rows-helpers.js';
 
@@ -218,13 +226,23 @@ test('the navigator leaves agent messages out of history it has not loaded', asy
     userMeta: { origin: 'agent-thread', originThread: { threadId: 't-lead', title: 'Lead', kind: 'send' }, sendId: `thread-request:${n}` },
     items: [{ kind: 'assistant_text', summary: `Handled request ${n}.` }],
   });
+  const jobTurn = {
+    userText: 'Remote job finished on Build box: nightly build\nResult: succeeded; exit code: 0',
+    userMeta: {
+      origin: 'agent-wake',
+      originWake: { kind: 'completion', label: 'nightly build', computer: 'Build box' },
+      sendId: 'remote-completion:c:r',
+    },
+    items: [{ kind: 'assistant_text', summary: 'The build is green.' }],
+  };
   const own = (n: number) => ({
     userText: `Rail question ${n}`,
     items: [{ kind: 'assistant_text', summary: `Rail answer ${n}\n\n${'A detailed answer. '.repeat(40)}` }],
   });
-  // Agent messages at the far end of the thread, outside the window the
-  // pane loads at its newest end, between the person's.
-  const turns = [agentTurn(0), own(0), agentTurn(1), ...Array.from({ length: 160 }, (_, i) => own(i + 1))];
+  // Agent messages and a remote job's report at the far end of the thread,
+  // outside the window the pane loads at its newest end, between the
+  // person's.
+  const turns = [agentTurn(0), own(0), agentTurn(1), jobTurn, ...Array.from({ length: 160 }, (_, i) => own(i + 1))];
   await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{ name: 'amr-long-rail', repo: {}, threads: [{ title: 'Long rail', provider: 'claude', turns }] }],
   });
@@ -258,4 +276,52 @@ test('claude: a waiting request is not listed as the person\'s queued message', 
   await queued.release();
   await expect(preview).toHaveCount(0, { timeout: 30_000 });
   await expect(agentRow(page, 'request')).toHaveCount(1);
+});
+
+test('claude: a remote job\'s completion is the app\'s report, not the person\'s message', async ({ page }) => {
+  test.setTimeout(240_000);
+  const [harness, remote] = await startTogether(launchHarness(), launchHarness());
+  try {
+    const queued = await runRemoteCompletion(harness, remote, 'amr-remote');
+    await harness.open(page);
+    await openThread(page, BUILDER);
+    const input = page.getByTestId('composer-root').locator('textarea');
+    await input.fill(OWN_QUEUED);
+    await input.press('Enter');
+    await queued.queueOwn();
+    const preview = page.getByTestId('send-queue-preview-row');
+    // Both wait in the queue; only the person's is listed. The completion
+    // already shows in the timeline as the job's row.
+    await expect(preview.filter({ hasText: OWN_QUEUED })).toHaveCount(1);
+    await expect(preview).toHaveCount(1);
+    const job = agentRow(page, 'job');
+    await expect(job.getByTestId('agent-message-kind')).toHaveText('Job');
+    await expect(job.getByTestId('agent-message-sender')).toHaveText('nightly build on Build box');
+    await expect(job.getByTestId('agent-message-first-line')).toHaveText('succeeded; exit code: 0');
+    await keep(page, 'claude-remote-completion-queue-preview.png', page.getByTestId('send-queue-preview'));
+    await queued.release();
+    await expect(preview).toHaveCount(0, { timeout: 30_000 });
+
+    // The person's two messages are the navigator's ticks; the job's report
+    // between them is not one.
+    await expect(page.getByTestId('user-message-bubble')).toHaveCount(2);
+    await expect(page.getByTestId('user-message-bubble').filter({ hasText: BUILD_ASK })).toHaveCount(1);
+    await expect(job).toHaveCount(1);
+    await expect(ticks(page)).toHaveCount(2);
+    const body = await expand(job);
+    await expect(body.getByTestId('agent-message-text')).toContainText(BUILD_OUTPUT);
+    // The line written for the agent is the header's to say.
+    await expect(body).not.toContainText('Remote job finished on');
+    // The report names the remote workspace, a temporary path no capture shows.
+    await page.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.textContent ?? '';
+        if (text.includes('Workspace: /')) node.textContent = text.replace(/Workspace: \S+/g, 'Workspace: <remote workspace>');
+      }
+    });
+    await keep(page, 'claude-remote-completion-row.png', job);
+  } finally {
+    await Promise.allSettled([harness.close(), remote.close()]);
+  }
 });

@@ -22,6 +22,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/usermessage"
 )
 
 func (a *App) remoteStartLocks() *keyedlock.Registry {
@@ -353,10 +354,17 @@ func (a *App) deliverRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 
 // remoteCompletionNotice is the notice that carries w's completion.
 func (a *App) remoteCompletionNotice(w store.RemoteWatch, output remoteCompletionOutput) agentNotice {
+	computer := a.remoteComputerNames()[w.ComputerID]
+	if computer == "" {
+		computer = w.ComputerID
+	}
 	return agentNotice{
 		threadID: w.ThreadID,
 		sendID:   remoteCompletionSendID(w),
-		prepare:  func() (string, bool, error) { return a.prepareRemoteCompletion(w, output) },
+		// The app's report, not the person's: an agent row naming the job.
+		origin:     usermessage.OriginAgentWake,
+		originWake: &usermessage.OriginWake{Kind: usermessage.OriginWakeKindCompletion, Label: w.Label, Computer: computer},
+		prepare:    func() (string, bool, error) { return a.prepareRemoteCompletion(w, output) },
 		persist: func(item store.FlushQueueItem) error {
 			return a.store.QueueRemoteCompletion(w.ComputerID, w.RequestID, item)
 		},
