@@ -10,7 +10,7 @@ import type { Locator } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { awaitGate, type ProviderName } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
-import { CHILD, LEAD, agentRow, agentsBody, ledgerRow, mockInterrupt, openAgents, seedAgentsTree, startTree } from './agents-tray-helpers.js';
+import { CHILD, LEAD, agentRow, agentsBody, approvalTool, ledgerRow, mockInterrupt, openAgents, seedAgentsTree, startTree } from './agents-tray-helpers.js';
 
 /** The row stays inside the window, its title above its controls, and its actions are touch-sized. */
 async function expectFits(row: Locator, viewportWidth: number): Promise<void> {
@@ -53,7 +53,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await expectFits(row, width);
     }
     await expect(grand).toHaveAttribute('data-depth', '1');
-    await expect(grand.getByTestId('agent-tray-row-blocked')).toContainText('Needs approval for Bash');
+    await expect(grand.getByTestId('agent-tray-row-blocked')).toContainText(`Needs approval for ${approvalTool(provider)}`);
     await capture(page, `agents-${provider}-compact-rows.png`, agentsBody(page));
 
     // The digest opens in place under the row.

@@ -120,8 +120,11 @@ func TestThreadAgentStopCascadesOnAPairedComputer(t *testing.T) {
 		grand, _, _ = pair.dest.store.GetThreadRequest(pair.grand)
 		return threadRequestSettled(grand)
 	})
-	if grand.State != store.ThreadRequestCancelled || !strings.Contains(string(grand.Answer), "The user stopped it") {
-		t.Fatalf("the child's spawn = %s %q, want cancelled by the user", grand.State, grand.Answer)
+	if grand.State != store.ThreadRequestCancelled || !strings.Contains(string(grand.Answer), "The user stopped it") || !grand.Notify {
+		t.Fatalf("the child's spawn = %s %q notify %v, want cancelled by the user with its wake armed", grand.State, grand.Answer, grand.Notify)
+	}
+	if spawn, _, err := pair.source.store.GetThreadRequest(pair.spawn.Token); err != nil || !spawn.Notify {
+		t.Fatalf("the stopped spawn's wake = %v, %v; a person's Stop keeps it armed", spawn.Notify, err)
 	}
 }
 

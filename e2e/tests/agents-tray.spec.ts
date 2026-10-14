@@ -20,6 +20,7 @@ import {
   LEAD,
   PEER,
   agentRow,
+  approvalTool,
   agentsBody,
   ledgerRow,
   mockInput,
@@ -36,7 +37,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     test.setTimeout(300_000);
     const tree = await seedAgentsTree(harness, provider, `agents-${provider}`);
     const approvalSeen = harness.waitForEvent<{ action: string; request?: { requestId: string; threadId: string; toolName: string } }>(
-      'provider:approval', (ev) => ev.action === 'request' && ev.request?.toolName === 'Bash', 90_000);
+      'provider:approval', (ev) => ev.action === 'request' && ev.request?.toolName === approvalTool(provider), 90_000);
     const started = await startTree(harness, tree);
     const approval = await approvalSeen;
     expect(approval.request!.threadId).toBe(started.grand);
@@ -56,7 +57,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(grand).toHaveAttribute('data-depth', '1');
     await expect(grand.getByTestId('agent-tray-row-title')).toHaveText(GRAND);
     await expect(grand.getByTestId('agent-tray-row-state')).toHaveText('blocked');
-    await expect(grand.getByTestId('agent-tray-row-blocked')).toContainText('Needs approval for Bash');
+    await expect(grand.getByTestId('agent-tray-row-blocked')).toContainText(`Needs approval for ${approvalTool(provider)}`);
     await expect(send.getByTestId('agent-tray-row-title')).toHaveText(PEER);
     await expect(send).toHaveAttribute('data-kind', 'send');
     await capture(page, `agents-${provider}-running-blocked-nested.png`, agentsBody(page));
@@ -153,7 +154,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const childInterrupted = mockInterrupt(harness, tree.childPath);
     const grandInterrupted = mockInterrupt(harness, tree.grandPath);
     await agentsBody(page).getByTestId('activity-rail-agents-stop-all').click();
-    await expect(page.getByTestId('toast').filter({ hasText: /^Stopped 2 agents \(2 turns, 1 background task and 1 agent of its own\)\.$/ })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('toast').filter({ hasText: 'Stopped 2 agents (2 turns, 1 background task and 1 agent of its own).' })).toBeVisible({ timeout: 30_000 });
     await childInterrupted;
     await grandInterrupted;
     for (const token of [started.childToken, started.grandToken, started.sendToken]) {

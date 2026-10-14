@@ -28,6 +28,11 @@ export const CHILD = 'Child worker';
 export const GRAND = 'Grand worker';
 export const PEER = 'Peer desk';
 
+/** The tool name each provider gives the grandchild's command approval. */
+export function approvalTool(provider: ProviderName): string {
+  return provider === 'claude' ? 'Bash' : 'command';
+}
+
 /** The provider frames of one background shell the thread starts. */
 export function backgroundShellSteps(provider: ProviderName): TurnStep[] {
   if (provider === 'claude') {
@@ -43,14 +48,18 @@ export function backgroundShellSteps(provider: ProviderName): TurnStep[] {
       ],
     }];
   }
-  // A unified-exec PTY that outlives the turn: the tray's Codex terminal.
+  // A unified-exec PTY the model then polls with empty input: the typed
+  // signal that makes it the tray's stoppable Codex terminal.
+  const frame = (method: string, fields: object) => JSON.stringify({
+    jsonrpc: '2.0', method, params: { threadId: '${THREAD_ID}', turnId: '${TURN_ID}', ...fields },
+  });
   return [{
-    emitLines: [JSON.stringify({
-      jsonrpc: '2.0', method: 'item/started', params: {
-        threadId: '${THREAD_ID}', turnId: '${TURN_ID}',
+    emitLines: [
+      frame('item/started', {
         item: { id: 'shell-1', type: 'commandExecution', source: 'unifiedExecStartup', processId: '77', status: 'inProgress', command: 'tail -f build.log' },
-      },
-    })],
+      }),
+      frame('item/commandExecution/terminalInteraction', { itemId: 'shell-1', processId: '77', stdin: '' }),
+    ],
   }];
 }
 
