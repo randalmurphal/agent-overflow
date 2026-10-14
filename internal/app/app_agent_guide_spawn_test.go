@@ -106,16 +106,11 @@ func TestStartSession_ClaudeCarriesTheAppGuideAndSnapshotOptOut(t *testing.T) {
 	if snapshot, _ := argValue(argv, "--system-prompt-snapshot"); snapshot != "off" {
 		t.Errorf("argv has no --system-prompt-snapshot off: %v", argv)
 	}
-	if wantPath := filepath.Join(app.configDir, "cache", "prompts", thread.ID+".append.md"); appendPath != wantPath {
-		t.Errorf("append file = %s, want %s", appendPath, wantPath)
-	}
-	// The file belongs to the thread, not the process: it stays for the
-	// next spawn to replace, and thread deletion removes it.
 	if err := app.StopSession(thread.ID); err != nil {
 		t.Fatalf("StopSession: %v", err)
 	}
-	if _, err := os.Stat(appendPath); err != nil {
-		t.Errorf("append file %s after StopSession: %v, want it kept", appendPath, err)
+	if _, err := os.Stat(appendPath); !os.IsNotExist(err) {
+		t.Errorf("append file %s survived StopSession: %v", appendPath, err)
 	}
 
 	// Switched off: no append file, and the snapshot opt-out stays (it is

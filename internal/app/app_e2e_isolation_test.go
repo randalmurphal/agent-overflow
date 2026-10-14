@@ -4,7 +4,6 @@ package app
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"agent-overflow/internal/kerneltest"
@@ -58,12 +57,6 @@ func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	// through (providerHome), so provider state one test writes is never
 	// another's.
 	app.credentialHomeOverride = t.TempDir()
-	// Production boots with the config dir and the settings dir equal
-	// (initSubsystems). A fixture that left it empty would have no
-	// directory for a Claude spawn's rendered prompt files.
-	if app.configDir == "" {
-		app.configDir = filepath.Dir(app.settings.Path())
-	}
 	if _, err := app.settings.Update(kerneltest.ProviderBinarySettings(isolation.PoisonedBinary)); err != nil {
 		t.Fatalf("poison provider binary settings: %v", err)
 	}

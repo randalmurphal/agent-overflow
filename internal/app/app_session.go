@@ -540,7 +540,6 @@ func (a *App) spawnProviderSession(
 		}
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.AppendSystemPrompt = appGuide
-		cfg.PromptFileDir = a.renderedPromptDir()
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		if mcpServers[remoteMCPName] != nil {
@@ -721,7 +720,6 @@ func (a *App) spawnProviderSession(
 		// headless one; there is no separate TUI binary setting.
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
 		cfg.AppendSystemPrompt = appGuide
-		cfg.PromptFileDir = a.renderedPromptDir()
 		cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
 		// claudetui's Config carries a whole environment rather than an
 		// override map, so the shared rule is applied here instead of inside

@@ -208,7 +208,7 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if err := a.closeThreadBrowserPages(threadID); err != nil {
 		errs = append(errs, fmt.Errorf("close browser pages: %w", err))
 	}
-	a.clearDeletedThreadSystemPrompt(threadID)
+	a.clearThreadSystemPrompt(threadID)
 	a.removeDeliberation(thread)
 	a.clearAutoReconnectAttempted(threadID)
 	unlockMutation, err := a.threadApplication().LockMutable(context.Background(), threadID)
