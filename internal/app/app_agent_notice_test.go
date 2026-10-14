@@ -553,6 +553,53 @@ func TestANoticeWhoseCheckCannotReadSaysWhichRead(t *testing.T) {
 	}
 }
 
+// A panic in a notice's start is that start's failure: the thread gets the
+// start-failure row, its lock is free again, and the process lives.
+func TestAPanicInANoticeStartIsAStartFailure(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	a.startSessionFn = func(string) error { panic("home read out of range") }
+	thread := noticeTestThread(t, a, "notice-start-panics")
+	if err := a.queueAgentNotice(agentNotice{
+		threadID:    thread.ID,
+		sendID:      agentSendIDRoot + "panic",
+		prepare:     func() (string, bool, error) { return "deploy 12 is done", true, nil },
+		startFailed: func(err error) string { return "the agent could not start: " + err.Error() },
+	}); err != nil {
+		t.Fatalf("queueAgentNotice: %v", err)
+	}
+	a.waitAgentNoticeWork()
+	want := "the agent could not start: the start hit an internal error: home read out of range"
+	if rows := threadErrorRows(t, a.store, thread.ID, ""); len(rows) != 1 || rows[0] != want {
+		t.Fatalf("error rows %q, want only %q", rows, want)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	unlock, err := a.threadLocks().LockCtx(ctx, thread.ID)
+	if err != nil {
+		t.Fatalf("the thread's lock is still held: %v", err)
+	}
+	unlock()
+	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 1 {
+		t.Fatalf("queued %+v, want the message kept", rows)
+	}
+}
+
+// Any other panic in notice work is an error row on its thread, not a crash.
+func TestAPanicInNoticeWorkIsAnErrorRow(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	thread := noticeTestThread(t, a, "notice-work-panics")
+	if !a.goAgentNoticeWork(thread.ID, func() { panic("cleared send out of range") }) {
+		t.Fatal("the work was refused")
+	}
+	a.waitAgentNoticeWork()
+	want := "The app hit an internal error while handling a queued message for this thread (cleared send out of range). The message may still be queued; send anything to start the agent."
+	if rows := threadErrorRows(t, a.store, thread.ID, ""); len(rows) != 1 || rows[0] != want {
+		t.Fatalf("error rows %q, want only %q", rows, want)
+	}
+}
+
 // heldNoticeFixture is a thread whose session will not start, so whatever
 // the app queues for it is held for the next start.
 func heldNoticeFixture(t *testing.T, id string) (*App, store.Thread) {

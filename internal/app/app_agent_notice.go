@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -104,13 +105,16 @@ func (a *App) queueAgentNotice(notice agentNotice) error {
 		return nil
 	}
 	// Refused only once shutdown began: the durable row is the next boot's.
-	a.goAgentNoticeWork(func() { a.startAgentNoticeSession(notice, false) })
+	a.goAgentNoticeWork(notice.threadID, func() { a.startAgentNoticeSession(notice, false) })
 	return nil
 }
 
-// goAgentNoticeWork runs fn on its own goroutine, joined at shutdown before
-// sessions close. False when shutdown has begun and fn did not run.
-func (a *App) goAgentNoticeWork(fn func()) bool {
+// goAgentNoticeWork runs fn for threadID on its own goroutine, joined at
+// shutdown before sessions close. False when shutdown has begun and fn did
+// not run. A panic in fn is logged with its stack and put on the thread as an
+// error row: the work runs with nobody watching, and the panic must not take
+// the process down.
+func (a *App) goAgentNoticeWork(threadID string, fn func()) bool {
 	a.agentNoticeWork.mu.Lock()
 	defer a.agentNoticeWork.mu.Unlock()
 	if a.agentNoticeWork.stopped {
@@ -119,6 +123,13 @@ func (a *App) goAgentNoticeWork(fn func()) bool {
 	a.agentNoticeWork.wg.Add(1)
 	go func() {
 		defer a.agentNoticeWork.wg.Done()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("agent notice: work for %s panicked: %v\n%s", threadID, recovered, debug.Stack())
+				a.emitErrorToThread(threadID, fmt.Sprintf(
+					"The app hit an internal error while handling a queued message for this thread (%v). The message may still be queued; send anything to start the agent.", recovered))
+			}
+		}()
 		fn()
 	}()
 	return true
@@ -158,15 +169,26 @@ func (a *App) startAgentNoticeSession(notice agentNotice, retry bool) bool {
 	}
 	held, kept := false, true
 	var checkErr, startErr error
-	if !notice.fromPerson {
-		held, checkErr = a.threadArchivedNow(notice.threadID)
-	}
-	if checkErr == nil && !held && notice.keep != nil {
-		kept, checkErr = notice.keep()
-	}
-	if checkErr == nil && !held && kept {
-		startErr = a.startSession(a.lifeCtx(), notice.threadID)
-	}
+	func() {
+		// A panic in the check or the start is this start's failure: the
+		// lock is released below and the thread is told, as for any other.
+		// Callers run on fire and notice goroutines nobody else recovers.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("agent notice: start of %s panicked: %v\n%s", notice.threadID, recovered, debug.Stack())
+				startErr = fmt.Errorf("the start hit an internal error: %v", recovered)
+			}
+		}()
+		if !notice.fromPerson {
+			held, checkErr = a.threadArchivedNow(notice.threadID)
+		}
+		if checkErr == nil && !held && notice.keep != nil {
+			kept, checkErr = notice.keep()
+		}
+		if checkErr == nil && !held && kept {
+			startErr = a.startSession(a.lifeCtx(), notice.threadID)
+		}
+	}()
 	failed := checkErr != nil || startErr != nil
 	stopping := failed && (errors.Is(startErr, ErrShuttingDown) || a.lifeCtx().Err() != nil)
 	first := false

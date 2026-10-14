@@ -417,6 +417,11 @@ func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string, para
 		result = `{"config":{}}`
 	case "mcpServerStatus/list":
 		result = `{"data":[],"nextCursor":null}`
+	case "thread/list":
+		// A resumed session lists its descendants (collab_discovery.go).
+		// The mock spawns no collab children of its own, so the list is
+		// empty, and a null cursor ends the walk on the first page.
+		result = `{"data":[],"nextCursor":null}`
 	case "thread/backgroundTerminals/list":
 		// The mock spawns no PTYs, so nothing is running. A null cursor
 		// terminates the app's paging walk on the first page.

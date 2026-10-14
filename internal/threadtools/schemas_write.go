@@ -1,6 +1,10 @@
 package threadtools
 
-import "fmt"
+import (
+	"fmt"
+
+	"agent-overflow/internal/agenthome"
+)
 
 // The nine tools that change something: spawn, send, ask, reply, status,
 // cancel, update, group and remind.
@@ -70,6 +74,7 @@ func spawnSchema(shape Shape) map[string]any {
 			"description": spawnDefaultText("Permission level of the new thread, a separate axis from mode", defaults.RuntimeMode) + " Keep the inherited one unless the task needs another. " + runtimeModeSentence() + ".",
 		},
 	}
+	properties["home_files"] = homeFilesProperty("prompt")
 	waitProperties(properties, 0, "the new thread to answer")
 	computerIDProperty(shape, properties, "the project the thread should run in")
 	description := "Open a new visible sidebar thread, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them, and joins a sidebar group when group names one. The new thread is an ordinary thread with no special marking: the user sees it in the sidebar and can take it over. Use it when the user asks for a separate thread, when another provider or model should do the work, or when the work should be visible and outlive your turn; use your own subagents for pieces of your current task."
@@ -77,6 +82,17 @@ func spawnSchema(shape Shape) map[string]any {
 		description += " With computer_id the thread is created on that computer, runs on its account, appears in its sidebar, and project_id must name one of its projects."
 	}
 	return tool("thread_spawn", description, properties, "prompt")
+}
+
+// homeFilesProperty is home_files on thread_spawn and thread_send.
+func homeFilesProperty(field string) map[string]any {
+	return map[string]any{
+		"type":        "array",
+		"items":       map[string]any{"type": "string", "minLength": 1},
+		"minItems":    1,
+		"maxItems":    agenthome.MaxHomeFiles,
+		"description": fmt.Sprintf("Only for a standing agent: files in your agent home, by path relative to it (for example verification.md), prepended to %s under their names so the receiver has them without you pasting them. Pass verification.md to every worker and reviewer. At most %d files and %d KiB together. Refused for a thread that is not a standing agent, and for a path that is absolute, leaves your home or is not a file there.", field, agenthome.MaxHomeFiles, agenthome.HomeFilesCap>>10),
+	}
 }
 
 // spawnDefaultText states the live default beside the parameter, so the
@@ -93,6 +109,7 @@ func sendSchema(shape Shape) map[string]any {
 		"thread_id": map[string]any{"type": "string", "description": "The thread to continue. Full id, or an unambiguous prefix of at least 6 characters. You cannot send to your own thread; use thread_remind to wake yourself."},
 		"message":   map[string]any{"type": "string", "minLength": 1, "description": "Exactly what the user would have typed there. The receiving agent sees it as a user message with a footer naming this thread and the token, so write it to be read without your context."},
 	}
+	properties["home_files"] = homeFilesProperty("message")
 	waitProperties(properties, 0, "that thread to answer")
 	computerIDProperty(shape, properties, "the thread")
 	description := "Continue an existing thread as if the user had typed message there. A thread mid-turn queues it for the turn boundary with the user's draft preserved; an idle thread receives it now and its session starts lazily. Works across projects" + pairedSuffix(shape, " and computers") + ". Returns a request token. Use send to give a thread work; use thread_ask to consult one without touching it."

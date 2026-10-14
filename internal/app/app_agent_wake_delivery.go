@@ -999,7 +999,7 @@ func (a *App) withdrawCancelledAgentWakes(threadID string, wakeIDs ...string) er
 // from being written here is written at the next boot, which finds the row
 // still queued (discardAgentWakeAtBoot).
 func (a *App) noteAgentSendsCleared(threadID string, rowIDs []string) {
-	queued := a.goAgentNoticeWork(func() {
+	queued := a.goAgentNoticeWork(threadID, func() {
 		unlock, err := a.threadLocks().LockCtx(a.lifeCtx(), threadID)
 		if err != nil {
 			log.Printf("agent wakes: %d cleared thread sends of %s are left for the next boot to note: %v", len(rowIDs), threadID, err)

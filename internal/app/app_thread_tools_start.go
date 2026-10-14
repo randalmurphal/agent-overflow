@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
@@ -89,6 +90,9 @@ type threadRequestOrigin struct {
 	// overrides nothing. Project and checkout are not in it: they are
 	// registered per computer and a spawn elsewhere names its own.
 	inherit threadtools.SpawnDefaults
+	// agent is set when the caller is a standing agent: read from the
+	// store for a local caller, carried for a foreign one.
+	agent *threadtools.SenderAgent
 }
 
 // localOrigin is the origin of a request one of this computer's own
@@ -100,8 +104,13 @@ func (t threadToolsApp) localOrigin(caller threadtools.Caller) (threadRequestOri
 	if err != nil {
 		return threadRequestOrigin{}, err
 	}
+	agent, err := t.senderAgent(caller.ThreadID)
+	if err != nil {
+		return threadRequestOrigin{}, err
+	}
 	return threadRequestOrigin{
 		caller:      caller,
+		agent:       agent,
 		ownerDevice: threadReceiptLocalOwner,
 		inherit: threadtools.SpawnDefaults{
 			Provider:    thread.Provider,
@@ -113,9 +122,63 @@ func (t threadToolsApp) localOrigin(caller threadtools.Caller) (threadRequestOri
 	}, nil
 }
 
+// senderAgent names a thread of this computer as a standing agent, with the
+// role line of its instructions, or returns nil for any other thread. A role
+// that cannot be read is logged and left out: the message still names the
+// sender as an agent.
+func (t threadToolsApp) senderAgent(threadID string) (*threadtools.SenderAgent, error) {
+	row, found, err := t.app.store.GetStandingAgent(threadID)
+	if err != nil || !found {
+		return nil, err
+	}
+	agent := &threadtools.SenderAgent{}
+	if row.Home != "" {
+		role, err := agenthome.RoleLine(row.Home)
+		if err != nil {
+			log.Printf("thread tools: read the role line of standing agent %s from %s: %v", threadID, row.Home, err)
+		}
+		agent.Role = role
+	}
+	return agent, nil
+}
+
+// attachHomeFiles prepends the files home_files names, read from the calling
+// standing agent's home, to the text a spawn or a send delivers. It runs on
+// the caller's computer before anything is written or forwarded, so every
+// refusal costs one call and a forwarded call carries the text alone.
+func (t threadToolsApp) attachHomeFiles(caller threadtools.Caller, files []string, text string) (string, error) {
+	if len(files) == 0 {
+		return text, nil
+	}
+	row, found, err := t.app.store.GetStandingAgent(caller.ThreadID)
+	if err != nil {
+		return "", err
+	}
+	if !found || row.Home == "" {
+		return "", errorsx.Public(threadtools.CodeInvalidRequest,
+			"home_files is only for a standing agent, a thread the user promoted, and this thread is not one. Put what the receiver needs in the message itself.", nil)
+	}
+	attached, err := agenthome.ReadAttached(row.Home, files)
+	if err != nil {
+		return "", errorsx.Public(threadtools.CodeInvalidRequest, err.Error()+".", err)
+	}
+	joined := attached + "\n\n" + text
+	if len(joined) > threadtools.MaxPromptBytes {
+		return "", errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+			"The message with its home_files comes to %d bytes, past the %d a message can carry. Attach fewer files or shorten the message.",
+			len(joined), threadtools.MaxPromptBytes), nil)
+	}
+	return joined, nil
+}
+
 // Spawn creates a visible thread, sends the prompt as its first message and
 // returns the receipt.
 func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, call threadtools.SpawnCall) (threadtools.RequestAck, error) {
+	prompt, err := t.attachHomeFiles(caller, call.HomeFiles, call.Prompt)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	call.Prompt, call.HomeFiles = prompt, nil
 	if t.remoteDestination(call.ComputerID) {
 		return t.startRemoteRequest(ctx, caller, store.ThreadRequest{
 			Kind:           store.ThreadRequestSpawn,
@@ -210,6 +273,11 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 
 // Send continues an existing thread as if the user had typed the message.
 func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, call threadtools.SendCall) (threadtools.RequestAck, error) {
+	message, err := t.attachHomeFiles(caller, call.HomeFiles, call.Message)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	call.Message, call.HomeFiles = message, nil
 	if t.remoteDestination(call.ComputerID) {
 		return t.startRemoteRequest(ctx, caller, store.ThreadRequest{
 			Kind:           store.ThreadRequestSend,
@@ -513,7 +581,7 @@ func (t threadToolsApp) dispatchRequest(
 		return err
 	}
 	caller := origin.caller
-	body, err := t.requestMessageBody(origin, token, text, wantsAnswer)
+	body, err := t.requestMessageBody(origin, token, targetThreadID, text, wantsAnswer)
 	if err != nil {
 		return err
 	}
@@ -630,7 +698,7 @@ func (t threadToolsApp) settleIfTurnAlreadyEnded(token, targetThreadID string, t
 // text, then the fixed footer. The footer is never hand-written here; both
 // ends read the same template, and a variant wording is a variant contract.
 func (t threadToolsApp) requestMessageBody(
-	origin threadRequestOrigin, token, text string, wantsAnswer bool,
+	origin threadRequestOrigin, token, targetThreadID, text string, wantsAnswer bool,
 ) (string, error) {
 	caller := origin.caller
 	latest := origin.userMessage
@@ -653,6 +721,17 @@ func (t threadToolsApp) requestMessageBody(
 		AnswerRequested: wantsAnswer,
 		SenderReachable: t.senderReachable(origin),
 		UserMessage:     latest,
+		Agent:           origin.agent,
+	}
+	if origin.agent != nil && !origin.foreign {
+		// A worker's questions and approvals reach the standing agent that
+		// spawned it on this computer (StandingAgentSpawnerOf); a sender
+		// on another computer never routes them.
+		spawner, _, found, err := t.app.store.StandingAgentSpawnerOf(targetThreadID)
+		if err != nil {
+			return "", err
+		}
+		footer.RoutesPrompts = found && spawner == caller.ThreadID
 	}
 	// The body is the sender's text and the footer is this computer's; a
 	// body line that opens like the footer is quoted so only the footer

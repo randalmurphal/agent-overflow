@@ -84,9 +84,9 @@ func TestCodexDeveloperInstructionsCarryTheHomeBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PromoteStandingAgent: %v", err)
 	}
-	block, err := f.app.standingAgentPrompt(thread)
-	if err != nil || block != standingAgentPromptText(row) {
-		t.Fatalf("standingAgentPrompt = %q, %v", block, err)
+	block, problems, err := f.app.standingAgentPrompt(thread)
+	if err != nil || len(problems) > 0 || block != standingAgentPromptText(row) {
+		t.Fatalf("standingAgentPrompt = %q, %v, %v", block, problems, err)
 	}
 	// What spawnProviderSession hands Codex with the guide off.
 	if got := f.app.codexDeveloperInstructions(thread.ID, joinPromptParts("", block), nil); got != block {

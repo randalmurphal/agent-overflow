@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/provider"
 )
 
@@ -23,31 +24,33 @@ import (
 // refuses itself.
 
 type spawnArgs struct {
-	Prompt        string `json:"prompt"`
-	Title         string `json:"title"`
-	FromThread    string `json:"from_thread"`
-	ComputerID    string `json:"computer_id"`
-	ProjectID     string `json:"project_id"`
-	WorkspacePath string `json:"workspace_path"`
-	Worktree      string `json:"worktree"`
-	Base          string `json:"base"`
-	BaseLocal     bool   `json:"base_local"`
-	Group         string `json:"group"`
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	Effort        string `json:"effort"`
-	Mode          string `json:"mode"`
-	RuntimeMode   string `json:"runtime_mode"`
-	WaitSeconds   *int   `json:"wait_seconds"`
-	Notify        bool   `json:"notify"`
+	Prompt        string   `json:"prompt"`
+	Title         string   `json:"title"`
+	FromThread    string   `json:"from_thread"`
+	ComputerID    string   `json:"computer_id"`
+	ProjectID     string   `json:"project_id"`
+	WorkspacePath string   `json:"workspace_path"`
+	Worktree      string   `json:"worktree"`
+	Base          string   `json:"base"`
+	BaseLocal     bool     `json:"base_local"`
+	Group         string   `json:"group"`
+	Provider      string   `json:"provider"`
+	Model         string   `json:"model"`
+	Effort        string   `json:"effort"`
+	Mode          string   `json:"mode"`
+	RuntimeMode   string   `json:"runtime_mode"`
+	WaitSeconds   *int     `json:"wait_seconds"`
+	Notify        bool     `json:"notify"`
+	HomeFiles     []string `json:"home_files"`
 }
 
 type sendArgs struct {
-	ThreadID    string `json:"thread_id"`
-	ComputerID  string `json:"computer_id"`
-	Message     string `json:"message"`
-	WaitSeconds *int   `json:"wait_seconds"`
-	Notify      bool   `json:"notify"`
+	ThreadID    string   `json:"thread_id"`
+	ComputerID  string   `json:"computer_id"`
+	Message     string   `json:"message"`
+	WaitSeconds *int     `json:"wait_seconds"`
+	Notify      bool     `json:"notify"`
+	HomeFiles   []string `json:"home_files"`
 }
 
 type askArgs struct {
@@ -108,6 +111,11 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := checkText(call.Prompt, "prompt"); err != nil {
 		return nil, err
 	}
+	files, err := homeFiles(args.HomeFiles)
+	if err != nil {
+		return nil, err
+	}
+	call.HomeFiles = files
 	if utf8.RuneCountInString(call.Title) > MaxTitleRunes {
 		return nil, invalidf("title must be at most %d characters.", MaxTitleRunes)
 	}
@@ -256,6 +264,10 @@ func (c *session) send(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := checkText(message, "message"); err != nil {
 		return nil, err
 	}
+	files, err := homeFiles(args.HomeFiles)
+	if err != nil {
+		return nil, err
+	}
 	wait, err := waitSeconds(args.WaitSeconds, 0)
 	if err != nil {
 		return nil, err
@@ -266,7 +278,7 @@ func (c *session) send(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	ack, err := c.app.Send(ctx, c.caller, SendCall{
 		ThreadID: target.ThreadID, ComputerID: target.Destination(),
-		Message: message, WaitSeconds: wait, Notify: args.Notify,
+		Message: message, WaitSeconds: wait, Notify: args.Notify, HomeFiles: files,
 	})
 	if err != nil {
 		return nil, err
@@ -315,6 +327,25 @@ func (c *session) resolveOther(ctx context.Context, ref, hint, verb string) (Tar
 		return Target{}, publicf(CodeSelfSend, "A thread cannot %s itself. Use thread_remind to wake yourself later, or thread_spawn to hand the work to a new thread.", verb)
 	}
 	return target, nil
+}
+
+// homeFiles checks home_files for shape: at most agenthome.MaxHomeFiles
+// paths, none blank. Where they point, and whether the caller has a home at
+// all, only the app can tell.
+func homeFiles(paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	if len(paths) > agenthome.MaxHomeFiles {
+		return nil, invalidf("home_files names %d files; at most %d can be attached.", len(paths), agenthome.MaxHomeFiles)
+	}
+	out := make([]string, len(paths))
+	for i, path := range paths {
+		if out[i] = trim(path); out[i] == "" {
+			return nil, invalidf("home_files has a blank path; name each file relative to your home.")
+		}
+	}
+	return out, nil
 }
 
 func checkText(text, field string) error {
