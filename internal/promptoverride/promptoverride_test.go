@@ -324,7 +324,7 @@ func TestReadmeMarkdownDescribesEveryPlaceholderAndLimit(t *testing.T) {
 			t.Errorf("README does not mention %q", want)
 		}
 	}
-	if strings.Contains(readme, "—") {
+	if strings.Contains(readme, "\u2014") {
 		t.Error("README contains an em dash")
 	}
 }
