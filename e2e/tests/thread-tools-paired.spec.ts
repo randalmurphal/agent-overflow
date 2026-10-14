@@ -4,7 +4,9 @@
 // Coverage: the paired (grouped) shape of thread_options and thread_search,
 // with each computer's per-model efforts and a spawn refused for a model
 // the destination lacks; a spawn that runs on the other computer and wakes
-// the caller through the source-side poller; an ask that forks and answers
+// the caller through the source-side poller; a standing agent on the other
+// computer named on its wake with its role line exactly as a local one is;
+// an ask that forks and answers
 // there with only the answer crossing, and a write inside that fork refused
 // there; thread_status and a thread-id prefix resolved across computers; a thread moved between the two resolving to
 // its new owner; a 38k-item thread over there windowed, paged and exported
@@ -21,11 +23,14 @@ import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { test, expect } from '@playwright/test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
+import { centerInTimeline } from './standing-agent-home-contents-helpers.js';
+import { capture } from './wake-rows-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
 import {
   FOOTER_TOKEN_PATTERN,
@@ -352,6 +357,83 @@ test('a spawn on the other computer runs there and its answer wakes the caller',
   );
   expect(wake.report.input).toContain('The kernel build finished clean.');
   expect(wake.report.input).toContain('GPU computer');
+});
+
+test('a standing agent on the other computer is named on its wake as a local one is', async ({ page }) => {
+  test.setTimeout(240_000);
+  page.setDefaultTimeout(20_000);
+  // A role with quotes, so the quoting is compared as well as the text.
+  const role = 'Reviewer of the "parser" branch: reads every change before it merges.';
+  const caller = await seed(home, 'wake-role-caller', ['Wake role caller']);
+  const local = await seed(home, 'wake-role-local', ['Local reviewer']);
+  const there = await seed(remote, 'wake-role-remote', ['Remote reviewer']);
+  for (const [app, threadID] of [[home, local.threadIds[0]], [remote, there.threadIds[0]]] as const) {
+    const promoted = await app.rpc<{ home: string }>('PromoteStandingAgent', threadID);
+    // Two heading markers: the remote role is bounded on both computers.
+    writeFileSync(join(promoted.home, 'instructions.md'), `# #\t${role}\n\nGrants: none.\n`);
+  }
+  await setScenario(home, local.path, plainScenario({ name: 'wake-role-local', provider: 'claude', texts: ['Local review: the parser is fine.'] }));
+  await setScenario(remote, there.path, plainScenario({ name: 'wake-role-remote', provider: 'claude', texts: ['Remote review: the parser is fine.'] }));
+  const send = (threadID: string, computerID?: string) => ({
+    call: {
+      tool: 'thread_send',
+      args: { thread_id: threadID, ...(computerID ? { computer_id: computerID } : {}), message: 'Review the parser change.', wait_seconds: 0, notify: true },
+      timeoutMs: 120_000,
+    },
+  });
+  await setScenario(
+    home,
+    caller.path,
+    threadToolsScenario({
+      name: 'wake-role-caller',
+      provider: 'claude',
+      turns: [
+        { steps: [send(local.threadIds[0]), send(there.threadIds[0], remoteID)], text: 'Asked both reviewers.' },
+        { text: 'Read a wake.' },
+      ],
+      afterTurns: 'repeatLast',
+    }),
+  );
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'ask both reviewers about the parser', null);
+
+  // Each wake names its agent on the line after its status line. A wake
+  // that arrived with the other in one input is read from the same text.
+  const agentLine = async (answer: string): Promise<string> => {
+    const wake = await home.waitForEvent<HarnessMockEventData>(
+      'harness:mock',
+      (ev) => ev.report.kind === 'user_input' && ev.cwd === caller.path && (ev.report.input ?? '').includes(answer),
+      120_000,
+    );
+    // What stands between the status line and the answer is the agent line.
+    const lines = (wake.report.input ?? '').split('\n');
+    const at = lines.indexOf(answer);
+    const status = lines.slice(0, at).findLastIndex((line) => line.endsWith('Its final message:'));
+    expect(status, wake.report.input).toBeGreaterThanOrEqual(0);
+    return lines.slice(status + 1, at).join('\n');
+  };
+  const localLine = await agentLine('Local review: the parser is fine.');
+  const remoteLine = await agentLine('Remote review: the parser is fine.');
+  const want = `That thread is a standing agent, a thread the user promoted. Its role, in its own words: ${JSON.stringify(role)}`;
+  expect(localLine).toBe(want);
+  expect(remoteLine).toBe(localLine);
+
+  // Both wakes in the caller's timeline, the remote one naming its computer.
+  await home.open(page);
+  await page.getByTestId('thread-row-title').filter({ hasText: 'Wake role caller' }).first().click();
+  const bubble = (answer: string) => page.getByTestId('user-message-bubble').filter({ hasText: answer });
+  const localWake = bubble('Local review: the parser is fine.');
+  const remoteWake = bubble('Remote review: the parser is fine.');
+  await expect(localWake).toHaveCount(1);
+  await expect(remoteWake).toHaveCount(1);
+  await expect(localWake).toContainText(want);
+  await expect(remoteWake).toContainText(want);
+  await expect(remoteWake.getByTestId('user-message-thread-origin')).toHaveText('from Remote reviewer on GPU computer');
+  await expect(localWake.getByTestId('user-message-thread-origin')).toHaveText('from Local reviewer');
+  // Tall enough for both wakes above the composer.
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  await centerInTimeline(localWake);
+  await capture(page, 'wake-role-local-and-remote.png', localWake, remoteWake);
 });
 
 test('an ask forks the thread on the other computer and only the answer crosses', async () => {
