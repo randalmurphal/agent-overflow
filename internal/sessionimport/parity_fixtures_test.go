@@ -107,6 +107,25 @@ func claudeParityEvents(threadID, workspace string) []provider.ProviderEvent {
 			Timestamp: at(7),
 		},
 		{
+			// An AO tool call: its row carries what the reply said
+			// (`ao_result`, triage.StampAoToolResult) on both writers.
+			Kind:      provider.EventToolStart,
+			ThreadID:  threadID,
+			ItemID:    "toolu_spawn_1",
+			ItemType:  "MCP/thread_spawn",
+			Meta:      json.RawMessage(`{"toolName":"MCP/thread_spawn","mcp":{"server":"ao-thread-tools","tool":"thread_spawn"},"input":{"prompt":"Write the release notes."}}`),
+			Timestamp: at(7),
+		},
+		{
+			Kind:      provider.EventToolComplete,
+			ThreadID:  threadID,
+			ItemID:    "toolu_spawn_1",
+			ItemType:  "MCP/thread_spawn",
+			Content:   `{"token":"tok-1","kind":"spawn","thread_id":"thread-child-1","title":"Release notes","state":"running","outcome":"backgrounded","revision":0,"notify":true}`,
+			Meta:      json.RawMessage(`{"is_error":false}`),
+			Timestamp: at(7),
+		},
+		{
 			Kind:      provider.EventCompactBoundary,
 			ThreadID:  threadID,
 			ItemID:    "compaction-1",

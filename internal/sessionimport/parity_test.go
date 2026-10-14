@@ -170,6 +170,7 @@ func claudeParityCase() parityCase {
 			{"toolu_edit_1", "tool_call", "tool_result", "tool_call_input"},
 			{"toolu_bash_1", "tool_call", "command_output", ""},
 			{"toolu_send_1", "tool_call", "tool_call_result", ""},
+			{"toolu_spawn_1", "tool_call", "tool_call_result", ""},
 			{"compact:1:provider:compaction-1", "compaction", "compaction", ""},
 			{"error:1:0", "api_error", "", ""},
 		},

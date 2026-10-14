@@ -196,6 +196,7 @@ func (b *builder) toolComplete(evt importir.Event) error {
 	}
 	r.item.Meta = triage.MergeStoredToolCallMetaObject(
 		r.item.Meta, evt.ItemType, r.item.ToolName, metaObject, writerControlMetaKeys[:]...)
+	r.item.Meta = triage.StampAoToolResult(r.item.Meta, evt.Content, r.item.Status != statusCompleted, r.item.CreatedAt)
 	if len(sendPatch) > 0 {
 		// After the wire merge, so the ack's verdict is what the stored
 		// meta says (the wire's own `is_error:false` would otherwise win).
