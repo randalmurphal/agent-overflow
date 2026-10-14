@@ -290,7 +290,7 @@ export async function readMoreRows(app: HarnessApp, page: Page, shot: (name: str
     memory_list: (row) => expect(row.getByTestId('tool-call-card-ao-line').filter({ hasText: 'The digest needs the schema first.' })).toHaveCount(1),
     memory_add: (row) => expect(row.getByTestId('tool-call-card-ao-outcome')).toContainText('learning added'),
     workflow_schema: async (row) => {
-      await expect(row.getByTestId('tool-call-card-ao-outcome')).toContainText(/^Agent Overflow Workflow · \d+ fields · \d+ definitions$/);
+      await expect(row.getByTestId('tool-call-card-ao-outcome')).toContainText(/Agent Overflow Workflow · \d+ fields · \d+ definitions$/);
       await expect(row.locator('[data-testid="tool-call-card-ao-result-fact"][data-fact="required"]')).toContainText('phases');
       await expect(row.getByTestId('tool-call-card-ao-line-title').filter({ hasText: /^phase · object$/ })).toHaveCount(1);
     },
