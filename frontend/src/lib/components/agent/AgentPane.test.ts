@@ -78,7 +78,7 @@ describe('<AgentPane>', () => {
   beforeEach(async () => {
     installTimelineScopeCapability();
     resetBindingMocks();
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
     resetPanesForTest();
     resetPaneLayoutForTest();
     resetCompanionPanesForTest();
