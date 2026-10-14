@@ -777,9 +777,9 @@ unchanged. A wake starts with one line: reply,
 finished without replying, errored, cancelled, interrupted, or expired,
 with the thread's title and id, the token, its computer and the
 answer's age when they apply, then the text. When the answering thread
-is a standing agent on the caller's computer, the line after it says so
-and quotes its role line; a thread on another computer is not named as
-one, since the request row records no role for it.
+is a standing agent, the line after it says so and quotes its role line
+as it was when the answer was written, on either computer: the answering
+computer records it with the answer and reports it with the settlement.
 
 ## Waiting
 

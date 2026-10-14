@@ -6459,6 +6459,14 @@ export class ThreadPeerRequest {
      */
     "blocked"?: boolean;
 
+    /**
+     * AnswerAgent is set on a settled request whose thread was a standing
+     * agent when the answer was written, with the role line its wake quotes.
+     * A computer that does not send it is read as having answered from an
+     * ordinary thread.
+     */
+    "answerAgent"?: ThreadPeerAgent | null;
+
     /** Creates a new ThreadPeerRequest instance. */
     constructor($$source: Partial<ThreadPeerRequest> = {}) {
         if (!("token" in $$source)) {
@@ -6475,7 +6483,11 @@ export class ThreadPeerRequest {
      * Creates a new ThreadPeerRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerRequest {
+        const $$createField14_0 = $$createType113;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("answerAgent" in $$parsedSource) {
+            $$parsedSource["answerAgent"] = $$createField14_0($$parsedSource["answerAgent"]);
+        }
         return new ThreadPeerRequest($$parsedSource as Partial<ThreadPeerRequest>);
     }
 }
