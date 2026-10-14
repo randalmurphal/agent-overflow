@@ -35,6 +35,7 @@ import type {
   TodoStep,
   ProviderSessionAccountEvent,
   ProviderStatusEvent,
+  SessionBannerKind,
   UserInputRequest,
 } from '../types/events';
 import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
@@ -351,6 +352,24 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // only tracks which account its live provider session should select.
   let providerBanner: ProviderStatusEvent | null | undefined =
     $state(undefined);
+  // Thread-owned banner rows, one per kind (stale binary, stale prompt), in
+  // display order. Each is raised and withdrawn by name by the backend's
+  // `provider:status` pushes and cleared wholesale when the session ends.
+  let sessionBanners: ProviderStatusEvent[] = $state([]);
+  const SESSION_BANNER_ORDER: readonly SessionBannerKind[] = ['prompt_stale', 'binary_stale'];
+  function setSessionBanner(kind: SessionBannerKind, status: ProviderStatusEvent | null): void {
+    const rest = sessionBanners.filter((banner) => banner.kind !== kind);
+    if (!status) {
+      if (rest.length !== sessionBanners.length) sessionBanners = rest;
+      return;
+    }
+    rest.push({ ...status, kind });
+    rest.sort((a, b) => SESSION_BANNER_ORDER.indexOf(a.kind as SessionBannerKind) - SESSION_BANNER_ORDER.indexOf(b.kind as SessionBannerKind));
+    sessionBanners = rest;
+  }
+  function clearSessionBanners(): void {
+    if (sessionBanners.length) sessionBanners = [];
+  }
   let providerSessionAccount: ProviderSessionAccountEvent | null =
     $state(null);
   let providerSessionAccountRevision = 0;
@@ -453,14 +472,28 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // on transitions, so a wrongly cleared banner would never come back.
     hydrateBinaryStaleBanner: (sessionVersion, installedVersion) => {
       if (!thread || !sessionVersion || !installedVersion) return;
-      providerBanner = {
+      setSessionBanner('binary_stale', {
         provider: thread.provider,
         status: 'binary_stale',
+        kind: 'binary_stale',
         threadId: thread.id,
         sessionVersion,
         installedVersion,
         actionable: true,
-      };
+      });
+    },
+    // Same set-only contract: 0 means the snapshot does not flag the
+    // thread, which says nothing about a push in flight.
+    hydratePromptStaleBanner: (revision) => {
+      if (!thread || revision <= 0) return;
+      setSessionBanner('prompt_stale', {
+        provider: thread.provider,
+        status: 'prompt_stale',
+        kind: 'prompt_stale',
+        threadId: thread.id,
+        revision,
+        actionable: true,
+      });
     },
   });
 
@@ -586,6 +619,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     setProviderBanner: (status) => {
       providerBanner = status;
     },
+    clearSessionBanners,
     setProviderSessionAccount: updateProviderSessionAccount,
     setSendInFlight: (value) => {
       sendInFlight = value;
@@ -666,6 +700,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     pendingInteractiveState.clear();
     contextWindow = null;
     providerBanner = undefined;
+    clearSessionBanners();
     updateProviderSessionAccount(null);
     paneErrors.clear();
     loading = false;
@@ -805,6 +840,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get providerBanner() {
       return providerBanner;
+    },
+    get sessionBanners() {
+      return sessionBanners;
     },
     get providerSessionAccount() {
       return providerSessionAccount;
@@ -1459,6 +1497,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     setProviderBanner(status: ProviderStatusEvent | null | undefined): void {
       providerBanner = status;
     },
+    setSessionBanner,
+    clearSessionBanners,
 
     setProviderSessionAccount(account: ProviderSessionAccountEvent | null): void {
       updateProviderSessionAccount(account);

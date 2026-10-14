@@ -99,8 +99,8 @@ const PROVIDER_FIELDS = [
     slug: 'system-prompt',
     heading: 'System prompt',
     label: 'System prompt overrides',
-    hint: "Replaces the provider's default system prompt. The first enabled entry whose models include the session's model wins. Edit a prompt here or in its file: a saved file applies to the next session start and to running Claude sessions. A .md file in the folder without an entry is ignored.",
-    keywords: ['instructions', 'prompt override', 'prompt file', 'placeholder'],
+    hint: "Each override is a Markdown file in the computer's prompts folder; its text replaces the provider's default system prompt for the models you pick. Edit the file in your editor or hand it to an agent. The first enabled entry whose models include the session's model wins; a .md file in the folder without an entry is ignored.",
+    keywords: ['instructions', 'prompt override', 'prompt file', 'placeholder', 'agent'],
   },
 ] as const;
 

@@ -270,6 +270,108 @@ describe('<ProviderStatusBanner>', () => {
       expect(queryByTestId('provider-status-recheck')).toBeNull();
       expect(queryByTestId('provider-status-action')).toBeNull();
     });
+
+    it('dismisses through the backend and drops the row', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      const dismiss = setBindingMock('DismissSessionBanner', async () => {});
+      emitStale();
+
+      const { getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      await fireEvent.click(getByTestId('provider-status-dismiss'));
+
+      expect(dismiss).toHaveBeenCalledWith('thread-1', 'binary_stale');
+      await waitFor(() => expect(queryByTestId('provider-status-banner')).toBeNull());
+    });
+  });
+
+  // `prompt_stale`: an override file the running session launched with was
+  // edited (or its entry toggled or rescoped), so the next session start
+  // would use a different system prompt. Same row shape as binary_stale.
+  describe('prompt_stale', () => {
+    function emitPromptStale(overrides: Record<string, unknown> = {}): void {
+      emitWailsEvent('provider:status', {
+        kind: 'prompt_stale',
+        provider: 'claude',
+        threadId: 'thread-1',
+        actionable: true,
+        revision: 1,
+        ...overrides,
+      } as unknown as ProviderStatusEvent);
+    }
+
+    it('renders its own copy with a restart action', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      emitPromptStale();
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      const banner = getByTestId('provider-status-banner');
+      expect(banner.dataset.kind).toBe('prompt_stale');
+      expect(banner.textContent).toContain('System prompt changed. Restart the session to use it.');
+      expect(getByTestId('provider-status-restart').textContent).toContain('Restart session');
+    });
+
+    it('restarts the session through the existing reconnect binding', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      const reconnect = setBindingMock('ReconnectSession', async () => {});
+      vi.spyOn(pane, 'refreshFromBackend').mockResolvedValue();
+      emitPromptStale();
+
+      const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      await fireEvent.click(getByTestId('provider-status-restart'));
+      expect(reconnect).toHaveBeenCalledWith('thread-1');
+    });
+
+    it('dismisses through the backend and shows again on a later change', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      const dismiss = setBindingMock('DismissSessionBanner', async () => {});
+      emitPromptStale();
+
+      const { getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      await fireEvent.click(getByTestId('provider-status-dismiss'));
+      expect(dismiss).toHaveBeenCalledWith('thread-1', 'prompt_stale');
+      await waitFor(() => expect(queryByTestId('provider-status-banner')).toBeNull());
+
+      emitPromptStale({ revision: 2 });
+      await waitFor(() => expect(getByTestId('provider-status-banner').dataset.kind).toBe('prompt_stale'));
+    });
+
+    it('keeps a failed dismiss visible as a pane error', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      setBindingMock('DismissSessionBanner', async () => {
+        throw new Error('backend away');
+      });
+      emitPromptStale();
+
+      const { getByTestId, getAllByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      await fireEvent.click(getByTestId('provider-status-dismiss'));
+      await waitFor(() => expect(pane.generalError).toContain('backend away'));
+      expect(getAllByTestId('provider-status-banner')).toHaveLength(1);
+    });
+
+    // Both claims can be true of one session: each gets its own row, the
+    // prompt one first, and dismissing one leaves the other.
+    it('stacks beside a stale binary and dismisses independently', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+      setBindingMock('DismissSessionBanner', async () => {});
+      emitWailsEvent('provider:status', {
+        kind: 'binary_stale',
+        provider: 'claude',
+        threadId: 'thread-1',
+        actionable: true,
+        sessionVersion: '2.1.219',
+        installedVersion: '2.1.257',
+      } as unknown as ProviderStatusEvent);
+      emitPromptStale();
+
+      const { getAllByTestId } = render(ProviderStatusBanner, { props: { pane } });
+      const rows = getAllByTestId('provider-status-banner');
+      expect(rows.map((row) => row.dataset.kind)).toEqual(['prompt_stale', 'binary_stale']);
+
+      await fireEvent.click(getAllByTestId('provider-status-dismiss')[0]);
+      await waitFor(() =>
+        expect(getAllByTestId('provider-status-banner').map((row) => row.dataset.kind)).toEqual(['binary_stale']),
+      );
+    });
   });
 
   // `{#if providerStatus?.actionable && primaryActionLabel}` sits inside

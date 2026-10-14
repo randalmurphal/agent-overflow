@@ -52,11 +52,16 @@ function claudeEntries(): PromptOverride[] {
   return lastPatch().claudePromptOverrides as PromptOverride[];
 }
 
+const ID = '0b7a2c4e-9f1d-4e3a-8c5b-2d6f7a8e9b0c';
+const PATH = `/home/u/.config/agent-overflow/prompts/${ID}.md`;
+
+// A saved entry whose file has text: the common case, so each test below
+// changes one thing about it.
 const ENTRY = (over: Partial<PromptOverride> = {}): PromptOverride => ({
-  id: '',
+  id: ID,
   enabled: true,
   models: ['claude-fable-5'],
-  prompt: 'You are a helpful agent.',
+  path: PATH,
   ...over,
 });
 
@@ -65,14 +70,16 @@ describe('<ProviderPromptSection>', () => {
     resetProviderModelsForTest();
   });
 
-  it('renders the configured entries with their prompt, switch, and models', async () => {
+  it('renders the configured entries with their file, switch, and models', async () => {
     await seed({
-      claudePromptOverrides: [ENTRY(), ENTRY({ enabled: false, models: [], prompt: 'draft' })],
+      claudePromptOverrides: [ENTRY(), ENTRY({ id: 'b', path: '/p/b.md', enabled: false, models: [] })],
     });
-    const { getByTestId, findByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
+    const { getByTestId, findByTestId, queryByRole } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
 
-    const first = getByTestId('settings-prompt-text-claude-0') as HTMLTextAreaElement;
-    expect(first.value).toBe('You are a helpful agent.');
+    expect(queryByRole('textbox')).toBeNull();
+    const path = getByTestId('settings-prompt-path-claude-0');
+    expect(path.textContent).toBe(PATH);
+    expect(path.getAttribute('title')).toBe(PATH);
     expect(getByTestId('settings-prompt-entry-claude-0').dataset.enabled).toBe('true');
     expect(getByTestId('settings-prompt-entry-claude-1').dataset.enabled).toBe('false');
 
@@ -97,19 +104,19 @@ describe('<ProviderPromptSection>', () => {
     await fireEvent.click(getByTestId('settings-prompt-add-claude'));
 
     await waitFor(() => {
-      expect(claudeEntries()).toEqual([{ id: '', enabled: false, models: [], prompt: '' }]);
+      expect(claudeEntries()).toEqual([{ id: '', enabled: false, models: [] }]);
     });
   });
 
   it('removes the entry that was clicked', async () => {
     await seed({
-      claudePromptOverrides: [ENTRY({ prompt: 'first' }), ENTRY({ prompt: 'second' })],
+      claudePromptOverrides: [ENTRY({ id: 'first' }), ENTRY({ id: 'second' })],
     });
     const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     await fireEvent.click(getByTestId('settings-prompt-remove-claude-0'));
 
     await waitFor(() => {
-      expect(claudeEntries().map((e) => e.prompt)).toEqual(['second']);
+      expect(claudeEntries().map((e) => e.id)).toEqual(['second']);
     });
   });
 
@@ -181,82 +188,39 @@ describe('<ProviderPromptSection>', () => {
     ).toContain('Could not load the Claude model catalog.');
   });
 
-  it('commits the prompt on change, not on every keystroke', async () => {
-    await seed({ claudePromptOverrides: [ENTRY({ prompt: 'old' })] });
-    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    const textarea = getByTestId('settings-prompt-text-claude-0') as HTMLTextAreaElement;
-
-    await fireEvent.input(textarea, { target: { value: 'new prompt' } });
-    expect(getBindingMock('UpdateSettings')?.mock.calls.length ?? 0).toBe(0);
-
-    await fireEvent.change(textarea);
-    await waitFor(() => expect(claudeEntries()[0].prompt).toBe('new prompt'));
-  });
-
-  it('does not write when a blur leaves the prompt unchanged', async () => {
-    await seed({ claudePromptOverrides: [ENTRY({ prompt: 'same' })] });
-    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    await fireEvent.change(getByTestId('settings-prompt-text-claude-0'));
-    expect(getBindingMock('UpdateSettings')?.mock.calls.length ?? 0).toBe(0);
-  });
-
-  it('keeps a prompt typed just before a remove shifts the indexes', async () => {
-    // The ordering the section depends on: a textarea commits on blur, and
-    // blur fires before the click of the button that took the focus. The
-    // remove therefore operates on a list that already carries the typing,
-    // and the typed entry survives its own index changing.
-    await seed({
-      claudePromptOverrides: [ENTRY({ prompt: 'first' }), ENTRY({ prompt: 'second' })],
-    });
-    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    const second = getByTestId('settings-prompt-text-claude-1') as HTMLTextAreaElement;
-
-    await fireEvent.input(second, { target: { value: 'edited second' } });
-    await fireEvent.change(second);
-    await fireEvent.click(getByTestId('settings-prompt-remove-claude-0'));
-
-    await waitFor(() =>
-      expect(claudeEntries()).toEqual([
-        { id: '', enabled: true, models: ['claude-fable-5'], prompt: 'edited second' },
-      ]),
-    );
-  });
-
   it('warns when an enabled entry applies to no model', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ models: [] })] });
     const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(getByTestId('settings-prompt-nomodels-claude-0')).toBeTruthy();
-    expect(queryByTestId('settings-prompt-noprompt-claude-0')).toBeNull();
+    expect(queryByTestId('settings-prompt-blank-claude-0')).toBeNull();
   });
 
-  it('warns when an enabled entry has no prompt, which the backend skips too', async () => {
-    await seed({ claudePromptOverrides: [ENTRY({ prompt: '   ' })] });
+  it('warns when an enabled entry has a blank file, which the backend skips too', async () => {
+    await seed({ claudePromptOverrides: [ENTRY({ blank: true })] });
     const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    expect(getByTestId('settings-prompt-noprompt-claude-0').textContent).toContain(
-      'write a prompt',
-    );
+    expect(getByTestId('settings-prompt-blank-claude-0').textContent).toContain('file is empty');
     expect(queryByTestId('settings-prompt-nomodels-claude-0')).toBeNull();
   });
 
   it('names both causes when an enabled entry has neither', async () => {
-    await seed({ claudePromptOverrides: [ENTRY({ models: [], prompt: '' })] });
+    await seed({ claudePromptOverrides: [ENTRY({ models: [], blank: true })] });
     const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(getByTestId('settings-prompt-nomodels-claude-0')).toBeTruthy();
-    expect(getByTestId('settings-prompt-noprompt-claude-0')).toBeTruthy();
+    expect(getByTestId('settings-prompt-blank-claude-0')).toBeTruthy();
   });
 
   it('warns about neither when the entry is switched off', async () => {
     await seed({
-      claudePromptOverrides: [ENTRY({ enabled: false, models: [], prompt: '' })],
+      claudePromptOverrides: [ENTRY({ enabled: false, models: [], blank: true })],
     });
     const { queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(queryByTestId('settings-prompt-nomodels-claude-0')).toBeNull();
-    expect(queryByTestId('settings-prompt-noprompt-claude-0')).toBeNull();
+    expect(queryByTestId('settings-prompt-blank-claude-0')).toBeNull();
   });
 
   it('warns that an earlier enabled entry already covers a model', async () => {
     await seed({
-      claudePromptOverrides: [ENTRY(), ENTRY({ prompt: 'second' })],
+      claudePromptOverrides: [ENTRY(), ENTRY({ id: 'second', path: '/p/second.md' })],
     });
     const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(queryByTestId('settings-prompt-shadowed-claude-0')).toBeNull();
@@ -269,85 +233,13 @@ describe('<ProviderPromptSection> placeholder legend', () => {
     resetProviderModelsForTest();
   });
 
-  it('inserts the token at the caret of the focused prompt', async () => {
-    await seed({ claudePromptOverrides: [ENTRY({ prompt: 'cwd:  here' })] });
+  it('lists every placeholder as a read-only reference', async () => {
+    await seed({ claudePromptOverrides: [ENTRY()] });
     const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    const textarea = getByTestId('settings-prompt-text-claude-0') as HTMLTextAreaElement;
-
-    textarea.focus();
-    await fireEvent.focus(textarea);
-    textarea.setSelectionRange(5, 5);
-
-    await fireEvent.click(getByTestId('settings-prompt-token-claude-WORKDIR'));
-
-    await waitFor(() =>
-      expect(claudeEntries()[0].prompt).toBe('cwd: {{WORKDIR}} here'),
-    );
-    expect(textarea.value).toBe('cwd: {{WORKDIR}} here');
-    await waitFor(() => expect(textarea.selectionStart).toBe(16));
-  });
-
-  it('falls back to the first prompt when none was focused', async () => {
-    await seed({ claudePromptOverrides: [ENTRY({ prompt: 'AB' })] });
-    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-
-    await fireEvent.click(getByTestId('settings-prompt-token-claude-MODEL_NAME'));
-
-    await waitFor(() =>
-      expect(claudeEntries()[0].prompt).toBe('AB{{MODEL_NAME}}'),
-    );
-  });
-
-  it('leaves the prompt alone when the insert fails to save', async () => {
-    await seed({ claudePromptOverrides: [ENTRY({ prompt: 'AB' })] });
-    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    const textarea = getByTestId('settings-prompt-text-claude-0') as HTMLTextAreaElement;
-
-    textarea.focus();
-    await fireEvent.focus(textarea);
-    textarea.setSelectionRange(2, 2);
-
-    setBindingMock('UpdateSettings', async () => {
-      throw new Error('rpc fail');
-    });
-    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    await fireEvent.click(getByTestId('settings-prompt-token-claude-MODEL_NAME'));
-
-    // Nothing else writes this textarea, so a token left behind by a failed
-    // save would be visible text belonging to no state.
-    await waitFor(() => expect(textarea.value).toBe('AB'));
-    expect(textarea.selectionStart).toBe(2);
-    consoleErr.mockRestore();
-  });
-
-  it('shows the insertion before the save lands, through the store', async () => {
-    await seed({ claudePromptOverrides: [ENTRY({ prompt: 'AB' })] });
-    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
-    const textarea = getByTestId('settings-prompt-text-claude-0') as HTMLTextAreaElement;
-
-    textarea.focus();
-    await fireEvent.focus(textarea);
-    textarea.setSelectionRange(2, 2);
-
-    let land: (() => void) | undefined;
-    const inFlight = new Promise<void>((resolve) => {
-      land = resolve;
-    });
-    setBindingMock('UpdateSettings', async (patch: unknown) => {
-      await inFlight;
-      return { ...makeSettings(), ...(patch as Record<string, unknown>) };
-    });
-
-    await fireEvent.click(getByTestId('settings-prompt-token-claude-MODEL_NAME'));
-    // The optimistic settings write is what makes it visible — the component
-    // never writes the textarea itself, so there is nothing to reconcile if
-    // the save then fails.
-    expect(textarea.value).toBe('AB{{MODEL_NAME}}');
-
-    land!();
-    await waitFor(() => expect(textarea.selectionStart).toBe(16));
-    expect(textarea.value).toBe('AB{{MODEL_NAME}}');
+    const legend = getByTestId('settings-prompt-legend-claude');
+    expect(legend.querySelectorAll('button')).toHaveLength(0);
+    expect(getByTestId('settings-prompt-token-claude-WORKDIR').textContent?.trim()).toBe('{{WORKDIR}}');
+    expect(legend.textContent).toContain("The session's working directory.");
   });
 
   it('offers the Claude-only memory placeholder to Claude alone', async () => {
@@ -365,9 +257,6 @@ describe('<ProviderPromptSection> placeholder legend', () => {
 });
 
 describe('<ProviderPromptSection> prompt file', () => {
-  const ID = '0b7a2c4e-9f1d-4e3a-8c5b-2d6f7a8e9b0c';
-  const PATH = `/home/u/.config/agent-overflow/prompts/${ID}.md`;
-
   beforeEach(() => {
     resetProviderModelsForTest();
     setPageGrantsFromBootstrap(false);
@@ -377,38 +266,56 @@ describe('<ProviderPromptSection> prompt file', () => {
     setPageGrantsFromBootstrap(false);
   });
 
-  it('shows a saved entry\'s file path and opens it in the editor', async () => {
+  it('opens the file in the editor', async () => {
     const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
-    await seed({ claudePromptOverrides: [ENTRY({ id: ID, path: PATH })] });
-    const { getByTestId, getByLabelText } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
+    await seed({ claudePromptOverrides: [ENTRY()] });
+    const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
 
-    const path = getByTestId('settings-prompt-path-claude-0');
-    expect(path.textContent).toBe(PATH);
-    expect(path.getAttribute('title')).toBe(PATH);
-    await fireEvent.click(getByLabelText('Open prompt file in editor'));
+    const edit = getByTestId('settings-prompt-open-claude-0');
+    expect(edit.getAttribute('aria-label')).toBe(`Open ${ID}.md in editor`);
+    await fireEvent.click(edit);
     await waitFor(() => expect(open).toHaveBeenCalledWith(PATH, 0, 0, '', ''));
   });
 
-  it('hides the file row for an entry not yet saved', async () => {
-    await seed({ claudePromptOverrides: [ENTRY()] });
-    const { queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
+  it('shows a saving note for an entry the backend has not named yet', async () => {
+    await seed({ claudePromptOverrides: [ENTRY({ id: '', path: undefined })] });
+    const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
+    expect(getByTestId('settings-prompt-unsaved-claude-0')).toBeTruthy();
     expect(queryByTestId('settings-prompt-file-claude-0')).toBeNull();
-    expect(queryByTestId('settings-prompt-open-claude-0')).toBeNull();
+    expect(queryByTestId('settings-prompt-copy-instructions-claude')).toBeNull();
   });
 
   it('keeps the path but offers no open where the page is not on the computer', async () => {
     setPageGrantsFromBootstrap(true);
-    await seed({ claudePromptOverrides: [ENTRY({ id: ID, path: PATH })] });
+    await seed({ claudePromptOverrides: [ENTRY()] });
     const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(getByTestId('settings-prompt-path-claude-0').textContent).toBe(PATH);
     expect(queryByTestId('settings-prompt-open-claude-0')).toBeNull();
+    expect(getByTestId('settings-prompt-copy-instructions-claude')).toBeTruthy();
   });
 
-  it('shows the problem in place of the empty-prompt warning', async () => {
+  it('shows the problem in place of the blank-file warning', async () => {
     const problem = `${PATH} is 70000 bytes, over the 64000-byte limit for one prompt; the entry is not applied until the file is shortened`;
-    await seed({ claudePromptOverrides: [ENTRY({ id: ID, path: PATH, prompt: undefined, problem })] });
+    await seed({ claudePromptOverrides: [ENTRY({ blank: true, problem })] });
     const { getByTestId, queryByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
     expect(getByTestId('settings-prompt-problem-claude-0').textContent?.trim()).toBe(problem);
-    expect(queryByTestId('settings-prompt-noprompt-claude-0')).toBeNull();
+    expect(queryByTestId('settings-prompt-blank-claude-0')).toBeNull();
+  });
+
+  it('copies the instructions an agent needs to edit the files', async () => {
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    try {
+      await seed({ claudePromptOverrides: [ENTRY(), ENTRY({ id: 'b', path: '/p/b.md' })] });
+      const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
+      await fireEvent.click(getByTestId('settings-prompt-copy-instructions-claude'));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+      const text = writeText.mock.calls[0][0] as string;
+      expect(text).toContain('/home/u/.config/agent-overflow/prompts/README.md');
+      expect(text).toContain(`- ${PATH}`);
+      expect(text).toContain('- /p/b.md');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

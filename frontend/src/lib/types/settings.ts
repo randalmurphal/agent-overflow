@@ -144,12 +144,15 @@ export interface ProviderEnvVar {
  * path, and why its text is not applied (it is over a size limit).
  */
 export interface PromptOverride {
+  /** Names the entry's file; empty until the backend mints one on save. */
   id: string;
   enabled: boolean;
   models: string[];
-  /** Omitted on the wire when the file has no text or cannot be applied (see `problem`). */
-  prompt?: string;
+  /** Absolute path of the prompt file on the computer; absent until saved. */
   path?: string;
+  /** The file has no text to apply (empty, or unreadable: see `problem`). */
+  blank?: boolean;
+  /** Why the file's text is not applied (over a size limit). */
   problem?: string;
 }
 

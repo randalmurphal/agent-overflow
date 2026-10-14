@@ -243,9 +243,9 @@ export function exposedTodoTools(disabled: readonly string[]): string[] {
   return CLAUDE_TODO_TOOL_GROUP.filter((name) => !disabled.includes(name));
 }
 
-/** A fresh, disabled, empty entry, appended by the Add control. The backend mints its id. */
+/** A fresh, disabled entry, appended by the Add control. The backend mints its id and a blank file. */
 export function newPromptOverride(): PromptOverride {
-  return { id: '', enabled: false, models: [], prompt: '' };
+  return { id: '', enabled: false, models: [] };
 }
 
 /** The list with `patch` applied to entry `index` (no-op for a bad index). */
@@ -284,13 +284,13 @@ export function toggleModelSelection(
     : [...models, slug];
 }
 
-// A blank prompt is not an override: `internal/promptoverride.Match` walks
-// past an entry whose Prompt is empty after TrimSpace exactly as it walks
-// past a disabled one. Two surfaces read that rule — the shadow walk below
-// and the per-entry warnings — so it lives here once rather than as two
-// `.trim() === ''` checks that can drift apart from Go independently.
+// A blank file is not an override: `internal/promptoverride.Match` walks
+// past an entry whose file has no text exactly as it walks past a disabled
+// one. The backend reports that as `blank` (also set for a file it refuses
+// to apply, see `problem`). Two surfaces read the rule, the shadow walk and
+// the per-entry warnings, so it lives here once.
 function hasPrompt(entry: PromptOverride): boolean {
-  return (entry.prompt ?? '').trim() !== '';
+  return !entry.blank;
 }
 
 /**
@@ -299,15 +299,15 @@ function hasPrompt(entry: PromptOverride): boolean {
  * a warning would make a deliberately parked entry look broken.
  */
 export interface EntryInertness {
-  /** Match skips the entry outright, so nothing about it matters. */
-  noPrompt: boolean;
+  /** Match skips the entry outright: its file is blank or not applied. */
+  blankFile: boolean;
   /** Match reaches it, but no session model can be in an empty list. */
   noModels: boolean;
 }
 
 export function entryInertness(entry: PromptOverride): EntryInertness {
   return {
-    noPrompt: entry.enabled && !hasPrompt(entry),
+    blankFile: entry.enabled && !hasPrompt(entry),
     noModels: entry.enabled && entry.models.length === 0,
   };
 }
@@ -414,21 +414,30 @@ export function withToolsRemoved(
   return list.filter((tool) => !drop.has(tool));
 }
 
+/** The folder a prompt file lives in; the generated README.md sits beside it. */
+export function promptFilesDir(path: string): string {
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return cut > 0 ? path.slice(0, cut) : path;
+}
+
+/** Name of the reference the backend writes beside the prompt files at boot. */
+export const PROMPT_README_NAME = 'README.md';
+
 /**
- * Insert `token` into `text` at `[start, end)`, replacing any selection.
- * Returns the new text and where the caret belongs after it. Pure so the
- * legend's insert behaviour is testable without a DOM selection.
+ * The text the Copy-instructions control puts on the clipboard: enough for
+ * an agent to find the README (which carries the placeholders and rules)
+ * and the files it may edit, and to know when an edit takes effect.
  */
-export function insertAtSelection(
-  text: string,
-  start: number,
-  end: number,
-  token: string,
-): { text: string; caret: number } {
-  const from = Math.max(0, Math.min(start, text.length));
-  const to = Math.max(from, Math.min(end, text.length));
-  return {
-    text: text.slice(0, from) + token + text.slice(to),
-    caret: from + token.length,
-  };
+export function agentPromptInstructions(paths: readonly string[]): string {
+  if (paths.length === 0) return '';
+  const dir = promptFilesDir(paths[0]);
+  const sep = paths[0].includes('\\') ? '\\' : '/';
+  const files = paths.map((path) => `- ${path}`).join('\n');
+  return [
+    `Agent Overflow system prompt override files live in ${dir}.`,
+    `Read ${dir}${sep}${PROMPT_README_NAME} first: it lists every {{PLACEHOLDER}} and the rules.`,
+    'Edit only these files:',
+    files,
+    'An edit applies when a thread\'s session next starts; running threads show a banner offering a restart.',
+  ].join('\n');
 }
