@@ -188,6 +188,11 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 		// provider refresh remain asynchronous and require no provider restart.
 		a.scheduleBrowserSettings(next)
 	}
+	if _, ok := patch["backgroundGitFetch"]; ok {
+		// Off means no background forge reads either: the merged-PR poll
+		// stops (and is joined) or starts with the setting, no restart.
+		a.reconcileMergedPRPoll(0)
+	}
 	a.ReconfigureObservability(prev, next)
 	if _, ok := patch["editor"]; ok {
 		// Editor preference touched — drop the cached catalog so the

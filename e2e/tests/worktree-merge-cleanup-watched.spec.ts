@@ -4,7 +4,8 @@
 // poll is set to ten minutes here, so only that transition can act: the
 // thread is open on screen, its pane's git status tracks the PR, the PR
 // merges, and the next lookup (a refresh after a git action) answers "no
-// open PR". One state read follows, and the worktree goes.
+// open PR". One state read follows, and the worktree goes, also with
+// "Fetch remotes in the background" off, which stops only the poll.
 import { expect, test as base } from './fixtures.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { expectEveryForgeCallHandled } from './forge-helpers.js';
@@ -48,3 +49,28 @@ for (const forge of ['github', 'gitlab'] as Forge[]) {
     await expect(errorToasts(page)).toHaveCount(0);
   });
 }
+
+test('with background fetch off, a PR that merges while its thread is on screen is still cleaned up at the next lookup', async ({ harness, page }) => {
+  const fixture = await seedMergeFixture(harness, { forge: 'github', name: 'merge-watched-off', titles: ['Watched off'], branch: 'watched-off-branch', number: 4 });
+  const [threadId] = fixture.threadIds;
+  await harness.rpc('UpdateSettings', { backgroundGitFetch: false });
+  try {
+    await harness.open(page);
+    await openThread(page, 'Watched off');
+    await expect(page.getByTestId('chat-header-pr-badge')).toBeVisible({ timeout: 30_000 });
+    await expectTracked(harness, threadId, 4);
+
+    await mergePR(harness, fixture);
+    await lookUpPR(harness, fixture);
+
+    await expect(page.getByTestId('env-picker-trigger')).toHaveText('Base', { timeout: 10_000 });
+    await expect(notices(page, 'merged.')).toHaveText(`${prLabel('github', 4)} merged. Removed worktree watched-off-branch; this thread now runs in Base.`);
+    expect(existsSync(fixture.worktreePath)).toBe(false);
+    await expectHandled(harness, threadId, 'removed');
+    expect(await stateReads(harness), 'the transition reads the PR once').toBe(1);
+    await expectEveryForgeCallHandled(harness);
+    await expect(errorToasts(page)).toHaveCount(0);
+  } finally {
+    await harness.rpc('UpdateSettings', { backgroundGitFetch: true });
+  }
+});

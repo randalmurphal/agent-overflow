@@ -192,7 +192,12 @@ Mechanism in
   a retry succeeds. No card, banner, toast or button. A worktree already
   gone counts as done; the worktree registry watch reconciles it. A
   failure to read a thread or the forge is retried later, never taken as
-  a reason to skip. Mechanism:
+  a reason to skip. The periodic state read follows "Fetch remotes in the
+  background": off, the app reads no PR state on its own, and a turned-on
+  setting picks up what merged meanwhile at its next pass, without a
+  restart. A lookup of a thread on screen that stops finding its PR still
+  reads that PR once, and the create paths still look the branch up.
+  Mechanism:
   [forge transport](architecture/forge-transport.md#merged-pr-worktree-cleanup).
 - Draft worktree and branch operations are DISK state, not thread state:
   project-scoped RPCs, bound to the thread at send or creation. Accepted

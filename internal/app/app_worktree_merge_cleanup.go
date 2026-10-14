@@ -33,10 +33,11 @@ import (
 //
 // A merge is the forge's word for it, read two ways. When the lookup for a
 // tracked branch answers "no open PR", the tracked pull request's state is
-// read once. And every pollInterval each repository with an unmerged
-// tracked pull request gets one batched state read (git.ReadPRStates).
-// Neither compares commits, so a squash, rebase or force push changes
-// nothing; a pull request closed without merging is retired.
+// read once. And while Settings.BackgroundGitFetch is on, the poll gives
+// each repository with an unmerged tracked pull request one batched state
+// read (git.ReadPRStates) every pollInterval. Neither compares commits, so
+// a squash, rebase or force push changes nothing; a pull request closed
+// without merging is retired.
 //
 // A merged pull request is acted on once, when every thread in its
 // worktree is idle: nothing happens when the thread left the worktree, the
@@ -46,6 +47,11 @@ import (
 // the branch, and each thread that moved to Base is told. A removal git
 // refuses is told once and retried. A failure to read the store or the
 // forge waits for a later pass; it never decides an outcome.
+//
+// Two goroutines run it. The worker handles observations and turn ends,
+// always. The poll runs only while the setting is on: its ticks read
+// states and retry waiting pull requests, so with the setting off the
+// cleanup makes no request on its own.
 
 const (
 	// mergedPRPollInterval is how often one repository's unmerged tracked
@@ -86,9 +92,9 @@ func (b *mergedPRBackoff) fail(now time.Time, base time.Duration, err error) {
 	b.next = now.Add(min(base<<min(b.failures, 8), max(mergedPRPollBackoffMax, base)))
 }
 
-// mergedPRCleanupState is the cleanup's worker. observed and act are
-// handed over under mu; reads, lookups, removals, noneRead and logged
-// belong to the worker goroutine.
+// mergedPRCleanupState is the cleanup's state. observed, act and logged
+// are handed over under mu; reads, lookups, removals and noneRead belong
+// to whichever of the worker and the poll holds pass.
 type mergedPRCleanupState struct {
 	// interval replaces mergedPRPollInterval for a harness boot
 	// (IsolationConfig.MergedPRPollInterval); zero keeps it.
@@ -100,6 +106,16 @@ type mergedPRCleanupState struct {
 	wake     chan struct{}
 	stop     chan struct{}
 	done     chan struct{}
+
+	// pass serializes the worker's and the poll's passes.
+	pass sync.Mutex
+
+	// pollMu guards running and the poll's channels. running is set from
+	// the worker's start to its stop; the poll runs only inside it.
+	pollMu   sync.Mutex
+	running  bool
+	pollStop chan struct{}
+	pollDone chan struct{}
 
 	// waitingIdle is set while a merged pull request waits for its
 	// worktree's threads to go idle, so a turn's end wakes the worker.
@@ -185,9 +201,9 @@ func (a *App) wakeMergedPRCleanup() {
 	c.mu.Unlock()
 }
 
-// startMergedPRCleanup starts the worker. It waits for the first client's
-// catalog reads like every unattended scan, then acts on merged pull
-// requests a previous run left waiting, and polls from the initial delay.
+// startMergedPRCleanup starts the worker, which handles observations and
+// turn ends, and the poll when the setting is on. The worker waits for
+// the first client's catalog reads like every unattended scan.
 func (a *App) startMergedPRCleanup() {
 	c := &a.mergedPRs
 	c.mu.Lock()
@@ -202,45 +218,42 @@ func (a *App) startMergedPRCleanup() {
 
 	go func() {
 		defer close(done)
-		ctx, cancel := context.WithCancel(a.lifeCtx())
+		ctx, cancel := stoppableContext(a.lifeCtx(), stop)
 		defer cancel()
-		go func() {
-			select {
-			case <-stop:
-				cancel()
-			case <-ctx.Done():
-			}
-		}()
 		if err := a.awaitFirstReadsSettled(ctx); err != nil {
 			return
 		}
-		interval := c.pollInterval()
-		pollFrom := time.Now().Add(min(mergedPRPollInitialDelay, interval))
-		ticker := time.NewTicker(min(mergedPRPollTick, interval))
+		// Retries an observation that failed, at the next tick.
+		ticker := time.NewTicker(c.tick())
 		defer ticker.Stop()
-		a.mergedPRActPass(ctx)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-wake:
 				a.mergedPRDrain(ctx)
-			case now := <-ticker.C:
+			case <-ticker.C:
 				a.mergedPRDrain(ctx)
-				if !now.Before(pollFrom) {
-					a.mergedPRPoll(ctx, now)
-				}
-				a.mergedPRActPass(ctx)
 			}
 		}
 	}()
+
+	c.pollMu.Lock()
+	c.running = true
+	c.pollMu.Unlock()
+	a.reconcileMergedPRPoll(min(mergedPRPollInitialDelay, c.pollInterval()))
 }
 
-// stopMergedPRCleanup stops the worker and joins it. It removes worktrees
-// and stops sessions, so Shutdown joins it before the session close and the
-// store close. Safe before start and twice.
+// stopMergedPRCleanup stops the poll and the worker and joins them. They
+// remove worktrees and stop sessions, so Shutdown joins them before the
+// session close and the store close. Safe before start and twice.
 func (a *App) stopMergedPRCleanup() {
 	c := &a.mergedPRs
+	c.pollMu.Lock()
+	c.running = false
+	c.stopMergedPRPollLocked()
+	c.pollMu.Unlock()
+
 	c.mu.Lock()
 	stop, done := c.stop, c.done
 	c.stop = nil
@@ -252,10 +265,94 @@ func (a *App) stopMergedPRCleanup() {
 	<-done
 }
 
+// reconcileMergedPRPoll runs the poll while the cleanup runs and
+// Settings.BackgroundGitFetch is on, and stops and joins it otherwise.
+// UpdateSettings calls it when the setting changes. delay holds a newly
+// started poll's first state read; acting on merged pull requests waiting
+// from before starts at once.
+func (a *App) reconcileMergedPRPoll(delay time.Duration) {
+	c := &a.mergedPRs
+	c.pollMu.Lock()
+	defer c.pollMu.Unlock()
+	if !c.running || !a.backgroundFetchSettingOn() {
+		c.stopMergedPRPollLocked()
+		return
+	}
+	if c.pollStop != nil {
+		return
+	}
+	stop, done := make(chan struct{}), make(chan struct{})
+	c.pollStop, c.pollDone = stop, done
+	go func() {
+		defer close(done)
+		ctx, cancel := stoppableContext(a.lifeCtx(), stop)
+		defer cancel()
+		if err := a.awaitFirstReadsSettled(ctx); err != nil {
+			return
+		}
+		pollFrom := time.Now().Add(delay)
+		ticker := time.NewTicker(c.tick())
+		defer ticker.Stop()
+		c.pass.Lock()
+		a.mergedPRActPass(ctx)
+		c.pass.Unlock()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				c.pass.Lock()
+				if !now.Before(pollFrom) {
+					a.mergedPRPoll(ctx, now)
+				}
+				a.mergedPRActPass(ctx)
+				c.pass.Unlock()
+			}
+		}
+	}()
+}
+
+// stopMergedPRPollLocked stops the poll and joins it. Callers hold pollMu.
+func (c *mergedPRCleanupState) stopMergedPRPollLocked() {
+	if c.pollStop == nil {
+		return
+	}
+	close(c.pollStop)
+	<-c.pollDone
+	c.pollStop, c.pollDone = nil, nil
+}
+
+// mergedPRPollRunning reports whether the poll goroutine is running.
+func (c *mergedPRCleanupState) mergedPRPollRunning() bool {
+	c.pollMu.Lock()
+	defer c.pollMu.Unlock()
+	return c.pollStop != nil
+}
+
+// backgroundFetchSettingOn reads Settings.BackgroundGitFetch live.
+func (a *App) backgroundFetchSettingOn() bool {
+	return a.settings != nil && a.settings.Get().BackgroundGitFetch
+}
+
+// stoppableContext is parent, also cancelled when stop closes.
+func stoppableContext(parent context.Context, stop <-chan struct{}) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
 // mergedPRDrain handles the observations handed over since the last drain,
 // then runs an act pass when one was asked for or a merge was found.
 func (a *App) mergedPRDrain(ctx context.Context) {
 	c := &a.mergedPRs
+	c.pass.Lock()
+	defer c.pass.Unlock()
 	c.mu.Lock()
 	observed := c.observed
 	c.observed = nil

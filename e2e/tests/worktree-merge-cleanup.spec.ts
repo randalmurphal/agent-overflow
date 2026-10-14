@@ -12,7 +12,9 @@
 // not repeat; a removal git refuses is told once with no path, retried, and
 // removed once git allows it; a worktree moved to another branch, or a
 // thread that left its worktree, is left alone; a fork's PR from the same
-// branch name is not shown, tracked or acted on, on both forges; a running
+// branch name is not shown, tracked or acted on, on both forges; with
+// "Fetch remotes in the background" off nothing is read, and turning it on
+// cleans up the PR that merged meanwhile; a running
 // turn delays the cleanup until it ends; a message the user sent after the
 // merge, or a new open PR on the branch, leaves the worktree alone; a
 // shared worktree moves both threads and tells both; a PR the app's create
@@ -352,6 +354,36 @@ test('a thread that left its worktree before the merge is not moved and gets no 
   await expect(page.getByTestId('env-picker-trigger')).toHaveText('Base');
   await expect(notices(page, 'merged')).toHaveCount(0);
   await expectEveryForgeCallHandled(harness);
+});
+
+test('with background fetch off a merged PR no pane shows is not read, and turning it on cleans it up', async ({ harness, page }) => {
+  const fixture = await seedMergeFixture(harness, { forge: 'github', name: 'merge-fetch-off', titles: ['Fetch off', 'Elsewhere'], branch: 'fetch-off-branch', number: 38 });
+  const [threadId] = fixture.threadIds;
+  await lookUpPR(harness, fixture);
+  await harness.open(page);
+  await openThread(page, 'Elsewhere');
+  await expectTracked(harness, threadId, 38);
+
+  await harness.rpc('UpdateSettings', { backgroundGitFetch: false });
+  try {
+    const before = await stateReads(harness);
+    await mergePR(harness, fixture);
+    await expectNoMoreStateReads(harness, POLL_MS);
+    expect(await stateReads(harness)).toBe(before);
+    expect(trackedRow(harness, threadId)?.merged_at, 'the merge was read with the setting off').toBe(0);
+    await expectWorktreeKept(harness, threadId, fixture);
+  } finally {
+    await harness.rpc('UpdateSettings', { backgroundGitFetch: true });
+  }
+
+  // The poll starts again and picks up the PR tracked meanwhile.
+  await expectHandled(harness, threadId, 'removed');
+  expect(await samePath((await threadRow(harness, threadId)).workspacePath, fixture.root)).toBe(true);
+  expect(existsSync(fixture.worktreePath), 'the worktree directory is still there').toBe(false);
+  await openThread(page, 'Fetch off');
+  await expect(notices(page, 'merged.')).toHaveText(`${prLabel('github', 38)} merged. Removed worktree fetch-off-branch; this thread now runs in Base.`);
+  await expectEveryForgeCallHandled(harness);
+  await expect(errorToasts(page)).toHaveCount(0);
 });
 
 test('a turn running when the PR merges delays the cleanup until it ends', async ({ harness, page }) => {

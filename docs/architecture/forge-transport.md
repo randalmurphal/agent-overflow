@@ -247,16 +247,23 @@ A PR the forge no longer has counts as closed.
 | Trigger | Requests |
 |---|---|
 | A repository with no unmerged tracked PR whose thread is in its worktree | none |
-| Poll, per repository with one (every 5 minutes, first after 45s) | 1 state read |
+| Poll, per repository with one, while background fetch is on (every 5 minutes, first after 45s from boot or the first tick after it is turned on) | 1 state read |
 | A failed poll | the next after 10, 20, 30 minutes (doubling from the poll interval, capped at 30) |
 | A watched lookup that stops finding the tracked PR | 1 state read |
 | Acting on a merged PR, after the local checks pass | 1 open-PR lookup of the branch (one page unless forks' PRs share the name) |
 | An act-time lookup that fails, or still lists the merged PR as open | the next after 2, 4, 8 ... minutes, capped at 30, per repository |
 | A removal git refuses | no request; the removal retries after 2, 4, 8 ... minutes, capped at 30 |
 
-A `*forgeapi.RateLimitedError` waits until its `Until` instead. The
-worker runs whether or not background fetch is enabled, and waits for the
-first client's reads like other unattended work. An act pass that finds a
+A `*forgeapi.RateLimitedError` waits until its `Until` instead. Two
+goroutines run the cleanup, serialized per pass. The worker handles
+lookup answers and turn ends, always. The poll, which reads states and
+retries waiting PRs on its tick, runs only while
+`Settings.BackgroundGitFetch` is on: `UpdateSettings` starts it, or stops
+and joins it, with no restart (`reconcileMergedPRPoll`). With the setting
+off the cleanup sends no request of its own; a merged PR waiting for a
+retry is tried again at the next act pass a turn end or a merge found by
+a lookup starts. Both wait for the first client's reads like other unattended
+work. An act pass that finds a
 thread busy marks itself waiting and runs again when a turn completes;
 each pass first skips what is backing off, so a busy or failing worktree
 costs no forge request per pass. `AO_HARNESS_TIMING` `merged-pr-poll`

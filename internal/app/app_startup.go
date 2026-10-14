@@ -264,9 +264,9 @@ func (a *App) startUnattendedWork() error {
 	// harness mode. See app_git_background_fetch.go.
 	a.startBackgroundGitFetch()
 
-	// Remove a thread's worktree once its pull request merges, on the
-	// background fetch's cadence and independent of its setting. See
-	// app_worktree_merge_cleanup.go.
+	// Remove a thread's worktree once its pull request merges. Its poll
+	// follows Settings.BackgroundGitFetch, started and stopped live by
+	// UpdateSettings. See app_worktree_merge_cleanup.go.
 	a.startMergedPRCleanup()
 
 	// Serve the canonical domain's certificate, and keep serving it: the

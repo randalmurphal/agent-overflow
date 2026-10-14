@@ -601,3 +601,113 @@ func TestMergedPRNoneReadStaysBounded(t *testing.T) {
 		t.Fatalf("memo after the PR was handled = %v", m.app.mergedPRs.noneRead)
 	}
 }
+
+// unmerge makes PR #5 tracked and unmerged again, so only a state read can
+// find its merge.
+func (m *mergeCase) unmerge(t *testing.T) {
+	t.Helper()
+	if _, err := m.app.store.MarkThreadPullRequestsHandled("github", "github.com", "acme/widgets", 5, store.PROutcomeClosed, 1); err != nil {
+		t.Fatal(err)
+	}
+	m.track(t, m.thread.ID)
+	if row := m.row(t, m.thread.ID); row.MergedAt != 0 || row.HandledAt != 0 {
+		t.Fatalf("row not re-armed: %+v", row)
+	}
+}
+
+func (m *mergeCase) setBackgroundFetch(t *testing.T, on bool) {
+	t.Helper()
+	if _, err := m.app.UpdateSettings(context.Background(), map[string]any{"backgroundGitFetch": on}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// awaitHandled waits for PR #5's row to be handled and returns it.
+func (m *mergeCase) awaitHandled(t *testing.T) store.ThreadPullRequest {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		row := m.row(t, m.thread.ID)
+		if row.HandledAt != 0 {
+			return row
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("PR #5 was never handled: %+v", row)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The poll runs only while Settings.BackgroundGitFetch is on. Off, the
+// cleanup reads nothing on its own; turning it on starts the poll, which
+// picks up the PR tracked meanwhile; off again stops and joins it; once
+// the cleanup stopped, the setting starts nothing.
+func TestMergedPRPollFollowsTheBackgroundFetchSetting(t *testing.T) {
+	t.Parallel()
+	m := newMergeCase(t, "feature/setting")
+	c := &m.app.mergedPRs
+	c.interval = 20 * time.Millisecond
+	m.app.maintenance.firstReadsFallback = time.Millisecond
+	m.unmerge(t)
+	m.setBackgroundFetch(t, false)
+	m.app.startMergedPRCleanup()
+	t.Cleanup(m.app.stopMergedPRCleanup)
+
+	time.Sleep(15 * c.interval)
+	if c.mergedPRPollRunning() {
+		t.Fatal("the poll runs with the setting off")
+	}
+	if n := m.requests.Load(); n != 0 {
+		t.Fatalf("the cleanup made %d forge requests with the setting off", n)
+	}
+	if row := m.row(t, m.thread.ID); row.MergedAt != 0 || row.HandledAt != 0 {
+		t.Fatalf("row changed with the setting off: %+v", row)
+	}
+
+	m.setBackgroundFetch(t, true)
+	if !c.mergedPRPollRunning() {
+		t.Fatal("turning the setting on did not start the poll")
+	}
+	if row := m.awaitHandled(t); row.Outcome != store.PROutcomeRemoved {
+		t.Fatalf("outcome = %q, want removed", row.Outcome)
+	}
+
+	c.pollMu.Lock()
+	pollDone := c.pollDone
+	c.pollMu.Unlock()
+	m.setBackgroundFetch(t, false)
+	if c.mergedPRPollRunning() {
+		t.Fatal("turning the setting off did not stop the poll")
+	}
+	select {
+	case <-pollDone:
+	default:
+		t.Fatal("turning the setting off returned before the poll goroutine ended")
+	}
+	m.app.stopMergedPRCleanup()
+	m.setBackgroundFetch(t, true)
+	if c.mergedPRPollRunning() {
+		t.Fatal("the setting started the poll of a stopped cleanup")
+	}
+}
+
+// With the setting off, a lookup that stops finding the tracked PR still
+// reads its state once, and the merge it finds is acted on.
+func TestMergedPRWatchedReadRunsWithTheSettingOff(t *testing.T) {
+	t.Parallel()
+	m := newMergeCase(t, "feature/watched-off")
+	m.app.mergedPRs.interval = 20 * time.Millisecond
+	m.app.maintenance.firstReadsFallback = time.Millisecond
+	m.unmerge(t)
+	m.setBackgroundFetch(t, false)
+	m.app.startMergedPRCleanup()
+	t.Cleanup(m.app.stopMergedPRCleanup)
+
+	m.app.observeOpenPR(gitops.OpenPRObservation{Cwd: m.path, Branch: m.thread.Branch})
+	if row := m.awaitHandled(t); row.Outcome != store.PROutcomeRemoved {
+		t.Fatalf("outcome = %q, want removed", row.Outcome)
+	}
+	if m.app.mergedPRs.mergedPRPollRunning() {
+		t.Fatal("the poll runs with the setting off")
+	}
+}
