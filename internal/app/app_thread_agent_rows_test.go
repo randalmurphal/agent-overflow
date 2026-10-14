@@ -125,8 +125,9 @@ func TestThreadAgentRowsReadNoDelivery(t *testing.T) {
 	f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
 
 	rows := f.agentRows(t, f.caller.ID).Rows
-	if len(rows) != 1 || rows[0].State != threadtools.RequestFinished || !strings.Contains(rows[0].Answer, "nine minutes") {
-		t.Fatalf("rows = %+v; want the settled spawn with its answer", rows)
+	if len(rows) != 1 || rows[0].State != threadtools.RequestFinished || !strings.Contains(rows[0].Answer, "nine minutes") ||
+		rows[0].Provider != string(provider.Claude) {
+		t.Fatalf("rows = %+v; want the settled spawn with its answer and provider", rows)
 	}
 	f.app.threadRequestsWG.Wait()
 	if row := f.request(t, ack.Token); row.DeliveredAt != 0 || row.DeliveredHow != "" {

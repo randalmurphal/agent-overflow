@@ -213,6 +213,17 @@ export function ledgerRow(harness: HarnessApp, token: string): LedgerRow | undef
   }
 }
 
+/** The send ids held in a thread's durable queue, in queue order. */
+export function heldSendIds(harness: HarnessApp, threadId: string): string[] {
+  const db = new DatabaseSync(join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    return (db.prepare('SELECT send_id FROM flush_queue_items WHERE thread_id = ? ORDER BY enqueued_at, rowid').all(threadId) as { send_id: string }[])
+      .map((row) => row.send_id);
+  } finally {
+    db.close();
+  }
+}
+
 /** The next input the mock in `cwd` takes whose text includes every part. */
 export function mockInput(harness: HarnessApp, cwd: string, parts: string[], timeoutMs = 60_000) {
   return harness.waitForEvent<HarnessMockEventData>(

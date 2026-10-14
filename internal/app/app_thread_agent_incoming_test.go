@@ -11,7 +11,7 @@ import (
 	"agent-overflow/internal/usermessage"
 )
 
-// A request another thread queued behind this thread's turn is an incoming
+// A request another thread queued for this thread is an incoming
 // row: the queue names its origin, and withdrawing it takes it out of the
 // queue and tells the sender's agent the user withdrew it.
 func TestThreadAgentIncomingRequestWithdrawTellsTheSender(t *testing.T) {

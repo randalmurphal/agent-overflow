@@ -9,13 +9,14 @@
 // the caller's wake armed with the user named, interrupts the spawned
 // child, stops the child's background shell and cascades into the
 // grandchild, whose own caller is woken the same way; Stop All cascades;
-// Background's Stop All leaves the rows; and the thread's own Stop does not
-// cascade; a request queued behind a busy thread's turn is an incoming row
-// there, named by its sender and kind, and its Stop withdraws it and wakes
-// the sender with the user named. The cross-computer rows are
+// Background's Stop All leaves the rows; the thread's own Stop does not
+// cascade; and an answer held in the caller's queue (its session cannot
+// start) is an incoming row there, named by its sender and kind, whose Stop
+// withdraws it and leaves the answer owed with its wake disarmed. The cross-computer rows are
 // thread-tools-paired.spec.ts's.
 import { test, expect, type SeedResult } from './fixtures.js';
-import { advanceGate, awaitGate, awaitToolAnswer, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
+import { rename } from 'node:fs/promises';
+import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
 import {
   CHILD,
@@ -24,8 +25,8 @@ import {
   PEER,
   agentRow,
   approvalTool,
-  backgroundShellSteps,
   agentsBody,
+  heldSendIds,
   ledgerRow,
   mockInput,
   mockInterrupt,
@@ -35,7 +36,6 @@ import {
 } from './agents-tray-helpers.js';
 
 const USER_STOP = 'The user stopped it from the Agents tray';
-const USER_WITHDREW = "The user withdrew it from the recipient's queue";
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: rows list, nest, block, settle and leave; a row's Stop cascades into what the child runs`, async ({ harness, page }) => {
@@ -77,6 +77,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await advanceGate(harness, peerHold.mockId, 'peer-hold');
     await expect(send).toHaveAttribute('data-settled', 'true', { timeout: 30_000 });
     await expect(send.getByTestId('agent-tray-row-state')).toHaveText(/finished|replied/);
+    await expect(send.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', provider);
     await capture(page, `agents-${provider}-settled.png`, agentsBody(page));
     await expect(page.getByTestId('activity-rail-agents-count').filter({ visible: true })).toHaveText('2');
     const settledAt = Date.now();
@@ -170,7 +171,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(agentsBody(page).getByTestId('agent-tray-row')).toHaveCount(0, { timeout: 30_000 });
   });
 
-  test(`${provider}: a request queued behind a busy thread is an incoming row there, and its Stop withdraws it`, async ({ harness, page }) => {
+  test(`${provider}: an answer held in the caller's queue is an incoming row there, and its Stop withdraws it`, async ({ harness, page }) => {
     test.setTimeout(180_000);
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
       projects: [
@@ -181,49 +182,58 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const [leadProject, peerProject] = seed.projects;
     const lead = leadProject.threadIds[0];
     const peer = peerProject.threadIds[0];
-    await setScenario(harness, peerProject.path, threadToolsScenario({
-      name: `incoming-${provider}-peer`, provider, echoUserMessage: true,
-      turns: [{ steps: [...backgroundShellSteps(provider), { gate: 'peer-busy' }], text: 'Busy work done.' }, { text: 'Noted.' }],
-    }));
     await setScenario(harness, leadProject.path, threadToolsScenario({
       name: `incoming-${provider}-lead`, provider, echoUserMessage: true,
-      turns: [
-        { steps: [{ call: { tool: 'thread_send', args: { thread_id: peer, message: 'Check the changelog.', notify: true } } }], text: 'Asked the peer.' },
-        { text: 'Noted.' },
-      ],
+      turns: [{ steps: [{ call: { tool: 'thread_send', args: { thread_id: peer, message: 'Check the changelog.', notify: true } } }], text: 'Asked the peer.' }],
     }));
-    // The peer's shell is work the queue waits behind, so the request
-    // waits there.
-    await harness.rpc('StartSession', peer);
-    await harness.rpc('SendMessage', peer, 'do the busy work', null);
-    const busy = await awaitGate(harness, 'peer-busy', peerProject.path);
+    await setScenario(harness, peerProject.path, threadToolsScenario({
+      name: `incoming-${provider}-peer`, provider, echoUserMessage: true,
+      turns: [{ steps: [{ gate: 'peer-hold' }], text: 'The changelog is fine.' }],
+    }));
     await harness.rpc('StartSession', lead);
     await harness.rpc('SendMessage', lead, 'ask the peer', null);
     const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', cwd: leadProject.path, timeoutMs: 60_000 });
     expect(send.isError, send.text).toBe(false);
     const token = send.value!.token;
+    await awaitTurnCompleted(harness, lead);
+    const peerHold = await awaitGate(harness, 'peer-hold', peerProject.path);
 
-    await harness.open(page);
-    await openAgents(page, PEER);
-    const incoming = agentsBody(page).getByTestId('agent-incoming-row');
-    await expect(incoming).toHaveCount(1);
-    await expect(incoming).toHaveAttribute('data-kind', 'request');
-    await expect(incoming.getByTestId('agent-incoming-row-sender')).toHaveText(`from ${LEAD}`);
-    await expect(page.getByTestId('activity-rail-agents-count').filter({ visible: true })).toHaveText('1');
-    await capture(page, `agents-${provider}-incoming.png`, agentsBody(page));
+    // A live session takes a queued message at once; the caller's session
+    // has ended and cannot start again, so the answer waits in its queue.
+    await harness.rpc('StopSession', lead);
+    const away = `${leadProject.path}.away`;
+    if (provider === 'codex') {
+      await setScenario(harness, leadProject.path, {
+        ...threadToolsScenario({ name: `incoming-${provider}-refused`, provider, turns: [{ text: 'unreached' }] }),
+        codex: { responses: {
+          initialize: '{"jsonrpc":"2.0","id":${REQUEST_ID},"error":{"code":-32603,"message":"mock: the app-server refused to start"}}',
+        } },
+      });
+    } else {
+      await rename(leadProject.path, away);
+    }
+    try {
+      await advanceGate(harness, peerHold.mockId, 'peer-hold');
+      await expect.poll(() => heldSendIds(harness, lead), { timeout: 30_000 }).toEqual([`thread-wake:${token}`]);
 
-    const leadWoken = mockInput(harness, leadProject.path, [token, USER_WITHDREW]);
-    await incoming.getByTestId('agent-incoming-row-stop').click();
-    await expect(page.getByTestId('toast').filter({ hasText: "Withdrew the incoming request before this thread's agent read it." })).toBeVisible({ timeout: 30_000 });
-    await leadWoken;
-    const row = ledgerRow(harness, token)!;
-    expect(row.state).toBe('cancelled');
-    expect(row.answer).toContain(USER_WITHDREW);
-    await expect(page.getByTestId('activity-rail-agents-toggle')).toHaveCount(0);
-    // The peer's turn ends with nothing queued behind it.
-    const peerInput = harness.waitForEvent('harness:mock', (ev: { cwd?: string; report: { kind: string; input?: string } }) =>
-      ev.report.kind === 'user_input' && ev.cwd === peerProject.path && (ev.report.input ?? '').includes('Check the changelog.'), 5_000).then(() => true, () => false);
-    await advanceGate(harness, busy.mockId, 'peer-busy');
-    expect(await peerInput, 'the withdrawn request reached the peer').toBe(false);
+      await harness.open(page);
+      await openAgents(page, LEAD);
+      const incoming = agentsBody(page).getByTestId('agent-incoming-row');
+      await expect(incoming).toHaveCount(1);
+      await expect(incoming).toHaveAttribute('data-kind', 'reply');
+      await expect(incoming.getByTestId('agent-incoming-row-sender')).toHaveText(`from ${PEER}`);
+      await capture(page, `agents-${provider}-incoming.png`, agentsBody(page));
+
+      await incoming.getByTestId('agent-incoming-row-stop').click();
+      await expect(page.getByTestId('toast').filter({ hasText: "Withdrew the incoming reply before this thread's agent read it." })).toBeVisible({ timeout: 30_000 });
+      expect(heldSendIds(harness, lead)).toEqual([]);
+      // The answer stays owed, for thread_status to read, and its wake is disarmed.
+      const row = ledgerRow(harness, token)!;
+      expect(row.state).toMatch(/finished|replied/);
+      expect(row.notify).toBe(0);
+      await expect(incoming).toHaveCount(0);
+    } finally {
+      if (provider === 'claude') await rename(away, leadProject.path).catch(() => undefined);
+    }
   });
 }

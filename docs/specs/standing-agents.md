@@ -718,9 +718,10 @@ closes up their spacing so the row holds at a phone width.
   opens the thread it went to otherwise. Clicking an open row opens the
   target in a pane.
 - **Incoming.** Messages other threads' agents, wakes and workers queued
-  behind this thread's turn are rows too, labelled incoming with the
-  sender and the kind (request, reply, wake, question), until the
-  thread's agent takes them in. Their Stop withdraws the message and gives
+  for this thread are rows too, labelled incoming with the sender and the
+  kind (request, reply, wake, question), until they leave the queue. A
+  live session takes a queued message at once, so one waits while the
+  thread has no session that can take it: its start is pending or failed. Their Stop withdraws the message and gives
   it back the way a queue drop does: a request's sender is told the user
   withdrew it, an answer is owed again and disarmed for `thread_status`, a
   worker's question goes back to the user, a wake's row records it as not

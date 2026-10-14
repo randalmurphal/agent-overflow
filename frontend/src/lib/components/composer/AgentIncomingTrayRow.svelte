@@ -1,7 +1,7 @@
 <script lang="ts">
   // An incoming row of the activity rail's Agents body: a message another
-  // thread's agent, a wake or a worker queued behind this thread's current
-  // turn, until the thread's agent takes it in. It names the sender and the
+  // thread's agent, a wake or a worker queued for this thread, while it is
+  // held in the queue. It names the sender and the
   // kind; clicking it opens the sending thread; Stop withdraws it from the
   // queue, and its sender is told (StopThreadAgentIncoming).
   import type { BackendKey } from '../../transport/backendKey';

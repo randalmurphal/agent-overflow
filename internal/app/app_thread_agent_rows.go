@@ -327,6 +327,11 @@ func (v threadAgentView) row(row store.ThreadRequest, depth int) ThreadAgentRow 
 		out.AnswerKind = state.AnswerKind
 		out.WakeItemID = v.app.threadAgentWakeItem(row)
 	}
+	if row.TargetComputerID == "" && row.TargetThreadID != "" {
+		if thread, err := v.app.store.GetThread(row.TargetThreadID); err == nil {
+			out.Provider = thread.Provider
+		}
+	}
 	switch {
 	case settled:
 	case row.TargetComputerID != "":
@@ -334,9 +339,6 @@ func (v threadAgentView) row(row store.ThreadRequest, depth int) ThreadAgentRow 
 			out.BlockedOn = "person"
 		}
 	case row.TargetThreadID != "":
-		if thread, err := v.app.store.GetThread(row.TargetThreadID); err == nil {
-			out.Provider = thread.Provider
-		}
 		if v.app.triage != nil {
 			snapshot := v.app.triage.LiveStateSnapshotForThread(row.TargetThreadID)
 			out.BlockedOn, out.BlockedDetail, out.BlockedRoutedTo = threadAgentBlockedOn(snapshot)

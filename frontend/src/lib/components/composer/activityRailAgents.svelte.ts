@@ -13,9 +13,9 @@
 // it stays while that row does.
 //
 // It also lists the incoming messages: what other threads' agents, wakes
-// and workers queued behind this thread's current turn, read from the send
-// queue's store and classified by agentMessageKind. Each leaves when it is
-// dispatched.
+// and workers queued for this thread and still held there, read from the
+// send queue's store and classified by agentMessageKind. Each leaves when
+// it is dispatched.
 //
 // Owned beside the background and wake controllers by the composer's rail
 // host, which counts it in the rail's visibility. One controller per
