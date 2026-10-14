@@ -72,6 +72,31 @@ func (f *requestFixture) mockClaude(t *testing.T, replies ...string) {
 	installMockClaudeReplies(t, f.app, replies...)
 }
 
+// mockClaudeAfterTheAck gives the fixture a provider whose one turn holds
+// its result until release runs. A turn that settles before a request's
+// ack is built has its answer delivered by the ack, so a test of the wake
+// that delivers it instead releases the turn after the ack, which release
+// checks carried no answer.
+func (f *requestFixture) mockClaudeAfterTheAck(t *testing.T, reply string) (release func(*testing.T, threadtools.RequestAck)) {
+	t.Helper()
+	gate := filepath.Join(t.TempDir(), "release")
+	installMockClaudeTurns(t, f.app, [][]string{{
+		mockClaudeInitLine,
+		`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":` + quoteJSON(reply) + `}]}}`,
+		testutil.MockWaitForFile(gate),
+		`{"type":"result","subtype":"success","is_error":false}`,
+	}})
+	return func(t *testing.T, ack threadtools.RequestAck) {
+		t.Helper()
+		if ack.Delivered != "" {
+			t.Fatalf("the ack delivered the answer (%q) before the turn was released", ack.Delivered)
+		}
+		if err := os.WriteFile(gate, nil, 0o600); err != nil {
+			t.Fatalf("release the turn: %v", err)
+		}
+	}
+}
+
 // installMockClaudeReplies gives one app a provider that answers each user
 // message with one assistant message and ends the turn.
 func installMockClaudeReplies(t *testing.T, app *App, replies ...string) {
@@ -768,7 +793,7 @@ func (f *requestFixture) awaitRequestState(t *testing.T, token string, want ...s
 func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
-	f.mockClaude(t, "the migration is reversible")
+	release := f.mockClaudeAfterTheAck(t, "the migration is reversible")
 	// The caller is mid-turn, so the wake queues at the turn boundary and
 	// stays there to be read instead of racing a session start.
 	if err := f.app.store.InsertTurn(store.Turn{
@@ -793,6 +818,7 @@ func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 	if ack.Outcome != threadtools.OutcomeBackgrounded {
 		t.Fatalf("ack outcome = %q, want backgrounded", ack.Outcome)
 	}
+	release(t, ack)
 	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
 	if !strings.Contains(string(row.Answer), "reversible") {
 		t.Fatalf("answer = %q", row.Answer)
@@ -1558,7 +1584,7 @@ func TestThreadLateReplyIsRefusedOnceTheHoldHasRunOut(t *testing.T) {
 func TestThreadLateReplyArrivesAsASecondWake(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
-	f.mockClaude(t, "looking into it")
+	release := f.mockClaudeAfterTheAck(t, "looking into it")
 	// The caller is mid-turn so both wakes stay in the queue to be read.
 	if err := f.app.store.InsertTurn(store.Turn{
 		TurnID: "caller-open", ThreadID: f.caller.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli(),
@@ -1571,6 +1597,7 @@ func TestThreadLateReplyArrivesAsASecondWake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	release(t, ack)
 	settled := f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
 	waitUntil(t, 10*time.Second, func() bool { return f.request(t, ack.Token).DeliveredAt != 0 })
 
@@ -2648,7 +2675,7 @@ func TestThreadRequestsListAndExport(t *testing.T) {
 func TestRestoredWakeIsRecordedAsADraft(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
-	f.mockClaude(t, "the backup finished")
+	release := f.mockClaudeAfterTheAck(t, "the backup finished")
 	f.holdCallerTurn(t)
 
 	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
@@ -2657,6 +2684,7 @@ func TestRestoredWakeIsRecordedAsADraft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
+	release(t, ack)
 	waitUntil(t, 10*time.Second, func() bool {
 		return f.request(t, ack.Token).DeliveredHow == store.ThreadWakeQueued
 	})
