@@ -425,6 +425,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "StopClaudeTask", ID: 536320598, Scope: "threads:operate", Route: "thread"},                                        // main.App.StopClaudeTask
 	{Name: "StopCodexSubagent", ID: 4232843083, Scope: "threads:operate", Route: "thread"},                                    // main.App.StopCodexSubagent
 	{Name: "StopSession", ID: 3838500111, Scope: "threads:operate", Route: "thread"},                                          // main.App.StopSession
+	{Name: "StopThreadAgentIncoming", ID: 860377738, Scope: "threads:operate", Route: "thread"},                               // main.App.StopThreadAgentIncoming
 	{Name: "StopThreadAgentRow", ID: 2507523326, Scope: "threads:operate", Route: "thread"},                                   // main.App.StopThreadAgentRow
 	{Name: "StopThreadAgentRows", ID: 3580127735, Scope: "threads:operate", Route: "thread"},                                  // main.App.StopThreadAgentRows
 	{Name: "StopThreadBackgroundWork", ID: 2155771620, Scope: "threads:operate", Route: "thread"},                             // main.App.StopThreadBackgroundWork

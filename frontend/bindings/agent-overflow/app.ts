@@ -2991,7 +2991,8 @@ export function ListTerminals(threadID: string): $CancellablePromise<terminal$0.
 
 /**
  * ListThreadAgentRows lists the requests a thread made of other threads that
- * it is waiting on, with their nested rows.
+ * it is waiting on, with their nested rows, those a paired computer holds
+ * included.
  */
 export function ListThreadAgentRows(threadID: string): $CancellablePromise<app$0.ThreadAgentRows> {
     return $Call.ByID(2323998099, threadID).then(($result: any) => {
@@ -5256,11 +5257,27 @@ export function StopSession(threadID: string): $CancellablePromise<void> {
 }
 
 /**
+ * StopThreadAgentIncoming withdraws one message an agent or a wake queued
+ * for the thread, named by its send id. A message the thread's agent
+ * already took in reports ended.
+ */
+export function StopThreadAgentIncoming(threadID: string, sendID: string): $CancellablePromise<app$0.ThreadAgentStop> {
+    return $Call.ByID(860377738, threadID, sendID).then(($result: any) => {
+        return $$createType193($result);
+    });
+}
+
+/**
  * StopThreadAgentRow stops one Agents row of the thread: it cancels the
  * request, as thread_cancel does, with the caller's wake left armed so its
- * agent learns a person stopped it; and when the row's caller spawned the
- * target, it interrupts the target's running turn. A row that had already
- * settled reports ended.
+ * agent learns a person stopped it. When the row's caller spawned the target
+ * the Stop cascades into it as stopping a provider subagent does: its
+ * Backgrounded items, its running turn, and its own Agents rows, each by the
+ * same rule, on whichever computer it runs (agent_stop). A computer that
+ * predates agent_stop has its request cancelled and its turn interrupted,
+ * and the result names it in Failures. A nested row a paired computer
+ * listed is stopped through that computer. A row that had already settled
+ * reports ended.
  */
 export function StopThreadAgentRow(threadID: string, token: string): $CancellablePromise<app$0.ThreadAgentStop> {
     return $Call.ByID(2507523326, threadID, token).then(($result: any) => {
@@ -5269,8 +5286,10 @@ export function StopThreadAgentRow(threadID: string, token: string): $Cancellabl
 }
 
 /**
- * StopThreadAgentRows stops every open Agents row of the thread, nested rows
- * included, as StopThreadAgentRow stops one, and reports each.
+ * StopThreadAgentRows stops every Agents row of the thread as
+ * StopThreadAgentRow stops one, and reports each top-level row with what
+ * its cascade stopped beneath it, then withdraws the incoming messages
+ * queued for the thread as StopThreadAgentIncoming does, each reported.
  */
 export function StopThreadAgentRows(threadID: string): $CancellablePromise<app$0.ThreadAgentStop[]> {
     return $Call.ByID(3580127735, threadID).then(($result: any) => {

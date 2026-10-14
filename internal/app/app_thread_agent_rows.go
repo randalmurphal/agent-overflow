@@ -159,6 +159,9 @@ type ThreadAgentStop struct {
 	Background  int      `json:"background,omitempty"`
 	Nested      int      `json:"nested,omitempty"`
 	Failures    []string `json:"failures,omitempty"`
+	// Incoming marks the withdrawal of a message queued for the thread,
+	// named by its send id in Token; ended then means it was delivered.
+	Incoming bool `json:"incoming,omitempty"`
 }
 
 // ListThreadAgentRows lists the requests a thread made of other threads that
@@ -461,11 +464,13 @@ func (a *App) parkedRequestTokens() []string {
 // StopThreadAgentRow stops one Agents row of the thread: it cancels the
 // request, as thread_cancel does, with the caller's wake left armed so its
 // agent learns a person stopped it. When the row's caller spawned the target
-// on this computer, the Stop cascades into it as stopping a provider subagent
-// does: its Backgrounded items, its running turn, and its own Agents rows,
-// each by the same rule. A paired computer's target has its request
-// cancelled and, for a spawn, its turn interrupted; the thread tools reach no
-// further there. A row that had already settled reports ended.
+// the Stop cascades into it as stopping a provider subagent does: its
+// Backgrounded items, its running turn, and its own Agents rows, each by the
+// same rule, on whichever computer it runs (agent_stop). A computer that
+// predates agent_stop has its request cancelled and its turn interrupted,
+// and the result names it in Failures. A nested row a paired computer
+// listed is stopped through that computer. A row that had already settled
+// reports ended.
 //
 //ao:scope threads:operate
 func (a *App) StopThreadAgentRow(ctx context.Context, threadID, token string) (ThreadAgentStop, error) {
@@ -509,7 +514,8 @@ func (a *App) stopThreadAgentRowIn(ctx context.Context, threadID, token string) 
 
 // StopThreadAgentRows stops every Agents row of the thread as
 // StopThreadAgentRow stops one, and reports each top-level row with what
-// its cascade stopped beneath it.
+// its cascade stopped beneath it, then withdraws the incoming messages
+// queued for the thread as StopThreadAgentIncoming does, each reported.
 //
 //ao:scope threads:operate
 func (a *App) StopThreadAgentRows(ctx context.Context, threadID string) ([]ThreadAgentStop, error) {
@@ -523,10 +529,16 @@ func (a *App) StopThreadAgentRows(ctx context.Context, threadID string) ([]Threa
 			top = append(top, *entries[index].request)
 		}
 	}
+	// The incoming rows are the ones shown now: the wakes the Stops below
+	// queue tell the agent what the person stopped, and are not withdrawn.
+	incoming := a.incomingAgentSendIDs(threadID)
 	out := make([]ThreadAgentStop, len(top))
 	runBounded(len(top), threadAgentStopsInFlight, func(index int) {
 		out[index] = a.stopThreadAgentRequest(ctx, top[index], map[string]bool{threadID: true})
 	})
+	for _, sendID := range incoming {
+		out = append(out, a.withdrawIncomingAgentMessage(ctx, threadID, sendID))
+	}
 	return out, nil
 }
 
