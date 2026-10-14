@@ -262,7 +262,8 @@ retries waiting PRs on its tick, runs only while
 and joins it, with no restart (`reconcileMergedPRPoll`). With the setting
 off the cleanup sends no request of its own; a merged PR waiting for a
 retry is tried again at the next act pass a turn end or a merge found by
-a lookup starts. Both wait for the first client's reads like other unattended
+a lookup starts, and the worker's start arms that turn-end pass when a
+previous run left one (`armMergedPRWaiting`, a store read). Both wait for the first client's reads like other unattended
 work. An act pass that finds a
 thread busy marks itself waiting and runs again when a turn completes;
 each pass first skips what is backing off, so a busy or failing worktree

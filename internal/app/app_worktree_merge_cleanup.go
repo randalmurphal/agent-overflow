@@ -223,6 +223,7 @@ func (a *App) startMergedPRCleanup() {
 		if err := a.awaitFirstReadsSettled(ctx); err != nil {
 			return
 		}
+		a.armMergedPRWaiting()
 		// Retries an observation that failed, at the next tick.
 		ticker := time.NewTicker(c.tick())
 		defer ticker.Stop()
@@ -263,6 +264,22 @@ func (a *App) stopMergedPRCleanup() {
 	}
 	close(stop)
 	<-done
+}
+
+// armMergedPRWaiting makes the next turn end start an act pass when a
+// previous run left a merged pull request unhandled, so it is acted on
+// with the poll off too. It reads the store only.
+func (a *App) armMergedPRWaiting() {
+	rows, err := a.store.ListPendingThreadPullRequests()
+	if err != nil {
+		// Unknown: a turn end asks for a pass that finds nothing at worst.
+		a.logMergedPR("list", fmt.Sprintf("merged PR cleanup: %v", err))
+		a.mergedPRs.waitingIdle.Store(true)
+		return
+	}
+	if slices.ContainsFunc(rows, func(row store.ThreadPullRequest) bool { return row.MergedAt != 0 }) {
+		a.mergedPRs.waitingIdle.Store(true)
+	}
 }
 
 // reconcileMergedPRPoll runs the poll while the cleanup runs and
