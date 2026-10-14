@@ -56,21 +56,24 @@ func (s *Service) RememberEvent(name eventchan.Channel, data any) {
 	}
 }
 
-// MergeSnapshot applies per-limit/window freshness without regressing quota
-// windows: an entry whose reset boundary is older than the cached one is
-// discarded, and same-window jitter in the boundary keeps the cached value.
+// MergeSnapshot applies per-limit/window freshness. A partial reading whose
+// reset boundary is older than the cached one is discarded, and same-window
+// jitter in the boundary keeps the cached value.
 //
-// Merging is per-entry because most readings are PARTIAL — a wire event
-// carries one window, Claude's header fallback carries two and can never see
+// Merging is per-entry because some readings are PARTIAL — a Codex wire event
+// carries one bucket, Claude's header fallback carries two and can never see
 // a model-scoped bucket. A reading that marks itself Complete is the whole
-// answer for the account, so it also DROPS cached limits it omits: a provider
-// removes a bucket from its answer once the bucket has no usage, which is
-// exactly what a mid-window reset produces, and an additive-only merge kept
+// answer for the account: every limit it names replaces the cached one
+// whatever the boundaries say. A cached boundary can be wrong, and a wrong
+// LATER boundary would otherwise reject every true reading until it passed.
+// A Complete reading also DROPS cached limits it omits: a provider removes a
+// bucket from its answer once the bucket has no usage, which is exactly what
+// a mid-window reset produces, and an additive-only merge kept
 // the pre-reset percentage for the rest of the window (2026-09-01: a Fable
 // weekly row frozen at 90% while session and all-models correctly read 0%).
 //
 // Within the same window the NEWEST reading wins, even when its used-percent
-// is lower. Every feed (wire rate-limit headers, the HTTP/app-server probes)
+// is lower. Every feed (the Codex wire, the HTTP/app-server probes)
 // reports the server's current answer, and the server legitimately lowers
 // same-window utilization — a limit increase, or an outright server-side
 // usage reset under an unchanged boundary (2026-09-01: Anthropic manually
@@ -107,7 +110,7 @@ func MergeSnapshot(current, incoming provider.RateLimitsSnapshot) (provider.Rate
 		if index, exists := indexByWindow[key]; exists {
 			prior := merged.Limits[index]
 			resetOrder := compareResetBoundaries(prior.ResetsAt, entry.ResetsAt)
-			if resetOrder < 0 {
+			if resetOrder < 0 && !incoming.Complete {
 				continue
 			}
 			if resetOrder == 0 {
@@ -125,9 +128,6 @@ func MergeSnapshot(current, incoming provider.RateLimitsSnapshot) (provider.Rate
 		changed = true
 	}
 	if incoming.Complete {
-		// Every limit the reading names stays, INCLUDING one rejected above
-		// for an older boundary: the server still lists it, so its cached
-		// value is the better answer, not a dead row.
 		present := make(map[string]struct{}, len(incoming.Limits))
 		for _, entry := range incoming.Limits {
 			if strings.TrimSpace(entry.LimitID) == "" {

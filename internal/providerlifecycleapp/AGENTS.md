@@ -7,10 +7,15 @@ paths, session-event quota attribution, and session-account projection.
 
 ## Merging readings
 
-Most quota readings are PARTIAL: a Claude `rate_limit_event` carries one
-window, the header fallback carries two and can never see a model-scoped
-bucket, and a Codex `account/rateLimits/updated` notification carries one
-bucket. `MergeSnapshot` therefore merges per limit/window rather than replacing.
+Claude quota comes only from `/api/oauth/usage`. The stdio `rate_limit_event`
+cannot say which account it reports (a response to a request sent before an
+account switch lands after it), so the Claude parser drops it.
+
+Some readings are PARTIAL: Claude's header fallback carries two windows and
+can never see a model-scoped bucket, and a Codex `account/rateLimits/updated`
+notification can carry one bucket. `MergeSnapshot` therefore merges per
+limit/window rather than replacing, and drops a partial entry whose reset
+boundary is older than the cached one.
 
 `RateLimitsSnapshot.Complete` is the exception, and only a source that reads
 every bucket in one response sets it (Claude's `/api/oauth/usage`, Codex's
@@ -18,12 +23,13 @@ every bucket in one response sets it (Claude's `/api/oauth/usage`, Codex's
 because a provider removes a bucket from its answer once that bucket has no
 usage, which is exactly what a mid-window reset produces. Without the drop,
 a pre-reset percentage would survive for the rest of the window. Two rules
-follow from that:
+follow:
 
 - A parser that skipped a limit must clear `Complete`. It no longer holds
   the whole answer, and pruning against it would delete a live quota.
-- An entry the reading names but the boundary check rejects still counts as
-  named. The server listed it; its cached value is the better answer.
+- A complete reading replaces every entry it names, whatever the boundaries
+  say. A cached boundary can be wrong, and a wrong later boundary would
+  otherwise reject every true reading until it passed.
 
 The cache is a union of readings, never a reading, so the merged snapshot
 always leaves `Complete` false; otherwise the persisted union would prune a
