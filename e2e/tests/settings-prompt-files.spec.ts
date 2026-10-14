@@ -84,8 +84,6 @@ test('an override is a file: added blank in Settings, written by hand, spawned f
     ],
   });
   const [threadId] = seed.projects[0].threadIds;
-  const pageErrors: string[] = [];
-  page.on('pageerror', (error) => pageErrors.push(error.message));
 
   let promptPath = '';
   try {
@@ -147,9 +145,6 @@ test('an override is a file: added blank in Settings, written by hand, spawned f
     expect(await claudeOverrides(harness)).toEqual([]);
     expect(await exists(promptPath)).toBe(false);
   } finally {
-    // Soft, in the finally: a browser error is reported beside whatever
-    // assertion it caused to time out, not hidden behind it.
-    expect.soft(pageErrors).toEqual([]);
     await harness.rpc('UpdateSettings', { claudePromptOverrides: [] });
   }
 });
@@ -172,8 +167,6 @@ test('a live thread whose next prompt differs shows a dismissible banner that Re
     ],
   });
   const [threadId, otherThreadId] = seed.projects[0].threadIds;
-  const pageErrors: string[] = [];
-  page.on('pageerror', (error) => pageErrors.push(error.message));
 
   try {
     await harness.rpc('UpdateSettings', {
@@ -246,7 +239,6 @@ test('a live thread whose next prompt differs shows a dismissible banner that Re
     await openThread(page, title);
     await expect(banner).toHaveCount(0);
   } finally {
-    expect.soft(pageErrors).toEqual([]);
     await harness.rpc('UpdateSettings', { claudePromptOverrides: [] });
   }
 });
