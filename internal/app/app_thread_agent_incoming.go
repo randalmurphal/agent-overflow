@@ -50,7 +50,9 @@ func incomingAgentSendID(sendID string) bool {
 }
 
 // incomingAgentSendIDs lists the thread's queued messages that are incoming
-// rows, in queue order.
+// rows, in queue order. Interim: the origin and send id decide it, as the
+// frontend's agentMessageKind does, until the queue carries a
+// server-computed agent-message flag that replaces both checks.
 func (a *App) incomingAgentSendIDs(threadID string) []string {
 	var out []string
 	for _, item := range a.queueSnapshotForThread(threadID) {

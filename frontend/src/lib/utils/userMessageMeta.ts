@@ -167,6 +167,11 @@ export function agentWakeOriginLabel(wake: UserMessageOriginWake): string {
  * Reads a `user_text` row's meta and a queued message alike: both carry
  * the origin fields and the send id the app gave the message
  * (internal/app/app_thread_tools_wake.go#threadWakeSendID).
+ *
+ * Interim: whether a queued message is an agent's is decided here and in
+ * the backend's incomingAgentSendIDs until the queue carries a
+ * server-computed agent-message flag. That flag replaces the null branch;
+ * only the mapping to a kind stays.
  */
 export type AgentMessageKind = 'request' | 'reply' | 'question' | 'wake';
 
