@@ -188,7 +188,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'proposed_plan_comments', reason: 'review comments on a proposed plan' },
   { table: 'thread_drafts', columns: ['pending_plan_implementation'], values: { has_content: [0] }, reason: 'a draft seeded from an accepted plan, and an empty draft that only holds attachments' },
   { table: 'diff_review_comments', reason: 'review comments on a pull request diff through the forge' },
-  { table: 'thread_pull_requests', reason: "an open pull request a forge reports for a thread's linked worktree; the top-up seeds no forge" },
+  { table: 'thread_pull_requests', reason: "an open pull request a forge reports for a thread's linked worktree; the top-up seeds no forge pull request" },
   { table: 'chat_bar_favorites', values: { kind: ['discussion'], provider: ['codex', 'claude-tui'] }, reason: 'favorites of other kinds and providers; one favorite proves the table' },
   { table: 'chat_model_profiles', values: { provider: ['claude-tui'], reasoning_effort: ['none', 'minimal', 'low', 'high', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last; the claude-tui provider has no mock' },
 

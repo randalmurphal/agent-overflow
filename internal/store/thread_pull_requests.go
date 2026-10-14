@@ -29,28 +29,31 @@ const (
 // ThreadPullRequest is the pull request a thread was last seen with OPEN
 // (migration v142). MergedAt is unix milliseconds once the forge reported
 // the merge, HandledAt once the app acted on it; both are zero until then.
+// RemovalFailedAt is when the thread was told that removing its worktree
+// failed, while the removal is retried; zero otherwise.
 type ThreadPullRequest struct {
-	ThreadID     string
-	Forge        string
-	Host         string
-	Project      string
-	Number       int
-	URL          string
-	NodeID       string
-	Branch       string
-	WorktreePath string
-	SeenOpenAt   int64
-	MergedAt     int64
-	HandledAt    int64
-	Outcome      string
+	ThreadID        string
+	Forge           string
+	Host            string
+	Project         string
+	Number          int
+	URL             string
+	NodeID          string
+	Branch          string
+	WorktreePath    string
+	SeenOpenAt      int64
+	MergedAt        int64
+	HandledAt       int64
+	RemovalFailedAt int64
+	Outcome         string
 }
 
-const threadPullRequestColumns = `thread_id, forge, host, project, number, url, node_id, branch, worktree_path, seen_open_at, merged_at, handled_at, outcome`
+const threadPullRequestColumns = `thread_id, forge, host, project, number, url, node_id, branch, worktree_path, seen_open_at, merged_at, handled_at, removal_failed_at, outcome`
 
 func scanThreadPullRequest(scan func(...any) error) (ThreadPullRequest, error) {
 	var pr ThreadPullRequest
 	err := scan(&pr.ThreadID, &pr.Forge, &pr.Host, &pr.Project, &pr.Number, &pr.URL, &pr.NodeID,
-		&pr.Branch, &pr.WorktreePath, &pr.SeenOpenAt, &pr.MergedAt, &pr.HandledAt, &pr.Outcome)
+		&pr.Branch, &pr.WorktreePath, &pr.SeenOpenAt, &pr.MergedAt, &pr.HandledAt, &pr.RemovalFailedAt, &pr.Outcome)
 	return pr, err
 }
 
@@ -66,12 +69,12 @@ func (s *Store) RecordOpenThreadPullRequest(pr ThreadPullRequest) (bool, error) 
 		return false, fmt.Errorf("store: record thread pull request: thread, number, url, branch and worktree are required")
 	}
 	result, err := s.db.Exec(`INSERT INTO thread_pull_requests(`+threadPullRequestColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, '')
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, '')
 		ON CONFLICT(thread_id) DO UPDATE SET
 		  forge = excluded.forge, host = excluded.host, project = excluded.project,
 		  number = excluded.number, url = excluded.url, node_id = excluded.node_id,
 		  branch = excluded.branch, worktree_path = excluded.worktree_path,
-		  seen_open_at = excluded.seen_open_at, merged_at = 0, handled_at = 0, outcome = ''
+		  seen_open_at = excluded.seen_open_at, merged_at = 0, handled_at = 0, removal_failed_at = 0, outcome = ''
 		WHERE forge <> excluded.forge OR host <> excluded.host OR project <> excluded.project
 		   OR number <> excluded.number OR outcome = 'closed'
 		   OR (merged_at = 0 AND (url <> excluded.url OR node_id <> excluded.node_id
@@ -138,6 +141,28 @@ func (s *Store) MarkThreadPullRequestsMerged(forge, host, project string, number
 		return 0, fmt.Errorf("store: mark %s %s#%d merged: %w", forge, project, number, err)
 	}
 	return result.RowsAffected()
+}
+
+// MarkThreadPullRequestsRemovalFailed records, on every unhandled row that
+// tracks the pull request (forge, host, project, number), that its threads
+// were told removing the worktree failed, and reports whether this is the
+// first time, so the notice is posted once however often the removal is
+// retried.
+func (s *Store) MarkThreadPullRequestsRemovalFailed(forge, host, project string, number int, at int64) (bool, error) {
+	if at <= 0 {
+		return false, fmt.Errorf("store: mark pull request removal failed: time is required")
+	}
+	result, err := s.db.Exec(`UPDATE thread_pull_requests SET removal_failed_at = ?
+		WHERE forge = ? AND host = ? AND project = ? AND number = ? AND handled_at = 0 AND removal_failed_at = 0`,
+		at, forge, host, project, number)
+	if err != nil {
+		return false, fmt.Errorf("store: mark %s %s#%d removal failed: %w", forge, project, number, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: mark %s %s#%d removal failed: %w", forge, project, number, err)
+	}
+	return n > 0, nil
 }
 
 // MarkThreadPullRequestsHandled records outcome on every unhandled row that

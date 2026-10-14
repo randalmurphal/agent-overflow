@@ -710,6 +710,48 @@ func TestPRStatesReadThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
+// A fork's pull or merge request from a branch of the same name is not
+// the checkout's: the app's open-PR lookup skips it on both forges.
+func TestOpenPRLookupSkipsForksThroughTheAppsForgeCode(t *testing.T) {
+	r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "acme/widgets", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Fork only", HeadRef: "lonely", HeadRepo: "stranger/widgets"},
+			{Number: 2, Title: "Fork", HeadRef: "topic", HeadRepo: "stranger/widgets"},
+			{Number: 3, Title: "Own", HeadRef: "topic"},
+		}},
+		{Forge: "gitlab", Project: "grp/tool", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Fork only", HeadRef: "lonely", HeadRepo: "stranger/tool"},
+			{Number: 2, Title: "Own", HeadRef: "topic"},
+			{Number: 3, Title: "Fork", HeadRef: "topic", HeadRepo: "stranger/tool"},
+		}},
+	}})
+	for _, tc := range []struct {
+		origin string
+		own    int
+	}{
+		{"git@github.com:acme/widgets.git", 3},
+		{"git@gitlab.com:grp/tool.git", 2},
+	} {
+		dir := t.TempDir()
+		for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", tc.origin}} {
+			if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		if open, err := r.core.ListOpenPRs(t.Context(), dir, "lonely"); err != nil || len(open) != 0 {
+			t.Fatalf("%s: a fork's pull alone = %+v, %v; want none", tc.origin, open, err)
+		}
+		if open, err := r.core.ListOpenPRs(t.Context(), dir, "topic"); err != nil || len(open) != 1 || open[0].Number != tc.own {
+			t.Fatalf("%s: own and fork = %+v, %v; want only #%d", tc.origin, open, err, tc.own)
+		}
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Fatalf("unimplemented invocation: %+v", inv)
+		}
+	}
+}
+
 // The app's own create call opens a pull or merge request for the
 // checkout's branch, and the open-PR lookup git status makes finds it.
 func TestCreatePROpensOneTheAppThenFinds(t *testing.T) {

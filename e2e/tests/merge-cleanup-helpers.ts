@@ -78,6 +78,7 @@ export interface TrackedRow {
   worktree_path: string;
   merged_at: number;
   handled_at: number;
+  removal_failed_at: number;
   outcome: string;
 }
 
@@ -86,7 +87,7 @@ export function trackedRows(harness: HarnessApp): TrackedRow[] {
   const database = new DatabaseSync(path.join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
   try {
     return database
-      .prepare('SELECT thread_id, number, branch, worktree_path, merged_at, handled_at, outcome FROM thread_pull_requests ORDER BY thread_id')
+      .prepare('SELECT thread_id, number, branch, worktree_path, merged_at, handled_at, removal_failed_at, outcome FROM thread_pull_requests ORDER BY thread_id')
       .all() as unknown as TrackedRow[];
   } finally {
     database.close();

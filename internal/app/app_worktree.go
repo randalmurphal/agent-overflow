@@ -467,10 +467,17 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 	reattached, sweepErr := a.reattachThreadsFromRemovedWorktree(removal, mutable)
 	finishErr := a.finishWorktreeRemoval(removal, reattached, true)
 	if err := errors.Join(sweepErr, finishErr); err != nil {
-		return nil, fmt.Errorf("worktree removed but %w", err)
+		return nil, &errWorktreeRemovedFollowUp{err: err}
 	}
 	return reattached, nil
 }
+
+// errWorktreeRemovedFollowUp is a removal git completed whose reaction
+// (moving threads, closing terminals, telling clients) partly failed.
+type errWorktreeRemovedFollowUp struct{ err error }
+
+func (e *errWorktreeRemovedFollowUp) Error() string { return "worktree removed but " + e.err.Error() }
+func (e *errWorktreeRemovedFollowUp) Unwrap() error { return e.err }
 
 // removeWorkflowWorktree removes a checkout a workflow owns, for its own
 // cleanup: disposition, discard, unit retirement and provisioning rollback.

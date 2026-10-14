@@ -119,7 +119,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | GraphQL `PRThreadsPage`, `PRCommentsPage(owner, name, number, after)` | ReadPR: review threads and comments past the first 100 |
 | GitHub | GraphQL `ThreadCommentsPage(threadID, after)`, `RollupContextsPage(commitID, after)` | ReadPR: one thread's comments, the rollup's contexts past 100 |
 | GitHub | GraphQL `SetThreadResolved(threadID, resolved)` | SetThreadResolved (flips the seeded thread) |
-| GitHub | GraphQL `OpenPRsByHead(owner, name, head)` | open PR lookup (checkout origin), with each PR's node id |
+| GitHub | GraphQL `OpenPRsByHead(owner, name, head, after)` | open PR lookup (checkout origin): pages of 100 with each PR's node id and `isCrossRepository` (a pull with `headRepo`) |
 | GitHub | GraphQL `PRStates(ids)` | merged-PR cleanup: state and `mergedAt` of tracked PRs by node id; an unknown id is a `NOT_FOUND` error at its `nodes` index |
 | GitHub | GraphQL `MergedPRs(owner, name, first, after)` | merged heads (checkout origin), in fixture order |
 | GitHub | `GET repos/O/R/actions/runs/ID/jobs?per_page=N[&page=N]` (`gh api run jobs`, conditional) | CI steps of a followed job's run; `Link` rel="next" while more pages exist |
@@ -128,7 +128,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitLab | `GET projects/P/merge_requests/N` (`glab api merge request`, conditional) | ReadPR, once per read: detail, head SHA for threads, head pipeline for CI |
 | GitLab | `GET projects/P/merge_requests/N/approvals` (`glab api approvals`) | ReadPR detail |
 | GitLab | `GET projects/P/merge_requests/N/discussions?per_page=N[&page=N]` (`glab api discussions`) | ReadPR threads; `X-Next-Page` while more pages exist |
-| GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin) |
+| GitLab | `GET projects/P/merge_requests?state=opened\|merged&...` (`glab api merge request list`, conditional) | open MR lookup, merged heads (checkout origin); the full view, with `project_id` and `source_project_id` (a pull with `headRepo` answers its fork's id) |
 | GitLab | `GET projects/P/merge_requests?iids[]=N...&state=all&per_page=100` (`glab api merge request list`) | merged-PR cleanup: state and `merged_at` of tracked MRs |
 | GitLab | `GET projects/P/pipelines/ID/jobs?per_page=N[&page=N]` (`glab api pipeline jobs`) | ReadPR CI |
 | GitLab | `GET projects/P/jobs/ID/trace` (`glab api job trace`, conditional) | CI job log (the current `log` of a started job, running included; 404 while the job sets `logWithheld`). A completed job's trace honors a start or closed range (206) and refuses a suffix range (400); a running job's trace ignores `Range` (200, whole body) and a running `synthetic` trace grows on every request |

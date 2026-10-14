@@ -43,7 +43,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "ThreadCommentsPage", required: []string{"threadID", "after"}, run: ghThreadCommentsPage},
 	{kind: "query", name: "RollupContextsPage", required: []string{"commitID", "after"}, run: ghRollupContextsPage},
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
-	{kind: "query", name: "OpenPRsByHead", required: []string{"owner", "name", "head"}, run: ghOpenPRsByHead},
+	{kind: "query", name: "OpenPRsByHead", required: []string{"owner", "name", "head"}, optional: []string{"after"}, run: ghOpenPRsByHead},
 	{kind: "query", name: "MergedPRs", required: []string{"owner", "name", "first"}, optional: []string{"after"}, run: ghMergedPRs},
 	{kind: "query", name: "PRStates", required: []string{"ids"}, run: ghPRStates},
 }
@@ -576,13 +576,14 @@ func ghSetThreadResolved(e *Engine, c *call, v graphQLVars) response {
 	return graphQLData(map[string]any{alias: map[string]any{"thread": map[string]any{"isResolved": thread.Resolved}}})
 }
 
-// ghOpenPRsByHead answers the open pull requests of a head branch, at
-// most 10.
+// ghOpenPRsByHead answers the open pull requests of a head branch name, a
+// fork's included, as headRefName does, a page of 100 from after.
 func ghOpenPRsByHead(e *Engine, c *call, v graphQLVars) response {
 	owner, err1 := v.str("owner")
 	name, err2 := v.str("name")
 	head, err3 := v.str("head")
-	if err := firstErr(err1, err2, err3); err != nil {
+	offset, err4 := v.cursor("after")
+	if err := firstErr(err1, err2, err3, err4); err != nil {
 		return unhandled("OpenPRsByHead: %v", err)
 	}
 	r := e.repoOn("github", c.http.host, owner+"/"+name)
@@ -592,12 +593,15 @@ func ghOpenPRsByHead(e *Engine, c *call, v graphQLVars) response {
 	nodes := []map[string]any{}
 	for i := range r.Pulls {
 		p := &r.Pulls[i]
-		if p.State != "open" || p.HeadRef != head || len(nodes) == 10 {
+		if p.State != "open" || p.HeadRef != head {
 			continue
 		}
-		nodes = append(nodes, map[string]any{"id": p.NodeID, "url": githubPullURL(r, p), "number": p.Number, "title": p.Title, "state": "OPEN"})
+		nodes = append(nodes, map[string]any{
+			"id": p.NodeID, "url": githubPullURL(r, p), "number": p.Number, "title": p.Title, "state": "OPEN",
+			"isCrossRepository": p.HeadRepo != "",
+		})
 	}
-	return graphQLData(map[string]any{"repository": map[string]any{"pullRequests": map[string]any{"nodes": nodes}}})
+	return graphQLData(map[string]any{"repository": map[string]any{"pullRequests": graphQLConnection(nodes, offset, githubGraphQLPageSize)}})
 }
 
 // ghPRStates answers pull requests by node id, at most 100, each resolved

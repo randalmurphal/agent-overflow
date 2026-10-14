@@ -77,6 +77,16 @@ func TestRecordOpenThreadPullRequestTracksTheLatestOpenPR(t *testing.T) {
 	if err != nil || len(pending) != 2 || pending[0].MergedAt != 500 || pending[0].WorktreePath != "/wt/feature" {
 		t.Fatalf("pending = %+v, %v", pending, err)
 	}
+	// A failed removal is told once, however often it is retried.
+	if first, err := s.MarkThreadPullRequestsRemovalFailed("github", "github.com", "o/r", 1, 650); err != nil || !first {
+		t.Fatalf("first removal failure = %v, %v", first, err)
+	}
+	if first, err := s.MarkThreadPullRequestsRemovalFailed("github", "github.com", "o/r", 1, 660); err != nil || first {
+		t.Fatalf("second removal failure = %v, %v; want already told", first, err)
+	}
+	if row, _, _ := s.GetThreadPullRequest("b"); row.RemovalFailedAt != 650 {
+		t.Fatalf("removal failure on the other thread = %+v", row)
+	}
 
 	if n, err := s.MarkThreadPullRequestsHandled("github", "github.com", "o/r", 1, PROutcomeRemoved, 700); err != nil || n != 2 {
 		t.Fatalf("handled = %d, %v", n, err)
@@ -97,7 +107,7 @@ func TestRecordOpenThreadPullRequestTracksTheLatestOpenPR(t *testing.T) {
 		t.Fatalf("follow-up PR = %v, %v", changed, err)
 	}
 	row, _, _ = s.GetThreadPullRequest("a")
-	if row.Number != 2 || row.MergedAt != 0 || row.HandledAt != 0 || row.Outcome != "" {
+	if row.Number != 2 || row.MergedAt != 0 || row.HandledAt != 0 || row.RemovalFailedAt != 0 || row.Outcome != "" {
 		t.Fatalf("follow-up row = %+v", row)
 	}
 

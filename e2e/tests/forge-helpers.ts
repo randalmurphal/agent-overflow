@@ -56,6 +56,8 @@ export interface ForgePull {
   author?: string;
   authorName?: string;
   headRef?: string;
+  /** The fork the head branch lives in ("owner/repo", a GitLab path); unset is the repository itself. */
+  headRepo?: string;
   baseRef?: string;
   headSha?: string;
   /** GitLab's merge base. */

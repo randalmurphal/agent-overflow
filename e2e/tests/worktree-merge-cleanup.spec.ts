@@ -7,14 +7,16 @@
 // Covered: a merged PR of an idle, clean worktree no pane shows removes the
 // worktree, moves the thread to Base with a neutral notice and keeps the
 // branch, on GitHub and GitLab; a PR closed without merging changes nothing
-// and stops being read; uncommitted changes keep the worktree with one
-// warning notice that does not repeat, as does a removal git refuses, with
-// no path in it; a worktree moved to another branch is left alone; a
-// running turn delays the cleanup until it ends; a message the user sent
-// after the merge, or a new open PR on the branch, leaves the worktree
-// alone; a shared worktree moves both
-// threads and tells both; a PR the app's create action or an agent's
-// `glab mr create` opens is tracked with no pane open.
+// and stops being read, and closed, reopened and merged is cleaned up;
+// uncommitted changes keep the worktree with one warning notice that does
+// not repeat; a removal git refuses is told once with no path, retried, and
+// removed once git allows it; a worktree moved to another branch, or a
+// thread that left its worktree, is left alone; a fork's PR from the same
+// branch name is not shown, tracked or acted on, on both forges; a running
+// turn delays the cleanup until it ends; a message the user sent after the
+// merge, or a new open PR on the branch, leaves the worktree alone; a
+// shared worktree moves both threads and tells both; a PR the app's create
+// action or an agent's `glab mr create` opens is tracked with no pane open.
 import { expect, test as base } from './fixtures.js';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import {
@@ -29,7 +31,7 @@ import {
   toolUseLine,
   waitForGate,
 } from './agent-visibility-helpers.js';
-import { expectEveryForgeCallHandled, seedForge } from './forge-helpers.js';
+import { expectEveryForgeCallHandled, seedForge, type ForgePull } from './forge-helpers.js';
 import {
   expectHandled,
   expectNoMoreStateReads,
@@ -47,7 +49,7 @@ import {
 } from './merge-cleanup-helpers.js';
 import { basename, errorToasts, harnessGit, listWorktrees, openThread, samePath, threadRow } from './worktree-removal-helpers.js';
 import { existsSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const POLL_MS = 400;
@@ -218,7 +220,7 @@ test('uncommitted changes keep the merged PR\'s worktree with one warning notice
   await expectEveryForgeCallHandled(harness);
 });
 
-test('a clean worktree git refuses to remove is kept with a warning that names no path', async ({ harness, page }) => {
+test('a clean worktree git refuses to remove is told once with no path, retried, and removed once git allows it', async ({ harness, page }) => {
   const fixture = await seedMergeFixture(harness, { forge: 'github', name: 'merge-refused', titles: ['Refused work'], branch: 'refused-branch', number: 14 });
   const [threadId] = fixture.threadIds;
   await lookUpPR(harness, fixture);
@@ -234,11 +236,24 @@ test('a clean worktree git refuses to remove is kept with a warning that names n
   expect(harnessGit(harness, fixture.worktreePath, 'status', '--porcelain')).toBe('');
   await mergePR(harness, fixture);
 
-  await expectHandled(harness, threadId, 'kept');
-  const notice = notices(page, 'merged.');
-  await expect(notice).toHaveText('PR #14 merged. Kept worktree refused-branch: removing it failed.');
-  await expect(notice).toHaveClass(/text-warning/);
+  const kept = notices(page, 'Kept worktree');
+  await expect(kept).toHaveText('PR #14 merged. Kept worktree refused-branch: removing it failed.');
+  await expect(kept).toHaveClass(/text-warning/);
   await expectWorktreeKept(harness, threadId, fixture);
+  // Not handled: the removal is retried, with growing waits, and told once.
+  await expect.poll(() => trackedRow(harness, threadId)?.removal_failed_at ?? 0).toBeGreaterThan(0);
+  expect(trackedRow(harness, threadId)?.handled_at).toBe(0);
+  await new Promise((resolve) => setTimeout(resolve, POLL_MS * 8));
+  await expect(kept).toHaveCount(1);
+
+  // Once git allows it, a retry removes the worktree and says so.
+  harnessGit(harness, fixture.worktreePath, 'rm', '--quiet', 'vendored');
+  harnessGit(harness, fixture.worktreePath, 'commit', '--quiet', '-m', 'drop the submodule');
+  await rm(path.join(harnessGit(harness, fixture.worktreePath, 'rev-parse', '--absolute-git-dir'), 'modules'), { recursive: true, force: true });
+  await expectHandled(harness, threadId, 'removed');
+  await expect(page.getByTestId('env-picker-trigger')).toHaveText('Base', { timeout: 15_000 });
+  await expect(notices(page, 'Removed worktree')).toHaveText('PR #14 merged. Removed worktree refused-branch; this thread now runs in Base.');
+  await expect(kept).toHaveCount(1);
   await expectEveryForgeCallHandled(harness);
 });
 
@@ -256,6 +271,85 @@ test('a worktree switched to another branch is left alone when the old branch\'s
   await expectWorktreeKept(harness, threadId, fixture);
   expect(harnessGit(harness, fixture.worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('next-branch');
   await openThread(page, 'Moved on');
+  await expect(notices(page, 'merged')).toHaveCount(0);
+  await expectEveryForgeCallHandled(harness);
+});
+
+for (const forge of ['github', 'gitlab'] as Forge[]) {
+  test(`a ${forge} fork's PR from the same branch name is not shown, tracked or acted on`, async ({ harness, page }) => {
+    const fixture = await seedMergeFixture(harness, { forge, name: `merge-fork-${forge}`, titles: ['Shared name'], branch: 'common-branch', number: 40 });
+    const [threadId] = fixture.threadIds;
+    const ref = { projectId: fixture.projectId, workspacePath: fixture.worktreePath };
+    const fork: ForgePull = { number: 40, title: 'A stranger', headRef: 'common-branch', baseRef: 'main', headRepo: `stranger/merge-fork-${forge}` };
+    await movePR(harness, fixture, fork);
+    await harness.open(page);
+    expect((await harness.rpc<{ openPrNumber?: number }>('GetGitStatus', ref)).openPrNumber ?? 0, 'the fork\'s PR was shown').toBe(0);
+    await openThread(page, 'Shared name');
+    await expect(page.getByTestId('env-picker-trigger')).toHaveText(basename(fixture.worktreePath));
+    await expect(page.getByTestId('chat-header-pr-badge')).toHaveCount(0);
+    expect(trackedRow(harness, threadId), 'the fork\'s PR was tracked').toBeUndefined();
+
+    // The fork's PR merges: nothing is read and nothing happens.
+    await movePR(harness, fixture, { ...fork, state: 'merged', mergedAt: new Date().toISOString() });
+    await lookUpPR(harness, fixture);
+    await expectNoMoreStateReads(harness, POLL_MS);
+    expect(await stateReads(harness)).toBe(0);
+    expect(trackedRow(harness, threadId)).toBeUndefined();
+    await expectWorktreeKept(harness, threadId, fixture);
+    await expect(notices(page, 'merged')).toHaveCount(0);
+
+    // Beside an open fork PR, the repository's own PR on the branch is the one shown and tracked.
+    await movePR(harness, fixture, fork, [{ number: 41, title: 'Ours', headRef: 'common-branch', baseRef: 'main' }]);
+    expect((await harness.rpc<{ openPrNumber?: number }>('GetGitStatus', ref)).openPrNumber).toBe(41);
+    await expectTracked(harness, threadId, 41);
+    await expect(page.getByTestId('chat-header-pr-badge')).toContainText('41', { timeout: 30_000 });
+    await expectEveryForgeCallHandled(harness);
+  });
+}
+
+test('a PR closed, reopened and then merged is cleaned up', async ({ harness, page }) => {
+  const fixture = await seedMergeFixture(harness, { forge: 'gitlab', name: 'merge-reopen', titles: ['Reopened work'], branch: 'reopen-branch', number: 35 });
+  const [threadId] = fixture.threadIds;
+  await lookUpPR(harness, fixture);
+  await harness.open(page);
+  await expectTracked(harness, threadId, 35);
+
+  await movePR(harness, fixture, { state: 'closed' });
+  await expectHandled(harness, threadId, 'closed');
+  await expectWorktreeKept(harness, threadId, fixture);
+
+  // Reopened: the next lookup that sees it open tracks it again.
+  await movePR(harness, fixture, {});
+  await lookUpPR(harness, fixture);
+  await expectTracked(harness, threadId, 35);
+
+  await mergePR(harness, fixture);
+  await expectHandled(harness, threadId, 'removed');
+  expect(existsSync(fixture.worktreePath)).toBe(false);
+  await openThread(page, 'Reopened work');
+  await expect(notices(page, 'merged.')).toHaveText('MR !35 merged. Removed worktree reopen-branch; this thread now runs in Base.');
+  await expectEveryForgeCallHandled(harness);
+});
+
+test('a thread that left its worktree before the merge is not moved and gets no notice', async ({ harness, page }) => {
+  const fixture = await seedMergeFixture(harness, { forge: 'github', name: 'merge-left', titles: ['Left early'], branch: 'left-branch', number: 37 });
+  const [threadId] = fixture.threadIds;
+  await lookUpPR(harness, fixture);
+  await harness.open(page);
+  await expectTracked(harness, threadId, 37);
+
+  await harness.rpc('UpdateThreadWorkspace', threadId, fixture.root);
+  expect(await samePath((await threadRow(harness, threadId)).workspacePath, fixture.root), 'the thread did not leave').toBe(true);
+  const before = await stateReads(harness);
+  await mergePR(harness, fixture);
+
+  // Nothing is read for it, and the worktree it left stays.
+  await expectNoMoreStateReads(harness, POLL_MS);
+  expect(await stateReads(harness)).toBe(before);
+  expect(existsSync(fixture.worktreePath)).toBe(true);
+  expect(await samePath((await threadRow(harness, threadId)).workspacePath, fixture.root)).toBe(true);
+  await openThread(page, 'Left early');
+  await expect(page.getByTestId('env-picker-trigger')).toHaveText('Base');
   await expect(notices(page, 'merged')).toHaveCount(0);
   await expectEveryForgeCallHandled(harness);
 });

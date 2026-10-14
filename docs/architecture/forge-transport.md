@@ -89,8 +89,9 @@ Two kinds of forge method, two sources of the host:
   unparseable origin fails with `*git.OriginUnknownError` instead of
   guessing. GitLab names the project in the path as
   `projects/<url.PathEscape(path)>`. GitHub branch lookups use GraphQL
-  `pullRequests(headRefName:)`, which needs no head owner, so a fork's
-  branch resolves without `OWNER:branch`. Repository identity (`forge:host:id`) already carries the
+  `pullRequests(headRefName:)`, which needs no head owner and also matches
+  forks' branches of the same name; the lookup drops those (below).
+  Repository identity (`forge:host:id`) already carries the
   host; GitHub's is `GET repos/OWNER/REPO`, GitLab's
   `GET projects/<escaped path>`.
 
@@ -205,7 +206,14 @@ request (`StreamCIJobLog`, as on GitHub).
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
 
 Git status looks up a branch's open PR (`lookupOpenPR`,
-`internal/git/status_pr_cache.go`). A branch with no
+`internal/git/status_pr_cache.go`). The forges' head-branch filters also
+match a fork's PR from a branch of the same name, so `ListOpenPRs` keeps
+only PRs whose head is the origin repository: GitHub
+`OpenPRsByHead` nodes with `isCrossRepository` false (paged, at most
+`githubReadMaxPages` pages of 100), GitLab merge requests whose
+`source_project_id` is their `project_id` (the full view, since the simple
+one lacks it; paged by 100 until one is found, at most
+`gitlabOpenMRsMaxPages` pages). A branch with no
 `refs/remotes/origin/<branch>` has no PR, so it is answered without a
 forge request. An answer is cached for `prLookupTTL` (30s), a "no open PR"
 included and never longer. A failed lookup is retried after 20s, doubling
@@ -227,7 +235,8 @@ cache hit) reaches the app through `Core.SetOpenPRObserver`. An open PR
 seen for a thread's linked worktree is recorded in `thread_pull_requests`
 (one row per thread, with the GitHub node id). A lookup that answers "no
 open PR" for a branch whose tracked PR is still unmerged reads that PR's
-state once.
+state once (a failed read leaves it to the poll); the memo of reads made
+holds only threads whose tracked PR is still pending and in its worktree.
 
 States are read in one request per repository, batched by
 `Forge.ReadPRStates`: GitHub `PRStates` (`nodes(ids:)` over the tracked
@@ -239,15 +248,20 @@ A PR the forge no longer has counts as closed.
 |---|---|
 | A repository with no unmerged tracked PR whose thread is in its worktree | none |
 | Poll, per repository with one (every 5 minutes, first after 45s) | 1 state read |
+| A failed poll | the next after 10, 20, 30 minutes (doubling from the poll interval, capped at 30) |
 | A watched lookup that stops finding the tracked PR | 1 state read |
-| Acting on a merged PR, after the local checks pass | 1 open-PR lookup of the branch |
+| Acting on a merged PR, after the local checks pass | 1 open-PR lookup of the branch (one page unless forks' PRs share the name) |
+| An act-time lookup that fails, or still lists the merged PR as open | the next after 2, 4, 8 ... minutes, capped at 30, per repository |
+| A removal git refuses | no request; the removal retries after 2, 4, 8 ... minutes, capped at 30 |
 
-A failed poll backs off per repository, doubling up to 30 minutes; a
-`*forgeapi.RateLimitedError` waits until its `Until`. The worker runs
-whether or not background fetch is enabled, and waits for the first
-client's reads like other unattended work. An act pass that finds a
-thread busy marks itself waiting and runs again when a turn completes.
-`AO_HARNESS_TIMING` `merged-pr-poll` shortens the poll for specs.
+A `*forgeapi.RateLimitedError` waits until its `Until` instead. The
+worker runs whether or not background fetch is enabled, and waits for the
+first client's reads like other unattended work. An act pass that finds a
+thread busy marks itself waiting and runs again when a turn completes;
+each pass first skips what is backing off, so a busy or failing worktree
+costs no forge request per pass. `AO_HARNESS_TIMING` `merged-pr-poll`
+shortens the poll, and with it the one-minute tick these retries start
+from, for specs.
 
 ## Requests
 

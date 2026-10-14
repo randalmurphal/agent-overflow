@@ -22,6 +22,7 @@ const threadPullRequestsV142SQL = `CREATE TABLE thread_pull_requests (
  seen_open_at INTEGER NOT NULL,
  merged_at INTEGER NOT NULL DEFAULT 0,
  handled_at INTEGER NOT NULL DEFAULT 0,
+ removal_failed_at INTEGER NOT NULL DEFAULT 0,
  outcome TEXT NOT NULL DEFAULT '' CHECK(outcome IN ('', 'removed', 'kept', 'gone', 'closed', 'skipped'))
 );
 CREATE INDEX idx_thread_pull_requests_pending ON thread_pull_requests(forge, host, project) WHERE handled_at = 0;`

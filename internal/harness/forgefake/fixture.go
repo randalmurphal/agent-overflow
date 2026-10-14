@@ -69,6 +69,13 @@ type Pull struct {
 	// HeadRef and BaseRef default to "feature" and "main".
 	HeadRef string `json:"headRef,omitempty"`
 	BaseRef string `json:"baseRef,omitempty"`
+	// HeadRepo is the fork the head branch lives in ("owner/repo" or a
+	// GitLab path); empty is the repository itself. A fork's pull answers
+	// isCrossRepository (GitHub) and a source_project_id of its own
+	// (GitLab).
+	HeadRepo string `json:"headRepo,omitempty"`
+	// headRepoID is the fork's generated project id.
+	headRepoID int64
 	// HeadSHA, BaseSHA and StartSHA are generated when omitted. StartSHA is
 	// the base branch's tip (GitHub baseRefOid, GitLab start_sha); BaseSHA
 	// is GitLab's merge base.
@@ -297,6 +304,12 @@ func (r *Repo) normalize(ids *idSource) error {
 		}
 		numbers[pull.Number] = true
 		r.defaultNodeID(pull)
+		if pull.HeadRepo != "" {
+			if !strings.Contains(pull.HeadRepo, "/") || strings.EqualFold(pull.HeadRepo, r.Project) {
+				return fmt.Errorf("pulls[%d] (#%d): headRepo %q is not another repository's path", i, pull.Number, pull.HeadRepo)
+			}
+			pull.headRepoID = ids.next()
+		}
 	}
 	for i := range r.Attachments {
 		if err := r.Attachments[i].normalize(r.Forge); err != nil {

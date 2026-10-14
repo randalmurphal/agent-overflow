@@ -249,22 +249,21 @@ func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 }
 
 // glabMRList answers the three merge request lists the app makes, of the
-// project the path names: the open MR for a source branch, recently merged
-// MRs, and named MRs in any state (iids[] with state=all).
+// project the path names: the open MRs from a source branch name (a
+// fork's included, as source_branch matches them), recently merged MRs,
+// and named MRs in any state (iids[] with state=all). Items are the full
+// view.
 func glabMRList(e *Engine, c *call, m []string) response {
 	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {
 		return fail
 	}
-	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "view", "order_by", "sort", "iids[]")
+	query, perPage, page, err := glabPage(m[2], "state", "source_branch", "order_by", "sort", "iids[]")
 	if err != nil {
 		return unhandled("%v", err)
 	}
 	if iids, named := query["iids[]"]; named {
 		return glabMRsByIID(r, query, iids, perPage, page)
-	}
-	if view := query.Get("view"); view != "" && view != "simple" {
-		return unhandled("view=%q is not implemented", view)
 	}
 	if order := query.Get("order_by"); order != "" && order != "updated_at" {
 		return unhandled("order_by=%q is not implemented", order)
@@ -300,7 +299,7 @@ func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) r
 	if state := query.Get("state"); state != "all" {
 		return unhandled("iids[] with state=%q is not implemented", state)
 	}
-	for _, key := range []string{"source_branch", "view", "order_by", "sort"} {
+	for _, key := range []string{"source_branch", "order_by", "sort"} {
 		if query.Has(key) {
 			return unhandled("iids[] with %s is not implemented", key)
 		}
@@ -332,15 +331,21 @@ func gitlabMRListItem(r *Repo, p *Pull) map[string]any {
 	if p.MergedAt != "" {
 		mergedAt = p.MergedAt
 	}
+	source := r.ID
+	if p.HeadRepo != "" {
+		source = p.headRepoID
+	}
 	return map[string]any{
-		"iid":           p.Number,
-		"title":         p.Title,
-		"state":         gitlabStates[p.State],
-		"web_url":       gitlabMRURL(r, p),
-		"source_branch": p.HeadRef,
-		"target_branch": p.BaseRef,
-		"sha":           p.HeadSHA,
-		"merged_at":     mergedAt,
+		"iid":               p.Number,
+		"project_id":        r.ID,
+		"source_project_id": source,
+		"title":             p.Title,
+		"state":             gitlabStates[p.State],
+		"web_url":           gitlabMRURL(r, p),
+		"source_branch":     p.HeadRef,
+		"target_branch":     p.BaseRef,
+		"sha":               p.HeadSHA,
+		"merged_at":         mergedAt,
 	}
 }
 

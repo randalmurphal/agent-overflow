@@ -210,12 +210,3 @@ func (f *gitlabForge) ReadPRStates(ctx context.Context, repo PRReference, prs []
 	}
 	return states, nil
 }
-
-// PruneWorktrees runs `git worktree prune` in project, dropping the
-// registrations of worktrees whose directories are gone.
-func (c *Core) PruneWorktrees(project string) error {
-	if _, stderr, err := c.Execute(project, "worktree", "prune"); err != nil {
-		return fmt.Errorf("git worktree prune failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
-	}
-	return nil
-}
