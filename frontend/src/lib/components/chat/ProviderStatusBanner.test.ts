@@ -344,7 +344,7 @@ describe('<ProviderStatusBanner>', () => {
 
       const { getByTestId, getAllByTestId } = render(ProviderStatusBanner, { props: { pane } });
       await fireEvent.click(getByTestId('provider-status-dismiss'));
-      await waitFor(() => expect(pane.generalError).toContain('backend away'));
+      await waitFor(() => expect(pane.generalError).toBe('Backend away.'));
       expect(getAllByTestId('provider-status-banner')).toHaveLength(1);
     });
 
