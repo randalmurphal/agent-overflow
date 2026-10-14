@@ -201,8 +201,8 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 			writeHomeFile(t, row.Home, agenthome.MemoryIndexFile, strings.Repeat(line, 50)+"INDEX TAIL\n")
 			capped := start(t)
 			for _, want := range []string{
-				"[instructions.md stops here, at byte 8135: the session start injects at most 8 KiB of it. Read the rest from that byte yourself.]",
-				"[MEMORY.md stops here, at byte 4000: the session start injects at most 4 KiB of it. Read the rest from that byte yourself.]",
+				"[instructions.md stops here, after line 82 (byte 8135 of its text with hidden characters removed): the session start injects at most 8 KiB of it. Read it yourself from line 83.]",
+				"[MEMORY.md stops here, after line 40 (byte 4000 of its text with hidden characters removed): the session start injects at most 4 KiB of it. Read it yourself from line 41.]",
 			} {
 				if !strings.Contains(capped, want) {
 					t.Fatalf("capped start has no %q:\n%s", want, capped)
@@ -226,8 +226,70 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 // A home file that cannot be read keeps nothing of it out of the start: the
 // session starts, its block says which file and why, and the thread gets a
 // warning row naming the path.
+// A home file that cannot be read starts the session without it, says so in
+// its place and puts a warning row naming its path on the thread, whatever
+// kept it out.
 func TestStandingAgentStartsWhenAHomeFileCannotBeRead(t *testing.T) {
 	t.Parallel()
+	cases := map[string]homeBreak{
+		"directory": {func(t *testing.T, path string) {
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}, "not a regular file"},
+		"link out of the home": {func(t *testing.T, path string) {
+			outside := filepath.Join(t.TempDir(), "outside.md")
+			if err := os.WriteFile(outside, []byte("secret\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, path); err != nil {
+				t.Skip("no symlinks here:", err)
+			}
+		}, "path escapes from parent"},
+	}
+	addUnixCases(cases)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			app, thread, home, argvPath := unreadableHomeFixture(t)
+			path := filepath.Join(home, agenthome.InstructionsFile)
+			tc.apply(t, path)
+			got := claudeInjected(app, thread.ID, argvPath)(t)
+			if !strings.Contains(got, "[instructions.md could not be read: ") || !strings.Contains(got, tc.why) ||
+				!strings.Contains(got, "index line") || strings.Contains(got, "secret") {
+				t.Fatalf("injected:\n%s", got)
+			}
+			requireHomeWarningRow(t, app, thread.ID, path, tc.why)
+		})
+	}
+}
+
+// A start that fails still reports the home file it could not read.
+func TestStandingAgentStartFailureStillReportsAnUnreadableHomeFile(t *testing.T) {
+	t.Parallel()
+	app, thread, home, _ := unreadableHomeFixture(t)
+	path := filepath.Join(home, agenthome.InstructionsFile)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": filepath.Join(t.TempDir(), "no-claude")}); err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+	if err := app.StartSession(thread.ID); err == nil {
+		t.Fatal("StartSession with no provider binary succeeded")
+	}
+	requireHomeWarningRow(t, app, thread.ID, path, "not a regular file")
+}
+
+// homeBreak puts something unreadable at path and names the reason the read
+// reports.
+type homeBreak struct {
+	apply func(t *testing.T, path string)
+	why   string
+}
+
+func unreadableHomeFixture(t *testing.T) (*App, store.Thread, string, string) {
+	t.Helper()
 	app, _ := setupE2EApp(t)
 	t.Cleanup(func() { _ = app.threadMCPServer().Close(); _ = app.workflowMCPServer().Close() })
 	thread, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
@@ -242,23 +304,21 @@ func TestStandingAgentStartsWhenAHomeFileCannotBeRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PromoteStandingAgent: %v", err)
 	}
-	if err := os.Mkdir(filepath.Join(row.Home, agenthome.InstructionsFile), 0o700); err != nil {
-		t.Fatal(err)
-	}
 	writeHomeFile(t, row.Home, agenthome.MemoryIndexFile, "index line\n")
-	got := claudeInjected(app, thread.ID, argvPath)(t)
-	if !strings.Contains(got, "[instructions.md could not be read: not a regular file. Read it yourself.]") || !strings.Contains(got, "index line") {
-		t.Fatalf("injected:\n%s", got)
-	}
-	items, err := app.store.ListItems(thread.ID)
+	return app, thread, row.Home, argvPath
+}
+
+func requireHomeWarningRow(t *testing.T, app *App, threadID, path, why string) {
+	t.Helper()
+	items, err := app.store.ListItems(threadID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(row.Home, agenthome.InstructionsFile)
 	for _, item := range items {
-		if strings.Contains(item.Summary, "This standing agent's session started without one of its home files") && strings.Contains(item.Summary, path) {
+		if strings.Contains(item.Summary, "One of this standing agent's home files could not be read for its session start: ") &&
+			strings.Contains(item.Summary, path) && strings.Contains(item.Summary, why) {
 			return
 		}
 	}
-	t.Fatalf("no warning row naming %s in %+v", path, items)
+	t.Fatalf("no warning row naming %s (%s) in %+v", path, why, items)
 }

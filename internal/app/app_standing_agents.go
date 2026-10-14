@@ -352,13 +352,13 @@ func standingAgentPromptText(row store.StandingAgent) string {
 }
 
 // reportStandingAgentHomeProblems logs each failed read of a standing agent's
-// home files with its path and puts it on the thread as a warning row, once
-// the session it was read for is registered: the session started without
+// home files with its path and puts it on the thread as a warning row, after
+// the start succeeds or fails: the session runs, or would have run, without
 // that file, and the person watching the agent has to know.
 func (a *App) reportStandingAgentHomeProblems(threadID string, problems []error) {
 	for _, problem := range problems {
 		log.Printf("standing agent %s: %v", threadID, problem)
-		if err := a.emitNoticeToThread(threadID, "This standing agent's session started without one of its home files: "+problem.Error()+"."); err != nil {
+		if err := a.emitNoticeToThread(threadID, "One of this standing agent's home files could not be read for its session start: "+problem.Error()+"."); err != nil {
 			log.Printf("standing agent %s: %v", threadID, err)
 		}
 	}

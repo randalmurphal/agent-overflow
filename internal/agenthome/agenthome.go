@@ -11,7 +11,7 @@
 package agenthome
 
 import (
-	"bytes"
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -31,8 +31,9 @@ const (
 	// MemoryIndexFile is the memory index the hygiene loop rewrites.
 	MemoryIndexFile = "MEMORY.md"
 	// InstructionsCap and MemoryIndexCap bound what a session start injects
-	// of each file. Past a cap the head is injected with a notice naming the
-	// byte the injection stopped at.
+	// of each file, counted in bytes of its cleaned text (CleanText). Past a
+	// cap the head is injected with a notice naming the line and the byte of
+	// the cleaned text the injection stopped at.
 	InstructionsCap = 8 << 10
 	MemoryIndexCap  = 4 << 10
 	// ArchiveMarker is the line in MEMORY.md after which nothing is
@@ -113,53 +114,57 @@ func ReadSessionBlock(home string) (block SessionBlock) {
 	return block
 }
 
-// readCapped reads name from root as injected text: up to the archive marker
-// when archive is set, then at most limit bytes, cut at the last line break
-// inside the cap (or a rune boundary when there is none) with a notice naming
-// the byte the cut stopped at.
+// readCapped reads name from root as injected text: cleaned first
+// (CleanText), then cut at the archive marker when archive is set, then held
+// to limit bytes of the cleaned text, cut after the last line break inside
+// the cap (or on a rune boundary when the cap falls inside one line) with a
+// notice naming the line and the byte of the cleaned text the cut stopped
+// at.
 func readCapped(root *os.Root, name string, limit int, archive bool) (_ string, err error) {
 	file, err := openRegular(root, name)
 	if err != nil {
 		return "", err
 	}
 	defer closeInto(file, &err)
-	// Enough to see a marker line that starts inside the cap, and one byte
-	// past the cap to know there is more.
-	raw, err := io.ReadAll(io.LimitReader(file, int64(limit+len(ArchiveMarker)+2)))
+	// Enough to see a marker line that starts inside the cap, and past the
+	// cap to know there is more.
+	text, more, err := readCleaned(file, limit+1<<10)
 	if err != nil {
 		return "", err
 	}
 	if archive {
-		if at := archiveAt(raw); at >= 0 && at <= limit {
-			return injected(raw[:at]), nil
+		if at := archiveAt(text); at >= 0 && at <= limit {
+			return strings.TrimRight(text[:at], "\n"), nil
 		}
 	}
-	if len(raw) <= limit {
-		return injected(raw), nil
+	if !more && len(text) <= limit {
+		return strings.TrimRight(text, "\n"), nil
 	}
-	cut := cutAt(raw, limit)
-	return injected(raw[:cut]) + "\n" + fmt.Sprintf(
-		"[%s stops here, at byte %d: the session start injects at most %d KiB of it. Read the rest from that byte yourself.]",
-		name, cut, limit>>10), nil
-}
-
-// injected is raw as the block carries it: cleaned, with no trailing blank
-// lines.
-func injected(raw []byte) string {
-	return strings.TrimRight(CleanText(string(raw)), "\n")
+	cut, whole := cutAt(text, limit)
+	line := strings.Count(text[:cut], "\n")
+	where := fmt.Sprintf("after line %d", line)
+	from := line + 1
+	if !whole {
+		line++
+		where, from = fmt.Sprintf("inside line %d", line), line
+	}
+	return strings.TrimRight(text[:cut], "\n") + "\n" + fmt.Sprintf(
+		"[%s stops here, %s (byte %d of its text with hidden characters removed): the session start injects at most %d KiB of it. Read it yourself from line %d.]",
+		name, where, cut, limit>>10, from), nil
 }
 
 // archiveAt is the offset of the line holding the archive marker alone, or
-// -1.
-func archiveAt(raw []byte) int {
+// -1. It reads cleaned text, so an invisible character before the marker does
+// not hide it.
+func archiveAt(text string) int {
 	offset := 0
-	for offset <= len(raw) {
-		end := bytes.IndexByte(raw[offset:], '\n')
-		line := raw[offset:]
+	for {
+		end := strings.IndexByte(text[offset:], '\n')
+		line := text[offset:]
 		if end >= 0 {
-			line = raw[offset : offset+end]
+			line = text[offset : offset+end]
 		}
-		if string(bytes.TrimSpace(line)) == ArchiveMarker {
+		if strings.TrimSpace(line) == ArchiveMarker {
 			return offset
 		}
 		if end < 0 {
@@ -167,26 +172,24 @@ func archiveAt(raw []byte) int {
 		}
 		offset += end + 1
 	}
-	return -1
 }
 
 // cutAt is where a head of at most limit bytes ends: after the last line
-// break inside it, else on the last rune boundary.
-func cutAt(raw []byte, limit int) int {
-	if at := bytes.LastIndexByte(raw[:limit], '\n'); at > 0 {
-		return at + 1
+// break inside it (whole is true), else on the last rune boundary.
+func cutAt(text string, limit int) (cut int, whole bool) {
+	if at := strings.LastIndexByte(text[:limit], '\n'); at > 0 {
+		return at + 1, true
 	}
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(raw[cut]) {
+	cut = limit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
 		cut--
 	}
-	return cut
+	return cut, false
 }
 
-// RoleLine is the first line of instructions.md as a footer or a wake quotes
-// it: cleaned, a leading Markdown heading marker dropped, and bounded to
-// RoleRunes. "" when the file is absent, empty or unreadable; err is set only
-// for a failure other than absence.
+// RoleLine is the role line of instructions.md as a footer or a wake quotes
+// it (BoundRole). "" when the file is absent, empty or holds no role; err is
+// set only for a failure other than absence.
 func RoleLine(home string) (_ string, err error) {
 	root, err := os.OpenRoot(home)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -204,21 +207,35 @@ func RoleLine(home string) (_ string, err error) {
 		return "", err
 	}
 	defer closeInto(file, &err)
-	raw, err := io.ReadAll(io.LimitReader(file, 4<<10))
+	text, _, err := readCleaned(file, 4<<10)
 	if err != nil {
 		return "", err
 	}
-	return BoundRole(string(raw)), nil
+	return BoundRole(text), nil
 }
 
-// BoundRole makes a role line of text: its first non-blank line, cleaned,
-// with a leading heading marker dropped, at most RoleRunes runes. It is also
-// what a role carried from another computer passes through.
+// BoundRole makes a role line of text: its first non-blank line after a
+// leading frontmatter block, skipping bare rule lines (`---`, `***`, `___`),
+// cleaned, with a leading heading marker dropped and runs of white space
+// folded, at most RoleRunes runes. It is also what a role carried from another
+// computer passes through.
 func BoundRole(text string) string {
-	for _, line := range strings.Split(CleanText(text), "\n") {
-		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "#"))
-		line = strings.Join(strings.Fields(line), " ")
-		if line == "" {
+	lines := strings.Split(CleanText(text), "\n")
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	if start < len(lines) && strings.TrimSpace(lines[start]) == "---" {
+		for end := start + 1; end < len(lines); end++ {
+			if closing := strings.TrimSpace(lines[end]); closing == "---" || closing == "..." {
+				start = end + 1
+				break
+			}
+		}
+	}
+	for _, line := range lines[start:] {
+		line = strings.Join(strings.Fields(strings.TrimLeft(strings.TrimSpace(line), "#")), " ")
+		if line == "" || ruleLine(line) {
 			continue
 		}
 		if utf8.RuneCountInString(line) <= RoleRunes {
@@ -230,12 +247,26 @@ func BoundRole(text string) string {
 	return ""
 }
 
+// ruleLine reports a Markdown thematic break: three or more of one of `-`,
+// `*` or `_`, spaces allowed between them.
+func ruleLine(line string) bool {
+	compact := strings.ReplaceAll(line, " ", "")
+	if len(compact) < 3 {
+		return false
+	}
+	mark := compact[0]
+	if mark != '-' && mark != '*' && mark != '_' {
+		return false
+	}
+	return strings.Count(compact, string(mark)) == len(compact)
+}
+
 // ReadAttached reads the files a spawn or a send attaches from the caller's
 // home and renders the block prepended to its message. Every refusal is a
 // sentence for the agent that asked: a path that is absolute or leaves the
 // home, a duplicate, a file that is missing or not a regular file, more than
-// MaxHomeFiles paths, or a total past HomeFilesCap. Sizes are checked before
-// anything is read.
+// MaxHomeFiles paths, or more than HomeFilesCap bytes of cleaned text
+// together.
 func ReadAttached(home string, paths []string) (_ string, err error) {
 	if len(paths) == 0 {
 		return "", nil
@@ -261,49 +292,41 @@ func ReadAttached(home string, paths []string) (_ string, err error) {
 		return "", fmt.Errorf("open your home to attach files: %w", err)
 	}
 	defer closeInto(root, &err)
-	files := make([]*os.File, 0, len(names))
-	defer func() {
-		for _, file := range files {
-			closeInto(file, &err)
-		}
-	}()
-	total := int64(0)
-	for _, name := range names {
-		file, err := openRegular(root, filepath.FromSlash(name))
-		if errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("home_files: %s is not in your home", name)
-		}
-		if err != nil {
-			return "", fmt.Errorf("home_files: %s: %w", name, err)
-		}
-		files = append(files, file)
-		info, err := file.Stat()
-		if err != nil {
-			return "", fmt.Errorf("home_files: %s: %w", name, err)
-		}
-		total += info.Size()
-		if total > HomeFilesCap {
-			return "", fmt.Errorf("home_files come to more than %d KiB; attach fewer or smaller files, or point the receiver at a path it can read", HomeFilesCap>>10)
-		}
-	}
 	var out strings.Builder
 	out.WriteString(AttachedOpening)
-	read := 0
-	for i, file := range files {
-		// A file that grew since its stat cannot push the total past the cap.
-		raw, err := io.ReadAll(io.LimitReader(file, int64(HomeFilesCap-read+1)))
+	left := HomeFilesCap
+	for _, name := range names {
+		text, err := readAttachedFile(root, name, left)
 		if err != nil {
-			return "", fmt.Errorf("home_files: %s: %w", names[i], err)
+			return "", err
 		}
-		read += len(raw)
-		if read > HomeFilesCap {
-			return "", fmt.Errorf("home_files come to more than %d KiB; attach fewer or smaller files, or point the receiver at a path it can read", HomeFilesCap>>10)
-		}
-		fmt.Fprintf(&out, "\n\n### %s\n\n%s", names[i], strings.TrimRight(CleanText(string(raw)), "\n"))
+		left -= len(text)
+		fmt.Fprintf(&out, "\n\n### %s\n\n%s", name, strings.TrimRight(text, "\n"))
 	}
 	out.WriteString("\n\n")
 	out.WriteString(AttachedClosing)
 	return out.String(), nil
+}
+
+// readAttachedFile reads one attached file's cleaned text, refusing it when
+// it would take more than left bytes of what is left of HomeFilesCap.
+func readAttachedFile(root *os.Root, name string, left int) (_ string, err error) {
+	file, err := openRegular(root, filepath.FromSlash(name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("home_files: %s is not in your home", name)
+	}
+	if err != nil {
+		return "", fmt.Errorf("home_files: %s: %w", name, err)
+	}
+	defer closeInto(file, &err)
+	text, more, err := readCleaned(file, left)
+	if err != nil {
+		return "", fmt.Errorf("home_files: %s: %w", name, err)
+	}
+	if more || len(text) > left {
+		return "", fmt.Errorf("home_files come to more than %d KiB; attach fewer or smaller files, or point the receiver at a path it can read", HomeFilesCap>>10)
+	}
+	return text, nil
 }
 
 // homeRelative checks a home_files path lexically and returns it in slash
@@ -337,15 +360,21 @@ func closeInto(closer io.Closer, err *error) {
 	}
 }
 
-// openRegular opens name inside root and refuses anything but a regular file.
+// errNotRegular refuses anything in the home but a regular file.
+var errNotRegular = errors.New("not a regular file")
+
+// openRegular opens name inside root for reading, refusing anything but a
+// regular file. Opening a FIFO waits for a writer, so the open does not wait
+// (openNonblock) and the mode is checked on the opened file, which no rename
+// can swap afterwards.
 func openRegular(root *os.Root, name string) (*os.File, error) {
-	file, err := root.Open(name)
+	file, err := root.OpenFile(name, os.O_RDONLY|openNonblock, 0)
 	if err != nil {
 		return nil, err
 	}
-	info, err := file.Stat()
-	if err == nil && !info.Mode().IsRegular() {
-		err = errors.New("not a regular file")
+	opened, err := file.Stat()
+	if err == nil && !opened.Mode().IsRegular() {
+		err = errNotRegular
 	}
 	if err != nil {
 		closeInto(file, &err)
@@ -354,27 +383,77 @@ func openRegular(root *os.Root, name string) (*os.File, error) {
 	return file, nil
 }
 
+// maxRawRead bounds the bytes one read takes from a file, whatever cleaning
+// removes from them, so a file of nothing but invisible characters is not
+// read without end.
+const maxRawRead = 1 << 20
+
+// readCleaned reads r as cleaned text, byte for byte what CleanText makes of
+// the same input, until it holds more than
+// keep bytes or the input ends. more is true when the input was not read to
+// its end: past keep, or past maxRawRead.
+func readCleaned(r io.Reader, keep int) (text string, more bool, err error) {
+	limited := &io.LimitedReader{R: r, N: maxRawRead}
+	reader := bufio.NewReader(limited)
+	var out strings.Builder
+	afterCR := false
+	for out.Len() <= keep {
+		// Invalid UTF-8 reads as utf8.RuneError, which is U+FFFD.
+		value, _, err := reader.ReadRune()
+		if errors.Is(err, io.EOF) {
+			if limited.N > 0 {
+				return out.String(), false, nil
+			}
+			// The raw bound ran out: more when the file goes on.
+			var probe [1]byte
+			n, err := r.Read(probe[:])
+			if err != nil && !errors.Is(err, io.EOF) {
+				return "", false, err
+			}
+			return out.String(), n > 0, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if afterCR && value == '\n' {
+			afterCR = false
+			continue
+		}
+		afterCR = value == '\r'
+		if value == '\r' {
+			value = '\n'
+		}
+		if hiddenRune(value) {
+			continue
+		}
+		out.WriteRune(value)
+	}
+	return out.String(), true, nil
+}
+
 // CleanText is a file's text as a prompt carries it: invalid UTF-8 replaced,
-// line ends made `\n`, and every control or invisible formatting character
-// that could hide or reorder text removed (other controls, line and paragraph
-// separators, bidirectional controls, a byte order mark). Tabs and line
-// breaks stay, so Markdown reads as written.
+// line ends made `\n`, and every control and format character (Unicode Cc and
+// Cf, which includes zero-width characters, bidirectional controls, the soft
+// hyphen, the byte order mark and the tag block) and the line and paragraph
+// separators removed. Tabs and line breaks stay, so Markdown reads as written.
 func CleanText(text string) string {
-	text = strings.ToValidUTF8(text, "\uFFFD")
+	// strings.Map writes U+FFFD for each invalid byte, as readCleaned does.
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	return strings.Map(func(r rune) rune {
-		switch {
-		case r == '\n' || r == '\t':
-			return r
-		case r == '\r':
+		if r == '\r' {
 			return '\n'
-		case unicode.IsControl(r),
-			r == '\u2028', r == '\u2029', r == '\uFEFF',
-			r == '\u200E', r == '\u200F', r == '\u061C',
-			r >= '\u202A' && r <= '\u202E',
-			r >= '\u2066' && r <= '\u2069':
+		}
+		if hiddenRune(r) {
 			return -1
 		}
 		return r
 	}, text)
+}
+
+// hiddenRune is a character CleanText removes.
+func hiddenRune(r rune) bool {
+	if r == '\n' || r == '\t' {
+		return false
+	}
+	return r == '\u2028' || r == '\u2029' || unicode.In(r, unicode.Cc, unicode.Cf)
 }

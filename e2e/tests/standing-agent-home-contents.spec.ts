@@ -21,7 +21,19 @@ import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { capture } from './wake-rows-helpers.js';
 import type { ProviderName } from './thread-tools-helpers.js';
-import { ATTACHED_OPENING, HYGIENE_LABEL, HYGIENE_OUTCOME, ROLE, VERIFICATION, runHomeContents } from './standing-agent-home-contents-helpers.js';
+import {
+  AGENT_SENTENCE,
+  ATTACHED_OPENING,
+  HYGIENE_LABEL,
+  HYGIENE_OUTCOME,
+  ROLE,
+  VERIFICATION,
+  centerInTimeline,
+  expectUncovered,
+  runHomeContents,
+  scrollTimelineToTop,
+  showTextUncovered,
+} from './standing-agent-home-contents-helpers.js';
 
 async function openThread(page: Page, title: string): Promise<void> {
   await page.getByTestId('thread-row').getByText(title, { exact: true }).click();
@@ -33,6 +45,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await runHomeContents(harness, provider, 'home-contents');
 
     await harness.open(page);
+    // Every project has a verified forge origin.
+    await expect(page.getByLabel(/^Could not fully verify/)).toHaveCount(0);
     // The injected block is the session's system prompt: no message shows it.
     await openThread(page, 'Release lead');
     const wake = page
@@ -43,13 +57,17 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(page.getByText('Your standing instructions')).toHaveCount(0);
     const opening = page.getByTestId('user-message-bubble').filter({ hasText: 'Set up your home.' });
     await expect(opening).toHaveCount(1);
-    await opening.scrollIntoViewIfNeeded();
+    await scrollTimelineToTop(page, opening);
     await expect(page.getByText('1 Thread loop')).toBeVisible();
     await capture(page, `${provider}-agent-session.png`, opening);
     await expect(page.getByText('Load the agent-home skill', { exact: false })).toHaveCount(0);
     await expect(page.getByText(ROLE, { exact: false })).toHaveCount(0);
-    await wake.scrollIntoViewIfNeeded();
-    await capture(page, `${provider}-hygiene-wake.png`, wake);
+    // The wake and the pass's outcome after it, clear of the composer.
+    const outcome = page.getByText(HYGIENE_OUTCOME);
+    await centerInTimeline(outcome);
+    await expectUncovered(outcome);
+    await expectUncovered(wake.getByTestId('user-message-wake-origin'));
+    await capture(page, `${provider}-hygiene-wake.png`, wake, outcome);
 
     // The worker's first message opens with the attached file.
     await openThread(page, 'Parser review');
@@ -57,7 +75,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(first).toHaveCount(1);
     await expect(first).toContainText(VERIFICATION);
     await expect(first).toContainText('Review the parser change on this branch.');
-    await first.scrollIntoViewIfNeeded();
+    // Expanded, so the footer naming the agent shows under the attached file.
+    await first.getByRole('button', { name: 'Show more' }).click();
+    await expect(first.getByRole('button', { name: 'Show less' })).toBeVisible();
+    await showTextUncovered(page, first, AGENT_SENTENCE);
+    // The whole expanded message, attached file to footer, in one shot.
     await capture(page, `${provider}-worker-first-message.png`, first);
   });
 }

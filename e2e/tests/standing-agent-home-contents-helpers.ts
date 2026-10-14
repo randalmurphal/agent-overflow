@@ -7,9 +7,6 @@
 // thread it trades messages with. A mock's scenario starts over with each
 // session, so the agent's scenario is set again before every start.
 //
-// The mock starts its tool-call ids over with each session, so every call
-// names its own id; a repeated id would replace an earlier session's row.
-//
 // The mock cannot run the hygiene pass, so the hygiene turn parks on a gate
 // and the test writes MEMORY.md the way the pass would, then releases it.
 // The home files are read only when a session starts, so the rewrite is
@@ -17,9 +14,13 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import type { Locator, Page } from '@playwright/test';
+
 import { expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
+import { seedForge } from './forge-helpers.js';
 import { dbWake } from './wake-rows-helpers.js';
+import { harnessGit } from './worktree-removal-helpers.js';
 import {
   RESULT_THREAD_PATTERN,
   advanceGate,
@@ -123,13 +124,22 @@ function agentScenario(provider: ProviderName, name: string, turns: ScriptedTurn
  * demotion.
  */
 export async function runHomeContents(harness: HarnessApp, provider: ProviderName, tag: string): Promise<HomeContentsRun> {
+  const names = [`${tag}-lead-${provider}`, `${tag}-workers-${provider}`, `${tag}-ordinary-${provider}`];
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
-      { name: `${tag}-lead-${provider}`, repo: {}, threads: [{ title: 'Release lead', provider }] },
-      { name: `${tag}-workers-${provider}`, repo: {}, threads: [{ title: 'Workers inbox', provider }] },
-      { name: `${tag}-ordinary-${provider}`, repo: {}, threads: [{ title: 'Ordinary', provider }] },
+      { name: names[0], repo: {}, threads: [{ title: 'Release lead', provider }] },
+      { name: names[1], repo: {}, threads: [{ title: 'Workers inbox', provider }] },
+      { name: names[2], repo: {}, threads: [{ title: 'Ordinary', provider }] },
     ],
   });
+  // Each project has a forge origin the fake forge verifies, as a real
+  // checkout does, so no project row carries an identity warning.
+  await seedForge(harness, names.map((name, i) => ({ forge: 'github', project: `me/${name}`, id: 301 + i })));
+  for (const [i, project] of seed.projects.entries()) {
+    harnessGit(harness, project.path, 'remote', 'add', 'origin', `https://github.com/me/${names[i]}`);
+    const refreshed = await harness.rpc<{ identityError?: string }>('RefreshProjectIdentity', project.projectId);
+    expect(refreshed.identityError ?? '').toBe('');
+  }
   const [lead, workers, plain] = seed.projects;
   const agent = lead.threadIds[0];
   const ordinary = plain.threadIds[0];
@@ -155,7 +165,6 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
             call: {
               tool: 'thread_loop',
               args: { label: HYGIENE_LABEL, note: 'Run the agent-home hygiene pass.', every_seconds: 21600 },
-              toolUseId: 'register-hygiene',
             },
           },
         ],
@@ -218,7 +227,6 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
               call: {
                 tool: 'thread_send',
                 args: { thread_id: agent, message: 'The release notes are ready for your review.' },
-                toolUseId: 'notes-ready',
               },
             },
           ],
@@ -243,7 +251,6 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
                 project_id: workers.projectId,
                 home_files: ['verification.md'],
               },
-              toolUseId: 'spawn-reviewer',
             },
           },
           { capture: { var: 'WORKER', from: 'lastResult', pattern: RESULT_THREAD_PATTERN } },
@@ -253,7 +260,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
       {
         steps: [
           {
-            call: { tool: 'thread_send', args: { thread_id: ordinary, message: 'Please confirm the release notes.' }, toolUseId: 'ask-notes' },
+            call: { tool: 'thread_send', args: { thread_id: ordinary, message: 'Please confirm the release notes.' } },
           },
         ],
         text: 'Asked the ordinary thread.',
@@ -294,7 +301,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   await awaitTurnCompleted(harness, agent);
   await harness.rpc('StopSession', agent);
 
-  // ---- Past the caps: each file's head, and the byte it stopped at.
+  // ---- Past the caps: each file's head, and the line and byte it stopped at.
   const line = `${'x'.repeat(99)}\n`;
   writeFileSync(join(home, 'instructions.md'), `${ROLE}\n${line.repeat(100)}INSTRUCTIONS TAIL\n`);
   writeFileSync(join(home, 'MEMORY.md'), `${line.repeat(50)}INDEX TAIL\n`);
@@ -304,9 +311,9 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   const capped = appended(provider, (await configsIn(harness, lead.path, 5))[4]);
   const instructionsCut = Buffer.byteLength(`${ROLE}\n`) + 8100;
   expect(capped).toContain(
-    `[instructions.md stops here, at byte ${instructionsCut}: the session start injects at most 8 KiB of it. Read the rest from that byte yourself.]`,
+    `[instructions.md stops here, after line 82 (byte ${instructionsCut} of its text with hidden characters removed): the session start injects at most 8 KiB of it. Read it yourself from line 83.]`,
   );
-  expect(capped).toContain('[MEMORY.md stops here, at byte 4000: the session start injects at most 4 KiB of it. Read the rest from that byte yourself.]');
+  expect(capped).toContain('[MEMORY.md stops here, after line 40 (byte 4000 of its text with hidden characters removed): the session start injects at most 4 KiB of it. Read it yourself from line 41.]');
   expect(capped).not.toContain('INSTRUCTIONS TAIL');
   expect(capped).not.toContain('INDEX TAIL');
   await harness.rpc('StopSession', agent);
@@ -322,4 +329,88 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   await harness.rpc('StopSession', agent);
 
   return { agent, home, worker, ordinary, workerFirstMessage };
+}
+
+/** The footer sentence a worker's first message names its agent with. */
+export const AGENT_SENTENCE = 'The sender is a standing agent, a thread the user promoted.';
+
+/**
+ * Scroll the timeline to its top, polling: a windowed timeline mounts its
+ * oldest rows only once the scroll reaches them.
+ */
+export async function scrollTimelineToTop(page: Page, until: Locator): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        await page.getByTestId('message-timeline-scroll').first().evaluate((el) => {
+          el.scrollTop = 0;
+        });
+        return until.count();
+      },
+      { timeout: 15_000 },
+    )
+    .toBe(1);
+  await page.getByTestId('message-timeline-scroll').first().evaluate((el) => {
+    el.scrollTop = 0;
+  });
+}
+
+/** Scroll target to the middle of the timeline. */
+export async function centerInTimeline(target: Locator): Promise<void> {
+  await target.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+}
+
+/**
+ * Nothing (the composer, a banner) covers target: the element at the top and
+ * the bottom of its middle is target or inside it.
+ */
+export async function expectUncovered(target: Locator): Promise<void> {
+  await expect
+    .poll(() =>
+      target.evaluate((el) => {
+        const box = el.getBoundingClientRect();
+        const x = box.left + box.width / 2;
+        return [box.top + 1, box.bottom - 1].every((y) => {
+          const hit = document.elementFromPoint(x, y);
+          return hit !== null && (el === hit || el.contains(hit));
+        });
+      }),
+    )
+    .toBe(true);
+}
+
+/**
+ * Scroll the timeline until `text` inside scope sits mid-view, then require
+ * every line of it to be in the viewport and uncovered. For a sentence of a
+ * message taller than the viewport, where no element bounds it.
+ */
+export async function showTextUncovered(page: Page, scope: Locator, text: string): Promise<void> {
+  const scroller = page.getByTestId('message-timeline-scroll').first();
+  await expect
+    .poll(async () => {
+      const handle = await scroller.elementHandle();
+      return scope.evaluate(
+        (root, [wanted, scrollEl]) => {
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const at = (node.textContent ?? '').indexOf(wanted);
+            if (at < 0) continue;
+            const range = document.createRange();
+            range.setStart(node, at);
+            range.setEnd(node, at + wanted.length);
+            const view = (scrollEl as HTMLElement).getBoundingClientRect();
+            const box = range.getBoundingClientRect();
+            (scrollEl as HTMLElement).scrollTop += box.top + box.height / 2 - (view.top + view.height / 2);
+            return Array.from(range.getClientRects()).every((line) => {
+              if (line.top < 0 || line.bottom > window.innerHeight) return false;
+              const hit = document.elementFromPoint(line.left + Math.min(4, line.width / 2), line.top + line.height / 2);
+              return hit !== null && root.contains(hit);
+            });
+          }
+          return false;
+        },
+        [text, handle] as const,
+      );
+    })
+    .toBe(true);
 }

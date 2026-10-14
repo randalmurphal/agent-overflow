@@ -297,6 +297,9 @@ func (a *App) startSessionNow(threadID string) error {
 	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agentHome, onEvent)
 	if err != nil {
 		a.emitProviderStatusOnSessionStartError(t.Provider)
+		// The start failed for its own reason; the home file that could not
+		// be read is still news the user needs before the next attempt.
+		a.reportStandingAgentHomeProblems(threadID, homeProblems)
 		return fmt.Errorf("start session: %w", err)
 	}
 

@@ -59,8 +59,10 @@ type Footer struct {
 
 // SenderAgent names a standing agent on a footer or a wake.
 type SenderAgent struct {
-	// Role is the first line of the agent's instructions.md, one line and
-	// bounded, or empty when it has none. It is the agent's own text.
+	// Role is the agent's role line (agenthome.BoundRole): the first
+	// non-blank line of its instructions.md after a leading frontmatter
+	// block and rule lines, bounded, or empty when it has none. It is the
+	// agent's own text.
 	Role string
 }
 

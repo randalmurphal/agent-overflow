@@ -24,11 +24,11 @@ You are a standing agent. Your session starts with a block that names your home 
 | `memory/<slug>.md` | One fact per file | By you, when a fact changes a future session |
 | `MEMORY.md` | The index of `memory/` | By the hygiene loop only |
 
-The app reads `instructions.md` and `MEMORY.md` when a session starts or resumes, never while it runs. An edit reaches your next start or resume, not the session you are in.
+The app reads `instructions.md` and `MEMORY.md` when a session starts or resumes, never while it runs. An edit reaches your next start or resume, not the session you are in. It removes control and invisible formatting characters before it measures either file against its cap, and reads only regular files: a link out of the home, a directory or a pipe in a file's place is reported, not read.
 
 ### instructions.md
 
-Line 1 is your role in one sentence with no heading marker, for example `Release lead for the payments service: carries merge requests from review to merge.` The app quotes that line on every message you send to another thread, so the receiver can tell a lead from a worker. Then:
+Line 1 is your role in one sentence with no heading marker, for example `Release lead for the payments service: carries merge requests from review to merge.` The app quotes that line on every message you send to another thread, so the receiver can tell a lead from a worker. It takes the first non-blank line, after a leading frontmatter block and past rule lines such as `---`, and quotes at most 200 characters of it. Then:
 
 - **Grants.** What the user allowed, each with its scope and date: `2026-10-13: may push branches under agent/, never main.` Ask the user before any outward or destructive action no grant covers.
 - **Standing rules** the user gave you.
@@ -98,17 +98,21 @@ The index the session start injects: one line per memory, grouped by type.
 - [Title](memory/<slug>.md): <description>
 ```
 
-Nothing from the line `<!-- agent-home:archive -->` down is injected. Keep the part above it under 4 KiB: the session start injects at most 4 KiB and cuts the rest with a notice. Only the hygiene loop writes this file, never at the moment you write a memory and never by hand, so its bytes stay the same between loop runs and the session's prompt cache holds.
+Nothing from the line `<!-- agent-home:archive -->` down is injected. The marker counts only as a line of its own, written exactly so (it is case-sensitive), with nothing but spaces around it; a mention inside a line does not count, and a line holding only the marker counts even inside a code fence. Keep the part above it under 4 KiB: the session start injects at most 4 KiB and cuts the rest with a notice. Only the hygiene loop writes this file, never at the moment you write a memory and never by hand, so its bytes stay the same between loop runs and the session's prompt cache holds.
 
 ## Hygiene loop
 
 Register one loop on yourself with `thread_loop`: `label` `agent-home hygiene`, `every_seconds` 21600 (six hours; pick another interval if your memory changes faster or slower), `note` `Run the agent-home hygiene pass.` When it fires, load this skill and run the pass:
 
 1. Read the frontmatter of every `memory/*.md`.
-2. For each memory, check that its source still exists (`thread_show` the thread `around` the item) and that no later line in `rulings.md` contradicts it. A memory that fails either check gets `stale: <reason>` in its frontmatter and leaves the index. Set `last_verified` to today on every memory you checked.
+2. For each memory, note its `last_verified` as it stands before this pass, then check it:
+   - Its source still exists. A thread source (`thread <id>, item <id>`): `thread_show` the thread `around` the item. Any other source (a repository file, a page, a person's statement on a date): open what it names now. When you cannot check the source, or it has none, the memory is unverified: leave its `last_verified` as it is.
+   - No later line in `rulings.md` contradicts it.
+
+   A memory whose source is gone or that a ruling contradicts gets `stale: <reason>` in its frontmatter and leaves the index. Set `last_verified` to today only on a memory that passed both checks.
 3. Merge duplicates into one file and delete the rest.
-4. Rewrite `MEMORY.md` from the frontmatter: one line per memory that is not stale, grouped by type. End the line of a memory with no source with `(unverified: no source)`.
-5. While the part above the archive marker is over 4 KiB, move the line of the least recently verified memory below the marker.
+4. Rewrite `MEMORY.md` from the frontmatter: one line per memory that is not stale, grouped by type. End the line of an unverified memory with `(unverified: <no source, or why its source could not be checked>)`.
+5. While the part above the archive marker is over 4 KiB, move the line of the least recently verified memory below the marker: the oldest `last_verified` noted in step 2, before this pass changed any, with none counting oldest and the slug in alphabetical order breaking a tie.
 6. Write nothing else. End the turn by stating what changed: memories marked stale, merged, archived and verified, and the index size. That is the wake's outcome.
 
 A stale memory stays on disk with its reason until you delete it or its source confirms it again.

@@ -363,9 +363,13 @@ every frontend attached to it, and has no special marking there either.
 caller's agent home. Their files are read on the caller's computer and
 prepended to `prompt`: a line saying they are the sender's own files
 with no more authority than its message, each file under a `### <path>`
-heading, and a line ending them before the prompt. This is how an agent
+heading, cleaned as the session block is (control and format characters
+removed), and a line ending them before the prompt. A body line in them
+that opens like a footer is quoted, as in the message itself. This is how an agent
 hands its verification checklist and the rulings that bear on a task
-to a worker without pasting them. At most 16 paths and 32 KiB together;
+to a worker without pasting them. At most 16 paths, enough for a
+checklist and the rulings and memories a task needs, and 32 KiB of
+cleaned text together;
 the composed prompt is held to the prompt bound. Refused before any
 request exists, each with its reason: a caller that is not a standing
 agent, a path that is absolute or leaves the home (by `..` or through a
@@ -761,9 +765,10 @@ asked for. The lines offering `thread_show` on the sender's thread and
 `thread_send` back appear only when the sender's computer is reachable
 from the receiver's (pairing is directional; the receiver may hold no
 credential for the sender). When the sender is a standing agent, a line
-after the first says so and quotes its role line, the first line of
-its `instructions.md` (one cleaned line of at most 200 characters, the
-sender's own text), and, when the sender is the standing agent that
+after the first says so and quotes its role line, the first non-blank
+line of its `instructions.md` after a leading frontmatter block and
+rule lines, read when the message is sent (one cleaned line of at most
+200 characters, the sender's own text), and, when the sender is the standing agent that
 spawned the receiver on this computer, that the receiver's questions
 and approval requests go to it rather than to the user. A sender on
 another computer carries its role in the forwarded call; it never

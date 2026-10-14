@@ -206,7 +206,7 @@ Layout the skill teaches (`assets/skills/pstack/skills/agent-home`):
 
 | Path | Holds | Written by |
 |---|---|---|
-| `instructions.md` | Line 1 the role; then grants with scope and date (ruling 1), standing rules, who it reports to | The agent, by hand, on a ruling |
+| `instructions.md` | Line 1 the role (the role line is its first non-blank line after a leading frontmatter block and rule lines); then grants with scope and date (ruling 1), standing rules, who it reports to | The agent, by hand, on a ruling |
 | `rulings.md` | Append-only dated rulings, each with the thread and item it came from | The agent |
 | `verification.md` | What the agent checks before calling work done and how, extended when a miss is found | The agent |
 | `memory/<slug>.md` | One fact per file; frontmatter `name`, `description`, `type` (user, feedback, project, reference), `source`, `last_verified` | The agent |
@@ -224,17 +224,25 @@ work. If it is not installed, tell the user to install the skills
 library from Settings, Agents, Skills, and keep your home files by hand
 until it is."; then, for each file that exists and is not empty,
 `instructions.md` under "Your standing instructions" and `MEMORY.md`
-under "Your memory index". Only the part of `MEMORY.md` above the line
-`<!-- agent-home:archive -->` is injected. Caps: 8 KiB of
-`instructions.md` and 4 KiB of `MEMORY.md`; past a cap the head is
-injected, cut after the last line break inside the cap, with a notice
-naming the file and the byte it stopped at, and the agent reads the
-rest itself. The text is cleaned the way an attached file is
-(`agenthome.CleanText`: invalid UTF-8 replaced, control and invisible
-formatting characters removed, tabs and line breaks kept). Reads go
-through an `os.Root` on the home, so a link out of it is not followed.
-The literals live in `internal/agenthome`, and a test holds the skill
-to them.
+under "Your memory index". Each file is cleaned first, the way an
+attached file is (`agenthome.CleanText`: invalid UTF-8 replaced, line
+ends made `\n`, every Unicode control and format character removed
+except tab and line break, the line and paragraph separators too), and
+everything after cleaning counts on the cleaned text. Only the part of
+`MEMORY.md` above the archive marker is injected: a line holding
+`<!-- agent-home:archive -->` exactly, case-sensitive, with only white
+space around it. A mention inside a line does not count; a marker line
+inside a code fence does. Caps: 8 KiB of `instructions.md` and 4 KiB of
+`MEMORY.md`; past a cap the head is injected, cut after the last line
+break inside the cap (on a character boundary when one line is longer),
+with a notice naming the file, the line and the byte of the cleaned text
+it stopped at and the line to read on from, and the agent reads the
+rest itself. Reads go through an `os.Root` on the home, so a link out of
+it is not followed, and only a regular file is read: the open does not
+wait (`O_NONBLOCK` on Unix) and the mode is checked on the opened file,
+so a FIFO cannot hang the start. The
+literals live in `internal/agenthome`, and a test holds the skill to
+them.
 
 The files are read when the session starts and never watched, so a
 session's prompt is fixed for its life and two starts over unchanged
@@ -242,20 +250,23 @@ files carry the same bytes, which keeps the provider's prompt cache. An
 edit, the hygiene loop's rewrite included, reaches the next start or
 resume. A missing file injects nothing. A file that cannot be read for
 another reason injects a line saying so in its place, is logged with
-its path, and puts a warning row on the thread once the session is
-registered; the start proceeds. A demoted thread's next session carries
+its path, and puts a warning row on the thread once the start has
+succeeded or failed; the start proceeds. A demoted thread's next session carries
 none of it.
 
 **Hygiene loop.** The skill has the agent register one `thread_loop` on
 itself, labeled `agent-home hygiene`, every six hours unless it chooses
 otherwise. Each fire runs one pass: rebuild `MEMORY.md` from the
 frontmatter; for each memory, check its source still exists
-(`thread_show` around the item) and that no later ruling contradicts
-it, mark a failing one `stale: <reason>` and drop it from the index;
-merge duplicates; mark a memory with no source unverified in its line;
-keep the part above the archive marker under 4 KiB by moving the least
-recently verified lines below it; set `last_verified` on what it
-checked. It writes nothing else and ends the turn stating what changed,
+(`thread_show` around the item for a thread source, opening what any
+other source names) and that no later ruling contradicts it, mark a
+failing one `stale: <reason>` and drop it from the index; set
+`last_verified` only on a memory that passed; merge duplicates; mark a
+memory with no source, or one it cannot check, unverified in its line
+and leave its `last_verified` alone; keep the part above the archive
+marker under 4 KiB by moving lines below it in order of the
+`last_verified` each memory held before the pass, oldest first, slug
+breaking a tie. It writes nothing else and ends the turn stating what changed,
 which is the wake's outcome. Only this pass writes `MEMORY.md`, never at
 the moment a memory is written, so the injected bytes change on the
 loop's schedule rather than on every write.
@@ -265,7 +276,7 @@ standing agent reads and writes:
 
 | Surface | What the receiver lacked | Now |
 |---|---|---|
-| `thread_send` / `thread_spawn` footer | Whether the sender is a lead or a worker; for a worker, that its questions go to the agent (ruling 19) | A standing agent sender is named as one with its role line, the first line of its `instructions.md` (one cleaned line, at most 200 characters, quoted). When it spawned the receiver on this computer, the footer adds that the receiver's questions and approval requests go to it. A sender on another computer carries its role in the forwarded call and never routes. An ordinary sender's footer is unchanged |
+| `thread_send` / `thread_spawn` footer | Whether the sender is a lead or a worker; for a worker, that its questions go to the agent (ruling 19) | A standing agent sender is named as one with its role line, the first non-blank line of its `instructions.md` after a leading frontmatter block and rule lines (one cleaned line, at most 200 characters, quoted), read when the message is sent. When it spawned the receiver on this computer, the footer adds that the receiver's questions and approval requests go to it. A sender on another computer carries its role in the forwarded call and never routes. An ordinary sender's footer is unchanged |
 | A spawned thread's first message | The sender's standards, which it could only paste | `home_files` on `thread_spawn` and `thread_send`: files from the caller's home prepended under their names, framed as the sender's own text ([thread tools](agent-thread-tools.md#thread_spawn-q5-q6-q18)). The skill passes `verification.md` to every worker and reviewer |
 | Wake of a reply, final message or failure | Whether the answering thread is an agent | A standing agent on the caller's computer is named with its role line on the line after the status line. One on another computer is not: the request row records no role for it, and cross-computer agents are a non-goal |
 | `thread_search`, `thread_show` | Which rows are agents and whose workers | `standing_agent` and `spawned_by` on every row |
