@@ -11,6 +11,14 @@ interface WorkerFixtures {
 
 interface TestFixtures {
   harness: HarnessApp;
+  /** Every uncaught error the `page` fixture's page threw, stack first. */
+  pageErrors: string[];
+  /**
+   * Set through `test.use({ expectPageErrors: true })` by a spec that
+   * provokes a page error on purpose. That spec asserts on `pageErrors`
+   * itself; every other spec fails at teardown when the page threw.
+   */
+  expectPageErrors: boolean;
 }
 
 export const test = base.extend<TestFixtures, WorkerFixtures>({
@@ -43,6 +51,10 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     await harnessWorker.reset();
     await use(harnessWorker);
   },
+  expectPageErrors: [false, { option: true }],
+  pageErrors: async ({}, use) => {
+    await use([]);
+  },
 
   // Every test in the suite is also a Content-Security-Policy check, for
   // whatever it happens to render. The shipped policy
@@ -56,7 +68,13 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   // Collected in Node rather than on `window` so a test that navigates more
   // than once cannot lose the violations from its earlier page — an init
   // script re-runs per navigation and would reset a page-side array.
-  page: async ({ page }, use) => {
+  //
+  // Every test is also an uncaught-exception check. A component that throws
+  // mid-render leaves stale DOM behind, which a functional assertion only
+  // reports as a timeout. The listener lives on the page object, so it keeps
+  // collecting across every navigation and reconnect the test drives.
+  page: async ({ page, pageErrors, expectPageErrors }, use) => {
+    page.on('pageerror', (error) => pageErrors.push(error.stack ?? error.message));
     const violations: string[] = [];
     await page.exposeFunction('__aoReportCspViolation', (violation: string) => {
       violations.push(violation);
@@ -80,6 +98,14 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
         'internal/transport.CSPProduction has to admit it (with the reason recorded on the ' +
         'constant), or it is a load the app should not be making',
     ).toEqual([]);
+    if (!expectPageErrors) {
+      expect(
+        pageErrors,
+        `the page threw ${pageErrors.length} uncaught error(s); fix the cause in the app, or ` +
+          'opt the spec out with test.use({ expectPageErrors: true }) if it provokes them on purpose:\n\n' +
+          pageErrors.join('\n\n'),
+      ).toEqual([]);
+    }
   },
 });
 

@@ -218,3 +218,32 @@ test('a session-scoped scenario rule binds only after the session resumes', asyn
   expect(resumedSpawn.mockId).not.toBe(firstSpawn.mockId);
   expect(resumedSpawn.scenario).toBe('streaming-text');
 });
+
+test.describe('a spec that provokes page errors on purpose', () => {
+  test.use({ expectPageErrors: true });
+
+  test('reads every error the page fixture collected, across navigations', async ({
+    harness,
+    page,
+    pageErrors,
+  }) => {
+    const throwFromPage = (message: string) =>
+      page.evaluate((text) => {
+        setTimeout(() => {
+          throw new Error(text);
+        });
+      }, message);
+
+    await harness.open(page);
+    await expect(page.getByText('No projects yet')).toBeVisible();
+    await throwFromPage('collector probe before reload');
+    await expect.poll(() => pageErrors.length).toBe(1);
+
+    await page.reload();
+    await expect(page.getByText('No projects yet')).toBeVisible();
+    await throwFromPage('collector probe after reload');
+    await expect.poll(() => pageErrors.length).toBe(2);
+    expect(pageErrors[0]).toContain('collector probe before reload');
+    expect(pageErrors[1]).toContain('collector probe after reload');
+  });
+});

@@ -17,7 +17,8 @@
 // This spec is the composite: the real wire, the real triage/store hop, and
 // the real SPA revealing text WHILE the deliveries land, the exact flush
 // the incident aborted. Three verdicts, each observable only here:
-//   1. zero page errors (nothing threw inside a flush),
+//   1. zero page errors (nothing threw inside a flush; the page fixture
+//      fails the test on any),
 //   2. text emitted AFTER the deliveries fully reveals (the drain never froze),
 //   3. one card per stop with no `[subagentGrouping] duplicate` repair
 //      warning (the fix holds at the root; the tripwire stayed idle).
@@ -94,14 +95,15 @@ function scanDoneLines(shell: (typeof SHELLS)[number]): string[] {
 }
 
 interface RenderWatch {
-  pageErrors: string[];
   duplicateKeyWarnings: string[];
 }
 
-/** Arm the two listeners the incident verdicts read. Call before streaming. */
+/**
+ * Arm the repair-warning listener. Call before streaming. The page fixture
+ * owns the page-error verdict.
+ */
 function watchRender(page: Page): RenderWatch {
-  const watch: RenderWatch = { pageErrors: [], duplicateKeyWarnings: [] };
-  page.on('pageerror', (err) => watch.pageErrors.push(String(err)));
+  const watch: RenderWatch = { duplicateKeyWarnings: [] };
   page.on('console', (msg) => {
     if (msg.text().includes('duplicate timeline node keys')) {
       watch.duplicateKeyWarnings.push(msg.text());
@@ -189,7 +191,6 @@ test(
     await expect(cards.nth(1).getByTestId('subagent-group-preview')).toContainText('Second stop: scanned frontend/.');
     await expect(cards.nth(2).getByTestId('subagent-group-preview')).toContainText('Third stop: scan complete.');
 
-    expect(watch.pageErrors).toEqual([]);
     expect(watch.duplicateKeyWarnings).toEqual([]);
   },
 );
@@ -219,7 +220,6 @@ test(
     await expect(cards.nth(0).getByTestId('subagent-group-preview')).toContainText('First review pass.');
     await expect(cards.nth(1).getByTestId('subagent-group-preview')).toContainText('Second review pass.');
 
-    expect(watch.pageErrors).toEqual([]);
     expect(watch.duplicateKeyWarnings).toEqual([]);
   },
 );

@@ -30,7 +30,6 @@ const ANSWER = 'A newer backend may add frames this build has never seen.';
 const PATCHED_TITLE = 'Renamed by a future dialect';
 
 interface ConsoleWatch {
-  pageErrors: string[];
   errorLines: string[];
   /** Every console line, any level, for the "quiet, not merely alive" check. */
   allLines: string[];
@@ -43,8 +42,7 @@ interface ConsoleWatch {
  * that have nothing to do with the wire.
  */
 function watchConsole(page: Page): ConsoleWatch {
-  const watch: ConsoleWatch = { pageErrors: [], errorLines: [], allLines: [] };
-  page.on('pageerror', (err) => watch.pageErrors.push(String(err)));
+  const watch: ConsoleWatch = { errorLines: [], allLines: [] };
   page.on('console', (msg) => {
     const line = `[${msg.type()}] ${msg.text()}`;
     watch.allLines.push(line);
@@ -131,7 +129,7 @@ test('the SPA keeps running when the backend speaks a future dialect', async ({
   expect(pane, 'the seeded thread must still be mounted').toBeDefined();
   expect(pane!.rows.some((row) => row.textHead.includes('never seen'))).toBe(true);
 
-  expect(watch.pageErrors).toEqual([]);
+  // A page error fails the test through the page fixture.
   expect(watch.errorLines).toEqual([]);
 
   // Quiet, not merely alive. A per-frame warn would turn a routine
