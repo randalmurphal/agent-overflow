@@ -38,9 +38,14 @@ const (
 	threadAgentPeerStop = "agent_stop"
 )
 
-// threadAgentPeerTimeout bounds one forwarded Agents call: a listing must
-// not hold a pane's read while a paired computer times out.
-const threadAgentPeerTimeout = 5 * time.Second
+// threadAgentPeerListTimeout bounds a forwarded listing: a pane's read must
+// not wait long on a computer that does not answer. A forwarded Stop runs
+// interrupts there, each bounded by its provider's own interrupt timeout, so
+// it waits longer.
+const (
+	threadAgentPeerListTimeout = 5 * time.Second
+	threadAgentPeerStopTimeout = 45 * time.Second
+)
 
 // threadAgentPeerArgs are the forwarded Agents tools' arguments.
 type threadAgentPeerArgs struct {
@@ -78,11 +83,11 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", method, err)
 	}
-	tool := threadAgentPeerRows
+	tool, timeout := threadAgentPeerRows, threadAgentPeerListTimeout
 	if method == "ThreadToolCall" {
-		tool = threadAgentPeerStop
+		tool, timeout = threadAgentPeerStop, threadAgentPeerStopTimeout
 	}
-	call, cancel := context.WithTimeout(ctx, threadAgentPeerTimeout)
+	call, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var reply ThreadPeerReply
 	if err := a.backends.CallThreadPeer(call, computerID, method, &reply, ThreadPeerCall{
