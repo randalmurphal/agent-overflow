@@ -1,8 +1,10 @@
 import { existsSync, writeFileSync } from 'node:fs';
+import { copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
+import { capture } from './wake-rows-helpers.js';
 import {
   assistantText,
   callChildren,
@@ -111,7 +113,7 @@ phases:
 cleanup: manual
 `;
 
-test('a bound run wakes its origin thread when it rests', async ({ harness }) => {
+test('a bound run wakes its origin thread when it rests', async ({ harness, page }) => {
   await setClaudeScenario(harness, 'wake-bound', [
     {
       steps: [
@@ -181,6 +183,25 @@ test('a bound run wakes its origin thread when it rests', async ({ harness }) =>
   // A wake is a pointer, never a dump of the run record.
   expect(wake).not.toContain('gate_trace');
   expect(wake).not.toContain('neither needs the flag');
+
+  // On screen it is a workflow row naming the workflow and leading with the
+  // run's headline; the line written for the agent is the header's to say.
+  await harness.open(page);
+  await page.getByTestId('thread-row').getByText('Wake origin', { exact: true }).click();
+  const row = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="workflow"]');
+  await expect(row.getByTestId('agent-message-sender')).toHaveText('wake-flow');
+  await expect(row.getByTestId('agent-message-first-line')).toHaveText(
+    new RegExp(`^Run "${item.id}" \\(workflow "wake-flow"\\) is done`),
+  );
+  await row.getByTestId('agent-message-toggle').click();
+  const body = row.getByTestId('agent-message-body');
+  await expect(body).toContainText('"verdict": "true"');
+  await expect(body).not.toContainText('untrusted run data');
+  await row.scrollIntoViewIfNeeded();
+  await capture(page, 'workflow-wake-row.png', row);
+  if (process.env.AO_AGENT_MESSAGE_SHOTS) {
+    await copyFile(test.info().outputPath('workflow-wake-row.png'), `${process.env.AO_AGENT_MESSAGE_SHOTS}/workflow-wake-row.png`);
+  }
 
   // Unbinding is the off switch: the next resting transition reports nowhere.
   const unbound = await harness.rpc<{ originThreadId?: string }>(
