@@ -138,7 +138,7 @@ func TestSettledRemotePollBacksOffThenRetires(t *testing.T) {
 		if delay := f.scheduleDelay(t, token); delay == 0 {
 			t.Fatal("a request still awaiting a late reply was retired")
 		}
-		stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), now.UnixMilli())
+		stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), now.UnixMilli(), nil)
 		if err != nil || !stored {
 			t.Fatalf("store late reply: stored=%v err=%v", stored, err)
 		}

@@ -108,6 +108,11 @@ type ThreadPeerRequest struct {
 	// is a live property, never stored, and it is what lets a wait on a
 	// remote request end on blocked the way a local one does.
 	Blocked bool `json:"blocked,omitempty"`
+	// AnswerAgent is set on a settled request whose thread was a standing
+	// agent when the answer was written, with the role line its wake quotes.
+	// A computer that does not send it is read as having answered from an
+	// ordinary thread.
+	AnswerAgent *ThreadPeerAgent `json:"answerAgent,omitempty"`
 }
 
 // ThreadPeerPoll is one source's whole outstanding set for this computer:
@@ -534,6 +539,9 @@ func (a *App) threadPeerRequestState(ctx context.Context, owner, token string) (
 	state.Revision = receipt.Revision
 	state.SettledAt = receipt.SettledAt
 	state.ExpiresAt = receipt.ExpiresAt
+	if receipt.AnswerAgent != nil {
+		state.AnswerAgent = &ThreadPeerAgent{Role: receipt.AnswerAgent.Role}
+	}
 	if receipt.TargetThreadID != "" {
 		if thread, err := a.store.GetThread(receipt.TargetThreadID); err == nil {
 			state.Title = thread.Title
