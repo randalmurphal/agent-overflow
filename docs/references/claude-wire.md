@@ -4249,6 +4249,16 @@ the scope's model or surface gives the limit id (`weekly_scoped:fable`), and
 one-minute boundary tolerance. `scope.model.id` is currently null, so the id
 falls back to the slugged display name.
 
+**A window starts at the account's first request after the previous one
+ends.** Logged `unifiedWindows` (2026-09-18 to 10-08) show each new 5h window
+ending 5h after its first request, floored to 10 minutes (a window that ended
+07:10 and resumed at 09:37 reset at 14:30, not 12:10). Weekly boundaries fall
+on the hour, exactly 7 days apart while the account stays in use. The Fable
+bucket shares the weekly window; every saved account reports the same
+`resets_at` for `weekly_all` and `weekly_scoped:fable`. A passed boundary
+therefore says nothing about the next one, so AO shows an expired window as
+0% with no reset time until a reading reports the new boundary.
+
 **A bucket is absent when it has nothing to report.** The array lists the
 limits that apply right now, and an older release of the same endpoint
 modelled every window as optional-and-nullable
