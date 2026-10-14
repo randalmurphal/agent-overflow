@@ -67,10 +67,10 @@ describe('rateLimitsInfo', () => {
     ).toEqual({ primary: null, limits: [] });
   });
 
-  // Claude wires emit ONE window per `rate_limit_event` (5h XOR 7d).
-  // The store must merge new windows alongside existing ones rather
-  // than replacing — otherwise toggling between 5h and 7d events
-  // alternately wipes the other window.
+  // A partial reading (Claude's header fallback, a Codex notification)
+  // can carry one window. The store must merge new windows alongside
+  // existing ones rather than replacing; otherwise alternating 5h and
+  // 7d readings wipe the other window.
   it('merges Claude single-window updates across separate calls', () => {
     setProviderRateLimits({
       provider: 'claude',
@@ -192,9 +192,10 @@ describe('rateLimitsInfo', () => {
   // The window-reset stale-event defense.
   //
   // Around a window-reset boundary, multiple sessions (Codex
-  // app-servers) emit partial readings independently. A long-running session can keep emitting
-  // its pre-reset reading for several requests after a fresher
-  // session has observed the post-reset reading. Without a guard
+  // app-servers) emit partial readings independently. A long-running
+  // session can keep emitting its pre-reset reading for several
+  // requests after a fresher session has observed the post-reset
+  // reading. Without a guard
   // these events overwrite each other and the ring visibly
   // oscillates between the old high percent and the new low one.
   //

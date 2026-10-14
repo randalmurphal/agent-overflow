@@ -60,7 +60,7 @@ func (s *Service) RememberEvent(name eventchan.Channel, data any) {
 // reset boundary is older than the cached one is discarded, and same-window
 // jitter in the boundary keeps the cached value.
 //
-// Merging is per-entry because some readings are PARTIAL — a Codex wire event
+// Merging is per-entry because some readings are PARTIAL: a Codex wire event
 // carries one bucket, Claude's header fallback carries two and can never see
 // a model-scoped bucket. A reading that marks itself Complete is the whole
 // answer for the account: every limit it names replaces the cached one

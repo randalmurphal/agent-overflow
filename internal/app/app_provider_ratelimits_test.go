@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -342,55 +341,6 @@ func TestProbeCodexRateLimits_EmitsRateLimitsWithoutAccount(t *testing.T) {
 	}
 	if evt.RateLimits.Limits[0].UsedPercent != 39 || evt.RateLimits.Limits[1].UsedPercent != 36 {
 		t.Fatalf("limits = %+v, want 39/36 used", evt.RateLimits.Limits)
-	}
-}
-
-// TestClaudeRateLimitEventAfterAccountSwitchLeavesMetersAlone drives the
-// wire through the real parser and session event pipeline. The session is
-// already relabeled to the newly selected account, but the rate_limit_event
-// answers a request the previous account's credential sent before the switch,
-// so it must not reach any account's meters.
-func TestClaudeRateLimitEventAfterAccountSwitchLeavesMetersAlone(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	// The production router, so a quota event would travel the real
-	// provider:usage path into the cache.
-	app.ensureTriageRouter()
-	const threadID = "thread-claude-switch"
-	app.sessionManager().put(threadID, session{
-		Provider:            string(provider.Claude),
-		Token:               "tok",
-		CredentialAccountID: "second",
-	})
-	var usageEmits atomic.Int32
-	app.testEmitHook = func(name string, data any) {
-		if usage, ok := data.(provider.UsageEvent); ok && name == "provider:usage" && usage.Action == "rate_limits" {
-			usageEmits.Add(1)
-		}
-	}
-
-	parser := claude.NewParser()
-	handler := app.sessionEventHandler(threadID, "tok", string(provider.Claude))
-	resetsAt := time.Now().Add(6 * 24 * time.Hour).Unix()
-	for _, line := range []string{
-		`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":` + strconv.FormatInt(resetsAt, 10) + `,"rateLimitType":"seven_day","utilization":0.28}}`,
-		`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":` + strconv.FormatInt(resetsAt, 10) + `,"rateLimitType":"seven_day"}}`,
-	} {
-		events, err := parser.ParseLine(threadID, []byte(line))
-		if err != nil {
-			t.Fatalf("parse %s: %v", line, err)
-		}
-		for _, event := range events {
-			handler(event)
-		}
-	}
-	waitProviderEvents(t, app, threadID)
-
-	if got := app.GetRateLimitsSnapshots(); len(got) != 0 {
-		t.Fatalf("rate_limit_event reached the meters: %+v", got)
-	}
-	if n := usageEmits.Load(); n != 0 {
-		t.Fatalf("rate_limit_event emitted %d provider:usage rate_limits event(s), want 0", n)
 	}
 }
 

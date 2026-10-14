@@ -520,8 +520,8 @@ internal/provider/claudetui/
                     Interrupt / RespondToUserInput / PID / Close
   gateway.go        per-session loopback proxy; classify + stream /v1/messages SSE
   reconstruct.go    raw SSE → stream-json envelopes (stream_event passthrough,
-                    assemble assistant, synthesize result / system:init)
-                    — ao_transform.py logic, real-time
+                    assemble assistant, synthesize result / system:init);
+                    ao_transform.py logic, real-time
   hookrelay.go      loopback relay endpoint + capability token; hook payload →
                     envelope (PostToolUse* → user/tool_result; SessionStart →
                     system:init; Pre/PostCompact → compact_boundary;
