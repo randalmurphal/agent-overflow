@@ -89,6 +89,9 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 
 	dbPath, settingsDir := storetest.ClonePath(t), t.TempDir()
 	source, _ := setupE2EAppOn(t, dbPath, settingsDir)
+	// A life a test can end, as shutdown does, set before anything reads it.
+	source.appCtx, source.appCancel = context.WithCancel(context.Background())
+	t.Cleanup(source.appCancel)
 	source.configDir = t.TempDir()
 	source.installThreadRequestObserver()
 	sourceID := uuid.NewString()

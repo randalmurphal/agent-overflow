@@ -54,8 +54,12 @@ const (
 // threadAgentPeerCache is the last agent_rows answer for each remote spawn,
 // by the spawn's token, and the asking of them.
 type threadAgentPeerCache struct {
-	mu      sync.Mutex
-	entries map[string]*threadAgentPeerEntry
+	// recording is held across an answer's pairing check and its record,
+	// and across a forget, so an answer whose computer was forgotten while
+	// its call ran is never recorded. It is taken before mu.
+	recording sync.Mutex
+	mu        sync.Mutex
+	entries   map[string]*threadAgentPeerEntry
 	// waiting is the spawns to ask about, oldest first; queued holds
 	// their tokens, and running the tokens being asked now. again holds the
 	// running spawns a refresh asked about meanwhile: a change may have
@@ -147,10 +151,10 @@ func (a *App) refreshPeerAgentRows(spawn store.ThreadRequest, minAge time.Durati
 }
 
 // queuePeerAgentRowsLocked queues one spawn and starts what there is room
-// for, unless its computer is backing off.
+// for, unless the app is shutting down or its computer is backing off.
 func (a *App) queuePeerAgentRowsLocked(spawn store.ThreadRequest) {
 	c := &a.threadAgentPeers
-	if c.backingOffLocked(spawn.TargetComputerID) {
+	if a.lifeCtx().Err() != nil || c.backingOffLocked(spawn.TargetComputerID) {
 		return
 	}
 	if c.queued == nil {
@@ -211,10 +215,12 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 	listing, err := a.peerThreadAgentRows(a.lifeCtx(), spawn.TargetComputerID, spawn.CallerThreadID,
 		spawn.TargetThreadID, threadAgentRowDepth-1)
 	shutdown := errors.Is(err, context.Canceled) && a.lifeCtx().Err() != nil
-	if !shutdown {
+	c := &a.threadAgentPeers
+	c.recording.Lock()
+	record := !shutdown && a.peerStillPaired(spawn.TargetComputerID)
+	if record {
 		a.recordPeerOpenWork(spawn, listing, err)
 	}
-	c := &a.threadAgentPeers
 	c.mu.Lock()
 	c.inFlight--
 	if c.perComputer[spawn.TargetComputerID]--; c.perComputer[spawn.TargetComputerID] <= 0 {
@@ -224,7 +230,7 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 	again, askAgain := c.again[spawn.Token]
 	delete(c.again, spawn.Token)
 	changed := false
-	if !shutdown {
+	if record {
 		changed = c.noteAnswerLocked(spawn, listing, err)
 	}
 	var reread []string
@@ -234,11 +240,12 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 		}
 		clear(c.rereadCallers)
 	}
-	if askAgain && !shutdown {
+	if askAgain {
 		a.queuePeerAgentRowsLocked(again)
 	}
 	a.startPeerAgentRowsLocked()
 	c.mu.Unlock()
+	c.recording.Unlock()
 	if changed {
 		a.noteThreadRequestChanged(store.ThreadRequestChange{CallerThreadID: spawn.CallerThreadID})
 	}
@@ -252,14 +259,36 @@ func (a *App) notePeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentRo
 	if errors.Is(err, context.Canceled) && a.lifeCtx().Err() != nil {
 		return
 	}
-	a.recordPeerOpenWork(spawn, listing, err)
 	c := &a.threadAgentPeers
+	c.recording.Lock()
+	if !a.peerStillPaired(spawn.TargetComputerID) {
+		c.recording.Unlock()
+		return
+	}
+	a.recordPeerOpenWork(spawn, listing, err)
 	c.mu.Lock()
 	changed := c.noteAnswerLocked(spawn, listing, err)
 	c.mu.Unlock()
+	c.recording.Unlock()
 	if changed {
 		a.noteThreadRequestChanged(store.ThreadRequestChange{CallerThreadID: spawn.CallerThreadID})
 	}
+}
+
+// peerStillPaired reports whether an answer from computerID may be
+// recorded. The caller holds recording, and every forget runs once the
+// computer's profile is gone, so a computer found here is forgotten only
+// after this answer is recorded. An answer whose lookup fails is dropped;
+// the next read asks again.
+func (a *App) peerStillPaired(computerID string) bool {
+	if a.backends == nil {
+		return false
+	}
+	_, found, err := a.backends.Lookup(computerID)
+	if err != nil {
+		log.Printf("agent rows: look up computer %s: %v", computerID, err)
+	}
+	return err == nil && found
 }
 
 // recordPeerOpenWork writes whether an answer listed open work on the
@@ -339,9 +368,10 @@ func errorText(err error) string {
 // its spawns waiting to be asked and its backoff here, and nested_open on
 // every spawn to it, so a settled one leaves its caller's Agents segment
 // by the settled window and the sweep stops asking. A call to it still in
-// flight ends in an error, which records nothing on the rows.
+// flight records nothing when it returns.
 func (a *App) forgetPeerAgentRows(computerID string) {
 	c := &a.threadAgentPeers
+	c.recording.Lock()
 	c.mu.Lock()
 	for token, entry := range c.entries {
 		if entry.spawn.TargetComputerID == computerID {
@@ -358,14 +388,10 @@ func (a *App) forgetPeerAgentRows(computerID string) {
 	}
 	clear(c.waiting[len(kept):])
 	c.waiting = kept
-	for token, spawn := range c.again {
-		if spawn.TargetComputerID == computerID {
-			delete(c.again, token)
-		}
-	}
 	delete(c.backoff, computerID)
 	c.mu.Unlock()
 	callers, err := a.store.ClearThreadRequestsNestedOpenForComputer(computerID)
+	c.recording.Unlock()
 	if err != nil {
 		// The sweep clears what this could not: it drops a spawn whose
 		// computer is no longer paired.

@@ -258,8 +258,9 @@ func TestThreadAgentPeerCallsRefuseOtherThreads(t *testing.T) {
 // calls it was sent.
 type stalledAgentsPeer struct {
 	*App
-	calls atomic.Int32
-	delay time.Duration
+	calls    atomic.Int32
+	answered atomic.Int32
+	delay    time.Duration
 }
 
 // serveStalledAgentsPeer serves app as a stalledAgentsPeer that never
@@ -297,6 +298,7 @@ func (p *stalledAgentsPeer) ThreadToolQuery(ctx context.Context, call ThreadPeer
 		}
 		select {
 		case <-time.After(wait):
+			defer p.answered.Add(1)
 		case <-ctx.Done():
 		}
 	}
@@ -534,7 +536,7 @@ func waitForPeerAnswer(t *testing.T, app *App, spawn store.ThreadRequest, within
 // the stalled computer's calls time out, it is not asked again until its
 // backoff passes.
 func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) {
-	// Serial: it times a read to 100 ms, which parallel tests would load.
+	// Serial: it counts the calls sent within a fixed 200 ms window.
 	var peer *stalledAgentsPeer
 	pair := newAgentPeerPair(t, serveStalledAgentsPeer(&peer))
 	a := pair.source
@@ -552,8 +554,11 @@ func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) 
 	other := pair.spawn
 	other.Token, other.TargetComputerID = "other-computer", uuid.NewString()
 	a.refreshPeerAgentRows(other, 0)
-	if took := waitForPeerAnswer(t, a, other, 5*time.Second); took > 100*time.Millisecond {
-		t.Fatalf("another computer's answer took %v behind a stalled computer", took)
+	a.threadAgentPeers.mu.Lock()
+	waiting := a.threadAgentPeers.queued[other.Token]
+	a.threadAgentPeers.mu.Unlock()
+	if waiting {
+		t.Fatal("another computer's spawn waits behind a stalled computer")
 	}
 
 	// The two calls time out; the computer backs off, so the seven still
@@ -827,5 +832,180 @@ func TestThreadAgentRowsShowARemoteSendsProvider(t *testing.T) {
 	row, ok := agentRowByToken(listing.Rows, ack.Token)
 	if !ok || row.Kind != store.ThreadRequestSend || row.Provider != target.Provider {
 		t.Fatalf("send row = %+v (listed %v); want the target's provider %q", row, ok, target.Provider)
+	}
+}
+
+// A computer forgotten while a spawn's call to it runs, with a read again
+// asked for, is not asked again and keeps nothing: the call's answer is
+// not recorded, and no mark is left.
+func TestThreadAgentRowsForgetDuringACallKeepsNothing(t *testing.T) {
+	t.Parallel()
+	var peer *stalledAgentsPeer
+	pair := newAgentPeerPair(t, serveSlowAgentsPeer(&peer, time.Second))
+	a := pair.source
+	frames := settleWithOpenWorkThere(t, pair)
+	before := peer.calls.Load()
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() == before+1 })
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	if err := a.RemoveBackend(pair.computer, true); err != nil {
+		t.Fatalf("forget the computer: %v", err)
+	}
+	a.threadRequestsWG.Wait()
+	if got := peer.calls.Load() - before; got != 1 {
+		t.Fatalf("calls after the forget = %d, want the one already running", got)
+	}
+	requireForgotten(t, pair, frames)
+	c := &a.threadAgentPeers
+	c.mu.Lock()
+	state := [4]int{len(c.waiting), len(c.queued), len(c.running), len(c.again)}
+	c.mu.Unlock()
+	if state != [4]int{} {
+		t.Fatalf("waiting/queued/running/again = %v after the forget, want none", state)
+	}
+}
+
+// An answer that lands after its computer was forgotten is not recorded:
+// it neither marks open work there again nor is cached.
+func TestThreadAgentRowsAnswerAfterTheForgetIsNotRecorded(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	a := pair.source
+	frames := settleWithOpenWorkThere(t, pair)
+	answer, cached := a.cachedPeerAgentRows(pair.spawn)
+	if !cached || answer.err != nil {
+		t.Fatalf("cached answer = %+v (%v), want the open rows", answer, cached)
+	}
+	if err := a.RemoveBackend(pair.computer, true); err != nil {
+		t.Fatalf("forget the computer: %v", err)
+	}
+	a.notePeerAgentRows(pair.spawn, answer.listing, nil)
+	a.threadRequestsWG.Wait()
+	requireForgotten(t, pair, frames)
+}
+
+// A refresh asked for during the read again marks that one too: three
+// calls in all, and no more.
+func TestThreadAgentPeerRefreshDuringTheReReadReadsOnceMore(t *testing.T) {
+	t.Parallel()
+	var peer *stalledAgentsPeer
+	pair := newAgentPeerPair(t, serveSlowAgentsPeer(&peer, 400*time.Millisecond))
+	a := pair.source
+	a.threadRequestsWG.Wait()
+	before := peer.calls.Load()
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() == before+1 })
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() == before+2 })
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() == before+3 })
+	a.threadRequestsWG.Wait()
+	if got := peer.calls.Load() - before; got != 3 {
+		t.Fatalf("calls = %d, want 3", got)
+	}
+}
+
+// requireNothingQueued checks the cache asks nothing more: no spawn
+// waiting, queued, running or marked, and no call in flight.
+func requireNothingQueued(t *testing.T, a *App) {
+	t.Helper()
+	c := &a.threadAgentPeers
+	c.mu.Lock()
+	state := [5]int{len(c.waiting), len(c.queued), len(c.running), len(c.again), c.inFlight}
+	c.mu.Unlock()
+	if state != [5]int{} {
+		t.Fatalf("waiting/queued/running/again/inFlight = %v, want none", state)
+	}
+}
+
+// Shutdown during a call with a read again marked ends the call, asks
+// nothing more and leaves no goroutine.
+func TestThreadAgentPeerShutdownDuringACallLeavesNothing(t *testing.T) {
+	t.Parallel()
+	var peer *stalledAgentsPeer
+	pair := newAgentPeerPair(t, serveSlowAgentsPeer(&peer, 10*time.Second))
+	a := pair.source
+	a.threadRequestsWG.Wait()
+	before := peer.calls.Load()
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() == before+1 })
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	a.threadAgentPeers.mu.Lock()
+	_, marked := a.threadAgentPeers.again[pair.spawn.Token]
+	a.threadAgentPeers.mu.Unlock()
+	if !marked {
+		t.Fatal("the refresh during the call marked no read again")
+	}
+	a.appCancel()
+	joined := make(chan struct{})
+	go func() { a.threadRequestsWG.Wait(); close(joined) }()
+	select {
+	case <-joined:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a call outlived shutdown")
+	}
+	requireNothingQueued(t, a)
+	if got := peer.calls.Load() - before; got != 1 {
+		t.Fatalf("calls = %d, want the one shutdown ended", got)
+	}
+}
+
+// A call with a read again marked that answers once shutdown has begun is
+// recorded but not asked again.
+func TestThreadAgentPeerAnswerDuringShutdownIsNotAskedAgain(t *testing.T) {
+	// Serial: the answer must reach this computer within a fixed window
+	// before shutdown begins.
+	var peer *stalledAgentsPeer
+	pair := newAgentPeerPair(t, serveSlowAgentsPeer(&peer, 300*time.Millisecond))
+	a := pair.source
+	a.threadRequestsWG.Wait()
+	a.threadAgentPeers.mu.Lock()
+	delete(a.threadAgentPeers.entries, pair.spawn.Token)
+	a.threadAgentPeers.mu.Unlock()
+	before, answered := peer.calls.Load(), peer.answered.Load()
+	// Held, the call's answer waits to be recorded until shutdown began.
+	a.threadAgentPeers.recording.Lock()
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	waitUntil(t, 5*time.Second, func() bool { return peer.calls.Load() == before+1 })
+	a.refreshPeerAgentRows(pair.spawn, 0)
+	waitUntil(t, 5*time.Second, func() bool { return peer.answered.Load() == answered+1 })
+	time.Sleep(200 * time.Millisecond)
+	a.appCancel()
+	a.threadAgentPeers.recording.Unlock()
+	a.threadRequestsWG.Wait()
+	if answer, cached := a.cachedPeerAgentRows(pair.spawn); !cached || answer.err != nil {
+		t.Fatalf("cached answer = %+v (%v); the call did not answer before shutdown", answer, cached)
+	}
+	requireNothingQueued(t, a)
+	if got := peer.calls.Load() - before; got != 1 {
+		t.Fatalf("calls = %d, want 1", got)
+	}
+}
+
+// A forget that lands while an answer is being recorded waits for it, so it
+// clears what that answer wrote.
+func TestThreadAgentRowsForgetWaitsForAnAnswerBeingRecorded(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	a := pair.source
+	settleWithOpenWorkThere(t, pair)
+	a.threadAgentPeers.recording.Lock()
+	forgot := make(chan struct{})
+	go func() { a.forgetPeerAgentRows(pair.computer); close(forgot) }()
+	select {
+	case <-forgot:
+		a.threadAgentPeers.recording.Unlock()
+		t.Fatal("the forget ran while an answer was being recorded")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if _, err := a.store.SetThreadRequestNestedOpen(pair.spawn.Token, true); err != nil {
+		t.Fatal(err)
+	}
+	a.threadAgentPeers.recording.Unlock()
+	<-forgot
+	if pair.request(t, pair.spawn.Token).NestedOpen {
+		t.Fatal("an answer recorded during the forget left open work there")
 	}
 }
