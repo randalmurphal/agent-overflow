@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 )
 
 func agentRowTokens(rows []ThreadAgentRow) []string {
@@ -395,5 +396,21 @@ func TestThreadStopLeavesItsAgentRows(t *testing.T) {
 	}
 	if rows := f.agentRows(t, f.caller.ID).Rows; len(rows) != 1 || rows[0].State != threadtools.RequestRunning {
 		t.Fatalf("rows after the caller's Stop = %+v", rows)
+	}
+}
+
+// A blocked row names the tool once, with what the prompt says about it.
+func TestThreadAgentBlockedOnNamesTheToolOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ title, description, want string }{
+		{"Bash", "make package", "Bash: make package"},
+		{"Bash", "", "Bash"},
+		{"Run the deploy", "make deploy", "Bash: Run the deploy"},
+	} {
+		var snapshot triage.LiveStateSnapshot
+		snapshot.Interactive.Approvals = []provider.ApprovalRequest{{ToolName: "Bash", Title: tc.title, Description: tc.description}}
+		if on, detail, _ := threadAgentBlockedOn(snapshot); on != "approval" || detail != tc.want {
+			t.Errorf("title %q, description %q: %s %q, want approval %q", tc.title, tc.description, on, detail, tc.want)
+		}
 	}
 }

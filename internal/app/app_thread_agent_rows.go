@@ -382,7 +382,12 @@ func threadAgentBlockedOn(snapshot triage.LiveStateSnapshot) (on, detail, routed
 	if approvals := snapshot.Interactive.Approvals; len(approvals) > 0 {
 		request := approvals[0]
 		detail = request.ToolName
-		if text := firstNonEmpty(request.Title, request.Description); text != "" {
+		// A provider titles a plain tool prompt with the tool's name.
+		title := request.Title
+		if strings.TrimSpace(title) == request.ToolName {
+			title = ""
+		}
+		if text := firstNonEmpty(title, request.Description); text != "" {
 			detail = request.ToolName + ": " + text
 		}
 		if request.RoutedTo != nil {
@@ -592,10 +597,12 @@ func (a *App) stopRemoteAgentRequest(ctx context.Context, current store.ThreadRe
 	tools := a.threadTools()
 	caller := a.threadAgentCaller(current.CallerThreadID)
 	if !settled {
-		if _, err := tools.cancelRemoteRequest(ctx, caller, current, true); err != nil {
+		report, err := tools.cancelRemoteRequest(ctx, caller, current, true)
+		if err != nil {
 			result.Outcome = threadAgentFailed
 			result.Failures = append(result.Failures, "cancel the request: "+err.Error())
 		}
+		result.Interrupted = report.Effect == threadtools.EffectInterrupted
 	}
 	if !spawned {
 		return
@@ -606,8 +613,8 @@ func (a *App) stopRemoteAgentRequest(ctx context.Context, current store.ThreadRe
 		})
 		if err != nil {
 			result.Failures = append(result.Failures, "interrupt its turn: "+err.Error())
-		} else {
-			result.Interrupted = report.Effect == threadtools.EffectInterrupted
+		} else if report.Effect == threadtools.EffectInterrupted {
+			result.Interrupted = true
 		}
 	}
 	remote, err := a.peerThreadAgentStop(ctx, current.TargetComputerID, current.CallerThreadID, current.TargetThreadID, "")

@@ -112,8 +112,8 @@ func TestThreadAgentStopCascadesOnAPairedComputer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StopThreadAgentRow: %v", err)
 	}
-	if stop.Outcome != threadAgentStopped || stop.Nested < 1 || len(stop.Failures) != 0 {
-		t.Fatalf("stop = %+v, want stopped with the nested spawn and no failures", stop)
+	if stop.Outcome != threadAgentStopped || !stop.Interrupted || stop.Nested < 1 || len(stop.Failures) != 0 {
+		t.Fatalf("stop = %+v, want stopped and interrupted with the nested spawn and no failures", stop)
 	}
 	var grand store.ThreadRequest
 	waitUntil(t, 10*time.Second, func() bool {
