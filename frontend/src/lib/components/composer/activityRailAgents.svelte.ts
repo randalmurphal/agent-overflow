@@ -90,7 +90,10 @@ export function createAgentController(
   });
 
   function replace(forThreadId: string | null, next: ThreadAgentRow[], more: boolean): void {
-    const now = getNow();
+    // The wall clock, not the rail's: the rail's clock stops while nothing
+    // it shows needs it, and a stamp from its last tick would end the
+    // linger on the first tick after it starts again.
+    const now = Date.now();
     const seen = new Map<string, number>();
     for (const row of next) {
       if (!isSettledAgentRow(row)) continue;

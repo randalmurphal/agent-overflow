@@ -118,3 +118,52 @@ func TestThreadAgentStopAllWithdrawsIncomingAndRefusesAPersonsMessage(t *testing
 	}
 	f.awaitRequestState(t, ack.Token, store.ThreadRequestCancelled)
 }
+
+// A loop's wake, a script's outside send and a worker's question are
+// incoming rows too, each withdrawn the way a queue drop gives it back: the
+// wake's row records it, the send leaves a notice, the question goes back to
+// the user in the worker.
+func TestThreadAgentIncomingWakesSendsAndQuestionsWithdrawToTheirOwners(t *testing.T) {
+	t.Parallel()
+	a, thread := heldNoticeFixture(t, "incoming-owners")
+	board := holdAgentWake(t, a, thread, store.AgentWakeLoop, "board")
+	sendID := sendWithin(t, a, thread.ID, "deploy 13 is done", 5*time.Second)
+	a.waitAgentNoticeWork()
+	prompt := a.workerPrompts.add(workerPrompt{
+		workerID: "worker-thread", agentID: thread.ID, requestID: "question-1",
+	}, func(string, string) bool { return true })
+	if err := a.queueAgentNotice(agentNotice{
+		threadID: thread.ID, sendID: prompt.sendID(),
+		origin:     usermessage.OriginAgentWake,
+		originWake: &usermessage.OriginWake{Kind: "question", Label: "worker", ThreadID: "worker-thread"},
+		prepare:    func() (string, bool, error) { return `Thread "worker" asks`, true, nil },
+	}); err != nil {
+		t.Fatalf("queue the worker's question: %v", err)
+	}
+	a.waitAgentNoticeWork()
+	wakeID := agentWakeSendID(board.ID, 1)
+	if got := a.incomingAgentSendIDs(thread.ID); !slices.Equal(got, []string{wakeID, sendID, prompt.sendID()}) {
+		t.Fatalf("incoming = %q", got)
+	}
+
+	for _, id := range []string{wakeID, sendID, prompt.sendID()} {
+		stop, err := a.StopThreadAgentIncoming(t.Context(), thread.ID, id)
+		if err != nil || stop.Outcome != threadAgentStopped {
+			t.Fatalf("withdraw %s = %+v, %v", id, stop, err)
+		}
+	}
+	if durable, memory := queuedSendIDs(t, a, thread.ID); len(durable)+len(memory) != 0 {
+		t.Fatalf("still queued: durable %q, memory %q", durable, memory)
+	}
+	saved, found, err := a.store.GetAgentWake(board.ID)
+	if err != nil || !found || saved.Undelivered != agentWakeOutcomeWithdrawn {
+		t.Fatalf("the loop records %q (found=%v err=%v), want %q", saved.Undelivered, found, err, agentWakeOutcomeWithdrawn)
+	}
+	want := "A message sent with agent-overflow thread send was not delivered: the user withdrew it from the queue."
+	if rows := noticeRows(t, a, thread.ID, want); len(rows) != 1 {
+		t.Fatalf("notices %q, want one %q", rows, want)
+	}
+	if a.workerPrompts.isRouted(prompt.token) {
+		t.Fatal("the worker's question is still routed to the agent; it should be back with the user")
+	}
+}

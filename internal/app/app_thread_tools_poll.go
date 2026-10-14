@@ -341,6 +341,14 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest) {
 		}(computerID)
 	}
 	wg.Wait()
+	// What a spawn there runs, its own agents included, changes with no
+	// frame here: each poll of one has its caller's Agents rows read again,
+	// at the poll's own pace.
+	for _, row := range rows {
+		if row.Kind == store.ThreadRequestSpawn && row.TargetComputerID != "" {
+			a.noteThreadRequestChanged(store.ThreadRequestChange{CallerThreadID: row.CallerThreadID})
+		}
+	}
 }
 
 // pollThreadRequestsOn asks one destination about every token due for it and

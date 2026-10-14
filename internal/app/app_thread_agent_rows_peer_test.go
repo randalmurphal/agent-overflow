@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
@@ -234,5 +235,30 @@ func TestThreadAgentRowsSayWhenAPairedComputerIsOlder(t *testing.T) {
 	}
 	if row := pair.request(t, pair.spawn.Token); row.State != store.ThreadRequestCancelled {
 		t.Fatalf("the spawn is %s, want cancelled", row.State)
+	}
+}
+
+// Nothing here learns of a change on the paired computer by itself, so each
+// poll of an open remote spawn has its caller's rows read again.
+func TestThreadAgentRowsReadAgainOnEachPollOfARemoteSpawn(t *testing.T) {
+	t.Parallel()
+	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+	frames := make(chan ThreadAgentRowChange, 16)
+	pair.source.testEmitHook = func(name string, data any) {
+		if change, ok := data.(ThreadAgentRowChange); ok && name == string(eventchan.ThreadAgentRowsChanged) {
+			frames <- change
+		}
+	}
+	pair.poll(t)
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case change := <-frames:
+			if change.ThreadID == pair.caller.ID && change.ID == "" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("a poll of the remote spawn did not have its caller's rows read again")
+		}
 	}
 }
