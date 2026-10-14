@@ -47,6 +47,28 @@ func TestSpawnAndEcho(t *testing.T) {
 	}
 }
 
+// The newline is the write's own: a caller's buffer with spare capacity
+// keeps its bytes past the line.
+func TestWriteLineLeavesTheCallersBufferAlone(t *testing.T) {
+	p, err := Spawn(context.Background(), SpawnConfig{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("spawn cat: %v", err)
+	}
+	defer p.Kill()
+
+	backing := []byte("lineXYZ")
+	if err := p.WriteLine(backing[:4]); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	line, err := p.ReadLine()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(line) != "line" || string(backing) != "lineXYZ" {
+		t.Errorf("read %q, caller's buffer %q; want %q and %q", line, backing, "line", "lineXYZ")
+	}
+}
+
 func TestSpawnMultipleLines(t *testing.T) {
 	ctx := context.Background()
 	p, err := Spawn(ctx, SpawnConfig{Binary: "cat"})
