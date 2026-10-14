@@ -229,6 +229,15 @@ func threadPairingEnded(code string) bool {
 	return false
 }
 
+// threadPeerAgent is what a forwarded request says of a standing agent
+// sender.
+func threadPeerAgent(agent *threadtools.SenderAgent) *ThreadPeerAgent {
+	if agent == nil {
+		return nil
+	}
+	return &ThreadPeerAgent{Role: agent.Role}
+}
+
 // startRemoteRequest is the source half of a spawn, send or ask on another
 // computer.
 //
@@ -277,6 +286,7 @@ func (t threadToolsApp) startRemoteRequest(
 		Token:       row.Token,
 		Source:      caller,
 		UserMessage: latest,
+		SourceAgent: threadPeerAgent(origin.agent),
 		Inherit:     origin.inherit,
 	})
 	issue := ""

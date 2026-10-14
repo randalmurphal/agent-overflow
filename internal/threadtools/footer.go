@@ -49,6 +49,30 @@ type Footer struct {
 	// UserMessage is the sender thread's latest user message that no
 	// agent wrote, empty when there is none.
 	UserMessage string
+	// Agent is set when the sender is a standing agent.
+	Agent *SenderAgent
+	// RoutesPrompts is true when the sender is the standing agent that
+	// spawned the receiving thread, so the receiver's questions and approval
+	// requests go to the sender rather than to the user.
+	RoutesPrompts bool
+}
+
+// SenderAgent names a standing agent on a footer or a wake.
+type SenderAgent struct {
+	// Role is the agent's role line (agenthome.BoundRole): the first
+	// non-blank line of its instructions.md after a leading frontmatter
+	// block and rule lines, bounded, or empty when it has none. It is the
+	// agent's own text.
+	Role string
+}
+
+// sentence says the sender or the answering thread is a standing agent and
+// quotes its role line.
+func (a *SenderAgent) sentence(who string) string {
+	if a.Role == "" {
+		return who + " is a standing agent, a thread the user promoted."
+	}
+	return fmt.Sprintf("%s is a standing agent, a thread the user promoted. Its role, in its own words: %q", who, a.Role)
 }
 
 // footerMarker opens every footer. The receiver is told the last `---`
@@ -79,6 +103,13 @@ func QuoteFooterMimics(body string) string {
 // marker the server instructions tell the receiver to look for.
 func (f Footer) String() string {
 	lines := []string{"---", fmt.Sprintf("%s%q (%s%s).", footerMarker, f.Title, f.ThreadID, onComputer(f.Computer))}
+	if f.Agent != nil {
+		line := f.Agent.sentence("The sender")
+		if f.RoutesPrompts {
+			line += " It spawned this thread, so your questions and approval requests go to it, not to the user."
+		}
+		lines = append(lines, line)
+	}
 	if f.AnswerRequested {
 		body := fmt.Sprintf("It is waiting for your answer. When you are done, call thread_reply with token %s, once. The sender sees only your reply text, so make it self-contained.", f.Token)
 		if f.SenderReachable {
@@ -125,10 +156,26 @@ type Wake struct {
 	// Text is the answer, the final message, the error or the note. It is
 	// clipped to WakePreviewBytes with a pointer to thread_status.
 	Text string
+	// Agent is set when the answering thread is a standing agent.
+	Agent *SenderAgent
 }
 
-// String renders one wake, status line first.
+// String renders one wake, status line first. A wake from a standing agent
+// says so on the line after the status line.
 func (w Wake) String() string {
+	status := w.status()
+	if w.Agent == nil || w.Kind == WakeReminder {
+		return status
+	}
+	head, body, found := strings.Cut(status, "\n")
+	line := w.Agent.sentence("That thread")
+	if !found {
+		return head + "\n" + line
+	}
+	return head + "\n" + line + "\n" + body
+}
+
+func (w Wake) status() string {
 	who := fmt.Sprintf("%q (%s%s%s)", w.Title, w.ThreadID, onComputer(w.Computer), w.answered())
 	token := ""
 	if w.Token != "" {

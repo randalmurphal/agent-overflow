@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/agenthome"
 )
 
 func spawnApp() *fakeApp {
@@ -663,4 +665,31 @@ func TestSpawnRefusesAForkThatAlsoPicksACheckout(t *testing.T) {
 	}
 	// from_thread on its own is still a fork, not a refusal.
 	call(t, server, localCaller(), "thread_spawn", `{"prompt":"go","from_thread":"`+localThreadID+`"}`)
+}
+
+// TestHomeFilesReachTheAppTrimmed on a spawn and a send, and a bad list
+// is refused before the app is called.
+func TestHomeFilesReachTheAppTrimmed(t *testing.T) {
+	app := spawnApp()
+	call(t, New(app), localCaller(), "thread_spawn", `{"prompt":"go","home_files":[" verification.md ","memory/rule.md"]}`)
+	if len(app.spawns) != 1 || strings.Join(app.spawns[0].HomeFiles, "|") != "verification.md|memory/rule.md" {
+		t.Fatalf("spawns = %+v", app.spawns)
+	}
+	app.addThread(Thread{ID: localThreadID, Title: "Worker"})
+	call(t, New(app), localCaller(), "thread_send", `{"thread_id":"`+localThreadID+`","message":"go","home_files":["verification.md"]}`)
+	if len(app.sends) != 1 || strings.Join(app.sends[0].HomeFiles, "|") != "verification.md" {
+		t.Fatalf("sends = %+v", app.sends)
+	}
+	callErr(t, New(app), localCaller(), "thread_send", `{"thread_id":"`+localThreadID+`","message":"go","home_files":[""]}`, CodeInvalidRequest)
+	server := New(spawnApp())
+	many := `["` + strings.TrimSuffix(strings.Repeat(`a.md","`, agenthome.MaxHomeFiles+1), `","`) + `"]`
+	for name, args := range map[string]string{
+		"blank":      `{"prompt":"go","home_files":["  "]}`,
+		"too many":   `{"prompt":"go","home_files":` + many + `}`,
+		"not a list": `{"prompt":"go","home_files":"verification.md"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			callErr(t, server, localCaller(), "thread_spawn", args, CodeInvalidRequest)
+		})
+	}
 }

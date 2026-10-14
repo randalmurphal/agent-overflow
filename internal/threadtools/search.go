@@ -55,6 +55,9 @@ type searchRow struct {
 	Pin          string `json:"pin,omitempty"`
 	Archived     bool   `json:"archived"`
 	Unread       bool   `json:"unread"`
+	// StandingAgent and SpawnedBy are Thread's.
+	StandingAgent bool   `json:"standing_agent,omitempty"`
+	SpawnedBy     string `json:"spawned_by,omitempty"`
 	// Self marks the calling thread's own row.
 	Self        bool            `json:"self,omitempty"`
 	LastMessage *lastMessageRow `json:"last_message,omitempty"`
@@ -412,25 +415,27 @@ func (c *session) row(computer Computer, hit Hit) searchRow {
 	id, name := c.stamp(computer)
 	thread := hit.Thread
 	return searchRow{
-		ComputerID:   id,
-		Computer:     name,
-		ThreadID:     thread.ID,
-		Title:        thread.Title,
-		ProjectID:    thread.ProjectID,
-		Project:      thread.Project,
-		Provider:     thread.Provider,
-		Model:        thread.Model,
-		State:        State(thread, hit.Live),
-		LastActivity: unixMsToRFC3339(thread.LastActivity),
-		Branch:       thread.Branch,
-		Group:        thread.Group,
-		Pin:          thread.Pin,
-		Archived:     thread.Archived,
-		Unread:       thread.Unread,
-		Self:         thread.ID == c.caller.ThreadID,
-		LastMessage:  newLastMessageRow(hit.LastMessage),
-		ItemID:       hit.ItemID,
-		Snippet:      hit.Snippet,
+		ComputerID:    id,
+		Computer:      name,
+		ThreadID:      thread.ID,
+		Title:         thread.Title,
+		ProjectID:     thread.ProjectID,
+		Project:       thread.Project,
+		Provider:      thread.Provider,
+		Model:         thread.Model,
+		State:         State(thread, hit.Live),
+		LastActivity:  unixMsToRFC3339(thread.LastActivity),
+		Branch:        thread.Branch,
+		Group:         thread.Group,
+		Pin:           thread.Pin,
+		Archived:      thread.Archived,
+		Unread:        thread.Unread,
+		StandingAgent: thread.StandingAgent,
+		SpawnedBy:     thread.SpawnedBy,
+		Self:          thread.ID == c.caller.ThreadID,
+		LastMessage:   newLastMessageRow(hit.LastMessage),
+		ItemID:        hit.ItemID,
+		Snippet:       hit.Snippet,
 	}
 }
 

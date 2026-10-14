@@ -133,6 +133,8 @@ func (p *threadProjector) thread(thread store.Thread) threadtools.Thread {
 		Archived:      thread.Archived,
 		Unread:        threadUnread(thread),
 		LastActivity:  threadLastActivity(thread),
+		StandingAgent: thread.AgentPromotedAt != nil,
+		SpawnedBy:     thread.SpawnedByThreadID,
 
 		HasIncompleteTurn:         thread.HasIncompleteTurn,
 		HasFailedTurn:             thread.HasFailedTurn,

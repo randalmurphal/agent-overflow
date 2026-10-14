@@ -47,6 +47,11 @@ type SpawnCall struct {
 	// run. Notify delivers the answer as a message when the wait did not.
 	WaitSeconds int  `json:"wait_seconds"`
 	Notify      bool `json:"notify"`
+	// HomeFiles are paths relative to the calling standing agent's home
+	// whose files are prepended to Prompt. They are read and folded into
+	// Prompt on the caller's computer, so a forwarded call never carries
+	// them.
+	HomeFiles []string `json:"home_files,omitempty"`
 }
 
 // SendCall continues an existing thread as if the user had typed it.
@@ -56,6 +61,8 @@ type SendCall struct {
 	Message     string `json:"message"`
 	WaitSeconds int    `json:"wait_seconds"`
 	Notify      bool   `json:"notify"`
+	// HomeFiles is SpawnCall.HomeFiles for Message.
+	HomeFiles []string `json:"home_files,omitempty"`
 }
 
 // AskCall forks the target into a hidden read-only scratch thread.

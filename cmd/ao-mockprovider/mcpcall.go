@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,8 +83,13 @@ type mcpCall struct {
 }
 
 // mcpCallSeq numbers minted tool_use ids so two calls in one process
-// never collide.
-var mcpCallSeq atomic.Int64
+// never collide, and mcpCallProcess keeps two processes apart: every
+// session of a thread is a new process, and an id that repeats an earlier
+// session's would land on that session's row in the same timeline.
+var (
+	mcpCallSeq     atomic.Int64
+	mcpCallProcess = strings.ToLower(rand.Text()[:10])
+)
 
 // runMcpCall performs a real MCP tools/call and frames it on the
 // provider wire. The wire order is the real client's: the tool_use (or
@@ -106,7 +112,7 @@ func (e *engine) runMcpCall(vars scenario.Vars, turn int, step *scenario.McpCall
 		call.args = json.RawMessage(vars.Substitute(string(step.Args)))
 	}
 	if call.toolUseID == "" {
-		call.toolUseID = "mcp-" + strconv.Itoa(turn) + "-" + strconv.FormatInt(mcpCallSeq.Add(1), 10)
+		call.toolUseID = "mcp-" + mcpCallProcess + "-" + strconv.Itoa(turn) + "-" + strconv.FormatInt(mcpCallSeq.Add(1), 10)
 	}
 
 	e.adapter.writeMcpToolUse(vars, call)
