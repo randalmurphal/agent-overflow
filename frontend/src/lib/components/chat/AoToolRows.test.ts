@@ -3,7 +3,7 @@
 // folded text, a failed call shows its message and code, and a spawn
 // follows its request until the answer lands.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import GenericToolCallRow from './GenericToolCallRow.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -262,6 +262,132 @@ describe('AO thread tool rows', () => {
     expect(preview.dataset.folded).toBe('true');
     expect(preview.textContent).toContain('line 5');
     expect(preview.textContent).not.toContain('line 29');
+  });
+});
+
+describe('AO tool replies past the payload preview, and replies nothing decodes', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  beforeEach(() => {
+    resetBindingMocks();
+    resetStagedBackends();
+    __resetEntityIndexForTest();
+    __resetItemProjectionSourceCacheForTest();
+    resetThreadsForTest();
+    noteThread(THREAD, HOME_BACKEND);
+    replaceAllThreads([makeThread({ id: CHILD, title: 'Docs slice' })]);
+  });
+
+  /** A reply served as a 32 KB preview and then in chunks, the way the store serves one. */
+  function serveInChunks(full: string, preview = 32 * 1024) {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const chunk = vi.fn(async (_thread: string, _id: string, offset: number, length: number) => {
+      await gate;
+      const data = full.slice(offset, offset + length);
+      return { data, nextOffset: offset + data.length, totalSize: full.length, isComplete: offset + data.length >= full.length };
+    });
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({
+      data: full.slice(0, preview), nextOffset: Math.min(preview, full.length), totalSize: full.length, isComplete: full.length <= preview,
+    })));
+    setBindingMock('GetPayloadChunk', chunk);
+    return { chunk, release };
+  }
+
+  it('reads a 65 KB thread_show reply whole before decoding it, and never paints the JSON', async () => {
+    const transcript = Array.from({ length: 2000 }, (_, i) => `[assistant] line ${i} of the answer`).join('\n');
+    const full = JSON.stringify({ thread_id: CHILD, title: 'Docs slice', state: 'idle', window: 'last_turns', items: 40, bytes: transcript.length, done: true, transcript });
+    expect(full.length).toBeGreaterThan(65 * 1024);
+    const { chunk, release } = serveInChunks(full);
+    const item = thread('thread_show', { input: { thread_id: CHILD } }, { payloadId: 'p-big' });
+    const { getByTestId, findByTestId, queryByTestId } = render(GenericToolCallRow, { props: { item } });
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    // Until the rest arrives the body says what it is doing, not the JSON.
+    await waitFor(() => expect(chunk).toHaveBeenCalled());
+    const output = getByTestId('tool-call-card-body');
+    expect(output.textContent).not.toContain('"transcript"');
+    expect(queryByTestId('tool-call-card-show-full')).toBeNull();
+    release();
+    expect((await findByTestId('tool-call-card-ao-outcome')).textContent).toContain('last turns · 40 items');
+    expect(getByTestId('tool-call-card-ao-link').textContent).toBe('Docs slice');
+    expect(getByTestId('tool-call-card-ao-preview').textContent).toContain('line 0 of the answer');
+    expect(output.textContent).not.toContain('"transcript"');
+  });
+
+  it('says a reply past the read limit is too large instead of loading or painting it', async () => {
+    const full = `{"transcript":"${'x'.repeat(40 * 1024)}`;
+    setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data: full.slice(0, 32 * 1024), nextOffset: 32 * 1024, totalSize: 3 * 1024 * 1024, isComplete: false })));
+    const chunk = vi.fn();
+    setBindingMock('GetPayloadChunk', chunk);
+    const item = thread('thread_show', { input: { thread_id: CHILD } }, { payloadId: 'p-huge' });
+    const { getByTestId, findByTestId, queryByTestId } = render(GenericToolCallRow, { props: { item } });
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    expect((await findByTestId('tool-call-card-ao-undecoded')).textContent).toContain('Reply of 3.0 MB, too large to read here.');
+    expect(getByTestId('tool-call-card-body').textContent).not.toContain('"transcript"');
+    expect(chunk).not.toHaveBeenCalled();
+    expect(queryByTestId('tool-call-card-show-full')).toBeNull();
+    const raw = getByTestId('tool-call-card-ao-raw-toggle');
+    await fireEvent.click(raw);
+    expect(raw).toHaveAttribute('aria-expanded', 'true');
+    expect(getByTestId('tool-call-card-body').textContent).toContain('"transcript"');
+    expect(queryByTestId('tool-call-card-show-full')).not.toBeNull();
+  });
+
+  it('says a reply no decoder reads was not decoded, and shows it only on request', async () => {
+    replyWith('Done, nothing to report.');
+    const item = thread('thread_show', { input: { thread_id: CHILD } }, { payloadId: 'p-text' });
+    const { getByTestId, findByTestId } = render(GenericToolCallRow, { props: { item } });
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    expect((await findByTestId('tool-call-card-ao-undecoded')).textContent).toContain('Reply not decoded, 24 B.');
+    expect(getByTestId('tool-call-card-body').textContent).not.toContain('nothing to report');
+    await fireEvent.click(getByTestId('tool-call-card-ao-raw-toggle'));
+    expect(getByTestId('tool-call-card-body').textContent).toContain('Done, nothing to report.');
+  });
+
+  it('reads a list reply as lines', async () => {
+    replyWith(JSON.stringify([{ token: 't0000000', state: 'running' }]));
+    const item = thread('thread_status', { input: { tokens: ['t0000000'] } }, { payloadId: 'p-list' });
+    const { getByTestId, findAllByTestId } = render(GenericToolCallRow, { props: { item } });
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    const lines = await findAllByTestId('tool-call-card-ao-line');
+    expect(lines[0].textContent).toContain('request t0000000');
+    expect(getByTestId('tool-call-card-body').textContent).not.toContain('"token"');
+  });
+
+  it('lists inputs whose labels collide as separate facts', async () => {
+    replyWith('');
+    // The each-key repair reports a duplicate key here instead of throwing.
+    const reported = vi.fn();
+    vi.stubGlobal('reportError', reported);
+    const item = thread('thread_send', { input: { thread_id: CHILD, message: 'm', extra_key: 'one', 'extra key': 'two' } });
+    const view = render(GenericToolCallRow, { props: { item } });
+    await fireEvent.click(view.getByTestId('tool-call-card-toggle'));
+    const read = () => view.getAllByTestId('tool-call-card-ao-fact')
+      .filter((el) => el.dataset.fact === 'extra key')
+      .map((el) => el.textContent?.trim());
+    expect(read()).toEqual(['one', 'two']);
+    // The same row re-read keeps one fact per input.
+    await view.rerender({ item: { ...item, meta: item.meta!.replace('"one"', '"three"').replace('"two"', '"four"') } });
+    expect(read()).toEqual(['three', 'four']);
+    expect(reported).not.toHaveBeenCalled();
+  });
+
+  it('heads and links an ask by the thread asked, not the copy that answers', async () => {
+    replyWith(JSON.stringify({ token: TOKEN, kind: 'ask', thread_id: 'fork-9', title: 'Copy of Docs slice', state: 'running', outcome: 'backgrounded', revision: 0, notify: true }));
+    const item = thread('thread_ask', {
+      input: { thread_id: CHILD, question: 'Why did the build fail?' },
+      ao_result: { token: TOKEN, thread_id: 'fork-9', title: 'Copy of Docs slice', state: 'running', outcome: 'backgrounded' },
+    }, { payloadId: 'p-ask' });
+    const { getByTestId, findByTestId } = render(GenericToolCallRow, { props: { item, pane: paneWith([item]) } });
+    expect(getByTestId('tool-call-card-preview').textContent?.trim()).toBe('Docs slice · Why did the build fail?(waiting on the answer)');
+    expect(getByTestId('tool-call-card-ao-live-hint').textContent).toBe('(waiting on the answer)');
+    await fireEvent.click(getByTestId('tool-call-card-toggle'));
+    await findByTestId('tool-call-card-ao-outcome');
+    const link = getByTestId('tool-call-card-ao-link');
+    expect(link.textContent).toBe('Docs slice');
+    expect(link.getAttribute('title')).toBe('Open Docs slice');
   });
 });
 

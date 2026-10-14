@@ -38,6 +38,15 @@ for (const provider of ['claude', 'codex'] as const) {
     }
 
     await expect(rows[0][1].getByTestId('tool-call-card-ao-live-hint')).toHaveText('(answer arrived)', { timeout: 30_000 });
+    // The header's own text keeps its room; the hint after it is what the
+    // row's truncation cuts.
+    const textFits = await rows[0][1].getByTestId('tool-call-card-preview').evaluate((el) => {
+      const text = document.createTreeWalker(el, NodeFilter.SHOW_TEXT).nextNode()!;
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      return range.getBoundingClientRect().right <= el.getBoundingClientRect().right + 0.5;
+    });
+    expect(textFits, 'spawn header text clipped beside its hint').toBe(true);
     // What each row's result must say once open. Checked as each row opens:
     // the timeline windows rows that scroll far off screen.
     const opened: Record<string, (row: Locator) => Promise<void>> = {

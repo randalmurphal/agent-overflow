@@ -24,6 +24,7 @@
     deferredOutputError = '',
     renderContent,
     copyLabel = 'Copy output',
+    offerMore = true,
   }: {
     pane?: PaneSession & RowUiRegistry & ScrollHost;
     expansion: PayloadExpansionHandle;
@@ -49,6 +50,11 @@
      * terminal output.
      */
     copyLabel?: string;
+    /**
+     * Whether a partial payload offers "Load more output". False for a
+     * caller that loads the rest itself or shows the text only on request.
+     */
+    offerMore?: boolean;
   } = $props();
 </script>
 
@@ -87,7 +93,7 @@
         <AnsiText source={expansion.displayData} class="whitespace-pre-wrap break-all" />
       </div>
     {/if}
-    {#if expansion.hasMore}
+    {#if expansion.hasMore && offerMore}
       <button
         type="button"
         class="mx-3 mb-3 text-[0.6875rem] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"

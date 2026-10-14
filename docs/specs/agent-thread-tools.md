@@ -1006,12 +1006,22 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
   server): an outcome line, a link that opens the thread in a pane (naming
   its computer when it is another one) or the run in the workflows
   overlay, the facts a person reads, one line per request or hit, and long
-  text folded behind "show more". A reply nothing decodes still reads as
-  facts. A failed call shows its message with the `[code]` as a chip.
+  text folded behind "show more". Each tool's reply has its own decoder;
+  a reply shape none knows reads as facts and lines, and text that is not
+  JSON reads "Reply not decoded" with its size and a "Show raw" control.
+  A reply past the 32 KB payload preview loads whole (up to 2 MiB) before
+  it is decoded; a larger one says so and offers the raw text. The JSON
+  the model read is never the default view. A failed call shows its
+  message with the `[code]` as a chip.
+- An ask names and links the thread asked, not the hidden read-only copy
+  that answers it.
 - A spawn, send or ask that returned before its answer follows the
-  request: the target thread's state until the answer's wake row (the
-  user row carrying the request's token, joined or not) lands, then
-  "answer arrived".
+  request: the target thread's state (an ask: waiting on the answer) until
+  the answer's wake row (the user row carrying the request's token, joined
+  or not) lands, then "answer arrived". The wake row is found among the
+  rows the pane has loaded, so an answer outside the loaded window, or a
+  target on another computer, shows no "answer arrived"; slice 10's
+  request store replaces this scan.
 
 ## Availability and permissions (Q13, Q17, Q27)
 

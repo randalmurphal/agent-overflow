@@ -301,6 +301,8 @@
     const { token, threadId, state, outcome } = aoTool.result;
     if (!token || outcome === 'settled' || isSettledRequestState(state)) return '';
     if (aoAnswered) return 'answer arrived';
+    // An ask runs in a hidden copy; the thread asked is not doing the work.
+    if (aoTool.tool === 'thread_ask') return 'waiting on the answer';
     const target = threadId ? getThreadById(threadId) : undefined;
     if (!target) return '';
     const status = getEffectiveThreadStatus(target);
@@ -313,6 +315,7 @@
         return `thread ${status.replace(/-/g, ' ')}`;
     }
   });
+
 
   const ticker = createRunningElapsed(
     () => isRunning && durationLabel === '' && !isBackgroundedLaunch,
@@ -440,15 +443,12 @@
             class="max-w-full break-all hover:text-accent focus-visible:text-accent"
           />
         {:else}
-          {preview.text}
+          {preview.text}{#if aoLive}<!-- Inside the clipped text, after it: the hint is what truncation cuts first. --><span
+              class="ml-1.5 text-fg-hint"
+              data-testid="tool-call-card-ao-live-hint"
+            >({aoLive})</span>{/if}
         {/if}
       </span>
-      {#if aoLive}
-        <span
-          class="ml-1.5 shrink-0 text-[0.75rem] text-fg-hint"
-          data-testid="tool-call-card-ao-live-hint"
-        >({aoLive})</span>
-      {/if}
       {#if where.name}
         <span
           class="ml-1.5 max-w-[45%] shrink-0 truncate text-[0.75rem] text-fg-hint"

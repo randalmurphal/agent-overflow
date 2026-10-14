@@ -126,6 +126,43 @@ func claudeParityEvents(threadID, workspace string) []provider.ProviderEvent {
 			Timestamp: at(7),
 		},
 		{
+			// A loop: its row also carries the next fire the reply named
+			// (`next_fire_at`) on both writers.
+			Kind:      provider.EventToolStart,
+			ThreadID:  threadID,
+			ItemID:    "toolu_loop_1",
+			ItemType:  "MCP/thread_loop",
+			Meta:      json.RawMessage(`{"toolName":"MCP/thread_loop","mcp":{"server":"ao-thread-tools","tool":"thread_loop"},"input":{"label":"board","note":"Check the board.","every_seconds":600}}`),
+			Timestamp: at(7),
+		},
+		{
+			Kind:      provider.EventToolComplete,
+			ThreadID:  threadID,
+			ItemID:    "toolu_loop_1",
+			ItemType:  "MCP/thread_loop",
+			Content:   `{"label":"board","state":"armed","next_fire":"2026-10-14T06:11:07Z","note":"Loop \"board\" fires next at 2026-10-14T06:11:07Z."}`,
+			Meta:      json.RawMessage(`{"is_error":false}`),
+			Timestamp: at(7),
+		},
+		{
+			// A workflow run start: the run id and state the reply named.
+			Kind:      provider.EventToolStart,
+			ThreadID:  threadID,
+			ItemID:    "toolu_run_1",
+			ItemType:  "MCP/run_start",
+			Meta:      json.RawMessage(`{"toolName":"MCP/run_start","mcp":{"server":"ao-workflow-tools","tool":"run_start"},"input":{"workflow_id":"digest","goal":"Weekly summary"}}`),
+			Timestamp: at(7),
+		},
+		{
+			Kind:      provider.EventToolComplete,
+			ThreadID:  threadID,
+			ItemID:    "toolu_run_1",
+			ItemType:  "MCP/run_start",
+			Content:   `{"start":{"itemId":"run-1","workflowId":"digest","state":"queued"},"run":{"itemId":"run-1","workflowId":"digest","goal":"Weekly summary","state":"running","resting":false},"outcome":"backgrounded"}`,
+			Meta:      json.RawMessage(`{"is_error":false}`),
+			Timestamp: at(7),
+		},
+		{
 			Kind:      provider.EventCompactBoundary,
 			ThreadID:  threadID,
 			ItemID:    "compaction-1",

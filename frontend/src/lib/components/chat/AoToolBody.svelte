@@ -7,7 +7,9 @@
   // server's decoder reads it (chat/aoToolResults.ts): the outcome, a link
   // to what the call touched, its facts, one line per listed entity and
   // long text folded behind "show more". A failed call shows its message.
-  // Nothing here renders the JSON the model read.
+  // A reply past the payload preview is read whole before it is decoded,
+  // and text no decoder reads is reported, not painted, until "Show raw".
+  // Nothing here renders the JSON the model read by default.
   import type { PayloadExpansionHandle } from '../../utils/payloadExpansion.svelte';
   import type {
     PaneSession,
@@ -15,6 +17,7 @@
     ScrollHost,
   } from '../../stores/threadPaneRoles';
   import type { BackendKey } from '../../transport/backendKey';
+  import { formatPayloadSize } from '../../utils/payloadExpansion.svelte';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import AnsiText from './AnsiText.svelte';
   import AoFoldedText from './AoFoldedText.svelte';
@@ -81,10 +84,41 @@
   // A fact value folds once it runs past a few lines.
   const FACT_LINES = 4;
 
+  // The decoders read a reply whole, and the expansion fetches its first
+  // 32 KB: a reply past that loads the rest before it is decoded, up to
+  // this size. A thread_show or thread_item read is at most 1 MiB of text.
+  const AO_REPLY_MAX = 2 * 1024 * 1024;
+
   let clipped = $derived(tool.fullWhat !== tool.what);
   let hasDetails = $derived(clipped || facts.length > 0);
   let allLines = $state(false);
+  let rawShown = $state(false);
+  let partial = $derived(expansion.displayData !== null && !expansion.isComplete);
+  let tooLarge = $derived(partial && expansion.totalSize > AO_REPLY_MAX);
+
+  $effect(() => {
+    if (!expansion.expanded || !partial || tooLarge) return;
+    if (expansion.loading || expansion.error !== null) return;
+    void expansion.showFull();
+  });
+
+  function toggleRaw(event: MouseEvent): void {
+    event.stopPropagation();
+    preservePaneScrollAnchor(pane, event, () => {
+      rawShown = !rawShown;
+    });
+  }
 </script>
+
+{#snippet rawToggle()}
+  <button
+    type="button"
+    class="text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded compact:select-none"
+    aria-expanded={rawShown}
+    data-testid="tool-call-card-ao-raw-toggle"
+    onclick={toggleRaw}
+  >{rawShown ? 'Hide raw' : 'Show raw'}</button>
+{/snippet}
 
 {#if hasDetails}
   <div
@@ -99,7 +133,7 @@
           <dd class="whitespace-pre-wrap break-all font-mono" data-testid="tool-call-card-ao-full">{tool.fullWhat}</dd>
         </div>
       {/if}
-      {#each facts as fact (fact.label)}
+      {#each facts as fact, index (index)}
         <div class="flex gap-2">
           <dt class="shrink-0 text-fg-hint">{fact.label}</dt>
           <dd class="min-w-0 break-all" data-testid="tool-call-card-ao-fact" data-fact={fact.label}>
@@ -121,17 +155,30 @@
     {deferredOutputState}
     {deferredOutputError}
     copyLabel="Copy result"
+    offerMore={tooLarge && rawShown}
   >
     {#snippet renderContent({ data, testId })}
-      {@const error = failed ? aoToolError(data) : null}
-      {@const remote = !failed && tool.server === REMOTE_TOOLS_SERVER ? remoteResultView(data) : null}
-      {@const view = failed || remote ? null : aoResultView(tool.server, tool.tool, data, input, names)}
+      {@const error = failed && !partial ? aoToolError(data) : null}
+      {@const remote = !failed && !partial && tool.server === REMOTE_TOOLS_SERVER ? remoteResultView(data) : null}
+      {@const view = failed || remote || partial ? null : aoResultView(tool.server, tool.tool, data, input, names)}
       <div
         class="ansi-body min-w-0 max-w-full max-h-60 overflow-y-auto overflow-x-hidden px-3 py-2 text-[0.6875rem] leading-relaxed text-fg-muted"
         use:nestedScroll
         data-testid={testId}
       >
-        {#if error}
+        {#if partial}
+          <p class="mb-1 flex flex-wrap items-baseline gap-x-1.5 text-fg-hint" data-testid="tool-call-card-ao-undecoded">
+            {#if tooLarge}
+              <span>Reply of {formatPayloadSize(expansion.totalSize)}, too large to read here.</span>
+              {@render rawToggle()}
+            {:else}
+              <span role="status">Reading the whole reply ({formatPayloadSize(expansion.totalSize)})…</span>
+            {/if}
+          </p>
+          {#if rawShown}
+            <AnsiText source={data} class="whitespace-pre-wrap break-all font-mono" />
+          {/if}
+        {:else if error}
           <div data-testid="tool-call-card-ao-error">
             {#if error.message === errorShown}
               <p class="text-fg-hint">The message is shown above.</p>
@@ -158,18 +205,18 @@
           {/if}
         {:else if view}
           {#if view.outcome || view.link}
-            <p class="mb-1 flex min-w-0 items-baseline gap-1.5" data-testid="tool-call-card-ao-outcome">
+            <p class="mb-1 flex min-w-0 flex-wrap items-baseline gap-x-1.5" data-testid="tool-call-card-ao-outcome">
               {#if view.link}
                 <AoToolLink link={view.link} {viewer} testId="tool-call-card-ao-link" />
               {/if}
               {#if view.outcome}
-                <span class="min-w-0 truncate text-fg-hint">{view.link ? '· ' : ''}{view.outcome}{live ? ` → ${live}` : ''}</span>
+                <span class="min-w-0 break-words text-fg-hint">{view.link ? '· ' : ''}{view.outcome}{live ? ` → ${live}` : ''}</span>
               {/if}
             </p>
           {/if}
           {#if view.facts.length > 0}
             <dl class="mb-1">
-              {#each view.facts as fact, index (`${fact.label}:${index}`)}
+              {#each view.facts as fact, index (index)}
                 <div class="flex gap-2">
                   <dt class="shrink-0 text-fg-hint">{fact.label}</dt>
                   <dd class="min-w-0 break-words" data-testid="tool-call-card-ao-result-fact" data-fact={fact.label}>
@@ -231,7 +278,14 @@
             <p class="text-fg-hint" data-testid="tool-call-card-ao-note">{view.note}</p>
           {/if}
         {:else}
-          <AnsiText source={data} class="whitespace-pre-wrap break-all" />
+          <!-- Text no decoder reads: said, not painted, until asked for. -->
+          <p class="mb-1 flex flex-wrap items-baseline gap-x-1.5 text-fg-hint" data-testid="tool-call-card-ao-undecoded">
+            <span>Reply not decoded, {formatPayloadSize(new TextEncoder().encode(data).length)}.</span>
+            {@render rawToggle()}
+          </p>
+          {#if rawShown}
+            <AnsiText source={data} class="whitespace-pre-wrap break-all font-mono" />
+          {/if}
         {/if}
       </div>
     {/snippet}

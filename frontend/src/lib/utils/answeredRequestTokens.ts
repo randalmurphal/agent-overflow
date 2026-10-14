@@ -15,6 +15,9 @@ import { parseUserMessageMeta, userMessageOriginTokens } from './userMessageMeta
 const EMPTY: ReadonlySet<string> = new Set();
 const memo = new WeakMap<readonly Item[], ReadonlySet<string>>();
 
+// TODO(#95): read answered requests from slice 10's request store
+// (ListThreadAgentRows and its change event) once both are merged; this
+// scan sees only the rows the pane has loaded.
 export function answeredRequestTokens(items: readonly Item[] | undefined): ReadonlySet<string> {
   if (!items || items.length === 0) return EMPTY;
   const cached = memo.get(items);

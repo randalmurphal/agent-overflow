@@ -741,6 +741,16 @@ export function aoToolServer(itemMeta: Record<string, unknown> | null): string |
  * The presentation for an AO tool row, or null when the row is not one
  * (a native tool, or a user-configured MCP server).
  */
+/**
+ * An ask's reply names the hidden read-only copy that answers it, which is
+ * deleted once it has. The row is about the thread asked: its header, link
+ * and live state follow the call's own target.
+ */
+function askTarget(tool: string, input: Input, result: AoResultStamp): AoResultStamp {
+  if (tool !== 'thread_ask') return result;
+  return { ...result, threadId: str(input, 'thread_id'), title: '', computer: str(input, 'computer_id') };
+}
+
 export function aoToolPresentation(
   itemMeta: Record<string, unknown> | null,
   names: AoToolNames = NO_AO_NAMES,
@@ -750,7 +760,7 @@ export function aoToolPresentation(
   const server = AO_TOOL_SERVERS[mcp.server];
   if (!server) return null;
   const input = readInput(itemMeta);
-  const result = readAoResultStamp(itemMeta);
+  const result = askTarget(mcp.tool, input, readAoResultStamp(itemMeta));
   const spec = server.tools[mcp.tool];
   const label = spec
     ? spec.label
@@ -794,7 +804,10 @@ const ALREADY_SHOWN: Record<string, ReadonlySet<string>> = {
   thread_status: new Set(['wait_seconds']),
   thread_loop: new Set(['label', 'every_seconds', 'stop']),
   thread_watch: new Set(['label', 'every_seconds', 'long_running', 'stop']),
+  thread_remind: new Set(['note', 'after_seconds', 'at']),
   run_start: new Set(['workflow_id', 'goal']),
+  browser_open: new Set(['url']),
+  browser_open_file: new Set(['path']),
 };
 
 const FACT_LABELS: Record<string, string> = {

@@ -6,6 +6,7 @@ import {
   aoToolError,
   browserResultView,
   parseFirstJson,
+  readFirstJson,
   remoteResultView,
   threadResultView,
   workflowResultView,
@@ -27,6 +28,10 @@ describe('AO tool errors', () => {
     expect(aoToolError('[workflow_failed] Line one\nline two')).toEqual({ code: 'workflow_failed', message: 'Line one\nline two' });
     expect(aoToolError('Element not found: #go')).toEqual({ code: '', message: 'Element not found: #go' });
   });
+
+  it('reads a code only at the start of the text', () => {
+    expect(aoToolError('Navigation failed: [net_error] refused')).toEqual({ code: '', message: 'Navigation failed: [net_error] refused' });
+  });
 });
 
 describe('parseFirstJson', () => {
@@ -35,6 +40,15 @@ describe('parseFirstJson', () => {
     expect(parseFirstJson('[1,2] trailing')).toEqual([1, 2]);
     expect(parseFirstJson('plain text')).toBeUndefined();
     expect(parseFirstJson('{"broken":')).toBeUndefined();
+  });
+
+  it('reads any JSON value, a bare string or number included, and the text after it', () => {
+    expect(readFirstJson('"a title"\nThe page navigated.')).toEqual({ value: 'a title', rest: 'The page navigated.' });
+    expect(readFirstJson('42\nnote')).toEqual({ value: 42, rest: 'note' });
+    expect(readFirstJson('null')).toEqual({ value: null, rest: '' });
+    expect(readFirstJson('true story')).toEqual({ value: true, rest: 'story' });
+    expect(readFirstJson('42abc')).toBeNull();
+    expect(readFirstJson('plain text')).toBeNull();
   });
 });
 
@@ -68,9 +82,22 @@ describe('thread tool results', () => {
   });
 
   it('names a thread on another computer', () => {
-    const view = threadResultView('thread_ask', json({ token: 't', thread_id: 'x1', title: 'Build', computer_id: 'c2', computer: 'Desk', state: 'blocked', outcome: 'blocked' }), {}, names)!;
+    const view = threadResultView('thread_send', json({ token: 't', thread_id: 'x1', title: 'Build', computer_id: 'c2', computer: 'Desk', state: 'blocked', outcome: 'blocked' }), {}, names)!;
     expect(view.link).toMatchObject({ id: 'x1', label: 'Build', computerId: 'c2', computerName: 'Desk' });
     expect(view.outcome).toBe('blocked on a person · blocked');
+  });
+
+  it('names and links the thread asked, never the hidden copy that answers', () => {
+    const view = threadResultView('thread_ask', json({ token: 't', thread_id: 'fork-1', title: 'Docs slice (ask)', state: 'running', outcome: 'backgrounded' }), { thread_id: tid, question: 'Why?' }, names)!;
+    expect(view.link).toMatchObject({ kind: 'thread', id: tid, label: 'Docs slice' });
+    expect(view.facts).toContainEqual({ label: 'asked', value: 'a read-only copy' });
+  });
+
+  it('reads a list reply as lines, never as JSON', () => {
+    const view = threadResultView('thread_status', json([{ token: 'abcdef0123', state: 'running' }, { thread_id: tid, state: 'idle' }]), {}, names)!;
+    expect(view.outcome).toBe('2 items');
+    expect(view.lines.map((l) => [l.title, l.detail])).toEqual([['request abcdef01', 'running'], ['Docs slice', 'idle']]);
+    expect(view.lines[1].link).toMatchObject({ kind: 'thread', id: tid });
   });
 
   it('reads a reply as accepted with the thread it answered', () => {
@@ -133,6 +160,16 @@ describe('thread tool results', () => {
     const found = threadResultView('thread_item', json({ thread_id: tid, item_id: 'i', size: 9, offset: 0, bytes: 0, eof: false, query: 'FAIL', match_count: 2, matches: [{ offset: 10, context: 'x FAIL y' }, { offset: 90, context: 'FAIL' }] }), {}, names)!;
     expect(found.outcome).toBe('2 matches');
     expect(found.lines.map((l) => l.title)).toEqual(['byte 10', 'byte 90']);
+    // The context starts and ends mid-line; the row shows the line that matched.
+    const midLine = threadResultView('thread_item', json({ thread_id: tid, item_id: 'i', size: 9, query: 'needle', matches: [{ offset: 40, context: 'arsing 56\nline 57\nNEEDLE panic: overran\nline 59\nline 6' }] }), {}, names)!;
+    expect(midLine.lines[0].text).toBe('NEEDLE panic: overran');
+    // The header names the item; the body does not list its id.
+    expect(found.facts.map((f) => f.label)).not.toContain('item');
+  });
+
+  it('titles a request with no thread by its kind, once', () => {
+    const view = threadResultView('thread_status', json({ requests: [{ token: 'r', kind: 'remind', state: 'accepted', answer_kind: 'note' }] }), {}, names)!;
+    expect(view.lines[0]).toMatchObject({ title: 'remind', detail: 'accepted · note' });
   });
 
   it('reads a cancel, a loop and a group change', () => {
@@ -147,8 +184,8 @@ describe('thread tool results', () => {
     const view = threadResultView('thread_options', json({ provider: 'claude', models: ['a', 'b'], nested: { x: 1 } }), {}, names)!;
     expect(view.facts).toEqual([
       { label: 'provider', value: 'claude' },
-      { label: 'models', value: '2 items' },
-      { label: 'nested', value: '1 field' },
+      { label: 'models', value: 'a, b' },
+      { label: 'nested', value: 'x: 1' },
     ]);
   });
 
@@ -208,25 +245,127 @@ describe('workflow tool results', () => {
   });
 });
 
+describe('workflow replies routed by tool', () => {
+  it('reads run_watch as where the run is, its transitions and the repair sentence', () => {
+    const view = workflowResultView('run_watch', json({
+      itemId: rid,
+      cursor: 12,
+      transitions: [
+        { seq: 11, at: 1, itemId: rid, phaseId: 'collect', attempt: 1, from: 'running', to: 'needs-human', reason: 'gate', resting: true },
+        { seq: 12, at: 2, itemId: 'child-1', to: 'running', resting: false },
+      ],
+      run: { itemId: rid, workflowId: 'digest', goal: 'Weekly summary', state: 'needs-human', reason: 'gate', phaseId: 'review', resting: true, repair: 'Approve or reject with run_resolve.' },
+    }), names)!;
+    expect(view.outcome).toBe('needs-human · resting · 2 transitions');
+    expect(view.link).toMatchObject({ kind: 'run', id: rid, label: 'digest · Weekly summary' });
+    expect(view.facts).toEqual([{ label: 'phase', value: 'review' }, { label: 'reason', value: 'gate' }]);
+    expect(view.lines.map((l) => [l.title, l.detail])).toEqual([
+      ['collect', 'running → needs-human · gate'],
+      ['run', 'started running'],
+    ]);
+    expect(view.lines[1].link).toMatchObject({ kind: 'run', id: 'child-1' });
+    expect(view.note).toBe('Approve or reject with run_resolve.');
+  });
+
+  it('reads run_amend as what changed and when the run reads it', () => {
+    const view = workflowResultView('run_amend', json({
+      itemId: rid, names: ['budget', 'target'], seeds: { budget: 4, target: 'main', other: 'x' }, phaseId: 'build',
+      effect: 'next_phase', appliesNote: 'The run reads the new values when build ends.', callerNote: 'Its caller will not carry this change.',
+    }), names)!;
+    expect(view.outcome).toBe('amended budget, target · next phase');
+    expect(view.link).toMatchObject({ kind: 'run', id: rid });
+    expect(view.facts).toEqual([{ label: 'phase', value: 'build' }, { label: 'budget', value: '4' }, { label: 'target', value: 'main' }]);
+    expect(view.note).toBe('The run reads the new values when build ends. Its caller will not carry this change.');
+  });
+
+  it('reads run_guide as the entries waiting, who left them, and when the run reads them', () => {
+    const view = workflowResultView('run_guide', json({
+      itemId: rid, pending: 2, maxPending: 8, by: 'operator', state: 'running', phaseId: 'build',
+      deliversNote: 'The run reads this when it enters its next phase.', quarantineNote: 'An unreadable entry was set aside.',
+    }), names)!;
+    expect(view.outcome).toBe('2 entries waiting of 8 · running');
+    expect(view.facts).toEqual([{ label: 'by', value: 'operator' }, { label: 'phase', value: 'build' }]);
+    expect(view.note).toBe('The run reads this when it enters its next phase. An unreadable entry was set aside.');
+  });
+
+  it('reads memory_add as where the note went', () => {
+    const view = workflowResultView('memory_add', json({ itemId: 'r9', rootId: rid, kind: 'lesson', wave: 1, path: '.ao/memory/notes.jsonl' }), names)!;
+    expect(view.outcome).toBe('lesson added · wave 1');
+    expect(view.link).toMatchObject({ kind: 'run', id: rid, label: 'digest · Weekly summary' });
+    expect(view.facts).toEqual([{ label: 'file', value: '.ao/memory/notes.jsonl' }]);
+  });
+
+  it('reads memory_list as one line per note', () => {
+    const view = workflowResultView('memory_list', json({
+      itemId: rid, rootId: rid, path: '.ao/memory/notes.jsonl', total: 5, skipped: 1,
+      notes: [
+        { kind: 'lesson', text: 'Run the linter first.', files: ['a.go'], provenance: { runId: rid, phaseId: 'build', attempt: 1, wave: 0 }, at: 1791900000000 },
+        { kind: 'fact', text: 'CI takes 9 minutes.', provenance: { runId: rid, wave: 0 }, at: 1791900000000 },
+      ],
+    }), names)!;
+    expect(view.outcome).toBe('2 of 5 notes · 1 unreadable');
+    expect(view.lines.map((l) => [l.title, l.text])).toEqual([['lesson', 'Run the linter first.'], ['fact', 'CI takes 9 minutes.']]);
+    expect(view.lines[0].detail).toMatch(/^build · 1 file · /);
+  });
+
+  it('reads run_inspect as the run, where its work is, its children and guidance', () => {
+    const view = workflowResultView('run_inspect', json({
+      run: { itemId: rid, workflowId: 'digest', goal: 'Weekly summary', state: 'running', currentPhaseId: 'build', currentPhaseOrdinal: 2, phaseCount: 3, resting: false },
+      branch: 'wf/digest', baseBranch: 'main', worktreePath: '/w/digest',
+      children: [{ itemId: 'c1', workflowId: 'wave', state: 'completed', parentPhaseId: 'build' }],
+      guidance: [{ text: 'Skip the docs.', at: 1, ageSeconds: 90, by: 'operator' }],
+    }), names)!;
+    expect(view.outcome).toBe('running');
+    expect(view.facts).toContainEqual({ label: 'branch', value: 'wf/digest · from main' });
+    expect(view.facts).toContainEqual({ label: 'guidance', value: '1 entry waiting' });
+    expect(view.lines.map((l) => l.title)).toEqual(['wave', 'guidance']);
+    expect(view.lines[0].link).toMatchObject({ kind: 'run', id: 'c1' });
+    expect(view.lines[1].text).toBe('Skip the docs.');
+  });
+
+  it('reads run_narrative as the account, folded', () => {
+    const view = workflowResultView('run_narrative', json({ itemId: rid, phaseId: 'build', attempt: 2, path: 'n.md', present: true, bytes: 2048, truncated: true, content: '# Account' }), names)!;
+    expect(view.outcome).toBe('2.0 KB · clipped');
+    expect(view.facts).toContainEqual({ label: 'phase', value: 'build · attempt 2' });
+    expect(view.preview).toEqual({ label: 'account', text: '# Account' });
+  });
+
+  it('reads run_control answers: a scheduled resume and an action whose run could not be read', () => {
+    const scheduled = workflowResultView('run_control', json({ armedAt: '2026-10-14T09:00:00Z', run: { itemId: rid, workflowId: 'digest', state: 'paused' } }), names)!;
+    expect(scheduled.outcome).toBe('paused');
+    expect(scheduled.facts.map((f) => f.label)).toContain('resumes');
+    const done = workflowResultView('run_control', json({ itemId: rid, action: 'cancel', done: true, readError: 'database is locked' }), names)!;
+    expect(done.outcome).toBe('cancel · done');
+    expect(done.link).toMatchObject({ kind: 'run', id: rid });
+    expect(done.facts).toContainEqual({ label: 'read error', value: 'database is locked' });
+  });
+});
+
 describe('browser tool results', () => {
   it('reads a page state and a snapshot\'s text', () => {
-    const view = browserResultView('browser_snapshot', json({ id: 'p1', url: 'https://example.test/', title: 'Example', canGoBack: false, text: 'Hello\nWorld', elements: [{ nodeId: 'n', selector: '#a', tag: 'a' }] }))!;
+    const view = browserResultView('browser_snapshot', json({ id: 'p1', url: 'https://example.test/', title: 'Example', canGoBack: false, text: 'Hello\nWorld', elements: [{ nodeId: 'n', selector: '#a', tag: 'a' }] }), names)!;
     expect(view.outcome).toBe('Example');
     expect(view.facts).toEqual([{ label: 'url', value: 'https://example.test/' }, { label: 'elements', value: '1' }]);
     expect(view.preview).toEqual({ label: 'page text', text: 'Hello\nWorld' });
   });
 
   it('reads an evaluation\'s value and the note after it', () => {
-    const view = browserResultView('browser_evaluate', '{"off":true,"top":900}\nThe page navigated.')!;
+    const view = browserResultView('browser_evaluate', '{"off":true,"top":900}\nThe page navigated.', names)!;
     expect(view.preview?.text).toBe('{\n  "off": true,\n  "top": 900\n}');
     expect(view.note).toBe('The page navigated.');
-    expect(browserResultView('browser_evaluate', '"a title"')!.preview?.text).toBe('"a title"');
+    // A scalar reads as itself, and the WebKit note after it is the note.
+    const title = browserResultView('browser_evaluate', '"a title"\nWebKit evaluates in an isolated world.', names)!;
+    expect(title.preview?.text).toBe('a title');
+    expect(title.note).toBe('WebKit evaluates in an isolated world.');
+    const count = browserResultView('browser_evaluate', '42\nWebKit evaluates in an isolated world.', names)!;
+    expect(count.preview?.text).toBe('42');
+    expect(count.note).toBe('WebKit evaluates in an isolated world.');
   });
 
   it('lists pages', () => {
-    const view = browserResultView('browser_pages', json([{ id: 'p1', url: 'https://a.test', title: 'A', selected: true }]))!;
+    const view = browserResultView('browser_pages', json([{ id: 'p1', url: 'https://a.test', title: 'A', selected: true }]), names)!;
     expect(view.lines[0]).toMatchObject({ title: 'A', detail: 'https://a.test · selected' });
-    expect(browserResultView('browser_pages', '[]')!.outcome).toBe('no pages');
+    expect(browserResultView('browser_pages', '[]', names)!.outcome).toBe('no pages');
   });
 });
 

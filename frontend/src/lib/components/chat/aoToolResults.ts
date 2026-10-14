@@ -3,9 +3,10 @@
 // request or run, a link to what the call touched, and long text folded to
 // its first lines. One decoder per server, each reading that server's own
 // reply shapes (`internal/threadtools`, `internal/workflowtools`,
-// `internal/browser/mcp.go`, `internal/app/app_remote_mcp_result.go`). A
-// reply none of them recognises still reads as facts, never as the JSON
-// the model read.
+// `internal/browser/mcp.go`, `internal/app/app_remote_mcp_result.go`),
+// routed by the tool that answered. A reply shape none of them recognises
+// still reads as facts and lines, never as the JSON the model read; text
+// that is not JSON decodes to null and the body reports it as undecoded.
 //
 // Errors arrive as text, not JSON: the thread and workflow servers write
 // `[code] message` (`internal/threadmcp/server.go` WriteToolError) and the
@@ -145,19 +146,32 @@ function whenText(value: string): string {
   return sameDay ? formatTimeOfDay(at) : `${formatCalendarDate(at)} ${formatTimeOfDay(at)}`;
 }
 
+/** A reply's first JSON value and the text after it. */
+export interface FirstJson {
+  value: unknown;
+  rest: string;
+}
+
+const SCALAR_PREFIX = /^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)(?=\s|$)/;
+
 /**
- * The reply's first JSON value. A client may append text after it (the
- * browser server's note, Codex's structured content), so a reply that does
- * not parse whole is cut at the end of its first object or array.
+ * The reply's first JSON value, of any type, and what follows it. A client
+ * may append text after the value (the browser server's note, Codex's
+ * structured content), so a reply that does not parse whole is cut at the
+ * end of its first value. Null when the reply does not start with one.
  */
-export function parseFirstJson(data: string): unknown {
+export function readFirstJson(data: string): FirstJson | null {
   const text = data.trim();
-  if (text === '' || (text[0] !== '{' && text[0] !== '[')) return undefined;
+  if (text === '') return null;
   try {
-    return JSON.parse(text);
+    return { value: JSON.parse(text), rest: '' };
   } catch {
     // fall through to the first value
   }
+  const scalar = SCALAR_PREFIX.exec(text);
+  if (scalar) return { value: JSON.parse(scalar[0]), rest: text.slice(scalar[0].length).trim() };
+  const first = text[0];
+  if (first !== '{' && first !== '[' && first !== '"') return null;
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -166,23 +180,33 @@ export function parseFirstJson(data: string): unknown {
     if (inString) {
       if (escaped) escaped = false;
       else if (c === '\\') escaped = true;
-      else if (c === '"') inString = false;
+      else if (c === '"') {
+        inString = false;
+        if (depth === 0) return parsedPrefix(text, i + 1);
+      }
       continue;
     }
     if (c === '"') inString = true;
     else if (c === '{' || c === '[') depth++;
     else if (c === '}' || c === ']') {
       depth--;
-      if (depth === 0) {
-        try {
-          return JSON.parse(text.slice(0, i + 1));
-        } catch {
-          return undefined;
-        }
-      }
+      if (depth === 0) return parsedPrefix(text, i + 1);
     }
   }
-  return undefined;
+  return null;
+}
+
+function parsedPrefix(text: string, end: number): FirstJson | null {
+  try {
+    return { value: JSON.parse(text.slice(0, end)), rest: text.slice(end).trim() };
+  } catch {
+    return null;
+  }
+}
+
+/** The reply's first JSON value, or undefined when it does not start with one. */
+export function parseFirstJson(data: string): unknown {
+  return readFirstJson(data)?.value;
 }
 
 /** Splits `[thread_not_found] No thread matches…` into its code and message. */
@@ -223,14 +247,24 @@ function requestState(state: string): string {
 
 // ---- thread tools ------------------------------------------------------
 
-/** A spawn, send, ask or remind ack (`internal/threadtools/start.go` ackResult). */
-function threadAckView(reply: Input, input: Input, names: AoToolNames): AoResultView {
+/**
+ * A spawn, send, ask or remind ack (`internal/threadtools/start.go`
+ * ackResult). An ask's ack names the hidden read-only copy that answers,
+ * which is deleted once it has; the row names and links the thread asked.
+ */
+function threadAckView(tool: string, reply: Input, input: Input, names: AoToolNames): AoResultView {
   const view = emptyView();
   const state = str(reply, 'state');
   const outcome = str(reply, 'outcome');
   view.outcome = join(requestState(state), outcome !== 'settled' ? words(outcome) : '');
-  const id = str(reply, 'thread_id');
-  view.link = threadLink(id, threadName(id, names, str(reply, 'title')), str(reply, 'computer_id'), str(reply, 'computer'));
+  if (tool === 'thread_ask') {
+    const id = str(input, 'thread_id');
+    view.link = threadLink(id, threadName(id, names), str(input, 'computer_id'), '');
+    fact(view.facts, 'asked', 'a read-only copy');
+  } else {
+    const id = str(reply, 'thread_id');
+    view.link = threadLink(id, threadName(id, names, str(reply, 'title')), str(reply, 'computer_id'), str(reply, 'computer'));
+  }
   // What a spawn overrode: the defaults go unsaid.
   fact(view.facts, 'branch', str(input, 'worktree'));
   if (str(input, 'worktree')) fact(view.facts, 'base', str(input, 'base'));
@@ -264,14 +298,16 @@ function threadReplyView(reply: Input, names: AoToolNames): AoResultView {
 
 function requestLine(row: Input, names: AoToolNames): AoResultLine {
   const id = str(row, 'thread_id');
-  const title = threadName(id, names, str(row, 'title')) || words(str(row, 'kind'));
+  const named = threadName(id, names, str(row, 'title'));
+  const title = named || words(str(row, 'kind'));
   const due = num(row, 'due_at');
   const answer = typeof row.answer === 'string' ? row.answer : '';
   return {
     key: str(row, 'token') || id,
     title,
     detail: join(
-      words(str(row, 'kind')),
+      // A request with no thread (a reminder) is titled by its kind already.
+      named ? words(str(row, 'kind')) : '',
       requestState(str(row, 'state')),
       str(row, 'answer_kind'),
       due ? `fires ${formatTimeOfDay(due)}` : '',
@@ -396,16 +432,22 @@ function threadItemView(reply: Input, names: AoToolNames): AoResultView {
     : join(`${bytesText(read)} of ${bytesText(size)}`, words(str(reply, 'kind')), reply.eof === true ? 'to the end' : '');
   const id = str(reply, 'thread_id');
   view.link = threadLink(id, threadName(id, names), str(reply, 'computer_id'), str(reply, 'computer'));
-  fact(view.facts, 'item', str(reply, 'item_id'));
   const first = num(reply, 'first_line');
   if (first) fact(view.facts, 'lines', `${first}-${num(reply, 'last_line') ?? first}`);
   for (const match of matches) {
     const offset = num(match, 'offset') ?? 0;
-    view.lines.push({ key: `match:${offset}`, title: `byte ${offset}`, detail: '', text: clipText(str(match, 'context'), LINE_TEXT_MAX), link: null });
+    view.lines.push({ key: `match:${offset}`, title: `byte ${offset}`, detail: '', text: clipText(matchLine(str(match, 'context'), query), LINE_TEXT_MAX), link: null });
   }
   const text = typeof reply.text === 'string' ? reply.text : '';
   if (text) view.preview = { label: 'content', text };
   return view;
+}
+
+/** The line of a match's context that holds the query: the context starts and ends mid-line. */
+function matchLine(context: string, query: string): string {
+  const needle = query.toLowerCase();
+  const line = needle ? context.split('\n').find((candidate) => candidate.toLowerCase().includes(needle)) : undefined;
+  return (line ?? context).trim();
 }
 
 function threadCancelView(reply: Input, names: AoToolNames): AoResultView {
@@ -452,14 +494,16 @@ function threadWakeView(reply: Input): AoResultView {
 
 /** Reads a thread tools reply (`internal/threadtools`). */
 export function threadResultView(tool: string, data: string, input: Input, names: AoToolNames): AoResultView | null {
-  const reply = obj(parseFirstJson(data));
+  const parsed = parseFirstJson(data);
+  if (Array.isArray(parsed)) return arrayView(parsed, names);
+  const reply = obj(parsed);
   if (!reply) return null;
   switch (tool) {
     case 'thread_spawn':
     case 'thread_send':
     case 'thread_ask':
     case 'thread_remind':
-      return threadAckView(reply, input, names);
+      return threadAckView(tool, reply, input, names);
     case 'thread_reply':
       return threadReplyView(reply, names);
     case 'thread_status':
@@ -484,7 +528,7 @@ export function threadResultView(tool: string, data: string, input: Input, names
       return view;
     }
     default:
-      return factsView(reply);
+      return factsView(reply, names);
   }
 }
 
@@ -509,27 +553,242 @@ function runTitle(run: Input, names: AoToolNames): string {
   return names.run(id) || join(str(run, 'workflowId'), str(run, 'goal')) || runName(id, names);
 }
 
+/**
+ * A run_start, run_status, run_control or run_resolve answer: a run
+ * document, a wait around one (`Wait`, `StartResult`), a scheduled resume
+ * (`ScheduledResume`) or an action whose run could not be read back
+ * (`ActionDone`).
+ */
 function workflowRunView(reply: Input, names: AoToolNames): AoResultView {
   const view = emptyView();
   const start = obj(reply.start);
-  const run = obj(reply.run) ?? (str(reply, 'itemId') ? reply : null);
-  const doc = run ?? start ?? {};
+  const run = obj(reply.run) ?? (str(reply, 'workflowId') || str(reply, 'state') ? reply : null);
+  const doc = run ?? start ?? reply;
   const outcome = str(reply, 'outcome');
-  view.outcome = join(words(str(doc, 'state')), outcome && outcome !== str(doc, 'state') ? words(outcome) : '');
-  const id = str(doc, 'itemId') || (start ? str(start, 'itemId') : '');
+  const action = str(reply, 'action');
+  view.outcome = action
+    ? join(words(action), reply.done === true ? 'done' : '')
+    : join(words(str(doc, 'state')), outcome && outcome !== str(doc, 'state') ? words(outcome) : '');
+  const id = str(doc, 'itemId') || (start ? str(start, 'itemId') : '') || str(reply, 'itemId');
   view.link = runLink(id, runTitle({ ...start, ...doc, itemId: id }, names));
   if (run) runFacts(view, run);
+  const armed = str(reply, 'armedAt');
+  if (armed) fact(view.facts, 'resumes', whenText(armed));
   if (start) fact(view.facts, 'binding', str(start, 'bindingWarning'));
   if (start?.skipped === true) fact(view.facts, 'start', 'skipped: already running');
   const notify = obj(reply.notify);
   if (notify) fact(view.facts, 'notify', join(notify.armed === true ? 'armed' : 'unavailable', str(notify, 'detail')));
   fact(view.facts, 'read error', str(reply, 'readError'));
+  return view;
+}
+
+/** run_output (`WorkflowAgentRunOutputs`): the run's state, its outputs and artifacts. */
+function runOutputView(reply: Input, names: AoToolNames): AoResultView {
+  const view = emptyView();
+  const id = str(reply, 'itemId');
+  view.outcome = join(words(str(reply, 'state')), reply.resting === true ? 'resting' : '');
+  view.link = runLink(id, runName(id, names));
+  fact(view.facts, 'reason', words(str(reply, 'reason')));
   const outputs = obj(reply.outputs);
-  if (outputs) {
-    for (const [key, value] of Object.entries(outputs)) fact(view.facts, key, scalarText(value));
-  }
-  const artifacts = Array.isArray(reply.artifacts) ? reply.artifacts.filter((a): a is string => typeof a === 'string') : [];
+  if (outputs) for (const [key, value] of Object.entries(outputs)) fact(view.facts, key, valueLines(value));
+  const artifacts = strings(reply.artifacts);
   if (artifacts.length) fact(view.facts, 'artifacts', artifacts.join('\n'));
+  if (!outputs || Object.keys(outputs).length === 0) fact(view.facts, 'outputs', 'none yet');
+  return view;
+}
+
+/**
+ * run_watch (`WorkflowAgentWatchResult`): where the run is now, one line
+ * per transition the poll saw, and the call that settles a park.
+ */
+function runWatchView(reply: Input, names: AoToolNames): AoResultView {
+  const view = emptyView();
+  const run = obj(reply.run) ?? {};
+  const id = str(run, 'itemId') || str(reply, 'itemId');
+  const transitions = list(reply.transitions);
+  view.outcome = join(
+    words(str(run, 'state')),
+    run.resting === true ? 'resting' : '',
+    transitions.length ? plural(transitions.length, 'transition') : 'no change',
+    reply.gap === true ? 'some transitions lost' : '',
+  );
+  view.link = runLink(id, runTitle({ ...run, itemId: id }, names));
+  fact(view.facts, 'phase', str(run, 'phaseId'));
+  fact(view.facts, 'reason', words(str(run, 'reason')));
+  for (const row of transitions) {
+    const from = str(row, 'from');
+    const attempt = num(row, 'attempt');
+    view.lines.push({
+      key: `transition:${num(row, 'seq') ?? view.lines.length}`,
+      title: join(str(row, 'phaseId') || 'run', attempt && attempt > 1 ? `attempt ${attempt}` : ''),
+      detail: join(from ? `${words(from)} → ${words(str(row, 'to'))}` : `started ${words(str(row, 'to'))}`, words(str(row, 'reason'))),
+      text: clipText(str(row, 'cause'), LINE_TEXT_MAX),
+      link: str(row, 'itemId') && str(row, 'itemId') !== id ? runLink(str(row, 'itemId'), runName(str(row, 'itemId'), names)) : null,
+    });
+  }
+  view.note = str(run, 'repair');
+  return view;
+}
+
+/**
+ * run_inspect (`WorkflowAgentRunInspection`): the run, where its work is,
+ * the runs it called, guidance still waiting, and a named phase attempt.
+ */
+function runInspectView(reply: Input, names: AoToolNames): AoResultView {
+  const run = obj(reply.run) ?? {};
+  const view = workflowRunView(run, names);
+  fact(view.facts, 'branch', join(str(reply, 'branch'), str(reply, 'baseBranch') ? `from ${str(reply, 'baseBranch')}` : ''));
+  fact(view.facts, 'worktree', str(reply, 'worktreePath'));
+  const guidance = list(reply.guidance);
+  if (guidance.length) fact(view.facts, 'guidance', plural(guidance.length, 'entry waiting', 'entries waiting'));
+  const phase = obj(reply.phase);
+  if (phase) {
+    fact(view.facts, 'attempt', join(str(phase, 'phaseId'), `attempt ${num(phase, 'attempt') ?? 1}`, words(str(phase, 'status'))));
+    fact(view.facts, 'ran on', join(str(phase, 'provider'), str(phase, 'model'), str(phase, 'effort')));
+    fact(view.facts, 'decision', join(str(phase, 'decision'), str(phase, 'decisionTarget')));
+    fact(view.facts, 'cause', words(str(phase, 'cause')));
+    const outputs = obj(phase.outputs);
+    if (outputs) for (const [key, value] of Object.entries(outputs)) fact(view.facts, key, valueLines(value));
+    for (const unit of list(phase.units)) {
+      view.lines.push({
+        key: `unit:${str(unit, 'unitId')}`,
+        title: str(unit, 'unitId') || words(str(unit, 'kind')),
+        detail: join(words(str(unit, 'kind')), words(str(unit, 'status')), str(unit, 'branch')),
+        text: clipText(str(unit, 'note'), LINE_TEXT_MAX),
+        link: str(unit, 'threadId') ? threadLink(str(unit, 'threadId'), threadName(str(unit, 'threadId'), names), '', '') : null,
+      });
+    }
+  }
+  for (const child of list(reply.children)) {
+    const childId = str(child, 'itemId');
+    const title = runTitle(child, names);
+    view.lines.push({
+      key: `child:${childId}`,
+      title,
+      detail: join(words(str(child, 'state')), words(str(child, 'reason')), str(child, 'parentPhaseId') ? `from ${str(child, 'parentPhaseId')}` : ''),
+      text: '',
+      link: runLink(childId, title),
+    });
+  }
+  for (const [index, entry] of guidance.entries()) {
+    view.lines.push({
+      key: `guidance:${index}`,
+      title: 'guidance',
+      detail: join(str(entry, 'by'), num(entry, 'ageSeconds') !== null ? `waiting ${formatDurationMs((num(entry, 'ageSeconds') ?? 0) * 1000)}` : ''),
+      text: clipText(str(entry, 'text'), LINE_TEXT_MAX),
+      link: null,
+    });
+  }
+  return view;
+}
+
+/** run_narrative (`WorkflowAgentNarrative`): one attempt's account, folded. */
+function runNarrativeView(reply: Input, names: AoToolNames): AoResultView {
+  const view = emptyView();
+  const id = str(reply, 'itemId');
+  const attempt = num(reply, 'attempt');
+  view.outcome = reply.present === false
+    ? 'no account written'
+    : join(bytesText(num(reply, 'bytes') ?? 0), reply.truncated === true ? 'clipped' : '');
+  view.link = runLink(id, runName(id, names));
+  fact(view.facts, 'phase', join(str(reply, 'phaseId'), attempt ? `attempt ${attempt}` : ''));
+  fact(view.facts, 'unit', join(str(reply, 'unitId'), num(reply, 'unitAttempt') ? `attempt ${num(reply, 'unitAttempt')}` : ''));
+  fact(view.facts, 'file', str(reply, 'path'));
+  const content = typeof reply.content === 'string' ? reply.content : '';
+  if (content) view.preview = { label: 'account', text: content };
+  return view;
+}
+
+/** run_amend (`WorkflowAgentAmendSeedsResult`): what changed and when the run reads it. */
+function runAmendView(reply: Input, names: AoToolNames): AoResultView {
+  const view = emptyView();
+  const id = str(reply, 'itemId');
+  const amended = strings(reply.names);
+  view.outcome = join(amended.length ? `amended ${amended.join(', ')}` : 'amended', words(str(reply, 'effect')));
+  view.link = runLink(id, runName(id, names));
+  fact(view.facts, 'phase', str(reply, 'phaseId'));
+  const seeds = obj(reply.seeds);
+  if (seeds) for (const name of amended) if (name in seeds) fact(view.facts, name, valueLines(seeds[name]));
+  view.note = [str(reply, 'appliesNote'), str(reply, 'callerNote')].filter(Boolean).join(' ');
+  return view;
+}
+
+/** run_guide (`WorkflowAgentGuideRunResult`): the entry waiting, and when the run reads it. */
+function runGuideView(reply: Input, names: AoToolNames): AoResultView {
+  const view = emptyView();
+  const id = str(reply, 'itemId');
+  const pending = num(reply, 'pending');
+  const max = num(reply, 'maxPending');
+  view.outcome = join(
+    pending !== null ? `${plural(pending, 'entry', 'entries')} waiting${max ? ` of ${max}` : ''}` : 'guidance left',
+    words(str(reply, 'state')),
+  );
+  view.link = runLink(id, runName(id, names));
+  fact(view.facts, 'by', str(reply, 'by'));
+  fact(view.facts, 'phase', str(reply, 'phaseId'));
+  fact(view.facts, 'reason', words(str(reply, 'reason')));
+  view.note = [str(reply, 'deliversNote'), str(reply, 'callerNote'), str(reply, 'quarantineNote')].filter(Boolean).join(' ');
+  return view;
+}
+
+/** memory_add (`WorkflowAgentMemoryResult`): where the note went. */
+function memoryAddView(reply: Input, names: AoToolNames): AoResultView {
+  const view = emptyView();
+  const root = str(reply, 'rootId') || str(reply, 'itemId');
+  view.outcome = join(`${words(str(reply, 'kind')) || 'note'} added`, num(reply, 'wave') ? `wave ${num(reply, 'wave')}` : '');
+  view.link = runLink(root, runName(root, names));
+  fact(view.facts, 'file', str(reply, 'path'));
+  return view;
+}
+
+/** memory_list (`WorkflowAgentMemoryLog`): one line per note, newest as the log orders them. */
+function memoryListView(reply: Input, names: AoToolNames): AoResultView {
+  const view = emptyView();
+  const root = str(reply, 'rootId') || str(reply, 'itemId');
+  const notes = list(reply.notes);
+  const total = num(reply, 'total');
+  const skipped = num(reply, 'skipped') ?? 0;
+  view.outcome = join(
+    total !== null && total !== notes.length ? `${notes.length} of ${plural(total, 'note')}` : plural(notes.length, 'note'),
+    skipped ? `${skipped} unreadable` : '',
+  );
+  view.link = runLink(root, runName(root, names));
+  fact(view.facts, 'file', str(reply, 'path'));
+  for (const [index, note] of notes.entries()) {
+    const provenance = obj(note.provenance) ?? {};
+    const files = strings(note.files);
+    const at = num(note, 'at');
+    view.lines.push({
+      key: `note:${index}`,
+      title: words(str(note, 'kind')) || 'note',
+      detail: join(
+        str(provenance, 'phaseId'),
+        str(provenance, 'unitId'),
+        files.length ? plural(files.length, 'file') : '',
+        at ? formatCalendarDate(at) : '',
+      ),
+      text: clipText(str(note, 'text'), LINE_TEXT_MAX),
+      link: null,
+    });
+  }
+  return view;
+}
+
+/** run_list: one line per run. */
+function runListView(runs: Input[], names: AoToolNames): AoResultView {
+  const view = emptyView();
+  for (const run of runs) {
+    const id = str(run, 'itemId');
+    const title = runTitle(run, names);
+    view.lines.push({
+      key: id,
+      title,
+      detail: join(words(str(run, 'state')), str(run, 'currentPhaseId')),
+      text: '',
+      link: runLink(id, title),
+    });
+  }
+  view.outcome = runs.length ? plural(runs.length, 'run') : 'no runs';
   return view;
 }
 
@@ -570,25 +829,17 @@ function validationView(reply: Input): AoResultView {
   return view;
 }
 
-/** Reads a workflow tools reply (`internal/workflowtools`). */
+/**
+ * Reads a workflow tools reply (`internal/workflowtools`), routed by the
+ * tool that answered: several replies carry a run id, and each has its own
+ * shape.
+ */
 export function workflowResultView(tool: string, data: string, names: AoToolNames): AoResultView | null {
   const parsed = parseFirstJson(data);
-  if (Array.isArray(parsed) && tool === 'run_list') {
-    const view = emptyView();
-    for (const run of list(parsed)) {
-      const id = str(run, 'itemId');
-      const title = runTitle(run, names);
-      view.lines.push({
-        key: id,
-        title,
-        detail: join(words(str(run, 'state')), str(run, 'currentPhaseId')),
-        text: '',
-        link: runLink(id, title),
-      });
-    }
-    view.outcome = plural(view.lines.length, 'run');
-    return view;
+  if (tool === 'workflow_schema' && parsed !== undefined) {
+    return { ...emptyView(), outcome: 'authoring schema', preview: { label: 'schema', text: data } };
   }
+  if (Array.isArray(parsed)) return tool === 'run_list' ? runListView(list(parsed), names) : arrayView(parsed, names);
   const reply = obj(parsed);
   if (!reply) return null;
   switch (tool) {
@@ -597,11 +848,29 @@ export function workflowResultView(tool: string, data: string, names: AoToolName
     case 'workflow_validate':
     case 'workflow_new':
       return validationView(reply);
-    case 'workflow_schema':
-      return { ...emptyView(), outcome: 'authoring schema', preview: { label: 'schema', text: data } };
+    case 'run_start':
+    case 'run_status':
+    case 'run_control':
+    case 'run_resolve':
+      return workflowRunView(reply, names);
+    case 'run_output':
+      return runOutputView(reply, names);
+    case 'run_watch':
+      return runWatchView(reply, names);
+    case 'run_inspect':
+      return runInspectView(reply, names);
+    case 'run_narrative':
+      return runNarrativeView(reply, names);
+    case 'run_amend':
+      return runAmendView(reply, names);
+    case 'run_guide':
+      return runGuideView(reply, names);
+    case 'memory_add':
+      return memoryAddView(reply, names);
+    case 'memory_list':
+      return memoryListView(reply, names);
     default:
-      if (reply.start || reply.run || str(reply, 'itemId')) return workflowRunView(reply, names);
-      return factsView(reply);
+      return factsView(reply, names);
   }
 }
 
@@ -618,22 +887,21 @@ function pageLine(page: Input): AoResultLine {
 }
 
 /** Reads a browser tools reply (`internal/browser/mcp.go`). */
-export function browserResultView(tool: string, data: string): AoResultView | null {
-  const parsed = parseFirstJson(data);
+export function browserResultView(tool: string, data: string, names: AoToolNames): AoResultView | null {
+  if (tool === 'browser_screenshot') return { ...emptyView(), outcome: 'captured an image' };
+  const first = readFirstJson(data);
   if (tool === 'browser_evaluate' || tool === 'browser_evaluate_readonly') {
-    // Any JSON value is a result here, including a bare string or number;
+    // Any JSON value is a result here, a bare string or number included;
     // the note the server appends after it is guidance.
+    if (!first) return null;
     const view = emptyView();
-    const value = parsed === undefined ? data : JSON.stringify(parsed, null, 2);
     view.outcome = 'returned';
-    view.preview = { label: 'value', text: value ?? String(parsed) };
-    if (parsed !== undefined) {
-      const raw = JSON.stringify(parsed) ?? '';
-      const rest = data.trim().slice(raw.length).trim();
-      view.note = rest.startsWith('{') ? '' : rest;
-    }
+    const value = first.value;
+    view.preview = { label: 'value', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? String(value) };
+    view.note = first.rest;
     return view;
   }
+  const parsed = first?.value;
   if (Array.isArray(parsed)) {
     const view = emptyView();
     for (const page of list(parsed)) view.lines.push(pageLine(page));
@@ -651,9 +919,12 @@ export function browserResultView(tool: string, data: string): AoResultView | nu
     if (elements.length) fact(view.facts, 'elements', String(elements.length));
     const text = typeof reply.text === 'string' ? reply.text : '';
     if (text) view.preview = { label: 'page text', text };
+    view.note = first?.rest ?? '';
     return view;
   }
-  return factsView(reply);
+  const view = factsView(reply, names);
+  if (first?.rest) view.note = join(view.note, first.rest);
+  return view;
 }
 
 // ---- remote tools --------------------------------------------------------
@@ -686,28 +957,49 @@ export function remoteResultView(data: string): RemoteResultView | null {
 }
 
 /** The other remote replies (listings, logs, fetches): their facts and lines. */
-function remoteOtherView(data: string): AoResultView | null {
+function remoteOtherView(data: string, names: AoToolNames): AoResultView | null {
   const parsed = parseFirstJson(data);
-  if (Array.isArray(parsed)) return arrayView(parsed);
+  if (Array.isArray(parsed)) return arrayView(parsed, names);
   const reply = obj(parsed);
-  return reply ? factsView(reply) : null;
+  return reply ? factsView(reply, names) : null;
 }
 
 // ---- any reply ---------------------------------------------------------
 
-function scalarText(value: unknown): string {
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string' && entry !== '') : [];
+}
+
+/**
+ * A value as a fact reads it: text as itself, a list of words as a list,
+ * an object as one `key: value` line per field, and a list of records as
+ * its count. Never the JSON text.
+ */
+function valueLines(value: unknown): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) return plural(value.length, 'item');
-  if (value && typeof value === 'object') return plural(Object.keys(value).length, 'field');
+  if (Array.isArray(value)) {
+    if (value.every((entry) => entry === null || typeof entry !== 'object')) return value.map(valueLines).join(', ');
+    return plural(value.length, 'item');
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Input)
+      .map(([key, entry]) => {
+        const text = entry !== null && typeof entry === 'object' && !Array.isArray(entry)
+          ? plural(Object.keys(entry).length, 'field')
+          : valueLines(entry);
+        return `${key}: ${text}`;
+      })
+      .join('\n');
+  }
   return '';
 }
 
 /**
- * A reply no decoder knows: each scalar field as a fact, each list as a
- * count, each array of records as lines. Never the JSON text.
+ * A reply no decoder knows: each field as a fact, the first list of
+ * records as lines, the note as the note. Never the JSON text.
  */
-function factsView(reply: Input): AoResultView {
+function factsView(reply: Input, names: AoToolNames): AoResultView {
   const view = emptyView();
   for (const [key, value] of Object.entries(reply)) {
     if (key === 'note' && typeof value === 'string') {
@@ -716,30 +1008,47 @@ function factsView(reply: Input): AoResultView {
     }
     const records = list(value);
     if (records.length && view.lines.length === 0) {
-      view.lines = arrayView(records).lines;
+      view.lines = arrayView(records, names).lines;
       fact(view.facts, words(key), plural(records.length, 'item'));
       continue;
     }
-    fact(view.facts, words(key), scalarText(value));
+    fact(view.facts, words(key), valueLines(value));
   }
+  if (!view.facts.length && !view.lines.length && !view.note) view.outcome = 'empty reply';
   return view;
 }
 
-function arrayView(rows: unknown[]): AoResultView {
+/** A list reply no decoder knows: one line per entry, named by what it carries. */
+function arrayView(rows: unknown[], names: AoToolNames): AoResultView {
   const view = emptyView();
-  for (const [index, row] of list(rows).entries()) {
-    const title = str(row, 'title') || str(row, 'name') || str(row, 'label') || str(row, 'id') || `item ${index + 1}`;
-    const detail = join(str(row, 'state'), str(row, 'status'), str(row, 'kind'));
-    view.lines.push({ key: `${index}:${title}`, title, detail, text: '', link: null });
+  for (const [index, row] of rows.entries()) {
+    const record = obj(row);
+    if (!record) {
+      view.lines.push({ key: `${index}`, title: clipText(valueLines(row), LINE_TEXT_MAX), detail: '', text: '', link: null });
+      continue;
+    }
+    const threadId = str(record, 'thread_id');
+    const token = str(record, 'token');
+    const title = str(record, 'title') || str(record, 'name') || str(record, 'label')
+      || (threadId ? threadName(threadId, names) : '')
+      || (token ? `request ${shortId(token)}` : '')
+      || str(record, 'id') || `item ${index + 1}`;
+    view.lines.push({
+      key: `${index}`,
+      title,
+      detail: join(words(str(record, 'kind')), words(str(record, 'state')), words(str(record, 'status'))),
+      text: clipText(str(record, 'text') || str(record, 'message') || str(record, 'answer'), LINE_TEXT_MAX),
+      link: threadId ? threadLink(threadId, title, str(record, 'computer_id'), str(record, 'computer')) : null,
+    });
   }
-  view.outcome = plural(rows.length, 'item');
+  view.outcome = rows.length ? plural(rows.length, 'item') : 'empty list';
   return view;
 }
 
 /**
- * The reply of any AO tool as its row's body shows it, or null when the
- * reply is not JSON (plain text renders as it is) or is a remote run reply,
- * which renders through `remoteResultView`.
+ * The reply of any AO tool as its row's body shows it. Null when the reply
+ * is not JSON, which the body reports as undecoded rather than painting,
+ * or is a remote run reply, which renders through `remoteResultView`.
  */
 export function aoResultView(
   server: string,
@@ -754,9 +1063,9 @@ export function aoResultView(
     case WORKFLOW_TOOLS_SERVER:
       return workflowResultView(tool, data, names);
     case BROWSER_TOOLS_SERVER:
-      return browserResultView(tool, data);
+      return browserResultView(tool, data, names);
     case REMOTE_TOOLS_SERVER:
-      return remoteResultView(data) ? null : remoteOtherView(data);
+      return remoteResultView(data) ? null : remoteOtherView(data, names);
     default:
       return null;
   }
