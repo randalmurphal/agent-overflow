@@ -206,3 +206,67 @@ func TestSplitPersonPartsFixture(t *testing.T) {
 		}
 	}
 }
+
+// Answers that queued together become one row: attribution is the first
+// member's, and the row's parts keep every member's request token so each
+// request finds the row that settled it.
+func TestOriginTokensNamesEveryJoinedRequest(t *testing.T) {
+	t.Parallel()
+	answer := func(id, token string) Meta {
+		return Meta{SendID: id, Origin: OriginAgentThread, OriginThread: &OriginThread{ThreadID: "t-" + token, Token: token}}
+	}
+	join := func(members []Meta, texts []string) Meta {
+		lengths := make([]int, len(texts))
+		for i, text := range texts {
+			lengths[i] = len(text)
+		}
+		joined := JoinMetas(members)
+		joined.JoinedParts = PartsOf(members, texts, lengths)
+		return joined
+	}
+	inner := join([]Meta{answer("d1", "tok-3"), answer("d2", "tok-1")}, []string{"three", "one again"})
+	joined := join([]Meta{answer("a", "tok-1"), {SendID: "b"}, answer("c", "tok-2"), inner},
+		[]string{"one", "mine", "two", "three" + JoinSeparator + "one again"})
+	if joined.OriginThread == nil || joined.OriginThread.Token != "tok-1" {
+		t.Fatalf("attribution = %+v, want the first member's", joined.OriginThread)
+	}
+	if got, want := originTokens(joined), []string{"tok-1", "tok-2", "tok-3"}; !slices.Equal(got, want) {
+		t.Errorf("OriginTokens = %v, want %v", got, want)
+	}
+	single := join([]Meta{answer("a", "tok-1"), {SendID: "b"}}, []string{"one", "mine"})
+	if got := originTokens(single); !slices.Equal(got, []string{"tok-1"}) {
+		t.Errorf("one answer and the person's: OriginTokens = %v, want [tok-1]", got)
+	}
+	if got := originTokens(answer("a", "tok-1")); !slices.Equal(got, []string{"tok-1"}) {
+		t.Errorf("an unjoined answer: OriginTokens = %v, want [tok-1]", got)
+	}
+	// A wake first takes the attribution; the answer behind it keeps its token.
+	behindWake := join([]Meta{
+		{SendID: "a", Origin: OriginAgentWake, OriginWake: &OriginWake{Kind: "loop", Label: "board"}},
+		answer("b", "tok-1"),
+	}, []string{"tick", "one"})
+	if behindWake.OriginThread != nil || !slices.Equal(originTokens(behindWake), []string{"tok-1"}) {
+		t.Errorf("behind a wake: OriginThread %+v, OriginTokens %v, want nil and [tok-1]", behindWake.OriginThread, originTokens(behindWake))
+	}
+	if got := originTokens(Meta{Origin: OriginAgentWake, OriginThread: &OriginThread{Token: "tok-9"}}); got != nil {
+		t.Errorf("a wake's own row: OriginTokens = %v, want none", got)
+	}
+}
+
+// originTokens is every request token a row carries, as the frontend's
+// userMessageOriginTokens reads them: each joined member's
+// an agent thread wrote, in queue order and once, whatever the row's
+// attribution (a wake may have joined first), else an `agent-thread` row's
+// own. It is how each request finds the row that answered it.
+func originTokens(meta Meta) []string {
+	var tokens []string
+	for _, part := range meta.JoinedParts {
+		if part.OriginThread != nil && part.OriginThread.Token != "" && !slices.Contains(tokens, part.OriginThread.Token) {
+			tokens = append(tokens, part.OriginThread.Token)
+		}
+	}
+	if len(tokens) == 0 && meta.Origin == OriginAgentThread && meta.OriginThread != nil && meta.OriginThread.Token != "" {
+		tokens = []string{meta.OriginThread.Token}
+	}
+	return tokens
+}

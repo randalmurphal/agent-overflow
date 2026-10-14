@@ -62,8 +62,11 @@ export interface UserMessageMeta {
   /** What wrote an `agent-wake` row. See userMessageOriginWake. */
   originWake?: unknown;
   /**
-   * A joined row's members in its text, each `{sendId, bytes, origin}`:
-   * bytes is the member's UTF-8 length. See personTextOfUserMessage.
+   * A joined row's members in its text, each `{sendId, bytes, origin,
+   * originThread, originWake}`: bytes is the member's UTF-8 length, and an
+   * agent thread's member carries its request token. `originThread` keeps
+   * only the first member's. See personTextOfUserMessage and
+   * userMessageOriginTokens.
    */
   joinedParts?: unknown;
   /**
@@ -117,6 +120,25 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
     token: stringField(record.token),
     kind: stringField(record.kind),
   };
+}
+
+/**
+ * The request tokens a user row answers: every joined member's (whatever
+ * the row's attribution, since a wake may have joined first), else an
+ * `agent-thread` row's own.
+ */
+export function userMessageOriginTokens(meta: UserMessageMeta): string[] {
+  const joined: string[] = [];
+  if (Array.isArray(meta.joinedParts)) {
+    for (const part of meta.joinedParts as unknown[]) {
+      const token = objectRecord(part) ? userMessageOriginThread(part as UserMessageMeta)?.token : '';
+      if (token && !joined.includes(token)) joined.push(token);
+    }
+  }
+  if (joined.length > 0) return joined;
+  if (userMessageOrigin(meta) !== 'agent-thread') return [];
+  const token = userMessageOriginThread(meta)?.token;
+  return token ? [token] : [];
 }
 
 /**

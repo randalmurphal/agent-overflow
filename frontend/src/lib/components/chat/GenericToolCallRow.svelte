@@ -8,6 +8,7 @@
     PaneSession,
     RowUiRegistry,
     ScrollHost,
+    TimelineSource,
   } from '../../stores/threadPaneRoles';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
@@ -36,9 +37,20 @@
     aoToolPresentation,
     aoToolServer,
     computerName as aoComputerName,
+    isFullThreadId,
     REMOTE_TOOLS_SERVER,
+    THREAD_TOOLS_SERVER,
     type AoToolNames,
   } from './aoTools';
+  import { aoToolError, isSettledRequestState } from './aoToolResults';
+  import { answeredRequestTokens } from '../../utils/answeredRequestTokens';
+  import {
+    readItemProjectionSource,
+    requestItemProjectionSource,
+  } from '../../utils/itemProjectionSource.svelte';
+  import { getThreadById, getThreads } from '../../stores/threads.svelte';
+  import { getEffectiveThreadStatus } from '../../stores/threadStatuses.svelte';
+  import { getWorkflowRun } from '../../stores/workflowRuns.svelte';
   import AoToolBody from './AoToolBody.svelte';
   import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
   import {
@@ -63,7 +75,7 @@
     showTimestamp = true,
     hostActions,
   }: {
-    pane?: PaneSession & RowUiRegistry & ScrollHost;
+    pane?: PaneSession & RowUiRegistry & ScrollHost & Partial<Pick<TimelineSource, 'items'>>;
     item: Item;
     displayItem?: Item;
     statusItem?: Item;
@@ -86,6 +98,14 @@
     const held = attachRemoteJobs(item.threadId);
     return () => held.release();
   });
+  /** The thread an id or the unambiguous prefix `thread_id` accepts (six characters or more) names. */
+  function namedThread(id: string) {
+    const thread = getThreadById(id);
+    if (thread || id.length < 6 || isFullThreadId(id)) return thread;
+    const matches = getThreads().filter((t) => t.id.startsWith(id));
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+
   const aoNames: AoToolNames = {
     computer: (id) => {
       const entry = attachedBackendEntry(id);
@@ -96,9 +116,36 @@
       const page = browserCompanionState(item.threadId)?.pages?.find((p) => p.id === pageId);
       return page?.label || page?.title || '';
     },
+    thread: (id) => namedThread(id)?.title ?? '',
+    threadId: (id) => namedThread(id)?.id ?? (isFullThreadId(id) ? id : ''),
+    run: (runId) => {
+      const run = getWorkflowRun(runId);
+      if (!run) return '';
+      const goal = run.goal.trim().split('\n')[0];
+      return [run.workflowId, goal].filter(Boolean).join(' · ');
+    },
   };
   let aoTool = $derived(aoServer ? aoToolPresentation(displayMeta, aoNames) : null);
-  let aoFacts = $derived(aoServer ? aoToolFacts(displayMeta, aoNames) : []);
+  // The wire projection clips a long input to its opening
+  // (internal/itemwire), which is all the header shows. The body lists
+  // inputs in full, so an expanded row reads them from the stored row.
+  let aoInputElided = $derived.by(() => {
+    const marker = displayMeta?.wireElision;
+    if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return false;
+    const input = (marker as Record<string, unknown>).input;
+    return Array.isArray(input) && input.length > 0;
+  });
+  let aoRecovered = $derived(
+    aoInputElided ? readItemProjectionSource(item.threadId, effectiveDisplayItem.id, effectiveDisplayItem.updatedAt) : null,
+  );
+  let aoFactsMeta = $derived(
+    aoRecovered?.source?.meta ? parseJsonObject(aoRecovered.source.meta) ?? displayMeta : displayMeta,
+  );
+  let aoInput = $derived.by<Record<string, unknown>>(() => {
+    const input = aoFactsMeta?.input;
+    return input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
+  });
+  let aoFacts = $derived(aoServer ? aoToolFacts(aoFactsMeta, aoNames) : []);
   let classification = $derived(
     aoTool
       ? { icon: aoTool.icon, label: aoTool.label, isSubagent: false }
@@ -232,6 +279,50 @@
         fallback: sendReply || 'Tool call failed',
       }),
   );
+  // An AO tool call that failed: its reply is the server's message, with a
+  // `[code]` prefix on the thread and workflow servers. The payload's
+  // preview carries its opening, so the row says what went wrong without a
+  // read; once the body has read the reply, the header shows it whole and
+  // the body does not repeat it.
+  let aoRowError = $derived.by(() => {
+    if (!aoTool || !rowError || rowError.code) return rowError;
+    const read = expansion.expanded && expansion.isComplete ? expansion.displayData : null;
+    const preview = read?.trim() ? read : statusMeta?.preview;
+    if (typeof preview !== 'string' || !preview.trim()) return rowError;
+    const error = aoToolError(preview);
+    return { tone: rowError.tone, msg: error.message, code: error.code || undefined };
+  });
+
+  // A spawn, send or ask whose call returned before the answer: where the
+  // request stands now. The answer's arrival is the wake row carrying its
+  // token; until then, what the target thread is doing.
+  let aoAnswered = $derived(
+    aoTool?.server === THREAD_TOOLS_SERVER
+      && aoTool.result.token !== ''
+      && answeredRequestTokens(pane?.items).has(aoTool.result.token),
+  );
+  let aoLive = $derived.by(() => {
+    if (!aoTool || aoTool.server !== THREAD_TOOLS_SERVER) return '';
+    if (!['thread_spawn', 'thread_send', 'thread_ask'].includes(aoTool.tool)) return '';
+    const { token, threadId, state, outcome } = aoTool.result;
+    if (!token || outcome === 'settled' || isSettledRequestState(state)) return '';
+    if (aoAnswered) return 'answer arrived';
+    // An ask runs in a hidden copy; the thread asked is not doing the work.
+    if (aoTool.tool === 'thread_ask') return 'waiting on the answer';
+    const target = threadId ? getThreadById(threadId) : undefined;
+    if (!target) return '';
+    const status = getEffectiveThreadStatus(target);
+    switch (status) {
+      case 'pending-approval':
+        return 'waiting on an approval';
+      case 'awaiting-input':
+        return 'waiting on an answer from you';
+      default:
+        return `thread ${status.replace(/-/g, ' ')}`;
+    }
+  });
+
+
   const ticker = createRunningElapsed(
     () => isRunning && durationLabel === '' && !isBackgroundedLaunch,
     () => item.createdAt,
@@ -274,6 +365,12 @@
   async function toggle() {
     await expansion.toggle();
   }
+
+  $effect(() => {
+    if (expansion.expanded && aoTool && aoInputElided) {
+      requestItemProjectionSource(item.threadId, effectiveDisplayItem.id, effectiveDisplayItem.updatedAt);
+    }
+  });
 
   // Where an AO tool acts, when that is not simply "here". A remote tool
   // names the computer its input targets: by name when this client or the
@@ -352,7 +449,10 @@
             class="max-w-full break-all hover:text-accent focus-visible:text-accent"
           />
         {:else}
-          {preview.text}
+          {preview.text}{#if aoLive}<!-- Inside the clipped text, after it: the hint is what truncation cuts first. --><span
+              class="ml-1.5 text-fg-hint"
+              data-testid="tool-call-card-ao-live-hint"
+            >({aoLive})</span>{/if}
         {/if}
       </span>
       {#if where.name}
@@ -369,9 +469,9 @@
     {/snippet}
   </TranscriptDisclosureHeader>
 
-  {#if rowError}
+  {#if aoRowError}
     <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1">
-      <RowError tone={rowError.tone} msg={rowError.msg} code={rowError.code} />
+      <RowError tone={aoRowError.tone} msg={aoRowError.msg} code={aoRowError.code} />
     </div>
   {:else if sendReply}
     <div
@@ -388,6 +488,13 @@
         id={bodyDomId}
         tool={aoTool}
         facts={aoFacts}
+        input={aoInput}
+        names={aoNames}
+        viewer={threadMachine(item.threadId, pane?.thread?.projectId)}
+        failed={effectiveStatusItem.status === 'errored'}
+        live={aoLive}
+        answered={aoAnswered}
+        errorShown={aoRowError?.msg ?? ''}
         hasPayload={hasPayloadBody}
         emptyMessage={importUnavailableLabel(item) ?? 'No stored payload for this tool result.'}
         {deferredOutputState}

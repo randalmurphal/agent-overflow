@@ -417,6 +417,13 @@ and anti-changes that live only here:
   and permissions). `ao-browser-tools` and `ao-remote-tools` stay denied in
   read-only sessions: both act outside the thread, and read-only is the
   mode for unattended work.
+- AO tool rows (thread, workflow, browser, remote) present as sentences
+  with structured results, never raw JSON (2026-10-13). The header says
+  what the call did in a person's words, ids read as names, and the body
+  decodes the reply into an outcome, links, facts and folded text; a
+  failed call shows its message and code. Text no decoder reads is
+  reported as undecoded and shown only on request. `docs/specs/agent-thread-tools.md`,
+  How calls surface in the timeline.
 - Phone chat chrome (2026-09-13): header row one is back, title, diff
   badge, menu; row two is the full-width `machine · project · branch ·
   worktree` line with every segment a direct tap into its picker. The

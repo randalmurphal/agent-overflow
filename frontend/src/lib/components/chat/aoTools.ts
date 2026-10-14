@@ -12,11 +12,19 @@
 // (`internal/app/app_remote_watch.go` `remoteTrayItems`) presents through
 // the same table as a live transcript row.
 //
-// The model addresses computers, jobs and pages by id; a person knows them
-// by name. Every id in an input is presented through `AoToolNames`, which
-// the row builds from what it can see (attached computers, the thread's
-// job listing, its live pages), and an id whose name is unknown falls back
-// to a short form rather than a bare UUID.
+// A thread or workflow tool's reply says what the call touched (the new
+// thread's title, a request's token, a run's workflow), and triage copies
+// those few fields onto the row as `meta.ao_result`
+// (`internal/triage/ao_tool_result.go`), so the header can name them
+// before the reply is read. The expanded body decodes the reply itself
+// (`aoToolResults.ts`).
+//
+// The model addresses computers, jobs, pages, threads and runs by id; a
+// person knows them by name. Every id is presented through `AoToolNames`,
+// which the row builds from what it can see (attached computers, the
+// thread's job listing, its live pages, the thread list, the workflow
+// runs), and an id whose name is unknown falls back to a short form rather
+// than a bare UUID.
 //
 // Adding an AO MCP server: register it in `AO_TOOL_SERVERS` with its icon,
 // family name and per-tool `what` builder. A tool missing from its server's
@@ -25,7 +33,7 @@
 
 import type { ToolKindIcon } from './toolCardHeader';
 import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
-import { formatCalendarDate, formatDurationMs, formatTimeOfDay } from '../../utils/format';
+import { formatCalendarDate, formatTimeOfDay } from '../../utils/format';
 
 /** Mirrors `internal/app/app_remote_mcp.go#remoteMCPName`. */
 export const REMOTE_TOOLS_SERVER = 'ao-remote-tools';
@@ -41,12 +49,49 @@ export interface AoToolNames {
   computer(id: string): string;
   job(requestId: string): string;
   page(pageId: string): string;
+  /** A thread's title. `id` may be the unambiguous prefix the model typed. */
+  thread(id: string): string;
+  /**
+   * The full id of the thread `id` names, which may be a prefix: '' when
+   * the prefix is ambiguous or names no thread this client knows.
+   */
+  threadId(id: string): string;
+  /** A workflow run's name: its workflow and goal. */
+  run(runId: string): string;
 }
 
 export const NO_AO_NAMES: AoToolNames = {
   computer: () => '',
   job: () => '',
   page: () => '',
+  thread: () => '',
+  threadId: (id) => (isFullThreadId(id) ? id : ''),
+  run: () => '',
+};
+
+/** Whether `id` is a whole thread id rather than a prefix of one. */
+export function isFullThreadId(id: string): boolean {
+  return id.length === 36;
+}
+
+/**
+ * What a thread or workflow tool's reply said, as triage stamped it on the
+ * row (`meta.ao_result`). Every field is '' when the reply did not carry it,
+ * the call failed, or the row predates the stamp.
+ */
+export interface AoResultStamp {
+  token: string;
+  threadId: string;
+  title: string;
+  computer: string;
+  runId: string;
+  workflowId: string;
+  state: string;
+  outcome: string;
+}
+
+const NO_RESULT: AoResultStamp = {
+  token: '', threadId: '', title: '', computer: '', runId: '', workflowId: '', state: '', outcome: '',
 };
 
 export interface AoToolPresentation {
@@ -67,6 +112,8 @@ export interface AoToolPresentation {
   computerName: string;
   /** The remote job the tool addresses, when its input names one. */
   requestId: string;
+  /** What the reply said, from the row's stamp. */
+  result: AoResultStamp;
 }
 
 /** One line of the expanded body: an input the header does not show. */
@@ -79,7 +126,7 @@ type Input = Record<string, unknown>;
 
 interface AoToolSpec {
   label: string;
-  what: (input: Input, names: AoToolNames) => string;
+  what: (input: Input, names: AoToolNames, result: AoResultStamp) => string;
 }
 
 interface AoToolServer {
@@ -92,8 +139,10 @@ interface AoToolServer {
 }
 
 const SHORT_ID_CHARS = 8;
-const WHAT_MAX = 160;
-const FACT_MAX = 2000;
+/** One header line. `metaInputLeafRenderCaps.test.ts` holds it under the wire leaf floor. */
+export const WHAT_MAX = 160;
+/** One fact in the expanded body; longer values fold behind "show more". */
+export const FACT_MAX = 2000;
 
 function str(input: Input, key: string): string {
   const value = input[key];
@@ -218,14 +267,14 @@ const BROWSER_TOOLS: Record<string, AoToolSpec> = {
       return label ? `${page ? `${page} as ` : ''}${quoted(label)}` : page;
     },
   },
-  browser_session: { label: 'session', what: (input) => str(input, 'name') },
+  browser_session: { label: 'use', what: (input) => str(input, 'name') },
   browser_visibility: {
     label: 'show',
     what: (input, names) =>
       input.visible === false ? `hide ${pageRef(input, names) || 'companion'}` : withPage('', input, names),
   },
   browser_viewport: {
-    label: 'viewport',
+    label: 'size',
     what: (input) => {
       const action = str(input, 'action');
       const width = num(input, 'width');
@@ -235,9 +284,9 @@ const BROWSER_TOOLS: Record<string, AoToolSpec> = {
     },
   },
   browser_close_page: { label: 'close', what: pageRef },
-  browser_snapshot: { label: 'snapshot', what: pageRef },
+  browser_snapshot: { label: 'read', what: pageRef },
   browser_screenshot: {
-    label: 'capture',
+    label: 'shot',
     what: (input, names) => withPage(input.full_page === true ? 'full page' : '', input, names),
   },
   browser_locator: {
@@ -305,33 +354,50 @@ const BROWSER_TOOLS: Record<string, AoToolSpec> = {
   browser_evaluate: { label: 'eval', what: (input) => str(input, 'expression') },
   browser_evaluate_readonly: { label: 'eval', what: (input) => str(input, 'expression') },
   browser_clipboard: {
-    label: 'clipboard',
+    label: 'clip',
     what: (input) => {
       const action = str(input, 'action');
       const text = str(input, 'text');
       return [action, text ? quoted(text) : ''].filter(Boolean).join(' ');
     },
   },
-  browser_console_logs: { label: 'console', what: (input) => str(input, 'filter') },
-  browser_downloads: { label: 'download', what: (input) => str(input, 'action') },
+  browser_console_logs: { label: 'logs', what: (input) => str(input, 'filter') },
+  browser_downloads: { label: 'files', what: (input) => str(input, 'action') },
   browser_assets: { label: 'assets', what: (input) => str(input, 'action') },
 };
 
-/**
- * A thread by the title the result carried, else by the reference the call
- * made. `thread_id` accepts an unambiguous prefix, so the input alone is
- * often eight characters of a UUID; `threadResultView` recovers the name
- * from the reply and the row prefers it.
- */
-function threadRef(input: Input): string {
-  const id = str(input, 'thread_id');
-  if (!id) return '';
-  return id.length > SHORT_ID_CHARS ? `thread ${id.slice(0, SHORT_ID_CHARS)}` : `thread ${id}`;
+/** Characters below which a typed id prefix reads whole rather than cut to its short form. */
+const TYPED_ID_MAX = 24;
+
+/** An id the model typed: a prefix shorter than a whole id reads as typed, a whole id in its short form. */
+function typedId(id: string): string {
+  return id.length < TYPED_ID_MAX ? id : shortId(id);
 }
 
-function threadListRef(input: Input): string {
+/** An id as a person can tell it apart: its first eight characters. */
+export function shortId(id: string): string {
+  return id.length > SHORT_ID_CHARS ? id.slice(0, SHORT_ID_CHARS) : id;
+}
+
+/**
+ * A thread by the title the reply carried, else the title this client
+ * knows it by, else `thread 1a2b3c4d`. `thread_id` accepts an unambiguous
+ * prefix, so the input alone is often eight characters of a UUID.
+ */
+export function threadName(id: string, names: AoToolNames, title = ''): string {
+  if (title) return title;
+  if (!id) return '';
+  return names.thread(id) || `thread ${typedId(id)}`;
+}
+
+function threadRef(input: Input, names: AoToolNames, result: AoResultStamp = NO_RESULT): string {
+  const id = str(input, 'thread_id');
+  return threadName(id, names, id && result.title ? result.title : '');
+}
+
+function threadListRef(input: Input, names: AoToolNames): string {
   const ids = strings(input, 'thread_ids');
-  if (ids.length === 1) return threadRef({ thread_id: ids[0] });
+  if (ids.length === 1) return threadName(ids[0], names);
   if (ids.length > 1) return `${ids.length} threads`;
   const tokens = strings(input, 'tokens');
   if (tokens.length) return `${tokens.length} request${tokens.length === 1 ? '' : 's'}`;
@@ -346,41 +412,100 @@ function firstLine(input: Input, key: string): string {
   return line.trim();
 }
 
-function withThread(what: string, input: Input): string {
-  const thread = threadRef(input);
-  if (!what) return thread;
-  return thread ? `${what} → ${thread}` : what;
+/** A message to a thread: who it went to, then what it said. */
+function toThread(target: string, line: string): string {
+  return [target, line].filter(Boolean).join(' · ');
+}
+
+/** Which part of a thread a thread_show call read. */
+function showWindow(input: Input): string {
+  const turns = num(input, 'turns');
+  switch (str(input, 'window')) {
+    case 'head':
+      return `first ${turns ?? 20} turns`;
+    case 'last_answer':
+      return 'last answer';
+    case 'around':
+      return `around ${str(input, 'item_id') || 'an item'}`;
+    case 'since':
+      return `since ${str(input, 'item_id') || str(input, 'since') || 'an item'}`;
+    case 'all':
+      return 'whole thread';
+    default:
+      return input.cursor ? 'next page' : `last ${turns ?? 20} turns`;
+  }
+}
+
+/** What part of an item a thread_item call read. */
+function itemRange(input: Input): string {
+  const query = str(input, 'query');
+  if (query) return `find ${quoted(query)}`;
+  const lines = str(input, 'lines');
+  if (lines) return `lines ${lines}`;
+  const offset = num(input, 'offset');
+  return offset !== null ? `from byte ${offset}` : '';
+}
+
+/** What a thread_search call looked for: the query, else its filters. */
+function searchWhat(input: Input, names: AoToolNames): string {
+  const query = str(input, 'query');
+  const within = str(input, 'thread_id') ? `in ${threadName(str(input, 'thread_id'), names)}` : '';
+  if (query) return [quoted(query), within].filter(Boolean).join(' ');
+  if (within) return within;
+  const kind = [input.archived === true ? 'archived' : '', str(input, 'state'), str(input, 'provider')];
+  const where = [str(input, 'group') ? `in ${str(input, 'group')}` : '', input.spawned_by_me === true ? 'spawned here' : ''];
+  if (![...kind, ...where].some(Boolean)) return 'recent threads';
+  return [...kind, 'threads', ...where].filter(Boolean).join(' ');
+}
+
+/** What a thread_status call asked about. */
+function statusWhat(input: Input, names: AoToolNames): string {
+  const asked = threadListRef(input, names) || 'all requests';
+  const wait = num(input, 'wait_seconds');
+  return wait ? `${asked} · wait ${wakeInterval(wait)}` : asked;
 }
 
 /** Tool order mirrors `internal/threadtools/schemas.go#ToolNames`. */
 const THREAD_TOOLS: Record<string, AoToolSpec> = {
-  thread_search: {
-    label: 'search',
-    what: (input) => {
-      const query = str(input, 'query');
-      return query ? quoted(query) : threadRef(input) || 'threads';
-    },
+  thread_search: { label: 'search', what: (input, names) => searchWhat(input, names) },
+  thread_show: {
+    label: 'read',
+    what: (input, names, result) => toThread(threadRef(input, names, result), showWindow(input)),
   },
-  thread_show: { label: 'read', what: (input) => threadRef(input) },
   thread_item: {
     label: 'item',
-    what: (input) => {
+    what: (input, names, result) => {
       const item = str(input, 'item_id');
-      const thread = threadRef(input);
-      return item ? `${item}${thread ? ` in ${thread}` : ''}` : thread;
+      return [threadRef(input, names, result), item ? `item ${shortId(item)}` : '', itemRange(input)]
+        .filter(Boolean)
+        .join(' · ');
     },
   },
-  thread_options: { label: 'options', what: () => 'spawn options' },
-  thread_spawn: { label: 'spawn', what: (input) => firstLine(input, 'prompt') },
-  thread_send: { label: 'send', what: (input) => withThread(firstLine(input, 'message'), input) },
-  thread_ask: { label: 'ask', what: (input) => withThread(firstLine(input, 'question'), input) },
-  thread_reply: { label: 'reply', what: (input) => firstLine(input, 'text') },
-  thread_status: { label: 'status', what: (input) => threadListRef(input) || 'requests' },
+  thread_options: { label: 'opts', what: () => 'spawn options' },
+  thread_spawn: {
+    label: 'spawn',
+    what: (input, _names, result) => result.title || str(input, 'title') || firstLine(input, 'prompt'),
+  },
+  thread_send: {
+    label: 'send',
+    what: (input, names, result) => toThread(threadRef(input, names, result), firstLine(input, 'message')),
+  },
+  thread_ask: {
+    label: 'ask',
+    what: (input, names, result) => toThread(threadRef(input, names, result), firstLine(input, 'question')),
+  },
+  thread_reply: {
+    label: 'reply',
+    what: (input, names, result) =>
+      toThread(threadName(result.threadId, names), firstLine(input, 'text') || str(input, 'decision')),
+  },
+  thread_status: { label: 'status', what: (input, names) => statusWhat(input, names) },
   thread_cancel: {
     label: 'cancel',
-    what: (input) => threadRef(input) || (str(input, 'token') ? 'request' : str(input, 'label')),
+    what: (input, names) =>
+      threadRef(input, names) || str(input, 'label') || (str(input, 'token') ? `request ${shortId(str(input, 'token'))}` : ''),
   },
-  thread_update: { label: 'update', what: (input) => threadListRef(input) },
+  thread_update: { label: 'update', what: (input, names) => threadListRef(input, names) },
   thread_group: {
     label: 'group',
     what: (input) => {
@@ -416,17 +541,29 @@ function wakeInterval(seconds: number): string {
   return `${seconds}s`;
 }
 
-/** A run by a short id, the way a thread is named: `run 1a2b3c4d`. */
-function runRef(input: Input): string {
-  const id = str(input, 'run_id');
+/**
+ * A run by the name this client knows it by, else its workflow and a short
+ * id when the reply named the workflow, else `run 1a2b3c4d`.
+ */
+export function runName(id: string, names: AoToolNames, workflowId = ''): string {
   if (!id) return '';
-  return id.length > SHORT_ID_CHARS ? `run ${id.slice(0, SHORT_ID_CHARS)}` : `run ${id}`;
+  return names.run(id) || [workflowId, `run ${shortId(id)}`].filter(Boolean).join(' ');
+}
+
+function runRef(input: Input, names: AoToolNames, result: AoResultStamp = NO_RESULT): string {
+  const id = str(input, 'run_id') || result.runId;
+  return runName(id, names, result.runId === id ? result.workflowId : '');
 }
 
 /** A run and, when the call names one, the phase it reads. */
-function runPhaseRef(input: Input): string {
+function runPhaseRef(input: Input, names: AoToolNames, result: AoResultStamp): string {
   const phase = str(input, 'phase_id');
-  return [runRef(input), phase ? `phase ${phase}` : ''].filter(Boolean).join(' · ');
+  return [runRef(input, names, result), phase ? `phase ${phase}` : ''].filter(Boolean).join(' · ');
+}
+
+/** A run and where the reply left it: `digest run 1a2b3c4d · running`. */
+function runWithState(input: Input, names: AoToolNames, result: AoResultStamp): string {
+  return [runRef(input, names, result), result.state].filter(Boolean).join(' · ');
 }
 
 function seedNames(input: Input): string {
@@ -437,8 +574,8 @@ function seedNames(input: Input): string {
 
 const WORKFLOW_TOOLS: Record<string, AoToolSpec> = {
   workflow_list: { label: 'list', what: () => 'workflows' },
-  workflow_validate: { label: 'validate', what: (input) => str(input, 'id') || str(input, 'path') },
-  workflow_schema: { label: 'schema', what: () => 'workflow schema' },
+  workflow_validate: { label: 'check', what: (input) => str(input, 'id') || str(input, 'path') },
+  workflow_schema: { label: 'read', what: () => 'workflow schema' },
   workflow_new: {
     label: 'new',
     what: (input) => {
@@ -449,42 +586,47 @@ const WORKFLOW_TOOLS: Record<string, AoToolSpec> = {
   },
   run_start: {
     label: 'start',
-    what: (input) => {
+    what: (input, _names, result) => {
       const goal = firstLine(input, 'goal');
-      return [str(input, 'workflow_id'), goal ? quoted(goal) : ''].filter(Boolean).join(' · ');
+      return [str(input, 'workflow_id'), goal ? quoted(goal) : '', result.state].filter(Boolean).join(' · ');
     },
   },
-  run_status: { label: 'status', what: (input) => runRef(input) },
+  run_status: { label: 'status', what: runWithState },
   run_watch: {
     label: 'watch',
-    what: (input) => [runRef(input), input.tree === true ? 'and its called runs' : ''].filter(Boolean).join(' '),
+    what: (input, names, result) =>
+      [runRef(input, names, result), input.tree === true ? 'and its called runs' : ''].filter(Boolean).join(' '),
   },
-  run_output: { label: 'output', what: (input) => runRef(input) },
-  run_inspect: { label: 'inspect', what: (input) => runPhaseRef(input) },
-  run_narrative: { label: 'narrative', what: (input) => runPhaseRef(input) },
+  run_output: { label: 'output', what: runWithState },
+  run_inspect: { label: 'probe', what: runPhaseRef },
+  run_narrative: { label: 'story', what: runPhaseRef },
   run_list: { label: 'list', what: (input) => (input.active_only === true ? 'active runs' : 'runs') },
   run_control: {
     label: 'control',
-    what: (input) => [str(input, 'action').replace(/_/g, ' '), runPhaseRef(input)].filter(Boolean).join(' '),
+    what: (input, names, result) =>
+      [str(input, 'action').replace(/_/g, ' '), runPhaseRef(input, names, result)].filter(Boolean).join(' '),
   },
   run_amend: {
     label: 'amend',
-    what: (input) => [runRef(input), seedNames(input)].filter(Boolean).join(' · '),
+    what: (input, names, result) => [runRef(input, names, result), seedNames(input)].filter(Boolean).join(' · '),
   },
-  run_guide: { label: 'guide', what: (input) => [runRef(input), firstLine(input, 'text')].filter(Boolean).join(' · ') },
+  run_guide: {
+    label: 'guide',
+    what: (input, names, result) => [runRef(input, names, result), firstLine(input, 'text')].filter(Boolean).join(' · '),
+  },
   run_resolve: {
-    label: 'resolve',
-    what: (input) => [str(input, 'decision'), runRef(input)].filter(Boolean).join(' '),
+    label: 'decide',
+    what: (input, names, result) => [str(input, 'decision'), runRef(input, names, result)].filter(Boolean).join(' '),
   },
   memory_add: {
-    label: 'remember',
+    label: 'note',
     what: (input) => {
       const kind = str(input, 'kind');
       const text = firstLine(input, 'text');
       return kind && text ? `${kind}: ${text}` : kind || text;
     },
   },
-  memory_list: { label: 'memory', what: (input) => str(input, 'kind') || runRef(input) || 'campaign notes' },
+  memory_list: { label: 'notes', what: (input, names) => str(input, 'kind') || runRef(input, names) || 'campaign notes' },
 };
 
 export const AO_TOOL_SERVERS: Record<string, AoToolServer> = {
@@ -530,6 +672,23 @@ function readInput(itemMeta: Record<string, unknown> | null): Input {
   return input && typeof input === 'object' && !Array.isArray(input) ? (input as Input) : {};
 }
 
+/** The row's `meta.ao_result` stamp, or empty fields when it has none. */
+export function readAoResultStamp(itemMeta: Record<string, unknown> | null): AoResultStamp {
+  const stamp = itemMeta?.ao_result;
+  if (!stamp || typeof stamp !== 'object' || Array.isArray(stamp)) return NO_RESULT;
+  const r = stamp as Input;
+  return {
+    token: str(r, 'token'),
+    threadId: str(r, 'thread_id'),
+    title: str(r, 'title'),
+    computer: str(r, 'computer'),
+    runId: str(r, 'run_id'),
+    workflowId: str(r, 'workflow_id'),
+    state: str(r, 'state'),
+    outcome: str(r, 'outcome'),
+  };
+}
+
 /** Compact `key=value, …` argument list for a tool the table does not know. */
 function argsText(input: Input): string {
   return Object.entries(input)
@@ -545,6 +704,22 @@ function valueText(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/**
+ * An input value as a person reads it: a list as its items, an object as
+ * one `key: value` line per key (the fact keeps newlines), JSON only for
+ * what nests deeper.
+ */
+function factText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map((entry) => (typeof entry === 'string' ? entry : valueText(entry))).join(', ');
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Input)
+      .map(([key, entry]) => `${key}: ${typeof entry === 'string' ? entry : valueText(entry)}`)
+      .join('\n');
+  }
+  return valueText(value);
 }
 
 function clip(text: string, max = WHAT_MAX): string {
@@ -582,6 +757,23 @@ export function aoToolServer(itemMeta: Record<string, unknown> | null): string |
 }
 
 /**
+ * An ask's reply names the hidden read-only copy that answers it, which is
+ * deleted once it has. The row is about the thread asked: its header, link
+ * and live state follow the call's own target, resolved from the id or
+ * prefix the model typed ('' when it names no one thread).
+ */
+function askTarget(tool: string, input: Input, result: AoResultStamp, names: AoToolNames): AoResultStamp {
+  if (tool !== 'thread_ask') return result;
+  const computer = str(input, 'computer_id');
+  return {
+    ...result,
+    threadId: names.threadId(str(input, 'thread_id')),
+    title: '',
+    computer: computer ? names.computer(computer) : '',
+  };
+}
+
+/**
  * The presentation for an AO tool row, or null when the row is not one
  * (a native tool, or a user-configured MCP server).
  */
@@ -594,11 +786,12 @@ export function aoToolPresentation(
   const server = AO_TOOL_SERVERS[mcp.server];
   if (!server) return null;
   const input = readInput(itemMeta);
+  const result = askTarget(mcp.tool, input, readAoResultStamp(itemMeta), names);
   const spec = server.tools[mcp.tool];
   const label = spec
     ? spec.label
     : (mcp.tool.startsWith(server.prefix) ? mcp.tool.slice(server.prefix.length) : mcp.tool) || 'tool';
-  const fullWhat = withNextFire((spec ? spec.what(input, names) : argsText(input)).trim(), itemMeta);
+  const fullWhat = withNextFire((spec ? spec.what(input, names, result) : argsText(input)).trim(), itemMeta);
   const computerId = server.computerField ? str(input, server.computerField) : '';
   return {
     server: mcp.server,
@@ -611,6 +804,7 @@ export function aoToolPresentation(
     computerId,
     computerName: computerId ? names.computer(computerId) || str(input, 'computer_name') : '',
     requestId: server.computerField ? str(input, 'request_id') : '',
+    result,
   };
 }
 
@@ -619,7 +813,28 @@ export function aoToolPresentation(
 const HIDDEN_FACTS = new Set([
   'computer_id', 'computer_name', 'request_id', 'project_id', 'page_id',
   'command', 'argv', 'interpreter', 'script',
+  'thread_id', 'thread_ids', 'run_id', 'token', 'tokens', 'cursor',
+  'home_files',
 ]);
+
+// Inputs a tool's header or decoded reply already says in its own words
+// (a read's window, a loop's cadence, the spawned thread's title as its
+// link, notify as armed or not), so the input list does not repeat them.
+const ALREADY_SHOWN: Record<string, ReadonlySet<string>> = {
+  thread_spawn: new Set(['title', 'notify', 'worktree', 'base', 'provider', 'model', 'effort', 'group']),
+  thread_send: new Set(['notify']),
+  thread_ask: new Set(['notify']),
+  thread_search: new Set(['query', 'state', 'group', 'provider', 'spawned_by_me', 'archived']),
+  thread_show: new Set(['window', 'turns', 'item_id', 'since']),
+  thread_item: new Set(['item_id', 'query', 'lines', 'offset']),
+  thread_status: new Set(['wait_seconds']),
+  thread_loop: new Set(['label', 'every_seconds', 'stop']),
+  thread_watch: new Set(['label', 'every_seconds', 'long_running', 'stop']),
+  thread_remind: new Set(['note', 'after_seconds', 'at']),
+  run_start: new Set(['workflow_id', 'goal']),
+  browser_open: new Set(['url']),
+  browser_open_file: new Set(['path']),
+};
 
 const FACT_LABELS: Record<string, string> = {
   workspace_path: 'workspace',
@@ -652,107 +867,23 @@ export function aoToolFacts(
   if (request && mcp.tool !== 'remote_run') facts.push({ label: 'job', value: names.job(request) || request });
   const page = str(input, 'page_id');
   if (page) facts.push({ label: 'page', value: names.page(page) || page });
+  // One thread or run is named in the header; a list of them is not.
+  const threads = strings(input, 'thread_ids');
+  if (threads.length > 1) facts.push({ label: 'threads', value: clip(threads.map((t) => threadName(t, names)).join(', '), FACT_MAX) });
+  // A standing agent's home files ride a spawn or send as paths; the row
+  // counts them rather than listing paths a person does not read.
+  const homeFiles = strings(input, 'home_files');
+  if (homeFiles.length) facts.push({ label: 'files', value: `${homeFiles.length} file${homeFiles.length === 1 ? '' : 's'} attached` });
+  const tokens = [str(input, 'token'), ...strings(input, 'tokens')].filter(Boolean);
+  if (tokens.length) facts.push({ label: tokens.length === 1 ? 'request' : 'requests', value: tokens.map(shortId).join(', ') });
+  const shown = ALREADY_SHOWN[mcp.tool];
   for (const [key, value] of Object.entries(input)) {
     if (HIDDEN_FACTS.has(key) || value === undefined || value === null || value === '') continue;
-    const text = typeof value === 'string' ? value : valueText(value);
-    facts.push({ label: FACT_LABELS[key] ?? key.replace(/_/g, ' '), value: clip(text, FACT_MAX) });
+    if (shown?.has(key)) continue;
+    const text = factText(value);
+    facts.push({ label: FACT_LABELS[key] ?? key.replace(/_/g, ' '), value: text.length > FACT_MAX ? `${text.slice(0, FACT_MAX - 1)}…` : text });
   }
   const script = str(input, 'script');
   if (script) facts.push({ label: 'script', value: script.length > FACT_MAX ? `${script.slice(0, FACT_MAX - 1)}…` : script });
   return facts;
-}
-
-/** A remote tool reply as its row shows it: the outcome, then the output. */
-export interface RemoteResultView {
-  /** `succeeded · exit 0 · 12.0s`, `running in the background`, `failed · exit 1`. */
-  outcome: string;
-  /** The destination's own error, when the reply carries one. */
-  error: string;
-  /** The oldest output the reply carried, when the tail did not reach the start. */
-  head: string;
-  /** The newest output the reply carried. */
-  output: string;
-  /** Guidance the reply carried about output that is not here. */
-  hint: string;
-}
-
-/**
- * Reads a `remote_run`, `remote_status` or `remote_cancel` reply
- * (`internal/app/app_remote_mcp_result.go` remoteMCPResult) for the row's
- * body. Null for any other text, which renders as it is.
- */
-export function remoteResultView(data: string): RemoteResultView | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(data);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const reply = parsed as Input;
-  const state = str(reply, 'state');
-  if (!state || typeof reply.id !== 'string') return null;
-  const parts = [state === 'running' && reply.backgrounded === true ? 'running in the background' : state];
-  const exit = num(reply, 'exitCode');
-  if (state !== 'running' && exit !== null && exit >= 0) parts.push(`exit ${exit}`);
-  const started = num(reply, 'startedAt');
-  const finished = num(reply, 'finishedAt');
-  if (started !== null && finished !== null && finished > 0 && finished >= started) {
-    parts.push(formatDurationMs(finished - started));
-  }
-  return {
-    outcome: parts.join(' · '),
-    error: str(reply, 'error'),
-    head: typeof reply.outputHead === 'string' ? reply.outputHead : '',
-    output: typeof reply.output === 'string' ? reply.output : '',
-    hint: str(reply, 'outputHint'),
-  };
-}
-
-/** A thread tool reply as its row shows it: what the call touched. */
-export interface ThreadResultView {
-  /** The thread's title, when the reply names one. */
-  title: string;
-  /** Its state, when the reply carries one ("running", "idle"). */
-  state: string;
-  /** A one-line count for a reply that names many threads or rows. */
-  summary: string;
-}
-
-/**
- * Reads a thread-tools reply (`internal/threadtools`) for the row's body.
- * The header can only show the arguments, and `thread_id` accepts a
- * prefix, so the thread's NAME is only ever in the result. Null for a
- * reply that names no thread, which renders as it is.
- */
-export function threadResultView(data: string): ThreadResultView | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(data);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const reply = parsed as Input;
-  const title = str(reply, 'title');
-  const state = str(reply, 'state');
-  const summary = threadRowSummary(reply);
-  if (!title && !state && !summary) return null;
-  return { title, state, summary };
-}
-
-/** "3 threads" for a search page, counting both result shapes. */
-function threadRowSummary(reply: Input): string {
-  let rows = Array.isArray(reply.rows) ? reply.rows.length : 0;
-  const computers = reply.computers;
-  if (Array.isArray(computers)) {
-    for (const group of computers) {
-      if (group && typeof group === 'object' && Array.isArray((group as Input).rows)) {
-        rows += ((group as Input).rows as unknown[]).length;
-      }
-    }
-  } else if (!Array.isArray(reply.rows)) {
-    return '';
-  }
-  return `${rows} thread${rows === 1 ? '' : 's'}`;
 }

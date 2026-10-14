@@ -56,14 +56,30 @@ export function agentThreadOriginChip(
   viewer: BackendKey,
 ): AgentThreadOriginChip {
   const title = origin.title || 'another thread';
+  const { computer, open } = agentThreadOpener(origin, viewer);
+  return { label: computer ? `from ${title} on ${computer}` : `from ${title}`, open };
+}
+
+export interface AgentThreadOpener {
+  /** The thread's computer by name when it is not `viewer`, else ''. */
+  computer: string;
+  /** Null when this client cannot reach that computer. */
+  open: (() => void) | null;
+}
+
+/**
+ * How a row shown by `viewer` reaches a thread another agent named: the
+ * computer to name beside it, and the open action when that computer is
+ * attached and up. Shared by the origin chip and the AO tool rows' links.
+ */
+export function agentThreadOpener(origin: UserMessageOriginThread, viewer: BackendKey): AgentThreadOpener {
   const entry = originBackend(origin.computerId);
   const elsewhere = origin.computerId !== '' && entry?.id !== viewer;
-  const computer = entry ? backendDisplayName(entry) : origin.computerName;
-  const label = elsewhere && computer ? `from ${title} on ${computer}` : `from ${title}`;
-  if (!entry && origin.computerId !== '') return { label, open: null };
+  const computer = elsewhere ? (entry ? backendDisplayName(entry) : origin.computerName) : '';
+  if (!entry && origin.computerId !== '') return { computer, open: null };
   const backend = entry?.id ?? viewer;
-  if (!backendReachable(backend)) return { label, open: null };
-  return { label, open: () => { void openAgentThreadOrigin(origin, backend); } };
+  if (!backendReachable(backend)) return { computer, open: null };
+  return { computer, open: () => { void openAgentThreadOrigin(origin, backend); } };
 }
 
 /**
