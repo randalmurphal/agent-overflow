@@ -517,8 +517,9 @@ func (a *App) collectLocalThreadRequest(token string, late bool) bool {
 		log.Printf("thread tools: receipt %s collides with an outbound request; nothing collected", token)
 		return false
 	}
+	agent := storeAnswerAgent(a.threadTools().answerAgent(receipt.TargetThreadID))
 	if late {
-		if _, err := a.store.StoreThreadRequestLateReply(token, receipt.LateReply, receipt.LateReplyAt); err != nil {
+		if _, err := a.store.StoreThreadRequestLateReply(token, receipt.LateReply, receipt.LateReplyAt, agent); err != nil {
 			log.Printf("thread tools: store late reply %s: %v", token, err)
 			return false
 		}
@@ -529,6 +530,7 @@ func (a *App) collectLocalThreadRequest(token string, late bool) bool {
 			AnswerKind: receipt.AnswerKind,
 			SettledAt:  receipt.SettledAt,
 			ExpiresAt:  receipt.ExpiresAt,
+			Agent:      agent,
 		})
 		if err != nil {
 			log.Printf("thread tools: settle request %s: %v", token, err)

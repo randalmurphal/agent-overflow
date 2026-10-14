@@ -391,6 +391,11 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 	if row.SettledAt > 0 {
 		wake.Age = time.Duration(time.Now().UnixMilli()-row.SettledAt) * time.Millisecond
 	}
+	// A standing agent that answered is named as one, from what the
+	// settlement recorded, so a thread on either computer reads the same.
+	if row.AnswerAgent != nil {
+		wake.Agent = &threadtools.SenderAgent{Role: row.AnswerAgent.Role}
+	}
 	if row.TargetComputerID != "" {
 		// A thread on another computer has no row here: its title is what
 		// that computer reported, kept on the request so a wake rendered
@@ -402,13 +407,15 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 		if thread, err := a.store.GetThread(row.TargetThreadID); err == nil {
 			wake.Title = thread.Title
 		}
-		// A standing agent that answered is named as one. A thread on
-		// another computer is not: its row records no role.
-		agent, err := a.threadTools().senderAgent(row.TargetThreadID)
-		if err != nil {
-			return "", err
+		if row.AnswerAgent == nil {
+			// A row settled before v149 recorded no agent; a thread here
+			// is read now.
+			agent, err := a.threadTools().senderAgent(row.TargetThreadID)
+			if err != nil {
+				return "", err
+			}
+			wake.Agent = agent
 		}
-		wake.Agent = agent
 	}
 	switch {
 	case late:

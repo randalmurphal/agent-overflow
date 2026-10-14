@@ -2023,7 +2023,7 @@ func owedWakeSeeds() []struct {
 			if _, err := f.app.store.MarkThreadRequestDelivered(token, store.ThreadWakeInline, 0, false); err != nil {
 				t.Fatalf("MarkThreadRequestDelivered: %v", err)
 			}
-			if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), time.Now().UnixMilli()); err != nil || !stored {
+			if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), time.Now().UnixMilli(), nil); err != nil || !stored {
 				t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 			}
 			return token

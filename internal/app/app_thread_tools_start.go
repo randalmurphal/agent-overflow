@@ -142,6 +142,30 @@ func (t threadToolsApp) senderAgent(threadID string) (*threadtools.SenderAgent, 
 	return agent, nil
 }
 
+// answerAgent is senderAgent for the thread that answered a request, read
+// when the answer is collected so a wake names the agent the same way from
+// either computer. A store read that fails is logged and the answer is
+// collected as an ordinary thread's: the answer matters more than its label.
+func (t threadToolsApp) answerAgent(threadID string) *threadtools.SenderAgent {
+	if threadID == "" {
+		return nil
+	}
+	agent, err := t.senderAgent(threadID)
+	if err != nil {
+		log.Printf("thread tools: read whether %s is a standing agent: %v", threadID, err)
+		return nil
+	}
+	return agent
+}
+
+// storeAnswerAgent is the record of an answering standing agent.
+func storeAnswerAgent(agent *threadtools.SenderAgent) *store.ThreadAnswerAgent {
+	if agent == nil {
+		return nil
+	}
+	return &store.ThreadAnswerAgent{Role: agent.Role}
+}
+
 // attachHomeFiles prepends the files home_files names, read from the calling
 // standing agent's home, to the text a spawn or a send delivers. It runs on
 // the caller's computer before anything is written or forwarded, so every

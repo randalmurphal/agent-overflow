@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/store"
 )
 
@@ -697,6 +698,7 @@ func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer T
 			AnswerKind: answer.AnswerKind,
 			SettledAt:  answer.SettledAt,
 			ExpiresAt:  answer.ExpiresAt,
+			Agent:      remoteAnswerAgent(answer.AnswerAgent),
 		})
 		if err != nil {
 			return false, false, err
@@ -706,7 +708,8 @@ func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer T
 		}
 	}
 	if answer.LateReply != "" && len(current.LateReply) == 0 {
-		stored, err := a.store.StoreThreadRequestLateReply(row.Token, []byte(answer.LateReply), answer.LateReplyAt)
+		stored, err := a.store.StoreThreadRequestLateReply(row.Token, []byte(answer.LateReply), answer.LateReplyAt,
+			remoteAnswerAgent(answer.AnswerAgent))
 		if err != nil {
 			return wake, false, err
 		}
@@ -715,6 +718,15 @@ func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer T
 		}
 	}
 	return wake, lateWake, nil
+}
+
+// remoteAnswerAgent is the standing agent another computer reported as
+// answering, its role bounded as a footer's carried role is.
+func remoteAnswerAgent(agent *ThreadPeerAgent) *store.ThreadAnswerAgent {
+	if agent == nil {
+		return nil
+	}
+	return &store.ThreadAnswerAgent{Role: agenthome.BoundRole(agent.Role)}
 }
 
 // settleRemoteThreadRequest settles a source row for a reason the

@@ -265,6 +265,9 @@ func (s *Store) SettleThreadRequestReceipt(token string, from []string, settleme
 	if err := settlement.validate(action, threadReceiptStates); err != nil {
 		return false, err
 	}
+	if settlement.Agent != nil {
+		return false, fmt.Errorf("%s: a receipt records no answering agent", action)
+	}
 	clause, args, err := stateInClause(action, from, threadReceiptStates)
 	if err != nil {
 		return false, err

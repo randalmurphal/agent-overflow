@@ -130,6 +130,17 @@ type ThreadRequest struct {
 	LineageOnly bool  `json:"-"`
 	CreatedAt   int64 `json:"createdAt"`
 	UpdatedAt   int64 `json:"updatedAt"`
+	// AnswerAgent is set when the thread that answered is a standing agent,
+	// as recorded with the answer; nil for any other thread and for a row
+	// written before v149.
+	AnswerAgent *ThreadAnswerAgent `json:"-"`
+}
+
+// ThreadAnswerAgent names the thread that answered a request as a standing
+// agent. Role is its role line as the wake quotes it (agenthome.BoundRole),
+// empty when its instructions.md holds none.
+type ThreadAnswerAgent struct {
+	Role string
 }
 
 // ThreadRequestSettlement is one settled answer, written identically to the
@@ -143,6 +154,10 @@ type ThreadRequestSettlement struct {
 	// sets it to SettledAt plus a day; the source copies what the
 	// destination reported.
 	ExpiresAt int64
+	// Agent is the answering thread as a standing agent, read when the
+	// answer is collected. Only the source row records it; a receipt
+	// settlement refuses one.
+	Agent *ThreadAnswerAgent
 }
 
 func (s ThreadRequestSettlement) validate(action string, states map[string]struct{}) error {
@@ -162,11 +177,12 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     COALESCE(late_delivered_at, 0), COALESCE(expires_at, 0),
     polling, next_check, attempts, issue,
     wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at,
-    COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0)`
+    COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	var r ThreadRequest
-	var notify, polling, lineageOnly int
+	var notify, polling, lineageOnly, answerAgent int
+	var answerAgentRole string
 	err := row.Scan(
 		&r.Token, &r.CallerThreadID, &r.Kind, &r.DueAt,
 		&r.TargetComputerID, &r.TargetThreadID, &r.TargetThreadTitle, &r.OriginThreadID, &notify, &r.State,
@@ -175,8 +191,11 @@ func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 		&r.LateDeliveredAt, &r.ExpiresAt,
 		&polling, &r.NextCheck, &r.Attempts, &r.Issue,
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
-		&r.ConfirmedAt, &r.LateConfirmedAt,
+		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
 	)
+	if answerAgent != 0 {
+		r.AnswerAgent = &ThreadAnswerAgent{Role: answerAgentRole}
+	}
 	r.Notify = notify != 0
 	r.Polling = polling != 0
 	r.LineageOnly = lineageOnly != 0
@@ -281,12 +300,13 @@ func (s *Store) SettleThreadRequest(token string, from []string, settlement Thre
 	if settledAt == 0 {
 		settledAt = nowMillis()
 	}
+	agent, role := answerAgentColumns(settlement.Agent)
 	set := []any{settlement.State, nilIfEmptyBytes(settlement.Answer), settlement.AnswerKind,
-		settledAt, nilIfZero(settlement.ExpiresAt), nowMillis(), token}
+		settledAt, nilIfZero(settlement.ExpiresAt), agent, role, nowMillis(), token}
 	result, err := s.db.Exec(
 		`UPDATE thread_requests
 		    SET state = ?, answer = ?, answer_kind = ?, revision = revision + 1,
-		        settled_at = ?, expires_at = ?, updated_at = ?
+		        settled_at = ?, expires_at = ?, answer_agent = ?, answer_agent_role = ?, updated_at = ?
 		  WHERE token = ? AND `+clause,
 		append(set, args...)...,
 	)
@@ -305,17 +325,20 @@ func ThreadRequestOpenStates() []string {
 // request had already settled. It is a new revision, so a `thread_status`
 // waiting past the collected revision returns and the wake path delivers a
 // second message. Only the first late reply is stored, and never on a
-// lineage-only row, whose token the ledger no longer knows.
-func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64) (bool, error) {
+// lineage-only row, whose token the ledger no longer knows. agent is the
+// replying thread as a standing agent, read with the reply; it replaces the
+// one the first answer recorded, since the late reply's wake names it.
+func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64, agent *ThreadAnswerAgent) (bool, error) {
 	action := fmt.Sprintf("store: store thread request late reply %s", token)
 	if at == 0 {
 		at = nowMillis()
 	}
+	isAgent, role := answerAgentColumns(agent)
 	result, err := s.db.Exec(
 		`UPDATE thread_requests
-		    SET late_reply = ?, late_reply_at = ?, revision = revision + 1, updated_at = ?
+		    SET late_reply = ?, late_reply_at = ?, answer_agent = ?, answer_agent_role = ?, revision = revision + 1, updated_at = ?
 		  WHERE token = ? AND settled_at IS NOT NULL AND late_reply IS NULL AND lineage_only = 0`,
-		nilIfEmptyBytes(reply), at, nowMillis(), token,
+		nilIfEmptyBytes(reply), at, isAgent, role, nowMillis(), token,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
@@ -808,7 +831,7 @@ const spawnLineageSQL = `kind = 'spawn' AND target_computer_id = ''
 // already marked.
 const clearLineagePayloadSQL = `UPDATE thread_requests
 	SET lineage_only = 1, answer = NULL, answer_kind = '', late_reply = NULL, late_reply_at = NULL,
-	    notify = 0, issue = '', wake_issue = '', expires_at = NULL
+	    answer_agent = 0, answer_agent_role = '', notify = 0, issue = '', wake_issue = '', expires_at = NULL
 	WHERE lineage_only = 0`
 
 // DeleteThreadRequestsBefore removes both sides of every request that has
@@ -909,6 +932,15 @@ func rowsChanged(result sql.Result, action string) (bool, error) {
 		return false, fmt.Errorf("%s: rows affected: %w", action, err)
 	}
 	return affected > 0, nil
+}
+
+// answerAgentColumns is how a ThreadAnswerAgent is stored: a flag, so an
+// agent with no role line is still one, and its role.
+func answerAgentColumns(agent *ThreadAnswerAgent) (int, string) {
+	if agent == nil {
+		return 0, ""
+	}
+	return 1, agent.Role
 }
 
 func nilIfZero(value int64) any {
