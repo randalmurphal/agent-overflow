@@ -1016,8 +1016,8 @@ completion names the job and its computer and leads with its result; a
 workflow wake names the workflow and leads with the run's headline. Every
 message the app writes into a thread that is not the person's own words
 carries one of these origins; the person's answers to a Codex question,
-review comments they send and the workflow messages they start from a
-button stay theirs. The parser reads the
+review comments they send, the workflow messages they start from a
+button and a workflow phase prompt stay theirs. The parser reads the
 Go templates, pinned by `internal/threadtools/testdata/agent_messages.json`.
 Rows written before this render the same way.
 

@@ -282,7 +282,9 @@ Mechanism in
   never raw. They are not navigator ticks, composer recall or send-queue
   preview entries, and the thread tools label them `agent` with their
   sender. A Claude join holding the person's composer message stays the
-  person's. Mechanism:
+  person's, and so do a workflow phase prompt, which is a phase thread's
+  only user message, and the messages the person starts from a button
+  (answers, review comments, triage and PR discussion). Mechanism:
   [how agent messages appear](specs/agent-thread-tools.md#how-agent-messages-appear).
 
 ## Providers and accounts
