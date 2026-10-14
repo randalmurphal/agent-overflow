@@ -24,6 +24,8 @@
     deferredOutputError = '',
     renderContent,
     copyLabel = 'Copy output',
+    offerMore = true,
+    holdWhileLoading = false,
   }: {
     pane?: PaneSession & RowUiRegistry & ScrollHost;
     expansion: PayloadExpansionHandle;
@@ -49,6 +51,16 @@
      * terminal output.
      */
     copyLabel?: string;
+    /**
+     * Whether a partial payload offers "Load more output". False for a
+     * caller that loads the rest itself or shows the text only on request.
+     */
+    offerMore?: boolean;
+    /**
+     * Keep rendering what has loaded while more of it loads, for a caller
+     * that shows its own progress; otherwise the body reads "Loading…".
+     */
+    holdWhileLoading?: boolean;
   } = $props();
 </script>
 
@@ -57,7 +69,7 @@
   class="ml-5 border-l border-border-subtle bg-surface-0/35"
   data-testid={bodyTestId}
 >
-  {#if expansion.loading}
+  {#if expansion.loading && !(holdWhileLoading && expansion.displayData !== null)}
     <p class="px-3 py-2 text-[0.6875rem] text-fg-subtle animate-pulse" role="status" aria-live="polite">
       Loading…
     </p>
@@ -87,7 +99,7 @@
         <AnsiText source={expansion.displayData} class="whitespace-pre-wrap break-all" />
       </div>
     {/if}
-    {#if expansion.hasMore}
+    {#if expansion.hasMore && offerMore}
       <button
         type="button"
         class="mx-3 mb-3 text-[0.6875rem] text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"

@@ -564,7 +564,7 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent, launch st
 		launch.ToolName = strings.TrimSpace(meta.ToolName)
 	}
 	launch.Meta = MergeStoredToolCallMeta(launch.Meta, evt.ItemType, launch.ToolName, evt.Meta)
-	launch.Meta = stampScheduledNextFire(launch.Meta, evt.Content, status != statusCompleted, launch.CreatedAt)
+	launch.Meta = StampAoToolResult(launch.Meta, evt.Content, status != statusCompleted, launch.CreatedAt)
 	if len(sendPatch) > 0 {
 		// After the wire merge, so the ack's verdict is what the stored
 		// meta says (the wire's own `is_error:false` would otherwise win).

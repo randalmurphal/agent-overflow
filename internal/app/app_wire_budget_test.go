@@ -135,31 +135,31 @@ const (
 // KB on these windows.
 const (
 	// Run-dominated, default client (collapseDiffPreviews on): measured
-	// 124,737 raw / 22,300 deflated for 139 rows and 55 stubs. The
+	// 130,885 raw / 22,853 deflated for 139 rows and 55 stubs. The
 	// deflated ceiling is set below §14's budget on purpose: passing this
 	// test is the statement that a cold attach fits, not that it nearly
 	// fits.
-	coldWindowRawCeiling        = 136 << 10 // 12% over measured
-	coldWindowCompressedCeiling = 25 << 10  // 15% over measured, under the §14 budget
+	coldWindowRawCeiling        = 136 << 10 // 6.4% over measured
+	coldWindowCompressedCeiling = 25 << 10  // 12% over measured, under the §14 budget
 
 	// The same window for a client that asked for inline previews and
-	// pays for its patch text: measured 143,172 raw / 25,475 deflated. It
+	// pays for its patch text: measured 149,320 raw / 25,951 deflated. It
 	// stays under the unprojected window because meta.input elision
 	// applies to every client — the preference governs previews, not the
 	// whole projection.
-	coldWindowPreviewsOnRawCeiling        = 156 << 10 // 12% over measured
-	coldWindowPreviewsOnCompressedCeiling = 28 << 10  // 13% over measured
+	coldWindowPreviewsOnRawCeiling        = 156 << 10 // 7.0% over measured
+	coldWindowPreviewsOnCompressedCeiling = 28 << 10  // 10% over measured
 
-	// The conversation shape, where all 198 rows ship: measured 227,955
-	// raw / 41,080 deflated with previews off, 290,415 / 50,850 with them
+	// The conversation shape, where all 198 rows ship: measured 239,521
+	// raw / 42,208 deflated with previews off, 301,981 / 50,315 with them
 	// on. Nearly twice the run-dominated page's bytes for 1.4x the rows,
 	// which is the point of pinning both — a budget stated only against a
 	// page that ships 30 of a run's 91 members says nothing about the
 	// page a normal thread loads.
-	proseWindowRawCeiling                  = 250 << 10 // 12% over measured
-	proseWindowCompressedCeiling           = 46 << 10  // 15% over measured
-	proseWindowPreviewsOnRawCeiling        = 310 << 10 // 9% over measured
-	proseWindowPreviewsOnCompressedCeiling = 56 << 10  // 13% over measured
+	proseWindowRawCeiling                  = 250 << 10 // 6.9% over measured
+	proseWindowCompressedCeiling           = 46 << 10  // 12% over measured
+	proseWindowPreviewsOnRawCeiling        = 310 << 10 // 5.1% over measured
+	proseWindowPreviewsOnCompressedCeiling = 56 << 10  // 14% over measured
 )
 
 func TestColdWindowWireBudget(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -234,10 +235,9 @@ func (p *Process) WriteLine(data []byte) error {
 	default:
 	}
 
-	buf := make([]byte, len(data)+1)
-	copy(buf, data)
-	buf[len(data)] = '\n'
-	_, err := p.stdin.Write(buf)
+	// Clipped so the newline lands in a copy, never in the caller's spare
+	// capacity.
+	_, err := p.stdin.Write(append(slices.Clip(data), '\n'))
 	if err != nil {
 		return fmt.Errorf("provider: write to stdin: %w", err)
 	}
