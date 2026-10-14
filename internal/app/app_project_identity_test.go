@@ -27,8 +27,8 @@ func TestProjectIdentityRefreshAnnouncesAnOriginAddedAfterCreation(t *testing.T)
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if created.RepositoryID != "" || created.IdentityError == "" {
-		t.Fatalf("created identity = %+v, want verification unavailable without origin", created)
+	if created.RepositoryID != "" || created.IdentityError != "" {
+		t.Fatalf("created identity = %+v, want no identity and no error without origin", created)
 	}
 	const origin = "git@github.com:me/app.git"
 	testutil.RunGit(t, repo, "remote", "add", "origin", origin)

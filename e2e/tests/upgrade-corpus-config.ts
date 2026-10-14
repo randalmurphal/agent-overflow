@@ -211,7 +211,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'work_item_units', reason: 'a phase fanned out into units (a fan-out workflow definition)' },
   { table: 'automations', columns: ['enabled', 'condition', 'notes', 'skip_count', 'last_skip_at', 'last_skip_reason'], values: { workflow_scope: ['shared'] }, reason: 'a conditional, disabled, noted or skipped automation, and the shared scope' },
   { table: 'automation_cursors', reason: 'a cron automation fired on schedule rather than by hand' },
-  { table: 'projects', columns: ['color', 'workflow_queue_paused', 'workflow_concurrency', 'remote_url', 'root_commit', 'repository_id', 'identity_source'], reason: 'repository identity needs a forge remote; the queue pause and concurrency are project settings the top-up leaves default; color is set by no App method' },
+  { table: 'projects', columns: ['color', 'workflow_queue_paused', 'workflow_concurrency', 'remote_url', 'root_commit', 'repository_id'], reason: 'a verified repository_id needs a repository the forge serves (the top-up only writes a failed read); remote_url and root_commit are retired; the queue pause and concurrency are project settings the top-up leaves default; color is set by no App method' },
 
   // Fork internals.
   { table: 'edit_file_snapshots', reason: 'a file checkpoint of an Edit the mock performs for real; the library scenarios edit through frames only' },

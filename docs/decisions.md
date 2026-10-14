@@ -355,6 +355,10 @@ and anti-changes that live only here:
   a private GitLab project through the user's `glab` login, with no stored
   token. It does not clean up remote state, since its users have none.
   `docs/architecture/noremote-build.md`.
+- Repository identity exists only for GitHub and GitLab checkouts. A Git
+  repository with no origin or another forge's origin is a plain folder:
+  no identity warning on its project, and on another computer it becomes
+  its own project ([project identity](specs/remote-access.md#7d-project-identity)).
 - Cross-device advisory toasts are not worth fixing; only sticky
   misattributed banners get connection attribution.
 - Browser pane: an embedded real engine per platform, never a streamed
