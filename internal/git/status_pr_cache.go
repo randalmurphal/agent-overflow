@@ -7,24 +7,45 @@ import (
 	"time"
 )
 
-// lookupOpenPRCached returns cached PR info without making a network
-// call. The last result reports whether the cache answered: false is a
-// miss (cold or expired), and the PR fields with it say nothing about the
-// branch. A cached lookup failure returns the user-facing error together
-// with the last PR the branch was known to have (empty when there was
-// none) — see lookupOpenPR. Used by StatusFast to keep the initial
-// subscribe path free of network calls.
-func (c *Core) lookupOpenPRCached(cwd, branch string) (url string, number int, lookupError string, cached bool) {
+// lookupOpenPRCached returns the cached open-PR answer for (cwd, branch)
+// without a network call. The last result reports whether that answer is
+// current: false means a full lookup still has to answer, and the PR
+// fields with it are then the last PR the branch was known to have (empty
+// when there was none), which readers show until that answer lands. A
+// stale PR is withheld once the origin reads as a different remote than
+// the one it was found under. A current cached failure returns the
+// user-facing error together with the last known PR (see lookupOpenPR).
+// Used by StatusFast to keep the initial subscribe path free of network
+// calls.
+func (c *Core) lookupOpenPRCached(cwd, branch string) (url string, number int, lookupError string, current bool) {
 	if branch == "" {
 		return "", 0, "", true
 	}
-	key := prCacheKey(cwd, branch)
+	origin := c.cachedOrigin(cwd)
 	c.prCacheMu.RLock()
 	defer c.prCacheMu.RUnlock()
-	if entry, ok := c.prCache[key]; ok && entry.expiresAt.After(c.nowFn()) {
+	entry, ok := c.prCache[prCacheKey(cwd, branch)]
+	switch {
+	case !ok:
+		return "", 0, "", false
+	case entry.expiresAt.After(c.nowFn()):
 		return entry.url, entry.number, entry.lookupError, true
+	case origin.retargets(entry.origin):
+		return "", 0, "", false
 	}
-	return "", 0, "", false
+	return entry.url, entry.number, "", false
+}
+
+// openPRRecheckAt is when the cached failed lookup for (cwd, branch) is
+// asked again, or zero when its cached answer is not a failure. Status
+// reports it so the status watcher can re-check without a local change.
+func (c *Core) openPRRecheckAt(cwd, branch string) time.Time {
+	c.prCacheMu.RLock()
+	defer c.prCacheMu.RUnlock()
+	if entry, ok := c.prCache[prCacheKey(cwd, branch)]; ok && entry.lookupError != "" {
+		return entry.expiresAt
+	}
+	return time.Time{}
 }
 
 // lookupOpenPR returns the open PR for (cwd, branch), consulting the TTL'd
@@ -87,16 +108,20 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 	// leaves a fresh identity in the forge cache. Unknown here (cold or
 	// expired entry) means "not observed" and never invalidates below.
 	origin := c.cachedOrigin(cwd)
+	// The answer's lifetime, and a failure's wait before the forge is asked
+	// again, run from when the forge answered: a request that hung for most
+	// of the read timeout must not use up the wait that follows it.
+	answered := c.nowFn()
 
 	c.prCacheMu.Lock()
-	expiresAt := now.Add(prLookupTTL)
+	expiresAt := answered.Add(prLookupTTL)
 	failures := 0
 	if lookupError != "" {
 		failures = 1
 		if prev, ok := c.prCache[key]; ok {
 			failures = prev.failures + 1
 		}
-		expiresAt = now.Add(prLookupErrorDelay(failures))
+		expiresAt = answered.Add(c.prLookupErrorDelay(failures))
 		// A transient forge failure (rate limit, expired token, CLI upgrade)
 		// must not blank the PR badge: keep serving the last PR seen for this
 		// (cwd, branch) next to the error. The backoff still governs how
@@ -113,7 +138,7 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 			}
 		}
 	}
-	c.storePRLookupLocked(cwd, key, epoch, now, prCacheEntry{
+	c.storePRLookupLocked(cwd, key, epoch, answered, prCacheEntry{
 		url:         url,
 		number:      number,
 		lookupError: lookupError,
@@ -129,9 +154,13 @@ func (c *Core) lookupOpenPR(ctx context.Context, cwd, branch string) (string, in
 }
 
 // prLookupErrorDelay is how long the failures-th consecutive failed
-// lookup is cached: prLookupErrorBase doubling up to prLookupErrorMax.
-func prLookupErrorDelay(failures int) time.Duration {
-	delay := prLookupErrorBase
+// lookup is cached: the Core's base (prLookupErrorBase unless
+// WithPRLookupErrorBase replaced it) doubling up to prLookupErrorMax.
+func (c *Core) prLookupErrorDelay(failures int) time.Duration {
+	delay := c.prLookupErrorBase
+	if delay <= 0 {
+		delay = prLookupErrorBase
+	}
 	for i := 1; i < failures && delay < prLookupErrorMax; i++ {
 		delay *= 2
 	}
@@ -162,12 +191,13 @@ func (c *Core) storePRLookup(cwd, key string, epoch uint64, now time.Time, entry
 	c.storePRLookupLocked(cwd, key, epoch, now, entry)
 }
 
-// storePRLookupLocked caches one lookup answer and sweeps entries whose
-// usefulness as a sticky fallback has also lapsed, so the map stays
-// bounded by the recently-active (cwd, branch) pairs rather than the
-// lifetime total. Entries past expiresAt but inside the retention window
-// are kept: they are no longer served as fresh answers (both lookup paths
-// gate on expiresAt) but are still the last thing we knew. Callers hold
+// storePRLookupLocked caches one lookup answer. An entry outlives its
+// expiry as the last thing known about its branch: it is never served as
+// a current answer then (both lookup paths gate on expiresAt), but a
+// failed lookup carries its PR forward and StatusFast shows it while the
+// next lookup runs. So no entry is dropped for its age. The map is bounded
+// by prCacheMaxEntries instead, evicting the entry stored longest ago, and
+// a removed worktree's entries go with it (ForgetPRCache). Callers hold
 // prCacheMu. epoch is cwd's prCacheEpochs count when the lookup started;
 // an invalidation of cwd since then discards the answer, which may
 // predate it.
@@ -175,20 +205,44 @@ func (c *Core) storePRLookupLocked(cwd, key string, epoch uint64, now time.Time,
 	if epoch != c.prCacheEpochs[cwd] {
 		return
 	}
+	if _, ok := c.prCache[key]; !ok && len(c.prCache) >= prCacheMaxEntries {
+		oldestKey, oldest := "", time.Time{}
+		for k, held := range c.prCache {
+			if oldestKey == "" || held.storedAt.Before(oldest) {
+				oldestKey, oldest = k, held.storedAt
+			}
+		}
+		delete(c.prCache, oldestKey)
+	}
+	entry.storedAt = now
 	c.prCache[key] = entry
-	sweepBefore := now.Add(-prStickyRetention)
-	for k, held := range c.prCache {
-		if held.expiresAt.Before(sweepBefore) {
-			delete(c.prCache, k)
+}
+
+// InvalidatePRCache makes every cached open-PR answer for cwd stale, so the
+// next lookup asks the forge again, and discards any lookup of cwd already
+// in flight. Call after a successful CreatePR, on an explicit attach, or
+// after any action that may have changed PR state, so the next status
+// refresh does not wait up to prLookupTTL. Each answer stays the last
+// known PR of its branch: a failed re-check still shows it, and only an
+// answer from the forge replaces it.
+func (c *Core) InvalidatePRCache(cwd string) {
+	prefix := cwd + "\x00"
+	c.prCacheMu.Lock()
+	defer c.prCacheMu.Unlock()
+	c.prCacheEpochs[cwd]++
+	for key, entry := range c.prCache {
+		if strings.HasPrefix(key, prefix) {
+			entry.expiresAt = time.Time{}
+			c.prCache[key] = entry
 		}
 	}
 }
 
-// InvalidatePRCache drops every cached open-PR entry for cwd. Call after a
-// successful CreatePR (or any action that materially changes PR state) so the
-// next status refresh sees the new PR immediately rather than waiting up to
-// prLookupTTL.
-func (c *Core) InvalidatePRCache(cwd string) {
+// ForgetPRCache drops every cached open-PR answer for cwd, last known PRs
+// included, and discards any lookup of cwd in flight. For a workspace that
+// no longer exists: a checkout created at the same path later is another
+// workspace, which the old answers say nothing about.
+func (c *Core) ForgetPRCache(cwd string) {
 	prefix := cwd + "\x00"
 	c.prCacheMu.Lock()
 	defer c.prCacheMu.Unlock()

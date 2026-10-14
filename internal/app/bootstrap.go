@@ -50,11 +50,13 @@ type IsolationConfig struct {
 	ScanScopePIDs []int
 	// ThreadRequestPoll, TransferPendingRetry, PRUpdateInterval,
 	// PRUpdateRetryBase, PRCILiveInterval, PRCIFollowInterval,
-	// PRCILogWaitInterval and MergedPRPollInterval replace the agent thread
-	// request poll cadence, threadtransfer.PendingRetry, the pull request
-	// poll cadence and its first retry delay, the CI phase's three
-	// cadences, and the merged-PR worktree cleanup's per-repository poll
-	// (which also bounds its tick and first poll), so an end-to-end test
+	// PRCILogWaitInterval, MergedPRPollInterval and PRLookupRetryBase
+	// replace the agent thread request poll cadence,
+	// threadtransfer.PendingRetry, the pull request poll cadence and its
+	// first retry delay, the CI phase's three cadences, the merged-PR
+	// worktree cleanup's per-repository poll (which also bounds its tick
+	// and first poll), and how long a first failed open-PR lookup is
+	// cached (git.WithPRLookupErrorBase), so an end-to-end test
 	// does not wait out a production interval it is not about. Zero keeps
 	// the product value; only a harness boot sets them
 	// (diagenv.HarnessTiming).
@@ -66,6 +68,7 @@ type IsolationConfig struct {
 	PRCIFollowInterval   time.Duration
 	PRCILogWaitInterval  time.Duration
 	MergedPRPollInterval time.Duration
+	PRLookupRetryBase    time.Duration
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -82,6 +85,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.browser.mockEngine = config.MockBrowserEngine
 	a.isolatedWorkspaceRoot = config.WorkspaceRoot
 	a.forgeCLIs = isolatedForgeCLIs{isolated: true, fake: config.ForgeCLI}
+	a.prLookupRetryBase = config.PRLookupRetryBase
 	a.preview.scanScope = isolatedScanScope(config.ScanScopePIDs)
 	a.downloadsIsolated = true
 	a.threadPollOverride = config.ThreadRequestPoll

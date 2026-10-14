@@ -653,6 +653,10 @@ type App struct {
 	// never resolves them on PATH. The zero value is the desktop
 	// behavior. Set once before Start; never mutated afterwards.
 	forgeCLIs isolatedForgeCLIs
+	// prLookupRetryBase replaces how long the git.Core caches a first
+	// failed open-PR lookup (git.WithPRLookupErrorBase); zero keeps the
+	// product value. Only a harness boot sets it. Set once before Start.
+	prLookupRetryBase time.Duration
 	// providerBinaryOverride, when non-empty, wins over the settings-
 	// backed provider binary paths in providerBinaryPath. Harness mode
 	// points it at ao-mockprovider so the "providers are always mocked"

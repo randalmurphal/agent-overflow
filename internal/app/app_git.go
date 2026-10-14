@@ -420,7 +420,7 @@ func (a *App) newGitCore() (*gitops.Core, error) {
 // (providerExtraEnv), which is how it reaches the harness that answers
 // it. forgeAPI is nil for gitCore's Core.
 func (a *App) buildGitCore(forgeAPI *forgeapi.Service) *gitops.Core {
-	var opts []gitops.CoreOption
+	opts := []gitops.CoreOption{gitops.WithPRLookupErrorBase(a.prLookupRetryBase)}
 	if forgeAPI != nil {
 		opts = append(opts, gitops.WithForgeAPI(forgeAPI))
 	}

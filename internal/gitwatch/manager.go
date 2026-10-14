@@ -250,15 +250,16 @@ func (m *Manager) Suppress(cwd string) (resume func()) {
 }
 
 func (m *Manager) shouldRefreshMissingPR(status gitops.GitStatus) bool {
-	// A cold cache (OpenPRLookupPending) needs the refresh to answer at
-	// all; a warm "no PR" is re-checked too, because attach is the
-	// remote-change hook: creating an MR does not touch the local
-	// filesystem, while refreshCh coalescing and the PR cache keep
-	// repeated attaches from turning into a CLI storm.
+	// A pending lookup (OpenPRLookupPending, which may carry the branch's
+	// last known PR) needs the refresh to answer at all; a warm "no PR" is
+	// re-checked too, because attach is the remote-change hook: creating
+	// an MR does not touch the local filesystem, while refreshCh
+	// coalescing and the PR cache keep repeated attaches from turning into
+	// a request storm.
 	return m.fastStatusFn != nil &&
 		status.Branch != "" &&
 		status.Forge != "" &&
-		status.OpenPRURL == ""
+		(status.OpenPRLookupPending || status.OpenPRURL == "")
 }
 
 func (m *Manager) watchRoots(cwd string) ([]gitops.WatchRoot, error) {

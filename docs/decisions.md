@@ -199,6 +199,13 @@ Mechanism in
   reads that PR once, and the create paths still look the branch up.
   Mechanism:
   [forge transport](architecture/forge-transport.md#merged-pr-worktree-cleanup).
+- A branch's PR/MR stays in the header badge, the git menu and the review
+  pane until the forge answers that the branch has no open PR (user ruling
+  2026-10-14). Opening a thread asks the forge again but keeps showing the
+  last known PR meanwhile; a failed lookup keeps it, with the error in the
+  git menu item's tooltip, and is retried on its backoff while the thread
+  is open. Only
+  an origin re-pointed at another repository drops it without an answer.
 - Draft worktree and branch operations are DISK state, not thread state:
   project-scoped RPCs, bound to the thread at send or creation. Accepted
   consequences: an abandoned draft's worktree stays in pickers; a restart

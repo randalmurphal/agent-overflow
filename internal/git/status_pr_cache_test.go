@@ -2,7 +2,9 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -172,10 +174,10 @@ func TestInvalidatePRCacheKeepsAnotherWorkspacesLookupInFlight(t *testing.T) {
 	}
 }
 
-// TestInvalidatePRCacheClearsCwdEntries verifies that a successful
-// CreatePR can drop the stale "no PR" cached value so the next status
-// refresh sees the freshly-opened PR rather than waiting up to 30s.
-func TestInvalidatePRCacheClearsCwdEntries(t *testing.T) {
+// TestInvalidatePRCacheStalesCwdEntries verifies that a successful
+// CreatePR makes the cached "no PR" answer stale so the next status
+// refresh asks the forge rather than waiting up to 30s.
+func TestInvalidatePRCacheStalesCwdEntries(t *testing.T) {
 	t.Parallel()
 	core, forge := newOpenPRCore(t, "none")
 	cwdA := t.TempDir()
@@ -448,19 +450,22 @@ func TestLookupOpenPRWithoutPriorSuccessStaysEmpty(t *testing.T) {
 	f.wantPR("second failure", f.lookup("feat"), "", 0, true)
 }
 
-// TestPRCacheKeepsStickyEntryPastRefreshTTL pins the sweep horizon. The
-// per-write sweep used to drop any entry past its refresh TTL, so an
-// unrelated branch's lookup could delete the very value a later failure needs
-// — making the badge blank intermittently, depending on which workspace
-// refreshed last.
+// TestPRCacheKeepsStickyEntryPastRefreshTTL pins that no entry is dropped
+// for its age. A per-write sweep used to drop entries past their refresh
+// TTL (later, past a fixed retention), so an unrelated branch's lookup
+// could delete the very value a later failure needs, and a branch left
+// alone long enough lost its badge on the first failed re-check.
 func TestPRCacheKeepsStickyEntryPastRefreshTTL(t *testing.T) {
 	f := newPRFixture(t)
 
 	f.setMode("pr7")
 	f.wantPR("initial success", f.lookup("feat"), "https://example.com/pr/7", 7, false)
 
-	// An unrelated branch refreshes after "feat" has gone stale; its write
-	// runs the sweep.
+	// A day later an unrelated branch refreshes; its write is where a sweep
+	// would run. The day outlasts forgeDetectionTTL, so the origin identity
+	// is seeded again.
+	f.now = f.now.Add(24 * time.Hour)
+	seedForgeCacheGitHub(t, f.core, f.cwd)
 	f.setMode("none")
 	f.wantPR("sibling branch", f.lookup("other"), "", 0, false)
 
@@ -542,4 +547,229 @@ func TestLookupOpenPRCancelledCallLeavesCacheAlone(t *testing.T) {
 		t.Fatal("a cancelled lookup was cached as the branch's answer")
 	}
 	f.wantPR("after cancel", f.lookup("feat"), "https://example.com/pr/7", 7, false)
+}
+
+// The bug this guards: opening a thread invalidates its workspace's PR
+// cache, and that used to delete the entries, so a forge failure on the
+// re-check that follows had no last known PR to carry and the badge
+// blanked. Invalidation makes the answer stale; a failed re-check still
+// shows the PR beside the error, and the forge was asked.
+func TestInvalidatePRCacheKeepsTheLastKnownPRThroughAFailedRecheck(t *testing.T) {
+	f := newPRFixture(t)
+
+	f.setMode("pr7")
+	f.wantPR("initial success", f.lookup("feat"), "https://example.com/pr/7", 7, false)
+
+	f.core.InvalidatePRCache(f.cwd)
+	f.forge.mode.Store("fail")
+	before := f.forge.calls.Load()
+	f.wantPR("failed re-check after invalidation", f.lookup("feat"), "https://example.com/pr/7", 7, true)
+	if got := f.forge.calls.Load(); got != before+1 {
+		t.Fatalf("forge requests after invalidation = %d, want %d: a stale entry must be asked again", got, before+1)
+	}
+
+	// Only an answer from the forge replaces it.
+	f.setMode("none")
+	f.wantPR("forge answers none", f.lookup("feat"), "", 0, false)
+}
+
+// ForgetPRCache is for a workspace that is gone: unlike invalidation it
+// drops the last known PR, so a checkout re-created at the path starts
+// with nothing.
+func TestForgetPRCacheDropsTheLastKnownPR(t *testing.T) {
+	f := newPRFixture(t)
+
+	f.setMode("pr7")
+	f.wantPR("initial success", f.lookup("feat"), "https://example.com/pr/7", 7, false)
+
+	f.core.ForgetPRCache(f.cwd)
+	f.forge.mode.Store("fail")
+	f.wantPR("failure after forget", f.lookup("feat"), "", 0, true)
+}
+
+// A removed worktree's answers go with it, so the cache does not hold a
+// last known PR for a path that no longer exists.
+func TestRemoveWorktreeForgetsItsPRCache(t *testing.T) {
+	t.Parallel()
+	repo := initGitRepo(t)
+	worktree := filepath.Join(t.TempDir(), "wt")
+	testutil.RunGit(t, repo, "worktree", "add", "-b", "feat", worktree)
+	core := NewCore()
+	now := time.Now()
+	core.storePRLookup(worktree, prCacheKey(worktree, "feat"), 0, now, prCacheEntry{url: "https://example.com/pr/7", number: 7, expiresAt: now.Add(prLookupTTL)})
+	core.storePRLookup(repo, prCacheKey(repo, "main"), 0, now, prCacheEntry{url: "https://example.com/pr/1", number: 1, expiresAt: now.Add(prLookupTTL)})
+
+	if err := core.RemoveWorktreeForce(repo, worktree, false); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+	core.prCacheMu.RLock()
+	_, kept := core.prCache[prCacheKey(worktree, "feat")]
+	_, other := core.prCache[prCacheKey(repo, "main")]
+	core.prCacheMu.RUnlock()
+	if kept {
+		t.Fatal("the removed worktree's open-PR answer is still cached")
+	}
+	if !other {
+		t.Fatal("removing a worktree dropped another workspace's open-PR answer")
+	}
+}
+
+// The cache is bounded by a count, since no entry ages out: a new key past
+// prCacheMaxEntries evicts the entry stored longest ago, and rewriting a
+// held key evicts nothing.
+func TestPRCacheEvictsTheEntryStoredLongestAgo(t *testing.T) {
+	t.Parallel()
+	core := NewCore()
+	cwd := t.TempDir()
+	start := time.Now()
+	key := func(i int) string { return prCacheKey(cwd, fmt.Sprintf("b%d", i)) }
+	for i := range prCacheMaxEntries {
+		core.storePRLookup(cwd, key(i), 0, start.Add(time.Duration(i)*time.Second), prCacheEntry{})
+	}
+	// Rewriting the oldest key makes it the newest, and evicts nothing.
+	core.storePRLookup(cwd, key(0), 0, start.Add(time.Duration(prCacheMaxEntries)*time.Second), prCacheEntry{})
+	core.storePRLookup(cwd, key(prCacheMaxEntries), 0, start.Add(time.Duration(prCacheMaxEntries+1)*time.Second), prCacheEntry{})
+
+	core.prCacheMu.RLock()
+	defer core.prCacheMu.RUnlock()
+	if got := len(core.prCache); got != prCacheMaxEntries {
+		t.Fatalf("cache holds %d entries, want the bound %d", got, prCacheMaxEntries)
+	}
+	if _, ok := core.prCache[key(1)]; ok {
+		t.Fatal("the entry stored longest ago (b1) was not evicted")
+	}
+	for _, i := range []int{0, 2, prCacheMaxEntries} {
+		if _, ok := core.prCache[key(i)]; !ok {
+			t.Fatalf("b%d was evicted, want only b1 gone", i)
+		}
+	}
+}
+
+// statusRepo is a repository whose origin is a GitHub URL and whose main
+// branch origin has, so Status asks the fake forge for main's open PR.
+func statusRepo(t *testing.T) string {
+	t.Helper()
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/acme/repo.git")
+	testutil.RunGit(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	return repo
+}
+
+// The fast status a re-attach answers with carries the branch's last
+// known PR while its lookup is pending, so the badge and review pane keep
+// it instead of blanking until the forge answers. An origin that now reads
+// as a different remote withholds it.
+func TestStatusFastShowsTheLastKnownPRWhileItsLookupIsPending(t *testing.T) {
+	t.Parallel()
+	core, _ := newOpenPRCore(t, "pr7")
+	repo := statusRepo(t)
+
+	full, err := core.Status(t.Context(), repo)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if full.OpenPRNumber != 7 {
+		t.Fatalf("Status PR = %d, want 7", full.OpenPRNumber)
+	}
+
+	core.InvalidatePRCache(repo)
+	pending, err := core.StatusFast(repo)
+	if err != nil {
+		t.Fatalf("StatusFast: %v", err)
+	}
+	if !pending.OpenPRLookupPending || pending.OpenPRNumber != 7 || pending.OpenPRURL != "https://example.com/pr/7" {
+		t.Fatalf("fast status after invalidation = pending %v PR (%q, %d), want pending with PR 7",
+			pending.OpenPRLookupPending, pending.OpenPRURL, pending.OpenPRNumber)
+	}
+	if pending.OpenPRLookupError != "" {
+		t.Fatalf("a pending status carries the error %q, want none until the re-check answers", pending.OpenPRLookupError)
+	}
+
+	testutil.RunGit(t, repo, "remote", "set-url", "origin", "https://github.com/other/fork.git")
+	core.InvalidateForgeCache(repo)
+	retargeted, err := core.StatusFast(repo)
+	if err != nil {
+		t.Fatalf("StatusFast after retarget: %v", err)
+	}
+	if !retargeted.OpenPRLookupPending || retargeted.OpenPRURL != "" || retargeted.OpenPRNumber != 0 {
+		t.Fatalf("fast status after the origin moved = pending %v PR (%q, %d), want pending with no PR",
+			retargeted.OpenPRLookupPending, retargeted.OpenPRURL, retargeted.OpenPRNumber)
+	}
+}
+
+// Status reports when a failed lookup is asked again, so the status
+// watcher can re-check without a local change, and reports nothing once
+// a lookup succeeds. WithPRLookupErrorBase sets the first delay.
+func TestStatusReportsWhenAFailedLookupIsRecheckedNext(t *testing.T) {
+	t.Parallel()
+	core, forge := newOpenPRCore(t, "fail")
+	WithPRLookupErrorBase(500 * time.Millisecond)(core)
+	now := time.Now()
+	core.nowFn = func() time.Time { return now }
+	repo := statusRepo(t)
+
+	failed, err := core.Status(t.Context(), repo)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if failed.OpenPRLookupError == "" {
+		t.Fatal("the failed lookup reported no error")
+	}
+	if want := now.Add(500 * time.Millisecond); !failed.OpenPRRecheckAt.Equal(want) {
+		t.Fatalf("OpenPRRecheckAt = %v, want %v", failed.OpenPRRecheckAt, want)
+	}
+
+	forge.mode.Store("pr7")
+	now = now.Add(time.Second)
+	recovered, err := core.Status(t.Context(), repo)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if recovered.OpenPRNumber != 7 || !recovered.OpenPRRecheckAt.IsZero() {
+		t.Fatalf("recovered status = PR %d recheck %v, want PR 7 and no recheck", recovered.OpenPRNumber, recovered.OpenPRRecheckAt)
+	}
+}
+
+// An answer's lifetime, and a failure's wait, run from when the forge
+// answered, not from when the request went out: a request that hangs for
+// longer than the wait must not be followed at once by another. The fake
+// clock moves only inside the forge's handler, standing in for the time the
+// request took.
+func TestLookupOpenPRTimesItsAnswerFromWhenTheForgeAnswered(t *testing.T) {
+	t.Parallel()
+	const took = 45 * time.Second
+	start := time.Now()
+	var clock atomic.Int64
+	clock.Store(start.UnixNano())
+	var mode atomic.Value
+	mode.Store("fail")
+	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op != "OpenPRsByHead" {
+			return forgeUnexpected(t, call)
+		}
+		clock.Add(int64(took))
+		if mode.Load().(string) == "pr7" {
+			return githubData(`{"repository":{"pullRequests":{"nodes":[{"url":"https://example.com/pr/7","number":7,"title":"seven","state":"OPEN"}]}}}`)
+		}
+		return forgeAPIAnswer{Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`}
+	})
+	core.nowFn = func() time.Time { return time.Unix(0, clock.Load()) }
+	cwd := t.TempDir()
+	seedForgeCacheGitHub(t, core, cwd)
+
+	core.lookupOpenPR(t.Context(), cwd, "feat")
+	if got, want := core.openPRRecheckAt(cwd, "feat"), start.Add(took+prLookupErrorBase); !got.Equal(want) {
+		t.Fatalf("failed lookup re-checked at %v, want %v: the wait must start when the forge answered", got, want)
+	}
+
+	mode.Store("pr7")
+	clock.Add(int64(prLookupErrorBase))
+	answered := time.Unix(0, clock.Load()).Add(took)
+	core.lookupOpenPR(t.Context(), cwd, "feat")
+	core.prCacheMu.RLock()
+	expiresAt := core.prCache[prCacheKey(cwd, "feat")].expiresAt
+	core.prCacheMu.RUnlock()
+	if want := answered.Add(prLookupTTL); !expiresAt.Equal(want) {
+		t.Fatalf("successful lookup expires at %v, want %v", expiresAt, want)
+	}
 }
