@@ -193,5 +193,5 @@ describe('streaming thinking tail through a live window recut', () => {
       }
     }
     expect(teleports).toEqual([]);
-  }, 60_000);
+  });
 });

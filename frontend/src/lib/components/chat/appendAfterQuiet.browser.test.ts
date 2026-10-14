@@ -539,7 +539,7 @@ describe('auto-collapse release vs streaming appends', () => {
     ).toBeLessThan(heightBefore);
   });
 
-  it('settle window: the restore navigation dies on arrival, so tail growth resuming right after the release glides', { timeout: 30000 }, async () => {
+  it('settle window: the restore navigation dies on arrival, so tail growth resuming right after the release glides', async () => {
     // bug-report-20260731T211929Z: the stream stalls mid-prose, the gate
     // releases in the quiet, and the stream resumes ~75ms later — INSIDE
     // the 150ms settle window of the restore's scrollToIndex navigation.

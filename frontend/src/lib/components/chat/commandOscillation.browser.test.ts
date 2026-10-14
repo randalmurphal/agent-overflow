@@ -12,7 +12,7 @@ import {
 setupTimelineHarness();
 const quiet = { epsilonPx: 2, stableFrames: 12, frameBudget: 480 };
 
-it('does not reveal and retract a completion during gaps in an unfinished message', { timeout: 30000 }, async () => {
+it('does not reveal and retract a completion during gaps in an unfinished message', async () => {
   const threadId = 'burst-completion';
   const { pane, scrollEl } = await mountTimeline(threadId, seedTimelineItems(threadId, {
     question: i => `Question ${i}`, replyLead: i => `Answer ${i}. Preceding context.`, replyList: '- One\n- Two',
@@ -55,7 +55,7 @@ it('does not reveal and retract a completion during gaps in an unfinished messag
   }
 });
 
-it.each([360, 800, 1400])('does not retract a completed command below tall prose at width %i', { timeout: 30000 }, async (width) => {
+it.each([360, 800, 1400])('does not retract a completed command below tall prose at width %i', async (width) => {
   const threadId = 'oscillation';
   const seed = seedTimelineItems(threadId, {
     question: i => `Question ${i}`,

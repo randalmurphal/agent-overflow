@@ -137,7 +137,7 @@ function streamTail(
 }
 
 describe('reader-asked expand while a turn streams', () => {
-  it('the clicked expand delta places instantly — it is never handed to the spring', { timeout: 30000 }, async () => {
+  it('the clicked expand delta places instantly — it is never handed to the spring', async () => {
     setUiRenderTraceEnabled(true);
     clearUiRenderTrace();
     const THREAD_ID = 'thread-expand-mid-stream';

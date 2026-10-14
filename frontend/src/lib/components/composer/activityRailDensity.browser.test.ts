@@ -92,4 +92,4 @@ it('protects both controls and holds the row height across sprites, widths and l
     view.unmount();
     target.remove();
   }
-}, 15000);
+});

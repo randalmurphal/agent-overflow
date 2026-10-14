@@ -176,6 +176,6 @@ describe('streaming incremental token reuse (real timeline × Chromium)', () => 
       expect(settled[testCase.settledCount - UNITS].textContent).toContain('Item 0');
       expect(settled[testCase.settledCount - 1].textContent).toContain(`Item ${UNITS - 1}`);
       expect(resizeObserverErrors.messages).toEqual([]);
-    }, 60_000);
+    });
   }
 });

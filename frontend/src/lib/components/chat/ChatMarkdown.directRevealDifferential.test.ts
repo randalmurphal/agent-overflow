@@ -250,7 +250,7 @@ beforeEach(() => {
 // flaked at ~1.6x suite contention (2026-08-30). The budget is a
 // wedged-runtime tripwire, not a perf assertion — every lap is a bounded
 // loop that cannot spin forever on its own.
-describe('direct markdown reveal differential', { timeout: 60_000 }, () => {
+describe('direct markdown reveal differential', () => {
   it('matches authoritative markdown after every character', async () => {
     const count = await assertEveryAppend(RICH_MARKDOWN, Array.from(RICH_MARKDOWN));
     expect(count).toBeGreaterThan(100);

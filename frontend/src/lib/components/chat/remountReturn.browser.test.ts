@@ -227,7 +227,7 @@ function createPhaseMonitor(scrollEl: HTMLElement): PhaseMonitor {
 // Scroll choreography
 // ---------------------------------------------------------------------------
 describe('scroll-away/return remount outcomes (real MessageTimeline × Chromium)', () => {
-  it('returns to the bottom with no dips, no reversals, and bounded unmount batches', { timeout: 60_000 }, async () => {
+  it('returns to the bottom with no dips, no reversals, and bounded unmount batches', async () => {
     const threadId = 'thread-remount-return';
     const { scrollEl, entry } = await mountTimeline(
       threadId,
