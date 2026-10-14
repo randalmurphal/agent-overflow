@@ -303,14 +303,14 @@ describe('<ProviderPromptSection> prompt file', () => {
   });
 
   it('copies the instructions an agent needs to edit the files', async () => {
-    const writeText = vi.fn(async () => undefined);
+    const writeText = vi.fn<(text: string) => Promise<void>>(async () => undefined);
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
     try {
       await seed({ claudePromptOverrides: [ENTRY(), ENTRY({ id: 'b', path: '/p/b.md' })] });
       const { getByTestId } = render(ProviderPromptSection, { props: { provider: CLAUDE } });
       await fireEvent.click(getByTestId('settings-prompt-copy-instructions-claude'));
       await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
-      const text = writeText.mock.calls[0][0] as string;
+      const text = writeText.mock.calls[0]?.[0] ?? '';
       expect(text).toContain('/home/u/.config/agent-overflow/prompts/README.md');
       expect(text).toContain(`- ${PATH}`);
       expect(text).toContain('- /p/b.md');

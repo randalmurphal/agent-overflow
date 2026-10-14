@@ -145,7 +145,7 @@ describe('settings store', () => {
       const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       await updateSetting('claudePromptOverrides', [
-        { id: '', enabled: true, models: ['m'], prompt: 'p' },
+        { id: '', enabled: true, models: ['m'] },
       ]);
 
       expect(getSettings().claudePromptOverrides).toBeUndefined();
@@ -202,7 +202,7 @@ describe('settings store', () => {
     it('does not start the second RPC until the first has answered', async () => {
       const trace: string[] = [];
       setBindingMock('UpdateSettings', async (patch: unknown) => {
-        const label = (patch as Settings).claudePromptOverrides?.[0].prompt ?? '?';
+        const label = (patch as Settings).claudePromptOverrides?.[0].id ?? '?';
         trace.push(`start:${label}`);
         await new Promise((resolve) => setTimeout(resolve, label === 'one' ? 15 : 0));
         trace.push(`end:${label}`);
@@ -211,10 +211,10 @@ describe('settings store', () => {
 
       await Promise.all([
         updateSetting('claudePromptOverrides', [
-          { id: '', enabled: true, models: ['m'], prompt: 'one' },
+          { id: 'one', enabled: true, models: ['m'] },
         ]),
         updateSetting('claudePromptOverrides', [
-          { id: '', enabled: true, models: ['m'], prompt: 'two' },
+          { id: 'two', enabled: true, models: ['m'] },
         ]),
       ]);
 

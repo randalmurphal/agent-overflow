@@ -145,7 +145,7 @@
     if (from && to) versions = ` (${from} → ${to})`;
     else if (to) versions = ` (${to})`;
     else if (from) versions = ` (was ${from})`;
-    return `${label} updated${versions} — restart the session to use it.`;
+    return `${label} updated${versions}. Restart the session to use it.`;
   }
 
   let providerBannerMessage = $derived.by(() => {

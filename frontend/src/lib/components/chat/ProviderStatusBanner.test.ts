@@ -210,7 +210,7 @@ describe('<ProviderStatusBanner>', () => {
 
       expect(banner.dataset.status).toBe('binary_stale');
       expect(banner.textContent).toContain('Claude CLI updated (2.1.219 → 2.1.257)');
-      expect(banner.textContent).toContain('restart the session to use it');
+      expect(banner.textContent).toContain('Restart the session to use it');
       expect(getByTestId('provider-status-restart').textContent).toContain('Restart session');
     });
 
@@ -244,7 +244,7 @@ describe('<ProviderStatusBanner>', () => {
 
       const { getByTestId } = render(ProviderStatusBanner, { props: { pane } });
       const text = getByTestId('provider-status-banner').textContent ?? '';
-      expect(text).toContain('Claude CLI updated — restart the session to use it');
+      expect(text).toContain('Claude CLI updated. Restart the session to use it');
       expect(text).not.toContain('(');
     });
 
