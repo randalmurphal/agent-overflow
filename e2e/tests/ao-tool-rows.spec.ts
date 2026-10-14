@@ -46,6 +46,11 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(spawn.getByTestId('tool-call-card-output')).not.toContainText('"token"');
     await shot('spawn-expanded', spawn);
 
+    // The spawn link opens the spawned thread in a pane; then back to the lead.
+    await spawn.getByTestId('tool-call-card-ao-link').click();
+    await expect(page.getByTestId('user-message-thread-origin').filter({ hasText: `from ${LEAD_TITLE}` }).first()).toBeVisible();
+    await openLead(harness, page);
+
     // Send: the target's title and the message's first line.
     const send = toolRow(page, 'send', `${TARGET_TITLE} · Rebase onto main`);
     await expect(send).toHaveCount(1);
@@ -119,12 +124,12 @@ for (const provider of ['claude', 'codex'] as const) {
     // The run link opens the run in the workflows overlay.
     await runStatus.getByTestId('tool-call-card-ao-link').click();
     await expect(page.getByTestId('workflow-run-detail')).toHaveAttribute('data-item-id', run.runId);
+    // Escape steps back to the run list, then closes the overlay.
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('workflow-run-detail')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Workflows' })).toHaveCount(0);
 
-    // The spawn link opens the spawned thread in a pane.
-    await spawn.getByTestId('tool-call-card-ao-link').click();
-    await expect(page.getByTestId('user-message-thread-origin').filter({ hasText: `from ${LEAD_TITLE}` }).first()).toBeVisible();
     expect(run.spawnedThreadId).not.toBe('');
   });
 }

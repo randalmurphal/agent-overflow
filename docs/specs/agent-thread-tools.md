@@ -979,7 +979,10 @@ spawn's first message, on every `thread_send`, and on every wake. Both
 ends record it: the destination's thread shows where a message came
 from, and the caller's wake shows where the answer came from. Every
 agent-written row also carries `meta.originThread.token`, so three
-requests from one thread to another stay distinguishable.
+requests from one thread to another stay distinguishable. When Claude
+joins messages that queued together into one row, the attribution is the
+first member's (a thread or a wake) and `meta.joinedOriginTokens` lists
+every answering member's token.
 
 ## How calls surface in the timeline
 
@@ -1007,7 +1010,8 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
   facts. A failed call shows its message with the `[code]` as a chip.
 - A spawn, send or ask that returned before its answer follows the
   request: the target thread's state until the answer's wake row (the
-  user row carrying the request's token) lands, then "answer arrived".
+  user row carrying the request's token, joined or not) lands, then
+  "answer arrived".
 
 ## Availability and permissions (Q13, Q17, Q27)
 

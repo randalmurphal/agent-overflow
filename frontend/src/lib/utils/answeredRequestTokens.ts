@@ -10,7 +10,7 @@
 // membership does.
 
 import type { Item } from '../types/models';
-import { parseUserMessageMeta, userMessageOrigin, userMessageOriginThread } from './userMessageMeta';
+import { parseUserMessageMeta, userMessageOriginTokens } from './userMessageMeta';
 
 const EMPTY: ReadonlySet<string> = new Set();
 const memo = new WeakMap<readonly Item[], ReadonlySet<string>>();
@@ -21,11 +21,9 @@ export function answeredRequestTokens(items: readonly Item[] | undefined): Reado
   if (cached) return cached;
   const tokens = new Set<string>();
   for (const item of items) {
-    if (item.kind !== 'user_text' || !item.meta?.includes('originThread')) continue;
-    const meta = parseUserMessageMeta(item.meta);
-    if (userMessageOrigin(meta) !== 'agent-thread') continue;
-    const token = userMessageOriginThread(meta)?.token;
-    if (token) tokens.add(token);
+    if (item.kind !== 'user_text') continue;
+    if (!item.meta?.includes('originThread') && !item.meta?.includes('joinedOriginTokens')) continue;
+    for (const token of userMessageOriginTokens(parseUserMessageMeta(item.meta))) tokens.add(token);
   }
   memo.set(items, tokens);
   return tokens;

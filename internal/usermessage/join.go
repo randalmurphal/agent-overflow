@@ -176,6 +176,7 @@ func (in Input) Projection() Meta {
 // retry of any LATER member resolves to this row instead of duplicating it.
 func JoinMetas(members []Meta) Meta {
 	var joined Meta
+	var tokens []string
 	for _, member := range members {
 		joined.Attachments = append(joined.Attachments, member.Attachments...)
 		if joined.SourceProposedPlan == nil {
@@ -209,6 +210,17 @@ func JoinMetas(members []Meta) Meta {
 		if joined.Origin == "" {
 			joined.Origin, joined.OriginThread, joined.OriginWake = member.Origin, member.OriginThread, member.OriginWake
 		}
+		// Every member's request token is kept, so each request an
+		// answer in this row settles can find it.
+		memberTokens := member.JoinedOriginTokens
+		if len(memberTokens) == 0 && member.OriginThread != nil && member.OriginThread.Token != "" {
+			memberTokens = []string{member.OriginThread.Token}
+		}
+		for _, token := range memberTokens {
+			if !slices.Contains(tokens, token) {
+				tokens = append(tokens, token)
+			}
+		}
 		ids := member.JoinedSendIDs
 		if len(ids) == 0 {
 			ids = []string{member.SendID}
@@ -224,6 +236,9 @@ func JoinMetas(members []Meta) Meta {
 				joined.JoinedSendIDs = append(joined.JoinedSendIDs, id)
 			}
 		}
+	}
+	if len(tokens) > 1 || (len(tokens) == 1 && (joined.OriginThread == nil || joined.OriginThread.Token != tokens[0])) {
+		joined.JoinedOriginTokens = tokens
 	}
 	return joined
 }
@@ -262,6 +277,7 @@ func (m Meta) isZero() bool {
 		len(m.JoinedSendIDs) == 0 &&
 		m.Origin == "" &&
 		m.OriginThread == nil &&
+		len(m.JoinedOriginTokens) == 0 &&
 		m.OriginWake == nil &&
 		!m.ExpandComposerCommands
 }
@@ -287,6 +303,7 @@ var metaTypedKeys = []string{
 	"joinedSendIds",
 	"origin",
 	"originThread",
+	"joinedOriginTokens",
 	"originWake",
 }
 

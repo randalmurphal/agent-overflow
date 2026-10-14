@@ -158,3 +158,36 @@ func TestImageAttachmentCountTreatsEmptyKindAsImage(t *testing.T) {
 		t.Errorf("ImageAttachmentCount = %d, want 2 (empty kind is an image, a file is not)", got)
 	}
 }
+
+// Two answers that queued together become one row: the chip keeps the first
+// answer's thread, and the row still lists both request tokens so each
+// request finds the row that settled it.
+func TestJoinMetasKeepsEveryMembersRequestToken(t *testing.T) {
+	joined := JoinMetas([]Meta{
+		{SendID: "a", Origin: OriginAgentThread, OriginThread: &OriginThread{ThreadID: "t1", Token: "tok-1"}},
+		{SendID: "b"},
+		{SendID: "c", Origin: OriginAgentThread, OriginThread: &OriginThread{ThreadID: "t2", Token: "tok-2"}},
+		{SendID: "d", Origin: OriginAgentThread, OriginThread: &OriginThread{ThreadID: "t3", Token: "tok-3"}, JoinedOriginTokens: []string{"tok-3", "tok-1"}},
+	})
+	if joined.OriginThread == nil || joined.OriginThread.Token != "tok-1" {
+		t.Fatalf("attribution = %+v, want the first member's", joined.OriginThread)
+	}
+	if want := []string{"tok-1", "tok-2", "tok-3"}; !slices.Equal(joined.JoinedOriginTokens, want) {
+		t.Errorf("JoinedOriginTokens = %v, want %v", joined.JoinedOriginTokens, want)
+	}
+	single := JoinMetas([]Meta{
+		{SendID: "a", Origin: OriginAgentThread, OriginThread: &OriginThread{ThreadID: "t1", Token: "tok-1"}},
+		{SendID: "b"},
+	})
+	if single.JoinedOriginTokens != nil {
+		t.Errorf("one token rides OriginThread alone, got JoinedOriginTokens %v", single.JoinedOriginTokens)
+	}
+	// A wake first takes the attribution; the answer behind it keeps its token.
+	behindWake := JoinMetas([]Meta{
+		{SendID: "a", Origin: OriginAgentWake, OriginWake: &OriginWake{Kind: "loop", Label: "board"}},
+		{SendID: "b", Origin: OriginAgentThread, OriginThread: &OriginThread{ThreadID: "t1", Token: "tok-1"}},
+	})
+	if behindWake.OriginThread != nil || !slices.Equal(behindWake.JoinedOriginTokens, []string{"tok-1"}) {
+		t.Errorf("behind a wake: OriginThread %+v, JoinedOriginTokens %v, want nil and [tok-1]", behindWake.OriginThread, behindWake.JoinedOriginTokens)
+	}
+}

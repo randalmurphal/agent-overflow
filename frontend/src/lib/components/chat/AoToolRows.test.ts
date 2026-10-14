@@ -141,6 +141,33 @@ describe('AO thread tool rows', () => {
     expect(view.getByTestId('tool-call-card-ao-live-hint').textContent).toBe('(answer arrived)');
   });
 
+  it('finds its answer in a row that joined answers which queued together', () => {
+    replaceAllThreads([makeThread({ id: CHILD, title: 'Docs slice' })]);
+    const item = thread('thread_send', {
+      input: { thread_id: CHILD, message: 'm' },
+      ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'queued', outcome: 'queued' },
+    });
+    // The chip keeps the first member's thread; this request's token is the second.
+    const joined = makeItem({
+      id: 'wake-1', threadId: THREAD, kind: 'user_text',
+      meta: JSON.stringify({
+        origin: 'agent-thread',
+        originThread: { threadId: 'other', title: 'Other', token: 'first-token' },
+        joinedOriginTokens: ['first-token', TOKEN],
+      }),
+    });
+    const view = render(GenericToolCallRow, { props: { item, pane: paneWith([item, joined]) } });
+    expect(view.getByTestId('tool-call-card-ao-live-hint').textContent).toBe('(answer arrived)');
+
+    // A wake joined first: the row is the wake's, and still answers the request.
+    const behindWake = makeItem({
+      id: 'wake-2', threadId: THREAD, kind: 'user_text',
+      meta: JSON.stringify({ origin: 'agent-wake', originWake: { kind: 'loop', label: 'board' }, joinedOriginTokens: [TOKEN] }),
+    });
+    const other = render(GenericToolCallRow, { props: { item, pane: paneWith([item, behindWake]) } });
+    expect(other.getAllByTestId('tool-call-card-ao-live-hint').at(-1)!.textContent).toBe('(answer arrived)');
+  });
+
   it('drops the reply\'s "still working" note once the answer has landed', async () => {
     replyWith(spawnAck);
     const item = thread('thread_spawn', {
