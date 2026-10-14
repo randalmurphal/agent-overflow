@@ -691,7 +691,9 @@ func (a *App) cleanUpMergedPRWorktree(ctx context.Context, pr store.ThreadPullRe
 		a.postMergedPRKept(told, label, name, uncommittedFiles(recheck.UncommittedCount))
 		return mergedPRKept
 	}
-	a.postMergedPRKept(told, label, name, err.Error())
+	// git's error names paths; the notice names the worktree only.
+	log.Printf("merged PR cleanup: remove %s: %v", site.path, err)
+	a.postMergedPRKept(told, label, name, "removing it failed")
 	return mergedPRKept
 }
 
