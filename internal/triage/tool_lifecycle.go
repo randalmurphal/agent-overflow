@@ -377,7 +377,7 @@ func userInputValidationTexts(toolName, metaJSON string) []string {
 	if len(top.Input.Questions) == 0 {
 		return nil
 	}
-	texts := make([]string, 0, len(top.Input.Questions)*2)
+	texts := make([]string, 0, len(top.Input.Questions))
 	for _, question := range top.Input.Questions {
 		if q := strings.TrimSpace(question.Question); q != "" {
 			texts = append(texts, q)

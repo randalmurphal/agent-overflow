@@ -980,10 +980,10 @@ func subagentRoundBoundsFor(
 		}
 	}
 
-	out := make([]subagentRoundBounds, 0, len(rootIDs)+len(rounds))
+	out := make([]subagentRoundBounds, 0, max(len(rootIDs), len(rounds)))
 	// The aggregate query partitions by anchor, so a repeated anchor
 	// would count its rows twice. First bound wins.
-	seen := make(map[string]struct{}, len(rootIDs)+len(rounds))
+	seen := make(map[string]struct{}, max(len(rootIDs), len(rounds)))
 	add := func(b subagentRoundBounds) {
 		if _, dup := seen[b.anchorID]; dup {
 			return
