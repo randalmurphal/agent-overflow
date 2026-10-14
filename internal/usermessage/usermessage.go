@@ -110,14 +110,40 @@ type OriginWake struct {
 }
 
 // OriginThread identifies the sending thread of an `agent-thread` row: what
-// the chip renders, and the request token that keeps three requests from one
-// thread to another distinguishable.
+// the row's header names, and the request token that keeps three requests
+// from one thread to another distinguishable.
 type OriginThread struct {
 	ComputerID   string `json:"computerId,omitempty"`
 	ComputerName string `json:"computerName,omitempty"`
 	ThreadID     string `json:"threadId"`
 	Title        string `json:"title,omitempty"`
 	Token        string `json:"token,omitempty"`
+	// Kind is what the row delivers: the request kind (`spawn`, `send`,
+	// `ask`) on a request, or OriginKindWake on the wake carrying a
+	// request's answer back. Absent on rows written before it existed;
+	// readers fall back to the row's send id.
+	Kind string `json:"kind,omitempty"`
+}
+
+// OriginKindWake is OriginThread.Kind on a wake. The status line says which
+// settlement it carries.
+const OriginKindWake = "wake"
+
+// IsAgentMessage reports whether a user row is a message an agent wrote, not
+// the person: an `agent-thread` or `agent-wake` row. Such a row is no tick in
+// the message navigator, no entry in the composer's recall and no queued
+// message of the person's.
+//
+// A row that also carries ExpandComposerCommands is the person's: headless
+// Claude joins queued messages at a turn boundary, so one row can hold the
+// person's composer message after an agent's, and JoinMetas attributes it to
+// the agent. Only the composer path sets the flag. The SQL twin is
+// store.AgentMessageFilterFor and the frontend's is isAgentMessageMeta.
+func IsAgentMessage(meta Meta) bool {
+	if meta.ExpandComposerCommands {
+		return false
+	}
+	return meta.Origin == OriginAgentThread || meta.Origin == OriginAgentWake
 }
 
 // Input is the per-entry-point projection Marshal encodes. A struct

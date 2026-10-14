@@ -99,6 +99,22 @@ func QuoteFooterMimics(body string) string {
 	return strings.Join(lines, "\n")
 }
 
+// StripFooter returns a request message without its footer: the sender's
+// text, which is what names the work. A text with no footer is returned
+// unchanged. The footer is the last block opening with the marker, which
+// QuoteFooterMimics keeps unique.
+func StripFooter(text string) string {
+	opening := "---\n" + footerMarker
+	if strings.HasPrefix(text, opening) {
+		return ""
+	}
+	index := strings.LastIndex(text, "\n"+opening)
+	if index < 0 {
+		return text
+	}
+	return strings.TrimRight(text[:index], "\n")
+}
+
 // String renders the footer. It always starts with the "Agent request"
 // marker the server instructions tell the receiver to look for.
 func (f Footer) String() string {

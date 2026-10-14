@@ -265,7 +265,7 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 		// nothing here runs a second time.
 		return target, nil
 	}
-	if err := t.dispatchRequest(ctx, origin, token, target, call.Prompt, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
+	if err := t.dispatchRequest(ctx, origin, token, store.ThreadRequestSpawn, target, call.Prompt, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
 		return "", t.failRequest(token, err)
 	}
 	return target, nil
@@ -329,7 +329,7 @@ func (t threadToolsApp) acceptSend(ctx context.Context, origin threadRequestOrig
 	if !fresh {
 		return target.ID, nil
 	}
-	if err := t.dispatchRequest(ctx, origin, token, target.ID, call.Message, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
+	if err := t.dispatchRequest(ctx, origin, token, store.ThreadRequestSend, target.ID, call.Message, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
 		return "", t.failRequest(token, err)
 	}
 	return target.ID, nil
@@ -409,7 +409,7 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 	}
 	// An ask always wants an answer: that is what distinguishes it from a
 	// send, and the footer must say so however the wait was configured.
-	if err := t.dispatchRequest(ctx, origin, token, target, call.Question, true); err != nil {
+	if err := t.dispatchRequest(ctx, origin, token, store.ThreadRequestAsk, target, call.Question, true); err != nil {
 		return "", t.failRequest(token, err)
 	}
 	return target, nil
@@ -571,7 +571,7 @@ func (t threadToolsApp) failRequest(token string, cause error) error {
 // settlement on the queued one, so a message merged into another queued send
 // still reports the turn it joined.
 func (t threadToolsApp) dispatchRequest(
-	ctx context.Context, origin threadRequestOrigin, token, targetThreadID, text string, wantsAnswer bool,
+	ctx context.Context, origin threadRequestOrigin, token, kind, targetThreadID, text string, wantsAnswer bool,
 ) error {
 	// The message drives the target thread in the mode that thread already
 	// runs in, which is what SendMessageWithOptions judges for the composer.
@@ -591,6 +591,7 @@ func (t threadToolsApp) dispatchRequest(
 		ThreadID:     caller.ThreadID,
 		Title:        caller.Title,
 		Token:        token,
+		Kind:         kind,
 	}
 	sendID := threadRequestSendID(token)
 	item, err := t.app.sendMessageWithOptions(ctx, targetThreadID, body, sendMessageOptions{

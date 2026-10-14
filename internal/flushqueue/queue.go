@@ -34,6 +34,15 @@ type QueuedItem struct {
 	RevisionSourceDiffReview     *store.DiffReviewSourceRef   `json:"revisionSourceDiffReview,omitempty"`
 	RevisionSourceDiffCommentIDs []string                     `json:"revisionSourceDiffCommentIds,omitempty"`
 	EnqueuedAt                   int64                        `json:"enqueuedAt"`
+	// Origin, OriginThread and OriginWake attribute a message the app queued
+	// on an agent's behalf, as the row it becomes will. AgentMessage is
+	// usermessage.IsAgentMessage of that attribution: the message is not
+	// the person's, so the composer's queue preview leaves it out and the
+	// Agents rail segment lists it as incoming instead.
+	Origin       string                    `json:"origin,omitempty"`
+	OriginThread *usermessage.OriginThread `json:"originThread,omitempty"`
+	OriginWake   *usermessage.OriginWake   `json:"originWake,omitempty"`
+	AgentMessage bool                      `json:"agentMessage,omitempty"`
 }
 
 // Payload is the wire shape of triage.QueuedFlushItem.Payload — the
@@ -125,6 +134,13 @@ func itemFrom(threadID, id, message string, enqueuedAt int64, raw []byte) Queued
 	out.RevisionSourceCommentIDs = payload.RevisionSourceCommentIDs
 	out.RevisionSourceDiffReview = payload.RevisionSourceDiffReview
 	out.RevisionSourceDiffCommentIDs = payload.RevisionSourceDiffCommentIDs
+	out.Origin = payload.Origin
+	out.OriginThread = payload.OriginThread
+	out.OriginWake = payload.OriginWake
+	out.AgentMessage = usermessage.IsAgentMessage(usermessage.Meta{
+		Origin:                 payload.Origin,
+		ExpandComposerCommands: payload.ExpandComposerCommands,
+	})
 	return out
 }
 

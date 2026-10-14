@@ -7,6 +7,7 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
 
 func TestItemFromTriageNilPayload(t *testing.T) {
@@ -100,5 +101,35 @@ func TestNewItemIDPrefix(t *testing.T) {
 	// sanity check.
 	if NewItemID() == id {
 		t.Fatalf("NewItemID returned the same id twice")
+	}
+}
+
+// A queued message the app wrote for an agent carries its attribution and
+// the classification the composer's preview and the Agents rail read; a
+// person's composer message, joined with one or not, is never an agent's.
+func TestItemFromStoreCarriesTheAgentAttribution(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload Payload
+		agent   bool
+	}{
+		{"request", Payload{Origin: usermessage.OriginAgentThread, OriginThread: &usermessage.OriginThread{ThreadID: "t-lead", Title: "Lead", Kind: "send"}}, true},
+		{"loop wake", Payload{Origin: usermessage.OriginAgentWake, OriginWake: &usermessage.OriginWake{Kind: "loop", Label: "nightly"}}, true},
+		{"the person's", Payload{ExpandComposerCommands: true}, false},
+		{"the person's under an agent's origin", Payload{Origin: usermessage.OriginAgentWake, ExpandComposerCommands: true}, false},
+		{"an app notice with no origin", Payload{SendID: "remote-job:1"}, false},
+	} {
+		raw, err := json.Marshal(tc.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := ItemFromStore(store.FlushQueueItem{ID: "queue:1", ThreadID: "t", Message: "m", Payload: raw})
+		if got.AgentMessage != tc.agent {
+			t.Errorf("%s: AgentMessage = %v, want %v", tc.name, got.AgentMessage, tc.agent)
+		}
+		if got.Origin != tc.payload.Origin || (tc.payload.OriginThread != nil && (got.OriginThread == nil || got.OriginThread.Title != "Lead")) ||
+			(tc.payload.OriginWake != nil && (got.OriginWake == nil || got.OriginWake.Label != "nightly")) {
+			t.Errorf("%s: attribution = %q %+v %+v", tc.name, got.Origin, got.OriginThread, got.OriginWake)
+		}
 	}
 }

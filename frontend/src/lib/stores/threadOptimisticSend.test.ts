@@ -3,7 +3,7 @@ import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import { flushMicrotasks, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { applyQueueFlushed, applyQueueStateChanged } from './eventsQueue';
-import { getQueueForThread } from './sendQueue.svelte';
+import { getFlushedForThread, getQueueForThread } from './sendQueue.svelte';
 import { dispatchSend } from '../components/composer/composerSend';
 import { buildSendOptions } from '../utils/sendOptions';
 import type { ThreadPane } from './thread.svelte';
@@ -137,6 +137,27 @@ describe('optimistic send acknowledgement', () => {
     pane.applyProviderItemUpserts([canonical(pane, 'mine', 'user:1')]);
     expect(pane.items).toHaveLength(1);
     expect(pane.isOptimisticItem('user:1')).toBe(false);
+  });
+
+  // The queue carries the backend's classification of an agent's message and
+  // its sender, through the live event and the snapshot alike, so the
+  // composer's preview can leave it out and the Agents rail can name it.
+  it('keeps an agent message\'s classification and sender through the event and the snapshot', async () => {
+    const pane = await buildPane();
+    const agent = {
+      ...queued(pane.threadId!, 'thread-wake:k'), id: 'queue:wake', agentMessage: true, origin: 'agent-thread',
+      originThread: { threadId: 't-w', title: 'Worker', kind: 'wake' },
+    };
+    applyQueueStateChanged({ threadId: pane.threadId!, items: [agent, queued(pane.threadId!, 'mine')] } as never);
+    const [wake, mine] = getQueueForThread(pane.threadId);
+    expect(wake).toMatchObject({ agentMessage: true, originThread: { threadId: 't-w', title: 'Worker', kind: 'wake' } });
+    expect(mine.agentMessage).toBeUndefined();
+
+    setBindingMock('GetThreadLiveState', async () => ({ threadId: pane.threadId, queueItems: [agent], deferredItems: [],
+      flushedItems: [{ queueItemId: 'queue:f', userItemId: 'user:0:flush:f', message: 'm', agentMessage: true }] }));
+    await pane.refreshFromBackend();
+    expect(getQueueForThread(pane.threadId)[0]?.agentMessage).toBe(true);
+    expect(getFlushedForThread(pane.threadId)[0]?.agentMessage).toBe(true);
   });
 
   it('reconciles a current queue snapshot after missing its live event', async () => {

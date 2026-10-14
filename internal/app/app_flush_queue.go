@@ -74,6 +74,9 @@ type QueueFlushedItem struct {
 	SendID      string `json:"sendId,omitempty"`
 	UserItemID  string `json:"userItemId"`
 	Message     string `json:"message"`
+	// AgentMessage is usermessage.IsAgentMessage of the row the message
+	// became: an agent's message, which the queue preview leaves out.
+	AgentMessage bool `json:"agentMessage,omitempty"`
 }
 
 type QueueRestoredEvent struct {
@@ -754,13 +757,19 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// the one row they became: markItemsFlushed drops each queue id from
 	// Zone 1 and de-duplicates the additions by userItemId, so the overlay
 	// shows the joined message once and its echo clears it once.
+	joinedMeta, err := usermessage.FromItem(userItem)
+	if err != nil {
+		return nil, false, requeue, err
+	}
+	agentMessage := usermessage.IsAgentMessage(joinedMeta)
 	flushedItems := make([]QueueFlushedItem, 0, len(members))
 	for _, member := range members {
 		flushedItems = append(flushedItems, QueueFlushedItem{
-			QueueItemID: member.item.ID,
-			UserItemID:  userItem.ID,
-			Message:     joined.content,
-			SendID:      member.payload.SendID,
+			QueueItemID:  member.item.ID,
+			UserItemID:   userItem.ID,
+			Message:      joined.content,
+			SendID:       member.payload.SendID,
+			AgentMessage: agentMessage,
 		})
 	}
 

@@ -281,18 +281,34 @@ async function threadSend(dataDir: string, args: string[]): Promise<{ code: numb
   });
 }
 
-/** The timeline bubble a wake became, found by its badge. */
+/**
+ * The agent row a wake became, found by its kind and sender
+ * (docs/specs/agent-thread-tools.md, "How agent messages appear") and
+ * opened, so its decoded data is on screen. `badge` names the source:
+ * `Loop · label`, `Watch · label`, `Question · worker`, `Approval · worker`
+ * or `Sent by a script`.
+ */
 async function wakeBubble(page: Page, title: string, badge: string, contains: string) {
   await page.getByTestId('thread-row').getByText(title, { exact: true }).click();
-  const bubble = page
-    .getByTestId('user-message-bubble')
-    .filter({ has: page.getByTestId('user-message-wake-origin').getByText(badge, { exact: true }) })
-    .filter({ hasText: contains });
-  await expect(bubble).toHaveCount(1);
-  await bubble.scrollIntoViewIfNeeded();
-  await expect(bubble).toBeInViewport();
-  await expect(bubble).toContainText(DATA_NOTICE);
-  return bubble;
+  const kinds: Record<string, string> = { Loop: 'loop', Watch: 'watch', Question: 'worker-question', Approval: 'worker-approval' };
+  const [kind, sender] =
+    badge === 'Sent by a script' ? ['script', 'A script'] : [kinds[badge.split(' · ')[0]], badge.split(' · ')[1]];
+  const rows = page
+    .locator(`[data-testid="agent-message-row"][data-agent-message-kind="${kind}"]`)
+    .filter({ has: page.getByTestId('agent-message-sender').getByText(sender, { exact: true }) });
+  await expect(rows.first()).toBeVisible();
+  // Folded rows show only their first line: open each until the one
+  // holding the text is found.
+  for (const toggle of await rows.getByTestId('agent-message-toggle').all()) {
+    if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+  }
+  const row = rows.filter({ has: page.getByTestId('agent-message-text').filter({ hasText: contains }) });
+  await expect(row).toHaveCount(1);
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeInViewport();
+  // The template line written for the agent is the header's to say.
+  await expect(row).not.toContainText(DATA_NOTICE);
+  return row;
 }
 
 /**
@@ -1676,7 +1692,6 @@ while [ $i -lt 1000 ]; do printf 'line %064d\\n' $i; i=$((i+1)); done
 
       await harness.open(page);
       const bubble = await wakeBubble(page, 'Capped agent', 'Watch · big', 'line 0000');
-      await bubble.getByRole('button', { name: 'Show more' }).click();
       // The bubble's last line, after the last kept line of output.
       await shootText(page, `${provider}-capped-wake.png`, bubble, dropped);
     } finally {
@@ -2063,9 +2078,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           const bubbles = (
             conn
               .prepare(
-                `SELECT COUNT(*) AS n FROM items WHERE thread_id = ? AND kind = 'user_text' AND (summary LIKE ? OR summary LIKE ?)`,
+                `SELECT COUNT(*) AS n FROM items WHERE thread_id = ? AND kind = 'user_text' AND summary LIKE ?`,
               )
-              .get(caller, `%${ANSWER}%`, '%build 812%') as { n: number }
+              .get(caller, `%${ANSWER}%`) as { n: number }
           ).n;
           return { draft: draft?.content ?? '', bubbles };
         } finally {
@@ -2113,13 +2128,20 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const booted = owners();
       const rows = queued();
       expect(booted.request).toEqual({ delivered: 0, how: '', notify: 0 });
-      expect(composer()).toEqual({ draft: '', bubbles: 0 });
       const relaunched = harness;
       const deliveries = () => countInputs(relaunched, callerPath, completion);
-      const truthful =
+      // A completion the watcher dispatched between the snapshot and this
+      // read has left the queue before its input is reported: wait for the
+      // delivery it allows.
+      const truthful = () =>
         (booted.watch === 'pending' && rows.length === 0) ||
         (booted.watch === 'queued' && (rows.length === 1 || deliveries() === 1));
-      expect(truthful, `after boot: watch ${booted.watch}, queue ${JSON.stringify(rows)}, ${deliveries()} deliveries`).toBe(true);
+      await expect
+        .poll(truthful, { message: `after boot: watch ${booted.watch}, queue ${JSON.stringify(rows)}`, timeout: 30_000 })
+        .toBe(true);
+      // The answer never became a message; the completion's delivery is
+      // the watcher's, counted above.
+      expect(composer()).toEqual({ draft: '', bubbles: 0 });
       expect(rows).not.toContain('thread-wake');
       console.log(`${provider}: booted: request owed and disarmed, watch ${booted.watch}, queue ${JSON.stringify(rows)}, composer empty`);
 
@@ -2578,10 +2600,14 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const deliveries = () => countInputs(relaunched, g.callerPath, g.completion);
       // The watcher may already have queued it again or delivered it to a
       // session it started.
-      const truthful =
+      // One dispatched between the snapshot and this read has left the
+      // queue before its input is reported: wait for the delivery.
+      const truthful = () =>
         (booted.watch === 'pending' && booted.rows === 0) ||
         (booted.watch === 'queued' && (booted.rows === 1 || deliveries() === 1));
-      expect(truthful, `after boot: watch ${booted.watch}, ${booted.rows} rows, ${deliveries()} deliveries`).toBe(true);
+      await expect
+        .poll(truthful, { message: `after boot: watch ${booted.watch}, ${booted.rows} rows`, timeout: 30_000 })
+        .toBe(true);
       expect(booted).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '' });
       const input = await wakeInput(app, g.callerPath, g.completion, 60_000);
       expect(input.report.input).toContain('build 812 finished: green');

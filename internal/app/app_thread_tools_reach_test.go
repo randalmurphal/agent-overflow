@@ -28,6 +28,7 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/usermessage"
 )
 
 // Agent thread tools across two computers, over the real wire: a real
@@ -823,7 +824,7 @@ func (p *reachPair) collect(t *testing.T, token, answer string) string {
 
 // A wake for work that ran on another computer names that thread the way a
 // local one does, in its body and in the attribution a client renders as
-// the origin chip. The caller has no row for that thread, so the only name
+// the sender of an agent row. The caller has no row for that thread, so the only name
 // it has is what the destination reported while the request was open.
 func TestThreadToolsRemoteWakeNamesTheThreadAndComputerThatAnswered(t *testing.T) {
 	t.Parallel()
@@ -863,7 +864,8 @@ func TestThreadToolsRemoteWakeNamesTheThreadAndComputerThatAnswered(t *testing.T
 		t.Fatalf("the wake carries no attribution: %+v", payload)
 	}
 	got := *payload.OriginThread
-	if got.Title != "Kernel build" || got.ThreadID != target || got.ComputerID != id || got.ComputerName != name {
+	if got.Title != "Kernel build" || got.ThreadID != target || got.ComputerID != id || got.ComputerName != name ||
+		got.Kind != usermessage.OriginKindWake {
 		t.Errorf("wake origin = %+v, want %q (%s) on %q (%s)", got, "Kernel build", target, name, id)
 	}
 }

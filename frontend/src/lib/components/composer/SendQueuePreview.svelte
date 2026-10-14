@@ -8,6 +8,7 @@
   import {
     getFlushedForThread,
     getQueueForThread,
+    isPersonQueueEntry,
     type FlushedLifecycle,
   } from '../../stores/sendQueue.svelte';
   import { isWakeSendId, readableWakeText } from '../../utils/wakeText';
@@ -53,8 +54,10 @@
     return isWakeSendId(sendId) ? readableWakeText(message) : message;
   }
 
-  let queued = $derived(getQueueForThread(pane.threadId ?? ''));
-  let flushed = $derived(getFlushedForThread(pane.threadId ?? ''));
+  // The person's messages only: an agent's queued message is listed as
+  // incoming in the Agents rail segment, never as if the person typed it.
+  let queued = $derived(getQueueForThread(pane.threadId ?? '').filter(isPersonQueueEntry));
+  let flushed = $derived(getFlushedForThread(pane.threadId ?? '').filter(isPersonQueueEntry));
   let pending = $derived([
     ...flushed.map((item) => ({
       key: item.userItemId,

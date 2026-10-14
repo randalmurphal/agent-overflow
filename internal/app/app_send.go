@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
@@ -599,8 +600,15 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: allocate item id: %w", err)
 	}
+	// A request names its work in the sender's text; its footer is
+	// routing, and a title or branch named from it would read "Agent
+	// request from thread ...".
+	namingText := content
+	if opts.Origin == usermessage.OriginAgentThread {
+		namingText = threadtools.StripFooter(content)
+	}
 	if !isCodexReview {
-		a.maybeRenameTemporaryWorktreeBranch(threadID, content)
+		a.maybeRenameTemporaryWorktreeBranch(threadID, namingText)
 	}
 
 	if opts.onUserMessageReady != nil {
@@ -769,7 +777,7 @@ func (a *App) sendMessageLocked(
 	// emission here.
 
 	if !isCodexReview && !threadmode.IsSagaOwned(thread.Mode) {
-		a.maybeGenerateThreadTitleWithAttachments(thread, content, persistedAttachments, hasPriorItems)
+		a.maybeGenerateThreadTitleWithAttachments(thread, namingText, persistedAttachments, hasPriorItems)
 	}
 	return userItem, nil
 }

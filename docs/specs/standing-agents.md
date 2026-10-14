@@ -519,10 +519,12 @@ for them: one that arrives after the archive is refused back to what
 sent it, and one queued just before it waits, without a start, for the
 archive to take it back. A person's answers to an agent's questions are
 the exception, as anything they type into an archived thread is.
-The queued message is badged with the wake's kind and
+The queued message carries the wake's kind and
 label, wrapped as untrusted text with the byte cap above, and carries
-no approval or user authority. The timeline and the send queue show its
-quoted data decoded; the agent reads it escaped. A wake that arrives
+no approval or user authority. The timeline shows it as an agent row
+([how agent messages appear](agent-thread-tools.md#how-agent-messages-appear))
+with its quoted data decoded; the agent reads it escaped. It is never
+listed in the send queue as the person's message. A wake that arrives
 while a turn is open is delivered like a reminder: on Claude it is
 queued to the CLI, which takes it in at its next step or as a turn of
 its own after the current one, and on Codex it is steered into the

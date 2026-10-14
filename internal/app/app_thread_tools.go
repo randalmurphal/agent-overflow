@@ -521,6 +521,9 @@ func (t threadToolsApp) attachLastMessages(rows []threadtools.Hit) error {
 		role := "assistant"
 		if message.Kind == "user_text" {
 			role = "user"
+			if message.Agent {
+				role = "agent"
+			}
 		}
 		rows[index].LastMessage = &threadtools.LastMessage{Role: role, At: message.At, Tail: message.Tail, Clipped: message.Clipped}
 	}

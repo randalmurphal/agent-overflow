@@ -11,8 +11,10 @@
 // role and the route of its questions; the role line on a message from the
 // agent to an ordinary thread and none on one back; nothing injected after
 // demotion. Then the timeline: the injected block is system prompt and
-// never a message, the worker's first message shows the attached file, and
-// the hygiene wake shows with the pass's outcome.
+// never a message, the worker's first message is an agent row whose body
+// shows the attached file and whose facts name the agent's role and the
+// route of its questions, and the hygiene wake is an agent row followed by
+// the pass's outcome.
 //
 // No mock speaks claude-tui; its leg is proven at the argv level by
 // TestStandingAgentSessionsCarryTheirHomeFiles in internal/app.
@@ -50,8 +52,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // The injected block is the session's system prompt: no message shows it.
     await openThread(page, 'Release lead');
     const wake = page
-      .getByTestId('user-message-bubble')
-      .filter({ has: page.getByTestId('user-message-wake-origin').getByText(`Loop · ${HYGIENE_LABEL}`, { exact: true }) });
+      .locator('[data-testid="agent-message-row"][data-agent-message-kind="loop"]')
+      .filter({ has: page.getByTestId('agent-message-sender').getByText(HYGIENE_LABEL, { exact: true }) });
     await expect(wake).toHaveCount(1);
     await expect(page.getByText(HYGIENE_OUTCOME)).toBeVisible();
     await expect(page.getByText('Your standing instructions')).toHaveCount(0);
@@ -66,20 +68,28 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const outcome = page.getByText(HYGIENE_OUTCOME);
     await centerInTimeline(outcome);
     await expectUncovered(outcome);
-    await expectUncovered(wake.getByTestId('user-message-wake-origin'));
+    await expectUncovered(wake.getByTestId('agent-message-toggle'));
     await capture(page, `${provider}-hygiene-wake.png`, wake, outcome);
 
-    // The worker's first message opens with the attached file.
+    // The worker's first message is the agent's spawn prompt, opening with
+    // the attached file.
     await openThread(page, 'Parser review');
-    const first = page.getByTestId('user-message-bubble').filter({ hasText: ATTACHED_OPENING });
+    const first = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="spawn"]');
     await expect(first).toHaveCount(1);
-    await expect(first).toContainText(VERIFICATION);
-    await expect(first).toContainText('Review the parser change on this branch.');
-    // Expanded, so the footer naming the agent shows under the attached file.
-    await first.getByRole('button', { name: 'Show more' }).click();
-    await expect(first.getByRole('button', { name: 'Show less' })).toBeVisible();
-    await showTextUncovered(page, first, AGENT_SENTENCE);
-    // The whole expanded message, attached file to footer, in one shot.
+    await expect(first.getByTestId('agent-message-sender')).toHaveText('Release lead');
+    await expect(first.getByTestId('agent-message-role')).toHaveText(ROLE);
+    await expect(first.getByTestId('agent-message-first-line')).toHaveText(ATTACHED_OPENING);
+    // Expanded: the attached file and the message, then the facts the
+    // footer carried, never the footer itself.
+    await first.getByTestId('agent-message-toggle').click();
+    const text = first.getByTestId('agent-message-text');
+    await expect(text).toContainText(VERIFICATION);
+    await expect(text).toContainText('Review the parser change on this branch.');
+    await expect(first).not.toContainText(AGENT_SENTENCE);
+    await expect(first.locator('[data-fact="Role"]')).toHaveText(ROLE);
+    await expect(first.locator('[data-fact="Prompts"]')).toHaveText('Go to the sender, which spawned this thread');
+    await showTextUncovered(page, first, 'Go to the sender, which spawned this thread');
+    // The whole expanded message, attached file to facts, in one shot.
     await capture(page, `${provider}-worker-first-message.png`, first);
   });
 }

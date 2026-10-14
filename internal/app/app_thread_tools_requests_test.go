@@ -193,7 +193,7 @@ func TestThreadSpawnRunsTheWorkAndSettlesOnItsOwnTurn(t *testing.T) {
 	}
 
 	// The message the spawned thread read: the prompt, the footer both ends
-	// parse, and the attribution the origin chip renders.
+	// parse, and the attribution an agent row names its sender by.
 	row := f.userRow(t, ack.ThreadID, ack.Token)
 	if !strings.Contains(row.Summary, "check the windows build") {
 		t.Errorf("user row lost the prompt: %q", row.Summary)
@@ -206,7 +206,8 @@ func TestThreadSpawnRunsTheWorkAndSettlesOnItsOwnTurn(t *testing.T) {
 		t.Fatalf("decode user meta: %v", err)
 	}
 	if meta.Origin != usermessage.OriginAgentThread || meta.OriginThread == nil ||
-		meta.OriginThread.ThreadID != f.caller.ID || meta.OriginThread.Token != ack.Token {
+		meta.OriginThread.ThreadID != f.caller.ID || meta.OriginThread.Token != ack.Token ||
+		meta.OriginThread.Kind != store.ThreadRequestSpawn {
 		t.Fatalf("origin attribution = %+v", meta)
 	}
 
@@ -826,8 +827,9 @@ func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 	if err := json.Unmarshal(wake.Payload, &payload); err != nil {
 		t.Fatalf("decode wake payload: %v", err)
 	}
-	if payload.Origin != string(usermessage.OriginAgentThread) || payload.OriginThread == nil {
-		t.Errorf("wake payload = %+v, want the agent-thread attribution", payload)
+	if payload.Origin != string(usermessage.OriginAgentThread) || payload.OriginThread == nil ||
+		payload.OriginThread.Kind != usermessage.OriginKindWake {
+		t.Errorf("wake payload = %+v, want the agent-thread attribution of a wake", payload)
 	}
 	delivered := f.request(t, ack.Token)
 	if delivered.DeliveredHow != store.ThreadWakeQueued || delivered.DeliveredAt == 0 {
@@ -1811,8 +1813,9 @@ func TestThreadSendStartsAnIdleThread(t *testing.T) {
 	if meta.SendID != threadRequestSendID(ack.Token) {
 		t.Errorf("send id = %q, want the request's own", meta.SendID)
 	}
-	if meta.Origin != usermessage.OriginAgentThread || meta.OriginThread.ThreadID != f.caller.ID {
-		t.Errorf("attribution = %+v, want the caller thread", meta)
+	if meta.Origin != usermessage.OriginAgentThread || meta.OriginThread.ThreadID != f.caller.ID ||
+		meta.OriginThread.Kind != store.ThreadRequestSend {
+		t.Errorf("attribution = %+v, want the caller thread's send", meta)
 	}
 }
 

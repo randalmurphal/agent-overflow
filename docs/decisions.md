@@ -273,6 +273,17 @@ Mechanism in
   sends and on the wakes of its replies to a caller on its own computer;
   a caller on another computer gets no role, since cross-computer agents
   are a non-goal.
+- Messages between agents are not the person's messages (ruling
+  2026-10-13). A thread tool's spawn prompt, request or question, the
+  answer that comes back, a loop, watch, outside send or worker wake, and
+  a provider's own agent message stay user-role on the wire and
+  `user_text` rows in the store, and render as a folded agent row naming
+  the sender, never as the user bubble; their footer is shown as facts,
+  never raw. They are not navigator ticks, composer recall or send-queue
+  preview entries, and the thread tools label them `agent` with their
+  sender. A Claude join holding the person's composer message stays the
+  person's. Mechanism:
+  [how agent messages appear](specs/agent-thread-tools.md#how-agent-messages-appear).
 
 ## Providers and accounts
 

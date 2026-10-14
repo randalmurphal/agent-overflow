@@ -1228,15 +1228,15 @@ test('the origin chip names the other computer on both ends of a spawn', async (
   // The destination's first message says which computer asked for it.
   await remote.open(page);
   await sidebarRow('Chip work').click();
-  await expect(page.getByTestId('user-message-thread-origin').first()).toHaveText(
-    'from Chip caller on Laptop computer',
+  await expect(page.getByTestId('agent-message-sender').first()).toHaveText(
+    'Chip caller on Laptop computer',
   );
 
   // The caller's wake says which computer answered.
   await home.open(page);
   await sidebarRow('Chip caller').click();
-  await expect(page.getByTestId('user-message-thread-origin').first()).toHaveText(
-    'from Chip work on GPU computer',
+  await expect(page.getByTestId('agent-message-sender').first()).toHaveText(
+    'Chip work on GPU computer',
   );
 });
 

@@ -87,6 +87,33 @@ describe('deriveNavTicks', () => {
   });
 });
 
+describe('deriveNavTicks and agent messages', () => {
+  // A message another agent wrote is not the person's: no tick, so the rail
+  // and its previous/next walk step over it. The person's own still tick.
+  it('skips an agent thread\'s and a wake\'s messages and keeps the person\'s', () => {
+    const nodes: TimelineNode[] = [
+      leaf({ id: 'u1', kind: 'user_text', turnIndex: 1 }),
+      leaf({ id: 'req', kind: 'user_text', turnIndex: 2, meta: '{"origin":"agent-thread","originThread":{"threadId":"t9"}}' }),
+      leaf({ id: 'loop', kind: 'user_text', turnIndex: 3, meta: '{"origin":"agent-wake","originWake":{"kind":"loop"}}' }),
+      leaf({ id: 'mixed', kind: 'user_text', turnIndex: 4, meta: '{"origin":"agent-wake","expandComposerCommands":true}' }),
+      leaf({ id: 'u2', kind: 'user_text', turnIndex: 5 }),
+    ];
+    expect(deriveNavTicks(nodes).map((t) => t.id)).toEqual(['u1', 'mixed', 'u2']);
+  });
+
+  it('ends a turn preview at the person\'s next message, not at an agent\'s', () => {
+    const items: Item[] = [
+      item({ id: 'u1', kind: 'user_text', summary: 'ask the worker' }),
+      item({ id: 'a1', kind: 'assistant_text', role: 'assistant', summary: 'asked' }),
+      item({ id: 'w', kind: 'user_text', summary: 'Reply from', meta: '{"origin":"agent-thread"}' }),
+      item({ id: 'a2', kind: 'assistant_text', role: 'assistant', summary: 'the worker says yes' }),
+      item({ id: 'u2', kind: 'user_text', summary: 'thanks' }),
+    ];
+    const byId = new Map(items.map((it) => [it.id, it]));
+    expect(turnPreview(items, 'u1', (id) => byId.get(id)).assistantText).toBe('the worker says yes');
+  });
+});
+
 describe('mergeNavTicks', () => {
   const baseline = [base('b1', 0), base('b2', 1), base('b3', 2), base('b4', 5), base('b5', 6)];
   const loaded = [tick('b3', 2, 4), tick('b4', 5, 9)];

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  isAgentMessageMeta,
+  isReaderAuthoredUserText,
   parseUserMessageAttachments,
   parseUserMessageMeta,
   userMessageOriginThread,
@@ -112,12 +114,14 @@ describe('userMessageOriginThread', () => {
       threadId: 'thread-9',
       title: 'Auth rewrite',
       token: 'tok-1',
+      kind: 'send',
     })).toEqual({
       computerId: 'studio',
       computerName: 'Studio',
       threadId: 'thread-9',
       title: 'Auth rewrite',
       token: 'tok-1',
+      kind: 'send',
     });
   });
 
@@ -128,6 +132,7 @@ describe('userMessageOriginThread', () => {
       threadId: 'thread-9',
       title: '',
       token: '',
+      kind: '',
     });
   });
 
@@ -148,6 +153,7 @@ describe('userMessageOriginThread', () => {
       threadId: 'thread-9',
       title: '',
       token: '',
+      kind: '',
     });
   });
 
@@ -159,13 +165,14 @@ describe('userMessageOriginThread', () => {
 describe('userMessageOriginWake', () => {
   it('reads a loop, a watch and an outside send, and labels each', () => {
     const loop = userMessageOriginWake({ originWake: { kind: 'loop', label: 'board' } });
-    expect(loop).toEqual({ kind: 'loop', label: 'board' });
+    expect(loop).toEqual({ kind: 'loop', label: 'board', threadId: '' });
     expect(agentWakeOriginLabel(loop!)).toBe('Loop · board');
     const watch = userMessageOriginWake({ originWake: { kind: 'watch', label: 'mrs' } });
     expect(agentWakeOriginLabel(watch!)).toBe('Watch · mrs');
     const send = userMessageOriginWake({ originWake: { kind: 'send' } });
     expect(agentWakeOriginLabel(send!)).toBe('Sent by a script');
     const question = userMessageOriginWake({ originWake: { kind: 'question', label: 'Deploy worker', threadId: 't1' } });
+    expect(question?.threadId).toBe('t1');
     expect(agentWakeOriginLabel(question!)).toBe('Question · Deploy worker');
     const approval = userMessageOriginWake({ originWake: { kind: 'approval', label: 'Deploy worker' } });
     expect(agentWakeOriginLabel(approval!)).toBe('Approval · Deploy worker');
@@ -175,5 +182,33 @@ describe('userMessageOriginWake', () => {
     expect(userMessageOriginWake({ originWake: { kind: 'cron', label: 'x' } })).toBeNull();
     expect(userMessageOriginWake({ originWake: 'loop' })).toBeNull();
     expect(userMessageOriginWake({})).toBeNull();
+  });
+});
+
+describe('isAgentMessageMeta and isReaderAuthoredUserText', () => {
+  const row = (meta: Record<string, unknown>, parentId = '') =>
+    ({ kind: 'user_text', parentId, meta: JSON.stringify(meta) }) as Parameters<typeof isReaderAuthoredUserText>[0];
+
+  it('calls an agent thread\'s or a wake\'s row an agent message, and no other', () => {
+    expect(isAgentMessageMeta({ origin: 'agent-thread' })).toBe(true);
+    expect(isAgentMessageMeta({ origin: 'agent-wake' })).toBe(true);
+    for (const origin of ['', 'external-queue', 'scheduled', 'peer-session']) {
+      expect(isAgentMessageMeta({ origin })).toBe(false);
+    }
+  });
+
+  // Headless Claude joins the person's queued message after an agent's into
+  // one row attributed to the agent; the composer flag says the person is in it.
+  it('keeps a joined row holding the person\'s composer message as theirs', () => {
+    expect(isAgentMessageMeta({ origin: 'agent-wake', expandComposerCommands: true })).toBe(false);
+    expect(isReaderAuthoredUserText(row({ origin: 'agent-thread', expandComposerCommands: true }))).toBe(true);
+  });
+
+  it('counts only the person\'s top-level rows', () => {
+    expect(isReaderAuthoredUserText(row({}))).toBe(true);
+    expect(isReaderAuthoredUserText(row({ origin: 'agent-thread' }))).toBe(false);
+    expect(isReaderAuthoredUserText(row({ origin: 'agent-wake' }))).toBe(false);
+    expect(isReaderAuthoredUserText(row({ wire_only: true }))).toBe(false);
+    expect(isReaderAuthoredUserText(row({}, 'tool-1'))).toBe(false);
   });
 });

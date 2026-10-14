@@ -927,8 +927,8 @@ export function projectThreadError(threadId: string): void {
  * The carrier is the `thread:updated` activity patch, which the backend
  * emits from exactly the persists that count as thread activity: top-level
  * user_text rows that are not wire-only context injections and not a
- * subagent's own prompt (triage.userTextCountsAsThreadActivity, the SQL
- * predicate `isReaderAuthoredUserText` mirrors). That patch is wildcard, so
+ * subagent's own prompt (triage.userTextCountsAsThreadActivity); an
+ * agent's message counts, since it starts a turn too. That patch is wildcard, so
  * the badge clears for threads this client has no pane on — which is the
  * only place a sidebar pill is read.
  */

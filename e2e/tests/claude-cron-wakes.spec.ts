@@ -198,7 +198,7 @@ test('a cron fire renders as a scheduled turn with its prompt', async ({ page },
     await expect(fires).toHaveCount(3);
     await expect(fires.getByTestId('user-message-scheduled-origin')).toHaveCount(3);
     await expect(fires.first().getByTestId('user-message-scheduled-origin')).toHaveText('Scheduled');
-    await expect(page.getByTestId('user-message-peer-origin')).toHaveCount(0);
+    await expect(page.getByTestId('agent-message-row')).toHaveCount(0);
     await expectAbove(fires.first(), replyRow(page, 'CRON-FIRED').first());
   });
 });
@@ -229,7 +229,7 @@ test('a cron fire held through a busy turn renders after that turn as a schedule
 
     const fire = userRow(page, LOOP_PROMPT);
     await expect(fire.getByTestId('user-message-scheduled-origin')).toHaveCount(1);
-    await expect(page.getByTestId('user-message-peer-origin')).toHaveCount(0);
+    await expect(page.getByTestId('agent-message-row')).toHaveCount(0);
     await expectAbove(replyRow(page, 'SLEPT'), fire);
     await expectAbove(fire, pings.last());
   });

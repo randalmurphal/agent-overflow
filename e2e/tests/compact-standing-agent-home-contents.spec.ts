@@ -2,7 +2,8 @@
 // (docs/specs/standing-agents.md, "Agent home contents"): the same flow as
 // standing-agent-home-contents.spec.ts on the Claude mock, then the agent's
 // session, its hygiene wake with the pass's outcome and the worker's first
-// message with the attached file, each fitting the phone.
+// message, an agent row opened on the attached file and the facts its
+// footer carried, each fitting the phone.
 import { test, expect } from './fixtures.js';
 import { capture } from './wake-rows-helpers.js';
 import {
@@ -10,6 +11,7 @@ import {
   ATTACHED_OPENING,
   HYGIENE_LABEL,
   HYGIENE_OUTCOME,
+  ROLE,
   VERIFICATION,
   centerInTimeline,
   expectUncovered,
@@ -26,8 +28,8 @@ test('compact: the agent session, its hygiene wake and the worker first message 
   await expect(page.getByLabel(/^Could not fully verify/)).toHaveCount(0);
   await page.getByTestId('thread-row').getByText('Release lead', { exact: true }).tap();
   const wake = page
-    .getByTestId('user-message-bubble')
-    .filter({ has: page.getByTestId('user-message-wake-origin').getByText(`Loop · ${HYGIENE_LABEL}`, { exact: true }) });
+    .locator('[data-testid="agent-message-row"][data-agent-message-kind="loop"]')
+    .filter({ has: page.getByTestId('agent-message-sender').getByText(HYGIENE_LABEL, { exact: true }) });
   await expect(wake).toHaveCount(1);
   await expect(page.getByText(HYGIENE_OUTCOME)).toBeVisible();
   await expect(page.getByText('Your standing instructions')).toHaveCount(0);
@@ -38,17 +40,19 @@ test('compact: the agent session, its hygiene wake and the worker first message 
   const outcome = page.getByText(HYGIENE_OUTCOME);
   await centerInTimeline(outcome);
   await expectUncovered(outcome);
-  await expectUncovered(wake.getByTestId('user-message-wake-origin'));
-  await capture(page, 'compact-hygiene-wake.png', wake.getByTestId('user-message-wake-origin'), outcome);
+  await expectUncovered(wake.getByTestId('agent-message-toggle'));
+  await capture(page, 'compact-hygiene-wake.png', wake.getByTestId('agent-message-toggle'), outcome);
 
   await page.goBack();
   await page.getByTestId('thread-row').getByText('Parser review', { exact: true }).tap();
-  const first = page.getByTestId('user-message-bubble').filter({ hasText: ATTACHED_OPENING });
+  const first = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="spawn"]');
   await expect(first).toHaveCount(1);
-  await expect(first).toContainText(VERIFICATION);
-  // Expanded, and scrolled to its footer naming the agent.
-  await first.getByRole('button', { name: 'Show more' }).click();
-  await expect(first.getByRole('button', { name: 'Show less' })).toBeVisible();
-  await showTextUncovered(page, first, AGENT_SENTENCE);
+  await expect(first.getByTestId('agent-message-first-line')).toHaveText(ATTACHED_OPENING);
+  // Expanded, and scrolled to the facts naming the agent.
+  await first.getByTestId('agent-message-toggle').tap();
+  await expect(first.getByTestId('agent-message-text')).toContainText(VERIFICATION);
+  await expect(first).not.toContainText(AGENT_SENTENCE);
+  await expect(first.locator('[data-fact="Role"]')).toHaveText(ROLE);
+  await showTextUncovered(page, first, 'Go to the sender, which spawned this thread');
   await capture(page, 'compact-worker-first-message.png');
 });

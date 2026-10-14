@@ -8,6 +8,9 @@ import { Create as $Create } from "@wailsio/runtime";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as store$0 from "../store/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as usermessage$0 from "../usermessage/models.js";
 
 /**
  * QueuedItem is the wire-side projection of a triage QueuedFlushItem,
@@ -34,6 +37,18 @@ export class QueuedItem {
     "revisionSourceDiffReview"?: store$0.DiffReviewSourceRef | null;
     "revisionSourceDiffCommentIds"?: string[];
     "enqueuedAt": number;
+
+    /**
+     * Origin, OriginThread and OriginWake attribute a message the app queued
+     * on an agent's behalf, as the row it becomes will. AgentMessage is
+     * usermessage.IsAgentMessage of that attribution: the message is not
+     * the person's, so the composer's queue preview leaves it out and the
+     * Agents rail segment lists it as incoming instead.
+     */
+    "origin"?: string;
+    "originThread"?: usermessage$0.OriginThread | null;
+    "originWake"?: usermessage$0.OriginWake | null;
+    "agentMessage"?: boolean;
 
     /** Creates a new QueuedItem instance. */
     constructor($$source: Partial<QueuedItem> = {}) {
@@ -63,6 +78,8 @@ export class QueuedItem {
         const $$createField7_0 = $$createType0;
         const $$createField8_0 = $$createType4;
         const $$createField9_0 = $$createType0;
+        const $$createField12_0 = $$createType6;
+        const $$createField13_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField4_0($$parsedSource["attachmentIds"]);
@@ -82,6 +99,12 @@ export class QueuedItem {
         if ("revisionSourceDiffCommentIds" in $$parsedSource) {
             $$parsedSource["revisionSourceDiffCommentIds"] = $$createField9_0($$parsedSource["revisionSourceDiffCommentIds"]);
         }
+        if ("originThread" in $$parsedSource) {
+            $$parsedSource["originThread"] = $$createField12_0($$parsedSource["originThread"]);
+        }
+        if ("originWake" in $$parsedSource) {
+            $$parsedSource["originWake"] = $$createField13_0($$parsedSource["originWake"]);
+        }
         return new QueuedItem($$parsedSource as Partial<QueuedItem>);
     }
 }
@@ -92,3 +115,7 @@ const $$createType1 = store$0.ProposedPlanSourceRef.createFrom;
 const $$createType2 = $Create.Nullable($$createType1);
 const $$createType3 = store$0.DiffReviewSourceRef.createFrom;
 const $$createType4 = $Create.Nullable($$createType3);
+const $$createType5 = usermessage$0.OriginThread.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = usermessage$0.OriginWake.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);

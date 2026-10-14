@@ -12,6 +12,7 @@ function origin(overrides: Partial<UserMessageOriginThread> = {}): UserMessageOr
     threadId: 'thread-9',
     title: 'Auth rewrite',
     token: 'tok-1',
+    kind: '',
     ...overrides,
   };
 }

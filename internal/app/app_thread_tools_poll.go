@@ -607,7 +607,7 @@ func (a *App) collectThreadPeerReply(token, computerID string, answer ThreadPeer
 // when the row already names it under the name the destination gave it.
 //
 // The title is recorded beside the id because a thread on another computer
-// has no row here: it is what names the target in a wake, in the origin chip
+// has no row here: it is what names the target in a wake, as the sender
 // on that wake, and in `thread_status`, including after a restart, which the
 // live reading beside it does not survive.
 func threadPeerTarget(row store.ThreadRequest, answer ThreadPeerRequest) string {

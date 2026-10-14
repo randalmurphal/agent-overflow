@@ -183,6 +183,7 @@ export function createThreadLiveStateHydration(
             userItemId: item.userItemId,
             message: item.message,
             flushedAt: Date.now(),
+            ...(item.agentMessage ? { agentMessage: true } : {}),
             ...(deliveredAt ? { deliveredAt } : {}),
           };
         });

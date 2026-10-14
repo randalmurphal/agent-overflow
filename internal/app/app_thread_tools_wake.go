@@ -365,7 +365,7 @@ const (
 // row here, and a thread on another computer is named by what its own
 // computer reported when the request's target was recorded.
 func (a *App) threadWakeOrigin(row store.ThreadRequest) *usermessage.OriginThread {
-	origin := &usermessage.OriginThread{ThreadID: row.TargetThreadID, Token: row.Token}
+	origin := &usermessage.OriginThread{ThreadID: row.TargetThreadID, Token: row.Token, Kind: usermessage.OriginKindWake}
 	if row.TargetComputerID != "" {
 		origin.Title = row.TargetThreadTitle
 		origin.ComputerName, origin.ComputerID = a.threadTools().threadToolsBackendName(row.TargetComputerID)

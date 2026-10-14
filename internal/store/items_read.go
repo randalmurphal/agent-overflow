@@ -495,6 +495,29 @@ func userMessageTickFilterFor(alias string) string {
 
 var readerAuthoredUserTextFilter = readerAuthoredUserTextFilterFor("")
 
+// AgentMessageFilterFor matches the user_text rows an agent wrote, not the
+// person: `meta.origin` names an agent thread or the wake supervisor, and
+// the row does not carry the composer's `expandComposerCommands`, which a
+// headless Claude join of the person's message after an agent's keeps. It is
+// the SQL twin of usermessage.IsAgentMessage (pinned by
+// TestAgentMessageFilterMatchesIsAgentMessage), spelled with literals
+// because this package cannot import that one.
+//
+// The person's messages are the reader-authored rows without it: the nav
+// rail's ticks and the composer's recall. The send-identity reads keep
+// agent rows, which carry the send ids a retry or a wake is found by.
+func AgentMessageFilterFor(alias string) string {
+	return `(COALESCE(CASE WHEN json_valid(` + alias + `meta) THEN json_extract(` + alias + `meta, '$.origin') END, '') IN ('agent-thread', 'agent-wake')
+	  AND COALESCE(CASE WHEN json_valid(` + alias + `meta) THEN json_extract(` + alias + `meta, '$.expandComposerCommands') END, 0) != 1)`
+}
+
+// personMessageFilterFor is readerAuthoredUserTextFilterFor less the agents'
+// messages. Its prefix is the reader filter's, so idx_items_user_text still
+// applies.
+func personMessageFilterFor(alias string) string {
+	return readerAuthoredUserTextFilterFor(alias) + " AND NOT " + AgentMessageFilterFor(alias)
+}
+
 // UserMessageTick is one nav-rail tick: a reader-authored user message's
 // id plus its position, small enough that a whole thread's list ships in
 // one read. The position pair is what lets the frontend splice the
@@ -505,8 +528,9 @@ type UserMessageTick struct {
 	ItemIndex int    `json:"itemIndex"`
 }
 
-// ListThreadUserMessageTicks returns every reader-authored user message
-// in the thread, oldest first. Backs the message-nav rail, whose ticks
+// ListThreadUserMessageTicks returns every message the person wrote in the
+// thread, oldest first: reader-authored rows less the agents' messages
+// (personMessageFilterFor). Backs the message-nav rail, whose ticks
 // cover the WHOLE thread rather than the loaded window — three tiny
 // columns per row, so even a very long thread's list is a few KB.
 //
@@ -521,11 +545,11 @@ func (s *Store) ListThreadUserMessageTicks(threadID string, selection TimelineSe
 		if err != nil {
 			return nil, err
 		}
-		filter := readerAuthoredUserTextFilterFor("items.")
+		filter := personMessageFilterFor("items.")
 		var filterArgs []any
 		if scope.selection.ScopeRootID != "" {
 			filter, filterArgs = scope.filter("items.")
-			filter += " AND " + userMessageTickFilterFor("items.")
+			filter += " AND " + userMessageTickFilterFor("items.") + " AND NOT " + AgentMessageFilterFor("items.")
 		}
 
 		sql, args, err := timelineArms(q, threadID, timelineSelection{
@@ -569,8 +593,8 @@ type UserMessageHistoryEntry struct {
 	Summary   string `json:"summary"`
 }
 
-// ListThreadUserMessageHistory returns the thread's newest reader-authored
-// user messages, newest first, capped at limit. Backs the composer's
+// ListThreadUserMessageHistory returns the thread's newest messages the
+// person wrote (personMessageFilterFor), newest first, capped at limit. Backs the composer's
 // ArrowUp history recall, which needs the FULL text — a recalled message
 // is re-sent verbatim, so unlike the turn-preview read nothing here is
 // rune-capped. Wire-only injections and subagent child prompts are
@@ -591,7 +615,7 @@ func (s *Store) ListThreadUserMessageHistory(threadID string, limit int) ([]User
 				return `items.id AS id, items.turn_index AS turn_index,
 				        items.item_index AS item_index, items.summary AS summary`
 			},
-			Where:   readerAuthoredUserTextFilterFor("items."),
+			Where:   personMessageFilterFor("items."),
 			OrderBy: "turn_index DESC, item_index DESC",
 			Limit:   limit,
 		})

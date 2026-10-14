@@ -47,6 +47,36 @@ describe('<SendQueuePreview>', () => {
     expect(queryByTestId('send-queue-preview')).toBeNull();
   });
 
+  // An agent's queued message (a request, an answer, a wake) is not the
+  // person's: the Agents rail segment lists it, the composer's preview does not.
+  it('lists only the person\'s messages, queued or flushed', async () => {
+    const pane = await buildPane();
+    replaceQueueForThread('thread-1', [
+      makeQueueItem({ id: 'q-person', message: 'my follow-up' }),
+      makeQueueItem({ id: 'q-agent', message: 'Reply from "W"', agentMessage: true }),
+    ]);
+    markItemsFlushed('thread-1', [
+      { queueItemId: 'q-x', userItemId: 'user:flush:person', message: 'typed earlier' },
+      { queueItemId: 'q-y', userItemId: 'user:flush:agent', message: 'Agent request', agentMessage: true },
+    ]);
+
+    const { getAllByTestId, queryByText } = render(SendQueuePreview, { props: { pane } });
+
+    expect(getAllByTestId('send-queue-preview-row').map((row) => row.textContent?.trim())).toEqual([
+      expect.stringContaining('typed earlier'),
+      expect.stringContaining('my follow-up'),
+    ]);
+    expect(queryByText('Reply from "W"')).toBeNull();
+    expect(queryByText('Agent request')).toBeNull();
+  });
+
+  it('renders nothing when every pending message is an agent\'s', async () => {
+    const pane = await buildPane();
+    replaceQueueForThread('thread-1', [makeQueueItem({ id: 'q-agent', agentMessage: true })]);
+    const { queryByTestId } = render(SendQueuePreview, { props: { pane } });
+    expect(queryByTestId('send-queue-preview')).toBeNull();
+  });
+
   it('renders queued messages as pending rows', async () => {
     const pane = await buildPane();
     replaceQueueForThread('thread-1', [

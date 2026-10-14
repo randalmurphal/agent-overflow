@@ -37,7 +37,7 @@ func ThreadReceiptOpenStates() []string {
 // computer's threads, local ones included.
 //
 // The display metadata (source computer and thread names) is what the call
-// carried, for the footer and the origin chip. It is never an authorization
+// carried, for the footer and the sender an agent row names. It is never an authorization
 // input: OwnerDeviceID is, and it is the authenticated device of the source
 // computer, or "local" for an in-process call.
 type ThreadRequestReceipt struct {

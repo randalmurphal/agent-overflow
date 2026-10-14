@@ -592,17 +592,17 @@ test('thread_spawn opens a visible thread, delivers the prompt with its footer a
   expect(wake.report.input).toContain('finished its turn without calling thread_reply');
   expect(wake.report.input).toContain('The launcher starts in main.go.');
 
-  // Both ends carry the attribution chip: the spawned thread's first
-  // message says where it came from.
+  // Both ends name the other as the sender of an agent row: the spawned
+  // thread's first message says where it came from.
   await harness.open(page);
   const sidebarRow = (title: string) =>
     page.getByTestId('thread-row-title').filter({ hasText: title }).first();
   await sidebarRow('Launcher audit').click();
-  await expect(page.getByTestId('user-message-thread-origin')).toContainText('from Spawn caller');
+  const prompt = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="spawn"]');
+  await expect(prompt.getByTestId('agent-message-sender')).toHaveText('Spawn caller');
   await sidebarRow('Spawn caller').click();
-  await expect(page.getByTestId('user-message-thread-origin').first()).toContainText(
-    'from Launcher audit',
-  );
+  const answer = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="finished"]');
+  await expect(answer.getByTestId('agent-message-sender')).toHaveText('Launcher audit');
 });
 
 for (const provider of ['claude', 'codex'] as const) {

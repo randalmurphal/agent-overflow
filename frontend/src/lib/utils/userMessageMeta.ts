@@ -25,6 +25,8 @@ export interface UserMessageMeta {
   sourceProposedPlan?: unknown;
   wire_only?: unknown;
   command?: unknown;
+  /** Set by the composer path only; see isAgentMessageMeta. */
+  expandComposerCommands?: unknown;
   /**
    * Who produced this message, when it was not the person in front of Agent
    * Overflow. The difference matters to a reader:
@@ -38,9 +40,10 @@ export interface UserMessageMeta {
    *   (`internal/provider/claude/session_peer.go#PeerTurnOrigin`)
    * - `agent-thread` — an agent in another Agent Overflow thread, on this
    *   computer or on a paired one, wrote this row through the thread tools:
-   *   a spawn's first message, a `thread_send`, or the wake carrying an
-   *   answer back. `originThread` names the source thread.
-   *   (`docs/specs/agent-thread-tools.md`, Attribution)
+   *   a spawn's first message, a `thread_send`, a `thread_ask`, or the wake
+   *   carrying an answer back. `originThread` names the source thread. It
+   *   renders as an agent-message row, not the user bubble
+   *   (`docs/specs/agent-thread-tools.md`, How agent messages appear).
    * - `scheduled` — the prompt of a turn the provider started on its own
    *   schedule: a Claude cron job's fire or ScheduleWakeup wake. The model
    *   stored it earlier; nobody typed it now.
@@ -48,7 +51,7 @@ export interface UserMessageMeta {
    * - `agent-wake` — the wake supervisor wrote this row: a loop's fire, a
    *   watch's output, or a script's `agent-overflow thread send`. Data
    *   delivered to the thread, never the user speaking. `originWake` names
-   *   the loop or watch.
+   *   the loop or watch. It renders as an agent-message row too.
    *   (`docs/specs/standing-agents.md`, Wake supervisor)
    *
    * Absent means locally authored, which is the overwhelmingly common case.
@@ -75,18 +78,6 @@ export function userMessageOrigin(meta: UserMessageMeta): string {
 }
 
 /**
- * The label for a message another Claude session sent to this thread.
- *
- * Names the peer when the wire gave a name, because "from BETA" is what
- * lets the reader go look at BETA. Falls back to the unnamed form rather
- * than to an empty name — a message from nobody reads as a bug.
- */
-export function peerSessionOriginLabel(meta: UserMessageMeta): string {
-  const name = typeof meta.cross_session_from_name === 'string' ? meta.cross_session_from_name.trim() : '';
-  return name ? `From ${name} (another Claude session)` : 'From another Claude session';
-}
-
-/**
  * The thread an `agent-thread` row came from, as the tools stamped it.
  *
  * `threadId` is the whole point of the chip — it is what the reader clicks
@@ -101,6 +92,11 @@ export interface UserMessageOriginThread {
   title: string;
   /** The request token, so three requests from one thread stay distinct. */
   token: string;
+  /**
+   * What the row delivers: `spawn`, `send` or `ask` on a request, `wake` on
+   * an answer coming back. Empty on rows written before it was stamped.
+   */
+  kind: string;
 }
 
 export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOriginThread | null {
@@ -114,6 +110,7 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
     threadId,
     title: stringField(record.title),
     token: stringField(record.token),
+    kind: stringField(record.kind),
   };
 }
 
@@ -127,6 +124,8 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
 export interface UserMessageOriginWake {
   kind: 'loop' | 'watch' | 'send' | 'question' | 'approval';
   label: string;
+  /** The worker of a `question` or `approval` wake; empty otherwise. */
+  threadId: string;
 }
 
 const WAKE_KINDS: ReadonlySet<string> = new Set(['loop', 'watch', 'send', 'question', 'approval']);
@@ -142,7 +141,11 @@ export function userMessageOriginWake(meta: UserMessageMeta): UserMessageOriginW
   if (!record) return null;
   const kind = stringField(record.kind);
   if (!WAKE_KINDS.has(kind)) return null;
-  return { kind: kind as UserMessageOriginWake['kind'], label: stringField(record.label) };
+  return {
+    kind: kind as UserMessageOriginWake['kind'],
+    label: stringField(record.label),
+    threadId: stringField(record.threadId),
+  };
 }
 
 /** The badge a wake row carries: which loop, watch or worker, or that a script sent it. */
@@ -183,18 +186,34 @@ export function isPendingFlushRow(item: Item): boolean {
 }
 
 /**
+ * True for a message an agent wrote into this thread, not the person: an
+ * `agent-thread` or `agent-wake` row. A row that also carries the composer's
+ * `expandComposerCommands` is the person's: headless Claude joins queued
+ * messages at a turn boundary, so one row can hold the person's message
+ * after an agent's, attributed to the agent. The Go twin is
+ * usermessage.IsAgentMessage; the SQL one store.AgentMessageFilterFor.
+ */
+export function isAgentMessageMeta(meta: UserMessageMeta): boolean {
+  if (meta.expandComposerCommands === true) return false;
+  const origin = userMessageOrigin(meta);
+  return origin === 'agent-thread' || origin === 'agent-wake';
+}
+
+/**
  * True for a top-level user_text row the reader actually wrote. Wire-only
- * rows — context injections the send path marks in meta — fail it, as do
- * subagent-child user rows. The ONE TypeScript counterpart of the store's
- * SQL predicate (items_read.go readerAuthoredUserTextFilter): the nav
- * rail's tick derivation, the sidebar's activity counting, and any future
- * "which user messages are real" question all route here so they cannot
+ * rows (context injections the send path marks in meta) fail it, as do
+ * subagent-child user rows and an agent's messages (isAgentMessageMeta).
+ * The ONE TypeScript counterpart of the store's tick predicate
+ * (items_read.go personMessageFilterFor): the nav rail's tick derivation,
+ * the composer's recall, the un-send on interrupt, and any future "which
+ * user messages are the person's" question all route here so they cannot
  * drift.
  */
 export function isReaderAuthoredUserText(item: Item): boolean {
   if (item.kind !== 'user_text') return false;
   if ((item.parentId ?? '') !== '') return false;
-  return parseUserMessageMeta(item.meta).wire_only !== true;
+  const meta = parseUserMessageMeta(item.meta);
+  return meta.wire_only !== true && !isAgentMessageMeta(meta);
 }
 
 /**

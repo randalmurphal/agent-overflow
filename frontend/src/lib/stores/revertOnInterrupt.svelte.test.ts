@@ -163,6 +163,16 @@ describe('canRevertEarlyInterrupt', () => {
     }
   });
 
+  it('never un-sends a turn an agent\'s message started', () => {
+    const pane = readyPane();
+    pane.upsertItem({ ...userItem('u:0', 0), summary: 'Loop "tick" fired.', meta: JSON.stringify({ origin: 'agent-wake', originWake: { kind: 'loop', label: 'tick' } }) });
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+
+    const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
+
+    expect(result.canRevert).toBe(false);
+  });
+
   it('rejects when there is no active turn (Stop after settle)', () => {
     const pane = readyPane();
     pane.upsertItem(userItem('u:0', 0));
