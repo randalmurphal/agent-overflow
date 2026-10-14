@@ -369,7 +369,8 @@ test('a standing agent on the other computer is named on its wake as a local one
   const there = await seed(remote, 'wake-role-remote', ['Remote reviewer']);
   for (const [app, threadID] of [[home, local.threadIds[0]], [remote, there.threadIds[0]]] as const) {
     const promoted = await app.rpc<{ home: string }>('PromoteStandingAgent', threadID);
-    writeFileSync(join(promoted.home, 'instructions.md'), `# ${role}\n\nGrants: none.\n`);
+    // Two heading markers: the remote role is bounded on both computers.
+    writeFileSync(join(promoted.home, 'instructions.md'), `# #\t${role}\n\nGrants: none.\n`);
   }
   await setScenario(home, local.path, plainScenario({ name: 'wake-role-local', provider: 'claude', texts: ['Local review: the parser is fine.'] }));
   await setScenario(remote, there.path, plainScenario({ name: 'wake-role-remote', provider: 'claude', texts: ['Remote review: the parser is fine.'] }));

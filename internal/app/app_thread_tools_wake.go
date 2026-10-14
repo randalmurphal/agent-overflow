@@ -407,9 +407,9 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 		if thread, err := a.store.GetThread(row.TargetThreadID); err == nil {
 			wake.Title = thread.Title
 		}
-		if row.AnswerAgent == nil {
-			// A row settled before v149 recorded no agent; a thread here
-			// is read now.
+		if row.AnswerAgentUnrecorded {
+			// A row written before v149 recorded nothing; a thread here is
+			// read now.
 			agent, err := a.threadTools().senderAgent(row.TargetThreadID)
 			if err != nil {
 				return "", err

@@ -131,9 +131,11 @@ type ThreadRequest struct {
 	CreatedAt   int64 `json:"createdAt"`
 	UpdatedAt   int64 `json:"updatedAt"`
 	// AnswerAgent is set when the thread that answered is a standing agent,
-	// as recorded with the answer; nil for any other thread and for a row
-	// written before v149.
+	// as recorded with the answer; nil for any other thread.
 	AnswerAgent *ThreadAnswerAgent `json:"-"`
+	// AnswerAgentUnrecorded is true on a row written before v149, which
+	// recorded nothing about the thread that answered.
+	AnswerAgentUnrecorded bool `json:"-"`
 }
 
 // ThreadAnswerAgent names the thread that answered a request as a standing
@@ -154,9 +156,9 @@ type ThreadRequestSettlement struct {
 	// sets it to SettledAt plus a day; the source copies what the
 	// destination reported.
 	ExpiresAt int64
-	// Agent is the answering thread as a standing agent, read when the
-	// answer is collected. Only the source row records it; a receipt
-	// settlement refuses one.
+	// Agent is the answering thread as a standing agent, read by the
+	// receipt's settlement when the answer is written and copied to the
+	// source row with it.
 	Agent *ThreadAnswerAgent
 }
 
@@ -181,7 +183,8 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	var r ThreadRequest
-	var notify, polling, lineageOnly, answerAgent int
+	var notify, polling, lineageOnly int
+	var answerAgent sql.NullInt64
 	var answerAgentRole string
 	err := row.Scan(
 		&r.Token, &r.CallerThreadID, &r.Kind, &r.DueAt,
@@ -193,9 +196,8 @@ func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
 	)
-	if answerAgent != 0 {
-		r.AnswerAgent = &ThreadAnswerAgent{Role: answerAgentRole}
-	}
+	r.AnswerAgent = answerAgentOf(answerAgent.Int64, answerAgentRole)
+	r.AnswerAgentUnrecorded = !answerAgent.Valid
 	r.Notify = notify != 0
 	r.Polling = polling != 0
 	r.LineageOnly = lineageOnly != 0
@@ -245,8 +247,8 @@ func (s *Store) InsertThreadRequest(r ThreadRequest) error {
 		`INSERT INTO thread_requests (
 		    token, caller_thread_id, kind, due_at, target_computer_id, target_thread_id,
 		    origin_thread_id, notify, state, answer, answer_kind, revision,
-		    next_check, attempts, issue, lineage_only, created_at, updated_at
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    next_check, attempts, issue, lineage_only, created_at, updated_at, answer_agent
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
 		r.Token, r.CallerThreadID, r.Kind, nilIfZero(r.DueAt), r.TargetComputerID, r.TargetThreadID,
 		r.OriginThreadID, boolToInt(r.Notify), r.State, nilIfEmptyBytes(r.Answer), r.AnswerKind, r.Revision,
 		r.NextCheck, r.Attempts, r.Issue, boolToInt(r.LineageOnly), r.CreatedAt, r.UpdatedAt,
@@ -326,8 +328,9 @@ func ThreadRequestOpenStates() []string {
 // waiting past the collected revision returns and the wake path delivers a
 // second message. Only the first late reply is stored, and never on a
 // lineage-only row, whose token the ledger no longer knows. agent is the
-// replying thread as a standing agent, read with the reply; it replaces the
-// one the first answer recorded, since the late reply's wake names it.
+// replying thread as a standing agent, recorded by the receipt with the
+// reply; it replaces the one the first answer recorded, since the late
+// reply's wake names it.
 func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64, agent *ThreadAnswerAgent) (bool, error) {
 	action := fmt.Sprintf("store: store thread request late reply %s", token)
 	if at == 0 {
@@ -941,6 +944,14 @@ func answerAgentColumns(agent *ThreadAnswerAgent) (int, string) {
 		return 0, ""
 	}
 	return 1, agent.Role
+}
+
+// answerAgentOf reads the two stored columns back.
+func answerAgentOf(flag int64, role string) *ThreadAnswerAgent {
+	if flag == 0 {
+		return nil
+	}
+	return &ThreadAnswerAgent{Role: role}
 }
 
 func nilIfZero(value int64) any {

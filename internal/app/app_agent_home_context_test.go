@@ -1,7 +1,11 @@
 package app
 
 import (
+	"bytes"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -294,7 +298,9 @@ func TestWakeFromARemoteStandingAgentNamesItAsALocalOneDoes(t *testing.T) {
 	t.Parallel()
 	destination := newRequestFixture(t)
 	destination.mockClaude(t, "looking into it", "and again")
-	target, _ := destination.promoteTarget(t, "# Reviewer of the parser.\n\nGrants: none.")
+	// Two heading markers, which a second bounding pass must not strip
+	// differently from the first.
+	target, _ := destination.promoteTarget(t, "# #\tReviewer of the parser.\n\nGrants: none.")
 	source := threadtools.Caller{ThreadID: entityid.New(), ComputerID: entityid.New(), ComputerName: "Their Mac", Title: "Remote lead"}
 	forward := func() ThreadPeerRequest {
 		t.Helper()
@@ -439,5 +445,179 @@ func TestThreadRowsNameStandingAgentsAndSpawners(t *testing.T) {
 	worker, err := f.adapter().Thread(t.Context(), ack.ThreadID)
 	if err != nil || worker.StandingAgent || worker.SpawnedBy != f.caller.ID {
 		t.Fatalf("worker row = %+v, %v", worker, err)
+	}
+}
+
+// answerAgentFixture is an App over a database file the test can also open
+// raw, with a caller thread and a standing agent target on this computer.
+type answerAgentFixture struct {
+	app            *App
+	db             *sql.DB
+	caller, target store.Thread
+}
+
+func newAnswerAgentFixture(t *testing.T) *answerAgentFixture {
+	t.Helper()
+	a, path := newTestAppWithStorePath(t)
+	a.configDir = t.TempDir()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	f := &answerAgentFixture{app: a, db: db}
+	for _, thread := range []*store.Thread{&f.caller, &f.target} {
+		if *thread, err = createTestThread(t, a, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agent, err := a.PromoteStandingAgent(f.target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeHomeFile(t, agent.Home, agenthome.InstructionsFile, "Reviewer of the parser.\n")
+	return f
+}
+
+// request writes an open local send from the caller to the target, with its
+// receipt.
+func (f *answerAgentFixture) request(t *testing.T) string {
+	t.Helper()
+	token := newThreadRequestToken()
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
+		TargetThreadID: f.target.ID, State: store.ThreadRequestRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: token, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: f.caller.ID,
+		Kind: store.ThreadRequestSend, TargetThreadID: f.target.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func (f *answerAgentFixture) row(t *testing.T, token string) store.ThreadRequest {
+	t.Helper()
+	row, found, err := f.app.store.GetThreadRequest(token)
+	if err != nil || !found {
+		t.Fatalf("GetThreadRequest(%s): found=%v err=%v", token, found, err)
+	}
+	return row
+}
+
+func (f *answerAgentFixture) settle(t *testing.T, token string) {
+	t.Helper()
+	if err := f.app.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadReceiptFinished, Answer: []byte("done here"), AnswerKind: store.ThreadAnswerFinal,
+	}); err != nil {
+		t.Fatalf("settleThreadReceipt: %v", err)
+	}
+}
+
+// A row written before v149 recorded nothing about the thread that answered,
+// so its wake reads a thread on this computer when it renders. A row that
+// recorded no agent is not read again.
+func TestWakeOfARowWrittenBeforeV149ReadsTheAgentWhenItRenders(t *testing.T) {
+	t.Parallel()
+	f := newAnswerAgentFixture(t)
+	for _, tc := range []struct {
+		name       string
+		unrecorded bool
+		wantAgent  bool
+	}{{"before v149", true, true}, {"no agent recorded", false, false}} {
+		token := f.request(t)
+		if settled, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+			State: store.ThreadRequestFinished, Answer: []byte("done here"), AnswerKind: store.ThreadAnswerFinal,
+		}); err != nil || !settled {
+			t.Fatalf("%s: settle: settled=%v err=%v", tc.name, settled, err)
+		}
+		if tc.unrecorded {
+			if _, err := f.db.Exec(`UPDATE thread_requests SET answer_agent = NULL WHERE token = ?`, token); err != nil {
+				t.Fatal(err)
+			}
+		}
+		row := f.row(t, token)
+		if row.AnswerAgentUnrecorded != tc.unrecorded || row.AnswerAgent != nil {
+			t.Fatalf("%s: row = unrecorded %v agent %+v", tc.name, row.AnswerAgentUnrecorded, row.AnswerAgent)
+		}
+		body, err := f.app.threadWakeBody(row, false)
+		if err != nil {
+			t.Fatalf("%s: threadWakeBody: %v", tc.name, err)
+		}
+		if named := strings.Contains(body, "\n"+reviewerAgentLine+"\n"); named != tc.wantAgent {
+			t.Errorf("%s: wake names the agent = %v, want %v:\n%s", tc.name, named, tc.wantAgent, body)
+		}
+	}
+}
+
+// A failed read of whether the answering thread is a standing agent does
+// not fail the settlement: the answer settles recording no agent, and the
+// log names the request.
+func TestAFailedAgentReadSettlesTheAnswerWithNoAgent(t *testing.T) {
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	f := newAnswerAgentFixture(t)
+	if _, err := f.db.Exec(`UPDATE standing_agents SET promoted_at = 'not a time' WHERE thread_id = ?`, f.target.ID); err != nil {
+		t.Fatal(err)
+	}
+	token := f.request(t)
+	f.settle(t, token)
+	row := f.row(t, token)
+	if row.State != store.ThreadRequestFinished || string(row.Answer) != "done here" || row.AnswerAgent != nil || row.AnswerAgentUnrecorded {
+		t.Fatalf("settled row = state %s answer %q agent %+v unrecorded %v", row.State, row.Answer, row.AnswerAgent, row.AnswerAgentUnrecorded)
+	}
+	if receipt, _, err := f.app.store.GetThreadRequestReceipt(token); err != nil || receipt.AnswerAgent != nil {
+		t.Fatalf("receipt agent = %+v, %v", receipt.AnswerAgent, err)
+	}
+	if !strings.Contains(logs.String(), "request "+token+": read whether "+f.target.ID+" is a standing agent") {
+		t.Fatalf("the failed read is not logged with its request:\n%s", logs.String())
+	}
+}
+
+// The agent is recorded when the answer is written: the receipt carries it,
+// another computer is told it from the receipt, and the source row copies
+// it, so a demotion between the settlement and the collection changes
+// nothing on either computer. A refused local request records the agent the
+// receipt does.
+func TestTheAnswerAgentIsRecordedWhenTheAnswerIsWritten(t *testing.T) {
+	t.Parallel()
+	f := newAnswerAgentFixture(t)
+	token := f.request(t)
+	f.settle(t, token)
+	if err := f.app.DemoteStandingAgent(f.target.ID); err != nil {
+		t.Fatal(err)
+	}
+	if row := f.row(t, token); row.AnswerAgent == nil || row.AnswerAgent.Role != "Reviewer of the parser." {
+		t.Fatalf("source row agent = %+v", row.AnswerAgent)
+	}
+	state, err := f.app.threadPeerRequestState(t.Context(), threadReceiptLocalOwner, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.AnswerAgent == nil || state.AnswerAgent.Role != "Reviewer of the parser." {
+		t.Fatalf("reported agent after the demotion = %+v", state.AnswerAgent)
+	}
+
+	agent, err := f.app.PromoteStandingAgent(f.target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeHomeFile(t, agent.Home, agenthome.InstructionsFile, "Refused role.\n")
+	refused := f.request(t)
+	if err := f.app.threadTools().failRequest(refused, errors.New("the target is gone")); err == nil {
+		t.Fatal("failRequest returned no error")
+	}
+	row := f.row(t, refused)
+	if row.State != store.ThreadRequestRefused || row.AnswerAgent == nil || row.AnswerAgent.Role != "Refused role." {
+		t.Fatalf("refused row = state %s agent %+v", row.State, row.AnswerAgent)
+	}
+	if receipt, _, err := f.app.store.GetThreadRequestReceipt(refused); err != nil || receipt.AnswerAgent == nil || receipt.AnswerAgent.Role != "Refused role." {
+		t.Fatalf("refused receipt agent = %+v, %v", receipt.AnswerAgent, err)
 	}
 }

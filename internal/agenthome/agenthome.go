@@ -233,9 +233,11 @@ func RoleLine(home string) (_ string, err error) {
 
 // BoundRole makes a role line of text: its first non-blank line after a
 // leading frontmatter block, skipping bare rule lines (`---`, `***`, `___`),
-// cleaned, with a leading heading marker dropped and runs of white space
-// folded, at most RoleRunes runes. It is also what a role carried from another
-// computer passes through.
+// cleaned, with every leading `#` and the white space among them dropped and
+// runs of white space folded, at most RoleRunes runes. It is also what a role
+// carried from another computer passes through, so it is a fixed point:
+// BoundRole(BoundRole(x)) == BoundRole(x), and a role bounded on the computer
+// that read it reads the same after this one bounds it again.
 func BoundRole(text string) string {
 	lines := strings.Split(CleanText(text), "\n")
 	start := 0
@@ -251,7 +253,7 @@ func BoundRole(text string) string {
 		}
 	}
 	for _, line := range lines[start:] {
-		line = strings.Join(strings.Fields(strings.TrimLeft(strings.TrimSpace(line), "#")), " ")
+		line = strings.Join(strings.Fields(strings.TrimLeftFunc(line, headingRune)), " ")
 		if line == "" || ruleLine(line) {
 			continue
 		}
@@ -263,6 +265,10 @@ func BoundRole(text string) string {
 	}
 	return ""
 }
+
+// headingRune is what a role line drops from its start: heading markers and
+// the white space around them, all of it, so a second pass finds none.
+func headingRune(r rune) bool { return r == '#' || unicode.IsSpace(r) }
 
 // ruleLine reports a Markdown thematic break: three or more of one of `-`,
 // `*` or `_`, spaces allowed between them.

@@ -142,24 +142,20 @@ func (t threadToolsApp) senderAgent(threadID string) (*threadtools.SenderAgent, 
 	return agent, nil
 }
 
-// answerAgent is senderAgent for the thread that answered a request, read
-// when the answer is collected so a wake names the agent the same way from
-// either computer. A store read that fails is logged and the answer is
-// collected as an ordinary thread's: the answer matters more than its label.
-func (t threadToolsApp) answerAgent(threadID string) *threadtools.SenderAgent {
+// answerAgent is senderAgent for the thread that answers request token,
+// read when the answer is written so the wake names the agent as it was then,
+// from either computer. A store read that fails is logged and the answer is
+// settled as an ordinary thread's: the answer matters more than its label,
+// and a settlement is not retried for one.
+func (t threadToolsApp) answerAgent(token, threadID string) *store.ThreadAnswerAgent {
 	if threadID == "" {
 		return nil
 	}
 	agent, err := t.senderAgent(threadID)
 	if err != nil {
-		log.Printf("thread tools: read whether %s is a standing agent: %v", threadID, err)
+		log.Printf("thread tools: request %s: read whether %s is a standing agent; the answer records none: %v", token, threadID, err)
 		return nil
 	}
-	return agent
-}
-
-// storeAnswerAgent is the record of an answering standing agent.
-func storeAnswerAgent(agent *threadtools.SenderAgent) *store.ThreadAnswerAgent {
 	if agent == nil {
 		return nil
 	}
@@ -571,6 +567,9 @@ func (t threadToolsApp) failRequest(token string, cause error) error {
 			State:      store.ThreadRequestRefused,
 			Answer:     []byte(message),
 			AnswerKind: store.ThreadAnswerError,
+			// What the receipt records below, which another computer
+			// would collect.
+			Agent: t.answerAgent(token, row.TargetThreadID),
 		}); err != nil {
 			log.Printf("thread tools: settle refused request %s: %v", token, err)
 		}

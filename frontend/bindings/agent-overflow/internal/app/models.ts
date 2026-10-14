@@ -6460,9 +6460,10 @@ export class ThreadPeerRequest {
     "blocked"?: boolean;
 
     /**
-     * AnswerAgent is set on a settled request whose thread is a standing
-     * agent, with the role line its wake quotes. A computer that does not
-     * send it is read as having answered from an ordinary thread.
+     * AnswerAgent is set on a settled request whose thread was a standing
+     * agent when the answer was written, with the role line its wake quotes.
+     * A computer that does not send it is read as having answered from an
+     * ordinary thread.
      */
     "answerAgent"?: ThreadPeerAgent | null;
 

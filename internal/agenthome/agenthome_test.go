@@ -261,6 +261,8 @@ func TestRoleLine(t *testing.T) {
 		"yaml end":    {"---\nname: lead\n...\nRelease lead\n", "Release lead"},
 		"rule":        {"* * *\n___\nRelease lead\n---\n", "Release lead"},
 		"unclosed":    {"---\nRelease lead\n", "Release lead"},
+		"two markers": {"# # Title\n", "Title"},
+		"tab marker":  {"#\t#Hash role\n", "Hash role"},
 	} {
 		home := writeHome(t, map[string]string{InstructionsFile: tc.text})
 		got, err := RoleLine(home)
@@ -405,6 +407,38 @@ func TestTheSkillNamesTheLiterals(t *testing.T) {
 	if !strings.Contains(LoadSkillSentence, "Load the agent-home skill before any work.") {
 		t.Error("the load sentence names another skill")
 	}
+}
+
+// A role is bounded on the computer that read it and again on the one it was
+// carried to, so the second pass must change nothing: a remote agent's role
+// reads byte for byte as a local one's.
+func TestBoundRoleIsAFixedPoint(t *testing.T) {
+	t.Parallel()
+	for _, text := range boundRoleSeeds {
+		once := BoundRole(text)
+		if twice := BoundRole(once); twice != once {
+			t.Errorf("BoundRole(%q) = %q, and bounded again %q", text, once, twice)
+		}
+	}
+}
+
+func FuzzBoundRoleIsAFixedPoint(f *testing.F) {
+	for _, text := range boundRoleSeeds {
+		f.Add(text)
+	}
+	f.Fuzz(func(t *testing.T, text string) {
+		once := BoundRole(text)
+		if twice := BoundRole(once); twice != once {
+			t.Errorf("BoundRole(%q) = %q, and bounded again %q", text, once, twice)
+		}
+	})
+}
+
+var boundRoleSeeds = []string{
+	"# # Title", "#\t#Hash role", "## Release lead", "#Hash", "# ---\nRole", "  #  lead  ", "# \u00a0# lead",
+	"---\nname: lead\n---\n# Role", "---\nRole\n", "* * *\nRole", "lead\u202e\x07 role", "\xff\xfe role",
+	strings.Repeat("r", RoleRunes+5), strings.Repeat("r", RoleRunes-1) + " # tail", "# " + strings.Repeat("é", RoleRunes+1),
+	"Role\r\nnext", "",
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }

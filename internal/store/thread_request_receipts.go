@@ -72,6 +72,9 @@ type ThreadRequestReceipt struct {
 	ExpiresAt         int64 `json:"expiresAt,omitempty"`
 	CreatedAt         int64 `json:"createdAt"`
 	UpdatedAt         int64 `json:"updatedAt"`
+	// AnswerAgent is the target thread as a standing agent when the answer
+	// or the late reply was written; nil for any other thread.
+	AnswerAgent *ThreadAnswerAgent `json:"-"`
 }
 
 const threadReceiptColumns = `token, owner_device_id, source_computer_id, source_computer_name,
@@ -79,18 +82,21 @@ const threadReceiptColumns = `token, owner_device_id, source_computer_id, source
     message_item_id, turn_id, state, answer, answer_kind, late_reply,
     COALESCE(late_reply_at, 0), revision, COALESCE(settled_at, 0),
     collected_revision, COALESCE(collected_at, 0), COALESCE(expires_at, 0),
-    created_at, updated_at`
+    created_at, updated_at, answer_agent, answer_agent_role`
 
 func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 	var r ThreadRequestReceipt
+	var answerAgent int64
+	var answerAgentRole string
 	err := row.Scan(
 		&r.Token, &r.OwnerDeviceID, &r.SourceComputerID, &r.SourceComputerName,
 		&r.SourceThreadID, &r.SourceThreadTitle, &r.Kind, &r.TargetThreadID,
 		&r.MessageItemID, &r.TurnID, &r.State, &r.Answer, &r.AnswerKind, &r.LateReply,
 		&r.LateReplyAt, &r.Revision, &r.SettledAt,
 		&r.CollectedRevision, &r.CollectedAt, &r.ExpiresAt,
-		&r.CreatedAt, &r.UpdatedAt,
+		&r.CreatedAt, &r.UpdatedAt, &answerAgent, &answerAgentRole,
 	)
+	r.AnswerAgent = answerAgentOf(answerAgent, answerAgentRole)
 	return r, err
 }
 
@@ -265,9 +271,6 @@ func (s *Store) SettleThreadRequestReceipt(token string, from []string, settleme
 	if err := settlement.validate(action, threadReceiptStates); err != nil {
 		return false, err
 	}
-	if settlement.Agent != nil {
-		return false, fmt.Errorf("%s: a receipt records no answering agent", action)
-	}
 	clause, args, err := stateInClause(action, from, threadReceiptStates)
 	if err != nil {
 		return false, err
@@ -280,12 +283,13 @@ func (s *Store) SettleThreadRequestReceipt(token string, from []string, settleme
 	if expiresAt == 0 {
 		expiresAt = settledAt + threadAnswerHoldMillis
 	}
+	agent, role := answerAgentColumns(settlement.Agent)
 	set := []any{settlement.State, nilIfEmptyBytes(settlement.Answer), settlement.AnswerKind,
-		settledAt, expiresAt, nowMillis(), token}
+		settledAt, expiresAt, agent, role, nowMillis(), token}
 	result, err := s.db.Exec(
 		`UPDATE thread_request_receipts
 		    SET state = ?, answer = ?, answer_kind = ?, revision = revision + 1,
-		        settled_at = ?, expires_at = ?, updated_at = ?
+		        settled_at = ?, expires_at = ?, answer_agent = ?, answer_agent_role = ?, updated_at = ?
 		  WHERE token = ? AND `+clause,
 		append(set, args...)...,
 	)
@@ -305,19 +309,21 @@ const threadAnswerHoldMillis = 24 * 60 * 60 * 1000
 // receipt with no late reply yet and a hold still running accepts it: the
 // source stops polling once the hold on the first answer runs out, so a reply
 // after that would never be collected. Every other state is refused by the
-// caller with its state as the reason.
-func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64) (bool, error) {
+// caller with its state as the reason. agent is the replying thread as a
+// standing agent, and replaces the one the first answer recorded.
+func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64, agent *ThreadAnswerAgent) (bool, error) {
 	action := fmt.Sprintf("store: store thread receipt late reply %s", token)
 	if at == 0 {
 		at = nowMillis()
 	}
+	isAgent, role := answerAgentColumns(agent)
 	result, err := s.db.Exec(
 		`UPDATE thread_request_receipts
-		    SET late_reply = ?, late_reply_at = ?, revision = revision + 1,
+		    SET late_reply = ?, late_reply_at = ?, answer_agent = ?, answer_agent_role = ?, revision = revision + 1,
 		        expires_at = ?, updated_at = ?
 		  WHERE token = ? AND state = 'finished' AND late_reply IS NULL
 		    AND expires_at > ?`,
-		nilIfEmptyBytes(reply), at, at+threadAnswerHoldMillis, nowMillis(), token, at,
+		nilIfEmptyBytes(reply), at, isAgent, role, at+threadAnswerHoldMillis, nowMillis(), token, at,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
