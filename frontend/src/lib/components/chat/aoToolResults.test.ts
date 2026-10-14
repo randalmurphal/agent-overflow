@@ -102,6 +102,8 @@ describe('thread tool results', () => {
     }), {}, names)!;
     expect(solo.outcome).toBe('1 thread · more');
     expect(solo.lines[0]).toMatchObject({ title: 'Docs slice', detail: 'idle · assistant spoke last', text: 'the deploy failed' });
+    const agent = threadResultView('thread_search', json({ rows: [{ thread_id: 'w1', title: 'Worker', state: 'running', standing_agent: false, spawned_by: tid }, { thread_id: 'a1', title: 'Inbox agent', state: 'idle', standing_agent: true }] }), {}, names)!;
+    expect(agent.lines.map((l) => l.detail)).toEqual(['running · spawned by Docs slice', 'idle · standing agent']);
     const grouped = threadResultView('thread_search', json({
       computers: [
         { computer_id: 'c1', computer: 'Laptop', rows: [{ thread_id: 'a', title: 'A', state: 'running' }] },
@@ -121,6 +123,8 @@ describe('thread tool results', () => {
     expect(view.outcome).toBe('tail · 11 items · 8.7 KB');
     expect(view.link?.label).toBe('Docs slice');
     expect(view.preview).toEqual({ label: 'transcript', text: '--- turn 1 ---\n[user] hi' });
+    const agent = threadResultView('thread_show', json({ thread_id: 'a1', title: 'Inbox agent', window: 'tail', items: 1, bytes: 10, standing_agent: true, spawned_by: tid }), {}, names)!;
+    expect(agent.facts).toEqual([{ label: 'kind', value: 'standing agent' }, { label: 'spawned by', value: 'Docs slice' }]);
   });
 
   it('reads an item read and an item search', () => {

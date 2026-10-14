@@ -338,17 +338,29 @@ describe('AO tool presentation', () => {
       expect(facts.find((f) => f.label === 'computer')!.value).toBe('mac');
     });
 
-    it('names the thread, threads, run and requests a thread or workflow call addresses', () => {
+    it('lists what the header and the reply leave out: the threads of a list, the requests, never ids', () => {
+      // The header names the one thread; the reply says whether notify armed.
       expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_send', { thread_id: named, message: 'hi', notify: true }), names)).toEqual([
-        { label: 'thread', value: 'Release notes' },
         { label: 'message', value: 'hi' },
-        { label: 'notify', value: 'true' },
+      ]);
+      expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_update', { thread_ids: [named, '7f2c9a41-x'], archived: true }), names)).toEqual([
+        { label: 'threads', value: 'Release notes, thread 7f2c9a41' },
+        { label: 'archived', value: 'true' },
       ]);
       expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_status', { tokens: ['abcdef0123456789', 'fedcba9876543210'] }), names)).toEqual([
         { label: 'requests', value: 'abcdef01, fedcba98' },
       ]);
-      expect(aoToolFacts(meta(WORKFLOW_TOOLS_SERVER, 'run_output', { run_id: namedRun }), names)).toEqual([
-        { label: 'run', value: 'digest · Weekly summary' },
+      expect(aoToolFacts(meta(WORKFLOW_TOOLS_SERVER, 'run_output', { run_id: namedRun }), names)).toEqual([]);
+      // A spawn's overrides show in the reply's facts, its title as the link.
+      expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_spawn', { prompt: 'p', title: 't', model: 'opus', notify: true }), names)).toEqual([
+        { label: 'prompt', value: 'p' },
+      ]);
+    });
+
+    it('counts the home files a spawn or send attaches rather than listing their paths', () => {
+      expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_spawn', { prompt: 'p', home_files: ['/home/a.md', '/home/b.md'] }))).toEqual([
+        { label: 'files', value: '2 files attached' },
+        { label: 'prompt', value: 'p' },
       ]);
     });
 

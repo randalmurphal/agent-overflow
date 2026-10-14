@@ -290,12 +290,17 @@
   // A spawn, send or ask whose call returned before the answer: where the
   // request stands now. The answer's arrival is the wake row carrying its
   // token; until then, what the target thread is doing.
+  let aoAnswered = $derived(
+    aoTool?.server === THREAD_TOOLS_SERVER
+      && aoTool.result.token !== ''
+      && answeredRequestTokens(pane?.items).has(aoTool.result.token),
+  );
   let aoLive = $derived.by(() => {
     if (!aoTool || aoTool.server !== THREAD_TOOLS_SERVER) return '';
     if (!['thread_spawn', 'thread_send', 'thread_ask'].includes(aoTool.tool)) return '';
     const { token, threadId, state, outcome } = aoTool.result;
     if (!token || outcome === 'settled' || isSettledRequestState(state)) return '';
-    if (answeredRequestTokens(pane?.items).has(token)) return 'answer arrived';
+    if (aoAnswered) return 'answer arrived';
     const target = threadId ? getThreadById(threadId) : undefined;
     if (!target) return '';
     const status = getEffectiveThreadStatus(target);
@@ -339,7 +344,7 @@
   // An AO tool row opens whenever it has more to say than its header: the
   // text the header clipped, the inputs it left out, or the result.
   let hasAoBody = $derived(
-    aoTool !== null && (aoTool.fullWhat !== aoTool.what || aoFacts.length > 0 || aoLive !== ''),
+    aoTool !== null && (aoTool.fullWhat !== aoTool.what || aoFacts.length > 0),
   );
   let hasExpandableBody = $derived(!suppressBodyExpansion && (hasPayloadBody || hasAoBody));
 
@@ -482,6 +487,8 @@
         viewer={threadMachine(item.threadId, pane?.thread?.projectId)}
         failed={effectiveStatusItem.status === 'errored'}
         live={aoLive}
+        answered={aoAnswered}
+        errorShown={aoRowError?.msg ?? ''}
         hasPayload={hasPayloadBody}
         emptyMessage={importUnavailableLabel(item) ?? 'No stored payload for this tool result.'}
         {deferredOutputState}

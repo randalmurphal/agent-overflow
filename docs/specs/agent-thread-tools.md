@@ -981,6 +981,34 @@ from, and the caller's wake shows where the answer came from. Every
 agent-written row also carries `meta.originThread.token`, so three
 requests from one thread to another stay distinguishable.
 
+## How calls surface in the timeline
+
+A call is a tool row in the calling thread, presented by
+`frontend/src/lib/components/chat/aoTools.ts` (the same table serves the
+workflow, browser and remote tools). Both providers stamp `meta.mcp` and
+`meta.input` on the row; triage adds what the reply said as
+`meta.ao_result` (thread id, title, computer, token, state, outcome;
+`internal/triage/ao_tool_result.go`) on the live path and on import.
+
+- The collapsed header is one sentence: a spawn shows the new thread's
+  title (the prompt's first line before the reply lands); a send or ask
+  shows the target and the message's first line; a read shows the thread
+  and its window; a status or search shows what it asked; a loop, watch or
+  reminder shows its label, cadence and next fire. Every id reads as the
+  name this client knows it by, else a short form.
+- The wire projection clips a long input to its opening
+  (`internal/itemwire`), which is all the header needs; the expanded body
+  reads the full input from the stored row.
+- The expanded body decodes the reply (`aoToolResults.ts`, one decoder per
+  server): an outcome line, a link that opens the thread in a pane (naming
+  its computer when it is another one) or the run in the workflows
+  overlay, the facts a person reads, one line per request or hit, and long
+  text folded behind "show more". A reply nothing decodes still reads as
+  facts. A failed call shows its message with the `[code]` as a chip.
+- A spawn, send or ask that returned before its answer follows the
+  request: the target thread's state until the answer's wake row (the
+  user row carrying the request's token) lands, then "answer arrived".
+
 ## Availability and permissions (Q13, Q17, Q27)
 
 Each computer has one switch, Settings → Agent thread tools, default on.

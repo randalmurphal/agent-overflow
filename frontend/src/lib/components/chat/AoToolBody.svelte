@@ -49,6 +49,8 @@
     viewer,
     failed = false,
     live = '',
+    answered = false,
+    errorShown = '',
     hasPayload,
     emptyMessage,
     deferredOutputState = '',
@@ -66,6 +68,10 @@
     failed?: boolean;
     /** Where a request stands now, when the row follows one ("answer arrived"). */
     live?: string;
+    /** The request's answer has landed, so the reply's "still working" note no longer applies. */
+    answered?: boolean;
+    /** The error message the row's header already shows; the body does not repeat it. */
+    errorShown?: string;
     hasPayload: boolean;
     emptyMessage: string;
     deferredOutputState?: string;
@@ -76,7 +82,7 @@
   const FACT_LINES = 4;
 
   let clipped = $derived(tool.fullWhat !== tool.what);
-  let hasDetails = $derived(clipped || facts.length > 0 || live !== '');
+  let hasDetails = $derived(clipped || facts.length > 0);
   let allLines = $state(false);
 </script>
 
@@ -91,12 +97,6 @@
         <div class="mb-1">
           <dt class="text-fg-hint">{tool.label}</dt>
           <dd class="whitespace-pre-wrap break-all font-mono" data-testid="tool-call-card-ao-full">{tool.fullWhat}</dd>
-        </div>
-      {/if}
-      {#if live}
-        <div class="flex gap-2">
-          <dt class="shrink-0 text-fg-hint">now</dt>
-          <dd class="min-w-0" data-testid="tool-call-card-ao-live">{live}</dd>
         </div>
       {/if}
       {#each facts as fact (fact.label)}
@@ -133,7 +133,11 @@
       >
         {#if error}
           <div data-testid="tool-call-card-ao-error">
-            <RowError tone="error" msg={error.message} code={error.code || undefined} />
+            {#if error.message === errorShown}
+              <p class="text-fg-hint">The message is shown above.</p>
+            {:else}
+              <RowError tone="error" msg={error.message} code={error.code || undefined} />
+            {/if}
           </div>
         {:else if remote}
           <p class="mb-1 text-fg-hint" data-testid="tool-call-card-remote-outcome">{remote.outcome}</p>
@@ -159,7 +163,7 @@
                 <AoToolLink link={view.link} {viewer} testId="tool-call-card-ao-link" />
               {/if}
               {#if view.outcome}
-                <span class="min-w-0 truncate text-fg-hint">{view.link ? `· ${view.outcome}` : view.outcome}</span>
+                <span class="min-w-0 truncate text-fg-hint">{view.link ? '· ' : ''}{view.outcome}{live ? ` → ${live}` : ''}</span>
               {/if}
             </p>
           {/if}
@@ -223,7 +227,7 @@
               />
             </div>
           {/if}
-          {#if view.note}
+          {#if view.note && !answered}
             <p class="text-fg-hint" data-testid="tool-call-card-ao-note">{view.note}</p>
           {/if}
         {:else}

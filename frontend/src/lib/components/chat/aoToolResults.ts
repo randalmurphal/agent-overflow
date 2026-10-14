@@ -334,6 +334,8 @@ function searchLine(row: Input, names: AoToolNames, computerName: string): AoRes
     detail: join(
       words(str(row, 'state')),
       last ? `${str(last, 'role')} spoke last` : '',
+      row.standing_agent === true ? 'standing agent' : '',
+      str(row, 'spawned_by') ? `spawned by ${threadName(str(row, 'spawned_by'), names)}` : '',
       computerName || str(row, 'computer'),
       row.self === true ? 'this thread' : '',
     ),
@@ -374,6 +376,8 @@ function threadShowView(reply: Input, names: AoToolNames): AoResultView {
   const id = str(reply, 'thread_id');
   view.link = threadLink(id, threadName(id, names, str(reply, 'title')), str(reply, 'computer_id'), str(reply, 'computer'));
   fact(view.facts, 'state', words(str(reply, 'state')));
+  fact(view.facts, 'kind', reply.standing_agent === true ? 'standing agent' : '');
+  if (str(reply, 'spawned_by')) fact(view.facts, 'spawned by', threadName(str(reply, 'spawned_by'), names));
   const file = obj(reply.file);
   if (file) fact(view.facts, 'file', join(str(file, 'path'), bytesText(num(file, 'bytes') ?? num(file, 'size') ?? 0)));
   const transcript = typeof reply.transcript === 'string' ? reply.transcript : '';
@@ -513,7 +517,7 @@ function workflowRunView(reply: Input, names: AoToolNames): AoResultView {
   const outcome = str(reply, 'outcome');
   view.outcome = join(words(str(doc, 'state')), outcome && outcome !== str(doc, 'state') ? words(outcome) : '');
   const id = str(doc, 'itemId') || (start ? str(start, 'itemId') : '');
-  view.link = runLink(id, runTitle({ ...(start ?? {}), ...doc, itemId: id }, names));
+  view.link = runLink(id, runTitle({ ...start, ...doc, itemId: id }, names));
   if (run) runFacts(view, run);
   if (start) fact(view.facts, 'binding', str(start, 'bindingWarning'));
   if (start?.skipped === true) fact(view.facts, 'start', 'skipped: already running');

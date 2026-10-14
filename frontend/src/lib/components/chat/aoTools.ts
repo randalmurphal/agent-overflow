@@ -762,7 +762,24 @@ const HIDDEN_FACTS = new Set([
   'computer_id', 'computer_name', 'request_id', 'project_id', 'page_id',
   'command', 'argv', 'interpreter', 'script',
   'thread_id', 'thread_ids', 'run_id', 'token', 'tokens', 'cursor',
+  'home_files',
 ]);
+
+// Inputs a tool's header or decoded reply already says in its own words
+// (a read's window, a loop's cadence, the spawned thread's title as its
+// link, notify as armed or not), so the input list does not repeat them.
+const ALREADY_SHOWN: Record<string, ReadonlySet<string>> = {
+  thread_spawn: new Set(['title', 'notify', 'worktree', 'base', 'provider', 'model', 'effort', 'group']),
+  thread_send: new Set(['notify']),
+  thread_ask: new Set(['notify']),
+  thread_search: new Set(['query', 'state', 'group', 'provider', 'spawned_by_me', 'archived']),
+  thread_show: new Set(['window', 'turns', 'item_id', 'since']),
+  thread_item: new Set(['item_id', 'query', 'lines', 'offset']),
+  thread_status: new Set(['wait_seconds']),
+  thread_loop: new Set(['label', 'every_seconds', 'stop']),
+  thread_watch: new Set(['label', 'every_seconds', 'long_running', 'stop']),
+  run_start: new Set(['workflow_id', 'goal']),
+};
 
 const FACT_LABELS: Record<string, string> = {
   workspace_path: 'workspace',
@@ -795,16 +812,19 @@ export function aoToolFacts(
   if (request && mcp.tool !== 'remote_run') facts.push({ label: 'job', value: names.job(request) || request });
   const page = str(input, 'page_id');
   if (page) facts.push({ label: 'page', value: names.page(page) || page });
-  const thread = str(input, 'thread_id');
-  if (thread) facts.push({ label: 'thread', value: threadName(thread, names) });
+  // One thread or run is named in the header; a list of them is not.
   const threads = strings(input, 'thread_ids');
-  if (threads.length) facts.push({ label: 'threads', value: clip(threads.map((t) => threadName(t, names)).join(', '), FACT_MAX) });
-  const run = str(input, 'run_id');
-  if (run) facts.push({ label: 'run', value: runName(run, names) });
+  if (threads.length > 1) facts.push({ label: 'threads', value: clip(threads.map((t) => threadName(t, names)).join(', '), FACT_MAX) });
+  // A standing agent's home files ride a spawn or send as paths; the row
+  // counts them rather than listing paths a person does not read.
+  const homeFiles = strings(input, 'home_files');
+  if (homeFiles.length) facts.push({ label: 'files', value: `${homeFiles.length} file${homeFiles.length === 1 ? '' : 's'} attached` });
   const tokens = [str(input, 'token'), ...strings(input, 'tokens')].filter(Boolean);
   if (tokens.length) facts.push({ label: tokens.length === 1 ? 'request' : 'requests', value: tokens.map(shortId).join(', ') });
+  const shown = ALREADY_SHOWN[mcp.tool];
   for (const [key, value] of Object.entries(input)) {
     if (HIDDEN_FACTS.has(key) || value === undefined || value === null || value === '') continue;
+    if (shown?.has(key)) continue;
     const text = typeof value === 'string' ? value : valueText(value);
     facts.push({ label: FACT_LABELS[key] ?? key.replace(/_/g, ' '), value: text.length > FACT_MAX ? `${text.slice(0, FACT_MAX - 1)}…` : text });
   }
