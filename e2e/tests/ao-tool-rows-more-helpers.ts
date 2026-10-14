@@ -41,7 +41,7 @@ const REMOTE = 'ao-remote-tools';
 export const MORE_ROWS = [
   'thread_spawn', 'thread_send', 'thread_ask', 'thread_show', 'thread_item', 'thread_update', 'thread_group',
   'thread_remind', 'thread_watch', 'thread_cancel', 'thread_status',
-  'workflow_list', 'run_start', 'run_list', 'run_amend', 'run_guide', 'run_watch', 'memory_add', 'memory_list',
+  'workflow_list', 'workflow_schema', 'run_start', 'run_list', 'run_amend', 'run_guide', 'run_watch', 'memory_add', 'memory_list',
   'browser_open_file', 'browser_snapshot', 'browser_evaluate', 'browser_pages', 'browser_screenshot',
   'remote_computers', 'remote_run',
 ] as const;
@@ -164,6 +164,7 @@ export async function driveMoreAoToolRows(app: HarnessApp, remote: HarnessApp, p
           { call: { tool: 'thread_cancel', args: { label: 'ci' } } },
           { call: { tool: 'thread_status', args: {} } },
           { call: { server: WORKFLOW_TOOLS_SERVER, tool: 'workflow_list', args: {} } },
+          { call: { server: WORKFLOW_TOOLS_SERVER, tool: 'workflow_schema', args: {} } },
           { call: { server: WORKFLOW_TOOLS_SERVER, tool: 'run_start', args: { workflow_id: 'digest', goal: 'Weekly summary', seeds: { goal: 'Weekly summary' } } } },
           { capture: { var: 'RUN', from: '${MCP_RESULT}', pattern: START_RUN_PATTERN } },
           { call: { server: WORKFLOW_TOOLS_SERVER, tool: 'run_list', args: {} } },
@@ -288,6 +289,11 @@ export async function readMoreRows(app: HarnessApp, page: Page, shot: (name: str
     browser_pages: (row) => expect(row.getByTestId('tool-call-card-ao-line')).toHaveCount(1),
     memory_list: (row) => expect(row.getByTestId('tool-call-card-ao-line').filter({ hasText: 'The digest needs the schema first.' })).toHaveCount(1),
     memory_add: (row) => expect(row.getByTestId('tool-call-card-ao-outcome')).toContainText('learning added'),
+    workflow_schema: async (row) => {
+      await expect(row.getByTestId('tool-call-card-ao-outcome')).toContainText(/^Agent Overflow Workflow · \d+ fields · \d+ definitions$/);
+      await expect(row.locator('[data-testid="tool-call-card-ao-result-fact"][data-fact="required"]')).toContainText('phases');
+      await expect(row.getByTestId('tool-call-card-ao-line-title').filter({ hasText: /^phase · object$/ })).toHaveCount(1);
+    },
     run_list: (row) => expect(row.getByTestId('tool-call-card-ao-line-link').first()).toHaveAttribute('data-link-kind', 'run'),
     thread_status: (row) => expect(row.getByTestId('tool-call-card-ao-line-title').filter({ hasText: /^remind · accepted/ })).toHaveCount(1),
     thread_item: (row) => expect(row.getByTestId('tool-call-card-ao-outcome')).toContainText('1 match'),

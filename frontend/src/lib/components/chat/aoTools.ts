@@ -267,7 +267,7 @@ const BROWSER_TOOLS: Record<string, AoToolSpec> = {
       return label ? `${page ? `${page} as ` : ''}${quoted(label)}` : page;
     },
   },
-  browser_session: { label: 'name', what: (input) => str(input, 'name') },
+  browser_session: { label: 'use', what: (input) => str(input, 'name') },
   browser_visibility: {
     label: 'show',
     what: (input, names) =>
@@ -366,6 +366,14 @@ const BROWSER_TOOLS: Record<string, AoToolSpec> = {
   browser_assets: { label: 'assets', what: (input) => str(input, 'action') },
 };
 
+/** Characters below which a typed id prefix reads whole rather than cut to its short form. */
+const TYPED_ID_MAX = 24;
+
+/** An id the model typed: a prefix shorter than a whole id reads as typed, a whole id in its short form. */
+function typedId(id: string): string {
+  return id.length < TYPED_ID_MAX ? id : shortId(id);
+}
+
 /** An id as a person can tell it apart: its first eight characters. */
 export function shortId(id: string): string {
   return id.length > SHORT_ID_CHARS ? id.slice(0, SHORT_ID_CHARS) : id;
@@ -379,7 +387,7 @@ export function shortId(id: string): string {
 export function threadName(id: string, names: AoToolNames, title = ''): string {
   if (title) return title;
   if (!id) return '';
-  return names.thread(id) || `thread ${shortId(id)}`;
+  return names.thread(id) || `thread ${typedId(id)}`;
 }
 
 function threadRef(input: Input, names: AoToolNames, result: AoResultStamp = NO_RESULT): string {
@@ -473,7 +481,7 @@ const THREAD_TOOLS: Record<string, AoToolSpec> = {
         .join(' · ');
     },
   },
-  thread_options: { label: 'list', what: () => 'spawn options' },
+  thread_options: { label: 'opts', what: () => 'spawn options' },
   thread_spawn: {
     label: 'spawn',
     what: (input, _names, result) => result.title || str(input, 'title') || firstLine(input, 'prompt'),

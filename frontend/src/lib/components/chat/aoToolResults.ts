@@ -1002,7 +1002,8 @@ function remoteComputersView(rows: Input[]): AoResultView {
     const env = obj(row.environment);
     const system = env ? join(
       [str(env, 'executionOS'), str(env, 'architecture')].filter(Boolean).join('/'),
-      str(env, 'environment') === 'wsl' ? `WSL ${str(env, 'distribution')}`.trim() : '',
+      // WSL without its distribution says nothing the platform does not.
+      str(env, 'environment') === 'wsl' && str(env, 'distribution') ? `WSL ${str(env, 'distribution')}` : '',
     ) : '';
     const projects = list(row.projects);
     view.lines.push({

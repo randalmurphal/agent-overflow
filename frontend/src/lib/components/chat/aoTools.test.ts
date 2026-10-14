@@ -113,6 +113,8 @@ describe('AO tool presentation', () => {
       ['thread_search', { thread_id: tid }, 'search', 'in thread 7f2c9a41'],
       ['thread_search', { thread_id: named, query: 'deploy' }, 'search', '"deploy" in Release notes'],
       ['thread_show', { thread_id: '7f2c9a41' }, 'read', 'thread 7f2c9a41 · last 20 turns'],
+      // A typed prefix reads whole: the short form would cut what the model wrote.
+      ['thread_show', { thread_id: '7f2c9a41-aaaa' }, 'read', 'thread 7f2c9a41-aaaa · last 20 turns'],
       ['thread_show', { thread_id: named, window: 'last_answer' }, 'read', 'Release notes · last answer'],
       ['thread_show', { thread_id: tid, window: 'around', item_id: 'it-9' }, 'read', 'thread 7f2c9a41 · around it-9'],
       ['thread_show', { thread_id: tid, window: 'head', turns: 5 }, 'read', 'thread 7f2c9a41 · first 5 turns'],
@@ -121,7 +123,7 @@ describe('AO tool presentation', () => {
       ['thread_item', { thread_id: tid, item_id: 'toolu_0123456789', query: 'FAIL' }, 'item', 'thread 7f2c9a41 · item toolu_01 · find "FAIL"'],
       ['thread_item', { thread_id: tid, item_id: 'it-9', lines: '10-20' }, 'item', 'thread 7f2c9a41 · item it-9 · lines 10-20'],
       ['thread_item', { thread_id: tid }, 'item', 'thread 7f2c9a41'],
-      ['thread_options', {}, 'list', 'spawn options'],
+      ['thread_options', {}, 'opts', 'spawn options'],
       ['thread_spawn', { prompt: 'Port the fix\nto Windows' }, 'spawn', 'Port the fix'],
       ['thread_spawn', { prompt: 'Port the fix', title: 'Windows port' }, 'spawn', 'Windows port'],
       ['thread_send', { thread_id: tid, message: 'ping' }, 'send', 'thread 7f2c9a41 · ping'],
@@ -273,7 +275,7 @@ describe('AO tool presentation', () => {
       ['browser_select_page', { page_id: 'p1' }, 'select', 'Checkout'],
       ['browser_select_page', { page_id: 'p9' }, 'select', 'page'],
       ['browser_label_page', { page_id: 'p1', label: 'checkout' }, 'label', 'Checkout as "checkout"'],
-      ['browser_session', { name: 'Signup flow' }, 'name', 'Signup flow'],
+      ['browser_session', { name: 'Signup flow' }, 'use', 'Signup flow'],
       ['browser_visibility', { visible: true, page_id: 'p1' }, 'show', 'Checkout'],
       ['browser_visibility', { visible: false }, 'show', 'hide companion'],
       ['browser_viewport', { action: 'set', width: 1280, height: 720 }, 'size', '1280×720'],
@@ -353,7 +355,7 @@ describe('AO tool presentation', () => {
         { label: 'message', value: 'hi' },
       ]);
       expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_update', { thread_ids: [named, '7f2c9a41-x'], archived: true }), names)).toEqual([
-        { label: 'threads', value: 'Release notes, thread 7f2c9a41' },
+        { label: 'threads', value: 'Release notes, thread 7f2c9a41-x' },
         { label: 'archived', value: 'true' },
       ]);
       expect(aoToolFacts(meta(THREAD_TOOLS_SERVER, 'thread_status', { tokens: ['abcdef0123456789', 'fedcba9876543210'] }), names)).toEqual([

@@ -418,12 +418,18 @@ describe('remote tool results', () => {
       },
       { id: 'c2', name: 'Laptop', enabled: true, projects: [], error: 'The computer is not reachable.' },
       { id: 'c3', name: 'Mini', enabled: true, projects: [], environment: null, environmentError: 'environment read timed out' },
+      {
+        id: 'c4', name: 'Desk', enabled: true, projects: [],
+        environment: { executionOS: 'linux', architecture: 'arm64', hostOS: 'windows', environment: 'wsl', executables: {} },
+      },
     ]), {}, NO_AO_NAMES)!;
-    expect(view.outcome).toBe('3 computers · 1 offline');
+    expect(view.outcome).toBe('4 computers · 1 offline');
     expect(view.lines.map((l) => [l.title, l.detail, l.text])).toEqual([
       ['Build box', 'linux/amd64 · WSL Ubuntu · 1 project', 'git, go'],
       ['Laptop', 'offline', 'The computer is not reachable.'],
       ['Mini', '0 projects', 'environment read timed out'],
+      // WSL is named only with its distribution; without one the platform says it.
+      ['Desk', 'linux/arm64 · 0 projects', ''],
     ]);
   });
 });

@@ -451,7 +451,7 @@ describe('AO tool replies past the payload preview, and replies nothing decodes'
     // Two threads share the prefix: no one thread is named, so no link.
     replaceAllThreads([makeThread({ id: target, title: 'Release notes' }), makeThread({ id: 'target-thr-eeee-bbbb-cccc-dddddddddd', title: 'Other' })]);
     const ambiguous = render(GenericToolCallRow, { props: { item, pane: paneWith([item]) } });
-    expect(ambiguous.getByTestId('tool-call-card-preview').textContent).toContain('thread target-t · What shipped?');
+    expect(ambiguous.getByTestId('tool-call-card-preview').textContent).toContain('thread target-thr · What shipped?');
     await fireEvent.click(ambiguous.getByTestId('tool-call-card-toggle'));
     await ambiguous.findByTestId('tool-call-card-ao-outcome');
     expect(ambiguous.queryByTestId('tool-call-card-ao-link')).toBeNull();
