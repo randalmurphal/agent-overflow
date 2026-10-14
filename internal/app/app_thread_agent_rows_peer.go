@@ -147,6 +147,11 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 		if err != nil {
 			return ThreadPeerReply{}, err
 		}
+		thread, err := a.store.GetThread(args.ThreadID)
+		if err != nil {
+			return ThreadPeerReply{}, fmt.Errorf("read thread %s: %w", args.ThreadID, err)
+		}
+		listing.ThreadProvider = thread.Provider
 		result = listing
 	case threadAgentPeerStop:
 		stop, err := a.stopThreadAgentWorkHere(ctx, args.ThreadID, args.Token)

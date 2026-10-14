@@ -287,6 +287,8 @@ test('the Agents segment nests a spawn two computers away and its Stop cascades 
   const childRow = row(spawn.value!.token);
   const grandRow = row(nested.value!.token);
   await expect(childRow.getByTestId('agent-tray-row-computer')).toHaveText('on Studio computer');
+  await expect(childRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
+  await expect(grandRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
   await expect(grandRow).toHaveAttribute('data-depth', '1');
   await expect(grandRow.getByTestId('agent-tray-row-title')).toHaveText('Bench grandchild');
   await expect(grandRow.getByTestId('agent-tray-row-computer')).toHaveText('on Bench computer');

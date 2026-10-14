@@ -100,6 +100,10 @@ func TestThreadAgentRowsNestAPairedComputersAgents(t *testing.T) {
 		nested.OwnerComputerID != pair.computer || nested.CallerThreadID != pair.child {
 		t.Fatalf("the nested row = %+v, want depth 1 on %s (%s) made by %s", nested, pair.computer, parent.Computer, pair.child)
 	}
+	child, err := pair.dest.store.GetThread(pair.child)
+	if err != nil || child.Provider == "" || parent.Provider != child.Provider {
+		t.Fatalf("the spawn row's provider = %q, want the child's %q (%v)", parent.Provider, child.Provider, err)
+	}
 }
 
 // Stop on the spawn's row runs the cascade there: the child's own spawn is

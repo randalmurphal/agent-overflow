@@ -5897,6 +5897,12 @@ export class ThreadAgentRows {
     "rows": ThreadAgentRow[];
     "hidden"?: boolean;
 
+    /**
+     * ThreadProvider is the listed thread's own provider, answered by
+     * agent_rows so the spawn row on the computer that asked can show it.
+     */
+    "threadProvider"?: string;
+
     /** Creates a new ThreadAgentRows instance. */
     constructor($$source: Partial<ThreadAgentRows> = {}) {
         if (!("rows" in $$source)) {

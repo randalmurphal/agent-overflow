@@ -124,6 +124,9 @@ type ThreadAgentRow struct {
 type ThreadAgentRows struct {
 	Rows   []ThreadAgentRow `json:"rows"`
 	Hidden bool             `json:"hidden,omitempty"`
+	// ThreadProvider is the listed thread's own provider, answered by
+	// agent_rows so the spawn row on the computer that asked can show it.
+	ThreadProvider string `json:"threadProvider,omitempty"`
 }
 
 // ThreadAgentRowChange is one `thread:agent_rows_changed` frame: a request
@@ -263,6 +266,9 @@ func (a *App) nestPeerAgentRows(ctx context.Context, out *ThreadAgentRows, entri
 	if err != nil {
 		out.Rows[index].NestedUnavailable = err.Error()
 		return
+	}
+	if out.Rows[index].Provider == "" {
+		out.Rows[index].Provider = listing.ThreadProvider
 	}
 	peerName := out.Rows[index].Computer
 	self, _ := a.backendIdentity()
