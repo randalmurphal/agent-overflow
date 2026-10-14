@@ -1,9 +1,14 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import type { Duplex } from 'node:stream';
 import { test, expect } from '@playwright/test';
 import { launchHarness } from '../src/harness.js';
+import { HarnessApp } from '../src/harness-app.js';
 import {
   captureProcessGroupMemberProof,
   captureProcessIdentity,
@@ -178,4 +183,148 @@ test('reconciles an owned descendant after the bootstrap process exits', async (
 test('the tree snapshot recognises the identity the per-pid capture took', async () => {
   const identity = await captureProcessIdentity(process.pid);
   await expect(processTreeRSS(identity)).resolves.toBeGreaterThan(0);
+});
+
+type ShutdownAnswer = 'close' | 'error-reply';
+
+/**
+ * A backend stand-in on a real WebSocket. On HarnessShutdown it either closes
+ * the socket without a reply, as the real backend does when its shutdown wins
+ * the race against the reply write, or replies with an RPC error. After a
+ * close its owned process exits on its own one second later: longer than the
+ * half second an unacknowledged shutdown waits before signalling, shorter than
+ * the wait an acknowledged one gets.
+ */
+async function fakeShutdownBackend(answer: ShutdownAnswer): Promise<{
+  app: HarnessApp;
+  child: ChildProcess;
+  close: () => Promise<void>;
+}> {
+  const child = spawn(
+    process.execPath,
+    ['-e', 'process.on("message", () => process.exit(0)); setInterval(() => {}, 1000)'],
+    { detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
+  );
+  const server = createServer();
+  let exitTimer: ReturnType<typeof setTimeout> | undefined;
+  const sockets = new Set<Duplex>();
+  server.on('upgrade', (request, socket) => {
+    sockets.add(socket);
+    const key = String(request.headers['sec-websocket-key']);
+    const accept = createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+    socket.write(
+      'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+        `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+    );
+    let buffered = Buffer.alloc(0);
+    socket.on('data', (chunk: Buffer) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      for (;;) {
+        if (buffered.length < 2) return;
+        let length = buffered[1] & 0x7f;
+        let offset = 2;
+        if (length === 126) {
+          if (buffered.length < 4) return;
+          length = buffered.readUInt16BE(2);
+          offset = 4;
+        } else if (length === 127) {
+          if (buffered.length < 10) return;
+          length = Number(buffered.readBigUInt64BE(2));
+          offset = 10;
+        }
+        if (buffered.length < offset + 4 + length) return;
+        const mask = buffered.subarray(offset, offset + 4);
+        const payload = Buffer.from(buffered.subarray(offset + 4, offset + 4 + length));
+        for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4];
+        const opcode = buffered[0] & 0x0f;
+        buffered = buffered.subarray(offset + 4 + length);
+        if (opcode !== 0x1) continue;
+        const frame = JSON.parse(payload.toString('utf8')) as { id: string; method: string };
+        if (frame.method !== 'HarnessShutdown') continue;
+        if (answer === 'error-reply') {
+          const reply = Buffer.from(
+            JSON.stringify({ type: 'rpc', id: frame.id, error: { code: 'internal', message: 'shutdown refused' } }),
+          );
+          socket.write(Buffer.concat([Buffer.from([0x81, reply.length]), reply]));
+          continue;
+        }
+        socket.destroy();
+        exitTimer = setTimeout(() => child.send('exit'), 1_000);
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  const identity = await captureProcessIdentity(child.pid);
+  const app = new HarnessApp(
+    child,
+    {
+      url: `http://127.0.0.1:${port}/`,
+      port,
+      token: 't',
+      dataRoot: '',
+      dataDir: '',
+      mockProvider: '',
+      mockForge: '',
+      pid: child.pid ?? 0,
+      version: 'test',
+    },
+    undefined,
+    undefined,
+    undefined,
+    identity,
+  );
+  await app.connect();
+  return {
+    app,
+    child,
+    close: async () => {
+      clearTimeout(exitTimer);
+      // Upgraded sockets are no longer the server's; close would wait on them.
+      for (const socket of sockets) socket.destroy();
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+test('a backend closing the socket on HarnessShutdown is a graceful stop, not a failure', async () => {
+  test.skip(process.platform === 'win32', 'Windows teardown reconciles the Job Object tree after any shutdown');
+  const backend = await fakeShutdownBackend('close');
+  const errors: string[] = [];
+  const consoleError = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args.map(String).join(' '));
+  };
+  try {
+    await expect(backend.app.stop()).resolves.toBe(true);
+  } finally {
+    console.error = consoleError;
+    await backend.close();
+  }
+  expect(errors).toEqual([]);
+  // The backend exited on its own; teardown never signalled it.
+  expect(backend.child.signalCode).toBeNull();
+  expect(backend.child.exitCode).toBe(0);
+});
+
+test('a HarnessShutdown error reply or a socket closed before the request stays a failure', async () => {
+  const refusing = await fakeShutdownBackend('error-reply');
+  try {
+    await expect(refusing.app.requestShutdown()).rejects.toThrow('internal: shutdown refused');
+  } finally {
+    await refusing.close();
+  }
+
+  const closing = await fakeShutdownBackend('close');
+  try {
+    // The close answers only the shutdown; another call it cuts off fails.
+    const unanswered = closing.app.rpc('HarnessInfo');
+    await expect(closing.app.requestShutdown()).resolves.toBeUndefined();
+    await expect(unanswered).rejects.toThrow('harness WS closed unexpectedly');
+    // The socket is gone, so a second request is never written.
+    await expect(closing.app.requestShutdown()).rejects.toThrow('rpc HarnessShutdown: WS is not connected');
+  } finally {
+    await closing.close();
+  }
 });
