@@ -159,6 +159,35 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     expect(view.getAllByTestId('agent-message-text').map((p) => p.textContent)).toEqual(['First ask.', 'Second ask.']);
   });
 
+  it('names the session\'s end as what stopped a request, and shows what its turn wrote', async () => {
+    const wakeRow = async (name: string) => {
+      const pane = await buildPane();
+      const item = agentRow(text(name), {
+        origin: 'agent-thread',
+        originThread: { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' },
+        sendId: 'thread-wake:tok',
+      });
+      const view = render(TimelineLeaf, { props: { pane, item } });
+      await fireEvent.click(view.getByTestId('agent-message-toggle'));
+      return view;
+    };
+    for (const [name, stoppedBy] of [
+      ['interrupted by its session ending before it read the request', 'the session ended before it read the request'],
+      ['interrupted by its session ending before it answered the request', 'the session ended before it answered the request'],
+      ['interrupted by its session ending during the turn, having written nothing', 'the session ended during the turn that read the request'],
+    ]) {
+      const view = await wakeRow(name);
+      expect(view.getByTestId('agent-message-row').dataset.agentMessageKind, name).toBe('interrupted');
+      expect(view.container.querySelector('[data-fact="Stopped by"]')?.textContent, name).toBe(stoppedBy);
+      expect(view.queryByTestId('agent-message-text'), name).toBeNull();
+      view.unmount();
+    }
+    const wrote = await wakeRow('interrupted by its session ending during the turn, with what it wrote');
+    expect(wrote.container.querySelector('[data-fact="Stopped by"]')?.textContent).toBe('the session ended during the turn that read the request');
+    expect(wrote.getByTestId('agent-message-text').textContent).toBe('Half done.\nSecond line.');
+    expect(wrote.getByTestId('agent-message-row').textContent).not.toContain('What it had written by then');
+  });
+
   it('renders a loop wake decoded and a provider agent\'s message as agent rows', async () => {
     const pane = await buildPane();
     const loop = render(TimelineLeaf, {
