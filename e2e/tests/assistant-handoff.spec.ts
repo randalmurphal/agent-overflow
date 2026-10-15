@@ -98,8 +98,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
     await footer.getByTestId('thread-row-agent-done-toggle').click();
     await expect(row(page, first)).toHaveAttribute('data-archived-child', 'true');
+    await expect(row(page, first).getByTestId('thread-row-time')).toHaveText(/^superseded /);
     expect(await harness.rpc('GetStandingAgent', first)).toBeNull();
     expect((await harness.rpc<{ threadId: string }>('GetStandingAgent', second)).threadId).toBe(second);
+    // Hover swaps a row's time for its actions; the shot shows the time.
+    await page.mouse.move(800, 400);
     await captureAgentMessage(page, `${provider}-assistant-handoff-sidebar.png`, row(page, second), footer, row(page, first));
 
     // The loop is the successor's.

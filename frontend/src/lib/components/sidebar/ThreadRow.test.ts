@@ -3,6 +3,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
+import { sidebarTimeLabel } from '../../utils/sidebarRowMetrics';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
@@ -1720,5 +1721,15 @@ describe('<ThreadRow> standing agent variant', () => {
     const row = rendered.getByTestId('thread-row');
     expect(row.getAttribute('data-archived-child')).toBe('true');
     expect(row.className).toContain('opacity-50');
+  });
+
+  it("says when a handoff superseded an assistant's past thread in the done list", () => {
+    const supersededAt = Date.now() - 3 * 60 * 60 * 1000;
+    const past = makeThread({ title: 'Ops', archived: true, pastAgentId: 'agent-1', agentSupersededAt: supersededAt, updatedAt: Date.now() });
+    const rendered = render(ThreadRow, { props: { thread: past, pane: createThreadPane(), inGroup: true, archivedChild: true } });
+    expect(rendered.getByTestId('thread-row-time').textContent?.trim()).toBe(`superseded ${sidebarTimeLabel(supersededAt)}`);
+
+    const ordinary = render(ThreadRow, { props: { thread: makeThread({ id: 'child', archived: true, updatedAt: supersededAt }), pane: createThreadPane(), inGroup: true, archivedChild: true } });
+    expect(ordinary.getAllByTestId('thread-row-time').at(-1)?.textContent).not.toContain('superseded');
   });
 });

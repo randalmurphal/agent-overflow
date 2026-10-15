@@ -347,7 +347,11 @@
     // (transport/backendClock.ts); a row whose owner is not known yet
     // reads as home, which is what every row meant before a second
     // machine could be attached.
-    return sidebarTimeLabel(getThreadLiveActivityAt(thread), threadBackend(thread.id) ?? HOME_BACKEND);
+    const backend = threadBackend(thread.id) ?? HOME_BACKEND;
+    // An assistant's past thread in its done list says when a handoff
+    // replaced it (docs/specs/standing-agents.md, "Sidebar").
+    if (archivedChild && thread.agentSupersededAt) return `superseded ${sidebarTimeLabel(thread.agentSupersededAt, backend)}`;
+    return sidebarTimeLabel(getThreadLiveActivityAt(thread), backend);
   });
 
   function handleContextMenu(e: MouseEvent) {
