@@ -1033,10 +1033,17 @@ snapshot naming that id drops the Zone 2 entry (`replaceQueueForThread`), as
 does `provider:queue_restored` when the content goes back to the composer.
 
 **Working indicator.** `isThreadWorking` is
-`activeTurn !== null || hasPendingSend || hasQueueItems` (either zone), so
-the spinner stays up across the gap between a turn ending and the queued
-message's next turn starting. The elapsed counter is gated on `activeTurn`
-alone, so the bridge moment renders `Working` without a `for 0s` flash.
+`activeTurn !== null || hasPendingSend || sendsPending`, so the spinner
+stays up across the gap between a turn ending and the queued message's
+next turn starting. Sends pending (`provider:sends_pending`, the backend's
+answer every surface reads, and `ListThreadLiveActivity`) counts a queued
+or flushed message only while the thread has a session live or starting: a
+message queued with no process waits for the next start and nothing is
+working on it, so a stopped thread holding an owed request, or a thread
+whose start failed, reads as idle. A backend without the capability falls
+back to the pane's queue (`hasQueueItems`, either zone). The elapsed
+counter is gated on `activeTurn` alone, so the bridge moment renders
+`Working` without a `for 0s` flash.
 
 **Approval gate.** A pending tool approval keeps the wire round open, so no
 `turn_completed` fires and the boundary drain simply does not run. There is

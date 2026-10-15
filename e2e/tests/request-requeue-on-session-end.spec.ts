@@ -2,10 +2,15 @@
 // `started`, no echo) is not lost when the target's session ends: the request
 // goes back on the target's queue, owed again, and the next session start
 // delivers it. Its sender hears nothing until the answer, which arrives once
-// (docs/specs/agent-thread-tools.md, settlement). Two ends: the person's Stop
-// followed by a start, and a death the app reconnects. Claude only: its CLI
-// holds a message queued into a running turn (claude.holdQueuedInput), which
-// is what leaves the request handed over and not taken in.
+// (docs/specs/agent-thread-tools.md, settlement). Until then the stopped
+// thread reads as idle: a queued message counts as pending only while a
+// session is live or starting. Two ends: the person's Stop followed by a
+// start, and a death the app reconnects. Claude only: its CLI holds a
+// message queued into a running turn (claude.holdQueuedInput), which is what
+// leaves the request handed over and not taken in; a Codex steer and a
+// Codex turn's own message are taken in at once. The same idle reading on
+// both providers is covered by a held wake whose start keeps failing
+// (standing-agent-wakes.spec.ts, "a later fire retries a start that failed").
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { advanceGate, awaitGate, awaitToolAnswer, plainScenario, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
@@ -107,6 +112,12 @@ test('claude: a Stop gives back a request the CLI had not taken in, and the next
   await expect(incoming).toHaveCount(1);
   await expect(incoming.getByTestId('agent-incoming-row-sender')).toHaveText('from Sender');
   await expect(page.getByTestId('agent-message-row').filter({ hasText: REQUEST })).toHaveCount(0);
+  // It waits for the next start: nothing is working on it, so the thread
+  // reads as idle in the sidebar and in its composer.
+  await expect(
+    page.getByTestId('thread-row').filter({ hasText: 'Held worker' }).locator('[data-testid="thread-row-status-dot"][aria-label="Working"]'),
+  ).toHaveCount(0);
+  await expect(page.getByTestId('activity-rail-hairline')).toHaveCount(0);
 
   await setScenario(harness, targetPath, plainScenario({ name: 'requeue-stop-next', provider: 'claude', texts: [ANSWER], afterTurns: 'silent' }));
   await harness.rpc('StartSession', target);

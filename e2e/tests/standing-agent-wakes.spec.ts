@@ -3660,6 +3660,17 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await say('report 2');
       await expect.poll(lastOutput, { timeout: 30_000 }).toContain('"report 2"');
       expect(queuedWakes()).toBe(1);
+      // The held wake waits on a start that keeps failing. Nothing is
+      // working on it, so the thread reads as idle on every surface.
+      const live = await harness.rpc<{ threadId: string; sendsPending?: boolean }[]>('ListThreadLiveActivity');
+      expect(live.find((row) => row.threadId === thread)?.sendsPending ?? false).toBe(false);
+      await harness.open(page);
+      await page.getByTestId('thread-row-title').filter({ hasText: 'Retrying starter' }).first().click();
+      await expect(page.getByTestId('chat-header-title').filter({ hasText: 'Retrying starter' })).toBeVisible();
+      await expect(
+        page.getByTestId('thread-row').filter({ hasText: 'Retrying starter' }).locator('[data-testid="thread-row-status-dot"][aria-label="Working"]'),
+      ).toHaveCount(0);
+      await expect(page.getByTestId('activity-rail-hairline')).toHaveCount(0);
       console.log(`${provider}: error rows while failing: ${JSON.stringify(errorRows())}`);
       expect(errorRows()).toHaveLength(1);
       expect(raises()).toBe(1);

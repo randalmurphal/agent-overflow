@@ -2844,6 +2844,10 @@ func TestTeardownDeadPreInitSession_KeepsRequeuedItems(t *testing.T) {
 	if requeued[0].ID != "queue:survivor" || requeued[0].StaleUserItemID != "user:0:flush:1" {
 		t.Fatalf("surviving item = %+v, want queue:survivor with its stale marker", requeued[0])
 	}
+	// It waits for the next start; with no session nothing works on it.
+	if answer := app.publishSendsPending(thread.ID); answer.Pending {
+		t.Fatalf("sends pending = %+v for a message waiting on the next start", answer)
+	}
 }
 
 // TestQueuedFlushItemFromUnconfirmed_CarriesStaleMarker pins the

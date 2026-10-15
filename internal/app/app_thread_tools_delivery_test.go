@@ -676,6 +676,25 @@ func TestARequestHeldWhenTheThreadIsStoppedGoesBackToItsQueue(t *testing.T) {
 	for _, token := range []string{token, queuedAck.Token} {
 		assertRequestOwedAgain(t, f, h.thread.ID, token)
 	}
+	assertNothingPending(t, f.app, h.thread.ID)
+}
+
+// assertNothingPending checks that a thread with no session reads as not
+// working, its owed messages queued for the next start notwithstanding.
+func assertNothingPending(t *testing.T, app *App, threadID string) {
+	t.Helper()
+	if answer := app.publishSendsPending(threadID); answer.Pending {
+		t.Fatalf("sends pending = %+v with no session", answer)
+	}
+	rows, err := app.ListThreadLiveActivity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ThreadID == threadID && row.SendsPending {
+			t.Fatalf("live activity = %+v, want nothing pending", row)
+		}
+	}
 }
 
 // The idle reaper tears a session down holding the thread's mutation lock,
@@ -751,6 +770,7 @@ func TestARequestTheSessionDiedHoldingIsDeliveredAtTheNextStart(t *testing.T) {
 		return err == nil && found && !record.dispatched && f.receipt(t, token).State == store.ThreadReceiptAccepted
 	})
 	assertRequestOwedAgain(t, f, h.thread.ID, token)
+	assertNothingPending(t, f.app, h.thread.ID)
 
 	// The fixture's router has no dispatcher; the next start's flush needs it.
 	f.app.triage.SetFlushDispatcher(f.app.enqueueFlushDispatch)
@@ -766,6 +786,10 @@ func TestARequestTheSessionDiedHoldingIsDeliveredAtTheNextStart(t *testing.T) {
 		sent, _ := os.ReadFile(stdin)
 		return strings.Contains(string(sent), "check the changelog")
 	})
+	// In flight until its echo, which this CLI never sends.
+	if answer := f.app.publishSendsPending(h.thread.ID); !answer.Pending {
+		t.Fatalf("sends pending = %+v with the request in flight", answer)
+	}
 	if wakes := f.wakes(t, token); len(wakes) != 0 {
 		t.Fatalf("the sender was woken: %+v", wakes)
 	}
