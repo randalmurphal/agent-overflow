@@ -374,6 +374,8 @@ interface Pulse {
   boxShadow: string;
   /** The first animation's elapsed ms. */
   time: number | null;
+  /** When the first animation started on the document timeline. */
+  start: number | null;
 }
 
 function pulseOf(card: Locator): Promise<Pulse> {
@@ -384,6 +386,7 @@ function pulseOf(card: Locator): Promise<Pulse> {
       running: animations.length,
       boxShadow: getComputedStyle(el).boxShadow,
       time: first ? Number(first.currentTime) : null,
+      start: first ? Number(first.startTime) : null,
     };
   });
 }
@@ -398,7 +401,7 @@ async function expectPulsing(card: Locator): Promise<Pulse> {
 
 /** The pulse has ended on its own: no animation, no ring. */
 async function expectPulseGone(card: Locator): Promise<void> {
-  await expect.poll(async () => await pulseOf(card), { timeout: 3_000 }).toEqual({ running: 0, boxShadow: 'none', time: null });
+  await expect.poll(async () => await pulseOf(card), { timeout: 3_000 }).toEqual({ running: 0, boxShadow: 'none', time: null, start: null });
 }
 
 /** Scroll the diff list until the overview row is above the viewport. */
@@ -492,9 +495,6 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
     await press(card(THREADS.nullToken.id).getByTestId('review-conversation-jump-diff'));
     await expect(nullRow).toBeInViewport();
     const first = await expectPulsing(cardOf(nullRow));
-    await page.waitForTimeout(500);
-    const elapsed = (await pulseOf(cardOf(nullRow))).time ?? 0;
-    expect(elapsed).toBeGreaterThan(first.time ?? 0);
     // Back to the card through the list, not through the tap's own
     // scroll-into-view: that centers the target in every scrollable
     // ancestor, the compact pane strip included.
@@ -502,9 +502,11 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
     await expect(card(THREADS.nullToken.id).getByTestId('review-conversation-jump-diff')).toBeInViewport();
     await press(card(THREADS.nullToken.id).getByTestId('review-conversation-jump-diff'));
     await expect(nullRow).toBeInViewport();
+    // A pulse started over is an animation started after the first one.
+    // Its start, unlike an elapsed time, does not depend on when it is read.
     await expect.poll(async () => {
       const pulse = await pulseOf(cardOf(nullRow));
-      return pulse.running === 1 && pulse.time !== null && pulse.time < elapsed;
+      return pulse.running === 1 && (pulse.start ?? 0) > (first.start ?? 0);
     }).toBe(true);
     await expectPulseGone(cardOf(nullRow));
 
