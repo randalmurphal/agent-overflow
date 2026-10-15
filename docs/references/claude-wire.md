@@ -1410,11 +1410,68 @@ by comparing the wire round open when the `queued` ack landed against the
 one open at `started` (`internal/triage/command_lifecycle.go`), because
 the enqueue-time round is not recoverable after the fact.
 A thread request's settlement is bound to the turn its message was
-delivered into, read off `started`: the turn open then, or, for a held
-message whose `started` precedes its own `system/init`, the next turn to
-open. A message dispatched with no turn running reserved its own turn, and
-a `started` for it inside another message's round waits for that turn,
-which its echo opens when no init does (`internal/triage/send_delivery.go`).
+delivered into, read off the first of its `started` and its confirmation:
+the turn open then, or, for a held message whose `started` precedes its
+own `system/init`, the next turn to open. A message dispatched with no turn
+running reserved its own turn, and a delivery for it inside another
+message's round waits for that turn, which its echo opens when no init
+does (`internal/triage/send_delivery.go`). On 2.1.284 the echo of a
+mid-loop drain precedes its `started` (next section), so the echo is that
+first signal.
+
+### Frame order per consumption path (verified 2.1.284)
+
+Spike 2026-10-15, claude 2.1.284 (Sonnet), AO's flag set, three runs per
+case; the order was identical in every run. Each fixture is run 1 under
+`docs/references/fixtures/claude/`;
+`queued_delivery_orders_20261015.summary.json` has every run's order with
+timings. Writes are the client's stdin writes; `queued` acks are left out.
+
+| Case | Fixture | Order |
+|---|---|---|
+| M written during a cascade round's foreground Bash, drained mid-loop | `queued_midloop_after_cascade_20261015.ndjson` | turn 0 `result`, `task_notification`, cascade `system/init`, write M, `tool_result`, echo M, `started` M, `completed` M, `result` |
+| A from idle; B written right after `started` A, drained mid-loop into A's round | `queued_deferred_pair_midloop_20261015.ndjson` | write A, `started` A, write B, `system/init`, echo A, `tool_result`, echo B, `started` B, `completed` B, `result`, `completed` A |
+| A and B written 400 ms apart during a tool-free turn | `queued_boundary_merge_20261015.ndjson` | `result`, echo A (own block, no `timestamp`), `started` A, `started` B, `system/init`, echo B (both blocks, `timestamp`), `result`, `completed` A, `completed` B |
+| The same, written during a tool-free cascade round after turn 0's `result` | `queued_boundary_merge_after_cascade_20261015.ndjson` | cascade `result`, echo A (no `timestamp`), `started` A, `started` B, `system/init`, echo B (both blocks), `result`, `completed` A, `completed` B |
+| A and B in one stdin write at an idle session | `queued_idle_pair_split_20261015.ndjson` | `started` A, `system/init`, echo A, `result`, `completed` A, `started` B, `system/init`, echo B, `result`, `completed` B |
+
+- A mid-loop drain writes the echo first and `started` 1 to 5 ms after it,
+  with nothing between: `query.ts` yields the `queued_command` attachment
+  (which the echo replays) and only then calls
+  `notifyCommandLifecycle(uuid, 'started')`. This holds for a message AO
+  wrote into a running turn and for one it dispatched as deferred.
+- A boundary pickup (`print.ts` `drainCommandQueue`) writes every
+  merged-away echo, then `started` for every member, then `system/init`,
+  then the survivor's echo.
+- Every turn the boundary drain opens has exactly one `system/init`. The
+  2.1.284 bundle's `submitMessage` yields init once per `ask()`; the only
+  condition (`orphanedPermission.initFirst` or `handedOffTurn`) moves it
+  before input processing and never drops it. A boundary merge without an
+  init does not occur on 2.1.284.
+- A task-notification cascade round opens with its own `system/init` and
+  no stdout echo for the notification (the replay filter drops
+  `<task-notification>`). A message written during it drains mid-loop when
+  the round still runs tools and is held to its boundary otherwise.
+- Messages written together at an idle session never merge: the CLI
+  dequeues the first as it is enqueued, and the second waits for a turn of
+  its own.
+- The round-opening message's `completed` follows the round's `result`; a
+  mid-loop drained message's `completed` precedes it.
+
+What these orders mean for the delivery code in
+`internal/triage/send_delivery.go`:
+
+- `deliveryFloor`: in the deferred-pair case echo B opens B's own turn
+  before `started` B arrives, so the echo, not `started`, delivers B; the
+  floor only matters for a `started` that comes first, which 2.1.284 does
+  not write for a mid-loop drain.
+- `openQueuedEchoTurn` releasing a waiting delivery: in the cascade case
+  the echo is the first signal and is delivered into the turn it opens;
+  no delivery waits.
+- Merge-fold rebind (`SendDelivery.Rebind`): the captured order is the
+  init branch, for members written during a running turn and during a
+  cascade round. The no-init branch handles an order 2.1.284 does not
+  write.
 
 ### ⚠ The `priority` field is known and deliberately unused
 

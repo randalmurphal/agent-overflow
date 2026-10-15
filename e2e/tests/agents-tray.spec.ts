@@ -16,12 +16,6 @@
 // start) is an incoming row there, named by its sender and kind, whose Stop
 // withdraws it and leaves the answer owed with its wake disarmed. The
 // cross-computer rows are thread-tools-paired.spec.ts's.
-//
-// A Codex background terminal's row is not checked to leave the tray after
-// a Stop: the mock answers thread/backgroundTerminals/terminate and clean
-// with -32601 by policy (cmd/ao-mockprovider/AGENTS.md), these specs script
-// `{terminated:true}` for them, and no captured frame says what the CLI
-// writes for the terminal after the kill, so the mock writes none.
 import { test, expect, type SeedResult } from './fixtures.js';
 import { rename } from 'node:fs/promises';
 import { advanceGate, awaitGate, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
@@ -140,10 +134,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(nested.state).toBe('cancelled');
     expect(nested.answer).toContain(USER_STOP);
     expect(nested.notify, 'the cascade disarms the nested wake').toBe(0);
-    if (provider === 'claude') {
-      await expect.poll(async () => (await harness.rpc<{ status: string }[]>('ListLiveBackgroundTasks', started.child))
-        .filter((item) => item.status === 'running').length, { timeout: 30_000 }).toBe(0);
-    }
+    await expect.poll(async () => (await harness.rpc<{ status: string }[]>('ListLiveBackgroundTasks', started.child))
+      .filter((item) => item.status === 'running').length, { timeout: 30_000 }).toBe(0);
     // The stopped row lingers, then leaves.
     await expect(child.getByTestId('agent-tray-row-state')).toHaveText('stopped');
     const settledAt = Date.now();
@@ -167,10 +159,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // under Agents.
     await page.getByTestId('activity-rail-background-toggle').filter({ visible: true }).click();
     await page.getByTestId('activity-rail-background-stop-all').filter({ visible: true }).click();
-    if (provider === 'claude') {
-      await expect.poll(async () => (await harness.rpc<{ status: string }[]>('ListLiveBackgroundTasks', tree.lead))
-        .filter((item) => item.status === 'running').length, { timeout: 30_000 }).toBe(0);
-    }
+    await expect.poll(async () => (await harness.rpc<{ status: string }[]>('ListLiveBackgroundTasks', tree.lead))
+      .filter((item) => item.status === 'running').length, { timeout: 30_000 }).toBe(0);
     for (const token of [started.childToken, started.grandToken, started.sendToken]) {
       expect(ledgerRow(harness, token)!.state, token).toMatch(/running|accepted/);
     }
