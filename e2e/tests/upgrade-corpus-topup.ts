@@ -137,7 +137,17 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('SetChatBarFavorite', { kind: 'model', provider: 'claude', value: MODEL.claude, label: 'Opus' }, true);
     // Two assistants made by New Assistant, one told about every tick and
     // one moved to a new thread by New Thread, Same Assistant, which leaves
-    // a past thread. Each opening and handoff message takes a turn.
+    // a past thread. Each opening and handoff message takes a turn. A new
+    // assistant takes the provider of the thread created last, so a Claude
+    // thread goes first.
+    const remembered = await harness.rpc<{ id: string }>('CreateThread', {
+      projectId,
+      title: `Top-up v${version}: the profile New Assistant takes`,
+      provider: 'claude',
+      model: MODEL.claude,
+      mode: 'chat',
+    });
+    threadIds.push(remembered.id);
     await harness.rpc('HarnessSetScenario', {
       scenario: threadToolsScenario({ name: 'topup-assistants', provider: 'claude', turns: [{ text: 'Noted.' }], afterTurns: 'repeatLast' }),
     });

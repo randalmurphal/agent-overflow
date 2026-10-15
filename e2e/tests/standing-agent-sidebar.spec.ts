@@ -134,7 +134,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const spawned = spawn.value!.thread_id;
     const refused = await awaitToolAnswer(harness, { tool: 'thread_spawn', cwd });
     expect(refused.isError).toBe(true);
-    expect(refused.text).toContain('standing agent');
+    expect(refused.text).toContain("This thread is an assistant's");
     expect(refused.text).toContain('Omit group');
     const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd });
     expect(loop.isError, loop.text).toBe(false);
@@ -272,7 +272,9 @@ test('a spawned thread that is an assistant leaves the fold, and a thread nobody
 
   // The child made an assistant is an agent row of its own with the grandchild under it.
   await harness.rpc('HarnessMakeAssistant', child);
-  await expect(row(page, child)).toHaveAttribute('data-sidebar-agent', '');
+  // Its agent row arrives as its member row leaves: wait out the exit.
+  await expect(page.locator(`[data-sidebar-agent][data-sidebar-thread-id="${child}"]`)).toBeVisible();
+  await expect(row(page, child)).toHaveCount(1);
   await expect.poll(() => memberIds(page)).toEqual([grandchild]);
   await expect(row(page, lead).getByTestId('thread-row-agent-count')).toHaveCount(0);
   await row(page, lead).getByTestId('thread-row-agent-expand').click();

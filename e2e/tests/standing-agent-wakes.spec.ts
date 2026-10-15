@@ -574,7 +574,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await harness.rpc('SendMessage', plainThread, 'watch something for me', null);
       const refused = await awaitToolAnswer(harness, { tool: 'thread_watch', cwd: plainP.path, timeoutMs: 60_000 });
       expect(refused.isError).toBe(true);
-      expect(refused.text).toContain('thread_watch is for standing agents, and this thread is not one');
+      expect(refused.text).toContain("thread_watch is for assistants, and this thread is not an assistant's current thread");
       await awaitTurnCompleted(harness, plainThread);
 
       // ---- Loop: a person's turn notifies, the loop's tick does not.
@@ -1416,10 +1416,12 @@ interface Transfer {
   targetThreadId: string;
 }
 
+/** The assistant records naming the thread, as current or as a past thread. */
 function standingAgentRows(root: string, threadID: string): number {
   const db = new DatabaseSync(join(root, 'agent-overflow.db'), { readOnly: true });
   try {
-    return (db.prepare(`SELECT count(*) AS n FROM standing_agents WHERE thread_id = ?`).get(threadID) as { n: number }).n;
+    const query = `SELECT (SELECT count(*) FROM agents WHERE thread_id = ?) + (SELECT count(*) FROM agent_past_threads WHERE thread_id = ?) AS n`;
+    return (db.prepare(query).get(threadID, threadID) as { n: number }).n;
   } finally {
     db.close();
   }

@@ -2115,6 +2115,78 @@ test('a multi-megabyte tool output on the other computer is searched and read in
   expect(tail.value!.text).not.toContain(bigItem.needle.trim());
 });
 
+test('two assistants with one name on the two computers show and resolve as <name>-<computer>', async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(20_000);
+  // Named here so neither the answers nor the captures carry the host's name.
+  await home.rpc('SetDeviceName', 'Desk computer');
+  const caller = await seed(home, 'name-clash-caller', ['Clash caller']);
+  const here = await seed(home, 'name-clash-here', ['Night ops'], true);
+  const there = await seed(remote, 'name-clash-there', ['Night ops'], true);
+  await home.rpc('HarnessMakeAssistant', here.threadIds[0]);
+  await remote.rpc('HarnessMakeAssistant', there.threadIds[0]);
+  await setScenario(remote, there.path, plainScenario({ name: 'name-clash-there', provider: 'claude', texts: ['Night ops over there, on it.'] }));
+  await setScenario(
+    home,
+    caller.path,
+    threadToolsScenario({
+      name: 'name-clash-caller',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            { call: { tool: 'thread_search', args: { agents: true } } },
+            { call: { tool: 'thread_send', args: { thread_id: 'night ops', message: 'Which one?', wait_seconds: 0 } } },
+            { call: { tool: 'thread_send', args: { thread_id: 'Night ops-GPU computer', message: 'Check the GPUs.', wait_seconds: 0 }, timeoutMs: 60_000 } },
+          ],
+          text: 'Asked the right one.',
+        },
+      ],
+      afterTurns: 'repeatLast',
+    }),
+  );
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'ask night ops about the GPUs', null);
+
+  // thread_search agents lists both, each suffixed with its computer.
+  interface AgentsAnswer {
+    computers: Array<{ computer_id?: string; rows: Array<{ thread_id: string; assistant?: { name: string } }> }>;
+  }
+  const listed = await awaitToolAnswer<AgentsAnswer>(home, { tool: 'thread_search', cwd: caller.path, timeoutMs: 60_000 });
+  expect(listed.isError, listed.text).toBe(false);
+  const names = Object.fromEntries(
+    listed.value!.computers.flatMap((group) => group.rows).map((row) => [row.thread_id, row.assistant?.name]),
+  );
+  expect(names[here.threadIds[0]]).toBe('Night ops-Desk computer');
+  expect(names[there.threadIds[0]]).toBe('Night ops-GPU computer');
+
+  // The bare name is ambiguous, in any case, and the refusal names both.
+  const ambiguous = await awaitToolAnswer(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 60_000 });
+  expect(ambiguous.isError).toBe(true);
+  expect(ambiguous.text).toContain('"night ops" matches 2 threads');
+  expect(ambiguous.text).toContain(`${here.threadIds[0]} ("Night ops") on Desk computer, the assistant "Night ops-Desk computer"`);
+  expect(ambiguous.text).toContain(`${there.threadIds[0]} ("Night ops") on GPU computer, the assistant "Night ops-GPU computer"`);
+
+  // <name>-<computer> reaches the one over there.
+  const sent = await awaitToolAnswer<{ thread_id: string; computer_id: string }>(home, { tool: 'thread_send', cwd: caller.path, timeoutMs: 60_000 });
+  expect(sent.isError, sent.text).toBe(false);
+  expect(sent.value!.thread_id).toBe(there.threadIds[0]);
+  expect(sent.value!.computer_id).toBe(remoteID);
+  await awaitTurnCompleted(remote, there.threadIds[0], 60_000);
+
+  // The sidebar and the pane header show the suffix; the titles are unchanged.
+  await home.open(page);
+  const hereRow = page.locator(`[data-sidebar-thread-id="${here.threadIds[0]}"]`);
+  const thereRow = page.locator(`[data-sidebar-thread-id="${there.threadIds[0]}"]`);
+  await expect(hereRow.getByTestId('thread-row-title')).toHaveText('Night ops-Desk computer');
+  await expect(thereRow.getByTestId('thread-row-title')).toHaveText('Night ops-GPU computer');
+  await hereRow.click();
+  await expect(page.getByTestId('pane-title-handle').filter({ visible: true }).first()).toContainText('Night ops-Desk computer');
+  await capture(page, 'assistant-name-clash-sidebar.png', hereRow, thereRow);
+  expect((await threadRows(home)).find((row) => row.id === here.threadIds[0])?.title).toBe('Night ops');
+  expect((await threadRows(remote)).find((row) => row.id === there.threadIds[0])?.title).toBe('Night ops');
+});
+
 // Last in the file: this one removes the pairing, and the tests run in
 // serial order against the two backends beforeAll launched.
 test('forgetting a computer with open requests refuses once, then abandons them', async () => {
