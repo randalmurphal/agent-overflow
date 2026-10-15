@@ -16,7 +16,8 @@ import (
 func terminalStarted(itemID, processID, command string) string {
 	return `{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"id":"` + itemID +
 		`","type":"commandExecution","source":"unifiedExecStartup","processId":"` + processID +
-		`","status":"inProgress","command":"` + command + `","cwd":"/home/user/project","exitCode":null,"durationMs":null}}}`
+		`","status":"inProgress","command":"/usr/bin/zsh -lc \"` + command + `\"","commandActions":[{"type":"unknown","command":"` + command +
+		`"}],"cwd":"/home/user/project","exitCode":null,"durationMs":null}}}`
 }
 
 // codexTerminalsMock starts a mock whose first turn starts two background
@@ -110,7 +111,7 @@ func expectTerminalList(t *testing.T, p *mockProc, id int, want ...string) {
 	}
 	var got []string
 	for _, row := range resp.Result.Data {
-		got = append(got, row.ProcessID+":"+row.ItemID)
+		got = append(got, row.ProcessID+":"+row.ItemID+":"+row.Command)
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("listed terminals = %v, want %v", got, want)
@@ -126,7 +127,7 @@ func TestCodexBackgroundTerminalTerminate(t *testing.T) {
 	p := codexTerminalsMock(t)
 
 	p.send(`{"jsonrpc":"2.0","id":3,"method":"thread/backgroundTerminals/list","params":{"threadId":"th-terminals"}}`)
-	expectTerminalList(t, p, 3, "9:shell-a", "78:shell-b")
+	expectTerminalList(t, p, 3, "9:shell-a:tail -f a.log", "78:shell-b:tail -f b.log")
 
 	p.send(`{"jsonrpc":"2.0","id":4,"method":"thread/backgroundTerminals/terminate","params":{"threadId":"th-terminals"}}`)
 	if got := p.expectLine(testTimeout); !strings.Contains(got, `"code":-32600`) || !strings.Contains(got, "missing field `processId`") {
@@ -166,7 +167,7 @@ func TestCodexBackgroundTerminalTerminate(t *testing.T) {
 		t.Fatalf("line after the interrupt answer = %q, want the interrupted turn/completed alone", got)
 	}
 	p.send(`{"jsonrpc":"2.0","id":12,"method":"thread/backgroundTerminals/list","params":{"threadId":"th-terminals"}}`)
-	expectTerminalList(t, p, 12, "9:shell-a")
+	expectTerminalList(t, p, 12, "9:shell-a:tail -f a.log")
 	p.send(`{"jsonrpc":"2.0","id":13,"method":"thread/backgroundTerminals/terminate","params":{"threadId":"th-terminals","processId":"9"}}`)
 	if got := p.expectLine(testTimeout); got != `{"jsonrpc":"2.0","id":13,"result":{"terminated":true}}` {
 		t.Fatalf("terminate after the interrupt = %q", got)

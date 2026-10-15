@@ -1380,6 +1380,7 @@ Spike 2026-10-15, codex-cli 0.159.1, `gpt-6-luna`. Fixtures under
 | `background_terminal_terminate_mid_turn_20261015.ndjson` | terminate while the PTY's turn runs a foreground command |
 | `background_terminals_clean_20261015.ndjson` | `clean` with two PTYs running, then again with none |
 | `background_terminals_survive_interrupt_20261015.ndjson` | `turn/interrupt` with two PTYs running, then `clean` |
+| `background_terminal_terminate_refused_20261015.ndjson` | `terminate` with no `processId`, then with a non-numeric one |
 
 - `terminate` answers `{"terminated":true}`, then the exit watcher writes
   one `item/completed` for the killed command, about 10 ms later: the
@@ -1395,7 +1396,8 @@ Spike 2026-10-15, codex-cli 0.159.1, `gpt-6-luna`. Fixtures under
   `{"terminated":false}` and writes nothing, including a repeat terminate
   of a killed one. A missing `processId` is `-32600 "Invalid request:
   missing field `processId`"`; a non-numeric one is `-32600 "invalid
-  background terminal process id: invalid digit found in string"`.
+  background terminal process id: invalid digit found in string"`
+  (`background_terminal_terminate_refused_20261015.ndjson`).
 - `clean` answers `{}`, then writes that `item/completed` for every
   running PTY. Upstream drains a hash map (`terminate_all_processes`), so
   their order is unspecified. With nothing running it answers `{}` and

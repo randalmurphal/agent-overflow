@@ -42,8 +42,12 @@ type delivered struct {
 }
 
 // replayDeliveryCapture feeds a capture through the parser and router and
-// returns every delivery the hook reported, by tag, in order.
-func replayDeliveryCapture(t *testing.T, fixture string, sends []captureSend) (*store.Store, map[string][]delivered) {
+// returns every delivery the hook reported, by tag, in order. order is the
+// capture's sequence of delivery signals (lifecycle states, `system/init`,
+// echoes and results, by send tag), which pins the frame order the
+// deliveries are read from: a fixture whose order changed fails here before
+// any delivery is checked.
+func replayDeliveryCapture(t *testing.T, fixture string, sends []captureSend, order []string) (*store.Store, map[string][]delivered) {
 	t.Helper()
 	data, err := os.ReadFile(captureDir + fixture)
 	if err != nil {
@@ -96,14 +100,28 @@ func replayDeliveryCapture(t *testing.T, fixture string, sends []captureSend) (*
 
 	parser := claude.NewParser()
 	base := time.Now()
+	var signals []string
 	for i, line := range lines {
 		var frame struct {
 			Type        string `json:"type"`
+			Subtype     string `json:"subtype"`
 			State       string `json:"state"`
 			CommandUUID string `json:"command_uuid"`
+			UUID        string `json:"uuid"`
+			IsReplay    bool   `json:"isReplay"`
 		}
 		if err := json.Unmarshal([]byte(line), &frame); err != nil {
 			t.Fatalf("line %d: %v", i+1, err)
+		}
+		switch {
+		case frame.Type == "command_lifecycle":
+			signals = append(signals, frame.State+" "+byUUID[frame.CommandUUID].tag)
+		case frame.Type == "system" && frame.Subtype == "init":
+			signals = append(signals, "init")
+		case frame.Type == "user" && frame.IsReplay:
+			signals = append(signals, "echo "+byUUID[frame.UUID].tag)
+		case frame.Type == "result":
+			signals = append(signals, "result")
 		}
 		if frame.Type == "command_lifecycle" && frame.State == "queued" {
 			send, ok := byUUID[frame.CommandUUID]
@@ -126,6 +144,9 @@ func replayDeliveryCapture(t *testing.T, fixture string, sends []captureSend) (*
 		}
 	}
 
+	if !slices.Equal(signals, order) {
+		t.Fatalf("%s signal order =\n  %q\nwant\n  %q", fixture, signals, order)
+	}
 	got := make(map[string][]delivered)
 	for _, delivery := range log.snapshot() {
 		for _, id := range delivery.SendIDs {
@@ -187,6 +208,8 @@ func TestReplayQueuedMidloopAfterCascade20261015(t *testing.T) {
 	st, got := replayDeliveryCapture(t, "queued_midloop_after_cascade_20261015.ndjson", []captureSend{
 		{uuid: "4d8ee9cf-7060-4c57-a25f-ef702b75601f", tag: "t0", kind: "direct", turn: 0},
 		{uuid: "7476959b-a610-4616-af65-52549e482621", tag: "m", kind: "deferred", turn: 1},
+	}, []string{
+		"queued t0", "started t0", "init", "echo t0", "result", "completed t0", "init", "queued m", "echo m", "started m", "completed m", "result",
 	})
 	assertDeliveries(t, got, map[string][]delivered{"m": {{turn: 1, own: true}}})
 	assertTurnEnded(t, st, 1)
@@ -199,6 +222,8 @@ func TestReplayQueuedDeferredPairMidloop20261015(t *testing.T) {
 		{uuid: "6bb951a6-7235-4250-9110-6e3d421b2c8b", tag: "warmup", kind: "direct", turn: 0},
 		{uuid: "a0078c51-a382-4130-8f1f-6069e0681b56", tag: "a", kind: "deferred", turn: 1},
 		{uuid: "53e50cce-036f-4dab-8b02-0fd765e6bfa6", tag: "b", kind: "deferred", turn: 2},
+	}, []string{
+		"queued warmup", "started warmup", "init", "echo warmup", "result", "completed warmup", "queued a", "started a", "init", "queued b", "echo a", "echo b", "started b", "completed b", "result", "completed a",
 	})
 	assertDeliveries(t, got, map[string][]delivered{
 		"a": {{turn: 1, own: true}},
@@ -216,6 +241,8 @@ func TestReplayQueuedBoundaryMerge20261015(t *testing.T) {
 		{uuid: "19697499-15f9-4e06-9183-017d27e1b2d0", tag: "t0", kind: "direct", turn: 0},
 		{uuid: "4f00b9e4-ec4a-48dc-8509-2edbfe68f0e7", tag: "a", kind: "quiet", turn: 0},
 		{uuid: "80e69ef4-030f-4a31-899a-05fe7f946c1f", tag: "b", kind: "quiet", turn: 0},
+	}, []string{
+		"queued t0", "started t0", "init", "echo t0", "queued a", "queued b", "result", "completed t0", "echo a", "started a", "started b", "init", "echo b", "result", "completed a", "completed b",
 	})
 	assertDeliveries(t, got, map[string][]delivered{
 		"a": {{turn: 1, own: true}},
@@ -232,6 +259,8 @@ func TestReplayQueuedBoundaryMergeAfterCascade20261015(t *testing.T) {
 		{uuid: "b4fb2589-440d-4a2d-beb6-3ff215000e16", tag: "t0", kind: "direct", turn: 0},
 		{uuid: "61ad39d2-c20a-4285-899e-371a7bb6cf33", tag: "a", kind: "deferred", turn: 1},
 		{uuid: "2dbdd36e-6541-43dc-b6e5-0afed03a4f8b", tag: "b", kind: "deferred", turn: 2},
+	}, []string{
+		"queued t0", "started t0", "init", "echo t0", "result", "completed t0", "init", "queued a", "queued b", "result", "echo a", "started a", "started b", "init", "echo b", "result", "completed a", "completed b",
 	})
 	assertDeliveries(t, got, map[string][]delivered{
 		"a": {{turn: 1, own: true}, {turn: 2, own: true, rebind: true}},
@@ -248,6 +277,8 @@ func TestReplayQueuedIdlePairSplit20261015(t *testing.T) {
 		{uuid: "13f0d581-32b2-44ef-b813-d35deabbec3b", tag: "warmup", kind: "direct", turn: 0},
 		{uuid: "d37c454d-c5f3-409d-9f05-af4dc132b14f", tag: "a", kind: "deferred", turn: 1},
 		{uuid: "9145db28-21c4-4a81-b7d4-6de4ab93d0ce", tag: "b", kind: "deferred", turn: 2},
+	}, []string{
+		"queued warmup", "started warmup", "init", "echo warmup", "result", "completed warmup", "queued a", "started a", "init", "queued b", "echo a", "result", "completed a", "started b", "init", "echo b", "result", "completed b",
 	})
 	assertDeliveries(t, got, map[string][]delivered{
 		"a": {{turn: 1, own: true}},

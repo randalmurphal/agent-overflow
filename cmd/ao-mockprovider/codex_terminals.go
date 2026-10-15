@@ -32,7 +32,8 @@ import (
 //     item/completed for every running terminal (upstream drains a map, so
 //     the order is unspecified; this writes them in start order);
 //   - `thread/backgroundTerminals/list` lists the running terminals sorted by
-//     process id;
+//     process id, each with the model's command rather than the item's
+//     shell-wrapped one;
 //   - `turn/interrupt` kills none of them.
 //
 // Guarded by the writer's lock: observe runs as the writer's observer, and
@@ -181,6 +182,23 @@ func (a *codexAdapter) handleTerminalRequest(id json.RawMessage, method string, 
 	return true
 }
 
+// modelCommand is the command as the model wrote it, which a list row
+// carries (upstream's `hook_command`). The item's `command` is the
+// shell-wrapped form (`/usr/bin/zsh -lc "..."`); the model's own string is
+// on the item's `commandActions`. An item with no actions has only its
+// `command` to give.
+func (t *codexTerminal) modelCommand() string {
+	if actions, ok := t.item["commandActions"].([]any); ok && len(actions) > 0 {
+		if action, ok := actions[0].(map[string]any); ok {
+			if command, ok := action["command"].(string); ok && command != "" {
+				return command
+			}
+		}
+	}
+	command, _ := t.item["command"].(string)
+	return command
+}
+
 // terminalListRows is the list answer's data: one row per running terminal,
 // sorted by process id as upstream sorts them. The usage fields are null, as
 // they are for a process the server has no sample of yet.
@@ -193,10 +211,9 @@ func terminalListRows(running []*codexTerminal) []map[string]any {
 	})
 	rows := make([]map[string]any, 0, len(sorted))
 	for _, terminal := range sorted {
-		command, _ := terminal.item["command"].(string)
 		cwd, _ := terminal.item["cwd"].(string)
 		rows = append(rows, map[string]any{
-			"itemId": terminal.itemID, "processId": terminal.processID, "command": command, "cwd": cwd,
+			"itemId": terminal.itemID, "processId": terminal.processID, "command": terminal.modelCommand(), "cwd": cwd,
 			"osPid": nil, "cpuPercent": nil, "rssKb": nil,
 		})
 	}

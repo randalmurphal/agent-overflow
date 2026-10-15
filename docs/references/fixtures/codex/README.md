@@ -23,6 +23,9 @@ writes"), `gpt-6-luna`, one run each:
 - `background_terminals_survive_interrupt_20261015.ndjson`: `turn/interrupt`
   with two PTYs running kills neither; a later `clean` kills both under the
   interrupted turn's id.
+- `background_terminal_terminate_refused_20261015.ndjson`: on a fresh
+  connection, `terminate` with no `processId` and with `processId:"abc"`;
+  each is refused with -32600 and upstream's message.
 
 All: `initialize`, `thread/start` and their responses, `thread/started`,
 streaming deltas, token usage, rate limits, MCP startup, remote-control and

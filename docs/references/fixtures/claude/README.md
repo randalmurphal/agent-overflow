@@ -196,7 +196,8 @@ behavior. These back parser replay tests and the reference docs in
   cut to identity keys; `stream_event`, `system/status` and
   `rate_limit_event` dropped; mirror batches keep only `queue-operation`,
   main-chain `user` and `queued_command` entries; session ids and host
-  paths synthetic.
+  paths synthetic. In `queued_idle_pair_split_20261015.ndjson` one answer
+  is cut to its first word, in its assistant message and its `result`.
 - `ndjson_outlives.log`: backgrounded Bash outliving its launching turn
   (the wire `result` envelope arrives BEFORE the task's `task_updated`)
 - `ndjson_outlives_turn2.log`: follow-up turn on the same session
