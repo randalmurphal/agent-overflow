@@ -319,6 +319,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	727416435: 'thread', // RenameThread
 	723690026: 'home', // RenameThreadGroup
 	95139518: 'home', // RenewCanonicalDomainCert
+	2861245989: 'home', // ReorderProviderAccounts
 	1188796788: 'home', // RepairBackendAddress
 	446243420: 'selected', // ReplyToPRThread
 	2174329377: 'home', // ReportFrontendErrorBatch

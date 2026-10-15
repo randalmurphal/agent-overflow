@@ -73,7 +73,7 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 	}
 
 	m.emitUnauthenticatedIfNoLogin(r, info)
-	account, _, err := m.adoptCurrentProviderAccount(r.ProviderName, info, credential)
+	account, signIn, err := m.adoptCurrentProviderAccount(r.ProviderName, info, credential)
 	if err != nil {
 		reconcileMu.Unlock()
 		return provider.AccountInfo{}, err
@@ -89,6 +89,7 @@ func (m *Manager) RunAccountProbe(r ProbeRequest) (provider.AccountInfo, error) 
 		r.AfterAdopt(account)
 	}
 	m.emitProviderAccountIfCurrent(r.ProviderName, account, info)
+	m.emitReconciledSignIn(signIn)
 	return info, nil
 }
 

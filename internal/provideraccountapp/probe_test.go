@@ -8,7 +8,10 @@ import (
 	"agent-overflow/internal/provideraccounts"
 )
 
-type recordingAccountSink struct{ events []string }
+type recordingAccountSink struct {
+	events  []string
+	signIns []SignIn
+}
 
 func (s *recordingAccountSink) PublishAccount(string, provideraccounts.Account, provider.AccountInfo, uint64) {
 	s.events = append(s.events, "account")
@@ -19,6 +22,10 @@ func (s *recordingAccountSink) PublishUsageError(string, string, error) {
 	s.events = append(s.events, "usage-error")
 }
 func (s *recordingAccountSink) PublishLogin(LoginState) { s.events = append(s.events, "login") }
+func (s *recordingAccountSink) PublishSignIn(signIn SignIn) {
+	s.events = append(s.events, "signin")
+	s.signIns = append(s.signIns, signIn)
+}
 
 // A client refreshes the model catalog on `provider:account`. AfterAdopt is
 // where Claude commits that catalog, so it must land before the emit.

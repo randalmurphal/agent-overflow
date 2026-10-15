@@ -142,6 +142,7 @@ const (
 	ProviderAccount                Channel = "provider:account"
 	ProviderAccountUsageError      Channel = "provider:account_usage_error"
 	ProviderAccountsChanged        Channel = "provider:accounts_changed"
+	ProviderAccountSignIn          Channel = "provider:account_signin"
 	ProviderApproval               Channel = "provider:approval"
 	ProviderBackgroundTaskState    Channel = "provider:background_task_state"
 	ProviderBackgroundTasksChanged Channel = "provider:background_tasks_changed"

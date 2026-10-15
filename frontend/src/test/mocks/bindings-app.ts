@@ -257,6 +257,7 @@ export const SubmitProviderLoginCode = dispatch('SubmitProviderLoginCode');
 export const CancelProviderLogin = dispatch('CancelProviderLogin');
 export const SwitchProviderAccount = dispatch('SwitchProviderAccount');
 export const RemoveProviderAccount = dispatch('RemoveProviderAccount');
+export const ReorderProviderAccounts = dispatch('ReorderProviderAccounts');
 export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage');
 
 export const GetSettings = dispatch('GetSettings');

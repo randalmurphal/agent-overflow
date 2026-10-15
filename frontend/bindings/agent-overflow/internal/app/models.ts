@@ -3158,7 +3158,6 @@ export class ManagedProviderAccount {
      */
     "refreshTokenExpiresAt"?: number;
     "addedAt": number;
-    "lastUsedAt": number;
     "rateLimits"?: provider$0.RateLimitsSnapshot | null;
     "active": boolean;
     "generation": number;
@@ -3192,9 +3191,6 @@ export class ManagedProviderAccount {
         if (!("addedAt" in $$source)) {
             this["addedAt"] = 0;
         }
-        if (!("lastUsedAt" in $$source)) {
-            this["lastUsedAt"] = 0;
-        }
         if (!("active" in $$source)) {
             this["active"] = false;
         }
@@ -3215,10 +3211,10 @@ export class ManagedProviderAccount {
      * Creates a new ManagedProviderAccount instance from a string or object.
      */
     static createFrom($$source: any = {}): ManagedProviderAccount {
-        const $$createField12_0 = $$createType50;
+        const $$createField11_0 = $$createType50;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("rateLimits" in $$parsedSource) {
-            $$parsedSource["rateLimits"] = $$createField12_0($$parsedSource["rateLimits"]);
+            $$parsedSource["rateLimits"] = $$createField11_0($$parsedSource["rateLimits"]);
         }
         return new ManagedProviderAccount($$parsedSource as Partial<ManagedProviderAccount>);
     }

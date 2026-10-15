@@ -11,7 +11,9 @@ export function providerLabel(provider: ProviderID): string {
 
 
 /** The name a card, row, or confirm dialog shows for an account. */
-export function providerAccountName(account: ManagedProviderAccount): string {
+export function providerAccountName(
+  account: Pick<ManagedProviderAccount, 'displayName' | 'email' | 'subscriptionType'>,
+): string {
   return account.displayName || account.email || account.subscriptionType || 'Saved account';
 }
 

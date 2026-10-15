@@ -37,6 +37,7 @@ import type {
   ItemStreamEvent,
   ModelFallbackEvent,
   ProviderAccountEvent,
+  ProviderAccountSignInEvent,
   ProviderAccountUsageErrorEvent,
   ProviderSessionAccountEvent,
   SettingsUpdatedEvent,
@@ -134,6 +135,7 @@ import {
 } from './eventsProvider';
 import {
   applyProviderLogin,
+  applyProviderAccountSignIn,
   hydrateProviderLogins,
 } from './providerAccounts.svelte';
 import type { ProviderLoginState } from './bindings';
@@ -303,6 +305,12 @@ export function setupEventListeners(): () => void {
   if (attachedBackends().some((entry) => entry.home)) void hydrateProviderLogins().catch((error) => {
     console.warn('events: hydrate provider sign-in state failed', error);
   });
+  // provider:account_signin — where one login landed: added, renewed, or
+  // switched to. Ephemeral; the listing a reconnect re-reads holds the result.
+  const cancelProviderAccountSignIn = wailsEventOn<ProviderAccountSignInEvent>(
+    'provider:account_signin',
+    (evt, origin) => applyProviderAccountSignIn(evt, backendKeyForOrigin(origin.backendId)),
+  );
   const cancelProviderAccountUsageError = wailsEventOn<ProviderAccountUsageErrorEvent>(
     'provider:account_usage_error',
     (evt) => {
@@ -811,6 +819,7 @@ export function setupEventListeners(): () => void {
     cancelProviderStatus();
     cancelProviderAccount();
     cancelProviderLoginState();
+    cancelProviderAccountSignIn();
     cancelProviderSessionAccount();
     cancelProviderAccountUsageError();
     cancelSystemStats();

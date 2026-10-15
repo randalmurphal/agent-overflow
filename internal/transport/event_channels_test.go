@@ -99,6 +99,8 @@ var (
 		// link that no longer answers. GetProviderLoginState is the
 		// reconnect path instead.
 		"provider:login",
+		// A sign-in outcome is a toast; the listing holds its result.
+		"provider:account_signin",
 		"updater:install",
 		"webview:trim", // 2026-08-25: replaying a stale trim would GC an active session
 		// A cue is a MOMENT, not a state: replaying it after a reconnect

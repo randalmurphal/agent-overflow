@@ -18,7 +18,7 @@ func runClaudeProbe(cwd string) {
 
 	w.writeLine(fmt.Sprintf(
 		`{"type":"system","subtype":"init","session_id":"mock-probe","model":"claude-opus-4-7","cwd":%s,"tools":[],"claude_code_version":"2.99.0","account":%s}`,
-		mustJSON(cwd), claudeAccountJSON), 0, 0)
+		mustJSON(cwd), claudeAccountJSONForHome()), 0, 0)
 
 	forEachStdinLine(func(line []byte) {
 		var env struct {

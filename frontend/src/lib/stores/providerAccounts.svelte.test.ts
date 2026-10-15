@@ -24,6 +24,8 @@ import {
   providerAccountName,
   refreshProviderAccountUsage,
   removeProviderAccount,
+  reorderProviderAccounts,
+  applyProviderAccountSignIn,
   resetForTest as resetProviderAccounts,
   switchProviderAccount,
 } from './providerAccounts.svelte';
@@ -242,8 +244,8 @@ describe('switchProviderAccount', () => {
   it('switches, reloads, and resolves true', async () => {
     let active = 'claude-a';
     setBindingMock('ListProviderAccounts', async () => [
-      account({ id: 'claude-a', active: active === 'claude-a' }),
-      account({ id: 'claude-b', active: active === 'claude-b' }),
+      account({ id: 'claude-a', email: 'a@example.com', active: active === 'claude-a' }),
+      account({ id: 'claude-b', email: 'b@example.com', active: active === 'claude-b' }),
     ]);
     const switchMock = setBindingMock('SwitchProviderAccount', async (_p, id: unknown) => {
       active = String(id);
@@ -255,7 +257,7 @@ describe('switchProviderAccount', () => {
 
     expect(switchMock).toHaveBeenCalledWith('claude', 'claude-b');
     expect(getProviderAccount('claude')?.accountId).toBe('claude-b');
-    expect(toastMessages()).toContain('Switched Claude account.');
+    expect(toastMessages()).toContain('Switched to Claude account b@example.com.');
     expect(getProviderAccountActions('claude').switchingID).toBe('');
   });
 
@@ -397,7 +399,7 @@ describe('switchProviderAccount', () => {
     await expect(switchProviderAccount('claude', target)).resolves.toBe(false);
 
     // A declined switch is not a switch: no success toast, no active move.
-    expect(toastMessages()).not.toContain('Switched Claude account.');
+    expect(toastMessages().some((message) => message.startsWith('Switched'))).toBe(false);
     expect(toastMessages()).toContain(
       'The Claude login for Work expired. Sign in again to reconnect it.',
     );
@@ -413,8 +415,8 @@ describe('switchProviderAccount', () => {
   it('starts no sign-in when the switch is accepted', async () => {
     let active = 'claude-a';
     setBindingMock('ListProviderAccounts', async () => [
-      account({ id: 'claude-a', active: active === 'claude-a' }),
-      account({ id: 'claude-b', active: active === 'claude-b' }),
+      account({ id: 'claude-a', email: 'a@example.com', active: active === 'claude-a' }),
+      account({ id: 'claude-b', email: 'b@example.com', active: active === 'claude-b' }),
     ]);
     setBindingMock('SwitchProviderAccount', async (_p, id: unknown) => {
       active = String(id);
@@ -428,7 +430,7 @@ describe('switchProviderAccount', () => {
     ).resolves.toBe(true);
 
     expect(startMock).not.toHaveBeenCalled();
-    expect(toastMessages()).toContain('Switched Claude account.');
+    expect(toastMessages()).toContain('Switched to Claude account b@example.com.');
   });
 });
 
@@ -477,7 +479,7 @@ describe('startProviderLogin', () => {
 });
 
 describe('applyProviderLogin', () => {
-  it('reloads the listing and reports success once the sign-in lands', async () => {
+  it('reloads the listing once the sign-in lands, leaving the toast to the sign-in outcome', async () => {
     let saved: ManagedProviderAccount[] = [];
     setBindingMock('ListProviderAccounts', async () => saved);
     await loadProviderAccounts();
@@ -494,7 +496,9 @@ describe('applyProviderLogin', () => {
 
     expect(getProviderAccountsFor('claude').map((a) => a.id)).toEqual(['claude-a']);
     expect(getProviderAccount('claude')?.accountId).toBe('claude-a');
-    expect(toastMessages()).toContain('Claude account connected.');
+    // Where the login landed (added, renewed) is provider:account_signin's
+    // to say; the flow's own success names no account.
+    expect(toastMessages()).toEqual([]);
     // Succeeding closes the panel: there is nothing left for it to show.
     expect(getProviderLogin('claude').phase).toBe(ProviderLoginPhase.LoginPhaseIdle);
     expect(isProviderCredentialOpInFlight('claude')).toBe(false);
@@ -849,5 +853,119 @@ describe('applyProviderAccountsChanged', () => {
 
     expect(list).not.toHaveBeenCalled();
     expect(toastMessages()).toHaveLength(0);
+  });
+});
+
+describe('applyProviderAccountSignIn', () => {
+  const signIn = (outcome: { added?: boolean; renewed?: boolean; switched?: boolean }) => ({
+    provider: 'claude' as const,
+    account: { id: 'claude-b', email: 'b@example.com' },
+    added: false,
+    renewed: false,
+    switched: false,
+    active: false,
+    ...outcome,
+  });
+
+  it('names the account and what the login did to it', () => {
+    applyProviderAccountSignIn(signIn({ added: true }));
+    applyProviderAccountSignIn(signIn({ renewed: true }));
+    applyProviderAccountSignIn(signIn({ switched: true, renewed: true }));
+    applyProviderAccountSignIn(signIn({ added: true, switched: true }));
+
+    expect(toastMessages()).toEqual([
+      'Added Claude account b@example.com.',
+      'Renewed the Claude sign-in for b@example.com.',
+      'Switched to Claude account b@example.com.',
+      'Added and switched to Claude account b@example.com.',
+    ]);
+  });
+
+  it('says nothing for an outcome that changed nothing the user made', () => {
+    applyProviderAccountSignIn(signIn({}));
+    expect(toastMessages()).toEqual([]);
+  });
+});
+
+describe('reorderProviderAccounts', () => {
+  const ids = () => getProviderAccountsFor('claude').map((a) => a.id);
+  let saved: string[];
+
+  beforeEach(() => {
+    saved = ['claude-a', 'claude-b', 'claude-c'];
+    setBindingMock('ListProviderAccounts', async () => [
+      ...saved.map((id) => account({ id, active: id === 'claude-a' })),
+      account({ id: 'codex-a', provider: 'codex', active: true }),
+    ]);
+  });
+
+  it('shows the new order at once and writes it', async () => {
+    const reorder = setBindingMock('ReorderProviderAccounts', async (_p, order: unknown) => {
+      saved = [...(order as string[])];
+    });
+    await loadProviderAccounts();
+
+    const write = reorderProviderAccounts('claude', ['claude-c', 'claude-a', 'claude-b']);
+    expect(ids()).toEqual(['claude-c', 'claude-a', 'claude-b']);
+    await write;
+
+    expect(reorder).toHaveBeenCalledWith('claude', ['claude-c', 'claude-a', 'claude-b']);
+    expect(getProviderAccountsFor('codex').map((a) => a.id)).toEqual(['codex-a']);
+    expect(toastMessages()).toEqual([]);
+  });
+
+  it('keeps the order it showed when a listing lands before the write', async () => {
+    const pending = deferred<void>();
+    setBindingMock('ReorderProviderAccounts', async (_p, order: unknown) => {
+      await pending.promise;
+      saved = [...(order as string[])];
+    });
+    await loadProviderAccounts();
+
+    const write = reorderProviderAccounts('claude', ['claude-b', 'claude-a', 'claude-c']);
+    applyProviderAccountsChanged();
+    await vi.waitFor(() => expect(getProviderAccountsFor('claude')).toHaveLength(3));
+    await Promise.resolve();
+    expect(ids()).toEqual(['claude-b', 'claude-a', 'claude-c']);
+
+    pending.resolve();
+    await write;
+    expect(ids()).toEqual(['claude-b', 'claude-a', 'claude-c']);
+  });
+
+  it('writes successive moves in the order they were made', async () => {
+    const written: string[][] = [];
+    const first = deferred<void>();
+    let calls = 0;
+    setBindingMock('ReorderProviderAccounts', async (_p, order: unknown) => {
+      // Only the first write is slow, so a second write issued beside it
+      // rather than after it would land first.
+      if (calls++ === 0) await first.promise;
+      written.push([...(order as string[])]);
+    });
+    await loadProviderAccounts();
+
+    const one = reorderProviderAccounts('claude', ['claude-b', 'claude-a', 'claude-c']);
+    const two = reorderProviderAccounts('claude', ['claude-b', 'claude-c', 'claude-a']);
+    first.resolve();
+    await Promise.all([one, two]);
+
+    expect(written).toEqual([
+      ['claude-b', 'claude-a', 'claude-c'],
+      ['claude-b', 'claude-c', 'claude-a'],
+    ]);
+    expect(ids()).toEqual(['claude-b', 'claude-c', 'claude-a']);
+  });
+
+  it('reports a refused write and shows the saved order again', async () => {
+    setBindingMock('ReorderProviderAccounts', async () => {
+      throw new Error('the account list changed; reload and try again');
+    });
+    await loadProviderAccounts();
+
+    await reorderProviderAccounts('claude', ['claude-c', 'claude-b', 'claude-a']);
+
+    expect(ids()).toEqual(['claude-a', 'claude-b', 'claude-c']);
+    expect(toastMessages().some((message) => message.startsWith('Claude accounts were not reordered.'))).toBe(true);
   });
 });

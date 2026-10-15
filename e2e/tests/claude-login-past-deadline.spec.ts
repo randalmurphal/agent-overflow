@@ -3,7 +3,8 @@
 // renewal before the deadline issued an eight-hour access token, so the login
 // keeps working until the CLI would have to renew that token. The account is
 // adopted from the native credential like any working login, and its card says
-// when it really stops ("Login expires in 3h 5xm"), not "Login expired".
+// when it really stops ("Login expires in 3h 5xm"), not "Login expired", with
+// the sign-in a login in its last week offers.
 //
 // Owns its backend: it adopts a provider account, which is process-wide state
 // no other spec should inherit.
@@ -76,7 +77,8 @@ test('a login past its refresh deadline with a live access token reads as workin
     await expect(section).toBeVisible();
     await expect(section.getByTestId(`provider-account-login-expiry-${claude[0].id}`))
       .toHaveText(/^Login expires in 3h 5\dm$/);
-    await expect(section).not.toContainText('Sign in again');
+    // Inside its last week, so a sign-in is offered, but nothing says expired.
+    await expect(section.getByTestId(`provider-account-sign-in-${claude[0].id}`)).toBeVisible();
     await expect(section).not.toContainText('Login expired');
   } finally {
     await page.close();
