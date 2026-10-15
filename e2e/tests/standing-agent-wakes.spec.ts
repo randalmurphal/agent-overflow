@@ -173,6 +173,27 @@ function startBreaker(harness: HarnessApp, provider: ProviderName, cwd: string) 
   };
 }
 
+// Moves a workspace away so no session can start in it, on either
+// provider: a start refuses a workspace that is gone. A relaunch loses the
+// mock's scenario rules, so a spec keeps its caller away until it has set
+// them again; otherwise a start at boot runs the default script, which never
+// echoes, before the client is connected to see its input.
+function workspaceAway(cwd: string) {
+  const away = `${cwd}.away`;
+  let moved = false;
+  return {
+    move: async () => {
+      await rename(cwd, away);
+      moved = true;
+    },
+    restore: async () => {
+      if (!moved) return;
+      await rename(away, cwd);
+      moved = false;
+    },
+  };
+}
+
 interface NotificationSend {
   id: string;
   kind: string;
@@ -1921,9 +1942,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 // the app quits are not the person's words: the next boot gives them back to
 // their owners instead of the composer. The request is owed and disarmed, and
 // thread_status returns the answer; the watch is pending again, and the
-// watcher delivers the completion once to a session it starts. Both are held
-// in the durable queue behind a start that failed, which leaves them there
-// for the crash on both providers.
+// watcher queues the completion again for the next start, which delivers it
+// once. Both are held in the durable queue behind a start that failed, which
+// leaves them there for the crash on both providers.
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: an answer and a remote completion queued at quit go back to their owners at boot`, async ({ page }) => {
     test.setTimeout(240_000);
@@ -1932,6 +1953,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     let harness: HarnessApp | undefined;
     let remote: HarnessApp | undefined;
     let breaker: ReturnType<typeof startBreaker> | undefined;
+    let away: ReturnType<typeof workspaceAway> | undefined;
     try {
       [harness, remote] = await startTogether(launchHarness({ dataDir: root }), launchHarness());
       await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
@@ -2097,10 +2119,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(await harness.crash()).toBe(true);
       harness = undefined;
       await b.mend();
+      away = workspaceAway(callerPath);
+      await away.move();
 
       // The boot sweep gives both back. The scenario rules went with the
-      // crashed process, so the caller's is set again at once; the watcher
-      // may start the session before it is.
+      // crashed process, so the caller stays away until its own is set
+      // again.
       harness = await launchHarness({ dataDir: root });
       await setScenario(
         harness,
@@ -2113,28 +2137,19 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           afterTurns: 'silent',
         }),
       );
-      const booted = owners();
-      const rows = queued();
-      expect(booted.request).toEqual({ delivered: 0, how: '', notify: 0 });
+      // The request is owed and disarmed, and the watch, given its
+      // completion back, has queued it again behind a start that fails.
+      await expect.poll(queued, { timeout: 60_000 }).toEqual(['remote-completion']);
+      expect(owners()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued' });
+      expect(composer()).toEqual({ draft: '', bubbles: 0 });
+      console.log(`${provider}: booted: request owed and disarmed, the completion queued again by its watch, composer empty`);
+
+      // The next start delivers the completion once; the answer never
+      // reaches the agent as a message.
+      await away.restore();
       const relaunched = harness;
       const deliveries = () => countInputs(relaunched, callerPath, completion);
-      // A completion the watcher dispatched between the snapshot and this
-      // read has left the queue before its input is reported: wait for the
-      // delivery it allows.
-      const truthful = () =>
-        (booted.watch === 'pending' && rows.length === 0) ||
-        (booted.watch === 'queued' && (rows.length === 1 || deliveries() === 1));
-      await expect
-        .poll(truthful, { message: `after boot: watch ${booted.watch}, queue ${JSON.stringify(rows)}`, timeout: 30_000 })
-        .toBe(true);
-      // The answer never became a message; the completion's delivery is
-      // the watcher's, counted above.
-      expect(composer()).toEqual({ draft: '', bubbles: 0 });
-      expect(rows).not.toContain('thread-wake');
-      console.log(`${provider}: booted: request owed and disarmed, watch ${booted.watch}, queue ${JSON.stringify(rows)}, composer empty`);
-
-      // The watcher delivers the completion once, to a session it starts;
-      // the answer never reaches the agent as a message.
+      await harness.rpc('StartSession', caller);
       const input = await wakeInput(harness, callerPath, completion, 60_000);
       expect(input.report.input).toContain('Remote job finished on Build box: nightly build');
       expect(input.report.input).toContain('build 812 finished: green');
@@ -2190,6 +2205,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await shoot(page, `${provider}-boot-returns-an-answer-to-its-request.png`, page.getByText('Read the notes.').last());
     } finally {
       await breaker?.cleanup();
+      await away?.restore().catch(() => undefined);
       await Promise.allSettled([harness?.close(), remote?.close()]);
       await rm(root, { recursive: true, force: true });
     }
@@ -2554,14 +2570,18 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const root = await mkdtemp(join(tmpdir(), `ao-give-back-crash-${provider}-`));
     let harness: HarnessApp | undefined;
     let remote: HarnessApp | undefined;
+    let away: ReturnType<typeof workspaceAway> | undefined;
     try {
       [harness, remote] = await startTogether(launchHarness({ dataDir: root }), launchHarness());
       const g = await giveBackCaller(() => harness!, remote, provider, 'give-back-crash', ANSWER);
+      away = workspaceAway(g.callerPath);
+      // The scenario rules go with the crashed process, so the caller stays
+      // away until its own is set again; the caller restores it.
       const relaunch = async () => {
         expect(await harness!.crash()).toBe(true);
         harness = undefined;
+        await away!.move();
         harness = await launchHarness({ dataDir: root });
-        // The scenario rules went with the crashed process.
         await g.healthy(`give-back-crash-relaunched-${provider}`);
         return harness;
       };
@@ -2574,6 +2594,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(g.marks().answer).toBe(0);
       let app = await relaunch();
       expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '', rows: 0 });
+      await away.restore();
       console.log(`${provider}: crashed holding the answer: at boot the request is owed and disarmed, composer empty`);
 
       // ---- The completion.
@@ -2584,19 +2605,13 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(g.marks().completion).toBe(0);
       app = await relaunch();
       const relaunched = app;
-      const booted = g.state();
       const deliveries = () => countInputs(relaunched, g.callerPath, g.completion);
-      // The watcher may already have queued it again or delivered it to a
-      // session it started.
-      // One dispatched between the snapshot and this read has left the
-      // queue before its input is reported: wait for the delivery.
-      const truthful = () =>
-        (booted.watch === 'pending' && booted.rows === 0) ||
-        (booted.watch === 'queued' && (booted.rows === 1 || deliveries() === 1));
-      await expect
-        .poll(truthful, { message: `after boot: watch ${booted.watch}, ${booted.rows} rows`, timeout: 30_000 })
-        .toBe(true);
-      expect(booted).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '' });
+      // The watch, given its completion back, queues it again behind a
+      // start that fails; the next start delivers it.
+      await expect.poll(() => g.state(), { timeout: 60_000 }).toMatchObject({ watch: 'queued', rows: 1 });
+      expect(g.state()).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '' });
+      await away.restore();
+      await app.rpc('StartSession', g.caller);
       const input = await wakeInput(app, g.callerPath, g.completion, 60_000);
       expect(input.report.input).toContain('build 812 finished: green');
       await awaitTurnCompleted(app, g.caller);
@@ -2604,7 +2619,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(deliveries()).toBe(1);
       expect(countInputs(app, g.callerPath, ANSWER)).toBe(0);
       expect(g.state()).toEqual({ request: { delivered: 0, how: '', notify: 0 }, watch: 'queued', draft: '', rows: 0 });
-      console.log(`${provider}: crashed holding the completion: at boot the watch was ${booted.watch}; the watcher delivered it once`);
+      console.log(`${provider}: crashed holding the completion: at boot its watch queued it again; the next start delivered it once`);
 
       // The agent reads the answer with thread_status. The mock numbers tool
       // calls per process, so this one names its own id.
@@ -2647,6 +2662,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       );
       await shoot(page, `${provider}-crash-returns-an-unconfirmed-answer-to-its-request.png`, page.getByText('Read the notes.').last());
     } finally {
+      await away?.restore().catch(() => undefined);
       await Promise.allSettled([harness?.close(), remote?.close()]);
       await rm(root, { recursive: true, force: true });
     }
