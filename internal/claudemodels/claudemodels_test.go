@@ -266,12 +266,12 @@ func TestMergeWireOnlyModelTakesExtendedTierFromTheMarker(t *testing.T) {
 	if extended.Tokens != provider.ClaudeExtendedContextWindow || extended.Tier != provider.ContextTierExtended {
 		t.Errorf("second tier = %+v, want the 1M extended tier", extended)
 	}
-	if extended.Default {
-		t.Error("the 1M tier must be opt-in: the wire proves it exists, not that it should be paid for")
+	if model.ContextWindows[0].Default || !extended.Default {
+		t.Error("a model that offers 1M must start new threads on it, with exactly one default")
 	}
 	if tokens, ok := provider.DefaultContextWindowForOptions(model.ContextWindows); !ok ||
-		tokens != provider.ClaudeStandardContextWindow {
-		t.Errorf("default = %d, want the standard tier", tokens)
+		tokens != provider.ClaudeExtendedContextWindow {
+		t.Errorf("default = %d, want the extended tier", tokens)
 	}
 }
 

@@ -336,6 +336,9 @@ Mechanism in
   list. Rows the list omits stay for capability lookup, so threads already on
   them keep running; a model the provider truly withdrew fails in the
   timeline (ruling 2026-10-15).
+- A new thread starts on 1M on every model that offers it, Claude and Codex,
+  including models where a long prompt costs more (Haiku 5.5 over 100k
+  tokens); 200k stays selectable (ruling 2026-10-15).
 - Model inputs are full model IDs. AO keeps no alias table: a Claude alias
   (`opus`, `sonnet`) is refused as input with the offered IDs, and a Codex
   slug is passed as written for Codex to judge. An alias the CLI reports back

@@ -522,9 +522,8 @@ func TestDefaultContextWindowForOptions(t *testing.T) {
 	})
 }
 
-// TestClaudeDefaultContextWindowPerModel pins the product decision: the large
-// models start new threads on 1M, Sonnet keeps 1M as an opt-in, and Haiku has
-// only the one tier.
+// TestClaudeDefaultContextWindowPerModel pins the product decision: every model
+// that offers 1M starts new threads on it, and Haiku 4.5 has only the one tier.
 func TestClaudeDefaultContextWindowPerModel(t *testing.T) {
 	cases := []struct {
 		model string
@@ -536,8 +535,9 @@ func TestClaudeDefaultContextWindowPerModel(t *testing.T) {
 		{"claude-opus-4-7", ClaudeExtendedContextWindow},
 		{"claude-opus-4-6", ClaudeExtendedContextWindow},
 		{"claude-opus-4-5", ClaudeExtendedContextWindow},
-		{"claude-sonnet-5", ClaudeStandardContextWindow},
-		{"claude-sonnet-4-6", ClaudeStandardContextWindow},
+		{"claude-sonnet-5", ClaudeExtendedContextWindow},
+		{"claude-sonnet-4-6", ClaudeExtendedContextWindow},
+		{"claude-haiku-5-5", ClaudeExtendedContextWindow},
 		{"claude-haiku-4-5", ClaudeStandardContextWindow},
 	}
 
@@ -556,20 +556,20 @@ func TestClaudeDefaultContextWindowPerModel(t *testing.T) {
 	}
 
 	// The 1M spelling resolves through the same catalog entries.
-	if got := DefaultContextWindowForModel(string(Claude), "claude-sonnet-5[1m]", 0); got != ClaudeStandardContextWindow {
-		t.Errorf(`DefaultContextWindowForModel("claude-sonnet-5[1m]") = %d, want %d`, got, ClaudeStandardContextWindow)
+	if got := DefaultContextWindowForModel(string(Claude), "claude-haiku-4-5[1m]", 0); got != ClaudeStandardContextWindow {
+		t.Errorf(`DefaultContextWindowForModel("claude-haiku-4-5[1m]") = %d, want %d`, got, ClaudeStandardContextWindow)
 	}
 }
 
-// TestCodexDefaultContextWindowUnchanged guards the blast radius: flipping the
-// Claude large-model default must not move Codex's, whose 1M tier stays opt-in.
-func TestCodexDefaultContextWindowUnchanged(t *testing.T) {
+// TestCodexDefaultContextWindowPerModel: a Codex model that offers 1M starts on
+// it, the rest on their single tier.
+func TestCodexDefaultContextWindowPerModel(t *testing.T) {
 	cases := []struct {
 		model string
 		want  int
 	}{
 		{"gpt-5.6-sol", Codex56ContextWindow},
-		{"gpt-5.4", CodexStandardContextWindow},
+		{"gpt-5.4", CodexExtendedContextWindow},
 		{"gpt-5.5", CodexStandardContextWindow},
 		{"gpt-5.3-codex-spark", CodexSparkContextWindow},
 	}

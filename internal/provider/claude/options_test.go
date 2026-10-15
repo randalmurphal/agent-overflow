@@ -133,7 +133,7 @@ func TestConfigFromOptionsOneMillionContextUsesModelSuffix(t *testing.T) {
 // the registry's Default context-window flag reaches the wire: an unset
 // SessionOptions.ContextWindow resolves through
 // provider.ResolveContextWindowForModel, so the large models spawn on the 1M
-// tier (`[1m]` model suffix) while Sonnet keeps 1M opt-in.
+// tier (`[1m]` model suffix) on every model that offers it.
 func TestConfigFromOptionsUnsetContextWindowUsesModelDefault(t *testing.T) {
 	cases := []struct {
 		model     string
@@ -143,8 +143,9 @@ func TestConfigFromOptionsUnsetContextWindowUsesModelDefault(t *testing.T) {
 		{"claude-fable-5", "claude-fable-5[1m]", provider.ClaudeExtendedContextWindow},
 		{"claude-opus-5", "claude-opus-5[1m]", provider.ClaudeExtendedContextWindow},
 		{"claude-opus-4-7", "claude-opus-4-7[1m]", provider.ClaudeExtendedContextWindow},
-		{"claude-sonnet-5", "claude-sonnet-5", provider.ClaudeStandardContextWindow},
-		{"claude-sonnet-4-6", "claude-sonnet-4-6", provider.ClaudeStandardContextWindow},
+		{"claude-sonnet-5", "claude-sonnet-5[1m]", provider.ClaudeExtendedContextWindow},
+		{"claude-sonnet-4-6", "claude-sonnet-4-6[1m]", provider.ClaudeExtendedContextWindow},
+		{"claude-haiku-5-5", "claude-haiku-5-5[1m]", provider.ClaudeExtendedContextWindow},
 		{"claude-haiku-4-5", "claude-haiku-4-5", provider.ClaudeStandardContextWindow},
 	}
 	for _, tc := range cases {

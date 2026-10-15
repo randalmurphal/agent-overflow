@@ -305,13 +305,16 @@ func newWireOnlyModel(group wireGroup, base []provider.ModelInfo) (provider.Mode
 		model.ContextWindows = standardContextOptions()
 	}
 	if group.extended && !hasExtendedTier(model.ContextWindows) {
-		// A wire row naming `<model>[1m]` is proof the 1M tier exists for it.
-		// Added opt-in (never the default): the wire says the tier is
-		// available, not that it should be paid for by default.
+		// A wire row naming `<model>[1m]` is proof the 1M tier exists for it,
+		// and a model that offers 1M starts new threads on it.
+		for i := range model.ContextWindows {
+			model.ContextWindows[i].Default = false
+		}
 		model.ContextWindows = append(model.ContextWindows, provider.ContextWindowOption{
-			Tokens: provider.ClaudeExtendedContextWindow,
-			Label:  "1m",
-			Tier:   provider.ContextTierExtended,
+			Tokens:  provider.ClaudeExtendedContextWindow,
+			Label:   "1m",
+			Tier:    provider.ContextTierExtended,
+			Default: true,
 		})
 		detail += "; 1M tier added from the wire's [1m] marker"
 	}

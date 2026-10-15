@@ -100,7 +100,7 @@ var ClaudeModels = []ModelInfo{
 		Slug:             "claude-fable-5",
 		Name:             "Claude Fable 5",
 		Provider:         "claude",
-		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
+		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
@@ -113,7 +113,7 @@ var ClaudeModels = []ModelInfo{
 		Name:             "Claude Opus 5",
 		Provider:         "claude",
 		Capabilities:     []string{ModelCapabilityFastMode},
-		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
+		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
@@ -121,7 +121,7 @@ var ClaudeModels = []ModelInfo{
 		Name:             "Claude Opus 4.8",
 		Provider:         "claude",
 		Capabilities:     []string{ModelCapabilityFastMode},
-		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
+		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
@@ -129,7 +129,7 @@ var ClaudeModels = []ModelInfo{
 		Name:             "Claude Opus 4.7",
 		Provider:         "claude",
 		Capabilities:     []string{ModelCapabilityFastMode},
-		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
+		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
@@ -137,48 +137,42 @@ var ClaudeModels = []ModelInfo{
 		Name:             "Claude Opus 4.6",
 		Provider:         "claude",
 		Capabilities:     []string{ModelCapabilityFastMode},
-		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
+		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
 	},
 	{
 		Slug:             "claude-opus-4-5",
 		Name:             "Claude Opus 4.5",
 		Provider:         "claude",
-		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
+		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
 	},
 	{
-		// Sonnet advertises the 1M tier but keeps 200k as the default:
-		// the claude binary treats 1M as an explicit opt-in for Sonnet,
-		// and we track that rather than doubling every Sonnet thread's
-		// context cost by default.
 		Slug:             "claude-sonnet-5",
 		Name:             "Claude Sonnet 5",
 		Provider:         "claude",
-		ContextWindows:   claudeContextOptionsDefaultingToStandard(),
+		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
 		// The claude binary's picker offers xhigh for Sonnet 4.6, but the
 		// API capability table lacks xhigh_effort for it — selecting xhigh
 		// silently downgrades to high. Expose only efforts the API honors:
-		// low→high plus max. Context default is 200k, as on Sonnet 5.
+		// low→high plus max.
 		Slug:             "claude-sonnet-4-6",
 		Name:             "Claude Sonnet 4.6",
 		Provider:         "claude",
-		ContextWindows:   claudeContextOptionsDefaultingToStandard(),
+		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
 	},
 	{
 		// The CLI reports no context windows, and the nearest catalog family
 		// (Haiku 4.5) is 200k only, so this entry exists to carry the 1M
-		// tier. Same shape as Sonnet 5 in the CLI's capability table
-		// (native 1M, standard default): requests over 100k tokens are
-		// billed at a higher tier, so 1M stays opt-in.
+		// tier.
 		Slug:             "claude-haiku-5-5",
 		Name:             "Claude Haiku 5.5",
 		Provider:         "claude",
-		ContextWindows:   claudeContextOptionsDefaultingToStandard(),
+		ContextWindows:   claudeExtendedContextOptions(),
 		ReasoningEfforts: claudeEffortOptions("medium", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
@@ -796,29 +790,13 @@ func claudeStandardContextOptions() []ContextWindowOption {
 }
 
 // claudeExtendedContextOptions builds the 200k/1m pair every Claude model that
-// speaks the `[1m]` wire tier offers. defaultExtended chooses which tier a new
-// thread starts on; call it through one of the two named wrappers below rather
-// than passing a bare bool at the catalog entry.
-func claudeExtendedContextOptions(defaultExtended bool) []ContextWindowOption {
+// speaks the `[1m]` wire tier offers. New threads start on 1M wherever a model
+// offers it; 200k stays selectable.
+func claudeExtendedContextOptions() []ContextWindowOption {
 	return []ContextWindowOption{
-		{Tokens: ClaudeStandardContextWindow, Label: "200k", Tier: ContextTierStandard, Default: !defaultExtended},
-		{Tokens: ClaudeExtendedContextWindow, Label: "1m", Tier: ContextTierExtended, Default: defaultExtended},
+		{Tokens: ClaudeStandardContextWindow, Label: "200k", Tier: ContextTierStandard},
+		{Tokens: ClaudeExtendedContextWindow, Label: "1m", Tier: ContextTierExtended, Default: true},
 	}
-}
-
-// claudeContextOptionsDefaultingToExtended: new threads start on the 1M tier.
-// Used by the large models (Fable 5, the Opus family), where the extra context
-// is the point of the model and the cost tradeoff is one the user opted into
-// by picking it.
-func claudeContextOptionsDefaultingToExtended() []ContextWindowOption {
-	return claudeExtendedContextOptions(true)
-}
-
-// claudeContextOptionsDefaultingToStandard: new threads start on 200k and 1M
-// stays opt-in. Used by the Sonnet tier, matching how the claude binary itself
-// treats 1M for Sonnet.
-func claudeContextOptionsDefaultingToStandard() []ContextWindowOption {
-	return claudeExtendedContextOptions(false)
 }
 
 func codexStandardContextOptions() []ContextWindowOption {
@@ -839,12 +817,12 @@ func codex56ContextOptions() []ContextWindowOption {
 	}}
 }
 
-// codexExtendedContextOptions keeps 272k as the default: the 1M tier is a
-// Codex-side opt-in, unchanged by the Claude large-model default flip.
+// codexExtendedContextOptions starts new threads on 1M, as every model that
+// offers it does; 272k stays selectable.
 func codexExtendedContextOptions() []ContextWindowOption {
 	return []ContextWindowOption{
-		{Tokens: CodexStandardContextWindow, Label: "272k", Tier: ContextTierStandard, Default: true},
-		{Tokens: CodexExtendedContextWindow, Label: "1m", Tier: ContextTierExtended},
+		{Tokens: CodexStandardContextWindow, Label: "272k", Tier: ContextTierStandard},
+		{Tokens: CodexExtendedContextWindow, Label: "1m", Tier: ContextTierExtended, Default: true},
 	}
 }
 
