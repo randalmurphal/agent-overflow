@@ -161,28 +161,42 @@
     </SettingsCallout>
   {/if}
 
+  <!-- Narrower than @2xl each row is its own grid: the command with its
+       When condition under it, then the chord and actions at their natural
+       width. Words break only where they may: a command at its dots, a
+       condition at its spaces. -->
   <div
-    class="overflow-hidden rounded-[var(--radius-control)] border border-border-subtle"
+    class="@container/keys overflow-hidden rounded-[var(--radius-control)] border border-border-subtle"
   >
-    <table class="w-full text-[0.78125rem]">
+    <table class="w-full text-[0.78125rem] [overflow-wrap:normal] @max-2xl/keys:block">
       <thead
-        class="bg-surface-1/40 text-[0.65625rem] uppercase tracking-[0.14em] text-fg-hint"
+        class="bg-surface-1/40 text-[0.65625rem] uppercase tracking-[0.14em] text-fg-hint @max-2xl/keys:hidden"
       >
         <tr>
           <th class="px-3 py-2 text-left font-medium">Command</th>
           <th class="px-3 py-2 text-left font-medium">Chord</th>
-          <th class="px-3 py-2 text-left font-medium">When</th>
+          <th class="hidden px-3 py-2 text-left font-medium @2xl/keys:table-cell">When</th>
           <th class="px-3 py-2 text-right font-medium"><span class="sr-only">Actions</span></th>
         </tr>
       </thead>
-      <tbody>
+      <tbody class="@max-2xl/keys:block">
         {#each rules as rule, i (keybindingIdentity(rule))}
           {@const state = chordState(rule)}
-          <tr class="border-t border-border-subtle/60" data-testid="keybinding-row-{rowTestId(rule)}">
-            <td class="px-3 py-2 font-mono text-[0.71875rem] text-fg">
-              {rule.command}
+          <tr
+            class="border-t border-border-subtle/60 @max-2xl/keys:grid @max-2xl/keys:grid-cols-[minmax(0,1fr)_auto_auto] @max-2xl/keys:items-center @max-2xl/keys:first:border-t-0"
+            data-testid="keybinding-row-{rowTestId(rule)}"
+          >
+            <!-- Chrome breaks at <wbr> even under nowrap, so the wide layout
+                 takes the <wbr>s out of layout. -->
+            <td
+              class="px-3 py-2 font-mono text-[0.71875rem] text-fg @2xl/keys:whitespace-nowrap @2xl/keys:[&_wbr]:hidden @max-2xl/keys:[overflow-wrap:break-word]"
+            >
+              {#each rule.command.split('.') as part, j}{#if j > 0}.<wbr />{/if}{part}{/each}
+              {#if rule.when}
+                <span class="mt-0.5 block text-[0.6875rem] text-fg-muted @2xl/keys:hidden">{rule.when}</span>
+              {/if}
             </td>
-            <td class="px-3 py-2">
+            <td class="px-3 py-2 @max-2xl/keys:pr-0">
               {#if capturingFor === i}
                 <!-- svelte-ignore a11y_autofocus -->
                 <!--
@@ -200,7 +214,7 @@
                   onblur={() => {
                     if (capturingFor === i) capturingFor = null;
                   }}
-                  class="rounded-[var(--radius-field)] border border-accent bg-accent/15 px-2.5 py-1 text-[0.71875rem] font-mono text-accent"
+                  class="rounded-[var(--radius-field)] border border-accent bg-accent/15 px-2.5 py-1 text-[0.71875rem] font-mono text-accent @max-2xl/keys:max-w-[8.5rem]"
                 >
                   Press keys... (Esc to cancel)
                 </button>
@@ -217,7 +231,7 @@
                     : state === 'unbound'
                       ? 'No shortcut'
                       : undefined}
-                  class="rounded-[var(--radius-field)] px-2.5 py-1 text-[0.71875rem] font-mono cursor-pointer disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
+                  class="whitespace-nowrap rounded-[var(--radius-field)] px-2.5 py-1 text-[0.71875rem] font-mono cursor-pointer disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
                     {state === 'unbound'
                     ? 'border border-dashed border-border-subtle bg-transparent italic text-fg-hint hover:border-accent/40 hover:text-accent'
                     : state === 'custom'
@@ -228,10 +242,10 @@
                 </button>
               {/if}
             </td>
-            <td class="px-3 py-2 font-mono text-[0.6875rem] text-fg-muted">
+            <td class="hidden px-3 py-2 font-mono text-[0.6875rem] text-fg-muted @2xl/keys:table-cell">
               {rule.when ?? ''}
             </td>
-            <td class="px-3 py-2 text-right whitespace-nowrap">
+            <td class="px-3 py-2 text-right whitespace-nowrap @max-2xl/keys:flex @max-2xl/keys:flex-col @max-2xl/keys:items-end @max-2xl/keys:pl-1">
               {#if state !== 'unbound'}
                 <button
                   type="button"

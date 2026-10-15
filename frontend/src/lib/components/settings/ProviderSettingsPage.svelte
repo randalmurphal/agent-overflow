@@ -144,7 +144,7 @@
             class="h-1.5 w-1.5 rounded-full {statusDotColor(status?.status ?? 'unknown')}"
             aria-hidden="true"
           ></span>
-          {status?.status ?? 'checking'}
+          <span class="whitespace-nowrap">{status?.status ?? 'checking'}</span>
           {#if status?.version}
             <span class="text-fg-hint">·</span>
             <span class="font-mono text-[0.65625rem] text-fg-muted">{status.version}</span>
