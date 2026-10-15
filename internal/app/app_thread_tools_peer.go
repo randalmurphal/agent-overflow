@@ -528,7 +528,20 @@ func (a *App) cancelPeerThreadRequest(ctx context.Context, origin threadRequestO
 	if err != nil {
 		return ThreadPeerReply{}, err
 	}
-	return ThreadPeerReply{Request: &state, Effect: effect}, nil
+	return ThreadPeerReply{Request: &state, Effect: peerCancelEffect(effect)}, nil
+}
+
+// peerCancelEffect is a cancel's effect as a paired caller is told it. The
+// peer call carries no version, and a caller built before the two effects
+// that leave a turn alone renders an effect it does not know as an
+// interruption, which would be false; nothing_to_stop is what every build
+// reads as "nothing was stopped". The local caller keeps the precise word.
+func peerCancelEffect(effect string) string {
+	switch effect {
+	case threadtools.EffectLeftRunning, threadtools.EffectLeftUnread:
+		return threadtools.EffectNothing
+	}
+	return effect
 }
 
 // threadPeerRequestState reads one receipt for the device that owns it.

@@ -213,6 +213,18 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 		{"command lifecycle", "command lifecycle", func(t *testing.T, r *Router, token string) {
 			r.rememberCommandLifecycle(threadID, "command-1", commandLifecycleEntry{}, token)
 		}, func(r *Router) bool { _, ok := r.peekCommandLifecycle(threadID, "command-1"); return ok }},
+		{"deliveries awaiting a turn", "send started between turns", func(t *testing.T, r *Router, token string) {
+			// Claude acks `started` for a held message before its turn's
+			// init, so the delivery waits for that turn start.
+			row := store.Item{ID: "user:0:flush:1", ThreadID: threadID, Kind: "user_text", Meta: `{"sendId":"thread-request:tok"}`}
+			r.RegisterPendingQuietFlushSendWithExpectation(threadID, "queue:1", row, 1, 1, PendingSendExpectation{ProviderItemID: "uuid-1"})
+			r.noteSendStarted(threadID, token, "uuid-1")
+		}, func(r *Router) bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			st := r.threadStateIfPresent(threadID)
+			return st != nil && len(st.deliveriesAwaitingTurn) != 0
+		}},
 		{"effective model", "model fallback", func(t *testing.T, r *Router, token string) {
 			if err := r.handleModelFallback(fromSession(modelFallback(t), token)); err != nil {
 				t.Fatal(err)

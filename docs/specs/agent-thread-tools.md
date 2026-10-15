@@ -514,7 +514,18 @@ threads rather than the caller's ledger.
 
 By `token`: cancels that request. A message still queued and not yet
 dispatched is removed from the queue; a turn the request's message
-started is interrupted; a reminder is dropped. By `label`: stops the
+started is interrupted; a reminder is dropped. A message the provider
+drained into a turn already running did not start that turn: the request
+settles cancelled, the turn keeps running, and the effect is
+`turn_left_running`. A message the provider holds and no turn has read
+yet is not stopped either: the request settles cancelled, the thread may
+still read the message, and the effect is `message_left_unread`. A paired
+caller is told `nothing_to_stop` for both, because the peer call carries
+no version and an older build would read an unknown effect as an
+interruption; its note for a request on another computer says nothing
+could be stopped from here and the message may still be read. A request
+that has already settled stops nothing, even when the turn that answered
+it is still running. By `label`: stops the
 caller's loop or watch with that label, and the run it has in flight.
 By `thread_id`:
 interrupts that thread's running turn when the caller spawned, sent
@@ -922,7 +933,25 @@ late reply. Every settlement and late reply bumps the request's
 wakes the caller again; a new `thread_send` with `notify` or a wait
 re-subscribes. Settlement is bound to the turn that consumed the
 request's message: a turn the user or another request started, ending
-while the request's message is still queued, settles nothing. For scratch threads
+while the request's message is still queued, settles nothing. A message
+written into a running turn is bound when the provider delivers it, not
+when it is written: Claude can drain it into that turn or hold it and run
+it as a turn of its own, and only its `command_lifecycle` `started` (or the
+message's echo, on a provider without it) says which. Until then the
+request is `running` with no turn, a reply still settles it, and a cancel
+interrupts nothing. The binding records whether the turn opened for the
+message (or the joined message carrying it); a Codex steer joins a running
+turn, so it never does. A message sent with no turn running reserved a
+turn of its own, and is never bound to an earlier one, even when the CLI
+reports it `started` inside another message's turn. When the provider
+merges a message whose own echo already opened a turn into a later one,
+the binding moves to the turn that ran the merged message and the empty
+turn is ended. A message given back to the composer, or lost with a
+session that ended, before any turn read it settles `interrupted`; the
+answer says the request was read and not answered when the provider had
+taken it in. A session that ends during the turn that read the request
+(a stop, a death, a replacement start) ends that turn and settles the
+request `interrupted` with what the turn had written. For scratch threads
 only, any non-running state counts as rest (there is no human to
 unblock one), and the thread is deleted once its answer is stored.
 

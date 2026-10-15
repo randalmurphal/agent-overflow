@@ -584,6 +584,38 @@ func appendSeedPad(out []byte, side string, bytes int) []byte {
 // DB rows. Recorded bundles survive: they are captured artifacts, not
 // test state. The caller reloads the page afterwards; DB-derived
 // frontend state rebuilds from zero.
+// stopPasses bounds how many times stopAllSessions stops the sessions the
+// previous stops' work started. Each pass follows one hop of requests from
+// a stopped thread back to the thread that asked; a chain longer than this
+// is a defect, reported rather than waited out.
+const stopPasses = 5
+
+// stopAllSessions stops every thread's session, then the sessions that work
+// those stops set off has started: a stop settles the requests other threads
+// made of the stopped one, and each answer wakes its caller, which starts
+// that caller's session again. stopFailed decides what one failed stop does;
+// a non-nil return ends the stop.
+func (h *Harness) stopAllSessions(threads []store.Thread, stopFailed func(threadID string, err error) error) error {
+	ids := make([]string, 0, len(threads))
+	for _, t := range threads {
+		ids = append(ids, t.ID)
+	}
+	for pass := 0; len(ids) > 0; pass++ {
+		if pass == stopPasses {
+			return fmt.Errorf("sessions still starting after %d stop passes: %v", stopPasses, ids)
+		}
+		for _, threadID := range ids {
+			if err := h.config.Host.StopSession(threadID); err != nil {
+				if err := stopFailed(threadID, err); err != nil {
+					return err
+				}
+			}
+		}
+		ids = h.config.Host.AwaitSessionEndWork()
+	}
+	return nil
+}
+
 func (h *Harness) HarnessReset() (err error) {
 	// See Harness.mutate: two resets would both list the same projects and
 	// double-cascade them, and a concurrent seed would leave a project row
@@ -636,12 +668,13 @@ func (h *Harness) HarnessReset() (err error) {
 	if err != nil {
 		return fmt.Errorf("list threads: %w", err)
 	}
-	for _, t := range threads {
-		if err := h.config.Host.StopSession(t.ID); err != nil {
-			// Keep going: a half-dead session must not wedge the reset;
-			// the delete cascade below is the authoritative cleanup.
-			log.Printf("harness: reset: stop session %s: %v", t.ID, err)
-		}
+	if err := h.stopAllSessions(threads, func(threadID string, err error) error {
+		// Keep going: a half-dead session must not wedge the reset;
+		// the delete cascade below is the authoritative cleanup.
+		log.Printf("harness: reset: stop session %s: %v", threadID, err)
+		return nil
+	}); err != nil {
+		return err
 	}
 	if err := h.config.Host.RecoverCrashedTurns(); err != nil {
 		return fmt.Errorf("settle in-flight turns: %w", err)

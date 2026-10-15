@@ -101,7 +101,11 @@ is conditional on the state it expects to find, and a change that does not
 apply is a lost race rather than an error. A settlement takes the token's
 settle lock before it writes, releases it before queue or provider work, and
 is handed to the caller by the same door
-(`app_thread_tools_settle.go`). A wake (`app_thread_tools_wake.go`) writes its durable queue row and its
+(`app_thread_tools_settle.go`). A receipt is bound to the turn its message
+was delivered into, and to whether that turn opened for it (the only turn a
+cancel interrupts), only from triage's send-delivered hook or a send that
+opened its own turn (`bindRequestDelivery`); a message handed to the
+provider waits for that, because Claude can hold it for a turn of its own. A wake (`app_thread_tools_wake.go`) writes its durable queue row and its
 delivery mark in one store transaction. Every message the app writes into
 a thread for someone else goes through `queueAgentNotice`
 (`app_agent_notice.go`): it is accepted once queued, without the action

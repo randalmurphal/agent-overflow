@@ -211,6 +211,11 @@ type App struct {
 	// threadRequestsWG joins the request sweep goroutine at shutdown, the
 	// way remoteWatchWG joins the remote completion watcher.
 	threadRequestsWG sync.WaitGroup
+	// threadRequestSettling counts, inside threadRequestsWG, the
+	// settlements and wake deliveries in flight (goThreadRequestSettling),
+	// so a caller can wait for what a settlement sets off without waiting
+	// out the sweep.
+	threadRequestSettling sync.WaitGroup
 	// agentWakes is the wake supervisor's in-process state: the runs and
 	// long-running watch processes in flight. Zero value ready. See
 	// app_agent_wakes.go.
@@ -561,6 +566,10 @@ type App struct {
 	// remoteReplySettledForTest, when set, runs in a parked remote call's
 	// after-response work between the dismissal and the end of its wait.
 	remoteReplySettledForTest func()
+	// cancelReadForTest, when set, runs in a request cancel between its read
+	// of the receipt and its settlement (stopThreadRequestWorkFor), so a
+	// test can settle the receipt at that moment.
+	cancelReadForTest func(token string)
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a

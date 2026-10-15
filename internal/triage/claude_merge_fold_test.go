@@ -3,6 +3,7 @@ package triage
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -598,5 +599,141 @@ func TestEveryMergeFoldedMemberIsReportedConsumed(t *testing.T) {
 		if !slices.Contains(consumed, owner) {
 			t.Errorf("consumed hook saw %q; folded member owner %q was never confirmed", consumed, owner)
 		}
+	}
+}
+
+// A member a merge fold absorbs was delivered in the survivor's turn: the CLI
+// ran them as one message. Its request is reported delivered there, as the
+// survivor's is, or it would wait for a delivery that never comes.
+func TestAMergeFoldedMemberIsDeliveredInTheSurvivorsTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	log := &deliveryLog{}
+	router.SetSendDeliveredHook(log.record)
+
+	digestA, err := claude.UserMessageBlockDigest("check the changelog", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaA, err := usermessage.MarshalMeta(usermessage.Meta{SendID: "thread-request:tok-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	deferredA := store.Item{
+		ID: "user:3:flush:1", ThreadID: "t1", TurnIndex: 4,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "check the changelog", Meta: metaA, CreatedAt: now, UpdatedAt: now,
+	}
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:1", deferredA, now,
+		PendingSendExpectation{ProviderItemID: "uuid-a", ContentBlockDigest: digestA})
+	mergeFoldSend(t, router, "t1", "user:3:flush:2", "uuid-b", "and the notes", nil,
+		usermessage.Meta{SendID: "thread-request:tok-b"}, 3, 5)
+
+	// The merged turn opens, then the survivor's echo carries both.
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: "t1", Timestamp: time.Now()}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	open, ok := router.openTurnIndex("t1")
+	if !ok {
+		t.Fatal("fixture: no turn open")
+	}
+	if err := router.Handle(mergeEcho(t, "t1", "uuid-b", textBlocks("check the changelog", "and the notes"), true)); err != nil {
+		t.Fatalf("echo B: %v", err)
+	}
+	if _, ok := router.peekPendingSendByItemID("t1", deferredA.ID); ok {
+		t.Fatal("fixture: the fold did not consume the member")
+	}
+	turns := map[string]int{}
+	for _, delivery := range log.snapshot() {
+		for _, id := range delivery.SendIDs {
+			turns[id] = delivery.TurnIndex
+		}
+	}
+	for _, id := range []string{"thread-request:tok-a", "thread-request:tok-b"} {
+		if turn, ok := turns[id]; !ok || turn != open {
+			t.Errorf("delivery of %s = %d (reported %v), want the merged turn %d; all: %+v", id, turn, ok, open, log.snapshot())
+		}
+	}
+}
+
+// A deferred member whose merged-away echo arrives before the survivor's turn
+// opens: A's echo, `started` for A and B, then B's echo carrying both, with
+// the init that opens the merged turn before B's echo (the documented order)
+// or none, when B's echo opens it. A's echo opens turn 1 for A and delivers
+// it there; turn 2 runs the merged message. The fold leaves turn 1 with no
+// rows, so A's delivery moves to turn 2 and turn 1 is ended, not left open,
+// whether or not the opening of turn 2 already completed it.
+func TestAMergeFoldedMemberEchoedIntoATurnOfItsOwnMovesToTheSurvivorsTurn(t *testing.T) {
+	for _, order := range []string{"init", "no init"} {
+		t.Run(order, func(t *testing.T) {
+			router, st, _ := newTestRouter(t)
+			createTestThread(t, st, "t1")
+			log := &deliveryLog{}
+			router.SetSendDeliveredHook(log.record)
+			handle := func(evt provider.ProviderEvent) {
+				t.Helper()
+				evt.ThreadID = "t1"
+				evt.Timestamp = time.Now()
+				if err := router.Handle(evt); err != nil {
+					t.Fatalf("%s: %v", evt.Kind, err)
+				}
+			}
+			handle(provider.ProviderEvent{Kind: provider.EventTurnStart})
+			handle(provider.ProviderEvent{Kind: provider.EventTextDelta, Content: "turn 0 response"})
+			handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: normalTurnCompleteMeta()})
+			for i, send := range []struct{ uuid, text, sendID string }{
+				{"uuid-a", "check the changelog", "thread-request:tok-a"},
+				{"uuid-b", "and the notes", "thread-request:tok-b"},
+			} {
+				turn := i + 1
+				digest, err := claude.UserMessageBlockDigest(send.text, nil, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				meta, err := usermessage.MarshalMeta(usermessage.Meta{SendID: send.sendID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				now := time.Now().UnixMilli()
+				router.RegisterPendingFlushSendWithExpectation("t1", fmt.Sprintf("queue:%d", turn), store.Item{
+					ID: fmt.Sprintf("user:%d:flush:%d", turn, turn), ThreadID: "t1", TurnIndex: turn,
+					Kind: "user_text", Role: "user", Status: "completed", Summary: send.text, Meta: meta, CreatedAt: now, UpdatedAt: now,
+				}, now, PendingSendExpectation{ProviderItemID: send.uuid, ContentBlockDigest: digest})
+			}
+
+			handle(mergeEcho(t, "t1", "uuid-a", textBlocks("check the changelog"), false))
+			handle(commandLifecycleEvent("t1", "uuid-a", provider.CommandStarted))
+			handle(commandLifecycleEvent("t1", "uuid-b", provider.CommandStarted))
+			if order == "init" {
+				handle(provider.ProviderEvent{Kind: provider.EventInit})
+			}
+			handle(mergeEcho(t, "t1", "uuid-b", textBlocks("check the changelog", "and the notes"), true))
+
+			var moved *SendDelivery
+			turns := map[string][]int{}
+			for _, delivery := range log.snapshot() {
+				for _, id := range delivery.SendIDs {
+					turns[id] = append(turns[id], delivery.TurnIndex)
+				}
+				if delivery.Rebind {
+					moved = &delivery
+				}
+			}
+			if !slices.Equal(turns["thread-request:tok-a"], []int{1, 2}) || !slices.Equal(turns["thread-request:tok-b"], []int{2}) {
+				t.Fatalf("deliveries = %+v, want A into turn 1 then moved to 2, B into 2", log.snapshot())
+			}
+			if moved == nil || moved.ReboundFrom != 1 || moved.TurnIndex != 2 || !moved.OwnTurn || moved.UserItemID != "user:2:flush:2" {
+				t.Fatalf("moved delivery = %+v, want A's moved from turn 1 to 2, its own, under the survivor's row", moved)
+			}
+			turn, found, err := st.GetTurnByThreadIndex("t1", 1)
+			if err != nil || !found || turn.CompletedAt == nil {
+				t.Fatalf("turn 1 = %+v found=%v err=%v, want it ended", turn, found, err)
+			}
+			active, found, err := st.GetActiveTurn("t1")
+			if err != nil || !found || active.TurnIndex != 2 {
+				t.Fatalf("active turn = %+v found=%v err=%v, want turn 2 alone", active, found, err)
+			}
+		})
 	}
 }

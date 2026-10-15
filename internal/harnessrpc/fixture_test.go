@@ -37,6 +37,11 @@ type testHost struct {
 	updateWorkReason  string
 	droppedRetained   int
 	broadcastRows     []string
+	// stopped is every StopSession call, in order. liveAfterStop is what
+	// each AwaitSessionEndWork returns in turn: the sessions the stops'
+	// work started. Exhausted, it reports none.
+	stopped       []string
+	liveAfterStop [][]string
 }
 
 func newHarnessTestHost(t *testing.T) (*Harness, *testHost) {
@@ -145,7 +150,18 @@ func (h *testHost) ArchiveThread(threadID string) error {
 func (h *testHost) BroadcastThreadRow(threadID string) {
 	h.broadcastRows = append(h.broadcastRows, threadID)
 }
-func (h *testHost) StopSession(string) error              { return nil }
+func (h *testHost) StopSession(threadID string) error {
+	h.stopped = append(h.stopped, threadID)
+	return nil
+}
+func (h *testHost) AwaitSessionEndWork() []string {
+	if len(h.liveAfterStop) == 0 {
+		return nil
+	}
+	live := h.liveAfterStop[0]
+	h.liveAfterStop = h.liveAfterStop[1:]
+	return live
+}
 func (h *testHost) DeleteProject(projectID string) error  { return h.store.DeleteProject(projectID) }
 func (h *testHost) RecoverCrashedTurns() error            { return nil }
 func (h *testHost) RecoverOrphanedBackgroundTasks() error { return nil }

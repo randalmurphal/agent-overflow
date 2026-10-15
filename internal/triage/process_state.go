@@ -10,7 +10,9 @@ package triage
 // (stopExistingSessionLocked, such as the session-config restart
 // reconcileSessionConfig schedules) reaches MarkThreadActive without
 // CleanupThread and keeps it live, and its own lifecycle or CleanupThread
-// ends it. TestMarkThreadActiveClearsOnlyThroughProcessBoundState fails
+// ends it. The open turn is the exception that is not cleared but ended:
+// the host ends it as truncated when it closes the replaced session
+// (EndReplacedSessionTurn). TestMarkThreadActiveClearsOnlyThroughProcessBoundState fails
 // when MarkThreadActive clears anything outside this list.
 //
 // TestProcessStateWritersRefuseARetiredSessionsFrame is keyed by these
@@ -33,6 +35,9 @@ var processBoundState = []processBoundEntry{
 	// The acks the correlation waits on can only come from the dead
 	// process.
 	{name: "command lifecycle", clear: stateClear(func(st *threadState) { st.commandLifecycle = nil })},
+	// A delivery waiting for a turn start waits on the dead process's
+	// turn; a replacement's first turn is not it.
+	{name: "deliveries awaiting a turn", clear: stateClear(func(st *threadState) { st.deliveriesAwaitingTurn = nil })},
 	// An in-flight echo cannot survive the session whose read loop carries
 	// it, and a replacement after revert reuses turn indexes, so a
 	// lingering mark would settle a reused-index predecessor

@@ -38,8 +38,10 @@ type threadRequestState struct {
 	// end on that thread could settle. It is the settlement observer's
 	// gate: a thread with no entry here costs one map read per turn end
 	// and no query. Written only where a receipt enters and leaves
-	// `running`, so it cannot claim a receipt the store does not have.
-	running map[string]map[string]struct{}
+	// `running`, so it cannot claim a receipt the store does not have. A
+	// token's value is whether the provider has taken its message in
+	// before the turn that reads it opened (SendDelivery.AwaitingTurn).
+	running map[string]map[string]bool
 	// settleLocks serializes everything that can settle or deliver one
 	// token, so a settlement and a timing-out wait never both deliver the
 	// answer and never neither.
@@ -241,15 +243,44 @@ func (a *App) noteReceiptRunning(threadID, token string) {
 	}
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
+	a.receiptGateLocked(threadID, token)
+}
+
+// noteReceiptTakenIn records that the provider took the receipt's message in
+// before the turn that reads it opened, so a session that ends before that
+// turn says the request was read and not answered.
+func (a *App) noteReceiptTakenIn(threadID, token string) {
+	if threadID == "" || token == "" {
+		return
+	}
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	a.receiptGateLocked(threadID, token)[token] = true
+}
+
+// receiptTakenIn reports what noteReceiptTakenIn recorded.
+func (a *App) receiptTakenIn(threadID, token string) bool {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	return a.threadRequests.running[threadID][token]
+}
+
+// receiptGateLocked puts the token in the thread's gate, keeping what was
+// recorded for it, and returns the thread's tokens. Caller holds
+// threadRequests.mu.
+func (a *App) receiptGateLocked(threadID, token string) map[string]bool {
 	if a.threadRequests.running == nil {
-		a.threadRequests.running = make(map[string]map[string]struct{})
+		a.threadRequests.running = make(map[string]map[string]bool)
 	}
 	tokens := a.threadRequests.running[threadID]
 	if tokens == nil {
-		tokens = make(map[string]struct{})
+		tokens = make(map[string]bool)
 		a.threadRequests.running[threadID] = tokens
 	}
-	tokens[token] = struct{}{}
+	if _, ok := tokens[token]; !ok {
+		tokens[token] = false
+	}
+	return tokens
 }
 
 func (a *App) forgetReceiptRunning(threadID, token string) {

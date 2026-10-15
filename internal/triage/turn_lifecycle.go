@@ -64,6 +64,7 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	if !opened {
 		return openErr
 	}
+	r.releaseDeliveriesAtTurnStart(evt.ThreadID, turnIndex, evt.SessionToken)
 	r.openTurnSpan(evt, turnIndex)
 
 	// Open the first wire round for this logical turn. Frontend
@@ -1165,6 +1166,9 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 		log.Printf("triage: queued echo turn %s/%d was placed at %d — open-turn state still names %d",
 			threadID, turnIndex, placedIndex, turnIndex)
 	}
+	// A `started` that arrived with no logical turn open (a mid-loop drain
+	// after a re-round) is waiting for this turn: no init will open it.
+	r.releaseDeliveriesAtTurnStart(threadID, turnIndex, sessionToken)
 	r.openTurnSpan(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
 
 	// Re-mint the wire round under the new logical turn. The frontend
@@ -1760,6 +1764,22 @@ func (r *Router) WaitForPendingSettles() {
 // thanks to claimTurnSettlement.
 func (r *Router) CleanupThread(threadID string) {
 	r.cleanupThread(threadID, nil)
+}
+
+// EndReplacedSessionTurn ends, as truncated, the turn a session being
+// replaced left open, as CleanupThread does for a stop. A start that replaces
+// a live session keeps the rest of the thread's state live
+// (processBoundState), but the process that ran this turn is closed and its
+// replacement never continues it: left open, the replacement's first output
+// would land in it and complete it. The caller has closed that session and
+// drained its frames.
+func (r *Router) EndReplacedSessionTurn(threadID string) {
+	if !r.HasInFlightTurnOrRound(threadID) {
+		return
+	}
+	if err := r.synthesizeTruncatedTurnComplete(threadID, time.Now().UnixMilli()); err != nil {
+		r.providerWriteFailed(threadID, "synthesize turn-complete for replaced session on thread "+threadID, err)
+	}
 }
 
 // CleanupThreadIfEpoch is CleanupThread for asynchronous teardowns that

@@ -47,6 +47,8 @@ type mergedFlushRow struct {
 	// has nothing to delete.
 	persisted bool
 	kind      string
+	// turnIndex is the persisted row's turn.
+	turnIndex int
 }
 
 // foldMergedFlushRows rebuilds the survivor row as the join of members +
@@ -62,7 +64,7 @@ type mergedFlushRow struct {
 // earlier refusal leaves the conversation exactly as the pre-fold code left
 // it: several rows, one of which a revert will refuse. That is a loud,
 // recoverable state, and strictly better than a partially folded one.
-func (r *Router) foldMergedFlushRows(threadID string, survivor *pendingSend, digests []flushSendDigest) error {
+func (r *Router) foldMergedFlushRows(threadID, sessionToken string, survivor *pendingSend, digests []flushSendDigest) error {
 	members := make([]mergedFlushRow, 0, len(digests)+1)
 	for _, entry := range digests {
 		member, ok, err := r.resolveMergedFlushRow(threadID, entry.AOItemID)
@@ -128,7 +130,8 @@ func (r *Router) foldMergedFlushRows(threadID string, survivor *pendingSend, dig
 		return fmt.Errorf("triage: fold merged flush rows on %s: %w", threadID, err)
 	}
 
-	r.settleFoldedMergeState(threadID, survivor, digests)
+	r.settleFoldedMergeState(threadID, sessionToken, survivor, digests)
+	r.settleFoldEmptiedTurns(threadID, sessionToken, survivor, persisted.ID, folded, now)
 
 	r.emitItemUpsert(persisted)
 	for _, member := range folded {
@@ -158,7 +161,7 @@ func (r *Router) foldMergedFlushRows(threadID string, survivor *pendingSend, dig
 // the injected-context branch. Both are done together here. The consumption is
 // also a confirmation source: the app layer hears of the entry's send ids, as
 // it would from the entry's own echo, or its owners would stay unconfirmed.
-func (r *Router) settleFoldedMergeState(threadID string, survivor *pendingSend, digests []flushSendDigest) {
+func (r *Router) settleFoldedMergeState(threadID, sessionToken string, survivor *pendingSend, digests []flushSendDigest) {
 	var joinedDigest []string
 	dropped := make([]string, 0, len(digests))
 	for _, entry := range digests {
@@ -193,6 +196,76 @@ func (r *Router) settleFoldedMergeState(threadID string, survivor *pendingSend, 
 		r.markWireOnlyUserTextSeen(threadID, providerItemID)
 	}
 	r.reportSendsConsumed(threadID, consumedSends)
+	// The survivor's turn is the members' too: the CLI ran them as one
+	// message.
+	members := make([]*pendingSend, 0, len(consumedSends))
+	for i := range consumedSends {
+		members = append(members, &consumedSends[i])
+	}
+	r.reportSendsDelivered(threadID, sessionToken, members)
+}
+
+// settleFoldEmptiedTurns handles the members whose own echo opened a turn of
+// their own before the survivor's turn opened (openQueuedEchoTurn), and whose
+// delivery was reported into it. The fold moved their rows into the survivor,
+// so that turn holds nothing and never ran: their delivery moves to the
+// survivor's turn, and the empty turn is ended so it does not stay open.
+func (r *Router) settleFoldEmptiedTurns(threadID, sessionToken string, survivor *pendingSend, survivorItemID string, folded []mergedFlushRow, now int64) {
+	survivorTurn, open := r.openTurnIndex(threadID)
+	if !open {
+		return
+	}
+	emptied := make(map[int]bool)
+	var moved []SendDelivery
+	for _, member := range folded {
+		if !member.persisted || member.turnIndex == survivorTurn {
+			continue
+		}
+		empty, ok := emptied[member.turnIndex]
+		if !ok {
+			has, err := r.store.TurnHasItems(threadID, member.turnIndex)
+			if err != nil {
+				r.providerWriteFailed(threadID, "read a merge member's turn", err)
+				continue
+			}
+			empty = !has
+			emptied[member.turnIndex] = empty
+		}
+		if !empty {
+			continue
+		}
+		ids := sendIDsOf(member.meta)
+		if len(ids) == 0 {
+			continue
+		}
+		moved = append(moved, SendDelivery{
+			UserItemID: survivorItemID, SendIDs: ids,
+			TurnIndex: survivorTurn, OwnTurn: survivorTurn != survivor.WrittenDuringTurn,
+			Rebind: true, ReboundFrom: member.turnIndex,
+		})
+	}
+	r.reportReboundDeliveries(threadID, sessionToken, moved)
+	for turnIndex, empty := range emptied {
+		if empty {
+			r.endFoldEmptiedTurn(threadID, turnIndex, now)
+		}
+	}
+}
+
+// endFoldEmptiedTurn completes a turn a merge fold left with no rows, at the
+// time of the fold, unless something already completed it.
+func (r *Router) endFoldEmptiedTurn(threadID string, turnIndex int, now int64) {
+	turn, found, err := r.store.GetTurnByThreadIndex(threadID, turnIndex)
+	if err != nil {
+		r.providerWriteFailed(threadID, "read a turn a merge fold emptied", err)
+		return
+	}
+	if !found || turn.CompletedAt != nil {
+		return
+	}
+	if err := r.store.UpdateTurnCompleted(turn.TurnID, now, "end_turn", "", "", ""); err != nil {
+		r.providerWriteFailed(threadID, "end a turn a merge fold emptied", err)
+	}
 }
 
 // resolveMergedFlushRow finds a merged-away member's durable content. The row
@@ -217,6 +290,7 @@ func (r *Router) resolveMergedFlushRow(threadID, aoItemID string) (mergedFlushRo
 			meta:      meta,
 			persisted: true,
 			kind:      row.Kind,
+			turnIndex: row.TurnIndex,
 		}, true, nil
 	}
 	entry, ok := r.peekPendingSendByItemID(threadID, aoItemID)

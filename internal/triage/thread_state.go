@@ -212,6 +212,11 @@ type threadState struct {
 	// DrainUnconfirmedFlushItems; swept at cleanup, so a Stop drops them
 	// with the rest of the queue.
 	undeliveredSends []UnconfirmedFlushItem
+	// deliveriesAwaitingTurn are queued sends delivered while no turn was
+	// open: Claude acks `started` for a held message before the init of the
+	// turn it runs in. The next turn start reports them against its index.
+	// Lifecycle: process-bound (processBoundState), swept at cleanup.
+	deliveriesAwaitingTurn []SendDelivery
 	// recentFlushDigests is the bounded, ordered history of this thread's
 	// flush sends and the content-block fingerprints they put on the wire.
 	// It outlives the pendingSends entry because the evidence for a provider

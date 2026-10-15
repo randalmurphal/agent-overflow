@@ -54,10 +54,15 @@ type ThreadRequestReceipt struct {
 	// SetThreadReceiptTarget fills it in once.
 	TargetThreadID string `json:"targetThreadId,omitempty"`
 	// MessageItemID and TurnID bind settlement to the turn that consumed
-	// the request's message, and to no other.
+	// the request's message, and to no other. A `running` receipt with no
+	// TurnID was handed to a provider that has not delivered it yet.
 	MessageItemID string `json:"messageItemId,omitempty"`
 	TurnID        string `json:"turnId,omitempty"`
-	State         string `json:"state"`
+	// OwnTurn reports that the TurnID turn opened for the request's message
+	// (or the joined message carrying it), so a cancel may interrupt it.
+	// False for a message drained into a turn already running.
+	OwnTurn bool   `json:"ownTurn,omitempty"`
+	State   string `json:"state"`
 	// Answer is the copy of record for a remote caller until collected.
 	Answer      []byte `json:"-"`
 	AnswerKind  string `json:"answerKind,omitempty"`
@@ -82,7 +87,7 @@ const threadReceiptColumns = `token, owner_device_id, source_computer_id, source
     message_item_id, turn_id, state, answer, answer_kind, late_reply,
     COALESCE(late_reply_at, 0), revision, COALESCE(settled_at, 0),
     collected_revision, COALESCE(collected_at, 0), COALESCE(expires_at, 0),
-    created_at, updated_at, answer_agent, answer_agent_role`
+    created_at, updated_at, answer_agent, answer_agent_role, own_turn`
 
 func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 	var r ThreadRequestReceipt
@@ -94,7 +99,7 @@ func scanThreadReceipt(row rowScanner) (ThreadRequestReceipt, error) {
 		&r.MessageItemID, &r.TurnID, &r.State, &r.Answer, &r.AnswerKind, &r.LateReply,
 		&r.LateReplyAt, &r.Revision, &r.SettledAt,
 		&r.CollectedRevision, &r.CollectedAt, &r.ExpiresAt,
-		&r.CreatedAt, &r.UpdatedAt, &answerAgent, &answerAgentRole,
+		&r.CreatedAt, &r.UpdatedAt, &answerAgent, &answerAgentRole, &r.OwnTurn,
 	)
 	r.AnswerAgent = answerAgentOf(answerAgent, answerAgentRole)
 	return r, err
@@ -242,19 +247,67 @@ func (s *Store) ClearThreadRequestReceipts() error {
 	return nil
 }
 
-// MarkThreadReceiptRunning records the user row the request wrote and the
-// turn that consumed it, and moves the receipt out of `accepted`. Until it
-// applies, the request's message is still queued and no turn can settle it.
-func (s *Store) MarkThreadReceiptRunning(token, messageItemID, turnID string) (bool, error) {
-	action := fmt.Sprintf("store: mark thread receipt %s running", token)
+// MarkThreadReceiptDispatched records the user row the request wrote once
+// the message is handed to the provider, and moves the receipt out of
+// `accepted` with no turn bound. The provider can still hold the message for
+// a turn of its own, so the turn waits for BindThreadReceiptTurn and no turn
+// end settles the receipt until then.
+func (s *Store) MarkThreadReceiptDispatched(token, messageItemID string) (bool, error) {
+	action := fmt.Sprintf("store: mark thread receipt %s dispatched", token)
+	result, err := s.db.Exec(
+		`UPDATE thread_request_receipts
+		    SET state = 'running', message_item_id = ?, updated_at = ?
+		  WHERE token = ? AND state = 'accepted'`,
+		messageItemID, nowMillis(), token,
+	)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return rowsChanged(result, action)
+}
+
+// BindThreadReceiptTurn records the turn the request's message was
+// delivered into, the turn whose end settles it, and whether that turn
+// opened for the message (ownTurn). It and RebindThreadReceiptTurn are the
+// only writers of turn_id and own_turn, and the first delivery wins: a
+// receipt that already names a turn, or has settled, is left alone. A
+// delivery can arrive before the dispatch mark, so it moves an `accepted`
+// receipt too.
+func (s *Store) BindThreadReceiptTurn(token, messageItemID, turnID string, ownTurn bool) (bool, error) {
+	action := fmt.Sprintf("store: bind thread receipt %s to its turn", token)
 	if turnID == "" {
 		return false, fmt.Errorf("%s: turn id is required", action)
 	}
 	result, err := s.db.Exec(
 		`UPDATE thread_request_receipts
-		    SET state = 'running', message_item_id = ?, turn_id = ?, updated_at = ?
-		  WHERE token = ? AND state = 'accepted'`,
-		messageItemID, turnID, nowMillis(), token,
+		    SET state = 'running', message_item_id = ?, turn_id = ?, own_turn = ?, updated_at = ?
+		  WHERE token = ? AND (state = 'accepted' OR (state = 'running' AND turn_id = ''))`,
+		messageItemID, turnID, ownTurn, nowMillis(), token,
+	)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return rowsChanged(result, action)
+}
+
+// RebindThreadReceiptTurn moves a running receipt from the turn its delivery
+// named (fromTurnID, which is turn fromIndex of threadID) to toTurnID, once a
+// merge fold has shown the provider ran the message in that later turn. It
+// moves only from a turn that never ran, one with no rows left. Such a turn
+// can carry a completion all the same, written when the next turn opened, and
+// that completion answers nobody. A receipt bound anywhere else, or settled,
+// is left alone.
+func (s *Store) RebindThreadReceiptTurn(token, messageItemID, threadID string, fromIndex int, fromTurnID, toTurnID string, ownTurn bool) (bool, error) {
+	action := fmt.Sprintf("store: rebind thread receipt %s to its turn", token)
+	if fromTurnID == "" || toTurnID == "" {
+		return false, fmt.Errorf("%s: both turn ids are required", action)
+	}
+	result, err := s.db.Exec(
+		`UPDATE thread_request_receipts
+		    SET message_item_id = ?, turn_id = ?, own_turn = ?, updated_at = ?
+		  WHERE token = ? AND state = 'running' AND turn_id = ?
+		    AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE thread_id = ? AND turn_index = ?)`,
+		messageItemID, toTurnID, ownTurn, nowMillis(), token, fromTurnID, threadID, fromIndex,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
