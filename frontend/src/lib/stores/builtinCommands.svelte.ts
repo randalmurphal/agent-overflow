@@ -7,7 +7,7 @@ import { selectedBackend } from './selectedBackend.svelte';
 // invocation, so these run callbacks must receive the *current* active thread
 // via ctx rather than closing over a cached value.
 
-import { confirmsThreadDelete } from './assistantDelete.svelte';
+import { confirmsThreadDelete } from './assistants.svelte';
 import { tick } from 'svelte';
 import { SIDEBAR_JUMP_LIMIT } from './sidebarThreadOrder';
 import type { ThreadPane } from './thread.svelte';

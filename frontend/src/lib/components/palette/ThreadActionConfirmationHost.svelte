@@ -14,7 +14,7 @@
     terminalsClosingNoteForThreadDelete,
     withTerminalsNote,
   } from '../../stores/worktreeRemoval.svelte';
-  import { AssistantDeleteNote, threadDeleteTitle, withAssistantNote } from '../../stores/assistantDelete.svelte';
+  import { AssistantDeleteNote, threadDeleteTitle, withAssistantNote } from '../../stores/assistants.svelte';
 
   let pending = $derived(getPendingThreadActionConfirmation());
   // Deleting a thread on a worktree removes it; the confirmation says which

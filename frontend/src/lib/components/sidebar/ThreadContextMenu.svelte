@@ -78,7 +78,7 @@
     confirmsThreadDelete,
     threadDeleteTitle,
     withAssistantNote,
-  } from '../../stores/assistantDelete.svelte';
+  } from '../../stores/assistants.svelte';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
 
   interface Props {

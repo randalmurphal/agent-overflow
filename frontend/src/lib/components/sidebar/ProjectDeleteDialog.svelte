@@ -16,7 +16,7 @@
   import Button from '../primitives/Button.svelte';
   import type { ProjectDeletionPreview } from '../../types/workflow';
   import { cleanupSummary, retainedInPreview } from '../../utils/projectCleanup';
-  import { projectAssistantsNote } from '../../stores/assistantDelete.svelte';
+  import { projectAssistantsNote } from '../../stores/assistants.svelte';
 
   interface Props {
     open: boolean;

@@ -14,6 +14,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { resetProjectsForTest } from '../../stores/projects.svelte';
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
+import { TransportError } from '../../transport/wsClient';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
@@ -126,6 +127,24 @@ describe('<PaneTitleHandle>', () => {
     await tick();
     expect(queryByTestId('pane-title-input')).toBeNull();
     expect(getByTestId('pane-title')).toHaveTextContent('Other');
+  });
+
+  it("keeps the editor open with the refusal beside it when another assistant has the name", async () => {
+    setBindingMock('RenameThread', async () => {
+      throw new TransportError('assistant_name_taken', 'The assistant "Ops" already has that name; names are unique on this computer.');
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Original' }));
+    const { getByTestId } = render(PaneTitleHandle, { props: { pane } });
+    await tick();
+
+    await fireEvent.contextMenu(getByTestId('pane-title'));
+    await tick();
+    await fireEvent.input(getByTestId('pane-title-input'), { target: { value: 'ops' } });
+    await fireEvent.keyDown(getByTestId('pane-title-input'), { key: 'Enter' });
+
+    await waitFor(() => expect(getByTestId('pane-title-rename-error')).toHaveTextContent('The assistant "Ops" already has that name'));
+    expect(getByTestId('pane-title-input')).toBeInTheDocument();
+    expect(pane.generalError).toBeNull();
   });
 
   it('keeps a failed rename behind the pane banner', async () => {

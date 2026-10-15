@@ -28,6 +28,7 @@ import {
 } from '../../stores/keyboardModifiers.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
+import { TransportError } from '../../transport/wsClient';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { emitItemEventUpsert } from '../../../test/helpers/chat';
@@ -97,6 +98,21 @@ describe('<ThreadRow> provider icons', () => {
     setShowProviderIcons(true);
     const view = render(ThreadRow, { thread: makeThread(thread as Partial<Thread>), pane: null });
     expect(view.queryByTestId('thread-row-provider')).toBeNull();
+  });
+
+  it("keeps the rename open under a refusal naming the assistant that has the name", async () => {
+    setBindingMock('RenameThread', async () => {
+      throw new TransportError('assistant_name_taken', 'The assistant "Ops" already has that name; names are unique on this computer.');
+    });
+    const view = render(ThreadRow, { thread: makeThread(), pane: null });
+    await fireEvent.doubleClick(view.getByTestId('thread-row'));
+    const input = view.getByRole('textbox', { name: 'Rename Thread' });
+    await fireEvent.input(input, { target: { value: 'ops' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await vi.waitFor(() => expect(view.getByTestId('thread-row-rename-error')).toHaveTextContent('The assistant "Ops" already has that name'));
+    expect(view.getByRole('textbox', { name: 'Rename Thread' })).toBeInTheDocument();
+    await fireEvent.keyDown(view.getByRole('textbox', { name: 'Rename Thread' }), { key: 'Escape' });
+    expect(view.queryByTestId('thread-row-rename-error')).toBeNull();
   });
 
   it('updates the provider when the thread changes and hides it during rename', async () => {

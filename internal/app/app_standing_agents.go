@@ -13,8 +13,10 @@ import (
 
 	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
@@ -83,13 +85,25 @@ func (a *App) CreateAssistant(ctx context.Context, opts CreateAssistantOptions) 
 		},
 	})
 	if err != nil {
-		return store.Thread{}, err
+		return store.Thread{}, refuseTakenAssistantName(err)
 	}
 	body := agenthome.OpeningMessage(thread.Title, agent.Home)
 	if err := a.queueAssistantMessage(thread.ID, assistantSendID(assistantWakeKindOpening, agent.ID), thread.Title, body); err != nil {
 		return thread, fmt.Errorf("the assistant was created, but its opening message could not be queued: %w", err)
 	}
 	return thread, nil
+}
+
+// refuseTakenAssistantName gives a name another assistant holds the code a
+// client branches on to show the refusal where the name was typed, with a
+// sentence naming that assistant.
+func refuseTakenAssistantName(err error) error {
+	var taken *store.AssistantNameTakenError
+	if errors.As(err, &taken) {
+		return errorsx.Public(transport.ErrCodeAssistantNameTaken,
+			fmt.Sprintf("The assistant %q already has that name; names are unique on this computer.", taken.Name), err)
+	}
+	return err
 }
 
 // assistantSpec is what an assistant is created from.

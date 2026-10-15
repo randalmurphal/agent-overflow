@@ -47,6 +47,8 @@
   import { openThreadIds } from '../../stores/panes.svelte';
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import Plus from '@lucide/svelte/icons/plus';
+  import UserRoundPlus from '@lucide/svelte/icons/user-round-plus';
+  import { openNewAssistantDialog } from '../../stores/newAssistant.svelte';
   import Icon from '../primitives/Icon.svelte';
   import AgentDoneFooter from './AgentDoneFooter.svelte';
   import ThreadGroupRow from './ThreadGroupRow.svelte';
@@ -89,6 +91,7 @@
   // Creating a thread rides `threads:operate`. The empty-state control is
   // the whole content of an empty project, so it stays and goes inert.
   let newThreadUngranted = $derived(!projectHasScope('threads:operate', projectId));
+  let newAssistantUngranted = $derived(!projectHasScope('threads:autonomy', projectId));
 
   // Tree is built per-render: cheap (small N) and lets us reactively
   // pick up effective live-status changes from the status store and
@@ -366,6 +369,7 @@
 {/each}
 
 {#if threads.length === 0 && groups.length === 0}
+  <div class="ml-4 flex flex-wrap items-center">
   <button
     type="button"
     onclick={handleEmptyNewThreadClick}
@@ -373,11 +377,23 @@
     disabled={newThreadUngranted}
     title={newThreadUngranted ? 'Not granted to this device' : undefined}
     data-testid="project-thread-list-empty"
-    class="ml-4 mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 compact:py-2 text-[0.6875rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-surface-2/0 disabled:hover:text-fg-hint"
+    class="mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 compact:py-2 text-[0.6875rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-surface-2/0 disabled:hover:text-fg-hint"
   >
     <Icon icon={Plus} size={11} strokeWidth={2.2} class="opacity-80" />
     <span>New Thread</span>
   </button>
+  <button
+    type="button"
+    onclick={(e) => openNewAssistantDialog({ projectId, targetPane: pane, openInNewPane: shouldOpenProjectThreadInNewPane(e) })}
+    disabled={newAssistantUngranted}
+    title={newAssistantUngranted ? 'Not granted to this device' : undefined}
+    data-testid="project-thread-list-empty-assistant"
+    class="mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 compact:py-2 text-[0.6875rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-surface-2/0 disabled:hover:text-fg-hint"
+  >
+    <Icon icon={UserRoundPlus} size={11} strokeWidth={2.2} class="opacity-80" />
+    <span>New Assistant</span>
+  </button>
+  </div>
 {:else}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div

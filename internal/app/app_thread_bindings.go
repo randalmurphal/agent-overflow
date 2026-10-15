@@ -291,7 +291,7 @@ func (a *App) RenameThread(id string, title string) error {
 	}
 	defer unlock()
 	if err := a.threadApplication().Rename(id, title); err != nil {
-		return err
+		return refuseTakenAssistantName(err)
 	}
 	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
 		Action: triage.ThreadActionPatch, ID: id, Title: &title,

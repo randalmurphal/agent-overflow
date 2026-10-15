@@ -47,6 +47,9 @@
   let draftTitle = $state('');
   let inputEl: HTMLInputElement | undefined = $state(undefined);
   let renamePending = $state(false);
+  // A refused rename (an assistant's name in use) stays open with the
+  // refusal beside it, naming the assistant that holds the name.
+  let renameError: string | null = $state(null);
 
   // When the thread id changes, bail out of any in-flight rename — otherwise a
   // switch-thread-mid-edit would silently rename the wrong thread on Enter.
@@ -61,6 +64,7 @@
     editing = false;
     draftTitle = '';
     renamePending = false;
+    renameError = null;
   });
 
   // Published so the composer's bare `/rename` opens THIS editor rather than
@@ -83,6 +87,7 @@
   function cancelRename(): void {
     editing = false;
     draftTitle = '';
+    renameError = null;
   }
 
   async function commitRename(): Promise<void> {
@@ -92,13 +97,26 @@
     const threadId = pane.threadId;
     const currentTitle = pane.thread.title;
     renamePending = true;
+    let refused = false;
     try {
       const result = await renameThreadTitle(threadId, draftTitle, currentTitle);
-      if (!result.ok && result.error) pane.setGeneralError(result.error, result.cause);
+      if (!result.ok && result.error) {
+        if (result.nameTaken) {
+          refused = true;
+          renameError = result.error;
+        } else {
+          pane.setGeneralError(result.error, result.cause);
+        }
+      }
     } finally {
       renamePending = false;
-      editing = false;
-      draftTitle = '';
+      if (refused) {
+        void tick().then(() => inputEl?.focus({ preventScroll: true }));
+      } else {
+        editing = false;
+        draftTitle = '';
+        renameError = null;
+      }
     }
   }
 
@@ -157,8 +175,13 @@
       disabled={renamePending}
       data-testid={inputTestId}
       aria-label="Rename Thread"
+      aria-invalid={renameError !== null}
+      oninput={() => { renameError = null; }}
       class="text-sm compact:text-base font-medium text-fg bg-surface-2/60 rounded-[var(--radius-field)] px-1.5 py-0.5 min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
     />
+    {#if renameError}
+      <span role="alert" class="min-w-0 shrink truncate text-[0.6875rem] text-error" title={renameError} data-testid="pane-title-rename-error">{renameError}</span>
+    {/if}
   {:else}
     <!-- Title is the pane drag-handle. Right-click renames; mousedown + drag
          reorders the pane. Left-click is reserved for the drag gesture so a

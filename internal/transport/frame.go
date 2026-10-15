@@ -606,6 +606,11 @@ const (
 	ErrCodeShuttingDown            = "shutting_down"
 	ErrCodeAuthFailed              = "auth_failed"
 	ErrCodeBackgroundAgentsRunning = "background_agents_running"
+	// ErrCodeAssistantNameTaken refuses a title another assistant on the
+	// computer holds as its name (docs/specs/standing-agents.md, "Standing
+	// agent"); the message names that assistant, and a client shows it
+	// where the name was typed.
+	ErrCodeAssistantNameTaken = "assistant_name_taken"
 	// ErrCodeClientOverloaded refuses an RPC this connection has no slot
 	// for: it already holds Config.MaxConcurrentRPCs in flight. The call
 	// was never started, so a client may reissue it once one of its own

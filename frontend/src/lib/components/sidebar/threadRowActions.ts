@@ -43,6 +43,7 @@ import { expandProject } from '../../stores/sidebar.svelte';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
+import { isAssistantNameTaken } from '../../stores/assistants.svelte';
 import type { Thread } from '../../types/models';
 import { autoPinNewThread } from '../../stores/threadAutoPin';
 import { openConversationTransfer } from '../../stores/conversationTransfers.svelte';
@@ -70,12 +71,17 @@ export interface ThreadActionCtx {
   replacePaneThread?: (thread: Thread) => void;
 }
 
+/**
+ * Rename the thread. A name another assistant holds is refused with a
+ * sentence naming it, returned for the row's inline editor to show; any
+ * other failure goes to the pane as before.
+ */
 export async function renameThreadAction(
   ctx: ThreadActionCtx,
   newTitle: string,
-): Promise<void> {
+): Promise<string | null> {
   const trimmed = newTitle.trim();
-  if (!trimmed || trimmed === ctx.thread.title) return;
+  if (!trimmed || trimmed === ctx.thread.title) return null;
   try {
     await RenameThread(ctx.thread.id, trimmed);
     updateThreadTitle(ctx.thread.id, trimmed);
@@ -87,9 +93,12 @@ export async function renameThreadAction(
     if (ctx.isActive && ctx.replacePaneThread) {
       ctx.replacePaneThread({ ...ctx.thread, title: trimmed });
     }
+    return null;
   } catch (err) {
+    if (isAssistantNameTaken(err)) return err.message;
     console.error('Failed to rename thread:', err);
     ctx.reportError(userFacingError(err), err);
+    return null;
   }
 }
 

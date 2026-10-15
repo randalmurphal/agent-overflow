@@ -27,7 +27,7 @@
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { displayModelLabel } from '../../utils/modelLabels';
   import type { Thread } from '../../types/models';
-  import { AssistantDeleteNote, withAssistantNote } from '../../stores/assistantDelete.svelte';
+  import { AssistantDeleteNote, withAssistantNote } from '../../stores/assistants.svelte';
 
   let archivedThreads: Thread[] = $state([]);
   let loading = $state(true);

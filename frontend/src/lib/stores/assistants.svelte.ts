@@ -1,7 +1,9 @@
-// Deleting an assistant's current thread deletes the assistant and removes its
-// home folder (docs/specs/standing-agents.md, "Deletion, archive and
-// transfer"). Every confirmation of such a delete names the folder, and the
-// delete is always confirmed, whatever the confirmDelete setting says.
+// What every surface shares about assistants (docs/specs/standing-agents.md,
+// "Standing agent"). A name another assistant holds is refused with a code
+// the editors branch on. Deleting an assistant's current thread deletes the
+// assistant and removes its home folder ("Deletion, archive and transfer"):
+// every confirmation of such a delete names the folder, and the delete is
+// always confirmed, whatever the confirmDelete setting says.
 
 import { GetStandingAgent } from './bindings';
 import { getSettings } from './settings.svelte';
@@ -11,6 +13,12 @@ import { threadBackend } from '../transport/entityIndex';
 import type { Thread } from '../types/models';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
+import { TransportError } from '../transport/wsClient';
+
+/** A name another assistant on the computer holds; the message names it. */
+export function isAssistantNameTaken(err: unknown): err is TransportError {
+  return err instanceof TransportError && err.code === 'assistant_name_taken';
+}
 
 /** Whether deleting these threads deletes an assistant. */
 export function deletesAssistant(threads: readonly Thread[]): boolean {
