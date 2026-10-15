@@ -114,6 +114,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const menu = page.getByRole('menu', { name: 'Session' });
     await expect(menu.getByRole('menuitem', { name: 'Interrupt' })).toBeDisabled();
     await expect(menu.getByRole('menuitem', { name: 'End Session' })).not.toHaveAttribute('aria-disabled', 'true');
+    // The pointer rests on the menu, and any usage gauge tooltip it raised
+    // on the way has closed, so nothing covers the menu in the shot.
+    await menu.hover();
+    await expect(page.getByRole('tooltip')).toHaveCount(0);
     await captureAgentMessage(page, `${provider}-assistant-session-menu.png`, menu);
     await menu.getByRole('menuitem', { name: 'End Session' }).click();
     await expect.poll(() => liveIn(harness, leadProject.path), { timeout: 20_000 }).toBe(false);
@@ -123,6 +127,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const ended = page.getByRole('menu', { name: 'Session' }).getByRole('menuitem', { name: 'End Session' });
     await expect(ended).toHaveAttribute('aria-disabled', 'true');
     await expect(ended).toHaveAttribute('title', 'No session is running');
+    await page.getByRole('menu', { name: 'Session' }).hover();
+    await expect(page.getByRole('tooltip')).toHaveCount(0);
     await captureAgentMessage(page, `${provider}-assistant-session-menu-ended.png`, page.getByRole('menu', { name: 'Session' }));
     await page.keyboard.press('Escape');
   });
