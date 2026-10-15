@@ -311,17 +311,17 @@ test('a live run larger than its window grows at its tail without reading the ru
   await expect(run.getByTestId('activity-run-header-counts')).toContainText('80 Bash');
   expect(memberReads).toBe(0);
 
-  // The counter sees members reads: the boundary mounts the loaded rows
-  // above the window first, then reads the run for the older ones.
+  // The counter sees members reads. The live members pushed 20 loaded rows
+  // above the window, fewer than a chunk, so the click reads the run for
+  // the 5 it is short and grows by a whole chunk over both.
   if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
   const earlier = run.getByTestId('activity-run-earlier');
+  const rows = run.getByTestId('command-output-row');
   await expect(earlier).toContainText(`${80 - WINDOW_ROWS} earlier`);
   await earlier.click();
-  await expect(earlier).toContainText(`${60 - WINDOW_ROWS} earlier`);
-  expect(memberReads).toBe(0);
-  await earlier.click();
   await expect.poll(() => memberReads).toBe(1);
-  await expect(earlier).toContainText(`${60 - WINDOW_ROWS - CHUNK_ROWS} earlier`);
+  await expect(earlier).toContainText(`${80 - WINDOW_ROWS - CHUNK_ROWS} earlier`);
+  await expect(rows).toHaveCount(WINDOW_ROWS + CHUNK_ROWS);
 });
 
 // A jump to the head of a live run leaves the pane holding its first
