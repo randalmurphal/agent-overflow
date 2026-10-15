@@ -16,12 +16,15 @@ import { clearThreadStatus, projectSendResolved, projectSendStarted, setThreadSt
 import { __resetItemProjectionSourceCacheForTest } from '../../utils/itemProjectionSource.svelte';
 import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
 import type { Item } from '../../types/models';
+import type { ThreadAgentRow } from '../../stores/bindings';
+import { __resetAgentRequestAnswersForTest, noteListedAgentRows } from '../../stores/agentRequestAnswers.svelte';
 
 /** The pane surface the row reads: its expansion registry and its timeline. */
 function paneWith(items: Item[]): never {
   const cache = new Map<string, ReturnType<typeof createPayloadExpansion>>();
   return {
     items,
+    threadId: THREAD,
     expansionStateFor(item: Item) {
       let handle = cache.get(item.id);
       if (!handle) {
@@ -139,6 +142,38 @@ describe('AO thread tool rows', () => {
     });
     await view.rerender({ item, pane: paneWith([item, wake]) });
     expect(view.getByTestId('tool-call-card-ao-live-hint').textContent).toBe('(answer arrived)');
+  });
+
+  it('reads its answer from the Agents listing, and the loaded rows only for a request the listing leaves out', async () => {
+    __resetAgentRequestAnswersForTest();
+    replaceAllThreads([makeThread({ id: CHILD, title: 'Docs slice' })]);
+    const item = thread('thread_send', {
+      input: { thread_id: CHILD, message: 'm' },
+      ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'queued', outcome: 'queued' },
+    });
+    const hint = (view: ReturnType<typeof render>) => view.getByTestId('tool-call-card-ao-live-hint').textContent;
+    const listed = (wakeItemId: string) => ({ token: TOKEN, callerThreadId: THREAD, kind: 'send', threadId: CHILD, title: 'Docs slice', state: 'finished', wakeItemId }) as ThreadAgentRow;
+    const wake = makeItem({
+      id: 'wake-1', threadId: THREAD, kind: 'user_text',
+      meta: JSON.stringify({ origin: 'agent-thread', originThread: { threadId: CHILD, title: 'Docs slice', token: TOKEN } }),
+    });
+
+    // The wake row is outside the loaded window; the listing names it.
+    const view = render(GenericToolCallRow, { props: { item, pane: paneWith([item]) } });
+    expect(hint(view)).not.toBe('(answer arrived)');
+    noteListedAgentRows(THREAD, [listed('wake-1')]);
+    await waitFor(() => expect(hint(view)).toBe('(answer arrived)'));
+
+    // A request the listing covers takes the listing's word over the loaded rows.
+    noteListedAgentRows(THREAD, [listed('')]);
+    await view.rerender({ item, pane: paneWith([item, wake]) });
+    await waitFor(() => expect(hint(view)).not.toBe('(answer arrived)'));
+
+    // One it leaves out falls back to them; another thread's listing is not this one's.
+    noteListedAgentRows(THREAD, []);
+    noteListedAgentRows(CHILD, [{ ...listed(''), callerThreadId: CHILD }]);
+    await waitFor(() => expect(hint(view)).toBe('(answer arrived)'));
+    __resetAgentRequestAnswersForTest();
   });
 
   it('finds its answer in a row that joined answers which queued together', () => {

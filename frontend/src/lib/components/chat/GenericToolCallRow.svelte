@@ -43,7 +43,7 @@
     type AoToolNames,
   } from './aoTools';
   import { aoToolError, isSettledRequestState } from './aoToolResults';
-  import { answeredRequestTokens } from '../../utils/answeredRequestTokens';
+  import { requestAnswered } from '../../stores/agentRequestAnswers.svelte';
   import {
     readItemProjectionSource,
     requestItemProjectionSource,
@@ -295,11 +295,12 @@
 
   // A spawn, send or ask whose call returned before the answer: where the
   // request stands now. The answer's arrival is the wake row carrying its
-  // token; until then, what the target thread is doing.
+  // token, as the Agents listing reports it; until then, what the target
+  // thread is doing.
   let aoAnswered = $derived(
     aoTool?.server === THREAD_TOOLS_SERVER
       && aoTool.result.token !== ''
-      && answeredRequestTokens(pane?.items).has(aoTool.result.token),
+      && requestAnswered(pane?.threadId, pane?.items, aoTool.result.token),
   );
   let aoLive = $derived.by(() => {
     if (!aoTool || aoTool.server !== THREAD_TOOLS_SERVER) return '';

@@ -1105,10 +1105,11 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
 - A spawn, send or ask that returned before its answer follows the
   request: the target thread's state (an ask: waiting on the answer) until
   the answer's wake row (the user row carrying the request's token, joined
-  or not) lands, then "answer arrived". The wake row is found among the
-  rows the pane has loaded, so an answer outside the loaded window, or a
-  target on another computer, shows no "answer arrived"; slice 10's
-  request store replaces this scan.
+  or not) lands, then "answer arrived". The Agents listing
+  (`ListThreadAgentRows`) says whether each request it covers has its
+  confirmed wake row, loaded or not; a request it leaves out (settled
+  past its window, or past its bound) is looked for among the rows the
+  pane has loaded.
 
 ## Availability and permissions (Q13, Q17, Q27)
 
