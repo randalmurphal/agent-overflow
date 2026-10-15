@@ -89,8 +89,11 @@ gap on `pr:ci_log`. The log view reads lines through
 `ciLogBlocks.svelte.ts`, a bounded block cache that keeps a block's lines
 across a version only within the index's `stableLines`.
 
-Live turn, approval, user-input, compacting and sends-pending state is
-backend state, never derived from items or rows. Sends pending
+Live turn, approval, user-input, compacting, sends-pending and session
+state is backend state, never derived from items or rows. Whether a
+thread has a session (`provider:session_live`, capability
+`session-live.v1`) lives in `threadSessionLive.svelte.ts`; a computer
+without the capability gives no answer. Sends pending
 (`provider:sends_pending`, capability `sends-pending.v1`) covers a queued or
 flushed message until its echo while the thread has a session live or
 starting, so every thread surface, the pane's own composer included, reads

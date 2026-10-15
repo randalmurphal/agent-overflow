@@ -49,6 +49,11 @@
     interruptLabel?: string;
     /** Set on an assistant's current thread: the session menu's End Session. */
     onEndSession?: () => void;
+    /**
+     * Whether the thread has a provider session; End Session is disabled
+     * without one. Undefined when the computer does not say.
+     */
+    sessionLive?: boolean;
   }
 
   let {
@@ -65,6 +70,7 @@
     onInterrupt,
     interruptLabel = 'Interrupt current turn',
     onEndSession,
+    sessionLive,
   }: Props = $props();
   let menuTriggerEl: HTMLButtonElement | undefined = $state(undefined);
   let menuOpen = $state(false);
@@ -279,7 +285,12 @@
     {#snippet children()}
       <Menu ariaLabel="Session" onClose={closeMenu}>
         <MenuItem label="Interrupt" disabled={!turnRunning} onSelect={handleMenuInterrupt} />
-        <MenuItem label="End Session" onSelect={handleEndSession} />
+        <MenuItem
+          label="End Session"
+          disabled={sessionLive === false}
+          title={sessionLive === false ? 'No session is running' : undefined}
+          onSelect={handleEndSession}
+        />
       </Menu>
     {/snippet}
   </Popover>

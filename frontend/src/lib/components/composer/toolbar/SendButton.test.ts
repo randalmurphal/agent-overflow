@@ -190,6 +190,26 @@ describe('<SendButton>', () => {
     expect(onInterrupt).not.toHaveBeenCalled();
   });
 
+  it('disables End Session, saying why, when the thread has no session', async () => {
+    const onEndSession = vi.fn();
+    const view = render(SendButton, {
+      props: { canSend: true, isTurnActive: false, onSend: vi.fn(), onInterrupt: vi.fn(), onEndSession, sessionLive: false },
+    });
+    await fireEvent.click(view.getByTestId('composer-session-menu'));
+    const end = await view.findByRole('menuitem', { name: 'End Session' });
+    expect(end).toHaveAttribute('aria-disabled', 'true');
+    expect(end).toHaveAttribute('title', 'No session is running');
+    await fireEvent.click(end);
+    expect(onEndSession).not.toHaveBeenCalled();
+
+    await view.rerender({ canSend: true, isTurnActive: false, onSend: vi.fn(), onInterrupt: vi.fn(), onEndSession, sessionLive: true });
+    const live = view.getByRole('menuitem', { name: 'End Session' });
+    expect(live).not.toHaveAttribute('aria-disabled', 'true');
+    expect(live).not.toHaveAttribute('title');
+    await fireEvent.click(live);
+    expect(onEndSession).toHaveBeenCalledOnce();
+  });
+
   it('has no session menu on an ordinary thread', () => {
     const view = render(SendButton, {
       props: { canSend: false, isTurnActive: true, onSend: vi.fn(), onInterrupt: vi.fn() },

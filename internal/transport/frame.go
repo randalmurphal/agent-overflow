@@ -88,6 +88,11 @@ const CapabilityTimelineDigests = "timeline.digests.v1"
 // its own send-queue mirror.
 const CapabilitySendsPending = "sends-pending.v1"
 
+// CapabilitySessionLive publishes provider:session_live and the
+// sessionLive field of ListThreadLiveActivity. A client reading a backend
+// without it does not know whether a thread has a session.
+const CapabilitySessionLive = "session-live.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -102,6 +107,7 @@ var serverCapabilities = []string{
 	CapabilityTimelineScopes,
 	CapabilityTimelineDigests,
 	CapabilitySendsPending,
+	CapabilitySessionLive,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

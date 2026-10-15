@@ -42,6 +42,7 @@
   import { dispatchSend } from './composerSend';
   import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
   import { endThreadSession } from '../../stores/assistants.svelte';
+  import { threadSessionLive } from '../../stores/threadSessionLive.svelte';
   import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
   import {
     DeleteEmptyDraftThread,
@@ -1112,6 +1113,7 @@
       onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}
       onInterrupt={interrupt}
       onEndSession={pane.thread?.agentId ? endSession : undefined}
+      sessionLive={threadSessionLive(pane.threadId)}
     />
     <ComposerWorkspaceStrip {pane} />
   </div>

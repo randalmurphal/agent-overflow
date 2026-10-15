@@ -377,8 +377,9 @@ unarchived past thread is listed in the fold as a child. A move of the
 current thread cancels the loops and watches when it begins and deletes
 the record when it commits, so the conversation arrives as an ordinary
 thread and the home stays on its computer; a copy, a fork and a move of
-a past thread are ordinary threads. The transfer dialog says so before
-the user commits (`GetStandingAgent`).
+a past thread are ordinary threads. Before the user commits, the
+transfer dialog names the assistant and says that a move deletes it and
+leaves its home on this computer (`GetStandingAgent`).
 
 **Retention.** The retention sweep never removes an assistant's current
 thread or a past thread (`ThreadIDsOlderThan` skips every thread an
@@ -1035,8 +1036,12 @@ the provider process with its background agents and shells. The
 composer's Stop is Interrupt with a menu beside it holding both; the
 working indicator's Stop is Interrupt; the menu stays beside Send while
 no turn runs, with Interrupt disabled and End Session available, since
-an idle session can still hold background work. End Session on a thread
-with no session does nothing. A workflow run's Pause is Interrupt for its
+an idle session can still hold background work. End Session is
+disabled, titled "No session is running", while the thread has no
+session live or starting (`provider:session_live`, capability
+`session-live.v1`, restated by `ListThreadLiveActivity`'s
+`sessionLive`); against a computer that does not publish it, End
+Session stays enabled. A workflow run's Pause is Interrupt for its
 members (it keeps their sessions, as it did); Pause and End Sessions
 also ends the session of every member it paused, and Resume starts them
 again on the same provider threads. The Agents row's Stop is unchanged.

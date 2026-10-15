@@ -1402,10 +1402,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 // agent with its loop armed and its watch running; a move ends both, stops
 // the watch's processes and retires the thread here without its agent row.
 // On the destination the conversation is an ordinary thread either way.
-const TRANSFER_NOTE = {
-  copy: 'This conversation is a standing agent. Its home, loops and watches stay on this computer with the original, and the copy is an ordinary conversation.',
-  move: 'This conversation is a standing agent. Its home stays on this computer and the move ends its loops and watches, so it arrives as an ordinary conversation.',
-} as const;
+const TRANSFER_NOTE = (name: string) => ({
+  copy: `This conversation is the assistant "${name}". The assistant, its home, loops and watches stay on this computer with the original, and the copy is an ordinary conversation.`,
+  move: `This conversation is the assistant "${name}". Moving it deletes the assistant: its loops and watches end, its home stays on this computer, and the conversation arrives as an ordinary one.`,
+});
 
 interface Transfer {
   id: string;
@@ -1558,7 +1558,7 @@ test.describe('a standing agent copied or moved to another computer', () => {
         await dialog.getByRole('combobox', { name: 'Project on destination', exact: true }).selectOption(target.projects[0].projectId);
         for (const shown of kind === 'copy' ? (['move', 'copy'] as const) : (['move'] as const)) {
           await dialog.getByRole('radio', { name: shown === 'copy' ? 'Copy / fork' : 'Move', exact: true }).check();
-          await expect(note).toHaveText(TRANSFER_NOTE[shown]);
+          await expect(note).toHaveText(TRANSFER_NOTE(title)[shown]);
           await shoot(page, `${provider}-transfer-${shown}-standing-agent.png`, note);
         }
         await dialog.getByRole('button', { name: kind === 'copy' ? 'Copy conversation' : 'Move conversation', exact: true }).click();

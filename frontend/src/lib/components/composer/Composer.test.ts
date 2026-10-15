@@ -53,6 +53,8 @@ import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { UsageBucket } from '../../stores/bindings';
 import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
 import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
+import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
+import { applySessionLive } from '../../stores/threadSessionLive.svelte';
 
 /**
  * Send options as they reach the wire. Every send carries a freshly minted
@@ -439,6 +441,30 @@ describe('<Composer>', () => {
     const plain = await buildPane(makeTestThread({}));
     const plainView = render(Composer, { props: { pane: plain, draft: await buildDraft() } });
     expect(plainView.queryByTestId('composer-session-menu')).toBeNull();
+  });
+
+  it("follows the computer's session answer: End Session is disabled until a session starts", async () => {
+    __setTransportHelloForTest({
+      protocolVersion: 1, capabilities: ['session-live.v1'], backendId: '', backendName: '',
+      serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+    });
+    try {
+      const stop = setBindingMock('StopSession', vi.fn(async () => {}));
+      const pane = await buildPane(makeTestThread({ agentId: 'agent-1' }));
+      const view = render(Composer, { props: { pane, draft: await buildDraft() } });
+      await fireEvent.click(view.getByTestId('composer-session-menu'));
+      const end = await view.findByRole('menuitem', { name: 'End Session' });
+      expect(end).toHaveAttribute('aria-disabled', 'true');
+      await fireEvent.click(end);
+      expect(stop).not.toHaveBeenCalled();
+
+      applySessionLive({ threadId: 'thread-1', live: true });
+      await waitFor(() => expect(view.getByRole('menuitem', { name: 'End Session' })).not.toHaveAttribute('aria-disabled', 'true'));
+      await fireEvent.click(view.getByRole('menuitem', { name: 'End Session' }));
+      await waitFor(() => expect(stop).toHaveBeenCalledWith('thread-1'));
+    } finally {
+      __setTransportHelloForTest(null);
+    }
   });
 
   it('uploads a pasted image on a claude thread (control for the claude-tui gate)', async () => {

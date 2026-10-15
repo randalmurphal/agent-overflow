@@ -456,6 +456,9 @@ type App struct {
 	// sendsPending publishes provider:sends_pending
 	// (`app_sends_pending.go`).
 	sendsPending appSendsPendingState
+	// sessionLive publishes provider:session_live
+	// (`app_session_live.go`).
+	sessionLive appSessionLiveState
 	// prUpdates is the PR-scope review-pane polling concern
 	// (`app_pr_updates.go`).
 	prUpdates appPRUpdateState

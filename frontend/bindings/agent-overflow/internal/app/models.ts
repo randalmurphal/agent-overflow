@@ -6250,6 +6250,12 @@ export class ThreadLiveActivity {
     "compactingSinceUnixMs"?: number;
     "sendsPending"?: boolean;
 
+    /**
+     * SessionLive says the thread has a provider session live or
+     * starting (provider:session_live).
+     */
+    "sessionLive"?: boolean;
+
     /** Creates a new ThreadLiveActivity instance. */
     constructor($$source: Partial<ThreadLiveActivity> = {}) {
         if (!("threadId" in $$source)) {

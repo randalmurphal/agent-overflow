@@ -819,6 +819,16 @@ var channelPolicies = []ChannelPolicy{
 			"stay threads:operate. Keyed per thread: never latest-only.",
 	},
 	{
+		Channel:   eventchan.ProviderSessionLive,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "{threadId, live} only: whether a thread has a provider session " +
+			"live or starting, which decides whether End Session has anything " +
+			"to end. No content, so the sidebar audience of provider:sends_pending. " +
+			"Keyed per thread: never latest-only.",
+	},
+	{
 		Channel:   eventchan.ProviderQueueStateChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

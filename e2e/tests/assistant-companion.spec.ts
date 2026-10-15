@@ -8,7 +8,8 @@
 // closing the companion leaves the worker's thread; Open as Pane turns the
 // companion into an ordinary pane on the worker; the assistant's composer
 // keeps a session menu beside Send whose Interrupt is disabled while idle
-// and whose End Session ends the assistant's provider session.
+// and whose End Session ends the assistant's provider session, then is
+// disabled with no session left.
 import type { Page } from '@playwright/test';
 
 import { test, expect, type SeedResult } from './fixtures.js';
@@ -112,9 +113,17 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await leadPane.getByTestId('composer-session-menu').click();
     const menu = page.getByRole('menu', { name: 'Session' });
     await expect(menu.getByRole('menuitem', { name: 'Interrupt' })).toBeDisabled();
+    await expect(menu.getByRole('menuitem', { name: 'End Session' })).not.toHaveAttribute('aria-disabled', 'true');
     await captureAgentMessage(page, `${provider}-assistant-session-menu.png`, menu);
     await menu.getByRole('menuitem', { name: 'End Session' }).click();
     await expect.poll(() => liveIn(harness, leadProject.path), { timeout: 20_000 }).toBe(false);
     expect(await liveIn(harness, workerProject.path)).toBe(true);
+    // With no session left, End Session has nothing to end.
+    await leadPane.getByTestId('composer-session-menu').click();
+    const ended = page.getByRole('menu', { name: 'Session' }).getByRole('menuitem', { name: 'End Session' });
+    await expect(ended).toHaveAttribute('aria-disabled', 'true');
+    await expect(ended).toHaveAttribute('title', 'No session is running');
+    await captureAgentMessage(page, `${provider}-assistant-session-menu-ended.png`, page.getByRole('menu', { name: 'Session' }));
+    await page.keyboard.press('Escape');
   });
 }

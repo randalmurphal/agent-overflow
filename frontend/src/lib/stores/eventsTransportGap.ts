@@ -210,6 +210,9 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
     case 'provider:sends_pending':
       // A missed clear leaves a row running with nothing queued; panes
       // read their own queue, so only the registry needs the snapshot.
+    case 'provider:session_live':
+      // A missed frame leaves End Session offered for a session that
+      // ended, or withheld from one that started.
       resyncThreadLiveActivity(origin);
       return;
     case 'provider:item_event':

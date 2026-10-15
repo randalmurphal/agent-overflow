@@ -70,8 +70,8 @@
       {#if request.standingAgent}
         <p class="text-xs text-warning" data-testid="transfer-standing-agent">
           {kind === 'move'
-            ? 'This conversation is a standing agent. Its home stays on this computer and the move ends its loops and watches, so it arrives as an ordinary conversation.'
-            : 'This conversation is a standing agent. Its home, loops and watches stay on this computer with the original, and the copy is an ordinary conversation.'}
+            ? `This conversation is the assistant "${request.thread.title}". Moving it deletes the assistant: its loops and watches end, its home stays on this computer, and the conversation arrives as an ordinary one.`
+            : `This conversation is the assistant "${request.thread.title}". The assistant, its home, loops and watches stay on this computer with the original, and the copy is an ordinary conversation.`}
         </p>
       {:else if request.standingAgentError}
         <p class="break-words text-xs text-warning">Could not check whether this conversation is a standing agent: {request.standingAgentError}</p>
