@@ -24,16 +24,16 @@ func CredentialChainPosition(providerName string, data []byte) (int64, bool) {
 	return claude.CredentialExpiresAt(data)
 }
 
-// CredentialLoginExpiresAt reports when provider-native bytes stop being
-// renewable, in epoch milliseconds. Past it the tokens are still there, but
-// the refresh that would renew them answers invalid_grant and leaves the CLI's
-// sign-out husk behind. Only Claude records a session deadline; ok=false for
-// everything else, which reads as unknown rather than expired.
+// CredentialLoginExpiresAt reports when the login provider-native bytes hold
+// stops working, in epoch milliseconds (claude.LoginExpiresAt). Past it the
+// CLI's next renewal answers invalid_grant and leaves its sign-out husk
+// behind. Only Claude records a session deadline; ok=false for everything
+// else, which reads as unknown rather than expired.
 func CredentialLoginExpiresAt(providerName string, data []byte) (int64, bool) {
 	if providerName != string(provider.Claude) {
 		return 0, false
 	}
-	expiresAt, ok := claude.RefreshTokenExpiresAt(data)
+	expiresAt, ok := claude.LoginExpiresAt(data)
 	if !ok {
 		return 0, false
 	}

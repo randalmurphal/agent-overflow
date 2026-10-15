@@ -151,8 +151,8 @@ func (c *Credentials) CredentialSignedOut(providerName string, data []byte) bool
 	return c.credentialSignedOut(providerName, data)
 }
 
-// CredentialLoginExpiresAt reports when the login these bytes hold stops being
-// renewable, in epoch milliseconds. 0 means the bytes name no deadline. No
+// CredentialLoginExpiresAt reports when the login these bytes hold stops
+// working, in epoch milliseconds. 0 means the bytes name no deadline. No
 // predicate installed answers 0 for everything, so a store built without one
 // simply never sees a session end.
 func (c *Credentials) CredentialLoginExpiresAt(providerName string, data []byte) int64 {
@@ -166,10 +166,10 @@ func (c *Credentials) CredentialLoginExpiresAt(providerName string, data []byte)
 	return expiresAt
 }
 
-// CredentialLoginExpired reports that these bytes hold a login whose OAuth
-// session has ended, so refreshing them would only convert them into the
-// provider's sign-out husk. The boundary belongs to the expired side: the
-// refresh that lands exactly at the deadline is the one that gets rejected.
+// CredentialLoginExpired reports that these bytes hold a login that has stopped
+// working: its session deadline has passed and the provider would have to
+// renew the access token, which would only convert the bytes into the
+// provider's sign-out husk. The boundary belongs to the expired side.
 func (c *Credentials) CredentialLoginExpired(providerName string, data []byte, now time.Time) bool {
 	expiresAt := c.CredentialLoginExpiresAt(providerName, data)
 	return expiresAt > 0 && expiresAt <= now.UnixMilli()
@@ -325,8 +325,8 @@ type CredentialState struct {
 	// sign-out husk, and holds a login whose OAuth session has not ended. All
 	// three are the same state to the user: sign in again.
 	Usable bool
-	// LoginExpiresAt is the provider's own deadline for that login, in epoch
-	// milliseconds, or 0 when the bytes name none. It is reported whether or
+	// LoginExpiresAt is when that login stops working, in epoch milliseconds,
+	// or 0 when the bytes name no deadline. It is reported whether or
 	// not the account is usable — an expired account's card exists to say WHEN
 	// it expired.
 	LoginExpiresAt int64
