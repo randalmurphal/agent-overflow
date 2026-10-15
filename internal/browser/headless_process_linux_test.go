@@ -30,15 +30,16 @@ func TestChromiumCommandRunsInItsOwnGroupAndDiesWithTheBackend(t *testing.T) {
 	}
 }
 
-// processRunning reports whether pid names a process that has not exited.
-// A zombie has exited: it holds no files and runs no code.
+// processRunning reports whether pid names a process that has not exited,
+// by the reading the group wait uses (parseProcStat): a zombie or a dead
+// task being reaped has exited; it holds no files and runs no code.
 func processRunning(pid int) bool {
 	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
 		return false
 	}
-	end := bytes.LastIndexByte(stat, ')')
-	return end >= 0 && len(stat) > end+2 && stat[end+2] != 'Z'
+	_, exited, ok := parseProcStat(stat)
+	return ok && !exited
 }
 
 // readPIDFile reads a pid a script recorded before printing its endpoint.
@@ -347,6 +348,7 @@ func TestParseProcStatReadsTheGroupAndWhetherTheProcessExited(t *testing.T) {
 	}{
 		{name: "running", stat: stat("chrome", "S", 30), wantGroup: 777, wantOK: true},
 		{name: "exited", stat: stat("chrome", "Z", 1), wantGroup: 777, wantExited: true, wantOK: true},
+		{name: "dead and being reaped", stat: stat("chrome", "X", 1), wantGroup: 777, wantExited: true, wantOK: true},
 		{name: "a zombie whose threads are still exiting", stat: stat("chrome", "Z", 3), wantGroup: 777, wantOK: true},
 		{name: "a name with spaces and parentheses", stat: stat("a) Z 9 9 (b", "R", 1), wantGroup: 777, wantOK: true},
 		{name: "truncated", stat: []byte("4242 (chrome) S 1 777"), wantOK: false},

@@ -10,7 +10,7 @@ import (
 // A v152 database with two standing agents carrying loops,
 // watches, reminders and open requests opens through every pending
 // migration with everything still attached to the same assistant.
-func TestV153TwoAssistantsKeepEverything(t *testing.T) {
+func TestV154TwoAssistantsKeepEverything(t *testing.T) {
 	path := fileDBThrough(t, agentRecordsMigrationVersion-1)
 	db, err := sql.Open("sqlite", poolDSN(path, writerConnPragmas))
 	if err != nil {

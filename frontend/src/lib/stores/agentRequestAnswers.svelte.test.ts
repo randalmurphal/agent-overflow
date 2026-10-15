@@ -16,7 +16,7 @@ const settle = async () => {
 
 /** A ledger that answered every token it is asked about. Returns the mock. */
 function answeredLedger() {
-  const read = vi.fn(async (_thread: string, asked: string[]) => asked.map((token) => ({ token, state: 'finished', wakeItemId: `w-${token}` })));
+  const read = vi.fn(async (_thread: string, asked: string[]) => asked.map((token) => ({ token, state: 'finished', wakeItemId: `w-${token}`, answered: true })));
   setBindingMock('GetThreadRequestStates', read);
   return read;
 }
@@ -51,7 +51,7 @@ describe('agent request answers', () => {
     const tokens = Array.from({ length: 300 }, (_, i) => `tok-${i}`);
     const answers = new Map(tokens.map((token) => [token, '']));
     setBindingMock('GetThreadRequestStates', vi.fn(async (_thread: string, asked: string[]) =>
-      asked.map((token) => ({ token, state: 'finished', wakeItemId: answers.get(token) ?? '' }))));
+      asked.map((token) => ({ token, state: 'finished', wakeItemId: answers.get(token) ?? '', answered: Boolean(answers.get(token)) }))));
     const rows = mountRows('lead', tokens);
     await settle();
     flushSync();
@@ -109,6 +109,16 @@ describe('agent request answers', () => {
     await settle();
     expect(read.mock.calls.slice(before).map(([, asked]) => asked)).toEqual([['tok-0']]);
     watchedRelease();
+  });
+
+  it('reads an answer a call collected, which left no wake row, as arrived', async () => {
+    setBindingMock('GetThreadRequestStates', vi.fn(async (_thread: string, asked: string[]) =>
+      asked.map((token) => ({ token, state: 'finished', wakeItemId: '', answered: token === 'inline' }))));
+    requestAnswered('lead', undefined, 'inline');
+    requestAnswered('lead', undefined, 'owed');
+    await settle();
+    expect(requestAnswered('lead', undefined, 'inline')).toBe(true);
+    expect(requestAnswered('lead', undefined, 'owed')).toBe(false);
   });
 
   it('lets a released token go once the bound needs room', async () => {

@@ -106,15 +106,19 @@ type ThreadRequest struct {
 	Notify bool   `json:"notify"`
 	State  string `json:"state"`
 	// Answer is the whole settled text, never truncated.
-	Answer          []byte `json:"-"`
-	AnswerKind      string `json:"answerKind,omitempty"`
-	LateReply       []byte `json:"-"`
-	LateReplyAt     int64  `json:"lateReplyAt,omitempty"`
-	Revision        int64  `json:"revision"`
-	SettledAt       int64  `json:"settledAt,omitempty"`
-	DeliveredAt     int64  `json:"deliveredAt,omitempty"`
-	DeliveredHow    string `json:"deliveredHow,omitempty"`
-	LateDeliveredAt int64  `json:"lateDeliveredAt,omitempty"`
+	Answer      []byte `json:"-"`
+	AnswerKind  string `json:"answerKind,omitempty"`
+	LateReply   []byte `json:"-"`
+	LateReplyAt int64  `json:"lateReplyAt,omitempty"`
+	Revision    int64  `json:"revision"`
+	SettledAt   int64  `json:"settledAt,omitempty"`
+	DeliveredAt int64  `json:"deliveredAt,omitempty"`
+	// DeliveredHow is the route the first answer reached the caller by, and
+	// LateDeliveredHow the late reply's: an answer delivered by a wake keeps
+	// its wake row after a late reply is read inline, and the other way round.
+	DeliveredHow     string `json:"deliveredHow,omitempty"`
+	LateDeliveredAt  int64  `json:"lateDeliveredAt,omitempty"`
+	LateDeliveredHow string `json:"lateDeliveredHow,omitempty"`
 	// ConfirmedAt and LateConfirmedAt record the provider's echo of a
 	// queued answer and late reply. A queued one without it may never have
 	// reached the agent. An inline delivery is confirmed when it is marked.
@@ -179,6 +183,15 @@ func (r ThreadRequest) MadeIn() string {
 	return r.CallerThreadID
 }
 
+// DeliveryRoute is how the first answer (late false) or the late reply
+// (late true) reached the caller, empty while it has not.
+func (r ThreadRequest) DeliveryRoute(late bool) string {
+	if late {
+		return r.LateDeliveredHow
+	}
+	return r.DeliveredHow
+}
+
 // ThreadAnswerAgent names the thread that answered a request as a standing
 // agent. Role is its role line as the wake quotes it (agenthome.BoundRole),
 // empty when its instructions.md holds none.
@@ -221,7 +234,7 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     polling, next_check, attempts, issue,
     wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at,
     COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
-    target_provider, nested_open, made_in_thread_id`
+    target_provider, nested_open, late_delivered_how, made_in_thread_id`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	var r ThreadRequest
@@ -237,7 +250,7 @@ func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 		&polling, &r.NextCheck, &r.Attempts, &r.Issue,
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
-		&r.TargetProvider, &nestedOpen, &r.MadeInThreadID,
+		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
 	)
 	r.NestedOpen = nestedOpen != 0
 	r.AnswerAgent = answerAgentOf(answerAgent.Int64, answerAgentRole)
@@ -427,7 +440,7 @@ func MarkThreadRequestDeliveredTx(tx *sql.Tx, token, how string, at int64, late 
 	query := `UPDATE thread_requests SET delivered_at = ?, delivered_how = ?, confirmed_at = ?, updated_at = ?` + retry +
 		` WHERE token = ? AND delivered_at IS NULL` + settled
 	if late {
-		query = `UPDATE thread_requests SET late_delivered_at = ?, delivered_how = ?, late_confirmed_at = ?, updated_at = ?` + retry +
+		query = `UPDATE thread_requests SET late_delivered_at = ?, late_delivered_how = ?, late_confirmed_at = ?, updated_at = ?` + retry +
 			` WHERE token = ? AND late_reply IS NOT NULL AND late_delivered_at IS NULL` + settled
 	}
 	var confirmed any
@@ -1259,12 +1272,12 @@ func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, scope 
 		return err
 	}
 	if removed || scope != WithdrawQueued {
-		delivered, confirmed, clear := "delivered_at", "confirmed_at", "delivered_how = '', "
+		delivered, confirmed, route := "delivered_at", "confirmed_at", "delivered_how"
 		if late {
-			delivered, confirmed, clear = "late_delivered_at", "late_confirmed_at", ""
+			delivered, confirmed, route = "late_delivered_at", "late_confirmed_at", "late_delivered_how"
 		}
-		query := `UPDATE thread_requests SET ` + delivered + ` = NULL, ` + confirmed + ` = NULL, ` + clear + `notify = 0, updated_at = ?
-		           WHERE token = ? AND ` + delivered + ` IS NOT NULL AND delivered_how = ? AND lineage_only = 0`
+		query := `UPDATE thread_requests SET ` + delivered + ` = NULL, ` + confirmed + ` = NULL, ` + route + ` = '', notify = 0, updated_at = ?
+		           WHERE token = ? AND ` + delivered + ` IS NOT NULL AND ` + route + ` = ? AND lineage_only = 0`
 		// A message still in the queue never reached the provider. One that
 		// left it goes back only while no echo has confirmed it.
 		if !removed && scope == WithdrawUnconfirmed {

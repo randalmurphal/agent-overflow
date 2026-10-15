@@ -202,7 +202,7 @@ func TestStandingAgentsMigration(t *testing.T) {
 	if want := []string{"w-armed", "w-running", "w-long"}; !slices.Equal(liveIDs, want) {
 		t.Errorf("live wakes = %v, want %v", liveIDs, want)
 	}
-	// v153 made each row an assistant whose id is its thread's, keeping
+	// v154 made each row an assistant whose id is its thread's, keeping
 	// the home as it was.
 	if agent, found, err := s.GetStandingAgent("watcher"); err != nil || !found ||
 		agent != (StandingAgent{ID: "watcher", ThreadID: "watcher", Home: "/h/watcher", NotifyOnTick: true, CreatedAt: 11}) {

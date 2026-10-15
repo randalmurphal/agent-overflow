@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// v153 over a populated database: every standing_agents row becomes an
+// v154 over a populated database: every standing_agents row becomes an
 // assistant whose id is its thread's, with its home and tick setting kept;
 // standing_agents is gone; every request reads as made by its caller; and
 // the new tables cascade as the spec says.
-func TestMigrationV153AgentRecords(t *testing.T) {
+func TestMigrationV154AgentRecords(t *testing.T) {
 	path := fileDBThrough(t, agentRecordsMigrationVersion-1)
 	db, err := sql.Open("sqlite", poolDSN(path, writerConnPragmas))
 	if err != nil {

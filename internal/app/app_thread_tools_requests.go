@@ -431,7 +431,7 @@ func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadReques
 			return state, nil
 		}
 		row = claim.row
-		state.Delivered = row.DeliveredHow
+		state.Delivered = row.DeliveryRoute(late)
 	}
 	state.WakeQueued = t.wakeQueued(row, late)
 	return state, nil
@@ -451,7 +451,7 @@ func (t threadToolsApp) requestStateView(row store.ThreadRequest) threadtools.Re
 		AnswerKind: threadAnswerKindWord(row.AnswerKind),
 		Revision:   row.Revision,
 		Notify:     row.Notify,
-		Delivered:  row.DeliveredHow,
+		Delivered:  row.DeliveryRoute(row.LateDeliveredAt != 0),
 		ExpiresAt:  row.ExpiresAt,
 		DueAt:      row.DueAt,
 	}
@@ -568,7 +568,7 @@ func threadRequestDelivered(row store.ThreadRequest, late bool) bool {
 // unstamped row is a message that has not arrived yet. Probing the queue row
 // alone answers no for almost the whole window this notice exists for.
 func (t threadToolsApp) wakeQueued(row store.ThreadRequest, late bool) bool {
-	if !threadRequestDelivered(row, late) || row.DeliveredHow != store.ThreadWakeQueued {
+	if !threadRequestDelivered(row, late) || row.DeliveryRoute(late) != store.ThreadWakeQueued {
 		return false
 	}
 	record, found, err := t.app.findRecordedSend(row.CallerThreadID, threadWakeSendIDFor(row.Token, late))

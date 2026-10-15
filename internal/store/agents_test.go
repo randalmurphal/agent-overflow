@@ -9,7 +9,7 @@ import (
 )
 
 // mustCreateAssistant records an assistant on an existing thread, its id the
-// thread's as v153 migrates a promoted thread.
+// thread's as v154 migrates a promoted thread.
 func mustCreateAssistant(t *testing.T, s *Store, threadID, home string) StandingAgent {
 	t.Helper()
 	agent := StandingAgent{ID: threadID, ThreadID: threadID, Home: home, CreatedAt: 1}

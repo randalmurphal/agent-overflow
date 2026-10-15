@@ -4,12 +4,13 @@
 // calls; the spec reads its timeline: each row's collapsed header, its
 // expanded result as facts, links and lines rather than JSON, the
 // refusal's message and code, and the spawn and send following their
-// requests until the answers' wakes land. The spawn's prompt is over the
-// wire projection's budget, so its header proves the clipped opening
-// survives (internal/itemwire). Screenshots of every row collapsed and
-// expanded go to the test's output directory.
+// requests until the answers arrive, by a wake or by a status call that
+// collected the answer. The spawn's prompt is over the wire projection's
+// budget, so its header proves the clipped opening survives
+// (internal/itemwire). Screenshots of every row collapsed and expanded go to
+// the test's output directory.
 
-import { test, expect } from './fixtures.js';
+import { test, expect, type SeedResult } from './fixtures.js';
 import {
   LEAD_TITLE,
   SPAWN_TITLE,
@@ -20,6 +21,7 @@ import {
   shootRow,
   toolRow,
 } from './ao-tool-rows-helpers.js';
+import { RESULT_TOKEN_PATTERN, awaitToolAnswer, plainScenario, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 
 for (const provider of ['claude', 'codex'] as const) {
   test(`${provider}: AO tool rows say what the call did and show its result as facts`, async ({ harness, page }) => {
@@ -134,5 +136,48 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(page.getByRole('dialog', { name: 'Workflows' })).toHaveCount(0);
 
     expect(run.spawnedThreadId).not.toBe('');
+  });
+
+  // A thread_status that collects the answer is its delivery, so no wake row
+  // follows; the send row still reads the answer as arrived rather than
+  // following the target thread (GetThreadRequestStates' answered).
+  test(`${provider}: a send whose answer a status call collected reads answer arrived`, async ({ harness, page }) => {
+    const tag = `inline-${provider}`;
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [
+        { name: `ao-rows-lead-${tag}`, repo: {}, threads: [{ title: LEAD_TITLE, provider }] },
+        { name: `ao-rows-target-${tag}`, repo: {}, threads: [{ title: TARGET_TITLE, provider }] },
+      ],
+    });
+    const [lead, target] = seed.projects;
+    await setScenario(harness, target.path, plainScenario({ name: `ao-rows-target-${tag}`, provider, texts: ['Rebased and green.'] }));
+    await setScenario(harness, lead.path, threadToolsScenario({
+      name: `ao-rows-lead-${tag}`,
+      provider,
+      echoUserMessage: true,
+      turns: [{
+        steps: [
+          { call: { tool: 'thread_send', args: { thread_id: target.threadIds[0], message: 'Rebase onto main', notify: true } } },
+          { capture: { var: 'SEND', from: '${MCP_RESULT}', pattern: RESULT_TOKEN_PATTERN } },
+          // Parks until the target's turn settles the request, and carries
+          // the answer back in its own reply.
+          { call: { tool: 'thread_status', args: { tokens: ['${SEND}'], wait_seconds: 60 }, timeoutMs: 90_000 } },
+        ],
+        text: 'Read the answer.',
+      }],
+    }));
+
+    await harness.rpc('StartSession', lead.threadIds[0]);
+    await harness.rpc('SendMessage', lead.threadIds[0], 'rebase the target', null);
+    const status = await awaitToolAnswer<{ requests: { state: string; delivered?: string }[] }>(
+      harness, { tool: 'thread_status', cwd: lead.path, timeoutMs: 90_000 });
+    expect(status.isError, status.text).toBe(false);
+    expect(status.value?.requests[0]).toMatchObject({ state: 'finished', delivered: 'inline' });
+
+    await openLead(harness, page, 'send');
+    const send = toolRow(page, 'send', `${TARGET_TITLE} · Rebase onto main`);
+    await expect(send.getByTestId('tool-call-card-ao-live-hint')).toHaveText('(answer arrived)');
+    await expect(page.getByText('Read the answer.', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('agent-message-row')).toHaveCount(0);
   });
 }

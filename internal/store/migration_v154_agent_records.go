@@ -1,6 +1,6 @@
 package store
 
-// Migration v153 makes a standing agent a record of its own rather than a
+// Migration v154 makes a standing agent a record of its own rather than a
 // mark on a thread (docs/specs/standing-agents.md, "Standing agent").
 //
 // `agents` is the assistant: its own id, its current thread, its home, its
@@ -17,9 +17,9 @@ package store
 // Every standing_agents row becomes an assistant whose id is its thread's
 // id, so the home `<config>/agents/<thread-id>` the promotion made is the
 // record's own `<config>/agents/<agent-id>`.
-const agentRecordsMigrationVersion = 153
+const agentRecordsMigrationVersion = 154
 
-const agentRecordsV153SQL = `
+const agentRecordsV154SQL = `
 CREATE TABLE agents (
     id               TEXT PRIMARY KEY,
     thread_id        TEXT NOT NULL UNIQUE REFERENCES threads(id) ON DELETE CASCADE,

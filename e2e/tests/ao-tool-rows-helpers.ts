@@ -135,8 +135,8 @@ export async function driveAoToolRows(harness: HarnessApp, provider: ProviderNam
   return { leadThreadId, targetThreadId, spawnedThreadId: spawn.value!.thread_id, runId };
 }
 
-/** Opens the lead thread with every activity run expanded. */
-export async function openLead(harness: HarnessApp, page: Page): Promise<void> {
+/** Opens the lead thread with every activity run expanded, once its row with this gutter verb shows. */
+export async function openLead(harness: HarnessApp, page: Page, firstLabel = 'spawn'): Promise<void> {
   await harness.open(page);
   if ((await page.locator('html').getAttribute('data-compact-screen')) === 'thread') {
     await page.getByTestId('compact-back').click();
@@ -150,7 +150,7 @@ export async function openLead(harness: HarnessApp, page: Page): Promise<void> {
     const run = runs.nth(index);
     if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
   }
-  await expect(page.getByTestId('tool-call-card-label').filter({ hasText: /^spawn$/ }).first()).toBeAttached();
+  await expect(page.getByTestId('tool-call-card-label').filter({ hasText: new RegExp(`^${firstLabel}$`) }).first()).toBeAttached();
 }
 
 /** The one tool row with this gutter verb whose header reads `preview`. */
