@@ -40,7 +40,7 @@ func normalizeTerminalEnv(base []string) []string {
 	}
 	base = appimage.Scrub(base)
 
-	out := make([]string, 0, len(base)+2)
+	out := make([]string, 0, len(base))
 	for _, entry := range base {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok && slices.Contains(terminalCapabilityVars, key) {

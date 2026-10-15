@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -852,16 +853,17 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 }
 
 func formatCommand(binary string, args ...string) string {
-	parts := make([]string, 0, 1+len(args))
-	parts = append(parts, binary)
+	var b strings.Builder
+	b.WriteString(binary)
 	for _, arg := range args {
+		b.WriteByte(' ')
 		if strings.ContainsAny(arg, " \t\"'\\") {
-			parts = append(parts, fmt.Sprintf("%q", arg))
+			b.WriteString(strconv.Quote(arg))
 		} else {
-			parts = append(parts, arg)
+			b.WriteString(arg)
 		}
 	}
-	return strings.Join(parts, " ")
+	return b.String()
 }
 
 func trimBranchRef(ref string) string {

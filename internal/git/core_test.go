@@ -398,9 +398,17 @@ func TestListWorktreesOnNonRepo(t *testing.T) {
 
 func TestFormatCommandQuotesSpecialChars(t *testing.T) {
 	t.Parallel()
-	got := formatCommand("git", "commit", "-m", "hello world")
-	if !strings.Contains(got, `"hello world"`) {
-		t.Fatalf("expected quoted arg, got %q", got)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "git"},
+		{[]string{"commit", "-m", "hello world"}, `git commit -m "hello world"`},
+		{[]string{"log", `a"b`, `c\d`, "e'f", "g\th"}, `git log "a\"b" "c\\d" "e'f" "g\th"`},
+	} {
+		if got := formatCommand("git", tc.args...); got != tc.want {
+			t.Errorf("formatCommand(git, %q) = %s, want %s", tc.args, got, tc.want)
+		}
 	}
 }
 
