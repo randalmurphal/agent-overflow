@@ -678,6 +678,35 @@ func TestARequestHeldWhenTheThreadIsStoppedGoesBackToItsQueue(t *testing.T) {
 	}
 }
 
+// The idle reaper tears a session down holding the thread's mutation lock,
+// which queueing a message takes. The requests it took back are queued once
+// the reaper lets go, not under it.
+func TestAReapedSessionQueuesItsRequestsAgainOnceItsLockIsReleased(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	callerMidTurn(t, f)
+	h := newHeldRequestTarget(t, f)
+	tokens, uuid := h.send(t, "check the changelog")
+	h.lifecycle(t, uuid, provider.CommandQueued)
+
+	unlock := f.app.threadApplication().LockMutations(h.thread.ID)
+	sess, _ := f.app.sessionManager().take(h.thread.ID)
+	done := make(chan error, 1)
+	go func() { done <- f.app.teardownAndCloseSessionHoldingMutations(h.thread.ID, sess) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("teardown: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		unlock()
+		t.Fatal("the teardown waited on the mutation lock its caller holds")
+	}
+	unlock()
+	f.app.threadRequestsWG.Wait()
+	assertRequestOwedAgain(t, f, h.thread.ID, tokens[0])
+}
+
 // assertRequestOwedAgain checks that a request is back where it started:
 // accepted on both sides, its message queued and not in the timeline, its
 // sender told nothing and the person's composer without it.

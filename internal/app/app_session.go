@@ -1318,9 +1318,15 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool)
 	// The answers and remote completions the drop held go back to their
 	// requests and watches once the session is closed, so a completion the
 	// watcher queues again starts a session only after this one is gone.
-	// Other threads' requests go back on the queue the cleanup emptied.
+	// Other threads' requests go back on the queue the cleanup emptied; a
+	// caller holding the mutation lock a queue write takes (the idle
+	// reaper) has them queued once it lets go.
 	defer a.giveBackToOwners(threadID, held)
-	defer a.giveBackTeardownRequests(threadID, requests)
+	if mutationsHeld && !requests.empty() {
+		defer a.goThreadRequestSettling(func() { a.giveBackTeardownRequests(threadID, requests) })
+	} else {
+		defer a.giveBackTeardownRequests(threadID, requests)
+	}
 	err := a.closeProviderSession(threadID, sess)
 	if err == nil && sess.Provider == string(provider.Codex) {
 		err = a.retireCodexBackgroundRuntime(threadID)

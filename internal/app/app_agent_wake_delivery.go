@@ -595,6 +595,10 @@ type teardownRequests struct {
 	sent []teardownSend
 }
 
+func (owed teardownRequests) empty() bool {
+	return len(owed.queued) == 0 && len(owed.sent) == 0
+}
+
 type teardownSend struct {
 	userItemID  string
 	queueItemID string
