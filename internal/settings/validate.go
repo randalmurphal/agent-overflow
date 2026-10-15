@@ -288,6 +288,9 @@ func validateSettings(current Settings) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	if err := validatePromptOverrideIDsAcrossProviders(current); err != nil {
+		return Settings{}, err
+	}
 	current.ClaudeDisabledTools, err = validateDisabledTools("claudeDisabledTools", current.ClaudeDisabledTools)
 	if err != nil {
 		return Settings{}, err
@@ -479,6 +482,7 @@ func sanitizeLoadedSettings(current Settings) Settings {
 	current.CodexCustomEnv = sanitizeProviderEnvVars("codex", current.CodexCustomEnv)
 	current.ClaudePromptOverrides = sanitizePromptOverrides("claudePromptOverrides", current.ClaudePromptOverrides)
 	current.CodexPromptOverrides = sanitizePromptOverrides("codexPromptOverrides", current.CodexPromptOverrides)
+	sanitizePromptOverrideIDsAcrossProviders(&current)
 	current.ClaudeDisabledTools = sanitizeDisabledTools("claudeDisabledTools", current.ClaudeDisabledTools)
 	current.CodexDisabledTools = sanitizeDisabledTools("codexDisabledTools", current.CodexDisabledTools)
 	current.ClaudeOutputStyle = sanitizeClaudeOutputStyle("claudeOutputStyle", current.ClaudeOutputStyle)

@@ -78,7 +78,7 @@ describe('<AgentPane>', () => {
   beforeEach(async () => {
     installTimelineScopeCapability();
     resetBindingMocks();
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
     resetPanesForTest();
     resetPaneLayoutForTest();
     resetCompanionPanesForTest();
@@ -259,7 +259,27 @@ describe('<AgentPane>', () => {
     expect(queryByTestId('agent-pane-stop-error')).toBeNull();
   });
 
-  it('offers no Stop for a forked skill (no task lifecycle on the wire)', async () => {
+  it('stops a running forked skill by its task id', async () => {
+    const stop = vi.fn(async () => true);
+    setBindingMock('StopClaudeTask', stop);
+    const { ctx } = await setup([
+      launchItem({
+        toolName: 'Skill',
+        summary: 'Skill',
+        payloadMeta: JSON.stringify({ toolName: 'Skill', input: { skill: 'code-review' } }),
+        meta: JSON.stringify({ task_id: 'fork-task-1', task_type: 'local_agent' }),
+      }),
+      makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'fork work' }),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'code-review');
+    const { getByTestId } = await renderAgent({ props: { ctx } });
+
+    expect(getByTestId('agent-pane-stop')).toBeTruthy();
+    await fireEvent.click(getByTestId('composer-interrupt'));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith(THREAD_ID, 'fork-task-1'));
+  });
+
+  it('offers no Stop for a forked skill from a CLI that gave it no task', async () => {
     const { ctx } = await setup([
       launchItem({
         toolName: 'Skill',

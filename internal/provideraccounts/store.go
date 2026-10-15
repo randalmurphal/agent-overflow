@@ -723,14 +723,13 @@ func resetExpiredLimits(snapshot *provider.RateLimitsSnapshot, now time.Time) *p
 		if entry.ResetsAt <= 0 || entry.ResetsAt > nowUnix {
 			continue
 		}
+		// The next window starts at the account's first request after the
+		// reset, so its boundary is unknown until a reading reports it. A
+		// projected `old + k*window` is wrong in both directions: earlier when
+		// usage resumed late, later when windows lapsed unused, and a later
+		// one makes the merge reject partial readings against it.
 		entry.UsedPercent = 0
-		if entry.WindowMins <= 0 {
-			entry.ResetsAt = 0
-			continue
-		}
-		windowSeconds := int64(entry.WindowMins) * 60
-		elapsedWindows := (nowUnix-entry.ResetsAt)/windowSeconds + 1
-		entry.ResetsAt += elapsedWindows * windowSeconds
+		entry.ResetsAt = 0
 	}
 	return &copy
 }

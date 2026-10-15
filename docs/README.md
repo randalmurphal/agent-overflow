@@ -40,7 +40,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`root-decomposition.md`](architecture/root-decomposition.md) | Current application composition, ownership and Wails wire compatibility. |
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
 | [`transport.md`](architecture/transport.md) | Wire mechanism deep-dives: port pinning, the gap marker, scoped-token routes, coalescing, keepalive. |
-| [`forge-transport.md`](architecture/forge-transport.md) | Direct HTTPS to GitHub and GitLab with the user's `gh`/`glab` token: credential holder, hosts, typed errors, rate-limit gates, ETag and Range, the HTTP fake. |
+| [`forge-transport.md`](architecture/forge-transport.md) | Direct HTTPS to GitHub and GitLab with the user's `gh`/`glab` token: credential holder, hosts, typed errors, rate-limit gates, ETag and Range, the HTTP fake, the merged-PR worktree cleanup's reads. |
 | [`release-candidates.md`](architecture/release-candidates.md) | Build and test an untagged production candidate, then publish its exact saved bytes. |
 | [`release-upgrade-check.md`](architecture/release-upgrade-check.md) | The candidate migrates a large previous-release database through the launcher's update path and boots on it. |
 | [`remote-access-setup.md`](architecture/remote-access-setup.md) | Mac-to-Android setup: Tailscale, APK installation, pairing, release signing, and troubleshooting. |

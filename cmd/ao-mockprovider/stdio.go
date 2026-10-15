@@ -44,9 +44,11 @@ func (lw *lineWriter) writeLine(line string, chunkBytes, chunkIntervalMs int) {
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
 
+	// The observer sees a line before the app can: a control request the
+	// app sends on reading it finds the line's state recorded.
+	lw.observed(line)
 	if chunkBytes <= 0 || chunkBytes >= len(data) {
 		lw.write(data)
-		lw.observed(line)
 		return
 	}
 	for off := 0; off < len(data); off += chunkBytes {
@@ -56,7 +58,6 @@ func (lw *lineWriter) writeLine(line string, chunkBytes, chunkIntervalMs int) {
 			time.Sleep(time.Duration(chunkIntervalMs) * time.Millisecond)
 		}
 	}
-	lw.observed(line)
 }
 
 // writeLines writes every line, each newline-terminated, in ONE write
@@ -82,10 +83,10 @@ func (lw *lineWriter) writeLines(lines []string) {
 	}
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
-	lw.write(data)
 	for _, line := range lines {
 		lw.observed(line)
 	}
+	lw.write(data)
 }
 
 // locked runs fn holding the write lock and hands it a writer of whole

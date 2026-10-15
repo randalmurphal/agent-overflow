@@ -311,7 +311,7 @@ func (a *App) RemoveOtherWorktree(ws WorkspaceRef, worktreePath string, force bo
 	if err != nil {
 		return WorktreeRemoval{}, err
 	}
-	reattached, err := a.removeProjectWorktree(ws.ProjectID, project, worktreePath, force)
+	reattached, err := a.removeProjectWorktree(ws.ProjectID, project, worktreePath, worktreeRemovalPolicy{force: force})
 	if err != nil {
 		return WorktreeRemoval{}, err
 	}
@@ -322,7 +322,44 @@ func (a *App) RemoveOtherWorktree(ws WorkspaceRef, worktreePath string, force bo
 	return WorktreeRemoval{Workspace: state, Reattached: reattached}, nil
 }
 
-func (a *App) removeProjectWorktree(projectID, project, worktreePath string, force bool) ([]store.Thread, error) {
+// worktreeRemovalPolicy is what an in-app removal checks and says.
+type worktreeRemovalPolicy struct {
+	// force skips the loss-of-work gate and runs git with --force, for a
+	// user who confirmed discarding the worktree's changes.
+	force bool
+	// keepsBranch narrows the loss-of-work gate to uncommitted changes:
+	// unpushed commits are not lost when the branch outlives the worktree.
+	// git still runs without --force, so it refuses a dirty tree too.
+	keepsBranch bool
+	// mergedPR names the merged pull request the removal is for; each moved
+	// thread is told (worktreeRemoval.mergedPR).
+	mergedPR string
+	// idle is a further gate run with every occupant's lock held, after the
+	// running-turn and background-task check, so a thread cannot start
+	// work between the caller's check and the removal.
+	idle func(occupants []string) error
+}
+
+// errWorktreeDirty is the loss-of-work gate's refusal for uncommitted
+// changes, with how many files changed.
+type errWorktreeDirty struct {
+	path  string
+	count int
+}
+
+func (e *errWorktreeDirty) Error() string {
+	return fmt.Sprintf("worktree %s has %d uncommitted files", e.path, e.count)
+}
+
+// errWorktreeBusy is a removal refused because a thread in the worktree is
+// working; the reason says how.
+type errWorktreeBusy struct{ reason error }
+
+func (e *errWorktreeBusy) Error() string { return e.reason.Error() }
+func (e *errWorktreeBusy) Unwrap() error { return e.reason }
+
+func (a *App) removeProjectWorktree(projectID, project, worktreePath string, policy worktreeRemovalPolicy) ([]store.Thread, error) {
+	force := policy.force
 	worktreePath = strings.TrimSpace(worktreePath)
 	if worktreePath == "" {
 		return nil, fmt.Errorf("worktree path is required")
@@ -354,7 +391,10 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, for
 		if err != nil {
 			return nil, fmt.Errorf("worktree status: %w", err)
 		}
-		if status.Dirty || status.UnpushedCommits > 0 {
+		if policy.keepsBranch && status.Dirty {
+			return nil, &errWorktreeDirty{path: worktreePath, count: status.UncommittedCount}
+		}
+		if !policy.keepsBranch && (status.Dirty || status.UnpushedCommits > 0) {
 			return nil, fmt.Errorf("worktree %s has unsaved work (dirty=%v unpushed=%d); pass force to discard", worktreePath, status.Dirty, status.UnpushedCommits)
 		}
 	}
@@ -385,15 +425,21 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, for
 	}
 	slices.Sort(recheck)
 	if !slices.Equal(attached, slices.Compact(recheck)) {
-		return nil, fmt.Errorf("worktree %s occupancy changed during removal; retry", worktreePath)
+		return nil, &errWorktreeBusy{reason: fmt.Errorf("worktree %s occupancy changed during removal; retry", worktreePath)}
 	}
 	mutable, err := a.mutableWorkspaceThreads(attached)
 	if err != nil {
-		return nil, err
+		// A pending transfer is still deciding where the thread lives.
+		return nil, &errWorktreeBusy{reason: err}
 	}
 
 	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", worktreePath); err != nil {
-		return nil, err
+		return nil, &errWorktreeBusy{reason: err}
+	}
+	if policy.idle != nil {
+		if err := policy.idle(attached); err != nil {
+			return nil, &errWorktreeBusy{reason: err}
+		}
 	}
 
 	// Cancel by directory and block on the join. A recipe still writing into the
@@ -417,14 +463,21 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, for
 		resumeStatus()
 		return nil, err
 	}
-	removal := &worktreeRemoval{projectID: projectID, project: project, path: worktreePath}
+	removal := &worktreeRemoval{projectID: projectID, project: project, path: worktreePath, mergedPR: policy.mergedPR}
 	reattached, sweepErr := a.reattachThreadsFromRemovedWorktree(removal, mutable)
 	finishErr := a.finishWorktreeRemoval(removal, reattached, true)
 	if err := errors.Join(sweepErr, finishErr); err != nil {
-		return nil, fmt.Errorf("worktree removed but %w", err)
+		return nil, &errWorktreeRemovedFollowUp{err: err}
 	}
 	return reattached, nil
 }
+
+// errWorktreeRemovedFollowUp is a removal git completed whose reaction
+// (moving threads, closing terminals, telling clients) partly failed.
+type errWorktreeRemovedFollowUp struct{ err error }
+
+func (e *errWorktreeRemovedFollowUp) Error() string { return "worktree removed but " + e.err.Error() }
+func (e *errWorktreeRemovedFollowUp) Unwrap() error { return e.err }
 
 // removeWorkflowWorktree removes a checkout a workflow owns, for its own
 // cleanup: disposition, discard, unit retirement and provisioning rollback.
@@ -531,6 +584,10 @@ type worktreeRemoval struct {
 	// it says who removed the worktree (removedOutsideCause,
 	// removedByClaudeCause), and every thread the removal moves is told so.
 	cause string
+	// mergedPR names the pull request whose merge the app removed the
+	// worktree for ("PR #90", "MR !12"), and every thread the removal moves
+	// is told so. Empty for every other removal.
+	mergedPR string
 
 	branch     string
 	branchRead bool
@@ -546,12 +603,22 @@ func (r *worktreeRemoval) projectBranch(core *gitops.Core) string {
 	return r.branch
 }
 
-// notice is the timeline message a thread moved by an outside removal gets.
-func (r *worktreeRemoval) notice(stopped bool) string {
-	if stopped {
-		return fmt.Sprintf("Worktree %s %s. Its session was stopped, and this thread now runs in Base (%s); the next message starts it there.", r.path, r.cause, r.project)
+// notice is the timeline message, and its kind, a thread moved by this
+// removal gets: none for a removal the app performed on request. The
+// worktree is named by its directory and the project root as Base, the
+// names the workspace picker shows.
+func (r *worktreeRemoval) notice(stopped bool) (text, kind string, ok bool) {
+	name := filepath.Base(r.path)
+	switch {
+	case r.mergedPR != "":
+		return fmt.Sprintf("%s merged. Removed worktree %s; this thread now runs in Base.", r.mergedPR, name), noticeKindWorktreeCleanup, true
+	case r.cause == "":
+		return "", "", false
+	case stopped:
+		return fmt.Sprintf("Worktree %s %s. Its session was stopped, and this thread now runs in Base; the next message starts it there.", name, r.cause), noticeKindWarning, true
+	default:
+		return fmt.Sprintf("Worktree %s %s. This thread now runs in Base.", name, r.cause), noticeKindWarning, true
 	}
-	return fmt.Sprintf("Worktree %s %s. This thread now runs in Base (%s).", r.path, r.cause, r.project)
 }
 
 // finishWorktreeRemoval is what every removal ends with, whoever removed the
@@ -745,8 +812,8 @@ func (a *App) reattachThreadsFromRemovedWorktree(removal *worktreeRemoval, mutab
 				a.purgeRelocatedClaudeSessions(id, moved)
 			}
 		}
-		if removal.cause != "" {
-			if err := a.emitNoticeToThread(id, removal.notice(stop != nil)); err != nil {
+		if text, kind, ok := removal.notice(stop != nil); ok {
+			if err := a.emitNoticeToThread(id, kind, text); err != nil {
 				sweepErrs = append(sweepErrs, err)
 			}
 		}

@@ -49,12 +49,16 @@ type IsolationConfig struct {
 	// processes it was given.
 	ScanScopePIDs []int
 	// ThreadRequestPoll, TransferPendingRetry, PRUpdateInterval,
-	// PRUpdateRetryBase, PRCILiveInterval, PRCIFollowInterval and
-	// PRCILogWaitInterval replace the agent thread request poll cadence,
+	// PRUpdateRetryBase, PRCILiveInterval, PRCIFollowInterval,
+	// PRCILogWaitInterval, MergedPRPollInterval and PRLookupRetryBase
+	// replace the agent thread request poll cadence,
 	// threadtransfer.PendingRetry, the pull request poll cadence and its
-	// first retry delay, and the CI phase's three cadences, so an
-	// end-to-end test does not wait out a production interval it is not
-	// about. Zero keeps the product value; only a harness boot sets them
+	// first retry delay, the CI phase's three cadences, the merged-PR
+	// worktree cleanup's per-repository poll (which also bounds its tick
+	// and first poll), and how long a first failed open-PR lookup is
+	// cached (git.WithPRLookupErrorBase), so an end-to-end test
+	// does not wait out a production interval it is not about. Zero keeps
+	// the product value; only a harness boot sets them
 	// (diagenv.HarnessTiming).
 	ThreadRequestPoll    time.Duration
 	TransferPendingRetry time.Duration
@@ -63,6 +67,8 @@ type IsolationConfig struct {
 	PRCILiveInterval     time.Duration
 	PRCIFollowInterval   time.Duration
 	PRCILogWaitInterval  time.Duration
+	MergedPRPollInterval time.Duration
+	PRLookupRetryBase    time.Duration
 	// IdleReapThreshold, IdleReapInterval and WakeupReapGrace replace the
 	// idle-session reaper's inactivity window, sweep cadence and
 	// scheduled-wakeup grace (app_session_reaper.go). Zero keeps the
@@ -99,6 +105,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.browser.mockEngine = config.MockBrowserEngine
 	a.isolatedWorkspaceRoot = config.WorkspaceRoot
 	a.forgeCLIs = isolatedForgeCLIs{isolated: true, fake: config.ForgeCLI}
+	a.prLookupRetryBase = config.PRLookupRetryBase
 	a.preview.scanScope = isolatedScanScope(config.ScanScopePIDs)
 	a.downloadsIsolated = true
 	a.threadPollOverride = config.ThreadRequestPoll
@@ -116,6 +123,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.agentWakes.floorOverride = config.AgentWakeFloor
 	a.remoteWatchPoll = config.RemoteWatchPoll
 	a.providerEvents.drainStall = config.ProviderEventDrainStall
+	a.mergedPRs.interval = config.MergedPRPollInterval
 	// The mock provider's credential carries a mock bearer. The Claude usage
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.

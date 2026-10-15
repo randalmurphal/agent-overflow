@@ -20,6 +20,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"agent-overflow/internal/selfupdate"
 	"agent-overflow/internal/startupprogress"
@@ -541,15 +542,25 @@ type launcherUpdateHost struct {
 	configDir string
 }
 
-// HostFreeBytes reads the drive that holds the distro's virtual disk from
-// the WSL registration.
-func (h launcherUpdateHost) HostFreeBytes(distro string) (uint64, bool) {
-	free, err := distroDiskFreeBytes(distro)
+// HostDisk reads the drive that holds the distro's virtual disk, and the
+// disk's size on it, from the WSL registration. A disk whose size cannot be
+// read counts as holding nothing beyond what its filesystem uses.
+func (h launcherUpdateHost) HostDisk(distro string) (supervise.HostDisk, bool) {
+	base, vhd, err := distroDiskPaths(distro)
+	if err != nil {
+		log.Printf("updater: locate %s's disk: %v", distro, err)
+		return supervise.HostDisk{}, false
+	}
+	free, err := driveFreeBytes(base)
 	if err != nil {
 		log.Printf("updater: free space for %s's disk: %v", distro, err)
-		return 0, false
+		return supervise.HostDisk{}, false
 	}
-	return free, true
+	allocated, err := fileAllocatedBytes(vhd)
+	if err != nil {
+		log.Printf("updater: size of %s's disk: %v", distro, err)
+	}
+	return supervise.HostDisk{Free: free, Allocated: allocated, Drive: filepath.VolumeName(base)}, true
 }
 
 // InvalidatePayloadRecord clears wsl.json's installed payload. Isolated
@@ -617,17 +628,17 @@ func replaceFile(from, to string) error {
 // lxssKey is where WSL registers each distribution for the current user.
 const lxssKey = `Software\Microsoft\Windows\CurrentVersion\Lxss`
 
-// distroDiskFreeBytes is the free space, for this user, on the drive that
-// holds distro's virtual disk.
-func distroDiskFreeBytes(distro string) (uint64, error) {
+// distroDiskPaths is the directory that holds distro's virtual disk and the
+// disk's path.
+func distroDiskPaths(distro string) (base, vhd string, err error) {
 	root, err := registry.OpenKey(registry.CURRENT_USER, lxssKey, registry.ENUMERATE_SUB_KEYS)
 	if err != nil {
-		return 0, err
+		return "", "", err
 	}
 	defer root.Close()
 	names, err := root.ReadSubKeyNames(-1)
 	if err != nil {
-		return 0, err
+		return "", "", err
 	}
 	for _, name := range names {
 		key, err := registry.OpenKey(root, name, registry.QUERY_VALUE)
@@ -636,23 +647,68 @@ func distroDiskFreeBytes(distro string) (uint64, error) {
 		}
 		registered, _, nameErr := key.GetStringValue("DistributionName")
 		base, _, baseErr := key.GetStringValue("BasePath")
+		file, _, fileErr := key.GetStringValue("VhdFileName")
 		key.Close()
 		if nameErr != nil || !strings.EqualFold(registered, distro) {
 			continue
 		}
 		if baseErr != nil {
-			return 0, fmt.Errorf("read %s's BasePath: %w", distro, baseErr)
+			return "", "", fmt.Errorf("read %s's BasePath: %w", distro, baseErr)
+		}
+		if errors.Is(fileErr, registry.ErrNotExist) {
+			file = "ext4.vhdx"
+		} else if fileErr != nil {
+			return "", "", fmt.Errorf("read %s's VhdFileName: %w", distro, fileErr)
 		}
 		base = strings.TrimPrefix(base, `\\?\`)
-		pathPtr, err := windows.UTF16PtrFromString(base)
-		if err != nil {
-			return 0, err
-		}
-		var free uint64
-		if err := windows.GetDiskFreeSpaceEx(pathPtr, &free, nil, nil); err != nil {
-			return 0, fmt.Errorf("free space at %s: %w", base, err)
-		}
-		return free, nil
+		return base, filepath.Join(base, file), nil
 	}
-	return 0, fmt.Errorf("%s is not registered under HKCU\\%s", distro, lxssKey)
+	return "", "", fmt.Errorf("%s is not registered under HKCU\\%s", distro, lxssKey)
+}
+
+// driveFreeBytes is the free space, for this user, on the drive that holds
+// path.
+func driveFreeBytes(path string) (uint64, error) {
+	pathPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+	var free uint64
+	if err := windows.GetDiskFreeSpaceEx(pathPtr, &free, nil, nil); err != nil {
+		return 0, fmt.Errorf("free space at %s: %w", path, err)
+	}
+	return free, nil
+}
+
+// fileStandardInfo is FILE_STANDARD_INFO.
+type fileStandardInfo struct {
+	AllocationSize int64
+	EndOfFile      int64
+	NumberOfLinks  uint32
+	DeletePending  bool
+	Directory      bool
+}
+
+// fileAllocatedBytes is the space path occupies on its drive, which for a
+// sparse file is less than its length. WSL holds the disk open while the
+// distro runs, so it is opened for its attributes only.
+func fileAllocatedBytes(path string) (uint64, error) {
+	pathPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+	handle, err := windows.CreateFile(pathPtr, windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		return 0, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer windows.CloseHandle(handle)
+	var info fileStandardInfo
+	if err := windows.GetFileInformationByHandleEx(handle, windows.FileStandardInfo, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+		return 0, fmt.Errorf("read the size of %s: %w", path, err)
+	}
+	if info.AllocationSize < 0 {
+		return 0, fmt.Errorf("%s reports a negative size", path)
+	}
+	return uint64(info.AllocationSize), nil
 }

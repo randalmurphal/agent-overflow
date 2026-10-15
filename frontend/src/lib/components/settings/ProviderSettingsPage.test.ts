@@ -216,26 +216,20 @@ describe("provider page — sections render regardless of the enable toggle", ()
 });
 
 describe("provider page — when a change takes effect", () => {
-  // The section headers are the only place the page states what a save does,
-  // and the answer differs per provider: a Claude prompt edit converges live
-  // through `set_model.system_prompt`, everything else is spawn-only.
-  it("states the live-and-deferred halves on the Claude page", async () => {
+  // The section headers are the only place the page states what a save does.
+  // A prompt change never reaches a running session on any provider: it
+  // applies at the next session start, and a running thread gets a banner
+  // offering the restart (docs/decisions.md, 2026-10-14). Tools are
+  // spawn-only everywhere.
+  it("states the next-start rule and the banner for prompts on both pages", async () => {
     await seed();
-    const { getByText } = render(ClaudeSettings);
-    expect(
-      getByText(/reaches running headless sessions right away/),
-    ).toBeTruthy();
-    expect(
-      getByText(/turning one off applies when the session restarts/),
-    ).toBeTruthy();
-    expect(getByText(/Claude TUI sessions pick it up on their next start/)).toBeTruthy();
-  });
-
-  it("states the spawn-only rule on the Codex page", async () => {
-    await seed();
-    const { getAllByText } = render(CodexSettings);
-    // Both the system-prompt and the tools section carry it.
-    expect(getAllByText(/Applies to sessions started later\./).length).toBe(2);
+    for (const Page of [ClaudeSettings, CodexSettings]) {
+      const { getByText, unmount } = render(Page);
+      expect(getByText(/Applies when a thread's session next starts\./)).toBeTruthy();
+      expect(getByText(/Running threads show a banner offering a restart\./)).toBeTruthy();
+      expect(getByText(/^Applies to sessions started later\.$/)).toBeTruthy();
+      unmount();
+    }
   });
 });
 

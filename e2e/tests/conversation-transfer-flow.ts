@@ -7,14 +7,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
-import { headlessPairing } from './headless-pairing-helpers.js';
+import { CONNECTED_AFTER_CONFIRM, headlessPairing } from './headless-pairing-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';
-import { codexTransferScenario } from './conversation-transfer-helpers.js';
+import { codexTransferScenario, expectTransferComplete } from './conversation-transfer-helpers.js';
 import { RESULT_LINE, claudeTurnsScenario, emit, listItems, textLines, toolResultLine, toolUseLine } from './agent-visibility-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string; threadIds: string[] }> }
 interface Thread { id: string; title: string; sessionRef: string; workspacePath: string; ownershipEpoch?: number }
-interface Transfer { id: string; threadId: string; kind: string; phase: string; error?: string; targetThreadId: string }
 
 // One paired pair of hosts serves every provider's case. Each case seeds and
 // names its own source thread, so the other case's transfers cannot satisfy
@@ -51,7 +50,7 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
         const verification = page.getByLabel('Verification number');
         await expect(verification).toBeVisible();
         await pairing.confirm((await verification.textContent())!.trim());
-        await expect(page.getByTestId('attached-system')).toContainText('Connected');
+        await expect(page.getByTestId('attached-system')).toContainText('Connected', CONNECTED_AFTER_CONFIRM);
         remoteId = (await source.rpc<Array<{ id: string }>>('ListBackends'))[0].id;
       } finally {
         pairing?.close();
@@ -115,15 +114,8 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
             // Disconnect the initiating frontend while the hosts own the transfer.
             await dialog.getByRole('button', { name: 'Close', exact: true }).click();
             await page.goto('about:blank');
-            let result: Transfer | undefined;
-            await expect.poll(async () => {
-              const rows = await source.rpc<Transfer[]>('GetThreadTransfers');
-              result = rows.find((row) => row.threadId === sourceThread && row.kind === kind);
-              if (result?.phase === 'complete') return 'complete';
-              const recipient = (await destination.rpc<Transfer[]>('GetThreadTransfers')).find((row) => row.id === result?.id);
-              return result?.error || recipient?.error || result?.phase;
-            }, { timeout: 40_000, intervals: [250] }).toBe('complete');
-            const received = await destination.rpc<Thread>('GetThread', result!.targetThreadId);
+            const result = await expectTransferComplete(source, destination, sourceThread, kind);
+            const received = await destination.rpc<Thread>('GetThread', result.targetThreadId);
             const attachments = await destination.rpc<Array<{ id: string; filename: string; size: number }>>('ListAttachments', received.id);
             expect(attachments).toHaveLength(1);
             expect(attachments[0]).toMatchObject({ filename: 'portable.png', size: PNG_BYTES.length });
@@ -214,19 +206,13 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
           await expect(dialog.getByTestId('conversation-transfer-status').or(dialog.getByRole('alert'))).toBeVisible();
           await page.screenshot({ path: info.outputPath(`transfer-recurring-job-${kind}-started.png`) });
           await expect(dialog.getByRole('alert')).toHaveCount(0);
-          let result: Transfer | undefined;
-          await expect.poll(async () => {
-            result = (await source.rpc<Transfer[]>('GetThreadTransfers')).find((value) => value.threadId === sourceThread && value.kind === kind);
-            if (result?.phase === 'complete') return 'complete';
-            const recipient = (await destination.rpc<Transfer[]>('GetThreadTransfers')).find((value) => value.id === result?.id);
-            return result?.error || recipient?.error || result?.phase;
-          }, { timeout: 40_000, intervals: [250] }).toBe('complete');
+          const result = await expectTransferComplete(source, destination, sourceThread, kind);
           expect(exits(mockId!), 'the source session holding the job still runs').toBe(1);
           // Soft, so a run that keeps the job still records the move.
           await expect.configure({ soft: true }).poll(recurringJobs, { message: `the source still lists the job its ${kind} ended` }).toEqual([]);
           if (kind === 'copy') {
             // Name the copy distinctly so the next menu still names the source.
-            await destination.rpc('RenameThread', result!.targetThreadId, 'Looping Claude copy');
+            await destination.rpc('RenameThread', result.targetThreadId, 'Looping Claude copy');
             await dialog.getByRole('button', { name: 'Close', exact: true }).click();
           }
         }

@@ -190,6 +190,7 @@ func claudeSessionConfig(args []string) *control.SessionConfig {
 		PermissionMode:       flagValue(args, "--permission-mode"),
 		DisallowedTools:      flagValues(args, "--disallowedTools"),
 		MCPServers:           claudeMCPServerNames(flagValue(args, "--mcp-config")),
+		SystemPrompt:         promptFileContent(flagValue(args, "--system-prompt-file")),
 		AppendSystemPrompt:   promptFileContent(flagValue(args, "--append-system-prompt-file")),
 		SystemPromptSnapshot: flagValue(args, "--system-prompt-snapshot"),
 	}

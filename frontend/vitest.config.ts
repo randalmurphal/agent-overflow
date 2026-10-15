@@ -46,8 +46,15 @@ const moduleMockFiles = globSync(unitInclude, {
   exclude: (path) => path.includes('node_modules') || /\.browser\.(test|spec)\.[tj]s$/.test(path),
 }).filter((file) => MODULE_GRAPH_API.test(readFileSync(resolve(import.meta.dirname, file), 'utf8')));
 
+// A test or hook that runs this long is hung. The limit only catches a
+// hang: it sits far above any test's run time on a loaded CI runner, where
+// a correct test can take several times longer than locally.
+const HANG_TIMEOUT_MS = 60_000;
+
 const unitTestOptions = {
   environment: 'happy-dom',
+  testTimeout: HANG_TIMEOUT_MS,
+  hookTimeout: HANG_TIMEOUT_MS,
   environmentOptions: {
     happyDOM: {
       settings: {
@@ -161,6 +168,8 @@ export default defineConfig({
         test: {
           name: 'browser',
           include: ['src/**/*.browser.{test,spec}.{ts,js}'],
+          testTimeout: HANG_TIMEOUT_MS,
+          hookTimeout: HANG_TIMEOUT_MS,
           // Run after the unit projects, not beside them. Playwright drives
           // Chromium from Vitest's main thread, which also transforms modules
           // for every unit worker and stays saturated while they run. A pointer

@@ -422,13 +422,13 @@ func (p *Parser) appendToolResultBlock(
 	isBackground := resumeCarrier || bashAcked || markedOnWire || asyncLaunched || monitorLaunched || liveAgentTask
 	// §E9 — a FORKED skill's completion. A skill whose frontmatter forks
 	// runs as a subagent whose rows land on the parent stream with
-	// `parent_tool_use_id` = this Skill tool_use, but it gets no
-	// `system/task_started`, no task_id, no `task_progress` and no entry
-	// in `background_tasks_changed`. Its ONLY identity statement is this
-	// completion: `{success, commandName, status:"forked", agentId}`.
-	// Stamping it marks the launch row as an agent node the card and pane
-	// can render; an INLINE skill answers `{success, commandName}` with no
-	// status and is deliberately left unstamped.
+	// `parent_tool_use_id` = this Skill tool_use. Claude 2.1.284 also
+	// announces it as a local_agent task; an older CLI gives it no task,
+	// so this completion, `{success, commandName, status:"forked",
+	// agentId}`, is the identity statement every CLI sends. Stamping it
+	// marks the launch row as an agent node the card and pane can render;
+	// an INLINE skill answers `{success, commandName}` with no status and
+	// is deliberately left unstamped.
 	forkedAgentID, forkedCommandName, skillForked := toolResultSkillFork(backgroundSignals)
 	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,

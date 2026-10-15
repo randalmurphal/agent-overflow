@@ -149,11 +149,11 @@ func (c *Core) WriteTransferObjects(ctx context.Context, cwd, head string, index
 			}
 		}
 	}
-	_, stderr, err := c.executeSpec(commandSpec{binary: "git", cwd: cwd, ctx: ctx, stdin: revisions.String(),
+	_, _, err := c.executeSpec(commandSpec{binary: "git", cwd: cwd, ctx: ctx, stdin: revisions.String(),
 		output: output, outputLimit: transferfiles.MaxFileBytes, timeout: 2 * time.Minute,
 		args: []string{"pack-objects", "--stdout", "--revs", "--delta-base-offset", "--threads=2", "--window-memory=32m", "--compression=1"}})
 	if err != nil {
-		return fmt.Errorf("transfer: export repository objects: %w %s", err, strings.TrimSpace(stderr))
+		return fmt.Errorf("transfer: export repository objects: %w", err)
 	}
 	return nil
 }
@@ -164,10 +164,10 @@ func (c *Core) ImportTransferObjects(ctx context.Context, cwd string, input io.R
 	if input == nil {
 		return errors.New("transfer: missing repository objects")
 	}
-	_, stderr, err := c.executeSpec(commandSpec{binary: "git", cwd: cwd, ctx: ctx,
+	_, _, err := c.executeSpec(commandSpec{binary: "git", cwd: cwd, ctx: ctx,
 		input: input, timeout: 2 * time.Minute, args: []string{"-c", "core.fsync=all", "-c", "core.fsyncMethod=fsync", "-c", "core.deltaBaseCacheLimit=32m", "index-pack", "--stdin", "--strict", "--threads=2", fmt.Sprintf("--max-input-size=%d", transferfiles.MaxFileBytes)}})
 	if err != nil {
-		return fmt.Errorf("transfer: import repository objects: %w %s", err, strings.TrimSpace(stderr))
+		return fmt.Errorf("transfer: import repository objects: %w", err)
 	}
 	return nil
 }
@@ -191,9 +191,9 @@ func (c *Core) RestoreTransferIndex(ctx context.Context, cwd string, entries []T
 	for _, entry := range ordered {
 		fmt.Fprintf(&input, "%s %s 0\t%s\x00", entry.Mode, entry.OID, entry.Path)
 	}
-	_, stderr, err := c.executeSpec(commandSpec{binary: "git", cwd: cwd, ctx: ctx, stdin: input.String(), args: []string{"update-index", "-z", "--index-info"}})
+	_, _, err = c.executeSpec(commandSpec{binary: "git", cwd: cwd, ctx: ctx, stdin: input.String(), args: []string{"update-index", "-z", "--index-info"}})
 	if err != nil {
-		return fmt.Errorf("transfer: restore repository staging: %w %s", err, strings.TrimSpace(stderr))
+		return fmt.Errorf("transfer: restore repository staging: %w", err)
 	}
 	return nil
 }

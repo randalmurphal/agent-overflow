@@ -295,7 +295,9 @@ test('backgrounding a running inline agent returns the turn and the mirror conti
       return {
         mirrored: items.filter((i) => i.kind !== 'tool_completion' && i.summary?.includes('Mirrored:')).map((i) => i.parentId ?? ''),
         bells: items.filter((i) => i.kind === 'notification' && itemMeta(i).task_id === 'task-sweep').length,
+        // The mirror taking over the agent's rows keeps the launch's label.
+        launchLabel: items.find((i) => i.id === 'tu-agent')?.summary.startsWith('Agent: ') ?? false,
       };
     })
-    .toEqual({ mirrored: ['tu-agent'], bells: 0 });
+    .toEqual({ mirrored: ['tu-agent'], bells: 0, launchLabel: true });
 });

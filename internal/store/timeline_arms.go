@@ -469,7 +469,7 @@ func repeatArgs(n int, args []any) []any {
 	if n <= 0 || len(args) == 0 {
 		return nil
 	}
-	out := make([]any, 0, n*len(args))
+	var out []any
 	for range n {
 		out = append(out, args...)
 	}

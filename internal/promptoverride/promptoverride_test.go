@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -242,38 +243,89 @@ func TestClaudeMemoryDirErrorsOnAMissingWorkspace(t *testing.T) {
 	}
 }
 
-// The settings editor's placeholder legend is a hand-mirrored copy of the
-// Token* constants, and the two sets have to be identical in both
-// directions: a token only the legend knows renders literally into the
-// prompt the model reads, and a token only Go knows is a substitution the
-// user is never told exists. Same two-sided-copy pin as
-// TestReservedEnvNamesMatchTheProviderPins, parsing the mirror the way
-// internal/highlight pins its JS hash parity.
-func TestPlaceholderTokensMatchTheFrontendMirror(t *testing.T) {
+// The settings editor's placeholder legend is a hand-mirrored copy of
+// Placeholders, and the two have to be identical in both directions: a
+// token only the legend knows renders literally into the prompt the model
+// reads, a token only Go knows is a substitution the user is never told
+// exists, and a meaning or provider set that differs tells the user one
+// thing in Settings and another in the prompts directory README. Same
+// two-sided-copy pin as TestReservedEnvNamesMatchTheProviderPins, parsing
+// the mirror the way internal/highlight pins its JS hash parity.
+func TestPlaceholdersMatchTheFrontendMirror(t *testing.T) {
 	const mirror = "frontend/src/lib/utils/promptOverrides.ts"
 	source := readRepoFile(t, mirror)
-	advertised := setOf(exportedArrayLiterals(t, source, mirror, "PROMPT_PLACEHOLDERS", `\btoken:\s*'([^']*)'`))
+	pairs := exportedArrayPairs(t, source, mirror, "PROMPT_PLACEHOLDERS",
+		`\btoken:\s*'([^']*)',\s*meaning:\s*(?:'([^']*)'|"([^"]*)")`)
+	advertised := make(map[string]string, len(pairs))
+	for _, pair := range pairs {
+		advertised[pair[0]] = pair[1]
+	}
+	claudeOnly := setOf(constSetLiterals(t, source, mirror, "CLAUDE_ONLY_PLACEHOLDERS"))
+
 	// Read the constants out of the source rather than listing them here:
 	// a third hand-written copy would drift exactly the way this test
 	// exists to catch, and a token added to Go alone would go unnoticed.
 	owned := goTokenConstants(t)
-
+	described := make(map[string]Placeholder, len(Placeholders))
+	for _, placeholder := range Placeholders {
+		described[placeholder.Token] = placeholder
+	}
 	for name, token := range owned {
-		if _, ok := advertised[token]; !ok {
+		placeholder, ok := described[token]
+		if !ok {
+			t.Errorf("%s = %q is substituted but Placeholders does not describe it", name, token)
+			continue
+		}
+		meaning, ok := advertised[token]
+		if !ok {
 			t.Errorf("%s = %q is substituted but %s does not advertise it", name, token, mirror)
+			continue
+		}
+		if meaning != placeholder.Meaning {
+			t.Errorf("%s meaning: %s says %q, Placeholders says %q", token, mirror, meaning, placeholder.Meaning)
+		}
+		_, onlyClaude := claudeOnly[token]
+		codex := slices.Contains(placeholder.Providers, "codex")
+		if onlyClaude == codex {
+			t.Errorf("%s: %s Claude-only = %v, but Placeholders providers are %v", token, mirror, onlyClaude, placeholder.Providers)
 		}
 	}
+	if len(described) != len(owned) {
+		t.Errorf("Placeholders describes %d tokens, %d Token* constants exist", len(described), len(owned))
+	}
 	for token := range advertised {
-		found := false
-		for _, owned := range owned {
-			if owned == token {
-				found = true
-				break
-			}
+		if _, ok := described[token]; !ok {
+			t.Errorf("%s advertises %q but Render substitutes no such token; it would reach the model verbatim", mirror, token)
 		}
-		if !found {
-			t.Errorf("%s advertises %q but Render substitutes no such token — it would reach the model verbatim", mirror, token)
+	}
+}
+
+// The README is generated from Placeholders and the limits, so it names
+// every token with its meaning and providers, every limit, and when an edit
+// applies.
+func TestReadmeMarkdownDescribesEveryPlaceholderAndLimit(t *testing.T) {
+	readme := ReadmeMarkdown()
+	for _, placeholder := range Placeholders {
+		row := "| `" + placeholder.Token + "` | " + placeholder.Meaning + " | " + strings.Join(placeholder.Providers, ", ") + " |"
+		if !strings.Contains(readme, row) {
+			t.Errorf("README lacks the row %q", row)
 		}
+	}
+	for _, want := range []string{
+		strconv.Itoa(settings.MaxPromptOverrideLen),
+		strconv.Itoa(settings.MaxPromptOverridesTotalLen),
+		strconv.Itoa(MaxRenderedPromptBytes),
+		"`<id>.md`",
+		"left exactly as written",
+		"next starts",
+		"Restart",
+	} {
+		if !strings.Contains(readme, want) {
+			t.Errorf("README does not mention %q", want)
+		}
+	}
+	if strings.Contains(readme, "\u2014") {
+		t.Error("README contains an em dash")
 	}
 }
 
@@ -352,18 +404,19 @@ func readRepoFile(t *testing.T, rel string) string {
 	return string(data)
 }
 
-// exportedArrayLiterals pulls every capture of pattern out of the
-// `export const <name> = [ … ]` block of a TypeScript source. Anchoring on
-// the const name and on the flush-left `]` that closes it keeps comments,
-// blank lines and reformatting inside the array harmless; the file carries
-// a comment saying a Go test parses it. Extracting nothing is a hard
-// failure — a silently empty set would pin nothing while looking green.
-func exportedArrayLiterals(t *testing.T, source, path, name, pattern string) []string {
+// exportedArrayPairs pulls (first, second) captures of pattern out of the
+// `export const <name> = [ ... ]` block of a TypeScript source; the second
+// value may come from either of two alternative groups (a string in single
+// or double quotes). Anchoring on the const name and on the flush-left `]`
+// that closes it keeps comments, blank lines and reformatting inside the
+// array harmless. Extracting nothing is a hard failure: a silently empty
+// set would pin nothing while looking green.
+func exportedArrayPairs(t *testing.T, source, path, name, pattern string) [][2]string {
 	t.Helper()
 
 	start := strings.Index(source, "export const "+name)
 	if start < 0 {
-		t.Fatalf("%s: no `export const %s` — this pin cannot find its mirror", path, name)
+		t.Fatalf("%s: no `export const %s`; this pin cannot find its mirror", path, name)
 	}
 	block := source[start:]
 	open := strings.Index(block, "[")
@@ -373,7 +426,33 @@ func exportedArrayLiterals(t *testing.T, source, path, name, pattern string) []s
 	}
 	matches := regexp.MustCompile(pattern).FindAllStringSubmatch(block[open:end], -1)
 	if len(matches) == 0 {
-		t.Fatalf("%s: %s matched no %s literals — the entry syntax the pin parses changed", path, name, pattern)
+		t.Fatalf("%s: %s matched no %s literals; the entry syntax the pin parses changed", path, name, pattern)
+	}
+	pairs := make([][2]string, 0, len(matches))
+	for _, match := range matches {
+		pairs = append(pairs, [2]string{match[1], match[2] + match[3]})
+	}
+	return pairs
+}
+
+// constSetLiterals answers the single-quoted strings of a
+// `const <name> ... = new Set([ ... ])` declaration.
+func constSetLiterals(t *testing.T, source, path, name string) []string {
+	t.Helper()
+
+	start := strings.Index(source, "const "+name)
+	if start < 0 {
+		t.Fatalf("%s: no `const %s`; this pin cannot find it", path, name)
+	}
+	block := source[start:]
+	open := strings.Index(block, "new Set([")
+	end := strings.Index(block, "])")
+	if open < 0 || end < open {
+		t.Fatalf("%s: `const %s` is not a `new Set([...])` literal", path, name)
+	}
+	matches := regexp.MustCompile(`'([^']*)'`).FindAllStringSubmatch(block[open:end], -1)
+	if len(matches) == 0 {
+		t.Fatalf("%s: %s holds no string literals", path, name)
 	}
 	values := make([]string, 0, len(matches))
 	for _, match := range matches {

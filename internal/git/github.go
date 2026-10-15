@@ -14,6 +14,9 @@ import (
 // GitPR describes an open pull or merge request. Fields are shared across
 // forges; per-forge wrappers map their native shapes onto this struct.
 type GitPR struct {
+	// ID is the PR's GitHub GraphQL node id, which ReadPRStates addresses
+	// it by. Empty on GitLab, whose merge requests are read by iid.
+	ID     string `json:"id,omitempty"`
 	URL    string `json:"url"`
 	Number int    `json:"number"`
 	Title  string `json:"title"`
@@ -84,16 +87,21 @@ func (f *githubForge) githubOriginRepo(cwd string) (client *forgeapi.Client, own
 	return client, owner, repo, nil
 }
 
-// githubOpenPRsQuery finds open pull requests by head branch name alone,
-// so a fork's branch resolves without OWNER:branch.
-const githubOpenPRsQuery = `query OpenPRsByHead($owner: String!, $name: String!, $head: String!) {
+// githubOpenPRsQuery finds open pull requests by head branch name. The
+// filter matches a fork's branch of the same name too, so each node says
+// whether its head is in another repository.
+const githubOpenPRsQuery = `query OpenPRsByHead($owner: String!, $name: String!, $head: String!, $after: String) {
   repository(owner: $owner, name: $name) {
-    pullRequests(headRefName: $head, states: [OPEN], first: 10) { nodes { url number title state } }
+    pullRequests(headRefName: $head, states: [OPEN], first: 100, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { id url number title state isCrossRepository }
+    }
   }
 }`
 
 // ListOpenPRs returns the open pull requests whose head is the given
-// branch of cwd's origin repository.
+// branch of cwd's origin repository itself. A fork's pull request from a
+// branch of the same name is not one: it is someone else's work.
 func (f *githubForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error) {
 	if strings.TrimSpace(head) == "" {
 		return nil, errors.New("pull request head branch is required")
@@ -102,24 +110,42 @@ func (f *githubForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 	if err != nil {
 		return nil, err
 	}
-	var raw struct {
-		Repository *struct {
-			PullRequests struct {
-				Nodes []GitPR `json:"nodes"`
-			} `json:"pullRequests"`
-		} `json:"repository"`
-	}
-	if _, err := client.GraphQL(ctx, "OpenPRsByHead", githubOpenPRsQuery, map[string]any{"owner": owner, "name": repo, "head": head}, &raw); err != nil {
-		return nil, err
-	}
-	if raw.Repository == nil {
-		return nil, fmt.Errorf("GitHub answered no repository %s/%s", owner, repo)
-	}
-	pulls := raw.Repository.PullRequests.Nodes
-	// GitHub spells states uppercase ("OPEN"); callers read the canonical
-	// lowercase vocabulary.
-	for i := range pulls {
-		pulls[i].State = NormalizePRState(pulls[i].State)
+	pulls := []GitPR{}
+	var after any
+	for pages := 0; pages < githubReadMaxPages; pages++ {
+		var raw struct {
+			Repository *struct {
+				PullRequests struct {
+					PageInfo githubPageInfo `json:"pageInfo"`
+					Nodes    []struct {
+						GitPR
+						IsCrossRepository bool `json:"isCrossRepository"`
+					} `json:"nodes"`
+				} `json:"pullRequests"`
+			} `json:"repository"`
+		}
+		vars := map[string]any{"owner": owner, "name": repo, "head": head, "after": after}
+		if _, err := client.GraphQL(ctx, "OpenPRsByHead", githubOpenPRsQuery, vars, &raw); err != nil {
+			return nil, err
+		}
+		if raw.Repository == nil {
+			return nil, fmt.Errorf("GitHub answered no repository %s/%s", owner, repo)
+		}
+		for _, node := range raw.Repository.PullRequests.Nodes {
+			if node.IsCrossRepository {
+				continue
+			}
+			pr := node.GitPR
+			// GitHub spells states uppercase ("OPEN"); callers read the
+			// canonical lowercase vocabulary.
+			pr.State = NormalizePRState(pr.State)
+			pulls = append(pulls, pr)
+		}
+		page := raw.Repository.PullRequests.PageInfo
+		if !page.HasNextPage || page.EndCursor == "" {
+			break
+		}
+		after = page.EndCursor
 	}
 	return pulls, nil
 }

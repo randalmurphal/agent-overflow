@@ -80,6 +80,11 @@ func (a *App) emitKeyed(name eventchan.Channel, data any) string {
 	a.tapNotification(name, data)
 	a.tapWorkerPrompt(name, data)
 	a.tapThreadAgentRows(name, data)
+	// A turn's end may be what a merged pull request's worktree cleanup is
+	// waiting for (app_worktree_merge_cleanup.go). A flag read unless one is.
+	if name == eventchan.ProviderTurnCompleted {
+		a.wakeMergedPRCleanup()
+	}
 	entityKey := ""
 	if entityFilteredChannels[string(name)] || (a.replay != nil && a.replay.Enabled()) {
 		entityKey = eventscope.ThreadIDFromEvent(data)

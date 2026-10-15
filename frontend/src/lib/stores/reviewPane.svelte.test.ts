@@ -637,6 +637,7 @@ function prDetailStub(overrides: Partial<PRDetail> = {}): PRDetail {
     draft: false,
     headRefName: 'feature',
     baseRefName: 'main',
+    baseRefSHA: 'base-main',
     headSHA: 'sha-a',
     url: 'https://github.com/owner/repo/pull/5',
     additions: 1,
@@ -737,12 +738,12 @@ describe('reviewPane store — PR scope', () => {
 
     await state.setScope('pr');
     expect(subscribe).toHaveBeenCalledTimes(1);
-    // The diff is opened with the base ref from the detail, which the
-    // backend diffs the PR head against in the local clone.
+    // The diff is opened at the snapshot's revision: its head and the
+    // base branch's tip.
     expect(diff).toHaveBeenCalledWith(
       REVIEW_WS,
       expect.objectContaining({ Number: 5 }),
-      'main',
+      { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-a' },
       false,
     );
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
@@ -766,16 +767,15 @@ describe('reviewPane store — PR scope', () => {
     const state = reviewStateForPane('pane-1', prSubject());
     await waitLoaded(state);
     await state.setScope('pr');
-    // The known head SHA rides along so the backend can skip its fetch
-    // when the objects are already in the local clone.
-    expect(list).toHaveBeenCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), 'main', 'sha-a');
+    const revision = { baseRef: 'main', baseSHA: 'base-main', headSHA: 'sha-a' };
+    expect(list).toHaveBeenCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision);
     expect(state.commits.map((commit) => commit.sha)).toEqual([sha]);
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
 
     await state.selectCommit(sha);
     expect(state.selectedCommitSHA).toBe(sha);
     expect(state.sourceKey).toBe(`commit:${sha}`);
-    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), sha, false);
+    expect(commitDiff).toHaveBeenLastCalledWith(REVIEW_WS, expect.objectContaining({ Number: 5 }), revision, sha, false);
 
     // Back to the whole PR.
     await state.selectCommit(null);
@@ -914,6 +914,150 @@ describe('reviewPane store — PR scope', () => {
     await state.setScope('workspace');
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     expect(unsubscribe).toHaveBeenCalledWith('sub-1');
+  });
+
+  it('a failed refresh keeps the diff on screen, its comment source and editors, under the error', async () => {
+    installPRMocks();
+    setBindingMock('ListDiffReviewComments', async () => []);
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    const filesBefore = state.files;
+    const sourceBefore = state.sourceKey;
+    expect(filesBefore).toHaveLength(1);
+
+    setReviewDiffMock('OpenPRDiff', async () => {
+      throw new Error('open PR diff: fetch pull request commits: git fetch exited with code 128: fatal: unreachable');
+    });
+    await state.reload();
+
+    expect(state.error).toContain('fatal: unreachable');
+    expect(state.files).toBe(filesBefore);
+    expect(state.sourceKey).toBe(sourceBefore);
+    expect(state.prHeadSHA).toBe('sha-a');
+  });
+
+  it('a failed -w refresh puts the toggle back to the diff still on screen', async () => {
+    installPRMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    const filesBefore = state.files;
+
+    setReviewDiffMock('OpenPRDiff', async () => {
+      throw new Error('fetch failed');
+    });
+    await state.setIgnoreWhitespace(true);
+
+    expect(state.error).toContain('fetch failed');
+    expect(state.files).toBe(filesBefore);
+    expect(state.ignoreWhitespace).toBe(false);
+  });
+
+  it('a failed first PR load shows no files and retries on the next snapshot frame', async () => {
+    installPRMocks();
+    let fail = true;
+    const diff = setReviewDiffMock('OpenPRDiff', async () => {
+      if (fail) throw new Error('fetch failed');
+      return patchFor('src/app.ts', 3);
+    });
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(state.error).toContain('fetch failed');
+    expect(state.files).toEqual([]);
+    const callsAfterFailure = diff.mock.calls.length;
+    await flushPane();
+    // Nothing retries on its own between frames.
+    expect(diff.mock.calls.length).toBe(callsAfterFailure);
+
+    fail = false;
+    // The pump re-emits the unchanged snapshot after a failed read.
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub(), threads: [], headSHA: 'sha-a', seq: 50 });
+    await vi.waitFor(() => expect(state.files).toHaveLength(1));
+    expect(state.error).toBeNull();
+    expect(diff.mock.calls.length).toBe(callsAfterFailure + 1);
+  });
+
+  it('a failed refresh of a diff whose PR moved leaves the reload to the stale banner', async () => {
+    installPRMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    const filesBefore = state.files;
+
+    const failing = setReviewDiffMock('OpenPRDiff', async () => {
+      throw new Error('fetch failed');
+    });
+    await state.reload();
+    expect(state.files).toBe(filesBefore);
+    const calls = failing.mock.calls.length;
+
+    applyPRUpdatedEvent({
+      prKey: PR_KEY,
+      detail: prDetailStub({ headSHA: 'sha-b' }),
+      threads: [],
+      headSHA: 'sha-b',
+      seq: 60,
+    });
+    await flushPane();
+    expect(failing.mock.calls.length).toBe(calls);
+    expect(state.prStale).toBe(true);
+    expect(state.files).toBe(filesBefore);
+  });
+
+  it('a failed refresh retries when only the base tip moved, which raises no stale banner', async () => {
+    installPRMocks();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    let fail = true;
+    const diff = setReviewDiffMock('OpenPRDiff', async () => {
+      if (fail) throw new Error('fetch failed');
+      return patchFor('src/app.ts', 5);
+    });
+    await state.reload();
+    expect(state.error).toContain('fetch failed');
+
+    fail = false;
+    applyPRUpdatedEvent({
+      prKey: PR_KEY,
+      detail: prDetailStub({ baseRefSHA: 'base-main-2' }),
+      threads: [],
+      headSHA: 'sha-a',
+      seq: 70,
+    });
+    await vi.waitFor(() => expect(state.error).toBeNull());
+    expect(state.prStale).toBe(false);
+    expect(diff).toHaveBeenLastCalledWith(
+      REVIEW_WS,
+      expect.objectContaining({ Number: 5 }),
+      { baseRef: 'main', baseSHA: 'base-main-2', headSHA: 'sha-a' },
+      false,
+    );
+  });
+
+  it('waits while the forge has not reported the base tip, and loads once it does', async () => {
+    installPRMocks();
+    setBindingMock('SubscribePRUpdates', async () => ({
+      id: 'sub-1',
+      prKey: PR_KEY,
+      detail: prDetailStub({ baseRefSHA: '' }),
+      threads: [],
+      headSHA: 'sha-a',
+      seq: 1,
+    }));
+    const diff = setReviewDiffMock('OpenPRDiff', async () => patchFor('src/app.ts', 3));
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(state.awaitingPR).toBe(true);
+    expect(state.error).toBeNull();
+    expect(diff).not.toHaveBeenCalled();
+
+    applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub(), threads: [], headSHA: 'sha-a', seq: 2 });
+    await vi.waitFor(() => expect(state.files).toHaveLength(1));
+    expect(state.awaitingPR).toBe(false);
   });
 
   it('dispose during an in-flight subscribe closes the late-arriving subscription', async () => {
@@ -3352,10 +3496,14 @@ describe('reviewPane store — conversation section and resolve', () => {
     const resolved = convThread('t-1', { isResolved: true });
     const state = await statePRWithThreads([resolved]);
 
+    state.setOverviewSectionScrollTop('conversation', 140);
     state.openConversationAt('t-1');
     expect(state.conversationOpen).toBe(true);
     expect(state.conversationThreadExpanded('t-1')).toBe(true);
     expect(state.pendingConversationThreadId).toBe('t-1');
+    // The jump's scroll replaces the remembered reading offset, which a
+    // remounting overview row would otherwise restore over it.
+    expect(state.overviewSectionScrollTop('conversation')).toBe(0);
     state.consumePendingConversationThreadId();
     expect(state.pendingConversationThreadId).toBeNull();
 

@@ -46,13 +46,6 @@ type Session struct {
 	// the restart path — the respawn is what adds the opt-in. Written once
 	// at construction, like allowsBypassPermissions.
 	spawnedWithFastModeOptIn bool
-	// spawnedWithSnapshotOff records whether the process was spawned with
-	// `--system-prompt-snapshot off` (SystemPromptSnapshotArgs). On a build
-	// that snapshots by default (2.1.267+), a live `set_model.system_prompt`
-	// on a process spawned WITHOUT it is acked and then masked by the
-	// snapshot on the next request, so supportsLiveSystemPrompt routes that
-	// case to the restart path. Written once at construction.
-	spawnedWithSnapshotOff bool
 	// configModelMu guards configModel AND requestedEffort (below) — the
 	// two halves of "what AO has asked this process to run", read together
 	// by the get_settings override projection, so they take one lock.
@@ -272,7 +265,6 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		leafTracker:              newClaudeLeafTracker(cfg.ResumeAt),
 		allowsBypassPermissions:  slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions"),
 		spawnedWithFastModeOptIn: cfg.FastMode,
-		spawnedWithSnapshotOff:   len(SystemPromptSnapshotArgs(cfg.InstalledCLIVersion)) > 0,
 		configModel:              cfg.Model,
 		requestedEffort:          cfg.ReasoningEffort,
 		modelAliases:             maps.Clone(cfg.ModelAliases),
@@ -294,6 +286,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// given command uuid; a uuid we never issued on a cross-session-enabled
 	// process is a turn another Claude session started (session_peer.go).
 	s.parser.peerTurns = s
+	s.parser.agentLaunchLookup = cfg.AgentLaunchByTask
 
 	go s.readLoop()
 

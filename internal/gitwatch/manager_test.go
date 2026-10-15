@@ -869,6 +869,29 @@ func TestSharedWatcherMissingPRRefreshesForNewSubscriber(t *testing.T) {
 	}
 }
 
+// A fast status that carries the branch's last known PR while its lookup
+// is pending still asks the forge: the PR fields are not an answer.
+func TestPendingFastStatusWithLastKnownPRRefreshes(t *testing.T) {
+	t.Parallel()
+	const url = "https://gitlab.com/o/r/-/merge_requests/130"
+	fastStub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "feat", Forge: "gitlab", OpenPRURL: url, OpenPRNumber: 130, OpenPRLookupPending: true})
+	fullStub := newStubStatus(gitops.GitStatus{IsRepo: true, Branch: "feat", Forge: "gitlab", OpenPRURL: url, OpenPRNumber: 130})
+	mgr := NewManager(ManagerConfig{StatusFn: fullStub.fn(), FastStatusFn: fastStub.fn()})
+	t.Cleanup(mgr.Close)
+
+	sub, err := mgr.Subscribe(t.Context(), makeRepoDir(t))
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer sub.Close()
+	if got := sub.Initial(); !got.OpenPRLookupPending || got.OpenPRNumber != 130 {
+		t.Fatalf("Initial() = pending %v MR %d, want pending with the last known MR", got.OpenPRLookupPending, got.OpenPRNumber)
+	}
+	if got := recvWithin(t, sub, 5*time.Second); got.OpenPRLookupPending || got.OpenPRNumber != 130 {
+		t.Fatalf("follow-up = pending %v MR %d, want the settled answer", got.OpenPRLookupPending, got.OpenPRNumber)
+	}
+}
+
 // TestFastStatusFnNilFallsBackToStatusFn verifies that when
 // FastStatusFn is nil, Subscribe uses statusFn for the initial fetch.
 func TestFastStatusFnNilFallsBackToStatusFn(t *testing.T) {

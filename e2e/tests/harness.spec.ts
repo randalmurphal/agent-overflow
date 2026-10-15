@@ -6,6 +6,7 @@
 // threads (created but no items yet). A seeded thread without turns
 // only appears in the sidebar after its first message lands, so live
 // tests send first, then open the thread in the UI.
+import type { Page } from '@playwright/test';
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 
 test('boots headless, serves the real SPA, answers harness RPCs', async ({ harness, page }) => {
@@ -217,4 +218,58 @@ test('a session-scoped scenario rule binds only after the session resumes', asyn
   );
   expect(resumedSpawn.mockId).not.toBe(firstSpawn.mockId);
   expect(resumedSpawn.scenario).toBe('streaming-text');
+});
+
+test.describe('a spec that provokes page errors on purpose', () => {
+  test.use({ expectPageErrors: true });
+
+  test('reads every error its pages threw, across navigations and contexts', async ({
+    browser,
+    context,
+    harness,
+    page,
+    pageErrors,
+  }) => {
+    const throwFrom = (target: Page, message: string) =>
+      target.evaluate((text) => {
+        setTimeout(() => {
+          throw new Error(text);
+        });
+      }, message);
+
+    await harness.open(page);
+    await expect(page.getByText('No projects yet')).toBeVisible();
+    await throwFrom(page, 'collector probe before reload');
+    await expect.poll(() => pageErrors.length).toBe(1);
+
+    await page.reload();
+    await expect(page.getByText('No projects yet')).toBeVisible();
+    await throwFrom(page, 'collector probe after reload');
+    await expect.poll(() => pageErrors.length).toBe(2);
+
+    const second = await context.newPage();
+    await throwFrom(second, 'collector probe from a second page');
+    await expect.poll(() => pageErrors.length).toBe(3);
+
+    const own = await browser.newContext();
+    try {
+      await throwFrom(await own.newPage(), 'collector probe from a spec-created context');
+      await expect.poll(() => pageErrors.length).toBe(4);
+    } finally {
+      await own.close();
+    }
+
+    const standalone = await browser.newPage();
+    try {
+      await throwFrom(standalone, 'collector probe from browser.newPage');
+      await expect.poll(() => pageErrors.length).toBe(5);
+    } finally {
+      await standalone.close();
+    }
+    expect(pageErrors[0]).toContain('collector probe before reload');
+    expect(pageErrors[1]).toContain('collector probe after reload');
+    expect(pageErrors[2]).toContain('collector probe from a second page');
+    expect(pageErrors[3]).toContain('collector probe from a spec-created context');
+    expect(pageErrors[4]).toContain('collector probe from browser.newPage');
+  });
 });

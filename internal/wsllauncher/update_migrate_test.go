@@ -83,7 +83,7 @@ func TestMigrateCommitsThroughTheStablePayload(t *testing.T) {
 		t.Fatalf("end = %+v", end)
 	}
 	f.wantMigrationCalls(
-		"snapshot@stable --id <id> --host-free 5368709120",
+		"snapshot@stable --id <id> --host-free 5368709120 --host-disk-bytes 0",
 		"trial-run@stable --id <id> --to 2.0.0 --attempt 1",
 		"discard@stable --id <id>",
 	)

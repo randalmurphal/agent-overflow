@@ -3,7 +3,7 @@
 // flow owns both backends and all of its browser contexts.
 import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
-import { headlessPairing } from './headless-pairing-helpers.js';
+import { CONNECTED_AFTER_CONFIRM, headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { reloadAtRoot } from './compact-history-helpers.js';
 import { instrument } from './offhost-helpers.js';
@@ -82,13 +82,13 @@ export function connectedComputersFlow(): void {
       await expect(verification).toBeVisible();
       await pairing.confirm((await verification.textContent())!.trim());
       const computerRow = page.getByTestId('attached-system');
-      await expect(computerRow).toContainText('Connected');
+      await expect(computerRow).toContainText('Connected', CONNECTED_AFTER_CONFIRM);
       const systems = await home.rpc<Array<{ id: string }>>('ListBackends');
       expect(systems).toHaveLength(1);
       const remoteId = systems[0].id;
       await home.rpc('RenameBackend', remoteId, 'GPU workstation');
       await expect(computerRow).toContainText('GPU workstation');
-      await expect(remotePage.getByTestId('thread-row').filter({ hasText: 'Mac conversation' })).toBeVisible();
+      await expect(remotePage.getByTestId('thread-row').filter({ hasText: 'Mac conversation' })).toBeVisible(CONNECTED_AFTER_CONFIRM);
       const homeDraft = await home.rpc<{ id: string }>('CreateThread', {
         projectId: homeSeed.projects[0].projectId, title: 'Pushed after reciprocal pairing', provider: 'claude',
       });

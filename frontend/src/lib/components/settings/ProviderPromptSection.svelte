@@ -1,28 +1,32 @@
 <script lang="ts">
   // The System prompt section of a provider's settings page: the ordered
-  // list of system-prompt overrides and the placeholder legend that writes
-  // into them. The page owns the heading (and the line about when a save
-  // takes effect, which differs per provider); the tool list and Claude's
-  // session axes are sections of their own beside this one.
+  // list of system-prompt overrides, each a file on the computer, plus the
+  // placeholder reference and a copy of the instructions an agent needs to
+  // edit the files. The page owns the heading and the line about when a
+  // change takes effect; the tool list and Claude's session axes are
+  // sections of their own beside this one.
   //
-  // This component owns every write for the block. The entries are edited
-  // in place against the settings store — there is no draft copy and no Save
-  // button: a textarea commits on `change` (i.e. on blur, which fires before
-  // the click of whatever button stole focus, so a structural edit can never
-  // drop what was just typed), and every other control commits immediately.
+  // This component owns every write for the block: the enable switch, the
+  // model chips, add and remove all commit immediately against the settings
+  // store. The prompt text itself is never written from here; it lives in
+  // the file, which the Edit control opens.
 
-  import { tick } from 'svelte';
+  import ClipboardCopy from '@lucide/svelte/icons/clipboard-copy';
+  import Icon from '../primitives/Icon.svelte';
   import { settingsComputer } from './settingsComputer';
-  const { getSettings, updateSettingsPatch, backend } = settingsComputer();
+  const { getSettings, updateSettingsPatch, backend, hasScope } = settingsComputer();
+  import { openInEditor } from '../../stores/openInEditor';
+  import { addErrorToast, addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
+  import { copyToClipboard } from '../../utils/clipboard';
   import {
     ensureProviderModels,
     getProviderModels,
   } from '../../stores/providerModels.svelte';
-  import { addToast } from '../../stores/toast.svelte';
   import type { ProviderDefinition } from '../../providers/catalog';
   import type { PromptOverride } from '../../types/settings';
   import {
-    insertAtSelection,
+    agentPromptInstructions,
     promptOverridesFor,
     promptOverridesSettingsKey,
     shadowedModels,
@@ -59,10 +63,13 @@
   );
   let models = $derived(getProviderModels(provider.id, backend));
   let catalogError = $state<string | null>(null);
+  // The instructions name the files, so there is nothing to copy until an
+  // entry has been saved and has one.
+  let savedPaths = $derived(entries.flatMap((entry) => (entry.path ? [entry.path] : [])));
 
   // The catalog is a cached store read; ensure() is a no-op once loaded, so
   // opening this tab after Providers costs nothing. A failure is rendered as
-  // state next to the chips instead of a toast — the section is still usable,
+  // state next to the chips instead of a toast: the section is still usable,
   // the model list just cannot be offered.
   $effect(() => {
     const id = provider.id;
@@ -81,36 +88,17 @@
     };
   });
 
-  // Where a legend click inserts: the prompt the user last touched, falling
-  // back to the block's first prompt. Not $state — nothing renders from it.
-  let blockEl = $state<HTMLElement | null>(null);
-  let lastEditor: { el: HTMLTextAreaElement; index: number } | null = null;
-
-  function noteEditorFocus(el: HTMLTextAreaElement, index: number): void {
-    lastEditor = { el, index };
-  }
-
-  function insertTarget(): { el: HTMLTextAreaElement; index: number } | null {
-    if (lastEditor && lastEditor.el.isConnected) return lastEditor;
-    const first = blockEl?.querySelector<HTMLTextAreaElement>('[data-prompt-editor]');
-    return first ? { el: first, index: 0 } : null;
-  }
-
   async function writeEntries(next: PromptOverride[]): Promise<void> {
     const key = promptOverridesSettingsKey(provider.id);
     if (!key) return;
     await updateSettingsPatch({ [key]: next });
   }
 
-  // Returns the write so the legend's insert can place the caret once the
-  // store has settled; the row callbacks fire and forget, as every other
-  // control in Settings does.
-  function patchEntry(index: number, patch: Partial<PromptOverride>): Promise<void> {
-    return writeEntries(withEntryPatch(entries, index, patch));
+  function patchEntry(index: number, patch: Partial<PromptOverride>): void {
+    void writeEntries(withEntryPatch(entries, index, patch));
   }
 
   function removeEntry(index: number): void {
-    if (lastEditor?.index === index) lastEditor = null;
     void writeEntries(withEntryRemoved(entries, index));
   }
 
@@ -118,43 +106,34 @@
     void writeEntries(withEntryAdded(entries));
   }
 
-  async function insertToken(token: string): Promise<void> {
-    const target = insertTarget();
-    if (!target) {
-      addToast('info', 'Click into a prompt to insert a placeholder.');
-      return;
+  // The prompt file lives on the computer these settings belong to, and the
+  // editor opens on that computer's desktop, so the control is offered only
+  // where the page can act there. The path and the copied instructions are
+  // shown everywhere: an agent on that computer can still be pointed at them.
+  let canOpenFiles = $derived(hasScope('host'));
+
+  async function openPromptFile(path: string): Promise<void> {
+    try {
+      await openInEditor(backend, path, 0, 0, '', '');
+    } catch (err) {
+      addErrorToast(errString(err), err);
     }
-    const { el, index } = target;
-    const { text, caret } = insertAtSelection(
-      el.value,
-      el.selectionStart ?? el.value.length,
-      el.selectionEnd ?? el.value.length,
-      token,
-    );
-    lastEditor = { el, index };
-    // The store is the only writer of this textarea, and it costs nothing to
-    // keep it that way: the optimistic settings write makes the insertion
-    // visible immediately, and a rollback repaints it for free. Writing
-    // `el.value` here instead would arm no change event, so a save that
-    // failed would leave visible text belonging to no state — not persisted,
-    // and not undoable by anything the user can reach.
-    await patchEntry(index, { prompt: text });
-    await tick();
-    if (!el.isConnected) return;
-    // On success the store re-render already put `text` in the element and
-    // the caret lands after the token; on a failed save the element still
-    // holds the stored prompt, and the clamp keeps the caret inside it.
-    const at = Math.min(caret, el.value.length);
-    el.focus();
-    el.setSelectionRange(at, at);
+  }
+
+  async function copyInstructions(event: MouseEvent): Promise<void> {
+    if (await copyToClipboard(agentPromptInstructions(savedPaths), event)) {
+      addToast('success', 'Copied. Paste it into an agent to have it edit the prompt files.');
+    } else {
+      addToast('error', 'Could not copy to the clipboard.');
+    }
   }
 </script>
 
-<div bind:this={blockEl} data-testid="settings-prompts-{provider.id}">
+<div data-testid="settings-prompts-{provider.id}">
   <SettingsField
     id={fieldId}
     label="System prompt overrides"
-    hint="Replaces the provider's default system prompt. The first enabled entry whose models include the session's model wins."
+    hint="Each override is a Markdown file in the computer's prompts folder; its text replaces the provider's default system prompt for the models you pick. Edit the file in your editor or hand it to an agent. The first enabled entry whose models include the session's model wins; a .md file in the folder without an entry is ignored."
     align="start"
     stacked
   >
@@ -164,7 +143,7 @@
           class="text-[0.71875rem] text-fg-hint"
           data-testid="settings-prompts-{provider.id}-empty"
         >
-          No overrides — {provider.label} uses its own system prompt.
+          No overrides. {provider.label} uses its own system prompt.
         </p>
       {:else}
         <ul class="flex flex-col gap-3">
@@ -176,18 +155,15 @@
                 index={row.index}
                 shadowed={row.shadowed}
                 {models}
-                onPatch={(patch) => void patchEntry(row.index, patch)}
+                onPatch={(patch) => patchEntry(row.index, patch)}
                 onRemove={() => removeEntry(row.index)}
-                onEditorFocus={noteEditorFocus}
+                onOpenFile={canOpenFiles ? (path) => void openPromptFile(path) : null}
               />
             </li>
           {/each}
         </ul>
 
-        <PromptPlaceholderLegend
-          provider={provider.id}
-          onInsert={(token) => void insertToken(token)}
-        />
+        <PromptPlaceholderLegend provider={provider.id} />
       {/if}
 
       {#if catalogError}
@@ -200,7 +176,7 @@
         </p>
       {/if}
 
-      <div>
+      <div class="flex flex-wrap items-center gap-2">
         <button
           type="button"
           class={SECONDARY_BUTTON_CLASS}
@@ -209,6 +185,18 @@
         >
           Add override
         </button>
+        {#if savedPaths.length > 0}
+          <button
+            type="button"
+            class="{SECONDARY_BUTTON_CLASS} inline-flex items-center gap-1.5"
+            data-testid="settings-prompt-copy-instructions-{provider.id}"
+            title="Copy the file paths and the README location for an agent to edit the prompts"
+            onclick={(event) => void copyInstructions(event)}
+          >
+            <Icon icon={ClipboardCopy} size={12} strokeWidth={2} />
+            Copy instructions for an agent
+          </button>
+        {/if}
       </div>
     </div>
   </SettingsField>

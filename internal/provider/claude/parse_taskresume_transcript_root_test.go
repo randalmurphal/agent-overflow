@@ -15,6 +15,12 @@ import (
 // the `transcript_root_id` stamp and the resume prompt row — plus the
 // negative case that a fresh launch produces neither.
 
+// sendMessageToolUse is the resuming call a rebind binds. On stdout it
+// always precedes its task_started.
+func sendMessageToolUse(id string) string {
+	return `{"type":"assistant","message":{"id":"msg-` + id + `","role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"SendMessage","input":{"to":"agent-1","message":"keep going"}}]}}`
+}
+
 func findRebindStart(t *testing.T, events []provider.ProviderEvent, itemID string) map[string]any {
 	t.Helper()
 	for _, evt := range events {
@@ -157,9 +163,15 @@ func TestParseTaskStarted_ResumeWithEmptyPromptEmitsNoRow(t *testing.T) {
 	if _, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"agent-1","tool_use_id":"launch-1","task_type":"local_agent"}`)); err != nil {
 		t.Fatalf("round-1 task_started: %v", err)
 	}
+	if _, err := parser.ParseLine(testThread, []byte(sendMessageToolUse("carrier-1"))); err != nil {
+		t.Fatalf("carrier tool_use: %v", err)
+	}
 	events, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"agent-1","tool_use_id":"carrier-1","task_type":"local_agent","prompt":"   "}`))
 	if err != nil {
 		t.Fatalf("rebind task_started: %v", err)
+	}
+	if meta := findRebindStart(t, events, "carrier-1"); meta["resumes_tool_use_id"] != "launch-1" {
+		t.Fatalf("the rebind was not read as a resume: %+v", meta)
 	}
 	if len(events) != 1 {
 		t.Fatalf("a blank resume prompt must emit no row, got %d events: %+v", len(events), events)
@@ -177,6 +189,9 @@ func TestParseTaskStarted_TranscriptRootSurvivesRepeatedResumes(t *testing.T) {
 		t.Fatalf("round-1 task_started: %v", err)
 	}
 	for _, carrier := range []string{"carrier-2", "carrier-3"} {
+		if _, err := parser.ParseLine(testThread, []byte(sendMessageToolUse(carrier))); err != nil {
+			t.Fatalf("%s tool_use: %v", carrier, err)
+		}
 		events, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_started","task_id":"agent-1","tool_use_id":"`+carrier+`","task_type":"local_agent","prompt":"keep going"}`))
 		if err != nil {
 			t.Fatalf("%s task_started: %v", carrier, err)
@@ -196,25 +211,34 @@ func TestParseTaskStarted_TranscriptRootSurvivesRepeatedResumes(t *testing.T) {
 	}
 }
 
-// The map is bounded like every other parser correlation map: a
-// wholesale reset at the cap, and Close releases it.
+// The map rotates through two generations: a root outlives the next
+// parserTaskMapCap roots, the record never holds more than two
+// generations, the root stays write-once across a rotation, and Close
+// releases it.
 func TestTaskTranscriptRootsAreBoundedAndReleased(t *testing.T) {
 	parser := NewParser()
+	parser.rememberTaskTranscriptRoot("task-old", "launch-old")
 	for i := range parserTaskMapCap {
 		parser.rememberTaskTranscriptRoot(fmt.Sprintf("task-%d", i), fmt.Sprintf("launch-%d", i))
 	}
-	if len(parser.taskTranscriptRoots) != parserTaskMapCap {
-		t.Fatalf("map size before overflow = %d, want %d", len(parser.taskTranscriptRoots), parserTaskMapCap)
+	if got := parser.taskTranscriptRoot("task-old"); got != "launch-old" {
+		t.Fatalf("root rotated out after %d newer roots: %q", parserTaskMapCap, got)
 	}
-	parser.rememberTaskTranscriptRoot("task-overflow", "launch-overflow")
-	if len(parser.taskTranscriptRoots) != 1 {
-		t.Fatalf("map size after overflow = %d, want 1 (wholesale reset)", len(parser.taskTranscriptRoots))
+	parser.rememberTaskTranscriptRoot("task-old", "carrier")
+	if got := parser.taskTranscriptRoot("task-old"); got != "launch-old" {
+		t.Fatalf("a rotated root was overwritten: %q", got)
 	}
-	if got := parser.taskTranscriptRoot("task-overflow"); got != "launch-overflow" {
-		t.Fatalf("taskTranscriptRoot after reset = %q, want launch-overflow", got)
+	for i := range 2 * parserTaskMapCap {
+		parser.rememberTaskTranscriptRoot(fmt.Sprintf("task-new-%d", i), "launch")
+	}
+	if got := parser.taskTranscriptRoot("task-old"); got != "" {
+		t.Fatalf("root survived two generations: %q", got)
+	}
+	if n := parser.taskTranscriptRoots.len(); n > 2*parserTaskMapCap {
+		t.Fatalf("record holds %d roots, bound is %d", n, 2*parserTaskMapCap)
 	}
 	parser.Close()
-	if parser.taskTranscriptRoots != nil {
+	if parser.taskTranscriptRoots.len() != 0 {
 		t.Fatal("Close must release taskTranscriptRoots")
 	}
 }

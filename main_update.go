@@ -43,7 +43,7 @@ type updateCommandFlags struct {
 	dataDir  string
 	to       string
 	attempt  int
-	hostFree *uint64
+	hostDisk *supervise.HostDisk
 	reason   string
 }
 
@@ -57,6 +57,8 @@ func parseUpdateCommandFlags(name string, args []string) (updateCommandFlags, er
 	set.IntVar(&flags.attempt, "attempt", 0, "the trial's attempt number")
 	set.StringVar(&flags.reason, "reason", "", "why the snapshot is being restored")
 	hostFree := set.Int64("host-free", -1, "free bytes on the host drive that holds the data root's disk")
+	hostDiskBytes := set.Int64("host-disk-bytes", -1, "bytes the data root's virtual disk occupies on the host drive")
+	hostDrive := set.String("host-drive", "", "the host drive's name, for messages")
 	if err := set.Parse(args); err != nil {
 		return flags, fmt.Errorf("%s: %w", name, err)
 	}
@@ -64,8 +66,12 @@ func parseUpdateCommandFlags(name string, args []string) (updateCommandFlags, er
 		return flags, fmt.Errorf("%s: unexpected argument %q", name, set.Arg(0))
 	}
 	if *hostFree >= 0 {
-		free := uint64(*hostFree)
-		flags.hostFree = &free
+		flags.hostDisk = &supervise.HostDisk{Free: uint64(*hostFree), Drive: *hostDrive}
+		if *hostDiskBytes >= 0 {
+			flags.hostDisk.Allocated = uint64(*hostDiskBytes)
+		}
+	} else if *hostDiskBytes >= 0 || *hostDrive != "" {
+		return flags, fmt.Errorf("%s: --host-disk-bytes and --host-drive need --host-free", name)
 	}
 	if name == supervise.UpdateTrialCommand {
 		return flags, nil
@@ -139,9 +145,9 @@ func runUpdateStep(ctx context.Context, name string, flags updateCommandFlags, c
 	}
 	switch name {
 	case supervise.UpdateSpaceCommand:
-		return command.Space(flags.hostFree)
+		return command.Space(flags.hostDisk)
 	case supervise.UpdateSnapshotCommand:
-		return command.Snapshot(ctx, flags.hostFree)
+		return command.Snapshot(ctx, flags.hostDisk)
 	case supervise.UpdateTrialRunCommand:
 		executable, err := os.Executable()
 		if err != nil {

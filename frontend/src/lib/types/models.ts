@@ -487,6 +487,9 @@ export interface PRDetail {
   draft: boolean;
   headRefName: string;
   baseRefName: string;
+  /** The base branch's tip the forge compares against; empty while GitLab
+   *  prepares the merge request's diff. */
+  baseRefSHA: string;
   headSHA: string;
   url: string;
   additions: number;

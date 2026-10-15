@@ -948,8 +948,8 @@ func TestParser_CloseClearsState(t *testing.T) {
 	if parser.backgroundToolUses != nil {
 		t.Errorf("backgroundToolUses after Close: got %v, want nil", parser.backgroundToolUses)
 	}
-	if parser.taskToolUses != nil {
-		t.Errorf("taskToolUses after Close: got %v, want nil", parser.taskToolUses)
+	if parser.taskToolUses.len() != 0 {
+		t.Errorf("taskToolUses after Close: got %d entries, want 0", parser.taskToolUses.len())
 	}
 	if parser.streamBlockTypes != nil {
 		t.Errorf("streamBlockTypes after Close: got %v, want nil", parser.streamBlockTypes)

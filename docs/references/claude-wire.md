@@ -41,7 +41,7 @@ The CLI emits newline-delimited JSON. Every line has a top-level
 | `stream_event` | `parseStreamEvent` | Incremental deltas (requires `include_partial_messages:true`). |
 | `result` | `parseResult` | **Turn-complete signal.** One per CLI turn. |
 | `control_request` | `parseControlRequest` | Bidirectional. Inbound: `can_use_tool`, `exit_plan_mode`. Outbound (client → CLI): `interrupt`, `stop_task`, `set_permission_mode`, `mcp_set_servers`, `mcp_authenticate`, `mcp_oauth_callback_url`, `mcp_status`. |
-| `rate_limit_event` | `parseRateLimitEvent` | Rate limit state changes. The quota numbers AO renders come from [`/api/oauth/usage`](#apioauthusage), not from this envelope. |
+| `rate_limit_event` | ignored (`parser.go`) | Rate limit state changes. AO reads quota only from [`/api/oauth/usage`](#apioauthusage); see [`rate_limit_event`](#rate_limit_event) for why. |
 | `command_lifecycle` | `parseCommandLifecycle` | Delivery ack for a user message written to stdin, keyed by the client-minted `uuid`. See [§command_lifecycle](#command_lifecycle-stdin-message-delivery-acks-verified-21219). |
 
 Unknown `type` values are dropped silently by the dispatcher, logged
@@ -2152,9 +2152,11 @@ both handlers already use. The parser additionally:
 2. Enriches the meta-only `EventToolStart` the rebind `task_started`
    emits with `resumes_tool_use_id` (the previously-bound tool_use, which is
    the PREVIOUS binding — on a third round that is round two's carrier,
-   not the launch) and the wire's `description` + `subagent_type` — all
-   wire-sourced, so all survive the reconnect edge below where
-   `resumes_tool_use_id` is unknown.
+   not the launch) and the wire's `description` + `subagent_type`. The
+   last two are wire-sourced, so they survive a resume of an agent an
+   earlier process launched (below), where the previous binding is
+   unknown and `resumes_tool_use_id` names the launch the thread's
+   history holds, if any.
 3. Stamps `transcript_root_id`: the FIRST tool_use the task ever bound
    to, held write-once per `task_id` in `taskTranscriptRoots` so a
    rebind can never overwrite it. That is the row the agent's whole
@@ -2244,31 +2246,35 @@ get the whole session reaped mid-run. The carrier (backgrounded,
 running, no sibling until round-2 terminal) is what keeps the
 predicate true.
 
-**Reconnect edge**: if the parser restarts between the original
-launch and its resume (a fresh process `--resume`d the session and
-the model re-resumed the agent from its transcript), `taskToolUses`
-has no binding for the task_id at all. The parser falls back to a
-name-agnostic rule: a `local_agent` `task_started` binding to a
-tool_use that was never observed as the launch tool (`Agent`, or
-`Task` on older builds, per `isAgentLaunchToolName` in
-`parse_assistant.go`) is still classified as a resume, so the carrier
-marking survives the restart even though `resumes_tool_use_id` is
-unknown (omitted) — triage's Summary rewrite and identity copy still
-resolve the original launch through its persisted
-`items.meta.task_id` stamp, so the parser restart costs nothing
-downstream. A fresh launch cannot false-positive into this rule: parser
-lifetime == CLI process lifetime (stdio), and the assistant envelope
-carrying the launch tool_use always precedes its `task_started` on
-the same sequentially-parsed stream, so the launch-tool marker is
-already in place when the rule runs. `local_agent` tasks also die
-with their CLI process, so no pre-restart in-flight agent can re-emit
-`task_started` on the new process. The one unprotected window is
-losing the carrier's background flag between the rebind
-`task_started` and the resume ack, which is only possible via the parser's
-bounded-map wholesale reset (`parserTaskMapCap`, 1024 live entries
-accumulating inside a ~ms window; practically unreachable). A lost
-flag degrades to pre-fix behavior: the carrier lands foreground and
-that resumed round is reaper-unprotected.
+**A resume of an agent an earlier process launched**: if the session
+was restarted between the launch and its resume (a fresh process
+`--resume`d the session and the model re-resumed the agent from its
+transcript), the parser holds no binding for the task_id. A
+`local_agent` `task_started` that binds an observed call starting no
+agent (not `Agent`, `Task` or `Skill`) is still a resume: a fresh
+launch's call is one of those, and `local_agent` tasks die with their
+CLI process, so no pre-restart agent re-announces itself. The parser
+asks the thread's history for the launch (`claude.Config.AgentLaunchByTask`,
+the oldest agent launch row carrying the task id) and stamps it as
+`resumes_tool_use_id` and `transcript_root_id`; when the history has
+none, both are omitted and triage resolves the launch through the
+persisted `items.meta.task_id`. Task bindings and roots rotate
+through two generations of `parserTaskMapCap`, so a long session's
+Bash tasks do not evict them, and the history covers what rotates out.
+
+**A resume the session mirror delivers**: a call inside a typed fork
+(§E9) reaches the parser only through the mirror, after its
+`task_started`. The parser binds the task and holds the classification
+until the mirror projects the call; the call's name or the task's
+earlier binding then decides launch or resume, and the resume's meta
+and prompt row follow the call's row as they do on stdout (triage
+keeps only a row's task correlation ahead of the row). The projected
+ack is the carrier's background ack, as on stdout. A resumed awaited
+agent, which has a launching tool_use, streams its resumed rounds on
+stdout; a resumed typed fork, which has none, reaches only the mirror,
+and its rows project under its command row
+(`local_agent_resumed_by_typed_fork_20261014.ndjson`). No capture shows
+a resumed agent that was backgrounded or parked.
 
 See
 [`local_agent_async_resume.ndjson`](fixtures/claude/local_agent_async_resume.ndjson)
@@ -2338,7 +2344,53 @@ ever binds the wake prompt.
 - A `control_request{interrupt}` on a later turn kills a parked agent
   the same way (§Background task ownership).
 - A FOREGROUND agent is unchanged: its exit kills its shells (§Background
-  task ownership), so there is nothing to park.
+  task ownership), so there is nothing to park. So is one moved to the
+  background mid-run with `background_tasks`: at its stop its shell is
+  killed and nothing wakes it (2.1.284,
+  `local_agent_backgrounded_midrun_20261014.ndjson`). Only an agent
+  launched async parks.
+
+**Dropped wake.** Captured live against claude 2.1.284 (2026-10-14,
+`local_agent_dropped_wake_20261014.ndjson`; the delivered counterpart is
+`local_agent_mirror_wake_20261014.ndjson`). When the owned shell reports
+and the CLI cannot resume the parked agent (the capture removes the
+agent's `isolation:"worktree"` worktree while it is parked), the shell's
+own `task_updated` + `task_notification` arrive as usual and then
+nothing else on stdout: no `task_started`, no `task_updated` for the
+agent, no level-set change. The only record is in the session file,
+which `--session-mirror` streams (§`--session-mirror`): the wake prompt
+is enqueued and then removed with a reason.
+
+```json
+{"type":"transcript_mirror","filePath":"…/<session>.jsonl","entries":[{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>bn191xeyo</task-id>\n<tool-use-id>toolu_01KiGqDdgbxy144W69pHVtUK</tool-use-id>…"},{"type":"queue-operation","operation":"remove","reason":"agent_stopped","content":"<task-notification>…"}]}
+```
+
+The 2.1.284 bundle's wake router removes a queued wake with
+`agent_stopped` when the resume is refused or the agent was stopped by
+the user, and with `resume_failed` after five failed resumes; both drop
+the wake for good. `delivered_to_agent` and `absorbed_mid_turn` mark a
+wake that reached the agent. Nothing retries a dropped wake, so the
+agent never runs again. A later `stop_task` naming it acks `success`
+with no frames, as it does for any task the CLI no longer has.
+
+The parser (`parse_queue_operation.go`) strips every `queue-operation`
+entry from a mirror batch and emits `agent_wake_dropped` for each
+`<task-notification>` a drop reason removes, naming the command's task
+and tool_use. Triage (`agent_wake_dropped.go`) resolves the command's
+agent and, once no other owned command of that agent is still live, ends
+each of its parked runs with an `errored` sibling, `status_source:
+wake_dropped`. The dropped command counts as finished even when its own
+terminal has not been written yet, so the order of the two records does
+not matter. A later wake would still run the agent, so a drop while
+another owned command runs leaves it parked.
+
+**Stop of a task the CLI no longer has.** Because that ack carries no
+frames, the parser emits `background_task_stop_acked` from the
+`control_response` of a successful `stop_task`, on the read loop after
+every frame before it. Triage (`background_stop_ack.go`) settles any
+named run still open at that point as `killed`, `status_source:
+stop_acked`. When the CLI did stop the task, its kill frames came first
+and already settled it, so the ack writes nothing.
 
 **AO's park model (triage, `agent_stops.go`).** Every stop of a
 background agent's run writes a completion-shaped `tool_completion`
@@ -2363,7 +2415,8 @@ agent end (`agent_end.go`) fires only for the ending sibling.
 The wake drops the stash and persists the parser's wake row under the
 ROOT on the launch's turn, opening the next run. The ending sibling is
 written on the first stop with no live owned shell, on
-`task_updated{killed}`, and on session end; a `TaskOutput` observation
+`task_updated{killed}`, on a dropped wake, on a `stop_task` ack that
+found the run still open, and on session end; a `TaskOutput` observation
 of a parked agent writes nothing. A §E6 rebind of a parked agent
 retires the rows it was bound to (`RetireParkedAgentLaunches`): their
 parked sibling already records the run, and the carrier's runs write
@@ -2380,7 +2433,7 @@ that is still open.
 agent launch it returns with its run state, read by the same statement
 (`serveAgentRunStates`), as `subagentRunState`: `done` or `ended` (an
 ending sibling exists; `ended` when its `status_source` is
-`session_died`), else `parked` when the launch's newest stop is a parked
+`session_died` or `wake_dropped`), else `parked` when the launch's newest stop is a parked
 sibling no wake has followed (the predicate `Store.CurrentParkedStop`
 reads), else `running`. A parked launch also carries what that sibling
 recorded: `subagentParkedCommands` (N) and, when the run wrote a report,
@@ -2560,15 +2613,84 @@ badged user row.
 A skill whose frontmatter forks (the built-in `code-review`,
 `post-task-review`, `brainstorm`, ...) runs as a SUBAGENT whose context
 is a copy of the parent conversation at the call, plus the skill body
-as its first user message. Its wire shape is NOT the `local_agent`
-shape above, and three things an Agent launch provides are absent.
-Verified 2.1.237 across 12 Skill launches in AO provider-events logs
-(2026-08-20 → 08-22) and the `85f7aa3d` review thread:
+as its first user message. It is an awaited agent: the main turn is
+blocked until it returns. Its task shape changed in 2.1.284; both
+shapes reach AO, and the parser handles both.
 
-- **No `system/task_started`, no `task_id`, no `task_progress`, and no
-  entry in `background_tasks_changed`**, 0 of 12. Parser signal (5)
-  never arms for a fork, and `stop_task` has nothing to target:
-  killing a fork is `interrupt`-only.
+**2.1.284+: a local_agent task bound to the Skill call.** Verified live
+2026-10-14 with haiku probes (fixtures below):
+
+- **`system/task_started` binds the Skill call** right after its
+  tool_use: `task_type:"local_agent"`, `tool_use_id` = the Skill's id,
+  `description:"/<skill>"`, `subagent_type:"general-purpose"`,
+  `is_backgrounded:false`, `spawn_depth:1`, and the skill body as
+  `prompt`. It is a launch, never a §E6 resume: the parser's resume
+  rule for an unbound task excludes a Skill call (`isTaskResumeTool`).
+- **A fork that finishes gets no `task_progress`, no `task_updated`,
+  and no entry in `background_tasks_changed`.** Its run ends with
+  `system/task_notification` alone (`status:"completed"`,
+  `skip_transcript:true`, `ambient:true`), just before the forked
+  result. A terminal notification releases the parser's live-agent
+  flag, as a `task_updated` terminal does: a fork launched inside an
+  agent ends the same way, and its result on the agent's sidechain
+  carries no `tool_use_result`
+  (`forked_skill_in_agent_20261014.ndjson`).
+- **`stop_task` stops it** as it stops an awaited Agent:
+  `task_updated{killed}` and `task_notification{stopped}` before the
+  ack; after it, the `[Request interrupted by user]` row on the
+  agent's sidechain, the kill of the background shells it owns (level
+  set, `task_updated{killed}`, `task_notification{stopped}`), and the
+  launch's `is_error` tool_result (`tool_use_result:"Error: [Request
+  interrupted by user for tool use]"`). The main turn goes on
+  (`forked_skill_stop_task_20261014.ndjson`,
+  `local_agent_foreground_stop_task_20261014.ndjson`).
+- **`interrupt` stops it with the turn.** After the ack, an awaited
+  Agent's background shells are killed, then the Agent
+  (`task_updated{killed}`, `task_notification{stopped}`); a fork gets
+  the notification alone. The launch answers "User rejected tool use"
+  and the turn ends with `error_during_execution`
+  (`local_agent_foreground_interrupt_20261014.ndjson`,
+  `forked_skill_interrupt_20261014.ndjson`).
+- **`background_tasks` refuses it**: `{backgrounded:false}`, and the
+  fork runs on in the foreground. The same request backgrounds an
+  awaited Agent mid-run. AO offers no background action on a fork.
+- **What a fork leaves behind follows the Agent rule.** At its stop its
+  background shells are killed (`task_notification{stopped}`), and an
+  async agent it launched outlives it as a task of the main session
+  that wakes the main agent when it finishes. A fork does not park.
+- **A directly entered forked command** (`/code-review high`) gets the
+  same `task_started` with NO `tool_use_id`, and its terminal
+  notification names none either. Its rows arrive only through the
+  session mirror. AO records the task the running command announces
+  and stamps it on the row when the mirror proves the fork with that
+  agentId (§transcript_mirror). The Agent the fork launches is
+  announced by `task_started` before the mirror delivers its tool_use,
+  and the child's `agent_metadata`, naming that tool_use, can arrive
+  first too; the child's batches wait for the launch and then project
+  under it. Every projected agent's last message reaches the mirror
+  after its task terminal, so a terminal keeps the agent's projection
+  open (`forked_skill_direct_command_20261014.ndjson`).
+- **A typed fork can be resumed** by `SendMessage` to its agentId. The
+  resumed fork's `agent_metadata` again names no tool_use and its rows
+  reach only the mirror; they project under the command row the fork
+  first ran under (§E6,
+  `local_agent_resumed_by_typed_fork_20261014.ndjson`). No capture shows
+  a resumed agent that a typed fork launched; AO treats its resumed
+  rounds as streaming on stdout, as an Agent's do.
+- **A typed fork stopped by `stop_task` or `interrupt`** gets its kill
+  frames, but no tool call exists to answer and the turn ends with a
+  successful result. The fork's terminal notification is what settles
+  its row as failed
+  (`forked_skill_direct_command_stop_task_20261014.ndjson`,
+  `forked_skill_direct_command_interrupt_20261014.ndjson`).
+
+**2.1.237: no task at all.** Verified across 12 Skill launches in AO
+provider-events logs (2026-08-20 → 08-22) and the `85f7aa3d` review
+thread: no `system/task_started`, no `task_id`, no `task_progress`, no
+entry in `background_tasks_changed`, and killing a fork was
+`interrupt`-only. The fork's identity comes only from attribution and
+its completion, which both CLIs still send:
+
 - **The launch signal is attribution.** The fork's rows land on the
   parent stream as ordinary sidechain envelopes with
   `parent_tool_use_id` = the `Skill` tool_use's id (2–45 rows per fork,
@@ -2582,7 +2704,8 @@ Verified 2.1.237 across 12 Skill launches in AO provider-events logs
   Result:\n<agent's final text>` and `tool_use_result` is
   `{success:true, commandName, status:"forked", agentId, result}`.
   `agentId` is the fork's sidechain id (`subagents/agent-<id>.jsonl`
-  on disk, `meta.json` `{agentType:"general-purpose", spawnDepth:1}`).
+  on disk, `meta.json` `{agentType:"general-purpose", spawnDepth:1}`)
+  and, on 2.1.284, its task id.
 
   **AO stamps this onto the Skill's `EventToolComplete` meta** as
   `skillFork: {agentId, commandName}` (`toolResultSkillFork`,
@@ -2614,9 +2737,8 @@ Verified 2.1.237 across 12 Skill launches in AO provider-events logs
   Skill tool_use 04:01:53 → first sidechain row 04:01:56 → Skill
   tool_result 04:04:48 → `result` 04:04:56. The interactive TUI's
   "Running in the background as @<skill>" freedom is TUI-only; over
-  stream-json nothing else runs until the fork returns, so no
-  SendMessage relay (below) is possible during a fork unless it is
-  first backgrounded with the `background_tasks` control_request.
+  stream-json nothing else runs until the fork returns, and
+  `background_tasks` cannot free it (2.1.284 refuses).
 - **Agents a fork spawns are ordinary.** Its depth-2 `Agent` launches
   get `task_started`, acks, and terminals exactly as §E5/§E5b describe,
   and their rows carry the depth-2 launch (not the Skill) as
@@ -2626,10 +2748,21 @@ Verified 2.1.237 across 12 Skill launches in AO provider-events logs
 
 Whether the forked agent gets the `Agent` tool is the CLI's depth gate
 (`rfS` in 2.1.237: keep `Agent` iff `agentDepth < limit`, limit from
-`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, default 1). The code-review
-skill's prompt silently degrades to a solo pass when the tool is
-absent ("If the Agent tool is not available ... perform each angle
-yourself") and says nothing about it in its output.
+`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, default 1). On 2.1.284 a fork
+launched an Agent at `spawn_depth:2` with no override set. The
+code-review skill's prompt silently degrades to a solo pass when the
+tool is absent ("If the Agent tool is not available ... perform each
+angle yourself") and says nothing about it in its output.
+
+2.1.284 fixtures, from live haiku probes of a throwaway forked skill
+(README lists each): `forked_skill_task_started`,
+`forked_skill_background_children`, `forked_skill_stop_task`,
+`forked_skill_interrupt`, `forked_skill_background_refused`,
+`forked_skill_in_agent`, `forked_skill_direct_command`,
+`forked_skill_direct_command_stop_task`,
+`forked_skill_direct_command_interrupt`,
+`local_agent_foreground_stop_task` and
+`local_agent_foreground_interrupt`, all `_20261014.ndjson`.
 
 ### E10: `EnterWorktree` / `ExitWorktree` (the CLI moves its own cwd)
 
@@ -3369,7 +3502,8 @@ CLI binary; the subtypes we use or plan to use:
   `subtype:"success"` for any well-formed request, including one whose
   `tool_use_id` matched no live foreground task, so success alone would
   flip a still-streaming row to "backgrounded" in the UI. AO returns a
-  descriptive error when the flag is false or absent.
+  descriptive error when the flag is false or absent. A running forked
+  Skill is always refused this way (2.1.284, §E9).
 
   **AO turns the non-terminal patch into
   `EventSubagentBackgrounded`** (`parseTaskBackgroundedPatch`), keyed on
@@ -3456,14 +3590,16 @@ CLI binary; the subtypes we use or plan to use:
     one for another.
   - **Old builds and other transports ack without applying.** The
     field's own schema doc says so. That is the one failure mode with no
-    wire signal at all, which is why AO version-gates
-    (`minLiveSystemPromptCLIVersion`) and treats an unknown version as
-    too old.
+    wire signal at all.
   - **Success says nothing.** The payload is a bare `{ok:true}`, with no
     applied model, no confirmation the prompt landed. A family-alias
     step-down also answers ok (telemetry `model_switch:
     "family_alias_stepped_down"`), so `get_settings` is the only channel
     that reports what is actually running.
+
+  AO never sends `system_prompt`: a prompt change applies at the
+  thread's next session start
+  ([prompt-tool-overrides.md §Reconcile semantics](../specs/prompt-tool-overrides.md#reconcile-semantics-what-a-settings-edit-does-to-a-live-session)).
 - `subtype: "set_max_thinking_tokens"`: set the live session's thinking
   budget and/or display. Takes `max_thinking_tokens` (int or null) and
   `thinking_display` (`"summarized"` / `"omitted"` / null); both are
@@ -3639,6 +3775,13 @@ Error form:
  "task_id":"<same id>",
  "patch":{"status":"killed","end_time":<unix ms>}}
 ```
+
+An AWAITED agent or forked Skill (2.1.284) also gets
+`task_notification{stopped}` naming its output file before the ack and,
+after it, the `[Request interrupted by user]` row on its sidechain, the
+kill of the background shells it owns, and its launch's `is_error`
+tool_result; the main turn goes on
+(`local_agent_foreground_stop_task_20261014.ndjson`, §E9).
 
 A `stop_task` for a task the CLI no longer holds (it ended earlier) also
 answers `success` with an empty response, and nothing follows (2.1.280,
@@ -3980,7 +4123,13 @@ Two gaps make this surface necessary:
   command. AO shows a provisional running Command row on the lifecycle's
   `started` frame, then changes that same row to Skill after ownerless metadata
   and sidechain attribution confirm the fork. A long first model step no longer
-  looks like a command that failed to start.
+  looks like a command that failed to start. The change binds the fork's
+  `agentId` to the row in the parser's task map, so its terminal
+  notification, which names no tool_use (2.1.284, §E9), finds the row.
+  When the command announced that task (a `task_started` naming no
+  tool_use, 2.1.284), the change also stamps it as the row's `task_id`,
+  the id the pane's Stop sends; an older CLI's fork has no task and no
+  Stop.
 - A foreground agent moved through `background_tasks` stops ordinary
   sidechain forwarding at the acknowledgement. Its later rows continue in
   the mirror. An agent launched async normally still forwards its sidechain,
@@ -3998,21 +4147,40 @@ ordinary Agent's `agent_metadata.toolUseId` classifies the mirror as that
 Agent's duplicate even if the metadata beats `system/task_started`; ordinary
 stdout remains its live source. AO opens a projector only if
 `background_tasks` stopped that feed or the launch belongs below an already
-mirrored scope. Ownerless `agent_metadata` plus `isSidechain:true` and
-`attributionSkill` claim a forked Skill. An explicit `isSidechain:false` clears
-the buffer and leaves the command unprojected. Main-transcript rows are never
-projected: `mainTranscriptEvents` reads their user rows, in order, for the two
-facts stdout lacks. A row under an issued uuid confirms AO's own send (the
-filtered-echo section above); any other row with a `turnOrigin` is a turn the
-CLI started itself, a scheduled fire (§E11) or an idle background wake. If the
-file, entry, or byte bound drops any prefix data, AO persists a warning beneath
-the command row instead of leaving the gap silent.
+mirrored scope. A launch below a mirrored scope can be named by its child's
+metadata before the mirror delivers it; while its `task_started` has bound a
+call not delivered yet, the child's batches stay buffered, and they project
+once the launch does. Ownerless `agent_metadata` plus `isSidechain:true` and
+`attributionSkill` claim a forked Skill, unless its agent is already bound to
+a call (a resumed fork, or a forked Skill call inside the fork). An explicit
+`isSidechain:false` clears the buffer and leaves the command unprojected.
+Main-transcript rows are never projected: `mainTranscriptEvents` reads their
+user rows, in order, for the two facts stdout lacks. A row under an issued
+uuid confirms AO's own send (the filtered-echo section above); any other row
+with a `turnOrigin` is a turn the CLI started itself, a scheduled fire (§E11)
+or an idle background wake. If the file, entry, or byte bound drops any
+prefix data, AO persists a warning beneath the command row instead of
+leaving the gap silent.
+
+The main session file's mirror also carries its uuid-less
+`queue-operation` rows (enqueue, dequeue, remove with a `reason`). The
+parser reads them before any routing or buffering and never projects
+them; a `remove` with a drop reason is the only signal of a dropped
+wake (§E6b).
+
+An agent's last message reaches the mirror after its task terminal
+(2.1.284, every typed fork and projected child in the §E9 captures), so
+a final or `killed` terminal keeps the projection open for it
+(`finishMirroredTask`). It closes when its command ends, when the agent
+is resumed (a typed fork's projection is reused under its command row;
+an agent with a launching tool_use streams its resumed rounds on
+stdout, captured for an awaited agent), when the session closes, or
+when 64 later terminals retire it.
 
 No capture yet shows a moved agent that parks (§E6b) and later wakes.
 The code assumes its woken rounds continue in the same mirrored file:
-a parked stop keeps the projection while the agent's scope owns a live
-background shell or watch task, and a final or `killed` terminal
-closes it (`finishMirroredTask`).
+a parked stop is not a terminal for its projection while the agent's
+scope owns a live background shell or watch task.
 
 ### Local command envelope sequence
 
@@ -4255,16 +4423,17 @@ restart.
  }}
 ```
 
-camelCase wire fields (`resetsAt`, `rateLimitType`, etc.). See
-`parse_control.go` (`parseRateLimitEvent`).
+camelCase wire fields (`resetsAt`, `rateLimitType`, etc.).
 
-**Important consumer note**: `utilization` is an optional field on the
-wire, present only when Claude has signal to share (warning band,
-overload). The parser uses `*float64` to distinguish absent (drop the
-snapshot, preserve last-known good in the global store) from explicit
-`0.0` (a real "0% used" reading). Don't synthesize 0% when the field is
-missing: the empty ring would be visually identical to "no data" and
-could clobber a previously-known good reading.
+**AO ignores this envelope.** It reports the quota of whichever credential
+sent the request it answers, and nothing in it names the account. After an
+account switch, responses to requests sent before the switch still arrive,
+so attributing the event to the session's current account files one
+account's usage under another. The CLI's warning band makes this visible
+early in a week: `seven_day` carries `utilization` once 25% is used in the
+first 15% of the window (thresholds 0.25/0.15, 0.5/0.35, 0.75/0.6; 2.1.284).
+A refused turn is typed by the `assistant` envelope's `error: "rate_limit"`,
+not by this event.
 
 ### `unifiedWindows` (claude 2.1.257, observed 2026-09-01)
 
@@ -4292,11 +4461,6 @@ Utilization is a FRACTION here (0.12 = 12%), matching the top-level field.
 Each of the three windows is optional: the installed binary builds this
 object by spreading only the windows the usage response returned, so
 `seven_day_overage_included` comes and goes between consecutive events.
-
-`parseRateLimitEvent` does not read it, so on this release every
-steady-state `rate_limit_event` is dropped and the polled `/api/oauth/usage`
-probe is the only source of Claude quota numbers. That is correct but
-lossy — these events land on every turn.
 
 ---
 
@@ -4327,6 +4491,16 @@ the scope's model or surface gives the limit id (`weekly_scoped:fable`), and
 `resets_at` drifts by a second or two between reads — hence the merge's
 one-minute boundary tolerance. `scope.model.id` is currently null, so the id
 falls back to the slugged display name.
+
+**A window starts at the account's first request after the previous one
+ends.** Logged `unifiedWindows` (2026-09-18 to 10-08) show each new 5h window
+ending 5h after its first request, floored to 10 minutes (a window that ended
+07:10 and resumed at 09:37 reset at 14:30, not 12:10). Weekly boundaries fall
+on the hour, exactly 7 days apart while the account stays in use. The Fable
+bucket shares the weekly window; every saved account reports the same
+`resets_at` for `weekly_all` and `weekly_scoped:fable`. A passed boundary
+therefore says nothing about the next one, so AO shows an expired window as
+0% with no reset time until a reading reports the new boundary.
 
 **A bucket is absent when it has nothing to report.** The array lists the
 limits that apply right now, and an older release of the same endpoint
@@ -5112,8 +5286,7 @@ snapshot of one (model, mode) variant.
   (§"Request shape"), the file's content].
   `internal/provider/claudetui/launch.go` passes
   `--system-prompt-file` on the PTY launch and shares the headless
-  writer; `claudetui.Session.Close` removes the file, which the
-  `NewSession` failure path also runs.
+  writer and directory.
 - `--disallowedTools <name>` removes the tool's schema from the
   request `tools` array entirely (verified: `Workflow`,
   `EnterPlanMode`, `ExitPlanMode` absent from the capture) and
@@ -5160,8 +5333,9 @@ PTY. Each point holds on both transports unless it names one.
   `error: unknown option` and exits 1.
 
 AO passes the append file on both transports for its app guide, and the
-snapshot opt-out only when the binary is known to be 2.1.267 or newer
-([prompt-tool-overrides.md §App guide](../specs/prompt-tool-overrides.md#app-guide)).
+snapshot opt-out only when the binary is known to be 2.1.267 or newer, so a
+restarted session picks up an edited override or guide
+([prompt-tool-overrides.md §Claude prompt snapshot](../specs/prompt-tool-overrides.md#claude-prompt-snapshot)).
 
 ---
 

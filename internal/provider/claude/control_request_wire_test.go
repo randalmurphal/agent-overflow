@@ -108,13 +108,7 @@ func TestControlRequestWireKeys(t *testing.T) {
 			name:     "set_model",
 			subtype:  "set_model",
 			wantKeys: []string{"model", "subtype"},
-			invoke:   func(ctx context.Context, s *Session) error { return s.setModel(ctx, "opus", "") },
-		},
-		{
-			name:     "set_model with system prompt",
-			subtype:  "set_model",
-			wantKeys: []string{"model", "subtype", "system_prompt"},
-			invoke:   func(ctx context.Context, s *Session) error { return s.setModel(ctx, "opus", "be terse") },
+			invoke:   func(ctx context.Context, s *Session) error { return s.setModel(ctx, "opus") },
 		},
 		{
 			name:     "set_max_thinking_tokens",

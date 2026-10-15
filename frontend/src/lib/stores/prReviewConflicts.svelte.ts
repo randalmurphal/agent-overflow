@@ -18,6 +18,7 @@ import { errString } from '../utils/errors';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import type { WorkspaceRef } from '../types/git';
 import type { PRDetail } from '../types/models';
+import { prRevision, prRevisionKey, type PRRevision } from '../utils/prRevision';
 
 export interface PRConflicts {
   treeOID: string;
@@ -30,12 +31,11 @@ export interface PRConflicts {
   notes: Partial<Record<string, string[]>>;
   /** Fallback strip: messages that name no conflicted path (rare). */
   messages: string[];
-  /** The pair the merged tree was computed from. `treeOID` names a tree
-   * that only exists for THIS pair; when either moves the tree is gone,
-   * and every file read against it would answer for a merge nobody
+  /** The revision the merged tree was computed from. `treeOID` names a
+   * tree that only exists for THIS revision; when it moves the tree is
+   * gone, and every file read against it would answer for a merge nobody
    * asked about. */
-  baseRefName: string;
-  headSHA: string;
+  revision: PRRevision;
 }
 
 class PRConflictEntry {
@@ -59,10 +59,11 @@ class PRConflictEntry {
   /** In-flight per-path content loads, so N panes expanding the same file
    * share one read. */
   readonly inFlight = new Map<string, Promise<void>>();
-  /** The (base, head) pair that moved WHILE a load was running. The view is
-   * open, so it has to converge on it once the in-flight load settles —
-   * dropping it left the pane pinned to a superseded merge forever, because
-   * the poll only fires on CHANGE and no later event re-states the pair. */
+  /** The revision that moved WHILE a load was running, or that a view
+   * opened before the forge reported one (GitLab preparing the diff). The
+   * view is open, so it has to converge on it — dropping it left the pane
+   * pinned to a superseded merge forever, because the poll only fires on
+   * CHANGE and no later event re-states the revision. */
   pending: { ref: PRRef; detail: PRDetail } | null = null;
   seq = 0;
 
@@ -171,19 +172,22 @@ export async function openPRConflicts(
   detail: PRDetail,
 ): Promise<void> {
   const entry = ensureConflicts(key, workspace);
-  const headSHA = String(detail.headSHA ?? '');
-  const baseRefName = String(detail.baseRefName ?? '');
   if (entry.loading) return;
-  if (entry.state && entry.state.headSHA === headSHA && entry.state.baseRefName === baseRefName) {
+  const revision = prRevision(detail);
+  if (revision === null) {
+    // Nothing to merge yet; the snapshot that carries a revision reconciles.
+    entry.pending = { ref, detail };
     return;
   }
-  await loadPRConflicts(entry, ref, detail);
+  if (entry.state && prRevisionKey(entry.state.revision) === prRevisionKey(revision)) return;
+  await loadPRConflicts(entry, ref, revision, detail.headRefName);
 }
 
 async function loadPRConflicts(
   entry: PRConflictEntry,
   ref: PRRef,
-  detail: PRDetail,
+  revision: PRRevision,
+  headRefName: string,
 ): Promise<void> {
   const { prKey, workspace } = entry;
   const seq = ++entry.seq;
@@ -198,19 +202,18 @@ async function loadPRConflicts(
     const result = await withBackendTarget(workspaceKeyBackend(prKey), () => GetPRMergeConflicts(
       workspace,
       prReferenceWire(ref),
-      detail.baseRefName,
-      detail.headRefName,
+      revision,
+      headRefName,
     ));
     if (seq !== entry.seq) return;
     entry.state = {
       treeOID: String(result.treeOID ?? ''),
-      baseLabel: String(result.baseLabel ?? `origin/${detail.baseRefName}`),
-      headLabel: String(result.headLabel ?? detail.headRefName),
+      baseLabel: String(result.baseLabel ?? `origin/${revision.baseRef}`),
+      headLabel: String(result.headLabel ?? headRefName),
       paths: result.conflicted ? [...(result.paths ?? [])] : [],
-      notes: result.conflicted ? { ...(result.notes ?? {}) } : {},
+      notes: result.conflicted ? { ...result.notes } : {},
       messages: result.conflicted ? [...(result.messages ?? [])] : [],
-      baseRefName: String(detail.baseRefName ?? ''),
-      headSHA: String(detail.headSHA ?? ''),
+      revision,
     };
     entry.treeError = null;
     // Conflict files render expanded, so their content is fetched here
@@ -302,30 +305,31 @@ function reconcileEntryWithHead(
   liveHeadSHA: string,
 ): void {
   if (!viewHolds.has(entryKey(entry.prKey, entry.workspace))) return;
-  const headSHA = String(detail.headSHA ?? liveHeadSHA ?? '');
-  const baseRefName = String(detail.baseRefName ?? '');
-  if (headSHA === '' && baseRefName === '') return;
+  const revision = prRevision(detail, liveHeadSHA);
+  if (revision === null) return;
   if (entry.loading) {
-    // The pair moved while the merge-tree run (and its per-file reads) were
-    // still going. Park it: the load in flight answers for a merge nobody
-    // asked about any more, and dropping the new pair left the open view on
-    // it forever — later polls dedup to nothing, so no event re-states it.
+    // The revision moved while the merge-tree run (and its per-file reads)
+    // were still going. Park it: the load in flight answers for a merge
+    // nobody asked about any more, and dropping the new revision left the
+    // open view on it forever — later polls dedup to nothing, so no event
+    // re-states it.
     entry.pending = { ref, detail };
     return;
   }
-  // Compared against the pair recorded ON the entry, not the previous
+  // Compared against the revision recorded ON the entry, not the previous
   // snapshot: after a reconnect there is no previous snapshot, and the
   // tree is stale all the same.
   if (!entry.state) {
-    // A FAILED load is not a settled answer about the pair that moved under
-    // it — the view would sit on that error forever, because later polls
-    // dedup to nothing. Only a view that never loaded at all (no state, no
-    // error) has nothing here to reconcile.
-    if (entry.treeError === null) return;
-  } else if (entry.state.headSHA === headSHA && entry.state.baseRefName === baseRefName) {
+    // A FAILED load is not a settled answer about the revision: the next
+    // frame (the pump emits one after a failed read) retries it. A view
+    // parked waiting for a revision loads now. Only a view that never
+    // loaded at all (no state, no error, nothing parked) has nothing here
+    // to reconcile.
+    if (entry.treeError === null && entry.takePending() === null) return;
+  } else if (prRevisionKey(entry.state.revision) === prRevisionKey(revision)) {
     return;
   }
-  void loadPRConflicts(entry, ref, detail);
+  void loadPRConflicts(entry, ref, revision, detail.headRefName);
 }
 
 /**
@@ -343,6 +347,6 @@ export function dropPRConflicts(key: string): void {
 
 /** Test seam: drop every entry and permit, as a fresh module load would. */
 export function __resetPRConflictsForTest(): void {
-  for (const entry of [...conflictsByKey.values()]) dropPRConflicts(entry.prKey);
+  for (const entry of conflictsByKey.values()) dropPRConflicts(entry.prKey);
   viewHolds.clear();
 }

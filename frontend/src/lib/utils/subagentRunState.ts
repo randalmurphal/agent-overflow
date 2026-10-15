@@ -17,10 +17,10 @@ export type SubagentRunStateName = (typeof SUBAGENT_RUN_STATES)[number];
 export interface SubagentRunState {
   /**
    * `parked`: the agent reported and waits on background commands it
-   * started. `ended`: a session death settled it.
+   * started. `ended`: a session death or a wake Claude dropped settled it.
    */
   state: SubagentRunStateName;
-  /** Parked: the live background commands at the agent's transcript root. */
+  /** Parked: the background commands the agent was waiting on when it parked. */
   waitingOn: number;
   /**
    * Parked: the run's report, by row id for the full row, with the head the

@@ -66,16 +66,19 @@ no feed when no project was linked; it never reads GitHub.
 A GitLab release is installable when its links are named exactly
 `agent-overflow-wsl-noremote-amd64.exe` and `SHASUMS256` and point under
 `https://HOST/api/v4/` on the linked host, such as generic package files.
-Other links are refused. First installation also downloads `install.sh` from
-the release, so the release carries all three files.
+Other links are refused. First installation also reads `install.sh` from
+the release, through its `/install.sh` direct asset path, so the release
+carries all three files.
 
-First installation runs inside WSL, with glab signed in:
+First installation runs inside WSL, with glab signed in, and leaves no files
+behind:
 
 ```sh
-d=$(mktemp -d) && glab release download -R GROUP/PROJECT \
-  -n agent-overflow-wsl-noremote-amd64.exe -n SHASUMS256 -n install.sh -D "$d" \
-  && sh "$d/install.sh" --wsl --noremote --source "$d"
+glab api --hostname HOST projects/GROUP%2FPROJECT/releases/permalink/latest/downloads/install.sh \
+  | sh -s -- --wsl --noremote --source gitlab:HOST/GROUP/PROJECT
 ```
 
-`install.sh --noremote` applies only to `--wsl` and needs `--source`; a
-local directory source makes no network request.
+`--source gitlab:HOST/GROUP/PROJECT` reads the release with glab: the
+latest, or the one `--version` names, resolved once so every file comes from
+the same release. `install.sh --noremote` applies only to `--wsl` and needs
+`--source`; a local directory source makes no network request.

@@ -30,6 +30,11 @@ type fakeBackend struct {
 	// handle answers one rpc frame. Returning a nil error means the
 	// result is delivered; returning one delivers the error envelope.
 	handle func(frame transport.ClientFrame) (json.RawMessage, *transport.FrameError)
+	// closeOn names a method whose request closes the connection with no
+	// reply, as the real backend's shutdown can before its reply is written.
+	closeOn string
+	// unanswered names a method the backend reads and never answers.
+	unanswered string
 
 	mu         sync.Mutex
 	conn       *websocket.Conn
@@ -99,6 +104,13 @@ func (b *fakeBackend) serveWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *fakeBackend) answerRPC(ctx context.Context, conn *websocket.Conn, frame transport.ClientFrame) {
+	if b.closeOn != "" && frame.Method == b.closeOn {
+		_ = conn.CloseNow()
+		return
+	}
+	if b.unanswered != "" && frame.Method == b.unanswered {
+		return
+	}
 	handle := b.handle
 	if handle == nil {
 		handle = func(f transport.ClientFrame) (json.RawMessage, *transport.FrameError) {

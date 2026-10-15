@@ -3,15 +3,16 @@
 // every navigation and restore must still reach the right line.
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
 import '../../../app.css';
 import ReviewDiffBody from './ReviewDiffBody.svelte';
 import type { DiffReviewComment } from '../../types/models';
-import { REVIEW_FILE_HEADER_BAR_PX, type CommentAnchor } from '../../utils/reviewRows';
+import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
 import { parseReviewFiles, type ReviewFile } from '../../utils/patchStore';
 import { HELD_EDGE_PX, HELD_LIMIT_PX } from '../../utils/virtual/heldRows';
 import { waitFor } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
+import { reviewThreadRowSnippet } from '../../../test/helpers/reviewThreadRowSnippet.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 
 // 700 files of 1000 added lines: 14M px, past the held limit.
@@ -71,9 +72,7 @@ async function mountBody() {
     jumpToFilePath: null as string | null,
     onJumpConsumed: () => { props.jumpToFilePath = null; },
     drafts: [] as DiffReviewComment[],
-    commentThread: createRawSnippet((threadKey: () => string, _anchor: () => CommentAnchor) => ({
-      render: () => `<div data-testid="thread" data-thread="${threadKey()}" style="height:80px">${threadKey()}</div>`,
-    })),
+    commentThread: reviewThreadRowSnippet(),
     jumpToRowKey: null as string | null,
     onJumpRowConsumed: () => { props.jumpToRowKey = null; },
     onTopFileChange: (fileIndex: number) => { topFiles.push(fileIndex); },
@@ -141,7 +140,7 @@ describe('a review diff past the held limit', () => {
     expect(now).toEqual({ text: probe.text, top: probe.top - 300 });
   });
 
-  it('jumps to a comment row outside the held rows and flashes it', async () => {
+  it('jumps to a comment row outside the held rows and hands it the pulse', async () => {
     const { props, scrollEl } = await mountBody();
     props.drafts = [{
       id: 'far', threadId: 'thread-1', scope: 'workspace', sourceKey: 'source', filePath: 'src/f650.ts',
@@ -155,7 +154,13 @@ describe('a review diff past the held limit', () => {
     // The row lands below the sticky file bar, not under it.
     expect(thread!.getBoundingClientRect().top).toBe(scrollEl.getBoundingClientRect().top + REVIEW_FILE_HEADER_BAR_PX);
     expect(scrollEl.parentElement!.querySelector('[data-testid="review-sticky-header"]')).not.toBeNull();
-    expect(thread!.parentElement!.className).toContain('bg-accent/15');
+    expect(thread!.dataset.pulse).toBe('1');
+    // The same jump again is a new generation: the row pulses again.
+    props.jumpToRowKey = 't:far';
+    await settle(scrollEl);
+    expect(scrollEl.querySelector<HTMLElement>('[data-thread="far"]')!.dataset.pulse).toBe('2');
+    // Held for the pulse's lifetime (1.6s), then forgotten.
+    await waitFor(() => scrollEl.querySelector<HTMLElement>('[data-thread="far"]')!.dataset.pulse === '0', 'pulse released', 240);
   });
 
   it('keeps the line being read when the files are read again', async () => {

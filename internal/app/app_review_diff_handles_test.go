@@ -80,10 +80,10 @@ func openBranchBasePatch(t *testing.T, app *App, ref WorkspaceRef, base string, 
 	return readOpenedReviewDiff(t, app, ctx, opened)
 }
 
-func openPRCommitPatch(t *testing.T, app *App, ref WorkspaceRef, sha string) (string, error) {
+func openPRCommitPatch(t *testing.T, app *App, ref WorkspaceRef, rev gitops.PRRevision, sha string) (string, error) {
 	t.Helper()
 	ctx, _ := reviewDiffConn(t)
-	opened, err := app.OpenPRCommitDiff(ctx, ref, prRef(), sha, false)
+	opened, err := app.OpenPRCommitDiff(ctx, ref, prRef(), rev, sha, false)
 	if err != nil {
 		return "", err
 	}
@@ -243,28 +243,18 @@ func TestReviewDiffBootSweepRemovesSnapshotsFromTheLastRun(t *testing.T) {
 	}
 }
 
-func TestOpenPRDiffIsTheThreeDotDiffAtTheFetchedHead(t *testing.T) {
+// The forge's base tip has moved on past the clone's origin/main: the read
+// fetches it, and the three-dot diff leaves the base's own commit out.
+func TestOpenPRDiffIsTheThreeDotDiffAtTheRevision(t *testing.T) {
 	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	ref, clone, prSHAs := prCloneFixture(t, app)
-	// The base moves on after the PR branched; a three-dot diff leaves it out.
-	origin, _, err := gitops.NewCore().Execute(clone, "remote", "get-url", "origin")
-	if err != nil {
-		t.Fatalf("origin url: %v", err)
-	}
-	origin = strings.TrimSpace(origin)
-	if err := os.WriteFile(filepath.Join(origin, "base-only.txt"), []byte("base moved on\n"), 0o644); err != nil {
-		t.Fatalf("write base-only: %v", err)
-	}
-	testutil.RunGit(t, origin, "add", "base-only.txt")
-	testutil.RunGit(t, origin, "commit", "-m", "base moves on")
+	origin := moveOriginMainOn(t, clone)
+	rev := gitops.PRRevision{BaseRef: "main", BaseSHA: revParseIn(t, origin, "main"), HeadSHA: prSHAs[0]}
 	ctx, _ := reviewDiffConn(t)
-	opened, err := app.OpenPRDiff(ctx, ref, prRef(), "main", false)
+	opened, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false)
 	if err != nil {
 		t.Fatalf("OpenPRDiff: %v", err)
-	}
-	if opened.HeadSHA != prSHAs[0] {
-		t.Fatalf("HeadSHA = %q, want the fetched head %q", opened.HeadSHA, prSHAs[0])
 	}
 	patch, err := readOpenedReviewDiff(t, app, ctx, opened)
 	if err != nil {
@@ -278,6 +268,53 @@ func TestOpenPRDiffIsTheThreeDotDiffAtTheFetchedHead(t *testing.T) {
 	if strings.Contains(patch, "base moved on") {
 		t.Fatalf("PR diff includes the base's own later commit:\n%s", patch)
 	}
+}
+
+// A commit the clone lacks and cannot fetch fails the read with git's own
+// diagnosis rather than an exit code.
+func TestOpenPRDiffReportsWhyTheCommitsCouldNotBeFetched(t *testing.T) {
+	t.Parallel()
+	app := newReviewDiffTestApp(t)
+	ref, clone, prSHAs := prCloneFixture(t, app)
+	origin := moveOriginMainOn(t, clone)
+	rev := gitops.PRRevision{BaseRef: "main", BaseSHA: revParseIn(t, origin, "main"), HeadSHA: prSHAs[0]}
+	testutil.RunGit(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone"))
+	ctx, _ := reviewDiffConn(t)
+	_, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false)
+	if err == nil {
+		t.Fatal("OpenPRDiff succeeded without the base commit")
+	}
+	for _, want := range []string{"open PR diff: fetch pull request commits", "exited with code 128", "fatal:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+// moveOriginMainOn commits to the fixture origin's main after the clone
+// was made and returns the origin's path.
+func moveOriginMainOn(t *testing.T, clone string) string {
+	t.Helper()
+	origin, _, err := gitops.NewCore().Execute(clone, "remote", "get-url", "origin")
+	if err != nil {
+		t.Fatalf("origin url: %v", err)
+	}
+	origin = strings.TrimSpace(origin)
+	if err := os.WriteFile(filepath.Join(origin, "base-only.txt"), []byte("base moved on\n"), 0o644); err != nil {
+		t.Fatalf("write base-only: %v", err)
+	}
+	testutil.RunGit(t, origin, "add", "base-only.txt")
+	testutil.RunGit(t, origin, "commit", "-m", "base moves on")
+	return origin
+}
+
+func revParseIn(t *testing.T, repo, rev string) string {
+	t.Helper()
+	out, _, err := gitops.NewCore().Execute(repo, "rev-parse", rev)
+	if err != nil {
+		t.Fatalf("rev-parse %s: %v", rev, err)
+	}
+	return strings.TrimSpace(out)
 }
 
 // A handle is read under the scope its Open required, checked on every

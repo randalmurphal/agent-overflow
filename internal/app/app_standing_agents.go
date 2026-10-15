@@ -358,7 +358,7 @@ func standingAgentPromptText(row store.StandingAgent) string {
 func (a *App) reportStandingAgentHomeProblems(threadID string, problems []error) {
 	for _, problem := range problems {
 		log.Printf("standing agent %s: %v", threadID, problem)
-		if err := a.emitNoticeToThread(threadID, "One of this standing agent's home files could not be read for its session start: "+problem.Error()+"."); err != nil {
+		if err := a.emitNoticeToThread(threadID, noticeKindWarning, "One of this standing agent's home files could not be read for its session start: "+problem.Error()+"."); err != nil {
 			log.Printf("standing agent %s: %v", threadID, err)
 		}
 	}

@@ -4,9 +4,8 @@ import type { Item } from '../../types/models';
 import type { CompletionStatus } from '../../utils/toolCompletionStatus';
 import { PARKED_STOP_STATUS } from '../../utils/parkedStop';
 import {
-  completionEndedBySessionDeath,
+  agentEndedRowError,
   rowErrorForStatus,
-  SESSION_DIED_ROW_ERROR,
   type RowErrorData,
 } from './rowState';
 
@@ -17,11 +16,10 @@ export function subagentCardRowError(
   statusMeta: Record<string, unknown> | null,
 ): RowErrorData | null {
   if (completionStatus !== 'failure') return null;
-  // A sibling the session's death wrote: the agent was neither stopped by
-  // the user nor failed, so "stopped" would misreport what happened.
-  if (statusItem.status === 'killed' && completionEndedBySessionDeath(statusMeta)) {
-    return SESSION_DIED_ROW_ERROR;
-  }
+  // A sibling something other than the agent wrote (its session's death, a
+  // dropped wake): "stopped" or "failed" would misreport what happened.
+  const ended = agentEndedRowError(statusItem.status, statusMeta);
+  if (ended) return ended;
   return rowErrorForStatus(statusItem.status, 'Agent failed', 'Agent stopped') ?? {
     tone: 'error',
     msg: 'Agent failed',

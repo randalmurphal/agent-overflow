@@ -2086,7 +2086,8 @@ on a spent reject budget silently destroyed the gate's still-declared approve.
   `usageLimitExceeded`) plus the rate-limit windows the SAME session
   reported (Claude `rate_limit_event` `status: rejected` + `resetsAt`;
   Codex `account/rateLimits/updated`, Unix seconds on both, evidenced
-  against both CLIs' sources). A recognized pair skips the remaining
+  against both CLIs' sources). AO no longer reads Claude's
+  `rate_limit_event` at all: it names no account (`docs/decisions.md`). A recognized pair skips the remaining
   ladder and parks `retries-exhausted` immediately; a refusal missing
   either half falls through to the ordinary ladder unchanged. Along the
   way a real drop was fixed: AO's Claude parser discarded the rejected
@@ -2861,11 +2862,11 @@ each pinned by an incident-replay test:
   evaluate them (§4); only the automation condition that also used them is
   gone.
 
-  **Existing rows.** Migration v144 drops both tables and the partial index
+  **Existing rows.** Migration v145 drops both tables and the partial index
   `idx_work_items_automation_source_ref`, and rewrites every run an
   automation started as `source = 'manual'` with `source_ref` cleared,
   because the reference named a row that no longer exists; it logs how many
-  runs it mapped. v145 rebuilds `work_items` so its `source` CHECK admits
+  runs it mapped. v146 rebuilds `work_items` so its `source` CHECK admits
   only `manual`, `agent` and `call`. Keeping `automation` as a value nothing
   writes would leave the removed feature in the schema.
 

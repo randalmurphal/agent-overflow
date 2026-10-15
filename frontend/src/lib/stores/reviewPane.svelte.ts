@@ -5,6 +5,7 @@ import type { BackendKey } from '../transport/backendKey';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { threadHasScope } from '../transport/entityScopes';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import { untrack } from 'svelte';
 import {
   GetDiffContextLines,
   GetEditDiffContextLines,
@@ -104,6 +105,7 @@ import {
   prSourceKey,
   type PRRef,
 } from '../utils/prReference';
+import { prRevision, type PRRevision } from '../utils/prRevision';
 import {
   applyContextExpansion,
   expansionFetchRange,
@@ -545,7 +547,7 @@ function createReviewPaneState(
   // SHA would spend that window comparing the OLD PR's loaded head against
   // the NEW PR's live head — two unrelated OIDs, so the stale banner
   // flashed on a diff that had not even been requested yet.
-  let loadedPRHead = $state<{ key: string; sha: string } | null>(null);
+  let loadedPRHead = $state<{ key: string; revision: PRRevision } | null>(null);
   let refreshingPRData = $state(false);
   // This pane's reference on the shared PR entity — held exactly while the
   // pane is in pr scope. The subscription, poll pump and CI pipeline under
@@ -641,6 +643,9 @@ function createReviewPaneState(
   // it re-requests the diff. Per pane and deliberately not persisted —
   // a hidden `-w` restored at startup would silently understate a diff.
   let ignoreWhitespace = $state(false);
+  // The `-w` the files on screen were loaded with. A refresh that fails
+  // keeps those files, so the toggle goes back to describing them.
+  let shownIgnoreWhitespace = false;
   // Edits-scope files whose expansion attempt was refused (workspace
   // drifted from the historical diff): their gap rows retire for this
   // load. Cleared with the expansions on every reload.
@@ -777,9 +782,10 @@ function createReviewPaneState(
   // Everything anchored to the diff — the stale banner, span context,
   // draft commitSha, sent-marks — reads this rather than the raw stamp, so
   // none of them can quote a head that belongs to another pull request.
-  const loadedPRHeadSHA = $derived(
-    loadedPRHead !== null && loadedPRHead.key === prEntityKey ? loadedPRHead.sha : '',
+  const loadedPRRevision = $derived(
+    loadedPRHead !== null && loadedPRHead.key === prEntityKey ? loadedPRHead.revision : null,
   );
+  const loadedPRHeadSHA = $derived(loadedPRRevision?.headSHA ?? '');
   const prStale = $derived.by(() => {
     const live = prSnapshot?.headSHA ?? '';
     return live !== '' && loadedPRHeadSHA !== '' && live !== loadedPRHeadSHA;
@@ -956,6 +962,10 @@ function createReviewPaneState(
   // lookup is still pending (`openPrLookupPending`); either is "not yet",
   // not "no PR".
   let awaitingPRStatus = $state(false);
+  // The pr-scope load that failed, with the snapshot it ran against and
+  // that snapshot's head: the watcher below retries when a newer snapshot
+  // frame arrives.
+  let failedPRLoad = $state<{ snapshot: PRSnapshot; headSHA: string } | null>(null);
   const awaitingPR = $derived(awaitingPRDetail || awaitingPRStatus);
   function workspacePRLookupSettled(): boolean {
     const key = workspaceKeyForThread(getPane(sourcePaneId)?.thread ?? null);
@@ -977,8 +987,21 @@ function createReviewPaneState(
       void reload();
     });
     $effect(() => {
-      if (!awaitingPRDetail || !prSnapshot?.detail) return;
+      if (!awaitingPRDetail || !prRevision(prSnapshot?.detail, prSnapshot?.headSHA)) return;
       awaitingPRDetail = false;
+      void reload();
+    });
+    $effect(() => {
+      // A failed pr-scope load retries on the next frame the pump delivers:
+      // the backend has the pump emit its next successful poll after a
+      // failed read, so this is "once the forge answers again", not a
+      // timer. A diff still on screen of a PR whose head has since moved is
+      // the stale banner's to reload (it measures the head alone).
+      const failed = failedPRLoad;
+      const live = prSnapshot;
+      if (failed === null || live === null || live === failed.snapshot) return;
+      if (live.headSHA !== failed.headSHA && untrack(() => loadedFiles.length > 0)) return;
+      failedPRLoad = null;
       void reload();
     });
   });
@@ -1141,7 +1164,7 @@ function createReviewPaneState(
     const selectionOnly = opts?.selectionOnly === true
       && (scope === 'edits'
         ? edits.length > 0
-        : commits.length > 0 && (scope !== 'pr' || prAttachment !== null));
+        : commits.length > 0 && (scope !== 'pr' || (prAttachment !== null && loadedPRRevision !== null)));
     // The inline-diff affordance pins an edit for the NEXT load;
     // consumed here so a later manual reload doesn't re-pin it.
     const pinnedEditItemID = pendingEditItemID;
@@ -1150,12 +1173,17 @@ function createReviewPaneState(
     loadSeq = seq;
     loading = true;
     error = null;
+    failedPRLoad = null;
+    // Files on screen when the load starts belong to this subject (a new
+    // subject retires them first): a failed refresh leaves them up.
+    const keepsShownFiles = loadedFiles.length > 0;
+    const requestedIgnoreWhitespace = ignoreWhitespace;
+    // The diff is computed at the shared snapshot's revision, so the
+    // snapshot is awaited before the patch call. Attaching is what starts
+    // the poll pump — and re-attaching for a PR this pane already holds
+    // costs nothing.
+    let snapshot: PRSnapshot | null = null;
     try {
-      // The diff needs the PR detail's base ref, so the shared snapshot is
-      // awaited before the patch call. Attaching is what
-      // starts the poll pump — and re-attaching for a PR this pane already
-      // holds costs nothing.
-      let snapshot: PRSnapshot | null = null;
       // The PR this load COMMITS to, captured here and used for the rest of
       // it. `prRef` is reactive and the probe can re-resolve it under the
       // awaits below; re-reading it afterwards would let a diff fetched for
@@ -1170,9 +1198,10 @@ function createReviewPaneState(
         const hold = holdPR(loadingPRRef);
         snapshot = hold ? await hold.ready() : null;
         if (seq !== loadSeq || disposed) return;
-        if (hold && !snapshot?.detail) {
-          // Held, but the poller has nothing yet: its failure banner says
-          // why, and the watcher above reloads when the snapshot lands.
+        if (hold && !prRevision(snapshot?.detail, snapshot?.headSHA)) {
+          // Held, but the poller has no revision yet: its failure banner
+          // says why (or GitLab is still preparing the merge request's
+          // diff), and the watcher above reloads when one lands.
           awaitingPRDetail = true;
           return;
         }
@@ -1208,7 +1237,7 @@ function createReviewPaneState(
         // toggle on while the new source can't honor it, and passing it
         // anyway would make the button's state a lie.
         ignoreWhitespace && canIgnoreWhitespace,
-        selectionOnly ? { commits, edits, editTurnLabels } : undefined,
+        selectionOnly ? { commits, edits, editTurnLabels, prRevision: loadedPRRevision } : undefined,
       );
       if (seq !== loadSeq || disposed) {
         loaded.patch?.abandon();
@@ -1223,6 +1252,7 @@ function createReviewPaneState(
       showFiles(arrival, read.files);
       showRead(read.read);
       patchKey = read.patchKey;
+      shownIgnoreWhitespace = requestedIgnoreWhitespace;
       // Fresh defaults for the new patch, with the user's explicit
       // collapse/expand choices layered back on top.
       const nextCollapsed = new SvelteSet<string>();
@@ -1238,15 +1268,13 @@ function createReviewPaneState(
       // diff itself renders immediately (gaps just aren't expandable
       // yet).
       if (scope === 'edits') void verifyEditExpandability(seq);
-      if (scope === 'pr' && loadingPRKey && loadingPRRef) {
+      if (scope === 'pr' && loadingPRKey && loadingPRRef && loaded.prRevision) {
         // The anchor staleness is measured against: this diff describes
         // this head OF THIS PULL REQUEST, so the banner clears until the PR
         // moves again — for THIS pane, without touching what another pane
         // loaded, and without a switch to a different PR being compared
-        // against a head that was never its own. The backend reports the
-        // head it computed the diff at, which its fetch can move past the
-        // snapshot's.
-        loadedPRHead = { key: loadingPRKey, sha: read.headSha || (loaded.prHeadSHA ?? loadedPRHeadSHA) };
+        // against a head that was never its own.
+        loadedPRHead = { key: loadingPRKey, revision: loaded.prRevision };
       }
       // The files, patch key and selection are already updated above, so
       // the derived reflects this load — no need to re-derive by hand.
@@ -1274,6 +1302,18 @@ function createReviewPaneState(
       }
     } catch (err) {
       if (seq !== loadSeq || disposed) return;
+      error = userFacingError(err);
+      // Only a load that ran against a held snapshot: without one (no
+      // git:operate scope) there is no frame of its own to retry on.
+      if (scope === 'pr' && snapshot !== null) {
+        failedPRLoad = { snapshot, headSHA: snapshot.headSHA };
+      }
+      if (keepsShownFiles) {
+        // A failed refresh of the diff on screen changes nothing about it:
+        // its files, comment source and editors stay, under the error.
+        ignoreWhitespace = shownIgnoreWhitespace;
+        return;
+      }
       clearContextExpansions();
       loadedFiles = [];
       showRead(null);
@@ -1282,7 +1322,6 @@ function createReviewPaneState(
       draftBodies.clear();
       collapsedPaths = new SvelteSet<string>();
       if (threadId !== null) setActiveDiffReviewSource(threadId, null);
-      error = userFacingError(err);
     } finally {
       if (seq === loadSeq) loading = false;
     }
@@ -1326,9 +1365,9 @@ function createReviewPaneState(
   async function readPatch(
     seq: number,
     arrival: Arrival,
-  ): Promise<{ files: readonly ReviewFile[]; read: ReviewDiffRead | null; patchKey: string; headSha: string } | null> {
+  ): Promise<{ files: readonly ReviewFile[]; read: ReviewDiffRead | null; patchKey: string } | null> {
     const { patch, mergesPaths } = arrival.loaded;
-    if (patch === null) return { files: [], read: null, patchKey: '', headSha: '' };
+    if (patch === null) return { files: [], read: null, patchKey: '' };
     const merge = mergesPaths ? new EditFileMerge() : null;
     const view = (sections: readonly ReviewFile[]): readonly ReviewFile[] => merge?.files(sections) ?? sections;
     const cancelled = (): boolean => seq !== loadSeq || disposed;
@@ -1379,7 +1418,7 @@ function createReviewPaneState(
         return null;
       }
     }
-    return { files: view(read.parser.files), read, patchKey: read.parser.sourceKey(), headSha: read.headSha };
+    return { files: view(read.parser.files), read, patchKey: read.parser.sourceKey() };
   }
 
   if (!deferInitialLoad) void reload();
@@ -1859,6 +1898,10 @@ function createReviewPaneState(
     // has somewhere to land.
     if (!conversationOrder.includes(`t:${prThreadId}`)) captureConversationOrder(true);
     if (!conversationThreadExpanded(prThreadId)) conversationExpandOverrides.set(prThreadId, true);
+    // The jump decides where the section is scrolled. A remembered
+    // reading offset is restored a tick after the overview row remounts
+    // (ReviewResizableBody), which would land on top of the jump's scroll.
+    overviewScrollTops.delete('conversation');
     pendingConversationThreadId = prThreadId;
   }
 

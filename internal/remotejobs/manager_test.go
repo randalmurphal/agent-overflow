@@ -257,7 +257,7 @@ func TestAbandonedJobsStopAfterOwnerGraceWhilePolledJobsContinue(t *testing.T) {
 	t.Parallel()
 	o := logOptions(t, 1024)
 	o.OwnerGrace = 300 * time.Millisecond
-	m, _ := logManager(t, o, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
+	m, st := logManager(t, o, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
 		<-ctx.Done()
 		return Outcome{ExitCode: -1}, ctx.Err()
 	})
@@ -276,6 +276,23 @@ func TestAbandonedJobsStopAfterOwnerGraceWhilePolledJobsContinue(t *testing.T) {
 		}
 		if _, err := m.Get("other-owner", abandoned.ID); err == nil {
 			t.Fatal("another device's read counted as owner contact")
+		}
+		time.Sleep(o.OwnerGrace / 4)
+	}
+	// The stop is under way by now; its receipt lands once the run returns.
+	// Read the stored row, which is no owner contact, and keep polling the
+	// other job so it stays owned while this one settles.
+	settleBy := time.Now().Add(terminateGrace + drainGrace + 5*time.Second)
+	for {
+		row, err := st.GetRemoteJob(abandoned.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.State != "running" || time.Now().After(settleBy) {
+			break
+		}
+		if _, err := m.Get("owner", polled.ID); err != nil {
+			t.Fatal(err)
 		}
 		time.Sleep(o.OwnerGrace / 4)
 	}

@@ -157,6 +157,148 @@ assert_fails "$ROOT_DIR/scripts/install.sh" --linux --download --source "$bad_di
 echo "==> Insecure URL source fails"
 assert_fails "$ROOT_DIR/scripts/install.sh" --linux --download --source "http://127.0.0.1/release" --dry-run >/dev/null 2>&1
 
+# gitlab: sources read releases through glab. This stand-in serves releases
+# from $glab_releases/TAG/ and behaves like the real CLI where the installer
+# depends on it: `release download` needs an existing -D directory and exits 0
+# without writing anything when no asset has the name.
+glab_bin=$TMP_DIR/fake-glab-bin
+glab_releases=$TMP_DIR/glab-releases
+glab_log=$TMP_DIR/glab.log
+mkdir -p "$glab_bin"
+cat > "$glab_bin/glab" <<'EOF'
+#!/usr/bin/env sh
+printf '%s\n' "$*" >> "$AO_TEST_GLAB_LOG"
+case "${1:-} ${2:-}" in
+	"api --hostname")
+		[ "$3" = example.test ] || { echo "fake glab: unexpected host $3" >&2; exit 1; }
+		[ "$4" = "projects/group%2Fsub%2Fagent-overflow/releases/permalink/latest" ] || { echo "fake glab: unexpected path $4" >&2; exit 1; }
+		printf '{"name":"Agent Overflow","tag_name":"%s","description":"notes, \\"tag_name\\":\\"v9.9.9\\""}\n' "$AO_TEST_GLAB_LATEST"
+		exit 0
+		;;
+	"release download")
+		tag=$3
+		shift 3
+		while [ "$#" -gt 0 ]; do
+			case "$1" in
+				-R) repo=$2; shift 2 ;;
+				-n) name=$2; shift 2 ;;
+				-D) dir=$2; shift 2 ;;
+				*) echo "fake glab: unexpected argument $1" >&2; exit 1 ;;
+			esac
+		done
+		[ "$repo" = https://example.test/group/sub/agent-overflow ] || { echo "fake glab: unexpected repo $repo" >&2; exit 1; }
+		[ -d "$dir" ] || { echo "fake glab: open $dir/$name: no such file or directory" >&2; exit 1; }
+		if [ -f "$AO_TEST_GLAB_RELEASES/$tag/$name" ]; then
+			cp "$AO_TEST_GLAB_RELEASES/$tag/$name" "$dir/$name"
+		else
+			echo "no release assets found!"
+		fi
+		exit 0
+		;;
+esac
+echo "fake glab: unexpected command $*" >&2
+exit 1
+EOF
+chmod +x "$glab_bin/glab"
+for tag in v0.0.1 v0.0.2; do
+	mkdir -p "$glab_releases/$tag"
+	cp "$noremote_dir"/* "$glab_releases/$tag"/
+done
+mkdir -p "$glab_releases/v0.0.3" "$glab_releases/v0.0.4"
+cp "$noremote_dir/SHASUMS256" "$glab_releases/v0.0.3"/
+cp "$bad_noremote"/* "$glab_releases/v0.0.4"/
+gitlab_source=gitlab:example.test/group/sub/agent-overflow
+
+# run_gitlab_install runs the installer with the fake glab and a private
+# TMPDIR, and fails if the installer leaves anything in it.
+run_gitlab_install() {
+	gitlab_tmp=$TMP_DIR/gitlab-tmpdir
+	rm -rf "$gitlab_tmp" "$glab_log"
+	mkdir -p "$gitlab_tmp"
+	status=0
+	PATH="$glab_bin:$PATH" TMPDIR="$gitlab_tmp" \
+		AO_TEST_GLAB_LOG="$glab_log" AO_TEST_GLAB_RELEASES="$glab_releases" AO_TEST_GLAB_LATEST=v0.0.2 \
+		run_wsl_install "$@" || status=$?
+	if [ -n "$(ls -A "$gitlab_tmp")" ]; then
+		echo "ERROR: the installer left files behind:" >&2
+		ls -A "$gitlab_tmp" >&2
+		exit 1
+	fi
+	return "$status"
+}
+
+echo "==> WSL noremote from a GitLab project's latest release"
+gitlab_out=$(run_gitlab_install --wsl --noremote --source "$gitlab_source" --dry-run)
+printf '%s\n' "$gitlab_out" | grep -q 'agent-overflow-wsl-noremote-amd64.exe' || {
+	echo "ERROR: the gitlab: source did not install the noremote launcher" >&2
+	printf '%s\n' "$gitlab_out" >&2
+	exit 1
+}
+[ "$(grep -c '^api ' "$glab_log")" -eq 1 ] || { echo "ERROR: the latest release was not resolved exactly once" >&2; cat "$glab_log" >&2; exit 1; }
+[ "$(grep -c '^release download v0.0.2 ' "$glab_log")" -eq 2 ] || { echo "ERROR: the files did not both come from the latest release" >&2; cat "$glab_log" >&2; exit 1; }
+
+echo "==> WSL noremote from a GitLab release named by --version"
+run_gitlab_install --wsl --noremote --source "$gitlab_source" --version 0.0.1 --dry-run >/dev/null
+! grep -q '^api ' "$glab_log" || { echo "ERROR: --version still looked up the latest release" >&2; exit 1; }
+[ "$(grep -c '^release download v0.0.1 ' "$glab_log")" -eq 2 ] || { echo "ERROR: --version 0.0.1 did not download v0.0.1" >&2; cat "$glab_log" >&2; exit 1; }
+
+echo "==> WSL noremote with the installer piped from glab"
+gitlab_piped=$(PATH="$glab_bin:$PATH" AO_TEST_GLAB_LOG="$glab_log" AO_TEST_GLAB_RELEASES="$glab_releases" AO_TEST_GLAB_LATEST=v0.0.2 \
+	WSL_DISTRO_NAME=TestDistro \
+	AO_INSTALL_CMD_EXE="$fake_bin/cmd.exe" \
+	AO_INSTALL_APPDATA="C:\\Users\\Test\\AppData\\Roaming" \
+	AO_INSTALL_WSLPATH="$fake_bin/wslpath" \
+	sh -s -- --wsl --noremote --source "$gitlab_source" --dry-run < "$ROOT_DIR/scripts/install.sh")
+printf '%s\n' "$gitlab_piped" | grep -q 'agent-overflow-wsl-noremote-amd64.exe' || {
+	echo "ERROR: the piped installer did not install the noremote launcher" >&2
+	printf '%s\n' "$gitlab_piped" >&2
+	exit 1
+}
+
+# assert_gitlab_fails MESSAGE ARGS... runs a gitlab: install that must fail
+# with MESSAGE on stderr.
+assert_gitlab_fails() {
+	message=$1
+	shift
+	gitlab_err=$TMP_DIR/gitlab.err
+	if run_gitlab_install "$@" >/dev/null 2>"$gitlab_err"; then
+		echo "ERROR: expected the install to fail: $*" >&2
+		exit 1
+	fi
+	grep -q -- "$message" "$gitlab_err" || {
+		echo "ERROR: expected \"$message\" from: $*" >&2
+		cat "$gitlab_err" >&2
+		exit 1
+	}
+}
+
+echo "==> GitLab release without the launcher fails"
+assert_gitlab_fails 'has no file named agent-overflow-wsl-noremote-amd64.exe' --wsl --noremote --source "$gitlab_source" --version 0.0.3 --dry-run
+
+echo "==> GitLab release checksum mismatch fails"
+assert_gitlab_fails 'checksum mismatch' --wsl --noremote --source "$gitlab_source" --version 0.0.4 --dry-run
+
+echo "==> Malformed GitLab sources fail"
+assert_gitlab_fails 'needs HOST/GROUP/PROJECT' --wsl --noremote --source gitlab:example.test/agent-overflow --dry-run
+for bad_source in gitlab:example.test/group/../agent-overflow 'gitlab:example.test/group/agent overflow' gitlab:example.test//group/agent-overflow gitlab:example.test/group/agent-overflow/; do
+	assert_gitlab_fails 'unsafe GitLab project' --wsl --noremote --source "$bad_source" --dry-run
+done
+
+echo "==> gitlab: source without glab fails"
+no_glab_bin=$TMP_DIR/no-glab-bin
+mkdir -p "$no_glab_bin"
+for tool in sh dirname mktemp rm; do
+	ln -s "$(command -v "$tool")" "$no_glab_bin/$tool"
+done
+ln -s "$TMP_DIR/tools/uname" "$no_glab_bin/uname"
+no_glab_err=$TMP_DIR/no-glab.err
+if PATH="$no_glab_bin" WSL_DISTRO_NAME=TestDistro "$(command -v sh)" "$ROOT_DIR/scripts/install.sh" \
+	--wsl --noremote --source "$gitlab_source" --dry-run >/dev/null 2>"$no_glab_err"; then
+	echo "ERROR: a gitlab: source without glab succeeded" >&2
+	exit 1
+fi
+grep -q 'needs the GitLab CLI' "$no_glab_err" || { echo "ERROR: missing glab was not reported:" >&2; cat "$no_glab_err" >&2; exit 1; }
+
 [ ! -e "$network_marker" ] || {
 	echo "ERROR: the installer tried to download:" >&2
 	cat "$network_marker" >&2

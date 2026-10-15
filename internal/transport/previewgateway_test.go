@@ -346,7 +346,9 @@ func TestCloseEndsTheListenersAndTheGrants(t *testing.T) {
 		SessionLive: func(string) bool { return true },
 	})
 	gw.SetPorts(httpPorts(5173))
-	addr := previewAddr(t, gw, 5173)
+	gw.mu.Lock()
+	ln := gw.ports[5173].ln
+	gw.mu.Unlock()
 	gw.storeGrant("token", previewGrant{port: 5173, expiresAtNanos: time.Now().Add(time.Hour).UnixNano()})
 
 	gw.Close()
@@ -357,10 +359,7 @@ func TestCloseEndsTheListenersAndTheGrants(t *testing.T) {
 	if _, ok := gw.grant("token"); ok {
 		t.Fatal("a grant survived Close")
 	}
-	if conn, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
-		_ = conn.Close()
-		t.Fatal("the listener still accepts after Close")
-	}
+	requireListenerClosed(t, ln)
 	// And a second Close is a no-op rather than a panic.
 	gw.Close()
 }

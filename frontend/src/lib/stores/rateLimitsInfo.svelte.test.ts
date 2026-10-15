@@ -67,10 +67,10 @@ describe('rateLimitsInfo', () => {
     ).toEqual({ primary: null, limits: [] });
   });
 
-  // Claude wires emit ONE window per `rate_limit_event` (5h XOR 7d).
-  // The store must merge new windows alongside existing ones rather
-  // than replacing — otherwise toggling between 5h and 7d events
-  // alternately wipes the other window.
+  // A partial reading (Claude's header fallback, a Codex notification)
+  // can carry one window. The store must merge new windows alongside
+  // existing ones rather than replacing; otherwise alternating 5h and
+  // 7d readings wipe the other window.
   it('merges Claude single-window updates across separate calls', () => {
     setProviderRateLimits({
       provider: 'claude',
@@ -191,10 +191,11 @@ describe('rateLimitsInfo', () => {
 
   // The window-reset stale-event defense.
   //
-  // Around a window-reset boundary, multiple Claude sessions
-  // emit independently. A long-running session can keep emitting
-  // its pre-reset reading for several requests after a fresher
-  // session has observed the post-reset reading. Without a guard
+  // Around a window-reset boundary, multiple sessions (Codex
+  // app-servers) emit partial readings independently. A long-running
+  // session can keep emitting its pre-reset reading for several
+  // requests after a fresher session has observed the post-reset
+  // reading. Without a guard
   // these events overwrite each other and the ring visibly
   // oscillates between the old high percent and the new low one.
   //
@@ -393,6 +394,37 @@ describe('rateLimitsInfo', () => {
     expect(getProviderRateLimit('claude', 10080)?.usedPercent).toBe(0);
   });
 
+  // A whole-answer reading replaces a stored entry even when the stored
+  // boundary is later. A wrong later boundary (a reading filed under the
+  // wrong account) would otherwise reject every true reading until it
+  // passed, showing 28% while the server reported 100%. MergeSnapshot in
+  // internal/providerlifecycleapp is this rule's twin.
+  it('replaces a later stored boundary with a whole-answer reading', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'acct',
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 28, windowMins: 10080, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776284000,
+    });
+    const partial = {
+      provider: 'claude',
+      accountId: 'acct',
+      limits: [
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 100, windowMins: 10080, resetsAt: 1776855600 },
+      ],
+      updatedAt: 1776285000,
+    };
+    setProviderRateLimits(partial);
+    expect(getProviderRateLimit('claude', 10080, 'acct')?.usedPercent).toBe(28);
+
+    setProviderRateLimits({ ...partial, complete: true });
+    const limit = getProviderRateLimit('claude', 10080, 'acct');
+    expect(limit?.usedPercent).toBe(100);
+    expect(limit?.resetsAt).toBe(1776855600);
+  });
+
   // The same omission from a partial reading proves nothing: a wire event
   // carries one window and Claude's header fallback can never see a scoped
   // bucket, so both leave the rest of the store alone.
@@ -560,12 +592,12 @@ describe('rateLimitsInfo', () => {
   });
 
   // Reset-boundary expiry. The stored entry is never rewritten when its
-  // boundary passes: getters project it to 0% used at read time and keep
-  // the server-reported boundary. Fabricating a `old + window` boundary
-  // instead is what broke the 5h ring on 2026-08-07 — Claude re-anchors
-  // 5h windows, so the real next boundary landed 10 minutes EARLIER than
-  // the fabricated one and the stale-window guard rejected every real
-  // post-reset snapshot for the entire window.
+  // boundary passes: getters project it to 0% used with no reset time at
+  // read time, because the next window starts at the account's first
+  // request and its boundary is unknown until a reading reports it.
+  // Fabricating `old + window` broke the 5h ring on 2026-08-07: the real
+  // next boundary landed 10 minutes EARLIER than the fabricated one and
+  // the stale-window guard rejected every real post-reset snapshot.
   describe('reset boundary expiry', () => {
     // Real numbers from the incident: previous window closed 23:40:00Z,
     // the next window closed 04:30:00Z — 4h50m later, not 5h.
@@ -584,18 +616,28 @@ describe('rateLimitsInfo', () => {
       });
     });
 
-    it('shows 0% once the boundary passes, keeping the stored boundary', () => {
+    it('shows 0% with no reset time once the boundary passes', () => {
       vi.setSystemTime(new Date((OLD_BOUNDARY + 30) * 1000));
       const limit = getProviderRateLimit('claude', 300, 'acct');
       expect(limit?.usedPercent).toBe(0);
-      expect(limit?.resetsAt).toBe(OLD_BOUNDARY);
+      expect(limit?.resetsAt).toBe(0);
     });
 
     it('fires the expiry timer at the boundary without rewriting entries', () => {
       vi.advanceTimersByTime(3601 * 1000);
       const limit = getProviderRateLimit('claude', 300, 'acct');
       expect(limit?.usedPercent).toBe(0);
-      expect(limit?.resetsAt).toBe(OLD_BOUNDARY);
+      expect(limit?.resetsAt).toBe(0);
+      // The stored boundary still guards against a stale pre-reset reading.
+      setProviderRateLimits({
+        provider: 'claude',
+        accountId: 'acct',
+        limits: [
+          { limitId: 'session', limitName: 'Current session', usedPercent: 90, windowMins: 300, resetsAt: OLD_BOUNDARY - 3 * 3600 },
+        ],
+        updatedAt: (OLD_BOUNDARY + 1) * 1000,
+      });
+      expect(getProviderRateLimit('claude', 300, 'acct')?.usedPercent).toBe(0);
     });
 
     it('accepts the re-anchored next window whose boundary lands earlier than old + window', () => {
@@ -639,7 +681,7 @@ describe('rateLimitsInfo', () => {
       vi.setSystemTime(new Date((weeklyBoundary + 30) * 1000));
       const limit = getProviderRateLimit('claude', 10080, 'acct');
       expect(limit?.usedPercent).toBe(0);
-      expect(limit?.resetsAt).toBe(weeklyBoundary);
+      expect(limit?.resetsAt).toBe(0);
     });
 
     it('shows 0% for a snapshot hydrated with an already-passed boundary', () => {

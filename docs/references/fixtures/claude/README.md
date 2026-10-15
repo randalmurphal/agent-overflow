@@ -74,6 +74,81 @@ behavior. These back parser replay tests and the reference docs in
 
   Both: `system/init` and `rate_limit_event` dropped; host paths
   synthetic; every other line byte-identical to the capture.
+- `local_agent_dropped_wake_20261014.ndjson`: a background agent on
+  2.1.284 with `--session-mirror`, parked on its own backgrounded Bash
+  in an `isolation:"worktree"` worktree that is removed while it is
+  parked. The shell's terminal arrives and the agent never wakes: the
+  main file's mirror enqueues the wake and removes it with
+  `reason:"agent_stopped"` (claude-wire.md §E6b, dropped wake). The last
+  line is the bare `success` ack of a later `stop_task` naming the
+  agent. Backs `TestReplayDroppedAgentWake`.
+- `local_agent_mirror_wake_20261014.ndjson`: the same run with the
+  worktree kept. The wake is removed with `reason:"delivered_to_agent"`
+  and the agent runs again. Backs
+  `TestReplayMirroredDeliveredWakeIsNoDrop`.
+
+  Both: `system/init`, `rate_limit_event` and subagent mirror batches
+  dropped; main-file mirror batches keep only their `queue-operation`
+  entries; assistant text cut to its first 40 characters; host paths
+  synthetic.
+- Forked skills on 2.1.284 (claude-wire.md §E9), live haiku probes of a
+  throwaway `context: fork` skill driven by the Skill tool unless noted:
+  - `forked_skill_task_started_20261014.ndjson`: the fork's
+    `task_started` bound to the Skill call, a depth-2 awaited Agent, the
+    fork's lone `task_notification`, the forked result. No mirror. Backs
+    `TestReplay_ForkedSkillTaskStartedIsALaunch` and triage's
+    `TestForkedSkillTaskSettlesTheSkillRow`.
+  - `forked_skill_background_children_20261014.ndjson`: the fork starts a
+    background Bash and an async Agent and returns; the shell is killed
+    at its stop, the Agent outlives it and wakes the main agent. Backs
+    `TestForkedSkillBackgroundChildrenOutliveTheFork`.
+  - `forked_skill_stop_task_20261014.ndjson` /
+    `forked_skill_interrupt_20261014.ndjson`: a running fork stopped by
+    `stop_task` and by `interrupt` (the control requests themselves are
+    not in the files). Back `TestForkedSkillTaskSettlesTheSkillRow` and
+    the mock's awaited-agent stop frames.
+  - `forked_skill_background_refused_20261014.ndjson`: `background_tasks`
+    on a running fork answers `{backgrounded:false}`.
+  - `forked_skill_direct_command_20261014.ndjson`: `/probe-fork` typed
+    as the user message: `task_started` with no `tool_use_id`, the fork's
+    Agent announced, and its metadata mirrored, before the mirror
+    delivers its tool_use, and each agent's last message mirrored after
+    its terminal. Backs `TestReplay_ForkedSkillDirectCommandTaskAndChild`,
+    `TestReplay_TypedForkWithoutATaskNamesNoTask`,
+    `TestReplay_TypedForkChildAgentProjects` and
+    `TestReplay_TypedForkChildRowsBeforeItsLaunch`.
+  - `forked_skill_direct_command_stop_task_20261014.ndjson` /
+    `forked_skill_direct_command_interrupt_20261014.ndjson`: a typed
+    `/slow-fork` stopped after its first tool call; the kill frames name
+    no tool_use, nothing answers a launch, and the turn's result is
+    `success`. Back `TestReplay_TypedForkSettlesByItsTaskTerminal`.
+  - `forked_skill_in_agent_20261014.ndjson`: an awaited Agent calls the
+    Skill tool; the fork ends with its notification alone and its
+    result on the agent's sidechain has no `tool_use_result`. Backs
+    `TestForkedSkillInAnAgentSettlesInPlace`.
+- `local_agent_backgrounded_midrun_20261014.ndjson`: an awaited Agent
+  moved to the background with `background_tasks` mid-run, then the
+  session mirror carries its rows; its background shell is killed at
+  its stop and nothing wakes it. Backs `TestBackgroundedAgentKeepsItsLabel`.
+- `local_agent_foreground_stop_task_20261014.ndjson` /
+  `local_agent_foreground_interrupt_20261014.ndjson`: `stop_task` and
+  `interrupt` on a running awaited Agent that owns a background shell.
+  `stop_task` kills the shell after the ack; `interrupt` kills it, then
+  the agent. Back `TestAwaitedAgentStopKillsItsShell` and the mock's
+  awaited-agent stop frames.
+- `local_agent_resumed_by_typed_fork_20261014.ndjson`: turn 1 runs an
+  awaited Agent; turn 2 types `/resume-fork <agentId>`, whose fork
+  resumes that agent with a `SendMessage` the mirror delivers after the
+  rebind `task_started`; the resumed agent then resumes the finished
+  fork from stdout, and the resumed fork's rows reach only the mirror,
+  under metadata naming no tool_use. Backs the
+  `task_resume_mirror_test.go` replays, including the turn-2 and turn-3
+  starts that stand in for a restarted process.
+
+  All of these: `system/init` and `rate_limit_event` dropped, mirror
+  `attachment` entries dropped (account and environment context), host
+  paths synthetic, string values longer than 320 characters truncated
+  with a `…[trimmed for fixture]` marker.
 - `send_message_ack_20260904.ndjson`: two `SendMessage` round-trips on
   2.1.257, a refusal (`to: "A"`, no such agent) and a queued send to a
   live agent by id. Proves the `tool_result` block is `is_error:false`

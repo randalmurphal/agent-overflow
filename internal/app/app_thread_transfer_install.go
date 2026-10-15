@@ -255,9 +255,9 @@ func (installer appTransferInstaller) Install(ctx context.Context, row store.Thr
 }
 
 // transferredThreadMode is the mode a received conversation installs with. A
-// peer from before migration v142 still sends a former discussion thread's
+// peer from before migration v143 still sends a former discussion thread's
 // 'discussion' mode, and a recipe prepared before that update still holds
-// it; v142 made those threads ordinary chats.
+// it; v143 made those threads ordinary chats.
 func transferredThreadMode(mode string) string {
 	if mode == "discussion" {
 		return threadmode.ModeChat
@@ -427,7 +427,7 @@ func validateTransferredHistory(ctx context.Context, stage string, target store.
 			log.Printf("app: remove transfer validation directory %s: %v", directory, err)
 		}
 	}()
-	db, err := store.NewFromTemplate(ctx, filepath.Join(directory, "history.db"))
+	db, err := store.NewScratchFromTemplate(ctx, filepath.Join(directory, "history.db"))
 	if err != nil {
 		return err
 	}

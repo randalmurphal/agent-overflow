@@ -8,16 +8,20 @@ states its own coverage; do not maintain a duplicate spec catalog here.
 ## Shared infrastructure
 
 - `src/harness.ts` owns backend launch and the TypeScript harness wire client.
+  A failed test carries each backend's last 200 stderr lines as a
+  `backend <pid> stderr` attachment; the trace holds the full text.
   Each backend's dev-server scan is scoped to the launching worker's process
   tree and its own, so a fake dev server must listen in the worker or a
   descendant of it. Every launch passes `HARNESS_TIMING`
   (`diagenv.HarnessTiming`), which shortens product cadences a spec should
   not wait out (pairing probe, thread poll, transfer retry, PR update retry,
   PR CI live, follow and log wait polls); a spec that needs another value,
-  the PR update poll cadence (`pr-update`), a shortened idle-session
-  reaper (`idle-reap`, `idle-reap-sweep`, `wakeup-grace`), a longer
-  remote-job watcher cadence (`remote-watch-poll`) or a shorter provider
-  event drain stall bound (`drain-stall`), passes its own through `env`.
+  the PR update poll cadence (`pr-update`), the merged-PR cleanup poll
+  (`merged-pr-poll`), the first retry of a failed open-PR lookup
+  (`pr-lookup-retry`), a shortened idle-session reaper (`idle-reap`,
+  `idle-reap-sweep`, `wakeup-grace`), a longer remote-job watcher cadence
+  (`remote-watch-poll`) or a shorter provider event drain stall bound
+  (`drain-stall`), passes its own through `env`.
 - `src/product-process.ts` starts every product binary (`bin/agent-overflow`
   and the `bin/ao-*` tools): `productBinary`, `spawnProduct`, `execProduct`,
   and `writeProductScript` for a launch a product process makes, such as a

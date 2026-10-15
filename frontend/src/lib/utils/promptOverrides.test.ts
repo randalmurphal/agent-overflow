@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  agentPromptInstructions,
   CLAUDE_TODO_TOOL_GROUP,
   CLAUDE_TOOL_SUGGESTIONS,
   CODEX_TOOL_TOGGLES,
@@ -9,11 +10,11 @@ import {
   entryInertness,
   exposedTodoTools,
   isTodoGroupTool,
-  insertAtSelection,
   MAX_DISABLED_TOOL_BYTES,
   newPromptOverride,
   placeholdersFor,
   PROMPT_PLACEHOLDERS,
+  promptFilesDir,
   promptOverridesFor,
   promptOverridesSettingsKey,
   shadowedModels,
@@ -30,13 +31,13 @@ import {
 import { makeSettings } from '../../test/helpers/settings';
 import type { PromptOverride } from '../types/settings';
 
-// The default prompt is deliberately NON-blank: Match skips a blank one, so
-// an entry with an empty prompt is inert and a fixture built on it would be
-// asking a different question than the one under test.
+// The default entry has text in its file (`blank` unset): Match skips a
+// blank one, so a fixture built on it would be asking a different question
+// than the one under test.
 const ENTRY = (over: Partial<PromptOverride> = {}): PromptOverride => ({
+  id: '',
   enabled: true,
   models: [],
-  prompt: 'p',
   ...over,
 });
 
@@ -64,7 +65,7 @@ describe('promptOverrides settings routing', () => {
   });
 
   it('reads the configured lists', () => {
-    const entry = ENTRY({ models: ['claude-fable-5'], prompt: 'hi' });
+    const entry = ENTRY({ id: 'a', models: ['claude-fable-5'] });
     const settings = makeSettings({
       claudePromptOverrides: [entry],
       codexDisabledTools: ['web_search'],
@@ -78,7 +79,7 @@ describe('promptOverrides settings routing', () => {
 
 describe('prompt override list edits', () => {
   it('adds a disabled empty entry without touching the others', () => {
-    const list = [ENTRY({ prompt: 'first' })];
+    const list = [ENTRY({ id: 'first' })];
     const next = withEntryAdded(list);
     expect(next).toHaveLength(2);
     expect(next[0]).toEqual(list[0]);
@@ -87,20 +88,20 @@ describe('prompt override list edits', () => {
   });
 
   it('patches one entry and leaves the array immutable', () => {
-    const list = [ENTRY({ prompt: 'a' }), ENTRY({ prompt: 'b' })];
+    const list = [ENTRY({ id: 'a' }), ENTRY({ id: 'b' })];
     const next = withEntryPatch(list, 1, { enabled: false });
-    expect(next[1]).toEqual({ enabled: false, models: [], prompt: 'b' });
+    expect(next[1]).toEqual({ id: 'b', enabled: false, models: [] });
     expect(list[1].enabled).toBe(true);
   });
 
   it('ignores a patch for an index that does not exist', () => {
-    const list = [ENTRY({ prompt: 'a' })];
-    expect(withEntryPatch(list, 4, { prompt: 'x' })).toEqual(list);
-    expect(withEntryPatch(list, -1, { prompt: 'x' })).toEqual(list);
+    const list = [ENTRY({ id: 'a' })];
+    expect(withEntryPatch(list, 4, { enabled: false })).toEqual(list);
+    expect(withEntryPatch(list, -1, { enabled: false })).toEqual(list);
   });
 
   it('removes by index', () => {
-    const list = [ENTRY({ prompt: 'a' }), ENTRY({ prompt: 'b' })];
+    const list = [ENTRY({ id: 'a' }), ENTRY({ id: 'b' })];
     expect(withEntryRemoved(list, 0)).toEqual([list[1]]);
   });
 
@@ -132,19 +133,8 @@ describe('shadowedModels', () => {
     expect(shadowedModels(list, 2)).toEqual([]);
   });
 
-  it('ignores an earlier entry whose prompt is blank, as Match does', () => {
-    const list = [
-      ENTRY({ models: ['m'], prompt: '' }),
-      ENTRY({ models: ['m'], prompt: 'x' }),
-    ];
-    expect(shadowedModels(list, 1)).toEqual([]);
-  });
-
-  it('treats a whitespace-only earlier prompt as blank', () => {
-    const list = [
-      ENTRY({ models: ['m'], prompt: '  \n ' }),
-      ENTRY({ models: ['m'], prompt: 'x' }),
-    ];
+  it('ignores an earlier entry whose file is blank, as Match does', () => {
+    const list = [ENTRY({ models: ['m'], blank: true }), ENTRY({ models: ['m'] })];
     expect(shadowedModels(list, 1)).toEqual([]);
   });
 });
@@ -153,35 +143,35 @@ describe('entryInertness', () => {
   it('reports an enabled entry with no models', () => {
     expect(entryInertness(ENTRY({ models: [] }))).toEqual({
       noModels: true,
-      noPrompt: false,
+      blankFile: false,
     });
   });
 
-  it('reports an enabled entry whose prompt is blank after trimming', () => {
-    expect(entryInertness(ENTRY({ models: ['m'], prompt: '   ' }))).toEqual({
+  it('reports an enabled entry whose file is blank', () => {
+    expect(entryInertness(ENTRY({ models: ['m'], blank: true }))).toEqual({
       noModels: false,
-      noPrompt: true,
+      blankFile: true,
     });
   });
 
   it('reports both causes independently', () => {
-    expect(entryInertness(ENTRY({ models: [], prompt: '' }))).toEqual({
+    expect(entryInertness(ENTRY({ models: [], blank: true }))).toEqual({
       noModels: true,
-      noPrompt: true,
+      blankFile: true,
     });
   });
 
   it('stays silent about a disabled entry, however empty', () => {
-    expect(entryInertness(ENTRY({ enabled: false, models: [], prompt: '' }))).toEqual({
+    expect(entryInertness(ENTRY({ enabled: false, models: [], blank: true }))).toEqual({
       noModels: false,
-      noPrompt: false,
+      blankFile: false,
     });
   });
 
   it('says nothing about a usable entry', () => {
-    expect(entryInertness(ENTRY({ models: ['m'], prompt: 'x' }))).toEqual({
+    expect(entryInertness(ENTRY({ models: ['m'] }))).toEqual({
       noModels: false,
-      noPrompt: false,
+      blankFile: false,
     });
   });
 });
@@ -291,23 +281,29 @@ describe('placeholders', () => {
     expect(claude).toHaveLength(PROMPT_PLACEHOLDERS.length);
   });
 
-  it('inserts at the caret and reports where the caret lands', () => {
-    expect(insertAtSelection('AB', 1, 1, '{{X}}')).toEqual({
-      text: 'A{{X}}B',
-      caret: 6,
-    });
+});
+
+describe('agent instructions', () => {
+  it('names the folder, the README and every saved file', () => {
+    const text = agentPromptInstructions([
+      '/home/u/.config/agent-overflow/prompts/a.md',
+      '/home/u/.config/agent-overflow/prompts/b.md',
+    ]);
+    expect(text).toContain('live in /home/u/.config/agent-overflow/prompts.');
+    expect(text).toContain('/home/u/.config/agent-overflow/prompts/README.md');
+    expect(text).toContain('- /home/u/.config/agent-overflow/prompts/a.md');
+    expect(text).toContain('- /home/u/.config/agent-overflow/prompts/b.md');
+    expect(text).toContain('session next starts');
   });
 
-  it('replaces a selection', () => {
-    expect(insertAtSelection('hello world', 0, 5, '{{X}}')).toEqual({
-      text: '{{X}} world',
-      caret: 5,
-    });
+  it('keeps a Windows path on its own separator', () => {
+    const text = agentPromptInstructions(['C:\\Users\\u\\AppData\\agent-overflow\\prompts\\a.md']);
+    expect(text).toContain('C:\\Users\\u\\AppData\\agent-overflow\\prompts\\README.md');
+    expect(promptFilesDir('C:\\x\\prompts\\a.md')).toBe('C:\\x\\prompts');
   });
 
-  it('clamps offsets outside the text', () => {
-    expect(insertAtSelection('ab', 9, 9, 'X')).toEqual({ text: 'abX', caret: 3 });
-    expect(insertAtSelection('ab', -3, 1, 'X')).toEqual({ text: 'Xb', caret: 1 });
+  it('is empty with nothing saved', () => {
+    expect(agentPromptInstructions([])).toBe('');
   });
 });
 

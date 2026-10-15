@@ -19,7 +19,7 @@
         label="Fetch remotes in the background"
         hint={settings.backgroundGitFetch
           ? 'Runs `git fetch origin` for each project every few minutes so ahead/behind counts stay accurate. Never prunes, and never asks for credentials — a remote that needs them is skipped.'
-          : 'Ahead/behind counts will only update when you fetch, pull, or sync a branch yourself.'}
+          : 'Ahead/behind counts will only update when you fetch, pull, or sync a branch yourself. Merged PRs are only noticed for threads you have open.'}
       >
         <ToggleSwitch
           checked={settings.backgroundGitFetch}

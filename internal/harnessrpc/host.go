@@ -65,6 +65,9 @@ type Host interface {
 	RecoverOrphanedBackgroundTasks() error
 	ClearUIState() error
 	ResetSessionImporter()
+	// PauseMergedPRCleanup stops the merged pull request cleanup, joins it
+	// and drops its in-memory state; resume starts it again from nothing.
+	PauseMergedPRCleanup() (resume func())
 	// DropRetainedEvents empties the event bus replay rings so nothing
 	// emitted before a reset is replayable by the next test's page.
 	DropRetainedEvents()
@@ -73,7 +76,11 @@ type Host interface {
 	ResolveProjectWorkflow(projectID, workflowID string) error
 	StartWorkflowRun(projectID, workflowID, goal string, seeds json.RawMessage, stepMode bool) (store.WorkItem, error)
 	SubscribeEvents() (*transport.Subscriber, error)
-	SetWorkflowGlobalPause(paused bool) error
+	// HoldWorkflowStarts pauses the workflow engine in memory only, for the
+	// span of a reset. ReleaseWorkflowStarts unpauses it and clears a pause
+	// a spec persisted; the settings file is written only in that case.
+	HoldWorkflowStarts() error
+	ReleaseWorkflowStarts() error
 	CancelWorkflowItem(context.Context, string) error
 	SyncWorkflowEngine() error
 	PublishStoreIdentity(store.Identity)

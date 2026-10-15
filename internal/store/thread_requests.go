@@ -142,7 +142,7 @@ type ThreadRequest struct {
 	// AnswerAgent is set when the thread that answered is a standing agent,
 	// as recorded with the answer; nil for any other thread.
 	AnswerAgent *ThreadAnswerAgent `json:"-"`
-	// AnswerAgentUnrecorded is true on a row written before v149, which
+	// AnswerAgentUnrecorded is true on a row written before v150, which
 	// recorded nothing about the thread that answered.
 	AnswerAgentUnrecorded bool `json:"-"`
 }

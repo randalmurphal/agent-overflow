@@ -107,26 +107,38 @@ type Parser struct {
 	// taskToolUses correlates Claude background task lifecycle messages
 	// (task_started/task_updated/TaskOutput) back to the originating
 	// tool_use id and parent so we can target and group the right
-	// timeline row.
-	taskToolUses map[string]taskToolUseRef
-	// agentLaunchToolUses flags tool_use IDs whose block.Name is
-	// Claude's subagent-launching tool (see isAgentLaunchToolName in
-	// parse_assistant.go — "Agent" on current CLIs, "Task" on older
-	// builds; task_type:"local_agent" on system/task_started is a
-	// conceptual classification, not a tool name). system/task_started's resume
-	// detection (parse_system.go) uses this to recognize a task_id
-	// rebind to a NON-launch tool_use — the harness's resume call (e.g.
-	// SendMessage) — even when taskToolUses has no prior binding for
-	// the task_id at all (a parser restart mid-life lost it). See
-	// claude-wire.md §E6 and local_agent_async_resume.ndjson.
+	// timeline row. Two generations bound it: a task's binding outlives
+	// the next parserTaskMapCap tasks, whatever their kind.
+	taskToolUses recentMap[taskToolUseRef]
+	// toolUseNames records the tool name of every observed tool_use,
+	// forwarded on stdout or projected from the session mirror. Two
+	// readers need it. system/task_started's resume detection
+	// (parse_system.go) recognizes a task_id rebind to a NON-launch
+	// tool_use, the harness's resume call (e.g. SendMessage), even when
+	// taskToolUses has no binding for the task_id (an earlier process
+	// launched the agent); a call not observed yet is classified when it
+	// is (unclassifiedTaskCalls). The §E5b sidechain ack gate
+	// (parse_user.go) asks whether a call was an Agent launch.
 	//
-	// Unlike backgroundToolUses this is NOT one-shot: a resume can
-	// arrive minutes or hours after the launch (the captured fixture
-	// has a ~20min gap), so entries are never explicitly released —
-	// only bounded by parserTaskMapCap with wholesale reset on
-	// overflow, matching the other session-lifetime correlation maps
-	// (taskToolUses, toolUseParents).
-	agentLaunchToolUses map[string]bool
+	// Every reader asks about a call within a few envelopes of its
+	// tool_use, so entries are never explicitly released. The two
+	// generations keep at least the last parserTaskMapCap calls, so a
+	// rotation can never drop the call a reader is about to ask about.
+	toolUseNames recentMap[string]
+	// unclassifiedTaskCalls holds, per tool_use id, the local_agent
+	// task_started that bound a task with no binding to a call not
+	// observed yet. Only the session mirror delivers a call after its
+	// task_started (a typed fork's tool calls, claude-wire.md §E9), and
+	// only the call's name tells a launch from a §E6 resume, so the
+	// classification waits for the mirror to project the call
+	// (observeProjectedToolCalls). Released then; two generations bound
+	// a call the mirror never delivers.
+	unclassifiedTaskCalls recentMap[agentTaskStart]
+	// agentLaunchLookup resolves a local_agent task to its original launch
+	// tool_use from the thread's persisted history, for a resume whose
+	// launch this parser never saw. Nil on a bare Parser. Set by
+	// NewSession from Config.AgentLaunchByTask.
+	agentLaunchLookup func(taskID string) (string, bool, error)
 	// taskTranscriptRoots records, per local_agent task_id, the tool_use
 	// id that is that agent's TRANSCRIPT ROOT: the FIRST tool_use the
 	// task bound to, which is the original `Agent` launch. A §E6 resume
@@ -138,11 +150,9 @@ type Parser struct {
 	// parser's memory of where it lives, and it is deliberately
 	// write-once per task_id: a rebind must never overwrite it.
 	//
-	// Bounded by parserTaskMapCap with wholesale reset, like
-	// taskToolUses and agentLaunchToolUses; an entry lost that way
-	// degrades to triage's persisted-meta fallbacks
-	// (resumes_tool_use_id, then items.meta.task_id).
-	taskTranscriptRoots map[string]string
+	// Two generations bound it like taskToolUses. A resume whose root is
+	// not here asks agentLaunchLookup (resolveTaskTranscriptRoot).
+	taskTranscriptRoots recentMap[string]
 	// liveAgentTaskToolUses holds every tool_use id whose local_agent
 	// task is LIVE: `system/task_started` with task_type "local_agent"
 	// arrived and no terminal `task_updated` has resolved it yet. This
@@ -447,9 +457,10 @@ func (p *Parser) Close() {
 	p.advisorToolUses = nil
 	p.advisorMessages = nil
 	p.toolUseParents = nil
-	p.taskToolUses = nil
-	p.agentLaunchToolUses = nil
-	p.taskTranscriptRoots = nil
+	p.taskToolUses = recentMap[taskToolUseRef]{}
+	p.toolUseNames = recentMap[string]{}
+	p.unclassifiedTaskCalls = recentMap[agentTaskStart]{}
+	p.taskTranscriptRoots = recentMap[string]{}
 	p.liveAgentTaskToolUses = nil
 	p.ownedBackgroundTasks = nil
 	p.subagentModelStamped = nil
@@ -575,7 +586,13 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		// A heartbeat proves process activity, not a new tool or turn.
 		return toolProgressActivity(threadID, now), nil
 	case "rate_limit_event":
-		return parseRateLimitEvent(threadID, raw, now)
+		// Not a quota source. The event cannot say which account it reports:
+		// a response to a request sent before an account switch lands after
+		// it, so attributing it to the session's current account files one
+		// account's usage under another. The meters read /api/oauth/usage
+		// (ratelimits_probe.go); a refused turn is typed by the assistant
+		// envelope's error enum, not by this event.
+		return nil, nil
 	case "command_lifecycle":
 		// Delivery ack for a user message we wrote to stdin, keyed by the
 		// uuid we minted. Send-to-row correlation lives in triage (the
@@ -791,13 +808,14 @@ func (p *Parser) clearAdvisor(toolUseID string) {
 }
 
 // parserTaskMapCap bounds parser correlation maps such as
-// taskToolUses, toolUseParents, todoWriteToolUses, and
-// pendingTaskMutations so abandoned entries cannot grow the parser's
-// per-session state without bound. When the cap is hit the map is
-// replaced wholesale, which may lose a late-arriving lookup for an
-// ancient task; that is benign because the corresponding store row is
-// already terminal, and the cap is well above any realistic in-flight
-// task fan-out.
+// toolUseParents, todoWriteToolUses, and pendingTaskMutations so
+// abandoned entries cannot grow the parser's per-session state without
+// bound. When the cap is hit the map is replaced wholesale, which may
+// lose a late-arriving lookup for an ancient call; that is benign because
+// the corresponding store row is already terminal, and the cap is well
+// above any realistic in-flight fan-out. Task bindings, which a resume or
+// a parked agent's wake reads long after the launch, rotate through two
+// generations instead (recentMap).
 const parserTaskMapCap = 1024
 
 // parserStreamBlockCap bounds streamBlockTypes for the same reason —
@@ -823,10 +841,12 @@ func (p *Parser) rememberToolUseParent(toolUseID, parentToolUseID string) {
 		p.toolUseParents = make(map[string]string)
 	}
 	p.toolUseParents[toolUseID] = parentToolUseID
-	for taskID, ref := range p.taskToolUses {
-		if ref.ToolUseID == toolUseID && ref.ParentToolUseID == "" {
-			ref.ParentToolUseID = parentToolUseID
-			p.taskToolUses[taskID] = ref
+	for _, generation := range []map[string]taskToolUseRef{p.taskToolUses.current, p.taskToolUses.previous} {
+		for taskID, ref := range generation {
+			if ref.ToolUseID == toolUseID && ref.ParentToolUseID == "" {
+				ref.ParentToolUseID = parentToolUseID
+				generation[taskID] = ref
+			}
 		}
 	}
 }
@@ -842,23 +862,18 @@ func (p *Parser) rememberTaskToolUse(taskID, toolUseID string) {
 	if p == nil || taskID == "" || toolUseID == "" {
 		return
 	}
-	if p.taskToolUses == nil {
-		p.taskToolUses = make(map[string]taskToolUseRef)
-	}
-	if len(p.taskToolUses) >= parserTaskMapCap {
-		p.taskToolUses = make(map[string]taskToolUseRef)
-	}
-	p.taskToolUses[taskID] = taskToolUseRef{
+	p.taskToolUses.set(taskID, taskToolUseRef{
 		ToolUseID:       toolUseID,
 		ParentToolUseID: p.toolUseParent(toolUseID),
-	}
+	})
 }
 
 func (p *Parser) taskToolUseRef(taskID string) taskToolUseRef {
-	if p == nil || taskID == "" || p.taskToolUses == nil {
+	if p == nil || taskID == "" {
 		return taskToolUseRef{}
 	}
-	return p.taskToolUses[taskID]
+	ref, _ := p.taskToolUses.get(taskID)
+	return ref
 }
 
 // markLiveAgentTask records that toolUseID's local_agent task is live
@@ -928,29 +943,95 @@ func (p *Parser) hasLiveAgentTask(toolUseID string) bool {
 	return p.liveAgentTaskToolUses[toolUseID]
 }
 
-// markAgentLaunchTool records that toolUseID's tool_use block was
-// Claude's subagent-launching tool. See the agentLaunchToolUses field
-// doc for why this map exists and why it is never explicitly released.
-func (p *Parser) markAgentLaunchTool(toolUseID string) {
-	if p == nil || toolUseID == "" {
+// recentMap is a map bounded across two generations. When the current
+// generation fills it becomes the previous one, so a lookup always finds
+// the last parserTaskMapCap keys written.
+type recentMap[V any] struct {
+	current  map[string]V
+	previous map[string]V
+}
+
+func (r *recentMap[V]) set(key string, value V) {
+	if r.current == nil {
+		r.current = make(map[string]V)
+	}
+	if _, ok := r.current[key]; !ok && len(r.current) >= parserTaskMapCap {
+		r.previous = r.current
+		r.current = make(map[string]V)
+	}
+	// A key written again lives in the current generation only, so a
+	// later rotation cannot resurrect its older value.
+	delete(r.previous, key)
+	r.current[key] = value
+}
+
+func (r *recentMap[V]) get(key string) (V, bool) {
+	if value, ok := r.current[key]; ok {
+		return value, true
+	}
+	value, ok := r.previous[key]
+	return value, ok
+}
+
+func (r *recentMap[V]) delete(key string) {
+	delete(r.current, key)
+	delete(r.previous, key)
+}
+
+func (r *recentMap[V]) len() int {
+	return len(r.current) + len(r.previous)
+}
+
+// rememberToolUseName records the tool name of an observed tool_use. See
+// the toolUseNames field doc.
+func (p *Parser) rememberToolUseName(toolUseID, name string) {
+	if p == nil || toolUseID == "" || name == "" {
 		return
 	}
-	if p.agentLaunchToolUses == nil {
-		p.agentLaunchToolUses = make(map[string]bool)
+	p.toolUseNames.set(toolUseID, name)
+}
+
+func (p *Parser) toolUseName(toolUseID string) string {
+	if p == nil || toolUseID == "" {
+		return ""
 	}
-	if len(p.agentLaunchToolUses) >= parserTaskMapCap {
-		p.agentLaunchToolUses = make(map[string]bool)
-	}
-	p.agentLaunchToolUses[toolUseID] = true
+	name, _ := p.toolUseNames.get(toolUseID)
+	return name
 }
 
 // isAgentLaunchTool reports whether toolUseID was observed as an
 // Agent-launch tool_use. Read-only (has*/is* convention).
 func (p *Parser) isAgentLaunchTool(toolUseID string) bool {
-	if p == nil || toolUseID == "" || p.agentLaunchToolUses == nil {
-		return false
-	}
-	return p.agentLaunchToolUses[toolUseID]
+	return isAgentLaunchToolName(p.toolUseName(toolUseID))
+}
+
+// startsAgent reports whether a call with this tool name starts an agent
+// when it binds a local_agent task: an Agent or Task launch, or a forked
+// Skill (§E9). Any other call that binds one is a §E6 resume.
+func startsAgent(name string) bool {
+	return isAgentLaunchToolName(name) || name == skillToolName
+}
+
+// isTaskResumeTool reports whether a local_agent task_started that binds
+// toolUseID with no prior binding for its task can only be a §E6 resume:
+// the call was observed, and it is not one that starts an agent. A call
+// not observed yet is classified when the mirror delivers it
+// (unclassifiedTaskCalls).
+func (p *Parser) isTaskResumeTool(toolUseID string) bool {
+	name := p.toolUseName(toolUseID)
+	return name != "" && !startsAgent(name)
+}
+
+// agentTaskStart is the part of a local_agent task_started a §E6 resume
+// reads. resumes is the call the task was bound to before, when this
+// parser saw one: the start rebinds a running binding, so it is a resume
+// whatever its call.
+type agentTaskStart struct {
+	taskID       string
+	resumes      string
+	description  string
+	subagentType string
+	prompt       string
 }
 
 // rememberTaskTranscriptRoot records taskID's transcript root the FIRST
@@ -962,25 +1043,42 @@ func (p *Parser) rememberTaskTranscriptRoot(taskID, toolUseID string) {
 	if p == nil || taskID == "" || toolUseID == "" {
 		return
 	}
-	if p.taskTranscriptRoots == nil {
-		p.taskTranscriptRoots = make(map[string]string)
-	}
-	if _, seen := p.taskTranscriptRoots[taskID]; seen {
+	if _, seen := p.taskTranscriptRoots.get(taskID); seen {
 		return
 	}
-	if len(p.taskTranscriptRoots) >= parserTaskMapCap {
-		p.taskTranscriptRoots = make(map[string]string)
-	}
-	p.taskTranscriptRoots[taskID] = toolUseID
+	p.taskTranscriptRoots.set(taskID, toolUseID)
 }
 
-// taskTranscriptRoot returns taskID's transcript root, or "" when this
-// parser never observed the original binding (the reconnect edge).
+// taskTranscriptRoot returns taskID's transcript root as this parser
+// observed it, or "" when it never saw the original binding.
 func (p *Parser) taskTranscriptRoot(taskID string) string {
-	if p == nil || taskID == "" || p.taskTranscriptRoots == nil {
+	if p == nil || taskID == "" {
 		return ""
 	}
-	return p.taskTranscriptRoots[taskID]
+	root, _ := p.taskTranscriptRoots.get(taskID)
+	return root
+}
+
+// resolveTaskTranscriptRoot returns a resumed task's transcript root:
+// the parser's own record, else the launch the thread's history holds for
+// it (an earlier process launched the agent). A history hit is recorded,
+// so every later reader sees the same root. A lookup failure is logged
+// and reads as unknown: triage resolves a root-less resume through the
+// persisted task_id.
+func (p *Parser) resolveTaskTranscriptRoot(taskID string) string {
+	if root := p.taskTranscriptRoot(taskID); root != "" || p.agentLaunchLookup == nil {
+		return root
+	}
+	root, found, err := p.agentLaunchLookup(taskID)
+	if err != nil {
+		log.Printf("claude: resolve the launch of resumed task %s: %v", taskID, err)
+		return ""
+	}
+	if !found {
+		return ""
+	}
+	p.rememberTaskTranscriptRoot(taskID, root)
+	return root
 }
 
 // setLastAssistantMessageID remembers the id of the most recent

@@ -404,11 +404,15 @@ func TestTranscriptMirrorProjectsNestedBatchThatArrivesAfterTaskTerminal(t *test
 	if len(events) < 2 {
 		t.Fatalf("late child mirror was not projected: %+v", events)
 	}
-	if state.projections["/tmp/agent-child-agent.jsonl"] != nil || state.taskScopes["child-agent"].scope != "" {
-		t.Fatalf("late terminal child retained projection state: %+v", state)
+	later, err := parser.ParseLine(testThread, []byte(`{"type":"transcript_mirror","filePath":"/tmp/agent-child-agent.jsonl","entries":[{"type":"assistant","uuid":"a-child-last","agentId":"child-agent","timestamp":"2026-08-24T12:00:04Z","message":{"id":"msg-child-last","role":"assistant","model":"claude-opus-4-1","content":[{"type":"text","text":"done"}]}}]}`))
+	if err != nil {
+		t.Fatalf("later child mirror: %v", err)
+	}
+	if len(later) == 0 {
+		t.Fatal("a second batch after the terminal was dropped")
 	}
 	if state.projections["/tmp/agent-root.jsonl"] == nil {
-		t.Fatal("closing late child removed its parent projection")
+		t.Fatal("the late child removed its parent projection")
 	}
 }
 
@@ -991,6 +995,13 @@ func (a parkedMirrorAgent) projected() bool {
 	return state != nil && state.projections[parkedMirrorFile] != nil
 }
 
+// retired reports a binding past its terminal: its projection stays open
+// for the agent's last message, which Claude writes after the terminal.
+func (a parkedMirrorAgent) retired() bool {
+	state := a.parser.transcriptMirror
+	return state != nil && a.projected() && state.taskScopes[parkedMirrorTask].terminal
+}
+
 func (a parkedMirrorAgent) bound() bool {
 	state := a.parser.transcriptMirror
 	if state == nil {
@@ -1042,8 +1053,11 @@ func TestTranscriptMirrorKeepsAParkedBackgroundedAgentProjected(t *testing.T) {
 	}
 
 	a.agentStop("WOKE")
-	if a.projected() || a.bound() {
-		t.Fatal("the first stop with no live owned shell is final: the projection and its binding must be released")
+	if !a.retired() {
+		t.Fatal("the first stop with no live owned shell is final: the binding must be retired")
+	}
+	if tail := a.mirrorText("a-tail", "DONE"); len(tail) == 0 {
+		t.Fatal("the agent's last message, written after its terminal, was dropped")
 	}
 }
 
@@ -1063,8 +1077,8 @@ func TestTranscriptMirrorReleasesAParkedProjectionAtSessionEnd(t *testing.T) {
 func TestTranscriptMirrorReleasesAKilledParkedAgent(t *testing.T) {
 	a := startParkedMirrorAgent(t)
 	a.parse(`{"type":"system","subtype":"task_updated","task_id":"` + parkedMirrorTask + `","patch":{"status":"killed","end_time":1790000002000}}`)
-	if a.projected() || a.bound() {
-		t.Fatal("a killed agent's projection and binding must be released at the kill")
+	if !a.retired() {
+		t.Fatal("a killed agent's binding must be retired at the kill")
 	}
 }
 
@@ -1101,7 +1115,7 @@ func TestInterruptKillOfAParkedAgentKeysBothTerminals(t *testing.T) {
 	if len(terminals) != len(want) || terminals[parkedMirrorLaunch] != "killed" || terminals[parkedMirrorShell] != "killed" {
 		t.Fatalf("terminals by item = %v, want %v", terminals, want)
 	}
-	if a.projected() || a.bound() {
-		t.Fatal("the killed agent's projection and binding must be released")
+	if !a.retired() {
+		t.Fatal("the killed agent's binding must be retired")
 	}
 }

@@ -244,15 +244,16 @@ it is the only one marked `complete` on the snapshot. An
 complete would let one bucket's notification delete every other bucket from
 the cache.
 
-The backend retains the last normalized snapshot per provider, merging by
-`windowDurationMins` because Claude reports its 5h and 7d windows separately.
-The cache rejects older reset boundaries and stabilizes same-window boundary
-jitter, like the frontend store; within a window the NEWEST reading wins even
-when it is lower, because a server-side limit increase or usage reset is the
-current answer (2026-09-01), and a delayed older-window event still cannot
-regress hydration. A reading marked `complete` also DROPS cached buckets it
-omits — see [claude-wire.md](claude-wire.md#apioauthusage) for the reset case
-that rule exists for.
+The backend retains the last normalized snapshot per account, merging by
+limit and `windowDurationMins` because a partial notification carries one
+bucket. The cache rejects a partial reading with an older reset boundary and
+stabilizes same-window boundary jitter, like the frontend store; within a
+window the NEWEST reading wins even when it is lower, because a server-side
+limit increase or usage reset is the current answer (2026-09-01). A reading
+marked `complete` replaces every bucket it names whatever the cached boundary
+says, and DROPS cached buckets it omits; see
+[claude-wire.md](claude-wire.md#apioauthusage) for the reset case the drop
+exists for.
 Frontends call `GetRateLimitsSnapshots` after installing the live
 `provider:usage` listener and again when that channel reports a transport gap.
 This is necessary because a startup account probe can complete before the

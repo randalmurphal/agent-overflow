@@ -207,7 +207,7 @@ func stopVictim(ctx context.Context, pid int, bs harnessclient.Bootstrap, hasBoo
 		cancel()
 		if err == nil {
 			rpcCtx, rpcCancel := context.WithTimeout(ctx, stopGrace)
-			_, rpcErr := client.Call(rpcCtx, "HarnessShutdown")
+			rpcErr := client.Shutdown(rpcCtx)
 			rpcCancel()
 			if rpcErr == nil {
 				waitCtx, waitCancel := context.WithTimeout(ctx, stopGrace+10*time.Second)

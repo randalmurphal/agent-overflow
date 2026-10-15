@@ -711,6 +711,9 @@ func (a *App) finishThreadModelUpdate(update threadapp.ModelUpdate) (store.Threa
 		return update.Thread, a.rememberChatModelProfileFields(update.Thread, nil)
 	}
 	a.reconcileSessionConfig(update.Thread.ID, reassertModel)
+	// The override that matches is chosen by model, so the prompt the next
+	// start would use can move with it.
+	a.reconcileStalePromptSession(update.Thread.ID)
 	updated, err := a.threadApplication().Get(update.Thread.ID)
 	if err != nil {
 		return store.Thread{}, err

@@ -25,6 +25,43 @@ Nothing watches the tree for changes: rerun the target after editing. Use the ro
 commands for completion: the Go Make targets apply platform flags and
 `go-build` also compiles the `nogui` variant.
 
+### A database from a pre-sync personal-assistant build
+
+main's `thread_pull_requests` is migration v142. main is trunk and its next
+release ships it, so personal-assistant's migrations from v142 on moved up
+one version. A database a personal-assistant build from before that sync
+migrated holds `receipt_own_turn` as v151 and has no `thread_pull_requests`.
+Opening it fails at v152 with "this database was migrated by a pre-sync
+personal-assistant build". Repair it with the app stopped, in
+`sqlite3 <data dir>/agent-overflow.db`:
+
+```sql
+BEGIN;
+CREATE TABLE thread_pull_requests (
+ thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+ forge TEXT NOT NULL CHECK(forge IN ('github', 'gitlab')),
+ host TEXT NOT NULL,
+ project TEXT NOT NULL,
+ number INTEGER NOT NULL CHECK(number > 0),
+ url TEXT NOT NULL,
+ node_id TEXT NOT NULL DEFAULT '',
+ branch TEXT NOT NULL,
+ worktree_path TEXT NOT NULL,
+ seen_open_at INTEGER NOT NULL,
+ merged_at INTEGER NOT NULL DEFAULT 0,
+ handled_at INTEGER NOT NULL DEFAULT 0,
+ removal_failed_at INTEGER NOT NULL DEFAULT 0,
+ outcome TEXT NOT NULL DEFAULT '' CHECK(outcome IN ('', 'removed', 'kept', 'gone', 'closed', 'skipped'))
+);
+CREATE INDEX idx_thread_pull_requests_pending ON thread_pull_requests(forge, host, project) WHERE handled_at = 0;
+INSERT INTO migration_versions (version, name) VALUES (152, 'receipt_own_turn');
+COMMIT;
+```
+
+The table is `threadPullRequestsV142SQL`
+(`internal/store/migration_v142_thread_pull_requests.go`);
+`TestThePreSyncRepairOpens` applies this repair and opens the result.
+
 ## Generated artifacts
 
 - After changing `info` or `fileAssociations` in `build/config.yml`, run
@@ -91,7 +128,8 @@ Linux job for `fmt-check`, `tidy-check`, `go-vet`, `go-build`, `provider-smoke-c
 and `bindings-check`, a macOS `go-build`, one job for `go-lint` and
 `go-vuln`, the frontend job (`check`, `build`, `frontend-lint`), `go-test`
 in three shards by package weight (`GO_TEST_PKGS`, `GO_TEST_EXCLUDE`), the
-last of which also runs `make pstack-scripts`, the
+last of which also runs `make pstack-scripts`, plus one with
+`GO_TEST_FLAGS='-tags noremote'`, the
 Vitest unit and browser projects as two jobs under `bin/ao-netns`, and
 `make e2e` in eight Playwright shards with three workers each (`E2E_ARGS`,
 `AO_E2E_WORKERS`), and `make release-upgrade-check` as `upgrade-lineage`

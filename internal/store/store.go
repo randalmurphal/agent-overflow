@@ -108,6 +108,9 @@ type Options struct {
 	// checkpointInterval overrides the checkpointer's interval in tests.
 	// Zero means the checkpointInterval constant.
 	checkpointInterval time.Duration
+	// scratch opens the writer with scratchWriterConnPragmas, for a
+	// database the caller deletes after use (NewScratchFromTemplate).
+	scratch bool
 }
 
 // New opens (or creates) the SQLite database at the given path and runs migrations.
@@ -128,7 +131,11 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 	gate := &connGate{}
 	commits := newCommitSignal()
 	writes := new(atomic.Uint64)
-	db, err := openPool(dbPath, writerConnPragmas, gate, commits, writes)
+	pragmas := writerConnPragmas
+	if opts.scratch {
+		pragmas = scratchWriterConnPragmas
+	}
+	db, err := openPool(dbPath, pragmas, gate, commits, writes)
 	if err != nil {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
@@ -140,7 +147,7 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 			return nil, err
 		}
 	}
-	if err := runMigrationsContext(ctx, db, opts.OnMigration); err != nil {
+	if err := runMigrationsContext(ctx, db, pragmas, opts.OnMigration); err != nil {
 		db.Close()
 		// The refusal is already the sentence the boot failure shows.
 		if tooNew := (*SchemaTooNewError)(nil); errors.As(err, &tooNew) {

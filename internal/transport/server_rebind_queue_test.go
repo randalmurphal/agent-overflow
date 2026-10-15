@@ -3,6 +3,7 @@ package transport
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -55,8 +56,9 @@ func (g *acceptGate) Accept() (net.Conn, error) {
 // startGatedServer starts a server whose first loopback socket is gated.
 // Tests stay off the LAN, so a loopback socket on another port stands in
 // for every wildcard bind.
-func startGatedServer(t *testing.T, bindAddr string) (*Server, *acceptGate) {
+func startGatedServer(t *testing.T, bindAddr string) (*Server, *acceptGate, *boundListeners) {
 	t.Helper()
+	bound := &boundListeners{byAddr: make(map[string]net.Listener)}
 	d := NewDispatcher()
 	if _, err := d.Register(&fakeApp{}, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
 		t.Fatalf("register: %v", err)
@@ -72,7 +74,11 @@ func startGatedServer(t *testing.T, bindAddr string) (*Server, *acceptGate) {
 			return nil, err
 		}
 		if wildcardIPv4(host) {
-			return listenTCPSharing(network, "127.0.0.1:0", sharePort)
+			ln, err := listenTCPSharing(network, "127.0.0.1:0", sharePort)
+			if err == nil {
+				bound.record(ln)
+			}
+			return ln, err
 		}
 		ln, err := listenTCPSharing(network, addr, sharePort)
 		if err != nil || gate != nil {
@@ -93,7 +99,7 @@ func startGatedServer(t *testing.T, bindAddr string) (*Server, *acceptGate) {
 	})
 	// Runs before the shutdown above, so no accept stays parked.
 	t.Cleanup(gate.release)
-	return srv, gate
+	return srv, gate, bound
 }
 
 // queueRequests opens n connections to addr and writes a request on each
@@ -146,13 +152,49 @@ func moveWithQueue(t *testing.T, srv *Server, gate *acceptGate, addr string) {
 	requireServed(t, "move to "+addr, conns)
 }
 
-func requireRefused(t *testing.T, addr string) {
+// requireListenerClosed asserts the listener itself was closed. Dialing its
+// address instead tests whatever owns the port next: a parallel test can
+// bind the freed ephemeral port, and a dial to a closed local port can
+// connect to itself when the kernel picks that port as the source.
+func requireListenerClosed(t *testing.T, ln net.Listener) {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	// An open listener times out instead of blocking the test; a closed
+	// one refuses the deadline and reports ErrClosed from Accept.
+	if deadline, ok := ln.(interface{ SetDeadline(time.Time) error }); ok {
+		_ = deadline.SetDeadline(time.Now().Add(time.Second))
+	}
+	conn, err := ln.Accept()
 	if err == nil {
 		_ = conn.Close()
-		t.Fatalf("retired wildcard socket %s still accepts", addr)
+		t.Fatalf("listener %s still accepts", ln.Addr())
 	}
+	if !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("listener %s is open: Accept = %v", ln.Addr(), err)
+	}
+}
+
+// boundListeners records the listeners a server's bindTCP opened, by
+// address, so a test can assert the one a rebind retired was closed.
+type boundListeners struct {
+	mu     sync.Mutex
+	byAddr map[string]net.Listener
+}
+
+func (b *boundListeners) record(ln net.Listener) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.byAddr[ln.Addr().String()] = ln
+}
+
+func (b *boundListeners) at(t *testing.T, addr string) net.Listener {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ln := b.byAddr[addr]
+	if ln == nil {
+		t.Fatalf("no listener was bound at %s", addr)
+	}
+	return ln
 }
 
 // A LAN toggle must not reset the connections a loopback client already
@@ -161,7 +203,7 @@ func TestRebind_ServesConnectionsQueuedOnTheLoopbackSocket(t *testing.T) {
 	remotetest.Require(t)
 
 	t.Run("booted on loopback", func(t *testing.T) {
-		srv, gate := startGatedServer(t, "127.0.0.1")
+		srv, gate, bound := startGatedServer(t, "127.0.0.1")
 		loopbackAddr := srv.Addr()
 		_, port, err := net.SplitHostPort(loopbackAddr)
 		if err != nil {
@@ -176,11 +218,11 @@ func TestRebind_ServesConnectionsQueuedOnTheLoopbackSocket(t *testing.T) {
 		if got := srv.Addr(); got != loopbackAddr {
 			t.Fatalf("Addr = %s after the move back, want %s", got, loopbackAddr)
 		}
-		requireRefused(t, wildcard)
+		requireListenerClosed(t, bound.at(t, wildcard))
 	})
 
 	t.Run("booted on the wildcard", func(t *testing.T) {
-		srv, gate := startGatedServer(t, "0.0.0.0")
+		srv, gate, bound := startGatedServer(t, "0.0.0.0")
 		wildcard := srv.Addr()
 		loopbackAddr := gate.Addr().String()
 		_, port, err := net.SplitHostPort(loopbackAddr)
@@ -188,7 +230,7 @@ func TestRebind_ServesConnectionsQueuedOnTheLoopbackSocket(t *testing.T) {
 			t.Fatal(err)
 		}
 		moveWithQueue(t, srv, gate, loopbackAddr)
-		requireRefused(t, wildcard)
+		requireListenerClosed(t, bound.at(t, wildcard))
 		moveWithQueue(t, srv, gate, net.JoinHostPort("0.0.0.0", port))
 	})
 }

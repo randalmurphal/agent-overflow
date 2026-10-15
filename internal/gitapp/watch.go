@@ -170,6 +170,16 @@ func (s *Service) CloseStatus() {
 	s.status.wg.Wait()
 }
 
+// RefreshPR asks the forge again for the workspace's open PR and schedules
+// a status refresh, which reads that answer from the cache. For a PR just
+// created, which nothing on the filesystem announces. The lookup runs
+// whether or not a stream watches the workspace, so the merged-PR cleanup
+// learns of the PR either way.
+func (s *Service) RefreshPR(ctx context.Context, workspace string) {
+	s.core.RefreshOpenPR(ctx, workspace)
+	s.RequestRefresh(workspace)
+}
+
 // RequestRefresh schedules a status refresh for a subscribed workspace.
 func (s *Service) RequestRefresh(workspace string) {
 	if s.watch != nil {

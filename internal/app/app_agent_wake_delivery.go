@@ -451,7 +451,7 @@ func (a *App) discardAgentWakeAtBoot(row store.FlushQueueItem) bool {
 // `thread send` was thrown away, since the script that sent it was told it
 // was queued.
 func (a *App) noteAgentSendNotDelivered(threadID, why string) {
-	if err := a.emitNoticeToThread(threadID, "A message sent with agent-overflow thread send was not delivered: "+why+
+	if err := a.emitNoticeToThread(threadID, noticeKindWarning, "A message sent with agent-overflow thread send was not delivered: "+why+
 		". The script that sent it can send it again."); err != nil {
 		log.Printf("agent wakes: %v", err)
 	}

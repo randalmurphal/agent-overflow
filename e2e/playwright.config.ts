@@ -3,14 +3,15 @@ import { defineConfig, devices } from '@playwright/test';
 // The harness suite boots one real backend per worker (see
 // tests/fixtures.ts); tests within a worker share it and reset state
 // between tests. Workers scale horizontally — each gets its own
-// process, data dir, and port — but stay conservative by default so a
-// laptop run doesn't spawn a fleet of webviews. AO_E2E_WORKERS sets the
-// count explicitly: CI shards the suite across runners and runs two
-// workers on each (.github/workflows/ci.yml).
+// process, data dir, and port. A worker and its app backend and renderer
+// hold about 1 GB, so four fit the 6 GiB ceiling ao-harness-e2e runs the
+// suite under. AO_E2E_WORKERS sets the count
+// explicitly: CI shards the suite across runners and runs three workers
+// on each (.github/workflows/ci.yml).
 function workerCount(): number {
   const explicit = process.env.AO_E2E_WORKERS;
   if (explicit === undefined || explicit === '') {
-    return process.env.CI ? 1 : 2;
+    return process.env.CI ? 1 : 4;
   }
   const count = Number(explicit);
   if (!Number.isInteger(count) || count < 1) {
