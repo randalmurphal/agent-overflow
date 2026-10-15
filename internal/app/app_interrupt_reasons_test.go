@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -95,25 +94,6 @@ func TestEachInterruptionTellsTheSenderWhy(t *testing.T) {
 		}
 		if tc.token != "tok-restart" && strings.Contains(body, "restart") {
 			t.Errorf("%s reaches the sender as a restart: %q", tc.token, body)
-		}
-	}
-}
-
-// Triage ends a turn its session took down with a synthetic truncated
-// completion, and only that turn end reads as the session ending.
-func TestOnlyASyntheticTurnEndIsTheSessionEnding(t *testing.T) {
-	t.Parallel()
-	for name, tc := range map[string]struct {
-		complete provider.TurnCompleteMeta
-		want     bool
-	}{
-		"session ended": {&provider.TruncatedTurnCompleteMeta{Synthetic: true}, true},
-		"send failed":   {&provider.TruncatedTurnCompleteMeta{}, false},
-		"no completion": {nil, false},
-	} {
-		evt := provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: tc.complete}
-		if got := turnEndedWithItsSession(evt); got != tc.want {
-			t.Errorf("%s: turnEndedWithItsSession = %v, want %v", name, got, tc.want)
 		}
 	}
 }

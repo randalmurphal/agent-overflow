@@ -55,11 +55,8 @@ func (a *App) installThreadRequestObserver() {
 			if a.lifeCtx().Err() != nil {
 				return
 			}
-			// A turn its session took down with it is settled as the
-			// session's end, as the session's own end is.
-			endedWithSession := sessionEnded || turnEndedWithItsSession(evt)
 			a.goThreadRequestSettling(func() {
-				if endedWithSession {
+				if sessionEnded {
 					a.settleReceiptsForEndedSession(threadID)
 					return
 				}
@@ -67,14 +64,6 @@ func (a *App) installThreadRequestObserver() {
 			})
 		})
 	})
-}
-
-// turnEndedWithItsSession reports whether a turn end is the one triage
-// writes for a turn its session took down with it: a crash, a stop or a
-// teardown (Router.synthesizeTruncatedTurnComplete).
-func turnEndedWithItsSession(evt provider.ProviderEvent) bool {
-	complete, ok := evt.TurnComplete.(*provider.TruncatedTurnCompleteMeta)
-	return ok && complete.Synthetic
 }
 
 // settleReceiptsForEndedTurn settles every receipt whose turn has now
