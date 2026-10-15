@@ -45,6 +45,8 @@ func TestListThreadWakesBoundsItsReminders(t *testing.T) {
 func TestWakeNowOnAWatchNeedsAutonomy(t *testing.T) {
 	t.Parallel()
 	a, granted, ungranted := autonomyApp(t)
+	// The loop fired below delivers its wake, which starts a session.
+	installMockClaudeReplies(t, a, "ok")
 	thread := threadInMode(t, a, provider.RuntimeApprovalRequired)
 	next := time.Now().Add(time.Hour).UnixMilli()
 	watch := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "poll", Command: "true", IntervalSeconds: 3600, TimeoutSeconds: 60, NextAt: next})
@@ -68,6 +70,8 @@ func TestWakeNowOnAWatchNeedsAutonomy(t *testing.T) {
 func TestWakeNowFollowsTheThreadsRuntimeMode(t *testing.T) {
 	t.Parallel()
 	a, granted, ungranted := autonomyApp(t)
+	// The loop fired below delivers its wake, which starts a session.
+	installMockClaudeReplies(t, a, "ok")
 	thread := threadInMode(t, a, provider.RuntimeFullAccess)
 	loop := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "n", IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})
 	t.Cleanup(func() { a.stopAgentWakeRunsForThread(thread.ID) })
