@@ -668,16 +668,15 @@ func (s *Store) RecentUsageModels(providers []string, since int64) ([]string, er
 	if err != nil {
 		return nil, fmt.Errorf("store: recent usage models: %w", err)
 	}
-	defer rows.Close()
 	var models []string
 	for rows.Next() {
 		var model string
 		if err := rows.Scan(&model); err != nil {
-			return nil, fmt.Errorf("store: scan recent usage model: %w", err)
+			return nil, errors.Join(fmt.Errorf("store: scan recent usage model: %w", err), rows.Close())
 		}
 		models = append(models, model)
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("store: recent usage models: %w", err)
 	}
 	return models, nil

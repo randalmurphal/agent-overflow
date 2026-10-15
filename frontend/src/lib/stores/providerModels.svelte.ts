@@ -172,7 +172,7 @@ export function resetProviderModelsForTest(): void {
   inFlight.clear();
   refreshAfter.clear();
   authoritative.clear();
-  for (const key of [...retryTimers.keys()]) cancelRetry(key);
+  for (const key of retryTimers.keys()) cancelRetry(key);
   retrying.reset();
   retryAttempts.clear();
 }
