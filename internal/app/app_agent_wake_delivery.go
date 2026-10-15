@@ -608,33 +608,51 @@ func (a *App) returnUnsentRequests(parts []usermessage.AgentPart) notTakenIn {
 // teardownRequests is what a teardown owes other threads' requests whose
 // messages it drops before the agent took them in: their receipts are back
 // in `accepted` before the drop, so the session's end settles none of them,
-// and once the session is closed their messages go back on the queue.
+// and once the session is closed their messages go back on the queue. On a
+// thread New Thread, Same Assistant superseded, the loop and watch wakes it
+// drops are owed too, and go on to the assistant's current thread.
 type teardownRequests struct {
 	// queued are requests whose messages never left the queue.
 	queued []returnedRequest
+	// wakes are loop and watch wakes whose messages never left the queue.
+	wakes []returnedWake
 	// sent are messages the provider was handed and never took in, wholly
-	// these requests', whose timeline rows go before they are queued again.
+	// these requests' and wakes', whose timeline rows go before they are
+	// queued again.
 	sent []teardownSend
 }
 
 func (owed teardownRequests) empty() bool {
-	return len(owed.queued) == 0 && len(owed.sent) == 0
+	return len(owed.queued) == 0 && len(owed.wakes) == 0 && len(owed.sent) == 0
 }
 
 type teardownSend struct {
 	userItemID  string
 	queueItemID string
 	requests    []returnedRequest
+	wakes       []returnedWake
+}
+
+// returnedWake is a loop or watch wake a handoff's teardown took back.
+type returnedWake struct {
+	sendID string
+	body   string
 }
 
 // returnRequestsAtTeardown takes back the requests a teardown is about to
-// drop: those still queued, and those in a message the provider was handed
-// and has not taken in that holds nothing else. A message joined with a
+// drop, and on a thread a handoff superseded the loop and watch wakes:
+// those still queued, and those in a message the provider was handed and
+// has not taken in that holds nothing else. A message joined with a
 // person's text is the thread's history and stays as it is; the session's
 // end settles its requests. Caller holds the thread's mutation lock.
 func (a *App) returnRequestsAtTeardown(threadID string) teardownRequests {
 	var owed teardownRequests
 	tools := a.threadTools()
+	_, superseded := a.assistantCurrentThread(threadID)
+	movedWake := func(sendID string) bool {
+		_, _, ok := agentWakeFromSendID(sendID)
+		return superseded && ok
+	}
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
 		logThreadRequestSweep("list the queued requests of "+threadID, err)
@@ -642,11 +660,19 @@ func (a *App) returnRequestsAtTeardown(threadID string) teardownRequests {
 	for _, row := range rows {
 		if token := threadRequestSendIDToken(row.SendID); token != "" && tools.returnRequestNotTakenIn(threadID, token) {
 			owed.queued = append(owed.queued, returnedRequest{token: token, body: row.Message})
+		} else if movedWake(row.SendID) {
+			// Its row goes now, so the drop does not record the wake as
+			// cleared (noteAgentWakesDropped).
+			if err := a.store.DeleteFlushQueueItem(row.ID); err != nil {
+				logThreadRequestSweep("take back the queued wake "+row.SendID, err)
+				continue
+			}
+			owed.wakes = append(owed.wakes, returnedWake{sendID: row.SendID, body: row.Message})
 		}
 	}
 	for _, item := range a.triage.UnconfirmedFlushSends(threadID) {
 		ids := unconfirmedSendIDs(item)
-		if len(ids) == 0 || slices.ContainsFunc(ids, func(id string) bool { return threadRequestSendIDToken(id) == "" }) {
+		if len(ids) == 0 || slices.ContainsFunc(ids, func(id string) bool { return threadRequestSendIDToken(id) == "" && !movedWake(id) }) {
 			continue
 		}
 		bodies, person, split := splitSessionEndParts(ids, unconfirmedJoinedParts(item), a.restoredFlushDraftPart(threadID, item).Content)
@@ -658,12 +684,16 @@ func (a *App) returnRequestsAtTeardown(threadID string) teardownRequests {
 			send.userItemID = item.QuietItem.ID
 		}
 		for _, id := range ids {
+			if movedWake(id) {
+				send.wakes = append(send.wakes, returnedWake{sendID: id, body: bodies[id]})
+				continue
+			}
 			token := threadRequestSendIDToken(id)
 			if tools.returnRequestNotTakenIn(threadID, token) {
 				send.requests = append(send.requests, returnedRequest{token: token, body: bodies[id]})
 			}
 		}
-		if len(send.requests) > 0 {
+		if len(send.requests) > 0 || len(send.wakes) > 0 {
 			owed.sent = append(owed.sent, send)
 		}
 	}
@@ -676,7 +706,7 @@ func (a *App) returnRequestsAtTeardown(threadID string) teardownRequests {
 // as sent already. A request that cannot be queued again (its row stays,
 // the thread is archived, the write fails) settles as never read.
 func (a *App) giveBackTeardownRequests(threadID string, owed teardownRequests) {
-	requests := owed.queued
+	requests, wakes := owed.queued, owed.wakes
 	var userItemIDs, queueItemIDs []string
 	for _, send := range owed.sent {
 		if send.userItemID != "" {
@@ -684,6 +714,9 @@ func (a *App) giveBackTeardownRequests(threadID string, owed teardownRequests) {
 				log.Printf("thread tools: remove the row of %s's dropped request message %s: %v", threadID, send.userItemID, err)
 				for _, r := range send.requests {
 					a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread)
+				}
+				for _, w := range send.wakes {
+					a.noteMovedAgentWakeUndelivered(threadID, w)
 				}
 				continue
 			}
@@ -693,6 +726,10 @@ func (a *App) giveBackTeardownRequests(threadID string, owed teardownRequests) {
 			queueItemIDs = append(queueItemIDs, send.queueItemID)
 		}
 		requests = append(requests, send.requests...)
+		wakes = append(wakes, send.wakes...)
+	}
+	for _, w := range wakes {
+		a.redeliverMovedAgentWake(threadID, w)
 	}
 	if len(userItemIDs)+len(queueItemIDs) > 0 {
 		a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{

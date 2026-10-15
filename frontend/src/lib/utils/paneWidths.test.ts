@@ -4,19 +4,22 @@ import {
   MAX_PANE_WIDTH_PX,
   minAnchorPaneWidths,
   normalizePaneWidthPx,
+  paneMinWidthPx,
   resolvePaneBoundaryDrag,
+  THREAD_COMPANION_MIN_WIDTH_PX,
   type PaneBoundaryDrag,
 } from './paneWidths';
 
 const MIN = 560;
 
 function drag(overrides: Partial<PaneBoundaryDrag>): PaneBoundaryDrag {
+  const widths = overrides.widths ?? [MIN, MIN, MIN];
   return {
-    widths: [MIN, MIN, MIN],
+    widths,
     leftIndex: 0,
     hasRightPane: true,
     deltaPx: 0,
-    minPaneWidth: MIN,
+    minWidths: widths.map(() => MIN),
     overflowPx: 0,
     zeroSum: false,
     ...overrides,
@@ -278,18 +281,43 @@ describe('resolvePaneBoundaryDrag - guards', () => {
   });
 });
 
+describe('per-pane minimums', () => {
+  const C = THREAD_COMPANION_MIN_WIDTH_PX;
+  const mins = [MIN, C];
+
+  it('lets a thread companion narrow to its own minimum, below the density one', () => {
+    expect(C).toBeLessThan(MIN);
+    expect(paneMinWidthPx(true, MIN)).toBe(C);
+    expect(paneMinWidthPx(false, MIN)).toBe(MIN);
+    // A density minimum below the companion's still holds for both.
+    expect(paneMinWidthPx(true, 300)).toBe(300);
+    // Growing the source takes room from the companion down to its own minimum.
+    expect(resolvePaneBoundaryDrag(drag({ widths: [MIN, C + 40], minWidths: mins, deltaPx: 100 }))).toEqual([MIN + 100, C]);
+    // Shrinking the source stops at its own minimum.
+    expect(resolvePaneBoundaryDrag(drag({ widths: [MIN, C + 40], minWidths: mins, deltaPx: -100 }))![0]).toBe(MIN);
+    // A zero-sum trade respects each side's own minimum.
+    expect(resolvePaneBoundaryDrag(drag({ widths: [MIN, C + 40], minWidths: mins, deltaPx: 200, zeroSum: true }))).toEqual([MIN + 40, C]);
+    expect(resolvePaneBoundaryDrag(drag({ widths: [MIN, C + 40], minWidths: [MIN] }))).toBeNull();
+  });
+
+  it('anchors fit widths until one pane sits at its own minimum', () => {
+    expect(minAnchorPaneWidths([MIN * 2, C * 2], mins)).toEqual([MIN, C]);
+    expect(minAnchorPaneWidths([MIN, C + 40], mins)).toBeNull();
+  });
+});
+
 describe('minAnchorPaneWidths', () => {
   it('scales widths down so the smallest sits at the minimum', () => {
-    expect(minAnchorPaneWidths([1120, 2240], MIN)).toEqual([MIN, 1120]);
+    expect(minAnchorPaneWidths([1120, 2240], [MIN, MIN])).toEqual([MIN, 1120]);
   });
 
   it('is a no-op when already anchored or empty', () => {
-    expect(minAnchorPaneWidths([MIN, 900], MIN)).toBeNull();
-    expect(minAnchorPaneWidths([], MIN)).toBeNull();
+    expect(minAnchorPaneWidths([MIN, 900], [MIN, MIN])).toBeNull();
+    expect(minAnchorPaneWidths([], [])).toBeNull();
   });
 
   it('never produces a width below the minimum', () => {
-    const anchored = minAnchorPaneWidths([561, 5000], MIN);
+    const anchored = minAnchorPaneWidths([561, 5000], [MIN, MIN]);
     expect(anchored![0]).toBeGreaterThanOrEqual(MIN);
   });
 });

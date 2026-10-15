@@ -419,6 +419,14 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 	if row.SettledAt > 0 {
 		wake.Age = time.Duration(time.Now().UnixMilli()-row.SettledAt) * time.Millisecond
 	}
+	// A handoff made the assistant's current thread the caller and kept the
+	// thread that asked; the wake says which one that was.
+	if madeIn := row.MadeIn(); madeIn != row.CallerThreadID {
+		wake.MadeIn, wake.Now = madeIn, row.CallerThreadID
+		if current, ok := a.assistantCurrentThread(row.CallerThreadID); ok {
+			wake.Now = current
+		}
+	}
 	// A standing agent that answered is named as one, from what the
 	// settlement recorded, so a thread on either computer reads the same.
 	if row.AnswerAgent != nil {

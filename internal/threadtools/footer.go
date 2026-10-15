@@ -190,21 +190,38 @@ type Wake struct {
 	Text string
 	// Agent is set when the answering thread is a standing agent.
 	Agent *SenderAgent
+	// MadeIn is the assistant's past thread the request was made in, set
+	// when the wake goes to a later thread of the same assistant, Now.
+	MadeIn string
+	Now    string
 }
 
 // String renders one wake, status line first. A wake from a standing agent
-// says so on the line after the status line.
+// says so on the line after the status line, and a request made in an
+// assistant's past thread names it on the line after that.
 func (w Wake) String() string {
+	var lines []string
+	if w.Agent != nil && w.Kind != WakeReminder {
+		lines = append(lines, w.Agent.sentence("That thread"))
+	}
+	if w.MadeIn != "" {
+		lines = append(lines, WakeMadeIn(w.MadeIn, w.Now))
+	}
 	status := w.status()
-	if w.Agent == nil || w.Kind == WakeReminder {
+	if len(lines) == 0 {
 		return status
 	}
 	head, body, found := strings.Cut(status, "\n")
-	line := w.Agent.sentence("That thread")
 	if !found {
-		return head + "\n" + line
+		return head + "\n" + strings.Join(lines, "\n")
 	}
-	return head + "\n" + line + "\n" + body
+	return head + "\n" + strings.Join(lines, "\n") + "\n" + body
+}
+
+// WakeMadeIn names the past thread a request was made in, for a wake that
+// reaches the assistant's current thread after New Thread, Same Assistant.
+func WakeMadeIn(madeIn, now string) string {
+	return fmt.Sprintf("Made in thread %s, before New Thread, Same Assistant; now %s.", madeIn, now)
 }
 
 func (w Wake) status() string {

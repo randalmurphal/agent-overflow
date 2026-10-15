@@ -63,13 +63,13 @@ func SameAssistantName(a, b string) bool {
 
 // assistantNameHolder finds the assistant other than exceptAgentID whose
 // name is name, or nil.
-func assistantNameHolder(q rowQuerier, name, exceptAgentID string) (*AssistantNameTakenError, error) {
+func assistantNameHolder(q rowQuerier, name, exceptAgentID string) (_ *AssistantNameTakenError, err error) {
 	rows, err := q.Query(`SELECT agents.id, agents.thread_id, threads.title FROM agents
 		JOIN threads ON threads.id = agents.thread_id WHERE agents.id <> ?`, exceptAgentID)
 	if err != nil {
 		return nil, fmt.Errorf("read the assistants' names: %w", err)
 	}
-	defer rows.Close()
+	defer closeAgentWakeRows(rows, "read the assistants' names", &err)
 	for rows.Next() {
 		var holder AssistantNameTakenError
 		if err := rows.Scan(&holder.AgentID, &holder.ThreadID, &holder.Name); err != nil {
@@ -303,7 +303,7 @@ var ErrNotAssistantCurrentThread = errors.New("the thread is not an assistant's 
 // HandOffAssistant makes newThreadID the current thread of the assistant
 // whose current thread is oldThreadID, in one transaction: the record moves,
 // the old thread is recorded as superseded at now and archived, its live
-// loops and watches move, and every request it is the caller of moves with
+// loops and watches and the remote jobs still owed to it move, and every request it is the caller of moves with
 // the thread that made it kept in made_in_thread_id (a reminder's target
 // moves with it). Receipts addressed to the old thread are not moved here:
 // the messages they wait on are in the old thread's queue, and the app
@@ -342,6 +342,13 @@ func (s *Store) HandOffAssistant(oldThreadID, newThreadID string, now int64) (ha
 	if handOff.MovedWakeIDs, err = queryIDs(tx, `UPDATE agent_wakes SET thread_id = ?
 		WHERE thread_id = ? AND state IN ('armed','running') RETURNING id`, newThreadID, oldThreadID); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: move the loops and watches: %w", action, err)
+	}
+	// A remote job still owed to the old thread reports to the successor:
+	// the watcher skips an archived thread's watches.
+	if _, err := tx.Exec(`UPDATE remote_watches SET thread_id = ?
+		WHERE thread_id = ? AND (notification = 'pending' OR (notification = 'queued' AND confirmed_at IS NULL))`,
+		newThreadID, oldThreadID); err != nil {
+		return AssistantHandOff{}, fmt.Errorf("%s: move the remote jobs: %w", action, err)
 	}
 	moved, err := tx.Exec(`UPDATE thread_requests SET
 		made_in_thread_id = CASE WHEN made_in_thread_id = '' THEN caller_thread_id ELSE made_in_thread_id END,

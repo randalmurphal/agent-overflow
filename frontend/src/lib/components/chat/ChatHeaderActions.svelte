@@ -380,7 +380,7 @@
   </Popover>
   <GitActionsControl {pane} trigger={false} menuAnchor={moreTriggerEl} bind:this={gitControl} />
 {:else}
-<div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+<div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end @max-[36rem]/chat-header:shrink @max-[36rem]/chat-header:min-w-0">
   <PrBadge status={pane.gitStatus.status} onOpenReview={openPrReview} />
   {#if hasWorkspace}
     <WorkspaceDiffBadge

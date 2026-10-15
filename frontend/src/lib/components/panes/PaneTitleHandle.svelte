@@ -199,7 +199,9 @@
       title={`${titleText} (right-click to rename)`}
       class={[
         'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 compact:py-1.5 compact:select-none rounded-[var(--radius-field)] text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-        fade ? 'flex-1 overflow-hidden' : 'truncate',
+        // In a narrow chat header the title gives way first, down to an
+        // 8rem floor; past that the action cluster wraps (ChatHeader).
+        fade ? 'flex-1 overflow-hidden' : 'truncate @max-[36rem]/chat-header:min-w-[8rem] @max-[36rem]/chat-header:shrink-[100]',
         onPaneDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
       ].join(' ')}
     >

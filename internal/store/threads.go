@@ -1282,12 +1282,12 @@ func updateTitleTx(tx *sql.Tx, threadID, title string) error {
 
 // UpdateProviderTitle writes a title a provider reported for its thread,
 // and reports whether it did: a provider never renames an assistant.
-func (s *Store) UpdateProviderTitle(threadID, title string) (bool, error) {
+func (s *Store) UpdateProviderTitle(threadID, title string) (_ bool, err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, fmt.Errorf("store: begin provider title for %s: %w", threadID, err)
 	}
-	defer tx.Rollback()
+	defer rollbackAgentWakeTx(tx, "store: provider title for "+threadID, &err)
 	var assistant bool
 	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE thread_id = ?)`, threadID).Scan(&assistant); err != nil {
 		return false, fmt.Errorf("store: read the assistant of %s: %w", threadID, err)

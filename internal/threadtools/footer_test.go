@@ -93,6 +93,11 @@ func TestWakeTemplates(t *testing.T) {
 			want: "Reply from \"Parser\" (7f3a, on Studio, answered 3h ago) [token tok]:\ndone",
 		},
 		{
+			name: "a request made in an assistant's past thread names it",
+			wake: Wake{Kind: WakeReply, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "done", MadeIn: "old1", Now: "new2"},
+			want: "Reply from \"Parser\" (7f3a) [token tok]:\nMade in thread old1, before New Thread, Same Assistant; now new2.\ndone",
+		},
+		{
 			name: "fresh local reply states no computer and no age",
 			wake: Wake{Kind: WakeReply, Title: "Parser", ThreadID: "7f3a", Token: "tok", Age: 2 * time.Second, Text: "done"},
 			want: "Reply from \"Parser\" (7f3a) [token tok]:\ndone",

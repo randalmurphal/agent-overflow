@@ -46,7 +46,7 @@ function bindings(over: Partial<WorkflowActionBindings> = {}): WorkflowActionBin
 }
 
 function clearToasts(): void {
-  for (const toast of [...getToasts()]) removeToast(toast.id);
+  for (const toast of getToasts().slice()) removeToast(toast.id);
 }
 
 describe('resolveWorkflowRun', () => {

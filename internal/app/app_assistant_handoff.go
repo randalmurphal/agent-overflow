@@ -254,10 +254,10 @@ func (a *App) interruptedByHandOff(tokens []string) []agenthome.InterruptedReque
 // session is gone: its queued messages go to their owners, which send them
 // on to the successor, and the loops and watches that moved run there.
 func (a *App) continueAfterHandOff(oldThreadID, newThreadID string, handOff store.AssistantHandOff) {
-	// Loop and watch wakes still queued for the old thread are recorded on
-	// their rows, now the successor's, as not delivered: the next fire says
-	// so. Everything else app-written goes on (withdrawQueuedAgentMessages,
-	// redirected by its give-back).
+	// Loop and watch wakes and other threads' requests still queued for the
+	// old thread go on to the successor's queue. Everything else
+	// app-written goes on through its give-back
+	// (withdrawQueuedAgentMessages).
 	rows, err := a.store.ListFlushQueueItems(oldThreadID)
 	if err != nil {
 		log.Printf("assistants: hand off %s: read its queue: %v", oldThreadID, err)
@@ -272,15 +272,8 @@ func (a *App) continueAfterHandOff(oldThreadID, newThreadID string, handOff stor
 		case threadRequestSendIDToken(row.SendID) != "":
 			a.moveQueuedRequest(oldThreadID, row)
 		default:
-			if wakeID, _, ok := agentWakeFromSendID(row.SendID); ok {
-				removal, err := a.removeQueuedItem(a.lifeCtx(), oldThreadID, row.SendID)
-				if err != nil {
-					log.Printf("assistants: hand off %s: withdraw %s: %v", oldThreadID, row.SendID, err)
-					continue
-				}
-				if removal == queueRemovalRemoved {
-					a.noteAgentWakeUndelivered(newThreadID, wakeID, agentWakeOutcomeNotDelivered+": the assistant moved to a new thread", row.Message)
-				}
+			if _, _, ok := agentWakeFromSendID(row.SendID); ok {
+				a.moveQueuedAgentWake(oldThreadID, row)
 			}
 		}
 	}
@@ -310,6 +303,51 @@ func (a *App) moveQueuedRequest(oldThreadID string, row store.FlushQueueItem) {
 		return
 	}
 	a.giveBackRequest(oldThreadID, token, row.Message)
+}
+
+// moveQueuedAgentWake takes a loop or watch wake still queued on the old
+// thread with no session to drop it back and queues it on the successor,
+// whose row it now is. A live session's teardown takes the wakes it drops
+// back the same way (returnRequestsAtTeardown).
+func (a *App) moveQueuedAgentWake(oldThreadID string, row store.FlushQueueItem) {
+	removal, err := a.removeQueuedItem(a.lifeCtx(), oldThreadID, row.SendID)
+	if err != nil {
+		log.Printf("assistants: hand off %s: withdraw %s: %v", oldThreadID, row.SendID, err)
+		return
+	}
+	if removal == queueRemovalRemoved {
+		a.redeliverMovedAgentWake(oldThreadID, returnedWake{sendID: row.SendID, body: row.Message})
+	}
+}
+
+// redeliverMovedAgentWake queues a wake taken back from a thread a handoff
+// superseded on the thread that holds its row now. One that cannot be
+// queued there is recorded on the row as not delivered, a watch keeping its
+// output, and the next fire says so.
+func (a *App) redeliverMovedAgentWake(oldThreadID string, w returnedWake) {
+	wakeID, fireAt, _ := agentWakeFromSendID(w.sendID)
+	row, found, err := a.store.GetAgentWake(wakeID)
+	if err == nil && !found {
+		return
+	}
+	if err == nil {
+		err = a.deliverAgentWake(a.lifeCtx(), row, fireAt, w.body)
+	}
+	if err != nil {
+		log.Printf("assistants: hand off %s: move %s on: %v", oldThreadID, w.sendID, err)
+		a.noteMovedAgentWakeUndelivered(oldThreadID, w)
+	}
+}
+
+// noteMovedAgentWakeUndelivered records on its row a wake a handoff could
+// not move.
+func (a *App) noteMovedAgentWakeUndelivered(oldThreadID string, w returnedWake) {
+	wakeID, _, _ := agentWakeFromSendID(w.sendID)
+	threadID := oldThreadID
+	if current, ok := a.assistantCurrentThread(oldThreadID); ok {
+		threadID = current
+	}
+	a.noteAgentWakeUndelivered(threadID, wakeID, agentWakeOutcomeNotDelivered+": the assistant moved to a new thread", w.body)
 }
 
 // restartMovedAgentWakes moves the runs of the loops and watches the

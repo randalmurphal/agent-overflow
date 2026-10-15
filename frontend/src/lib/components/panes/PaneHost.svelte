@@ -11,7 +11,7 @@
     getPane,
   } from '../../stores/panes.svelte';
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
-  import { getPaneLayoutItems, isCompanionKind } from '../../stores/paneLayout.svelte';
+  import { getPaneLayoutItems, isCompanionKind, paneItemMinWidthPx, type PaneLayoutItem } from '../../stores/paneLayout.svelte';
   import { getPaneWidth, setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import { REVEAL_PANE_EVENT } from '../../stores/eventNames';
   import { getCompactScreen, isCompactLayout } from '../../stores/layoutMode.svelte';
@@ -215,7 +215,7 @@
   }
 
   $effect(() => {
-    paneStructureKey; // dep
+    void paneStructureKey;
     const stripAppeared = stripFirstPaint;
     stripFirstPaint = false;
     // Svelte has flushed the keyed pane sections before this effect runs.
@@ -418,9 +418,9 @@
   // widths when the window is wider than their sum; shrink-0 in the
   // class list keeps a narrower window as horizontal scroll instead of
   // squeezing below the stored width.
-  function paneSectionStyle(widthPx: number): string {
+  function paneSectionStyle(item: PaneLayoutItem): string {
     if (compact) return 'flex:0 0 100%;min-width:100%';
-    return `flex-grow:${widthPx};flex-basis:${widthPx}px;min-width:${minPaneWidth}px`;
+    return `flex-grow:${item.widthPx};flex-basis:${item.widthPx}px;min-width:${paneItemMinWidthPx(item, minPaneWidth)}px`;
   }
 
 </script>
@@ -462,7 +462,7 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <section
           use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
-          style={paneSectionStyle(item.widthPx)}
+          style={paneSectionStyle(item)}
           class={[
             item.kind === 'take-control' ? 'take-control-pair-top' : '',
             'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70',
@@ -470,7 +470,7 @@
           ].join(' ')}
           data-pane-id={item.paneId}
           data-pane-kind={item.kind}
-          data-pane-min-width={minPaneWidth}
+          data-pane-min-width={paneItemMinWidthPx(item, minPaneWidth)}
           data-pane-width={item.widthPx}
           data-pane-focused={focusedPaneId === item.paneId}
           onpointerdown={() => handlePanePointerDown(item.paneId)}
@@ -521,7 +521,7 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <section
             use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
-            style={paneSectionStyle(item.widthPx)}
+            style={paneSectionStyle(item)}
             class={[
               'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70',
               paired ? 'take-control-pair-top' : '',
@@ -531,7 +531,7 @@
             ].join(' ')}
             data-pane-id={item.paneId}
             data-pane-kind={item.kind}
-            data-pane-min-width={minPaneWidth}
+            data-pane-min-width={paneItemMinWidthPx(item, minPaneWidth)}
             data-pane-width={item.widthPx}
             data-pane-focused={focusedPaneId === item.paneId}
             data-pane-paired={paired}
@@ -546,7 +546,7 @@
           </section>
         {:else}
           <section
-            style={paneSectionStyle(item.widthPx)}
+            style={paneSectionStyle(item)}
             class="flex min-h-0 min-w-0 shrink-0 items-center justify-center text-sm text-error"
             data-pane-id={item.paneId}
             data-pane-kind={item.kind}

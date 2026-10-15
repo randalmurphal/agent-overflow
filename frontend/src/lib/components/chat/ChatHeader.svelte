@@ -7,7 +7,10 @@
   // chrome.
   //
   // Desktop is one row: `project / title`, then the regenerate glyph, the
-  // pane close control and the cluster. Compact is two: the way back to
+  // pane close control and the cluster. Below a 36rem header (a pane
+  // beside a companion on a laptop screen) the crumb goes and the Open
+  // control drops its label; the title then truncates down to an 8rem
+  // floor, and only past that does the cluster wrap. Compact is two: the way back to
   // the list, the title (one line that fades and swipes rather than
   // wrapping), the diff badge and the actions menu; then a full-width
   // facts line — machine, project, branch, worktree — which is where the
@@ -47,7 +50,7 @@
   <div
     data-testid="chat-header"
     data-transport-tap-hold
-    class="relative z-10 flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap compact:flex-wrap compact:gap-y-1 compact:px-3 compact:pt-[max(0.5rem,env(safe-area-inset-top))]"
+    class="@container/chat-header relative z-10 flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap compact:flex-wrap compact:gap-y-1 compact:px-3 compact:pt-[max(0.5rem,env(safe-area-inset-top))]"
   >
     <PaneHeaderLine paneId={pane.paneId} thread={pane.thread} />
     {#if compact}
@@ -67,9 +70,11 @@
       </div>
       <ChatHeaderFactsLine {pane} />
     {:else}
-      <ChatHeaderProject {pane} class="shrink-0 max-w-[14rem] text-text-secondary" />
+      <!-- The crumb gives way before the title, and goes from a narrow
+           header. -->
+      <ChatHeaderProject {pane} class="shrink-[8] max-w-[14rem] text-text-secondary @max-[36rem]/chat-header:hidden" />
       {#if pane.thread.projectId}
-        <span class={headerSegmentSeparatorClasses} aria-hidden="true">/</span>
+        <span class="{headerSegmentSeparatorClasses} @max-[36rem]/chat-header:hidden" aria-hidden="true">/</span>
       {/if}
       <PaneTitleHandle
         {pane}

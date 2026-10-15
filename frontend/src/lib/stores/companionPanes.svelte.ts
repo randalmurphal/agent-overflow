@@ -22,9 +22,13 @@ import {
   averagePaneWidthPx,
   getPaneLayoutItems,
   isCompanionKind,
+  isThreadHostingPaneKind,
   removePaneLayoutItem,
   type CompanionPaneKind,
 } from './paneLayout.svelte';
+import { getPaneHostWidth } from './layoutMetrics.svelte';
+import { getMinPaneWidth } from './paneDensity.svelte';
+import { normalizePaneWidthPx, paneMinWidthPx } from '../utils/paneWidths';
 import { isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
 import {
   addPaneDestroyedObserver,
@@ -53,15 +57,6 @@ function isEphemeralCompanionKind(kind: CompanionKind): boolean {
   return kind === 'take-control' || kind === 'browser' || kind === 'side-chat' || kind === 'agent-thread';
 }
 
-/**
- * A side chat and an agent thread companion own a ThreadPane each (the
- * registry entry under the companion pane id), so their take-down goes
- * through destroyPane. Only a side chat's close takes its thread with it:
- * an agent thread companion shows a thread that lives on without it.
- */
-function isThreadHostingCompanionKind(kind: CompanionKind): boolean {
-  return kind === 'side-chat' || kind === 'agent-thread';
-}
 
 export interface CompanionPaneState {
   paneId: string;
@@ -128,7 +123,11 @@ export function companionsForSource(sourcePaneId: string): CompanionPaneState[] 
 }
 
 export interface OpenCompanionOptions {
-  /** Width to open at. Defaults to the source pane's. */
+  /**
+   * Width to open at. Defaults to the source pane's; a side chat or agent
+   * thread companion takes the room left beside the strip when that is at
+   * least its minimum (threadCompanionWidthPx).
+   */
   widthPx?: number;
   /**
    * Scroll the new companion into view. On by default, since opening is
@@ -152,7 +151,7 @@ export function openCompanion(
 
   const paneId = companionPaneIdFor(sourcePaneId, kind);
   const sourceWidthPx = layoutItems[sourceIndex].widthPx;
-  const widthPx = options.widthPx ?? sourceWidthPx;
+  const widthPx = options.widthPx ?? (isThreadHostingPaneKind(kind) ? threadCompanionWidthPx(sourceWidthPx) : sourceWidthPx);
   addPaneLayoutItem(
     {
       id: paneId,
@@ -176,6 +175,21 @@ export function openCompanion(
   // companion by clicking or pane-navigating into it.
   if (options.reveal ?? true) revealPane(paneId);
   return state;
+}
+
+/**
+ * A thread companion opens at the source pane's width, narrowed to the room
+ * the strip has left so it fits beside its source rather than pushing the
+ * strip into scroll, but never below its minimum: a strip with no room left
+ * scrolls as before.
+ */
+function threadCompanionWidthPx(sourceWidthPx: number): number {
+  const host = getPaneHostWidth();
+  if (!Number.isFinite(host)) return sourceWidthPx;
+  const used = getPaneLayoutItems().reduce((sum, item) => sum + normalizePaneWidthPx(item.widthPx), 0);
+  const room = host - used;
+  const min = paneMinWidthPx(true, getMinPaneWidth());
+  return room >= min ? Math.min(sourceWidthPx, room) : sourceWidthPx;
 }
 
 /**
@@ -213,7 +227,11 @@ function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
     closeCompanionsForSource(paneId);
   }
   unregisterCompanionPane(paneId);
-  if (isThreadHostingCompanionKind(state.kind)) {
+  if (isThreadHostingPaneKind(state.kind)) {
+    // A side chat and an agent thread companion own a ThreadPane each (the
+    // registry entry under the companion pane id), so their take-down goes
+    // through destroyPane. Only a side chat's close takes its thread with
+    // it: an agent thread companion shows a thread that lives on without it.
     // Read before the registry entry goes. destroyPane removes the layout
     // item itself.
     const threadId = getPane(paneId)?.threadId ?? '';
