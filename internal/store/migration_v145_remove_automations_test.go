@@ -105,7 +105,7 @@ func TestMigrationV145V146RemoveAutomations(t *testing.T) {
 		t.Errorf("work_items CHECKs changed in v145: %q", got.checks)
 	}
 
-	schemaBefore145 := migrationSchema(t, db)
+	schemaBefore146 := migrationSchema(t, db)
 	migrateFromThrough(t, db, removeAutomationsMigrationVersion, workItemSourcesMigrationVersion)
 
 	if got := renderRows(); !slices.Equal(got, wantRows) {
@@ -113,18 +113,18 @@ func TestMigrationV145V146RemoveAutomations(t *testing.T) {
 	}
 	// Every object other than work_items keeps its SQL, and each work_items
 	// index is restated with the same declaration.
-	schemaAfter145 := migrationSchema(t, db)
+	schemaAfter146 := migrationSchema(t, db)
 	normalized := func(sqlText string) string { return strings.Join(strings.Fields(sqlText), " ") }
-	for name, sqlText := range schemaBefore145 {
+	for name, sqlText := range schemaBefore146 {
 		if name == "work_items" {
 			continue
 		}
-		if normalized(schemaAfter145[name]) != normalized(sqlText) {
-			t.Errorf("schema object %s changed in v146:\n got %q\nwant %q", name, schemaAfter145[name], sqlText)
+		if normalized(schemaAfter146[name]) != normalized(sqlText) {
+			t.Errorf("schema object %s changed in v146:\n got %q\nwant %q", name, schemaAfter146[name], sqlText)
 		}
 	}
-	for name := range schemaAfter145 {
-		if _, ok := schemaBefore145[name]; !ok {
+	for name := range schemaAfter146 {
+		if _, ok := schemaBefore146[name]; !ok {
 			t.Errorf("schema object %s is new after v146", name)
 		}
 	}

@@ -27,11 +27,11 @@ commands for completion: the Go Make targets apply platform flags and
 
 ### A database from a pre-sync personal-assistant build
 
-main's `thread_pull_requests` is migration v142 and shipped in 0.0.18, so
-personal-assistant's migrations from v142 on moved up one version. A
-database a personal-assistant build from before that sync migrated holds
-`receipt_own_turn` as v151 and has no `thread_pull_requests`. Opening it
-fails at v152 with "this database was migrated by a pre-sync
+main's `thread_pull_requests` is migration v142. main is trunk and its next
+release ships it, so personal-assistant's migrations from v142 on moved up
+one version. A database a personal-assistant build from before that sync
+migrated holds `receipt_own_turn` as v151 and has no `thread_pull_requests`.
+Opening it fails at v152 with "this database was migrated by a pre-sync
 personal-assistant build". Repair it with the app stopped, in
 `sqlite3 <data dir>/agent-overflow.db`:
 

@@ -42,14 +42,20 @@ func TestSessionFromEnvRejectsAHalfInjectedEnvironment(t *testing.T) {
 	}
 }
 
+// Inside a session too, a verb this build does not have is unknown rather
+// than reaching a backend. The endpoint is never dialed.
 func TestUnknownCommandsExitTwo(t *testing.T) {
+	session := func(name string) (string, bool) {
+		value, ok := map[string]string{EnvEndpoint: "http://127.0.0.1:1", EnvToken: "test-token", EnvThreadID: "thread-1"}[name]
+		return value, ok
+	}
 	for _, args := range [][]string{
 		{"nonsense"},
 		{"run", "start", "flow"},
 		{"workflow", "list"},
 		{"memory", "list"},
 	} {
-		code, _, stderr := runCLI(args, noEnv)
+		code, _, stderr := runCLI(args, session)
 		if code != exitError {
 			t.Fatalf("%v exit = %d, want %d", args, code, exitError)
 		}

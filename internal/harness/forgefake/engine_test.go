@@ -1617,6 +1617,11 @@ func TestGitLabMergeRequestsByIID(t *testing.T) {
 	if opened := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/g%2Fr/merge_requests?iids%5B%5D=1&state=opened", "", nil); opened.status != 404 {
 		t.Fatalf("iids with state=opened = %+v, want unhandled", opened)
 	}
+	for _, filter := range []string{"author_username=ao-author", "scope=created_by_me"} {
+		if filtered := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/g%2Fr/merge_requests?iids%5B%5D=1&state=all&"+filter, "", nil); filtered.status != 404 {
+			t.Fatalf("iids with %s = %+v, want unhandled", filter, filtered)
+		}
+	}
 }
 
 // source_branch matches a fork's merge request from a branch of the same
