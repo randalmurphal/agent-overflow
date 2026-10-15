@@ -66,6 +66,7 @@ const (
 	// rollback threw out of the queue.
 	agentWakeOutcomeSessionEnded = agentWakeOutcomeNotDelivered + ": the session ended before it took the wake in"
 	agentWakeOutcomeDropped      = agentWakeOutcomeNotDelivered + ": the queue was cleared"
+	agentWakeOutcomeWithdrawn    = agentWakeOutcomeNotDelivered + ": the user withdrew it"
 	agentWakeOutcomeCancelled    = "cancelled"
 )
 

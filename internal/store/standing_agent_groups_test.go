@@ -14,7 +14,7 @@ func TestPromoteStandingAgentIsOneTransaction(t *testing.T) {
 	mustCreateThread(t, s, "agent")
 	mustCreateThread(t, s, "child")
 	seedThreadRequest(t, s, "tok-child", "agent", ThreadRequestSpawn, 100)
-	if _, err := s.SetThreadRequestTarget("tok-child", "", "child", ""); err != nil {
+	if _, err := s.SetThreadRequestTarget("tok-child", "", "child", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	group, err := s.CreateThreadGroup(defaultTestProjectID, "Shared")
@@ -59,7 +59,7 @@ func TestStandingAgentSpawnerOfReadsALineageOnlySpawn(t *testing.T) {
 	mustCreateThread(t, s, "agent")
 	mustCreateThread(t, s, "worker")
 	seedThreadRequest(t, s, "tok-worker", "agent", ThreadRequestSpawn, 100)
-	if _, err := s.SetThreadRequestTarget("tok-worker", "", "worker", ""); err != nil {
+	if _, err := s.SetThreadRequestTarget("tok-worker", "", "worker", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if applied, err := s.SettleThreadRequest("tok-worker", ThreadRequestOpenStates(), ThreadRequestSettlement{

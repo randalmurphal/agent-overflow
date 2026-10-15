@@ -394,3 +394,72 @@ func TestOwnDeviceSelfRowPersistsWithoutRoutesAndReadsLiveOnes(t *testing.T) {
 		t.Fatalf("the move wrote routes into the self row %v: %v", stored.Routes, err)
 	}
 }
+
+// An own-device profile a tombstone retires is a removal like any other:
+// the Agents rows forget the machine, so a settled spawn on it that last
+// listed open work leaves the caller's pane, the sweep and the cache.
+func TestOwnDeviceRetireForgetsTheMachinesAgentRows(t *testing.T) {
+	remotetest.Require(t)
+	ownConnectionNetwork(t)
+	a, b := ownConnectionBackend(t), ownConnectionBackend(t)
+	pairOwnConnection(t, b, a.app.backends, true)
+	reconcileOwnConnection(t, a)
+
+	caller, err := createTestThread(t, a.app, "claude", t.TempDir(), "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawn := store.ThreadRequest{Token: uuid.NewString(), CallerThreadID: caller.ID, Kind: store.ThreadRequestSpawn,
+		TargetComputerID: b.id, TargetThreadID: uuid.NewString(), State: store.ThreadRequestRunning}
+	if err := a.app.store.InsertThreadRequest(spawn); err != nil {
+		t.Fatal(err)
+	}
+	if settled, err := a.app.store.SettleThreadRequest(spawn.Token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal,
+		SettledAt: time.Now().Add(-time.Hour).UnixMilli(),
+	}); err != nil || !settled {
+		t.Fatalf("settle: %v %v", settled, err)
+	}
+	if _, err := a.app.store.SetThreadRequestNestedOpen(spawn.Token, true); err != nil {
+		t.Fatal(err)
+	}
+	peers := &a.app.threadAgentPeers
+	peers.mu.Lock()
+	peers.noteAnswerLocked(spawn, ThreadAgentRows{Rows: []ThreadAgentRow{{Token: "there"}}}, nil)
+	peers.backoff[b.id] = threadAgentPeerBackoff{until: time.Now().Add(time.Minute)}
+	peers.mu.Unlock()
+	frames := recordAgentRowFrames(a.app)
+
+	// B is tombstoned in A's catalog; A's next pass retires its profile.
+	key, err := b.app.backends.OwnIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := a.app.store.OwnDevice(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member.Generation++
+	member.Removed = true
+	if _, err := MergeOwnDevices(a.app, []owndevices.Member{member}); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOwnConnection(t, a)
+	if _, err := deviceclient.LoadSession(a.profile, b.id); !errors.Is(err, deviceclient.ErrNoSession) {
+		t.Fatalf("the tombstone did not retire the profile: %v", err)
+	}
+
+	if row, _, err := a.app.store.GetThreadRequest(spawn.Token); err != nil || row.NestedOpen {
+		t.Fatalf("after the retire nested_open = %v, %v; want cleared", row.NestedOpen, err)
+	}
+	if _, cached := a.app.cachedPeerAgentRows(spawn); cached {
+		t.Fatal("the retired machine's answer is still cached")
+	}
+	peers.mu.Lock()
+	_, backingOff := peers.backoff[b.id]
+	peers.mu.Unlock()
+	if backingOff {
+		t.Fatal("the retired machine's backoff is kept")
+	}
+	waitUntil(t, 5*time.Second, func() bool { return frames.count(caller.ID) > 0 })
+}

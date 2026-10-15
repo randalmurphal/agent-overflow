@@ -529,6 +529,10 @@ accepted: a cancel that never reached the destination leaves the wake
 armed, since the work is still running there and still owes an answer.
 A request that already settled reports its settled state and
 `nothing_to_stop`, and is not settled a second time.
+A person's Stop in the caller's Agents segment cancels the same way but
+keeps `notify` armed, and the wake says the user stopped it, so the agent
+learns the stop was not its own
+([Agents segment](standing-agents.md#agents-segment)).
 
 ### `thread_update`
 
@@ -1113,6 +1117,21 @@ the calling computer, so thread tools are not a way around the boundary
 the sidebar's own create and send obey. A local agent's call carries no
 transport session and is not gated by it.
 
+Two more forwarded tools serve the caller's Agents segment, both refused
+unless the thread they name is one the calling device's thread spawned
+there, directly or through that computer's own spawn lineage:
+`agent_rows` over `ThreadToolQuery` lists that thread's own Agents rows
+to the nesting depth left, so the caller nests them under its spawn named
+by their computer, and `agent_stop` over `ThreadToolCall` runs a Stop's
+cascade there, for the whole thread (its Backgrounded items, its turn and
+its own rows) or for one nested row by token. A request inside that
+lineage is cancelled with its wake disarmed. A forwarded spawn, send or
+ask acknowledges with the target thread's provider beside its title, so
+the caller's row shows it. A computer that predates them answers that
+they are not thread tools calls; the caller then stops the request and
+the turn alone, records it as the user's stop, and says so on the row
+and in the Stop's report.
+
 Errors follow the remote-commands shape: stable codes, prose that names
 the operation, the computer and the thread with the ids beside the
 names so the model can retry with them, and raw causes kept in host
@@ -1240,7 +1259,9 @@ collects that settlement like any other.
 ## Non-goals
 
 - A CLI or `/ao-tools` composer command for these tools.
-- Launch cards, tray rows, or subagent treatment for spawned threads.
+- Launch cards or subagent treatment for spawned threads. The requests a
+  thread is owed list in its activity rail's Agents segment instead
+  ([standing agents](standing-agents.md#agents-segment)).
 - Relaying approval requests to the calling agent, except a standing
   agent's own workers
   ([ruling 19](standing-agents.md#decisions)).

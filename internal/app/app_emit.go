@@ -79,6 +79,7 @@ func (a *App) emitKeyed(name eventchan.Channel, data any) string {
 	// blocks this goroutine.
 	a.tapNotification(name, data)
 	a.tapWorkerPrompt(name, data)
+	a.tapThreadAgentRows(name, data)
 	entityKey := ""
 	if entityFilteredChannels[string(name)] || (a.replay != nil && a.replay.Enabled()) {
 		entityKey = eventscope.ThreadIDFromEvent(data)

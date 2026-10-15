@@ -34,6 +34,12 @@ type QueuedItem struct {
 	RevisionSourceDiffReview     *store.DiffReviewSourceRef   `json:"revisionSourceDiffReview,omitempty"`
 	RevisionSourceDiffCommentIDs []string                     `json:"revisionSourceDiffCommentIds,omitempty"`
 	EnqueuedAt                   int64                        `json:"enqueuedAt"`
+	// Origin, OriginThread and OriginWake are the payload's attribution of
+	// a message the app queued for an agent or a wake, so a reader of the
+	// queue can tell it from a person's own.
+	Origin       string                    `json:"origin,omitempty"`
+	OriginThread *usermessage.OriginThread `json:"originThread,omitempty"`
+	OriginWake   *usermessage.OriginWake   `json:"originWake,omitempty"`
 }
 
 // Payload is the wire shape of triage.QueuedFlushItem.Payload — the
@@ -125,6 +131,9 @@ func itemFrom(threadID, id, message string, enqueuedAt int64, raw []byte) Queued
 	out.RevisionSourceCommentIDs = payload.RevisionSourceCommentIDs
 	out.RevisionSourceDiffReview = payload.RevisionSourceDiffReview
 	out.RevisionSourceDiffCommentIDs = payload.RevisionSourceDiffCommentIDs
+	out.Origin = payload.Origin
+	out.OriginThread = payload.OriginThread
+	out.OriginWake = payload.OriginWake
 	return out
 }
 

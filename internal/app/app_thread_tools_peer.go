@@ -64,6 +64,10 @@ type ThreadPeerCall struct {
 	// row is on the other computer; this computer still validates every
 	// value against its own catalogs.
 	Inherit threadtools.SpawnDefaults `json:"inherit,omitzero"`
+	// UserStop marks a thread_cancel a person made from the source thread's
+	// Agents tray rather than the source's agent: the receipt settles saying
+	// so. A computer that does not read it words it as the sender's cancel.
+	UserStop bool `json:"userStop,omitempty"`
 }
 
 // ThreadPeerAgent is a forwarded request's standing agent sender.
@@ -94,9 +98,12 @@ type ThreadPeerRequest struct {
 	Kind           string `json:"kind,omitempty"`
 	TargetThreadID string `json:"targetThreadId,omitempty"`
 	Title          string `json:"title,omitempty"`
-	State          string `json:"state,omitempty"`
-	Answer         string `json:"answer,omitempty"`
-	AnswerKind     string `json:"answerKind,omitempty"`
+	// Provider is the target thread's provider, for the caller's Agents
+	// row; a computer that does not send it leaves the row without one.
+	Provider   string `json:"provider,omitempty"`
+	State      string `json:"state,omitempty"`
+	Answer     string `json:"answer,omitempty"`
+	AnswerKind string `json:"answerKind,omitempty"`
 	// LateReply is a thread_reply that arrived after the receipt had
 	// already finished. It is a later revision than Answer.
 	LateReply   string `json:"lateReply,omitempty"`
@@ -178,13 +185,16 @@ func (a *App) ThreadToolResolve(ctx context.Context, resolve ThreadPeerResolve) 
 //ao:scope threads:read
 //ao:route selected
 func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
-	if _, err := a.remoteCommandOwner(ctx); err != nil {
+	owner, err := a.remoteCommandOwner(ctx)
+	if err != nil {
 		return ThreadPeerReply{}, err
 	}
 	if err := a.requireScope(ctx, transport.ScopeThreadsRead, "read a thread"); err != nil {
 		return ThreadPeerReply{}, err
 	}
 	switch call.Tool {
+	case threadAgentPeerRows:
+		return a.serveThreadAgentPeer(ctx, owner, call)
 	case "thread_search", "thread_show", "thread_item", "thread_options", "thread_status":
 	default:
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
@@ -212,6 +222,8 @@ func (a *App) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPe
 		return a.runThreadPeerTool(ctx, call)
 	case "thread_spawn", "thread_send", "thread_ask", "thread_cancel":
 		return a.runThreadPeerRequest(ctx, owner, call)
+	case threadAgentPeerStop:
+		return a.serveThreadAgentPeer(ctx, owner, call)
 	}
 	return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 		fmt.Sprintf("%s is not a thread tools write call.", call.Tool), nil)
@@ -504,7 +516,11 @@ func (a *App) cancelPeerThreadRequest(ctx context.Context, origin threadRequestO
 	if err := a.refuseForeignToken(token, origin.ownerDevice); err != nil {
 		return ThreadPeerReply{}, err
 	}
-	effect, err := a.stopThreadRequestWork(ctx, token)
+	answer := threadRequestSenderCancel
+	if call.UserStop {
+		answer = threadRequestUserStop
+	}
+	effect, err := a.stopThreadRequestWorkFor(ctx, token, answer)
 	if err != nil {
 		return ThreadPeerReply{}, a.publicThreadToolError("thread_cancel", origin.caller.ThreadID, err)
 	}
@@ -545,6 +561,7 @@ func (a *App) threadPeerRequestState(ctx context.Context, owner, token string) (
 	if receipt.TargetThreadID != "" {
 		if thread, err := a.store.GetThread(receipt.TargetThreadID); err == nil {
 			state.Title = thread.Title
+			state.Provider = thread.Provider
 		}
 		if receipt.State == store.ThreadReceiptAccepted || receipt.State == store.ThreadReceiptRunning {
 			live, err := a.threadToolsAdapter().LiveState(ctx, receipt.TargetThreadID)

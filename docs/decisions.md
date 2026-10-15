@@ -272,6 +272,13 @@ Mechanism in
   start. A standing agent is named with its role line on the footers it
   sends and on the wakes of its replies, on either computer: a thread on
   another computer behaves as a local one does.
+- Requests to other threads and agent messages queued for a thread list
+  in the activity rail's Agents segment, apart from Background, with a
+  user Stop that keeps the caller's wake armed and cascades into what a
+  spawned thread runs on any computer; incoming agent messages list
+  there, and leave the composer's queue with slice 13 (standing agents
+  rulings 20 and 21,
+  [Agents segment](specs/standing-agents.md#agents-segment)).
 
 ## Providers and accounts
 

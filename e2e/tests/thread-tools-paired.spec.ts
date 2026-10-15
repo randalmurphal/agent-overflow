@@ -14,7 +14,10 @@
 // range and negative offset; the origin chip naming the other computer on
 // both ends; a destination whose own switch is off still serving a
 // forwarded request and replying through thread_reply; a cancel that stops
-// work there; a deleted caller stopping the scratch ask it left there; a
+// work there; the Agents segment nesting a thread spawned over there with
+// its own spawn, named by that computer, and a Stop on its row cascading
+// there into its background shell, its turn and its own spawn; a deleted
+// caller stopping the scratch ask it left there; a
 // destination too old to carry the tools; a reply written while the calling
 // computer was off arriving once it is back; and forgetting a computer with
 // open requests.
@@ -32,6 +35,7 @@ import { startTogether } from './launch-helpers.js';
 import { centerInTimeline } from './standing-agent-home-contents-helpers.js';
 import { capture } from './wake-rows-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
+import { backgroundShellSteps } from './agents-tray-helpers.js';
 import {
   FOOTER_TOKEN_PATTERN,
   RESULT_TOKEN_PATTERN,
@@ -1097,6 +1101,111 @@ test('a cancel stops a turn the caller started on the other computer', async () 
   // The interrupted turn never reached its own completion text there.
   const items = await remote.rpc<Array<{ summary?: string }>>('ListItems', target, true);
   expect(items.some((item) => (item.summary ?? '').includes('Long remote job done.'))).toBe(false);
+});
+
+test('the Agents segment nests a spawn on the other computer and its Stop cascades there', async ({ page }) => {
+  test.setTimeout(240_000);
+  page.setDefaultTimeout(30_000);
+  const caller = await seed(home, 'agents-remote-caller', ['Agents remote caller']);
+  const child = await seed(remote, 'agents-remote-child', []);
+  const grand = await seed(remote, 'agents-remote-grand', []);
+  const peer = await seed(remote, 'agents-remote-peer', ['Remote peer']);
+  await remote.rpc('UpdateNewThreadDefaults', {
+    projectId: child.projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
+  });
+  await remote.rpc('UpdateNewThreadDefaults', {
+    projectId: grand.projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
+  });
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'agents-remote-caller-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Build it over there.', title: 'Remote child', computer_id: remoteID, project_id: child.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }, { call: {
+        tool: 'thread_send',
+        args: { thread_id: peer.threadIds[0], computer_id: remoteID, message: 'Check the changelog.', notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  // The child spawns a thread of its own on its computer, starts a
+  // background shell there and holds.
+  await setScenario(remote, child.path, threadToolsScenario({
+    name: 'agents-remote-child-script', provider: 'claude',
+    turns: [
+      { steps: [
+        { call: { tool: 'thread_spawn', args: { prompt: 'Package it.', title: 'Remote grandchild', project_id: grand.projectId, notify: true } } },
+        ...backgroundShellSteps('claude'),
+        { gate: 'remote-child-hold' },
+      ], text: 'Built.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  await setScenario(remote, grand.path, threadToolsScenario({
+    name: 'agents-remote-grand-script', provider: 'claude',
+    turns: [{ steps: [{ gate: 'remote-grand-hold' }], text: 'Packaged.' }, { text: 'Noted.' }],
+  }));
+  await setScenario(remote, peer.path, threadToolsScenario({
+    name: 'agents-remote-peer-script', provider: 'claude',
+    turns: [{ steps: [{ gate: 'remote-peer-hold' }], text: 'Fine.' }],
+  }));
+
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build it', null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const sent = await awaitToolAnswer<{ token: string }>(home, { tool: 'thread_send', timeoutMs: 120_000 });
+  expect(sent.isError, sent.text).toBe(false);
+  const nested = await awaitToolAnswer<{ token: string; thread_id: string }>(remote, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
+  expect(nested.isError, nested.text).toBe(false);
+  await awaitGate(remote, 'remote-child-hold', child.path);
+  await awaitGate(remote, 'remote-grand-hold', grand.path);
+  await expect.poll(async () => (await remote.rpc<{ status: string }[]>('ListLiveBackgroundTasks', spawn.value!.thread_id))
+    .filter((item) => item.status === 'running').length).toBe(1);
+
+  await home.open(page);
+  await page.getByTestId('thread-row-title').getByText('Agents remote caller', { exact: true }).click();
+  const toggle = page.getByTestId('activity-rail-agents-toggle').filter({ visible: true });
+  await toggle.click();
+  const body = page.getByTestId('activity-rail-agents-body').filter({ visible: true });
+  const row = (token: string) => body.locator(`[data-testid="agent-tray-row"][data-token="${token}"]`);
+  const childRow = row(spawn.value!.token);
+  const grandRow = row(nested.value!.token);
+  await expect(childRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+  await expect(childRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
+  await expect(grandRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
+  // A send there shows its target's provider, from the acknowledgement.
+  const sendRow = row(sent.value!.token);
+  await expect(sendRow).toHaveAttribute('data-kind', 'send');
+  await expect(sendRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+  await expect(sendRow.getByTestId('agent-tray-row-provider')).toHaveAttribute('data-provider', 'claude');
+  await expect(grandRow).toHaveAttribute('data-depth', '1');
+  await expect(grandRow.getByTestId('agent-tray-row-title')).toHaveText('Remote grandchild');
+  await expect(grandRow.getByTestId('agent-tray-row-computer')).toHaveText('on GPU computer');
+  await body.screenshot({ path: test.info().outputPath('agents-remote-nested.png'), animations: 'disabled' });
+
+  const childInterrupted = remote.waitForEvent<HarnessMockEventData>(
+    'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === child.path, 90_000);
+  const grandInterrupted = remote.waitForEvent<HarnessMockEventData>(
+    'harness:mock', (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === grand.path, 90_000);
+  // The cascade disarms the child's own spawn there: the person stopped
+  // the child's work, so the child takes no new turn for it.
+  const childWoken = remote.waitForEvent<HarnessMockEventData>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path && (ev.report.input ?? '').includes(nested.value!.token),
+    30_000).then(() => true, () => false);
+  await childRow.getByTestId('agent-tray-row-stop').click();
+  await expect(page.getByTestId('toast-message').filter({ hasText: 'Stopped Remote child' }))
+    .toHaveText('Stopped Remote child: its turn, 1 background task and 1 agent of its own.', { timeout: 60_000 });
+  await childInterrupted;
+  await grandInterrupted;
+  await expect.poll(async () => (await remote.rpc<{ status: string }[]>('ListLiveBackgroundTasks', spawn.value!.thread_id))
+    .filter((item) => item.status === 'running').length).toBe(0);
+  await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
+  expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
 });
 
 test('a thread moved to the other computer resolves there by its bare id', async () => {

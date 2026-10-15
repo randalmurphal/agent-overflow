@@ -280,7 +280,7 @@ func keyedLookups(th string) []keyedLookup {
 			mustFind[Item](t, "last answer")(s.LastTopLevelTurnItem(th, 1, "assistant_text"))
 		}},
 		{name: "ListThreadLastMessages", turn: true, run: func(t *testing.T, s *Store) {
-			got, err := s.ListThreadLastMessages([]string{th})
+			got, err := s.ListThreadLastMessages([]string{th}, "")
 			if err != nil || got[th].Kind != "assistant_text" {
 				t.Errorf("last message = %#v, %v", got, err)
 			}

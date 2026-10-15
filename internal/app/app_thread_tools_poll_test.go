@@ -330,7 +330,7 @@ func TestRemoteTargetTitleSurvivesARestart(t *testing.T) {
 	computer := uuid.NewString()
 	token := f.seedRemoteRequest(t, computer)
 	target := f.request(t, token).TargetThreadID
-	if _, err := f.app.store.SetThreadRequestTarget(token, computer, target, "Release checklist"); err != nil {
+	if _, err := f.app.store.SetThreadRequestTarget(token, computer, target, "Release checklist", ""); err != nil {
 		t.Fatalf("record the target: %v", err)
 	}
 

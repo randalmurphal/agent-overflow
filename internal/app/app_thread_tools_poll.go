@@ -123,6 +123,7 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 		a.fireDueThreadReminders(now)
 		a.fireDueAgentWakes(now)
 		a.pollRemoteThreadRequests(now)
+		a.refreshNestedOpenRemoteSpawns()
 		a.retryUndeliveredThreadWakes(now)
 		if now.Sub(lastExpiry) >= threadRequestExpiryInterval {
 			lastExpiry = now
@@ -161,6 +162,11 @@ func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 		logThreadRequestSweep("read the next scheduled request work", err)
 	} else {
 		due := []store.ScheduledMoment{schedule.Reminder, schedule.Wake}
+		if schedule.NestedOpen {
+			// A settled spawn on another computer whose work there is still
+			// open: its rows are asked for again at the poll's pace.
+			due = append(due, store.ScheduledMoment{At: time.Now().Add(a.threadPollNormal()).UnixMilli(), Set: true})
+		}
 		if !a.threadRequestPollInFlight() {
 			due = append(due, schedule.Poll)
 		}
@@ -342,6 +348,14 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest) {
 		}(computerID)
 	}
 	wg.Wait()
+	// What a spawn there runs, its own agents included, changes with no
+	// frame here: each poll of one asks for its Agents rows again, at the
+	// poll's own pace, and an answer that changed emits a frame.
+	for _, row := range rows {
+		if row.Kind == store.ThreadRequestSpawn && row.TargetComputerID != "" {
+			a.refreshPeerAgentRows(row, 0)
+		}
+	}
 }
 
 // pollThreadRequestsOn asks one destination about every token due for it and
@@ -556,7 +570,7 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 	}
 	a.noteRemoteRequestBlocked(token, answer.Blocked)
 	if target := threadPeerTarget(row, answer); target != "" {
-		if _, err := a.store.SetThreadRequestTarget(token, computerID, target, answer.Title); err != nil {
+		if _, err := a.store.SetThreadRequestTarget(token, computerID, target, answer.Title, answer.Provider); err != nil {
 			return 0, err
 		}
 	}

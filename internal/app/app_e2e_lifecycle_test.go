@@ -43,6 +43,8 @@ type capturedEventBus struct {
 	mu  sync.Mutex
 	ch  chan capturedEvent
 	all []capturedEvent
+	// tap, when set, sees each router emission as a.emit's taps would.
+	tap func(eventchan.Channel, any)
 }
 
 func newCapturedEventBus() *capturedEventBus {
@@ -65,6 +67,12 @@ func (b *capturedEventBus) emit(name string, data any) {
 // a.emit's wire spelling (a string) while the router emits eventchan
 // constants.
 func (b *capturedEventBus) emitChannel(name eventchan.Channel, data any) {
+	b.mu.Lock()
+	tap := b.tap
+	b.mu.Unlock()
+	if tap != nil {
+		tap(name, data)
+	}
 	b.emit(name.String(), data)
 }
 

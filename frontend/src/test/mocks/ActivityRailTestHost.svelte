@@ -36,6 +36,7 @@
     {pane}
     bg={host.bg}
     wakes={host.wakes}
+    agents={host.agents}
     clock={host.clock}
     usage={host.usage}
     {inputRequest}

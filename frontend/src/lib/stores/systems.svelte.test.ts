@@ -4,6 +4,7 @@ import { pairViewOnly, resetToLocalPage } from '../../test/helpers/scopes';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import { attachedBackends, backendById } from '../transport/backends';
 import { __resetManifestBackendsForTest, manifestBackendDescriptors } from '../transport/manifestBackends';
+import { onPurgeClientState } from '../transport/clientPurge';
 import {
   __resetSystemsForTest,
   addSystem,
@@ -255,6 +256,28 @@ describe('systems store', () => {
 
     expect(getToasts()).toEqual([]);
     expect(manifestBackendDescriptors()).toEqual([]);
+  });
+
+  // An own-device retire announces the removal, then the membership change
+  // whose re-read no longer lists the machine: one purge, no toast.
+  it('forgets a retired own device once, without a toast', async () => {
+    stageBackend();
+    let rows = [LAPTOP];
+    setBindingMock('ListBackends', async () => rows);
+    await loadSystems();
+    const purged: string[] = [];
+    const off = onPurgeClientState((scope) => { if (scope === 'laptop') purged.push(scope); });
+
+    rows = [];
+    applyBackendSetChange({ action: 'removed', id: 'laptop' });
+    applyBackendSetChange({ action: 'membership', id: '' });
+    await loadSystems(); // joins the membership change's re-read
+    off();
+
+    expect(getToasts()).toEqual([]);
+    expect(manifestBackendDescriptors()).toEqual([]);
+    expect(attachedBackends().some((b) => b.id === 'laptop')).toBe(false);
+    expect(purged).toEqual(['laptop']);
   });
 
   // A rename lands in fields only the authoritative list holds — the folded

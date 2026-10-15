@@ -11,7 +11,8 @@
   import WorkingChip from '../composer/WorkingChip.svelte';
   import { activityRailChipClasses, activityRailRowClasses } from '../composer/activityRailClasses';
   import { createBackgroundController } from '../composer/activityRailBackground.svelte';
-  import ActivityRailBackgroundToggle from '../composer/ActivityRailBackgroundToggle.svelte';
+  import ActivityRailSegmentToggle from '../composer/ActivityRailSegmentToggle.svelte';
+  import SendToBack from '@lucide/svelte/icons/send-to-back';
   import ActivityRailBackgroundBody from '../composer/ActivityRailBackgroundBody.svelte';
   import { createTrayTaskMemo, scopedTrayTasks } from '../../utils/backgroundTray';
   import { liveSubagentRunState } from '../../stores/subagentRunState.svelte';
@@ -252,7 +253,10 @@
           <span class="{activityRailChipClasses} shrink-0" aria-hidden="true" data-testid="agent-pane-activity-reserve">{'\u200B'}</span>
         {/if}
         {#if trayTasks.length > 0}
-          <ActivityRailBackgroundToggle
+          <ActivityRailSegmentToggle
+            icon={SendToBack}
+            name="Background"
+            segment="background"
             count={trayTasks.length}
             running={trayRunningCount > 0}
             open={trayOpen}

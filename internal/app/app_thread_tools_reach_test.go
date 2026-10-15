@@ -89,6 +89,9 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 
 	dbPath, settingsDir := storetest.ClonePath(t), t.TempDir()
 	source, _ := setupE2EAppOn(t, dbPath, settingsDir)
+	// A life a test can end, as shutdown does, set before anything reads it.
+	source.appCtx, source.appCancel = context.WithCancel(context.Background())
+	t.Cleanup(source.appCancel)
 	source.configDir = t.TempDir()
 	source.installThreadRequestObserver()
 	sourceID := uuid.NewString()
@@ -100,6 +103,7 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 	}
 	pair.manager = pair.pairWith(t, "source")
 	source.backends = pair.manager
+	pair.manager.SetChanged(source.backendSetChanged)
 	pair.computer = pair.attachedID(t, pair.manager)
 
 	caller, err := createTestThread(t, source, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)

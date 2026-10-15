@@ -6,6 +6,7 @@ import {
   userMessageOriginThread,
   userMessageOriginWake,
   agentWakeOriginLabel,
+  agentMessageKind,
 } from './userMessageMeta';
 import {
   DEFAULT_MAX_ATTACHMENT_SIZE,
@@ -175,5 +176,20 @@ describe('userMessageOriginWake', () => {
     expect(userMessageOriginWake({ originWake: { kind: 'cron', label: 'x' } })).toBeNull();
     expect(userMessageOriginWake({ originWake: 'loop' })).toBeNull();
     expect(userMessageOriginWake({})).toBeNull();
+  });
+});
+
+describe('agentMessageKind', () => {
+  const thread = { computerId: '', computerName: '', threadId: 'sender', title: 'Sender', token: 'tok' };
+  it('names a request, a reply, a reminder, a question and a wake, and leaves a person\'s message out', () => {
+    expect(agentMessageKind({ origin: 'agent-thread', originThread: thread, sendId: 'thread-request:tok' })).toBe('request');
+    expect(agentMessageKind({ origin: 'agent-thread', originThread: thread, sendId: 'thread-wake:tok' })).toBe('reply');
+    expect(agentMessageKind({ origin: 'agent-thread', originThread: thread, sendId: 'thread-wake-late:tok' })).toBe('reply');
+    expect(agentMessageKind({ origin: 'agent-thread', sendId: 'thread-wake:reminder' })).toBe('wake');
+    expect(agentMessageKind({ origin: 'agent-wake', originWake: { kind: 'question', label: 'Worker' }, sendId: 'agent-ask:q' })).toBe('question');
+    expect(agentMessageKind({ origin: 'agent-wake', originWake: { kind: 'approval', label: 'Worker' }, sendId: 'agent-ask:a' })).toBe('question');
+    expect(agentMessageKind({ origin: 'agent-wake', originWake: { kind: 'loop', label: 'Nightly' }, sendId: 'agent-wake:l' })).toBe('wake');
+    expect(agentMessageKind({ sendId: 'composer-1' })).toBeNull();
+    expect(agentMessageKind({ origin: 'user', sendId: 'thread-request:tok' })).toBeNull();
   });
 });
