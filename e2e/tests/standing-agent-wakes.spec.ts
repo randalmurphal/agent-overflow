@@ -58,7 +58,7 @@ import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { pairBuildBox } from './build-box-helpers.js';
 import { agentsBody, openAgents } from './agents-tray-helpers.js';
-import { captureAgentMessage } from './wake-rows-helpers.js';
+import { captureAgentMessage, dbWake as dbWakeRow } from './wake-rows-helpers.js';
 import {
   advanceGate,
   awaitGate,
@@ -1734,9 +1734,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const ticker = tickerP.threadIds[0];
       const barrier = barrierP.threadIds[0];
       await harness.rpc('PromoteStandingAgent', ticker);
-      const loop = (every: number) => ({
-        call: { tool: 'thread_loop', args: { label: 'tick', note: 'look at the board', every_seconds: every } },
-      });
+      // Each tick is fired with Wake now on an hourly loop, so no second
+      // fire can land before the tick's turn ends.
       await setScenario(
         harness,
         tickerP.path,
@@ -1745,10 +1744,13 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           provider,
           echoUserMessage: true,
           turns: [
-            { steps: [loop(1)], text: 'Ticking.' },
-            { steps: [loop(3600)], fail: 'the board API is down' },
-            { steps: [loop(1)], text: 'Ticking again.' },
-            { steps: [loop(3600)], text: 'Tick noted.' },
+            {
+              steps: [{ call: { tool: 'thread_loop', args: { label: 'tick', note: 'look at the board', every_seconds: 3600 } } }],
+              text: 'Ticking.',
+            },
+            { fail: 'the board API is down' },
+            { text: 'Ticking again.' },
+            { text: 'Tick noted.' },
           ],
           afterTurns: 'silent',
         }),
@@ -1760,6 +1762,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const count = (predicate: (data: NotificationSend) => boolean) =>
         harness.countEvents<NotificationSend>('notification:send', predicate);
       const ticks = () => countInputs(harness, tickerP.path, 'Loop "tick" fired.');
+      const tick = async () => {
+        const wake = dbWakeRow(harness.bootstrap.dataDir, ticker, 'tick');
+        expect(wake, 'the tick loop is registered').toBeDefined();
+        await harness.rpc('WakeThreadWakeNow', ticker, 'loop', wake!.id);
+      };
       const settle = async () => {
         const rest = harness.waitForEvent<NotificationSend>(
           'notification:send',
@@ -1779,6 +1786,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await settle();
       const retractionsBefore = count(retractions);
       const failed = harness.waitForEvent<NotificationSend>('notification:send', sends('error'), 60_000);
+      await tick();
       await expect.poll(ticks, { timeout: 30_000 }).toBe(1);
       await failed;
       await settle();
@@ -1800,6 +1808,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         (data) => sends('turn-complete')(data) && count(sends('turn-complete')) > restsBefore,
         60_000,
       );
+      await tick();
       await expect.poll(ticks, { timeout: 30_000 }).toBe(2);
       await tickRest;
       await settle();
