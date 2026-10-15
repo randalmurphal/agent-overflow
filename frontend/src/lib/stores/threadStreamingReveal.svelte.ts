@@ -511,7 +511,7 @@ export function createThreadStreamingReveal(
       // iterate a snapshot rather than the live map. One broken mounted
       // representation must not prevent the other panes' rows from catching
       // up after a hidden interval.
-      for (const [id, entry] of [...itemSmoothers]) {
+      for (const [id, entry] of Array.from(itemSmoothers)) {
         try {
           entry.smoother.snap();
         } catch (error) {
@@ -556,7 +556,7 @@ export function createThreadStreamingReveal(
       const errors: unknown[] = [];
       // snap() → onReveal can settle+delete entries (terminal rows), so
       // iterate a snapshot rather than the live map.
-      for (const [id, entry] of [...itemSmoothers]) {
+      for (const [id, entry] of Array.from(itemSmoothers)) {
         try {
           entry.smoother.snap();
         } catch (error) {
