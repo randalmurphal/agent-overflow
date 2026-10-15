@@ -2,6 +2,7 @@ package threadtools
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -391,4 +392,21 @@ func TestSearchGroupFilterReachesEveryComputerAndItsCursor(t *testing.T) {
 	}
 	callErr(t, p.server, localCaller(), "thread_search", mustJSON(t, map[string]any{"group": "Other", "limit": 10, "cursor": first["cursor"]}), CodeInvalidRequest)
 	call(t, p.server, localCaller(), "thread_search", mustJSON(t, map[string]any{"group": "MR Reviews", "limit": 10, "cursor": first["cursor"]}))
+}
+
+// Assistants on two computers clash when their names are the same under
+// Unicode simple case folding, as the store compares them, final sigma
+// included; a name that only full case mapping equates does not clash.
+func TestSuffixAssistantClashesFoldsAsTheStore(t *testing.T) {
+	row := func(name string) searchRow { return searchRow{Assistant: &Assistant{ID: name, Name: name}} }
+	groups := []searchGroup{
+		{ComputerID: "a", Computer: "Desk", Rows: []searchRow{row("ΟΔΟΣ"), row("straße")}},
+		{ComputerID: "b", Computer: "Studio", Rows: []searchRow{row("οδος"), row("STRASSE")}},
+	}
+	suffixAssistantClashes(groups)
+	got := []string{groups[0].Rows[0].Assistant.Name, groups[0].Rows[1].Assistant.Name, groups[1].Rows[0].Assistant.Name, groups[1].Rows[1].Assistant.Name}
+	want := []string{"ΟΔΟΣ-Desk", "straße", "οδος-Studio", "STRASSE"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("names = %q, want %q", got, want)
+	}
 }

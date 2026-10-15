@@ -47,9 +47,26 @@ export function isAssistantSessionGone(err: unknown): err is TransportError {
   return err instanceof TransportError && err.code === 'assistant_session_gone';
 }
 
-/** Two assistant names are the same name, as the store compares them. */
+/**
+ * Two assistant names are the same name, as the store compares them:
+ * trimmed, under Unicode simple case folding (strings.EqualFold). Each code
+ * point is upper- then lowercased on its own, keeping only one-code-point
+ * mappings, so final sigma folds and "ß" does not become "ss".
+ * internal/store/testdata/assistant_name_folds.json holds both sides to it.
+ */
 export function sameAssistantName(a: string, b: string): boolean {
-  return a.trim().toLowerCase() === b.trim().toLowerCase();
+  return foldAssistantName(a) === foldAssistantName(b);
+}
+
+function foldAssistantName(name: string): string {
+  let out = '';
+  for (const char of name.trim()) {
+    const upper = char.toUpperCase();
+    const single = [...upper].length === 1 ? upper : char;
+    const lower = single.toLowerCase();
+    out += [...lower].length === 1 ? lower : single;
+  }
+  return out;
 }
 
 /**

@@ -513,23 +513,26 @@ func (c *session) searchResult(groups []searchGroup, failures []errorRow, failur
 // sidebar does. Names are unique on each computer, so a clash is always
 // across computers; the suffix is only in this answer.
 func suffixAssistantClashes(groups []searchGroup) {
-	computers := map[string]map[string]struct{}{}
+	type held struct{ name, computerID string }
+	var names []held
 	for _, group := range groups {
 		for _, row := range group.Rows {
-			if row.Assistant == nil {
-				continue
+			if row.Assistant != nil {
+				names = append(names, held{row.Assistant.Name, group.ComputerID})
 			}
-			key := strings.ToLower(strings.TrimSpace(row.Assistant.Name))
-			if computers[key] == nil {
-				computers[key] = map[string]struct{}{}
-			}
-			computers[key][group.ComputerID] = struct{}{}
 		}
+	}
+	// Names compare as the store compares them (store.SameAssistantName):
+	// trimmed, under Unicode simple case folding.
+	clashes := func(name, computerID string) bool {
+		return slices.ContainsFunc(names, func(other held) bool {
+			return other.computerID != computerID && strings.EqualFold(strings.TrimSpace(other.name), strings.TrimSpace(name))
+		})
 	}
 	for _, group := range groups {
 		for index := range group.Rows {
 			row := &group.Rows[index]
-			if row.Assistant == nil || len(computers[strings.ToLower(strings.TrimSpace(row.Assistant.Name))]) < 2 {
+			if row.Assistant == nil || !clashes(row.Assistant.Name, group.ComputerID) {
 				continue
 			}
 			named := *row.Assistant

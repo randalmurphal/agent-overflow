@@ -1,7 +1,9 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
 	"slices"
 	"testing"
 )
@@ -243,5 +245,26 @@ func TestRetargetThreadReceipt(t *testing.T) {
 	}
 	if moved, err := s.RetargetThreadReceipt("tok", "old", "new"); err != nil || moved {
 		t.Fatalf("a second retarget = %v %v, want no change", moved, err)
+	}
+}
+
+// The frontend folds names the same way (stores/assistants.svelte.ts); both
+// sides read testdata/assistant_name_folds.json so the two cannot drift.
+func TestSameAssistantNameFolds(t *testing.T) {
+	raw, err := os.ReadFile("testdata/assistant_name_folds.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		A, B string
+		Same bool
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		if got := SameAssistantName(c.A, c.B); got != c.Same {
+			t.Errorf("SameAssistantName(%q, %q) = %v, want %v", c.A, c.B, got, c.Same)
+		}
 	}
 }

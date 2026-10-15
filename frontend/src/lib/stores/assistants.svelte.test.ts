@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { assistantDisplayName, sameAssistantName } from './assistants.svelte';
+import nameFolds from '../../../../internal/store/testdata/assistant_name_folds.json';
 import { replaceAllThreads } from './threads.svelte';
 import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -45,5 +46,12 @@ describe('assistantDisplayName', () => {
   it('compares names ignoring case and surrounding space', () => {
     expect(sameAssistantName(' Ops', 'OPS ')).toBe(true);
     expect(sameAssistantName('Ops', 'Op s')).toBe(false);
+  });
+});
+
+// The same cases the store's SameAssistantName is held to.
+describe('sameAssistantName folds as the store does', () => {
+  it.each(nameFolds)('$a and $b are the same name: $same', ({ a, b, same }) => {
+    expect(sameAssistantName(a, b)).toBe(same);
   });
 });
