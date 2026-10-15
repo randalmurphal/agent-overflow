@@ -335,6 +335,55 @@ describe('<ActivityRun>', () => {
       expect(queryByTestId('activity-run-earlier')).toBeNull();
     });
 
+    it('fetches the rest of a chunk when fewer than a chunk is loaded above the window', async () => {
+      // The pane holds t36..t89 (54 members) and the window shows the newest
+      // 30, so 24 loaded rows sit above it and t0..t35 are on the server. A
+      // click grows by a whole chunk: it fetches the one row it is short and
+      // mounts it with the 24 loaded ones, not the 24 alone.
+      await updateSetting('activityRunWindowRows', 30);
+      const shipped = Array.from({ length: 54 }, (_, i) => tool(`t${i + 36}`, i + 36));
+      const { getByTestId, getAllByTestId } = await renderStubbedRun(
+        shipped, runStub(0, 89, [36, 89]),
+      );
+      expect(getAllByTestId('command-output-row')).toHaveLength(30);
+      expect(getByTestId('activity-run-earlier').textContent).toContain('60 earlier');
+
+      const members = deferredMembers();
+      await fireEvent.click(getByTestId('activity-run-earlier'));
+      await tick();
+      expect(members.call).toHaveBeenCalledOnce();
+      expect(members.call.mock.calls[0][1]).toMatchObject({
+        loadedFirstItemId: 't36',
+        direction: 'before',
+        limit: 1,
+      });
+
+      members.resolve({ items: [tool('t35', 35)], stub: runStub(0, 89, [35, 89]) });
+      await flushJump();
+
+      expect(getAllByTestId('command-output-row')).toHaveLength(55);
+      expect(getByTestId('activity-run-earlier').textContent).toContain('35 earlier');
+    });
+
+    it('mounts the loaded rows above the window when the shortfall fetch fails', async () => {
+      await updateSetting('activityRunWindowRows', 30);
+      const shipped = Array.from({ length: 34 }, (_, i) => tool(`t${i + 56}`, i + 56));
+      const { getByTestId, getAllByTestId } = await renderStubbedRun(
+        shipped, runStub(0, 89, [56, 89]),
+      );
+      expect(getAllByTestId('command-output-row')).toHaveLength(30);
+
+      const call = vi.fn(async () => { throw new Error('computer offline'); });
+      setBindingMock('ListActivityRunMembers', call);
+      await fireEvent.click(getByTestId('activity-run-earlier'));
+      await flushJump();
+      expect(call).toHaveBeenCalledOnce();
+
+      // The four loaded rows still mount; the server's 56 stay behind the boundary.
+      expect(getAllByTestId('command-output-row')).toHaveLength(34);
+      expect(getByTestId('activity-run-earlier').textContent).toContain('56 earlier');
+    });
+
     it('does not grow the window over a fetch that produced nothing', async () => {
       await updateSetting('activityRunWindowRows', 10);
       const shipped = Array.from({ length: 10 }, (_, i) => tool(`t${i + 5}`, i + 5));
