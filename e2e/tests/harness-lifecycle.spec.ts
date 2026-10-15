@@ -209,16 +209,20 @@ test('the watchdog samples a backend that is mid-exit and stops once it is reape
   test.skip(process.platform !== 'linux', 'Linux exe link and VmRSS');
   // An exiting backend has no exe link and no VmRSS but still holds its pid.
   // Reading that as a changed identity tripped the watchdog with a false
-  // reason and tore the backend down. The exec'd parent never reaps, so the
-  // sampled process stays a zombie until the parent is killed.
+  // reason and tore the backend down. As in the test above, the backend
+  // leads its own group only once it calls setsid, here after a pause, so
+  // the watchdog starts once it does. The exec'd parent never reaps, so the
+  // backend killed below stays a zombie until the parent is killed.
   const root = await mkdtemp(path.join(tmpdir(), 'ao-watchdog-exit-'));
-  const parent = spawn('/bin/sh', ['-c', 'setsid sleep 2 & echo $!; exec sleep 30'], {
+  const backend = 'import os, time; time.sleep(0.3); os.setsid(); os.execvp("sleep", ["sleep", "60"])';
+  const parent = spawn('/bin/sh', ['-c', 'python3 -c "$0" & echo $!; exec sleep 30', backend], {
     stdio: ['ignore', 'pipe', 'ignore'],
   });
   let closed = false;
   let watchdog: HarnessWatchdog | undefined;
   try {
     const pid = Number((await once(parent.stdout!, 'data'))[0].toString().trim());
+    await expect.poll(async () => (await captureProcessIdentity(pid)).groupId).toBe(pid);
     const child = { pid, exitCode: null, signalCode: null } as unknown as ChildProcess;
     watchdog = new HarnessWatchdog({
       child,
@@ -238,6 +242,7 @@ test('the watchdog samples a backend that is mid-exit and stops once it is reape
       sample(limit: number): Promise<void>;
       timer?: ReturnType<typeof setInterval>;
     };
+    process.kill(pid, 'SIGKILL');
     await expect.poll(async () => (await readFile(`/proc/${pid}/stat`, 'utf8')).split(') ')[1]?.[0], { timeout: 5_000 }).toBe('Z');
     await sampled.sample(FALLBACK_MEMORY_LIMIT_BYTES);
     expect(closed).toBe(false);
