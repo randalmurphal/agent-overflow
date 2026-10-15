@@ -238,9 +238,9 @@ func (a *App) GetStandingAgent(threadID string) (*store.StandingAgent, error) {
 // it. Only the directory creation makes, `<config>/agents/<agent-id>` (a
 // migrated record's id is its thread's, so its home is that too), is
 // removed; a record naming any other path refuses the delete, and nothing is
-// deleted. A failure's innermost layer, the one a toast shows, carries no
-// path; the layer around it names the recorded home and the expected folder
-// or where the removal stopped.
+// deleted. A failure's innermost layer, the one a toast shows, names the
+// home folder; the layer around it names the expected folder or where the
+// removal stopped.
 func (a *App) assistantHomeForDelete(threadID string) (func() error, error) {
 	agent, found, err := a.store.GetStandingAgent(threadID)
 	if err != nil {
@@ -258,7 +258,7 @@ func (a *App) assistantHomeForDelete(threadID string) (func() error, error) {
 	case a.configDir == "":
 		reason = "the app has no config directory"
 	case filepath.Clean(agent.Home) != want || filepath.Dir(want) != agents:
-		reason = "its home is not its own folder in the app's agents folder"
+		reason = "its home " + agent.Home + " is not its own folder in the app's agents folder"
 	}
 	if reason != "" {
 		return nil, fmt.Errorf("delete the assistant's home %q (expected %s): %w", agent.Home, want,
@@ -275,7 +275,7 @@ func (a *App) assistantHomeForDelete(threadID string) (func() error, error) {
 			at, err = pathErr.Path, pathErr.Err
 		}
 		return fmt.Errorf("remove the assistant's home %q (stopped at %s): %w", want, at,
-			fmt.Errorf("the assistant's home folder could not be removed, so the delete is not finished: %v", err))
+			fmt.Errorf("the assistant's home folder %s could not be removed, so the delete is not finished: %v", want, err))
 	}, nil
 }
 

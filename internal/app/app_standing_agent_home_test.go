@@ -188,10 +188,9 @@ func TestDeletingAnAssistantRefusesAnyOtherHomePath(t *testing.T) {
 			if home != "" && !strings.Contains(err.Error(), home) {
 				t.Fatalf("err = %v, want the recorded home %s named", err, home)
 			}
-			// The toast line is the innermost layer: no path, so the UUID
-			// scrub cannot leave a broken one behind.
+			// The toast line is the innermost layer, and names the folder.
 			chain := errorsx.Chain(err)
-			if line := chain[len(chain)-1]; strings.Contains(line, string(filepath.Separator)) || !strings.HasPrefix(line, "this assistant was not deleted: ") {
+			if line := chain[len(chain)-1]; !strings.HasPrefix(line, "this assistant was not deleted: ") || (home != "" && !strings.Contains(line, home)) {
 				t.Fatalf("toast line = %q", line)
 			}
 			for _, marker := range markers {
@@ -213,8 +212,8 @@ func TestDeletingAnAssistantRefusesAnyOtherHomePath(t *testing.T) {
 }
 
 // A home that cannot be removed leaves the delete unfinished, the record
-// with it, so the next attempt removes the home; the toast line carries no
-// path and the layer around it names where the removal stopped.
+// with it, so the next attempt removes the home; the toast line names the
+// home and the layer around it names where the removal stopped.
 func TestDeletingAnAssistantWhoseHomeCannotBeRemovedFinishesLater(t *testing.T) {
 	t.Parallel()
 	if os.Geteuid() == 0 {
@@ -237,7 +236,7 @@ func TestDeletingAnAssistantWhoseHomeCannotBeRemovedFinishesLater(t *testing.T) 
 	if len(chain) < 2 {
 		t.Fatalf("err = %v, chain = %q", err, chain)
 	}
-	if got := chain[len(chain)-1]; got != "the assistant's home folder could not be removed, so the delete is not finished: permission denied" {
+	if got := chain[len(chain)-1]; got != "the assistant's home folder "+row.Home+" could not be removed, so the delete is not finished: permission denied" {
 		t.Errorf("innermost layer = %q", got)
 	}
 	if !strings.Contains(err.Error(), locked) {
