@@ -348,10 +348,11 @@ test.describe.serial('remote device lifecycle', () => {
     // open settings. Each of those mounts panes whose stores fire passive
     // loads, which is exactly the burst this asserts the absence of.
     //
-    // The composer is asserted once a thread is open, because this page
-    // boots to NO pane: a revoke deletes the device's ui_state bucket on
-    // the backend and the client purges its own copy on the 401, so the
-    // re-paired page does not resurrect the layout the revoked device had.
+    // This page boots with the pane case 1 opened already restored: the
+    // pane layout is frontend-owned, so the purge on the revoke's 401 keeps
+    // it (stores/appStorage.ts) and the reload switches that pane before
+    // anything below is clicked. That restore is part of the boot fan-out
+    // asserted on at the end.
     const rows = phone.getByTestId('thread-row');
     await rows.first().click();
     await expect(phone.getByLabel('Message Input')).toBeDisabled();

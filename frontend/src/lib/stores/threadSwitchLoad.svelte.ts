@@ -3,6 +3,7 @@ import { awaitBackendReplay } from './transportRecovery';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { threadHasScope } from '../transport/entityScopes';
+import { pageGrantsKnown, pageGrantsResolved } from '../transport/scopes';
 import { threadBackend } from '../transport/entityIndex';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import type { Item, Thread } from '../types/models';
@@ -1347,9 +1348,9 @@ export function createThreadSwitchLoad(
    * switch latency; under `Promise.allSettled` the wall-clock cost is
    * bounded by the slowest leg, not their sum. Each leg gen-guards its
    * own pane writes so a thread swap mid-flight invalidates late
-   * resolutions. `switchPromise` and `liveStatePromise` keep their
-   * bespoke shapes (the former logs unconditionally; the latter
-   * consumes the live-state hydration token); the three canonical
+   * resolutions. The operate legs and `liveStatePromise` keep their
+   * bespoke shapes (the former log unconditionally; the latter
+   * consumes the live-state hydration token); the canonical
    * paged/list legs go through `withGenGuard`.
    *
    * Returns `{ liveStateHydrationConsumed }` so the caller can decide
@@ -1374,50 +1375,13 @@ export function createThreadSwitchLoad(
     // Replay arrivals are older than the reads about to leave.
     liveTouchedDuringSync = new Set();
     liveRemovedDuringSync = new Set();
-    // Focus bookkeeping, not a read: SwitchThread stamps the thread read
-    // and AutoResumeThread is a retained no-op, and both ride
-    // `threads:operate`. A session without that grant opens threads all
-    // day, so issuing them anyway would put a refusal — and, for the
-    // first, a toast — on every open. The row the pane already holds
-    // from the thread list is what SwitchThread would have returned.
-    const mayOperate = threadHasScope('threads:operate', newThread.id, newThread.projectId);
-    const switchPromise = (async () => {
-      if (!mayOperate) return;
-      try {
-        const switched = (await withBackendTarget(backend, () => SwitchThread(newThread.id))) as
-          | Thread
-          | undefined;
-        if (gen !== options.getSwitchGeneration()) return;
-        if (switched?.id === newThread.id) {
-          const currentContextWindow = options.getContextWindow();
-          options.setThread(switched);
-          options.setContextWindow(
-            currentContextWindow
-              ? normalizeContextWindowForThread(currentContextWindow, switched)
-              : seedContextWindow(switched),
-          );
-        }
-      } catch (err) {
-        if (isPassiveConnectionFailure(err)) return;
-        console.error('Failed to notify backend of thread switch:', err);
-        addToast('warning', 'Backend was not notified of thread switch');
-      }
-    })();
-
-    const autoResumePromise = (async () => {
-      if (!mayOperate) return;
-      try {
-        await withBackendTarget(backend, () => AutoResumeThread(newThread.id));
-      } catch (err) {
-        // The Go binding only returns an error for the GetThread DB lookup
-        // or a transport failure — both root causes the parallel SwitchThread
-        // call above hits at the same time and surfaces via its own toast.
-        // Session-start failures fire from a backend goroutine through
-        // emitErrorToThread, not this binding's return path. A user-visible
-        // toast here would double-report the same root cause.
-        console.error('Thread auto-resume failed:', err);
-      }
-    })();
+    // HOME's grants arrive with its bootstrap manifest, and a pane restored
+    // from the replica catalog can switch before that. Waiting here would
+    // hold an offline pane loading until its computer returns, so the gated
+    // legs are skipped now and run from the manifest instead.
+    const grantsPending = backend === HOME_BACKEND && !pageGrantsKnown();
+    if (grantsPending) runGatedLegsOnGrants(newThread, gen, backend);
+    const operatePromise = grantsPending ? Promise.resolve() : runOperateLegs(newThread, gen, backend);
 
     // One live-state fetch, two consumers: the apply leg below (the
     // registries half of hydration) and the item leg, which merges the
@@ -1478,13 +1442,84 @@ export function createThreadSwitchLoad(
     );
 
     await Promise.allSettled([
-      switchPromise,
+      operatePromise,
       liveStatePromise,
       loadItemsPromise,
       recentTurnsPromise,
-      autoResumePromise,
     ]);
     return { liveStateHydrationConsumed };
+  }
+
+  /**
+   * Focus bookkeeping, not a read: SwitchThread stamps the thread read
+   * and AutoResumeThread is a retained no-op, and both ride
+   * `threads:operate`. A session without that grant opens threads all
+   * day, so issuing them anyway would put a refusal (and, for the
+   * first, a toast) on every open. The row the pane already holds
+   * from the thread list is what SwitchThread would have returned.
+   */
+  async function runOperateLegs(newThread: Thread, gen: number, backend: BackendKey): Promise<void> {
+    if (!threadHasScope('threads:operate', newThread.id, newThread.projectId)) return;
+    const switchPromise = (async () => {
+      try {
+        const switched = (await withBackendTarget(backend, () => SwitchThread(newThread.id))) as
+          | Thread
+          | undefined;
+        if (gen !== options.getSwitchGeneration()) return;
+        if (switched?.id === newThread.id) {
+          const currentContextWindow = options.getContextWindow();
+          options.setThread(switched);
+          options.setContextWindow(
+            currentContextWindow
+              ? normalizeContextWindowForThread(currentContextWindow, switched)
+              : seedContextWindow(switched),
+          );
+        }
+      } catch (err) {
+        if (isPassiveConnectionFailure(err)) return;
+        console.error('Failed to notify backend of thread switch:', err);
+        addToast('warning', 'Backend was not notified of thread switch');
+      }
+    })();
+
+    const autoResumePromise = (async () => {
+      try {
+        await withBackendTarget(backend, () => AutoResumeThread(newThread.id));
+      } catch (err) {
+        // The Go binding only returns an error for the GetThread DB lookup
+        // or a transport failure, both root causes the parallel SwitchThread
+        // call above hits at the same time and surfaces via its own toast.
+        // Session-start failures fire from a backend goroutine through
+        // emitErrorToThread, not this binding's return path. A user-visible
+        // toast here would double-report the same root cause.
+        console.error('Thread auto-resume failed:', err);
+      }
+    })();
+    await Promise.allSettled([switchPromise, autoResumePromise]);
+  }
+
+  /**
+   * The switch that skipped its gated legs before the manifest. One waiter
+   * per pane however many switches happen first; only the latest switch's
+   * legs run, and only while the pane still holds it.
+   */
+  let switchAwaitingGrants: { thread: Thread; gen: number; backend: BackendKey } | null = null;
+  function runGatedLegsOnGrants(thread: Thread, gen: number, backend: BackendKey): void {
+    const armed = switchAwaitingGrants !== null;
+    switchAwaitingGrants = { thread, gen, backend };
+    if (armed) return;
+    void pageGrantsResolved().then(() => {
+      const pending = switchAwaitingGrants;
+      switchAwaitingGrants = null;
+      if (!pending || pending.gen !== options.getSwitchGeneration()) return;
+      void runOperateLegs(pending.thread, pending.gen, pending.backend);
+      // The live-state leg skipped its snapshot too (startLiveStateFetch).
+      // A refresh re-reads it beside the window its deferred rows merge into.
+      const { id, projectId } = pending.thread;
+      if (threadHasScope('threads:operate', id, projectId) || threadHasScope('approvals:respond', id, projectId)) {
+        refreshScheduler.request({ immediate: true });
+      }
+    });
   }
 
   async function switchThread(newThread: Thread): Promise<void> {
