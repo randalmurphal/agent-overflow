@@ -2162,9 +2162,9 @@ func TestAWakeQueuedJustBeforeAnArchiveGoesBackToItsRequest(t *testing.T) {
 				go func() { archived <- f.app.ArchiveThread(f.caller.ID) }()
 				waitUntil(t, 10*time.Second, func() bool { return f.app.threadLocks().Refs(f.caller.ID) == 2 })
 				f.app.deliverThreadWake(token, tc.late)
-				if row := f.request(t, token); !threadRequestDelivered(row, tc.late) || row.DeliveredHow != store.ThreadWakeQueued {
+				if row := f.request(t, token); !threadRequestDelivered(row, tc.late) || row.DeliveryRoute(tc.late) != store.ThreadWakeQueued {
 					unlock()
-					t.Fatalf("the wake was not queued before the archive: delivered as %q", row.DeliveredHow)
+					t.Fatalf("the wake was not queued before the archive: delivered as %q", row.DeliveryRoute(tc.late))
 				}
 				if live {
 					// The start's own flush, which hands the queue to a
@@ -2253,9 +2253,9 @@ func TestAWakeAStopDropsGoesBackToItsRequest(t *testing.T) {
 					Liveness: newSessionLiveness(time.Now()),
 				})
 				f.app.deliverThreadWake(token, tc.late)
-				if row := f.request(t, token); !threadRequestDelivered(row, tc.late) || row.DeliveredHow != store.ThreadWakeQueued {
+				if row := f.request(t, token); !threadRequestDelivered(row, tc.late) || row.DeliveryRoute(tc.late) != store.ThreadWakeQueued {
 					unlock()
-					t.Fatalf("the wake was not queued before the Stop: delivered as %q", row.DeliveredHow)
+					t.Fatalf("the wake was not queued before the Stop: delivered as %q", row.DeliveryRoute(tc.late))
 				}
 				if err := f.app.StopSession(f.caller.ID); err != nil {
 					unlock()

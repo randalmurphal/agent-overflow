@@ -522,6 +522,91 @@ func TestThreadRequestStatesReadAnAnswerAStatusReplyCarried(t *testing.T) {
 	}
 }
 
+// A late reply a status call collected inline after the first answer came by
+// a wake is its own delivery: the first answer's route and wake row stand, so
+// the Agents row and the ledger still name that wake.
+func TestALateReplyCollectedInlineKeepsTheFirstAnswersWake(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	token := owedWakeSeeds()[0].seed(t, f)
+	f.app.deliverThreadWake(token, false)
+	f.app.waitAgentNoticeWork()
+	envelope := dispatchUnconfirmed(t, f)
+	wireID, _ := envelope["uuid"].(string)
+	text, _ := envelopeText(t, envelope)
+	meta, _ := json.Marshal(map[string]any{"provider_item_id": wireID})
+	if err := f.app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: f.caller.ID, Content: text, Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	wake := f.wakeRow(t, token)
+	if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), time.Now().UnixMilli(), nil); err != nil || !stored {
+		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
+	}
+
+	ctx, pending := withThreadToolsPending(t.Context())
+	report, err := f.adapter().RequestStates(ctx, f.callerIdentity(), threadtools.StatusCall{Tokens: []string{token}})
+	if err != nil || report.Requests[0].Delivered != store.ThreadWakeInline || !strings.Contains(report.Requests[0].Answer, "one more thing") {
+		t.Fatalf("RequestStates = %+v, %v; want the late reply carried inline", report, err)
+	}
+	pending.run(true)
+
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued || row.LateDeliveredHow != store.ThreadWakeInline || row.LateDeliveredAt == 0 {
+		t.Fatalf("routes: first %q, late %q at %d; want queued, then inline", row.DeliveredHow, row.LateDeliveredHow, row.LateDeliveredAt)
+	}
+	states, err := f.app.GetThreadRequestStates(f.caller.ID, []string{token})
+	if err != nil || len(states) != 1 || states[0].WakeItemID != wake.ID || !states[0].Answered {
+		t.Fatalf("GetThreadRequestStates = %+v, %v; want answered in the wake row %q", states, err, wake.ID)
+	}
+	row, ok := agentRowByToken(f.agentRows(t, f.caller.ID).Rows, token)
+	if !ok || row.WakeItemID != wake.ID {
+		t.Fatalf("Agents row = %+v (listed %v); want the wake row %q", row, ok, wake.ID)
+	}
+}
+
+// The other way round: a first answer a status call collected leaves no
+// row, and a late reply that came by a wake names its own.
+func TestALateReplyByAWakeAfterAnInlineAnswerNamesItsWake(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	token := owedWakeSeeds()[0].seed(t, f)
+	ctx, pending := withThreadToolsPending(t.Context())
+	if report, err := f.adapter().RequestStates(ctx, f.callerIdentity(), threadtools.StatusCall{Tokens: []string{token}}); err != nil || report.Requests[0].Delivered != store.ThreadWakeInline {
+		t.Fatalf("RequestStates = %+v, %v; want the answer carried inline", report, err)
+	}
+	pending.run(true)
+	if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), time.Now().UnixMilli(), nil); err != nil || !stored {
+		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
+	}
+	f.app.deliverThreadWake(token, true)
+	f.app.waitAgentNoticeWork()
+	envelope := dispatchUnconfirmed(t, f)
+	wireID, _ := envelope["uuid"].(string)
+	text, _ := envelopeText(t, envelope)
+	meta, _ := json.Marshal(map[string]any{"provider_item_id": wireID})
+	if err := f.app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: f.caller.ID, Content: text, Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+
+	row := f.request(t, token)
+	if row.DeliveredHow != store.ThreadWakeInline || row.LateDeliveredHow != store.ThreadWakeQueued || row.LateConfirmedAt == 0 {
+		t.Fatalf("routes: first %q, late %q confirmed at %d; want inline, then a confirmed wake", row.DeliveredHow, row.LateDeliveredHow, row.LateConfirmedAt)
+	}
+	record, found, err := f.app.findRecordedSend(f.caller.ID, threadWakeSendIDFor(token, true))
+	if err != nil || !found || !record.dispatched {
+		t.Fatalf("late wake row: %+v found %v, %v", record, found, err)
+	}
+	states, err := f.app.GetThreadRequestStates(f.caller.ID, []string{token})
+	if err != nil || len(states) != 1 || states[0].WakeItemID != record.item.ID || !states[0].Answered {
+		t.Fatalf("GetThreadRequestStates = %+v, %v; want answered in the late wake row %q", states, err, record.item.ID)
+	}
+}
+
 // Every request transition reaches the caller's pane as a frame with the row
 // as it stands, and so does the target becoming blocked on a person.
 func TestThreadAgentRowsChangesAreEmitted(t *testing.T) {

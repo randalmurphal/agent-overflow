@@ -1746,6 +1746,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: answerAgentMigrationVersion, Name: "answer_agent", SQL: answerAgentV150SQL},
 	{Version: agentRowsRemoteMigrationVersion, Name: "agent_rows_remote", SQL: agentRowsRemoteV151SQL},
 	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV152SQL, Check: refusePreSyncReceiptOwnTurn},
+	{Version: lateDeliveryRouteMigrationVersion, Name: "late_delivery_route", SQL: lateDeliveryRouteV153SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

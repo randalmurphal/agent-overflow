@@ -603,28 +603,37 @@ func clipLine(text string) string {
 }
 
 // threadRequestDeliveredInline reports that a call's reply carried the
-// request's answer to the caller (requestState, claimInlineDelivery). The mark
-// is written once that reply is, so no wake row follows it.
+// request's answer or its late reply to the caller (requestState,
+// claimInlineDelivery). The mark is written once that reply is, so no wake
+// row follows it.
 func threadRequestDeliveredInline(row store.ThreadRequest) bool {
-	return row.DeliveredHow == store.ThreadWakeInline && row.DeliveredAt != 0
+	return (row.DeliveredHow == store.ThreadWakeInline && row.DeliveredAt != 0) ||
+		(row.LateDeliveredHow == store.ThreadWakeInline && row.LateDeliveredAt != 0)
 }
 
 // threadAgentWakeItem is the caller's timeline row that delivered a
-// settled request's answer, once its provider confirmed it, or empty.
+// settled request's answer, once its provider confirmed it, or empty: the
+// late reply's wake when one carried it, else the first answer's. A reply a
+// call collected inline has no row, so it leaves the other's in place.
 func (a *App) threadAgentWakeItem(row store.ThreadRequest) string {
-	late := row.LateDeliveredAt > 0 && row.LateConfirmedAt > 0
-	if row.DeliveredHow != store.ThreadWakeQueued || (!late && row.ConfirmedAt == 0) {
-		return ""
+	for _, late := range []bool{true, false} {
+		confirmed := row.ConfirmedAt
+		if late {
+			confirmed = row.LateConfirmedAt
+		}
+		if row.DeliveryRoute(late) != store.ThreadWakeQueued || confirmed == 0 {
+			continue
+		}
+		record, found, err := a.findRecordedSend(row.CallerThreadID, threadWakeSendIDFor(row.Token, late))
+		if err != nil {
+			log.Printf("agent rows: find the wake of %s: %v", row.Token, err)
+			return ""
+		}
+		if found && record.dispatched {
+			return record.item.ID
+		}
 	}
-	record, found, err := a.findRecordedSend(row.CallerThreadID, threadWakeSendIDFor(row.Token, late))
-	if err != nil {
-		log.Printf("agent rows: find the wake of %s: %v", row.Token, err)
-		return ""
-	}
-	if !found || !record.dispatched {
-		return ""
-	}
-	return record.item.ID
+	return ""
 }
 
 // parkedRequestTokens lists the tokens a tool call is parked on.
