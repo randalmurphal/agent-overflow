@@ -242,18 +242,18 @@
   let fetchingLater = $state(false);
 
   /**
-   * Bring the run's next older chunk into the pane when no loaded row is
-   * left above the window. Resolves false when the fetch produced nothing
-   * (a failure, already reported to the reader) or the clip went away
-   * while it was in flight; the boundary then reads as it did, and the
-   * reader's next gesture asks again.
+   * Bring `limit` older members into the pane, above the loaded span.
+   * Resolves false when the fetch produced nothing (a failure, already
+   * reported to the reader) or the clip went away while it was in flight;
+   * the boundary then reads as it did, and the reader's next gesture asks
+   * again.
    */
-  async function fetchEarlier(clip: HTMLElement): Promise<boolean> {
+  async function fetchEarlier(clip: HTMLElement, limit: number): Promise<boolean> {
     fetchingEarlier = true;
     try {
       const held = await pane.activityRuns.fetchMembers(run.runId, {
         direction: 'before',
-        limit: ACTIVITY_RUN_CHUNK_ROWS,
+        limit,
       });
       if (held.length === 0) return false;
     } finally {
@@ -278,9 +278,16 @@
     if (!clip || mountingEarlier || hiddenEarlier <= 0) return;
     mountingEarlier = true;
     try {
-      // Nothing loaded above the window, so what `hiddenEarlier` counts is
-      // on the server: fetch first, then grow over the rows that landed.
-      if (run.mountedFrom === 0 && !(await fetchEarlier(clip))) return;
+      // Every step grows by a whole chunk. When fewer rows than that are
+      // loaded above the window and the server holds more, fetch the
+      // shortfall first, then grow over the loaded and fetched rows
+      // together. A failed fetch still mounts the loaded rows; with none
+      // loaded there is nothing to grow over.
+      const shortfall = ACTIVITY_RUN_CHUNK_ROWS - run.mountedFrom;
+      if (shortfall > 0 && run.unshippedBefore > 0) {
+        const fetched = await fetchEarlier(clip, shortfall);
+        if (clip !== clipEl || (!fetched && run.mountedFrom === 0)) return;
+      }
       // Read after the fetch, not before it: the fetched rows land above the
       // window and move no mounted row, while the reader's scrolling and a
       // live append during the round trip are positions this must keep.
