@@ -1,7 +1,7 @@
 import { type ChildProcess } from 'node:child_process';
 import { rm } from 'node:fs/promises';
 
-import type { Page } from '@playwright/test';
+import { test, type Page, type TestInfo } from '@playwright/test';
 
 import {
   type ProcessIdentity,
@@ -119,6 +119,8 @@ export class HarnessApp {
   private processTreeProof?: ProcessTreeProof;
   private processIdentity?: ProcessIdentity;
   private teardownComplete = false;
+  /** The backend's last stderr lines, kept by launchHarness. */
+  private readonly stderrTail: readonly string[];
 
   constructor(
     child: ChildProcess,
@@ -127,7 +129,9 @@ export class HarnessApp {
     memberProof?: ProcessGroupMemberProof,
     treeProof?: ProcessTreeProof,
     identity?: ProcessIdentity,
+    stderrTail: readonly string[] = [],
   ) {
+    this.stderrTail = stderrTail;
     this.child = child;
     this.bootstrap = bootstrap;
     this.url = bootstrap.url;
@@ -531,7 +535,31 @@ export class HarnessApp {
     this.processTreeProof = state.treeProof;
     this.teardownComplete = state.complete;
     this.closed = state.closed;
+    // A spec stops the backends it launched before Playwright knows whether
+    // it failed, so every stop inside a test attaches the tail. A body
+    // attachment is held in memory rather than written to the output
+    // directory, and the list reporter and the retain-on-failure trace show
+    // it only for a failure.
+    let info: TestInfo | undefined;
+    try {
+      info = test.info();
+    } catch {
+      // Outside a test: a worker fixture's teardown or a driver script.
+    }
+    if (info) await this.attachStderr(info);
     return result;
+  }
+
+  /** Attach the backend's stderr tail to a test, so a failure carries the backend's side. */
+  async attachStderr(info: TestInfo): Promise<void> {
+    const name = `backend ${this.bootstrap.pid} stderr`;
+    // A worker restarted after a failure stops its backend under the failed
+    // test's info, which the fixture has already given the tail.
+    if (info.attachments.some((attachment) => attachment.name === name)) return;
+    await info.attach(name, {
+      body: this.stderrTail.join('\n'),
+      contentType: 'text/plain',
+    });
   }
 
   /** Terminate the backend and remove the temp data dir it owned. */

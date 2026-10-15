@@ -2,7 +2,7 @@
 // Both hosts use isolated homes and mock providers; the draft executes no turn.
 import { test, expect } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
-import { headlessPairing } from './headless-pairing-helpers.js';
+import { CONNECTED_AFTER_CONFIRM, headlessPairing } from './headless-pairing-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string }> }
@@ -39,7 +39,7 @@ export function draftProjectTransferFlow(): void {
       const verification = page.getByLabel('Verification number');
       await expect(verification).toBeVisible();
       await pairing.confirm((await verification.textContent())!.trim());
-      await expect(page.getByTestId('attached-system')).toContainText('Connected');
+      await expect(page.getByTestId('attached-system')).toContainText('Connected', CONNECTED_AFTER_CONFIRM);
       await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
       await page.getByTestId('thread-row-title').filter({ hasText: /^Moving draft$/ }).click();
       const input = page.getByRole('textbox', { name: 'Message Input', exact: true });
