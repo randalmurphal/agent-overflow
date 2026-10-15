@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -61,10 +62,12 @@ func TestListStandingAgentWakesListsAgentsOnly(t *testing.T) {
 	second := noticeTestThread(t, a, "changes-agent-b")
 	plain := noticeTestThread(t, a, "changes-plain")
 	now := time.Now()
-	for _, id := range []string{first.ID, second.ID} {
-		if _, err := a.store.PromoteStandingAgent(id, t.TempDir(), now.UnixMilli()); err != nil {
+	for i, id := range []string{first.ID, second.ID} {
+		// Assistant names are unique; the fixture titles every thread alike.
+		if err := a.store.UpdateTitle(id, "Agent "+strconv.Itoa(i)); err != nil {
 			t.Fatal(err)
 		}
+		testAssistant(t, a, id)
 	}
 	next := now.Add(time.Hour).UnixMilli()
 	registerTestWake(t, a, store.AgentWake{ThreadID: first.ID, Kind: store.AgentWakeLoop, Label: "z-board", Note: "n", IntervalSeconds: 3600, NextAt: next})

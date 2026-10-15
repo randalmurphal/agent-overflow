@@ -167,10 +167,7 @@ func TestWakeNowFiresAWatchThroughTheSweep(t *testing.T) {
 	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	thread := noticeTestThread(t, a, "rows-fire")
-	home := t.TempDir()
-	if _, err := a.store.PromoteStandingAgent(thread.ID, home, time.Now().UnixMilli()); err != nil {
-		t.Fatal(err)
-	}
+	testAssistant(t, a, thread.ID)
 	next := time.Now().Add(time.Hour).UnixMilli()
 	watch := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "quiet",
 		Command: "echo 'quiet: nothing new' >&2", IntervalSeconds: 3600, TimeoutSeconds: 60, NextAt: next})

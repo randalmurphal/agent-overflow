@@ -675,14 +675,12 @@ func TestArchivingAStoppedThreadWithdrawsWhatTheAppQueued(t *testing.T) {
 }
 
 // Cancelling a loop or watch takes back its wake a failed start left queued,
-// whichever door cancels it (the tool, a demotion, a move), and leaves other
-// rows' wakes alone.
+// whichever door cancels it (the tool, a move), and leaves other rows' wakes
+// alone.
 func TestCancellingAStoppedThreadsLoopOrWatchWithdrawsItsHeldWake(t *testing.T) {
 	t.Parallel()
 	a, thread := heldNoticeFixture(t, "notice-cancel-stopped")
-	if _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
-		t.Fatalf("PromoteStandingAgent: %v", err)
-	}
+	testAssistant(t, a, thread.ID)
 	board := holdAgentWake(t, a, thread, store.AgentWakeLoop, "board")
 	inbox := holdAgentWake(t, a, thread, store.AgentWakeLoop, "inbox")
 	feed := holdAgentWake(t, a, thread, store.AgentWakeWatch, "feed")
@@ -702,12 +700,6 @@ func TestCancellingAStoppedThreadsLoopOrWatchWithdrawsItsHeldWake(t *testing.T) 
 	}
 	if got, want := held(), []string{agentWakeSendID(inbox.ID, 1), agentWakeSendID(feed.ID, 1)}; !slices.Equal(got, want) {
 		t.Fatalf("after cancelling %s: %q, want %q", board.Label, got, want)
-	}
-	if err := a.DemoteStandingAgent(thread.ID); err != nil {
-		t.Fatalf("DemoteStandingAgent: %v", err)
-	}
-	if got, want := held(), []string{agentWakeSendID(inbox.ID, 1)}; !slices.Equal(got, want) {
-		t.Fatalf("after demoting away the watch: %q, want %q", got, want)
 	}
 	if err := a.stopThreadRequestsForMovedThread(context.Background(), thread.ID, ""); err != nil {
 		t.Fatalf("stopThreadRequestsForMovedThread: %v", err)
@@ -742,14 +734,12 @@ func TestARetryForAWakeNoLongerWantedWithdrawsTheHeldWake(t *testing.T) {
 }
 
 // A message a withdrawal could not take back would reach the agent at the
-// next start, so the archive, the demotion and the cancel tool report it
-// rather than return as if it were gone.
+// next start, so the archive and the cancel tool report it rather than
+// return as if it were gone.
 func TestAWithdrawalThatFailsIsReported(t *testing.T) {
 	t.Parallel()
 	a, thread := heldNoticeFixture(t, "notice-withdraw-fails")
-	if _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
-		t.Fatalf("PromoteStandingAgent: %v", err)
-	}
+	testAssistant(t, a, thread.ID)
 	holdAgentWake(t, a, thread, store.AgentWakeLoop, "board")
 	holdAgentWake(t, a, thread, store.AgentWakeWatch, "feed")
 	// Send admission refuses every removal from here on, as it does once
@@ -761,9 +751,6 @@ func TestAWithdrawalThatFailsIsReported(t *testing.T) {
 	if _, _, err := (threadToolsApp{app: a}).CancelWake(context.Background(), threadtools.Caller{ThreadID: thread.ID}, "board", ""); err == nil ||
 		!strings.Contains(err.Error(), `the loop "board" is cancelled, but its wake already queued could not be taken back`) {
 		t.Fatalf("CancelWake: %v, want the wake left queued reported", err)
-	}
-	if err := a.DemoteStandingAgent(thread.ID); err == nil || !strings.Contains(err.Error(), "withdraw agent-wake:wake-feed:1") {
-		t.Fatalf("DemoteStandingAgent: %v, want the wake left queued reported", err)
 	}
 	if err := a.stopArchivedThreadWork(context.Background(), thread.ID); err == nil || !strings.Contains(err.Error(), "withdraw agent-wake:wake-board:1") {
 		t.Fatalf("stopArchivedThreadWork: %v, want the wakes left queued reported", err)

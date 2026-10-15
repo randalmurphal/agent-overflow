@@ -35,9 +35,7 @@ func TestBootRecoveryTellsTheTray(t *testing.T) {
 	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	thread := noticeTestThread(t, a, "emits-recover")
-	if _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
-		t.Fatal(err)
-	}
+	testAssistant(t, a, thread.ID)
 	next := time.Now().Add(time.Hour).UnixMilli()
 	// A quiet watch: the rerun the boot pass starts wakes nothing.
 	watch := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "quiet", Command: "true", IntervalSeconds: 3600, TimeoutSeconds: 60, NextAt: next})
@@ -75,9 +73,7 @@ func TestALongRunningWatchStartTellsTheTray(t *testing.T) {
 	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	thread := noticeTestThread(t, a, "emits-process")
-	if _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
-		t.Fatal(err)
-	}
+	testAssistant(t, a, thread.ID)
 	watch := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "tail", Command: "exec sleep 60", LongRunning: true})
 	t.Cleanup(func() { a.stopAgentWakeRunsForThread(thread.ID) })
 
@@ -132,20 +128,21 @@ func TestARemindToolCallTellsTheTray(t *testing.T) {
 	}
 }
 
-// Demoting a standing agent cancels its watches, and the tray drops each.
-func TestDemotingAnAgentTellsTheTray(t *testing.T) {
+// A handoff moves an assistant's watches: the tray drops each from the old
+// thread and lists it on the new one.
+func TestAHandOffTellsTheTray(t *testing.T) {
 	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
-	thread := noticeTestThread(t, a, "emits-demote")
-	if _, err := a.store.PromoteStandingAgent(thread.ID, t.TempDir(), time.Now().UnixMilli()); err != nil {
-		t.Fatal(err)
-	}
+	thread := noticeTestThread(t, a, "emits-handoff")
+	testAssistant(t, a, thread.ID)
 	watch := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "poll", Command: "true", IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})
 
-	if err := a.DemoteStandingAgent(thread.ID); err != nil {
-		t.Fatalf("DemoteStandingAgent: %v", err)
+	successor, err := a.StartNextAssistantThread(t.Context(), thread.ID)
+	if err != nil {
+		t.Fatalf("StartNextAssistantThread: %v", err)
 	}
 	awaitWakeChange(t, rec, thread.ID, watch.ID, func(c ThreadWakeChange) bool { return c.Removed && c.Row == nil })
+	awaitWakeChange(t, rec, successor.ID, watch.ID, func(c ThreadWakeChange) bool { return c.Row != nil && c.Row.Label == "poll" })
 }
 
 // A wake that was queued, and recorded delivered, but that the session

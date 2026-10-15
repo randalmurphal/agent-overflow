@@ -43,7 +43,7 @@
   },
   {
     "name": "a standing agent's reply",
-    "text": "Reply from \"Worker\" (t-worker) [token tok-1]:\nThat thread is a standing agent, a thread the user promoted. Its role, in its own words: \"Runs the builds.\"\nDone.",
+    "text": "Reply from \"Worker\" (t-worker) [token tok-1]:\nThat thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\nDone.",
     "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
     "label": "Worker: Done."
   },

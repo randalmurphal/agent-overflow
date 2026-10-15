@@ -128,6 +128,11 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 	if old.WorktreePath == "" {
 		opts.WorkspaceOverride = old.WorkspacePath
 	}
+	endWork, err := a.workAdmission.begin(ctx)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	defer endWork()
 	successor, err := a.createThreadRow(ctx, opts, false)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("create the assistant's next thread: %w", err)
