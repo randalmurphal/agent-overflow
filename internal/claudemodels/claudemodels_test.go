@@ -585,6 +585,35 @@ func TestCatalogAliasesFollowTheServedAnswer(t *testing.T) {
 	}
 }
 
+// TestCatalogReportsModelReadsTheServedWireRows pins that ReportsModel answers
+// from the wire rows behind the served answer, folds spellings onto the slug,
+// and does not count a shipped catalog model the CLI never listed.
+func TestCatalogReportsModelReadsTheServedWireRows(t *testing.T) {
+	catalog := NewCatalog()
+	if catalog.ReportsModel(testKey("account-a"), "claude-haiku-4-5") {
+		t.Fatal("ReportsModel before any probe = true")
+	}
+	catalog.Store(testKey("account-a"), []claude.WireModel{
+		{Value: "haiku", ResolvedModel: "claude-haiku-5-5"},
+		{Value: "claude-haiku-4-5-20251001", ResolvedModel: "claude-haiku-4-5-20251001"},
+	}, nil)
+	for _, slug := range []string{"claude-haiku-5-5", "claude-haiku-4-5"} {
+		if !catalog.ReportsModel(testKey("account-a"), slug) {
+			t.Errorf("ReportsModel(own, %s) = false", slug)
+		}
+		if !catalog.ReportsModel(testKey("account-b"), slug) {
+			t.Errorf("ReportsModel(unprobed, same binary, %s) = false", slug)
+		}
+	}
+	if catalog.ReportsModel(testKey("account-a"), "claude-opus-4-5") {
+		t.Error("a shipped model the CLI did not list was reported")
+	}
+	other := provider.ProbeCacheKey{Binary: "/opt/claude", AccountID: "account-a", WorkDir: "/home/u"}
+	if catalog.ReportsModel(other, "claude-haiku-5-5") {
+		t.Error("another binary's rows were used")
+	}
+}
+
 // TestCatalogDriftIsReportedOncePerDistinctReport backs "a log line, once per
 // probe result, never a toast": a probe that repeats the same story says
 // nothing the second time, and a probe that tells a NEW story is heard.

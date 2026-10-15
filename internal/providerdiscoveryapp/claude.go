@@ -106,6 +106,12 @@ func (s *Service) ClaudeModelAliases() map[string]string {
 	return claudecatalog.ModelAliases(s.ClaudeProbeKey())
 }
 
+// ClaudeReportsModel reports whether the current Claude identity's probe listed
+// slug, false until a probe has reported.
+func (s *Service) ClaudeReportsModel(slug string) bool {
+	return claudecatalog.ReportsModel(s.ClaudeProbeKey(), slug)
+}
+
 // ClaudeCommands returns the last probe-reported command list for the current
 // Claude identity. Probed preserves the missing-vs-empty distinction.
 func (s *Service) ClaudeCommands() (commands []provider.SlashCommand, probed bool) {

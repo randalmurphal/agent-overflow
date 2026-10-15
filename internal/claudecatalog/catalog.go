@@ -108,6 +108,12 @@ func ModelAliases(key provider.ProbeCacheKey) map[string]string {
 	return modelCatalog().AliasesFor(key)
 }
 
+// ReportsModel reports whether the Claude CLI listed slug for one probe
+// identity (claudemodels.Catalog.ReportsModel).
+func ReportsModel(key provider.ProbeCacheKey, slug string) bool {
+	return modelCatalog().ReportsModel(key, slug)
+}
+
 // Models returns the picker catalog for one Claude-family provider, and
 // whether a probe answer backs it. A false enriched is the shipped list.
 func Models(key provider.ProbeCacheKey, providerName string) (models []provider.ModelInfo, enriched bool) {

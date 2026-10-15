@@ -845,6 +845,28 @@ func (c *Catalog) AliasesFor(key provider.ProbeCacheKey) map[string]string {
 	return nil
 }
 
+// ReportsModel reports whether the wire rows behind ModelsFor's answer for key
+// name slug: the key's own entry, else the same binary's newest. False covers
+// both "no probe has reported" and "the CLI did not list it"; it is evidence
+// for choosing a model the CLI is known to run, never for removing one.
+func (c *Catalog) ReportsModel(key provider.ProbeCacheKey, slug string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key.String()]
+	if !ok {
+		entry, ok = c.newestForBinaryLocked(key.Binary)
+	}
+	if !ok {
+		return false
+	}
+	for _, row := range entry.wire {
+		if row.CanonicalSlug() == slug {
+			return true
+		}
+	}
+	return false
+}
+
 // newestForBinaryLocked finds the most recently stored entry learned from one
 // binary path. Caller holds mu.
 func (c *Catalog) newestForBinaryLocked(binary string) (catalogEntry, bool) {
