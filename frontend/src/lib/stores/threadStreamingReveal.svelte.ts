@@ -181,8 +181,14 @@ export interface ThreadStreamingReveal {
    * new suffix into the smoother before the replacement becomes observable.
    * The required commit callback installs the result; gate synchronization
    * belongs to this operation and runs even if preparation or commit throws.
+   * `opensStreams` marks live provider upserts, whose streaming rows gate
+   * from this commit (`RevealRouting.openStreams`).
    */
-  withReconciledItems<T>(incoming: readonly Item[], commit: (items: Item[]) => T): T;
+  withReconciledItems<T>(
+    incoming: readonly Item[],
+    commit: (items: Item[]) => T,
+    opensStreams?: boolean,
+  ): T;
   disposeSmootherFor(itemId: string): void;
   disposeSmoothersForItems(items: readonly { id: string }[]): void;
   disposeAll(): void;
@@ -459,12 +465,17 @@ export function createThreadStreamingReveal(
     return prepared ?? incoming as Item[];
   }
 
-  function withReconciledItems<T>(incoming: readonly Item[], commit: (items: Item[]) => T): T {
+  function withReconciledItems<T>(
+    incoming: readonly Item[],
+    commit: (items: Item[]) => T,
+    opensStreams = false,
+  ): T {
     let result!: T;
     gate.mutateSmoothersAndRecompute('timeline item reconciliation', () => {
       const prepared = prepareItemReplacements(incoming);
       result = commit(prepared);
       routing.afterRowsCommitted(prepared);
+      if (opensStreams) routing.openStreams(prepared);
     });
     return result;
   }
