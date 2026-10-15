@@ -100,6 +100,10 @@ func (t *migratedTemplate) load(ctx context.Context, parent string) ([]byte, err
 	return image, nil
 }
 
+// templateBuildOpened, when set by a test, sees the store
+// buildMigratedImage opened before the build closes it.
+var templateBuildOpened func(*Store)
+
 // buildMigratedImage migrates a new database in dir and returns its file.
 // The identity row is deleted first so each copy mints its own when it
 // opens (ensureStoreIdentity). Close's TRUNCATE checkpoint moves the WAL
@@ -110,6 +114,9 @@ func buildMigratedImage(ctx context.Context, dir string) ([]byte, error) {
 	s, err := NewWithOptions(path, Options{Context: ctx, scratch: true})
 	if err != nil {
 		return nil, err
+	}
+	if templateBuildOpened != nil {
+		templateBuildOpened(s)
 	}
 	_, err = s.db.Exec(`DELETE FROM store_meta`)
 	if err != nil {

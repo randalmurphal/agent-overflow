@@ -103,6 +103,24 @@ func TestNewScratchFromTemplateSyncsNothing(t *testing.T) {
 	}
 }
 
+// The build replays every migration, so it is the scratch work that waited
+// longest behind other writers' flushes.
+func TestMigratedImageBuildSyncsNothing(t *testing.T) {
+	synchronous := -1
+	templateBuildOpened = func(s *Store) {
+		if err := s.db.QueryRow("PRAGMA synchronous").Scan(&synchronous); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { templateBuildOpened = nil })
+	if _, err := buildMigratedImage(context.Background(), t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if synchronous != 0 {
+		t.Fatalf("template build store: synchronous = %d, want 0", synchronous)
+	}
+}
+
 func TestNewScratchFromTemplateMatchesAFreshMigration(t *testing.T) {
 	fresh, err := New(filepath.Join(t.TempDir(), "fresh.db"))
 	if err != nil {
