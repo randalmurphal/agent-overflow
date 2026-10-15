@@ -536,6 +536,39 @@ describe('PaneHost', () => {
     expect(scrollLeftOf()).toBe(800);
   });
 
+  it('a reveal glide yields to a scroll it did not make', async () => {
+    registerPaneForTest('a', createThreadPane({ paneId: 'a' }));
+    registerPaneForTest('b', createThreadPane({ paneId: 'b' }));
+    registerPaneForTest('c', createThreadPane({ paneId: 'c' }));
+    setPaneLayoutItemsForTest([
+      { id: 'a', paneId: 'a', kind: 'thread', widthPx: 1 },
+      { id: 'b', paneId: 'b', kind: 'thread', widthPx: 1 },
+      { id: 'c', paneId: 'c', kind: 'thread', widthPx: 1 },
+    ]);
+    focusPane('a');
+
+    const pump = installFramePump();
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const scrollLeftOf = stubStripGeometry(host, 400, 1200);
+    const c = rendered.container.querySelector<HTMLElement>('[data-pane-id="c"]');
+    if (!c) throw new Error('expected pane c');
+    stubPaneOffsets(c, 800, 400);
+    pump.frame();
+
+    await fireEvent.pointerDown(c);
+    pump.frame();
+    pump.frame();
+    expect(scrollLeftOf()).toBeGreaterThan(0);
+    expect(scrollLeftOf()).toBeLessThan(800);
+
+    // A scroll-into-view, scrollbar drag or keyboard scroll moves the
+    // strip mid-glide; the next frames leave it where that put it.
+    host.scrollLeft = 120;
+    pump.pumpUntilIdle();
+    expect(scrollLeftOf()).toBe(120);
+  });
+
   it('publishes and clears measured widths by pane id', () => {
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
