@@ -4706,8 +4706,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           turns: [
             {
               steps: [
-                // Each next prompt waits for the agent's turn to end, or Codex
+                // Each prompt waits for the agent's turn to end, or Codex
                 // would steer it into that turn rather than start one.
+                { gate: 'then-ask-target' },
                 askStep('Target', 'Which environment should release 4.2 go to?', ['staging', 'production'], [
                   { gate: 'then-approve' },
                   {
@@ -4754,10 +4755,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await harness.open(page);
       await harness.rpc('StartSession', agent);
+      const spawnTurnsBefore = agentTurns();
       await harness.rpc('SendMessage', agent, 'ship release 4.2', null);
       const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: agentP.path });
       expect(spawn.isError).toBe(false);
       const worker = spawn.value!.thread_id;
+      await nextPromptAfterTurn(spawnTurnsBefore, 'then-ask-target');
       const workerDot = page
         .getByTestId('thread-row')
         .filter({ hasText: 'Release worker' })
