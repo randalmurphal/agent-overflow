@@ -1409,6 +1409,12 @@ handling is a queue at priority `"next"`:
 by comparing the wire round open when the `queued` ack landed against the
 one open at `started` (`internal/triage/command_lifecycle.go`), because
 the enqueue-time round is not recoverable after the fact.
+A thread request's settlement is bound to the turn its message was
+delivered into, read off `started`: the turn open then, or, for a held
+message whose `started` precedes its own `system/init`, the next turn to
+open. A message dispatched with no turn running reserved its own turn, and
+a `started` for it inside another message's round waits for that turn,
+which its echo opens when no init does (`internal/triage/send_delivery.go`).
 
 ### ⚠ The `priority` field is known and deliberately unused
 

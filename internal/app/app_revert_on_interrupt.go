@@ -176,9 +176,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 			a.triage.ClearTurnReverted(threadID)
 		}
 		for _, r := range owed.requests {
-			if r.returned {
-				a.threadTools().markRequestRunning(r.token, threadID, userItem)
-			}
+			a.bindRequestDelivery(r.token, threadID, userItem.ID, userItem.TurnIndex, true)
 		}
 	}
 

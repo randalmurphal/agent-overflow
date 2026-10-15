@@ -198,7 +198,7 @@ func (c *session) stopWake(ctx context.Context, label, kind string) (any, error)
 			Note: fmt.Sprintf("This thread has no live %s named %q; nothing was stopped. thread_status lists what it has.", kind, label)}, nil
 	}
 	return cancelResult{Label: label, Kind: state.Kind, State: "cancelled", Effect: EffectWakeCancelled,
-		Note: cancelNote(EffectWakeCancelled)}, nil
+		Note: cancelNote(EffectWakeCancelled, false)}, nil
 }
 
 func wakeLabel(raw string) (string, error) {

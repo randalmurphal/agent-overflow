@@ -151,7 +151,7 @@ describe('AO thread tool rows', () => {
       input: { thread_id: CHILD, message: 'm' },
       ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'queued', outcome: 'queued' },
     });
-    const hint = (view: ReturnType<typeof render>) => view.getByTestId('tool-call-card-ao-live-hint').textContent;
+    const hint = (view: { getByTestId: (id: string) => HTMLElement }) => view.getByTestId('tool-call-card-ao-live-hint').textContent;
     const listed = (wakeItemId: string) => ({ token: TOKEN, callerThreadId: THREAD, kind: 'send', threadId: CHILD, title: 'Docs slice', state: 'finished', wakeItemId }) as ThreadAgentRow;
     const wake = makeItem({
       id: 'wake-1', threadId: THREAD, kind: 'user_text',

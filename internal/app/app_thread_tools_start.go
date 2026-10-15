@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -589,10 +590,13 @@ func (t threadToolsApp) failRequest(token string, cause error) error {
 //
 // The send is composer-shaped on purpose: a busy thread queues the message at
 // its turn boundary instead of interrupting it, and an idle one starts a turn
-// now. The receipt moves to `running` when the message reaches the provider:
-// from the returned row on the idle path, and from the queue's durable
-// settlement on the queued one, so a message merged into another queued send
-// still reports the turn it joined.
+// now. The receipt moves to `running` when the message reaches the provider.
+// On the idle path the message opens its own turn, which binds the receipt at
+// once. On the queued path the provider still decides the turn: Claude can
+// drain the message into the running turn or hold it for a turn of its own,
+// so the receipt is bound only when triage reports the delivery
+// (bindDeliveredRequests), and a message merged into another queued send is
+// bound to the turn they ran in together.
 func (t threadToolsApp) dispatchRequest(
 	ctx context.Context, origin threadRequestOrigin, token, kind, targetThreadID, text string, wantsAnswer bool,
 ) error {
@@ -632,13 +636,14 @@ func (t threadToolsApp) dispatchRequest(
 		return err
 	}
 	if item.ID != "" {
-		t.markRequestRunning(token, targetThreadID, item)
+		// Sent to an idle thread, the message opened its own turn.
+		t.app.bindRequestDelivery(token, targetThreadID, item.ID, item.TurnIndex, true)
 	}
 	return nil
 }
 
-// requestDispatched settles a queued request message once it is durable: it
-// binds the receipt to the turn that consumed the message.
+// requestDispatched moves a queued request's receipt to `running` once its
+// message is durable and with the provider (markRequestDispatched).
 func (t threadToolsApp) requestDispatched(token, targetThreadID string) {
 	record, found, err := t.app.findRecordedSend(targetThreadID, threadRequestSendID(token))
 	if err != nil {
@@ -646,17 +651,17 @@ func (t threadToolsApp) requestDispatched(token, targetThreadID string) {
 		return
 	}
 	if !found || !record.dispatched {
-		// The message did not reach the provider: a restart, or a session
-		// end that gave it back to its queue (requeueRequest). Nothing ran,
-		// so the receipt stays `accepted`.
+		// The message did not reach the provider: it was restored instead of
+		// being sent (a session death, a restart). Nothing ran, so the
+		// receipt stays `accepted`.
 		return
 	}
-	t.markRequestRunning(token, targetThreadID, record.item)
+	t.markRequestDispatched(token, targetThreadID, record.item.ID)
 }
 
-// returnRequest takes a request whose message a turn did not take in back to
-// `accepted`: a person's Stop un-sent the turn, or the session ended before
-// the agent read it. Nothing answered it, so its sender is told nothing; the
+// returnRequest takes a request whose message a person's Stop un-sent back to
+// `accepted`, before the interrupt. Nothing answered it, so its sender is told
+// nothing; the
 // request is owed again and requeueRequest puts its message back on the
 // queue. It reports false when the request was settled or cancelled first,
 // and then it owes nothing. It takes the token's settle lock, so a turn end
@@ -682,8 +687,8 @@ func (t threadToolsApp) returnRequest(token string) bool {
 
 // requeueRequest puts a returned request's message (body, footer included)
 // back on its target's queue, attributed as dispatchRequest attributed it. It
-// is held: the Stop or the session end that gave it back does not start a
-// turn for it, and the thread's next turn boundary or session start sends it.
+// is held: the Stop that gave it back does not start a turn for it, and the
+// thread's next turn boundary or session start sends it.
 func (t threadToolsApp) requeueRequest(token, targetThreadID, body string) error {
 	receipt, found, err := t.app.store.GetThreadRequestReceipt(token)
 	if err != nil {
@@ -712,44 +717,115 @@ func (t threadToolsApp) requeueRequest(token, targetThreadID, body string) error
 	return nil
 }
 
-// markRequestRunning binds the receipt to the turn that consumed its message.
-// Until it applies nothing can settle the request, which is exactly right:
-// the message is still on a queue.
+// markRequestDispatched moves the receipt to `running` once its queued
+// message is with the provider, with no turn bound: the provider has not
+// said yet which turn will read it, and no turn end settles the receipt
+// until bindRequestDelivery names one. A reply in the meantime still
+// settles it.
+//
+// The observer's gate is set under the token's settle lock BEFORE the row,
+// as bindRequestDelivery does, so the session-end backstop
+// (settleReceiptsForEndedSession) sees this receipt.
+func (t threadToolsApp) markRequestDispatched(token, targetThreadID, messageItemID string) {
+	unlock := t.app.threadRequestSettleLock(token)
+	defer unlock()
+	t.app.noteReceiptRunning(targetThreadID, token)
+	if _, err := t.app.store.MarkThreadReceiptDispatched(token, messageItemID); err != nil {
+		log.Printf("thread tools: mark receipt %s dispatched: %v", token, err)
+		return
+	}
+	if _, err := t.app.store.AdvanceThreadRequestState(token, store.ThreadRequestAccepted, store.ThreadRequestRunning); err != nil {
+		log.Printf("thread tools: advance request %s to running: %v", token, err)
+	}
+}
+
+// bindDeliveredRequests binds every request a delivered send carries to the
+// turn the provider delivered it into. A joined message carries several, and
+// they share the turn. It is triage's send-delivered hook, so it runs on the
+// provider read loop. A send taken in before its turn opened binds nothing
+// yet; its delivery is reported again when that turn opens.
+func (a *App) bindDeliveredRequests(threadID string, delivery triage.SendDelivery) {
+	for _, sendID := range delivery.SendIDs {
+		token, ok := strings.CutPrefix(sendID, threadRequestSendIDPrefix)
+		if !ok || token == "" {
+			continue
+		}
+		if delivery.AwaitingTurn {
+			a.noteReceiptTakenIn(threadID, token)
+			continue
+		}
+		if delivery.Rebind {
+			a.rebindRequestDelivery(token, threadID, delivery.UserItemID, delivery.ReboundFrom, delivery.TurnIndex, delivery.OwnTurn)
+			continue
+		}
+		a.bindRequestDelivery(token, threadID, delivery.UserItemID, delivery.TurnIndex, delivery.OwnTurn)
+	}
+}
+
+// rebindRequestDelivery moves the receipt from a turn a merge fold emptied to
+// the turn that ran its message (triage.SendDelivery.Rebind). The store moves
+// it only from a turn that never ran, so a receipt bound anywhere else is left
+// alone. It takes the settle lock as bindRequestDelivery does.
+func (a *App) rebindRequestDelivery(token, targetThreadID, messageItemID string, fromIndex, turnIndex int, ownTurn bool) {
+	t := a.threadTools()
+	var work threadSettlementWork
+	func() {
+		unlock := a.threadRequestSettleLock(token)
+		defer unlock()
+		moved, err := a.store.RebindThreadReceiptTurn(token, messageItemID, targetThreadID, fromIndex,
+			threadRequestTurnKey(targetThreadID, fromIndex), threadRequestTurnKey(targetThreadID, turnIndex), ownTurn)
+		if err != nil {
+			log.Printf("thread tools: rebind receipt %s to its turn: %v", token, err)
+			return
+		}
+		if moved {
+			work = t.settleIfTurnAlreadyEnded(token, targetThreadID, turnIndex)
+		}
+	}()
+	a.runThreadSettlementWorkDetached(work)
+}
+
+// bindRequestDelivery binds the receipt to the turn its message was delivered
+// into, which is the only turn whose end settles it, and records whether that
+// turn opened for the message (ownTurn), which is the only turn a cancel may
+// interrupt. It is the one place the
+// binding is written, and the first delivery wins (BindThreadReceiptTurn).
 //
 // It runs under the token's settle lock, so the observer's gate and the row
 // transition are one step as far as a turn end is concerned: without that the
-// observer could read the receipt as `accepted`, decide there is nothing to
+// observer could read the receipt as unbound, decide there is nothing to
 // watch, and drop the gate the write is about to need. A turn that finished
 // before the binding landed is settled here, because by then no turn end is
 // coming.
-func (t threadToolsApp) markRequestRunning(token, targetThreadID string, item store.Item) {
+func (a *App) bindRequestDelivery(token, targetThreadID, messageItemID string, turnIndex int, ownTurn bool) {
+	t := a.threadTools()
 	var work threadSettlementWork
 	func() {
-		unlock := t.app.threadRequestSettleLock(token)
+		unlock := a.threadRequestSettleLock(token)
 		defer unlock()
 		// The observer's gate is set BEFORE the row, so a turn that ends
 		// between the two still reaches this token. The gate only says
 		// "look"; the store row says whether there is anything to settle.
-		t.app.noteReceiptRunning(targetThreadID, token)
-		bound, err := t.app.store.MarkThreadReceiptRunning(token, item.ID, threadRequestTurnKey(targetThreadID, item.TurnIndex))
+		a.noteReceiptRunning(targetThreadID, token)
+		bound, err := a.store.BindThreadReceiptTurn(token, messageItemID, threadRequestTurnKey(targetThreadID, turnIndex), ownTurn)
 		if err != nil {
-			log.Printf("thread tools: mark receipt %s running: %v", token, err)
+			log.Printf("thread tools: bind receipt %s to its turn: %v", token, err)
 			return
 		}
-		if _, err := t.app.store.AdvanceThreadRequestState(token, store.ThreadRequestAccepted, store.ThreadRequestRunning); err != nil {
+		if _, err := a.store.AdvanceThreadRequestState(token, store.ThreadRequestAccepted, store.ThreadRequestRunning); err != nil {
 			log.Printf("thread tools: advance request %s to running: %v", token, err)
 		}
 		if !bound {
-			// The receipt was cancelled or settled while the message was on
-			// its way to the provider. Whoever settled it owns it.
+			// Bound by an earlier delivery, or cancelled or settled while the
+			// message was on its way. Whoever did that owns it.
 			return
 		}
-		work = t.settleIfTurnAlreadyEnded(token, targetThreadID, item.TurnIndex)
+		work = t.settleIfTurnAlreadyEnded(token, targetThreadID, turnIndex)
 	}()
-	// This runs inside the target thread's own send or queue dispatch, which
-	// holds that thread's locks. The deferred work takes thread locks of its
-	// own, so it never runs on this goroutine.
-	t.app.runThreadSettlementWorkDetached(work)
+	// This runs inside the target thread's own send or on its provider read
+	// loop, which hold that thread's locks. The deferred work takes thread
+	// locks of its own, so it never runs on this goroutine.
+	a.runThreadSettlementWorkDetached(work)
 }
 
 // settleIfTurnAlreadyEnded settles a receipt whose turn completed before the
@@ -766,7 +842,7 @@ func (t threadToolsApp) settleIfTurnAlreadyEnded(token, targetThreadID string, t
 	if !found || turn.CompletedAt == nil {
 		return threadSettlementWork{}
 	}
-	settlement, err := t.app.turnSettlement(targetThreadID, turn, false)
+	settlement, err := t.app.turnSettlement(targetThreadID, turn)
 	if err != nil {
 		log.Printf("thread tools: read the answer of request %s: %v", token, err)
 		return threadSettlementWork{}

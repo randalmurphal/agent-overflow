@@ -26,7 +26,7 @@ func bindRunningReceipt(t *testing.T, app *App, threadID, token string, turnInde
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := app.store.MarkThreadReceiptRunning(token, "u:"+token, threadRequestTurnKey(threadID, turnIndex)); err != nil || !ok {
+	if ok, err := app.store.BindThreadReceiptTurn(token, "u:"+token, threadRequestTurnKey(threadID, turnIndex), true); err != nil || !ok {
 		t.Fatalf("mark %s running: %v %v", token, ok, err)
 	}
 	app.noteReceiptRunning(threadID, token)
@@ -45,7 +45,7 @@ func TestEveryStoppedTurnKeepsItsPersonStopMark(t *testing.T) {
 	app.notePersonStop(thread.ID, 1)
 	for index, startedAt := range map[int]int64{0: 10, 1: 20} {
 		turn := store.Turn{ThreadID: thread.ID, TurnIndex: index, StartedAt: startedAt, StopReason: "interrupted"}
-		settlement, err := app.turnSettlement(thread.ID, turn, false)
+		settlement, err := app.turnSettlement(thread.ID, turn)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -88,7 +88,7 @@ func TestASettledTurnTakesOnlyItsOwnPersonStopMark(t *testing.T) {
 	if err := app.store.UpdateTurnCompleted("t0", 15, "interrupted", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	app.settleReceiptsForEndedTurn(thread.ID, false)
+	app.settleReceiptsForEndedTurn(thread.ID)
 
 	if receipt, _, _ := app.store.GetThreadRequestReceipt("tok-0"); receipt.State != store.ThreadReceiptInterrupted || receipt.AnswerKind != store.ThreadAnswerFinal {
 		t.Fatalf("turn 0's request settled %q/%q, want the person's Stop", receipt.State, receipt.AnswerKind)
@@ -118,7 +118,7 @@ func TestOwnTurnStopsBehindAQueuedRequestKeepNoMarks(t *testing.T) {
 		done := int64(100*i + 50)
 		insertTurns(t, app, thread.ID, store.Turn{TurnID: fmt.Sprintf("t%d", i), TurnIndex: i, StartedAt: int64(100 * i), CompletedAt: &done, StopReason: "interrupted"})
 		app.notePersonStop(thread.ID, i)
-		app.settleReceiptsForEndedTurn(thread.ID, false)
+		app.settleReceiptsForEndedTurn(thread.ID)
 	}
 	app.threadRequests.mu.Lock()
 	kept := len(app.threadRequests.personStops[thread.ID])

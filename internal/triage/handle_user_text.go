@@ -240,8 +240,12 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 	if handleErr == nil && len(merged) > 0 {
 		// The provider merged earlier dispatched messages into this
 		// one, so AO's rows become the one row the transcript holds.
-		handleErr = r.foldMergedFlushRows(evt.ThreadID, &pending, merged)
+		handleErr = r.foldMergedFlushRows(evt.ThreadID, evt.SessionToken, &pending, merged)
 	}
+	// After the writes, so an echo that opened the send's own turn has
+	// opened it, and before a failed write puts the entry back, so the
+	// retry does not report it again.
+	r.reportSendsDelivered(evt.ThreadID, evt.SessionToken, []*pendingSend{&pending})
 	if r.isWireOnlyUserTextSeen(evt.ThreadID, pending.EchoProviderItemID) {
 		r.markWireOnlyUserTextSeen(evt.ThreadID, providerItemID)
 	}

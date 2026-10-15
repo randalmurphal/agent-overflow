@@ -432,7 +432,7 @@ func TestStopUnsendOfAJoinedRowKeepsOnlyThePersonsText(t *testing.T) {
 		t.Fatal(err)
 	}
 	insertUserItemWithMeta(t, app.store, thread.ID, "u:0", 0, unsendRequestText+usermessage.JoinSeparator+mine, meta)
-	app.threadTools().markRequestRunning(token, thread.ID, store.Item{ID: "u:0", TurnIndex: 0})
+	app.bindRequestDelivery(token, thread.ID, "u:0", 0, true)
 	if receipt, _, _ := app.store.GetThreadRequestReceipt(token); receipt.State != store.ThreadReceiptRunning {
 		t.Fatalf("receipt = %q before the Stop, want running", receipt.State)
 	}
@@ -529,7 +529,7 @@ func TestAFailedUnsendRebindsTheRequestToItsTurn(t *testing.T) {
 	}
 	insertUserItemWithMeta(t, app.store, thread.ID, "user:1", 1, unsendRequestText+usermessage.JoinSeparator+mine, meta)
 	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
-	app.threadTools().markRequestRunning(token, thread.ID, store.Item{ID: "user:1", TurnIndex: 1})
+	app.bindRequestDelivery(token, thread.ID, "user:1", 1, true)
 	bound, _, _ := app.store.GetThreadRequestReceipt(token)
 	if bound.State != store.ThreadReceiptRunning {
 		t.Fatalf("receipt = %q before the Stop, want running", bound.State)

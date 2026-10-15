@@ -128,9 +128,14 @@ func TestWakeTemplates(t *testing.T) {
 			want: "\"Parser\" (7f3a) [token tok] was interrupted by a restart of this computer.",
 		},
 		{
-			name: "interrupted by its session ending",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptSessionEnded},
-			want: "\"Parser\" (7f3a) [token tok]: Its session ended before it answered.",
+			name: "interrupted by its session ending before it read the request",
+			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptSessionEndedUnread},
+			want: "\"Parser\" (7f3a) [token tok]: The thread's session ended before it read the request.",
+		},
+		{
+			name: "interrupted by its session ending during the turn, with what it wrote",
+			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + "Half done."},
+			want: "\"Parser\" (7f3a) [token tok]: The thread's session ended during the turn that read the request. What it had written by then:\n\nHalf done.",
 		},
 		{
 			name: "interrupted by a move",

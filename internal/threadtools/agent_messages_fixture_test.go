@@ -3,6 +3,7 @@ package threadtools
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -112,8 +113,15 @@ func wakePart(wake Wake) (string, fixturePart) {
 		switch moved, isMoved := strings.CutPrefix(wake.Text, "The thread was moved to "); {
 		case wake.Text == InterruptRestart:
 			part.Wake.StoppedBy = "a restart of " + restartedComputer(wake.Computer)
-		case wake.Text == InterruptSessionEnded:
-			part.Wake.StoppedBy = "its session ending"
+		case slices.Contains(InterruptSessionEndedReasons, wake.Text):
+			part.Wake.StoppedBy = sessionEndedBy(wake.Text)
+		case strings.HasPrefix(wake.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar):
+			part.Wake.StoppedBy = sessionEndedBy(InterruptSessionEndedMidTurn)
+			part.Body = strings.TrimPrefix(wake.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar)
+			if len(part.Body) > WakePreviewBytes {
+				part.Body = clipBytes(part.Body, WakePreviewBytes)
+				part.Wake.Clipped = true
+			}
 		case wake.Text == "" || wake.Text == InterruptTurn:
 			part.Wake.StoppedBy = "an interrupt"
 		case isMoved:
@@ -189,7 +197,17 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("cancelled", wake(Wake{Kind: WakeCancelled, Title: "Worker", ThreadID: "t-work", Token: token})),
 		one("interrupted by a restart locally", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptRestart})),
 		one("interrupted by a restart on another computer", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Computer: "desk", Token: token, Text: InterruptRestart})),
-		one("interrupted by its session ending", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptSessionEnded})),
+		one("interrupted by its session ending before it read the request", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptSessionEndedUnread})),
+		one("interrupted by its session ending before it answered the request", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptSessionEndedUnanswered})),
+		one("interrupted by its session ending during the turn, having written nothing", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptSessionEndedMidTurn})),
+		one("interrupted by its session ending during the turn, with what it wrote", wake(Wake{
+			Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Agent: &SenderAgent{Role: "Runs the builds."},
+			Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + "Half done.\nSecond line.",
+		})),
+		one("interrupted by its session ending during a turn that wrote past the preview", wake(Wake{
+			Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token,
+			Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + strings.Repeat("Long answer. ", WakePreviewBytes/12+8),
+		})),
 		one("interrupted by a move", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptMoved("Desk (Linux)")})),
 		one("interrupted by a move to an unknown computer", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptMoved("")})),
 		one("interrupted by something other than a person", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptTurn})),
@@ -260,4 +278,10 @@ func TestRowHeadNamesTheSenderOfAnAgentRow(t *testing.T) {
 	if got := RowHead(Item{ID: "i2", Role: "user"}); got != "[user i2]" {
 		t.Errorf("user head = %q", got)
 	}
+}
+
+// sessionEndedBy is what the frontend names as having stopped a request whose
+// session ended: the reason without its subject.
+func sessionEndedBy(reason string) string {
+	return "the session ended " + strings.TrimSuffix(strings.TrimPrefix(reason, "The thread's session ended "), ".")
 }

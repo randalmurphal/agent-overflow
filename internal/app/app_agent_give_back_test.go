@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 
@@ -788,29 +789,28 @@ func queueRequestFromAnotherComputer(t *testing.T, f *requestFixture) (string, s
 }
 
 // A session that ends before the agent took in a request Claude joined with
-// the person's message gives the person their text and the request back to
-// its queue, owed again: its receipt is `accepted` and its sender is told
-// nothing.
-func TestASessionDeathGivesAJoinedRequestBackToItsQueue(t *testing.T) {
+// the person's message gives the person their text alone and settles the
+// request with why: nothing will deliver it now.
+func TestASessionDeathSettlesAJoinedRequestAndGivesThePersonTheirText(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	f.app.startSessionFn = func(string) error { return nil }
 	if _, err := f.app.RegisterQueueItem(context.Background(), f.caller.ID, "my own words", SendMessageOptions{SendID: "person-send"}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
-	token, body := queueRequestFromAnotherComputer(t, f)
+	token, _ := queueRequestFromAnotherComputer(t, f)
 	dispatchUnconfirmed(t, f)
 	waitUntil(t, 10*time.Second, func() bool { return f.receipt(t, token).State == store.ThreadReceiptRunning })
 
 	f.app.restoreUnconfirmedQueueOnSessionDeath(f.caller.ID)
 
 	requireDraft(t, f.app, f.caller.ID, "my own words")
-	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptAccepted || receipt.TurnID != "" {
-		t.Fatalf("receipt = %q bound to %q, want accepted and unbound", receipt.State, receipt.TurnID)
+	waitUntil(t, 10*time.Second, func() bool { return f.receipt(t, token).State == store.ThreadReceiptInterrupted })
+	if receipt := f.receipt(t, token); string(receipt.Answer) != threadtools.InterruptSessionEndedUnread {
+		t.Fatalf("receipt answer = %q, want the session's end before it read the request", receipt.Answer)
 	}
-	rows := durableQueueRows(t, f.app, f.caller.ID)
-	if len(rows) != 1 || rows[0].SendID != threadRequestSendID(token) || rows[0].Message != body {
-		t.Fatalf("queue = %+v, want the request alone", rows)
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("queue = %+v, want it empty", rows)
 	}
 }
 

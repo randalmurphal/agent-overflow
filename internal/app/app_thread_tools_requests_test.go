@@ -20,7 +20,6 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadapp"
@@ -1394,7 +1393,7 @@ func TestAPersonsStopReachesTheSenderAsThePersons(t *testing.T) {
 
 	wakeFor := func(turn store.Turn) string {
 		t.Helper()
-		settlement, err := f.app.turnSettlement(threadID, turn, false)
+		settlement, err := f.app.turnSettlement(threadID, turn)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2878,71 +2877,28 @@ func (f *requestFixture) waitersOn(key string) int {
 }
 
 // TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem covers the join:
-// two messages that waited out a turn are sent as one, so one turn end is
-// the answer to both. Settling either alone, or twice, would be wrong.
+// two messages that waited out a turn are sent as one, and the CLI drains
+// that one message into the running turn, so one turn end is the answer to
+// both. Settling either alone, or twice, would be wrong.
 func TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
-	workspace := initGitRepo(t)
-	target, err := createTestThread(t, f.app, string(provider.Claude), workspace, "claude-opus-4-7", threadmode.ModeChat)
-	if err != nil {
-		t.Fatalf("create target: %v", err)
-	}
-	now := time.Now().UnixMilli()
-	if err := f.app.store.InsertTurn(store.Turn{
-		TurnID: "merge-turn", ThreadID: target.ID, TurnIndex: 0, StartedAt: now,
-	}); err != nil {
-		t.Fatalf("InsertTurn: %v", err)
-	}
-	// A session that records what it is given and says nothing back: the
-	// dispatch is the behavior under test, not the provider's answer.
-	stdinLog := filepath.Join(t.TempDir(), "claude-stdin.jsonl")
-	sess, err := claude.NewSession(context.Background(), target.ID,
-		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
-		func(provider.ProviderEvent) {})
-	if err != nil {
-		t.Fatalf("claude.NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	f.app.sessionManager().put(target.ID, session{
-		Provider: string(provider.Claude), Token: "tok", Claude: sess,
-		Liveness: newSessionLiveness(time.Now()),
-	})
-
-	first, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
-		ThreadID: target.ID, Message: "check the changelog", WaitSeconds: 0,
-	})
-	if err != nil {
-		t.Fatalf("Send(first): %v", err)
-	}
-	second, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
-		ThreadID: target.ID, Message: "and the migration notes", WaitSeconds: 0,
-	})
-	if err != nil {
-		t.Fatalf("Send(second): %v", err)
-	}
-	queued := f.app.triage.QueuedFlushItems(target.ID)
-	if len(queued) != 2 {
-		t.Fatalf("queued = %+v, want both requests waiting", queued)
-	}
-	f.app.dispatchFlush(target.ID, queued)
-
-	firstReceipt, secondReceipt := f.receipt(t, first.Token), f.receipt(t, second.Token)
-	if firstReceipt.State != store.ThreadReceiptRunning || secondReceipt.State != store.ThreadReceiptRunning {
-		t.Fatalf("receipts = %q / %q, want both running", firstReceipt.State, secondReceipt.State)
-	}
-	if firstReceipt.TurnID != secondReceipt.TurnID {
-		t.Fatalf("turns = %q / %q, want the one turn that consumed both", firstReceipt.TurnID, secondReceipt.TurnID)
-	}
-	if firstReceipt.MessageItemID != secondReceipt.MessageItemID {
-		t.Errorf("message rows = %q / %q, want the one merged message", firstReceipt.MessageItemID, secondReceipt.MessageItemID)
+	h := newHeldRequestTarget(t, f)
+	tokens, uuid := h.send(t, "check the changelog", "and the migration notes")
+	first, second := f.receipt(t, tokens[0]), f.receipt(t, tokens[1])
+	if first.MessageItemID != second.MessageItemID {
+		t.Errorf("message rows = %q / %q, want the one merged message", first.MessageItemID, second.MessageItemID)
 	}
 
-	if err := f.app.store.UpdateTurnCompleted("merge-turn", time.Now().UnixMilli(), "end_turn", "", "", ""); err != nil {
-		t.Fatalf("UpdateTurnCompleted: %v", err)
+	h.lifecycle(t, uuid, provider.CommandStarted)
+	first, second = f.receipt(t, tokens[0]), f.receipt(t, tokens[1])
+	if first.TurnID == "" || first.TurnID != second.TurnID {
+		t.Fatalf("turns = %q / %q, want the one turn that consumed both", first.TurnID, second.TurnID)
 	}
-	f.app.settleReceiptsForEndedTurn(target.ID, false)
-	for _, token := range []string{first.Token, second.Token} {
+
+	h.text(t, "a-merge", "Both read.")
+	h.turnComplete(t)
+	for _, token := range tokens {
 		if row := f.request(t, token); row.State != store.ThreadRequestFinished {
 			t.Errorf("request %s = %q, want the shared turn to have settled it", token, row.State)
 		}
@@ -3262,9 +3218,13 @@ func TestAClaimedWakeTheAppStopsBeforeDeliveringIsReleased(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the retry pass did not return once the app stopped")
 	}
-	if f.app.threadWakeInFlight(token, false) {
-		t.Fatal("a wake the app stopped before delivering is still marked in flight")
-	}
+	// Another pass over the same wake (the app's own sweep) can hold a
+	// claim of its own, released as that pass sees the stop.
+	waitFor(t, "every claim of the stopped wake to be released", func() bool {
+		unlock := f.app.threadRequestSettleLock(token)
+		defer unlock()
+		return !f.app.threadWakeInFlight(token, false)
+	})
 	if row := f.request(t, token); row.DeliveredAt != 0 {
 		t.Fatalf("a wake with no slot was delivered: %q", row.DeliveredHow)
 	}

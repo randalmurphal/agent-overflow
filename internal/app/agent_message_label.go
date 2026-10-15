@@ -2,6 +2,7 @@ package app
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -134,7 +135,10 @@ func readThreadWake(text string) (title, body string, reminder, ok bool) {
 		body = after
 	case rest == ": "+threadtools.InterruptNeverStarted:
 		body = threadtools.InterruptNeverStarted
-	case rest == ": "+threadtools.WakePersonStopped, rest == ": "+threadtools.InterruptSessionEnded, rest == ": "+threadtools.InterruptTurn,
+	case rest == ": "+threadtools.InterruptSessionEndedMidTurn+strings.TrimRight(threadtools.SessionEndedWrittenSoFar, "\n"):
+		body = strings.TrimPrefix(after, "\n")
+	case strings.HasPrefix(rest, ": ") && slices.Contains(threadtools.InterruptSessionEndedReasons, rest[len(": "):]),
+		rest == ": "+threadtools.WakePersonStopped, rest == ": "+threadtools.InterruptTurn,
 		strings.HasPrefix(rest, ": The thread was moved to ") && strings.HasSuffix(rest, " before it answered."),
 		strings.HasPrefix(rest, " was cancelled."), strings.HasPrefix(rest, " was interrupted by a restart of "),
 		rest == " did not answer within a day.", rest == " settled.":

@@ -551,7 +551,7 @@ func (c *session) cancel(ctx context.Context, raw json.RawMessage) (any, error) 
 	return cancelResult{
 		Token: report.Token, ThreadID: report.ThreadID, ComputerID: id, Computer: name,
 		State: report.State, Effect: report.Effect,
-		Note: cancelNote(report.Effect),
+		Note: cancelNote(report.Effect, report.RemoteRequest),
 	}, nil
 }
 
@@ -602,9 +602,13 @@ func (c *session) remind(ctx context.Context, raw json.RawMessage) (any, error) 
 
 // cancelNote says what the cancel did, in the effect's own words, so a
 // cancel that found nothing running is not reported as an interruption.
-func cancelNote(effect string) string {
+// remoteRequest is CancelReport.RemoteRequest.
+func cancelNote(effect string, remoteRequest bool) string {
 	switch effect {
 	case EffectNothing:
+		if remoteRequest {
+			return "Nothing could be stopped for this request from here; its message may still be read by that thread."
+		}
 		return "Nothing was running or queued for this, so nothing was stopped. The request is settled as reported."
 	case EffectReminderDropped:
 		return "The reminder was dropped; it will not fire."
@@ -612,6 +616,10 @@ func cancelNote(effect string) string {
 		return "It will not fire or run again. A wake it already queued still arrives."
 	case EffectQueuedRemoved:
 		return "The queued message was removed before it ran; nothing was interrupted."
+	case EffectLeftUnread:
+		return "The request was cancelled before the thread read it; the thread may still read and act on the message, and no turn was interrupted."
+	case EffectLeftRunning:
+		return "The request is cancelled and no answer will come, but its message had already reached the thread. The thread keeps working on its current turn, which this request did not start, and may still act on the message; nothing was interrupted."
 	default:
 		return "This interrupted the work; it did not undo anything already done."
 	}

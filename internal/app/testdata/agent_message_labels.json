@@ -78,10 +78,28 @@
     "label": "Worker"
   },
   {
-    "name": "a session that ended",
-    "text": "\"Worker\" (t-worker) [token tok-1]: Its session ended before it answered.",
+    "name": "a session that ended: The thread's session ended before it read the request.",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The thread's session ended before it read the request.",
     "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
     "label": "Worker"
+  },
+  {
+    "name": "a session that ended: The thread's session ended before it answered the request.",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The thread's session ended before it answered the request.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker"
+  },
+  {
+    "name": "a session that ended: The thread's session ended during the turn that read the request.",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The thread's session ended during the turn that read the request.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker"
+  },
+  {
+    "name": "a session that ended during the turn, with what it wrote",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The thread's session ended during the turn that read the request. What it had written by then:\n\nHalf done.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker: Half done."
   },
   {
     "name": "a move",

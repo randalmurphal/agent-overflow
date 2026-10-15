@@ -16,7 +16,10 @@
 // MCP calls (scenario `mcpCall` / `mcpList`), so the assertions are about
 // what a provider session actually received.
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
+import type { HarnessApp } from '../src/harness.js';
 import { sessionConfigs } from './workflows-helpers.js';
 import {
   FOOTER_TOKEN_PATTERN,
@@ -2875,6 +2878,32 @@ test('a backgrounded ask arrives as a message and thread_status returns the same
   expect(request.delivered).toBe('queued');
 });
 
+// releaseHeldReply lets a held turn's thread_reply run only once the end of
+// the turn its request was written during has been judged: the receipt is
+// bound to the held turn (turn 1), or a settlement has landed. The turn-end
+// settlement runs off the event worker, so without this a reply can win the
+// race and hide a settlement on the wrong turn.
+async function releaseHeldReply(harness: HarnessApp, targetPath: string, target: string, token: string) {
+  const gate = await awaitGate(harness, 'hold-reply', targetPath);
+  const receipt = () => {
+    const db = new DatabaseSync(join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+    try {
+      return db.prepare(`SELECT state, turn_id FROM thread_request_receipts WHERE token = ?`).get(token) as
+        | { state: string; turn_id: string }
+        | undefined;
+    } finally {
+      db.close();
+    }
+  };
+  await expect
+    .poll(() => {
+      const row = receipt();
+      return row !== undefined && (row.turn_id === `${target}#1` || row.state !== 'running');
+    }, { timeout: 30_000 })
+    .toBe(true);
+  await advanceGate(harness, gate.mockId, 'hold-reply');
+}
+
 test('thread_send with notify into a mid-turn thread lands after the boundary with the draft intact', async ({
   harness,
 }) => {
@@ -2891,11 +2920,11 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
   const draft = 'half a sentence the person is still typing';
 
   // The target's first turn parks, so the send arrives mid-turn and the
-  // only way into the thread is the turn boundary.
-  await setScenario(
-    harness,
-    targetPath,
-    threadToolsScenario({
+  // only way into the thread is the turn boundary. The CLI holds a message
+  // written during a turn with no tool round left and runs it as the next
+  // turn (claude-wire.md §Queued-message consumption).
+  await setScenario(harness, targetPath, {
+    ...threadToolsScenario({
       name: 'tt-draft-target-script',
       provider: 'claude',
       turns: [
@@ -2903,6 +2932,7 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
         {
           steps: [
             { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+            { gate: 'hold-reply' },
             {
               call: {
                 tool: 'thread_reply',
@@ -2914,7 +2944,8 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
         },
       ],
     }),
-  );
+    claude: { holdQueuedInput: true },
+  });
   await setScenario(
     harness,
     callerPath,
@@ -3000,6 +3031,7 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
   // The boundary is what lets the target act on it, and its reply wakes
   // the caller.
   await advanceGate(harness, targetMock.mockId, 'hold-target');
+  await releaseHeldReply(harness, targetPath, target, send.value!.token);
   const reply = await awaitToolAnswer<{ token: string; state: string }>(harness, {
     tool: 'thread_reply',
     timeoutMs: 60_000,
@@ -3027,6 +3059,161 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
     )
     .toBe(true);
 });
+
+// A request flushed into a busy thread settles on the turn that READ it, not
+// the turn it was written during. Claude can hold a message written mid-turn
+// and run it as its own next turn (claude-wire.md §Queued-message
+// consumption); Codex reads a steered message inside the turn it joined.
+// Either way the caller is woken once, with the answer of the turn that read
+// the request.
+for (const provider of ['claude', 'codex'] as const) {
+  test(`${provider}: a request flushed mid-turn wakes the caller once, from the turn that read it`, async ({
+    harness,
+  }) => {
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [
+        { name: `tt-held-caller-${provider}`, repo: {}, threads: [{ title: 'Held caller', provider: 'claude' }] },
+        { name: `tt-held-target-${provider}`, repo: {}, threads: [{ title: 'Held target', provider }] },
+      ],
+    });
+    const caller = seed.projects[0].threadIds[0];
+    const callerPath = seed.projects[0].path;
+    const target = seed.projects[1].threadIds[0];
+    const targetPath = seed.projects[1].path;
+
+    if (provider === 'claude') {
+      // The CLI holds the request while the first turn runs and picks it up
+      // as a turn of its own when that turn ends; the first turn's text was
+      // written before the request was read.
+      await setScenario(harness, targetPath, {
+        ...threadToolsScenario({
+          name: 'tt-held-target-claude',
+          provider: 'claude',
+          turns: [
+            { steps: [{ gate: 'hold-target' }], text: 'Still on the first task.' },
+            {
+              steps: [
+                { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+                { gate: 'hold-reply' },
+                { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: 'The stall is in the watchdog.' } } },
+              ],
+              text: 'Answered the caller.',
+            },
+          ],
+          afterTurns: 'silent',
+        }),
+        claude: { holdQueuedInput: true },
+      });
+    } else {
+      // The steer joins the running turn, which reads it before it ends.
+      await setScenario(
+        harness,
+        targetPath,
+        threadToolsScenario({
+          name: 'tt-held-target-codex',
+          provider: 'codex',
+          turns: [{ steps: [{ gate: 'hold-target' }], text: 'Read the request; the stall is in the watchdog.' }],
+          echoUserMessage: true,
+          afterTurns: 'silent',
+        }),
+      );
+    }
+    await setScenario(
+      harness,
+      callerPath,
+      threadToolsScenario({
+        name: `tt-held-caller-${provider}`,
+        provider: 'claude',
+        turns: [
+          {
+            steps: [
+              {
+                call: {
+                  tool: 'thread_send',
+                  args: { thread_id: target, message: 'where does the stall come from?', wait_seconds: 0, notify: true },
+                },
+              },
+            ],
+            text: 'Queued it for the busy thread.',
+          },
+          { text: 'Read the answer when it arrived.' },
+        ],
+      }),
+    );
+
+    await harness.rpc('StartSession', target);
+    await harness.rpc('SendMessage', target, 'start on the first task', null);
+    const targetMock = await awaitGate(harness, 'hold-target', targetPath);
+
+    await harness.rpc('StartSession', caller);
+    await harness.rpc('SendMessage', caller, 'ask the busy thread about the stall', null);
+    const send = await awaitToolAnswer<{ token: string; outcome: string }>(harness, {
+      tool: 'thread_send',
+      timeoutMs: 60_000,
+    });
+    expect(send.isError, send.text).toBe(false);
+    expect(send.value!.outcome).toBe('backgrounded');
+    const token = send.value!.token;
+
+    // The request is written to the provider while the first turn runs.
+    await harness.waitForEvent<{ threadId?: string }>(
+      'provider:queue_flushed',
+      (data) => data.threadId === target,
+      30_000,
+    );
+    if (provider === 'codex') {
+      // The steer reaches the running turn: no turn of its own.
+      await harness.waitForEvent<HarnessMockEvent>(
+        'harness:mock',
+        (ev) => ev.report.kind === 'user_input' && ev.cwd === targetPath && (ev.report.input ?? '').includes(token),
+        30_000,
+      );
+    }
+    await advanceGate(harness, targetMock.mockId, 'hold-target');
+    if (provider === 'claude') await releaseHeldReply(harness, targetPath, target, token);
+
+    const wakeOf = (ev: HarnessMockEvent) =>
+      ev.report.kind === 'user_input' && ev.cwd === callerPath && (ev.report.input ?? '').includes(token);
+    const wake = await harness.waitForEvent<HarnessMockEvent>('harness:mock', wakeOf, 60_000);
+    expect(wake.report.input).not.toContain('Still on the first task.');
+    if (provider === 'claude') {
+      // The reply, not a "no reply" fallback carrying the earlier turn.
+      expect(wake.report.input).toContain('The stall is in the watchdog.');
+      expect(wake.report.input).not.toContain('without calling thread_reply');
+    } else {
+      // No reply was called: the fallback is the text of the turn that read
+      // the request.
+      expect(wake.report.input).toContain('Read the request; the stall is in the watchdog.');
+    }
+
+    // Both threads run to rest, and the caller was woken exactly once.
+    const targetItems = async () =>
+      await harness.rpc<Array<{ summary?: string }>>('ListItems', target, true);
+    const lastTargetText = provider === 'claude' ? 'Answered the caller.' : 'Read the request; the stall is in the watchdog.';
+    await expect
+      .poll(async () => (await targetItems()).some((item) => (item.summary ?? '').includes(lastTargetText)), { timeout: 30_000 })
+      .toBe(true);
+    await expect
+      .poll(
+        async () =>
+          (await harness.rpc<Array<{ summary?: string }>>('ListItems', caller, true)).some((item) =>
+            (item.summary ?? '').includes('Read the answer when it arrived.'),
+          ),
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+    expect(harness.countEvents<HarnessMockEvent>('harness:mock', wakeOf)).toBe(1);
+    if (provider === 'claude') {
+      // No "no reply" fallback reached the caller at any point.
+      expect(
+        harness.countEvents<HarnessMockEvent>(
+          'harness:mock',
+          (ev) => wakeOf(ev) && (ev.report.input ?? '').includes('without calling thread_reply'),
+        ),
+      ).toBe(0);
+    }
+  });
+}
 
 test('a write inside the ask fork is refused by its session and the refusal comes back in the answer', async ({
   harness,

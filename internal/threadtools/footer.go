@@ -226,6 +226,11 @@ func (w Wake) status() string {
 		case "":
 			return fmt.Sprintf("%s%s: %s", who, token, InterruptTurn)
 		}
+		// What a turn its session ended had written is an answer, clipped
+		// as one.
+		if written, ok := strings.CutPrefix(w.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar); ok {
+			return fmt.Sprintf("%s%s: %s%s%s", who, token, InterruptSessionEndedMidTurn, SessionEndedWrittenSoFar, WakeBody(written, w.Token))
+		}
 		return fmt.Sprintf("%s%s: %s", who, token, w.Text)
 	case WakeStopped:
 		status := fmt.Sprintf("%s%s: %s", who, token, WakePersonStopped)
@@ -252,9 +257,17 @@ const WakePersonStopped = "The person stopped this turn before it answered."
 const (
 	// InterruptRestart: the computer that held the request restarted.
 	InterruptRestart = "This computer restarted before the request finished."
-	// InterruptSessionEnded: the session running the request's turn
-	// ended, by a crash, a stop or a teardown.
-	InterruptSessionEnded = "Its session ended before it answered."
+	// InterruptSessionEndedUnread: the thread's session ended, by a crash,
+	// a stop, a teardown or a replacement, before the provider took the
+	// request's message in.
+	InterruptSessionEndedUnread = "The thread's session ended before it read the request."
+	// InterruptSessionEndedUnanswered: the session ended after the provider
+	// took the message in and before the turn that reads it opened.
+	InterruptSessionEndedUnanswered = "The thread's session ended before it answered the request."
+	// InterruptSessionEndedMidTurn: the session ended during the turn that
+	// read the message. Its answer goes on with what the turn had written
+	// by then (SessionEndedWrittenSoFar), when it wrote anything.
+	InterruptSessionEndedMidTurn = "The thread's session ended during the turn that read the request."
 	// InterruptTurn: something other than a person's Stop interrupted the
 	// turn, such as a workflow taking the thread over.
 	InterruptTurn = "The turn was interrupted before it answered."
@@ -262,6 +275,16 @@ const (
 	// never created.
 	InterruptNeverStarted = "That request was accepted but its thread was never created."
 )
+
+// SessionEndedWrittenSoFar introduces, after InterruptSessionEndedMidTurn,
+// what the turn had written when its session ended.
+const SessionEndedWrittenSoFar = " What it had written by then:\n\n"
+
+// InterruptSessionEndedReasons are the reasons a request reads when its
+// thread's session ended before a turn answered it.
+var InterruptSessionEndedReasons = []string{
+	InterruptSessionEndedUnread, InterruptSessionEndedUnanswered, InterruptSessionEndedMidTurn,
+}
 
 // InterruptMoved is the reason of a request whose thread was moved to
 // destination, another computer, before it answered.

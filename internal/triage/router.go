@@ -180,6 +180,9 @@ type Router struct {
 	// and a queue-boundary merge that consumes a member whose own echo had
 	// not arrived (settleFoldedMergeState), never an interrupt's anchoring.
 	flushSendConsumed func(threadID string, sendIDs []string)
+	// sendDelivered is the app-layer signal naming the turn a queued send
+	// was delivered into (send_delivery.go).
+	sendDelivered func(threadID string, delivery SendDelivery)
 	// sendUndelivered is the app-layer signal that a thread has sends the
 	// provider cancelled without running (retireUnrunSend). The app drains
 	// them and returns them to the composer. Called under the thread's flush

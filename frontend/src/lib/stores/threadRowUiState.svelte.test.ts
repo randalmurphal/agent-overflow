@@ -662,6 +662,7 @@ describe('createThreadRowUiState', () => {
     const rowUiState = createThreadRowUiState({
       getItemById: (itemId) => loaded.find((item) => item.id === itemId),
       loadedItems,
+      threadId: () => null,
     });
 
     rowUiState.expansionStateForPayload('payload-a', 'thread-a');
@@ -683,6 +684,7 @@ describe('createThreadRowUiState', () => {
     const rowUiState = createThreadRowUiState({
       getItemById: () => undefined,
       loadedItems,
+      threadId: () => null,
     });
 
     rowUiState.disposeItems([makeItem({ id: 'text:0', threadId: 'thread-a' })]);

@@ -442,6 +442,9 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	a.emitProviderSessionDisconnected(threadID, existing.Provider)
 
 	err := a.closeProviderSession(threadID, existing)
+	if a.triage != nil {
+		a.triage.EndReplacedSessionTurn(threadID)
+	}
 	// The close processed the old CLI's final frames, including the sends
 	// it discarded unrun. No session-end restore runs on this path.
 	a.restoreUndeliveredSendsLocked(threadID)
@@ -452,7 +455,7 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	// already taken above, so its callback only drops the dead
 	// process's schedule and skips the registry half that purges. Unlike
 	// teardownAndCloseSession there is no CleanupThread here (the
-	// replacement path deliberately keeps triage live), so the stream
+	// replacement path keeps triage live apart from the closed turn), so the stream
 	// persist buffers must be drained explicitly first: the close drained
 	// the read loop and its events, but a buffer armed by its final deltas would
 	// otherwise fire its 250ms flush AFTER the purge and re-register

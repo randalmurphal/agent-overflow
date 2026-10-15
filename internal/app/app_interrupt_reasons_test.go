@@ -36,7 +36,7 @@ func runningReceipt(t *testing.T, app *App, threadID, token string, turnIndex in
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := app.store.MarkThreadReceiptRunning(token, "u:"+token, threadRequestTurnKey(threadID, turnIndex)); err != nil || !ok {
+	if ok, err := app.store.BindThreadReceiptTurn(token, "u:"+token, threadRequestTurnKey(threadID, turnIndex), true); err != nil || !ok {
 		t.Fatalf("mark %s running: %v %v", token, ok, err)
 	}
 	app.noteReceiptRunning(threadID, token)
@@ -62,14 +62,14 @@ func TestEachInterruptionTellsTheSenderWhy(t *testing.T) {
 	insertTurns(t, app, thread.ID, store.Turn{TurnID: "t0", TurnIndex: 0, StartedAt: 10}, store.Turn{TurnID: "t1", TurnIndex: 1, StartedAt: 20})
 	runningReceipt(t, app, thread.ID, "tok-session", 0)
 	runningReceipt(t, app, thread.ID, "tok-takeover", 1)
-	if err := app.store.UpdateTurnCompleted("t0", 15, "interrupted", "", "", ""); err != nil {
-		t.Fatal(err)
-	}
-	app.settleReceiptsForEndedTurn(thread.ID, true)
 	if err := app.store.UpdateTurnCompleted("t1", 25, "interrupted", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	app.settleReceiptsForEndedTurn(thread.ID, false)
+	app.settleReceiptsForEndedTurn(thread.ID)
+	if err := app.store.UpdateTurnCompleted("t0", 15, "interrupted", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	app.settleReceiptsForEndedSession(thread.ID)
 
 	moved := siblingThread(t, app, thread, "interrupt-reasons-moved")
 	runningReceipt(t, app, moved.ID, "tok-moved", 0)
@@ -84,7 +84,7 @@ func TestEachInterruptionTellsTheSenderWhy(t *testing.T) {
 	for _, tc := range []struct {
 		thread, token, want string
 	}{
-		{thread.ID, "tok-session", `[token tok-session]: Its session ended before it answered.`},
+		{thread.ID, "tok-session", `[token tok-session]: The thread's session ended during the turn that read the request.`},
 		{thread.ID, "tok-takeover", `[token tok-takeover]: The turn was interrupted before it answered.`},
 		{moved.ID, "tok-moved", `[token tok-moved]: The thread was moved to Desk before it answered.`},
 		{restarted.ID, "tok-restart", `[token tok-restart] was interrupted by a restart of this computer.`},

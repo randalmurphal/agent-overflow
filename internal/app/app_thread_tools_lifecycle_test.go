@@ -352,7 +352,7 @@ func TestAFinishedTurnSettlesWhenItsReceiptCatchesUp(t *testing.T) {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
 
-	f.adapter().markRequestRunning(token, target.ID, store.Item{ID: target.ID + ":u0", TurnIndex: 0})
+	f.app.bindRequestDelivery(token, target.ID, target.ID+":u0", 0, true)
 
 	receipt := f.receipt(t, token)
 	if receipt.State != store.ThreadReceiptFinished {
@@ -385,7 +385,7 @@ func TestTheObserverKeepsTheGateOfAnAcceptedReceipt(t *testing.T) {
 	}
 	f.app.noteReceiptRunning(target.ID, token)
 
-	if _, err := f.app.settleReceiptOnTurnEnd(target.ID, token, false); err != nil {
+	if _, err := f.app.settleReceiptOnTurnEnd(target.ID, token); err != nil {
 		t.Fatalf("settleReceiptOnTurnEnd: %v", err)
 	}
 	tokens, ok := f.app.runningReceiptTokens(target.ID)
@@ -499,7 +499,7 @@ func TestAFallbackAnswerIsStoredWhole(t *testing.T) {
 		t.Fatalf("GetTurnByThreadIndex: found=%v err=%v", found, err)
 	}
 
-	settlement, err := f.app.turnSettlement(thread.ID, turn, false)
+	settlement, err := f.app.turnSettlement(thread.ID, turn)
 	if err != nil {
 		t.Fatalf("turnSettlement: %v", err)
 	}

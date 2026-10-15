@@ -297,13 +297,32 @@ export function parseRequestText(text: string): AgentMessagePart[] | null {
 const PERSON_STOPPED = ': The person stopped this turn before it answered.';
 const PERSON_STOPPED_ANSWER = ' Its last message:';
 
+/** A request whose thread's session ended before a turn answered it (threadtools InterruptSessionEnded*). */
+const SESSION_ENDED_MID_TURN = "The thread's session ended during the turn that read the request.";
+const SESSION_ENDED: readonly string[] = [
+  "The thread's session ended before it read the request.",
+  "The thread's session ended before it answered the request.",
+  SESSION_ENDED_MID_TURN,
+];
+const WRITTEN_SO_FAR = ' What it had written by then:';
+
+/** The session's end as what stopped the request: the reason without its subject. */
+function sessionEndedBy(sentence: string): string {
+  return `the session ended ${sentence.slice("The thread's session ended ".length, -1)}`;
+}
+
 /**
  * Why a request was interrupted, the sentence its status line states after
  * `: ` (threadtools Interrupt*): what stopped it, or for a request whose
  * thread never existed, the sentence itself as the message.
  */
-function interruptReason(sentence: string): { stoppedBy: string; body: string } | null {
-  if (sentence === 'Its session ended before it answered.') return { stoppedBy: 'its session ending', body: '' };
+function interruptReason(sentence: string, after: string): { stoppedBy: string; body: string } | null {
+  // A turn its session ended goes on with what it had written by then.
+  if (sentence === `${SESSION_ENDED_MID_TURN}${WRITTEN_SO_FAR}`) {
+    return { stoppedBy: sessionEndedBy(SESSION_ENDED_MID_TURN), body: after.replace(/^\n/, '') };
+  }
+  if (after !== '') return null;
+  if (SESSION_ENDED.includes(sentence)) return { stoppedBy: sessionEndedBy(sentence), body: '' };
   if (sentence === 'The turn was interrupted before it answered.') return { stoppedBy: 'an interrupt', body: '' };
   if (sentence === 'That request was accepted but its thread was never created.') return { stoppedBy: '', body: sentence };
   const moved = /^The thread was moved to (.+) before it answered\.$/.exec(sentence);
@@ -358,7 +377,7 @@ export function parseWakeText(text: string): AgentMessagePart | null {
       facts.agentRole = agent.role;
       after = agentNewline < 0 ? '' : after.slice(agentNewline + 1);
     }
-    const reason = !reply && rest.startsWith(': ') && after === '' ? interruptReason(rest.slice(2)) : null;
+    const reason = !reply && rest.startsWith(': ') ? interruptReason(rest.slice(2), after) : null;
     if (reply) {
       if (rest !== ':') return null;
       facts.kind = 'reply';

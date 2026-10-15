@@ -478,9 +478,10 @@ func (a *App) noteAgentSendNotDelivered(threadID, why string) {
 // keeps its schedule, and a watch keeps the wake's own text. An outside send
 // is thrown away with a notice, as at boot, and a worker's prompt goes back
 // to the user in the worker. An answer, a reminder or a completion goes back
-// to its request or watch, as a Stop's does, and another thread's request
-// goes back to its queue, owed again (returnRequest). When a person's message
-// was joined with them, the person's text alone goes back to the composer.
+// to its request or watch, as a Stop's does. Another thread's request is
+// settled by the restore that called this (settleRequestsNotTakenIn), its
+// text going nowhere. When a person's message was joined with them, the
+// person's text alone goes back to the composer.
 func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlushItem, part composerdraft.Part, reason string) (composerdraft.Part, bool, notTakenIn) {
 	wakeOutcome, sendWhy := agentWakeOutcomeSessionEnded, "the session ended before the agent took it in"
 	if reason != queueRestoredReasonSessionDied && reason != queueRestoredReasonNotDelivered {
@@ -524,9 +525,6 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 		if agentAppPartRoot(id) != "" {
 			owed.messages = append(owed.messages, appMessageOutcome{sendID: id, wakeOutcome: wakeOutcome, body: bodies[id], sendWhy: sendWhy})
 		}
-		if token := threadRequestSendIDToken(id); token != "" {
-			owed.requests = append(owed.requests, returnedRequest{token: token, body: bodies[id]})
-		}
 	}
 	if person != nil {
 		part.Content = *person
@@ -544,7 +542,8 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 // a reminder or a completion goes back to its owner whether or not the
 // provider confirmed it, since the turn that took it in is cut. A request's
 // receipt goes back to `accepted` here, before the interrupt, and the
-// request back on its queue once settled; one already settled owes nothing.
+// request back on its queue, owed again, once the cut commits; one already
+// settled owes nothing.
 func (a *App) returnUnsentRequests(parts []usermessage.AgentPart) notTakenIn {
 	var owed notTakenIn
 	for _, part := range parts {
@@ -559,7 +558,7 @@ func (a *App) returnUnsentRequests(parts []usermessage.AgentPart) notTakenIn {
 		case threadRequestSendIDToken(part.SendID) != "":
 			token := threadRequestSendIDToken(part.SendID)
 			if a.threadTools().returnRequest(token) {
-				owed.requests = append(owed.requests, returnedRequest{token: token, body: part.Text, returned: true})
+				owed.requests = append(owed.requests, returnedRequest{token: token, body: part.Text})
 			}
 		default:
 			log.Printf("interrupt-and-revert: an agent's message %q has no owner to go back to", part.SendID)
@@ -577,21 +576,21 @@ type notTakenIn struct {
 	messages []appMessageOutcome
 	// owned are the answers, reminders and completions, for their owners.
 	owned []ownedMessage
-	// requests are other threads' requests, which go back to their queue.
+	// requests are other threads' requests a Stop un-sent, which go back to
+	// their queue.
 	requests []returnedRequest
 	// rowID is the queue row of an item wholly the app's, which no composer
 	// restore retires.
 	rowID string
 }
 
-// returnedRequest is another thread's request whose message the agent did not
-// take in: by its token, with its message's text. returned marks one whose
-// receipt is already back in `accepted` (a Stop's un-send returns it before
-// the interrupt, so the turn end does not settle it).
+// returnedRequest is another thread's request whose message a Stop un-sent,
+// its receipt already back in `accepted` (returnRequest, before the
+// interrupt, so the turn end does not settle it): by its token, with its
+// message's text.
 type returnedRequest struct {
-	token    string
-	body     string
-	returned bool
+	token string
+	body  string
 }
 
 // appMessageOutcome is one app-written message the agent did not take in: a
@@ -628,9 +627,6 @@ func (a *App) settleNotTakenIn(threadID string, owed []notTakenIn) {
 		}
 		owned = append(owned, item.owned...)
 		for _, r := range item.requests {
-			if !r.returned && !a.threadTools().returnRequest(r.token) {
-				continue
-			}
 			logThreadRequestSweep("requeue the request "+r.token, a.threadTools().requeueRequest(r.token, threadID, r.body))
 		}
 	}

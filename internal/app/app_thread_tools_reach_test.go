@@ -1519,6 +1519,11 @@ func TestCancellingARemoteRequestNamesItsSource(t *testing.T) {
 	if report.ComputerID != pair.computer || report.Effect == "" {
 		t.Fatalf("cancel report = %+v, want an effect on %s", report, pair.computer)
 	}
+	// Its effect is the other computer's word, which may stand for a turn
+	// left running or a message left unread there, and is noted as such.
+	if !report.RemoteRequest {
+		t.Fatalf("cancel report = %+v, want it marked as a request another computer holds", report)
+	}
 	// The destination settled its own receipt, which is the only side that
 	// could have stopped the work.
 	receipt := pair.receipt(t, spawn.Token)

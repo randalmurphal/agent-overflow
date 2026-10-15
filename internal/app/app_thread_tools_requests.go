@@ -731,7 +731,7 @@ const threadCancelTimeout = 20 * time.Second
 // the caller's agent is told, and the destination words the settlement as
 // the user's.
 func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadtools.Caller, row store.ThreadRequest, userStop bool) (threadtools.CancelReport, error) {
-	report := threadtools.CancelReport{Token: row.Token, ThreadID: row.TargetThreadID, ComputerID: row.TargetComputerID}
+	report := threadtools.CancelReport{Token: row.Token, ThreadID: row.TargetThreadID, ComputerID: row.TargetComputerID, RemoteRequest: true}
 	if _, err := t.Peer(ctx, row.TargetComputerID); err != nil {
 		return threadtools.CancelReport{}, err
 	}

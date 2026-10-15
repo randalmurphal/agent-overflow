@@ -693,3 +693,34 @@ func TestHomeFilesReachTheAppTrimmed(t *testing.T) {
 		})
 	}
 }
+
+// A request another computer reported nothing_to_stop for may have been left
+// running or unread there, so its note claims neither that nothing was
+// running nor an interruption. A local nothing_to_stop keeps its own words.
+func TestCancelNoteOfARemoteRequestsNothingToStop(t *testing.T) {
+	t.Parallel()
+	remote := cancelNote(EffectNothing, true)
+	if remote != "Nothing could be stopped for this request from here; its message may still be read by that thread." {
+		t.Errorf("remote note = %q", remote)
+	}
+	if local := cancelNote(EffectNothing, false); !strings.Contains(local, "Nothing was running or queued") {
+		t.Errorf("local note = %q", local)
+	}
+	if note := cancelNote(EffectInterrupted, true); !strings.Contains(note, "This interrupted the work") {
+		t.Errorf("a remote interruption's note = %q, want it reported as one", note)
+	}
+}
+
+// A cancel that left a turn alone says so, and never claims an interruption.
+func TestCancelNoteOfAnEffectThatLeavesATurnAlone(t *testing.T) {
+	t.Parallel()
+	for effect, want := range map[string]string{
+		EffectLeftRunning: "keeps working on its current turn",
+		EffectLeftUnread:  "cancelled before the thread read it",
+	} {
+		note := cancelNote(effect, false)
+		if !strings.Contains(note, want) || !strings.Contains(note, "interrupted") || strings.Contains(note, "This interrupted") {
+			t.Errorf("cancelNote(%q) = %q, want it to say %q and that nothing was interrupted", effect, note, want)
+		}
+	}
+}

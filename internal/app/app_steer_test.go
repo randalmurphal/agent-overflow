@@ -86,6 +86,13 @@ done
 // caller can Close() it via t.Cleanup.
 func installSteerTestSession(t *testing.T, app *App, thread store.Thread, steerOutcome string) *codex.Session {
 	t.Helper()
+	return installSteerTestSessionWithEvents(t, app, thread, steerOutcome, func(provider.ProviderEvent) {})
+}
+
+// installSteerTestSessionWithEvents is installSteerTestSession with the
+// session's own events, such as its disconnect at Close, handed to onEvent.
+func installSteerTestSessionWithEvents(t *testing.T, app *App, thread store.Thread, steerOutcome string, onEvent func(provider.ProviderEvent)) *codex.Session {
+	t.Helper()
 	binary := writeCodexSteerBinary(t, thread.ID+"-codex", steerOutcome)
 	sess, err := codex.NewSession(
 		context.Background(),
@@ -94,7 +101,7 @@ func installSteerTestSession(t *testing.T, app *App, thread store.Thread, steerO
 			Binary:  binary,
 			WorkDir: thread.WorkspacePath,
 		},
-		func(provider.ProviderEvent) {},
+		onEvent,
 	)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
