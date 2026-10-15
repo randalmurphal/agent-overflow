@@ -11,7 +11,7 @@
 
 import { getAttachedBackends, attachedBackendEntry, backendDisplayName, backendReachable } from '../../stores/attachedBackends.svelte';
 import { getThreadById } from '../../stores/threads.svelte';
-import { openThreadInPane, findPaneShowingThread, focusPane } from '../../stores/panes.svelte';
+import { openThreadInPane, findPaneShowingThread, focusPane, revealPane } from '../../stores/panes.svelte';
 import { GetThread } from '../../stores/bindings';
 import { withBackendTarget } from '../../transport/backends';
 import type { BackendKey } from '../../transport/backendKey';
@@ -103,6 +103,7 @@ export async function openAgentThreadOrigin(
     const open = findPaneShowingThread(origin.threadId);
     if (open) {
       focusPane(open.paneId);
+      revealPane(open.paneId);
       return;
     }
     let thread = getThreadById(origin.threadId);

@@ -17,6 +17,7 @@ import {
   resetCompanionPanesForTest,
 } from './companionPanes.svelte';
 import { installCompanionStash, resetCompanionStashForTest } from './companionStash';
+import { REVEAL_PANE_EVENT } from './eventNames';
 import { getPaneLayoutItems, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import {
   createPane,
@@ -100,10 +101,21 @@ describe('openAgentThreadCompanion', () => {
     const shown = await openThreadInNewPane(WORKER);
     await openThreadInPane(SOURCE, 'main');
 
-    await openAgentThreadCompanion(getPane('main')!, WORKER);
+    const revealed: string[] = [];
+    const onReveal = ((event: CustomEvent<{ paneId: string }>) => {
+      revealed.push(event.detail.paneId);
+    }) as EventListener;
+    window.addEventListener(REVEAL_PANE_EVENT, onReveal);
+    try {
+      await openAgentThreadCompanion(getPane('main')!, WORKER);
+    } finally {
+      window.removeEventListener(REVEAL_PANE_EVENT, onReveal);
+    }
 
     expect(paneIds()).toEqual(['main', shown.paneId]);
     expect(getFocusedPaneId()).toBe(shown.paneId);
+    // Under compact the strip moves to it: focus alone shows nothing.
+    expect(revealed).toEqual([shown.paneId]);
   });
 
   it('closes a companion it opened when the thread cannot be mounted', async () => {

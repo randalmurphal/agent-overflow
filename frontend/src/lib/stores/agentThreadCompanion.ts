@@ -15,6 +15,7 @@ import {
   getPane,
   mountThreadInPane,
   openThreadInNewPane,
+  revealPane,
 } from './panes.svelte';
 import { addErrorToast } from './toast.svelte';
 import type { ThreadPane } from './thread.svelte';
@@ -32,6 +33,7 @@ export async function openAgentThreadCompanion(source: ThreadPane, thread: Threa
   const shown = findPaneShowingThread(thread.id);
   if (shown) {
     focusPane(shown.paneId);
+    revealPane(shown.paneId);
     return;
   }
   const existing = companionForSource(source.paneId, AGENT_THREAD_COMPANION_KIND);
