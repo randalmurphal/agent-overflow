@@ -392,6 +392,11 @@ function pulseOf(card: Locator): Promise<Pulse> {
 interface PulseStart {
   at: number;
   frames: string[];
+  /**
+   * How and when it first ended. A restart cancels a running pulse; left
+   * alone it finishes, and the owner forgetting the jump cancels it.
+   */
+  ended?: { how: 'finish' | 'cancel'; at: number };
 }
 
 /**
@@ -408,7 +413,10 @@ async function recordPulses(page: Page): Promise<void> {
       const animation = animate.apply(this, args);
       const keyframes = Array.isArray(args[0]) ? args[0] : [];
       const record = this as Element & { e2ePulses?: PulseStart[] };
-      (record.e2ePulses ??= []).push({ at, frames: keyframes.map((frame) => String((frame as Keyframe).boxShadow)) });
+      const pulse: PulseStart = { at, frames: keyframes.map((frame) => String((frame as Keyframe).boxShadow)) };
+      (record.e2ePulses ??= []).push(pulse);
+      animation.addEventListener('finish', () => { pulse.ended ??= { how: 'finish', at: performance.now() }; });
+      animation.addEventListener('cancel', () => { pulse.ended ??= { how: 'cancel', at: performance.now() }; });
       return animation;
     };
   });
@@ -429,6 +437,12 @@ async function expectPulsed(card: Locator, since: number): Promise<PulseStart> {
   }, { timeout: 3_000 }).toBe(1);
   expect(started[0].frames[0], `pulse keyframes ${started[0].frames.join(' | ')}`).toMatch(/^0 0 0 2px (?!transparent)/);
   return started[0];
+}
+
+/** How the card's pulse that started at `at` ended, if it has. */
+function pulseEnd(card: Locator, at: number): Promise<PulseStart['ended']> {
+  return card.evaluate((el, start) => ((el as Element & { e2ePulses?: PulseStart[] }).e2ePulses ?? [])
+    .find((pulse) => pulse.at === start)?.ended, at);
 }
 
 /** The pulse has ended on its own: no animation, no ring. */
@@ -513,23 +527,41 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
     // A card's location jumps to its diff row; the same jump again, mid
     // pulse, starts the pulse over.
     const nullRow = row(THREADS.nullToken.text);
-    since = await pageNow(page);
-    await press(card(THREADS.nullToken.id).getByTestId('review-conversation-jump-diff'));
-    await expect(nullRow).toBeInViewport();
-    const first = await expectPulsed(cardOf(nullRow), since);
-    // Back to the card through the list, not through the tap's own
-    // scroll-into-view: that centers the target in every scrollable
-    // ancestor, the compact pane strip included.
-    await review.getByTestId('review-scroll').evaluate((el) => { el.scrollTop = 0; });
-    await expect(card(THREADS.nullToken.id).getByTestId('review-conversation-jump-diff')).toBeInViewport();
-    // A restart is only tested while the first pulse runs; a host too slow
-    // to get back here inside the pulse cannot tell a restart from a new one.
-    expect((await pulseOf(cardOf(nullRow))).running, 'the first pulse ended before the repeat jump').toBe(1);
-    await press(card(THREADS.nullToken.id).getByTestId('review-conversation-jump-diff'));
-    await expect(nullRow).toBeInViewport();
-    // A pulse started over is an animation started after the first one.
-    await expectPulsed(cardOf(nullRow), first.at);
-    await expectPulseGone(cardOf(nullRow));
+    const jumpToRow = card(THREADS.nullToken.id).getByTestId('review-conversation-jump-diff');
+    // The owner holds a jump for the pulse's 1.6 s; a repeat press a loaded
+    // host delivers after that is a new jump, not a restart, so the pair is
+    // tried until the repeat lands inside a running pulse.
+    let restarted = false;
+    const backToCard = async () => {
+      // Through the list, not through the tap's own scroll-into-view: that
+      // centers the target in every scrollable ancestor, the compact pane
+      // strip included.
+      await review.getByTestId('review-scroll').evaluate((el) => { el.scrollTop = 0; });
+      await expect(jumpToRow).toBeInViewport();
+    };
+    for (let attempt = 0; attempt < 5 && !restarted; attempt += 1) {
+      if (attempt > 0) await backToCard();
+      since = await pageNow(page);
+      await press(jumpToRow);
+      await expect(nullRow).toBeInViewport();
+      const first = await expectPulsed(cardOf(nullRow), since);
+      await backToCard();
+      if ((await pulseOf(cardOf(nullRow))).running !== 1) {
+        await expectPulseGone(cardOf(nullRow));
+        continue;
+      }
+      const repeated = await pageNow(page);
+      await press(jumpToRow);
+      await expect(nullRow).toBeInViewport();
+      // A pulse started over is an animation started after the first one,
+      // which the repeat cancelled while it still ran.
+      await expectPulsed(cardOf(nullRow), first.at);
+      let end: PulseStart['ended'];
+      await expect.poll(async () => (end = await pulseEnd(cardOf(nullRow), first.at))).toBeDefined();
+      restarted = end?.how === 'cancel' && end.at > repeated;
+      await expectPulseGone(cardOf(nullRow));
+    }
+    expect(restarted, 'no repeat jump landed inside a running pulse in 5 tries').toBe(true);
 
     // The title bar's Conversation peek joins the count and the stepper
     // into one control.
