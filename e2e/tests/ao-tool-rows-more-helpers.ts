@@ -142,8 +142,8 @@ export async function driveMoreAoToolRows(app: HarnessApp, remote: HarnessApp, p
     provider,
     echoUserMessage: true,
     turns: [
-      // A standing agent may not spawn, so the spawn runs before the lead
-      // is promoted, in a turn of its own.
+      // The spawn runs before the lead is made an assistant, in a turn of
+      // its own.
       {
         steps: [
           { call: { tool: 'thread_spawn', args: { prompt: 'Triage the crash report.', title: MORE_SPAWN_TITLE, project_id: target.projectId, group: 'Bugs', wait_seconds: 30 } } },
@@ -210,7 +210,7 @@ export async function driveMoreAoToolRows(app: HarnessApp, remote: HarnessApp, p
   expect(spawn.value?.outcome, spawn.text).toBe('settled');
   await spawnTurn;
   // A watch runs a script from a standing agent's home, so the lead is one.
-  await app.rpc('PromoteStandingAgent', leadThreadId);
+  await app.rpc('HarnessMakeAssistant', leadThreadId);
   await app.rpc('SendMessage', leadThreadId, 'run every tool once', null);
   const last = await app.awaitMcpResult({ server: REMOTE, tool: 'remote_run', cwd: lead.path, timeoutMs: 120_000 });
   expect(last.report.isError, last.report.result).toBeFalsy();

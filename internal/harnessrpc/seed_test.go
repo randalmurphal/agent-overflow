@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -168,6 +169,34 @@ func TestHarnessSeedBroadcastsRowsWhoseHistoryLandedBehindTheStore(t *testing.T)
 	}
 	if row.IsDraft {
 		t.Fatal("seeded thread with history still reads as a draft; the broadcast would re-announce a draft row")
+	}
+}
+
+// A seeded assistant is an assistant's current thread whose row is
+// announced with its record; a thread spawned by it names it.
+func TestHarnessSeedMakesAnAssistant(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "assistant-seed",
+		Repo: &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{
+			{Title: "Ops", Assistant: true},
+			{Title: "Worker", SpawnedBy: "Ops"},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ids := result.Projects[0].ThreadIDs
+	if agent, found, err := host.store.GetStandingAgent(ids[0]); err != nil || !found || agent.ThreadID != ids[0] {
+		t.Fatalf("assistant record = %+v %v %v", agent, found, err)
+	}
+	if !slices.Contains(host.broadcastRows, ids[0]) {
+		t.Fatalf("broadcast rows = %v, want the assistant's row announced", host.broadcastRows)
+	}
+	worker, err := host.store.GetThread(ids[1])
+	if err != nil || worker.SpawnedByThreadID != ids[0] || !worker.SpawnedByAgent {
+		t.Fatalf("worker = spawnedBy %q agent %v (%v)", worker.SpawnedByThreadID, worker.SpawnedByAgent, err)
 	}
 }
 

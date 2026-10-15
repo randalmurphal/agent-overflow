@@ -1,7 +1,7 @@
 // The wake supervisor (docs/specs/standing-agents.md, "Wake supervisor"),
 // end to end on both mock providers.
 //
-// Coverage: promotion through the binding, with its home and README; a loop,
+// Coverage: an assistant's home and README; a loop,
 // an interval watch and a long-running watch registered through real MCP
 // calls, each fire arriving in its thread as a badged message that quotes
 // its data; a non-zero exit recorded on the row and never delivered; the
@@ -65,6 +65,7 @@ import {
   awaitToolAnswer,
   awaitTurnCompleted,
   FOOTER_TOKEN_PATTERN,
+  plainScenario,
   setScenario,
   threadToolsScenario,
   type ProviderName,
@@ -443,21 +444,21 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const tailThread = tailP.threadIds[0];
       const plainThread = plainP.threadIds[0];
 
-      // Promotion makes the home and its README. The loop thread is promoted
-      // too, so its row's notify_on_tick (off) is what keeps ticks quiet.
+      // The record makes the home and its README. The loop thread is an
+      // assistant too, so its row's notify_on_tick (off) is what keeps ticks quiet.
       const homes: Record<string, string> = {};
       for (const id of [loopThread, watchThread, tailThread]) {
-        const agent = await harness.rpc<{ threadId: string; home: string; notifyOnTick: boolean }>(
-          'PromoteStandingAgent',
+        const agent = await harness.rpc<{ id: string; threadId: string; home: string; notifyOnTick: boolean }>(
+          'HarnessMakeAssistant',
           id,
         );
         expect(agent.threadId).toBe(id);
-        expect(agent.home).toBe(join(dataDir, 'agents', id));
+        expect(agent.home).toBe(join(dataDir, 'agents', agent.id));
         expect(agent.notifyOnTick).toBe(false);
         const readme = await readFile(join(agent.home, 'README.md'), 'utf8');
-        expect(readme).toContain(`Thread id: ${id}`);
+        expect(readme).toContain(`- First thread: ${id}`);
         expect(readme).toContain('thread_watch');
-        expect(readme).toContain(`agent-overflow thread send ${id}`);
+        expect(readme).toContain('agent-overflow thread send <thread-id>');
         homes[id] = agent.home;
       }
       for (const home of Object.values(homes)) {
@@ -860,7 +861,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       });
       const { path: cwd, threadIds } = seed.projects[0];
       const thread = threadIds[0];
-      const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      const agent = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
       // Reports once, when released. The next run says it is waiting and
       // parks until the test asks for a second report, so nothing
       // overwrites the outcome under test; every run after that parks for
@@ -1073,7 +1074,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       });
       const { path: cwd, threadIds } = seed.projects[0];
       const thread = threadIds[0];
-      const { home } = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      const { home } = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
       await writeFile(join(home, 'say.sh'), SAY_SCRIPT);
       const { say, hold } = sayControls(home);
       const b = startBreaker(harness, provider, cwd);
@@ -1290,14 +1291,14 @@ async function expectGone(pids: number[]): Promise<void> {
 }
 
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
-  test(`${provider}: archive, delete and demote stop loops and watches, and a long-running watch restarts at boot`, async () => {
+  test(`${provider}: archive and delete stop loops and watches, a handoff moves them, and a long-running watch restarts at boot`, async () => {
     test.setTimeout(180_000);
     const root = await mkdtemp(join(tmpdir(), `ao-wake-life-${provider}-`));
     let harness: HarnessApp | undefined;
     try {
       harness = await launchHarness({ dataDir: root });
       const dataDir = harness.bootstrap.dataDir;
-      const names = ['archived', 'deleted', 'demoted', 'restarted'] as const;
+      const names = ['archived', 'deleted', 'handed', 'restarted'] as const;
       const seed = await harness.rpc<SeedResult>('HarnessSeed', {
         projects: names.map((name) => ({
           name: `life-${name}-${provider}`,
@@ -1313,7 +1314,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       for (const [i, name] of names.entries()) {
         const thread = threads[name];
         const cwd = seed.projects[i].path;
-        homes[name] = (await harness.rpc<{ home: string }>('PromoteStandingAgent', thread)).home;
+        homes[name] = (await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread)).home;
         await writeFile(join(homes[name], 'hold.sh'), HOLD_SCRIPT);
         await setScenario(
           harness,
@@ -1361,17 +1362,17 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await expectGone(runs.deleted);
       expect(dbWakes(dataDir, threads.deleted)).toEqual([]);
 
-      // ---- Demote cancels the watch and keeps the loop.
-      await harness.rpc('DemoteStandingAgent', threads.demoted);
-      await expectGone(runs.demoted);
-      expect(dbWakes(dataDir, threads.demoted)).toEqual([
-        { kind: 'loop', label: 'beat', state: 'armed', last_outcome: '' },
-        {
-          kind: 'watch',
-          label: 'hold',
-          state: 'cancelled',
-          last_outcome: 'cancelled: the thread is no longer a standing agent',
-        },
+      // ---- New Thread, Same Assistant moves both to the successor, and
+      // the long-running watch's process starts again under it.
+      await setScenario(harness, seed.projects[2].path, plainScenario({ name: `life-handed-${provider}`, provider, texts: ['Moved.'] }));
+      const successor = await harness.rpc<{ id: string }>('StartNextAssistantThread', threads.handed);
+      await awaitTurnCompleted(harness, successor.id);
+      await expectGone(runs.handed);
+      const handedRuns = await holdRun(homes.handed, 2);
+      expect(dbWakes(dataDir, threads.handed)).toEqual([]);
+      expect(dbWakes(dataDir, successor.id).map((row) => [row.kind, row.label, row.state])).toEqual([
+        ['loop', 'beat', 'armed'],
+        ['watch', 'hold', 'running'],
       ]);
 
       // ---- A graceful quit stops the long-running watch; the next boot
@@ -1385,9 +1386,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(second).not.toEqual(runs.restarted);
       expect(dbWakes(dataDir, threads.restarted).find((row) => row.label === 'hold')!.state).toBe('running');
       expect(pidsIn(join(homes.restarted, 'hold.pids'))).toHaveLength(2);
-      // Nothing cancelled came back.
+      // Nothing cancelled came back, and the moved watch runs on the successor.
       expect(pidsIn(join(homes.archived, 'hold.pids'))).toHaveLength(1);
-      expect(pidsIn(join(homes.demoted, 'hold.pids'))).toHaveLength(1);
+      await expectGone(handedRuns);
+      expect((await holdRun(homes.handed, 3)).length).toBeGreaterThan(0);
     } finally {
       if (harness) await harness.close();
       await rm(root, { recursive: true, force: true });
@@ -1505,7 +1507,7 @@ test.describe('a standing agent copied or moved to another computer', () => {
         projects: [{ name: `agent-transfer-target-${provider}`, repo: {} }],
       });
 
-      const home = (await source.rpc<{ home: string }>('PromoteStandingAgent', thread)).home;
+      const home = (await source.rpc<{ home: string }>('HarnessMakeAssistant', thread)).home;
       await writeFile(join(home, 'hold.sh'), HOLD_SCRIPT);
       const scenario = threadToolsScenario({
         name: `agent-transfer-${provider}`,
@@ -1620,7 +1622,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       });
       const { path: cwd, threadIds } = seed.projects[0];
       const thread = threadIds[0];
-      const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      const agent = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
       // 1000 lines of 70 bytes: 70,000 bytes, 4,464 over the cap.
       await writeFile(
         join(agent.home, 'big.sh'),
@@ -1706,7 +1708,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const [tickerP, barrierP] = seed.projects;
       const ticker = tickerP.threadIds[0];
       const barrier = barrierP.threadIds[0];
-      await harness.rpc('PromoteStandingAgent', ticker);
+      await harness.rpc('HarnessMakeAssistant', ticker);
       const loop = (every: number) => ({
         call: { tool: 'thread_loop', args: { label: 'tick', note: 'look at the board', every_seconds: every } },
       });
@@ -1804,7 +1806,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       });
       const { path: cwd, threadIds } = seed.projects[0];
       const thread = threadIds[0];
-      const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      const agent = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
       await writeFile(
         join(agent.home, 'once.sh'),
         `[ -f "$AO_AGENT_HOME/once.done" ] && exec sleep 3600
@@ -2747,7 +2749,7 @@ test('codex: a wake and an outside send are accepted while the session they need
     });
     const { path: cwd, threadIds } = seed.projects[0];
     const thread = threadIds[0];
-    const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+    const agent = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
     await writeFile(
       join(agent.home, 'once.sh'),
       `[ -f "$AO_AGENT_HOME/once.done" ] && exec sleep 3600
@@ -3388,7 +3390,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       });
       const { path: cwd, threadIds } = seed.projects[0];
       const thread = threadIds[0];
-      const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      const agent = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
       await writeFile(
         join(agent.home, 'once.sh'),
         `[ -f "$AO_AGENT_HOME/once.done" ] && exec sleep 3600
@@ -3546,7 +3548,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       });
       const { path: cwd, threadIds } = seed.projects[0];
       const thread = threadIds[0];
-      const { home } = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      const { home } = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
       await writeFile(join(home, 'say.sh'), SAY_SCRIPT);
       const { say, hold, release } = sayControls(home);
       const b = startBreaker(harness, provider, cwd);
@@ -3798,7 +3800,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       });
       const { path: cwd, threadIds } = seed.projects[0];
       const thread = threadIds[0];
-      const { home } = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      const { home } = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
       await writeFile(join(home, 'say.sh'), SAY_SCRIPT);
       const { say } = sayControls(home);
       const b = startBreaker(harness, provider, cwd);
@@ -4408,7 +4410,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       });
       const { path: cwd, threadIds } = seed.projects[0];
       const thread = threadIds[0];
-      const { home } = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+      const { home } = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
       await writeFile(join(home, 'say.sh'), SAY_SCRIPT);
       const { say, hold, release } = sayControls(home);
       const b = startBreaker(harness, provider, cwd);
@@ -4555,7 +4557,7 @@ test('codex: a wake steered into a person turn keeps its notification', async ()
     });
     const { path: cwd, threadIds } = seed.projects[0];
     const thread = threadIds[0];
-    const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+    const agent = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
     await writeFile(
       join(agent.home, 'mid.sh'),
       `[ -f "$AO_AGENT_HOME/mid.done" ] && exit 0
@@ -4645,7 +4647,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const [agentP, workerP, plainP] = seed.projects;
       const agent = agentP.threadIds[0];
       const plain = plainP.threadIds[0];
-      await harness.rpc('PromoteStandingAgent', agent);
+      await harness.rpc('HarnessMakeAssistant', agent);
 
       const answer = (gate: string, args: Record<string, unknown>, text: string): ScriptedTurn => ({
         steps: [
@@ -4872,7 +4874,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       });
       const [agentP, workerP] = seed.projects;
       const agent = agentP.threadIds[0];
-      await harness.rpc('PromoteStandingAgent', agent);
+      await harness.rpc('HarnessMakeAssistant', agent);
       // Codex: the wake starts turn 2, which parks without echoing it.
       await setScenario(
         harness,
@@ -5025,7 +5027,7 @@ test('claude: a wake flushed mid-turn is a tick only when it runs as its own tur
     const pickup = pickupP.threadIds[0];
     const drain = drainP.threadIds[0];
     const barrier = barrierP.threadIds[0];
-    for (const id of [pickup, drain]) await harness.rpc('PromoteStandingAgent', id);
+    for (const id of [pickup, drain]) await harness.rpc('HarnessMakeAssistant', id);
     const loop = (every: number) => ({ call: { tool: 'thread_loop', args: { label: 'tick', note: 'look again', every_seconds: every } } });
     const stop = { call: { tool: 'thread_loop', args: { label: 'tick', stop: true } } };
     await setScenario(harness, pickupP.path, {

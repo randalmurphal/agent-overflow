@@ -151,6 +151,10 @@ func (h *testHost) ArchiveThread(threadID string) error {
 	_, _, err := h.store.ArchiveThread(threadID)
 	return err
 }
+func (h *testHost) MakeAssistant(threadID string) (store.StandingAgent, error) {
+	agent := store.StandingAgent{ID: threadID, ThreadID: threadID, Home: "/agents/" + threadID, CreatedAt: 1}
+	return agent, h.store.CreateStandingAgent(agent)
+}
 func (h *testHost) BroadcastThreadRow(threadID string) {
 	h.broadcastRows = append(h.broadcastRows, threadID)
 }

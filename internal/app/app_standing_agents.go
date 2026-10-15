@@ -136,30 +136,12 @@ func (a *App) createAssistant(ctx context.Context, spec assistantSpec) (store.Th
 	if err != nil {
 		return store.Thread{}, store.StandingAgent{}, err
 	}
-	agent := store.StandingAgent{
-		ID:             entityid.New(),
-		ThreadID:       thread.ID,
-		CreatorAgentID: spec.creatorAgentID,
-		CreatedAt:      time.Now().UnixMilli(),
-	}
-	agent.Home = filepath.Join(a.configDir, "agents", agent.ID)
-	undo := func(cause error) (store.Thread, store.StandingAgent, error) {
+	agent, err := a.makeAssistantRecord(thread, spec.creatorAgentID)
+	if err != nil {
 		if err := a.DeleteThread(thread.ID); err != nil {
 			log.Printf("assistants: delete the thread %s of an assistant that was not created: %v", thread.ID, err)
 		}
-		return store.Thread{}, store.StandingAgent{}, cause
-	}
-	if err := os.MkdirAll(agent.Home, 0o700); err != nil {
-		return undo(fmt.Errorf("create the assistant's home: %w", err))
-	}
-	if err := a.writeAssistantReadme(agent, thread); err != nil {
-		return undo(err)
-	}
-	if err := a.store.CreateStandingAgent(agent); err != nil {
-		if removeErr := os.RemoveAll(agent.Home); removeErr != nil {
-			log.Printf("assistants: remove the home %s of an assistant that was not created: %v", agent.Home, removeErr)
-		}
-		return undo(err)
+		return store.Thread{}, store.StandingAgent{}, err
 	}
 	created, err := a.store.GetThread(thread.ID)
 	if err != nil {
@@ -167,6 +149,39 @@ func (a *App) createAssistant(ctx context.Context, spec assistantSpec) (store.Th
 	}
 	a.broadcastThreadRow(triage.ThreadActionListed, created)
 	return created, agent, nil
+}
+
+// makeAssistantRecord makes thread an assistant's current thread: its home
+// with the README, then the record. A record that cannot be written takes
+// the home with it.
+func (a *App) makeAssistantRecord(thread store.Thread, creatorAgentID string) (store.StandingAgent, error) {
+	if a.configDir == "" {
+		return store.StandingAgent{}, errors.New("create an assistant: no config directory")
+	}
+	agent := store.StandingAgent{
+		ID:             entityid.New(),
+		ThreadID:       thread.ID,
+		CreatorAgentID: creatorAgentID,
+		CreatedAt:      time.Now().UnixMilli(),
+	}
+	agent.Home = filepath.Join(a.configDir, "agents", agent.ID)
+	if err := os.MkdirAll(agent.Home, 0o700); err != nil {
+		return store.StandingAgent{}, fmt.Errorf("create the assistant's home: %w", err)
+	}
+	removeHome := func() {
+		if err := os.RemoveAll(agent.Home); err != nil {
+			log.Printf("assistants: remove the home %s of an assistant that was not created: %v", agent.Home, err)
+		}
+	}
+	if err := a.writeAssistantReadme(agent, thread); err != nil {
+		removeHome()
+		return store.StandingAgent{}, err
+	}
+	if err := a.store.CreateStandingAgent(agent); err != nil {
+		removeHome()
+		return store.StandingAgent{}, err
+	}
+	return agent, nil
 }
 
 // queueAssistantMessage queues an app-written message that opens an

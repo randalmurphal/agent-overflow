@@ -372,7 +372,7 @@ test('a standing agent on the other computer is named on its wake as a local one
   const local = await seed(home, 'wake-role-local', ['Local reviewer']);
   const there = await seed(remote, 'wake-role-remote', ['Remote reviewer']);
   for (const [app, threadID] of [[home, local.threadIds[0]], [remote, there.threadIds[0]]] as const) {
-    const promoted = await app.rpc<{ home: string }>('PromoteStandingAgent', threadID);
+    const promoted = await app.rpc<{ home: string }>('HarnessMakeAssistant', threadID);
     // Two heading markers: the remote role is bounded on both computers.
     writeFileSync(join(promoted.home, 'instructions.md'), `# #\t${role}\n\nGrants: none.\n`);
   }
@@ -418,7 +418,7 @@ test('a standing agent on the other computer is named on its wake as a local one
   };
   const localLine = await agentLine('Local review: the parser is fine.');
   const remoteLine = await agentLine('Remote review: the parser is fine.');
-  const want = `That thread is a standing agent, a thread the user promoted. Its role, in its own words: ${JSON.stringify(role)}`;
+  const want = `That thread is a standing agent. Its role, in its own words: ${JSON.stringify(role)}`;
   expect(localLine).toBe(want);
   expect(remoteLine).toBe(localLine);
 

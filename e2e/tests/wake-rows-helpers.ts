@@ -43,7 +43,7 @@ export interface WakeAgent {
   dataDir: string;
 }
 
-/** Seeds one thread, promotes it to a standing agent and writes its scripts. */
+/** Seeds one thread, makes it an assistant and writes its scripts. */
 export async function seedWakeAgent(harness: HarnessApp, provider: ProviderName, tag: string, title: string): Promise<WakeAgent> {
   await harness.rpc('SetDeviceName', DEVICE_NAME);
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
@@ -51,7 +51,7 @@ export async function seedWakeAgent(harness: HarnessApp, provider: ProviderName,
   });
   const { path: cwd, threadIds } = seed.projects[0];
   const thread = threadIds[0];
-  const agent = await harness.rpc<{ home: string }>('PromoteStandingAgent', thread);
+  const agent = await harness.rpc<{ home: string }>('HarnessMakeAssistant', thread);
   for (const [name, body] of Object.entries(SCRIPTS)) await writeFile(join(agent.home, name), body);
   return { thread, cwd, home: agent.home, dataDir: harness.bootstrap.dataDir };
 }

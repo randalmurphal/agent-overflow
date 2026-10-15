@@ -49,6 +49,7 @@ export const migrationExceptions: MigrationException[] = [
   { version: 145, table: 'automations', dropped: true, reason: 'v145 removes the workflow scheduler and drops its automations' },
   { version: 145, table: 'automation_cursors', dropped: true, reason: "v145 drops the scheduler's per-source cursors with its automations" },
   { version: 145, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v145 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
+  { version: 153, table: 'standing_agents', dropped: true, reason: 'v153 moves every standing agent to an agents record whose id is its thread id, and drops the table' },
 ];
 
 /**

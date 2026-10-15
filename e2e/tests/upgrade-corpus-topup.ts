@@ -135,24 +135,34 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('ArchiveThread', scenarioThreads['session-death']);
     await harness.rpc('RenameThread', scenarioThreads['usage-limit-claude'], `Top-up v${version}: renamed after its usage limit`);
     await harness.rpc('SetChatBarFavorite', { kind: 'model', provider: 'claude', value: MODEL.claude, label: 'Opus' }, true);
-    // Two standing agents, one told about every tick.
-    await harness.rpc('PromoteStandingAgent', scenarioThreads['tool-call']);
-    await harness.rpc('PromoteStandingAgent', scenarioThreads['codex-basic']);
-    await harness.rpc('SetStandingAgentNotifyOnTick', scenarioThreads['codex-basic'], true);
-    // A standing agent that set itself a loop and a watch through the
-    // thread tools, an hour out, and stopped a second loop. A short watch
-    // fires once, and the turn its wake starts cancels it before a second
-    // fire is due; a long-running watch is started and stopped. Nothing is
-    // left running for a later boot of the corpus to restart.
-    const agent = await harness.rpc<{ id: string }>('CreateThread', {
-      projectId,
-      title: `Top-up v${version}: standing agent with a loop and a watch`,
-      provider: 'claude',
-      model: MODEL.claude,
-      mode: 'chat',
+    // Two assistants made by New Assistant, one told about every tick and
+    // one moved to a new thread by New Thread, Same Assistant, which leaves
+    // a past thread. Each opening and handoff message takes a turn.
+    await harness.rpc('HarnessSetScenario', {
+      scenario: threadToolsScenario({ name: 'topup-assistants', provider: 'claude', turns: [{ text: 'Noted.' }], afterTurns: 'repeatLast' }),
     });
-    threadIds.push(agent.id);
-    const { home } = await harness.rpc<{ home: string }>('PromoteStandingAgent', agent.id);
+    const assistant = async (name: string): Promise<string> => {
+      const created = await harness.rpc<{ id: string }>('CreateAssistant', { projectId, name });
+      await awaitTurnCompleted(harness, created.id, TURN_TIMEOUT_MS);
+      threadIds.push(created.id);
+      return created.id;
+    };
+    const told = await assistant(`Top-up v${version} ${nonce}: told every tick`);
+    await harness.rpc('SetStandingAgentNotifyOnTick', told, true);
+    const moved = await assistant(`Top-up v${version} ${nonce}: moved on`);
+    const successor = await harness.rpc<{ id: string }>('StartNextAssistantThread', moved);
+    await awaitTurnCompleted(harness, successor.id, TURN_TIMEOUT_MS);
+    threadIds.push(successor.id);
+    // An assistant that set itself a loop and a watch through the thread
+    // tools, an hour out, and stopped a second loop. A short watch fires
+    // once, and the turn its wake starts cancels it before a second fire is
+    // due; a long-running watch is started and stopped. Nothing is left
+    // running for a later boot of the corpus to restart.
+    const agent = { id: await assistant(`Top-up v${version} ${nonce}: loop and watch`) };
+    const record = await harness.rpc<{ home: string }>('GetStandingAgent', agent.id);
+    const home = record.home;
+    // The scenario below applies to the session it starts.
+    await harness.rpc('StopSession', agent.id);
     await harness.rpc('HarnessSetScenario', {
       scenario: threadToolsScenario({
         name: 'topup-wakes',

@@ -74,9 +74,13 @@ type HarnessSeedThread struct {
 	Archived   bool   `json:"archived,omitempty"`
 	// SpawnedBy is the title of a thread seeded earlier in this project.
 	// The thread is recorded as that thread's thread_spawn, through a
-	// finished spawn request row, so the sidebar nests it under a promoted
-	// spawner and counts it once archived.
-	SpawnedBy string            `json:"spawnedBy,omitempty"`
+	// finished spawn request row, so the sidebar nests it under an
+	// assistant spawner and counts it once archived.
+	SpawnedBy string `json:"spawnedBy,omitempty"`
+	// Assistant makes the thread an assistant's current thread, its title
+	// the name, with the record and home New Assistant makes and no opening
+	// message.
+	Assistant bool              `json:"assistant,omitempty"`
 	Turns     []HarnessSeedTurn `json:"turns,omitempty"`
 }
 
@@ -375,7 +379,12 @@ func (h *Harness) seedThread(projectID string, spec HarnessSeedThread, spawnerID
 			return thread.ID, fmt.Errorf("record spawner: %w", err)
 		}
 	}
-	if spec.SessionRef != "" || len(spec.Turns) > 0 || spawnerID != "" {
+	if spec.Assistant {
+		if _, err := h.config.Host.MakeAssistant(thread.ID); err != nil {
+			return thread.ID, fmt.Errorf("make assistant: %w", err)
+		}
+	}
+	if spec.SessionRef != "" || len(spec.Turns) > 0 || spawnerID != "" || spec.Assistant {
 		// CreateThread announced an item-less row (IsDraft=true) with no
 		// spawner. The history, session cursor and spawn record above went
 		// in behind the store, so a page that is already open would keep
