@@ -216,11 +216,31 @@ func TestThreadAgentIncomingCompletionsAndWorkflowWakes(t *testing.T) {
 			t.Fatalf("withdraw %s = %+v, %v", id, stop, err)
 		}
 	}
+	// The withdrawn completion is dismissed, not handed back: the watcher
+	// would queue a pending one again on its next tick.
 	watch, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
-	if err != nil || watch.Notification != "pending" {
-		t.Fatalf("watch = %+v, %v; want its completion pending again", watch, err)
+	if err != nil || watch.Notification != "dismissed" || watch.WakeIssue == "" {
+		t.Fatalf("watch = %+v, %v; want it dismissed with the reason", watch, err)
+	}
+	for range 3 {
+		due, err := a.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range due {
+			a.checkRemoteWatch(d)
+		}
+		a.checkRemoteWatch(watch)
+		a.waitAgentNoticeWork()
 	}
 	if durable, memory := queuedSendIDs(t, a, thread.ID); !slices.Equal(durable, []string{person.SendID}) || !slices.Equal(memory, []string{person.SendID}) {
-		t.Fatalf("queue = %q / %q, want the person's message alone", durable, memory)
+		t.Fatalf("queue after three watcher ticks = %q / %q, want the person's message alone", durable, memory)
+	}
+	jobs, err := a.ListThreadRemoteCommands(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Notification != "dismissed" || jobs[0].Receipt.ID == "" {
+		t.Fatalf("remote_jobs = %+v, want the job with its result", jobs)
 	}
 }

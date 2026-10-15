@@ -57,6 +57,7 @@ import { codexTransferScenario } from './conversation-transfer-helpers.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { pairBuildBox } from './build-box-helpers.js';
+import { agentsBody, openAgents } from './agents-tray-helpers.js';
 import {
   advanceGate,
   awaitGate,
@@ -4044,6 +4045,125 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         `${provider}-archive-keeps-held-remote-completion.png`,
         completionRows(page).last(),
       );
+    } finally {
+      await breaker?.cleanup();
+      await Promise.allSettled([harness.close(), remote.close()]);
+    }
+  });
+
+  test(`${provider}: a Stop on a held remote completion's incoming row dismisses it for good`, async ({ page }) => {
+    test.setTimeout(180_000);
+    const [harness, remote] = await startTogether(launchHarness(), launchHarness());
+    let breaker: ReturnType<typeof startBreaker> | undefined;
+    try {
+      await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+      const dataDir = harness.bootstrap.dataDir;
+      const computer = await pairBuildBox(harness, remote);
+      const remoteSeed = await remote.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `remote-build-${provider}`, repo: {} }],
+      });
+      const { projectId: remoteProject, path: remotePath } = remoteSeed.projects[0];
+      const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `remote-stopped-${provider}`, repo: {}, threads: [{ title: 'Remote builder', provider }] }],
+      });
+      const { path: cwd, threadIds } = seed.projects[0];
+      const thread = threadIds[0];
+      const b = startBreaker(harness, provider, cwd);
+      breaker = b;
+      const requestId = randomUUID();
+      const release = join(remotePath, 'build.release');
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `remote-stopped-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [
+            {
+              steps: [
+                {
+                  call: {
+                    server: 'ao-remote-tools',
+                    tool: 'remote_run',
+                    args: {
+                      computer_id: computer,
+                      project_id: remoteProject,
+                      request_id: requestId,
+                      label: 'nightly build',
+                      argv: ['sh', '-c', `while [ ! -f '${release}' ]; do sleep 0.1; done; echo 'build 812 finished: green'`],
+                      wait_seconds: 0,
+                    },
+                  },
+                },
+              ],
+              text: 'The build runs on Build box.',
+            },
+          ],
+          afterTurns: 'silent',
+        }),
+      );
+      await harness.rpc('StartSession', thread);
+      await harness.rpc('SendMessage', thread, 'run the nightly build on the build box', null);
+      const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
+      expect(started.report.isError, started.report.result).toBeFalsy();
+      await awaitTurnCompleted(harness, thread);
+
+      const startFailure = (data: NotificationSend) => data.id === `session-start:${thread}` && !data.retract;
+      const db = <T,>(read: (conn: DatabaseSync) => T): T => {
+        const conn = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return read(conn);
+        } finally {
+          conn.close();
+        }
+      };
+      const queued = () => db((conn) => (conn.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ?`).all(thread) as {
+        send_id: string;
+      }[]).map((row) => row.send_id.split(':')[0]));
+      const watch = () => db((conn) => conn.prepare(`SELECT notification, wake_issue FROM remote_watches WHERE request_id = ?`).get(requestId) as {
+        notification: string;
+        wake_issue: string;
+      });
+      const completion = `request_id: ${requestId}`;
+
+      // The job finishes while the thread's start fails: its completion is
+      // held in the queue, an incoming row in the Agents tray.
+      await harness.rpc('StopSession', thread);
+      await b.brk();
+      await writeFile(release, '');
+      await harness.waitForEvent<NotificationSend>('notification:send', startFailure, 60_000);
+      await expect.poll(queued, { timeout: 15_000 }).toEqual(['remote-completion']);
+      await harness.open(page);
+      await openAgents(page, 'Remote builder');
+      const incoming = agentsBody(page).getByTestId('agent-incoming-row');
+      await expect(incoming).toHaveCount(1);
+      await expect(incoming).toHaveAttribute('data-kind', 'wake');
+
+      // Stopped, it is dismissed on its watch, not handed back: three watcher
+      // ticks later nothing is queued and the row stays gone.
+      await incoming.getByTestId('agent-incoming-row-stop').click();
+      await expect(page.getByTestId('toast').filter({ hasText: /^Withdrew .* before this thread's agent read it\.$/ })).toBeVisible({ timeout: 30_000 });
+      await expect(incoming).toHaveCount(0);
+      expect(queued()).toEqual([]);
+      expect(watch()).toEqual({ notification: 'dismissed', wake_issue: 'The user withdrew it from the queue before the agent read it.' });
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      expect(queued()).toEqual([]);
+      expect(watch().notification).toBe('dismissed');
+      await expect(incoming).toHaveCount(0);
+
+      // A mended start still never receives it, and remote_jobs keeps the result.
+      await b.mend();
+      await harness.rpc('StartSession', thread);
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      expect(queued()).toEqual([]);
+      expect(countInputs(harness, cwd, completion)).toBe(0);
+      const jobs = await harness.rpc<{ requestId: string; notification: string; receipt: { state: string } }[]>('ListThreadRemoteCommands', thread);
+      const job = jobs.find((j) => j.requestId === requestId);
+      expect(job?.notification).toBe('dismissed');
+      expect(job?.receipt.state).not.toBe('running');
+      console.log(`${provider}: stopped completion: watch ${JSON.stringify(watch())}, job ${job?.receipt.state}`);
+      await shoot(page, `${provider}-stopped-remote-completion.png`, agentsBody(page));
     } finally {
       await breaker?.cleanup();
       await Promise.allSettled([harness.close(), remote.close()]);

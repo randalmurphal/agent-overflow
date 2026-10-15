@@ -23,9 +23,16 @@ import (
 //   - a worker's question: back to the user in the worker;
 //   - a loop or watch wake: recorded on its row as not delivered;
 //   - an outside `thread send`: a notice in the thread;
-//   - a remote job's completion: back to its watch (store.WithdrawRemoteCompletion),
-//     which delivers it again;
+//   - a remote job's completion: dismissed on its watch with the reason
+//     (store.WithdrawRemoteCompletion), so it is never delivered again and
+//     remote_jobs and remote_status still return it;
 //   - a workflow run's wake: dropped, as a queue drop drops it.
+
+// stoppedRemoteCompletion dismisses a completion a person withdrew: a
+// completion handed back to its watch would be queued again on the next tick.
+func stoppedRemoteCompletion(int64) store.CompletionReturn {
+	return store.CompletionReturn{Issue: "The user withdrew it from the queue before the agent read it."}
+}
 
 // StopThreadAgentIncoming withdraws one message an agent or a wake queued
 // for the thread, named by its send id. A message the thread's agent
@@ -71,7 +78,7 @@ func (a *App) withdrawIncomingAgentMessage(ctx context.Context, threadID, sendID
 	computerID, requestID, isCompletion := remoteCompletionFromSendID(sendID)
 	if isCompletion {
 		deleteRow = func(row store.FlushQueueItem) error {
-			return a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID, store.WithdrawQueued, nil)
+			return a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID, store.WithdrawQueued, stoppedRemoteCompletion)
 		}
 	}
 	removal, err := a.removeQueuedItemWith(ctx, threadID, sendID, deleteRow)
