@@ -145,9 +145,10 @@ func TestThreadAgentIncomingWakesSendsAndQuestionsWithdrawToTheirOwners(t *testi
 	}, func(string, string) bool { return true })
 	if err := a.queueAgentNotice(agentNotice{
 		threadID: thread.ID, sendID: prompt.sendID(),
-		origin:     usermessage.OriginAgentWake,
-		originWake: &usermessage.OriginWake{Kind: "question", Label: "worker", ThreadID: "worker-thread"},
-		prepare:    func() (string, bool, error) { return `Thread "worker" asks`, true, nil },
+		origin:      usermessage.OriginAgentWake,
+		originWake:  &usermessage.OriginWake{Kind: "question", Label: "worker", ThreadID: "worker-thread"},
+		prepare:     func() (string, bool, error) { return `Thread "worker" asks`, true, nil },
+		startFailed: func(err error) string { return "the agent could not start: " + err.Error() },
 	}); err != nil {
 		t.Fatalf("queue the worker's question: %v", err)
 	}

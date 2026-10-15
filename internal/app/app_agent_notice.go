@@ -84,6 +84,9 @@ type agentNotice struct {
 // thread refuses it with errThreadArchived, which each caller treats as its
 // own reason not to proceed.
 func (a *App) queueAgentNotice(notice agentNotice) error {
+	if notice.prepare == nil || notice.startFailed == nil {
+		return fmt.Errorf("agent notice %s for %s names no body or no start failure message", notice.sendID, notice.threadID)
+	}
 	body, proceed, err := notice.prepare()
 	if err != nil || !proceed {
 		return err
