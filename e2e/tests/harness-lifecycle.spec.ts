@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
+import { chmod, mkdtemp, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -12,10 +13,13 @@ import { HarnessApp } from '../src/harness-app.js';
 import {
   captureProcessGroupMemberProof,
   captureProcessIdentity,
+  captureProcessTreeProof,
+  ownedProcessTreeAlive,
+  processHoldState,
   processTreeRSS,
   terminateChildTreeAndWaitVerified,
-  verifyProcessGroupMemberProof,
 } from '../src/harness-process.js';
+import { FALLBACK_MEMORY_LIMIT_BYTES, HarnessWatchdog } from '../src/harness-watchdog.js';
 
 async function fakeBinary(source: string): Promise<{ root: string; binary: string; pidFile: string }> {
   const root = await mkdtemp(path.join(tmpdir(), 'ao-harness-lifecycle-'));
@@ -74,7 +78,7 @@ test('sweeps /proc by name so an ordinary exit cannot fail the scan', async () =
 
 test('rejects a reused process-group member identity', async () => {
   const identity = await captureProcessIdentity(process.pid);
-  await expect(verifyProcessGroupMemberProof({ ...identity, birth: identity.birth + '-reused' })).resolves.toBe(false);
+  await expect(processHoldState({ ...identity, birth: identity.birth + '-reused' })).resolves.toBe('changed');
 });
 
 test('reaps an owned helper after the process-group leader exits during graceful teardown', async () => {
@@ -117,6 +121,132 @@ test('reaps an owned helper after the process-group leader exits during graceful
       }
     }
     await rm(fake.root, { recursive: true, force: true });
+  }
+});
+
+test('escalates through a tree-proof member after the leader exits during the grace window', async () => {
+  test.skip(process.platform === 'win32', 'Unix process-group regression');
+  // The lifecycle browser passes only a tree proof. The leader exits on
+  // SIGTERM while a helper ignores it, so escalation must authenticate the
+  // group through the helper's tree-proof identity.
+  const fake = await fakeBinary(`
+    const { spawn } = await import('node:child_process');
+    const { writeFileSync } = await import('node:fs');
+    const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    writeFileSync(process.env.AO_PID_FILE, String(child.pid));
+    process.on('SIGTERM', () => process.exit(0));
+    setInterval(() => {}, 1000);
+  `);
+  const leader = spawn(fake.binary, [], {
+    detached: true,
+    env: { ...process.env, AO_PID_FILE: fake.pidFile },
+    stdio: 'ignore',
+  });
+  try {
+    await expect.poll(async () => {
+      try {
+        return Number(await readFile(fake.pidFile, 'utf8'));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+        throw error;
+      }
+    }).toBeGreaterThan(0);
+    const helperPID = Number(await readFile(fake.pidFile, 'utf8'));
+    const identity = await captureProcessIdentity(leader.pid);
+    const treeProof = await captureProcessTreeProof(identity);
+    expect(treeProof.descendants.map((proof) => proof.pid)).toContain(helperPID);
+
+    await terminateChildTreeAndWaitVerified(leader, identity, 'SIGTERM', undefined, treeProof);
+    expect(await processExists(helperPID)).toBe(false);
+  } finally {
+    if (leader.pid) {
+      try {
+        process.kill(-leader.pid, 'SIGKILL');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    }
+    await rm(fake.root, { recursive: true, force: true });
+  }
+});
+
+test('an exiting process still holds its pid while its exe link is gone', async () => {
+  test.skip(process.platform !== 'linux', 'Linux exe link');
+  // A process mid-exit or a zombie has no readable exe link, but its stat
+  // still carries the captured birth and group. Treating that as a changed
+  // identity refused escalation for a Chromium leader that was only exiting.
+  // The exec'd parent never reaps, so the child stays a zombie.
+  const parent = spawn('/bin/sh', ['-c', 'setsid sleep 1 & echo $!; exec sleep 30'], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  try {
+    const pid = Number((await once(parent.stdout!, 'data'))[0].toString().trim());
+    const identity = await captureProcessIdentity(pid);
+    expect(identity.groupId).toBe(pid);
+    await expect.poll(async () => (await readFile(`/proc/${pid}/stat`, 'utf8')).split(') ')[1]?.[0]).toBe('Z');
+    await expect(readlink(`/proc/${pid}/exe`)).rejects.toThrow();
+
+    await expect(processHoldState(identity)).resolves.toBe('held');
+    await expect(processHoldState({ ...identity, birth: `${identity.birth}1` })).resolves.toBe('changed');
+    // Teardown liveness applies the same rule: an exiting process can still
+    // hold files, so its data root is not reclaimed yet.
+    const child = { pid, exitCode: 0, signalCode: null } as unknown as ChildProcess;
+    await expect(ownedProcessTreeAlive(child, identity)).resolves.toBe(true);
+    parent.kill('SIGKILL');
+    await expect.poll(() => processHoldState(identity), { timeout: 5_000 }).toBe('released');
+    await expect(ownedProcessTreeAlive(child, identity)).resolves.toBe(false);
+  } finally {
+    parent.kill('SIGKILL');
+  }
+});
+
+test('the watchdog samples a backend that is mid-exit and stops once it is reaped', async () => {
+  test.skip(process.platform !== 'linux', 'Linux exe link and VmRSS');
+  // An exiting backend has no exe link and no VmRSS but still holds its pid.
+  // Reading that as a changed identity tripped the watchdog with a false
+  // reason and tore the backend down. The exec'd parent never reaps, so the
+  // sampled process stays a zombie until the parent is killed.
+  const root = await mkdtemp(path.join(tmpdir(), 'ao-watchdog-exit-'));
+  const parent = spawn('/bin/sh', ['-c', 'setsid sleep 2 & echo $!; exec sleep 30'], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  let closed = false;
+  let watchdog: HarnessWatchdog | undefined;
+  try {
+    const pid = Number((await once(parent.stdout!, 'data'))[0].toString().trim());
+    const child = { pid, exitCode: null, signalCode: null } as unknown as ChildProcess;
+    watchdog = new HarnessWatchdog({
+      child,
+      dataRoot: root,
+      dataDir: root,
+      isClosed: () => closed,
+      markClosed: () => { closed = true; },
+      shutdown: async () => undefined,
+      closeSocket: () => undefined,
+      socketOpen: () => false,
+    });
+    await watchdog.start(FALLBACK_MEMORY_LIMIT_BYTES);
+    // Drive samples directly so each assertion covers one known state; an
+    // interval sample in flight would make a direct one return early.
+    watchdog.stop();
+    const sampled = watchdog as unknown as {
+      sample(limit: number): Promise<void>;
+      timer?: ReturnType<typeof setInterval>;
+    };
+    await expect.poll(async () => (await readFile(`/proc/${pid}/stat`, 'utf8')).split(') ')[1]?.[0], { timeout: 5_000 }).toBe('Z');
+    await sampled.sample(FALLBACK_MEMORY_LIMIT_BYTES);
+    expect(closed).toBe(false);
+
+    parent.kill('SIGKILL');
+    await expect.poll(() => processHoldState(watchdog!.processIdentity!), { timeout: 5_000 }).toBe('released');
+    sampled.timer = setInterval(() => undefined, 60_000);
+    await sampled.sample(FALLBACK_MEMORY_LIMIT_BYTES);
+    expect(closed).toBe(false);
+    expect(sampled.timer).toBeUndefined();
+  } finally {
+    watchdog?.stop();
+    parent.kill('SIGKILL');
+    await rm(root, { recursive: true, force: true });
   }
 });
 
