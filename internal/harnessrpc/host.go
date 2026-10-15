@@ -55,6 +55,11 @@ type Host interface {
 	// which changes derived row columns (IsDraft) no store write announces.
 	BroadcastThreadRow(threadID string)
 	StopSession(threadID string) error
+	// AwaitSessionEndWork waits for the work stopped sessions set off (a
+	// request a stop settled, the wake that answer owes another thread, and
+	// the session that wake starts) and returns the threads with a live
+	// session afterwards.
+	AwaitSessionEndWork() []string
 	DeleteProject(projectID string) error
 	RecoverCrashedTurns() error
 	RecoverOrphanedBackgroundTasks() error

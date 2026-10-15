@@ -43,19 +43,30 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 		return threadtools.EffectNothing, nil
 	}
 	state := receipt.State
+	if hook := a.cancelReadForTest; hook != nil {
+		hook(token)
+	}
 	// The door takes the settle lock for the settlement and releases it
 	// before the queue and provider work below: both take thread locks, and
 	// neither settles anything.
-	if err := a.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+	work, settled, err := a.settleReceiptUnderLock(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 		State:      store.ThreadReceiptCancelled,
 		Answer:     []byte(answer),
 		AnswerKind: store.ThreadAnswerError,
-	}); err != nil {
+	}, dropScratchThread)
+	if err != nil {
 		return "", err
 	}
+	a.runThreadSettlementWork(work)
+	// A receipt something else settled first (a reply, a turn end, an
+	// earlier cancel), before the read above or after it, has nothing left
+	// to stop: its turn, still running or not, is no longer this request's
+	// work. Only the settlement's own answer says which happened last.
+	if !settled {
+		return threadtools.EffectNothing, nil
+	}
 
-	switch state {
-	case store.ThreadReceiptAccepted:
+	if state == store.ThreadReceiptAccepted {
 		// The message was still on the queue when the receipt was read, so
 		// the first thing to try is taking it back.
 		removal, err := a.removeQueuedItem(ctx, receipt.TargetThreadID, threadRequestSendID(token))
@@ -65,16 +76,16 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 		if removal == queueRemovalRemoved {
 			return threadtools.EffectQueuedRemoved, nil
 		}
-		// It is not on the queue any more: the dispatch claimed it while the
-		// cancel was running, or it reached the provider before the receipt
-		// moved to `running`. Either way a turn is starting from it, and
-		// stopping that turn is what the cancel promised.
-		return a.interruptDispatchedRequest(ctx, receipt.TargetThreadID, threadRequestSendID(token))
-	case store.ThreadReceiptRunning:
-		index, ok := threadRequestTurnIndex(receipt.TargetThreadID, receipt.TurnID)
-		if !ok {
-			return threadtools.EffectNothing, nil
-		}
+	}
+	// The turn is read after the settlement: a delivery that bound the
+	// receipt first names the turn that read the message, and none can bind
+	// it after.
+	if settled, found, err := a.store.GetThreadRequestReceipt(token); err != nil {
+		return "", err
+	} else if found {
+		receipt = settled
+	}
+	if index, ok := threadRequestTurnIndex(receipt.TargetThreadID, receipt.TurnID); ok {
 		turn, found, err := a.store.GetTurnByThreadIndex(receipt.TargetThreadID, index)
 		if err != nil {
 			return "", err
@@ -91,9 +102,23 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 		if found && turn.CompletedAt != nil {
 			return threadtools.EffectNothing, nil
 		}
+		// A message drained into a turn already running joined a turn the
+		// person or another request started; a token never interrupts it.
+		if !receipt.OwnTurn {
+			return threadtools.EffectLeftRunning, nil
+		}
 		return a.interruptRequestTurn(ctx, receipt.TargetThreadID, index)
 	}
-	return threadtools.EffectNothing, nil
+	if state == store.ThreadReceiptAccepted {
+		// It is not on the queue any more and no delivery bound it: the
+		// dispatch claimed it while the cancel was running, or it reached
+		// the provider before the receipt moved to `running`.
+		return a.interruptDispatchedRequest(ctx, receipt.TargetThreadID, threadRequestSendID(token))
+	}
+	// Running with no turn bound: the message is with the provider and no
+	// turn has read it yet. The turn running meanwhile is someone else's,
+	// and a token never interrupts that.
+	return threadtools.EffectLeftUnread, nil
 }
 
 // interruptDispatchedRequest stops the turn a request's message started, for
@@ -109,6 +134,16 @@ func (a *App) interruptDispatchedRequest(ctx context.Context, threadID, sendID s
 	if !found || !record.dispatched {
 		// The message was never sent, or it was restored into the composer.
 		return threadtools.EffectNothing, nil
+	}
+	// A message written into a turn that was already running did not start
+	// it, and the provider may still hold the message for a turn of its own:
+	// that turn is someone else's, and a token never interrupts it.
+	turn, turnFound, err := a.store.GetTurnByThreadIndex(threadID, record.item.TurnIndex)
+	if err != nil {
+		return "", err
+	}
+	if turnFound && turn.StartedAt < record.item.CreatedAt {
+		return threadtools.EffectLeftUnread, nil
 	}
 	return a.interruptRequestTurn(ctx, threadID, record.item.TurnIndex)
 }

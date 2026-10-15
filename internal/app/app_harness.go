@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	appbrowser "agent-overflow/internal/browser"
@@ -247,6 +248,17 @@ func (h *harnessHost) BroadcastThreadRow(threadID string) {
 
 func (h *harnessHost) StopSession(threadID string) error {
 	return h.app.StopSession(threadID)
+}
+
+func (h *harnessHost) AwaitSessionEndWork() []string {
+	h.app.threadRequestSettling.Wait()
+	h.app.agentNoticeWork.wg.Wait()
+	live := make([]string, 0)
+	for threadID := range h.app.sessionManager().snapshot() {
+		live = append(live, threadID)
+	}
+	sort.Strings(live)
+	return live
 }
 
 func (h *harnessHost) DeleteProject(projectID string) error {

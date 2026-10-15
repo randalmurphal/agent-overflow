@@ -131,12 +131,12 @@ func (r *Router) handleCommandLifecycle(evt provider.ProviderEvent) error {
 		r.rememberCommandLifecycle(evt.ThreadID, meta.CommandUUID, entry, evt.SessionToken)
 		out.UserItemID = entry.UserItemID
 	case provider.CommandStarted:
-		r.markPendingSendStarted(evt.ThreadID, meta.CommandUUID)
 		entry, ok := r.peekCommandLifecycle(evt.ThreadID, meta.CommandUUID)
 		if ok {
 			out.UserItemID = entry.UserItemID
 			out.Delivery = classifyCommandDelivery(entry.RoundIDAtQueue, r.openRoundID(evt.ThreadID))
 		}
+		r.noteSendStarted(evt.ThreadID, evt.SessionToken, meta.CommandUUID)
 	default:
 		// completed / cancelled / discarded are terminal: release the
 		// correlation in the same step that reports it.

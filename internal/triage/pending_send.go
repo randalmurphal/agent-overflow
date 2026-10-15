@@ -182,6 +182,17 @@ type pendingSend struct {
 	// lifecycle state means (handleCommandLifecycle).
 	Started bool
 
+	// DeliveryReported records that the app was told which turn this send
+	// was delivered into (send_delivery.go). The first delivery signal
+	// decides; a later one for the same send changes nothing.
+	DeliveryReported bool
+
+	// WrittenDuringTurn is the logical turn open when the send was
+	// registered, or -1 when none was. A delivery into that same turn
+	// joined a turn someone else started; a delivery into any other turn
+	// is one the provider opened for this message (SendDelivery.OwnTurn).
+	WrittenDuringTurn int
+
 	Confirmation *userMessageConfirmation
 }
 
@@ -218,6 +229,25 @@ func (r *Router) PeekPendingSendHeadForTest(threadID string) (PendingSendSnapsho
 		HasDeferred:            head.DeferredItem != nil,
 		ExpectedProviderItemID: head.ExpectedProviderItemID,
 	}, true
+}
+
+// PendingSendsForTest returns snapshots of every FIFO entry for threadID, in
+// order. Exported for integration tests in `internal/app` that dispatch
+// several sends and drive each one's echo.
+func (r *Router) PendingSendsForTest(threadID string) []PendingSendSnapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	queue := r.pendingSendsLocked(threadID)
+	out := make([]PendingSendSnapshot, 0, len(queue))
+	for _, send := range queue {
+		out = append(out, PendingSendSnapshot{
+			AOItemID:               send.AOItemID,
+			TurnIndex:              send.TurnIndex,
+			HasDeferred:            send.DeferredItem != nil,
+			ExpectedProviderItemID: send.ExpectedProviderItemID,
+		})
+	}
+	return out
 }
 
 // PendingSendExpectation names the wire identity a send's echo will carry
@@ -323,6 +353,10 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 	}
 	r.mu.Lock()
 	st := r.state(threadID)
+	writtenDuring := -1
+	if st.openTurnSet {
+		writtenDuring = st.openTurn
+	}
 	st.pendingSends = append(st.pendingSends, pendingSend{
 		AOItemID:                   aoItemID,
 		QueueItemID:                queueItemID,
@@ -336,6 +370,7 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 		JoinedParts:                expect.JoinedParts,
 		Shape:                      shape,
 		InterruptedTurnIndex:       -1,
+		WrittenDuringTurn:          writtenDuring,
 	})
 	// The ledger outlives the FIFO entry on purpose: a merge is recognised
 	// from the SURVIVOR's echo, by which time the earlier members' entries
@@ -411,23 +446,6 @@ func (r *Router) turnOpeningPendingSend(threadID string) (pendingSend, bool) {
 // turn left to open.
 func (p pendingSend) canOpenTurn() bool {
 	return !p.OpenedTurn && !p.EchoConsumed
-}
-
-// markPendingSendStarted records `started` on the entry registered under
-// providerItemID, if it is still pending.
-func (r *Router) markPendingSendStarted(threadID, providerItemID string) {
-	if providerItemID == "" {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	queue := r.pendingSendsLocked(threadID)
-	for i := range queue {
-		if queue[i].ExpectedProviderItemID == providerItemID {
-			queue[i].Started = true
-			return
-		}
-	}
 }
 
 // consumePendingSendByProviderID pops the entry registered under the wire id
@@ -1059,14 +1077,23 @@ func (p pendingSend) sendIDs() ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode the send ids of %s: %w", row.ID, err)
 		}
-		if len(meta.JoinedSendIDs) > 0 {
-			return meta.JoinedSendIDs, nil
-		}
-		if meta.SendID != "" {
-			return []string{meta.SendID}, nil
+		if ids := sendIDsOf(meta); len(ids) > 0 {
+			return ids, nil
 		}
 	}
 	return nil, nil
+}
+
+// sendIDsOf is the send ids one user row's meta carries: every member's for
+// a joined message.
+func sendIDsOf(meta usermessage.Meta) []string {
+	if len(meta.JoinedSendIDs) > 0 {
+		return meta.JoinedSendIDs
+	}
+	if meta.SendID != "" {
+		return []string{meta.SendID}
+	}
+	return nil
 }
 
 // restorePendingSendDeferred undoes EagerPersistDeferredFlushSends'

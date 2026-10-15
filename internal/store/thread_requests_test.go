@@ -511,19 +511,38 @@ func TestThreadRequestReceiptAcceptanceIsIdempotent(t *testing.T) {
 		t.Errorf("retry overwrote the acceptance: %+v", again)
 	}
 
-	running, err := s.MarkThreadReceiptRunning("tok-r", "item-1", "turn-1")
-	if err != nil || !running {
-		t.Fatalf("mark running: running=%v err=%v", running, err)
+	dispatched, err := s.MarkThreadReceiptDispatched("tok-r", "item-1")
+	if err != nil || !dispatched {
+		t.Fatalf("mark dispatched: dispatched=%v err=%v", dispatched, err)
 	}
-	running, err = s.MarkThreadReceiptRunning("tok-r", "item-2", "turn-2")
+	if row, _, _ := s.GetThreadRequestReceipt("tok-r"); row.State != ThreadReceiptRunning || row.TurnID != "" || row.MessageItemID != "item-1" {
+		t.Fatalf("a dispatched receipt is running with no turn: %+v", row)
+	}
+	if again, err := s.MarkThreadReceiptDispatched("tok-r", "item-2"); err != nil || again {
+		t.Fatalf("a second dispatch mark applied: %v %v", again, err)
+	}
+	if _, err := s.BindThreadReceiptTurn("tok-r", "item-1", "", true); err == nil {
+		t.Error("a receipt cannot be bound to no turn")
+	}
+	bound, err := s.BindThreadReceiptTurn("tok-r", "item-1", "turn-1", true)
+	if err != nil || !bound {
+		t.Fatalf("bind turn: bound=%v err=%v", bound, err)
+	}
+	bound, err = s.BindThreadReceiptTurn("tok-r", "item-2", "turn-2", false)
 	if err != nil {
-		t.Fatalf("repeat mark running: %v", err)
+		t.Fatalf("repeat bind: %v", err)
 	}
-	if running {
-		t.Error("a running receipt must not be re-bound to another turn")
+	if bound {
+		t.Error("a bound receipt must not be re-bound to another turn")
 	}
-	if _, err := s.MarkThreadReceiptRunning("tok-r", "item-3", ""); err == nil {
-		t.Error("a receipt cannot run without a turn")
+	if row, _, _ := s.GetThreadRequestReceipt("tok-r"); row.TurnID != "turn-1" || !row.OwnTurn {
+		t.Errorf("receipt = %+v, want the first delivery's turn, its own", row)
+	}
+	if again, err := s.MarkThreadReceiptDispatched("tok-r", "item-3"); err != nil || again {
+		t.Fatalf("a dispatch mark after the delivery applied: %v %v", again, err)
+	}
+	if row, _, _ := s.GetThreadRequestReceipt("tok-r"); row.TurnID != "turn-1" || row.MessageItemID != "item-1" {
+		t.Fatalf("receipt = %+v, want the first delivery's binding", row)
 	}
 
 	open, err := s.ListOpenThreadRequestReceipts()
@@ -560,6 +579,97 @@ func TestThreadRequestReceiptAcceptanceIsIdempotent(t *testing.T) {
 	}
 	if _, found, err := s.GetThreadRequestReceipt("tok-unknown"); err != nil || found {
 		t.Fatalf("unknown token: found=%v err=%v", found, err)
+	}
+}
+
+// A delivery can land before the dispatch mark: it binds an accepted
+// receipt directly, the late mark changes nothing, and a settled receipt is
+// never bound.
+func TestADeliveryBindsAReceiptAheadOfItsDispatchMark(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-target")
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+		Token: "tok-early", OwnerDeviceID: "device-1", Kind: ThreadRequestSend,
+		TargetThreadID: "t-target", CreatedAt: 100, UpdatedAt: 100,
+	}); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if bound, err := s.BindThreadReceiptTurn("tok-early", "item-e", "turn-e", false); err != nil || !bound {
+		t.Fatalf("bind an accepted receipt: %v %v", bound, err)
+	}
+	if again, err := s.MarkThreadReceiptDispatched("tok-early", "item-e"); err != nil || again {
+		t.Fatalf("a dispatch mark after the delivery applied: %v %v", again, err)
+	}
+	if row, _, _ := s.GetThreadRequestReceipt("tok-early"); row.State != ThreadReceiptRunning || row.TurnID != "turn-e" || row.OwnTurn {
+		t.Fatalf("receipt = %+v, want it running on the delivered turn", row)
+	}
+	if _, err := s.SettleThreadRequestReceipt("tok-early", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
+		State: ThreadReceiptCancelled, Answer: []byte("x"), AnswerKind: ThreadAnswerError,
+	}); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if bound, err := s.BindThreadReceiptTurn("tok-early", "item-e", "turn-later", true); err != nil || bound {
+		t.Fatalf("a settled receipt was bound: %v %v", bound, err)
+	}
+}
+
+// A rebind moves a running receipt only from the turn it is bound to, and only
+// while that turn holds no rows; a completion on the empty turn does not pin
+// it. A settled receipt is never moved.
+func TestARebindMovesOnlyFromAnEmptyBoundTurn(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-target")
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+		Token: "tok-a", OwnerDeviceID: "device-1", Kind: ThreadRequestSend,
+		TargetThreadID: "t-target", CreatedAt: 100, UpdatedAt: 100,
+	}); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if bound, err := s.BindThreadReceiptTurn("tok-a", "item-a", "t-target#1", true); err != nil || !bound {
+		t.Fatalf("bind: %v %v", bound, err)
+	}
+	if err := s.InsertTurn(Turn{TurnID: "turn-1", ThreadID: "t-target", TurnIndex: 1, StartedAt: 200}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	if _, err := s.UpsertItem(Item{
+		ID: "item-a", ThreadID: "t-target", TurnIndex: 1, Kind: "user_text", Role: "user",
+		Status: "completed", Summary: "check the changelog", CreatedAt: 200, UpdatedAt: 200,
+	}, nil); err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+	rebind := func(from string) bool {
+		t.Helper()
+		moved, err := s.RebindThreadReceiptTurn("tok-a", "item-b", "t-target", 1, from, "t-target#2", true)
+		if err != nil {
+			t.Fatalf("rebind: %v", err)
+		}
+		return moved
+	}
+	if rebind("t-target#1") {
+		t.Fatal("moved from a turn that still holds a row")
+	}
+	if err := s.DeleteThreadItem("t-target", "item-a"); err != nil {
+		t.Fatalf("DeleteThreadItem: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-1", 300, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted: %v", err)
+	}
+	if rebind("t-target#0") {
+		t.Fatal("moved from a turn it is not bound to")
+	}
+	if !rebind("t-target#1") {
+		t.Fatal("not moved from its empty, completed turn")
+	}
+	if row, _, _ := s.GetThreadRequestReceipt("tok-a"); row.TurnID != "t-target#2" || row.MessageItemID != "item-b" || !row.OwnTurn {
+		t.Fatalf("receipt = %+v, want it on turn 2 under the survivor's row", row)
+	}
+	if _, err := s.SettleThreadRequestReceipt("tok-a", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
+		State: ThreadReceiptFinished, Answer: []byte("x"), AnswerKind: ThreadAnswerFinal,
+	}); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if moved, err := s.RebindThreadReceiptTurn("tok-a", "item-c", "t-target", 2, "t-target#2", "t-target#3", true); err != nil || moved {
+		t.Fatalf("a settled receipt was moved: %v %v", moved, err)
 	}
 }
 

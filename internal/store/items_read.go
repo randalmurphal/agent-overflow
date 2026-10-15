@@ -178,6 +178,18 @@ func (s *Store) ListItems(threadID string) ([]Item, error) {
 	})
 }
 
+// TurnHasItems reports whether turnIndex holds any row.
+func (s *Store) TurnHasItems(threadID string, turnIndex int) (bool, error) {
+	var found bool
+	if err := s.reader().QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM timeline_items WHERE thread_id = ? AND turn_index = ?)`,
+		threadID, turnIndex,
+	).Scan(&found); err != nil {
+		return false, fmt.Errorf("store: read whether turn %s/%d has rows: %w", threadID, turnIndex, err)
+	}
+	return found, nil
+}
+
 // ListTurnItems returns turnIndex's logical rows in timeline order.
 func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 	selection, args, err := turnIDSelection(s.reader(), threadID, turnIndex)

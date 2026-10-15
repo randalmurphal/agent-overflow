@@ -189,9 +189,17 @@ const (
 // CancelReport.Effect, shared with the App implementation that decides
 // which one happened.
 const (
-	EffectNothing         = "nothing_to_stop"
-	EffectQueuedRemoved   = "queued_message_removed"
-	EffectInterrupted     = "turn_interrupted"
+	EffectNothing       = "nothing_to_stop"
+	EffectQueuedRemoved = "queued_message_removed"
+	EffectInterrupted   = "turn_interrupted"
+	// EffectLeftRunning: the request's message had already reached the
+	// thread in a turn the request did not start, so the cancel settled the
+	// request and left that turn running.
+	EffectLeftRunning = "turn_left_running"
+	// EffectLeftUnread: the request's message was with the provider and no
+	// turn had read it yet, so the cancel settled the request and stopped
+	// nothing; the thread may still read the message.
+	EffectLeftUnread      = "message_left_unread"
 	EffectReminderDropped = "reminder_dropped"
 	EffectWakeCancelled   = "loop_or_watch_cancelled"
 )
@@ -285,6 +293,11 @@ type CancelReport struct {
 	State      string `json:"state"`
 	// Effect is one of the Effect constants above.
 	Effect string `json:"effect"`
+	// RemoteRequest marks the cancel of a request another computer holds.
+	// That computer reports a turn it left running and a message it left
+	// unread as nothing_to_stop, because the peer call carries no finer
+	// word, so that effect is noted for all it may stand for.
+	RemoteRequest bool `json:"-"`
 }
 
 // UpdateReport is one computer's per-id result for thread_update.

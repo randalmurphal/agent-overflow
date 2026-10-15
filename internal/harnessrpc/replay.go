@@ -360,10 +360,10 @@ func (h *Harness) HarnessReplayBundle(name string, opts harness.ReplayOptions) (
 	if err != nil {
 		return harness.ReplayStatus{}, fmt.Errorf("list threads: %w", err)
 	}
-	for _, t := range threads {
-		if err := h.config.Host.StopSession(t.ID); err != nil {
-			return harness.ReplayStatus{}, fmt.Errorf("stop session %s before restore: %w", t.ID, err)
-		}
+	if err := h.stopAllSessions(threads, func(threadID string, err error) error {
+		return fmt.Errorf("stop session %s before restore: %w", threadID, err)
+	}); err != nil {
+		return harness.ReplayStatus{}, err
 	}
 	identity, err := database.RestoreFrom(filepath.Join(dir, "db.snapshot"))
 	if err != nil {
