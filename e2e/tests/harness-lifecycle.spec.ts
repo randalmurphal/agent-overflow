@@ -14,10 +14,12 @@ import {
   captureProcessGroupMemberProof,
   captureProcessIdentity,
   captureProcessTreeProof,
+  ownedProcessTreeAlive,
   processHoldState,
   processTreeRSS,
   terminateChildTreeAndWaitVerified,
 } from '../src/harness-process.js';
+import { FALLBACK_MEMORY_LIMIT_BYTES, HarnessWatchdog } from '../src/harness-watchdog.js';
 
 async function fakeBinary(source: string): Promise<{ root: string; binary: string; pidFile: string }> {
   const root = await mkdtemp(path.join(tmpdir(), 'ao-harness-lifecycle-'));
@@ -186,10 +188,65 @@ test('an exiting process still holds its pid while its exe link is gone', async 
 
     await expect(processHoldState(identity)).resolves.toBe('held');
     await expect(processHoldState({ ...identity, birth: `${identity.birth}1` })).resolves.toBe('changed');
+    // Teardown liveness applies the same rule: an exiting process can still
+    // hold files, so its data root is not reclaimed yet.
+    const child = { pid, exitCode: 0, signalCode: null } as unknown as ChildProcess;
+    await expect(ownedProcessTreeAlive(child, identity)).resolves.toBe(true);
     parent.kill('SIGKILL');
     await expect.poll(() => processHoldState(identity), { timeout: 5_000 }).toBe('released');
+    await expect(ownedProcessTreeAlive(child, identity)).resolves.toBe(false);
   } finally {
     parent.kill('SIGKILL');
+  }
+});
+
+test('the watchdog samples a backend that is mid-exit and stops once it is reaped', async () => {
+  test.skip(process.platform !== 'linux', 'Linux exe link and VmRSS');
+  // An exiting backend has no exe link and no VmRSS but still holds its pid.
+  // Reading that as a changed identity tripped the watchdog with a false
+  // reason and tore the backend down. The exec'd parent never reaps, so the
+  // sampled process stays a zombie until the parent is killed.
+  const root = await mkdtemp(path.join(tmpdir(), 'ao-watchdog-exit-'));
+  const parent = spawn('/bin/sh', ['-c', 'setsid sleep 2 & echo $!; exec sleep 30'], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  let closed = false;
+  let watchdog: HarnessWatchdog | undefined;
+  try {
+    const pid = Number((await once(parent.stdout!, 'data'))[0].toString().trim());
+    const child = { pid, exitCode: null, signalCode: null } as unknown as ChildProcess;
+    watchdog = new HarnessWatchdog({
+      child,
+      dataRoot: root,
+      dataDir: root,
+      isClosed: () => closed,
+      markClosed: () => { closed = true; },
+      shutdown: async () => undefined,
+      closeSocket: () => undefined,
+      socketOpen: () => false,
+    });
+    await watchdog.start(FALLBACK_MEMORY_LIMIT_BYTES);
+    // Drive samples directly so each assertion covers one known state; an
+    // interval sample in flight would make a direct one return early.
+    watchdog.stop();
+    const sampled = watchdog as unknown as {
+      sample(limit: number): Promise<void>;
+      timer?: ReturnType<typeof setInterval>;
+    };
+    await expect.poll(async () => (await readFile(`/proc/${pid}/stat`, 'utf8')).split(') ')[1]?.[0], { timeout: 5_000 }).toBe('Z');
+    await sampled.sample(FALLBACK_MEMORY_LIMIT_BYTES);
+    expect(closed).toBe(false);
+
+    parent.kill('SIGKILL');
+    await expect.poll(() => processHoldState(watchdog!.processIdentity!), { timeout: 5_000 }).toBe('released');
+    sampled.timer = setInterval(() => undefined, 60_000);
+    await sampled.sample(FALLBACK_MEMORY_LIMIT_BYTES);
+    expect(closed).toBe(false);
+    expect(sampled.timer).toBeUndefined();
+  } finally {
+    watchdog?.stop();
+    parent.kill('SIGKILL');
+    await rm(root, { recursive: true, force: true });
   }
 });
 
