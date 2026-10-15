@@ -111,10 +111,11 @@ the affected claims, links and references, not application builds or tests.
 Behavior the Playwright suite covers is validated by that suite, not by unit
 tests alone: transport reconnect and recovery, timeline scroll and windowing,
 compact layout, the harness wire, and any spec whose header names the changed
-behavior. Run the affected specs with `bin/ao-harness-e2e tests/<spec>` and
-`make e2e` when the affected set is unclear. CI runs every suite on each
-pull request ([Development](docs/architecture/development.md#continuous-integration)),
-but the author's run is the gate before pushing. A failing check in a relevant suite belongs to the
+behavior. Run the affected specs with `bin/ao-harness-e2e tests/<spec>`
+before pushing; when the affected set is unclear, run the specs nearest the
+change and let CI's run of every suite on the pull request
+([Development](docs/architecture/development.md#continuous-integration))
+be the full-suite gate before merge. A failing check in a relevant suite belongs to the
 change whether the code or the test is wrong: fix it before finishing, never
 record it as pre-existing.
 

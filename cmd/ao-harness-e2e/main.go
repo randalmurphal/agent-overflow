@@ -29,10 +29,10 @@ import (
 )
 
 const (
-	// Two Playwright workers, their browsers, two app backends, and the Go/Node
-	// runners normally exceed 2 GiB. Six GiB leaves room for the complete gate
-	// while the host-global reservation and available-memory floor still refuse
-	// unsafe parallel launches.
+	// Four Playwright workers, their browsers, four app backends, and the
+	// Go/Node runners stay under 5 GiB. Six GiB leaves room for the complete
+	// gate while the host-global reservation and available-memory floor still
+	// refuse unsafe parallel launches.
 	defaultMemoryLimit = 6 << 30
 	monitorInterval    = 100 * time.Millisecond
 )
