@@ -175,14 +175,19 @@ test('an exiting process still holds its pid while its exe link is gone', async 
   // A process mid-exit or a zombie has no readable exe link, but its stat
   // still carries the captured birth and group. Treating that as a changed
   // identity refused escalation for a Chromium leader that was only exiting.
-  // The exec'd parent never reaps, so the child stays a zombie.
-  const parent = spawn('/bin/sh', ['-c', 'setsid sleep 1 & echo $!; exec sleep 30'], {
+  // The shell reports the child's pid at its fork, and the child leads its
+  // own group only once it calls setsid, here after a pause, so the capture
+  // waits for that. The exec'd parent never reaps, so the child killed
+  // below stays a zombie.
+  const child = 'import os, time; time.sleep(0.3); os.setsid(); os.execvp("sleep", ["sleep", "60"])';
+  const parent = spawn('/bin/sh', ['-c', 'python3 -c "$0" & echo $!; exec sleep 30', child], {
     stdio: ['ignore', 'pipe', 'ignore'],
   });
   try {
     const pid = Number((await once(parent.stdout!, 'data'))[0].toString().trim());
+    await expect.poll(async () => (await captureProcessIdentity(pid)).groupId).toBe(pid);
     const identity = await captureProcessIdentity(pid);
-    expect(identity.groupId).toBe(pid);
+    process.kill(pid, 'SIGKILL');
     await expect.poll(async () => (await readFile(`/proc/${pid}/stat`, 'utf8')).split(') ')[1]?.[0]).toBe('Z');
     await expect(readlink(`/proc/${pid}/exe`)).rejects.toThrow();
 
@@ -190,11 +195,11 @@ test('an exiting process still holds its pid while its exe link is gone', async 
     await expect(processHoldState({ ...identity, birth: `${identity.birth}1` })).resolves.toBe('changed');
     // Teardown liveness applies the same rule: an exiting process can still
     // hold files, so its data root is not reclaimed yet.
-    const child = { pid, exitCode: 0, signalCode: null } as unknown as ChildProcess;
-    await expect(ownedProcessTreeAlive(child, identity)).resolves.toBe(true);
+    const exited = { pid, exitCode: 0, signalCode: null } as unknown as ChildProcess;
+    await expect(ownedProcessTreeAlive(exited, identity)).resolves.toBe(true);
     parent.kill('SIGKILL');
     await expect.poll(() => processHoldState(identity), { timeout: 5_000 }).toBe('released');
-    await expect(ownedProcessTreeAlive(child, identity)).resolves.toBe(false);
+    await expect(ownedProcessTreeAlive(exited, identity)).resolves.toBe(false);
   } finally {
     parent.kill('SIGKILL');
   }
