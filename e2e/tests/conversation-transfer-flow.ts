@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
-import { headlessPairing } from './headless-pairing-helpers.js';
+import { CONNECTED_AFTER_CONFIRM, headlessPairing } from './headless-pairing-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';
 import { codexTransferScenario } from './conversation-transfer-helpers.js';
 
@@ -50,7 +50,7 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
         const verification = page.getByLabel('Verification number');
         await expect(verification).toBeVisible();
         await pairing.confirm((await verification.textContent())!.trim());
-        await expect(page.getByTestId('attached-system')).toContainText('Connected');
+        await expect(page.getByTestId('attached-system')).toContainText('Connected', CONNECTED_AFTER_CONFIRM);
         remoteId = (await source.rpc<Array<{ id: string }>>('ListBackends'))[0].id;
       } finally {
         pairing?.close();
