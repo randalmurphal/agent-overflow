@@ -18,9 +18,14 @@ func appLayout(t *testing.T, dataDir string) Layout {
 	return layout
 }
 
-// freeSpace is a free-space reading that reports n.
-func freeSpace(n uint64) func(string) (uint64, error) {
-	return func(string) (uint64, error) { return n, nil }
+// freeSpace is a filesystem reading that reports n available.
+func freeSpace(n uint64) func(string) (DiskSpace, error) {
+	return diskSpace(n, 0)
+}
+
+// diskSpace is a filesystem reading that reports available and used.
+func diskSpace(available, used uint64) func(string) (DiskSpace, error) {
+	return func(string) (DiskSpace, error) { return DiskSpace{Available: available, Used: used}, nil }
 }
 
 func TestAppUpdateLayoutIsBesideServesUnderRuntime(t *testing.T) {
@@ -258,7 +263,7 @@ func TestSnapshotRefusesWhenEitherDiskIsShort(t *testing.T) {
 	writeFile(t, filepath.Join(dataDir, "agent-overflow.db"), strings.Repeat("x", 1024))
 	need := SnapshotSpaceNeeded(1024)
 
-	_, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{FreeBytes: freeSpace(need - 1)})
+	_, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{ReadSpace: freeSpace(need - 1)})
 	var space *InsufficientSpaceError
 	if !errors.As(err, &space) || space.Need != need || space.Available != need-1 {
 		t.Fatalf("TakeSnapshot = %v, want the data disk's shortfall", err)
@@ -267,8 +272,8 @@ func TestSnapshotRefusesWhenEitherDiskIsShort(t *testing.T) {
 		t.Fatalf("message %q does not name the disk and the shortfall", err)
 	}
 
-	host := need - (256 << 20)
-	_, err = TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{HostAvailable: &host, FreeBytes: freeSpace(need)})
+	host := HostDisk{Free: need - (256 << 20)}
+	_, err = TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{Host: &host, ReadSpace: freeSpace(need)})
 	if !errors.As(err, &space) || space.Where != hostDiskDescription {
 		t.Fatalf("TakeSnapshot = %v, want the host drive's shortfall", err)
 	}
@@ -276,9 +281,50 @@ func TestSnapshotRefusesWhenEitherDiskIsShort(t *testing.T) {
 		t.Fatalf("message %q does not name the host shortfall", err)
 	}
 
-	host = need
-	if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{HostAvailable: &host, FreeBytes: freeSpace(need)}); err != nil {
+	host = HostDisk{Free: need}
+	if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{Host: &host, ReadSpace: freeSpace(need)}); err != nil {
 		t.Fatalf("TakeSnapshot with exactly enough room: %v", err)
+	}
+}
+
+// TestHostBoundCountsTheVirtualDisksUnusedBlocks: a dynamic virtual disk
+// keeps the blocks of deleted files, so the filesystem writes into them
+// without the disk growing on the host drive.
+func TestHostBoundCountsTheVirtualDisksUnusedBlocks(t *testing.T) {
+	plan := SnapshotPlan{DatabaseBytes: 3 << 30}
+	need := SnapshotSpaceNeeded(plan.DatabaseBytes)
+	const used = 600 << 30
+	dataDir := t.TempDir()
+	var space *InsufficientSpaceError
+
+	// A full host drive under a disk holding 270 GiB the filesystem does
+	// not use.
+	full := HostDisk{Free: 7 << 20, Allocated: used + 270<<30}
+	if err := plan.Check(dataDir, &full, diskSpace(300<<30, used)); err != nil {
+		t.Fatalf("Check = %v, want the disk's unused blocks to hold the snapshot", err)
+	}
+	// The unused blocks and the drive's free space together, to the byte.
+	exact := HostDisk{Free: need - 1000, Allocated: used + 1000}
+	if err := plan.Check(dataDir, &exact, diskSpace(300<<30, used)); err != nil {
+		t.Fatalf("Check = %v, want exactly enough room", err)
+	}
+	short := HostDisk{Free: need - 1001, Allocated: used + 1000}
+	if err := plan.Check(dataDir, &short, diskSpace(300<<30, used)); !errors.As(err, &space) ||
+		space.Where != hostDiskDescription || space.Available != need-1 {
+		t.Fatalf("Check = %v, want the host drive's one-byte shortfall", err)
+	}
+	named := HostDisk{Free: 1, Drive: "D:"}
+	if err := plan.Check(dataDir, &named, diskSpace(300<<30, used)); !errors.As(err, &space) ||
+		space.Where != "D:, "+hostDiskDescription || !strings.Contains(err.Error(), "free on D:, the Windows drive") {
+		t.Fatalf("Check = %v, want the refusal to name the drive", err)
+	}
+	// A disk that holds no more than the filesystem uses, or whose size on
+	// the drive is unknown, can only grow into the drive's free space.
+	for _, allocated := range []uint64{0, used - 1, used} {
+		host := HostDisk{Free: need - 1, Allocated: allocated}
+		if err := plan.Check(dataDir, &host, diskSpace(300<<30, used)); !errors.As(err, &space) || space.Available != need-1 {
+			t.Fatalf("allocated %d: Check = %v, want the drive's free space alone", allocated, err)
+		}
 	}
 }
 
@@ -322,7 +368,7 @@ func TestPlanSnapshotCountsWhatTheSnapshotWillCopy(t *testing.T) {
 	if err != nil || plan.Reclaimable != 3000 {
 		t.Fatalf("plan = %+v, %v; want the leftover's 3000 bytes reclaimable", plan, err)
 	}
-	host := need - 3000
+	host := HostDisk{Free: need - 3000}
 	if err := plan.Check(dataDir, &host, freeSpace(need-3000)); err != nil {
 		t.Fatalf("free space plus the leftover suffices, got %v", err)
 	}
@@ -330,7 +376,7 @@ func TestPlanSnapshotCountsWhatTheSnapshotWillCopy(t *testing.T) {
 	if err := plan.Check(dataDir, nil, freeSpace(need-3001)); !errors.As(err, &space) || space.Need != need-3000 || space.Available != need-3001 {
 		t.Fatalf("Check = %v, want a shortfall of one byte beyond the leftover", err)
 	}
-	host = need - 3001
+	host = HostDisk{Free: need - 3001}
 	if err := plan.Check(dataDir, &host, freeSpace(need)); !errors.As(err, &space) || space.Where != hostDiskDescription {
 		t.Fatalf("Check = %v, want the host drive's shortfall", err)
 	}

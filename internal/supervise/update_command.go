@@ -39,9 +39,9 @@ type UpdateCommand struct {
 	// changing it. The snapshot reports it, so the update can remember a
 	// failed trial by the schema it started from. nil reports none.
 	SchemaVersion func() (int, error)
-	// FreeBytes reads the data directory's free space for the snapshot's
-	// space check. nil means FreeBytes.
-	FreeBytes func(path string) (uint64, error)
+	// ReadSpace reads the data directory's filesystem for the snapshot's
+	// space check. nil means ReadDiskSpace.
+	ReadSpace func(path string) (DiskSpace, error)
 	// Now is the clock. nil means time.Now.
 	Now func() time.Time
 	// Log receives diagnostics. nil is silent.
@@ -71,10 +71,9 @@ func (c UpdateCommand) Started() UpdateEvent {
 	return UpdateEvent{Type: UpdateEventStarted, PID: os.Getpid()}
 }
 
-// Snapshot backs up the database for the update. hostAvailable bounds free
-// space from the host that holds the data directory's disk (see
-// SnapshotOptions).
-func (c UpdateCommand) Snapshot(ctx context.Context, hostAvailable *uint64) UpdateEvent {
+// Snapshot backs up the database for the update. host bounds free space
+// from the host that holds the data directory's disk (see SnapshotOptions).
+func (c UpdateCommand) Snapshot(ctx context.Context, host *HostDisk) UpdateEvent {
 	relay, ctx, cancel := c.startRelay(ctx)
 	defer cancel()
 	defer relay.close()
@@ -90,10 +89,10 @@ func (c UpdateCommand) Snapshot(ctx context.Context, hostAvailable *uint64) Upda
 	schema := c.readSchemaVersion()
 	relay.step("update.snapshot", "Backing up the database")
 	_, err = TakeSnapshot(layout, c.DataDir, c.now(), SnapshotOptions{
-		UpdateID:      c.UpdateID,
-		HostAvailable: hostAvailable,
-		FreeBytes:     c.FreeBytes,
-		Progress:      relay.copyProgress("update.snapshot", "Backing up the database"),
+		UpdateID:  c.UpdateID,
+		Host:      host,
+		ReadSpace: c.ReadSpace,
+		Progress:  relay.copyProgress("update.snapshot", "Backing up the database"),
 	})
 	if err != nil {
 		var space *InsufficientSpaceError
@@ -127,8 +126,8 @@ func (c UpdateCommand) readSchemaVersion() int {
 // rule TakeSnapshot applies (SnapshotPlan). It takes no lock and changes
 // nothing: it runs while the version being replaced still serves the
 // database, so the refusal reaches the user before anything stops.
-// hostAvailable is as for Snapshot.
-func (c UpdateCommand) Space(hostAvailable *uint64) UpdateEvent {
+// host is as for Snapshot.
+func (c UpdateCommand) Space(host *HostDisk) UpdateEvent {
 	layout, err := NewAppUpdateLayout(c.DataDir)
 	if err != nil {
 		return failedEvent(UpdateOutcomeRefused, err)
@@ -139,7 +138,7 @@ func (c UpdateCommand) Space(hostAvailable *uint64) UpdateEvent {
 	}
 	// No database is the snapshot step's refusal to make, with its reason.
 	if found {
-		if err := plan.Check(c.DataDir, hostAvailable, c.FreeBytes); err != nil {
+		if err := plan.Check(c.DataDir, host, c.ReadSpace); err != nil {
 			var space *InsufficientSpaceError
 			if errors.As(err, &space) {
 				return failedEvent(UpdateOutcomeRefused, err)

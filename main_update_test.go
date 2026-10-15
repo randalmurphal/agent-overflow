@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -291,6 +292,13 @@ func TestUpdateCommandsRunThroughMain(t *testing.T) {
 			!strings.Contains(result.Reason, "Free at least") {
 			t.Fatalf("space on a full host drive = %+v exit %d\n%s", result, run.code, run.stderr)
 		}
+		// The same full drive under a virtual disk that already holds far
+		// more than the filesystem uses.
+		run = runUpdateCommandProcess(t, "", supervise.UpdateSpaceCommand, "--id", "u1", "--data-dir", dataRoot,
+			"--host-free", "1", "--host-disk-bytes", strconv.FormatUint(1<<62, 10))
+		if result := run.result(t); result.Outcome != supervise.UpdateOutcomeOK || run.code != 0 {
+			t.Fatalf("space on a full host drive under a disk with unused blocks = %+v exit %d\n%s", result, run.code, run.stderr)
+		}
 	})
 
 	t.Run("bad argv", func(t *testing.T) {
@@ -302,15 +310,21 @@ func TestUpdateCommandsRunThroughMain(t *testing.T) {
 }
 
 func TestParseUpdateCommandFlags(t *testing.T) {
-	flags, err := parseUpdateCommandFlags(supervise.UpdateSnapshotCommand, []string{"--id", "u1", "--host-free", "1024"})
-	if err != nil || flags.id != "u1" || flags.hostFree == nil || *flags.hostFree != 1024 {
+	flags, err := parseUpdateCommandFlags(supervise.UpdateSnapshotCommand, []string{"--id", "u1", "--host-free", "1024", "--host-disk-bytes", "4096", "--host-drive", "D:"})
+	if err != nil || flags.id != "u1" || flags.hostDisk == nil || *flags.hostDisk != (supervise.HostDisk{Free: 1024, Allocated: 4096, Drive: "D:"}) {
 		t.Fatalf("snapshot flags = %+v, %v", flags, err)
 	}
-	if flags, err := parseUpdateCommandFlags(supervise.UpdateSnapshotCommand, []string{"--id", "u1"}); err != nil || flags.hostFree != nil {
+	flags, err = parseUpdateCommandFlags(supervise.UpdateSnapshotCommand, []string{"--id", "u1", "--host-free", "1024"})
+	if err != nil || flags.hostDisk == nil || *flags.hostDisk != (supervise.HostDisk{Free: 1024}) {
+		t.Fatalf("host free without the disk's size = %+v, %v", flags, err)
+	}
+	if flags, err := parseUpdateCommandFlags(supervise.UpdateSnapshotCommand, []string{"--id", "u1"}); err != nil || flags.hostDisk != nil {
 		t.Fatalf("no host bound = %+v, %v", flags, err)
 	}
 	for _, bad := range [][]string{
 		{"--id", ""},
+		{"--id", "u1", "--host-disk-bytes", "4096"},
+		{"--id", "u1", "--host-drive", "D:"},
 		{"--id", "u1", "extra"},
 		{"--nope"},
 	} {
