@@ -1580,7 +1580,6 @@ test.describe('a standing agent copied or moved to another computer', () => {
         }
         await dialog.getByRole('button', { name: kind === 'copy' ? 'Copy conversation' : 'Move conversation', exact: true }).click();
         await expect(dialog.getByTestId('conversation-transfer-status')).toBeVisible();
-        await dialog.getByRole('button', { name: 'Close', exact: true }).click();
         let result: Transfer | undefined;
         await expect
           .poll(
@@ -1595,6 +1594,13 @@ test.describe('a standing agent copied or moved to another computer', () => {
             { timeout: 40_000, intervals: [250] },
           )
           .toBe('complete');
+        // A move follows the copy. The menu opens a new form only once the
+        // page's own copy of this row is complete; until then it reopens
+        // this transfer's status.
+        if (kind === 'copy') {
+          await expect(dialog.getByTestId('conversation-transfer-status').getByRole('status')).toHaveText(/^Copied to /);
+        }
+        await dialog.getByRole('button', { name: 'Close', exact: true }).click();
         return result!;
       };
 
