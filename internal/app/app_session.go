@@ -565,6 +565,9 @@ func (a *App) spawnProviderSession(
 		// thread title lands. See app_claude_peer_name.go.
 		cfg.PeerSessionName = opts.ClaudePeerSessionName
 		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
+		cfg.AgentLaunchByTask = func(taskID string) (string, bool, error) {
+			return a.triage.AgentLaunchByTask(threadID, taskID)
+		}
 		cfg.SystemPromptDir, err = a.claudePromptFileDir()
 		if err != nil {
 			return session{}, err

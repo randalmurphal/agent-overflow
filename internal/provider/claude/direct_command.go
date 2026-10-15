@@ -131,6 +131,19 @@ func (p *Parser) holdMirroredCommandOutput(commandUUID string, events []provider
 	return true
 }
 
+// directCommandLaunchPrefix marks the row a direct command stands on. The
+// command has no tool_use of its own, so nothing Claude forwards on stdout
+// is ever parented to it.
+const directCommandLaunchPrefix = "claude-command:"
+
+func directCommandLaunchID(commandUUID string) string {
+	return directCommandLaunchPrefix + commandUUID
+}
+
+func isDirectCommandLaunchID(id string) bool {
+	return strings.HasPrefix(id, directCommandLaunchPrefix)
+}
+
 func (p *Parser) provisionalMirroredCommandEvent(threadID, commandUUID string, now time.Time) []provider.ProviderEvent {
 	if p == nil || p.transcriptMirror == nil {
 		return nil
@@ -139,7 +152,7 @@ func (p *Parser) provisionalMirroredCommandEvent(threadID, commandUUID string, n
 	if command == nil || command.launchID != "" {
 		return nil
 	}
-	command.launchID = "claude-command:" + commandUUID
+	command.launchID = directCommandLaunchID(commandUUID)
 	command.provisional = true
 	input := map[string]any{"command": "/" + command.command.Name}
 	if command.command.Argument != "" {

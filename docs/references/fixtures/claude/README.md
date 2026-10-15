@@ -110,10 +110,13 @@ behavior. These back parser replay tests and the reference docs in
   - `forked_skill_background_refused_20261014.ndjson`: `background_tasks`
     on a running fork answers `{backgrounded:false}`.
   - `forked_skill_direct_command_20261014.ndjson`: `/probe-fork` typed
-    as the user message: `task_started` with no `tool_use_id`, and the
-    fork's Agent announced before the mirror delivers its tool_use. Backs
-    `TestReplay_ForkedSkillDirectCommandTaskAndChild` and
-    `TestReplay_TypedForkWithoutATaskNamesNoTask`.
+    as the user message: `task_started` with no `tool_use_id`, the fork's
+    Agent announced, and its metadata mirrored, before the mirror
+    delivers its tool_use, and each agent's last message mirrored after
+    its terminal. Backs `TestReplay_ForkedSkillDirectCommandTaskAndChild`,
+    `TestReplay_TypedForkWithoutATaskNamesNoTask`,
+    `TestReplay_TypedForkChildAgentProjects` and
+    `TestReplay_TypedForkChildRowsBeforeItsLaunch`.
   - `forked_skill_direct_command_stop_task_20261014.ndjson` /
     `forked_skill_direct_command_interrupt_20261014.ndjson`: a typed
     `/slow-fork` stopped after its first tool call; the kill frames name
@@ -133,6 +136,14 @@ behavior. These back parser replay tests and the reference docs in
   `stop_task` kills the shell after the ack; `interrupt` kills it, then
   the agent. Back `TestAwaitedAgentStopKillsItsShell` and the mock's
   awaited-agent stop frames.
+- `local_agent_resumed_by_typed_fork_20261014.ndjson`: turn 1 runs an
+  awaited Agent; turn 2 types `/resume-fork <agentId>`, whose fork
+  resumes that agent with a `SendMessage` the mirror delivers after the
+  rebind `task_started`; the resumed agent then resumes the finished
+  fork from stdout, and the resumed fork's rows reach only the mirror,
+  under metadata naming no tool_use. Backs the
+  `task_resume_mirror_test.go` replays, including the turn-2 and turn-3
+  starts that stand in for a restarted process.
 
   All of these: `system/init` and `rate_limit_event` dropped, mirror
   `attachment` entries dropped (account and environment context), host

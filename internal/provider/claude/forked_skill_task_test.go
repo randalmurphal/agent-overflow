@@ -198,18 +198,18 @@ func TestReplay_TypedForkSettlesByItsTaskTerminal(t *testing.T) {
 // it was observed and starts no agent; the record keeps every recent call
 // across a generation rotation.
 func TestRecentToolUseNamesKeepsTheLastCapCalls(t *testing.T) {
-	var names recentToolUseNames
+	var names recentMap[string]
 	total := parserTaskMapCap*2 + 7
 	for i := 0; i < total; i++ {
-		names.remember(fmt.Sprintf("toolu_%d", i), "SendMessage")
+		names.set(fmt.Sprintf("toolu_%d", i), "SendMessage")
 	}
 	for i := total - parserTaskMapCap; i < total; i++ {
-		if got := names.name(fmt.Sprintf("toolu_%d", i)); got != "SendMessage" {
+		if got, _ := names.get(fmt.Sprintf("toolu_%d", i)); got != "SendMessage" {
 			t.Fatalf("call %d of the last %d forgotten (got %q)", i, parserTaskMapCap, got)
 		}
 	}
-	if len(names.current)+len(names.previous) > 2*parserTaskMapCap {
-		t.Fatalf("record holds %d calls, bound is %d", len(names.current)+len(names.previous), 2*parserTaskMapCap)
+	if names.len() > 2*parserTaskMapCap {
+		t.Fatalf("record holds %d calls, bound is %d", names.len(), 2*parserTaskMapCap)
 	}
 
 	parser := NewParser()

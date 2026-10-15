@@ -13,6 +13,13 @@
 //      command row becomes the fork's card once the session mirror proves
 //      the fork, settles when the fork ends, and its pane Stop stops it by
 //      the task id the mirror gave it.
+//   5. A typed fork's Agent and every agent's last message, which Claude
+//      writes after the agent's terminal, reach the fork's card.
+//   6. A resume a typed fork sends is the resumed round's background
+//      carrier until the agent ends, in the same process and after a
+//      restart, where the thread's history names the agent's launch.
+//   7. After a restart, a resumed typed fork's rows return to its command
+//      card, the root the thread's history names.
 //
 // The mock writes the CLI's stop frames for an awaited agent
 // (cmd/ao-mockprovider/claude_tasks.go; forked_skill_stop_task,
@@ -23,12 +30,15 @@ import {
   RESULT_LINE,
   advance,
   claudeScenario,
+  claudeTurnsScenario,
   emit,
+  itemMeta,
   listItems,
   seedAgentThread,
   startMock,
   taskNotificationLine,
   taskStartedLine,
+  taskUpdatedLine,
   textLines,
   toolResultLine,
   toolUseLine,
@@ -274,4 +284,282 @@ test("Stop in a typed fork's pane stops the fork by its task id", async ({ harne
   await expect
     .poll(async () => (await listItems(harness, threadId)).filter((i) => i.status === 'running').map((i) => i.id))
     .toEqual([]);
+});
+
+const CHILD_TASK = 'task-typed-child';
+
+test("a typed fork's child agent and every last message reach the fork's card", async ({ harness, page }) => {
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('typed-fork-child', [
+      emit([
+        taskStartedLine(TYPED_TASK, '', '/code-review'),
+        transcriptMirrorLine(TYPED_TASK, [{ text: 'Reviewing the change.' }], {
+          metadata: true,
+          attributionSkill: 'code-review',
+          uuidPrefix: 'fork-1',
+        }),
+        // The CLI announces the child before the mirror delivers the fork's
+        // Agent call, and the child's first rows can come first too
+        // (forked_skill_direct_command_20261014).
+        taskStartedLine(CHILD_TASK, 'tu-typed-child', 'check the diff'),
+        transcriptMirrorLine(CHILD_TASK, [{ user: 'Check the diff.' }], {
+          metadataToolUseId: 'tu-typed-child',
+          uuidPrefix: 'child-1',
+        }),
+        transcriptMirrorLine(
+          TYPED_TASK,
+          [{ toolUse: { id: 'tu-typed-child', name: 'Agent', input: { description: 'check the diff', prompt: 'Check the diff.' } } }],
+          { uuidPrefix: 'fork-2' },
+        ),
+        transcriptMirrorLine(CHILD_TASK, [{ tool: { id: 'tu-child-read', name: 'Read', result: '# fixture' } }], {
+          uuidPrefix: 'child-2',
+        }),
+        taskUpdatedLine(CHILD_TASK, { status: 'completed', end_time: 1792029207656 }),
+        taskNotificationLine(CHILD_TASK, 'tu-typed-child', 'check the diff'),
+        // Claude writes each agent's last message after its terminal.
+        transcriptMirrorLine(CHILD_TASK, [{ text: 'CHILD-LAST' }], { uuidPrefix: 'child-3' }),
+        transcriptMirrorLine(TYPED_TASK, [{ toolResult: { id: 'tu-typed-child', result: 'CHILD-LAST' } }], {
+          uuidPrefix: 'fork-3',
+        }),
+        taskNotificationLine(TYPED_TASK, '', '/code-review'),
+        transcriptMirrorLine(TYPED_TASK, [{ text: 'FORK-LAST' }], { uuidPrefix: 'fork-4' }),
+        RESULT_LINE,
+      ]),
+    ]),
+  });
+
+  const threadId = await seedAgentThread(harness, 'typed-fork-child-app', 'Typed fork child');
+  await harness.open(page);
+  await page.getByText('Typed fork child').click();
+  await startMock(harness, threadId);
+  await harness.rpc('SendMessage', threadId, '/code-review high', null);
+  await harness.waitForEvent('provider:turn_completed');
+
+  await expect
+    .poll(async () => {
+      const row = await typedForkRow(harness, threadId);
+      const items = await listItems(harness, threadId);
+      const under = (parent: string | undefined) =>
+        items.filter((i) => parent && i.parentId === parent).map((i) => i.toolName || i.summary);
+      return { status: row?.status, fork: under(row?.id), child: under('tu-typed-child') };
+    })
+    .toEqual({
+      status: 'completed',
+      fork: ['Reviewing the change.', 'Agent', 'FORK-LAST'],
+      child: ['Check the diff.', 'Read', 'CHILD-LAST'],
+    });
+
+  const card = page.getByTestId('message-timeline-scroll').getByTestId('subagent-group');
+  await expect(card).toHaveCount(1);
+  await card.getByTestId('subagent-group-open-pane').first().click();
+  const pane = page.getByTestId('companion-pane-agent-body');
+  await expect(pane.getByText('FORK-LAST')).toBeVisible();
+  await pane.getByRole('button', { name: 'Expand 1 activity row' }).click();
+  await expect(pane.getByTestId('subagent-group')).toHaveAttribute('data-status', 'completed');
+});
+
+const AGENT_TASK = 'task-resumed-agent';
+const RESUME_PROMPT = `<agent-message from="${TYPED_TASK}">\nReply with the word beta.\n</agent-message>`;
+
+/** Turn 1 of local_agent_resumed_by_typed_fork_20261014: an awaited agent
+ * runs and finishes. */
+function awaitedAgentTurn(): string[] {
+  return [
+    toolUseLine('msg-agent', 'tu-agent', 'Agent', {
+      description: 'Test agent call',
+      subagent_type: 'general-purpose',
+      prompt: 'Reply with the word alpha.',
+    }),
+    taskStartedLine(AGENT_TASK, 'tu-agent', 'Test agent call', { prompt: 'Reply with the word alpha.' }),
+    ...textLines('msg-agent-alpha', 'alpha', 'tu-agent'),
+    taskUpdatedLine(AGENT_TASK, { status: 'completed', end_time: 1792029207656 }),
+    taskNotificationLine(AGENT_TASK, 'tu-agent', 'alpha', { uuid: 'notify-agent-1' }),
+    toolResultLine('tu-agent', [{ type: 'text', text: 'alpha' }], {
+      toolUseResult: { status: 'completed', agentId: AGENT_TASK, content: [{ type: 'text', text: 'alpha' }] },
+    }),
+    ...textLines('msg-main-alpha', 'The agent said alpha.'),
+    RESULT_LINE,
+  ];
+}
+
+/** Turn 2: the typed fork resumes the agent with a SendMessage the session
+ * mirror delivers after the rebind task_started. */
+function forkResumesAgentTurn(): string[] {
+  return [
+    taskStartedLine(TYPED_TASK, '', '/resume-fork'),
+    transcriptMirrorLine(TYPED_TASK, [{ text: 'Messaging the agent.' }], {
+      metadata: true,
+      attributionSkill: 'resume-fork',
+      uuidPrefix: 'fork-1',
+    }),
+    taskStartedLine(AGENT_TASK, 'tu-fork-send', 'Test agent call', { prompt: RESUME_PROMPT }),
+    transcriptMirrorLine(
+      TYPED_TASK,
+      [
+        {
+          toolUse: { id: 'tu-fork-send', name: 'SendMessage', input: { to: AGENT_TASK, message: 'Reply with the word beta.' } },
+          toolResult: { id: 'tu-fork-send', result: `{"success":true,"message":"Resuming agent","resumedAgentId":"${AGENT_TASK}"}` },
+        },
+      ],
+      { uuidPrefix: 'fork-2' },
+    ),
+    taskNotificationLine(TYPED_TASK, '', '/resume-fork'),
+    transcriptMirrorLine(TYPED_TASK, [{ text: 'Sent.' }], { uuidPrefix: 'fork-3' }),
+    RESULT_LINE,
+  ];
+}
+
+/** The resumed agent's round: rows on stdout under its launch, then its
+ * terminal, which names the carrier. */
+function resumedAgentRound(): string[] {
+  return [
+    ...textLines('msg-agent-beta', 'beta', 'tu-agent'),
+    taskUpdatedLine(AGENT_TASK, { status: 'completed', end_time: 1792029221235 }),
+    taskNotificationLine(AGENT_TASK, 'tu-fork-send', 'beta', { uuid: 'notify-agent-2' }),
+  ];
+}
+
+/** The carrier is the round's background row: running, then ended by the
+ * completion sibling the agent's terminal writes under it. */
+async function expectResumedRound(harness: HarnessApp, threadId: string, running: boolean) {
+  await expect
+    .poll(async () => {
+      const items = await listItems(harness, threadId);
+      const carrier = items.find((i) => i.id === 'tu-fork-send');
+      return {
+        carrier: carrier?.status,
+        background: carrier?.isBackground ?? false,
+        root: itemMeta(carrier).transcript_root_id,
+        ended: items.filter((i) => i.completionOf === 'tu-fork-send').map((i) => i.status),
+        beta: items.some((i) => i.parentId === 'tu-agent' && i.summary === 'beta'),
+        launches: items.filter((i) => i.toolName === 'Agent').map((i) => i.id),
+      };
+    })
+    .toEqual({
+      carrier: 'running',
+      background: true,
+      root: 'tu-agent',
+      ended: running ? [] : ['completed'],
+      beta: !running,
+      launches: ['tu-agent'],
+    });
+}
+
+test('a resume a typed fork sends keeps the resumed round running until the agent ends', async ({ harness, page }) => {
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeTurnsScenario('typed-fork-resume', [
+      [emit(awaitedAgentTurn())],
+      [emit(forkResumesAgentTurn()), { waitSignal: { name: 'resumed' } }, emit(resumedAgentRound())],
+    ]),
+  });
+
+  const threadId = await seedAgentThread(harness, 'typed-fork-resume-app', 'Typed fork resume');
+  await harness.open(page);
+  await page.getByText('Typed fork resume').click();
+  const mockId = await startMock(harness, threadId);
+  await harness.rpc('SendMessage', threadId, 'ask an agent for alpha', null);
+  await harness.waitForEvent('provider:turn_completed');
+
+  const turn2 = harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('SendMessage', threadId, `/resume-fork ${AGENT_TASK}`, null);
+  await turn2;
+  await waitForGate(harness, 'resumed');
+  await expectResumedRound(harness, threadId, true);
+
+  await advance(harness, mockId, 'resumed');
+  await expectResumedRound(harness, threadId, false);
+});
+
+test('after a restart, a resume a typed fork sends finds the agent the earlier process ran', async ({ harness, page }) => {
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('typed-fork-resume-before-restart', [emit(awaitedAgentTurn())]),
+  });
+  const threadId = await seedAgentThread(harness, 'typed-fork-restart-app', 'Typed fork restart');
+  await harness.open(page);
+  await page.getByText('Typed fork restart').click();
+  await startMock(harness, threadId);
+  await harness.rpc('SendMessage', threadId, 'ask an agent for alpha', null);
+  await harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('StopSession', threadId);
+
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('typed-fork-resume-after-restart', [
+      emit(forkResumesAgentTurn()),
+      { waitSignal: { name: 'resumed' } },
+      emit(resumedAgentRound()),
+    ]),
+  });
+  const mockId = await startMock(harness, threadId);
+  const turn = harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('SendMessage', threadId, `/resume-fork ${AGENT_TASK}`, null);
+  await turn;
+  await waitForGate(harness, 'resumed');
+  await expectResumedRound(harness, threadId, true);
+  await advance(harness, mockId, 'resumed');
+  await expectResumedRound(harness, threadId, false);
+});
+
+test("after a restart, a resumed typed fork's rows return to its command card", async ({ harness, page }) => {
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('typed-fork-before-restart', [
+      emit([...typedForkLines(), taskNotificationLine(TYPED_TASK, '', '/code-review'), RESULT_LINE]),
+    ]),
+  });
+  const threadId = await seedAgentThread(harness, 'typed-fork-resumed-app', 'Typed fork resumed');
+  await harness.open(page);
+  await page.getByText('Typed fork resumed').click();
+  await startMock(harness, threadId);
+  await harness.rpc('SendMessage', threadId, '/code-review high', null);
+  await harness.waitForEvent('provider:turn_completed');
+  const fork = await typedForkRow(harness, threadId);
+  expect(fork?.id).toMatch(/^claude-command:/);
+  await harness.rpc('StopSession', threadId);
+
+  // The resumed fork has no launching tool_use: its rows reach only the
+  // mirror (local_agent_resumed_by_typed_fork_20261014, turn 3).
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('typed-fork-resumed-after-restart', [
+      emit([
+        toolUseLine('msg-send-fork', 'tu-send-fork', 'SendMessage', { to: TYPED_TASK, message: 'Anything else?' }),
+        taskStartedLine(TYPED_TASK, 'tu-send-fork', '(resumed)', { prompt: 'Anything else?' }),
+        toolResultLine('tu-send-fork', [{ type: 'text', text: `{"success":true,"resumedAgentId":"${TYPED_TASK}"}` }], {
+          toolUseResult: { success: true, message: 'Resuming agent', resumedAgentId: TYPED_TASK },
+        }),
+        RESULT_LINE,
+      ]),
+      { waitSignal: { name: 'fork-round' } },
+      emit([
+        transcriptMirrorLine(TYPED_TASK, [], { metadata: true }),
+        transcriptMirrorLine(TYPED_TASK, [{ text: 'FORK-AGAIN' }], { uuidPrefix: 'again-1' }),
+        taskUpdatedLine(TYPED_TASK, { status: 'completed', end_time: 1792029221726 }),
+        taskNotificationLine(TYPED_TASK, 'tu-send-fork', 'done', { uuid: 'notify-fork-2' }),
+        transcriptMirrorLine(TYPED_TASK, [{ text: 'FORK-AGAIN-LAST' }], { uuidPrefix: 'again-2' }),
+      ]),
+    ]),
+  });
+  const mockId = await startMock(harness, threadId);
+  const turn = harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('SendMessage', threadId, 'ask the reviewer for more', null);
+  await turn;
+  await waitForGate(harness, 'fork-round');
+  await advance(harness, mockId, 'fork-round');
+
+  await expect
+    .poll(async () => {
+      const items = await listItems(harness, threadId);
+      const carrier = items.find((i) => i.id === 'tu-send-fork');
+      return {
+        background: carrier?.isBackground ?? false,
+        root: itemMeta(carrier).transcript_root_id,
+        ended: items.filter((i) => i.completionOf === 'tu-send-fork').map((i) => i.status),
+        underFork: items.filter((i) => i.parentId === fork?.id).map((i) => i.toolName || i.summary),
+      };
+    })
+    .toEqual({
+      background: true,
+      root: fork?.id,
+      ended: ['completed'],
+      // The resume's prompt opens the round under the root.
+      underFork: ['Reviewing the change.', 'Read', 'Anything else?', 'FORK-AGAIN', 'FORK-AGAIN-LAST'],
+    });
 });

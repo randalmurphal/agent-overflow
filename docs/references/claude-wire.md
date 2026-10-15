@@ -2140,9 +2140,11 @@ both handlers already use. The parser additionally:
 2. Enriches the meta-only `EventToolStart` the rebind `task_started`
    emits with `resumes_tool_use_id` (the previously-bound tool_use, which is
    the PREVIOUS binding — on a third round that is round two's carrier,
-   not the launch) and the wire's `description` + `subagent_type` — all
-   wire-sourced, so all survive the reconnect edge below where
-   `resumes_tool_use_id` is unknown.
+   not the launch) and the wire's `description` + `subagent_type`. The
+   last two are wire-sourced, so they survive a resume of an agent an
+   earlier process launched (below), where the previous binding is
+   unknown and `resumes_tool_use_id` names the launch the thread's
+   history holds, if any.
 3. Stamps `transcript_root_id`: the FIRST tool_use the task ever bound
    to, held write-once per `task_id` in `taskTranscriptRoots` so a
    rebind can never overwrite it. That is the row the agent's whole
@@ -2232,31 +2234,35 @@ get the whole session reaped mid-run. The carrier (backgrounded,
 running, no sibling until round-2 terminal) is what keeps the
 predicate true.
 
-**Reconnect edge**: if the parser restarts between the original
-launch and its resume (a fresh process `--resume`d the session and
-the model re-resumed the agent from its transcript), `taskToolUses`
-has no binding for the task_id at all. The parser falls back to a
-name-agnostic rule: a `local_agent` `task_started` binding to a
-tool_use that was never observed as the launch tool (`Agent`, or
-`Task` on older builds, per `isAgentLaunchToolName` in
-`parse_assistant.go`) is still classified as a resume, so the carrier
-marking survives the restart even though `resumes_tool_use_id` is
-unknown (omitted) — triage's Summary rewrite and identity copy still
-resolve the original launch through its persisted
-`items.meta.task_id` stamp, so the parser restart costs nothing
-downstream. A fresh launch cannot false-positive into this rule: parser
-lifetime == CLI process lifetime (stdio), and the assistant envelope
-carrying the launch tool_use always precedes its `task_started` on
-the same sequentially-parsed stream, so the launch-tool marker is
-already in place when the rule runs. `local_agent` tasks also die
-with their CLI process, so no pre-restart in-flight agent can re-emit
-`task_started` on the new process. The one unprotected window is
-losing the carrier's background flag between the rebind
-`task_started` and the resume ack, which is only possible via the parser's
-bounded-map wholesale reset (`parserTaskMapCap`, 1024 live entries
-accumulating inside a ~ms window; practically unreachable). A lost
-flag degrades to pre-fix behavior: the carrier lands foreground and
-that resumed round is reaper-unprotected.
+**A resume of an agent an earlier process launched**: if the session
+was restarted between the launch and its resume (a fresh process
+`--resume`d the session and the model re-resumed the agent from its
+transcript), the parser holds no binding for the task_id. A
+`local_agent` `task_started` that binds an observed call starting no
+agent (not `Agent`, `Task` or `Skill`) is still a resume: a fresh
+launch's call is one of those, and `local_agent` tasks die with their
+CLI process, so no pre-restart agent re-announces itself. The parser
+asks the thread's history for the launch (`claude.Config.AgentLaunchByTask`,
+the oldest agent launch row carrying the task id) and stamps it as
+`resumes_tool_use_id` and `transcript_root_id`; when the history has
+none, both are omitted and triage resolves the launch through the
+persisted `items.meta.task_id`. Task bindings and roots rotate
+through two generations of `parserTaskMapCap`, so a long session's
+Bash tasks do not evict them, and the history covers what rotates out.
+
+**A resume the session mirror delivers**: a call inside a typed fork
+(§E9) reaches the parser only through the mirror, after its
+`task_started`. The parser binds the task and holds the classification
+until the mirror projects the call; the call's name or the task's
+earlier binding then decides launch or resume, and the resume's meta
+and prompt row follow the call's row as they do on stdout (triage
+keeps only a row's task correlation ahead of the row). The projected
+ack is the carrier's background ack, as on stdout. A resumed awaited
+agent, which has a launching tool_use, streams its resumed rounds on
+stdout; a resumed typed fork, which has none, reaches only the mirror,
+and its rows project under its command row
+(`local_agent_resumed_by_typed_fork_20261014.ndjson`). No capture shows
+a resumed agent that was backgrounded or parked.
 
 See
 [`local_agent_async_resume.ndjson`](fixtures/claude/local_agent_async_resume.ndjson)
@@ -2573,8 +2579,8 @@ shapes reach AO, and the parser handles both.
   tool_use: `task_type:"local_agent"`, `tool_use_id` = the Skill's id,
   `description:"/<skill>"`, `subagent_type:"general-purpose"`,
   `is_backgrounded:false`, `spawn_depth:1`, and the skill body as
-  `prompt`. It is a launch, never a §E6 resume: the parser's reconnect
-  resume rule excludes a Skill call (`isTaskResumeTool`).
+  `prompt`. It is a launch, never a §E6 resume: the parser's resume
+  rule for an unbound task excludes a Skill call (`isTaskResumeTool`).
 - **A fork that finishes gets no `task_progress`, no `task_updated`,
   and no entry in `background_tasks_changed`.** Its run ends with
   `system/task_notification` alone (`status:"completed"`,
@@ -2613,8 +2619,19 @@ shapes reach AO, and the parser handles both.
   session mirror. AO records the task the running command announces
   and stamps it on the row when the mirror proves the fork with that
   agentId (§transcript_mirror). The Agent the fork launches is
-  announced by `task_started` before the mirror delivers its tool_use:
-  a call not observed yet is a launch.
+  announced by `task_started` before the mirror delivers its tool_use,
+  and the child's `agent_metadata`, naming that tool_use, can arrive
+  first too; the child's batches wait for the launch and then project
+  under it. Every projected agent's last message reaches the mirror
+  after its task terminal, so a terminal keeps the agent's projection
+  open (`forked_skill_direct_command_20261014.ndjson`).
+- **A typed fork can be resumed** by `SendMessage` to its agentId. The
+  resumed fork's `agent_metadata` again names no tool_use and its rows
+  reach only the mirror; they project under the command row the fork
+  first ran under (§E6,
+  `local_agent_resumed_by_typed_fork_20261014.ndjson`). No capture shows
+  a resumed agent that a typed fork launched; AO treats its resumed
+  rounds as streaming on stdout, as an Agent's do.
 - **A typed fork stopped by `stop_task` or `interrupt`** gets its kill
   frames, but no tool call exists to answer and the turn ends with a
   successful result. The fork's terminal notification is what settles
@@ -4008,8 +4025,13 @@ ordinary Agent's `agent_metadata.toolUseId` classifies the mirror as that
 Agent's duplicate even if the metadata beats `system/task_started`; ordinary
 stdout remains its live source. AO opens a projector only if
 `background_tasks` stopped that feed or the launch belongs below an already
-mirrored scope. Ownerless `agent_metadata` plus `isSidechain:true` and
-`attributionSkill` claim a forked Skill. An explicit `isSidechain:false` clears
+mirrored scope. A launch below a mirrored scope can be named by its child's
+metadata before the mirror delivers it; while its `task_started` has bound a
+call not delivered yet, the child's batches stay buffered, and they project
+once the launch does. Ownerless `agent_metadata` plus `isSidechain:true` and
+`attributionSkill` claim a forked Skill, unless its agent is already bound to
+a call (a resumed fork, or a forked Skill call inside the fork). An explicit
+`isSidechain:false` clears
 the buffer and leaves the command unprojected. If the file, entry, or byte bound
 drops any prefix data, AO persists a warning beneath the command row instead of
 leaving the gap silent.
@@ -4020,11 +4042,19 @@ parser reads them before any routing or buffering and never projects
 them; a `remove` with a drop reason is the only signal of a dropped
 wake (§E6b).
 
+An agent's last message reaches the mirror after its task terminal
+(2.1.284, every typed fork and projected child in the §E9 captures), so
+a final or `killed` terminal keeps the projection open for it
+(`finishMirroredTask`). It closes when its command ends, when the agent
+is resumed (a typed fork's projection is reused under its command row;
+an agent with a launching tool_use streams its resumed rounds on
+stdout, captured for an awaited agent), when the session closes, or
+when 64 later terminals retire it.
+
 No capture yet shows a moved agent that parks (§E6b) and later wakes.
 The code assumes its woken rounds continue in the same mirrored file:
-a parked stop keeps the projection while the agent's scope owns a live
-background shell or watch task, and a final or `killed` terminal
-closes it (`finishMirroredTask`).
+a parked stop is not a terminal for its projection while the agent's
+scope owns a live background shell or watch task.
 
 ### Local command envelope sequence
 
