@@ -747,6 +747,89 @@ describe('deferred scroll pass', () => {
     expect(h.state.isAtBottom).toBe(true);
   });
 
+  describe('a down gesture whose scroll lands after the down-intent window', () => {
+    // A loaded host can deliver the landing scroll event long after the
+    // wheel; the window is 250 ms.
+    const PAST_WINDOW_MS = 300;
+    const pastWindow = () => new Promise((r) => setTimeout(r, PAST_WINDOW_MS));
+
+    function wheeledDownWhileEscaped(): Harness {
+      const h = build();
+      h.state.escaped = true;
+      h.state.distanceFromBottom = 100;
+      h.scrollEl.scrollTop = 400;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+      wheel(h.scrollEl, { deltaY: 10 });
+      return h;
+    }
+
+    function landAt(h: Harness, distanceFromBottom: number): void {
+      h.state.distanceFromBottom = distanceFromBottom;
+      h.scrollEl.scrollTop = 500;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+    }
+
+    it('re-sticks when it lands at the bottom', async () => {
+      const h = wheeledDownWhileEscaped();
+      await pastWindow();
+      landAt(h, 0);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(false);
+      expect(h.state.isAtBottom).toBe(true);
+    });
+
+    it('re-sticks when the landing is resize-correlated', async () => {
+      const h = wheeledDownWhileEscaped();
+      await pastWindow();
+      h.state.resizeCorrelated = true;
+      landAt(h, 0);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(false);
+    });
+
+    it('stays escaped when it lands outside the re-stick epsilon', async () => {
+      const h = wheeledDownWhileEscaped();
+      await pastWindow();
+      landAt(h, AUTO_FOLLOW_BOTTOM_EPSILON_PX + 1);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    it('stays escaped after an upward escape in between', async () => {
+      const h = wheeledDownWhileEscaped();
+      wheel(h.scrollEl, { deltaY: -10 });
+      await pastWindow();
+      landAt(h, 0);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    it('stays escaped when an escape lands before the deferred pass', async () => {
+      const h = wheeledDownWhileEscaped();
+      await pastWindow();
+      landAt(h, 0);
+      wheel(h.scrollEl, { deltaY: -10 });
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    it('stays escaped after the controller placed the view at the bottom and escaped again', async () => {
+      const h = wheeledDownWhileEscaped();
+      h.intent.clearRecentDownIntent();
+      h.intent.setEscapedFromLock(true);
+      await pastWindow();
+      landAt(h, 0);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+  });
+
   it('does not re-stick without down intent', async () => {
     const h = build();
     h.state.escaped = true;

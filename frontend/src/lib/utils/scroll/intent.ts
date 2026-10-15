@@ -239,6 +239,13 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   let downIntentShownEnd = -1;
   let recentDownIntentVersion = 0;
   let recentDownIntentClearTimer: ReturnType<typeof setTimeout> | null = null;
+  // A down gesture made while escaped, still waiting for its scroll to land.
+  // Unlike the recent-down-intent window it has no clock: a loaded host can
+  // deliver the landing scroll event long after the input, and a landing at
+  // the bottom re-sticks whenever it arrives. An escape, a re-stick or a
+  // detach ends it; the version fences a deferred check against that.
+  let downLandingPending = false;
+  let downLandingVersion = 0;
   let scrollbarDragSessionActive = false;
   let scrollbarDragSessionVersion = 0;
   let scrollbarDragSessionFailsafeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -246,8 +253,8 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   let touchStartY: number | null = null;
   let touchStartX: number | null = null;
   // Baseline so `scrolledDown` can be computed for the re-stick path.
-  // Re-stick requires both recent down input and a real downward scroll
-  // event landing at the bottom (or at the end that input aimed at); this
+  // Re-stick requires both down input and a real downward scroll event
+  // landing at the bottom (or at the end that input aimed at); this
   // baseline keeps layout clamps from masquerading as user-driven down
   // motion.
   let lastObservedScrollTopForRestick = -1;
@@ -278,6 +285,11 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       clearTimeout(recentDownIntentClearTimer);
       recentDownIntentClearTimer = null;
     }
+  }
+
+  function clearDownLanding(): void {
+    downLandingPending = false;
+    downLandingVersion += 1;
   }
 
   function hasRecentDownIntent(): boolean {
@@ -332,6 +344,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   function restickFromUserInput(source: 'wheel' | 'key' | 'touch' | 'scroll'): void {
     clearRecentDownIntent({ bumpVersion: false });
+    clearDownLanding();
     deps.setEscaped(false);
     deps.setIsAtBottom(true);
     deps.spring.clearStopRequest();
@@ -352,6 +365,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     deps.setRestoreConsentArmed(false);
     recentDownIntentVersion += 1;
     extendRecentDownIntent();
+    downLandingPending = true;
     const el = deps.getScrollEl();
     const distFromBottom = el ? deps.distanceFromBottom() : 0;
     downIntentShownEnd = el ? el.scrollTop + distFromBottom : -1;
@@ -423,6 +437,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   function setEscapedFromLock(next: boolean): void {
     if (!next && !scrollbarDragSessionActive) clearScrollbarDragSession();
+    clearDownLanding();
     if (next) {
       clearRecentDownIntent();
       // User explicitly broke from auto-follow — bail any in-flight
@@ -617,6 +632,8 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     const downIntentVersionAtEvent = recentDownIntentVersion;
     const shownEndAtEvent = downIntentShownEnd;
     const resizeDifferenceAtEvent = deps.resizeDifferenceNow();
+    const downLandingAtEvent = downLandingPending;
+    const downLandingVersionAtEvent = downLandingVersion;
     const scrollbarDragSessionAtEvent = scrollbarDragSessionActive;
     const scrollbarDragSessionVersionAtEvent = scrollbarDragSessionVersion;
     const scrolledDown = previousObserved < 0
@@ -667,7 +684,14 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       const hasLiveScrollbarDragRestickIntent =
         eventCameFromCurrentScrollbarDrag
         && scrolledDown;
-      const hasLiveDownIntent = hasLiveRecentDownIntent || hasLiveScrollbarDragRestickIntent;
+      // A down gesture's own scroll landing at the bottom, however late.
+      const landedFromDownGesture = downLandingAtEvent
+        && downLandingVersion === downLandingVersionAtEvent
+        && scrolledDown
+        && !nativeClamp
+        && distFromBottomAtEvent <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+      const hasLiveDownIntent = hasLiveRecentDownIntent || hasLiveScrollbarDragRestickIntent
+        || landedFromDownGesture;
       if (resizeCorrelatedScroll && !hasLiveDownIntent) {
         if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent.deferred.bailRO', () => ({
           resizeDifference: Math.round(deps.resizeDifferenceNow()),
@@ -809,6 +833,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     detachListeners = undefined;
     clearProgrammaticScrollState();
     clearRecentDownIntent();
+    clearDownLanding();
     clearScrollbarDragSession();
     touchStartY = null;
     lastObservedScrollTopForRestick = -1;
@@ -835,7 +860,10 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     clearRestoreConsent: () => {
       deps.setRestoreConsentArmed(false);
     },
-    clearRecentDownIntent: () => clearRecentDownIntent(),
+    clearRecentDownIntent: () => {
+      clearRecentDownIntent();
+      clearDownLanding();
+    },
     clearScrollbarDragSession: () => clearScrollbarDragSession(),
     noteProgrammaticWrite,
     debugState: () => ({

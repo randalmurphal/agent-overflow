@@ -2,7 +2,8 @@
 // in its last block's row, which keeps its key and re-measures through
 // ResizeObserver once the block reads its new lines. The view must land at the true
 // bottom after that re-measure, follow further growth for a reader at
-// the bottom, and leave a reader who wheeled away alone. Expanding a
+// the bottom, including one who wheeled back there however late the
+// scroll landed, and leave a reader who wheeled away alone. Expanding a
 // section holds its row where it was instead of following to the end.
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -139,6 +140,34 @@ describe('ReviewCILogView tail follow', () => {
     p.log = lint.state;
     flushSync();
     await settledAtBottom(scroll, 'the new job at its tail');
+  });
+
+  it('follows again once a reader\'s wheel to the end lands, however late its scroll event', async () => {
+    const { p, scroll, fake } = mountLog();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
+    await settledAtBottom(scroll, 'the opened log at its tail');
+    // The landing below returns to the pin's own scrollTop: let the pin's
+    // write tokens expire so it reads as the reader's scroll, as it does
+    // after any real reading.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+
+    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+    scroll.scrollTop -= 600;
+    await raf();
+    await raf();
+
+    // The wheel back down is the reader's; a loaded host delivers its
+    // scroll to the end well past the 250 ms down-intent window.
+    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    scroll.scrollTop = scroll.scrollHeight;
+    await settledAtBottom(scroll, 'the reader at the end');
+
+    fake.grow(numberedLines(GROWTH_LINES, FIRST_LINES + 1));
+    p.log = fake.state;
+    flushSync();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES + GROWTH_LINES}`) === true, 'the grown log');
+    await settledAtBottom(scroll, 'the tail after growth');
   });
 
   it('holds an expanded section at its row instead of following to the end', async () => {

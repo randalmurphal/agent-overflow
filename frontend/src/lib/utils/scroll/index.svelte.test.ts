@@ -1093,7 +1093,10 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isSticky).toBe(true);
     });
 
-    it('does not extend downward gesture consent through layout motion', async () => {
+    it('re-sticks when a slow downward gesture through layout motion lands at the bottom', async () => {
+      // The landing arrives past the down-intent window and the motion
+      // before it is resize-correlated; a down gesture's landing at the
+      // bottom re-sticks however long it took.
       const ro = getRO();
       ro.fire(contentEl, 800);
       fireWheel(scrollEl, -50, scrollEl);
@@ -1114,8 +1117,8 @@ describe('createUseStickToBottomController', () => {
       geom.scrollTop = geom.scrollHeight - geom.clientHeight;
       fireScroll(scrollEl);
       await nextTimer();
-      expect(controller.escapedFromLock).toBe(true);
-      expect(controller.isSticky).toBe(false);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
     });
 
     it('selection during scroll flips escapedFromLock', async () => {
@@ -6028,7 +6031,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.escapedFromLock).toBe(true);
     });
 
-    it('recent down intent expires before a later bottom-landing scroll', async () => {
+    it('a down gesture re-sticks when its scroll lands at the bottom after the down-intent window', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -6046,8 +6049,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       fireScroll(scrollEl);
       await nextTimer();
 
-      expect(controller.escapedFromLock).toBe(true);
-      expect(controller.isSticky).toBe(false);
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
     });
 
     it('up input clears recent down intent before a bottom-landing scroll', async () => {

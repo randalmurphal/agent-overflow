@@ -732,10 +732,18 @@ the bottom while the user has escaped bottom-follow. Upward wheel, key,
 touch, middle-button autoscroll, or scrollbar-gutter pointer intent
 escapes synchronously when it targets the timeline or a descendant.
 
-A recent down-intent window is the only consent path for re-sticking after
-escape. Re-stick uses the distance from bottom captured at scroll-event
-time so streaming growth between the event and the deferred check cannot
-invalidate what the user actually saw.
+Down input (wheel, key, touch) is the only consent path for re-sticking
+after escape. A down gesture made while escaped stays pending until its
+scroll lands, with no clock: a downward landing at the bottom (within
+`AUTO_FOLLOW_BOTTOM_EPSILON_PX`) re-sticks however late a loaded host
+delivers the scroll event, even inside a resize-correlated cascade. An
+upward escape, a re-stick or a detach ends the pending gesture. Re-stick
+uses the distance from bottom captured at scroll-event time so streaming
+growth between the event and the deferred check cannot invalidate what
+the user actually saw. `attach` is untracked: consumers attach from an
+effect whose teardown detaches, and a subscription to the controller's
+near-bottom state would re-run that effect at the bottom and drop the
+pending gesture.
 
 A down input also records the bottom target it aims at
 (`downIntentShownEnd`). The browser clamps a gesture to the end that stood
