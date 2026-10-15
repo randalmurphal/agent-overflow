@@ -241,9 +241,12 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   let recentDownIntentClearTimer: ReturnType<typeof setTimeout> | null = null;
   // A down gesture made while escaped, still waiting for its scroll to land.
   // Unlike the recent-down-intent window it has no clock: a loaded host can
-  // deliver the landing scroll event long after the input, and a landing at
-  // the bottom re-sticks whenever it arrives. An escape, a re-stick or a
-  // detach ends it; the version fences a deferred check against that.
+  // deliver the landing scroll event long after the input. The first
+  // untagged scroll event after the gesture is its landing and consumes it,
+  // wherever it lands; a landing at the bottom re-sticks. A later scroll
+  // with no input of its own (find-in-page, focus, an anchor) therefore
+  // finds nothing pending. An escape, a re-stick or a detach also ends it;
+  // the version fences a deferred check against those.
   let downLandingPending = false;
   let downLandingVersion = 0;
   let scrollbarDragSessionActive = false;
@@ -634,6 +637,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     const resizeDifferenceAtEvent = deps.resizeDifferenceNow();
     const downLandingAtEvent = downLandingPending;
     const downLandingVersionAtEvent = downLandingVersion;
+    downLandingPending = false;
     const scrollbarDragSessionAtEvent = scrollbarDragSessionActive;
     const scrollbarDragSessionVersionAtEvent = scrollbarDragSessionVersion;
     const scrolledDown = previousObserved < 0

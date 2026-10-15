@@ -170,6 +170,39 @@ describe('ReviewCILogView tail follow', () => {
     await settledAtBottom(scroll, 'the tail after growth');
   });
 
+  it('stays put when a scroll with no input reaches the end after a wheel landed short of it', async () => {
+    const { p, scroll, fake } = mountLog();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
+    await settledAtBottom(scroll, 'the opened log at its tail');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+
+    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+    scroll.scrollTop -= 600;
+    await raf();
+    await raf();
+
+    // One notch down, landing mid-log.
+    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true }));
+    scroll.scrollTop += 200;
+    await raf();
+    await raf();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    // Find-in-page, a focus scroll or an anchor reaches the end with no input.
+    scroll.scrollTop = scroll.scrollHeight;
+    await raf();
+    await raf();
+    const readingAt = scroll.scrollTop;
+
+    fake.grow(numberedLines(GROWTH_LINES, FIRST_LINES + 1));
+    p.log = fake.state;
+    flushSync();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES + GROWTH_LINES}`) === true, 'the grown log');
+    for (let i = 0; i < 12; i += 1) await raf();
+    expect(scroll.scrollTop).toBe(readingAt);
+    expect(distanceFromBottom(scroll)).toBeGreaterThan(AT_BOTTOM_PX);
+  });
+
   it('holds an expanded section at its row instead of following to the end', async () => {
     // Three collapsed sections fit the viewport, so the reader is at the
     // bottom; the first one opens onto more lines than the viewport holds.

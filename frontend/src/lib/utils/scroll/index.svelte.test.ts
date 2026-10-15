@@ -1093,10 +1093,10 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isSticky).toBe(true);
     });
 
-    it('re-sticks when a slow downward gesture through layout motion lands at the bottom', async () => {
-      // The landing arrives past the down-intent window and the motion
-      // before it is resize-correlated; a down gesture's landing at the
-      // bottom re-sticks however long it took.
+    it('does not extend downward gesture consent through layout motion', async () => {
+      // The wheel's first scroll is its landing, short of the bottom; the
+      // layout motion after it renews nothing, so the end it later reaches
+      // is not the reader's.
       const ro = getRO();
       ro.fire(contentEl, 800);
       fireWheel(scrollEl, -50, scrollEl);
@@ -1117,8 +1117,8 @@ describe('createUseStickToBottomController', () => {
       geom.scrollTop = geom.scrollHeight - geom.clientHeight;
       fireScroll(scrollEl);
       await nextTimer();
-      expect(controller.escapedFromLock).toBe(false);
-      expect(controller.isSticky).toBe(true);
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
     });
 
     it('selection during scroll flips escapedFromLock', async () => {
@@ -6051,6 +6051,33 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
+    });
+
+    it('an old down intent does not consent to an unrelated later landing at the bottom', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // The wheel's own scroll lands short of the bottom.
+      fireWheel(scrollEl, 50, scrollEl);
+      geom.scrollTop = 150;
+      fireScroll(scrollEl);
+      await nextTimer();
+      await waitMs(300);
+
+      // A scroll with no input reaches the end later.
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
     });
 
     it('up input clears recent down intent before a bottom-landing scroll', async () => {

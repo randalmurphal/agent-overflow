@@ -734,10 +734,16 @@ escapes synchronously when it targets the timeline or a descendant.
 
 Down input (wheel, key, touch) is the only consent path for re-sticking
 after escape. A down gesture made while escaped stays pending until its
-scroll lands, with no clock: a downward landing at the bottom (within
-`AUTO_FOLLOW_BOTTOM_EPSILON_PX`) re-sticks however late a loaded host
-delivers the scroll event, even inside a resize-correlated cascade. An
-upward escape, a re-stick or a detach ends the pending gesture. Re-stick
+scroll lands, with no clock: the first untagged scroll event after the
+gesture is its landing and consumes it wherever it lands. A downward
+landing at the bottom (within `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) re-sticks
+however late a loaded host delivers it, even inside a resize-correlated
+cascade; a scroll with no input of its own (find-in-page, focus, an
+anchor) after a landing short of the bottom does not. A controller write
+is tagged and is never the landing. An upward escape, a re-stick or a
+detach also ends the pending gesture. Motion that continues a gesture
+past its first scroll event re-sticks through the 250 ms recent
+down-intent window, which each further downward user scroll renews. Re-stick
 uses the distance from bottom captured at scroll-event time so streaming
 growth between the event and the deferred check cannot invalidate what
 the user actually saw. `attach` is untracked: consumers attach from an

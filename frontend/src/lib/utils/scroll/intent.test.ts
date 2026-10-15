@@ -763,9 +763,9 @@ describe('deferred scroll pass', () => {
       return h;
     }
 
-    function landAt(h: Harness, distanceFromBottom: number): void {
+    function landAt(h: Harness, distanceFromBottom: number, top = 500): void {
       h.state.distanceFromBottom = distanceFromBottom;
-      h.scrollEl.scrollTop = 500;
+      h.scrollEl.scrollTop = top;
       h.scrollEl.dispatchEvent(new Event('scroll'));
     }
 
@@ -816,6 +816,46 @@ describe('deferred scroll pass', () => {
       await settleDeferredPass();
 
       expect(h.state.escaped).toBe(true);
+    });
+
+    it('is consumed by a landing away from the bottom, so a later scroll with no input to the end stays escaped', async () => {
+      // Find-in-page, a focus scroll or an anchor moves the view with no
+      // input of its own; the earlier gesture already landed.
+      const h = wheeledDownWhileEscaped();
+      landAt(h, 60, 440);
+      await settleDeferredPass();
+      expect(h.state.escaped).toBe(true);
+
+      await pastWindow();
+      landAt(h, 0, 500);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    it('is not consumed by a scroll the controller wrote', async () => {
+      const h = wheeledDownWhileEscaped();
+      h.intent.noteProgrammaticWrite(450);
+      h.scrollEl.scrollTop = 450;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+      await pastWindow();
+      landAt(h, 0, 500);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(false);
+    });
+
+    it('is armed again by a second wheel after its first landing', async () => {
+      const h = wheeledDownWhileEscaped();
+      landAt(h, 60, 440);
+      await settleDeferredPass();
+      await pastWindow();
+      wheel(h.scrollEl, { deltaY: 10 });
+      await pastWindow();
+      landAt(h, 0, 500);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(false);
     });
 
     it('stays escaped after the controller placed the view at the bottom and escaped again', async () => {
