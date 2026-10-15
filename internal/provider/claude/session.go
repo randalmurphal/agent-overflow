@@ -286,6 +286,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// given command uuid; a uuid we never issued on a cross-session-enabled
 	// process is a turn another Claude session started (session_peer.go).
 	s.parser.peerTurns = s
+	s.parser.agentLaunchLookup = cfg.AgentLaunchByTask
 
 	go s.readLoop()
 

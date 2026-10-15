@@ -188,11 +188,12 @@ export function taskStartedLine(
     type: 'system',
     subtype: 'task_started',
     task_id: taskId,
-    tool_use_id: toolUseId,
     description,
     subagent_type: 'general-purpose',
     task_type: opts.taskType ?? 'local_agent',
   };
+  // A typed forked command's task names no tool_use (claude-wire.md §E9).
+  if (toolUseId) envelope.tool_use_id = toolUseId;
   if (opts.ownedBySubagent) envelope.owned_by_subagent = true;
   if (opts.prompt) envelope.prompt = opts.prompt;
   return j(envelope);
@@ -566,59 +567,70 @@ export function itemMeta(item: Item | undefined): Record<string, unknown> {
  * timestamp, so the parser stamps each with its arrival time. The mirror
  * binds them to the launch the parser armed for `agentId` (the task id)
  * on `task_updated{is_backgrounded:true}`.
+ *
+ * A typed forked command's agent (claude-wire.md §E9) is proven by an
+ * `agent_metadata` row with no `toolUseId` (`metadata`) and rows that name
+ * the skill (`attributionSkill`). An agent launched inside it names its
+ * launch on its metadata row (`metadataToolUseId`). Row uuids carry
+ * `uuidPrefix`, so several frames of one agent stay distinct rows.
  */
 export function transcriptMirrorLine(
   agentId: string,
-  rows: Array<{ text?: string; tool?: { id: string; name: string; result: string } }>,
+  rows: Array<{
+    text?: string;
+    user?: string;
+    tool?: { id: string; name: string; result: string };
+    toolUse?: { id: string; name: string; input: Json };
+    toolResult?: { id: string; result: string };
+  }>,
+  opts: { metadata?: boolean; metadataToolUseId?: string; attributionSkill?: string; uuidPrefix?: string } = {},
 ): string {
   const entries: Json[] = [];
+  if (opts.metadata || opts.metadataToolUseId) {
+    entries.push({
+      type: 'agent_metadata',
+      agentType: 'general-purpose',
+      ...(opts.metadataToolUseId ? { toolUseId: opts.metadataToolUseId } : {}),
+    });
+  }
+  const at = opts.uuidPrefix ?? 'm';
   let prev: string | null = null;
-  const sidechain = { isSidechain: true, agentId };
+  const sidechain = {
+    isSidechain: true,
+    agentId,
+    ...(opts.attributionSkill ? { attributionSkill: opts.attributionSkill } : {}),
+  };
+  const push = (uuid: string, role: 'assistant' | 'user', message: Json) => {
+    entries.push({ type: role, uuid, parentUuid: prev, ...sidechain, message: { role, ...message } });
+    prev = uuid;
+  };
   let n = 0;
   for (const row of rows) {
     n += 1;
-    if (row.text !== undefined) {
-      const uuid = `m-text-${n}`;
-      entries.push({
-        type: 'assistant',
-        uuid,
-        parentUuid: prev,
-        ...sidechain,
-        message: {
-          role: 'assistant',
-          id: `msg-mirror-${n}`,
-          model: 'claude-mock-1',
-          content: [{ type: 'text', text: row.text }],
-        },
-      });
-      prev = uuid;
+    if (row.user !== undefined) {
+      push(`${at}-user-${n}`, 'user', { content: row.user });
     }
-    if (row.tool) {
-      const useUuid = `m-tool-${n}`;
-      entries.push({
-        type: 'assistant',
-        uuid: useUuid,
-        parentUuid: prev,
-        ...sidechain,
-        message: {
-          role: 'assistant',
-          id: `msg-mirror-tool-${n}`,
-          model: 'claude-mock-1',
-          content: [{ type: 'tool_use', id: row.tool.id, name: row.tool.name, input: { file_path: 'README.md' } }],
-        },
+    if (row.text !== undefined) {
+      push(`${at}-text-${n}`, 'assistant', {
+        id: `msg-${at}-${n}`,
+        model: 'claude-mock-1',
+        content: [{ type: 'text', text: row.text }],
       });
-      const resUuid = `m-tool-res-${n}`;
-      entries.push({
-        type: 'user',
-        uuid: resUuid,
-        parentUuid: useUuid,
-        ...sidechain,
-        message: {
-          role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: row.tool.id, content: row.tool.result }],
-        },
+    }
+    const use =
+      row.toolUse ?? (row.tool ? { id: row.tool.id, name: row.tool.name, input: { file_path: 'README.md' } } : undefined);
+    if (use) {
+      push(`${at}-tool-${n}`, 'assistant', {
+        id: `msg-${at}-tool-${n}`,
+        model: 'claude-mock-1',
+        content: [{ type: 'tool_use', id: use.id, name: use.name, input: use.input }],
       });
-      prev = resUuid;
+    }
+    const result = row.toolResult ?? (row.tool ? { id: row.tool.id, result: row.tool.result } : undefined);
+    if (result) {
+      push(`${at}-tool-res-${n}`, 'user', {
+        content: [{ type: 'tool_result', tool_use_id: result.id, content: result.result }],
+      });
     }
   }
   return j({

@@ -281,7 +281,7 @@ round's **background carrier**.
   `items.meta.task_id` stamp through
   `store.FindOriginalAgentLaunchByTaskID`, oldest row excluding the
   carrier itself, which carries the same task_id by then — so the
-  reconnect edge resolves too) and stamps `transcript_root_id` onto the
+  resume of an agent an earlier process launched resolves too) and stamps `transcript_root_id` onto the
   carrier when the parser could not. It rewrites the carrier's `Summary` to
   the resumed agent's identity (`"Agent: <description>"`, preferring
   the original launch row's own Summary when it's still around) and
@@ -327,12 +327,12 @@ stays hidden from the tray (its own sibling excludes it), and the
 CARRIER is what surfaces there during round 2, with the agent-centric
 summary.
 
-**Known edge**: if the parser restarts and loses BOTH the
-`taskToolUses` binding AND the `agentLaunchToolUses` launch-tool
-marker for the resuming tool (a double restart mid-stream), the resume
-is undetectable from that instance's state alone and the round is
-reaper-unprotected. Not engineered around. See the parser's
-`task_started` case comment.
+A resuming call the session mirror delivers (inside a typed fork or a
+backgrounded agent) arrives after its `task_started`. The parser holds
+the classification until the call is projected, so the carrier and its
+resume meta land in stdout order, and a resume of an agent an earlier
+process launched names its root from the thread's history
+(`claude.Config.AgentLaunchByTask`). See claude-wire.md §E6.
 
 ### Parking: an async agent whose owned shell outlives its stop
 

@@ -267,7 +267,7 @@
   let isBackgroundNode = $derived(launchRunsDetached(launchInfo, parentMeta));
 
   // Background button (spec Q9): Claude foreground Agent/Task only, while
-  // it runs. Forks have no task to detach, a resume carrier is already
+  // it runs. The CLI refuses to background a fork, a resume carrier is already
   // background, and Codex children are always async. BackgroundClaudeTask
   // rides `threads:operate`; a session without it gets no button.
   let canBackground = $derived(

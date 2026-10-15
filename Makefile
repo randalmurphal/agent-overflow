@@ -257,8 +257,9 @@ test-race: netns-tool
 # revertable. It SPENDS REAL MODEL TOKENS: one trivial turn per provider, four
 # for the imported-branch scenario, three Haiku turns for the merge scenario,
 # and four answered turns plus one early interrupt per provider for the revert
-# flow, four for the Claude worktree follow scenario, and five per provider
-# for the external worktree removal scenario (one cut mid-command).
+# flow, four for the Claude worktree follow scenario, five per provider for
+# the external worktree removal scenario (one cut mid-command), and three
+# Haiku turns for the forked skill scenario (two stopped mid-fork).
 # Both CLIs must be installed and authenticated.
 #
 # The `providersmoke` build tag keeps these tests out of `make go-test`.
@@ -272,9 +273,9 @@ test-race: netns-tool
 # -timeout covers the sum of the in-test deadlines (6m per workflow leg, 3m for
 # the imported-branch scenario, 6m for the merge scenario, 6m per revert leg,
 # 3m per queue leg, 8m per fork leg, 5m for the worktree follow scenario,
-# 6m per external-removal leg, plus auth probes) with
-# headroom, so a wedged turn fails through the gate's own diagnostics rather
-# than as a bare test-binary timeout panic.
+# 6m per external-removal leg, 8m for the forked skill scenario, plus auth
+# probes) with headroom, so a wedged turn fails through the gate's own
+# diagnostics rather than as a bare test-binary timeout panic.
 provider-smoke-compile:
 	go test -tags providersmoke -run '^$$' ./internal/app
 

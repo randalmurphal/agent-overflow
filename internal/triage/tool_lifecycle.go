@@ -191,8 +191,11 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 		if meta.ToolName != "" {
 			existing.ToolName = meta.ToolName
 		}
-		if summary := BuildToolCallSummary(meta, evt.ItemType); meta.MetaUpdateOnly && strings.TrimSpace(summary) != "" {
-			existing.Summary = summary
+		// Only an update that names the tool re-derives the summary. A marker
+		// that names none (the session mirror taking over a backgrounded
+		// agent's rows) would rename the row to the fallback "tool".
+		if meta.MetaUpdateOnly && (strings.TrimSpace(meta.ToolName) != "" || strings.TrimSpace(evt.ItemType) != "") {
+			existing.Summary = BuildToolCallSummary(meta, evt.ItemType)
 		}
 		parentToolUseID := stringsx.FirstNonEmptyTrimmed(eventParentID(evt), meta.ParentToolUseID)
 		baseMeta := mergeItemMetaJSON(existing.Meta, evt.Meta)

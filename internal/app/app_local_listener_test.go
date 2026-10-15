@@ -94,8 +94,17 @@ func TestLocalClientsReturnToTheMainBindWhenTheListenerFails(t *testing.T) {
 	if local := app.localListenerAddr(); local != "" {
 		t.Fatalf("failed listener still advertised at %q", local)
 	}
-	if _, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second); err == nil {
-		t.Fatal("the failed listener is still accepting")
+	// Assert on the listener, not by dialing its freed port: a parallel
+	// test can bind that port, and a dial to a closed local port can
+	// connect to itself. The deadline keeps an open listener from blocking.
+	if tcp, ok := ln.(*net.TCPListener); ok {
+		_ = tcp.SetDeadline(time.Now().Add(time.Second))
+	}
+	if conn, err := ln.Accept(); !errors.Is(err, net.ErrClosed) {
+		if conn != nil {
+			_ = conn.Close()
+		}
+		t.Fatalf("the failed listener is still open: Accept = %v", err)
 	}
 	endpoint, err := localcontrol.Read(app.configDir)
 	if err != nil {

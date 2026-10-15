@@ -484,6 +484,7 @@ func (p *Parser) appendToolUseEvent(
 	block assistantContentBlock,
 ) []provider.ProviderEvent {
 	p.rememberToolUseParent(block.ID, parentToolUseID)
+	p.rememberToolUseName(block.ID, block.Name)
 
 	if block.Name == "ExitPlanMode" {
 		return appendExitPlanModeEvent(events, threadID, parentToolUseID, now, block)
@@ -512,9 +513,6 @@ func (p *Parser) appendToolUseEvent(
 	isBackground := hasRunInBackground(block.Input)
 	if isBackground {
 		p.markBackground(block.ID, backgroundHintInput)
-	}
-	if isAgentLaunchToolName(block.Name) {
-		p.markAgentLaunchTool(block.ID)
 	}
 	if block.Name == sessionimport.BashToolName || block.Name == sessionimport.MonitorToolName {
 		p.markAckTool(block.ID, block.Name)
@@ -869,6 +867,10 @@ func contextWindowFromClaudeUsage(usage assistantUsage) (provider.ContextWindow,
 func isAgentLaunchToolName(name string) bool {
 	return name == "Agent" || name == "Task"
 }
+
+// skillToolName is Claude's Skill tool. A forking skill runs as a
+// local_agent task bound to this call (claude-wire.md §E9).
+const skillToolName = "Skill"
 
 // hasRunInBackground returns true when the tool input JSON contains
 // `"run_in_background": true`. Malformed JSON is treated as absent —

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -809,9 +810,17 @@ func (p *Parser) parseTaskStartedEvent(
 	taskType := readRawString(raw["task_type"])
 	toolUseID := firstNonEmpty(readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
 	if toolUseID == "" {
-		// The one shape that names no tool_use is a parked agent's wake
-		// (claude-wire.md §E6b). Nothing else on this wire omits it.
+		// Two shapes name no tool_use: a parked agent's wake
+		// (claude-wire.md §E6b), for a task already bound, and a typed
+		// forked command's own task (§E9), whose launch the session
+		// mirror names later. A wake's prompt is the `<task-notification>`
+		// that woke it, so a wake whose binding is gone is not taken for
+		// the fork.
 		if taskType != "local_agent" {
+			return nil, nil
+		}
+		if p.taskToolUseRef(taskID).ToolUseID == "" && len(ExtractAllTaskNotificationFields(readRawString(raw["prompt"]))) == 0 {
+			p.noteCommandForkTask(taskID)
 			return nil, nil
 		}
 		return p.parseTaskWakeEvent(threadID, taskID, raw, now), nil
@@ -826,18 +835,27 @@ func (p *Parser) parseTaskStartedEvent(
 	// claude-wire.md §E6 and local_agent_async_resume.ndjson
 	// (captured from AO thread 9941d40f, 2026-07-02).
 	//
-	// Two detection paths, both scoped to task_type=="local_agent"
+	// Three detection paths, all scoped to task_type=="local_agent"
 	// (Bash's "local_bash" task_type never rebinds like this):
-	//  1. In-memory: taskID is already bound to a DIFFERENT
+	//  1. The call was not observed yet. Only the session mirror
+	//     delivers a call after its task_started (a typed fork's calls,
+	//     §E9): a launch inside the fork, or a resume the fork sends.
+	//     The classification and its meta wait for the mirror to project
+	//     the call (observeProjectedToolCalls), so they follow the call's
+	//     row as on stdout: triage keeps only a row's task correlation
+	//     ahead of the row itself.
+	//  2. In-memory: taskID is already bound to a DIFFERENT
 	//     tool_use_id than this envelope carries.
-	//  2. Reconnect: taskID has NO binding at all (a parser restart
-	//     lost it), but toolUseID was never observed as an
-	//     Agent-launch tool_use either (see isAgentLaunchTool) — the
-	//     only way a "local_agent" task_started binds to a
-	//     non-launch tool is a resume whose original launch
-	//     predates this parser instance.
+	//  3. No binding, and toolUseID was observed as a call that starts
+	//     no agent (isTaskResumeTool): an earlier process launched the
+	//     agent and the model resumed it from its transcript
+	//     (SendMessage to a dead agent replies "resumed from
+	//     transcript", thread 9941d40f). A fresh launch cannot reach
+	//     this: its call is an Agent, Task or Skill, and local_agent
+	//     tasks die with their CLI process, so no pre-restart agent
+	//     re-announces itself on the new one.
 	var resumesToolUseID string
-	var isResume, reannounced bool
+	var isResume, reannounced, unclassified bool
 	if taskType == "local_agent" {
 		existingRef := p.taskToolUseRef(taskID)
 		switch {
@@ -848,48 +866,38 @@ func (p *Parser) parseTaskStartedEvent(
 			// prompt this is a wake: 2.1.280 names the bound tool_use
 			// where earlier CLIs named none (claude-wire.md §E6b).
 			reannounced = true
+		case p.toolUseName(toolUseID) == "":
+			resumesToolUseID = existingRef.ToolUseID
+			unclassified = true
 		case existingRef.ToolUseID != "":
 			resumesToolUseID = existingRef.ToolUseID
 			isResume = true
-		case existingRef.ToolUseID == "" && !p.isAgentLaunchTool(toolUseID):
-			// No binding at all: the original launch predates this
-			// parser instance. Real trigger: a fresh process
-			// resumed the session and the model re-resumed an
-			// agent from its transcript (SendMessage to a dead
-			// agent replies "resumed from transcript" — observed
-			// live, thread 9941d40f). Mark the carrier below, but
-			// resumesToolUseID stays "" since there is no original
-			// tool_use_id to point triage at.
-			//
-			// Inferring "resume" from ABSENT state is sound here
-			// because a fresh launch cannot reach this branch:
-			// parser lifetime == CLI process lifetime (stdio), the
-			// CLI emits task_started only AFTER the assistant
-			// envelope carrying the tool_use, and ParseLine is
-			// sequential — so any launch tool_use whose
-			// task_started this process sees is already in
-			// agentLaunchToolUses. local_agent tasks die with
-			// their CLI process, so no pre-restart in-flight agent
-			// can re-emit task_started on the new process either.
-			// The only in-process loss window is the bounded-map
-			// wholesale reset at parserTaskMapCap (1024 live
-			// launches between a tool_use and its ~ms-later
-			// task_started — practically unreachable).
+		case p.isTaskResumeTool(toolUseID):
 			isResume = true
 		}
 	}
 
+	start := agentTaskStart{
+		taskID:       taskID,
+		resumes:      resumesToolUseID,
+		description:  readRawString(raw["description"]),
+		subagentType: firstNonEmpty(readRawString(raw["subagent_type"]), readRawString(raw["subagentType"])),
+		prompt:       readRawString(raw["prompt"]),
+	}
 	p.rememberTaskToolUse(taskID, toolUseID)
 	if taskType == "local_agent" {
-		// Write-once: the FIRST tool_use a local_agent task binds to is
-		// the agent's transcript root, and a resume rebind must never
-		// move it. Neither a resume nor a re-announced binding records
-		// one: when the root is not known (the reconnect edge) the
-		// bound call is a carrier, never a root.
-		if !isResume && !reannounced {
+		switch {
+		case unclassified:
+			p.unclassifiedTaskCalls.set(toolUseID, start)
+		case !isResume && !reannounced:
+			// Write-once: the FIRST tool_use a local_agent task binds to
+			// is the agent's transcript root, and a resume rebind must
+			// never move it.
 			p.rememberTaskTranscriptRoot(taskID, toolUseID)
 		}
-		p.noteMirrorTaskScope(taskID, toolUseID, true)
+		if !isResume {
+			p.noteMirrorTaskScope(taskID, toolUseID, true)
+		}
 	} else if ownedBackgroundTaskStarted(raw) {
 		p.rememberOwnedBackgroundTask(taskID, toolUseID)
 	}
@@ -908,25 +916,6 @@ func (p *Parser) parseTaskStartedEvent(
 		p.markLiveAgentTask(toolUseID)
 	}
 
-	if isResume {
-		// Route this tool_use through the SAME is_background
-		// mechanism run_in_background launches use (parser.go
-		// markBackground/isBackground) — with the wire-backed origin:
-		// unlike an input flag, which the result must confirm, this
-		// rebind IS the wire saying the task runs under this id, so
-		// the ack classifies on it alone. The async-ack path then
-		// emits this tool_use's EventToolComplete with
-		// is_background:true, and triage's keep-running flip
-		// (tool_lifecycle.go) makes it the resumed round's
-		// background carrier — the row that keeps
-		// ListRunningBackgroundToolCalls non-empty (reaper
-		// protection) while the resumed agent runs quiet. Wire
-		// order guarantees this works: assistant tool_use ->
-		// task_started (here) -> tool_result ack. See
-		// claude-wire.md §E6.
-		p.markBackground(toolUseID, backgroundFromTaskStarted)
-	}
-
 	// Re-emit an EventToolStart carrying task_id so triage can
 	// persist the task_id ↔ tool_use_id mapping into items.meta.
 	// On reconnect with a fresh in-memory parser, a later
@@ -943,56 +932,87 @@ func (p *Parser) parseTaskStartedEvent(
 	if taskRef.ParentToolUseID != "" {
 		metaFields["parent_tool_use_id"] = taskRef.ParentToolUseID
 	}
+	var events []provider.ProviderEvent
+	var prompt *provider.ProviderEvent
 	if isResume {
-		// resumes_tool_use_id + description + subagent_type tie the
-		// carrier back to the agent it's resuming — triage's
-		// keep-running flip uses them to rewrite the carrier's Summary
-		// to the agent-centric form ("Agent: <description>") instead
-		// of "SendMessage: …", and the frontend renders the carrier
-		// row with the ORIGINAL agent's identity (type + description)
-		// instead of the resuming tool's raw input. description and
-		// subagent_type come straight off the wire envelope, so both
-		// survive the reconnect edge where resumesToolUseID is
-		// unknown. Only stamped on the resume path so a normal
-		// launch's meta-update never gains unrelated identity fields.
-		if resumesToolUseID != "" {
-			metaFields["resumes_tool_use_id"] = resumesToolUseID
-		}
-		if desc := readRawString(raw["description"]); desc != "" {
-			metaFields["description"] = desc
-		}
-		if agentType := firstNonEmpty(readRawString(raw["subagent_type"]), readRawString(raw["subagentType"])); agentType != "" {
-			metaFields["subagent_type"] = agentType
-		}
-		// transcript_root_id names the row the resumed agent's rows are
-		// STILL parented to. The lifecycle rebinds onto the carrier but
-		// the conversation tree does not move (claude-wire.md §E6), so
-		// triage stamps this on the carrier and treats the root as the
-		// only transcript scope. Omitted when this parser never saw the
-		// original binding; triage then falls back to
-		// resumes_tool_use_id and the persisted items.meta.task_id.
-		if root := p.taskTranscriptRoot(taskID); root != "" && root != toolUseID {
-			metaFields["transcript_root_id"] = root
-		}
+		var resumeFields map[string]any
+		resumeFields, prompt, events = p.beginTaskResume(threadID, toolUseID, resumesToolUseID, start, now)
+		maps.Copy(metaFields, resumeFields)
 	}
 	meta, _ := json.Marshal(metaFields)
-	events := []provider.ProviderEvent{{
+	events = append(events, provider.ProviderEvent{
 		Kind:            provider.EventToolStart,
 		ThreadID:        threadID,
 		ItemID:          toolUseID,
 		Meta:            meta,
 		ParentToolUseID: taskRef.ParentToolUseID,
 		Timestamp:       now,
-	}}
-	if isResume {
-		if prompt := resumePromptEvent(threadID, toolUseID, p.taskTranscriptRoot(taskID), readRawString(raw["prompt"]), now); prompt != nil {
-			events = append(events, *prompt)
-		}
+	})
+	if prompt != nil {
+		events = append(events, *prompt)
 	}
-	if reannounced && len(ExtractAllTaskNotificationFields(readRawString(raw["prompt"]))) > 0 {
+	if reannounced && len(ExtractAllTaskNotificationFields(start.prompt)) > 0 {
 		events = append(events, p.parseTaskWakeEvent(threadID, taskID, raw, now)...)
 	}
 	return events, nil
+}
+
+// beginTaskResume records a §E6 resume of start.taskID onto carrier: the
+// resuming call's own tool_use, which the task now runs under. It returns
+// the meta fields that tie the carrier to the agent it resumes, the row
+// for the message that resumed it, and any events from closing the
+// agent's earlier mirror projection.
+//
+// The carrier is routed through the SAME is_background mechanism
+// run_in_background launches use (markBackground/isBackground), with the
+// wire-backed origin: unlike an input flag, which the result must
+// confirm, the rebind IS the wire saying the task runs under this id, so
+// the ack classifies on it alone. The ack's EventToolComplete then
+// carries is_background:true, and triage's keep-running flip
+// (tool_lifecycle.go) makes it the resumed round's background carrier:
+// the row that keeps ListRunningBackgroundToolCalls non-empty (reaper
+// protection) while the resumed agent runs quiet. The ack always follows
+// this rebind: on stdout by wire order, and in the session mirror because
+// the call's result is written when it returns (claude-wire.md §E6).
+func (p *Parser) beginTaskResume(threadID, carrier, resumesToolUseID string, start agentTaskStart, now time.Time) (map[string]any, *provider.ProviderEvent, []provider.ProviderEvent) {
+	p.markBackground(carrier, backgroundFromTaskStarted)
+	// transcript_root_id names the row the resumed agent's rows are
+	// STILL parented to. The lifecycle rebinds onto the carrier but the
+	// conversation tree does not move (claude-wire.md §E6), so triage
+	// stamps this on the carrier and treats the root as the only
+	// transcript scope. Unknown when neither this parser nor the
+	// thread's history saw the launch; triage then falls back to the
+	// persisted items.meta.task_id.
+	root := p.resolveTaskTranscriptRoot(start.taskID)
+	if resumesToolUseID == "" {
+		resumesToolUseID = root
+	}
+	closed := p.resumeMirrorTask(threadID, start.taskID, root)
+
+	// resumes_tool_use_id + description + subagent_type tie the carrier
+	// back to the agent it's resuming — triage's keep-running flip uses
+	// them to rewrite the carrier's Summary to the agent-centric form
+	// ("Agent: <description>") instead of "SendMessage: …", and the
+	// frontend renders the carrier row with the ORIGINAL agent's
+	// identity (type + description) instead of the resuming tool's raw
+	// input. description and subagent_type come straight off the wire
+	// envelope, so both survive when the launch is unknown. Only stamped
+	// on a resume so a normal launch's meta-update never gains unrelated
+	// identity fields.
+	fields := map[string]any{}
+	if resumesToolUseID != "" && resumesToolUseID != carrier {
+		fields["resumes_tool_use_id"] = resumesToolUseID
+	}
+	if start.description != "" {
+		fields["description"] = start.description
+	}
+	if start.subagentType != "" {
+		fields["subagent_type"] = start.subagentType
+	}
+	if root != "" && root != carrier {
+		fields["transcript_root_id"] = root
+	}
+	return fields, resumePromptEvent(threadID, carrier, root, start.prompt, now), closed
 }
 
 // parseTaskWakeEvent handles a parked async agent being WOKEN
@@ -1426,6 +1446,14 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 		UUID:            readRawString(raw["uuid"]),
 	}
 	fields.Usage, fields.UsageSet = readTaskUsage(raw["usage"])
+	// A forked Skill's run ends with this notification alone, no
+	// task_updated (claude-wire.md §E9), so a terminal status releases the
+	// liveness flag as the task_updated terminal does: a depth-2 fork's
+	// result carries no tool_use_result and would otherwise read as an ack.
+	if terminal := NormalizeTaskTerminalStatus(fields.Status); terminal != "" {
+		p.clearLiveAgentTask(firstNonEmpty(fields.ToolUseID, p.taskToolUseRef(taskID).ToolUseID))
+		p.noteMirroredForkTerminal(taskID, terminal)
+	}
 	events := p.finishMirroredTask(threadID, taskID, false)
 	return append(events, p.buildBackgroundTaskNotificationEvent(threadID, fields, now)), nil
 }

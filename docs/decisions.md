@@ -296,6 +296,12 @@ Mechanism in
   way. Agent thread requests, their cancels and workflow takeovers are
   not gated. Wire facts:
   [claude-wire.md §Background task ownership](references/claude-wire.md#background-task-ownership).
+- A forked skill is an awaited agent with a different label. Its card has
+  no Stop and no background action; its agent pane's Stop ends the fork
+  alone (the main turn goes on after a fork the model launched, and a
+  typed command's turn ends with its fork); the turn's Stop ends
+  everything (ruling 2026-10-14). The CLI refuses to background a fork
+  ([claude-wire.md §E9](references/claude-wire.md#e9-forked-skill-skill-tool-context-fork)).
 - Pre-existing dangling Codex child rows in old fork threads are left inert
   on purpose (`internal/store/AGENTS.md`).
 
