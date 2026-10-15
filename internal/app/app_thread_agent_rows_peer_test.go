@@ -554,12 +554,15 @@ func TestThreadAgentPeerRefreshesDoNotQueueBehindAStalledComputer(t *testing.T) 
 	other := pair.spawn
 	other.Token, other.TargetComputerID = "other-computer", uuid.NewString()
 	// Only the queue's bounds are under test: no second computer is paired.
+	// Held, the call it starts stays running for the check.
+	a.threadAgentPeers.recording.Lock()
 	a.refreshPairedPeerAgentRows(other, 0)
 	a.threadAgentPeers.mu.Lock()
-	waiting := a.threadAgentPeers.queued[other.Token]
+	started := a.threadAgentPeers.running[other.Token]
 	a.threadAgentPeers.mu.Unlock()
-	if waiting {
-		t.Fatal("another computer's spawn waits behind a stalled computer")
+	a.threadAgentPeers.recording.Unlock()
+	if !started {
+		t.Fatal("another computer's spawn did not start beside a stalled computer")
 	}
 
 	// The two calls time out; the computer backs off, so the seven still
@@ -1058,5 +1061,36 @@ func TestThreadAgentRowsAskNothingOfAComputerNoLongerPaired(t *testing.T) {
 	a.threadRequestsWG.Wait()
 	if got := peer.calls.Load(); got != calls {
 		t.Fatalf("the computer no longer paired was asked %d times", got-calls)
+	}
+}
+
+// A computer forgotten while answers to it land, at offsets across the
+// call, keeps nothing: no open work there, no answer, nothing queued.
+func TestThreadAgentRowsForgetRacingAnswersKeepsNothing(t *testing.T) {
+	t.Parallel()
+	for round := range 12 {
+		var peer *stalledAgentsPeer
+		pair := newAgentPeerPair(t, serveSlowAgentsPeer(&peer, time.Duration(5+round*3)*time.Millisecond))
+		a := pair.source
+		a.threadRequestsWG.Wait()
+		a.refreshPeerAgentRows(pair.spawn, 0)
+		a.refreshPeerAgentRows(pair.spawn, 0)
+		time.Sleep(time.Duration(round*3) * time.Millisecond)
+		if err := a.RemoveBackend(pair.computer, true); err != nil {
+			t.Fatal(err)
+		}
+		a.threadRequestsWG.Wait()
+		row, _, err := a.store.GetThreadRequest(pair.spawn.Token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, cached := a.cachedPeerAgentRows(pair.spawn)
+		c := &a.threadAgentPeers
+		c.mu.Lock()
+		queue := len(c.waiting) + len(c.again) + len(c.running)
+		c.mu.Unlock()
+		if row.NestedOpen || cached || queue != 0 {
+			t.Errorf("round %d: nested_open=%v cached=%v queue=%d after the forget", round, row.NestedOpen, cached, queue)
+		}
 	}
 }
