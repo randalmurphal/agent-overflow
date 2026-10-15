@@ -376,6 +376,12 @@ export const Create = {
 // RegisterQueueItem's answers by every frame of the channel, including one
 // for a thread that moved away, which can carry a loss announcement.
 const SUBSCRIBER_OWNERSHIP_CHANNELS: ReadonlySet<string> = new Set(['provider:sends_pending']);
+// Channels that are not thread-scoped runtime events although their rows
+// name a thread. A thread:transfer row is one computer's record of a
+// handoff, and both computers report on the thread it moves: the source's
+// last rows arrive after the destination owns the thread. Its subscriber
+// keys rows by the delivering computer instead.
+const OWNER_INDEPENDENT_CHANNELS: ReadonlySet<string> = new Set(['thread:transfer']);
 
 export const Events = {
   On(
@@ -387,7 +393,7 @@ export const Events = {
       // Row ownership events use id/thread.id and are admitted separately so a
       // newer owner can introduce itself before its runtime events arrive.
       const threadId = (data as { threadId?: unknown } | null)?.threadId;
-      if (typeof threadId === 'string' && !SUBSCRIBER_OWNERSHIP_CHANNELS.has(name)
+      if (typeof threadId === 'string' && !SUBSCRIBER_OWNERSHIP_CHANNELS.has(name) && !OWNER_INDEPENDENT_CHANNELS.has(name)
         && !currentThreadEvent(threadId, backendKeyForOrigin(transport.origin.backendId))) return;
       handler({ name, data: safeRepositoryMetadata(data), origin: transport.origin, sequence, replayed });
     });

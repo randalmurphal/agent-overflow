@@ -1594,12 +1594,12 @@ test.describe('a standing agent copied or moved to another computer', () => {
             { timeout: 40_000, intervals: [250] },
           )
           .toBe('complete');
-        // A move follows the copy. The menu opens a new form only once the
-        // page's own copy of this row is complete; until then it reopens
-        // this transfer's status.
-        if (kind === 'copy') {
-          await expect(dialog.getByTestId('conversation-transfer-status').getByRole('status')).toHaveText(/^Copied to /);
-        }
+        // The page's own copy of the row completes too, the source's last row
+        // landing after the destination owns the thread. A move follows the
+        // copy, and the menu opens a new form only once that row is
+        // complete; until then it reopens this transfer's status.
+        await expect(dialog.getByTestId('conversation-transfer-status').getByRole('status'))
+          .toHaveText(kind === 'copy' ? /^Copied to / : /^Moved to /);
         await dialog.getByRole('button', { name: 'Close', exact: true }).click();
         return result!;
       };
