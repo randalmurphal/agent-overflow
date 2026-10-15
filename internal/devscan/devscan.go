@@ -259,7 +259,7 @@ func (s *Scanner) Scan(ctx context.Context, owners []Owner, allowed []int) ([]De
 
 	schemes := s.probePorts(ctx, rows, allowedSet)
 
-	servers := make([]DevServer, 0, len(rows)+len(allowed))
+	servers := make([]DevServer, 0, len(rows))
 	for port, row := range rows {
 		_, handNamed := allowedSet[port]
 		switch {

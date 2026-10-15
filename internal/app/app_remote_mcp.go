@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -154,10 +155,8 @@ func withRemoteMCPClaudeEnv(env map[string]string) map[string]string {
 	if _, set := env[claudeMCPAutoBackgroundEnvVar]; set {
 		return env
 	}
-	out := make(map[string]string, len(env)+1)
-	for key, value := range env {
-		out[key] = value
-	}
+	out := make(map[string]string, len(env))
+	maps.Copy(out, env)
 	out[claudeMCPAutoBackgroundEnvVar] = strconv.FormatInt(remoteMCPCallCeiling.Milliseconds(), 10)
 	return out
 }
