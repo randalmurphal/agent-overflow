@@ -263,6 +263,16 @@ func TestBuildEnvironmentRemovesInheritedProviderHomeAndAppliesOverride(t *testi
 	}
 }
 
+// The override names join the removal list in a copy: a caller's unset
+// slice with spare capacity keeps its bytes past the names it passed.
+func TestBuildEnvironmentLeavesTheCallersUnsetSliceAlone(t *testing.T) {
+	backing := []string{"CODEX_HOME", "KEEP_ME"}
+	BuildEnvironment(map[string]string{"AGENT_OVERFLOW_ENV_TEST": "override"}, backing[:1]...)
+	if backing[1] != "KEEP_ME" {
+		t.Fatalf("caller's unset slice = %q, want its second entry untouched", backing)
+	}
+}
+
 // TestProviderEnvironmentAppliesTheAppImageScrub pins the integration with
 // internal/appimage at both env entry points, including the one place the
 // mount could re-enter after the scrub: BuildEnvironment's additive PATH

@@ -33,7 +33,7 @@ func (installer appTransferInstaller) Discard(ctx context.Context, row store.Thr
 		return nil
 	}
 	var manifest transferManifest
-	if err := readTransferJSON(filepath.Join(directory, "extracted", "manifest.json"), transferManifestLimit, &manifest); errors.Is(err, os.ErrNotExist) {
+	if err := readTransferJSON(filepath.Join(directory, "extracted"), "manifest.json", transferManifestLimit, &manifest); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
 		return err
@@ -66,7 +66,7 @@ func (installer appTransferInstaller) Prepare(ctx context.Context, row store.Thr
 		return nil, errors.New("The destination transfer settings are unreadable.")
 	}
 	var manifest transferManifest
-	if err := readTransferJSON(filepath.Join(stage, "manifest.json"), transferManifestLimit, &manifest); err != nil {
+	if err := readTransferJSON(stage, "manifest.json", transferManifestLimit, &manifest); err != nil {
 		return nil, err
 	}
 	if manifest.Version != transferManifestVersion {
@@ -456,12 +456,20 @@ func validateTransferredHistory(ctx context.Context, stage string, target store.
 	return destination.CheckTransferHistoryConflicts(ctx, db, target.ID)
 }
 
-func readTransferJSON(filename string, limit int64, value any) error {
-	file, err := os.Open(filename)
+// readTransferJSON reads name inside directory through an os.Root, so a
+// name that is a link out of the transfer directory is refused rather than
+// followed.
+func readTransferJSON(directory, name string, limit int64, value any) (err error) {
+	root, err := os.OpenRoot(directory)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { err = errors.Join(err, root.Close()) }()
+	file, err := root.Open(name)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return err
