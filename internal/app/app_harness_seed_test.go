@@ -302,6 +302,51 @@ cleanup: manual
 	}
 }
 
+// Reset holds the workflow engine for its sweep in memory, not through the
+// persisted pause, whose settings write is an fsync (harnessHost.
+// HoldWorkflowStarts). Clearing a pause a spec left persisted is the workflow
+// seed test's half.
+func TestHarnessResetHoldsWorkflowsWithoutWritingSettings(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "agent-overflow")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bus := transport.NewEventBus(128)
+	app.SetEventBus(bus)
+	t.Cleanup(bus.Close)
+	if err := app.initWorkflowEngine(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.workflowApplication().Engine().Close() })
+	h := NewHarness(app, HarnessPaths{DataRoot: root, DataDir: dataDir})
+
+	// The file exists before the reset, so an untouched one keeps its inode;
+	// every settings write replaces it through a rename.
+	if _, err := app.settings.SetWorkflowPaused(false); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(app.settings.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.HarnessReset(); err != nil {
+		t.Fatalf("HarnessReset: %v", err)
+	}
+	after, err := os.Stat(app.settings.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("HarnessReset rewrote settings.json to hold the workflow engine")
+	}
+	if state, err := app.WorkflowGetEngineState(); err != nil || state.Paused {
+		t.Fatalf("engine state after reset = %+v, %v, want unpaused", state, err)
+	}
+}
+
 func TestHarnessResetCancelsRunningAndHeldRuns(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)

@@ -71,7 +71,11 @@ type Host interface {
 	ResolveProjectWorkflow(projectID, workflowID string) error
 	StartWorkflowRun(projectID, workflowID, goal string, seeds json.RawMessage, stepMode bool) (store.WorkItem, error)
 	SubscribeEvents() (*transport.Subscriber, error)
-	SetWorkflowGlobalPause(paused bool) error
+	// HoldWorkflowStarts pauses the workflow engine in memory only, for the
+	// span of a reset. ReleaseWorkflowStarts unpauses it and clears a pause
+	// a spec persisted; the settings file is written only in that case.
+	HoldWorkflowStarts() error
+	ReleaseWorkflowStarts() error
 	CancelWorkflowItem(context.Context, string) error
 	SyncWorkflowEngine() error
 	PublishStoreIdentity(store.Identity)

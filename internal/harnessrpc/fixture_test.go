@@ -180,7 +180,8 @@ func (h *testHost) StartWorkflowRun(string, string, string, json.RawMessage, boo
 func (h *testHost) SubscribeEvents() (*transport.Subscriber, error) {
 	return nil, fmt.Errorf("event bus unavailable")
 }
-func (h *testHost) SetWorkflowGlobalPause(bool) error                { return nil }
+func (h *testHost) HoldWorkflowStarts() error                        { return nil }
+func (h *testHost) ReleaseWorkflowStarts() error                     { return nil }
 func (h *testHost) CancelWorkflowItem(context.Context, string) error { return nil }
 func (h *testHost) SyncWorkflowEngine() error                        { return nil }
 func (h *testHost) PublishStoreIdentity(identity store.Identity)     { h.published = &identity }
