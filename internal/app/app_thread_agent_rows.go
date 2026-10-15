@@ -186,12 +186,17 @@ func (a *App) ListThreadAgentRows(ctx context.Context, threadID string) (ThreadA
 }
 
 // ThreadRequestState is one request a thread made as the ledger holds it:
-// its state, and the caller's timeline row that delivered its answer once the
-// provider confirmed that row, whether or not any pane has it loaded.
+// its state, the caller's timeline row that delivered its answer once the
+// provider confirmed that row, whether or not any pane has it loaded, and
+// whether the answer has reached the caller at all.
 type ThreadRequestState struct {
 	Token      string `json:"token"`
 	State      string `json:"state"`
 	WakeItemID string `json:"wakeItemId,omitempty"`
+	// Answered is set once the answer reached the caller: in its confirmed
+	// wake row, or in the reply of a call that collected it (a thread_status
+	// or a listing), which is the delivery and leaves no wake row.
+	Answered bool `json:"answered"`
 }
 
 // maxThreadRequestStates bounds one GetThreadRequestStates read.
@@ -220,7 +225,11 @@ func (a *App) GetThreadRequestStates(threadID string, tokens []string) ([]Thread
 		if !found || row.CallerThreadID != threadID {
 			continue
 		}
-		out = append(out, ThreadRequestState{Token: token, State: row.State, WakeItemID: a.threadAgentWakeItem(row)})
+		wake := a.threadAgentWakeItem(row)
+		out = append(out, ThreadRequestState{
+			Token: token, State: row.State, WakeItemID: wake,
+			Answered: wake != "" || threadRequestDeliveredInline(row),
+		})
 	}
 	return out, nil
 }
@@ -591,6 +600,13 @@ func clipLine(text string) string {
 		return text + "…"
 	}
 	return text
+}
+
+// threadRequestDeliveredInline reports that a call's reply carried the
+// request's answer to the caller (requestState, claimInlineDelivery). The mark
+// is written once that reply is, so no wake row follows it.
+func threadRequestDeliveredInline(row store.ThreadRequest) bool {
+	return row.DeliveredHow == store.ThreadWakeInline && row.DeliveredAt != 0
 }
 
 // threadAgentWakeItem is the caller's timeline row that delivered a

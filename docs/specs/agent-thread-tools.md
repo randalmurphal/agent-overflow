@@ -1152,10 +1152,13 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
   prefix that names none or several stays text.
 - A spawn, send or ask that returned before its answer follows the
   request: the target thread's state (an ask: waiting on the answer) until
-  the answer's wake row (the user row carrying the request's token, joined
-  or not) lands, then "answer arrived". The request ledger says whether
-  it has (`GetThreadRequestStates`: the confirmed wake row, loaded in the
-  pane or not, however long ago it settled), read for the rows' tokens
+  the answer reaches the caller, then "answer arrived". It reaches it in
+  its wake row (the user row carrying the request's token, joined or not)
+  or in the reply of a `thread_status` or listing that collected it, which
+  leaves no wake row. The request ledger says whether it has
+  (`GetThreadRequestStates` `answered`: the confirmed wake row, loaded in
+  the pane or not, however long ago it settled, or the recorded inline
+  delivery), read for the rows' tokens
   and again on each `thread:agent_rows_changed` frame naming one. A
   mounted row keeps its token's answer cached. A token the ledger does
   not know, a request from before it, falls back to the answer rows the

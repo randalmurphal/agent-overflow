@@ -67,7 +67,7 @@ function replyWith(data: string) {
  */
 function ledger(wakes: Record<string, string>) {
   const read = vi.fn(async (threadId: string, tokens: string[]) =>
-    tokens.filter((token) => threadId === THREAD && token in wakes).map((token) => ({ token, state: 'finished', wakeItemId: wakes[token] })),
+    tokens.filter((token) => threadId === THREAD && token in wakes).map((token) => ({ token, state: 'finished', wakeItemId: wakes[token], answered: wakes[token] !== '' })),
   );
   setBindingMock('GetThreadRequestStates', read);
   return read;

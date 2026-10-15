@@ -6841,13 +6841,21 @@ export class ThreadRecurringJob {
 
 /**
  * ThreadRequestState is one request a thread made as the ledger holds it:
- * its state, and the caller's timeline row that delivered its answer once the
- * provider confirmed that row, whether or not any pane has it loaded.
+ * its state, the caller's timeline row that delivered its answer once the
+ * provider confirmed that row, whether or not any pane has it loaded, and
+ * whether the answer has reached the caller at all.
  */
 export class ThreadRequestState {
     "token": string;
     "state": string;
     "wakeItemId"?: string;
+
+    /**
+     * Answered is set once the answer reached the caller: in its confirmed
+     * wake row, or in the reply of a call that collected it (a thread_status
+     * or a listing), which is the delivery and leaves no wake row.
+     */
+    "answered": boolean;
 
     /** Creates a new ThreadRequestState instance. */
     constructor($$source: Partial<ThreadRequestState> = {}) {
@@ -6856,6 +6864,9 @@ export class ThreadRequestState {
         }
         if (!("state" in $$source)) {
             this["state"] = "";
+        }
+        if (!("answered" in $$source)) {
+            this["answered"] = false;
         }
 
         Object.assign(this, $$source);

@@ -452,8 +452,8 @@ func TestThreadRequestStatesNameTheConfirmedWake(t *testing.T) {
 		return got
 	}
 	for _, state := range states() {
-		if state.WakeItemID != "" {
-			t.Fatalf("an unconfirmed wake is named: %+v", state)
+		if state.WakeItemID != "" || state.Answered {
+			t.Fatalf("an unconfirmed wake is named or read as the answer: %+v", state)
 		}
 	}
 	wireID, _ := envelope["uuid"].(string)
@@ -470,7 +470,7 @@ func TestThreadRequestStatesNameTheConfirmedWake(t *testing.T) {
 		t.Fatalf("states = %+v; want the two requests the thread made", got)
 	}
 	for _, state := range got {
-		if state.WakeItemID != wake.ID || state.State != store.ThreadRequestFinished {
+		if state.WakeItemID != wake.ID || !state.Answered || state.State != store.ThreadRequestFinished {
 			t.Fatalf("state = %+v; want finished, answered in the joined wake %q", state, wake.ID)
 		}
 	}
@@ -479,6 +479,46 @@ func TestThreadRequestStatesNameTheConfirmedWake(t *testing.T) {
 	}
 	if _, err := f.app.GetThreadRequestStates(f.caller.ID, make([]string, maxThreadRequestStates+1)); err == nil {
 		t.Fatal("an oversized read was answered")
+	}
+}
+
+// An answer a status reply carried is the delivery and leaves no wake row:
+// the ledger reads it answered once that reply is written, and not while it
+// is on its way or when it never reached the model.
+func TestThreadRequestStatesReadAnAnswerAStatusReplyCarried(t *testing.T) {
+	t.Parallel()
+	for _, written := range []bool{true, false} {
+		t.Run(map[bool]string{true: "written", false: "dropped"}[written], func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			token := f.settledAnswerOwingAWake(t)
+			state := func() ThreadRequestState {
+				t.Helper()
+				got, err := f.app.GetThreadRequestStates(f.caller.ID, []string{token})
+				if err != nil || len(got) != 1 {
+					t.Fatalf("GetThreadRequestStates = %+v, %v; want the one request", got, err)
+				}
+				return got[0]
+			}
+			if got := state(); got.Answered {
+				t.Fatalf("state = %+v; an answer nothing delivered reads answered", got)
+			}
+
+			ctx, pending := withThreadToolsPending(t.Context())
+			report, err := f.adapter().RequestStates(ctx, f.callerIdentity(), threadtools.StatusCall{Tokens: []string{token}})
+			if err != nil || report.Requests[0].Delivered != store.ThreadWakeInline {
+				t.Fatalf("RequestStates = %+v, %v; want the answer carried inline", report, err)
+			}
+			if got := state(); got.Answered {
+				t.Fatalf("state = %+v; the reply carrying the answer is still on its way", got)
+			}
+			pending.run(written)
+
+			got := state()
+			if got.Answered != written || got.WakeItemID != "" || got.State != store.ThreadRequestFinished {
+				t.Fatalf("state = %+v; want finished, answered %v, no wake row", got, written)
+			}
+		})
 	}
 }
 
