@@ -211,7 +211,7 @@ async function loadPRConflicts(
       baseLabel: String(result.baseLabel ?? `origin/${revision.baseRef}`),
       headLabel: String(result.headLabel ?? headRefName),
       paths: result.conflicted ? [...(result.paths ?? [])] : [],
-      notes: result.conflicted ? { ...(result.notes ?? {}) } : {},
+      notes: result.conflicted ? { ...result.notes } : {},
       messages: result.conflicted ? [...(result.messages ?? [])] : [],
       revision,
     };
@@ -347,6 +347,6 @@ export function dropPRConflicts(key: string): void {
 
 /** Test seam: drop every entry and permit, as a fresh module load would. */
 export function __resetPRConflictsForTest(): void {
-  for (const entry of [...conflictsByKey.values()]) dropPRConflicts(entry.prKey);
+  for (const entry of conflictsByKey.values()) dropPRConflicts(entry.prKey);
   viewHolds.clear();
 }
