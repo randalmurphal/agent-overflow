@@ -26,6 +26,10 @@ it('protects both controls and holds the row height across sprites, widths and l
     id: `background-${i}`, threadId: pane.threadId!, kind: 'tool_call', toolName: 'Bash',
     status: 'running', isBackground: true, summary: 'sleep 30',
   })));
+  setBindingMock('ListThreadAgentRows', async () => ({ hidden: false, rows: Array.from({ length: 3 }, (_, i) => ({
+    token: `agent-${i}`, callerThreadId: pane.threadId!, kind: 'spawn', threadId: `agent-thread-${i}`,
+    title: `Agent ${i}`, provider: 'claude', state: 'running', createdAt: Date.now(), depth: 0,
+  })) }));
   setBindingMock('GetUsageStats', async () => [new UsageBucket({
     bucket: '', outputTokens: 30800, costUsd: 5.49, turnCount: 1, unpricedRows: 0,
   })]);
@@ -37,12 +41,15 @@ it('protects both controls and holds the row height across sprites, widths and l
   const view = render(ActivityRailHost, { target, props: { pane } });
   try {
     await view.findByTestId('activity-rail-background-toggle');
+    await view.findByTestId('activity-rail-agents-toggle');
     let usage = await view.findByTestId('usage-chip-trigger');
     const row = view.getByTestId('activity-rail').querySelector<HTMLElement>('[data-activity-rail-row]')!;
     const todos = view.getByTestId('activity-rail-todos-toggle');
     const background = view.getByTestId('activity-rail-background-toggle');
+    const agents = view.getByTestId('activity-rail-agents-toggle');
     expect(todos.querySelector('.lucide-list-todo')).not.toBeNull();
     expect(background.querySelector('.lucide-send-to-back')).not.toBeNull();
+    expect(agents.querySelector('.lucide-users-round')).not.toBeNull();
     for (const compact of [false, true, false]) {
       setCompactLayoutForTest(compact);
       updateFrontendPreferences({ spinnerAnimationsEnabled: false });
@@ -61,7 +68,7 @@ it('protects both controls and holds the row height across sprites, widths and l
           await waitFor(() => {
             expect(row.querySelector('.working-sprite')).toHaveAttribute('data-sprite-id', sprite.id);
             expect(row.scrollWidth, `${compact}/${width}/${sprite.id}`).toBeLessThanOrEqual(row.clientWidth + 1);
-            for (const control of [todos, background]) {
+            for (const control of [todos, background, agents]) {
               expect(control.scrollWidth, `${width}/${sprite.id} control`).toBeLessThanOrEqual(control.clientWidth + 1);
             }
             expect(row.getBoundingClientRect().height).toBeCloseTo(height, 1);
@@ -70,7 +77,7 @@ it('protects both controls and holds the row height across sprites, widths and l
             const art = row.querySelector<HTMLElement>('.working-sprite')!;
             expect(art.getBoundingClientRect().width).toBeLessThanOrEqual(32);
             expect(usage.textContent?.trim()).toBe('30.8k');
-            const rects = [view.getByTestId('activity-rail-working'), todos, background, usage].map(el => el.getBoundingClientRect());
+            const rects = [view.getByTestId('activity-rail-working'), todos, background, agents, usage].map(el => el.getBoundingClientRect());
             for (let i = 1; i < rects.length; i++) expect(rects[i].left).toBeGreaterThanOrEqual(rects[i - 1].right);
           }
         }
@@ -84,6 +91,8 @@ it('protects both controls and holds the row height across sprites, widths and l
     expect(todos).toHaveAttribute('aria-expanded', 'true');
     await fireEvent.click(background);
     expect(background).toHaveAttribute('aria-expanded', 'true');
+    await fireEvent.click(agents);
+    expect(agents).toHaveAttribute('aria-expanded', 'true');
     setCompactLayoutForTest(true);
     usage = await view.findByTestId('usage-chip-trigger');
     await fireEvent.click(usage);

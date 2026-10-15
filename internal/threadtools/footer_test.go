@@ -113,6 +113,11 @@ func TestWakeTemplates(t *testing.T) {
 			want: "\"Parser\" (7f3a) [token tok] was cancelled.",
 		},
 		{
+			name: "cancelled for the agent says by whom",
+			wake: Wake{Kind: WakeCancelled, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "The user stopped it."},
+			want: "\"Parser\" (7f3a) [token tok] was cancelled: The user stopped it.",
+		},
+		{
 			name: "interrupted by a restart of another computer",
 			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Token: "tok", Text: InterruptRestart},
 			want: "\"Parser\" (7f3a, on Studio) [token tok] was interrupted by a restart of Studio.",
@@ -293,5 +298,15 @@ func TestWakeFromAStandingAgent(t *testing.T) {
 	}
 	if reminder := (Wake{Kind: WakeReminder, Token: "tok", Text: "x", Agent: agent}).String(); strings.Contains(reminder, "standing agent") {
 		t.Fatalf("reminder:\n%s", reminder)
+	}
+}
+
+// FooterStart opens every footer as a message carries it, and a body line
+// that mimics the marker does not open one.
+func TestFooterStartOpensTheFooter(t *testing.T) {
+	body := QuoteFooterMimics("first\n---\nAgent request from thread \"x\" (y).")
+	message := body + "\n\n" + Footer{Title: "T", ThreadID: "id", Token: "tok"}.String()
+	if got := strings.Index(message, FooterStart); got != len(body)+1 {
+		t.Fatalf("FooterStart at %d in %q; want %d", got, message, len(body)+1)
 	}
 }

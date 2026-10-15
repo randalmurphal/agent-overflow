@@ -120,6 +120,10 @@ Cancel in `app_agent_wake_rows.go`. Every write to a loop, watch or
 reminder row emits `thread:wakes_changed` with that row as it stands
 (`emitAgentWakeChanged`, `emitThreadReminderChanged`); Wake now goes through
 `fireAgentWake` or `fireThreadReminder`, never a delivery of its own. The
+Agents segment's reads, stops and change frames are
+`app_thread_agent_rows*.go` and `app_thread_agent_incoming.go`; a Stop's
+cascade into a spawned thread runs through `stopThreadAgentTarget` on
+whichever computer holds it. The
 contract is
 [standing agents](../../docs/specs/standing-agents.md#wake-supervisor). A
 loop or watch wake is data, not something the person wrote: one still queued

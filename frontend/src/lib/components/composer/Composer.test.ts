@@ -80,6 +80,7 @@ function installDraftMocks() {
   mockAttachmentDownload();
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+  setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   // The composer toolbar's MCP trigger holds the pane's MCP entity for as
   // long as it is mounted, so every composer render lists once.
@@ -2482,6 +2483,7 @@ describe('<Composer>', () => {
     // itself looks identical whether or not a turn is running.
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+    setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
     const pane = await buildPane();
     const draft = await buildDraft();
 
@@ -2530,6 +2532,7 @@ describe('<Composer>', () => {
     // the card.
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+    setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
     const pane = await buildPane();
     pane.setLiveTodo([{ step: 'one', status: 'inProgress' }]);
     const draft = await buildDraft();
@@ -2615,6 +2618,7 @@ describe('<Composer>', () => {
     try {
       setBindingMock('ListLiveBackgroundTasks', async () => []);
       setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+      setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
       const draft = await buildDraft();
       const sent = await buildPane(makeTestThread());
       setBindingMock('GetUsageStats', async () => [new UsageBucket({

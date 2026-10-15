@@ -1492,6 +1492,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get activityRailBackgroundOpen() {
       return liveTodoState.activityRailBackgroundOpen;
     },
+    get activityRailAgentsOpen() {
+      return liveTodoState.activityRailAgentsOpen;
+    },
     get activityRailInputCollapsed() {
       return liveTodoState.activityRailInputCollapsed;
     },
@@ -1504,6 +1507,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     /** Toggle the Background accordion body inside the activity rail. */
     toggleActivityRailBackground(): void {
       liveTodoState.toggleActivityRailBackground(thread?.id ?? null);
+    },
+
+    /** Toggle the Agents accordion body inside the activity rail. */
+    toggleActivityRailAgents(): void {
+      liveTodoState.toggleActivityRailAgents(thread?.id ?? null);
     },
 
     /** Open or close the Background accordion body; a no-op when it already is. */

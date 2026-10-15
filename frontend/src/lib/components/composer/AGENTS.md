@@ -45,6 +45,12 @@ focused pane. The thread's loops, watches and reminders are tray rows too
 (`activityRailWakes.svelte.ts`, `WakeTrayRow.svelte`), counted in the toggle
 with the other background work.
 
+The threads a thread is waiting on, and the agent messages queued for it,
+are the rail's Agents segment (`activityRailAgents.svelte.ts`,
+`ActivityRailAgentsBody.svelte`), apart from Background: Background's Stop
+All never touches it, and its own Stop cascades through the backend
+([Agents segment](../../../../../docs/specs/standing-agents.md#agents-segment)).
+
 Use the stepped working indicator. Do not add a continuously animated spinner.
 
 The workspace strip resolves from the pane's `WorkspaceRef` and mounts only in

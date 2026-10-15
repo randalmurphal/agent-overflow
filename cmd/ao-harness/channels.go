@@ -106,6 +106,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ThreadTitleGeneration,
 		eventchan.ThreadUpdated,
 		eventchan.ThreadWakesChanged,
+		eventchan.ThreadAgentRowsChanged,
 		eventchan.ThreadTransfer,
 		eventchan.UpdaterDownloadStarted,
 		eventchan.UpdaterError,

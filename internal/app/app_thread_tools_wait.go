@@ -125,8 +125,11 @@ func (a *App) threadRequestSettleLock(token string) func() {
 // dropped, or the request settled after the reply was rendered.
 func (a *App) beginRequestWait(ctx context.Context, threadID string, keys []string) (context.Context, <-chan string, func()) {
 	waitCtx, woke, end := a.beginWait(ctx, threadRequestWait{threadID: threadID}, keys)
+	// A send or ask is an Agents row while its caller waits on it.
+	a.noteThreadAgentWait(keys)
 	return waitCtx, woke, func() {
 		end()
+		a.noteThreadAgentWait(keys)
 		a.nudgeThreadRequestSweep()
 	}
 }
@@ -474,6 +477,7 @@ func (a *App) noteRemoteRequestBlocked(token string, blocked bool) {
 	}
 	a.threadRequests.mu.Lock()
 	changed := blocked && !a.threadRequests.blocked[token]
+	flipped := a.threadRequests.blocked[token] != blocked
 	if a.threadRequests.blocked == nil {
 		a.threadRequests.blocked = make(map[string]bool)
 	}
@@ -481,6 +485,10 @@ func (a *App) noteRemoteRequestBlocked(token string, blocked bool) {
 	a.threadRequests.mu.Unlock()
 	if changed {
 		a.wakeRequestWaits(token)
+	}
+	if flipped {
+		// The Agents row shows the reading: the request is blocked or not.
+		a.noteThreadRequestChanged(store.ThreadRequestChange{Token: token})
 	}
 }
 

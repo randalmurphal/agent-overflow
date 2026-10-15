@@ -278,15 +278,6 @@ func firstLineOf(text string) string {
 	return ""
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func nonEmpty(values ...string) []string {
 	var out []string
 	for _, value := range values {

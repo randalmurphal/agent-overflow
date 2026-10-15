@@ -86,6 +86,9 @@ type Store struct {
 	groups groupCommit
 	// holdersReleased is the function OnHoldersReleased set, or nil.
 	holdersReleased atomic.Pointer[func()]
+	// threadRequestChanged is the function OnThreadRequestChanged set, or
+	// nil.
+	threadRequestChanged atomic.Pointer[func(ThreadRequestChange)]
 }
 
 // Options configures NewWithOptions.

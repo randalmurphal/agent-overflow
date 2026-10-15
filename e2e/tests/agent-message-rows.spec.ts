@@ -401,5 +401,10 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(groups).toHaveCount(2);
     await expect(groups.nth(0)).toHaveAttribute('label', 'Lead: Agent request 0.');
     await expect(groups.nth(1)).toHaveAttribute('label', 'tidy the readme');
+    // A native select's open menu is drawn outside the page, so the shot
+    // lists the groups in place.
+    const select = review.getByTestId('review-edit-select');
+    await select.evaluate((el: HTMLSelectElement) => { el.size = 6; });
+    await captureAgentMessage(page, `${provider}-edits-selector.png`, select);
   });
 }

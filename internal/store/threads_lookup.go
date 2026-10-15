@@ -206,19 +206,25 @@ var threadLastMessageSQL = func() string {
 	})
 	return `WITH page(id, turn) AS MATERIALIZED (
 		  SELECT ids.value, (SELECT MAX(turn_index) FROM turns WHERE turns.thread_id = ids.value)
-		    FROM json_each(?) AS ids
+		    FROM json_each(?1) AS ids
 		)
 		SELECT page.id,
 		       (SELECT json_object('kind', last.kind, 'agent', last.agent, 'at', last.at,
-		                           'tail', substr(last.summary, -` + strconv.Itoa(threadLastMessageTailRunes) + `),
-		                           'clipped', length(last.summary) > ` + strconv.Itoa(threadLastMessageTailRunes) + `)
-		          FROM (` + arms + `) AS last)
+		                           'tail', substr(last.body, -` + strconv.Itoa(threadLastMessageTailRunes) + `),
+		                           'clipped', length(last.body) > ` + strconv.Itoa(threadLastMessageTailRunes) + `)
+		          FROM (SELECT message.kind AS kind, message.agent AS agent, message.at AS at,
+		                       CASE WHEN ?2 <> '' AND instr(message.summary, ?2) > 0
+		                            THEN rtrim(substr(message.summary, 1, instr(message.summary, ?2) - 1), char(10))
+		                            ELSE message.summary END AS body
+		                  FROM (` + arms + `) AS message) AS last)
 		  FROM page`
 }()
 
 // ListThreadLastMessages reads the latest-turn message of each thread in one
-// statement, keyed by thread id. A thread with none is absent.
-func (s *Store) ListThreadLastMessages(threadIDs []string) (map[string]ThreadLastMessage, error) {
+// statement, keyed by thread id. A thread with none is absent. A non-empty
+// cutAt ends each text before its first occurrence, before the tail is
+// taken.
+func (s *Store) ListThreadLastMessages(threadIDs []string, cutAt string) (map[string]ThreadLastMessage, error) {
 	out := make(map[string]ThreadLastMessage, len(threadIDs))
 	if len(threadIDs) == 0 {
 		return out, nil
@@ -227,7 +233,7 @@ func (s *Store) ListThreadLastMessages(threadIDs []string) (map[string]ThreadLas
 	if err != nil {
 		return nil, fmt.Errorf("store: encode thread ids for last messages: %w", err)
 	}
-	rows, err := s.reader().Query(threadLastMessageSQL, string(ids))
+	rows, err := s.reader().Query(threadLastMessageSQL, string(ids), cutAt)
 	if err != nil {
 		return nil, fmt.Errorf("store: list thread last messages: %w", err)
 	}

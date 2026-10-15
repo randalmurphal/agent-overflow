@@ -291,6 +291,13 @@ Mechanism in
   reaches the sender as the person's Stop, never as a restart (ruling
   2026-10-14). Mechanism:
   [how agent messages appear](specs/agent-thread-tools.md#how-agent-messages-appear).
+- Requests to other threads and agent messages queued for a thread list
+  in the activity rail's Agents segment, apart from Background, with a
+  user Stop that keeps the caller's wake armed and cascades into what a
+  spawned thread runs on any computer; incoming agent messages list
+  there instead of the composer's queue (standing agents
+  rulings 20 and 21,
+  [Agents segment](specs/standing-agents.md#agents-segment)).
 
 ## Providers and accounts
 

@@ -590,7 +590,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     const states = itemExpansionKeysByState.get(itemId);
     if (!states) return;
     for (const keys of states.values()) {
-      for (const key of [...keys]) {
+      for (const key of Array.from(keys)) {
         disposeExpansionKey(key);
       }
     }
@@ -601,7 +601,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       payloadExpansionRegistryKey(threadId, payloadId),
     );
     if (!keys) return;
-    for (const key of [...keys]) disposeExpansionKey(key);
+    for (const key of Array.from(keys)) disposeExpansionKey(key);
   }
 
   function disposeItems(items: Iterable<Item>): void {
@@ -719,10 +719,10 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   }
 
   function clear(): void {
-    for (const key of [...expansionStates.keys()]) {
+    for (const key of Array.from(expansionStates.keys())) {
       disposeExpansionKey(key);
     }
-    for (const key of [...leasedPrunedExpansionStates.keys()]) {
+    for (const key of Array.from(leasedPrunedExpansionStates.keys())) {
       disposeExpansionKey(key);
     }
     expansionStates.clear();

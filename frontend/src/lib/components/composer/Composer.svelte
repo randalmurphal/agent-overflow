@@ -1019,6 +1019,7 @@
         {pane}
         bg={activityRail.bg}
         wakes={activityRail.wakes}
+        agents={activityRail.agents}
         clock={activityRail.clock}
         usage={activityRail.usage}
         inputRequest={hasUserInputPrompt ? activeUserInput : null}

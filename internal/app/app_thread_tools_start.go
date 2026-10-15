@@ -507,7 +507,7 @@ func (t threadToolsApp) acceptRequest(
 	}
 	if !origin.foreign {
 		// No title: a thread on this computer is named from its own row.
-		if _, err := t.app.store.SetThreadRequestTarget(token, "", target, ""); err != nil {
+		if _, err := t.app.store.SetThreadRequestTarget(token, "", target, "", ""); err != nil {
 			return "", false, err
 		}
 		if created && kind == store.ThreadRequestSpawn {

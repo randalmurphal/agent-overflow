@@ -158,6 +158,7 @@ import { applySubagentProgress, clearSubagentProgressForThread } from './subagen
 import type { BackgroundTrayEvent, SubagentProgressEvent } from '../types/events';
 import { applyBackgroundTrayEvent } from './eventsBackgroundTray';
 import { applyThreadWakesChanged, type ThreadWakeChange } from './eventsThreadWakes';
+import { applyThreadAgentRowsChanged, type ThreadAgentRowChange } from './eventsThreadAgentRows';
 import {
   applyProviderCommands,
   type ProviderCommandsPayload,
@@ -541,6 +542,12 @@ export function setupEventListeners(): () => void {
     'thread:wakes_changed',
     (evt, origin) => applyThreadWakesChanged(evt, backendKeyForOrigin(origin.backendId)),
   );
+  // thread:agent_rows_changed: one request a thread made of another thread
+  // changed, with the row as it stands (eventsThreadAgentRows.ts).
+  const cancelThreadAgentRows = wailsEventOn<Partial<ThreadAgentRowChange>>(
+    'thread:agent_rows_changed',
+    (evt, origin) => applyThreadAgentRowsChanged(evt, backendKeyForOrigin(origin.backendId)),
+  );
 
   // provider:commands — the CLI's own list of slash commands it will execute
   // without an API call. Restated wholesale on every session init and every
@@ -814,6 +821,7 @@ export function setupEventListeners(): () => void {
     cancelSubagentProgress();
     cancelBackgroundTray();
     cancelThreadWakes();
+    cancelThreadAgentRows();
     cancelCodexAgentsReset();
     cancelProviderCommands();
     cancelUserMessageReverted();

@@ -304,6 +304,10 @@ const (
 	// ThreadWakesChanged carries one changed loop, watch or reminder: its
 	// thread, its id, and the row as it stands or that it was removed.
 	ThreadWakesChanged Channel = "thread:wakes_changed"
+	// ThreadAgentRowsChanged carries one changed request a thread made of
+	// another thread: its caller, its token, and the row as it stands or
+	// that it is no longer an agent.
+	ThreadAgentRowsChanged Channel = "thread:agent_rows_changed"
 )
 
 // updater:* — the self-update lifecycle. Six of these are bridged from

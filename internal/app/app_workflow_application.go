@@ -12,6 +12,8 @@ import (
 	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflowapp"
+
+	"github.com/google/uuid"
 )
 
 func (a *App) workflowApplication() *workflowapp.Service {
@@ -133,16 +135,7 @@ func (a *App) workflowApplication() *workflowapp.Service {
 					return live
 				},
 				// A run's wake is the workflow's report, not the person's.
-				QueueMessage: func(threadID, workflowID, message string, onDurable func()) error {
-					_, err := a.registerQueueItem(
-						threadID, message, SendMessageOptions{},
-						injectedQueueOptions{
-							preserveDraft: true, onDurable: onDurable,
-							origin: usermessage.OriginAgentWake, originWake: workflowWakeOrigin(workflowID),
-						},
-					)
-					return err
-				},
+				QueueMessage: a.queueWorkflowWake,
 				SendMessage: func(threadID, workflowID, message string) error {
 					_, err := a.sendMessageWithOptions(
 						context.Background(), threadID, message, sendMessageOptions{
@@ -328,6 +321,23 @@ func projectWorkflowWatch(value workflowapp.WatchResult) WorkflowAgentWatchResul
 		})
 	}
 	return out
+}
+
+// workflowWakeSendIDRoot opens a workflow run's queued wake's send id, so
+// its incoming row is withdrawn by send id as every other message the app
+// queues for an agent is.
+const workflowWakeSendIDRoot = "workflow-wake:"
+
+// queueWorkflowWake queues a run's wake for the thread's agent.
+func (a *App) queueWorkflowWake(threadID, workflowID, message string, onDurable func()) error {
+	_, err := a.registerQueueItem(
+		threadID, message, SendMessageOptions{SendID: workflowWakeSendIDRoot + uuid.NewString()},
+		injectedQueueOptions{
+			preserveDraft: true, onDurable: onDurable,
+			origin: usermessage.OriginAgentWake, originWake: workflowWakeOrigin(workflowID),
+		},
+	)
+	return err
 }
 
 // workflowWakeOrigin attributes a run's wake to its workflow.

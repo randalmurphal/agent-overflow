@@ -1366,6 +1366,22 @@ var channelPolicies = []ChannelPolicy{
 			"different rows each carry state the others do not.",
 	},
 	{
+		Channel:   eventchan.ThreadAgentRowsChanged,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
+		Why: "{threadId,id?,row?,removed?}: one spawn, send or ask a thread " +
+			"made of another thread changed (written, settled, re-targeted, " +
+			"waited on, delivered) or its target's turn, prompt, title or " +
+			"latest activity changed, with the row as it stands; no id is " +
+			"every request of the thread. Scope threads:read because " +
+			"ListThreadAgentRows, the pull half, carries it. NOT " +
+			"EntityFiltered: a pane lists the rows of threads its own " +
+			"thread spawned, which no pane may be watching. Never " +
+			"latest-only: the frames of different requests each carry " +
+			"state the others do not.",
+	},
+	{
 		Channel:   eventchan.ThreadGroupUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

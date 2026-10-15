@@ -726,7 +726,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		"tok-spawn-lineage": {"", "t-child"}, "tok-spawn-gone": {"", "t-deleted"}, "tok-spawn-remote": {"laptop", "t-child"},
 	} {
 		seedThreadRequest(t, s, token, "t-caller", ThreadRequestSpawn, 100)
-		if _, err := s.SetThreadRequestTarget(token, target[0], target[1], ""); err != nil {
+		if _, err := s.SetThreadRequestTarget(token, target[0], target[1], "", ""); err != nil {
 			t.Fatalf("target %s: %v", token, err)
 		}
 		settle(token, 200)
@@ -754,6 +754,10 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	}
 	if !owesWake() {
 		t.Fatal("the lineage row owes no wake before the sweep")
+	}
+	// And the Agents columns a remote answer writes.
+	if _, err := s.db.Exec(`UPDATE thread_requests SET nested_open = 1, target_provider = 'codex' WHERE token = ?`, "tok-spawn-lineage"); err != nil {
+		t.Fatal(err)
 	}
 	// A reminder armed past the floor. No ceiling: next week is a valid
 	// reminder, and so is next month.
@@ -822,7 +826,7 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		t.Errorf("the kept spawn row is not marked lineage-only: %+v", lineage)
 	}
 	if len(lineage.Answer) != 0 || lineage.AnswerKind != "" || len(lineage.LateReply) != 0 || lineage.LateReplyAt != 0 || lineage.Notify ||
-		lineage.AnswerAgent != nil {
+		lineage.AnswerAgent != nil || lineage.NestedOpen || lineage.TargetProvider != "" {
 		t.Errorf("lineage row past the floor = answer %q kind %q late reply %q at %d notify %v agent %+v; want its payload cleared",
 			lineage.Answer, lineage.AnswerKind, lineage.LateReply, lineage.LateReplyAt, lineage.Notify, lineage.AnswerAgent)
 	}
@@ -1080,7 +1084,7 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 	mustCreateThread(t, s, "t-caller")
 	seedThreadRequest(t, s, "tok-target", "t-caller", ThreadRequestAsk, 100)
 
-	set, err := s.SetThreadRequestTarget("tok-target", "", "t-scratch-fork", "")
+	set, err := s.SetThreadRequestTarget("tok-target", "", "t-scratch-fork", "", "")
 	if err != nil || !set {
 		t.Fatalf("set target: set=%v err=%v", set, err)
 	}
@@ -1094,7 +1098,7 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 	if _, err := s.AdvanceThreadRequestState("tok-target", ThreadRequestUnconfirmed, ThreadRequestRunning); err != nil {
 		t.Fatalf("advance state: %v", err)
 	}
-	set, err = s.SetThreadRequestTarget("tok-target", "backend-2", "t-moved", "Release notes")
+	set, err = s.SetThreadRequestTarget("tok-target", "backend-2", "t-moved", "Release notes", "codex")
 	if err != nil || !set {
 		t.Fatalf("repoint target: set=%v err=%v", set, err)
 	}
@@ -1104,8 +1108,15 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 	}
 	// The answering thread is on another computer, so its name has no local
 	// row to read after a restart. The dispatch records it here instead.
-	if row.TargetThreadTitle != "Release notes" {
-		t.Fatalf("target title = %q", row.TargetThreadTitle)
+	if row.TargetThreadTitle != "Release notes" || row.TargetProvider != "codex" {
+		t.Fatalf("target title %q provider %q", row.TargetThreadTitle, row.TargetProvider)
+	}
+	// The provider alone changing is a change.
+	if set, err := s.SetThreadRequestTarget("tok-target", "backend-2", "t-moved", "Release notes", "claude"); err != nil || !set {
+		t.Fatalf("provider change: set=%v err=%v", set, err)
+	}
+	if row := mustGetThreadRequest(t, s, "tok-target"); row.TargetProvider != "claude" {
+		t.Fatalf("target provider = %q, want claude", row.TargetProvider)
 	}
 	// It is now a remote request, so the poller must see it.
 	polls, err := s.DueThreadRequestPolls(nowMillis(), 10)
@@ -1116,7 +1127,7 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 		t.Fatalf("due polls = %+v", polls)
 	}
 
-	set, err = s.SetThreadRequestTarget("tok-unknown", "backend-2", "t-moved", "")
+	set, err = s.SetThreadRequestTarget("tok-unknown", "backend-2", "t-moved", "", "")
 	if err != nil || set {
 		t.Fatalf("unknown token: set=%v err=%v", set, err)
 	}

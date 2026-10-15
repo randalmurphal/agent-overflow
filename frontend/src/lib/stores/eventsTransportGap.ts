@@ -1,5 +1,6 @@
 import { refreshAsyncQuestions } from './asyncQuestions.svelte';
 import { applyThreadWakesGap } from './eventsThreadWakes';
+import { applyThreadAgentRowsGap } from './eventsThreadAgentRows';
 import { refreshTimelineSurfaces } from './timelineSurfaces';
 import type { EventOrigin } from '../transport/handle';
 import { backendKeyForOrigin } from '../transport/backends';
@@ -181,6 +182,10 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // A lost frame could have named any thread's row, so every tray on
       // that computer reads its list again; nothing else renders it.
       applyThreadWakesGap(backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
+    case 'thread:agent_rows_changed':
+      // The same for the Agents rows: any pane's list may have missed it.
+      applyThreadAgentRowsGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'backend:attach':
     case 'backend:set-changed':

@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 )
 
 // threadToolsApp implements threadtools.App over this process's store,
@@ -188,13 +189,18 @@ func (t threadToolsApp) LiveState(_ context.Context, threadID string) (threadtoo
 	if t.app.triage == nil {
 		return threadtools.LiveState{}, nil
 	}
-	snapshot := t.app.triage.LiveStateSnapshotForThread(threadID)
+	return threadToolsLiveState(t.app.triage.LiveStateSnapshotForThread(threadID)), nil
+}
+
+// threadToolsLiveState projects one live snapshot, for a reader that also
+// wants the snapshot's prompts.
+func threadToolsLiveState(snapshot triage.LiveStateSnapshot) threadtools.LiveState {
 	return threadtools.LiveState{
 		ActiveTurn:        snapshot.ActiveTurn != nil,
 		PendingSends:      len(snapshot.QueueItems)+len(snapshot.FlushedItems)+len(snapshot.DeferredItems) > 0,
 		PendingApprovals:  len(snapshot.Interactive.Approvals),
 		PendingUserInputs: len(snapshot.Interactive.UserInputs),
-	}, nil
+	}
 }
 
 // ResolveThreadRef matches a full id or a prefix against this computer's
@@ -509,7 +515,7 @@ func (t threadToolsApp) attachLastMessages(rows []threadtools.Hit) error {
 			ids = append(ids, row.Thread.ID)
 		}
 	}
-	messages, err := t.app.store.ListThreadLastMessages(ids)
+	messages, err := t.app.store.ListThreadLastMessages(ids, "")
 	if err != nil {
 		return err
 	}

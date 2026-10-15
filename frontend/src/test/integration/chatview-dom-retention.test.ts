@@ -88,6 +88,7 @@ async function buildPane(thread: Thread, paneId: string, items: Item[] = []) {
   setBindingMock('SwitchThread', async () => thread);
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+  setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('CountRunningBackgroundTasks', async () => 0);
   setBindingMock('GetGitStatus', async () => ({

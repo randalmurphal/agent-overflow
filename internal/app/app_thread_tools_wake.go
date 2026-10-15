@@ -430,7 +430,9 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 	case row.State == store.ThreadRequestErrored, row.State == store.ThreadRequestRefused:
 		wake.Kind, wake.Text = threadtools.WakeErrored, string(row.Answer)
 	case row.State == store.ThreadRequestCancelled:
-		wake.Kind = threadtools.WakeCancelled
+		// A cancel the agent made itself disarms the wake; one that still
+		// owes it was made for the agent, and the answer says by whom.
+		wake.Kind, wake.Text = threadtools.WakeCancelled, string(row.Answer)
 	case row.State == store.ThreadRequestInterrupted && row.AnswerKind == store.ThreadAnswerFinal:
 		// A person's Stop: the answer is what the turn said before it
 		// (turnSettlement).
