@@ -206,19 +206,13 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
           await expect(dialog.getByTestId('conversation-transfer-status').or(dialog.getByRole('alert'))).toBeVisible();
           await page.screenshot({ path: info.outputPath(`transfer-recurring-job-${kind}-started.png`) });
           await expect(dialog.getByRole('alert')).toHaveCount(0);
-          let result: Transfer | undefined;
-          await expect.poll(async () => {
-            result = (await source.rpc<Transfer[]>('GetThreadTransfers')).find((value) => value.threadId === sourceThread && value.kind === kind);
-            if (result?.phase === 'complete') return 'complete';
-            const recipient = (await destination.rpc<Transfer[]>('GetThreadTransfers')).find((value) => value.id === result?.id);
-            return result?.error || recipient?.error || result?.phase;
-          }, { timeout: 40_000, intervals: [250] }).toBe('complete');
+          const result = await expectTransferComplete(source, destination, sourceThread, kind);
           expect(exits(mockId!), 'the source session holding the job still runs').toBe(1);
           // Soft, so a run that keeps the job still records the move.
           await expect.configure({ soft: true }).poll(recurringJobs, { message: `the source still lists the job its ${kind} ended` }).toEqual([]);
           if (kind === 'copy') {
             // Name the copy distinctly so the next menu still names the source.
-            await destination.rpc('RenameThread', result!.targetThreadId, 'Looping Claude copy');
+            await destination.rpc('RenameThread', result.targetThreadId, 'Looping Claude copy');
             await dialog.getByRole('button', { name: 'Close', exact: true }).click();
           }
         }
