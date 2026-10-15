@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/agenthome"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
@@ -32,6 +34,64 @@ import (
 //
 //ao:scope threads:autonomy
 func (a *App) StartNextAssistantThread(ctx context.Context, threadID string) (store.Thread, error) {
+	return a.nextAssistantThread(ctx, threadID, false)
+}
+
+// errAssistantSessionGone is a start of an assistant's current thread whose
+// provider session the provider itself cleaned up: Claude's transcript file
+// is gone, or Codex refuses thread/resume with no rollout. The start fails
+// with it and the assistant continues in a new thread
+// (recoverAssistantSessionLoss).
+var errAssistantSessionGone = errors.New("the provider no longer has this assistant's session, so the assistant continues in a new thread")
+
+// requireAssistantClaudeSession refuses a Claude or Claude TUI resume of an
+// assistant's current thread whose transcript is gone, before the start
+// tears anything down. Codex has no file to look for; its thread/resume
+// refusal is the signal (startSessionNow).
+func (a *App) requireAssistantClaudeSession(t store.Thread, opts provider.SessionOptions) error {
+	if opts.Resume == "" || opts.ForkSession || (t.Provider != string(provider.Claude) && t.Provider != string(provider.ClaudeTUI)) {
+		return nil
+	}
+	if _, found, err := a.store.GetStandingAgent(t.ID); err != nil || !found {
+		return err
+	}
+	projectsDir, err := a.claudeProjectsDir()
+	if err != nil {
+		return err
+	}
+	if _, err := sessionfork.LocateSessionFile(projectsDir, opts.Resume, opts.WorkDir); errors.Is(err, sessionfork.ErrSessionFileNotFound) {
+		return errors.Join(errAssistantSessionGone, err)
+	}
+	return nil
+}
+
+// recoverAssistantSessionLoss runs New Thread, Same Assistant for an
+// assistant whose session the provider cleaned up, off the start that found
+// it (which holds the thread's action lock), once per thread at a time. The
+// new thread's opening block says why.
+func (a *App) recoverAssistantSessionLoss(threadID string) {
+	if _, running := a.assistantSessionLoss.LoadOrStore(threadID, struct{}{}); running {
+		return
+	}
+	started := a.goAgentNoticeWork(threadID, func() {
+		defer a.assistantSessionLoss.Delete(threadID)
+		successor, err := a.nextAssistantThread(a.lifeCtx(), threadID, true)
+		if err != nil {
+			log.Printf("assistants: %s lost its provider session and could not move to a new thread: %v", threadID, err)
+			a.emitErrorToThread(threadID, "The provider cleaned up this assistant's session, and moving it to a new thread failed: "+err.Error()+". Use New Thread, Same Assistant to try again.")
+			return
+		}
+		log.Printf("assistants: %s lost its provider session; it continues in %s", threadID, successor.ID)
+	})
+	if !started {
+		a.assistantSessionLoss.Delete(threadID)
+	}
+}
+
+// nextAssistantThread is New Thread, Same Assistant; sessionLost says the
+// provider cleaned up the old thread's session, which the opening block
+// tells the assistant.
+func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionLost bool) (store.Thread, error) {
 	agent, found, err := a.store.GetStandingAgent(threadID)
 	if err != nil {
 		return store.Thread{}, err
@@ -94,6 +154,7 @@ func (a *App) StartNextAssistantThread(ctx context.Context, threadID string) (st
 		MovedWakes:       len(handOff.MovedWakeIDs),
 		MovedRequests:    handOff.MovedRequests,
 		Interrupted:      a.interruptedByHandOff(interrupted),
+		SessionLost:      sessionLost,
 	})
 	if err := a.queueAssistantMessage(successor.ID, assistantSendID(assistantWakeKindHandOff, threadID), successor.Title, body); err != nil {
 		return successor, fmt.Errorf("the assistant moved to its new thread, but its opening block could not be queued: %w", err)

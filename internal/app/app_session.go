@@ -162,6 +162,11 @@ func (a *App) startSessionNow(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
+	// Before anything is torn down: an assistant whose Claude transcript
+	// the provider cleaned up continues in a new thread instead.
+	if err := a.requireAssistantClaudeSession(t, opts); err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
 	if err := a.stopExistingSessionLocked(threadID); err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
@@ -297,6 +302,10 @@ func (a *App) startSessionNow(threadID string) error {
 	}
 	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agentHome, onEvent)
 	if err != nil {
+		if codex.IsThreadNotFound(err) && agentHome != "" {
+			// An assistant's Codex thread the provider no longer has.
+			err = errors.Join(errAssistantSessionGone, err)
+		}
 		a.emitProviderStatusOnSessionStartError(t.Provider)
 		// The start failed for its own reason; the home file that could not
 		// be read is still news the user needs before the next attempt.

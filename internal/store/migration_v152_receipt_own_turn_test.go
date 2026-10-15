@@ -61,7 +61,8 @@ func preSyncPersonalAssistantDB(t *testing.T) string {
 	}
 	db.SetMaxOpenConns(1)
 	for _, m := range migrations {
-		if m.Version <= threadPullRequestsMigrationVersion {
+		// Later migrations postdate the sync; no pre-sync build has them.
+		if m.Version <= threadPullRequestsMigrationVersion || m.Version > receiptOwnTurnMigrationVersion {
 			continue
 		}
 		m.Version--
@@ -103,7 +104,8 @@ func TestReceiptOwnTurnRefusesAPreSyncPersonalAssistantDatabase(t *testing.T) {
 }
 
 // The repair docs/architecture/development.md gives, applied to a pre-sync
-// database, leaves one the build opens at v152 with thread_pull_requests.
+// database, leaves one at v152 with thread_pull_requests, which the build
+// opens and migrates on from.
 func TestThePreSyncRepairOpens(t *testing.T) {
 	path := preSyncPersonalAssistantDB(t)
 	db, err := sql.Open("sqlite", poolDSN(path, writerConnPragmas))
@@ -120,7 +122,7 @@ func TestThePreSyncRepairOpens(t *testing.T) {
 		t.Fatalf("New after the repair: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	if got := recordedVersion(t, path); got != receiptOwnTurnMigrationVersion {
-		t.Fatalf("recorded version = %d, want %d", got, receiptOwnTurnMigrationVersion)
+	if got, want := recordedVersion(t, path), migrations[len(migrations)-1].Version; got != want {
+		t.Fatalf("recorded version = %d, want %d", got, want)
 	}
 }

@@ -36,6 +36,12 @@ type DeletePorts struct {
 	// Forget drops the conversation's in-memory settings after its row is
 	// gone, so a delete that fails earlier keeps them.
 	Forget func(threadID string)
+	// AssistantHome runs first, for a thread that is an assistant's current
+	// thread: deleting it deletes the assistant and its home. It refuses a
+	// home it may not remove, so nothing is deleted, and otherwise returns
+	// the removal, which runs once the delete is marked. nil remove for any
+	// other thread.
+	AssistantHome func(threadID string) (remove func() error, err error)
 	// Deleted fires once the row's delete mark committed
 	// (store.BeginThreadDelete), as DeleteThread returns. From the mark on
 	// the row is gone to every read, so a delete that fails after it still
@@ -73,6 +79,12 @@ func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 		return fmt.Errorf("delete thread %s: lookup: %w", threadID, threadErr)
 	}
 	threadFound := threadErr == nil
+	var removeHome func() error
+	if ports.AssistantHome != nil {
+		if removeHome, err = ports.AssistantHome(threadID); err != nil {
+			return err
+		}
+	}
 	var spawned []string
 	if threadFound && thread.AgentID != "" {
 		if spawned, err = database.ListSpawnedThreadIDs(threadID); err != nil {
@@ -142,6 +154,13 @@ func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 	if ports.CleanupReplayLog != nil {
 		if err := ports.CleanupReplayLog(threadID); err != nil {
 			errs = append(errs, fmt.Errorf("cleanup replay log: %w", err))
+		}
+	}
+	// Before the row drops, so a failure keeps the record and the next
+	// attempt, or the boot that finishes the delete, removes the home.
+	if removeHome != nil {
+		if err := removeHome(); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	if unbound, err := database.ClearWorkItemOriginThreads(threadID); err != nil {

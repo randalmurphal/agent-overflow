@@ -353,18 +353,24 @@ assistant's done footer with the time it was superseded, and is never
 current again. Every app-written message addressed to a past thread
 (`queueAgentNotice`, the one door) is queued on its assistant's current
 thread instead, so a request, worker or run that raced the handoff never
-wakes the archived thread. A wake from a request a handoff moved says
-"Requested by your previous thread <id>." A call forwarded to a paired
+wakes the archived thread. A wake from a request a handoff moved reads
+as any other: the successor's opening block already said the answers to
+its previous thread's requests arrive here, and `thread_status` lists
+them. A call forwarded to a paired
 computer about such a request names the thread that made it as its
 source, which is the thread that computer's receipt recorded.
 
 **Deletion, archive and transfer.** Deleting an assistant's current
-thread deletes the assistant: its loops and watches go with the thread,
-and its past threads become ordinary archived threads. The confirm names
-the home folder and offers Delete, the default, which keeps the home,
-and Delete With Home, which also removes the record's home when it is
-`<configDir>/agents/<agent-id>` (anything else is refused and named, and
-the deletion stands). Deleting a past thread touches neither the record
+thread deletes the assistant and its home: its loops and watches go with
+the thread, and its past threads become ordinary archived threads. The
+one confirm, always shown, names the home folder and says it is removed
+with the assistant. The thread delete owns the removal
+(`threadapp.DeletePorts.AssistantHome`), so every path that deletes the
+thread (the sidebar, a project's delete, a delete the boot finishes)
+removes it: only `<configDir>/agents/<agent-id>` is removed, and a record
+naming any other path refuses the delete before anything stops, naming
+the folder. A removal that fails keeps the record and the delete pending
+for the next attempt. Deleting a past thread touches neither the record
 nor the home. Archiving the current thread archives the assistant: it
 cancels the loops and watches and unarchiving re-arms none. An
 unarchived past thread is listed in the fold as a child. A move of the
@@ -373,6 +379,27 @@ the record when it commits, so the conversation arrives as an ordinary
 thread and the home stays on its computer; a copy, a fork and a move of
 a past thread are ordinary threads. The transfer dialog says so before
 the user commits (`GetStandingAgent`).
+
+**Retention.** The retention sweep never removes an assistant's current
+thread or a past thread (`ThreadIDsOlderThan` skips every thread an
+`agents` or `agent_past_threads` row names); they go only with the
+assistant. The Storage settings hint says so, and that the sweep is
+Agent Overflow's own thread data only: each provider CLI cleans its own
+session files on its own settings.
+
+**Session loss.** A provider can clean up an assistant's session on its
+own (Claude's transcript cleanup, Codex's rollouts). When the current
+thread's session start finds it gone, the start fails with
+`errAssistantSessionGone` and the app runs New Thread, Same Assistant
+itself (`recoverAssistantSessionLoss`, once per thread at a time): a
+Claude or Claude TUI resume checks the transcript before anything is
+torn down (`requireAssistantClaudeSession`, `sessionfork.LocateSessionFile`,
+the check the workflow runner's resume makes), and a Codex start's
+`thread/resume` refusal (`codex.IsThreadNotFound`, the workflow runner's
+signal) marks it. The successor's opening block says the provider
+cleaned up the previous thread's session, names that thread's id, says
+Agent Overflow's history of it is intact and that its last message may
+not have reached the assistant, and asks it to tell the user.
 
 ### Agent home contents
 
@@ -549,11 +576,11 @@ new pane under the same modifier a new thread takes.
 
 Mechanics, as built:
 
-- The thread row carries the lineage: `agentId` and `agentCreatedAt` on
-  an assistant's current thread, `pastAgentId` and `agentSupersededAt`
-  on a past thread, `spawnedByThreadId` (the newest local spawn request
-  naming it) and `archivedChildCount` (an assistant's archived spawned
-  and past threads), derived in `threadColumns`, so one `thread:updated`
+- The thread row carries the lineage: `agentId` on an assistant's
+  current thread, `pastAgentId` and `agentSupersededAt` on a past
+  thread, `spawnedByThreadId` (the newest local spawn request naming
+  it) and `archivedChildCount` (an assistant's archived spawned and past
+  threads, never an assistant it created), derived in `threadColumns`, so one `thread:updated`
   frame moves the row. A spawn's accept re-broadcasts the spawned
   thread; a child's archive, unarchive and delete re-broadcast the child
   and its spawner, whose `archivedChildCount` they change; a handoff

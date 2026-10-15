@@ -2,9 +2,9 @@ package store
 
 import "testing"
 
-// A thread row names the local thread that spawned it, carries its own
-// promotion time once promoted, and, as a standing agent, counts the
-// threads it spawned that are now archived.
+// A thread row names the local thread that spawned it, carries its
+// assistant's id while it is an assistant's current thread, and, as one,
+// counts the threads it spawned that are now archived.
 func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"agent", "child-1", "child-2", "far-spawner", "far-child", "plain"} {
@@ -40,21 +40,19 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 			t.Errorf("%s spawnedBy = %q, want %q", id, got, want)
 		}
 	}
-	if got := row("agent"); got.AgentPromotedAt != nil || got.ArchivedChildCount != 0 {
-		t.Errorf("unpromoted agent row = promotedAt %v, archived children %d", got.AgentPromotedAt, got.ArchivedChildCount)
+	if got := row("agent"); got.AgentID != "" || got.ArchivedChildCount != 0 {
+		t.Errorf("ordinary row = agent %q, archived children %d", got.AgentID, got.ArchivedChildCount)
 	}
 	if row("child-1").SpawnedByAgent {
-		t.Error("a thread spawned by an unpromoted thread says it is agent-bound")
+		t.Error("a thread spawned by an ordinary thread says it is agent-bound")
 	}
 
-	if _, err := s.PromoteStandingAgent("agent", "/h/agent", 500); err != nil {
-		t.Fatal(err)
-	}
-	if got := row("agent"); got.AgentPromotedAt == nil || *got.AgentPromotedAt != 500 || got.ArchivedChildCount != 0 {
-		t.Errorf("promoted agent row = promotedAt %v, archived children %d", got.AgentPromotedAt, got.ArchivedChildCount)
+	mustCreateAssistant(t, s, "agent", "/h/agent")
+	if got := row("agent"); got.AgentID != "agent" || got.ArchivedChildCount != 0 {
+		t.Errorf("assistant row = agent %q, archived children %d", got.AgentID, got.ArchivedChildCount)
 	}
 	if !row("child-1").SpawnedByAgent || row("far-child").SpawnedByAgent {
-		t.Error("spawnedByAgent follows the local spawner's promotion")
+		t.Error("spawnedByAgent follows whether the local spawner is an assistant's")
 	}
 	// The bond holds while the agent is archived: the group refusal does.
 	if _, _, err := s.ArchiveThread("agent"); err != nil {
@@ -93,7 +91,7 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	for _, thread := range listed {
 		switch thread.ID {
 		case "agent":
-			if thread.AgentPromotedAt == nil || thread.ArchivedChildCount != 1 {
+			if thread.AgentID != "agent" || thread.ArchivedChildCount != 1 {
 				t.Errorf("listed agent row = %+v", thread)
 			}
 		case "child-2":
@@ -103,13 +101,15 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 		}
 	}
 
-	if _, err := s.DemoteStandingAgent("agent"); err != nil {
+	// Without its record (the assistant was moved away), its workers are
+	// ordinary threads again.
+	if _, err := s.db.Exec(`DELETE FROM agents WHERE thread_id = 'agent'`); err != nil {
 		t.Fatal(err)
 	}
-	if got := row("agent"); got.AgentPromotedAt != nil || got.ArchivedChildCount != 0 {
-		t.Errorf("demoted agent row = promotedAt %v, archived children %d", got.AgentPromotedAt, got.ArchivedChildCount)
+	if got := row("agent"); got.AgentID != "" || got.ArchivedChildCount != 0 {
+		t.Errorf("row without a record = agent %q, archived children %d", got.AgentID, got.ArchivedChildCount)
 	}
 	if row("child-2").SpawnedByAgent {
-		t.Error("a demoted agent's spawned thread still says it is agent-bound")
+		t.Error("a thread spawned by a thread that is no longer an assistant's still says it is agent-bound")
 	}
 }

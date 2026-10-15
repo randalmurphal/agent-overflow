@@ -238,10 +238,15 @@ Mechanism in
   requests and workers to the successor. The name is the current
   thread's title, unique per computer case-insensitively; a clash
   across paired computers shows `<name>-<computer>`, display only.
-  Deleting the current thread deletes the assistant and keeps its home
-  unless the confirm's secondary Delete With Home is chosen; deleting a
-  past thread touches neither (ruling 2026-10-15,
-  [standing agents](specs/standing-agents.md) rulings 22 to 29).
+  Deleting the current thread deletes the assistant and its home, after
+  one confirm naming the folder; a home outside
+  `<config>/agents/<agent-id>` refuses the delete. Deleting a past thread
+  touches neither. The retention sweep never removes an assistant's
+  current or past threads. A session the provider cleaned up moves the
+  assistant to a new thread on its own, its opening block naming the
+  previous thread (ruling 2026-10-15,
+  [standing agents](specs/standing-agents.md) rulings 22 to 29,
+  "Retention" and "Session loss").
 - Multi-agent discussions are removed. A thread nests under another only
   as an assistant's spawned child or past thread; every other
   thread renders flat under its project or group

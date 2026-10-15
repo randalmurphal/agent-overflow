@@ -232,6 +232,7 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 		CloseBrowserPages:  a.closeThreadBrowserPages,
 		ClearAutoReconnect: a.clearAutoReconnectAttempted,
 		CleanupAttachments: a.cleanupThreadAttachmentFiles,
+		AssistantHome:      a.assistantHomeForDelete,
 		CleanupReplayLog: func(threadID string) error {
 			if a.replay == nil {
 				return nil

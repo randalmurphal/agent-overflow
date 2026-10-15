@@ -75,20 +75,32 @@ type HandOff struct {
 	MovedWakes       int
 	MovedRequests    int64
 	Interrupted      []InterruptedRequest
+	// SessionLost says the provider cleaned up the previous thread's
+	// session, so the app moved the assistant here itself.
+	SessionLost bool
 }
 
 // HandOffMessage opens an assistant's next thread.
 func HandOffMessage(h HandOff) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are %q, a standing agent. The user replaced your previous thread %s with this one, which is now your current thread. Your home, your %s and your %s moved here, with your workers and reminders, and answers to requests your previous thread made arrive here.",
-		h.Name, h.PreviousThreadID, plural(h.MovedWakes, "loop or watch", "loops and watches"), plural64(h.MovedRequests, "request", "requests"))
+	if h.SessionLost {
+		fmt.Fprintf(&b, "You are %q, a standing agent. The provider cleaned up the session of your previous thread %s, so it could not resume, and Agent Overflow moved you to this thread, which is now your current thread. Agent Overflow's history of the previous thread is intact.", h.Name, h.PreviousThreadID)
+	} else {
+		fmt.Fprintf(&b, "You are %q, a standing agent. The user replaced your previous thread %s with this one, which is now your current thread.", h.Name, h.PreviousThreadID)
+	}
+	fmt.Fprintf(&b, " Your home, your %s and your %s moved here, with your workers and reminders, and answers to requests your previous thread made arrive here.",
+		plural(h.MovedWakes, "loop or watch", "loops and watches"), plural64(h.MovedRequests, "request", "requests"))
 	if len(h.Interrupted) > 0 {
 		b.WriteString("\n\nYour previous thread had read these requests and not answered them. Their senders were told it moved and can ask again; follow up with them yourself if the work is still yours:")
 		for _, r := range h.Interrupted {
 			fmt.Fprintf(&b, "\n- token %s from %q (%s)", r.Token, r.SenderTitle, r.SenderID)
 		}
 	}
-	fmt.Fprintf(&b, "\n\nRead your previous thread with thread_show (thread_id %s) before acting on anything it was doing, then tell the user in one short paragraph what you picked up and what you are waiting on.", h.PreviousThreadID)
+	if h.SessionLost {
+		fmt.Fprintf(&b, "\n\nThe last message to your previous thread may not have reached you. Read it with thread_show (thread_id %s) before acting on anything it was doing, then tell the user in one short paragraph that the provider cleaned up your session, what you picked up and what you are waiting on.", h.PreviousThreadID)
+	} else {
+		fmt.Fprintf(&b, "\n\nRead your previous thread with thread_show (thread_id %s) before acting on anything it was doing, then tell the user in one short paragraph what you picked up and what you are waiting on.", h.PreviousThreadID)
+	}
 	return b.String()
 }
 

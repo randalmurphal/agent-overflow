@@ -226,6 +226,9 @@ type App struct {
 	agentWakes agentWakeState
 	// agentNoticeWork joins what notices run after they are accepted.
 	agentNoticeWork appAgentNoticeWorkState
+	// assistantSessionLoss holds the threads whose session-loss handoff is
+	// running (recoverAssistantSessionLoss).
+	assistantSessionLoss sync.Map
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup

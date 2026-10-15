@@ -339,26 +339,6 @@ func TestQueueAgentWakeRefusesMoreThanAheadQueuedWakes(t *testing.T) {
 	}
 }
 
-func TestPromoteStandingAgentIsIdempotent(t *testing.T) {
-	t.Parallel()
-	s := newTestStore(t)
-	mustCreateThread(t, s, "t")
-	promotion, err := s.PromoteStandingAgent("t", "/home/t", 5)
-	row, promoted := promotion.Agent, promotion.Promoted
-	if err != nil || !promoted || row.Home != "/home/t" || row.NotifyOnTick {
-		t.Fatalf("promote: %+v %v %v", row, promoted, err)
-	}
-	if again, err := s.PromoteStandingAgent("t", "/other", 6); err != nil || again.Promoted {
-		t.Fatalf("second promote: %v %v", again.Promoted, err)
-	}
-	if demoted, err := s.DemoteStandingAgent("t"); err != nil || !demoted {
-		t.Fatalf("demote: %v %v", demoted, err)
-	}
-	if _, found, err := s.GetStandingAgent("t"); err != nil || found {
-		t.Fatalf("after demote: %v %v", found, err)
-	}
-}
-
 // A move retires its thread when it commits, and the agent row goes in the
 // same write; a copy, and a move cancelled before it commits, keep the row.
 func TestCommittedMoveDropsTheStandingAgent(t *testing.T) {
@@ -366,9 +346,7 @@ func TestCommittedMoveDropsTheStandingAgent(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"moved", "copied", "cancelled"} {
 		mustCreateThread(t, s, id)
-		if _, err := s.PromoteStandingAgent(id, "/home/"+id, 1); err != nil {
-			t.Fatal(err)
-		}
+		mustCreateAssistant(t, s, id, "/home/"+id)
 	}
 	isAgent := func(id string) bool {
 		t.Helper()
@@ -580,9 +558,7 @@ func TestSetStandingAgentNotifyOnTick(t *testing.T) {
 	if _, _, found, err := s.SetStandingAgentNotifyOnTick("t", true); err != nil || found {
 		t.Fatalf("a thread that is not a standing agent: found=%v err=%v", found, err)
 	}
-	if _, err := s.PromoteStandingAgent("t", "/h", 1); err != nil {
-		t.Fatal(err)
-	}
+	mustCreateAssistant(t, s, "t", "/h")
 	for _, step := range []struct{ on, changed bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
 		row, changed, found, err := s.SetStandingAgentNotifyOnTick("t", step.on)
 		if err != nil || !found || changed != step.changed || row.NotifyOnTick != step.on {

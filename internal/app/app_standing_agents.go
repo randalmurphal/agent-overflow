@@ -199,58 +199,45 @@ func (a *App) GetStandingAgent(threadID string) (*store.StandingAgent, error) {
 	return &row, nil
 }
 
-// DeleteAssistantWithHome deletes an assistant's current thread, which
-// deletes the assistant, and then its home: exactly the directory its record
-// names, and only when that is `<config>/agents/<agent-id>`. The deletion
-// stands when the home's does not, and the error names the folder.
-//
-//ao:scope threads:autonomy
-func (a *App) DeleteAssistantWithHome(threadID string) error {
+// assistantHomeForDelete is the thread delete's AssistantHome: deleting an
+// assistant's current thread deletes the assistant, and its home goes with
+// it. Only the directory creation makes, `<config>/agents/<agent-id>` (a
+// migrated record's id is its thread's, so its home is that too), is
+// removed; a record naming any other path refuses the delete, naming the
+// folder, and nothing is deleted.
+func (a *App) assistantHomeForDelete(threadID string) (func() error, error) {
 	agent, found, err := a.store.GetStandingAgent(threadID)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("read the assistant of %s: %w", threadID, err)
 	}
 	if !found {
-		return errNotAssistantThread
+		return nil, nil
 	}
-	if err := a.DeleteThread(threadID); err != nil {
-		return err
-	}
-	return a.deleteAssistantHome(agent)
-}
-
-// deleteAssistantHome removes a deleted assistant's home. The recorded path
-// must be the one creation makes for it, or a migrated record's
-// `<config>/agents/<thread-id>`, which is its id; any other path is refused
-// rather than deleted. A failure's innermost layer, the one a toast shows,
-// says the thread was deleted and carries no path; the layer around it
-// names the recorded home and the expected folder or where removal stopped.
-func (a *App) deleteAssistantHome(agent store.StandingAgent) error {
-	var reason error
-	at := ""
 	agents := filepath.Join(a.configDir, "agents")
 	want := filepath.Join(agents, agent.ID)
+	var reason string
 	switch {
 	case agent.Home == "":
-		reason = errors.New("its record names no home")
+		reason = "its record names no home folder"
 	case a.configDir == "":
-		reason = errors.New("no config directory")
+		reason = "the app has no config directory"
 	case filepath.Clean(agent.Home) != want || filepath.Dir(want) != agents:
-		reason = errors.New("it is not this assistant's folder in the app's agents folder")
-		at = fmt.Sprintf(" (expected %s)", want)
-	default:
-		reason = os.RemoveAll(want)
+		reason = fmt.Sprintf("it is not this assistant's folder %s", want)
 	}
-	if reason == nil {
+	if reason != "" {
+		return nil, fmt.Errorf("this assistant was not deleted: its home %q cannot be removed with it, because %s", agent.Home, reason)
+	}
+	return func() error {
+		if err := os.RemoveAll(want); err != nil {
+			at := want
+			var pathErr *fs.PathError
+			if errors.As(err, &pathErr) {
+				at, err = pathErr.Path, pathErr.Err
+			}
+			return fmt.Errorf("remove the assistant's home %q (stopped at %s): %w", want, at, err)
+		}
 		return nil
-	}
-	var pathErr *fs.PathError
-	if errors.As(reason, &pathErr) {
-		at = fmt.Sprintf(" (stopped at %s)", pathErr.Path)
-		reason = pathErr.Err
-	}
-	return fmt.Errorf("delete the assistant's home %q%s: %w", agent.Home, at,
-		fmt.Errorf("the assistant was deleted, but its home folder was not: %v", reason))
+	}, nil
 }
 
 // ListArchivedSpawnedThreads lists the archived threads an assistant's
