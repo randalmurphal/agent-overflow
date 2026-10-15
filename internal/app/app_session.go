@@ -999,7 +999,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
-		a.forgetPersonStop(threadID)
+		a.forgetPersonStop(threadID, interruptedTurn)
 		return false, interruptErr
 	}
 	if !interruptSent {
@@ -1009,7 +1009,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
-		a.forgetPersonStop(threadID)
+		a.forgetPersonStop(threadID, interruptedTurn)
 		return false, nil
 	}
 	if a.triage != nil {

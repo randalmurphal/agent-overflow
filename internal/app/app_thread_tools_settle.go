@@ -51,73 +51,101 @@ func (a *App) installThreadRequestObserver() {
 			if a.lifeCtx().Err() != nil {
 				return
 			}
+			sessionEnded := turnEndedWithItsSession(evt)
 			a.threadRequestsWG.Add(1)
 			go func() {
 				defer a.threadRequestsWG.Done()
-				a.settleReceiptsForEndedTurn(threadID)
+				a.settleReceiptsForEndedTurn(threadID, sessionEnded)
 			}()
 		})
 	})
 }
 
+// turnEndedWithItsSession reports whether a turn end is the one triage
+// writes for a turn its session took down with it: a crash, a stop or a
+// teardown (Router.synthesizeTruncatedTurnComplete).
+func turnEndedWithItsSession(evt provider.ProviderEvent) bool {
+	complete, ok := evt.TurnComplete.(*provider.TruncatedTurnCompleteMeta)
+	return ok && complete.Synthetic
+}
+
 // settleReceiptsForEndedTurn settles every receipt whose turn has now
 // completed. The in-memory gate keeps a turn end on a thread with no requests
-// to a single map read.
-func (a *App) settleReceiptsForEndedTurn(threadID string) {
+// to a single map read. sessionEnded is set when the turn ended because its
+// session did.
+func (a *App) settleReceiptsForEndedTurn(threadID string, sessionEnded bool) {
 	tokens, ok := a.runningReceiptTokens(threadID)
 	if !ok {
 		return
 	}
+	// A person's Stop mark on an ended turn goes once every receipt of that
+	// turn has settled; one that failed keeps it for the next try.
+	allSettled := map[int]bool{}
 	for _, token := range tokens {
-		if err := a.settleReceiptOnTurnEnd(threadID, token); err != nil {
+		turnIndex, err := a.settleReceiptOnTurnEnd(threadID, token, sessionEnded)
+		if err != nil {
 			log.Printf("thread tools: settle request %s on %s: %v", token, threadID, err)
+		}
+		if turnIndex < 0 {
+			continue
+		}
+		if _, seen := allSettled[turnIndex]; !seen {
+			allSettled[turnIndex] = true
+		}
+		allSettled[turnIndex] = allSettled[turnIndex] && err == nil
+	}
+	for turnIndex, settled := range allSettled {
+		if settled {
+			a.forgetPersonStop(threadID, turnIndex)
 		}
 	}
 }
 
 // settleReceiptOnTurnEnd reads what the receipt's own turn did and settles it.
+// It returns the index of the ended turn it read, or -1 when the receipt's
+// turn has not ended.
 //
 // The binding is the turn, not the event: an end of some other turn on the
 // same thread leaves this receipt's turn row unfinished and settles nothing,
 // which is what keeps a user's own turn from answering an agent's request.
-func (a *App) settleReceiptOnTurnEnd(threadID, token string) error {
+func (a *App) settleReceiptOnTurnEnd(threadID, token string, sessionEnded bool) (int, error) {
 	receipt, found, err := a.store.GetThreadRequestReceipt(token)
 	if err != nil {
-		return err
+		return -1, err
 	}
 	if !found || receipt.TargetThreadID != threadID {
 		// Gone, or bound to another thread: nothing here owns it any more.
 		a.forgetReceiptRunning(threadID, token)
-		return nil
+		return -1, nil
 	}
 	if receipt.State == store.ThreadReceiptAccepted {
 		// The dispatch has not bound its turn yet. The gate is set before
 		// the row, so dropping it here would take away the only thing
 		// watching for this receipt's turn end.
-		return nil
+		return -1, nil
 	}
 	if receipt.State != store.ThreadReceiptRunning {
 		// Replied, cancelled or settled: nothing here owns it any more.
 		a.forgetReceiptRunning(threadID, token)
-		return nil
+		return -1, nil
 	}
 	index, ok := threadRequestTurnIndex(threadID, receipt.TurnID)
 	if !ok {
-		return fmt.Errorf("receipt names turn %q, which is not a turn of this thread", receipt.TurnID)
+		return -1, fmt.Errorf("receipt names turn %q, which is not a turn of this thread", receipt.TurnID)
 	}
 	turn, found, err := a.store.GetTurnByThreadIndex(threadID, index)
 	if err != nil {
-		return err
+		return -1, err
 	}
 	if !found || turn.CompletedAt == nil {
 		// The request's own turn is still running. Some other turn ended.
-		return nil
+		return -1, nil
 	}
-	settlement, err := a.turnSettlement(threadID, turn)
+	settlement, err := a.turnSettlement(threadID, turn, sessionEnded)
 	if err != nil {
-		return err
+		return index, err
 	}
-	return a.settleThreadReceipt(token, []string{store.ThreadReceiptRunning}, settlement)
+	return index, a.settleThreadReceipt(token, []string{store.ThreadReceiptRunning}, settlement)
 }
 
 // turnSettlement maps one ended turn onto the answer its requester reads.
@@ -127,8 +155,10 @@ func (a *App) settleReceiptOnTurnEnd(threadID, token string) error {
 // `final` so the caller is never told a fallback is the answer it asked for.
 // A turn a person's Stop cut (notePersonStop) is `interrupted` with what it
 // said by then as its `final` answer, which is how the wake tells it from a
-// restart: every other interruption's answer is an `error`.
-func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequestSettlement, error) {
+// restart: every other interruption's answer is an `error` stating why
+// (threadtools.InterruptSessionEnded when sessionEnded, the turn's session
+// having ended with it).
+func (a *App) turnSettlement(threadID string, turn store.Turn, sessionEnded bool) (store.ThreadRequestSettlement, error) {
 	settledAt := time.Now().UnixMilli()
 	if turn.CompletedAt != nil {
 		settledAt = *turn.CompletedAt
@@ -146,9 +176,13 @@ func (a *App) turnSettlement(threadID string, turn store.Turn) (store.ThreadRequ
 			SettledAt:  settledAt,
 		}, nil
 	case turn.StopReason == "interrupted":
+		reason := threadtools.InterruptTurn
+		if sessionEnded {
+			reason = threadtools.InterruptSessionEnded
+		}
 		return store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptInterrupted,
-			Answer:     []byte("The turn was interrupted before it answered."),
+			Answer:     []byte(reason),
 			AnswerKind: store.ThreadAnswerError,
 			SettledAt:  settledAt,
 		}, nil

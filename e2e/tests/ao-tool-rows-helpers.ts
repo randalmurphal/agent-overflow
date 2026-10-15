@@ -179,15 +179,17 @@ export async function shootRow(row: Locator, path: string): Promise<void> {
   await page.mouse.wheel(0, -40);
   await row.evaluate((element) => element.scrollIntoView({ block: 'center' }));
   let last = '';
-  await expect.poll(async () => {
+  await expect(async () => {
     const box = await row.boundingBox();
     const viewport = page.viewportSize()!;
+    const scrollTop = await page.getByTestId('message-timeline-scroll').evaluate((el) => el.scrollTop);
     const onScreen = box !== null && box.y >= 0 && box.y + box.height <= viewport.height;
     const at = onScreen ? `${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.height)}` : '';
     const still = at !== '' && at === last;
     last = at;
-    return still;
-  }, { intervals: [150], timeout: 10_000 }).toBe(true);
+    const where = box ? `y ${Math.round(box.y)}, height ${Math.round(box.height)}` : 'no box';
+    expect(still, `row ${where} in a ${viewport.width}x${viewport.height} viewport, timeline scrollTop ${Math.round(scrollTop)}`).toBe(true);
+  }).toPass({ intervals: [150], timeout: 10_000 });
   await row.screenshot({ path, animations: 'disabled' });
 }
 

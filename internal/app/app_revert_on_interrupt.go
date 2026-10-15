@@ -128,8 +128,10 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 			return InterruptAndRevertResult{}, err
 		}
 	}
+	stoppedTurn := anyOpenTurn
 	if a.triage != nil {
-		a.notePersonStop(threadID, a.triage.OpenTurnIndex(threadID))
+		stoppedTurn = a.triage.OpenTurnIndex(threadID)
+		a.notePersonStop(threadID, stoppedTurn)
 	}
 	if !eligible {
 		// Frontend predicate disagreed (race) or queue carries
@@ -137,7 +139,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		// the user's Stop click still takes effect. The caller will
 		// undo any optimistic timeline / composer state.
 		if err := a.runPlainInterruptLocked(threadID); err != nil {
-			a.forgetPersonStop(threadID)
+			a.forgetPersonStop(threadID, stoppedTurn)
 			return InterruptAndRevertResult{Reverted: false, Reason: reason}, err
 		}
 		return InterruptAndRevertResult{Reverted: false, Reason: reason}, nil
@@ -245,7 +247,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		declined()
 		return InterruptAndRevertResult{}, err
 	}
-	a.forgetPersonStop(threadID)
+	a.forgetPersonStop(threadID, stoppedTurn)
 	a.settleNotTakenIn(threadID, []notTakenIn{owed})
 
 	cutEvent := UserMessageRevertedEvent{

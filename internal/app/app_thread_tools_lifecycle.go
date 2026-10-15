@@ -232,10 +232,7 @@ func (a *App) stopThreadRequestsForDeletedThread(ctx context.Context, threadID s
 // usual; nothing is re-addressed, because the request was made of a thread on
 // this computer and that thread is gone from it.
 func (a *App) stopThreadRequestsForMovedThread(ctx context.Context, threadID, destination string) error {
-	reason := "The thread was moved to another computer before it answered."
-	if destination != "" {
-		reason = "The thread was moved to " + destination + " before it answered."
-	}
+	reason := threadtools.InterruptMoved(destination)
 	// Loops and watches are this computer's clock and processes; they do
 	// not travel with the conversation.
 	a.cancelAgentWakesForThread(threadID, "cancelled: the thread was moved to another computer")

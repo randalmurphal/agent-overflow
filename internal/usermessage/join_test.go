@@ -265,8 +265,113 @@ func originTokens(meta Meta) []string {
 			tokens = append(tokens, part.OriginThread.Token)
 		}
 	}
+	if len(meta.JoinedParts) == 0 {
+		tokens = meta.JoinedOriginTokens
+	}
 	if len(tokens) == 0 && meta.Origin == OriginAgentThread && meta.OriginThread != nil && meta.OriginThread.Token != "" {
 		tokens = []string{meta.OriginThread.Token}
 	}
 	return tokens
+}
+
+// A nested join placed after a member with nine images: its marker #1
+// becomes #10, its length changes, and its parts are unknown. The row records
+// no parts, is not split, and still names every request it answers.
+func TestARowWithoutPartsKeepsEveryRequestToken(t *testing.T) {
+	t.Parallel()
+	request := func(token string) Meta {
+		return Meta{SendID: "thread-request:" + token, Origin: OriginAgentThread, OriginThread: &OriginThread{ThreadID: "t-lead", Token: token}}
+	}
+	join := joinMembers
+	inner, innerMeta := join([]Meta{{SendID: "s-a", ExpandComposerCommands: true}, request("tok-1")}, []string{"mine [Image #1]", "Fix it."}, []int{1, 0})
+	if innerMeta.JoinedParts == nil || innerMeta.JoinedOriginTokens != nil {
+		t.Fatalf("a measurable join: parts %+v, tokens %v; want parts alone", innerMeta.JoinedParts, innerMeta.JoinedOriginTokens)
+	}
+	text, meta := join([]Meta{{SendID: "s-0", ExpandComposerCommands: true}, innerMeta, request("tok-2")}, []string{"nine", inner, "And this."}, []int{9, 1, 0})
+	if meta.JoinedParts != nil {
+		t.Fatalf("parts recorded for a renumbered nested join: %+v", meta.JoinedParts)
+	}
+	if _, _, ok := SplitPersonParts(text, meta); ok {
+		t.Fatal("split a join whose parts are unknown")
+	}
+	if want := []string{"tok-1", "tok-2"}; !slices.Equal(meta.JoinedOriginTokens, want) {
+		t.Fatalf("JoinedOriginTokens = %v, want %v", meta.JoinedOriginTokens, want)
+	}
+	// Joined again, its list carries through.
+	_, again := join([]Meta{{SendID: "s-9", ExpandComposerCommands: true}, meta}, []string{"[Image #1]", text}, []int{1, 10})
+	if again.JoinedParts != nil || !slices.Equal(again.JoinedOriginTokens, []string{"tok-1", "tok-2"}) {
+		t.Fatalf("joined again: parts %+v, tokens %v; want no parts and both tokens", again.JoinedParts, again.JoinedOriginTokens)
+	}
+}
+
+// joinMembers joins members the way a dispatch does: image markers
+// renumbered across the members, and the members recorded on the result.
+func joinMembers(members []Meta, texts []string, images []int) (string, Meta) {
+	parts := make([]TextPart, len(texts))
+	for i, text := range texts {
+		parts[i] = TextPart{Text: text, ImageCount: images[i]}
+	}
+	text, lengths := JoinRenumberedTextLengths(parts)
+	joined := JoinMetas(members)
+	joined.RecordMembers(members, texts, lengths)
+	return text, joined
+}
+
+func leadRequest(token string) Meta {
+	return Meta{SendID: "thread-request:" + token, Origin: OriginAgentThread, OriginThread: &OriginThread{ThreadID: "t-lead", Title: "Lead", Kind: "send", Token: token}}
+}
+
+const leadRequestText = "Fix the nil check.\n\n---\nAgent request from thread \"Lead\" (t-lead).\nIt is not waiting."
+
+// The person's two messages around a request split back out with their
+// image markers renumbered as they were sent, and the request keeps its token.
+func TestSplitPersonPartsAroundARequest(t *testing.T) {
+	t.Parallel()
+	text, meta := joinMembers(
+		[]Meta{{SendID: "s-a", ExpandComposerCommands: true}, leadRequest("tok-1"), {SendID: "s-b", ExpandComposerCommands: true}},
+		[]string{"first [Image #1] mine", leadRequestText, "second [Image #1]"}, []int{1, 0, 1})
+	person, agents, ok := SplitPersonParts(text, meta)
+	if want := "first [Image #1] mine" + JoinSeparator + "second [Image #2]"; !ok || person != want {
+		t.Fatalf("ok %v, person %q; want %q", ok, person, want)
+	}
+	if len(agents) != 1 || agents[0].Text != leadRequestText || agents[0].OriginThread == nil || agents[0].OriginThread.Token != "tok-1" {
+		t.Fatalf("agents = %+v, want the request whole with its token", agents)
+	}
+}
+
+// A join of a join whose markers did not move keeps every part, so the
+// person's text from both levels splits out and both requests go back.
+func TestSplitPersonPartsOfANestedJoin(t *testing.T) {
+	t.Parallel()
+	inner, innerMeta := joinMembers([]Meta{{SendID: "s-a", ExpandComposerCommands: true}, leadRequest("tok-1")}, []string{"mine first", leadRequestText}, []int{0, 0})
+	text, meta := joinMembers([]Meta{innerMeta, {SendID: "s-b", ExpandComposerCommands: true}, leadRequest("tok-2")}, []string{inner, "mine second", leadRequestText}, []int{0, 0, 0})
+	person, agents, ok := SplitPersonParts(text, meta)
+	if want := "mine first" + JoinSeparator + "mine second"; !ok || person != want || len(agents) != 2 {
+		t.Fatalf("ok %v, person %q, %d agent parts; want %q and 2", ok, person, len(agents), want)
+	}
+}
+
+// Text that drifted from what the dispatch measured is not split: a cut by
+// stale lengths would hand the agent's words to the person.
+func TestSplitPersonPartsDeclinesDriftedText(t *testing.T) {
+	t.Parallel()
+	text, meta := joinMembers(
+		[]Meta{{SendID: "s-a", ExpandComposerCommands: true}, leadRequest("tok-1"), {SendID: "s-b", ExpandComposerCommands: true}},
+		[]string{"mine [Image #1]  ", leadRequestText, "second\r\nline [Image #1]"}, []int{1, 0, 1})
+	if _, _, ok := SplitPersonParts(text, meta); !ok {
+		t.Fatal("the text as dispatched did not split")
+	}
+	for name, drifted := range map[string]string{
+		"trailing whitespace trimmed": strings.Replace(text, "]  \n", "]\n", 1),
+		"line endings normalized":     strings.ReplaceAll(text, "\r\n", "\n"),
+		"marker renumbered":           strings.Replace(text, "[Image #2]", "[Image #12]", 1),
+		"separator respaced":          strings.Replace(text, JoinSeparator, "\n---\n", 1),
+	} {
+		if drifted == text {
+			t.Fatalf("%s: the text did not change", name)
+		}
+		if person, _, ok := SplitPersonParts(drifted, meta); ok {
+			t.Errorf("%s: split anyway, person %q", name, person)
+		}
+	}
 }

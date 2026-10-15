@@ -78,6 +78,24 @@
     "label": "Worker"
   },
   {
+    "name": "a session that ended",
+    "text": "\"Worker\" (t-worker) [token tok-1]: Its session ended before it answered.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker"
+  },
+  {
+    "name": "a move",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The thread was moved to Desk before it answered.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker"
+  },
+  {
+    "name": "a request whose thread was never created",
+    "text": "\"Worker\" (t-worker) [token tok-1]: That request was accepted but its thread was never created.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker: That request was accepted but its thread was never created."
+  },
+  {
     "name": "a reminder",
     "text": "Reminder you set [token tok-1]:\nCheck the build.",
     "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-self\",\"title\":\"Self\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
@@ -91,7 +109,7 @@
   },
   {
     "name": "two wakes joined, the first saying nothing",
-    "text": "\"A\" (t-a) [token tok-1] was interrupted by a restart of this computer.\n\n---\n\nReply from \"B\" (t-b) [token tok-2]:\ntwo",
+    "text": "\"A\" (t-a) [token tok-1]: The turn was interrupted before it answered.\n\n---\n\nReply from \"B\" (t-b) [token tok-2]:\ntwo",
     "meta": "{\"sendId\":\"thread-wake:tok-1\",\"joinedSendIds\":[\"thread-wake:tok-1\",\"thread-wake:tok-2\"],\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-a\",\"title\":\"A\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
     "label": "A"
   },

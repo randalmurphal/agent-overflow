@@ -1394,7 +1394,7 @@ func TestAPersonsStopReachesTheSenderAsThePersons(t *testing.T) {
 
 	wakeFor := func(turn store.Turn) string {
 		t.Helper()
-		settlement, err := f.app.turnSettlement(threadID, turn)
+		settlement, err := f.app.turnSettlement(threadID, turn, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1413,11 +1413,11 @@ func TestAPersonsStopReachesTheSenderAsThePersons(t *testing.T) {
 	}
 	reused := stopped
 	reused.StartedAt = started + 1
-	if body := wakeFor(reused); !strings.Contains(body, "interrupted by a restart") {
+	if body := wakeFor(reused); !strings.Contains(body, threadtools.InterruptTurn) {
 		t.Fatalf("another turn at the stopped index reaches the sender as %q", body)
 	}
 	f.app.forgetReceiptRunning(threadID, "tok-1")
-	if body := wakeFor(stopped); !strings.Contains(body, "interrupted by a restart") {
+	if body := wakeFor(stopped); !strings.Contains(body, threadtools.InterruptTurn) {
 		t.Fatalf("with the request settled, the mark should be gone; the wake reads %q", body)
 	}
 }
@@ -2941,7 +2941,7 @@ func TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem(t *testing.T) {
 	if err := f.app.store.UpdateTurnCompleted("merge-turn", time.Now().UnixMilli(), "end_turn", "", "", ""); err != nil {
 		t.Fatalf("UpdateTurnCompleted: %v", err)
 	}
-	f.app.settleReceiptsForEndedTurn(target.ID)
+	f.app.settleReceiptsForEndedTurn(target.ID, false)
 	for _, token := range []string{first.Token, second.Token} {
 		if row := f.request(t, token); row.State != store.ThreadRequestFinished {
 			t.Errorf("request %s = %q, want the shared turn to have settled it", token, row.State)

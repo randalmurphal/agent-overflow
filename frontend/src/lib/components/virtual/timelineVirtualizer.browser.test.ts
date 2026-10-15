@@ -876,14 +876,14 @@ describe('straddling-row attribution (reading anchor)', () => {
   const TALL_INDEX = 10;
   const STRADDLE_SCROLL_TOP = 1500;
 
-  function straddleRows(): HarnessRow[] {
+  function straddleRows(clipContentPx?: number): HarnessRow[] {
     return [
       ...Array.from({ length: TALL_INDEX }, (_, i) => ({
         id: `row-${i}`,
         heightPx: SHORT_PX,
         label: `Row ${i}`,
       })),
-      { id: 'tall', heightPx: TALL_PX, headPx: HEAD_PX, label: 'Tall' },
+      { id: 'tall', heightPx: TALL_PX, headPx: HEAD_PX, label: 'Tall', clipContentPx },
       ...Array.from({ length: 20 }, (_, i) => ({
         id: `row-${TALL_INDEX + 1 + i}`,
         heightPx: SHORT_PX,
@@ -892,10 +892,10 @@ describe('straddling-row attribution (reading anchor)', () => {
     ];
   }
 
-  async function mountStraddled(trackReadingAnchor?: () => boolean) {
+  async function mountStraddled(trackReadingAnchor?: () => boolean, clipContentPx?: number) {
     const compensations: EngineCompensation[] = [];
     const { harness, scrollEl } = mountHarness({
-      initialRows: straddleRows(),
+      initialRows: straddleRows(clipContentPx),
       onCompensation: (c) => compensations.push(c),
       trackReadingAnchor,
     });
@@ -976,6 +976,35 @@ describe('straddling-row attribution (reading anchor)', () => {
     await raf();
     await raf();
     await raf();
+
+    expect(compensations.reduce((sum, c) => sum + c.delta, 0)).toBe(0);
+  });
+
+  it('does not read a scroll inside the straddling row as growth above the reader', async () => {
+    // An activity run's clip scrolls in place: its content moves within the
+    // row with no scroll event on the timeline. Scrolled up (a row above
+    // brought into view), the element at the viewport top moves down inside
+    // its row; measured against the old sample, the row's next growth below
+    // the reader would be compensated as growth above it, pushing the row
+    // the reader just opened up the screen by its whole growth.
+    const { harness, scrollEl, compensations } = await mountStraddled(undefined, 2000);
+    const clip = rowEl(scrollEl, 'tall')!.querySelector<HTMLElement>('[data-row-clip]')!;
+    clip.scrollTop = 300;
+    await raf();
+    await raf();
+    // A timeline scroll samples the anchor over the scrolled clip.
+    scrollEl.scrollTop = STRADDLE_SCROLL_TOP + 1;
+    await waitForStableGeometry(scrollEl, 'resample over the clip');
+    const rect = scrollEl.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + 1);
+    expect(hit?.hasAttribute('data-clip-block')).toBe(true);
+
+    clip.scrollTop = 150;
+    await raf();
+    await raf();
+    compensations.length = 0;
+    harness.resizeRow('tall', TALL_PX + 60);
+    await waitForStableGeometry(scrollEl, 'growth below the reader');
 
     expect(compensations.reduce((sum, c) => sum + c.delta, 0)).toBe(0);
   });

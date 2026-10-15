@@ -107,7 +107,20 @@ func wakePart(wake Wake) (string, fixturePart) {
 	}
 	switch wake.Kind {
 	case WakeInterrupted:
-		part.Wake.StoppedBy = "A restart of " + restartedComputer(wake.Computer)
+		// The frontend names what stopped it, or shows a reason that names
+		// no stopper as the message.
+		switch moved, isMoved := strings.CutPrefix(wake.Text, "The thread was moved to "); {
+		case wake.Text == InterruptRestart:
+			part.Wake.StoppedBy = "a restart of " + restartedComputer(wake.Computer)
+		case wake.Text == InterruptSessionEnded:
+			part.Wake.StoppedBy = "its session ending"
+		case wake.Text == "" || wake.Text == InterruptTurn:
+			part.Wake.StoppedBy = "an interrupt"
+		case isMoved:
+			part.Wake.StoppedBy = "a move to " + strings.TrimSuffix(moved, " before it answered.")
+		default:
+			part.Body = wake.Text
+		}
 	case WakeStopped:
 		// The frontend reads both as an interrupted request, told apart by
 		// who stopped it.
@@ -174,8 +187,14 @@ func agentMessageFixtureCases() []fixtureCase {
 			Kind: WakeErrored, Title: "Worker", ThreadID: "t-work", Token: token, Text: "boom\nstack", Agent: &SenderAgent{},
 		})),
 		one("cancelled", wake(Wake{Kind: WakeCancelled, Title: "Worker", ThreadID: "t-work", Token: token})),
-		one("interrupted locally", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token})),
-		one("interrupted on another computer", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Computer: "desk", Token: token})),
+		one("interrupted by a restart locally", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptRestart})),
+		one("interrupted by a restart on another computer", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Computer: "desk", Token: token, Text: InterruptRestart})),
+		one("interrupted by its session ending", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptSessionEnded})),
+		one("interrupted by a move", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptMoved("Desk (Linux)")})),
+		one("interrupted by a move to an unknown computer", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptMoved("")})),
+		one("interrupted by something other than a person", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptTurn})),
+		one("interrupted with no reason recorded", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token})),
+		one("interrupted before its thread existed", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptNeverStarted})),
 		one("stopped by the person with its last message", wake(Wake{
 			Kind: WakeStopped, Title: "Worker", ThreadID: "t-work", Token: token, Text: "Half done.\nSecond line.",
 		})),

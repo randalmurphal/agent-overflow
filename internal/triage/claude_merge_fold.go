@@ -262,7 +262,7 @@ func joinMergedFlushContent(survivorMetaJSON string, members []mergedFlushRow) (
 	}
 	summary, lengths := usermessage.JoinRenumberedTextLengths(parts)
 	joined := usermessage.JoinMetas(metas)
-	joined.JoinedParts = usermessage.PartsOf(metas, texts, lengths)
+	joined.RecordMembers(metas, texts, lengths)
 	meta, err := usermessage.MergeJoinedMeta(survivorMetaJSON, joined)
 	if err != nil {
 		return "", "", err

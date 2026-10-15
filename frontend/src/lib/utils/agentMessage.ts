@@ -69,7 +69,10 @@ export interface WakeFacts {
   age: string;
   token: string;
   agentRole: string | null;
-  /** Who stopped an `interrupted` request: a computer's restart or the person. */
+  /**
+   * What stopped an `interrupted` request: a computer's restart, the person,
+   * its session ending, a move or another interrupt.
+   */
   stoppedBy: string;
   /** The answer was cut to the wake's preview; thread_status has the rest. */
   clipped: boolean;
@@ -294,6 +297,19 @@ export function parseRequestText(text: string): AgentMessagePart[] | null {
 const PERSON_STOPPED = ': The person stopped this turn before it answered.';
 const PERSON_STOPPED_ANSWER = ' Its last message:';
 
+/**
+ * Why a request was interrupted, the sentence its status line states after
+ * `: ` (threadtools Interrupt*): what stopped it, or for a request whose
+ * thread never existed, the sentence itself as the message.
+ */
+function interruptReason(sentence: string): { stoppedBy: string; body: string } | null {
+  if (sentence === 'Its session ended before it answered.') return { stoppedBy: 'its session ending', body: '' };
+  if (sentence === 'The turn was interrupted before it answered.') return { stoppedBy: 'an interrupt', body: '' };
+  if (sentence === 'That request was accepted but its thread was never created.') return { stoppedBy: '', body: sentence };
+  const moved = /^The thread was moved to (.+) before it answered\.$/.exec(sentence);
+  return moved ? { stoppedBy: `a move to ${moved[1]}`, body: '' } : null;
+}
+
 const WAKE_TAILS: ReadonlyArray<{ kind: WakeKind; opening: string; body: 'line' | 'next' | 'none' }> = [
   { kind: 'finished', opening: ' finished its turn without calling thread_reply. Its final message:', body: 'next' },
   { kind: 'errored', opening: ' errored: ', body: 'line' },
@@ -342,10 +358,15 @@ export function parseWakeText(text: string): AgentMessagePart | null {
       facts.agentRole = agent.role;
       after = agentNewline < 0 ? '' : after.slice(agentNewline + 1);
     }
+    const reason = !reply && rest.startsWith(': ') && after === '' ? interruptReason(rest.slice(2)) : null;
     if (reply) {
       if (rest !== ':') return null;
       facts.kind = 'reply';
       body = after;
+    } else if (reason) {
+      facts.kind = 'interrupted';
+      facts.stoppedBy = reason.stoppedBy;
+      body = reason.body;
     } else {
       const tail = WAKE_TAILS.find((candidate) => rest.startsWith(candidate.opening));
       if (!tail) return null;
@@ -357,7 +378,7 @@ export function parseWakeText(text: string): AgentMessagePart | null {
         else if (inline !== '' || after !== '') return null;
       } else if (tail.kind === 'interrupted') {
         if (!inline.endsWith('.')) return null;
-        facts.stoppedBy = `A restart of ${inline.slice(0, -1)}`;
+        facts.stoppedBy = `a restart of ${inline.slice(0, -1)}`;
       } else if (tail.body === 'line') {
         body = after === '' ? inline : `${inline}\n${after}`;
       } else if (tail.body === 'next') {
@@ -644,4 +665,18 @@ export function agentMessageFromItem(item: Pick<Item, 'kind' | 'meta' | 'summary
     return userMessageOrigin(meta) === 'agent-thread' ? fromThread(text, meta) : fromWake(text, meta);
   }
   return fromProvider(text, meta);
+}
+
+/**
+ * The agent's message a row of the person's was joined with, named as a
+ * Stop that cannot split it off says so: "Lead's request". null when the
+ * row joins no agent's message.
+ */
+export function joinedAgentMessageName(item: Pick<Item, 'kind' | 'meta' | 'summary'>): string | null {
+  const meta = parseUserMessageMeta(item.meta);
+  if (meta.expandComposerCommands !== true) return null;
+  const agent = agentMessageFromItem({ ...item, meta: JSON.stringify({ ...meta, expandComposerCommands: undefined }) });
+  if (!agent) return null;
+  const noun = agent.kind === 'spawn' || agent.kind === 'request' || agent.kind === 'question' ? 'request' : 'message';
+  return `${agent.sender}'s ${noun}`;
 }

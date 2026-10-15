@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
 
 // The unattended half of the request ledger: what runs with no tool call in
@@ -836,7 +837,7 @@ func (a *App) sweepThreadRequestsAtBoot() {
 	for _, receipt := range receipts {
 		if err := a.settleThreadReceipt(receipt.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptInterrupted,
-			Answer:     []byte("This computer restarted before the request finished."),
+			Answer:     []byte(threadtools.InterruptRestart),
 			AnswerKind: store.ThreadAnswerError,
 		}); err != nil {
 			logThreadRequestSweep("settle interrupted receipt "+receipt.Token, err)

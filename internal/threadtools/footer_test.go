@@ -114,13 +114,33 @@ func TestWakeTemplates(t *testing.T) {
 		},
 		{
 			name: "interrupted by a restart of another computer",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Token: "tok"},
+			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Token: "tok", Text: InterruptRestart},
 			want: "\"Parser\" (7f3a, on Studio) [token tok] was interrupted by a restart of Studio.",
 		},
 		{
 			name: "interrupted locally names this computer",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok"},
+			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptRestart},
 			want: "\"Parser\" (7f3a) [token tok] was interrupted by a restart of this computer.",
+		},
+		{
+			name: "interrupted by its session ending",
+			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptSessionEnded},
+			want: "\"Parser\" (7f3a) [token tok]: Its session ended before it answered.",
+		},
+		{
+			name: "interrupted by a move",
+			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptMoved("Desk")},
+			want: "\"Parser\" (7f3a) [token tok]: The thread was moved to Desk before it answered.",
+		},
+		{
+			name: "interrupted by something other than a person",
+			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptTurn},
+			want: "\"Parser\" (7f3a) [token tok]: The turn was interrupted before it answered.",
+		},
+		{
+			name: "interrupted with no reason recorded never claims a restart",
+			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok"},
+			want: "\"Parser\" (7f3a) [token tok]: The turn was interrupted before it answered.",
 		},
 		{
 			name: "stopped by the person, with its last message",

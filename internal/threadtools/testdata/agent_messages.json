@@ -252,7 +252,7 @@
     ]
   },
   {
-    "name": "interrupted locally",
+    "name": "interrupted by a restart locally",
     "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] was interrupted by a restart of this computer.",
     "parts": [
       {
@@ -266,14 +266,14 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "stoppedBy": "A restart of this computer",
+          "stoppedBy": "a restart of this computer",
           "clipped": false
         }
       }
     ]
   },
   {
-    "name": "interrupted on another computer",
+    "name": "interrupted by a restart on another computer",
     "text": "\"Worker\" (t-work, on desk) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] was interrupted by a restart of desk.",
     "parts": [
       {
@@ -287,7 +287,133 @@
           "age": "",
           "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
           "agentRole": null,
-          "stoppedBy": "A restart of desk",
+          "stoppedBy": "a restart of desk",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by its session ending",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: Its session ended before it answered.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "its session ending",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by a move",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread was moved to Desk (Linux) before it answered.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "a move to Desk (Linux)",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by a move to an unknown computer",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread was moved to another computer before it answered.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "a move to another computer",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by something other than a person",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The turn was interrupted before it answered.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "an interrupt",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted with no reason recorded",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The turn was interrupted before it answered.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "an interrupt",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted before its thread existed",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: That request was accepted but its thread was never created.",
+    "parts": [
+      {
+        "body": "That request was accepted but its thread was never created.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "",
           "clipped": false
         }
       }

@@ -78,6 +78,10 @@ export interface ThreadRowUiState {
    *  the registry stores the deviation only — an expanded id — and
    *  collapsing forgets it rather than storing `false`. */
   setUserMessageExpanded(itemId: string, expanded: boolean): void;
+  /** Whether a person's Stop left this message in place because it joins
+   *  an agent's message nothing can split from it. */
+  isUnsendDeclined(itemId: string): boolean;
+  setUnsendDeclined(itemId: string): void;
   /** The card's deviation from the current `collapseDiffPreviews` default,
    *  or undefined when it follows it. See `liveDiffOverride`. */
   diffCardExpandedOverride(itemId: string, filePath: string): boolean | undefined;
@@ -830,6 +834,8 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     toggleSubagentGroupExpanded,
     isUserMessageExpanded: messageUi.isExpanded,
     setUserMessageExpanded: messageUi.setExpanded,
+    isUnsendDeclined: messageUi.isUnsendDeclined,
+    setUnsendDeclined: messageUi.setUnsendDeclined,
     diffCardExpandedOverride,
     setDiffCardExpanded,
     expansionSignature,

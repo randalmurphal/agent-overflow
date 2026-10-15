@@ -70,6 +70,11 @@ export interface UserMessageMeta {
    */
   joinedParts?: unknown;
   /**
+   * A joined row's request tokens when it has no `joinedParts`: the join
+   * could not measure its members (`usermessage` RecordMembers).
+   */
+  joinedOriginTokens?: unknown;
+  /**
    * The peer session's registered display name, on a `peer-session` row.
    * May be absent — an older CLI reports only a socket address — in which
    * case the row is labelled without a name rather than with an empty one.
@@ -124,17 +129,15 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
 
 /**
  * The request tokens a user row answers: every joined member's (whatever
- * the row's attribution, since a wake may have joined first), else an
+ * the row's attribution, since a wake may have joined first), read from its
+ * parts, or from its token list when the join recorded no parts; else an
  * `agent-thread` row's own.
  */
 export function userMessageOriginTokens(meta: UserMessageMeta): string[] {
-  const joined: string[] = [];
-  if (Array.isArray(meta.joinedParts)) {
-    for (const part of meta.joinedParts as unknown[]) {
-      const token = objectRecord(part) ? userMessageOriginThread(part as UserMessageMeta)?.token : '';
-      if (token && !joined.includes(token)) joined.push(token);
-    }
-  }
+  const listed: unknown[] = Array.isArray(meta.joinedParts)
+    ? (meta.joinedParts as unknown[]).map((part) => (objectRecord(part) ? userMessageOriginThread(part as UserMessageMeta)?.token : ''))
+    : Array.isArray(meta.joinedOriginTokens) ? (meta.joinedOriginTokens as unknown[]) : [];
+  const joined = [...new Set(listed.filter((token): token is string => typeof token === 'string' && token !== ''))];
   if (joined.length > 0) return joined;
   if (userMessageOrigin(meta) !== 'agent-thread') return [];
   const token = userMessageOriginThread(meta)?.token;

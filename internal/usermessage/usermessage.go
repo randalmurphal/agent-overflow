@@ -81,6 +81,12 @@ type Meta struct {
 	// OriginThread names the thread that wrote this row, on an
 	// `agent-thread` row. Absent on every other origin.
 	OriginThread *OriginThread `json:"originThread,omitempty"`
+	// JoinedOriginTokens lists the request token of every member an agent
+	// thread wrote, in queue order, on a joined row that has no
+	// JoinedParts. The parts name each member's token when they could be
+	// recorded (RecordMembers); this list is how a request still finds the
+	// row that answered it when they could not.
+	JoinedOriginTokens []string `json:"joinedOriginTokens,omitempty"`
 	// OriginWake names the loop, watch or outside send that wrote this row,
 	// on an `agent-wake` row. Absent on every other origin.
 	OriginWake *OriginWake `json:"originWake,omitempty"`

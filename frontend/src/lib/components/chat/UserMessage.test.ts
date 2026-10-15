@@ -49,6 +49,7 @@ describe('<UserMessage>', () => {
       thread: makeThread({ id: 'thread-1' }),
       attachmentCacheFor: () => undefined,
       setUserMessageExpanded: () => {},
+      isUnsendDeclined: () => false,
     } as unknown as ThreadPane;
   }
 
@@ -576,6 +577,25 @@ describe('<UserMessage>', () => {
     } finally {
       setCompactLayoutForTest(false);
     }
+  });
+
+  it('keeps the reason a Stop left the message in place', () => {
+    const pane = { ...makeActionsPane(), isUnsendDeclined: (id: string) => id === 'user:1' } as unknown as ThreadPane;
+    const { getByTestId } = render(UserMessage, {
+      props: {
+        pane,
+        item: makeItem({
+          id: 'user:1', threadId: 'thread-1', turnIndex: 1, kind: 'user_text', role: 'user',
+          summary: 'Fix it.\n\n---\nAgent request from thread "Lead" (t-lead).\nIt is not waiting.\n\n---\n\nmine',
+          meta: JSON.stringify({
+            origin: 'agent-thread', originThread: { threadId: 't-lead', title: 'Lead', kind: 'send', token: 'tok-1' },
+            expandComposerCommands: true, joinedSendIds: ['thread-request:tok-1', 's-person'],
+          }),
+        }),
+      },
+    });
+
+    expect(getByTestId('user-message-unsend-declined').textContent).toBe("Not un-sent: joined with Lead's request");
   });
 
   it('does not show the edit action for wire-only user messages', () => {

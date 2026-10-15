@@ -122,6 +122,41 @@ func PartsOf(members []Meta, texts []string, lengths []int) []JoinedPart {
 	return parts
 }
 
+// RecordMembers records the members of the joined message m was joined
+// from: their parts (PartsOf), or, when the parts cannot be known, the
+// request token of every member an agent thread wrote, so each request still
+// finds the row that answered it.
+func (m *Meta) RecordMembers(members []Meta, texts []string, lengths []int) {
+	m.JoinedParts = PartsOf(members, texts, lengths)
+	m.JoinedOriginTokens = nil
+	if m.JoinedParts != nil {
+		return
+	}
+	var tokens []string
+	add := func(token string) {
+		if token != "" && !slices.Contains(tokens, token) {
+			tokens = append(tokens, token)
+		}
+	}
+	for _, member := range members {
+		switch {
+		case len(member.JoinedParts) > 0:
+			for _, part := range member.JoinedParts {
+				if part.OriginThread != nil {
+					add(part.OriginThread.Token)
+				}
+			}
+		case len(member.JoinedOriginTokens) > 0:
+			for _, token := range member.JoinedOriginTokens {
+				add(token)
+			}
+		case member.Origin == OriginAgentThread && member.OriginThread != nil:
+			add(member.OriginThread.Token)
+		}
+	}
+	m.JoinedOriginTokens = tokens
+}
+
 // SplitPersonParts cuts a joined row's text into the person's text and the
 // agents' members, by the parts recorded on its meta. ok is false when the
 // row holds an agent's member and no recorded parts describe its text and
@@ -330,6 +365,7 @@ func (m Meta) isZero() bool {
 		m.Command == "" &&
 		m.SendID == "" &&
 		len(m.JoinedSendIDs) == 0 &&
+		len(m.JoinedOriginTokens) == 0 &&
 		m.Origin == "" &&
 		m.OriginThread == nil &&
 		m.OriginWake == nil &&
@@ -358,6 +394,7 @@ var metaTypedKeys = []string{
 	"joinedSendIds",
 	"origin",
 	"originThread",
+	"joinedOriginTokens",
 	"originWake",
 	"joinedParts",
 }

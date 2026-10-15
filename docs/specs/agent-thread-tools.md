@@ -777,8 +777,10 @@ and approval requests go to it rather than to the user. A sender on
 another computer carries its role in the forwarded call; it never
 routes the receiver's questions. A footer from an ordinary thread is
 unchanged. A wake starts with one line: reply,
-finished without replying, errored, cancelled, interrupted by a
-restart, stopped by the person (with the turn's last message), or expired,
+finished without replying, errored, cancelled, interrupted (by a restart
+of its computer, its session ending, a move to another computer or
+another interrupt, as its settlement recorded), stopped by the person
+(with the turn's last message), or expired,
 with the thread's title and id, the token, its computer and the
 answer's age when they apply, then the text. When the answering thread
 is a standing agent, the line after it says so and quotes its role line
@@ -913,10 +915,13 @@ What settles a request, in order:
    as a second wake, so a responder that ended its turn to wait on a
    command costs the caller nothing.
 3. An errored turn settles `errored` with the error text.
-4. `thread_cancel` settles `cancelled`; a restart of the responder's
-   computer mid-turn settles `interrupted`. So does the person's Stop,
-   with what the turn said by then as its `final` answer; its wake says
-   the person stopped the turn, not a restart.
+4. `thread_cancel` settles `cancelled`. A turn cut any other way
+   settles `interrupted` with why (`threadtools.Interrupt*`): the
+   responder's computer restarted, the turn's session ended (a crash,
+   a stop or a teardown), the thread moved to another computer, or
+   something else interrupted it, such as a workflow takeover. The
+   person's Stop settles `interrupted` with what the turn said by then
+   as its `final` answer; its wake says the person stopped the turn.
 
 A request settles once and its wake fires once, plus one more for a
 late reply. Every settlement and late reply bumps the request's
@@ -987,7 +992,10 @@ thread to another distinguishable. A row written before `kind` existed
 is read by its send id (`thread-request:`, `thread-wake`). When Claude
 joins messages that queued together into one row, the attribution is the
 first member's (a thread or a wake), and `meta.joinedParts` records each
-member's length, attribution and token.
+member's length, attribution and token. A join that cannot measure its
+members (a member that was itself joined and whose image markers were
+renumbered) records `meta.joinedOriginTokens`, every member's token,
+instead.
 
 ### How agent messages appear
 
@@ -1014,8 +1022,7 @@ it), a standing agent's role line, and the message's first line. Opened,
 it shows the message and the routing parsed into facts: whether the
 sender waits, whether a reply reaches it, its role, where its spawned
 thread's prompts go, the sender's user message it quoted and the token;
-on an answer, who answered, how long ago, the restart or the person that
-stopped it and
+on an answer, who answered, how long ago, what stopped it and
 where the clipped rest is. The footer and a wake's status line never
 render raw; a loop, watch, outside send or worker wake shows its data
 decoded without the line written for the agent. A remote job's

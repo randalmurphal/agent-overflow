@@ -176,6 +176,18 @@ describe('AO thread tool rows', () => {
     });
     const other = render(GenericToolCallRow, { props: { item, pane: paneWith([item, behindWake]) } });
     expect(other.getAllByTestId('tool-call-card-ao-live-hint').at(-1)!.textContent).toBe('(answer arrived)');
+
+    // A join whose members could not be measured lists the tokens instead.
+    const unmeasured = makeItem({
+      id: 'wake-3', threadId: THREAD, kind: 'user_text',
+      meta: JSON.stringify({
+        origin: 'agent-wake',
+        originWake: { kind: 'loop', label: 'board' },
+        joinedOriginTokens: ['first-token', TOKEN],
+      }),
+    });
+    const third = render(GenericToolCallRow, { props: { item, pane: paneWith([item, unmeasured]) } });
+    expect(third.getAllByTestId('tool-call-card-ao-live-hint').at(-1)!.textContent).toBe('(answer arrived)');
   });
 
   it('drops the reply\'s "still working" note once the answer has landed', async () => {

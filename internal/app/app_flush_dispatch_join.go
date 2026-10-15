@@ -195,11 +195,12 @@ func joinFlushMeta(members []flushMember, lengths []int) (string, []usermessage.
 			OriginWake:   member.payload.OriginWake,
 		}.Projection()
 		meta.JoinedParts = member.payload.JoinedParts
+		meta.JoinedOriginTokens = member.payload.JoinedOriginTokens
 		metas = append(metas, meta)
 		texts = append(texts, resolved.content)
 	}
 	joined := usermessage.JoinMetas(metas)
-	joined.JoinedParts = usermessage.PartsOf(metas, texts, lengths)
+	joined.RecordMembers(metas, texts, lengths)
 	meta, err := usermessage.MarshalMeta(joined)
 	if err != nil {
 		return "", nil, "", err

@@ -430,6 +430,10 @@ func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
 		// So does the send id: the redispatch's fresh row carries it, which
 		// is what keeps a re-sent frame deduping across a requeue.
 		SendID: m.SendID,
+		// And who wrote it: an agent's message requeued stays the agent's.
+		Origin:       m.Origin,
+		OriginThread: m.OriginThread,
+		OriginWake:   m.OriginWake,
 	}
 	for _, att := range m.Attachments {
 		payload.AttachmentIDs = append(payload.AttachmentIDs, att.ID)
@@ -585,6 +589,14 @@ func queuePayloadFromUserItem(item store.Item, parts []usermessage.JoinedPart, f
 		SendID:        meta.SendID,
 		JoinedSendIDs: meta.JoinedSendIDs,
 		JoinedParts:   joinedPartsOf(strings.TrimSpace(item.Summary), parts),
+		// Without parts, its request tokens are all that says which
+		// requests it answers.
+		JoinedOriginTokens: meta.JoinedOriginTokens,
+		// An agent's message requeued stays the agent's, so its next row
+		// is an agent row and no Stop un-sends it into the composer.
+		Origin:       meta.Origin,
+		OriginThread: meta.OriginThread,
+		OriginWake:   meta.OriginWake,
 	})
 	if err != nil {
 		return fallback

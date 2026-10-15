@@ -25,8 +25,9 @@ export function answeredRequestTokens(items: readonly Item[] | undefined): Reado
   const tokens = new Set<string>();
   for (const item of items) {
     if (item.kind !== 'user_text') continue;
-    // A joined member's token sits in its part's own originThread.
-    if (!item.meta?.includes('originThread')) continue;
+    // A joined member's token sits in its part's own originThread, or in
+    // the row's token list when the join recorded no parts.
+    if (!item.meta?.includes('originThread') && !item.meta?.includes('joinedOriginTokens')) continue;
     for (const token of userMessageOriginTokens(parseUserMessageMeta(item.meta))) tokens.add(token);
   }
   memo.set(items, tokens);

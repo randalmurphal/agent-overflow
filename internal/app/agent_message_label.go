@@ -132,7 +132,10 @@ func readThreadWake(text string) (title, body string, reminder, ok bool) {
 	case strings.HasPrefix(rest, " finished its turn without calling thread_reply. Its final message:"),
 		rest == ": "+threadtools.WakePersonStopped+" Its last message:":
 		body = after
-	case rest == ": "+threadtools.WakePersonStopped,
+	case rest == ": "+threadtools.InterruptNeverStarted:
+		body = threadtools.InterruptNeverStarted
+	case rest == ": "+threadtools.WakePersonStopped, rest == ": "+threadtools.InterruptSessionEnded, rest == ": "+threadtools.InterruptTurn,
+		strings.HasPrefix(rest, ": The thread was moved to ") && strings.HasSuffix(rest, " before it answered."),
 		strings.HasPrefix(rest, " was cancelled."), strings.HasPrefix(rest, " was interrupted by a restart of "),
 		rest == " did not answer within a day.", rest == " settled.":
 	default:

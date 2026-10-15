@@ -15,6 +15,9 @@ interface Options {
 /** Message presentation survives confirmation, and ends when the message leaves retention. */
 export function createThreadMessageUiState(options: Options) {
   let expanded = $state<ReadonlySet<string>>(new Set());
+  // Messages a person's Stop left in place because each joins an agent's
+  // message nothing can split from it.
+  let unsendDeclined = $state<ReadonlySet<string>>(new Set());
   const attachments = new Map<string, MessageAttachments>();
 
   function itemKey(item: Item): string {
@@ -37,6 +40,22 @@ export function createThreadMessageUiState(options: Options) {
     if (value) next.add(key);
     else next.delete(key);
     expanded = next;
+  }
+
+  function isUnsendDeclined(itemId: string): boolean {
+    return unsendDeclined.has(keyForId(itemId));
+  }
+
+  function setUnsendDeclined(itemId: string): void {
+    const key = keyForId(itemId);
+    if (unsendDeclined.has(key)) return;
+    unsendDeclined = new Set(unsendDeclined).add(key);
+  }
+
+  function forgetUnsendDeclined(keep: (key: string) => boolean): void {
+    if (unsendDeclined.size === 0) return;
+    const next = new Set([...unsendDeclined].filter(keep));
+    if (next.size !== unsendDeclined.size) unsendDeclined = next;
   }
 
   function revoke(preview: ImagePreviewItem): void {
@@ -80,20 +99,22 @@ export function createThreadMessageUiState(options: Options) {
     let next: Set<string> | undefined;
     for (const item of items) {
       const key = itemKey(item);
-      if (!expanded.has(key) && !attachments.has(key)) continue;
+      if (!expanded.has(key) && !attachments.has(key) && !unsendDeclined.has(key)) continue;
       if (userMessageIdentity(item) !== null) {
         retainedKeys ??= new Set(Array.from(options.loadedItems(), itemKey));
         if (retainedKeys.has(key)) continue;
       }
       disposeAttachments(key);
       if (expanded.has(key)) (next ??= new Set(expanded)).delete(key);
+      if (unsendDeclined.has(key)) forgetUnsendDeclined((declined) => declined !== key);
     }
     if (next) expanded = next;
   }
 
   function prune(itemIds: ReadonlySet<string>): void {
-    if (expanded.size === 0 && attachments.size === 0) return;
+    if (expanded.size === 0 && attachments.size === 0 && unsendDeclined.size === 0) return;
     const kept = new Set(Array.from(itemIds, keyForId));
+    forgetUnsendDeclined((key) => kept.has(key));
     for (const key of attachments.keys()) {
       if (!kept.has(key)) disposeAttachments(key);
     }
@@ -103,12 +124,17 @@ export function createThreadMessageUiState(options: Options) {
 
   function clear(): void {
     expanded = new Set();
+    unsendDeclined = new Set();
     for (const key of attachments.keys()) disposeAttachments(key);
   }
 
   return {
-    isExpanded, setExpanded, attachmentCacheFor, disposeItems, prune, clear,
+    isExpanded, setExpanded, isUnsendDeclined, setUnsendDeclined, attachmentCacheFor, disposeItems, prune, clear,
     expansionSignature: () => expanded.size > 0 ? `u:${JSON.stringify([...expanded].sort())}` : '',
-    stats: () => ({ expandedUserMessages: expanded.size, attachmentItems: attachments.size }),
+    stats: () => ({
+      expandedUserMessages: expanded.size,
+      attachmentItems: attachments.size,
+      unsendDeclinedMessages: unsendDeclined.size,
+    }),
   };
 }

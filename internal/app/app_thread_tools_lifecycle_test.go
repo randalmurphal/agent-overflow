@@ -385,7 +385,7 @@ func TestTheObserverKeepsTheGateOfAnAcceptedReceipt(t *testing.T) {
 	}
 	f.app.noteReceiptRunning(target.ID, token)
 
-	if err := f.app.settleReceiptOnTurnEnd(target.ID, token); err != nil {
+	if _, err := f.app.settleReceiptOnTurnEnd(target.ID, token, false); err != nil {
 		t.Fatalf("settleReceiptOnTurnEnd: %v", err)
 	}
 	tokens, ok := f.app.runningReceiptTokens(target.ID)
@@ -499,7 +499,7 @@ func TestAFallbackAnswerIsStoredWhole(t *testing.T) {
 		t.Fatalf("GetTurnByThreadIndex: found=%v err=%v", found, err)
 	}
 
-	settlement, err := f.app.turnSettlement(thread.ID, turn)
+	settlement, err := f.app.turnSettlement(thread.ID, turn, false)
 	if err != nil {
 		t.Fatalf("turnSettlement: %v", err)
 	}

@@ -532,7 +532,7 @@ func (t threadToolsApp) acceptRequest(
 // threadReceiptNeverStarted is what a receipt accepted without its thread
 // says on both ends: the answer stored on the settled receipt, and the
 // refusal the retry that found it reads.
-const threadReceiptNeverStarted = "That request was accepted but its thread was never created."
+const threadReceiptNeverStarted = threadtools.InterruptNeverStarted
 
 // failRequest settles a source row on this computer whose acceptance or
 // dispatch failed before the destination ever ran it, and returns the
@@ -766,7 +766,7 @@ func (t threadToolsApp) settleIfTurnAlreadyEnded(token, targetThreadID string, t
 	if !found || turn.CompletedAt == nil {
 		return threadSettlementWork{}
 	}
-	settlement, err := t.app.turnSettlement(targetThreadID, turn)
+	settlement, err := t.app.turnSettlement(targetThreadID, turn, false)
 	if err != nil {
 		log.Printf("thread tools: read the answer of request %s: %v", token, err)
 		return threadSettlementWork{}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"slices"
 	"sync"
 	"time"
 
@@ -41,11 +42,13 @@ type threadRequestState struct {
 	// and no query. Written only where a receipt enters and leaves
 	// `running`, so it cannot claim a receipt the store does not have.
 	running map[string]map[string]struct{}
-	// personStops maps a thread with an entry in running to the turn a
-	// person's Stop cut there, so that turn's receipts settle as the
-	// person's Stop rather than as a restart (turnSettlement). It goes
-	// with the thread's running entry.
-	personStops map[string]personStop
+	// personStops maps a thread with an entry in running to the turns a
+	// person's Stop cut there, so each turn's receipts settle as the
+	// person's Stop rather than as a restart (turnSettlement). A turn's
+	// entry goes when its receipts have settled, and every entry goes
+	// with the thread's running entry, so the set holds at most one entry
+	// per turn whose receipts are still running.
+	personStops map[string][]personStop
 	// settleLocks serializes everything that can settle or deliver one
 	// token, so a settlement and a timing-out wait never both deliver the
 	// answer and never neither.
@@ -303,25 +306,36 @@ func (a *App) notePersonStop(threadID string, turnIndex int) {
 	if len(a.threadRequests.running[threadID]) == 0 {
 		return
 	}
-	if a.threadRequests.personStops == nil {
-		a.threadRequests.personStops = make(map[string]personStop)
+	stop := personStop{turnIndex: turnIndex, startedAt: turn.StartedAt}
+	if slices.Contains(a.threadRequests.personStops[threadID], stop) {
+		return
 	}
-	a.threadRequests.personStops[threadID] = personStop{turnIndex: turnIndex, startedAt: turn.StartedAt}
+	if a.threadRequests.personStops == nil {
+		a.threadRequests.personStops = make(map[string][]personStop)
+	}
+	a.threadRequests.personStops[threadID] = append(a.threadRequests.personStops[threadID], stop)
 }
 
-// forgetPersonStop drops the mark of a Stop whose interrupt did not go out.
-func (a *App) forgetPersonStop(threadID string) {
+// forgetPersonStop drops the marks on turnIndex: the Stop's interrupt did
+// not go out, the Stop un-sent the turn, or the turn's receipts settled.
+func (a *App) forgetPersonStop(threadID string, turnIndex int) {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
-	delete(a.threadRequests.personStops, threadID)
+	stops := slices.DeleteFunc(a.threadRequests.personStops[threadID], func(stop personStop) bool {
+		return stop.turnIndex == turnIndex
+	})
+	if len(stops) == 0 {
+		delete(a.threadRequests.personStops, threadID)
+		return
+	}
+	a.threadRequests.personStops[threadID] = stops
 }
 
 // personStopped reports whether a person's Stop cut turn.
 func (a *App) personStopped(threadID string, turn store.Turn) bool {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
-	stop, ok := a.threadRequests.personStops[threadID]
-	return ok && stop.turnIndex == turn.TurnIndex && stop.startedAt == turn.StartedAt
+	return slices.Contains(a.threadRequests.personStops[threadID], personStop{turnIndex: turn.TurnIndex, startedAt: turn.StartedAt})
 }
 
 // runningReceiptTokens returns the tokens a turn end on this thread could

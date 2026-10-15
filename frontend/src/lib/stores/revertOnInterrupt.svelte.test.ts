@@ -23,6 +23,7 @@ import {
 import { replaceSubagentRunStates, resetForTest as resetSubagentRunStatesForTest } from './subagentRunState.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { replaceQueueForThread } from './sendQueue.svelte';
+import { getToasts, resetToastsForTest } from './toast.svelte';
 import type { Item, Thread } from '../types/models';
 import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
 import { resetResendRevertMarkersForTest } from './eventsMessageRevert';
@@ -465,7 +466,57 @@ describe('runInterruptOrRevert', () => {
 
     const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
 
-    expect(result).toEqual({ canRevert: false, reason: "message joins an agent's it cannot split" });
+    expect(result).toMatchObject({ canRevert: false, reason: "message joins an agent's it cannot split" });
+    expect(result.canRevert === false && result.joined?.id).toBe('u:0');
+  });
+
+  const unsplittableJoin = {
+    ...userItem('u:0', 0),
+    summary: 'Fix the nil check.\n\n---\nAgent request from thread "Lead" (t-lead).\nIt is not waiting.\n\n---\n\nmine',
+    meta: JSON.stringify({
+      origin: 'agent-thread', originThread: { threadId: 't-lead', title: 'Lead', kind: 'send', token: 'tok-1' },
+      expandComposerCommands: true, sendId: 'thread-request:tok-1', joinedSendIds: ['thread-request:tok-1', 's-person'],
+    }),
+  };
+
+  it('says why a Stop left a message joined with an agent\'s in place, and the row keeps saying so', async () => {
+    resetToastsForTest();
+    const pane = readyPane();
+    pane.upsertItem(unsplittableJoin);
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    let interrupted = 0;
+    setBindingMock('InterruptTurn', async () => { interrupted++; });
+    let unsent = 0;
+    setBindingMock('InterruptAndRevertIfClean', async () => { unsent++; return successfulRevert(); });
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await flushInterruptFlow();
+
+    expect(interrupted).toBe(1);
+    expect(unsent).toBe(0);
+    expect(getToasts().map((toast) => toast.message)).toEqual([
+      "This turn also carried Lead's request, so Stop left the message in place.",
+    ]);
+    expect(pane.isUnsendDeclined('u:0')).toBe(true);
+  });
+
+  it('says why when the backend declines the un-send for the same reason', async () => {
+    resetToastsForTest();
+    const pane = readyPane();
+    const mine = { ...userItem('u:0', 0), summary: 'mine', meta: JSON.stringify({ sendId: 's-person', expandComposerCommands: true }) };
+    pane.upsertItem(mine);
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    // The CLI joined an agent's message into the row, which the backend
+    // reads and this client has not seen yet.
+    setBindingMock('InterruptAndRevertIfClean', async () => ({ reverted: false, reason: "message joins an agent's it cannot split" }));
+
+    runInterruptOrRevert(pane, optimisticDraftProbe());
+    await flushInterruptFlow();
+
+    expect(getToasts().map((toast) => toast.message)).toEqual([
+      "This turn also carried an agent's message, so Stop left the message in place.",
+    ]);
+    expect(pane.isUnsendDeclined('u:0')).toBe(true);
   });
 
   it('restores attachment and source-plan metadata from the interrupted user item', async () => {

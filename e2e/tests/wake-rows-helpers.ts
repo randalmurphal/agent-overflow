@@ -208,7 +208,14 @@ export async function holdNextRun(home: string): Promise<{ running: () => Promis
 export async function capture(page: Page, name: string, ...targets: Locator[]): Promise<void> {
   for (const target of targets) {
     await expect(target).toBeVisible();
-    await expect(target).toBeInViewport({ ratio: 1 });
+    try {
+      await expect(target).toBeInViewport({ ratio: 1 });
+    } catch (error) {
+      const box = await target.boundingBox();
+      const viewport = page.viewportSize()!;
+      const scrollTop = await page.getByTestId('message-timeline-scroll').first().evaluate((el) => el.scrollTop).catch(() => NaN);
+      throw new Error(`${name}: target at ${box ? `y ${Math.round(box.y)}, height ${Math.round(box.height)}` : 'no box'} in a ${viewport.width}x${viewport.height} viewport, timeline scrollTop ${Math.round(scrollTop)}`, { cause: error });
+    }
   }
   await page.evaluate(() => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);

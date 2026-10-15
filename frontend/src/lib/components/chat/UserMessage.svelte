@@ -38,6 +38,7 @@
   import type { UserMessageActions } from './userMessageActions';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
+  import { joinedAgentMessageName } from '../../utils/agentMessage';
 
   interface Props {
     item: Item;
@@ -48,6 +49,12 @@
   let { item, pane, actions }: Props = $props();
 
   const userMeta = $derived(parseUserMessageMeta(item.meta));
+  // A Stop left this message in place: it joins an agent's message nothing
+  // can split from it (revertOnInterrupt). Named from the row as it is now,
+  // which the join may have reached after the Stop.
+  const unsendDeclined = $derived(
+    pane?.isUnsendDeclined(item.id) ? (joinedAgentMessageName(item) ?? "an agent's message") : '',
+  );
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
   // A message that reached this thread from outside Agent Overflow keeps the
   // user bubble: it IS user-role content and the model answered it, but says
@@ -356,6 +363,10 @@
             onError={() => addToast('error', 'Failed to copy')}
           />
         </span>
+      {/if}
+      {#if unsendDeclined}
+        <!-- The meta line's own height: the fact never moves the row. -->
+        <span class="min-w-0 truncate" data-testid="user-message-unsend-declined">Not un-sent: joined with {unsendDeclined}</span>
       {/if}
       <time class="tabular-nums" datetime={isoTime}>
         {time}

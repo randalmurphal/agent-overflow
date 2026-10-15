@@ -84,6 +84,9 @@ type Payload struct {
 	// (usermessage.JoinedPart). Set on the same requeue path, when the
 	// dispatch that joined the message recorded them.
 	JoinedParts []usermessage.JoinedPart `json:"joinedParts,omitempty"`
+	// JoinedOriginTokens are that joined message's request tokens when it
+	// recorded no parts (usermessage.Meta.JoinedOriginTokens).
+	JoinedOriginTokens []string `json:"joinedOriginTokens,omitempty"`
 	// Origin and OriginThread attribute a queued message the app wrote on
 	// an agent's behalf. They ride the payload for the same reason SendID
 	// does: the dispatch that persists the row happens later, and the row

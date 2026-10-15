@@ -42,6 +42,26 @@ describe('message presentation lifetime', () => {
     revoke.mockRestore();
   });
 
+  it('keeps a declined un-send across confirmation and forgets it when the message leaves retention', () => {
+    const { provisional, confirmed, items, ui, confirm } = fixture();
+    ui.setUnsendDeclined(provisional.id);
+    ui.setUnsendDeclined(provisional.id);
+    confirm();
+    expect(ui.isUnsendDeclined(confirmed.id)).toBe(true);
+    expect(ui.stats().unsendDeclinedMessages).toBe(1);
+    ui.prune(new Set([confirmed.id]));
+    expect(ui.isUnsendDeclined(confirmed.id)).toBe(true);
+    ui.prune(new Set());
+    expect(ui.isUnsendDeclined(confirmed.id)).toBe(false);
+    ui.setUnsendDeclined(confirmed.id);
+    items.delete(confirmed.id);
+    ui.disposeItems([confirmed]);
+    expect(ui.stats().unsendDeclinedMessages).toBe(0);
+    ui.setUnsendDeclined(confirmed.id);
+    ui.clear();
+    expect(ui.stats().unsendDeclinedMessages).toBe(0);
+  });
+
   it('collapses and expands through either representation without carrying state to another thread', () => {
     const { provisional, confirmed, ui, confirm, items } = fixture();
     ui.setExpanded(provisional.id, true);

@@ -210,7 +210,15 @@ func (w Wake) status() string {
 	case WakeCancelled:
 		return fmt.Sprintf("%s%s was cancelled.", who, token)
 	case WakeInterrupted:
-		return fmt.Sprintf("%s%s was interrupted by a restart of %s.", who, token, restartedComputer(w.Computer))
+		// The reason the interruption recorded, as its own sentence; a
+		// restart names the computer that restarted.
+		switch w.Text {
+		case InterruptRestart:
+			return fmt.Sprintf("%s%s was interrupted by a restart of %s.", who, token, restartedComputer(w.Computer))
+		case "":
+			return fmt.Sprintf("%s%s: %s", who, token, InterruptTurn)
+		}
+		return fmt.Sprintf("%s%s: %s", who, token, w.Text)
 	case WakeStopped:
 		status := fmt.Sprintf("%s%s: %s", who, token, WakePersonStopped)
 		if w.Text == "" {
@@ -229,6 +237,32 @@ func (w Wake) status() string {
 // WakePersonStopped is the status of a request whose turn a person's Stop
 // cut before it answered.
 const WakePersonStopped = "The person stopped this turn before it answered."
+
+// Why a request was interrupted: the answer an interrupted settlement
+// records, which its wake states (WakeInterrupted). A person's Stop is
+// WakeStopped instead, with what the turn said.
+const (
+	// InterruptRestart: the computer that held the request restarted.
+	InterruptRestart = "This computer restarted before the request finished."
+	// InterruptSessionEnded: the session running the request's turn
+	// ended, by a crash, a stop or a teardown.
+	InterruptSessionEnded = "Its session ended before it answered."
+	// InterruptTurn: something other than a person's Stop interrupted the
+	// turn, such as a workflow taking the thread over.
+	InterruptTurn = "The turn was interrupted before it answered."
+	// InterruptNeverStarted: the request was accepted and its thread was
+	// never created.
+	InterruptNeverStarted = "That request was accepted but its thread was never created."
+)
+
+// InterruptMoved is the reason of a request whose thread was moved to
+// destination, another computer, before it answered.
+func InterruptMoved(destination string) string {
+	if destination == "" {
+		destination = "another computer"
+	}
+	return "The thread was moved to " + destination + " before it answered."
+}
 
 func (w Wake) body() string { return WakeBody(w.Text, w.Token) }
 
