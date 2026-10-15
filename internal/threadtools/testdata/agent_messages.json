@@ -399,6 +399,48 @@
     ]
   },
   {
+    "name": "interrupted by the thread not taking it in",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread did not take the request in.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the thread did not take it in",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by the thread not taking it in, its message back in that thread's composer",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread did not take the request in, and its message went back to that thread's composer.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the thread did not take it in, and its message went back to that thread's composer",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
     "name": "interrupted by a move",
     "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread was moved to Desk (Linux) before it answered.",
     "parts": [

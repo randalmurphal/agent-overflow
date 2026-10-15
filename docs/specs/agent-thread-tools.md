@@ -962,7 +962,8 @@ turn is ended. A session that ends (a stop, a death, a replacement start,
 an idle close) before the provider took the request's message in (no
 `started`, no echo) takes it back: the request returns to `accepted` and
 its message to the thread's queue, owed again, and the next session start
-delivers it; its sender is told nothing. The session-end settlement
+delivers it, or the session already live when an idle close's requeue
+lands; its sender is told nothing. The session-end settlement
 leaves a message the session still holds to the restore that takes it
 back. One the queue cannot take back (an archived thread, a failed write)
 settles `interrupted` saying the session ended before the thread read
@@ -973,7 +974,9 @@ what the turn had written. The three answers are the
 `threadtools.InterruptSessionEnded*` sentences, which the sender's wake
 row shows as "Stopped by: the session ended ...". A message the provider
 refuses while its session lives on (Claude's `cancelled`, a failed Codex
-resend) settles the request saying the thread did not take it in. A
+resend, a rollback that purges it) settles the request saying the thread
+did not take it in (`threadtools.InterruptNotTakenIn*`), which the
+sender's row shows as "Stopped by: the thread did not take it in". A
 restore never puts a request's text in the person's composer on its
 own: a message that held the person's text gives back that text alone,
 and one that cannot be split gives back all of it and says so in the
@@ -1153,7 +1156,10 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
   or not) lands, then "answer arrived". The request ledger says whether
   it has (`GetThreadRequestStates`: the confirmed wake row, loaded in the
   pane or not, however long ago it settled), read for the rows' tokens
-  and again on each `thread:agent_rows_changed` frame naming one.
+  and again on each `thread:agent_rows_changed` frame naming one. A
+  mounted row keeps its token's answer cached. A token the ledger does
+  not know, a request from before it, falls back to the answer rows the
+  pane has loaded.
 
 ## Availability and permissions (Q13, Q17, Q27)
 

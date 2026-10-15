@@ -306,6 +306,15 @@ const SESSION_ENDED: readonly string[] = [
 ];
 const WRITTEN_SO_FAR = ' What it had written by then:';
 
+/** A request whose message the thread did not take in (threadtools InterruptNotTakenIn*), with what stopped it. */
+const NOT_TAKEN_IN: ReadonlyMap<string, string> = new Map([
+  ['The thread did not take the request in.', 'the thread did not take it in'],
+  [
+    "The thread did not take the request in, and its message went back to that thread's composer.",
+    "the thread did not take it in, and its message went back to that thread's composer",
+  ],
+]);
+
 /** The session's end as what stopped the request: the reason without its subject. */
 function sessionEndedBy(sentence: string): string {
   return `the session ended ${sentence.slice("The thread's session ended ".length, -1)}`;
@@ -323,6 +332,8 @@ function interruptReason(sentence: string, after: string): { stoppedBy: string; 
   }
   if (after !== '') return null;
   if (SESSION_ENDED.includes(sentence)) return { stoppedBy: sessionEndedBy(sentence), body: '' };
+  const notTakenIn = NOT_TAKEN_IN.get(sentence);
+  if (notTakenIn) return { stoppedBy: notTakenIn, body: '' };
   if (sentence === 'The turn was interrupted before it answered.') return { stoppedBy: 'an interrupt', body: '' };
   if (sentence === 'That request was accepted but its thread was never created.') return { stoppedBy: '', body: sentence };
   const moved = /^The thread was moved to (.+) before it answered\.$/.exec(sentence);

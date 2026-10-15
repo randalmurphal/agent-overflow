@@ -115,6 +115,10 @@ func wakePart(wake Wake) (string, fixturePart) {
 			part.Wake.StoppedBy = "a restart of " + restartedComputer(wake.Computer)
 		case slices.Contains(InterruptSessionEndedReasons, wake.Text):
 			part.Wake.StoppedBy = sessionEndedBy(wake.Text)
+		case wake.Text == InterruptNotTakenIn:
+			part.Wake.StoppedBy = "the thread did not take it in"
+		case wake.Text == InterruptNotTakenInToComposer:
+			part.Wake.StoppedBy = "the thread did not take it in, and its message went back to that thread's composer"
 		case strings.HasPrefix(wake.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar):
 			part.Wake.StoppedBy = sessionEndedBy(InterruptSessionEndedMidTurn)
 			part.Body = strings.TrimPrefix(wake.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar)
@@ -208,6 +212,8 @@ func agentMessageFixtureCases() []fixtureCase {
 			Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token,
 			Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + strings.Repeat("Long answer. ", WakePreviewBytes/12+8),
 		})),
+		one("interrupted by the thread not taking it in", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptNotTakenIn})),
+		one("interrupted by the thread not taking it in, its message back in that thread's composer", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptNotTakenInToComposer})),
 		one("interrupted by a move", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptMoved("Desk (Linux)")})),
 		one("interrupted by a move to an unknown computer", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptMoved("")})),
 		one("interrupted by something other than a person", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptTurn})),

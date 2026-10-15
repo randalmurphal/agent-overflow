@@ -274,6 +274,14 @@ const (
 	// InterruptNeverStarted: the request was accepted and its thread was
 	// never created.
 	InterruptNeverStarted = "That request was accepted but its thread was never created."
+	// InterruptNotTakenIn: the provider gave the request's message back
+	// before taking it in, and the request could not go back to its queue
+	// (a cancelled send with the session alive, a failed Codex resend).
+	InterruptNotTakenIn = "The thread did not take the request in."
+	// InterruptNotTakenInToComposer: the message was not taken in and was
+	// joined with the person's own text it could not be split from, so all
+	// of it went back to the target thread's composer.
+	InterruptNotTakenInToComposer = "The thread did not take the request in, and its message went back to that thread's composer."
 )
 
 // SessionEndedWrittenSoFar introduces, after InterruptSessionEndedMidTurn,

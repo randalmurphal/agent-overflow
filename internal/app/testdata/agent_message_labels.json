@@ -102,6 +102,18 @@
     "label": "Worker: Half done."
   },
   {
+    "name": "a message the thread did not take in: The thread did not take the request in.",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The thread did not take the request in.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker"
+  },
+  {
+    "name": "a message the thread did not take in: The thread did not take the request in, and its message went back to that thread's composer.",
+    "text": "\"Worker\" (t-worker) [token tok-1]: The thread did not take the request in, and its message went back to that thread's composer.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker"
+  },
+  {
     "name": "a move",
     "text": "\"Worker\" (t-worker) [token tok-1]: The thread was moved to Desk before it answered.",
     "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",

@@ -525,7 +525,7 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 			// A request's text is in the composer now; queued again, it
 			// would be sent twice.
 			if token := threadRequestSendIDToken(id); token != "" {
-				owed.unread = append(owed.unread, unreadRequest{token: token, why: requestReturnedToComposer})
+				owed.unread = append(owed.unread, unreadRequest{token: token, why: threadtools.InterruptNotTakenInToComposer})
 			}
 		}
 		return part, true, owed
@@ -538,7 +538,7 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 			if sessionEnded {
 				owed.requests = append(owed.requests, returnedRequest{token: token, body: bodies[id]})
 			} else {
-				owed.unread = append(owed.unread, unreadRequest{token: token, why: requestReturnedUnread})
+				owed.unread = append(owed.unread, unreadRequest{token: token, why: threadtools.InterruptNotTakenIn})
 			}
 		}
 	}
@@ -680,10 +680,23 @@ func (a *App) giveBackTeardownRequests(threadID string, owed teardownRequests) {
 			UserItemIDs:  userItemIDs,
 		})
 	}
+	requeued := false
 	for _, r := range requests {
 		if err := a.threadTools().requeueRequest(r.token, threadID, r.body); err != nil {
 			log.Printf("thread tools: give request %s back to %s after its session's end: %v", r.token, threadID, err)
 			a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread)
+			continue
+		}
+		requeued = true
+	}
+	// The torn-down session left the registry before the teardown, so a
+	// live one started after it: while the idle reaper held the lock this
+	// waited on, its start flushed the queue before these were back on it.
+	// Idle, it has no turn boundary coming to send them. A turn in flight
+	// sends them at its end.
+	if requeued && a.triage != nil {
+		if _, live := a.sessionManager().get(threadID); live && !a.threadTurnInFlight(threadID) {
+			a.triage.FlushQueuedItems(threadID)
 		}
 	}
 }

@@ -98,6 +98,10 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 		Text: threadtools.InterruptSessionEndedMidTurn + threadtools.SessionEndedWrittenSoFar + "Half done.",
 	}, from("wake", worker))
 	add("a session that ended during the turn, with what it wrote", text, meta)
+	for _, reason := range []string{threadtools.InterruptNotTakenIn, threadtools.InterruptNotTakenInToComposer} {
+		text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: reason}, from("wake", worker))
+		add("a message the thread did not take in: "+reason, text, meta)
+	}
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: threadtools.InterruptMoved("Desk")}, from("wake", worker))
 	add("a move", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: threadtools.InterruptNeverStarted}, from("wake", worker))

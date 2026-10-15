@@ -392,7 +392,7 @@ func TestARequestRetiredUnrunSettlesWhenItsMessageGoesBack(t *testing.T) {
 	h.lifecycle(t, uuid, provider.CommandQueued)
 	h.lifecycle(t, uuid, provider.CommandCancelled)
 	row := f.awaitRequestState(t, token, store.ThreadRequestInterrupted)
-	if string(row.Answer) != requestReturnedUnread {
+	if string(row.Answer) != threadtools.InterruptNotTakenIn {
 		t.Fatalf("answer = %q", row.Answer)
 	}
 	if draft, _, err := f.app.store.GetThreadDraft(h.thread.ID); err != nil || strings.Contains(draft.Content, "check the changelog") {
@@ -574,9 +574,9 @@ func TestARequestARestoreTakesBackIsRequeuedOrSettled(t *testing.T) {
 		want    string
 	}{
 		{path: "session death", parts: true, requeue: true},
-		{path: "failed resend", parts: true, want: requestReturnedUnread},
-		{path: "session death", want: requestReturnedToComposer},
-		{path: "failed resend", want: requestReturnedToComposer},
+		{path: "failed resend", parts: true, want: threadtools.InterruptNotTakenIn},
+		{path: "session death", want: threadtools.InterruptNotTakenInToComposer},
+		{path: "failed resend", want: threadtools.InterruptNotTakenInToComposer},
 	} {
 		name := tc.path
 		if !tc.parts {
@@ -724,6 +724,50 @@ func TestAReapedSessionQueuesItsRequestsAgainOnceItsLockIsReleased(t *testing.T)
 	unlock()
 	f.app.threadRequestsWG.Wait()
 	assertRequestOwedAgain(t, f, h.thread.ID, tokens[0])
+}
+
+// A session that starts while the reaper still holds the lock (a wake, the
+// person) flushes the queue before the reaped requests are back on it. Live
+// and idle, it has no turn boundary coming, so the requeue sends them.
+func TestAReapedRequestGoesToASessionThatStartedBeforeItWasQueuedAgain(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	callerMidTurn(t, f)
+	h := newHeldRequestTarget(t, f)
+	tokens, uuid := h.send(t, "check the changelog")
+	h.lifecycle(t, uuid, provider.CommandQueued)
+	// The fixture's router has no dispatcher; a flush needs it.
+	f.app.triage.SetFlushDispatcher(f.app.enqueueFlushDispatch)
+
+	unlock := f.app.threadApplication().LockMutations(h.thread.ID)
+	sess, _ := f.app.sessionManager().take(h.thread.ID)
+	if err := f.app.teardownAndCloseSessionHoldingMutations(h.thread.ID, sess); err != nil {
+		unlock()
+		t.Fatalf("teardown: %v", err)
+	}
+	stdin := filepath.Join(t.TempDir(), "next-session-stdin.jsonl")
+	next, err := claude.NewSession(context.Background(), h.thread.ID,
+		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdin), WorkDir: h.thread.WorkspacePath},
+		func(provider.ProviderEvent) {})
+	if err != nil {
+		unlock()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = next.Close() })
+	f.app.sessionManager().put(h.thread.ID, session{Provider: string(provider.Claude), Token: "next-session", Claude: next, Liveness: newSessionLiveness(time.Now())})
+	unlock()
+	f.app.threadRequestsWG.Wait()
+
+	waitUntil(t, 10*time.Second, func() bool {
+		sent, _ := os.ReadFile(stdin)
+		return strings.Contains(string(sent), "check the changelog")
+	})
+	if queued := f.app.triage.QueuedFlushItems(h.thread.ID); len(queued) != 0 {
+		t.Fatalf("%d still queued after the flush", len(queued))
+	}
+	if wakes := f.wakes(t, tokens[0]); len(wakes) != 0 {
+		t.Fatalf("the sender was woken: %+v", wakes)
+	}
 }
 
 // assertRequestOwedAgain checks that a request is back where it started:

@@ -1,32 +1,75 @@
 import { SvelteMap } from 'svelte/reactivity';
+import type { Item } from '../types/models';
 import { GetThreadRequestStates } from './bindings';
 import { onThreadAgentRowsChanged, type ThreadAgentRowChange } from './eventsThreadAgentRows';
+import { answeredRequestTokens } from '../utils/answeredRequestTokens';
 
 // Whether the answer to each request a thread made has landed in that
 // thread's timeline, as the request ledger says (GetThreadRequestStates: the
-// confirmed wake row, loaded in a pane or not). A tool row asks for its own
-// token; the asks of one task are read in one call per thread, and a change
-// frame naming a token, or the thread, or a lost frame, reads them again.
-// Kept per thread for the session, outside any pane; the least recently
-// asked thread goes first, and within one the least recently asked token.
+// confirmed wake row, loaded in a pane or not). A mounted tool row watches
+// its own token; the asks of one task are read in one call per thread, in
+// reads of at most MAX_TOKENS, and a change frame naming a token, or the
+// thread, or a lost frame, reads them again. A token the ledger does not
+// know, a request from before it, falls back to the answer rows the pane
+// has loaded.
+//
+// Kept per thread for the session, outside any pane. A token a mounted row
+// watches stays; past MAX_TOKENS a thread drops its least recently asked
+// unwatched token, and past MAX_THREADS the least recently read thread
+// nobody watches goes.
 const MAX_THREADS = 64;
-// The backend's bound on one read (maxThreadRequestStates).
+// The backend's bound on one read (maxThreadRequestStates), and the
+// unwatched tokens a thread keeps.
 const MAX_TOKENS = 256;
 
-const answered = new SvelteMap<string, SvelteMap<string, boolean>>();
+/** What the ledger said: answered or not, or null for a token it does not know. */
+type Ledger = boolean | null;
+
+const answered = new SvelteMap<string, SvelteMap<string, Ledger>>();
+// The mounted rows watching each token, by thread.
+const watched = new Map<string, Map<string, number>>();
 // Tokens to read, by thread, until the next microtask.
 const due = new Map<string, Set<string>>();
 let unsubscribe: (() => void) | null = null;
 
 /**
- * Whether the answer to a request threadId made has landed in its timeline.
- * Unknown until the ledger has been read, which this asks for.
+ * Whether the answer to a request threadId made has landed in its timeline:
+ * the ledger's answer, or for a token it does not know, whether the loaded
+ * items hold a row answering it. Unknown until the ledger has been read,
+ * which this asks for.
  */
-export function requestAnswered(threadId: string | null | undefined, token: string): boolean {
+export function requestAnswered(threadId: string | null | undefined, items: readonly Item[] | undefined, token: string): boolean {
   if (!threadId || !token) return false;
   const known = answered.get(threadId)?.get(token);
   if (known === undefined) ask(threadId, [token]);
-  return known ?? false;
+  return known ?? answeredRequestTokens(items).has(token);
+}
+
+/**
+ * Keeps threadId's token cached while a mounted row shows it, so rows past
+ * MAX_TOKENS do not push each other out. Returns the release.
+ */
+export function watchRequestAnswer(threadId: string | null | undefined, token: string): () => void {
+  if (!threadId || !token) return () => {};
+  let thread = watched.get(threadId);
+  if (!thread) {
+    thread = new Map();
+    watched.set(threadId, thread);
+  }
+  thread.set(token, (thread.get(token) ?? 0) + 1);
+  if (answered.get(threadId)?.get(token) === undefined) ask(threadId, [token]);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const count = (thread.get(token) ?? 1) - 1;
+    if (count > 0) {
+      thread.set(token, count);
+      return;
+    }
+    thread.delete(token);
+    if (thread.size === 0 && watched.get(threadId) === thread) watched.delete(threadId);
+  };
 }
 
 function ask(threadId: string, tokens: readonly string[]): void {
@@ -66,13 +109,29 @@ async function read(threadId: string, tokens: string[]): Promise<void> {
     thread = new SvelteMap();
   }
   answered.set(threadId, thread);
-  if (answered.size > MAX_THREADS) answered.delete(answered.keys().next().value!);
   for (const token of tokens) {
-    // A token the ledger does not name for this thread has no answer to wait on.
     thread.delete(token);
-    thread.set(token, byToken.get(token) ?? false);
+    thread.set(token, byToken.get(token) ?? null);
   }
-  while (thread.size > MAX_TOKENS) thread.delete(thread.keys().next().value!);
+  trim(thread, watched.get(threadId));
+  if (answered.size > MAX_THREADS) {
+    for (const id of answered.keys()) {
+      if (answered.size <= MAX_THREADS) break;
+      if (!watched.has(id)) answered.delete(id);
+    }
+  }
+}
+
+/** Drops a thread's least recently asked unwatched tokens past MAX_TOKENS. */
+function trim(thread: SvelteMap<string, Ledger>, watching: ReadonlyMap<string, number> | undefined): void {
+  let unwatched = 0;
+  for (const token of thread.keys()) if (!watching?.has(token)) unwatched++;
+  for (const token of thread.keys()) {
+    if (unwatched <= MAX_TOKENS) return;
+    if (watching?.has(token)) continue;
+    thread.delete(token);
+    unwatched--;
+  }
 }
 
 function readAgain(change: ThreadAgentRowChange | null): void {
@@ -88,6 +147,7 @@ function readAgain(change: ThreadAgentRowChange | null): void {
 
 export function __resetAgentRequestAnswersForTest(): void {
   answered.clear();
+  watched.clear();
   due.clear();
   unsubscribe?.();
   unsubscribe = null;

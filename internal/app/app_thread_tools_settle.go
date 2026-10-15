@@ -234,15 +234,6 @@ func (a *App) giveBackRequest(threadID, token, body string) {
 	}
 }
 
-// The answers of a request whose message a restore gave back, with the
-// session alive, before the provider took it in: its text went nowhere, or
-// went back to the person's composer with the person's own text it was
-// joined with and could not be told apart from.
-const (
-	requestReturnedUnread     = "The thread did not take the request in."
-	requestReturnedToComposer = "The thread did not take the request in, and its message went back to that thread's composer."
-)
-
 // settleUndeliveredReceipt settles one receipt `interrupted` if it is still
 // running with no turn. The read and the write share the token's settle
 // lock, which a delivery's binding takes too, so a delivery that lands first

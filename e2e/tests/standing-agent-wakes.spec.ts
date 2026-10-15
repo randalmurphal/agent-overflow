@@ -58,6 +58,7 @@ import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { pairBuildBox } from './build-box-helpers.js';
 import { agentsBody, openAgents } from './agents-tray-helpers.js';
+import { captureAgentMessage } from './wake-rows-helpers.js';
 import {
   advanceGate,
   awaitGate,
@@ -3671,6 +3672,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         page.getByTestId('thread-row').filter({ hasText: 'Retrying starter' }).locator('[data-testid="thread-row-status-dot"][aria-label="Working"]'),
       ).toHaveCount(0);
       await expect(page.getByTestId('activity-rail-hairline')).toHaveCount(0);
+      await captureAgentMessage(
+        page,
+        `${provider}-idle-with-a-queued-wake.png`,
+        page.getByTestId('thread-row').filter({ hasText: 'Retrying starter' }).first(),
+        page.getByLabel('Message Input'),
+      );
       console.log(`${provider}: error rows while failing: ${JSON.stringify(errorRows())}`);
       expect(errorRows()).toHaveLength(1);
       expect(raises()).toBe(1);

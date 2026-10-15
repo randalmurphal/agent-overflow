@@ -139,6 +139,7 @@ func readThreadWake(text string) (title, body string, reminder, ok bool) {
 		body = strings.TrimPrefix(after, "\n")
 	case strings.HasPrefix(rest, ": ") && slices.Contains(threadtools.InterruptSessionEndedReasons, rest[len(": "):]),
 		rest == ": "+threadtools.WakePersonStopped, rest == ": "+threadtools.InterruptTurn,
+		rest == ": "+threadtools.InterruptNotTakenIn, rest == ": "+threadtools.InterruptNotTakenInToComposer,
 		strings.HasPrefix(rest, ": The thread was moved to ") && strings.HasSuffix(rest, " before it answered."),
 		strings.HasPrefix(rest, " was cancelled."), strings.HasPrefix(rest, " was interrupted by a restart of "),
 		rest == " did not answer within a day.", rest == " settled.":
