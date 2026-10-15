@@ -175,6 +175,29 @@ behavior. These back parser replay tests and the reference docs in
   the user email are synthetic.
   `cron_spike_20261010.summary.json` records the shapes, fire timings and
   the 2.1.284 scheduler constants read from the CLI bundle.
+- Queued-message delivery orders on 2.1.284 (claude-wire.md §"Frame order
+  per consumption path"), Sonnet, AO's flag set, run 1 of three per case;
+  `queued_delivery_orders_20261015.summary.json` holds every run's order
+  and timings:
+  - `queued_midloop_after_cascade_20261015.ndjson`: a message drained
+    mid-loop into a task-notification cascade round: its echo, then
+    `started`.
+  - `queued_deferred_pair_midloop_20261015.ndjson`: A from idle, B written
+    right after `started` A and drained mid-loop into A's round.
+  - `queued_boundary_merge_20261015.ndjson` /
+    `queued_boundary_merge_after_cascade_20261015.ndjson`: A and B held and
+    merged at a boundary, written during a running turn and during a
+    cascade round: merged-away echo A, `started` A and B, `system/init`,
+    survivor echo B.
+  - `queued_idle_pair_split_20261015.ndjson`: A and B in one stdin write at
+    an idle session run as two turns.
+
+  All: `system/init` kept (its position is the finding) with its payload
+  cut to identity keys; `stream_event`, `system/status` and
+  `rate_limit_event` dropped; mirror batches keep only `queue-operation`,
+  main-chain `user` and `queued_command` entries; session ids and host
+  paths synthetic. In `queued_idle_pair_split_20261015.ndjson` one answer
+  is cut to its first word, in its assistant message and its `result`.
 - `ndjson_outlives.log`: backgrounded Bash outliving its launching turn
   (the wire `result` envelope arrives BEFORE the task's `task_updated`)
 - `ndjson_outlives_turn2.log`: follow-up turn on the same session

@@ -53,6 +53,10 @@ type codexAdapter struct {
 	// endedTurn is the id of the turn whose turn/completed was last
 	// written. Guarded by the writer's lock (noteTurnEnd).
 	endedTurn string
+	// terminals follows the background terminals this process announced,
+	// for the background terminal RPCs. Guarded by the writer's lock
+	// (codex_terminals.go).
+	terminals codexTerminalLedger
 	// historyMode is the thread's persisted history contract
 	// ("legacy" / "paginated"), decided at thread/start and merely echoed
 	// on thread/resume. It gates `thread/revert`. See codex_revert.go.
@@ -147,7 +151,7 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 	}
 	a.keepHistory = opts != nil && opts.KeepHistory
 	a.approvalSeq.Store(codexApprovalIDBase)
-	w.onLine(a.noteTurnEnd)
+	w.onLine(a.noteFrame)
 	return a
 }
 
@@ -314,13 +318,16 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		if a.handleReadRequest(id, method, params) {
 			return
 		}
+		if a.handleTerminalRequest(id, method, params) {
+			return
+		}
 		// -32601, not `{"result":{}}`. An empty success is a LIE that no
 		// real app-server tells, and it defeated the app's own fallback
 		// machinery: codex.IsMethodUnsupported keys on this code, so under
 		// the old default it could never fire and every optional surface
-		// (thread compaction, review, config writes, MCP OAuth, terminal
-		// termination) reported success against a server that had done
-		// nothing. The honest answer exercises those fallback branches.
+		// (thread compaction, review, config writes, MCP OAuth) reported
+		// success against a server that had done nothing. The honest answer
+		// exercises those fallback branches.
 		log.Printf("codex: request method %q is not implemented by this mock; answering -32601", method)
 		a.writeRPCError(id, -32601, fmt.Sprintf("Method not found: %s", method))
 	}
@@ -334,10 +341,11 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 //
 // What is deliberately NOT here stays -32601: the optional and newer
 // surfaces (thread/compact/start, review/start, config/batchWrite,
-// config/mcpServer/reload, mcpServer/oauth/login, the background
-// terminal terminate/clean pair). "This build does not have it" is a
-// real thing for an app-server to say, and those are exactly the
-// branches worth exercising in a harness.
+// config/mcpServer/reload, mcpServer/oauth/login). "This build does not
+// have it" is a real thing for an app-server to say, and those are exactly
+// the branches worth exercising in a harness. The background terminal
+// list/terminate/clean set answers from the terminals this process
+// announced, in the captured shapes (codex_terminals.go).
 //
 // Returns false when the method is not one of them.
 func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string, params json.RawMessage) bool {
@@ -421,10 +429,6 @@ func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string, para
 		// A resumed session lists its descendants (collab_discovery.go).
 		// The mock spawns no collab children of its own, so the list is
 		// empty, and a null cursor ends the walk on the first page.
-		result = `{"data":[],"nextCursor":null}`
-	case "thread/backgroundTerminals/list":
-		// The mock spawns no PTYs, so nothing is running. A null cursor
-		// terminates the app's paging walk on the first page.
 		result = `{"data":[],"nextCursor":null}`
 	default:
 		return false
@@ -535,8 +539,14 @@ func rpcErrorLine(id json.RawMessage, code int, message string) string {
 	})
 }
 
-// noteTurnEnd records the turn whose turn/completed was last written. It
-// is the writer's observer, so it runs under the write lock in wire order.
+// noteFrame is the writer's observer, so it runs under the write lock in
+// wire order.
+func (a *codexAdapter) noteFrame(line string) {
+	a.noteTurnEnd(line)
+	a.terminals.observe(line)
+}
+
+// noteTurnEnd records the turn whose turn/completed was last written.
 func (a *codexAdapter) noteTurnEnd(line string) {
 	if !strings.Contains(line, `"method":"turn/completed"`) {
 		return

@@ -243,8 +243,11 @@ func TestPRCILogFinalFetchFailureSurfacesAfterTheQuickTries(t *testing.T) {
 	if frame.Error == "" || strings.Contains(frame.Error, "glab: 500") || frame.Version != 1 || frame.TotalLines != 1 || !frame.Available {
 		t.Fatalf("error frame = %+v, want the failure over the held version", frame)
 	}
-	if n := f.logFetches.Load(); n != 1+prCILogFinalAttempts {
-		t.Fatalf("final fetch attempted %d times, want %d", n-1, prCILogFinalAttempts)
+	// The running job's log is fetched at the follow cadence until the
+	// pipeline turns terminal, as often as the test's own pace allows; the
+	// final tries are the fetches after it.
+	if n := f.logFetches.Load() - f.logFetchesAtTerminal.Load(); n != prCILogFinalAttempts {
+		t.Fatalf("final fetch attempted %d times, want %d", n, prCILogFinalAttempts)
 	}
 	if got := f.lines(t, "7"); !slices.Equal(got, []string{"partial"}) {
 		t.Fatalf("the held version is not readable under the failure: %q", got)
@@ -315,6 +318,12 @@ func TestPRCILogCutDownloadResumes(t *testing.T) {
 	body := strings.Repeat("0123456789abcdef\n", 2000)
 	f.setLog("7", body, nil)
 	f.cutLog("7", 10000)
+	// The follow cadence can resume the download before the reply is read;
+	// hold the resume so the reply is the cut state.
+	resume := make(chan struct{})
+	f.mu.Lock()
+	f.resumeGate = resume
+	f.mu.Unlock()
 	sub := f.subscribe(t)
 	awaitCIEvent(t, f.ciEvents, "pipeline frame")
 	result, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
@@ -325,6 +334,7 @@ func TestPRCILogCutDownloadResumes(t *testing.T) {
 		t.Fatalf("cut download state = %+v, want downloading", state)
 	}
 	awaitLogEvent(t, f.logEvents, "downloading frame")
+	close(resume)
 	done := awaitLogEvent(t, f.logEvents, "resumed log frame")
 	if done.Downloading || !done.Available || done.TotalLines != 2000 {
 		t.Fatalf("resumed frame = %+v", done)
@@ -558,6 +568,11 @@ func TestPRCILogRefusedResumeStartsOver(t *testing.T) {
 	body := strings.Repeat("0123456789abcdef\n", 2000)
 	f.setLog("7", body, nil)
 	f.cutLog("7", len(body))
+	// Hold the resume so the reply is the cut state (TestPRCILogCutDownloadResumes).
+	resume := make(chan struct{})
+	f.mu.Lock()
+	f.resumeGate = resume
+	f.mu.Unlock()
 	sub := f.subscribe(t)
 	awaitCIEvent(t, f.ciEvents, "pipeline frame")
 	result, err := f.app.SetPRCILogFollows(context.Background(), sub.ID, []string{"7"})
@@ -568,6 +583,7 @@ func TestPRCILogRefusedResumeStartsOver(t *testing.T) {
 		t.Fatalf("cut download state = %+v, want downloading", state)
 	}
 	awaitLogEvent(t, f.logEvents, "downloading frame")
+	close(resume)
 	done := awaitLogEvent(t, f.logEvents, "restarted log frame")
 	if done.Downloading || !done.Available || done.Error != "" || done.TotalLines != 2000 {
 		t.Fatalf("restarted frame = %+v", done)

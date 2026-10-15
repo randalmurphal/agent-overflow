@@ -1342,7 +1342,7 @@ the running thread.
 ## Background terminals
 
 `#[experimental]`: all three require `capabilities.experimentalApi`.
-Available since codex 0.140.0; verified on 0.146.0.
+Available since codex 0.140.0; verified on 0.146.0 and 0.159.1.
 
 ```json
 {"method": "thread/backgroundTerminals/list",
@@ -1368,6 +1368,50 @@ Available since codex 0.140.0; verified on 0.146.0.
 - `terminated: false` means no running process matched (already exited,
   or belongs to another thread). It is a state answer, not an error.
 - `list` paginates: pass a non-null `nextCursor` back as `cursor`.
+
+### What a kill writes (verified 0.159.1)
+
+Spike 2026-10-15, codex-cli 0.159.1, `gpt-6-luna`. Fixtures under
+`docs/references/fixtures/codex/`, one run each:
+
+| Fixture | Case |
+|---|---|
+| `background_terminal_terminate_after_turn_20261015.ndjson` | terminate after the PTY's turn completed; a repeat and an unknown id |
+| `background_terminal_terminate_mid_turn_20261015.ndjson` | terminate while the PTY's turn runs a foreground command |
+| `background_terminals_clean_20261015.ndjson` | `clean` with two PTYs running, then again with none |
+| `background_terminals_survive_interrupt_20261015.ndjson` | `turn/interrupt` with two PTYs running, then `clean` |
+| `background_terminal_terminate_refused_20261015.ndjson` | `terminate` with no `processId`, then with a non-numeric one |
+
+- `terminate` answers `{"terminated":true}`, then the exit watcher writes
+  one `item/completed` for the killed command, about 10 ms later: the
+  `commandExecution` item as `item/started` carried it, with
+  `status:"failed"`, `exitCode:-1` and `durationMs` from its start, under
+  the `turnId` it started in, plus `completedAtMs`. Nothing else follows:
+  no `thread/status/changed`, no turn frame.
+- After the PTY's turn completed, that `item/completed` names the ended
+  turn and arrives with no turn open. During the turn it lands
+  mid-turn and the turn goes on: the model is not told, and the turn ends
+  normally.
+- A process id that matches no running terminal answers
+  `{"terminated":false}` and writes nothing, including a repeat terminate
+  of a killed one. A missing `processId` is `-32600 "Invalid request:
+  missing field `processId`"`; a non-numeric one is `-32600 "invalid
+  background terminal process id: invalid digit found in string"`
+  (`background_terminal_terminate_refused_20261015.ndjson`).
+- `clean` answers `{}`, then writes that `item/completed` for every
+  running PTY. Upstream drains a hash map (`terminate_all_processes`), so
+  their order is unspecified. With nothing running it answers `{}` and
+  writes nothing.
+- `turn/interrupt` kills no PTY: the turn completes `interrupted` and both
+  PTYs keep running, the foreground command still running at the
+  interrupt included; `list` shows it and a later `clean` kills it under
+  the interrupted turn's id.
+- `list` rows carry the command as the model wrote it; the item's
+  `command` is the shell-wrapped form (`/usr/bin/zsh -lc "..."`).
+
+AO reads the `item/completed` as the PTY's completion, which removes its
+live tray row (`observeCodexUnifiedExecComplete`). The mock writes the same
+frames from the terminals it announced (`cmd/ao-mockprovider/codex_terminals.go`).
 
 ---
 
