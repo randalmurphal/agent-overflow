@@ -150,7 +150,8 @@ test('an assistant whose home cannot be removed is not deleted, and the toast sa
     const dialog = page.getByRole('dialog').or(page.getByRole('alertdialog'));
     await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
 
-    const toast = page.getByTestId('toast').filter({ hasText: "the assistant's home folder could not be removed" });
+    // The toast's own line names the folder that is still there.
+    const toast = page.getByTestId('toast').filter({ hasText: `the assistant's home folder ${agent.home} could not be removed` });
     await expect(toast).toBeVisible();
     await toast.getByTestId('error-details-toggle').click();
     await expect(toast.getByTestId('error-details')).toContainText(agent.home);
