@@ -302,9 +302,10 @@ func TestHandOffTeardownTakesBackAQueuedWake(t *testing.T) {
 	}
 }
 
-// A handoff leaves remote watches where they are, so a job the old thread
-// started reports to the assistant's current thread through the notice's
-// own redirect (queueAgentNotice).
+// A completion the watcher prepared with the watch it read before a
+// handoff names the old thread; the notice's own redirect (queueAgentNotice)
+// queues it on the assistant's current thread. The handoff itself moves the
+// remote jobs still owed (TestHandOffMovesOwedRemoteJobs).
 func TestARemoteCompletionOfAPastThreadReachesTheCurrentThread(t *testing.T) {
 	t.Parallel()
 	a, _ := newAppForFlushQueueRPC(t)
@@ -359,31 +360,5 @@ func TestASendThatFindsTheSessionGoneCarriesItsText(t *testing.T) {
 	})
 	if draft, found, err := f.app.store.GetThreadDraft(thread.ID); err != nil || (found && draft.Content != "") {
 		t.Fatalf("past thread's composer = %+v %v, want it empty", draft, err)
-	}
-}
-
-// A handoff that fails after a send found the session gone puts the
-// person's text back in the composer it was sent from.
-func TestAFailedSessionLossHandOffReturnsTheText(t *testing.T) {
-	t.Parallel()
-	f := newAssistantFixture(t)
-	thread, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testAssistant(t, f.app, thread.ID)
-	// An archived assistant refuses the handoff.
-	if _, _, err := f.app.store.ArchiveThread(thread.ID); err != nil {
-		t.Fatal(err)
-	}
-	f.app.assistantSessionLossCarry.Store(thread.ID, store.Item{ThreadID: thread.ID, ID: uuid.NewString(), Kind: "user", Summary: "Anything new?"})
-
-	f.app.recoverAssistantSessionLoss(thread.ID)
-	waitUntil(t, 20*time.Second, func() bool {
-		draft, found, err := f.app.store.GetThreadDraft(thread.ID)
-		return err == nil && found && draft.Content == "Anything new?"
-	})
-	if agent, found, err := f.app.store.GetStandingAgent(thread.ID); err != nil || !found || agent.ThreadID != thread.ID {
-		t.Fatalf("assistant = %+v %v %v, want it still on its thread", agent, found, err)
 	}
 }

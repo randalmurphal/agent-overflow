@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/agenthome"
@@ -16,7 +17,6 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
-	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
@@ -72,71 +72,160 @@ func (a *App) requireAssistantClaudeSession(t store.Thread, opts provider.Sessio
 	return nil
 }
 
+// sessionLossCarries holds, by thread, whether a session-loss handoff is
+// running and the messages of the person's sends that found the session gone
+// while it ran, in the order they arrived. One lock covers both, so a send
+// adds its message only while a handoff runs that will take it, and the
+// handoff takes what is left as it stops.
+type sessionLossCarries struct {
+	mu      sync.Mutex
+	running map[string]bool
+	items   map[string][]store.Item
+}
+
+// begin marks a handoff running for the thread, and reports false when one
+// already is.
+func (c *sessionLossCarries) begin(threadID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.running[threadID] {
+		return false
+	}
+	if c.running == nil {
+		c.running = map[string]bool{}
+	}
+	c.running[threadID] = true
+	return true
+}
+
+// add keeps a send's message for the running handoff, and reports false when
+// none runs to take it.
+func (c *sessionLossCarries) add(threadID string, item store.Item) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.running[threadID] {
+		return false
+	}
+	if c.items == nil {
+		c.items = map[string][]store.Item{}
+	}
+	c.items[threadID] = append(c.items[threadID], item)
+	return true
+}
+
+// take returns the messages kept so far, oldest first.
+func (c *sessionLossCarries) take(threadID string) []store.Item {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	items := c.items[threadID]
+	delete(c.items, threadID)
+	return items
+}
+
+// finish ends the thread's handoff and returns the messages it did not take.
+func (c *sessionLossCarries) finish(threadID string) []store.Item {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.running, threadID)
+	items := c.items[threadID]
+	delete(c.items, threadID)
+	return items
+}
+
 // recoverAssistantSessionLoss runs New Thread, Same Assistant for an
 // assistant whose session the provider cleaned up, off the start that found
 // it (which holds the thread's action lock), once per thread at a time. The
-// new thread's opening block says why.
+// new thread's opening block says why. A handoff that fails, or never starts
+// because the app is stopping, puts every message a send left for it back in
+// the old thread's composer.
 func (a *App) recoverAssistantSessionLoss(threadID string) {
-	if _, running := a.assistantSessionLoss.LoadOrStore(threadID, struct{}{}); running {
+	if !a.assistantSessionLoss.begin(threadID) {
 		return
 	}
 	started := a.goAgentNoticeWork(threadID, func() {
-		defer a.assistantSessionLoss.Delete(threadID)
+		if a.sessionLossHandOffForTest != nil {
+			a.sessionLossHandOffForTest(threadID)
+		}
 		successor, err := a.nextAssistantThread(a.lifeCtx(), threadID, true)
 		if err != nil {
 			log.Printf("assistants: %s lost its provider session and could not move to a new thread: %v", threadID, err)
 			a.emitErrorToThread(threadID, "The provider cleaned up this assistant's session, and moving it to a new thread failed: "+err.Error()+". Use New Thread, Same Assistant to try again.")
-			a.returnSessionLossCarry(threadID)
+			a.returnSessionLossCarries(threadID, a.assistantSessionLoss.finish(threadID))
 			return
+		}
+		// The handoff took every message under the old thread's action
+		// lock, the only lock a send that finds the session gone holds.
+		if left := a.assistantSessionLoss.finish(threadID); len(left) > 0 {
+			a.carrySessionLossItems(threadID, successor.ID, left)
 		}
 		log.Printf("assistants: %s lost its provider session; it continues in %s", threadID, successor.ID)
 	})
 	if !started {
-		a.assistantSessionLoss.Delete(threadID)
+		a.returnSessionLossCarries(threadID, a.assistantSessionLoss.finish(threadID))
 	}
 }
 
-// carryAcrossSessionLoss puts the person's message whose send found the
-// session gone in the successor's composer, and reports whether there was
-// one. The send stored it before it let go of the old thread's action lock,
-// which the handoff has taken since.
-func (a *App) carryAcrossSessionLoss(oldThreadID, successorID string) bool {
-	value, found := a.assistantSessionLossCarry.LoadAndDelete(oldThreadID)
-	if !found {
-		return false
+// carryAcrossSessionLoss puts the messages of the person's sends that found
+// the session gone in the successor's composer, oldest first, and returns
+// how many there were. The sends kept them under the old thread's action
+// lock, which the handoff has taken since.
+func (a *App) carryAcrossSessionLoss(oldThreadID, successorID string) int {
+	items := a.assistantSessionLoss.take(oldThreadID)
+	if len(items) == 0 {
+		return 0
 	}
-	userItem := value.(store.Item)
-	draft, err := a.composerDraftFromUserItemWithClonedAttachments(successorID, userItem, time.Now().UnixMilli())
+	if !a.carrySessionLossItems(oldThreadID, successorID, items) {
+		return 0
+	}
+	return len(items)
+}
+
+// carrySessionLossItems merges the messages into the successor's composer,
+// one blank line between them, each with its attachments copied over. A
+// write that fails puts them back in the old thread's composer.
+func (a *App) carrySessionLossItems(oldThreadID, successorID string, items []store.Item) bool {
+	now := time.Now().UnixMilli()
+	parts := make([]composerdraft.Part, 0, len(items))
+	var err error
+	for _, item := range items {
+		var part composerdraft.Part
+		if part, err = a.draftPartWithClonedAttachments(successorID, item, now); err != nil {
+			break
+		}
+		parts = append(parts, part)
+	}
 	if err == nil {
-		err = a.writeThreadDraft(transport.ClientIdentity{}, draft)
+		_, err = a.mergeAndUpsertThreadDraft(successorID, parts)
 	}
 	if err != nil {
-		log.Printf("assistants: carry the message to %s into %s: %v", oldThreadID, successorID, err)
-		a.restoreSessionLossCarry(oldThreadID, userItem)
+		log.Printf("assistants: carry the messages to %s into %s: %v", oldThreadID, successorID, err)
+		a.returnSessionLossCarries(oldThreadID, items)
 		return false
 	}
 	return true
 }
 
-// returnSessionLossCarry puts the message back in the old thread's composer
-// when the handoff failed. It waits for the send that stored it to let go of
-// the thread's action lock.
-func (a *App) returnSessionLossCarry(threadID string) {
-	unlock := a.threadLocks().Lock(threadID)
-	unlock()
-	if value, found := a.assistantSessionLossCarry.LoadAndDelete(threadID); found {
-		a.restoreSessionLossCarry(threadID, value.(store.Item))
+// returnSessionLossCarries puts the messages back in the old thread's
+// composer, oldest first, ahead of anything typed there since.
+func (a *App) returnSessionLossCarries(threadID string, items []store.Item) {
+	if len(items) == 0 {
+		return
 	}
-}
-
-func (a *App) restoreSessionLossCarry(threadID string, userItem store.Item) {
-	part, err := composerdraft.PartFromUserItem(userItem)
+	parts := make([]composerdraft.Part, 0, len(items))
+	var err error
+	for _, item := range items {
+		var part composerdraft.Part
+		if part, err = composerdraft.PartFromUserItem(item); err != nil {
+			break
+		}
+		parts = append(parts, part)
+	}
 	if err == nil {
-		_, err = a.mergeAndUpsertThreadDraft(threadID, []composerdraft.Part{part})
+		_, err = a.mergeAndUpsertThreadDraft(threadID, parts)
 	}
 	if err != nil {
-		log.Printf("assistants: put the message back in %s's composer: %v", threadID, err)
-		a.emitErrorToThread(threadID, "Your message could not be put back in the composer: "+err.Error())
+		log.Printf("assistants: put %d messages back in %s's composer: %v", len(items), threadID, err)
+		a.emitErrorToThread(threadID, "Your messages could not be put back in the composer: "+err.Error())
 	}
 }
 
@@ -207,6 +296,10 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 	a.broadcastThreadRow(triage.ThreadActionListed, successor)
 	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionUnlisted, Thread: &handOff.Old, HandOffTo: successor.ID})
 	a.broadcastSpawnedThreadRows(successor.ID)
+	carried := 0
+	if sessionLost {
+		carried = a.carryAcrossSessionLoss(threadID, successor.ID)
+	}
 	body := agenthome.HandOffMessage(agenthome.HandOff{
 		Name:             successor.Title,
 		PreviousThreadID: threadID,
@@ -214,7 +307,7 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 		MovedRequests:    handOff.MovedRequests,
 		Interrupted:      a.interruptedByHandOff(interrupted),
 		SessionLost:      sessionLost,
-		Carried:          sessionLost && a.carryAcrossSessionLoss(threadID, successor.ID),
+		Carried:          carried,
 	})
 	if err := a.queueAssistantMessage(successor.ID, assistantSendID(assistantWakeKindHandOff, threadID), successor.Title, body); err != nil {
 		return successor, fmt.Errorf("the assistant moved to its new thread, but its opening block could not be queued: %w", err)

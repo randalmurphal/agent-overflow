@@ -65,10 +65,6 @@ func preSyncPersonalAssistantDB(t *testing.T) string {
 		if m.Version <= threadPullRequestsMigrationVersion || m.Version > receiptOwnTurnMigrationVersion {
 			continue
 		}
-		if m.Version > receiptOwnTurnMigrationVersion {
-			// That build stopped at its own last migration.
-			break
-		}
 		m.Version--
 		apply := applyMigration
 		if m.Rebuild {

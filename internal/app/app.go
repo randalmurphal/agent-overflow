@@ -227,12 +227,8 @@ type App struct {
 	// agentNoticeWork joins what notices run after they are accepted.
 	agentNoticeWork appAgentNoticeWorkState
 	// assistantSessionLoss holds the threads whose session-loss handoff is
-	// running (recoverAssistantSessionLoss).
-	assistantSessionLoss sync.Map
-	// assistantSessionLossCarry holds, by thread, the person's message whose
-	// send found the assistant's session gone, for the handoff that follows
-	// to put in its successor's composer (carryAcrossSessionLoss).
-	assistantSessionLossCarry sync.Map
+	// running and the messages it carries (recoverAssistantSessionLoss).
+	assistantSessionLoss sessionLossCarries
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
@@ -584,6 +580,14 @@ type App struct {
 	// delete of the durable queue (dropDurableFlushQueue), so a test can
 	// queue a message before the in-memory queue is cleared.
 	queueDroppedForTest func(threadID string)
+	// remoteCompletionReadForTest, when set, runs in a watcher pass between
+	// its read of the watch and the queueing of the completion
+	// (checkRemoteWatch), so a test can hand the thread off at that moment.
+	remoteCompletionReadForTest func(w store.RemoteWatch)
+	// sessionLossHandOffForTest, when set, runs as a session-loss handoff
+	// begins, before it reads anything (recoverAssistantSessionLoss), so a
+	// test can send again or make the handoff fail at that moment.
+	sessionLossHandOffForTest func(threadID string)
 	// remoteReplySettledForTest, when set, runs in a parked remote call's
 	// after-response work between the dismissal and the end of its wait.
 	remoteReplySettledForTest func()

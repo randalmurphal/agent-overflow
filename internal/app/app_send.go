@@ -690,11 +690,11 @@ func (a *App) sendMessageLocked(
 		if startErr := a.startSession(ctx, threadID); startErr != nil {
 			err = fmt.Errorf("start session: %w", startErr)
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
-			if errors.Is(startErr, errAssistantSessionGone) && opts.Origin == "" {
-				// The handoff that start set off puts the person's text in
-				// the new thread's composer, so the client keeps it out of
-				// this one's.
-				a.assistantSessionLossCarry.Store(threadID, userItem)
+			// The handoff that start set off puts the person's text in the
+			// new thread's composer, so the client keeps it out of this
+			// one's. With no handoff running to take it, the send fails as
+			// any start failure does and the client keeps the text.
+			if errors.Is(startErr, errAssistantSessionGone) && opts.Origin == "" && a.assistantSessionLoss.add(threadID, userItem) {
 				return store.Item{}, errorsx.Public(transport.ErrCodeAssistantSessionGone, assistantSessionGoneMessage, err)
 			}
 			return store.Item{}, fmt.Errorf("send message: %w", err)

@@ -286,15 +286,25 @@ func (a *App) mergeAndUpsertThreadDraft(threadID string, parts []composerdraft.P
 }
 
 func (a *App) composerDraftFromUserItemWithClonedAttachments(threadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {
-	meta, err := usermessage.FromItem(userItem)
+	part, err := a.draftPartWithClonedAttachments(threadID, userItem, updatedAt)
 	if err != nil {
 		return store.ThreadDraft{}, err
+	}
+	return composerdraft.FromParts(threadID, part.Content, part.AttachmentIDs, part.SourceProposedPlan, updatedAt)
+}
+
+// draftPartWithClonedAttachments projects a user item into a draft part for
+// threadID, its attachments copied into that thread.
+func (a *App) draftPartWithClonedAttachments(threadID string, userItem store.Item, updatedAt int64) (composerdraft.Part, error) {
+	meta, err := usermessage.FromItem(userItem)
+	if err != nil {
+		return composerdraft.Part{}, err
 	}
 	attachmentIDs, err := a.cloneUserMessageAttachmentsForDraft(threadID, userItem.ThreadID, meta.Attachments, updatedAt)
 	if err != nil {
-		return store.ThreadDraft{}, err
+		return composerdraft.Part{}, err
 	}
-	return composerdraft.FromParts(threadID, userItem.Summary, attachmentIDs, meta.SourceProposedPlan, updatedAt)
+	return composerdraft.Part{Content: userItem.Summary, AttachmentIDs: attachmentIDs, SourceProposedPlan: meta.SourceProposedPlan}, nil
 }
 
 func (a *App) cloneUserMessageAttachmentsForDraft(

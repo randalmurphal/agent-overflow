@@ -137,3 +137,36 @@ func asNameTaken(err error, out **AssistantNameTakenError) bool {
 	}
 	return ok
 }
+
+// A handoff moves the remote jobs still owed to the old
+// thread (pending, or queued and never confirmed) and leaves a confirmed or
+// dismissed one where it was.
+func TestHandOffMovesOwedRemoteJobs(t *testing.T) {
+	path := fileDBThrough(t, agentRecordsMigrationVersion-1)
+	s, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	mustExec(t, s.db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
+	mustExec(t, s.db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
+		('a', 'p', 'Ops', 'claude', '/p', '', 1, 1, 0), ('a2', 'p', 'Ops', 'claude', '/p', '', 2, 2, 0)`)
+	if err := s.CreateStandingAgent(StandingAgent{ID: "A", ThreadID: "a", Home: "/h/A", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.db, `INSERT INTO remote_watches (computer_id, request_id, thread_id, fingerprint, label, notification, created_at, confirmed_at) VALUES
+		('c', 'pending', 'a', 'f', 'l', 'pending', 1, NULL),
+		('c', 'unconfirmed', 'a', 'f', 'l', 'queued', 1, NULL),
+		('c', 'confirmed', 'a', 'f', 'l', 'queued', 1, 5),
+		('c', 'dismissed', 'a', 'f', 'l', 'dismissed', 1, NULL)`)
+	if _, err := s.HandOffAssistant("a", "a2", 10); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"pending": "a2", "unconfirmed": "a2", "confirmed": "a", "dismissed": "a"}
+	for request, thread := range want {
+		w, err := s.GetRemoteWatch("c", request)
+		if err != nil || w.ThreadID != thread {
+			t.Errorf("watch %s on %q %v, want %s", request, w.ThreadID, err, thread)
+		}
+	}
+}

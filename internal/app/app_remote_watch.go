@@ -291,6 +291,9 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	}
 	w.Receipt = receipt
 	output := a.remoteCompletionExcerpt(ctx, w.ComputerID, w.RequestID, receipt)
+	if a.remoteCompletionReadForTest != nil {
+		a.remoteCompletionReadForTest(w)
+	}
 	if err = a.deliverRemoteCompletion(w, output); err != nil {
 		_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, receipt, "Completion could not enter the message queue: "+remoteErrorText(err), next)
 	}
