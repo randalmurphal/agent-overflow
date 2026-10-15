@@ -178,6 +178,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'thread_requests', reason: "an agent's thread_send or thread_ask request" },
   { table: 'thread_request_receipts', reason: "an agent's thread_send or thread_ask request" },
   { table: 'async_questions', reason: "an agent's thread_ask question" },
+  { table: 'agents', columns: ['creator_agent_id'], reason: "an assistant another assistant made with thread_new_assistant, which is an agent's thread request" },
   {
     table: 'agent_wakes',
     columns: ['last_output', 'undelivered', 'missed'],

@@ -33,7 +33,7 @@ import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../sr
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { centerInTimeline } from './standing-agent-home-contents-helpers.js';
-import { capture } from './wake-rows-helpers.js';
+import { capture, captureAgentMessage } from './wake-rows-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
 import { backgroundShellSteps } from './agents-tray-helpers.js';
 import {
@@ -2181,8 +2181,8 @@ test('two assistants with one name on the two computers show and resolve as <nam
   await expect(hereRow.getByTestId('thread-row-title')).toHaveText('Night ops-Desk computer');
   await expect(thereRow.getByTestId('thread-row-title')).toHaveText('Night ops-GPU computer');
   await hereRow.click();
-  await expect(page.getByTestId('pane-title-handle').filter({ visible: true }).first()).toContainText('Night ops-Desk computer');
-  await capture(page, 'assistant-name-clash-sidebar.png', hereRow, thereRow);
+  await expect(page.getByTestId('chat-header-title').filter({ visible: true })).toHaveText('Night ops-Desk computer');
+  await captureAgentMessage(page, 'assistant-name-clash-sidebar.png', hereRow, thereRow);
   expect((await threadRows(home)).find((row) => row.id === here.threadIds[0])?.title).toBe('Night ops');
   expect((await threadRows(remote)).find((row) => row.id === there.threadIds[0])?.title).toBe('Night ops');
 });
