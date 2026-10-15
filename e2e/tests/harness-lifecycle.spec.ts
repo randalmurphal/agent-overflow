@@ -185,8 +185,10 @@ test('an exiting process still holds its pid while its exe link is gone', async 
   });
   try {
     const pid = Number((await once(parent.stdout!, 'data'))[0].toString().trim());
+    // The shell reports the pid at its fork, before setsid has made it a
+    // group leader.
+    await expect.poll(async () => (await captureProcessIdentity(pid)).groupId).toBe(pid);
     const identity = await captureProcessIdentity(pid);
-    expect(identity.groupId).toBe(pid);
     await expect.poll(async () => (await readFile(`/proc/${pid}/stat`, 'utf8')).split(') ')[1]?.[0]).toBe('Z');
     await expect(readlink(`/proc/${pid}/exe`)).rejects.toThrow();
 

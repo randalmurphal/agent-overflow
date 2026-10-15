@@ -808,12 +808,19 @@ func TestARequestTheSessionDiedHoldingIsDeliveredAtTheNextStart(t *testing.T) {
 	h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "error"})
 	h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
 	// The death restores twice, at its error and at its disconnect; the
-	// second finds the request queued again and queues it once more.
+	// second finds the request queued again and queues it once more. Each
+	// holds the thread action lock from its drain until the request is
+	// queued again, so the request is read under it.
 	waitUntil(t, 10*time.Second, func() bool {
+		unlock := f.app.threadLocks().Lock(h.thread.ID)
+		defer unlock()
 		record, found, err := f.app.findRecordedSend(h.thread.ID, threadRequestSendID(token))
-		return err == nil && found && !record.dispatched && f.receipt(t, token).State == store.ThreadReceiptAccepted
+		if err != nil || !found || record.dispatched || f.receipt(t, token).State != store.ThreadReceiptAccepted {
+			return false
+		}
+		assertRequestOwedAgain(t, f, h.thread.ID, token)
+		return true
 	})
-	assertRequestOwedAgain(t, f, h.thread.ID, token)
 	assertNothingPending(t, f.app, h.thread.ID)
 
 	// The fixture's router has no dispatcher; the next start's flush needs it.
