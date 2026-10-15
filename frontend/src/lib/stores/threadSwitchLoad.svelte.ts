@@ -2,7 +2,8 @@ import { captureRetainedTimelineWindow, refreshRetainedTimelineWindow } from './
 import { awaitBackendReplay } from './transportRecovery';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
-import { hasScope, pageGrantsKnown, pageGrantsResolved } from '../transport/scopes';
+import { threadHasScope } from '../transport/entityScopes';
+import { pageGrantsKnown, pageGrantsResolved } from '../transport/scopes';
 import { threadBackend } from '../transport/entityIndex';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import type { Item, Thread } from '../types/models';
@@ -1458,7 +1459,7 @@ export function createThreadSwitchLoad(
    * from the thread list is what SwitchThread would have returned.
    */
   async function runOperateLegs(newThread: Thread, gen: number, backend: BackendKey): Promise<void> {
-    if (!hasScope('threads:operate', backend)) return;
+    if (!threadHasScope('threads:operate', newThread.id, newThread.projectId)) return;
     const switchPromise = (async () => {
       try {
         const switched = (await withBackendTarget(backend, () => SwitchThread(newThread.id))) as
@@ -1514,7 +1515,8 @@ export function createThreadSwitchLoad(
       void runOperateLegs(pending.thread, pending.gen, pending.backend);
       // The live-state leg skipped its snapshot too (startLiveStateFetch).
       // A refresh re-reads it beside the window its deferred rows merge into.
-      if (hasScope('threads:operate', pending.backend) || hasScope('approvals:respond', pending.backend)) {
+      const { id, projectId } = pending.thread;
+      if (threadHasScope('threads:operate', id, projectId) || threadHasScope('approvals:respond', id, projectId)) {
         refreshScheduler.request({ immediate: true });
       }
     });

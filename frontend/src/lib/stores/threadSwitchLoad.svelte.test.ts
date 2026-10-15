@@ -4,7 +4,7 @@
 // cold initial load, the spinner-flash gate over the two, and the size-prior
 // capture a switch has to take BEFORE the incoming thread lands.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
 import { __setSmoothingClockForTest, createThreadPane } from './thread.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -12,6 +12,16 @@ import { buildPane, makeItem, makeThread, stubScrollController } from '../../tes
 import { FakeSmoothingClock, flushMicrotasks, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { utf8Length } from '../utils/utf8Offsets';
 import { prependThread, removeThread } from './threads.svelte';
+import { getBindingMock } from '../../test/mocks/bindings-app';
+import { __attachBackendForTest, __resetBackendsForTest } from '../transport/backends';
+import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
+import {
+  grantBackendScopes,
+  OBSERVE_SCOPES,
+  pairViewOnly,
+  resetToLocalPage,
+  revokeBackendScopes,
+} from '../../test/helpers/scopes';
 
 describe('threadSwitchLoad', () => {
   beforeEach(installThreadPaneTestEnv);
@@ -824,6 +834,62 @@ describe('threadSwitchLoad', () => {
       ]);
 
       await expect(pane.switchThread(makeThread({ id: 'thread-in' }))).resolves.toBeUndefined();
+    });
+  });
+
+  // The operate legs ride the thread's computer, so they ask that computer's
+  // grant: a second backend can hold a different set than home.
+  describe('operate legs gate on the thread computer', () => {
+    const LAPTOP = 'laptop';
+    const OPERATE_CALLS = ['SwitchThread', 'AutoResumeThread', 'GetThreadLiveState', 'ListPendingInteractiveRequests'];
+
+    beforeEach(() => {
+      setBindingMock('AutoResumeThread', async () => {});
+      __attachBackendForTest({
+        id: LAPTOP,
+        backendId: '99999999-8888-4777-8666-555555555555',
+        name: 'Laptop',
+        wsUrl: 'ws://localhost:3000/ws/backend/laptop',
+        bootstrapUrl: '/bootstrap/laptop.json',
+      }, {
+        callByID: async () => null,
+        callByName: async () => null,
+        subscribe: () => () => undefined,
+        installStepUpProver: () => undefined,
+        setLease: () => undefined,
+        setWatchedThreads: () => undefined,
+        getStatus: () => ({ status: 'connected', nextAttemptAt: null }),
+        onStatusChange: () => () => undefined,
+        getHello: () => null,
+        onHelloChange: () => () => undefined,
+        onReplay: () => () => undefined,
+        close: () => undefined,
+      } as never);
+      noteThread('t-laptop', LAPTOP);
+    });
+
+    afterEach(() => {
+      revokeBackendScopes(LAPTOP);
+      resetToLocalPage();
+      __resetBackendsForTest();
+      __resetEntityIndexForTest();
+    });
+
+    it('skips them when the thread computer withholds threads:operate that home holds', async () => {
+      await grantBackendScopes(LAPTOP, OBSERVE_SCOPES);
+      await createThreadPane().switchThread(makeThread({ id: 't-laptop' }));
+      for (const name of OPERATE_CALLS) {
+        expect(getBindingMock(name), `${name} is not granted on the laptop`).not.toHaveBeenCalled();
+      }
+    });
+
+    it('runs them when the thread computer grants threads:operate that home withholds', async () => {
+      await pairViewOnly();
+      await grantBackendScopes(LAPTOP, [...OBSERVE_SCOPES, 'threads:operate', 'approvals:respond']);
+      await createThreadPane().switchThread(makeThread({ id: 't-laptop' }));
+      for (const name of ['SwitchThread', 'AutoResumeThread', 'GetThreadLiveState']) {
+        expect(getBindingMock(name), `${name} is granted on the laptop`).toHaveBeenCalledWith('t-laptop');
+      }
     });
   });
 });
