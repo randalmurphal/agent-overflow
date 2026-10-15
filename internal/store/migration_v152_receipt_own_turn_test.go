@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -44,5 +45,82 @@ func TestMigrationV152ReceiptOwnTurn(t *testing.T) {
 	}
 	if want := []string{"bound|0", "settled|0", "unbound|0"}; !slices.Equal(got, want) {
 		t.Errorf("own turns = %q, want %q", got, want)
+	}
+}
+
+// preSyncPersonalAssistantDB is a database a personal-assistant build from
+// before main's v142 migrated: main's chain through v141, then
+// personal-assistant's ten migrations recorded one version lower (v142 to
+// v151), with no thread_pull_requests.
+func preSyncPersonalAssistantDB(t *testing.T) string {
+	t.Helper()
+	path := fileDBThrough(t, threadPullRequestsMigrationVersion-1)
+	db, err := sql.Open("sqlite", poolDSN(path, writerConnPragmas))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	for _, m := range migrations {
+		if m.Version <= threadPullRequestsMigrationVersion {
+			continue
+		}
+		m.Version--
+		apply := applyMigration
+		if m.Rebuild {
+			apply = applyRebuildMigration
+		}
+		if err := apply(db, m); err != nil {
+			t.Fatalf("apply %s as v%d: %v", m.Name, m.Version, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A pre-sync personal-assistant database already holds v152's column under
+// v151. Opening it refuses v152 by naming that cause and the repair's doc
+// section, not with SQLite's duplicate-column error, and changes nothing.
+func TestReceiptOwnTurnRefusesAPreSyncPersonalAssistantDatabase(t *testing.T) {
+	path := preSyncPersonalAssistantDB(t)
+	_, err := New(path)
+	if err == nil {
+		t.Fatal("New opened a pre-sync personal-assistant database")
+	}
+	want := "migration v152 (receipt_own_turn) refused: thread_request_receipts.own_turn already exists: " +
+		"this database was migrated by a pre-sync personal-assistant build; " +
+		"see docs/architecture/development.md#a-database-from-a-pre-sync-personal-assistant-build"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("New error = %q, want it to contain %q", err, want)
+	}
+	if strings.Contains(err.Error(), "duplicate column") {
+		t.Fatalf("New error = %q, want the cause rather than SQLite's duplicate-column error", err)
+	}
+	if got := recordedVersion(t, path); got != receiptOwnTurnMigrationVersion-1 {
+		t.Fatalf("recorded version = %d, want %d", got, receiptOwnTurnMigrationVersion-1)
+	}
+}
+
+// The repair docs/architecture/development.md gives, applied to a pre-sync
+// database, leaves one the build opens at v152 with thread_pull_requests.
+func TestThePreSyncRepairOpens(t *testing.T) {
+	path := preSyncPersonalAssistantDB(t)
+	db, err := sql.Open("sqlite", poolDSN(path, writerConnPragmas))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, db, threadPullRequestsV142SQL)
+	mustExec(t, db, `INSERT INTO migration_versions (version, name) VALUES (152, 'receipt_own_turn')`)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(path)
+	if err != nil {
+		t.Fatalf("New after the repair: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if got := recordedVersion(t, path); got != receiptOwnTurnMigrationVersion {
+		t.Fatalf("recorded version = %d, want %d", got, receiptOwnTurnMigrationVersion)
 	}
 }

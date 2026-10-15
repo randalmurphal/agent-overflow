@@ -59,26 +59,27 @@ export function containedCommand(binary: string, args: string[], memoryLimitByte
     // cadence, and the outer ao-harness-e2e launcher monitors the whole suite.
     return { file: binary, args };
   }
-  // RLIMIT_AS (`ulimit -v`) prevents Go and Node from reserving their normal
-  // runtime address space before the watchdog can start. RLIMIT_DATA bounds
+  // RLIMIT_AS prevents Go and Node from reserving their normal runtime
+  // address space before the watchdog can start. RLIMIT_DATA bounds
   // heap/data allocations without blocking those virtual reservations.
-  const script = 'limit="$1"; shift; ulimit -d "$limit" || exit 125; exec "$@"';
-  return { file: '/bin/sh', args: ['-c', script, 'ao-harness-memory-limit', String(kib), binary, ...args] };
+  // prlimit (util-linux) sets it, soft and hard, and execs the binary with
+  // no shell between them.
+  return { file: 'prlimit', args: [`--data=${kib * 1024}`, '--', binary, ...args] };
 }
 
 export async function captureProcessIdentity(pid: number | undefined): Promise<ProcessIdentity> {
   if (!pid || pid <= 0) throw new Error('harness watchdog: child has no pid');
-  // Linux fallback containment starts through `/bin/sh` so it can apply
-  // ulimit before exec'ing the backend. Do not authenticate that short-lived
-  // wrapper. A later identity check would otherwise reject the same PID when
-  // exec turns it into the backend process.
+  // Linux fallback containment starts through `prlimit` so it can apply
+  // RLIMIT_DATA before exec'ing the backend. Do not authenticate that
+  // short-lived wrapper. A later identity check would otherwise reject the
+  // same PID when exec turns it into the backend process.
   let previous: ProcessIdentity | undefined;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const identity = await captureProcessIdentityOnce(pid);
-    if (!isShellExecutable(identity.executable) && previous && sameProcessIdentity(previous, identity)) {
+    if (!isLaunchWrapper(identity.executable) && previous && sameProcessIdentity(previous, identity)) {
       return identity;
     }
-    previous = isShellExecutable(identity.executable) ? undefined : identity;
+    previous = isLaunchWrapper(identity.executable) ? undefined : identity;
     if (attempt === 99) return identity;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -166,9 +167,8 @@ async function captureProcessIdentityOnce(pid: number): Promise<ProcessIdentity>
   throw new Error(`harness watchdog: unsupported platform ${process.platform}`);
 }
 
-function isShellExecutable(executable: string): boolean {
-  const name = path.basename(executable).toLowerCase();
-  return name === 'sh' || name === 'dash' || name === 'bash' || name === 'zsh';
+function isLaunchWrapper(executable: string): boolean {
+  return path.basename(executable).toLowerCase() === 'prlimit';
 }
 
 export async function captureProcessGroupMemberProof(

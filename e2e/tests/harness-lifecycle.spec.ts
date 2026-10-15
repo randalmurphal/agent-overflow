@@ -516,6 +516,21 @@ test('a launch that cannot spawn closes its console log', async () => {
   }
 });
 
+// The Linux rlimit path execs the backend under prlimit, with no shell
+// between them, so the backend itself carries the data limit, soft and hard.
+test('a Linux backend runs under the data limit it was launched with', async () => {
+  test.skip(process.platform !== 'linux', 'RLIMIT_DATA is applied only on the Linux fallback path');
+  const harness = await launchHarness();
+  try {
+    const limits = await readFile(`/proc/${harness.bootstrap.pid}/limits`, 'utf8');
+    const row = limits.split('\n').find((line) => line.startsWith('Max data size'));
+    expect(row?.trim().split(/\s+/).slice(3, 5)).toEqual([String(FALLBACK_MEMORY_LIMIT_BYTES), String(FALLBACK_MEMORY_LIMIT_BYTES)]);
+    expect(path.basename(await readlink(`/proc/${harness.bootstrap.pid}/exe`))).toBe('agent-overflow');
+  } finally {
+    await harness.close();
+  }
+});
+
 test('flush puts every written console line in the file', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'ao-harness-console-'));
   try {

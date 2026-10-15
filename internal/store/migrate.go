@@ -94,6 +94,11 @@ type Migration struct {
 	// REFUSES the combination by name rather than dropping the Fix on the
 	// floor.
 	Fix func(tx *sql.Tx) error
+	// Check is an optional precondition that runs inside the migration's
+	// transaction before SQL. It refuses, with the cause, a database the
+	// migration cannot apply to; it changes nothing. Not supported on
+	// Rebuild migrations, which refuse it as they refuse a Fix.
+	Check func(tx *sql.Tx) error
 	// Rebuild marks a migration whose SQL performs a full table rebuild
 	// (CREATE new / copy / DROP old / RENAME) to change a CHECK or drop a
 	// NOT NULL that SQLite can't alter in place. Such a migration MUST run
@@ -1740,7 +1745,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: deliveryConfirmationsMigrationVersion, Name: "delivery_confirmations", SQL: deliveryConfirmationsV149SQL},
 	{Version: answerAgentMigrationVersion, Name: "answer_agent", SQL: answerAgentV150SQL},
 	{Version: agentRowsRemoteMigrationVersion, Name: "agent_rows_remote", SQL: agentRowsRemoteV151SQL},
-	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV152SQL},
+	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV152SQL, Check: refusePreSyncReceiptOwnTurn},
 }
 
 // MigrationStep describes one pending migration as it begins, or a
@@ -2077,6 +2082,12 @@ func applyMigrationContext(ctx context.Context, db *sql.DB, m Migration) error {
 		return fmt.Errorf("begin migration v%d: %w", m.Version, err)
 	}
 
+	if m.Check != nil {
+		if err := m.Check(tx); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration v%d (%s) refused: %w", m.Version, m.Name, err)
+		}
+	}
 	if strings.TrimSpace(m.SQL) != "" {
 		if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 			_ = tx.Rollback()
@@ -2152,6 +2163,9 @@ func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, ac
 	// consecutive migrations, which is what every existing pair does.
 	if m.Fix != nil {
 		return fmt.Errorf("migration v%d (%s): a Rebuild migration cannot carry a Fix; split the data fixup into its own migration", m.Version, m.Name)
+	}
+	if m.Check != nil {
+		return fmt.Errorf("migration v%d (%s): a Rebuild migration cannot carry a Check", m.Version, m.Name)
 	}
 	log.Printf("store: applying rebuild migration v%d: %s", m.Version, m.Name)
 	conn, err := db.Conn(ctx)

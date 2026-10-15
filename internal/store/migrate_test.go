@@ -1839,6 +1839,9 @@ func TestNoShippedRebuildMigrationCarriesAFix(t *testing.T) {
 			t.Errorf("migration v%d (%s) is a Rebuild and carries a Fix; split the data fixup into its own migration",
 				m.Version, m.Name)
 		}
+		if m.Rebuild && m.Check != nil {
+			t.Errorf("migration v%d (%s) is a Rebuild and carries a Check", m.Version, m.Name)
+		}
 	}
 }
 
