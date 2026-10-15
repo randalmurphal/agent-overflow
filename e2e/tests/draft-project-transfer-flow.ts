@@ -4,6 +4,7 @@ import { test, expect } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { CONNECTED_AFTER_CONFIRM, headlessPairing } from './headless-pairing-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';
+import { expectTransferComplete } from './conversation-transfer-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string }> }
 interface Thread { id: string; projectId: string; workspacePath: string; mode: string; model: string; runtimeMode: string }
@@ -46,6 +47,7 @@ export function draftProjectTransferFlow(): void {
       await expect(input).toHaveValue(prompt);
       await page.getByTestId('chat-header-project').click();
       await page.getByRole('menuitem', { name: /Draft remote project/ }).click();
+      await expectTransferComplete(source, target, original.id);
       await expect(page.getByTestId('chat-header-project')).toHaveText('Draft remote project');
       await expect(input).toHaveValue(prompt);
       await expect(page.getByTestId('attachment-thumb')).toHaveCount(1);

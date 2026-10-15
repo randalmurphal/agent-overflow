@@ -54,7 +54,7 @@ func readDatabaseShape(t *testing.T, s *Store) databaseShape {
 	}
 	for _, pragma := range []string{
 		"user_version", "schema_version", "application_id", "auto_vacuum", "journal_mode",
-		"page_size", "encoding", "freelist_count", "foreign_keys", "synchronous", "busy_timeout",
+		"page_size", "encoding", "freelist_count", "foreign_keys", "busy_timeout",
 	} {
 		var value string
 		if err := s.db.QueryRow("PRAGMA " + pragma).Scan(&value); err != nil {
@@ -74,19 +74,66 @@ func closeTemplateStore(t *testing.T, s *Store) {
 	})
 }
 
-func TestNewFromTemplateMatchesAFreshMigration(t *testing.T) {
+// A scratch database waits for no flush. Under other writers' fsyncs the
+// synced build and copy took seconds, which a conversation transfer's
+// preparation spent before every first validation in a process.
+func TestNewScratchFromTemplateSyncsNothing(t *testing.T) {
+	durable, err := New(filepath.Join(t.TempDir(), "durable.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeTemplateStore(t, durable)
+	scratch, err := NewScratchFromTemplate(context.Background(), filepath.Join(t.TempDir(), "scratch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeTemplateStore(t, scratch)
+	for _, c := range []struct {
+		name  string
+		store *Store
+		want  int
+	}{{"durable", durable, 1}, {"scratch", scratch, 0}} {
+		var synchronous int
+		if err := c.store.db.QueryRow("PRAGMA synchronous").Scan(&synchronous); err != nil {
+			t.Fatal(err)
+		}
+		if synchronous != c.want {
+			t.Fatalf("%s store: synchronous = %d, want %d", c.name, synchronous, c.want)
+		}
+	}
+}
+
+// The build replays every migration, so it is the scratch work that waited
+// longest behind other writers' flushes.
+func TestMigratedImageBuildSyncsNothing(t *testing.T) {
+	synchronous := -1
+	templateBuildOpened = func(s *Store) {
+		if err := s.db.QueryRow("PRAGMA synchronous").Scan(&synchronous); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { templateBuildOpened = nil })
+	if _, err := buildMigratedImage(context.Background(), t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if synchronous != 0 {
+		t.Fatalf("template build store: synchronous = %d, want 0", synchronous)
+	}
+}
+
+func TestNewScratchFromTemplateMatchesAFreshMigration(t *testing.T) {
 	fresh, err := New(filepath.Join(t.TempDir(), "fresh.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	closeTemplateStore(t, fresh)
 	dir := t.TempDir()
-	first, err := NewFromTemplate(context.Background(), filepath.Join(dir, "first.db"))
+	first, err := NewScratchFromTemplate(context.Background(), filepath.Join(dir, "first.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	closeTemplateStore(t, first)
-	second, err := NewFromTemplate(context.Background(), filepath.Join(dir, "second.db"))
+	second, err := NewScratchFromTemplate(context.Background(), filepath.Join(dir, "second.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +205,7 @@ func sharedImage(ctx context.Context, dir string) ([]byte, error) {
 	return processTemplate.load(ctx, dir)
 }
 
-func TestNewFromTemplateBuildsOnceUnderConcurrentFirstUse(t *testing.T) {
+func TestNewScratchFromTemplateBuildsOnceUnderConcurrentFirstUse(t *testing.T) {
 	var builds atomic.Int32
 	release := make(chan struct{})
 	tmpl := newMigratedTemplate(func(ctx context.Context, dir string) ([]byte, error) {
@@ -197,7 +244,7 @@ func TestNewFromTemplateBuildsOnceUnderConcurrentFirstUse(t *testing.T) {
 	}
 }
 
-func TestNewFromTemplateRetriesAFailedBuild(t *testing.T) {
+func TestNewScratchFromTemplateRetriesAFailedBuild(t *testing.T) {
 	var builds atomic.Int32
 	buildErr := errors.New("disk full")
 	tmpl := newMigratedTemplate(func(ctx context.Context, dir string) ([]byte, error) {
@@ -232,7 +279,7 @@ func TestNewFromTemplateRetriesAFailedBuild(t *testing.T) {
 	}
 }
 
-func TestNewFromTemplateCancelledBuildIsNotKept(t *testing.T) {
+func TestNewScratchFromTemplateCancelledBuildIsNotKept(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	dir := t.TempDir()
@@ -250,7 +297,7 @@ func TestNewFromTemplateCancelledBuildIsNotKept(t *testing.T) {
 	}
 }
 
-func TestNewFromTemplateWaiterHonorsItsContext(t *testing.T) {
+func TestNewScratchFromTemplateWaiterHonorsItsContext(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	tmpl := newMigratedTemplate(func(ctx context.Context, dir string) ([]byte, error) {
 		close(started)
@@ -294,7 +341,7 @@ func TestNewFromTemplateWaiterHonorsItsContext(t *testing.T) {
 	}
 }
 
-func TestNewFromTemplateRefusesExistingFiles(t *testing.T) {
+func TestNewScratchFromTemplateRefusesExistingFiles(t *testing.T) {
 	for _, existing := range []string{"", "-wal", "-journal"} {
 		t.Run("history.db"+existing, func(t *testing.T) {
 			dir := t.TempDir()
@@ -302,7 +349,7 @@ func TestNewFromTemplateRefusesExistingFiles(t *testing.T) {
 			if err := os.WriteFile(path+existing, []byte("keep"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if s, err := NewFromTemplate(context.Background(), path); err == nil {
+			if s, err := NewScratchFromTemplate(context.Background(), path); err == nil {
 				s.Close()
 				t.Fatal("opened over an existing file")
 			}
@@ -318,7 +365,7 @@ func TestNewFromTemplateRefusesExistingFiles(t *testing.T) {
 	}
 }
 
-func TestNewFromTemplateRemovesADatabaseThatFailsToOpen(t *testing.T) {
+func TestNewScratchFromTemplateRemovesADatabaseThatFailsToOpen(t *testing.T) {
 	tmpl := newMigratedTemplate(func(context.Context, string) ([]byte, error) {
 		return []byte("not a database, but long enough to be read as a header......................................................................"), nil
 	})

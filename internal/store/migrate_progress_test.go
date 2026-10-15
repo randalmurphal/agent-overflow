@@ -21,7 +21,7 @@ func fileDBThrough(t *testing.T, target int) string {
 		t.Fatalf("open: %v", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := configureDatabase(db); err != nil {
+	if err := configureDatabase(db, writerConnPragmas); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
 	if err := ensureMigrationTable(db); err != nil {

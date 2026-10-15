@@ -413,7 +413,7 @@ func validateTransferredHistory(ctx context.Context, stage string, target store.
 			log.Printf("app: remove transfer validation directory %s: %v", directory, err)
 		}
 	}()
-	db, err := store.NewFromTemplate(ctx, filepath.Join(directory, "history.db"))
+	db, err := store.NewScratchFromTemplate(ctx, filepath.Join(directory, "history.db"))
 	if err != nil {
 		return err
 	}

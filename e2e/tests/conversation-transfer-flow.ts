@@ -9,11 +9,10 @@ import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
 import { CONNECTED_AFTER_CONFIRM, headlessPairing } from './headless-pairing-helpers.js';
 import { PNG_BYTES } from './attachment-fixture.js';
-import { codexTransferScenario } from './conversation-transfer-helpers.js';
+import { codexTransferScenario, expectTransferComplete } from './conversation-transfer-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string; threadIds: string[] }> }
 interface Thread { id: string; title: string; sessionRef: string; workspacePath: string; ownershipEpoch?: number }
-interface Transfer { id: string; threadId: string; kind: string; phase: string; error?: string; targetThreadId: string }
 
 // One paired pair of hosts serves every provider's case. Each case seeds and
 // names its own source thread, so the other case's transfers cannot satisfy
@@ -114,15 +113,8 @@ export function conversationTransferFlow(providers: Array<'claude' | 'codex'> = 
             // Disconnect the initiating frontend while the hosts own the transfer.
             await dialog.getByRole('button', { name: 'Close', exact: true }).click();
             await page.goto('about:blank');
-            let result: Transfer | undefined;
-            await expect.poll(async () => {
-              const rows = await source.rpc<Transfer[]>('GetThreadTransfers');
-              result = rows.find((row) => row.threadId === sourceThread && row.kind === kind);
-              if (result?.phase === 'complete') return 'complete';
-              const recipient = (await destination.rpc<Transfer[]>('GetThreadTransfers')).find((row) => row.id === result?.id);
-              return result?.error || recipient?.error || result?.phase;
-            }, { timeout: 40_000, intervals: [250] }).toBe('complete');
-            const received = await destination.rpc<Thread>('GetThread', result!.targetThreadId);
+            const result = await expectTransferComplete(source, destination, sourceThread, kind);
+            const received = await destination.rpc<Thread>('GetThread', result.targetThreadId);
             const attachments = await destination.rpc<Array<{ id: string; filename: string; size: number }>>('ListAttachments', received.id);
             expect(attachments).toHaveLength(1);
             expect(attachments[0]).toMatchObject({ filename: 'portable.png', size: PNG_BYTES.length });
