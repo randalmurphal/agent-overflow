@@ -85,11 +85,15 @@ export function createTimelineRowProjection(
   // reads it existed for into the card removed the need, not just the
   // cost — the card is also where the walk is bounded by what is
   // actually mounted.
+  // An agent's message is not held for its echo: it is in no composer
+  // preview to stand in for it, so the timeline shows it once dispatched.
   let pendingFlushIDs = $derived(JSON.stringify(
-    getFlushedForThread(options.getPane().threadId).map((entry) => entry.userItemId),
+    getFlushedForThread(options.getPane().threadId)
+      .filter((entry) => !entry.agentMessage)
+      .map((entry) => entry.userItemId),
   ));
   let groupedNodes = $derived.by(() => {
-    options.getPane().timelineRevision;
+    void options.getPane().timelineRevision;
     // The live snapshot owns pending delivery. A quiet SQLite reservation
     // must not become history merely because navigation loaded its row.
     // After session loss the registry is empty; retained history continues
@@ -99,7 +103,7 @@ export function createTimelineRowProjection(
     // agent scope keeps outside its edges (see `itemsWithinLoadedWindow`)
     // render only on that scope's surface. The edges move with the
     // window, so a cursor change alone re-derives here.
-    options.getPane().activityRuns.windowRevision;
+    void options.getPane().activityRuns.windowRevision;
     const oldest = options.getPane().oldestLoadedCursor;
     const newest = options.getPane().newestLoadedCursor;
     return untrack(() => {
@@ -150,7 +154,7 @@ export function createTimelineRowProjection(
     const nodes = gatedNodes;
     const withheld = withheldNodes;
     const pane = options.getPane();
-    pane.activityRuns.revision;
+    void pane.activityRuns.revision;
     activityRunDefaultCollapsed();
     activityRunWindowRows();
     // Both tail facts are pane state the registry reads inside the untracked
@@ -159,7 +163,7 @@ export function createTimelineRowProjection(
     // nothing, and without this read the pass that records the verified
     // tail's open hold would wait for an unrelated structural change.
     const windowReachesTail = !pane.hasMoreNewer;
-    pane.loading;
+    void pane.loading;
     return untrack(() => {
       const runs = groupActivityRuns(nodes, {
         identity: pane.activityRuns,
@@ -181,7 +185,7 @@ export function createTimelineRowProjection(
     const provider = options.getPane().thread?.provider;
     // Receiver labels come from spawn-row metadata. Summary-only streaming
     // deltas do not change that metadata and do not bump timelineRevision.
-    options.getPane().timelineRevision;
+    void options.getPane().timelineRevision;
 
     return provider === PROVIDER_DEFINITIONS.codex.id
       ? untrack(() => codexSubagentReceiverLabels(options.getPane().items))

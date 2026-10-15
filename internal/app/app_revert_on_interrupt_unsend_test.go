@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
 
 // appendTurnRow appends one row of the given kind to a thread turn.
@@ -359,5 +361,215 @@ func assertLaunchSettledWithoutSibling(t *testing.T, app *App, threadID, launchI
 		if row.ID == launchID || row.CompletionOf == launchID {
 			t.Fatalf("the tray lists %s: %+v", launchID, row)
 		}
+	}
+}
+
+const unsendRequestText = "Fix the nil check.\n\n---\nAgent request from thread \"Lead\" (t-lead).\nIt is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token tok-1, once."
+
+// Stop's predicate is authoritative in the backend: a turn an agent's
+// message started is never un-sent into the person's composer, whatever
+// the frontend decided.
+func TestStopNeverUnsendsAnAgentsMessage(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(t)
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
+	thread := createAppTestThread(t, app, "unsend-agent-request", "claude", t.TempDir())
+	insertUserItemWithMeta(t, app.store, thread.ID, "u:0", 0, unsendRequestText,
+		`{"origin":"agent-thread","originThread":{"threadId":"t-lead","title":"Lead","kind":"send","token":"tok-1"},"sendId":"thread-request:tok-1"}`)
+
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, nil)
+	if err != nil {
+		t.Fatalf("interrupt-and-revert: %v", err)
+	}
+	if result.Reverted {
+		t.Fatalf("the agent's request was un-sent (reason %q)", result.Reason)
+	}
+	draft, _, _ := app.store.GetThreadDraft(thread.ID)
+	if draft.Content != "" {
+		t.Fatalf("composer = %q, want it untouched", draft.Content)
+	}
+}
+
+// A row headless Claude joined from an agent's request and the person's
+// queued message is the person's to take back, but only their part: the
+// composer gets the person's text, and the request goes back on the queue,
+// owed again, its receipt `accepted` and its sender told nothing.
+func TestStopUnsendOfAJoinedRowKeepsOnlyThePersonsText(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(t)
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
+	thread := createAppTestThread(t, app, "unsend-joined-target", "claude", t.TempDir())
+	caller := thread
+	caller.ID, caller.Title = "unsend-joined-caller", "Lead"
+	if err := app.store.CreateThread(caller); err != nil {
+		t.Fatal(err)
+	}
+	const token = "tok-1"
+	if err := app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: caller.ID, Kind: store.ThreadRequestSend,
+		TargetThreadID: thread.ID, State: store.ThreadRequestAccepted,
+	}); err != nil {
+		t.Fatalf("InsertThreadRequest: %v", err)
+	}
+	if _, _, err := app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: token, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: caller.ID, SourceThreadTitle: "Lead",
+		Kind: store.ThreadRequestSend, TargetThreadID: thread.ID,
+	}); err != nil {
+		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
+	}
+
+	const mine = "and also update the docs"
+	originThread := &usermessage.OriginThread{ThreadID: caller.ID, Title: "Lead", Kind: store.ThreadRequestSend, Token: token}
+	meta, err := usermessage.MarshalMeta(usermessage.Meta{
+		Origin: usermessage.OriginAgentThread, OriginThread: originThread, ExpandComposerCommands: true,
+		SendID: threadRequestSendID(token), JoinedSendIDs: []string{threadRequestSendID(token), "s-person"},
+		JoinedParts: []usermessage.JoinedPart{
+			{SendID: threadRequestSendID(token), Bytes: len(unsendRequestText), Origin: usermessage.OriginAgentThread, OriginThread: originThread},
+			{SendID: "s-person", Bytes: len(mine)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertUserItemWithMeta(t, app.store, thread.ID, "u:0", 0, unsendRequestText+usermessage.JoinSeparator+mine, meta)
+	app.bindRequestDelivery(token, thread.ID, "u:0", 0, true)
+	if receipt, _, _ := app.store.GetThreadRequestReceipt(token); receipt.State != store.ThreadReceiptRunning {
+		t.Fatalf("receipt = %q before the Stop, want running", receipt.State)
+	}
+
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, nil)
+	if err != nil {
+		t.Fatalf("interrupt-and-revert: %v", err)
+	}
+	if !result.Reverted {
+		t.Fatalf("not un-sent: %q", result.Reason)
+	}
+	draft, _, _ := app.store.GetThreadDraft(thread.ID)
+	if !strings.Contains(draft.Content, mine) || strings.Contains(draft.Content, "Agent request from thread") || strings.Contains(draft.Content, "Fix the nil check") {
+		t.Fatalf("composer = %q, want the person's text alone", draft.Content)
+	}
+	receipt, _, _ := app.store.GetThreadRequestReceipt(token)
+	if receipt.State != store.ThreadReceiptAccepted || receipt.TurnID != "" {
+		t.Fatalf("receipt = %q bound to %q, want accepted and unbound", receipt.State, receipt.TurnID)
+	}
+	request, _, _ := app.store.GetThreadRequest(token)
+	if request.State != store.ThreadRequestAccepted {
+		t.Fatalf("request = %q, want accepted: nothing answered it", request.State)
+	}
+	rows, err := app.store.ListFlushQueueItems(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].SendID != threadRequestSendID(token) || rows[0].Message != unsendRequestText {
+		t.Fatalf("queue = %+v, want the request's message alone", rows)
+	}
+	var payload flushQueuePayload
+	if err := json.Unmarshal(rows[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Origin != usermessage.OriginAgentThread || payload.OriginThread == nil ||
+		payload.OriginThread.ThreadID != caller.ID || payload.OriginThread.Token != token || payload.ExpandComposerCommands {
+		t.Fatalf("queued payload = %+v, want the request's attribution", payload)
+	}
+	if wakes, _ := app.store.ListFlushQueueItems(caller.ID); len(wakes) != 0 {
+		t.Fatalf("the sender was sent %+v; it is owed nothing", wakes)
+	}
+}
+
+// An un-send that fails after the request went back to `accepted` leaves
+// the message where it was, so the request is running in its turn again:
+// nothing would otherwise ever settle it.
+func TestAFailedUnsendRebindsTheRequestToItsTurn(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	// A Codex rollback whose fork reports another tail fails after the
+	// request went back (TestRevertAndResendCodexRollbackFailureKeepsCrashCopy).
+	thread := e2eThread("unsend-joined-failed", string(provider.Codex), t.TempDir())
+	thread.SessionRef = "codex-source-thread"
+	caller := e2eThread("unsend-joined-failed-caller", string(provider.Codex), thread.WorkspacePath)
+	for _, row := range []store.Thread{thread, caller} {
+		if err := app.store.CreateThread(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binary := writeCodexResendBinary(t, codexResendMock{forkedThreadID: "codex-forked-thread", forkTailTurnID: "turn-wrong"})
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	insertUserItemWithMeta(t, app.store, thread.ID, "user:0", 0, "first", `{"provider_item_id":"provider-user-0"}`)
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+	if err := app.store.InsertTurn(store.Turn{TurnID: "turn-b", ProviderTurnID: "turn-b", ThreadID: thread.ID, TurnIndex: 1, StartedAt: 3}); err != nil {
+		t.Fatal(err)
+	}
+	const token = "tok-1"
+	if err := app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: caller.ID, Kind: store.ThreadRequestSend,
+		TargetThreadID: thread.ID, State: store.ThreadRequestAccepted,
+	}); err != nil {
+		t.Fatalf("InsertThreadRequest: %v", err)
+	}
+	if _, _, err := app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: token, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: caller.ID, SourceThreadTitle: "Lead",
+		Kind: store.ThreadRequestSend, TargetThreadID: thread.ID,
+	}); err != nil {
+		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
+	}
+	const mine = "and also update the docs"
+	originThread := &usermessage.OriginThread{ThreadID: caller.ID, Title: "Lead", Kind: store.ThreadRequestSend, Token: token}
+	meta, err := usermessage.MarshalMeta(usermessage.Meta{
+		Origin: usermessage.OriginAgentThread, OriginThread: originThread, ExpandComposerCommands: true,
+		SendID: threadRequestSendID(token), JoinedSendIDs: []string{threadRequestSendID(token), "s-person"},
+		JoinedParts: []usermessage.JoinedPart{
+			{SendID: threadRequestSendID(token), Bytes: len(unsendRequestText), Origin: usermessage.OriginAgentThread, OriginThread: originThread},
+			{SendID: "s-person", Bytes: len(mine)},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertUserItemWithMeta(t, app.store, thread.ID, "user:1", 1, unsendRequestText+usermessage.JoinSeparator+mine, meta)
+	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
+	app.bindRequestDelivery(token, thread.ID, "user:1", 1, true)
+	bound, _, _ := app.store.GetThreadRequestReceipt(token)
+	if bound.State != store.ThreadReceiptRunning {
+		t.Fatalf("receipt = %q before the Stop, want running", bound.State)
+	}
+
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, nil)
+	if err == nil || result.Reverted {
+		t.Fatalf("result %+v, err %v: want the rollback to fail", result, err)
+	}
+	receipt, _, _ := app.store.GetThreadRequestReceipt(token)
+	if receipt.State != store.ThreadReceiptRunning || receipt.TurnID != bound.TurnID {
+		t.Fatalf("receipt = %q bound to %q, want running in %q again", receipt.State, receipt.TurnID, bound.TurnID)
+	}
+	if request, _, _ := app.store.GetThreadRequest(token); request.State != store.ThreadRequestRunning {
+		t.Fatalf("request = %q, want running", request.State)
+	}
+	if rows, _ := app.store.ListFlushQueueItems(thread.ID); len(rows) != 0 {
+		t.Fatalf("queue = %+v, want the request left in its turn", rows)
+	}
+}
+
+// A row joined from an agent's message and the person's before rows
+// recorded their parts cannot be told apart, so Stop keeps it rather than
+// put the agent's words in the person's composer.
+func TestStopKeepsAJoinedRowNothingSplits(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(t)
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
+	thread := createAppTestThread(t, app, "unsend-joined-unsplit", "claude", t.TempDir())
+	insertUserItemWithMeta(t, app.store, thread.ID, "u:0", 0, unsendRequestText+usermessage.JoinSeparator+"and also update the docs",
+		`{"origin":"agent-thread","originThread":{"threadId":"t-lead","title":"Lead","kind":"send","token":"tok-1"},"expandComposerCommands":true,"sendId":"thread-request:tok-1","joinedSendIds":["thread-request:tok-1","s-person"]}`)
+
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, nil)
+	if err != nil {
+		t.Fatalf("interrupt-and-revert: %v", err)
+	}
+	if result.Reverted {
+		t.Fatal("a row nothing splits was un-sent")
+	}
+	if draft, _, _ := app.store.GetThreadDraft(thread.ID); draft.Content != "" {
+		t.Fatalf("composer = %q, want it untouched", draft.Content)
 	}
 }

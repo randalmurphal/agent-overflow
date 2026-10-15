@@ -459,22 +459,23 @@ export function hasPendingSend(threadId: string | null | undefined): boolean {
   return !isThreadInterruptRestored(threadId) && pendingSendThreads.get(threadId);
 }
 
+/**
+ * Whether the thread is working: what the composer's activity shows, and
+ * the running half of the status every other thread surface shows.
+ */
 export function isThreadWorking(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
-  if (isThreadInterruptRestored(threadId)) return false;
-  return activeTurns.get(threadId) !== null
-    || pendingSendThreads.get(threadId)
-    || hasQueueItems(threadId);
+  return showsThreadRunning(threadId);
 }
 
 /**
- * The running half of the status every thread surface shows (sidebar row,
- * pane header, picker). It is `isThreadWorking` with the send-queue bridge
- * read from the backend, for a backend that publishes it: what a client
+ * A turn running, a send in flight, or a queued message pending, the last
+ * read from the backend for a backend that publishes it: what a client
  * learns from the queue frames alone goes stale on a thread it does not
- * watch. This client's own queue RPC counts as running until it answers,
- * the same optimistic hold `pendingSendThreads` is for a send, and its
- * answer carries the backend's.
+ * watch, and a message queued with no session live or starting is not
+ * pending (it waits for the next start). This client's own queue RPC
+ * counts as running until it answers, the same optimistic hold
+ * `pendingSendThreads` is for a send, and its answer carries the backend's.
  */
 function showsThreadRunning(threadId: string): boolean {
   if (isThreadInterruptRestored(threadId)) return false;
@@ -927,8 +928,8 @@ export function projectThreadError(threadId: string): void {
  * The carrier is the `thread:updated` activity patch, which the backend
  * emits from exactly the persists that count as thread activity: top-level
  * user_text rows that are not wire-only context injections and not a
- * subagent's own prompt (triage.userTextCountsAsThreadActivity, the SQL
- * predicate `isReaderAuthoredUserText` mirrors). That patch is wildcard, so
+ * subagent's own prompt (triage.userTextCountsAsThreadActivity); an
+ * agent's message counts, since it starts a turn too. That patch is wildcard, so
  * the badge clears for threads this client has no pane on — which is the
  * only place a sidebar pill is read.
  */

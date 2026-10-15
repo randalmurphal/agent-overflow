@@ -172,6 +172,8 @@ func (s *Store) ListOwnedThreadsByID(ids []string) ([]Thread, error) {
 type ThreadLastMessage struct {
 	// Kind is user_text or assistant_text.
 	Kind string
+	// Agent is set on a user_text an agent wrote (AgentMessageFilterFor).
+	Agent bool
 	// At is the row's last write in Unix milliseconds.
 	At int64
 	// Tail is the last threadLastMessageTailRunes runes of the text, and
@@ -193,6 +195,7 @@ var threadLastMessageSQL = func() string {
 	arms, _ := correlatedTimelineArms(timelineSelection{
 		Columns: func(string, string) string {
 			return `items.kind AS kind, items.updated_at AS at, items.summary AS summary,
+			        ` + AgentMessageFilterFor("items.") + ` AS agent,
 			        items.turn_index AS turn_index, items.item_index AS item_index`
 		},
 		Thread:  "page.id",
@@ -206,10 +209,10 @@ var threadLastMessageSQL = func() string {
 		    FROM json_each(?1) AS ids
 		)
 		SELECT page.id,
-		       (SELECT json_object('kind', last.kind, 'at', last.at,
+		       (SELECT json_object('kind', last.kind, 'agent', last.agent, 'at', last.at,
 		                           'tail', substr(last.body, -` + strconv.Itoa(threadLastMessageTailRunes) + `),
 		                           'clipped', length(last.body) > ` + strconv.Itoa(threadLastMessageTailRunes) + `)
-		          FROM (SELECT message.kind AS kind, message.at AS at,
+		          FROM (SELECT message.kind AS kind, message.agent AS agent, message.at AS at,
 		                       CASE WHEN ?2 <> '' AND instr(message.summary, ?2) > 0
 		                            THEN rtrim(substr(message.summary, 1, instr(message.summary, ?2) - 1), char(10))
 		                            ELSE message.summary END AS body
@@ -246,6 +249,7 @@ func (s *Store) ListThreadLastMessages(threadIDs []string, cutAt string) (map[st
 		}
 		var row struct {
 			Kind    string `json:"kind"`
+			Agent   int    `json:"agent"`
 			At      int64  `json:"at"`
 			Tail    string `json:"tail"`
 			Clipped int    `json:"clipped"`
@@ -253,7 +257,7 @@ func (s *Store) ListThreadLastMessages(threadIDs []string, cutAt string) (map[st
 		if err := json.Unmarshal([]byte(encoded.String), &row); err != nil {
 			return nil, fmt.Errorf("store: decode thread last message of %s: %w", id, err)
 		}
-		out[id] = ThreadLastMessage{Kind: row.Kind, At: row.At, Tail: row.Tail, Clipped: row.Clipped != 0}
+		out[id] = ThreadLastMessage{Kind: row.Kind, Agent: row.Agent != 0, At: row.At, Tail: row.Tail, Clipped: row.Clipped != 0}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate thread last messages: %w", err)

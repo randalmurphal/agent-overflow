@@ -393,7 +393,7 @@ func TestQueuedWakePromotesOnlyWhileItsClaimIsCurrent(t *testing.T) {
 	}
 	f.service.deps.WakeDelivery.HasLiveSession = func(string) bool { return true }
 	var onDurable func()
-	f.service.deps.WakeDelivery.QueueMessage = func(threadID, message string, settle func()) error {
+	f.service.deps.WakeDelivery.QueueMessage = func(threadID, _, message string, settle func()) error {
 		if threadID != thread.ID || !strings.Contains(message, item.ID) {
 			t.Fatalf("queued wake thread=%q message=%q", threadID, message)
 		}

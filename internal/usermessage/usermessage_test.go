@@ -402,3 +402,23 @@ func TestMarshalProjectsAttachmentKind(t *testing.T) {
 		t.Errorf("legacy kind: got %q want empty", legacy.Attachments[0].Kind)
 	}
 }
+
+func TestIsAgentMessage(t *testing.T) {
+	for _, tc := range []struct {
+		meta Meta
+		want bool
+	}{
+		{Meta{}, false},
+		{Meta{Origin: "external-queue"}, false},
+		{Meta{Origin: "peer-session"}, false},
+		{Meta{Origin: OriginAgentThread}, true},
+		{Meta{Origin: OriginAgentWake}, true},
+		// The person's composer message Claude joined after an agent's.
+		{Meta{Origin: OriginAgentWake, ExpandComposerCommands: true}, false},
+		{Meta{Origin: OriginAgentThread, ExpandComposerCommands: true}, false},
+	} {
+		if got := IsAgentMessage(tc.meta); got != tc.want {
+			t.Errorf("IsAgentMessage(%+v) = %v, want %v", tc.meta, got, tc.want)
+		}
+	}
+}

@@ -2,7 +2,14 @@ import type { Item, SourceDiffReview, SourceProposedPlan } from '../types/models
 import type { QueuedItem as WireQueuedItem, SendsPendingAnswer } from '../../../bindings/agent-overflow/internal/app/models';
 import type { OutgoingSendOptions } from '../utils/sendOptions';
 import { RegisterQueueItem } from './bindings';
-import { isPendingFlushRow, parseUserMessageMeta } from '../utils/userMessageMeta';
+import {
+  isPendingFlushRow,
+  parseUserMessageMeta,
+  userMessageOriginThread,
+  userMessageOriginWake,
+  type UserMessageOriginThread,
+  type UserMessageOriginWake,
+} from '../utils/userMessageMeta';
 import { createKeyedSignalRegistry, type KeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import type { TimelineCursorLike } from './threadItems';
@@ -65,12 +72,15 @@ export interface QueueItem {
   revisionSourceDiffReview?: SourceDiffReview | null;
   revisionSourceDiffCommentIds?: readonly string[];
   enqueuedAt: number;
-  /** Attribution of a message the app queued for an agent or a wake; read
-   * through `agentMessageKind` (utils/userMessageMeta.ts). Absent on a
-   * person's message. */
-  origin?: string;
-  originThread?: unknown;
-  originWake?: unknown;
+  /**
+   * An agent's message the app queued on its behalf (a thread request, an
+   * answer coming back, a wake), not the person's: the backend classifies
+   * it (usermessage.IsAgentMessage). The composer's preview leaves it out;
+   * the Agents rail segment lists it as incoming, named from the origin.
+   */
+  agentMessage?: boolean;
+  originThread?: UserMessageOriginThread | null;
+  originWake?: UserMessageOriginWake | null;
 }
 
 /** What the provider has told us about a flushed message's delivery.
@@ -98,6 +108,9 @@ export interface FlushedItem {
   /** Undefined until the provider acks — and forever on a CLI that
    * never does. Never inferred from anything else. */
   lifecycle?: FlushedLifecycle;
+  /** An agent's message (QueueItem.agentMessage): never in the composer's
+   * preview, and rendered by the timeline as soon as it is dispatched. */
+  agentMessage?: boolean;
   /** The confirmed row's position, set when a live-state read finds the
    * message consumed while this client still holds its entry. A pane that
    * does not hold the row reads it to tell history before its window from
@@ -387,7 +400,7 @@ export function replaceFlushedForThread(
  * neither" hold for a re-flushed send whose row is no longer rendered. */
 export function markItemsFlushed(
   threadId: string,
-  items: readonly Pick<FlushedItem, 'queueItemId' | 'userItemId' | 'message' | 'sendId'>[],
+  items: readonly Pick<FlushedItem, 'queueItemId' | 'userItemId' | 'message' | 'sendId' | 'agentMessage'>[],
 ): void {
   if (!threadId || items.length === 0) return;
   const now = Date.now();
@@ -405,6 +418,7 @@ export function markItemsFlushed(
       userItemId: item.userItemId,
       message: item.message,
       flushedAt: now,
+      ...(item.agentMessage ? { agentMessage: true } : {}),
     });
   }
   const appendedFlushedItems = appendZoneItems(flushedByThread, threadId, additions);
@@ -423,6 +437,7 @@ export function markQueuedItemConsumed(item: Item): void {
   const matches = queued.filter(entry => entry.sendId && ids.has(entry.sendId));
   markItemsFlushed(item.threadId, matches.map(entry => ({
     queueItemId: entry.id, userItemId: item.id, message: item.summary, sendId: entry.sendId,
+    agentMessage: entry.agentMessage,
   })));
 }
 
@@ -539,8 +554,29 @@ export function queueItemFromWire(item: WireQueuedItem): QueueItem {
       ? [...item.revisionSourceDiffCommentIds]
       : undefined,
     enqueuedAt: item.enqueuedAt,
-    ...(item.origin ? { origin: item.origin, originThread: item.originThread ?? undefined, originWake: item.originWake ?? undefined } : {}),
+    ...(item.agentMessage
+      ? {
+        agentMessage: true,
+        originThread: userMessageOriginThread({ originThread: item.originThread }),
+        originWake: userMessageOriginWake({ originWake: item.originWake }),
+      }
+      : {}),
   };
+}
+
+/** The queue entries the person wrote: the composer's preview and recall. */
+export function isPersonQueueEntry(entry: { agentMessage?: boolean }): boolean {
+  return entry.agentMessage !== true;
+}
+
+/**
+ * The person's messages still on their way, oldest first: those sent and
+ * awaiting the provider's echo, then those queued. The composer recalls them.
+ */
+export function personPendingMessages(threadId: string | null | undefined): string[] {
+  return [...getFlushedForThread(threadId), ...getQueueForThread(threadId)]
+    .filter(isPersonQueueEntry)
+    .map((entry) => entry.message);
 }
 
 // ---- Test-only helpers -----------------------------------------------

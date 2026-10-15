@@ -95,7 +95,7 @@
       return;
     }
     const chip = agentThreadOriginChip(
-      { threadId: target, computerId: row.computerId ?? '', computerName: row.computer ?? '', title: row.title, token: row.token },
+      { threadId: target, computerId: row.computerId ?? '', computerName: row.computer ?? '', title: row.title, token: row.token, kind: '' },
       viewer,
     );
     if (!chip.open) {

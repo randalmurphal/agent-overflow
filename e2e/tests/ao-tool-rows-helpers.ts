@@ -9,6 +9,7 @@ import { expect, type Locator, type Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
+import { escapeTimelineFollow } from './timeline-follow-helpers.js';
 import {
   RESULT_TOKEN_PATTERN,
   awaitToolAnswer,
@@ -170,24 +171,25 @@ export async function expandRow(row: Locator): Promise<void> {
  * Screenshots a row centred in the timeline once nothing is moving it. A
  * row merely scrolled into view can sit under the composer, which floats
  * over the timeline's bottom edge, and a timeline following a live tail
- * pulls a script-scrolled row away again: a wheel turn escapes the follow
- * as a reader does, then the row is centred and must hold still on screen.
+ * pulls a script-scrolled row away again: the follow is left as a reader
+ * leaves it, then the row is centred and must hold still on screen.
  */
 export async function shootRow(row: Locator, path: string): Promise<void> {
   const page = row.page();
-  await page.getByTestId('message-timeline-scroll').hover();
-  await page.mouse.wheel(0, -40);
+  await escapeTimelineFollow(page);
   await row.evaluate((element) => element.scrollIntoView({ block: 'center' }));
   let last = '';
-  await expect.poll(async () => {
+  await expect(async () => {
     const box = await row.boundingBox();
     const viewport = page.viewportSize()!;
+    const scrollTop = await page.getByTestId('message-timeline-scroll').evaluate((el) => el.scrollTop);
     const onScreen = box !== null && box.y >= 0 && box.y + box.height <= viewport.height;
     const at = onScreen ? `${Math.round(box.x)},${Math.round(box.y)},${Math.round(box.height)}` : '';
     const still = at !== '' && at === last;
     last = at;
-    return still;
-  }, { intervals: [150], timeout: 10_000 }).toBe(true);
+    const where = box ? `y ${Math.round(box.y)}, height ${Math.round(box.height)}` : 'no box';
+    expect(still, `row ${where} in a ${viewport.width}x${viewport.height} viewport, timeline scrollTop ${Math.round(scrollTop)}`).toBe(true);
+  }).toPass({ intervals: [150], timeout: 10_000 });
   await row.screenshot({ path, animations: 'disabled' });
 }
 

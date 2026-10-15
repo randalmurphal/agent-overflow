@@ -379,8 +379,8 @@ func TestARequestHeldWhenTheSessionDiesSettlesInterrupted(t *testing.T) {
 }
 
 // The CLI retires the held message unrun while the session lives on: the
-// message goes back to the composer, and the request settles interrupted
-// with it.
+// request settles interrupted, and its text, an agent's and not the
+// person's, stays out of the composer.
 func TestARequestRetiredUnrunSettlesWhenItsMessageGoesBack(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -392,13 +392,12 @@ func TestARequestRetiredUnrunSettlesWhenItsMessageGoesBack(t *testing.T) {
 	h.lifecycle(t, uuid, provider.CommandQueued)
 	h.lifecycle(t, uuid, provider.CommandCancelled)
 	row := f.awaitRequestState(t, token, store.ThreadRequestInterrupted)
-	if !strings.Contains(string(row.Answer), "went back to that thread's composer") {
+	if string(row.Answer) != threadtools.InterruptNotTakenIn {
 		t.Fatalf("answer = %q", row.Answer)
 	}
-	waitUntil(t, 10*time.Second, func() bool {
-		draft, _, err := f.app.store.GetThreadDraft(h.thread.ID)
-		return err == nil && strings.Contains(draft.Content, "check the changelog")
-	})
+	if draft, _, err := f.app.store.GetThreadDraft(h.thread.ID); err != nil || strings.Contains(draft.Content, "check the changelog") {
+		t.Fatalf("draft = %q, %v; want the request's text kept out of it", draft.Content, err)
+	}
 }
 
 // A cancel of a request whose message no turn has read yet stops nothing:
@@ -443,7 +442,7 @@ func TestTheObserverKeepsTheGateOfAnUndeliveredReceipt(t *testing.T) {
 	}
 	f.adapter().markRequestDispatched(token, target.ID, target.ID+":u0")
 
-	if err := f.app.settleReceiptOnTurnEnd(target.ID, token); err != nil {
+	if _, err := f.app.settleReceiptOnTurnEnd(target.ID, token); err != nil {
 		t.Fatalf("settleReceiptOnTurnEnd: %v", err)
 	}
 	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptRunning {
@@ -560,14 +559,30 @@ func (c *codexRequestTarget) echo(t *testing.T, head triage.PendingSendSnapshot)
 	c.frame(t, provider.ProviderEvent{Kind: provider.EventUserText, ItemID: "codex-user-1", Content: "check the changelog", Meta: meta})
 }
 
-// Every restore that gives a request's message back to the composer before
-// a turn read it settles the request, on both restore paths: the session
-// death's and the failed Codex resend's. A delivered request is left to its
-// turn.
-func TestARequestGivenBackUndeliveredSettlesInterrupted(t *testing.T) {
+// A restore that takes back a joined message before a turn read it: on a
+// session death the request in it goes back to its queue; on a failed Codex
+// resend, with the session alive, it settles with its text gone nowhere; and
+// on either, a message that does not split leaves the request's text in the
+// person's composer and settles it saying so. A delivered request in the same
+// message is left to its turn.
+func TestARequestARestoreTakesBackIsRequeuedOrSettled(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"session death", "failed resend"} {
-		t.Run(path, func(t *testing.T) {
+	for _, tc := range []struct {
+		path    string
+		parts   bool
+		requeue bool
+		want    string
+	}{
+		{path: "session death", parts: true, requeue: true},
+		{path: "failed resend", parts: true, want: threadtools.InterruptNotTakenIn},
+		{path: "session death", want: threadtools.InterruptNotTakenInToComposer},
+		{path: "failed resend", want: threadtools.InterruptNotTakenInToComposer},
+	} {
+		name := tc.path
+		if !tc.parts {
+			name += ", no parts"
+		}
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			f := newRequestFixture(t)
 			target, err := createTestThread(t, f.app, string(provider.Codex), t.TempDir(), "gpt-5.5", threadmode.ModeChat)
@@ -593,32 +608,41 @@ func TestARequestGivenBackUndeliveredSettlesInterrupted(t *testing.T) {
 			f.app.bindRequestDelivery(delivered, target.ID, "user:1:flush:1", 1, true)
 
 			ids := []string{threadRequestSendID(undelivered), threadRequestSendID(delivered)}
-			meta, err := usermessage.Marshal(usermessage.Input{SendID: ids[0], JoinedSendIDs: ids})
+			const first, second = "check the changelog", "and the release notes"
+			fields := usermessage.Meta{SendID: ids[0], JoinedSendIDs: ids}
+			if tc.parts {
+				fields.JoinedParts = []usermessage.JoinedPart{
+					{SendID: ids[0], Bytes: len(first), Origin: usermessage.OriginAgentThread},
+					{SendID: ids[1], Bytes: len(second), Origin: usermessage.OriginAgentThread},
+				}
+			}
+			meta, err := usermessage.MarshalMeta(fields)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if path == "session death" {
-				row := store.Item{ThreadID: target.ID, ID: "user:1:flush:1", Summary: "check the changelog", Meta: meta}
+			text := first + usermessage.JoinSeparator + second
+			if tc.path == "session death" {
+				row := store.Item{ThreadID: target.ID, ID: "user:1:flush:1", Summary: text, Meta: meta}
 				f.app.restoreFlushItemsToDraftLocked(target.ID, []triage.UnconfirmedFlushItem{
 					{UserItemID: row.ID, Message: row.Summary, EnqueuedAt: 1000, QuietItem: &row},
 				}, queueRestoredReasonSessionDied)
 			} else {
 				f.app.restoreEagerPersistedFlushesToDraft(target.ID, []triage.EagerPersistedFlush{
-					{UserItemID: "user:1:flush:1", Content: "check the changelog", Meta: meta, EnqueuedAt: 1000},
+					{UserItemID: "user:1:flush:1", Content: text, Meta: meta, EnqueuedAt: 1000},
 				})
 			}
 			f.app.threadRequestsWG.Wait()
 
-			row := f.request(t, undelivered)
-			if row.State != store.ThreadRequestInterrupted {
-				t.Fatalf("undelivered request = %q, want interrupted", row.State)
-			}
-			want := "did not take the request in"
-			if path == "session death" {
-				want = "session ended before it read"
-			}
-			if !strings.Contains(string(row.Answer), want) {
-				t.Fatalf("answer = %q, want %q", row.Answer, want)
+			if tc.requeue {
+				assertRequestOwedAgain(t, f, target.ID, undelivered)
+				if rows := durableQueueRows(t, f.app, target.ID); len(rows) != 1 || rows[0].Message != first {
+					t.Fatalf("queue = %+v, want the request's own text alone", rows)
+				}
+			} else {
+				row := f.request(t, undelivered)
+				if row.State != store.ThreadRequestInterrupted || string(row.Answer) != tc.want {
+					t.Fatalf("undelivered request = %q %q, want interrupted with %q", row.State, row.Answer, tc.want)
+				}
 			}
 			if receipt := f.receipt(t, delivered); receipt.State != store.ThreadReceiptRunning {
 				t.Fatalf("delivered receipt = %q, want it left to its turn", receipt.State)
@@ -627,10 +651,152 @@ func TestARequestGivenBackUndeliveredSettlesInterrupted(t *testing.T) {
 	}
 }
 
-// A Stop drops the session's queue without giving it back, the held request
-// with it. Nothing will deliver it, so it settles interrupted with the
-// session's end rather than running until the next boot.
-func TestARequestHeldWhenTheThreadIsStoppedSettlesInterrupted(t *testing.T) {
+// A Stop drops the session's queue. A request the CLI was handed and had not
+// taken in goes back to its queue, owed again, with its timeline row gone,
+// and so does one still queued behind it; neither sender hears anything.
+func TestARequestHeldWhenTheThreadIsStoppedGoesBackToItsQueue(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	callerMidTurn(t, f)
+	h := newHeldRequestTarget(t, f)
+	tokens, uuid := h.send(t, "check the changelog")
+	token := tokens[0]
+	h.lifecycle(t, uuid, provider.CommandQueued)
+	queuedAck, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: h.thread.ID, Message: "then the release notes", WaitSeconds: 0, Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if err := f.app.StopSession(h.thread.ID); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+	h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
+	for _, token := range []string{token, queuedAck.Token} {
+		assertRequestOwedAgain(t, f, h.thread.ID, token)
+	}
+	assertNothingPending(t, f.app, h.thread.ID)
+}
+
+// assertNothingPending checks that a thread with no session reads as not
+// working, its owed messages queued for the next start notwithstanding.
+func assertNothingPending(t *testing.T, app *App, threadID string) {
+	t.Helper()
+	if answer := app.publishSendsPending(threadID); answer.Pending {
+		t.Fatalf("sends pending = %+v with no session", answer)
+	}
+	rows, err := app.ListThreadLiveActivity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ThreadID == threadID && row.SendsPending {
+			t.Fatalf("live activity = %+v, want nothing pending", row)
+		}
+	}
+}
+
+// The idle reaper tears a session down holding the thread's mutation lock,
+// which queueing a message takes. The requests it took back are queued once
+// the reaper lets go, not under it.
+func TestAReapedSessionQueuesItsRequestsAgainOnceItsLockIsReleased(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	callerMidTurn(t, f)
+	h := newHeldRequestTarget(t, f)
+	tokens, uuid := h.send(t, "check the changelog")
+	h.lifecycle(t, uuid, provider.CommandQueued)
+
+	unlock := f.app.threadApplication().LockMutations(h.thread.ID)
+	sess, _ := f.app.sessionManager().take(h.thread.ID)
+	done := make(chan error, 1)
+	go func() { done <- f.app.teardownAndCloseSessionHoldingMutations(h.thread.ID, sess) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("teardown: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		unlock()
+		t.Fatal("the teardown waited on the mutation lock its caller holds")
+	}
+	unlock()
+	f.app.threadRequestsWG.Wait()
+	assertRequestOwedAgain(t, f, h.thread.ID, tokens[0])
+}
+
+// A session that starts while the reaper still holds the lock (a wake, the
+// person) flushes the queue before the reaped requests are back on it. Live
+// and idle, it has no turn boundary coming, so the requeue sends them.
+func TestAReapedRequestGoesToASessionThatStartedBeforeItWasQueuedAgain(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	callerMidTurn(t, f)
+	h := newHeldRequestTarget(t, f)
+	tokens, uuid := h.send(t, "check the changelog")
+	h.lifecycle(t, uuid, provider.CommandQueued)
+	// The fixture's router has no dispatcher; a flush needs it.
+	f.app.triage.SetFlushDispatcher(f.app.enqueueFlushDispatch)
+
+	unlock := f.app.threadApplication().LockMutations(h.thread.ID)
+	sess, _ := f.app.sessionManager().take(h.thread.ID)
+	if err := f.app.teardownAndCloseSessionHoldingMutations(h.thread.ID, sess); err != nil {
+		unlock()
+		t.Fatalf("teardown: %v", err)
+	}
+	stdin := filepath.Join(t.TempDir(), "next-session-stdin.jsonl")
+	next, err := claude.NewSession(context.Background(), h.thread.ID,
+		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdin), WorkDir: h.thread.WorkspacePath},
+		func(provider.ProviderEvent) {})
+	if err != nil {
+		unlock()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = next.Close() })
+	f.app.sessionManager().put(h.thread.ID, session{Provider: string(provider.Claude), Token: "next-session", Claude: next, Liveness: newSessionLiveness(time.Now())})
+	unlock()
+	f.app.threadRequestsWG.Wait()
+
+	waitUntil(t, 10*time.Second, func() bool {
+		sent, _ := os.ReadFile(stdin)
+		return strings.Contains(string(sent), "check the changelog")
+	})
+	if queued := f.app.triage.QueuedFlushItems(h.thread.ID); len(queued) != 0 {
+		t.Fatalf("%d still queued after the flush", len(queued))
+	}
+	if wakes := f.wakes(t, tokens[0]); len(wakes) != 0 {
+		t.Fatalf("the sender was woken: %+v", wakes)
+	}
+}
+
+// assertRequestOwedAgain checks that a request is back where it started:
+// accepted on both sides, its message queued and not in the timeline, its
+// sender told nothing and the person's composer without it.
+func assertRequestOwedAgain(t *testing.T, f *requestFixture, threadID, token string) {
+	t.Helper()
+	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptAccepted || receipt.MessageItemID != "" {
+		t.Fatalf("receipt = %+v, want it accepted with no message", receipt)
+	}
+	if row := f.request(t, token); row.State != store.ThreadRequestAccepted {
+		t.Fatalf("request = %q, want accepted", row.State)
+	}
+	record, found, err := f.app.findRecordedSend(threadID, threadRequestSendID(token))
+	if err != nil || !found || record.dispatched {
+		t.Fatalf("request message = %+v found=%v err=%v, want it queued and not in the timeline", record, found, err)
+	}
+	if wakes := f.wakes(t, token); len(wakes) != 0 {
+		t.Fatalf("the sender was woken: %+v", wakes)
+	}
+	if draft, _, err := f.app.store.GetThreadDraft(threadID); err != nil || draft.Content != "" {
+		t.Fatalf("draft = %q, %v; want the request kept out of it", draft.Content, err)
+	}
+}
+
+// A session that dies before the CLI took in a request it was handed gives
+// the request back to its queue, owed again, its sender told nothing, and
+// the thread's next session start delivers it.
+func TestARequestTheSessionDiedHoldingIsDeliveredAtTheNextStart(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	callerMidTurn(t, f)
@@ -639,13 +805,119 @@ func TestARequestHeldWhenTheThreadIsStoppedSettlesInterrupted(t *testing.T) {
 	token := tokens[0]
 	h.lifecycle(t, uuid, provider.CommandQueued)
 
-	if err := f.app.StopSession(h.thread.ID); err != nil {
-		t.Fatalf("StopSession: %v", err)
+	h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "error"})
+	h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
+	// The death restores twice, at its error and at its disconnect; the
+	// second finds the request queued again and queues it once more. Each
+	// holds the thread action lock from its drain until the request is
+	// queued again, so the request is read under it.
+	waitUntil(t, 10*time.Second, func() bool {
+		unlock := f.app.threadLocks().Lock(h.thread.ID)
+		defer unlock()
+		record, found, err := f.app.findRecordedSend(h.thread.ID, threadRequestSendID(token))
+		if err != nil || !found || record.dispatched || f.receipt(t, token).State != store.ThreadReceiptAccepted {
+			return false
+		}
+		assertRequestOwedAgain(t, f, h.thread.ID, token)
+		return true
+	})
+	assertNothingPending(t, f.app, h.thread.ID)
+
+	// The fixture's router has no dispatcher; the next start's flush needs it.
+	f.app.triage.SetFlushDispatcher(f.app.enqueueFlushDispatch)
+	stdin := filepath.Join(t.TempDir(), "next-session-stdin.jsonl")
+	if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": writeClaudeStdinRecorderBinary(t, stdin)}); err != nil {
+		t.Fatalf("set binary: %v", err)
 	}
+	if err := f.app.StartSession(h.thread.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	t.Cleanup(func() { _ = f.app.StopSession(h.thread.ID) })
+	waitUntil(t, 10*time.Second, func() bool {
+		sent, _ := os.ReadFile(stdin)
+		return strings.Contains(string(sent), "check the changelog")
+	})
+	// In flight until its echo, which this CLI never sends.
+	if answer := f.app.publishSendsPending(h.thread.ID); !answer.Pending {
+		t.Fatalf("sends pending = %+v with the request in flight", answer)
+	}
+	if wakes := f.wakes(t, token); len(wakes) != 0 {
+		t.Fatalf("the sender was woken: %+v", wakes)
+	}
+}
+
+// The session-end settlement can run before the death's restore reaches the
+// thread. It leaves a request whose message the session still holds to that
+// restore, which gives it back.
+func TestTheSessionEndLeavesAHeldRequestToItsRestore(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	callerMidTurn(t, f)
+	h := newHeldRequestTarget(t, f)
+	tokens, uuid := h.send(t, "check the changelog")
+	token := tokens[0]
+	h.lifecycle(t, uuid, provider.CommandQueued)
+
+	f.app.settleReceiptsForEndedSession(h.thread.ID)
+	f.app.threadRequestsWG.Wait()
+	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptRunning {
+		t.Fatalf("receipt = %q before the restore, want it left running", receipt.State)
+	}
+	f.app.restoreUnconfirmedQueueOnSessionDeath(h.thread.ID)
+	assertRequestOwedAgain(t, f, h.thread.ID, token)
+	f.app.settleReceiptsForEndedSession(h.thread.ID)
+	f.app.threadRequestsWG.Wait()
+	assertRequestOwedAgain(t, f, h.thread.ID, token)
+}
+
+// A session that dies during the turn that read a request settles it with
+// what the turn had written.
+func TestARequestReadWhenItsSessionDiesSettlesWithWhatItWrote(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	h, token := heldRequestMidTurn(t, f)
+	h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "error"})
 	h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
 	row := f.awaitRequestState(t, token, store.ThreadRequestInterrupted)
-	if !strings.Contains(string(row.Answer), "session ended before it read") {
-		t.Fatalf("answer = %q", row.Answer)
+	if !strings.Contains(string(row.Answer), "session ended during the turn that read the request") ||
+		!strings.Contains(string(row.Answer), "Halfway through the changelog.") {
+		t.Fatalf("answer = %q, want the session's end and what the turn had written", row.Answer)
+	}
+}
+
+// An archived thread takes nothing back on its queue: a request its archive
+// or its death took back before the agent took it in settles as never read.
+func TestARequestAnArchivedThreadCannotTakeBackSettlesUnread(t *testing.T) {
+	t.Parallel()
+	for _, end := range []string{"archive", "death"} {
+		t.Run(end, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			callerMidTurn(t, f)
+			h := newHeldRequestTarget(t, f)
+			tokens, uuid := h.send(t, "check the changelog")
+			token := tokens[0]
+			h.lifecycle(t, uuid, provider.CommandQueued)
+			if end == "archive" {
+				if err := f.app.ArchiveThread(h.thread.ID); err != nil {
+					t.Fatalf("ArchiveThread: %v", err)
+				}
+				h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
+			} else {
+				if _, _, err := f.app.store.ArchiveThread(h.thread.ID); err != nil {
+					t.Fatalf("store.ArchiveThread: %v", err)
+				}
+				h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "error"})
+				h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
+			}
+			row := f.awaitRequestState(t, token, store.ThreadRequestInterrupted)
+			if string(row.Answer) != threadtools.InterruptSessionEndedUnread {
+				t.Fatalf("answer = %q, want the session's end before it read the request", row.Answer)
+			}
+			if record, found, err := f.app.findRecordedSend(h.thread.ID, threadRequestSendID(token)); err != nil || (found && !record.dispatched) {
+				t.Fatalf("request message = %+v found=%v err=%v, want it not queued", record, found, err)
+			}
+		})
 	}
 }
 
@@ -723,9 +995,10 @@ func TestInterruptingTheTurnAHeldRequestWasWrittenDuringLeavesItRunning(t *testi
 }
 
 // A replacement start (a session-config restart) retires the old process
-// without a death. The message that process discarded unrun goes back to the
-// composer with the replacement's start, and the request settles with it.
-func TestARequestDiscardedByAReplacedSessionSettlesInterrupted(t *testing.T) {
+// without a death. A request that process discarded unrun is the session's
+// end before the agent took it in: it goes back to its queue for the
+// replacement to send.
+func TestARequestDiscardedByAReplacedSessionGoesBackToItsQueue(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	callerMidTurn(t, f)
@@ -735,16 +1008,15 @@ func TestARequestDiscardedByAReplacedSessionSettlesInterrupted(t *testing.T) {
 	h.lifecycle(t, uuid, provider.CommandQueued)
 	h.lifecycle(t, uuid, provider.CommandDiscarded)
 
+	h.handSessionEventsToHandler()
 	unlock := f.app.threadLocks().Lock(h.thread.ID)
 	err := f.app.stopExistingSessionLocked(h.thread.ID)
 	unlock()
 	if err != nil {
 		t.Fatalf("stopExistingSessionLocked: %v", err)
 	}
-	row := f.awaitRequestState(t, token, store.ThreadRequestInterrupted)
-	if !strings.Contains(string(row.Answer), "did not take the request in") {
-		t.Fatalf("answer = %q", row.Answer)
-	}
+	f.app.threadRequestsWG.Wait()
+	assertRequestOwedAgain(t, f, h.thread.ID, token)
 }
 
 // A request queued during turn 0 and flushed after a task-notification

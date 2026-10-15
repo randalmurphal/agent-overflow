@@ -194,8 +194,8 @@ describe('the Agents segment', () => {
     setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
     replaceQueueForThread(pane.threadId!, [{
       id: 'q1', sendId: 'thread-request:tok', threadId: pane.threadId!, message: 'Check the changelog.',
-      attachmentIds: [], enqueuedAt: Date.now() - 5_000, origin: 'agent-thread',
-      originThread: { computerId: '', computerName: '', threadId: 'sender', title: 'Sender', token: 'tok' },
+      attachmentIds: [], enqueuedAt: Date.now() - 5_000, agentMessage: true,
+      originThread: { computerId: '', computerName: '', threadId: 'sender', title: 'Sender', token: 'tok', kind: 'send' },
     } as QueueItem]);
     const view = render(ActivityRailHost, { props: { pane } });
     await waitFor(() => expect(view.getByTestId('activity-rail-agents-count').textContent).toBe('1'));

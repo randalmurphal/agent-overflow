@@ -92,7 +92,8 @@ across a version only within the index's `stableLines`.
 Live turn, approval, user-input, compacting and sends-pending state is
 backend state, never derived from items or rows. Sends pending
 (`provider:sends_pending`, capability `sends-pending.v1`) covers a queued or
-flushed message until its echo, so a thread surface with no pane reads
+flushed message until its echo while the thread has a session live or
+starting, so every thread surface, the pane's own composer included, reads
 running from it rather than from the queue frames. `RegisterQueueItem`
 replies with the thread's answer and the channel sequence it reflects. The
 reply can overtake earlier frames, so a frame at or below an applied answer

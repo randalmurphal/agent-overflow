@@ -73,7 +73,7 @@
   import { prepareThreadWorktreeIntent } from '../../stores/worktreeIntentMaterialize';
   import { providerSupports } from '../../providers/catalog';
   import { hasScope } from '../../transport/scopes';
-  import { getFlushedForThread, getQueueForThread, registerQueueItem } from '../../stores/sendQueue.svelte';
+  import { personPendingMessages, registerQueueItem } from '../../stores/sendQueue.svelte';
   import { buildSendOptions } from '../../utils/sendOptions';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
@@ -825,10 +825,7 @@
     flushDraft: () => draft.flushPending(),
     fetchHistory: (threadId) => GetThreadUserMessageHistory(threadId, HISTORY_RECALL_LIMIT),
     paneItems: () => pane.items,
-    pendingMessages: () => [
-      ...getFlushedForThread(pane.threadId).map((f) => f.message),
-      ...getQueueForThread(pane.threadId).map((q) => q.message),
-    ],
+    pendingMessages: () => personPendingMessages(pane.threadId),
     paint: paintHistoryPreview,
     reportError: (msg, err) => pane.setGeneralError(msg, err),
   });

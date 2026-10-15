@@ -1788,7 +1788,7 @@ export class EditDiffList {
 
 /**
  * EditDiffTurnLabel captions a selector turn group with the turn's
- * first user prompt.
+ * first user prompt (promptLabel).
  */
 export class EditDiffTurnLabel {
     "turnIndex": number;
@@ -4255,6 +4255,12 @@ export class QueueFlushedItem {
     "userItemId": string;
     "message": string;
 
+    /**
+     * AgentMessage is usermessage.IsAgentMessage of the row the message
+     * became: an agent's message, which the queue preview leaves out.
+     */
+    "agentMessage"?: boolean;
+
     /** Creates a new QueueFlushedItem instance. */
     constructor($$source: Partial<QueueFlushedItem> = {}) {
         if (!("queueItemId" in $$source)) {
@@ -4317,13 +4323,16 @@ export class RegisteredQueueItem {
     "enqueuedAt": number;
 
     /**
-     * Origin, OriginThread and OriginWake are the payload's attribution of
-     * a message the app queued for an agent or a wake, so a reader of the
-     * queue can tell it from a person's own.
+     * Origin, OriginThread and OriginWake attribute a message the app queued
+     * on an agent's behalf, as the row it becomes will. AgentMessage is
+     * usermessage.IsAgentMessage of that attribution: the message is not
+     * the person's, so the composer's queue preview leaves it out and the
+     * Agents rail segment lists it as incoming instead.
      */
     "origin"?: string;
     "originThread"?: usermessage$0.OriginThread | null;
     "originWake"?: usermessage$0.OriginWake | null;
+    "agentMessage"?: boolean;
     "sendsPending": SendsPendingAnswer;
 
     /** Creates a new RegisteredQueueItem instance. */
@@ -4359,7 +4368,7 @@ export class RegisteredQueueItem {
         const $$createField9_0 = $$createType8;
         const $$createField12_0 = $$createType72;
         const $$createField13_0 = $$createType74;
-        const $$createField14_0 = $$createType75;
+        const $$createField15_0 = $$createType75;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField4_0($$parsedSource["attachmentIds"]);
@@ -4386,7 +4395,7 @@ export class RegisteredQueueItem {
             $$parsedSource["originWake"] = $$createField13_0($$parsedSource["originWake"]);
         }
         if ("sendsPending" in $$parsedSource) {
-            $$parsedSource["sendsPending"] = $$createField14_0($$parsedSource["sendsPending"]);
+            $$parsedSource["sendsPending"] = $$createField15_0($$parsedSource["sendsPending"]);
         }
         return new RegisteredQueueItem($$parsedSource as Partial<RegisteredQueueItem>);
     }
@@ -6827,6 +6836,37 @@ export class ThreadRecurringJob {
     static createFrom($$source: any = {}): ThreadRecurringJob {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new ThreadRecurringJob($$parsedSource as Partial<ThreadRecurringJob>);
+    }
+}
+
+/**
+ * ThreadRequestState is one request a thread made as the ledger holds it:
+ * its state, and the caller's timeline row that delivered its answer once the
+ * provider confirmed that row, whether or not any pane has it loaded.
+ */
+export class ThreadRequestState {
+    "token": string;
+    "state": string;
+    "wakeItemId"?: string;
+
+    /** Creates a new ThreadRequestState instance. */
+    constructor($$source: Partial<ThreadRequestState> = {}) {
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadRequestState instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadRequestState {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadRequestState($$parsedSource as Partial<ThreadRequestState>);
     }
 }
 

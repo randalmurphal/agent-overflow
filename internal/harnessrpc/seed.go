@@ -83,7 +83,10 @@ type HarnessSeedThread struct {
 // HarnessSeedTurn is one completed exchange: the user message plus the
 // assistant-side items that followed it.
 type HarnessSeedTurn struct {
-	UserText string            `json:"userText"`
+	UserText string `json:"userText"`
+	// UserMeta is the user message's meta, such as the origin of a
+	// message another agent wrote.
+	UserMeta json.RawMessage   `json:"userMeta,omitempty"`
 	Items    []HarnessSeedItem `json:"items,omitempty"`
 	// Repeat seeds this turn that many times in a row (default 1), each
 	// at its own turn index and minute. It is how a fixture describes a
@@ -458,6 +461,7 @@ func appendSeedTurn(batch *store.ThreadHistoryBatch, threadID string, turnIndex 
 		Kind:      "user_text",
 		Role:      "user",
 		Summary:   spec.UserText,
+		Meta:      string(spec.UserMeta),
 		CreatedAt: at,
 		UpdatedAt: at,
 	}})

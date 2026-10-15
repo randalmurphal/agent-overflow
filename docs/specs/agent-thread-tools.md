@@ -123,7 +123,9 @@ pin tier (`front` / `back` / none), archived, unread, `last_message`,
 `standing_agent` on a thread the user promoted, `spawned_by` naming the
 local thread that spawned it, `self` on the caller's own row, and with
 a query the matched item id and a snippet. `last_message` is the newest top-level assistant text or
-reader-authored user text of the thread's latest turn: its role, when
+reader-authored user text of the thread's latest turn: its role
+(`agent` for a message another agent wrote, see
+[How agent messages appear](#how-agent-messages-appear)), when
 it was last written, and the last 400 characters of it, whitespace
 collapsed and marked `…` when longer. With the state it answers whether
 an idle thread is waiting on an answer without opening it. It is absent
@@ -229,7 +231,8 @@ chunks with a whole-file SHA-256, as remote artifacts do; the inline
 form moves at most `max_bytes` over the wire.
 
 Output is plain text, turn-delimited, each row prefixed with role and
-item id. Default content is what people said: user text and assistant
+item id; a message another agent wrote is role `agent` and names its
+sender (`[agent <id> from "Title" (<thread id>)]`). Default content is what people said: user text and assistant
 text, each clipped only when it alone outgrows the page. Consecutive
 rows of one turn whose bodies the read leaves out fold into one
 parenthesized line that counts the tool calls by name, the thinking
@@ -789,7 +792,10 @@ and approval requests go to it rather than to the user. A sender on
 another computer carries its role in the forwarded call; it never
 routes the receiver's questions. A footer from an ordinary thread is
 unchanged. A wake starts with one line: reply,
-finished without replying, errored, cancelled, interrupted, or expired,
+finished without replying, errored, cancelled, interrupted (by a restart
+of its computer, its session ending, a move to another computer or
+another interrupt, as its settlement recorded), stopped by the person
+(with the turn's last message), or expired,
 with the thread's title and id, the token, its computer and the
 answer's age when they apply, then the text. When the answering thread
 is a standing agent, the line after it says so and quotes its role line
@@ -860,8 +866,8 @@ subagent child" and would mark the caller busy while its spawns run.
 
 ## Wakes (Q7, Q8, Q15, Q25)
 
-A wake is a user-role row in the calling thread, badged with the source
-thread (see Attribution), carrying a status line with the token, the
+A wake is a user-role row in the calling thread, attributed to the
+source thread (see Attribution), carrying a status line with the token, the
 answer kind, the source thread's computer, id and title as a link, and
 a body capped at a 24KB preview with a notice pointing at
 `thread_status` with the token, which returns the whole answer.
@@ -924,8 +930,14 @@ What settles a request, in order:
    as a second wake, so a responder that ended its turn to wait on a
    command costs the caller nothing.
 3. An errored turn settles `errored` with the error text.
-4. `thread_cancel` settles `cancelled`; a restart of the responder's
-   computer mid-turn settles `interrupted`.
+4. `thread_cancel` settles `cancelled`. A turn cut any other way
+   settles `interrupted` with why (`threadtools.Interrupt*`): the
+   responder's computer restarted, the thread's session ended (a crash,
+   a stop, a teardown or a replacement; one of three sentences, by how
+   far the request got), the thread moved to another computer, or
+   something else interrupted it, such as a workflow takeover. The
+   person's Stop settles `interrupted` with what the turn said by then
+   as its `final` answer; its wake says the person stopped the turn.
 
 A request settles once and its wake fires once, plus one more for a
 late reply. Every settlement and late reply bumps the request's
@@ -946,12 +958,29 @@ turn of its own, and is never bound to an earlier one, even when the CLI
 reports it `started` inside another message's turn. When the provider
 merges a message whose own echo already opened a turn into a later one,
 the binding moves to the turn that ran the merged message and the empty
-turn is ended. A message given back to the composer, or lost with a
-session that ended, before any turn read it settles `interrupted`; the
-answer says the request was read and not answered when the provider had
-taken it in. A session that ends during the turn that read the request
-(a stop, a death, a replacement start) ends that turn and settles the
-request `interrupted` with what the turn had written. For scratch threads
+turn is ended. A session that ends (a stop, a death, a replacement start,
+an idle close) before the provider took the request's message in (no
+`started`, no echo) takes it back: the request returns to `accepted` and
+its message to the thread's queue, owed again, and the next session start
+delivers it, or the session already live when an idle close's requeue
+lands; its sender is told nothing. The session-end settlement
+leaves a message the session still holds to the restore that takes it
+back. One the queue cannot take back (an archived thread, a failed write)
+settles `interrupted` saying the session ended before the thread read
+it. One the provider had taken in settles saying it ended before the
+thread answered it, and a session that ends during the turn that read
+the request ends that turn and settles the request `interrupted` with
+what the turn had written. The three answers are the
+`threadtools.InterruptSessionEnded*` sentences, which the sender's wake
+row shows as "Stopped by: the session ended ...". A message the provider
+refuses while its session lives on (Claude's `cancelled`, a failed Codex
+resend, a rollback that purges it) settles the request saying the thread
+did not take it in (`threadtools.InterruptNotTakenIn*`), which the
+sender's row shows as "Stopped by: the thread did not take it in". A
+restore never puts a request's text in the person's composer on its
+own: a message that held the person's text gives back that text alone,
+and one that cannot be split gives back all of it and says so in the
+request's answer. For scratch threads
 only, any non-running state counts as rest (there is no human to
 unblock one), and the thread is deleted once its answer is stored.
 
@@ -1004,18 +1033,80 @@ still wants the work. A target deleted while a request is open settles
 `items.meta.origin` is already a string (`external-queue`,
 `peer-session`) with a rendering branch. A user row written by an agent
 carries `meta.origin = "agent-thread"` and `meta.originThread =
-{computerId, computerName, threadId, title}`. The UI renders a small "from <title>" chip on the
-row, with "on <computer>" appended when the origin is another computer,
-clickable through to that thread when the frontend is attached to its
-computer and inert with the same label otherwise. It appears on a
-spawn's first message, on every `thread_send`, and on every wake. Both
-ends record it: the destination's thread shows where a message came
-from, and the caller's wake shows where the answer came from. Every
-agent-written row also carries `meta.originThread.token`, so three
-requests from one thread to another stay distinguishable. When Claude
+{computerId, computerName, threadId, title, token, kind}`, where `kind`
+is `spawn`, `send` or `ask` on a request and `wake` on its answer. It
+appears on a spawn's first message, on every `thread_send` and
+`thread_ask`, and on every wake. Both ends record it: the destination's
+thread shows where a message came from, and the caller's wake shows
+where the answer came from. The token keeps three requests from one
+thread to another distinguishable. A row written before `kind` existed
+is read by its send id (`thread-request:`, `thread-wake`). When Claude
 joins messages that queued together into one row, the attribution is the
-first member's (a thread or a wake) and `meta.joinedOriginTokens` lists
-every answering member's token.
+first member's (a thread or a wake), and `meta.joinedParts` records each
+member's length, attribution and token. A join that cannot measure its
+members (a member that was itself joined and whose image markers were
+renumbered) records `meta.joinedOriginTokens`, every member's token,
+instead.
+
+### How agent messages appear
+
+A message another agent wrote is not the person's message. It stays a
+user-role turn on the wire and a `user_text` row in the store, so
+history never changes, and is told apart by its meta: `origin` is
+`agent-thread` or `agent-wake` (a loop, watch, outside send or worker
+prompt wake, a remote job's completion or a workflow run's wake), or
+the row is a provider's own agent message, a Claude
+peer session's (`origin = peer-session`) or a Codex collab agent's
+(`meta.agent_message`). A row Claude joined from an agent's message and
+the person's queued composer message carries the composer's
+`expandComposerCommands` and stays the person's. The origin rule has
+three twins held to each other by tests: `usermessage.IsAgentMessage`,
+`store.AgentMessageFilterFor` and `isAgentMessageMeta`
+(`frontend/src/lib/utils/userMessageMeta.ts`); the provider kinds are
+wire-only rows, which no query below reads.
+
+The timeline renders such a row folded, in the register of a tool row
+(`AgentMessageRow.svelte`): an icon and a gutter label for the kind,
+then one header line naming the sender (with `on <computer>` when
+remote, a button opening its thread in a pane when this client reaches
+it), a standing agent's role line, and the message's first line. Opened,
+it shows the message and the routing parsed into facts: whether the
+sender waits, whether a reply reaches it, its role, where its spawned
+thread's prompts go, the sender's user message it quoted and the token;
+on an answer, who answered, how long ago, what stopped it and
+where the clipped rest is. The footer and a wake's status line never
+render raw; a loop, watch, outside send or worker wake shows its data
+decoded without the line written for the agent. A remote job's
+completion names the job and its computer and leads with its result; a
+workflow wake names the workflow and leads with the run's headline. Every
+message the app writes into a thread that is not the person's own words
+carries one of these origins; the person's answers to a Codex question,
+review comments they send, the workflow messages they start from a
+button and a workflow phase prompt stay theirs. The parser reads the
+Go templates, pinned by `internal/threadtools/testdata/agent_messages.json`.
+Agent-thread and agent-wake rows written before this render the same way;
+a remote job's completion or a workflow wake written before it carries no
+origin and renders as the person's.
+
+Such a row is not a tick on the message navigator, not recalled by the
+composer, never un-sent by Stop, and not listed in the send-queue
+preview; the queue wire marks it `agentMessage`, with its origin, so the
+Agents rail can list it as incoming. The review pane's Edits selector
+names a turn one started by the row's sender and first line. Title
+generation and worktree branch naming read a request without its footer.
+
+Headless Claude can join a person's queued message with an agent's into
+one row. The row records each member's length and origin when it is
+joined (`joinedParts`), so a Stop that un-sends it puts only the
+person's text back in the composer and gives each agent's message back
+to its owner: an answer or a completion to its request or watch, a loop
+or watch wake to its row, and a request to its queue, owed again, its
+receipt `accepted` and its sender told nothing. A session that ends
+before the agent took such a message in gives back the person's text and
+settles the request with why, as above. A row with no
+recorded parts that holds an agent's message is not un-sent. A request
+still queued when the app quits is not put in the composer at the next
+start; the boot sweep tells its sender.
 
 ## How calls surface in the timeline
 
@@ -1062,10 +1153,13 @@ workflow, browser and remote tools). Both providers stamp `meta.mcp` and
 - A spawn, send or ask that returned before its answer follows the
   request: the target thread's state (an ask: waiting on the answer) until
   the answer's wake row (the user row carrying the request's token, joined
-  or not) lands, then "answer arrived". The wake row is found among the
-  rows the pane has loaded, so an answer outside the loaded window, or a
-  target on another computer, shows no "answer arrived"; slice 10's
-  request store replaces this scan.
+  or not) lands, then "answer arrived". The request ledger says whether
+  it has (`GetThreadRequestStates`: the confirmed wake row, loaded in the
+  pane or not, however long ago it settled), read for the rows' tokens
+  and again on each `thread:agent_rows_changed` frame naming one. A
+  mounted row keeps its token's answer cached. A token the ledger does
+  not know, a request from before it, falls back to the answer rows the
+  pane has loaded.
 
 ## Availability and permissions (Q13, Q17, Q27)
 
@@ -1358,9 +1452,9 @@ codex 0.153.4); outcomes recorded in the
       reads the range around the match, and reads its last 16KB with a
       negative offset, locally and on another computer.
 - [x] `thread_spawn` with `worktree` and `notify` yields a sidebar thread
-      on a new worktree whose first row carries the origin chip, and the
+      on a new worktree whose first row names the caller, and the
       caller receives a wake when it rests. The same on another computer
-      with an explicit project, with the chip naming the computer on
+      with an explicit project, with the sender naming the computer on
       both ends; omitting the project lists that computer's projects.
 - [x] `thread_ask` with the default wait returns the answer inline when
       it arrives in time; a longer answer backgrounds and arrives as a
@@ -1454,8 +1548,8 @@ codex 0.153.4); outcomes recorded in the
   expiry, settlement collection after a restart on either side,
   revocation, a moved target, and an older destination. No real
   providers, no real GPU or network hardware.
-- Frontend: origin chip with and without a computer, inert chip when
-  the computer is not attached, `side-chat` companion pane persistence
+- Frontend: agent message rows of every kind, their sender with and
+  without a computer and inert when the computer is not attached, `side-chat` companion pane persistence
   and close rules, Keep promotion, the settings switch; Playwright in
   `e2e/` through the agent harness for the side-chat flow (including
   mid-turn) and a spawn/wake round trip, local and across two harness

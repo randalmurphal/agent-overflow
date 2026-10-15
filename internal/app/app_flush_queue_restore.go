@@ -217,9 +217,6 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 		settlement.Settle()
 	}
 	a.settleNotTakenIn(threadID, owed)
-	for _, item := range restorable {
-		a.settleRequestsNotTakenIn(threadID, unconfirmedSendIDs(item), reason)
-	}
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 
 	a.emitQueueStateChanged(threadID)
@@ -284,6 +281,11 @@ const (
 	queueRestoredReasonResendFailed = "resend_failed"
 	queueRestoredReasonNeverQueued  = "provider_queue_never_taken"
 	queueRestoredReasonPurgeAborted = "provider_queue_purge_aborted"
+	// queueRestoredReasonRequestRequeued removes the rows of other threads'
+	// requests a teardown took back before the agent took them in; their
+	// messages are queued again rather than restored to the composer
+	// (giveBackTeardownRequests).
+	queueRestoredReasonRequestRequeued = "request_requeued"
 )
 
 // restoreEagerPersistedFlushesForReason is the body, parameterised by the
@@ -354,10 +356,6 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 		}
 	}
 	a.settleNotTakenIn(threadID, owed)
-	for _, p := range restorable {
-		row := store.Item{ThreadID: threadID, ID: p.UserItemID, Meta: p.Meta}
-		a.settleRequestsNotTakenIn(threadID, unconfirmedSendIDs(triage.UnconfirmedFlushItem{QuietItem: &row}), reason)
-	}
 	a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
 		ThreadID:     threadID,
 		Reason:       reason,
@@ -437,6 +435,10 @@ func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
 		// So does the send id: the redispatch's fresh row carries it, which
 		// is what keeps a re-sent frame deduping across a requeue.
 		SendID: m.SendID,
+		// And who wrote it: an agent's message requeued stays the agent's.
+		Origin:       m.Origin,
+		OriginThread: m.OriginThread,
+		OriginWake:   m.OriginWake,
 	}
 	for _, att := range m.Attachments {
 		payload.AttachmentIDs = append(payload.AttachmentIDs, att.ID)
@@ -592,6 +594,14 @@ func queuePayloadFromUserItem(item store.Item, parts []usermessage.JoinedPart, f
 		SendID:        meta.SendID,
 		JoinedSendIDs: meta.JoinedSendIDs,
 		JoinedParts:   joinedPartsOf(strings.TrimSpace(item.Summary), parts),
+		// Without parts, its request tokens are all that says which
+		// requests it answers.
+		JoinedOriginTokens: meta.JoinedOriginTokens,
+		// An agent's message requeued stays the agent's, so its next row
+		// is an agent row and no Stop un-sends it into the composer.
+		Origin:       meta.Origin,
+		OriginThread: meta.OriginThread,
+		OriginWake:   meta.OriginWake,
 	})
 	if err != nil {
 		return fallback
@@ -626,8 +636,8 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 // restoreDurableFlushQueueAtBoot puts every queued message the previous
 // process did not deliver back into its thread's composer draft, and deletes
 // the rows. What the app wrote is not the person's to send and goes
-// elsewhere: a loop or watch wake, an outside send or a worker's prompt is
-// discarded (discardAgentWakeAtBoot), and an answer, a reminder or a remote
+// elsewhere: a loop or watch wake, an outside send, a worker's prompt or
+// another thread's request is discarded (discardAgentWakeAtBoot), and an answer, a reminder or a remote
 // completion goes back to its owner (giveBackToOwners), as does one the
 // previous process handed a provider that never confirmed it
 // (giveBackUnconfirmedAtBoot).

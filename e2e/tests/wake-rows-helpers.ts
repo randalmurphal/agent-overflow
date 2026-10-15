@@ -2,7 +2,7 @@
 // compact-wake-rows.spec.ts): a standing agent seeded with its scripts, the
 // tray row locators, reads of the rows the tray shows, and captures.
 import { existsSync } from 'node:fs';
-import { rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Locator, Page } from '@playwright/test';
@@ -17,6 +17,7 @@ import {
   type ProviderName,
   type ScriptedTurn,
 } from './thread-tools-helpers.js';
+import { escapeTimelineFollow } from './timeline-follow-helpers.js';
 
 /** The computer name a capture may show. */
 export const DEVICE_NAME = 'Wake tray computer';
@@ -208,7 +209,14 @@ export async function holdNextRun(home: string): Promise<{ running: () => Promis
 export async function capture(page: Page, name: string, ...targets: Locator[]): Promise<void> {
   for (const target of targets) {
     await expect(target).toBeVisible();
-    await expect(target).toBeInViewport({ ratio: 1 });
+    try {
+      await expect(target).toBeInViewport({ ratio: 1 });
+    } catch (error) {
+      const box = await target.boundingBox();
+      const viewport = page.viewportSize()!;
+      const scrollTop = await page.getByTestId('message-timeline-scroll').first().evaluate((el) => el.scrollTop).catch(() => NaN);
+      throw new Error(`${name}: target at ${box ? `y ${Math.round(box.y)}, height ${Math.round(box.height)}` : 'no box'} in a ${viewport.width}x${viewport.height} viewport, timeline scrollTop ${Math.round(scrollTop)}`, { cause: error });
+    }
   }
   await page.evaluate(() => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -226,3 +234,27 @@ export async function capture(page: Page, name: string, ...targets: Locator[]): 
     style: '[data-testid="sidebar-system-stats"] { display: none !important; }',
   });
 }
+
+/**
+ * capture, also copied to AO_AGENT_MESSAGE_SHOTS when it is set, since the
+ * next run wipes the run's output: the agent message rows' published shots.
+ */
+export async function captureAgentMessage(page: Page, name: string, ...targets: Locator[]): Promise<void> {
+  await capture(page, name, ...targets);
+  const dir = process.env.AO_AGENT_MESSAGE_SHOTS;
+  if (!dir) return;
+  await mkdir(dir, { recursive: true });
+  await copyFile(test.info().outputPath(name), `${dir}/${name}`);
+}
+
+/**
+ * captureAgentMessage of rows brought into view with the timeline's follow
+ * left first, so a timeline following its bottom does not carry a row the
+ * test just opened back out of view.
+ */
+export async function captureAgentMessageInView(page: Page, name: string, ...targets: Locator[]): Promise<void> {
+  await escapeTimelineFollow(page);
+  for (const target of targets) await target.scrollIntoViewIfNeeded();
+  await captureAgentMessage(page, name, ...targets);
+}
+

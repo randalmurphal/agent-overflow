@@ -40,6 +40,7 @@ interface ThreadRowUiStateOptions {
   getItemById(itemId: string): Item | undefined;
   /** The committed window determines whether a dropped record's message or payload still has a reader. */
   loadedItems(): Iterable<Item>;
+  threadId(): string | null;
 }
 
 export interface ThreadRowUiState {
@@ -78,6 +79,10 @@ export interface ThreadRowUiState {
    *  the registry stores the deviation only — an expanded id — and
    *  collapsing forgets it rather than storing `false`. */
   setUserMessageExpanded(itemId: string, expanded: boolean): void;
+  /** Whether a person's Stop left this message in place because it joins
+   *  an agent's message nothing can split from it. */
+  isUnsendDeclined(itemId: string): boolean;
+  setUnsendDeclined(itemId: string): void;
   /** The card's deviation from the current `collapseDiffPreviews` default,
    *  or undefined when it follows it. See `liveDiffOverride`. */
   diffCardExpandedOverride(itemId: string, filePath: string): boolean | undefined;
@@ -586,7 +591,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     const states = itemExpansionKeysByState.get(itemId);
     if (!states) return;
     for (const keys of states.values()) {
-      for (const key of [...keys]) {
+      for (const key of Array.from(keys)) {
         disposeExpansionKey(key);
       }
     }
@@ -597,7 +602,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       payloadExpansionRegistryKey(threadId, payloadId),
     );
     if (!keys) return;
-    for (const key of [...keys]) disposeExpansionKey(key);
+    for (const key of Array.from(keys)) disposeExpansionKey(key);
   }
 
   function disposeItems(items: Iterable<Item>): void {
@@ -715,10 +720,10 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   }
 
   function clear(): void {
-    for (const key of [...expansionStates.keys()]) {
+    for (const key of Array.from(expansionStates.keys())) {
       disposeExpansionKey(key);
     }
-    for (const key of [...leasedPrunedExpansionStates.keys()]) {
+    for (const key of Array.from(leasedPrunedExpansionStates.keys())) {
       disposeExpansionKey(key);
     }
     expansionStates.clear();
@@ -830,6 +835,8 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     toggleSubagentGroupExpanded,
     isUserMessageExpanded: messageUi.isExpanded,
     setUserMessageExpanded: messageUi.setExpanded,
+    isUnsendDeclined: messageUi.isUnsendDeclined,
+    setUnsendDeclined: messageUi.setUnsendDeclined,
     diffCardExpandedOverride,
     setDiffCardExpanded,
     expansionSignature,

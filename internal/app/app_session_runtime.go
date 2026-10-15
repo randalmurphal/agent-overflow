@@ -21,28 +21,56 @@ import (
 )
 
 // sessionManager is a root naming adapter over the package-owned runtime. It
-// holds no state; sessionruntime.Manager is the sole authority.
-type sessionManager struct{ runtime *sessionruntime.Manager }
+// holds no state; sessionruntime.Manager is the sole authority. Every change
+// to whether a thread has a session, live or starting, is reported to
+// changed: whether its queued messages count as pending depends on it
+// (readSendsPending).
+type sessionManager struct {
+	runtime *sessionruntime.Manager
+	changed func(threadID string)
+}
 
 func (a *App) sessionManager() sessionManager {
 	a.sessionRuntimeOnce.Do(func() { a.sessionRuntime = sessionruntime.New() })
-	return sessionManager{runtime: a.sessionRuntime}
+	return sessionManager{runtime: a.sessionRuntime, changed: a.markSendsPendingDirty}
 }
 
-func (m sessionManager) get(threadID string) (session, bool)  { return m.runtime.Get(threadID) }
-func (m sessionManager) put(threadID string, entry session)   { m.runtime.Put(threadID, entry) }
-func (m sessionManager) take(threadID string) (session, bool) { return m.runtime.Take(threadID) }
+func (m sessionManager) get(threadID string) (session, bool) { return m.runtime.Get(threadID) }
+func (m sessionManager) put(threadID string, entry session) {
+	m.runtime.Put(threadID, entry)
+	m.changed(threadID)
+}
+func (m sessionManager) take(threadID string) (session, bool) {
+	entry, ok := m.runtime.Take(threadID)
+	m.changed(threadID)
+	return entry, ok
+}
 func (m sessionManager) unregister(threadID, token string) (session, bool) {
-	return m.runtime.Unregister(threadID, token)
+	entry, ok := m.runtime.Unregister(threadID, token)
+	m.changed(threadID)
+	return entry, ok
 }
 func (m sessionManager) beginStart(threadID string) (*sessionStart, bool) {
-	return m.runtime.BeginStart(threadID)
+	start, leader := m.runtime.BeginStart(threadID)
+	m.changed(threadID)
+	return start, leader
 }
 func (m sessionManager) finishStart(threadID string, start *sessionStart) {
 	m.runtime.FinishStart(threadID, start)
+	m.changed(threadID)
 }
 func (m sessionManager) startState(threadID string) (*sessionStart, bool) {
 	return m.runtime.StartState(threadID)
+}
+
+// liveOrStarting reports whether a thread has a session registered or one
+// starting.
+func (m sessionManager) liveOrStarting(threadID string) bool {
+	if _, ok := m.runtime.Get(threadID); ok {
+		return true
+	}
+	_, starting := m.runtime.StartState(threadID)
+	return starting
 }
 func (m sessionManager) updateLaunchOpts(threadID, token string, options provider.SessionOptions) {
 	m.runtime.UpdateLaunchOptions(threadID, token, options)
@@ -74,10 +102,20 @@ func (m sessionManager) idleCandidates(cutoffNano int64) []string {
 	return m.runtime.IdleCandidates(cutoffNano)
 }
 func (m sessionManager) takeIdle(threadID string, cutoffNano int64) (session, bool) {
-	return m.runtime.TakeIdle(threadID, cutoffNano)
+	entry, ok := m.runtime.TakeIdle(threadID, cutoffNano)
+	if ok {
+		m.changed(threadID)
+	}
+	return entry, ok
 }
-func (m sessionManager) snapshot() map[string]session         { return m.runtime.Snapshot() }
-func (m sessionManager) snapshotAndClear() map[string]session { return m.runtime.SnapshotAndClear() }
+func (m sessionManager) snapshot() map[string]session { return m.runtime.Snapshot() }
+func (m sessionManager) snapshotAndClear() map[string]session {
+	cleared := m.runtime.SnapshotAndClear()
+	for threadID := range cleared {
+		m.changed(threadID)
+	}
+	return cleared
+}
 
 type sessionStart = sessionruntime.Start
 

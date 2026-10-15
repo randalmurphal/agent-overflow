@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -14,8 +15,10 @@ import (
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/usermessage"
 )
 
 func threadToolsOS() string { return runtime.GOOS }
@@ -264,6 +267,11 @@ func (t threadToolsApp) projectItem(q threadtools.TranscriptQuery, row store.Ite
 		TurnID:   strconv.Itoa(row.TurnIndex),
 		Name:     row.ToolName,
 	}
+	if kind == "user_text" {
+		if from, ok := agentMessageSender(row); ok {
+			item.Role, item.From = "agent", from
+		}
+	}
 	toolRow := kind == "tool_call" || kind == "diff"
 	if toolRow {
 		item.Label = row.Summary
@@ -294,6 +302,51 @@ func (t threadToolsApp) projectItem(q threadtools.TranscriptQuery, row store.Ite
 	item.Text = text
 	item.Clipped = int64(len(text)) < size
 	return item, nil
+}
+
+// agentMessageSender names who wrote a user row that is not the person's:
+// an agent thread, a wake, or another Claude session. ok is false for the
+// person's own rows, a row whose meta does not decode included: calling an
+// unreadable row the person's is what every other reader does with it.
+func agentMessageSender(row store.Item) (from string, ok bool) {
+	meta, err := usermessage.FromItem(row)
+	if err != nil {
+		return "", false
+	}
+	if meta.Origin == claude.PeerTurnOrigin && !meta.ExpandComposerCommands {
+		var peer struct {
+			Name string `json:"cross_session_from_name"`
+		}
+		if json.Unmarshal([]byte(row.Meta), &peer) == nil && peer.Name != "" {
+			return fmt.Sprintf("Claude session %q", peer.Name), true
+		}
+		return "another Claude session", true
+	}
+	if !usermessage.IsAgentMessage(meta) {
+		return "", false
+	}
+	if origin := meta.OriginThread; origin != nil {
+		where := origin.ThreadID
+		if origin.ComputerName != "" {
+			where += ", on " + origin.ComputerName
+		}
+		return fmt.Sprintf("%q (%s)", origin.Title, where), true
+	}
+	if wake := meta.OriginWake; wake != nil {
+		switch wake.Kind {
+		case agentWakeKindSend:
+			return "a script (agent-overflow thread send)", true
+		case workerPromptKindQuestion, workerPromptKindApproval:
+			return fmt.Sprintf("%q (%s), its %s", wake.Label, wake.ThreadID, wake.Kind), true
+		case usermessage.OriginWakeKindCompletion:
+			return fmt.Sprintf("remote job %q on %s", wake.Label, wake.Computer), true
+		case usermessage.OriginWakeKindWorkflow:
+			return fmt.Sprintf("workflow %q", wake.Label), true
+		default:
+			return fmt.Sprintf("%s %q", wake.Kind, wake.Label), true
+		}
+	}
+	return "another agent", true
 }
 
 // threadToolsItemKind maps a store row onto the transcript vocabulary and

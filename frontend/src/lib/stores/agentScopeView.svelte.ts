@@ -172,6 +172,8 @@ export function createAgentScopeView(
     toggleSubagentGroupExpanded: rows.toggleSubagentGroupExpanded,
     isUserMessageExpanded: rows.isUserMessageExpanded,
     setUserMessageExpanded: rows.setUserMessageExpanded,
+    isUnsendDeclined: rows.isUnsendDeclined,
+    setUnsendDeclined: rows.setUnsendDeclined,
     diffCardExpandedOverride: rows.diffCardExpandedOverride,
     setDiffCardExpanded: rows.setDiffCardExpanded,
     expansionSignature: rows.expansionSignature,

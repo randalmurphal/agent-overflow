@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import agentMessageMetas from '../../../../internal/usermessage/testdata/agent_message_metas.json';
+import personParts from '../../../../internal/usermessage/testdata/person_parts.json';
 
 import {
+  isAgentMessageMeta,
+  isReaderAuthoredUserText,
   parseUserMessageAttachments,
+  personTextOfUserMessage,
   parseUserMessageMeta,
   userMessageOriginThread,
   userMessageOriginWake,
   agentWakeOriginLabel,
-  agentMessageKind,
 } from './userMessageMeta';
 import {
   DEFAULT_MAX_ATTACHMENT_SIZE,
@@ -113,12 +117,14 @@ describe('userMessageOriginThread', () => {
       threadId: 'thread-9',
       title: 'Auth rewrite',
       token: 'tok-1',
+      kind: 'send',
     })).toEqual({
       computerId: 'studio',
       computerName: 'Studio',
       threadId: 'thread-9',
       title: 'Auth rewrite',
       token: 'tok-1',
+      kind: 'send',
     });
   });
 
@@ -129,6 +135,7 @@ describe('userMessageOriginThread', () => {
       threadId: 'thread-9',
       title: '',
       token: '',
+      kind: '',
     });
   });
 
@@ -149,6 +156,7 @@ describe('userMessageOriginThread', () => {
       threadId: 'thread-9',
       title: '',
       token: '',
+      kind: '',
     });
   });
 
@@ -158,18 +166,24 @@ describe('userMessageOriginThread', () => {
 });
 
 describe('userMessageOriginWake', () => {
-  it('reads a loop, a watch and an outside send, and labels each', () => {
+  it('reads every wake kind and labels each', () => {
     const loop = userMessageOriginWake({ originWake: { kind: 'loop', label: 'board' } });
-    expect(loop).toEqual({ kind: 'loop', label: 'board' });
+    expect(loop).toEqual({ kind: 'loop', label: 'board', threadId: '', computer: '' });
     expect(agentWakeOriginLabel(loop!)).toBe('Loop · board');
     const watch = userMessageOriginWake({ originWake: { kind: 'watch', label: 'mrs' } });
     expect(agentWakeOriginLabel(watch!)).toBe('Watch · mrs');
     const send = userMessageOriginWake({ originWake: { kind: 'send' } });
     expect(agentWakeOriginLabel(send!)).toBe('Sent by a script');
     const question = userMessageOriginWake({ originWake: { kind: 'question', label: 'Deploy worker', threadId: 't1' } });
+    expect(question?.threadId).toBe('t1');
     expect(agentWakeOriginLabel(question!)).toBe('Question · Deploy worker');
     const approval = userMessageOriginWake({ originWake: { kind: 'approval', label: 'Deploy worker' } });
     expect(agentWakeOriginLabel(approval!)).toBe('Approval · Deploy worker');
+    const job = userMessageOriginWake({ originWake: { kind: 'completion', label: 'build', computer: 'GPU box' } });
+    expect(job).toEqual({ kind: 'completion', label: 'build', threadId: '', computer: 'GPU box' });
+    expect(agentWakeOriginLabel(job!)).toBe('Remote job · build');
+    const run = userMessageOriginWake({ originWake: { kind: 'workflow', label: 'release' } });
+    expect(agentWakeOriginLabel(run!)).toBe('Workflow · release');
   });
 
   it('refuses a kind it does not know, which is not attribution', () => {
@@ -179,17 +193,52 @@ describe('userMessageOriginWake', () => {
   });
 });
 
-describe('agentMessageKind', () => {
-  const thread = { computerId: '', computerName: '', threadId: 'sender', title: 'Sender', token: 'tok' };
-  it('names a request, a reply, a reminder, a question and a wake, and leaves a person\'s message out', () => {
-    expect(agentMessageKind({ origin: 'agent-thread', originThread: thread, sendId: 'thread-request:tok' })).toBe('request');
-    expect(agentMessageKind({ origin: 'agent-thread', originThread: thread, sendId: 'thread-wake:tok' })).toBe('reply');
-    expect(agentMessageKind({ origin: 'agent-thread', originThread: thread, sendId: 'thread-wake-late:tok' })).toBe('reply');
-    expect(agentMessageKind({ origin: 'agent-thread', sendId: 'thread-wake:reminder' })).toBe('wake');
-    expect(agentMessageKind({ origin: 'agent-wake', originWake: { kind: 'question', label: 'Worker' }, sendId: 'agent-ask:q' })).toBe('question');
-    expect(agentMessageKind({ origin: 'agent-wake', originWake: { kind: 'approval', label: 'Worker' }, sendId: 'agent-ask:a' })).toBe('question');
-    expect(agentMessageKind({ origin: 'agent-wake', originWake: { kind: 'loop', label: 'Nightly' }, sendId: 'agent-wake:l' })).toBe('wake');
-    expect(agentMessageKind({ sendId: 'composer-1' })).toBeNull();
-    expect(agentMessageKind({ origin: 'user', sendId: 'thread-request:tok' })).toBeNull();
+describe('isAgentMessageMeta and isReaderAuthoredUserText', () => {
+  const row = (meta: Record<string, unknown>, parentId = '') =>
+    ({ kind: 'user_text', parentId, meta: JSON.stringify(meta) }) as Parameters<typeof isReaderAuthoredUserText>[0];
+
+  it('calls an agent thread\'s or a wake\'s row an agent message, and no other', () => {
+    expect(isAgentMessageMeta({ origin: 'agent-thread' })).toBe(true);
+    expect(isAgentMessageMeta({ origin: 'agent-wake' })).toBe(true);
+    for (const origin of ['', 'external-queue', 'scheduled', 'peer-session']) {
+      expect(isAgentMessageMeta({ origin })).toBe(false);
+    }
   });
+
+  // Headless Claude joins the person's queued message after an agent's into
+  // one row attributed to the agent; the composer flag says the person is in it.
+  it('keeps a joined row holding the person\'s composer message as theirs', () => {
+    expect(isAgentMessageMeta({ origin: 'agent-wake', expandComposerCommands: true })).toBe(false);
+    expect(isReaderAuthoredUserText(row({ origin: 'agent-thread', expandComposerCommands: true }))).toBe(true);
+  });
+
+  // The same rows Go's IsAgentMessage, the store's SQL filter and Stop's
+  // un-send predicate are held to (TestAgentMessageClassifierAgreesInGoAndSQL).
+  for (const tc of agentMessageMetas) {
+    it(`agrees with Go and SQL: ${tc.name}`, () => {
+      const meta = tc.meta === '' ? {} : (JSON.parse(tc.meta) as Record<string, unknown>);
+      expect(isAgentMessageMeta(meta)).toBe(tc.agent);
+      expect(isReaderAuthoredUserText(row(meta))).toBe(!tc.agent);
+    });
+  }
+
+  it('counts only the person\'s top-level rows', () => {
+    expect(isReaderAuthoredUserText(row({}))).toBe(true);
+    expect(isReaderAuthoredUserText(row({ origin: 'agent-thread' }))).toBe(false);
+    expect(isReaderAuthoredUserText(row({ origin: 'agent-wake' }))).toBe(false);
+    expect(isReaderAuthoredUserText(row({ wire_only: true }))).toBe(false);
+    expect(isReaderAuthoredUserText(row({}, 'tool-1'))).toBe(false);
+  });
+});
+
+describe('personTextOfUserMessage', () => {
+  // The rows Go's usermessage.SplitPersonParts is held to
+  // (TestSplitPersonPartsFixture): Stop's un-send gives the composer the
+  // same text on both sides.
+  for (const tc of personParts) {
+    it(`agrees with Go: ${tc.name}`, () => {
+      const meta = tc.meta === '' ? {} : (JSON.parse(tc.meta) as Record<string, unknown>);
+      expect(personTextOfUserMessage(tc.text, meta)).toBe(tc.person);
+    });
+  }
 });

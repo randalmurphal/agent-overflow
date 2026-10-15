@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
 
 // The unattended half of the request ledger: what runs with no tool call in
@@ -620,7 +621,7 @@ func (a *App) collectThreadPeerReply(token, computerID string, answer ThreadPeer
 // when the row already names it under the name the destination gave it.
 //
 // The title is recorded beside the id because a thread on another computer
-// has no row here: it is what names the target in a wake, in the origin chip
+// has no row here: it is what names the target in a wake, as the sender
 // on that wake, and in `thread_status`, including after a restart, which the
 // live reading beside it does not survive.
 func threadPeerTarget(row store.ThreadRequest, answer ThreadPeerRequest) string {
@@ -848,7 +849,7 @@ func (a *App) sweepThreadRequestsAtBoot() {
 	for _, receipt := range receipts {
 		if err := a.settleThreadReceipt(receipt.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptInterrupted,
-			Answer:     []byte("This computer restarted before the request finished."),
+			Answer:     []byte(threadtools.InterruptRestart),
 			AnswerKind: store.ThreadAnswerError,
 		}); err != nil {
 			logThreadRequestSweep("settle interrupted receipt "+receipt.Token, err)

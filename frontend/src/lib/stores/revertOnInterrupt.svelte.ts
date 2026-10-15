@@ -1,7 +1,7 @@
 import { conversationMutationReconciler } from './reconcileConversationMutation';
 import { isTransportClassError } from './transportStatus.svelte';
 import { getUndoableSend, retireUndoableSend } from './composerSendUndo';
-import { parseUserMessageMeta } from '../utils/userMessageMeta';
+import { parseUserMessageMeta, personTextOfUserMessage } from '../utils/userMessageMeta';
 // Early Stop restores presentation synchronously. The original send, background
 // checks and provider rollback finish behind a thread-scoped Send gate. A refusal
 // restores the transcript; a committed cut fences delayed item and turn events.
@@ -10,7 +10,7 @@ import type { Attachment } from '../types/attachment';
 import type { TerminalChip } from '../types/draft';
 import type { Item, ItemKind } from '../types/models';
 import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
-import type { ErrorSurface, PaneSession, ThreadPaneIngest } from './threadPaneRoles';
+import type { ErrorSurface, PaneSession, RowUiRegistry, ThreadPaneIngest } from './threadPaneRoles';
 import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
 import { restoredDraftSnapshotFromUserItem } from '../utils/userMessageDraftSnapshot';
 import {
@@ -39,6 +39,8 @@ import {
 import { refusedBackgroundAgents, type BackgroundKillAgent } from '../transport/backgroundKillRefusal';
 import { confirmBackgroundKill } from './backgroundKillConfirmation.svelte';
 import { hasLiveSubagentRunStates } from './subagentRunState.svelte';
+import { addToast } from './toast.svelte';
+import { joinedAgentMessageName } from '../utils/agentMessage';
 
 /**
  * The only rows that may share a turn with the message an early Stop
@@ -74,7 +76,8 @@ const UNSEND_TURN_COMPANION_KINDS: ReadonlySet<string> = new Set<string>([
  */
 export type RevertEligibility =
   | { canRevert: true; userItem: Item }
-  | { canRevert: false; reason: string };
+  /** joined: the person's message the Stop keeps because it holds an agent's it cannot split. */
+  | { canRevert: false; reason: string; joined?: Item };
 
 /**
  * What this flow reads off a pane: the ingest surface (timeline reads,
@@ -85,7 +88,8 @@ export type RevertEligibility =
  */
 type InterruptPane = ThreadPaneIngest
   & Pick<ErrorSurface, 'setGeneralError'>
-  & Pick<PaneSession, 'setSendInFlight'>;
+  & Pick<PaneSession, 'setSendInFlight'>
+  & Pick<RowUiRegistry, 'setUnsendDeclined'>;
 
 /**
  * Whether a plain interrupt owns the pane's working presentation. 'clear'
@@ -104,6 +108,18 @@ interface DraftSnapshotInputs {
   applyOptimisticRestoredDraft?: (threadId: string, snapshot: ComposerDraftSnapshot) => void;
   settleOptimisticRestoredDraft?: (threadId: string) => Promise<void>;
   clearOptimisticRestoredDraft?: (threadId: string, snapshot: ComposerDraftSnapshot) => void;
+}
+
+/** The un-send's decline, on both sides, for a message joined with an agent's it cannot split. */
+const UNSPLITTABLE_JOIN = "message joins an agent's it cannot split";
+
+/**
+ * A Stop that left the person's message in place because it holds an agent's
+ * message nothing can split from it says why, and the row keeps saying so.
+ */
+function noteUnsplittableJoin(pane: InterruptPane, item: Item): void {
+  pane.setUnsendDeclined(item.id);
+  addToast('info', `This turn also carried ${joinedAgentMessageName(item) ?? "an agent's message"}, so Stop left the message in place.`);
 }
 
 export function canRevertEarlyInterrupt(
@@ -154,6 +170,9 @@ export function canRevertEarlyInterrupt(
   // Multiple user_text rows on one turn means the user steered mid-
   // round; reverting one would break ordering. Defer to plain interrupt.
   if (userCount > 1) return { canRevert: false, reason: 'turn has steered user messages' };
+  if (personTextOfUserMessage(userItem.summary, parseUserMessageMeta(userItem.meta)) === null) {
+    return { canRevert: false, reason: UNSPLITTABLE_JOIN, joined: userItem };
+  }
 
   return { canRevert: true, userItem };
 }
@@ -171,6 +190,7 @@ export function runInterruptOrRevert(
   const eligibility = canRevertEarlyInterrupt(pane, draft);
 
   if (!eligibility.canRevert) {
+    if (eligibility.joined) noteUnsplittableJoin(pane, eligibility.joined);
     void runPlainInterrupt(pane, threadId, interruptToken, 'clear');
     return false;
   }
@@ -328,8 +348,13 @@ async function runEarlyInterrupt(
   const undo = getUndoableSend(threadId);
   const matchesSend = undo && parseUserMessageMeta(userItem.meta).sendId === undo.sendId;
   if (matchesSend) undo.undoRequested = true;
+  // Only the person's text goes back; the backend gives an agent's message
+  // Claude joined into the row back to its owner.
   const restoredDraft = shouldRestoreDraft
-    ? (matchesSend ? undo.snapshot : restoredDraftSnapshotFromUserItem(userItem))
+    ? (matchesSend
+      ? undo.snapshot
+      : restoredDraftSnapshotFromUserItem(
+        userItem, personTextOfUserMessage(userItem.summary, parseUserMessageMeta(userItem.meta)) ?? userItem.summary))
     : null;
   if (restoredDraft) {
     draft.applyOptimisticRestoredDraft?.(threadId, restoredDraft);
@@ -436,6 +461,8 @@ async function runEarlyInterrupt(
     const refreshNeeded = restore();
     finishThreadInterrupt(threadId, interruptToken);
     if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
+    // Noted once the row is back in the timeline, where its fact is kept.
+    if (result.reason === UNSPLITTABLE_JOIN && pane.threadId === threadId) noteUnsplittableJoin(pane, userItem);
     return;
   }
 

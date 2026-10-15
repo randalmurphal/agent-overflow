@@ -12,6 +12,7 @@ import {
   getQueueForThread,
   hasQueueItems,
   markItemsFlushed,
+  personPendingMessages,
   removeRestoredQueueItems,
   replaceFlushedForThread,
   replaceQueueForThread,
@@ -61,6 +62,19 @@ describe('sendQueue store', () => {
       expect(getQueueForThread('t1')).toHaveLength(1);
       expect(getQueueForThread('t2')).toHaveLength(1);
     });
+  });
+
+  it('recalls only the person\'s pending messages, sent ones first', () => {
+    markItemsFlushed('t1', [
+      { queueItemId: 'q:mine', userItemId: 'u:mine', message: 'mine, sent' },
+      { queueItemId: 'q:wake', userItemId: 'u:wake', message: 'a wake', agentMessage: true },
+    ]);
+    replaceQueueForThread('t1', [
+      makeItem({ threadId: 't1', message: 'a request', id: 'q:req' }),
+      makeItem({ threadId: 't1', message: 'mine, queued', id: 'q:q' }),
+    ].map((item, index) => (index === 0 ? { ...item, agentMessage: true } : item)));
+    expect(personPendingMessages('t1')).toEqual(['mine, sent', 'mine, queued']);
+    expect(personPendingMessages(null)).toEqual([]);
   });
 
   describe('Zone 2 (flushed)', () => {
@@ -411,6 +425,12 @@ describe('pending submission visibility', () => {
     markQueuedItemConsumed(makeChatItem({ id: 'user:flush:1', threadId: 't1', kind: 'user_text', summary: 'accepted', meta: JSON.stringify({ sendId: options.sendId }) }));
     expect(getQueueForThread('t1')).toEqual([]);
     expect(getFlushedForThread('t1')).toHaveLength(1);
+  });
+
+  it('an echo that consumes an agent\'s queued message keeps it an agent\'s', () => {
+    replaceQueueForThread('t1', [{ ...makeItem({ threadId: 't1', message: 'a wake' }), sendId: 'thread-wake:k', agentMessage: true }]);
+    markQueuedItemConsumed(makeChatItem({ id: 'user:wake', threadId: 't1', kind: 'user_text', summary: 'a wake', meta: JSON.stringify({ sendId: 'thread-wake:k' }) }));
+    expect(getFlushedForThread('t1').map((item) => [item.userItemId, item.agentMessage])).toEqual([['user:wake', true]]);
   });
 
   it('a joined Claude echo acknowledges every member before delayed admission replies', async () => {

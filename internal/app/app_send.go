@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
@@ -75,6 +76,9 @@ type sendMessageOptions struct {
 	// tools' request send; every other caller leaves them empty.
 	Origin       string
 	OriginThread *usermessage.OriginThread
+	// OriginWake attributes a report the app writes (usermessage.OriginWake),
+	// with Origin usermessage.OriginAgentWake.
+	OriginWake *usermessage.OriginWake
 	// onDurable runs once a QUEUED message has either reached the provider
 	// or been restored into the composer after a session death. It is the
 	// only hook an app-internal injector gets on the queued path, where the
@@ -473,6 +477,7 @@ func (a *App) sendMessageLocked(
 			preserveDraft:          opts.PreserveDraft,
 			origin:                 opts.Origin,
 			originThread:           opts.OriginThread,
+			originWake:             opts.OriginWake,
 			onDurable:              opts.onDurable,
 		})
 		return store.Item{}, err
@@ -528,6 +533,7 @@ func (a *App) sendMessageLocked(
 		sendID:                       opts.SendID,
 		origin:                       opts.Origin,
 		originThread:                 opts.OriginThread,
+		originWake:                   opts.OriginWake,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
@@ -599,8 +605,15 @@ func (a *App) sendMessageLocked(
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: allocate item id: %w", err)
 	}
+	// A request names its work in the sender's text; its footer is
+	// routing, and a title or branch named from it would read "Agent
+	// request from thread ...".
+	namingText := content
+	if opts.Origin == usermessage.OriginAgentThread {
+		namingText = threadtools.StripFooter(content)
+	}
 	if !isCodexReview {
-		a.maybeRenameTemporaryWorktreeBranch(threadID, content)
+		a.maybeRenameTemporaryWorktreeBranch(threadID, namingText)
 	}
 
 	if opts.onUserMessageReady != nil {
@@ -769,7 +782,7 @@ func (a *App) sendMessageLocked(
 	// emission here.
 
 	if !isCodexReview && !threadmode.IsSagaOwned(thread.Mode) {
-		a.maybeGenerateThreadTitleWithAttachments(thread, content, persistedAttachments, hasPriorItems)
+		a.maybeGenerateThreadTitleWithAttachments(thread, namingText, persistedAttachments, hasPriorItems)
 	}
 	return userItem, nil
 }

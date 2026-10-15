@@ -37,7 +37,7 @@ func newHoldFixture(t *testing.T) *holdFixture {
 		t.Fatal(err)
 	}
 	f.item.OriginThreadID = f.thread
-	f.service.deps.WakeDelivery.SendMessage = func(threadID, message string) error {
+	f.service.deps.WakeDelivery.SendMessage = func(threadID, _, message string) error {
 		if threadID != f.thread || !strings.Contains(message, f.item.ID) {
 			t.Fatalf("wake to %q: %q", threadID, message)
 		}

@@ -56,6 +56,9 @@ import { productBinary, spawnProduct } from '../src/product-process.js';
 import { codexTransferScenario } from './conversation-transfer-helpers.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
+import { pairBuildBox } from './build-box-helpers.js';
+import { agentsBody, openAgents } from './agents-tray-helpers.js';
+import { captureAgentMessage } from './wake-rows-helpers.js';
 import {
   advanceGate,
   awaitGate,
@@ -232,32 +235,6 @@ function countInputs(harness: HarnessApp, cwd: string, prefix: string): number {
   );
 }
 
-/**
- * Pairs `remote` with `harness` as Build box, which agents may use, and
- * returns its computer id. Both computers are named so no capture shows the
- * host's own name.
- */
-async function pairBuildBox(harness: HarnessApp, remote: HarnessApp): Promise<string> {
-  await harness.rpc('SetDeviceName', 'Agent computer');
-  await remote.rpc('SetDeviceName', 'Other computer');
-  const invite = await remote.rpc<{ url: string; linkId: string }>('MintDevicePairing', 'desktop', 'full');
-  const attachment = await harness.rpc<{ id: string }>('AddBackend', invite.url);
-  await remote.rpc('ConfirmDevicePairing', invite.linkId);
-  const computer = attachment.id;
-  await harness.rpc('RenameBackend', computer, 'Build box');
-  await expect
-    .poll(async () => {
-      try {
-        await harness.rpc('SetAgentComputerEnabled', computer, true);
-        return 'enabled';
-      } catch (error) {
-        return String(error);
-      }
-    }, { timeout: 30_000 })
-    .toBe('enabled');
-  return computer;
-}
-
 async function threadSend(dataDir: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return await new Promise((resolve, reject) => {
     const child = spawnProduct(productBinary('agent-overflow'), ['thread', 'send', '--config-root', dataDir, ...args], {
@@ -281,18 +258,45 @@ async function threadSend(dataDir: string, args: string[]): Promise<{ code: numb
   });
 }
 
-/** The timeline bubble a wake became, found by its badge. */
+/**
+ * The agent row a wake became, found by its kind and sender
+ * (docs/specs/agent-thread-tools.md, "How agent messages appear") and
+ * opened, so its decoded data is on screen. `badge` names the source:
+ * `Loop · label`, `Watch · label`, `Question · worker`, `Approval · worker`
+ * or `Sent by a script`.
+ */
 async function wakeBubble(page: Page, title: string, badge: string, contains: string) {
   await page.getByTestId('thread-row').getByText(title, { exact: true }).click();
-  const bubble = page
-    .getByTestId('user-message-bubble')
-    .filter({ has: page.getByTestId('user-message-wake-origin').getByText(badge, { exact: true }) })
-    .filter({ hasText: contains });
-  await expect(bubble).toHaveCount(1);
-  await bubble.scrollIntoViewIfNeeded();
-  await expect(bubble).toBeInViewport();
-  await expect(bubble).toContainText(DATA_NOTICE);
-  return bubble;
+  const kinds: Record<string, string> = { Loop: 'loop', Watch: 'watch', Question: 'worker-question', Approval: 'worker-approval' };
+  const [kind, sender] =
+    badge === 'Sent by a script' ? ['script', 'A script'] : [kinds[badge.split(' · ')[0]], badge.split(' · ')[1]];
+  const rows = page
+    .locator(`[data-testid="agent-message-row"][data-agent-message-kind="${kind}"]`)
+    .filter({ has: page.getByTestId('agent-message-sender').getByText(sender, { exact: true }) });
+  await expect(rows.first()).toBeVisible();
+  // Folded rows show only their first line: open each until the one
+  // holding the text is found.
+  for (const toggle of await rows.getByTestId('agent-message-toggle').all()) {
+    if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+  }
+  const row = rows.filter({ has: page.getByTestId('agent-message-text').filter({ hasText: contains }) });
+  await expect(row).toHaveCount(1);
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeInViewport();
+  // The template line written for the agent is the header's to say.
+  await expect(row).not.toContainText(DATA_NOTICE);
+  return row;
+}
+
+/**
+ * The agent rows the nightly build's completions became: a job row naming
+ * the job and its computer (docs/specs/agent-thread-tools.md, "How agent
+ * messages appear").
+ */
+function completionRows(page: Page): Locator {
+  return page
+    .locator('[data-testid="agent-message-row"][data-agent-message-kind="job"]')
+    .filter({ has: page.getByTestId('agent-message-sender').getByText('nightly build on Build box', { exact: true }) });
 }
 
 /**
@@ -1676,7 +1680,6 @@ while [ $i -lt 1000 ]; do printf 'line %064d\\n' $i; i=$((i+1)); done
 
       await harness.open(page);
       const bubble = await wakeBubble(page, 'Capped agent', 'Watch · big', 'line 0000');
-      await bubble.getByRole('button', { name: 'Show more' }).click();
       // The bubble's last line, after the last kept line of output.
       await shootText(page, `${provider}-capped-wake.png`, bubble, dropped);
     } finally {
@@ -2063,9 +2066,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           const bubbles = (
             conn
               .prepare(
-                `SELECT COUNT(*) AS n FROM items WHERE thread_id = ? AND kind = 'user_text' AND (summary LIKE ? OR summary LIKE ?)`,
+                `SELECT COUNT(*) AS n FROM items WHERE thread_id = ? AND kind = 'user_text' AND summary LIKE ?`,
               )
-              .get(caller, `%${ANSWER}%`, '%build 812%') as { n: number }
+              .get(caller, `%${ANSWER}%`) as { n: number }
           ).n;
           return { draft: draft?.content ?? '', bubbles };
         } finally {
@@ -2113,13 +2116,20 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const booted = owners();
       const rows = queued();
       expect(booted.request).toEqual({ delivered: 0, how: '', notify: 0 });
-      expect(composer()).toEqual({ draft: '', bubbles: 0 });
       const relaunched = harness;
       const deliveries = () => countInputs(relaunched, callerPath, completion);
-      const truthful =
+      // A completion the watcher dispatched between the snapshot and this
+      // read has left the queue before its input is reported: wait for the
+      // delivery it allows.
+      const truthful = () =>
         (booted.watch === 'pending' && rows.length === 0) ||
         (booted.watch === 'queued' && (rows.length === 1 || deliveries() === 1));
-      expect(truthful, `after boot: watch ${booted.watch}, queue ${JSON.stringify(rows)}, ${deliveries()} deliveries`).toBe(true);
+      await expect
+        .poll(truthful, { message: `after boot: watch ${booted.watch}, queue ${JSON.stringify(rows)}`, timeout: 30_000 })
+        .toBe(true);
+      // The answer never became a message; the completion's delivery is
+      // the watcher's, counted above.
+      expect(composer()).toEqual({ draft: '', bubbles: 0 });
       expect(rows).not.toContain('thread-wake');
       console.log(`${provider}: booted: request owed and disarmed, watch ${booted.watch}, queue ${JSON.stringify(rows)}, composer empty`);
 
@@ -2175,7 +2185,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await shoot(
         page,
         `${provider}-boot-returns-a-completion-to-its-watch.png`,
-        page.getByText('Remote job finished on Build box: nightly build').last(),
+        completionRows(page).last(),
       );
       await shoot(page, `${provider}-boot-returns-an-answer-to-its-request.png`, page.getByText('Read the notes.').last());
     } finally {
@@ -2453,7 +2463,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await shoot(
         page,
         `${provider}-death-returns-a-completion-to-its-watch.png`,
-        page.getByText('Remote job finished on Build box: nightly build').last(),
+        completionRows(page).last(),
       );
     } finally {
       await Promise.allSettled([harness.close(), remote.close()]);
@@ -2520,7 +2530,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await shoot(
         page,
         `${provider}-archive-returns-an-unconfirmed-completion-to-its-watch.png`,
-        page.getByText('Remote job finished on Build box: nightly build').last(),
+        completionRows(page).last(),
       );
     } finally {
       await Promise.allSettled([harness.close(), remote.close()]);
@@ -2578,10 +2588,14 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const deliveries = () => countInputs(relaunched, g.callerPath, g.completion);
       // The watcher may already have queued it again or delivered it to a
       // session it started.
-      const truthful =
+      // One dispatched between the snapshot and this read has left the
+      // queue before its input is reported: wait for the delivery.
+      const truthful = () =>
         (booted.watch === 'pending' && booted.rows === 0) ||
         (booted.watch === 'queued' && (booted.rows === 1 || deliveries() === 1));
-      expect(truthful, `after boot: watch ${booted.watch}, ${booted.rows} rows, ${deliveries()} deliveries`).toBe(true);
+      await expect
+        .poll(truthful, { message: `after boot: watch ${booted.watch}, ${booted.rows} rows`, timeout: 30_000 })
+        .toBe(true);
       expect(booted).toMatchObject({ request: { delivered: 0, how: '', notify: 0 }, draft: '' });
       const input = await wakeInput(app, g.callerPath, g.completion, 60_000);
       expect(input.report.input).toContain('build 812 finished: green');
@@ -2629,7 +2643,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await shoot(
         page,
         `${provider}-crash-returns-an-unconfirmed-completion-to-its-watch.png`,
-        page.getByText('Remote job finished on Build box: nightly build').last(),
+        completionRows(page).last(),
       );
       await shoot(page, `${provider}-crash-returns-an-unconfirmed-answer-to-its-request.png`, page.getByText('Read the notes.').last());
     } finally {
@@ -2707,7 +2721,7 @@ test('codex: a completion the provider took in before its session died reaches t
 
     await harness.open(page);
     await page.getByTestId('thread-row').getByText('Weekly planner', { exact: true }).click();
-    const completion = page.getByText('Remote job finished on Build box: nightly build');
+    const completion = completionRows(page);
     await expect(completion).toHaveCount(1);
     await expect(page.getByTestId('composer-root').locator('textarea')).toHaveValue('');
     await shoot(page, 'codex-duplicate-after-death-shows-one-completion.png', completion);
@@ -3346,7 +3360,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Remote builder', { exact: true }).click();
-      await shoot(page, `${provider}-stop-returns-a-dropped-remote-completion.png`, page.getByText('Remote job finished on Build box: nightly build').last());
+      await shoot(page, `${provider}-stop-returns-a-dropped-remote-completion.png`, completionRows(page).last());
     } finally {
       await breaker?.cleanup();
       await Promise.allSettled([harness.close(), remote.close()]);
@@ -3647,6 +3661,23 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await say('report 2');
       await expect.poll(lastOutput, { timeout: 30_000 }).toContain('"report 2"');
       expect(queuedWakes()).toBe(1);
+      // The held wake waits on a start that keeps failing. Nothing is
+      // working on it, so the thread reads as idle on every surface.
+      const live = await harness.rpc<{ threadId: string; sendsPending?: boolean }[]>('ListThreadLiveActivity');
+      expect(live.find((row) => row.threadId === thread)?.sendsPending ?? false).toBe(false);
+      await harness.open(page);
+      await page.getByTestId('thread-row-title').filter({ hasText: 'Retrying starter' }).first().click();
+      await expect(page.getByTestId('chat-header-title').filter({ hasText: 'Retrying starter' })).toBeVisible();
+      await expect(
+        page.getByTestId('thread-row').filter({ hasText: 'Retrying starter' }).locator('[data-testid="thread-row-status-dot"][aria-label="Working"]'),
+      ).toHaveCount(0);
+      await expect(page.getByTestId('activity-rail-hairline')).toHaveCount(0);
+      await captureAgentMessage(
+        page,
+        `${provider}-idle-with-a-queued-wake.png`,
+        page.getByTestId('thread-row').filter({ hasText: 'Retrying starter' }).first(),
+        page.getByLabel('Message Input'),
+      );
       console.log(`${provider}: error rows while failing: ${JSON.stringify(errorRows())}`);
       expect(errorRows()).toHaveLength(1);
       expect(raises()).toBe(1);
@@ -4030,8 +4061,129 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await shoot(
         page,
         `${provider}-archive-keeps-held-remote-completion.png`,
-        page.getByText('Remote job finished on Build box: nightly build').last(),
+        completionRows(page).last(),
       );
+    } finally {
+      await breaker?.cleanup();
+      await Promise.allSettled([harness.close(), remote.close()]);
+    }
+  });
+
+  test(`${provider}: a Stop on a held remote completion's incoming row dismisses it for good`, async ({ page }) => {
+    test.setTimeout(180_000);
+    const [harness, remote] = await startTogether(launchHarness(), launchHarness());
+    let breaker: ReturnType<typeof startBreaker> | undefined;
+    try {
+      await harness.rpc('UpdateSettings', { notifyQuietWhen: 'never' });
+      const dataDir = harness.bootstrap.dataDir;
+      const computer = await pairBuildBox(harness, remote);
+      const remoteSeed = await remote.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `remote-build-${provider}`, repo: {} }],
+      });
+      const { projectId: remoteProject, path: remotePath } = remoteSeed.projects[0];
+      const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+        projects: [{ name: `remote-stopped-${provider}`, repo: {}, threads: [{ title: 'Remote builder', provider }] }],
+      });
+      const { path: cwd, threadIds } = seed.projects[0];
+      const thread = threadIds[0];
+      const b = startBreaker(harness, provider, cwd);
+      breaker = b;
+      const requestId = randomUUID();
+      const release = join(remotePath, 'build.release');
+      await setScenario(
+        harness,
+        cwd,
+        threadToolsScenario({
+          name: `remote-stopped-${provider}`,
+          provider,
+          echoUserMessage: true,
+          turns: [
+            {
+              steps: [
+                {
+                  call: {
+                    server: 'ao-remote-tools',
+                    tool: 'remote_run',
+                    args: {
+                      computer_id: computer,
+                      project_id: remoteProject,
+                      request_id: requestId,
+                      label: 'nightly build',
+                      argv: ['sh', '-c', `while [ ! -f '${release}' ]; do sleep 0.1; done; echo 'build 812 finished: green'`],
+                      wait_seconds: 0,
+                    },
+                  },
+                },
+              ],
+              text: 'The build runs on Build box.',
+            },
+          ],
+          afterTurns: 'silent',
+        }),
+      );
+      await harness.rpc('StartSession', thread);
+      await harness.rpc('SendMessage', thread, 'run the nightly build on the build box', null);
+      const started = await harness.awaitMcpResult({ server: 'ao-remote-tools', tool: 'remote_run', cwd, timeoutMs: 60_000 });
+      expect(started.report.isError, started.report.result).toBeFalsy();
+      await awaitTurnCompleted(harness, thread);
+
+      const startFailure = (data: NotificationSend) => data.id === `session-start:${thread}` && !data.retract;
+      const db = <T,>(read: (conn: DatabaseSync) => T): T => {
+        const conn = new DatabaseSync(join(dataDir, 'agent-overflow.db'), { readOnly: true });
+        try {
+          return read(conn);
+        } finally {
+          conn.close();
+        }
+      };
+      const queued = () => db((conn) => (conn.prepare(`SELECT send_id FROM flush_queue_items WHERE thread_id = ?`).all(thread) as {
+        send_id: string;
+      }[]).map((row) => row.send_id.split(':')[0]));
+      const watch = () => db((conn) => conn.prepare(`SELECT notification, wake_issue FROM remote_watches WHERE request_id = ?`).get(requestId) as {
+        notification: string;
+        wake_issue: string;
+      });
+      const completion = `request_id: ${requestId}`;
+
+      // The job finishes while the thread's start fails: its completion is
+      // held in the queue, an incoming row in the Agents tray.
+      await harness.rpc('StopSession', thread);
+      await b.brk();
+      await writeFile(release, '');
+      await harness.waitForEvent<NotificationSend>('notification:send', startFailure, 60_000);
+      await expect.poll(queued, { timeout: 15_000 }).toEqual(['remote-completion']);
+      await harness.open(page);
+      await openAgents(page, 'Remote builder');
+      const incoming = agentsBody(page).getByTestId('agent-incoming-row');
+      await expect(incoming).toHaveCount(1);
+      await expect(incoming).toHaveAttribute('data-kind', 'wake');
+
+      // Stopped, it is dismissed on its watch, not handed back: three watcher
+      // ticks later nothing is queued and the row stays gone.
+      await incoming.getByTestId('agent-incoming-row-stop').click();
+      await expect(page.getByTestId('toast').filter({ hasText: /Withdrew .* before this thread's agent read it\./ })).toBeVisible({ timeout: 30_000 });
+      await expect(incoming).toHaveCount(0);
+      expect(queued()).toEqual([]);
+      expect(watch()).toEqual({ notification: 'dismissed', wake_issue: 'The user withdrew it from the queue before the agent read it.' });
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      expect(queued()).toEqual([]);
+      expect(watch().notification).toBe('dismissed');
+      await expect(incoming).toHaveCount(0);
+
+      // A mended start still never receives it, and remote_jobs keeps the result.
+      await b.mend();
+      await setScenario(harness, cwd, threadToolsScenario({
+        name: `remote-stopped-mended-${provider}`, provider, echoUserMessage: true, turns: [{ text: 'Nothing to read.' }], afterTurns: 'silent',
+      }));
+      await harness.rpc('StartSession', thread);
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      expect(queued()).toEqual([]);
+      expect(countInputs(harness, cwd, completion)).toBe(0);
+      const jobs = await harness.rpc<{ requestId: string; notification: string; receipt: { state: string } }[]>('ListThreadRemoteCommands', thread);
+      const job = jobs.find((j) => j.requestId === requestId);
+      expect(job?.notification).toBe('dismissed');
+      expect(job?.receipt.state).not.toBe('running');
+      console.log(`${provider}: stopped completion: watch ${JSON.stringify(watch())}, job ${job?.receipt.state}`);
     } finally {
       await breaker?.cleanup();
       await Promise.allSettled([harness.close(), remote.close()]);
@@ -4184,7 +4336,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Nightly checks', { exact: true }).click();
-      await shoot(page, `${provider}-archive-keeps-finished-remote-job.png`, page.getByText('Remote job finished on Build box: nightly build').last());
+      await shoot(page, `${provider}-archive-keeps-finished-remote-job.png`, completionRows(page).last());
     } finally {
       await Promise.allSettled([harness.close(), remote.close()]);
     }

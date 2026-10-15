@@ -24,6 +24,7 @@ import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app
 const NO_ROWS_LOADED = {
   getItemById: () => undefined,
   loadedItems: () => [],
+  threadId: () => null,
 };
 
 // Diff-card overrides are read against the live collapseDiffPreviews default
@@ -51,6 +52,7 @@ describe('createThreadRowUiState', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -78,6 +80,7 @@ describe('createThreadRowUiState', () => {
       const items = new Map<string, Item>();
       const rowUiState = createThreadRowUiState({
         loadedItems: () => [],
+        threadId: () => null,
         getItemById(itemId: string): Item | undefined {
           return items.get(itemId);
         },
@@ -114,6 +117,7 @@ describe('createThreadRowUiState', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -200,6 +204,7 @@ describe('createThreadRowUiState', () => {
     const getPayloadData = setBindingMock('GetPayloadData', async () => ({ data: 'seed' }));
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -251,6 +256,7 @@ describe('createThreadRowUiState', () => {
     items.set(item.id, item);
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -314,6 +320,7 @@ describe('createThreadRowUiState', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -347,6 +354,7 @@ describe('createThreadRowUiState', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById: (itemId) => items.get(itemId),
     });
     const ids = ['a"b', 'a\\b', 'a,b', '["a"]', 'a]b['];
@@ -367,6 +375,7 @@ describe('createThreadRowUiState', () => {
     const items = new Map<string, Item>();
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -577,6 +586,7 @@ describe('createThreadRowUiState', () => {
     });
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -652,6 +662,7 @@ describe('createThreadRowUiState', () => {
     const rowUiState = createThreadRowUiState({
       getItemById: (itemId) => loaded.find((item) => item.id === itemId),
       loadedItems,
+      threadId: () => null,
     });
 
     rowUiState.expansionStateForPayload('payload-a', 'thread-a');
@@ -673,6 +684,7 @@ describe('createThreadRowUiState', () => {
     const rowUiState = createThreadRowUiState({
       getItemById: () => undefined,
       loadedItems,
+      threadId: () => null,
     });
 
     rowUiState.disposeItems([makeItem({ id: 'text:0', threadId: 'thread-a' })]);
@@ -698,6 +710,7 @@ describe('createThreadRowUiState', () => {
     });
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -742,6 +755,7 @@ describe('createThreadRowUiState', () => {
       });
       const rowUiState = createThreadRowUiState({
         loadedItems: () => [],
+        threadId: () => null,
         getItemById(itemId: string): Item | undefined {
           return itemId === item.id ? item : undefined;
         },
@@ -790,6 +804,7 @@ describe('createThreadRowUiState', () => {
     });
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -850,6 +865,7 @@ describe('createThreadRowUiState', () => {
     items.set(retainedItem.id, retainedItem);
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById(itemId: string): Item | undefined {
         return items.get(itemId);
       },
@@ -969,6 +985,7 @@ describe('createThreadRowUiState', () => {
     });
     const rowUiState = createThreadRowUiState({
       loadedItems: () => [],
+      threadId: () => null,
       getItemById(itemId: string): Item | undefined {
         return itemId === item.id ? item : undefined;
       },
@@ -1020,7 +1037,7 @@ describe('createThreadRowUiState', () => {
 
     it('drops the expansion when its item is disposed', () => {
       const item = makeItem({ id: 'user:1', kind: 'user_text', threadId: 'thread-a' });
-      const rowUiState = createThreadRowUiState({ getItemById: () => item, loadedItems: () => [] });
+      const rowUiState = createThreadRowUiState({ getItemById: () => item, loadedItems: () => [], threadId: () => null });
 
       rowUiState.setUserMessageExpanded(item.id, true);
       rowUiState.disposeItems([item]);
@@ -1192,6 +1209,7 @@ describe('createThreadRowUiState', () => {
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
         loadedItems: () => [],
+        threadId: () => null,
         getItemById: (itemId) => items.get(itemId),
       });
 
@@ -1227,6 +1245,7 @@ describe('createThreadRowUiState', () => {
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
         loadedItems: () => [],
+        threadId: () => null,
         getItemById: (itemId) => items.get(itemId),
       });
 
@@ -1260,6 +1279,7 @@ describe('createThreadRowUiState', () => {
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
         loadedItems: () => [],
+        threadId: () => null,
         getItemById: (itemId) => items.get(itemId),
       });
 
@@ -1296,6 +1316,7 @@ describe('createThreadRowUiState', () => {
       items.set(item.id, item);
       const rowUiState = createThreadRowUiState({
         loadedItems: () => [],
+        threadId: () => null,
         getItemById: (itemId) => items.get(itemId),
       });
 

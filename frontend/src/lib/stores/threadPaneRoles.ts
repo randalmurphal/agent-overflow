@@ -258,6 +258,8 @@ export interface RowUiRegistry {
   readonly toggleSubagentGroupExpanded: (groupKey: string) => boolean;
   readonly isUserMessageExpanded: (itemId: string) => boolean;
   readonly setUserMessageExpanded: (itemId: string, expanded: boolean) => void;
+  readonly isUnsendDeclined: (itemId: string) => boolean;
+  readonly setUnsendDeclined: (itemId: string) => void;
   readonly diffCardExpandedOverride: (itemId: string, filePath: string) => boolean | undefined;
   readonly setDiffCardExpanded: (itemId: string, filePath: string, expanded: boolean) => void;
   readonly attachmentCacheFor: (itemId: string) => AttachmentPreviewCache;

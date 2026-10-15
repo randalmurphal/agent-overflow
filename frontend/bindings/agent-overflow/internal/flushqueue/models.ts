@@ -39,13 +39,16 @@ export class QueuedItem {
     "enqueuedAt": number;
 
     /**
-     * Origin, OriginThread and OriginWake are the payload's attribution of
-     * a message the app queued for an agent or a wake, so a reader of the
-     * queue can tell it from a person's own.
+     * Origin, OriginThread and OriginWake attribute a message the app queued
+     * on an agent's behalf, as the row it becomes will. AgentMessage is
+     * usermessage.IsAgentMessage of that attribution: the message is not
+     * the person's, so the composer's queue preview leaves it out and the
+     * Agents rail segment lists it as incoming instead.
      */
     "origin"?: string;
     "originThread"?: usermessage$0.OriginThread | null;
     "originWake"?: usermessage$0.OriginWake | null;
+    "agentMessage"?: boolean;
 
     /** Creates a new QueuedItem instance. */
     constructor($$source: Partial<QueuedItem> = {}) {

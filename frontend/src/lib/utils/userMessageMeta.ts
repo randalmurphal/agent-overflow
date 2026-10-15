@@ -25,6 +25,8 @@ export interface UserMessageMeta {
   sourceProposedPlan?: unknown;
   wire_only?: unknown;
   command?: unknown;
+  /** Set by the composer path only; see isAgentMessageMeta. */
+  expandComposerCommands?: unknown;
   /**
    * Who produced this message, when it was not the person in front of Agent
    * Overflow. The difference matters to a reader:
@@ -38,9 +40,10 @@ export interface UserMessageMeta {
    *   (`internal/provider/claude/session_peer.go#PeerTurnOrigin`)
    * - `agent-thread` — an agent in another Agent Overflow thread, on this
    *   computer or on a paired one, wrote this row through the thread tools:
-   *   a spawn's first message, a `thread_send`, or the wake carrying an
-   *   answer back. `originThread` names the source thread.
-   *   (`docs/specs/agent-thread-tools.md`, Attribution)
+   *   a spawn's first message, a `thread_send`, a `thread_ask`, or the wake
+   *   carrying an answer back. `originThread` names the source thread. It
+   *   renders as an agent-message row, not the user bubble
+   *   (`docs/specs/agent-thread-tools.md`, How agent messages appear).
    * - `scheduled` — the prompt of a turn the provider started on its own
    *   schedule: a Claude cron job's fire or ScheduleWakeup wake. The model
    *   stored it earlier; nobody typed it now.
@@ -48,7 +51,7 @@ export interface UserMessageMeta {
    * - `agent-wake` — the wake supervisor wrote this row: a loop's fire, a
    *   watch's output, or a script's `agent-overflow thread send`. Data
    *   delivered to the thread, never the user speaking. `originWake` names
-   *   the loop or watch.
+   *   the loop or watch. It renders as an agent-message row too.
    *   (`docs/specs/standing-agents.md`, Wake supervisor)
    *
    * Absent means locally authored, which is the overwhelmingly common case.
@@ -56,14 +59,21 @@ export interface UserMessageMeta {
   origin?: unknown;
   /** The source thread of an `agent-thread` row. See userMessageOriginThread. */
   originThread?: unknown;
-  /**
-   * Every member's request token, when one row joins two or more answers
-   * that queued together (`internal/usermessage` JoinMetas). `originThread`
-   * keeps only the first member's.
-   */
-  joinedOriginTokens?: unknown;
   /** What wrote an `agent-wake` row. See userMessageOriginWake. */
   originWake?: unknown;
+  /**
+   * A joined row's members in its text, each `{sendId, bytes, origin,
+   * originThread, originWake}`: bytes is the member's UTF-8 length, and an
+   * agent thread's member carries its request token. `originThread` keeps
+   * only the first member's. See personTextOfUserMessage and
+   * userMessageOriginTokens.
+   */
+  joinedParts?: unknown;
+  /**
+   * A joined row's request tokens when it has no `joinedParts`: the join
+   * could not measure its members (`usermessage` RecordMembers).
+   */
+  joinedOriginTokens?: unknown;
   /**
    * The peer session's registered display name, on a `peer-session` row.
    * May be absent — an older CLI reports only a socket address — in which
@@ -81,18 +91,6 @@ export function userMessageOrigin(meta: UserMessageMeta): string {
 }
 
 /**
- * The label for a message another Claude session sent to this thread.
- *
- * Names the peer when the wire gave a name, because "from BETA" is what
- * lets the reader go look at BETA. Falls back to the unnamed form rather
- * than to an empty name — a message from nobody reads as a bug.
- */
-export function peerSessionOriginLabel(meta: UserMessageMeta): string {
-  const name = typeof meta.cross_session_from_name === 'string' ? meta.cross_session_from_name.trim() : '';
-  return name ? `From ${name} (another Claude session)` : 'From another Claude session';
-}
-
-/**
  * The thread an `agent-thread` row came from, as the tools stamped it.
  *
  * `threadId` is the whole point of the chip — it is what the reader clicks
@@ -107,6 +105,11 @@ export interface UserMessageOriginThread {
   title: string;
   /** The request token, so three requests from one thread stay distinct. */
   token: string;
+  /**
+   * What the row delivers: `spawn`, `send` or `ask` on a request, `wake` on
+   * an answer coming back. Empty on rows written before it was stamped.
+   */
+  kind: string;
 }
 
 export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOriginThread | null {
@@ -120,18 +123,21 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
     threadId,
     title: stringField(record.title),
     token: stringField(record.token),
+    kind: stringField(record.kind),
   };
 }
 
 /**
  * The request tokens a user row answers: every joined member's (whatever
- * the row's attribution, since a wake may have joined first), else an
+ * the row's attribution, since a wake may have joined first), read from its
+ * parts, or from its token list when the join recorded no parts; else an
  * `agent-thread` row's own.
  */
 export function userMessageOriginTokens(meta: UserMessageMeta): string[] {
-  const joined = Array.isArray(meta.joinedOriginTokens)
-    ? meta.joinedOriginTokens.filter((token): token is string => typeof token === 'string' && token !== '')
-    : [];
+  const listed: unknown[] = Array.isArray(meta.joinedParts)
+    ? (meta.joinedParts as unknown[]).map((part) => (objectRecord(part) ? userMessageOriginThread(part as UserMessageMeta)?.token : ''))
+    : Array.isArray(meta.joinedOriginTokens) ? (meta.joinedOriginTokens as unknown[]) : [];
+  const joined = [...new Set(listed.filter((token): token is string => typeof token === 'string' && token !== ''))];
   if (joined.length > 0) return joined;
   if (userMessageOrigin(meta) !== 'agent-thread') return [];
   const token = userMessageOriginThread(meta)?.token;
@@ -146,16 +152,23 @@ export function userMessageOriginTokens(meta: UserMessageMeta): string[] {
  * refused.
  */
 export interface UserMessageOriginWake {
-  kind: 'loop' | 'watch' | 'send' | 'question' | 'approval';
+  kind: 'loop' | 'watch' | 'send' | 'question' | 'approval' | 'completion' | 'workflow';
+  /** The loop, watch or worker; a `completion`'s job; a `workflow`'s id. */
   label: string;
+  /** The worker of a `question` or `approval` wake; empty otherwise. */
+  threadId: string;
+  /** The computer a `completion`'s job ran on; empty otherwise. */
+  computer: string;
 }
 
-const WAKE_KINDS: ReadonlySet<string> = new Set(['loop', 'watch', 'send', 'question', 'approval']);
+const WAKE_KINDS: ReadonlySet<string> = new Set(['loop', 'watch', 'send', 'question', 'approval', 'completion', 'workflow']);
 const WAKE_KIND_LABELS: Record<Exclude<UserMessageOriginWake['kind'], 'send'>, string> = {
   loop: 'Loop',
   watch: 'Watch',
   question: 'Question',
   approval: 'Approval',
+  completion: 'Remote job',
+  workflow: 'Workflow',
 };
 
 export function userMessageOriginWake(meta: UserMessageMeta): UserMessageOriginWake | null {
@@ -163,7 +176,12 @@ export function userMessageOriginWake(meta: UserMessageMeta): UserMessageOriginW
   if (!record) return null;
   const kind = stringField(record.kind);
   if (!WAKE_KINDS.has(kind)) return null;
-  return { kind: kind as UserMessageOriginWake['kind'], label: stringField(record.label) };
+  return {
+    kind: kind as UserMessageOriginWake['kind'],
+    label: stringField(record.label),
+    threadId: stringField(record.threadId),
+    computer: stringField(record.computer),
+  };
 }
 
 /** The badge a wake row carries: which loop, watch or worker, or that a script sent it. */
@@ -171,42 +189,6 @@ export function agentWakeOriginLabel(wake: UserMessageOriginWake): string {
   if (wake.kind === 'send') return 'Sent by a script';
   const kind = WAKE_KIND_LABELS[wake.kind];
   return wake.label ? `${kind} · ${wake.label}` : kind;
-}
-
-/**
- * What an agent's message to this thread is, or null for a person's own:
- *
- * - `request`: a spawn's first message or a `thread_send` from another
- *   thread (`agent-thread`).
- * - `reply`: the answer to a request this thread made, which carries the
- *   answering thread (`agent-thread` with a `thread-wake` send id).
- * - `question`: a worker's question or approval put to the standing agent
- *   that spawned it (`agent-wake`).
- * - `wake`: a loop's fire, a watch's output, a script's outside send, or
- *   this thread's own reminder.
- *
- * Reads a `user_text` row's meta and a queued message alike: both carry
- * the origin fields and the send id the app gave the message
- * (internal/app/app_thread_tools_wake.go#threadWakeSendID).
- *
- * Interim: whether a queued message is an agent's is decided here and in
- * the backend's incomingAgentSendIDs until the queue carries a
- * server-computed agent-message flag. That flag replaces the null branch;
- * only the mapping to a kind stays.
- */
-export type AgentMessageKind = 'request' | 'reply' | 'question' | 'wake';
-
-export function agentMessageKind(meta: Pick<UserMessageMeta, 'origin' | 'originThread' | 'originWake' | 'sendId'>): AgentMessageKind | null {
-  const origin = userMessageOrigin(meta);
-  if (origin === 'agent-wake') {
-    const wake = userMessageOriginWake(meta);
-    return wake?.kind === 'question' || wake?.kind === 'approval' ? 'question' : 'wake';
-  }
-  if (origin !== 'agent-thread') return null;
-  const sendId = stringField(meta.sendId);
-  if (!sendId.startsWith('thread-wake:') && !sendId.startsWith('thread-wake-late:')) return 'request';
-  // A reminder is this thread's own wake: it names no other thread.
-  return userMessageOriginThread(meta) ? 'reply' : 'wake';
 }
 
 function stringField(value: unknown): string {
@@ -240,18 +222,82 @@ export function isPendingFlushRow(item: Item): boolean {
 }
 
 /**
+ * True for a message an agent wrote into this thread, not the person: an
+ * `agent-thread` or `agent-wake` row. A row that also carries the composer's
+ * `expandComposerCommands` is the person's: headless Claude joins queued
+ * messages at a turn boundary, so one row can hold the person's message
+ * after an agent's, attributed to the agent. The Go twin is
+ * usermessage.IsAgentMessage; the SQL one store.AgentMessageFilterFor.
+ */
+export function isAgentMessageMeta(meta: UserMessageMeta): boolean {
+  if (meta.expandComposerCommands === true) return false;
+  const origin = userMessageOrigin(meta);
+  return origin === 'agent-thread' || origin === 'agent-wake';
+}
+
+/**
  * True for a top-level user_text row the reader actually wrote. Wire-only
- * rows — context injections the send path marks in meta — fail it, as do
- * subagent-child user rows. The ONE TypeScript counterpart of the store's
- * SQL predicate (items_read.go readerAuthoredUserTextFilter): the nav
- * rail's tick derivation, the sidebar's activity counting, and any future
- * "which user messages are real" question all route here so they cannot
+ * rows (context injections the send path marks in meta) fail it, as do
+ * subagent-child user rows and an agent's messages (isAgentMessageMeta).
+ * The ONE TypeScript counterpart of the store's tick predicate
+ * (items_read.go personMessageFilterFor): the nav rail's tick derivation,
+ * the composer's recall, the un-send on interrupt, and any future "which
+ * user messages are the person's" question all route here so they cannot
  * drift.
  */
 export function isReaderAuthoredUserText(item: Item): boolean {
   if (item.kind !== 'user_text') return false;
   if ((item.parentId ?? '') !== '') return false;
-  return parseUserMessageMeta(item.meta).wire_only !== true;
+  const meta = parseUserMessageMeta(item.meta);
+  return meta.wire_only !== true && !isAgentMessageMeta(meta);
+}
+
+const JOIN_SEPARATOR_BYTES = new TextEncoder().encode('\n\n---\n\n');
+
+interface JoinedPartMeta {
+  bytes: number;
+  agent: boolean;
+}
+
+function joinedPartsOf(meta: UserMessageMeta): JoinedPartMeta[] | null {
+  if (!Array.isArray(meta.joinedParts)) return null;
+  const parts: JoinedPartMeta[] = [];
+  for (const part of meta.joinedParts as unknown[]) {
+    if (typeof part !== 'object' || part === null) return null;
+    const { bytes, origin } = part as { bytes?: unknown; origin?: unknown };
+    if (typeof bytes !== 'number' || !Number.isInteger(bytes)) return null;
+    parts.push({ bytes, agent: origin === 'agent-thread' || origin === 'agent-wake' });
+  }
+  return parts;
+}
+
+/**
+ * The person's text of a row a Stop un-sends: the whole row, or for a row
+ * headless Claude joined from the person's messages and agents', the
+ * person's members cut by the lengths the row recorded. null when the row
+ * holds an agent's message nothing tells apart from the person's; the
+ * un-send declines then. The Go twin is usermessage.SplitPersonParts.
+ */
+export function personTextOfUserMessage(text: string, meta: UserMessageMeta): string | null {
+  const origin = typeof meta.origin === 'string' ? meta.origin : '';
+  const agentOrigin = origin === 'agent-thread' || origin === 'agent-wake';
+  const parts = joinedPartsOf(meta);
+  if (parts === null || parts.length === 0) return agentOrigin ? null : text;
+  if (agentOrigin && !parts.some((part) => part.agent)) return null;
+  const bytes = new TextEncoder().encode(text);
+  const decoder = new TextDecoder();
+  const kept: string[] = [];
+  let at = 0;
+  for (const [i, part] of parts.entries()) {
+    if (i > 0) {
+      if (!JOIN_SEPARATOR_BYTES.every((byte, j) => bytes[at + j] === byte)) return null;
+      at += JOIN_SEPARATOR_BYTES.length;
+    }
+    if (part.bytes < 0 || part.bytes > bytes.length - at) return null;
+    if (!part.agent) kept.push(decoder.decode(bytes.subarray(at, at + part.bytes)));
+    at += part.bytes;
+  }
+  return at === bytes.length ? kept.join('\n\n---\n\n') : null;
 }
 
 /**

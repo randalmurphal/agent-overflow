@@ -166,10 +166,11 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 			return state, fmt.Errorf("get thread live state: pending message metadata: %w", err)
 		}
 		state.FlushedItems = append(state.FlushedItems, QueueFlushedItem{
-			QueueItemID: item.QueueItemID,
-			SendID:      meta.SendID,
-			UserItemID:  item.UserItemID,
-			Message:     item.Message,
+			QueueItemID:  item.QueueItemID,
+			SendID:       meta.SendID,
+			UserItemID:   item.UserItemID,
+			Message:      item.Message,
+			AgentMessage: usermessage.IsAgentMessage(meta),
 		})
 	}
 	return state, nil

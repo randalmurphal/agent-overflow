@@ -37,7 +37,7 @@ func ThreadReceiptOpenStates() []string {
 // computer's threads, local ones included.
 //
 // The display metadata (source computer and thread names) is what the call
-// carried, for the footer and the origin chip. It is never an authorization
+// carried, for the footer and the sender an agent row names. It is never an authorization
 // input: OwnerDeviceID is, and it is the authenticated device of the source
 // computer, or "local" for an in-process call.
 type ThreadRequestReceipt struct {
@@ -308,6 +308,25 @@ func (s *Store) RebindThreadReceiptTurn(token, messageItemID, threadID string, f
 		  WHERE token = ? AND state = 'running' AND turn_id = ?
 		    AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE thread_id = ? AND turn_index = ?)`,
 		messageItemID, toTurnID, ownTurn, nowMillis(), token, fromTurnID, threadID, fromIndex,
+	)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return rowsChanged(result, action)
+}
+
+// ReturnThreadReceipt takes a receipt back to `accepted` when the turn its
+// message started was un-sent before it answered: the message goes back on
+// the queue, and the next delivery binds the receipt again
+// (BindThreadReceiptTurn). It reports whether the receipt is open and
+// accepted afterwards; a settled or cancelled one is left as it is.
+func (s *Store) ReturnThreadReceipt(token string) (bool, error) {
+	action := fmt.Sprintf("store: return thread receipt %s", token)
+	result, err := s.db.Exec(
+		`UPDATE thread_request_receipts
+		    SET state = 'accepted', message_item_id = '', turn_id = '', own_turn = 0, updated_at = ?
+		  WHERE token = ? AND state IN ('accepted', 'running')`,
+		nowMillis(), token,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)

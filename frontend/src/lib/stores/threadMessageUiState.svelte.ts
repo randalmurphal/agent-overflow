@@ -1,6 +1,7 @@
 import type { Item } from '../types/models';
 import type { AttachmentPreviewCache, ImagePreviewItem } from '../utils/attachmentPreview.svelte';
 import { userMessageIdentity } from '../utils/userMessageIdentity';
+import { isUnsendDeclined as declinedInSession, noteUnsendDeclined } from './unsendDeclines.svelte';
 
 interface MessageAttachments {
   previews: Map<string, ImagePreviewItem>;
@@ -10,6 +11,8 @@ interface MessageAttachments {
 interface Options {
   getItemById(itemId: string): Item | undefined;
   loadedItems(): Iterable<Item>;
+  /** The thread whose session-scoped un-send declines this state reads. */
+  threadId(): string | null;
 }
 
 /** Message presentation survives confirmation, and ends when the message leaves retention. */
@@ -37,6 +40,18 @@ export function createThreadMessageUiState(options: Options) {
     if (value) next.add(key);
     else next.delete(key);
     expanded = next;
+  }
+
+  // A decline outlives this state (unsendDeclines.svelte.ts); the key is
+  // the message's identity, so it holds across confirmation.
+  function isUnsendDeclined(itemId: string): boolean {
+    const threadId = options.threadId();
+    return threadId !== null && declinedInSession(threadId, keyForId(itemId));
+  }
+
+  function setUnsendDeclined(itemId: string): void {
+    const threadId = options.threadId();
+    if (threadId !== null) noteUnsendDeclined(threadId, keyForId(itemId));
   }
 
   function revoke(preview: ImagePreviewItem): void {
@@ -107,8 +122,11 @@ export function createThreadMessageUiState(options: Options) {
   }
 
   return {
-    isExpanded, setExpanded, attachmentCacheFor, disposeItems, prune, clear,
+    isExpanded, setExpanded, isUnsendDeclined, setUnsendDeclined, attachmentCacheFor, disposeItems, prune, clear,
     expansionSignature: () => expanded.size > 0 ? `u:${JSON.stringify([...expanded].sort())}` : '',
-    stats: () => ({ expandedUserMessages: expanded.size, attachmentItems: attachments.size }),
+    stats: () => ({
+      expandedUserMessages: expanded.size,
+      attachmentItems: attachments.size,
+    }),
   };
 }

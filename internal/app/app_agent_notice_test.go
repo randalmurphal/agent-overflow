@@ -824,3 +824,20 @@ func TestAStartFailureRaisedBeforeARestartIsWithdrawnAfterIt(t *testing.T) {
 		t.Fatalf("after a second restart: %#v, want nothing left to withdraw", sends)
 	}
 }
+
+// A notice with no start-failure message is refused before it is queued: a
+// start that fails would have nothing to tell the thread.
+func TestAnIncompleteAgentNoticeIsRefused(t *testing.T) {
+	t.Parallel()
+	a, thread := heldNoticeFixture(t, "notice-incomplete")
+	err := a.queueAgentNotice(agentNotice{
+		threadID: thread.ID, sendID: "agent-send:incomplete",
+		prepare: func() (string, bool, error) { return "deploy 14 is done", true, nil },
+	})
+	if err == nil {
+		t.Fatal("queued a notice with no start-failure message")
+	}
+	if durable, memory := queuedSendIDs(t, a, thread.ID); len(durable)+len(memory) != 0 {
+		t.Fatalf("queue = %q / %q, want nothing", durable, memory)
+	}
+}

@@ -82,14 +82,21 @@ type Meta struct {
 	// `agent-thread` row. Absent on every other origin.
 	OriginThread *OriginThread `json:"originThread,omitempty"`
 	// JoinedOriginTokens lists the request token of every member an agent
-	// thread wrote, in queue order, when a join folded them into one row.
-	// Attribution is the first member's, which may be another thread or a
-	// wake; this list is how every member's request still finds the row
-	// that answered it. Absent when OriginThread alone names every token.
+	// thread wrote, in queue order, on a joined row that has no
+	// JoinedParts. The parts name each member's token when they could be
+	// recorded (RecordMembers); this list is how a request still finds the
+	// row that answered it when they could not.
 	JoinedOriginTokens []string `json:"joinedOriginTokens,omitempty"`
 	// OriginWake names the loop, watch or outside send that wrote this row,
 	// on an `agent-wake` row. Absent on every other origin.
 	OriginWake *OriginWake `json:"originWake,omitempty"`
+	// JoinedParts are a joined row's members as they appear in its text,
+	// each with its attribution (JoinedPart), written when the row is
+	// joined. Origin above is the first attributed member's; these say
+	// which words are whose, so a Stop that un-sends the row gives the
+	// person back their own text and an agent's member back to its owner.
+	// Absent on a row of one message and on rows joined before it existed.
+	JoinedParts []JoinedPart `json:"joinedParts,omitempty"`
 }
 
 // OriginAgentThread is the Origin value of a row one thread's agent wrote
@@ -105,25 +112,60 @@ const OriginAgentWake = "agent-wake"
 // OriginWake identifies what wrote an `agent-wake` row: what its badge
 // renders.
 type OriginWake struct {
-	// Kind is `loop`, `watch` or `send`, or `question` or `approval` for a
-	// worker's prompt put to the agent that spawned it.
+	// Kind is `loop`, `watch` or `send`, `question` or `approval` for a
+	// worker's prompt put to the agent that spawned it, `completion` for a
+	// remote job's report, or `workflow` for a workflow run's wake.
 	Kind string `json:"kind"`
-	// Label is the loop or watch label, or the worker's title; empty for an
-	// outside send.
+	// Label is the loop or watch label, the worker's title, the remote
+	// job's label or the workflow's id; empty for an outside send.
 	Label string `json:"label,omitempty"`
 	// ThreadID is the worker of a `question` or `approval` wake.
 	ThreadID string `json:"threadId,omitempty"`
+	// Computer names the computer a `completion`'s job ran on.
+	Computer string `json:"computer,omitempty"`
 }
 
+// The OriginWake kinds of the app's own reports into a thread.
+const (
+	OriginWakeKindCompletion = "completion"
+	OriginWakeKindWorkflow   = "workflow"
+)
+
 // OriginThread identifies the sending thread of an `agent-thread` row: what
-// the chip renders, and the request token that keeps three requests from one
-// thread to another distinguishable.
+// the row's header names, and the request token that keeps three requests
+// from one thread to another distinguishable.
 type OriginThread struct {
 	ComputerID   string `json:"computerId,omitempty"`
 	ComputerName string `json:"computerName,omitempty"`
 	ThreadID     string `json:"threadId"`
 	Title        string `json:"title,omitempty"`
 	Token        string `json:"token,omitempty"`
+	// Kind is what the row delivers: the request kind (`spawn`, `send`,
+	// `ask`) on a request, or OriginKindWake on the wake carrying a
+	// request's answer back. Absent on rows written before it existed;
+	// readers fall back to the row's send id.
+	Kind string `json:"kind,omitempty"`
+}
+
+// OriginKindWake is OriginThread.Kind on a wake. The status line says which
+// settlement it carries.
+const OriginKindWake = "wake"
+
+// IsAgentMessage reports whether a user row is a message an agent wrote, not
+// the person: an `agent-thread` or `agent-wake` row. Such a row is no tick in
+// the message navigator, no entry in the composer's recall and no queued
+// message of the person's.
+//
+// A row that also carries ExpandComposerCommands is the person's: headless
+// Claude joins queued messages at a turn boundary, so one row can hold the
+// person's composer message after an agent's, and JoinMetas attributes it to
+// the agent. Only the composer path sets the flag. The SQL twin is
+// store.AgentMessageFilterFor and the frontend's is isAgentMessageMeta.
+func IsAgentMessage(meta Meta) bool {
+	if meta.ExpandComposerCommands {
+		return false
+	}
+	return meta.Origin == OriginAgentThread || meta.Origin == OriginAgentWake
 }
 
 // Input is the per-entry-point projection Marshal encodes. A struct

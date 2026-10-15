@@ -153,7 +153,7 @@ func TestWithdrawnRemoteCompletionIsOwedAgainOnceItsThreadIsUnarchived(t *testin
 	if _, _, err := s.ArchiveThread(thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WithdrawRemoteCompletion(held.ComputerID, held.RequestID, item.ID, false, nil); err != nil {
+	if err := s.WithdrawRemoteCompletion(held.ComputerID, held.RequestID, item.ID, WithdrawQueued, nil); err != nil {
 		t.Fatal(err)
 	}
 	if rows, err := s.ListFlushQueueItems(thread.ID); err != nil || len(rows) != 0 {
@@ -182,14 +182,14 @@ func TestWithdrawnRemoteCompletionIsOwedAgainOnceItsThreadIsUnarchived(t *testin
 	if err := s.DeleteFlushQueueItem(item.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WithdrawRemoteCompletion(sent.ComputerID, sent.RequestID, item.ID, false, nil); err != nil {
+	if err := s.WithdrawRemoteCompletion(sent.ComputerID, sent.RequestID, item.ID, WithdrawQueued, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := notification(sent); got != "queued" {
 		t.Fatalf("a delivered completion's watch = %q, want queued", got)
 	}
 	// One the provider never confirmed goes back with no row left.
-	if err := s.WithdrawRemoteCompletion(sent.ComputerID, sent.RequestID, item.ID, true, nil); err != nil {
+	if err := s.WithdrawRemoteCompletion(sent.ComputerID, sent.RequestID, item.ID, WithdrawUnconfirmed, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := notification(sent); got != "pending" {
@@ -349,7 +349,7 @@ func TestRemoteCompletionDeliveryIsConfirmedByItsEcho(t *testing.T) {
 	if got := unconfirmed(); len(got) != 0 {
 		t.Fatalf("unconfirmed after the echo = %q, want none", got)
 	}
-	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", true, nil); err != nil {
+	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", WithdrawUnconfirmed, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustRemoteWatch(t, s, w); got.Notification != "queued" || got.ConfirmedAt != 500 {
@@ -361,7 +361,7 @@ func TestRemoteCompletionDeliveryIsConfirmedByItsEcho(t *testing.T) {
 	other := finishedRemoteWatch(t, s, thread)
 	w = other
 	queueAndSend()
-	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", true, nil); err != nil {
+	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", WithdrawUnconfirmed, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustRemoteWatch(t, s, w); got.Notification != "pending" {
@@ -405,7 +405,7 @@ func TestRemoteCompletionGivenBackWithAPace(t *testing.T) {
 	}
 
 	queue()
-	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", true, paced); err != nil {
+	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", WithdrawUnconfirmed, paced); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustRemoteWatch(t, s, w); got.Notification != "pending" || got.NextCheck != 10_000 || got.WakeAttempts != 1 {
@@ -415,7 +415,7 @@ func TestRemoteCompletionGivenBackWithAPace(t *testing.T) {
 		t.Fatalf("paced completion due before its time or not at it")
 	}
 	queue()
-	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", true, paced); err != nil {
+	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", WithdrawUnconfirmed, paced); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustRemoteWatch(t, s, w); got.NextCheck != 20_000 || got.WakeAttempts != 2 || !slices.Equal(seen, []int64{0, 1}) {
@@ -424,7 +424,7 @@ func TestRemoteCompletionGivenBackWithAPace(t *testing.T) {
 
 	// Without a pace (a Stop) it is due at once and keeps its count.
 	queue()
-	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", true, nil); err != nil {
+	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", WithdrawUnconfirmed, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustRemoteWatch(t, s, w); got.Notification != "pending" || got.WakeAttempts != 2 {
@@ -433,7 +433,7 @@ func TestRemoteCompletionGivenBackWithAPace(t *testing.T) {
 
 	queue()
 	giveUp := func(int64) CompletionReturn { return CompletionReturn{Issue: "not delivered"} }
-	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", true, giveUp); err != nil {
+	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, "", WithdrawUnconfirmed, giveUp); err != nil {
 		t.Fatal(err)
 	}
 	got := mustRemoteWatch(t, s, w)
@@ -490,7 +490,7 @@ func TestWithdrawRemoteCompletionWithItsRowIgnoresTheConfirmation(t *testing.T) 
 	if _, err := s.ConfirmRemoteCompletion(w.ComputerID, w.RequestID, 500); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, item.ID, false, nil); err != nil {
+	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, item.ID, WithdrawQueued, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustRemoteWatch(t, s, w); got.Notification != "pending" || got.ConfirmedAt != 0 {

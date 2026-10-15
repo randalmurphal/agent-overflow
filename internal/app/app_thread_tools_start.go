@@ -286,7 +286,7 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 		// nothing here runs a second time.
 		return target, nil
 	}
-	if err := t.dispatchRequest(ctx, origin, token, target, call.Prompt, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
+	if err := t.dispatchRequest(ctx, origin, token, store.ThreadRequestSpawn, target, call.Prompt, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
 		return "", t.failRequest(token, err)
 	}
 	return target, nil
@@ -350,7 +350,7 @@ func (t threadToolsApp) acceptSend(ctx context.Context, origin threadRequestOrig
 	if !fresh {
 		return target.ID, nil
 	}
-	if err := t.dispatchRequest(ctx, origin, token, target.ID, call.Message, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
+	if err := t.dispatchRequest(ctx, origin, token, store.ThreadRequestSend, target.ID, call.Message, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
 		return "", t.failRequest(token, err)
 	}
 	return target.ID, nil
@@ -430,7 +430,7 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 	}
 	// An ask always wants an answer: that is what distinguishes it from a
 	// send, and the footer must say so however the wait was configured.
-	if err := t.dispatchRequest(ctx, origin, token, target, call.Question, true); err != nil {
+	if err := t.dispatchRequest(ctx, origin, token, store.ThreadRequestAsk, target, call.Question, true); err != nil {
 		return "", t.failRequest(token, err)
 	}
 	return target, nil
@@ -533,7 +533,7 @@ func (t threadToolsApp) acceptRequest(
 // threadReceiptNeverStarted is what a receipt accepted without its thread
 // says on both ends: the answer stored on the settled receipt, and the
 // refusal the retry that found it reads.
-const threadReceiptNeverStarted = "That request was accepted but its thread was never created."
+const threadReceiptNeverStarted = threadtools.InterruptNeverStarted
 
 // failRequest settles a source row on this computer whose acceptance or
 // dispatch failed before the destination ever ran it, and returns the
@@ -598,7 +598,7 @@ func (t threadToolsApp) failRequest(token string, cause error) error {
 // (bindDeliveredRequests), and a message merged into another queued send is
 // bound to the turn they ran in together.
 func (t threadToolsApp) dispatchRequest(
-	ctx context.Context, origin threadRequestOrigin, token, targetThreadID, text string, wantsAnswer bool,
+	ctx context.Context, origin threadRequestOrigin, token, kind, targetThreadID, text string, wantsAnswer bool,
 ) error {
 	// The message drives the target thread in the mode that thread already
 	// runs in, which is what SendMessageWithOptions judges for the composer.
@@ -618,6 +618,7 @@ func (t threadToolsApp) dispatchRequest(
 		ThreadID:     caller.ThreadID,
 		Title:        caller.Title,
 		Token:        token,
+		Kind:         kind,
 	}
 	sendID := threadRequestSendID(token)
 	item, err := t.app.sendMessageWithOptions(ctx, targetThreadID, body, sendMessageOptions{
@@ -629,21 +630,7 @@ func (t threadToolsApp) dispatchRequest(
 		PreserveDraft: true,
 		Origin:        usermessage.OriginAgentThread,
 		OriginThread:  attribution,
-		onDurable: func() {
-			record, found, err := t.app.findRecordedSend(targetThreadID, sendID)
-			if err != nil {
-				log.Printf("thread tools: resolve dispatched request %s: %v", token, err)
-				return
-			}
-			if !found || !record.dispatched {
-				// The message was restored into the composer instead of
-				// being sent (a session death, a restart). Nothing ran, so
-				// the receipt stays `accepted` and the boot sweep settles it
-				// interrupted.
-				return
-			}
-			t.markRequestDispatched(token, targetThreadID, record.item.ID)
-		},
+		onDurable:     func() { t.requestDispatched(token, targetThreadID) },
 	})
 	if err != nil {
 		return err
@@ -651,6 +638,114 @@ func (t threadToolsApp) dispatchRequest(
 	if item.ID != "" {
 		// Sent to an idle thread, the message opened its own turn.
 		t.app.bindRequestDelivery(token, targetThreadID, item.ID, item.TurnIndex, true)
+	}
+	return nil
+}
+
+// requestDispatched moves a queued request's receipt to `running` once its
+// message is durable and with the provider (markRequestDispatched).
+func (t threadToolsApp) requestDispatched(token, targetThreadID string) {
+	record, found, err := t.app.findRecordedSend(targetThreadID, threadRequestSendID(token))
+	if err != nil {
+		log.Printf("thread tools: resolve dispatched request %s: %v", token, err)
+		return
+	}
+	if !found || !record.dispatched {
+		// The message did not reach the provider: it was restored instead of
+		// being sent (a session death, a restart). Nothing ran, so the
+		// receipt stays `accepted`.
+		return
+	}
+	t.markRequestDispatched(token, targetThreadID, record.item.ID)
+}
+
+// returnRequest takes a request whose message a person's Stop un-sent back to
+// `accepted`, before the interrupt. Nothing answered it, so its sender is told
+// nothing; the
+// request is owed again and requeueRequest puts its message back on the
+// queue. It reports false when the request was settled or cancelled first,
+// and then it owes nothing. It takes the token's settle lock, so a turn end
+// reading the receipt sees it running or accepted, never in between.
+func (t threadToolsApp) returnRequest(token string) bool {
+	unlock := t.app.threadRequestSettleLock(token)
+	defer unlock()
+	return t.returnRequestLocked(token)
+}
+
+// returnRequestNotTakenIn is returnRequest for a message a session's end took
+// back: it reports true for a request still `accepted` (its message never
+// left the queue) or `running` on threadID with no turn and not taken in by
+// the provider, now `accepted`, and false for any other, which the session
+// end settles.
+func (t threadToolsApp) returnRequestNotTakenIn(threadID, token string) bool {
+	unlock := t.app.threadRequestSettleLock(token)
+	defer unlock()
+	receipt, found, err := t.app.store.GetThreadRequestReceipt(token)
+	if err != nil {
+		log.Printf("thread tools: return request %s: %v", token, err)
+		return false
+	}
+	if !found || receipt.TargetThreadID != threadID {
+		return false
+	}
+	switch {
+	case receipt.State == store.ThreadReceiptAccepted:
+		return true
+	case receipt.State == store.ThreadReceiptRunning && receipt.TurnID == "" && !t.app.receiptTakenIn(threadID, token):
+		return t.returnRequestLocked(token)
+	}
+	return false
+}
+
+// returnRequestLocked moves a receipt and its request back to `accepted`.
+// The caller holds the token's settle lock.
+func (t threadToolsApp) returnRequestLocked(token string) bool {
+	returned, err := t.app.store.ReturnThreadReceipt(token)
+	if err != nil {
+		log.Printf("thread tools: return request %s: %v", token, err)
+		return false
+	}
+	if !returned {
+		return false
+	}
+	// A request another computer made has no row here; its caller reads
+	// the receipt.
+	if _, err := t.app.store.AdvanceThreadRequestState(token, store.ThreadRequestRunning, store.ThreadRequestAccepted); err != nil {
+		log.Printf("thread tools: return request %s to accepted: %v", token, err)
+	}
+	return true
+}
+
+// requeueRequest puts a returned request's message (body, footer included)
+// back on its target's queue, attributed as dispatchRequest attributed it. It
+// is held: the Stop or session end that gave it back does not start a turn
+// for it, and the thread's next turn boundary or session start sends it. An
+// archived thread refuses it.
+func (t threadToolsApp) requeueRequest(token, targetThreadID, body string) error {
+	receipt, found, err := t.app.store.GetThreadRequestReceipt(token)
+	if err != nil {
+		return fmt.Errorf("requeue request %s: %w", token, err)
+	}
+	if !found || receipt.State != store.ThreadReceiptAccepted {
+		return nil
+	}
+	_, err = t.app.registerQueueItem(targetThreadID, body, SendMessageOptions{SendID: threadRequestSendID(token)}, injectedQueueOptions{
+		preserveDraft:     true,
+		held:              true,
+		heldWhileArchived: true,
+		origin:            usermessage.OriginAgentThread,
+		originThread: &usermessage.OriginThread{
+			ComputerID:   receipt.SourceComputerID,
+			ComputerName: receipt.SourceComputerName,
+			ThreadID:     receipt.SourceThreadID,
+			Title:        receipt.SourceThreadTitle,
+			Token:        token,
+			Kind:         receipt.Kind,
+		},
+		onDurable: func() { t.requestDispatched(token, targetThreadID) },
+	})
+	if err != nil {
+		return fmt.Errorf("requeue request %s: %w", token, err)
 	}
 	return nil
 }

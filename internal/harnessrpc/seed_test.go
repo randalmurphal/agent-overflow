@@ -1,6 +1,7 @@
 package harnessrpc
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -167,6 +168,31 @@ func TestHarnessSeedBroadcastsRowsWhoseHistoryLandedBehindTheStore(t *testing.T)
 	}
 	if row.IsDraft {
 		t.Fatal("seeded thread with history still reads as a draft; the broadcast would re-announce a draft row")
+	}
+}
+
+// A seeded turn can open with a message another agent wrote, carrying the
+// origin meta a real delivery writes on the turn's user row.
+func TestHarnessSeedWritesTheUserMessageMeta(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	meta := `{"origin":"agent-thread","originThread":{"threadId":"t-lead","kind":"send"}}`
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "user-meta",
+		Repo: &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{{Turns: []HarnessSeedTurn{
+			{UserText: "mine"},
+			{UserText: "from the lead", UserMeta: json.RawMessage(meta)},
+		}}},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	items, err := host.store.ListItems(result.Projects[0].ThreadIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Meta != "{}" || items[1].Meta != meta {
+		t.Fatalf("user rows = %+v, want an empty meta then %s", items, meta)
 	}
 }
 

@@ -110,6 +110,10 @@ type UnconfirmedFlushItem struct {
 	// never carry it: their dispatch already ran the cleanup before
 	// persisting.
 	StaleUserItemID string
+	// Discarded marks a send the provider dropped unrun because its session
+	// ended (provider.CommandDiscarded), as against one it cancelled while
+	// the session lives on.
+	Discarded bool
 }
 
 // FlushSettlement owns the one durable-delivery transition for an injected

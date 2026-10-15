@@ -44,6 +44,19 @@ func waitSendsPendingIdle(t *testing.T, app *App) {
 	})
 }
 
+// sessionStarting holds a session start open for each thread, so a queued
+// message counts as pending without a provider to flush it to.
+func sessionStarting(t *testing.T, app *App, threadIDs ...string) {
+	t.Helper()
+	for _, threadID := range threadIDs {
+		start, leader := app.sessionManager().beginStart(threadID)
+		if !leader {
+			t.Fatalf("a start of %s was already open", threadID)
+		}
+		t.Cleanup(func() { app.sessionManager().finishStart(threadID, start) })
+	}
+}
+
 func assertSendsPendingFrames(t *testing.T, app *App, rec *emitRecorder, threadID, stage string, want ...bool) {
 	t.Helper()
 	if got := sendsPendingFrames(t, app, rec, threadID); !slices.Equal(got, want) {
@@ -56,6 +69,7 @@ func TestSendsPendingPublishesChangesOnly(t *testing.T) {
 	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 	const threadID = "sends-pending-changes"
+	sessionStarting(t, app, threadID)
 
 	app.triage.RegisterQueueItem(threadID, triage.QueuedFlushItem{ID: "q1", Message: "first"})
 	app.triage.RegisterQueueItem(threadID, triage.QueuedFlushItem{ID: "q2", Message: "second"})
@@ -75,11 +89,36 @@ func TestSendsPendingPublishesChangesOnly(t *testing.T) {
 	}
 }
 
+// A queued message counts as pending only while its thread has a session
+// live or starting: one waiting for the next start is not being worked on.
+// The registry reports every change, a start that fails among them.
+func TestSendsPendingCountsAQueueOnlyWithASessionLiveOrStarting(t *testing.T) {
+	t.Parallel()
+	app, rec := newAppForFlushQueueRPC(t)
+	const threadID = "sends-pending-sessionless"
+	app.triage.RegisterQueueItem(threadID, triage.QueuedFlushItem{ID: "q1", Message: "owed"})
+	assertSendsPendingFrames(t, app, rec, threadID, "queued with no session")
+	if _, listed := app.sendsPendingThreads()[threadID]; listed {
+		t.Fatal("snapshot set names a thread with no session")
+	}
+
+	start, _ := app.sessionManager().beginStart(threadID)
+	assertSendsPendingFrames(t, app, rec, threadID, "starting", true)
+	app.sessionManager().finishStart(threadID, start)
+	assertSendsPendingFrames(t, app, rec, threadID, "the start failed", true, false)
+
+	app.sessionManager().put(threadID, session{Provider: string(provider.Claude), Token: "sessionless"})
+	assertSendsPendingFrames(t, app, rec, threadID, "registered", true, false, true)
+	app.sessionManager().unregister(threadID, "sessionless")
+	assertSendsPendingFrames(t, app, rec, threadID, "unregistered", true, false, true, false)
+}
+
 // A batch the App dispatcher holds has left triage; it is still pending.
 func TestSendsPendingCoversDispatcherHeldBatch(t *testing.T) {
 	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
 	const threadID = "sends-pending-dispatch"
+	sessionStarting(t, app, threadID)
 
 	app.beginFlushDispatchVisibility(threadID, []triage.QueuedFlushItem{{ID: "q1", Message: "held"}})
 	assertSendsPendingFrames(t, app, rec, threadID, "held by the dispatcher", true)
@@ -135,6 +174,7 @@ func TestListThreadLiveActivityReportsSendsPending(t *testing.T) {
 	running := seedLiveStateTodoThread(t, app, "pending-running")
 	queuedOnly := seedLiveStateTodoThread(t, app, "pending-queued-only")
 	idle := seedLiveStateTodoThread(t, app, "pending-idle")
+	sessionStarting(t, app, running.ID, queuedOnly.ID)
 
 	if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: running.ID, TurnID: "turn-1", Timestamp: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -204,6 +244,7 @@ func TestSendsPendingClearsOnDispatcherExits(t *testing.T) {
 			t.Parallel()
 			app, rec := newAppForFlushQueueRPC(t)
 			threadID := "sends-pending-" + tc.name
+			sessionStarting(t, app, threadID)
 			// Stand in for a running worker so the batch stays queued.
 			app.flushDispatch.mu.Lock()
 			app.ensureFlushDispatchMapsLocked()
@@ -260,6 +301,7 @@ func TestRegisterQueueItemAnswersSendsPendingAtItsFrameSequence(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	sessionStarting(t, app, thread.ID, "sends-pending-other")
 	type frame struct {
 		SendsPendingEvent
 		seq uint64

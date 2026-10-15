@@ -95,7 +95,7 @@ func (s *Service) deliverWorkflowWake(item store.WorkItem, composed composedWake
 			s.casWakeRecord(itemID, claim, "")
 			return false
 		}
-		if err := s.deps.WakeDelivery.QueueMessage(threadID, composed.message, onDurable); err != nil {
+		if err := s.deps.WakeDelivery.QueueMessage(threadID, item.WorkflowID, composed.message, onDurable); err != nil {
 			s.reportWakeFailure(item, threadID, err)
 			s.releaseWorkflowUsageAttention(composed.usageAttention)
 			// Nothing will ever promote this claim — drop it rather than leave
@@ -111,7 +111,7 @@ func (s *Service) deliverWorkflowWake(item store.WorkItem, composed composedWake
 		s.releaseWorkflowUsageAttention(composed.usageAttention)
 		return false
 	}
-	if err := s.deps.WakeDelivery.SendMessage(threadID, composed.message); err != nil {
+	if err := s.deps.WakeDelivery.SendMessage(threadID, item.WorkflowID, composed.message); err != nil {
 		s.reportWakeFailure(item, threadID, err)
 		s.releaseWorkflowUsageAttention(composed.usageAttention)
 		return false

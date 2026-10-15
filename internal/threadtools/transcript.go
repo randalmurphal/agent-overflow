@@ -351,13 +351,16 @@ func plural(n int, one, many string) string {
 }
 
 // RowHead is how a transcript and an export name one row: role, item id,
-// and a tool row's name and summary.
+// the sender of an agent's message, and a tool row's name and summary.
 func RowHead(item Item) string {
 	role := item.Role
 	if role == "" {
 		role = item.Kind
 	}
 	head := "[" + role + " " + item.ID + "]"
+	if item.From != "" {
+		head = "[" + role + " " + item.ID + " from " + oneLine(item.From, maxLabelBytes) + "]"
+	}
 	if item.Name != "" {
 		head += " " + item.Name
 	}

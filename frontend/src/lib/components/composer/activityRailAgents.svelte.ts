@@ -16,7 +16,8 @@
 //
 // It also lists the incoming messages: what other threads' agents, wakes
 // and workers queued for this thread and still held there, read from the
-// send queue's store and classified by agentMessageKind. Each leaves when
+// send queue's store: the items the backend marks an agent's
+// (QueueItem.agentMessage), named by their origin's kind. Each leaves when
 // it is dispatched.
 //
 // Owned beside the background and wake controllers by the composer's rail
@@ -27,7 +28,7 @@ import { untrack } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { ListThreadAgentRows, type ThreadAgentRow } from '../../stores/bindings';
 import { getQueueForThread, type QueueItem } from '../../stores/sendQueue.svelte';
-import { agentMessageKind, type AgentMessageKind } from '../../utils/userMessageMeta';
+import { userMessageOriginThread, userMessageOriginWake } from '../../utils/userMessageMeta';
 import { onThreadAgentRowsChanged } from '../../stores/eventsThreadAgentRows';
 import { getTransportStatusFor, onBackendStatusChange } from '../../stores/transportStatus.svelte';
 import { threadBackend } from '../../transport/entityIndex';
@@ -51,10 +52,29 @@ interface SettledMemory {
   readonly dismissed: ReadonlySet<string>;
 }
 
+/**
+ * What an incoming message is: a request from another thread (a spawn's
+ * first message, a send or an ask), the reply to one this thread made, a
+ * worker's question or approval, or a wake (a loop, a watch, an outside
+ * send, a remote job's completion, a workflow run's wake, this thread's
+ * own reminder).
+ */
+export type IncomingAgentKind = 'request' | 'reply' | 'question' | 'wake';
+
 /** A message queued for the thread by an agent or a wake, with its kind. */
 export interface IncomingAgentMessage {
   readonly item: QueueItem;
-  readonly kind: AgentMessageKind;
+  readonly kind: IncomingAgentKind;
+}
+
+/** The kind of an agent's queued message, from its origin; null for the person's. */
+export function incomingAgentKind(item: QueueItem): IncomingAgentKind | null {
+  if (!item.agentMessage) return null;
+  const thread = userMessageOriginThread(item);
+  // A reminder is this thread's own wake: it names no other thread.
+  if (thread) return thread.kind === 'wake' ? 'reply' : 'request';
+  const wake = userMessageOriginWake(item);
+  return wake?.kind === 'question' || wake?.kind === 'approval' ? 'question' : 'wake';
 }
 
 export interface AgentController {
@@ -182,7 +202,7 @@ export function createAgentController(
   const incoming = $derived.by<IncomingAgentMessage[]>(() => {
     const out: IncomingAgentMessage[] = [];
     for (const item of getQueueForThread(threadId)) {
-      const kind = agentMessageKind(item);
+      const kind = incomingAgentKind(item);
       if (kind) out.push({ item, kind });
     }
     return out;

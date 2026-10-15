@@ -7,8 +7,8 @@ import { Create as $Create } from "@wailsio/runtime";
 
 /**
  * OriginThread identifies the sending thread of an `agent-thread` row: what
- * the chip renders, and the request token that keeps three requests from one
- * thread to another distinguishable.
+ * the row's header names, and the request token that keeps three requests
+ * from one thread to another distinguishable.
  */
 export class OriginThread {
     "computerId"?: string;
@@ -16,6 +16,14 @@ export class OriginThread {
     "threadId": string;
     "title"?: string;
     "token"?: string;
+
+    /**
+     * Kind is what the row delivers: the request kind (`spawn`, `send`,
+     * `ask`) on a request, or OriginKindWake on the wake carrying a
+     * request's answer back. Absent on rows written before it existed;
+     * readers fall back to the row's send id.
+     */
+    "kind"?: string;
 
     /** Creates a new OriginThread instance. */
     constructor($$source: Partial<OriginThread> = {}) {
@@ -41,14 +49,15 @@ export class OriginThread {
  */
 export class OriginWake {
     /**
-     * Kind is `loop`, `watch` or `send`, or `question` or `approval` for a
-     * worker's prompt put to the agent that spawned it.
+     * Kind is `loop`, `watch` or `send`, `question` or `approval` for a
+     * worker's prompt put to the agent that spawned it, `completion` for a
+     * remote job's report, or `workflow` for a workflow run's wake.
      */
     "kind": string;
 
     /**
-     * Label is the loop or watch label, or the worker's title; empty for an
-     * outside send.
+     * Label is the loop or watch label, the worker's title, the remote
+     * job's label or the workflow's id; empty for an outside send.
      */
     "label"?: string;
 
@@ -56,6 +65,11 @@ export class OriginWake {
      * ThreadID is the worker of a `question` or `approval` wake.
      */
     "threadId"?: string;
+
+    /**
+     * Computer names the computer a `completion`'s job ran on.
+     */
+    "computer"?: string;
 
     /** Creates a new OriginWake instance. */
     constructor($$source: Partial<OriginWake> = {}) {

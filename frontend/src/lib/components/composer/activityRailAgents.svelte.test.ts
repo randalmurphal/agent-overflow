@@ -8,6 +8,7 @@ import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { noteThread } from '../../transport/entityIndex';
 import { setupEventListeners } from '../../stores/events';
 import type { ThreadAgentRow } from '../../stores/bindings';
+import type { UserMessageOriginWake } from '../../utils/userMessageMeta';
 import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem } from '../../stores/sendQueue.svelte';
 
 function queued(id: string, over: Partial<QueueItem> = {}): QueueItem {
@@ -202,8 +203,8 @@ describe('agents controller', () => {
   it('lists an agent\'s queued message as incoming until it leaves the queue, and not a person\'s', async () => {
     const { pane, controller } = await mountAgents([row('child')]);
     const request = queued('thread-request:tok', {
-      origin: 'agent-thread',
-      originThread: { computerId: '', computerName: '', threadId: 'sender', title: 'Sender', token: 'tok' },
+      agentMessage: true,
+      originThread: { computerId: '', computerName: '', threadId: 'sender', title: 'Sender', token: 'tok', kind: 'send' },
     });
     replaceQueueForThread(pane.threadId!, [queued('composer-1'), request]);
     expect(controller.incoming.map((m) => [m.item.sendId, m.kind])).toEqual([['thread-request:tok', 'request']]);
@@ -215,6 +216,30 @@ describe('agents controller', () => {
     replaceQueueForThread(pane.threadId!, [queued('composer-1')]);
     expect(controller.incoming).toEqual([]);
     expect(controller.count).toBe(1);
+  });
+
+  it('names each incoming message by its origin\'s kind, and lists only what the queue marks an agent\'s', async () => {
+    const { pane, controller } = await mountAgents([]);
+    const thread = (kind: string, threadId = 'sender') => ({ computerId: '', computerName: '', threadId, title: 'Sender', token: 'tok', kind });
+    const wake = (kind: UserMessageOriginWake['kind'], label: string): UserMessageOriginWake => ({ kind, label, threadId: '', computer: '' });
+    replaceQueueForThread(pane.threadId!, [
+      queued('spawn', { agentMessage: true, originThread: thread('spawn') }),
+      queued('ask', { agentMessage: true, originThread: thread('ask') }),
+      queued('reply', { agentMessage: true, originThread: thread('wake') }),
+      queued('reminder', { agentMessage: true }),
+      queued('worker-question', { agentMessage: true, originWake: wake('question', 'Worker') }),
+      queued('worker-approval', { agentMessage: true, originWake: wake('approval', 'Worker') }),
+      queued('loop', { agentMessage: true, originWake: wake('loop', 'Nightly') }),
+      queued('completion', { agentMessage: true, originWake: { ...wake('completion', 'build'), computer: 'Build box' } }),
+      queued('workflow', { agentMessage: true, originWake: wake('workflow', 'wf-1') }),
+      // The person's message joined with an agent's is the person's.
+      queued('joined', { originThread: thread('send') }),
+    ]);
+    expect(controller.incoming.map((m) => [m.item.sendId, m.kind])).toEqual([
+      ['spawn', 'request'], ['ask', 'request'], ['reply', 'reply'], ['reminder', 'wake'],
+      ['worker-question', 'question'], ['worker-approval', 'question'],
+      ['loop', 'wake'], ['completion', 'wake'], ['workflow', 'wake'],
+    ]);
   });
 
   it('keeps the last list through a failed read', async () => {

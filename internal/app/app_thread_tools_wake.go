@@ -59,7 +59,7 @@ func (a *App) withdrawHeldThreadWakes(threadID string) error {
 			continue
 		}
 		if _, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
-			return a.store.WithdrawThreadWake(token, late, row.ID, false)
+			return a.store.WithdrawThreadWake(token, late, row.ID, store.WithdrawQueued)
 		}); err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))
 		}
@@ -365,7 +365,7 @@ const (
 // row here, and a thread on another computer is named by what its own
 // computer reported when the request's target was recorded.
 func (a *App) threadWakeOrigin(row store.ThreadRequest) *usermessage.OriginThread {
-	origin := &usermessage.OriginThread{ThreadID: row.TargetThreadID, Token: row.Token}
+	origin := &usermessage.OriginThread{ThreadID: row.TargetThreadID, Token: row.Token, Kind: usermessage.OriginKindWake}
 	if row.TargetComputerID != "" {
 		origin.Title = row.TargetThreadTitle
 		origin.ComputerName, origin.ComputerID = a.threadTools().threadToolsBackendName(row.TargetComputerID)
@@ -433,8 +433,12 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 		// A cancel the agent made itself disarms the wake; one that still
 		// owes it was made for the agent, and the answer says by whom.
 		wake.Kind, wake.Text = threadtools.WakeCancelled, string(row.Answer)
+	case row.State == store.ThreadRequestInterrupted && row.AnswerKind == store.ThreadAnswerFinal:
+		// A person's Stop: the answer is what the turn said before it
+		// (turnSettlement).
+		wake.Kind, wake.Text = threadtools.WakeStopped, string(row.Answer)
 	case row.State == store.ThreadRequestInterrupted:
-		wake.Kind = threadtools.WakeInterrupted
+		wake.Kind, wake.Text = threadtools.WakeInterrupted, string(row.Answer)
 	case row.State == store.ThreadRequestExpired:
 		wake.Kind = threadtools.WakeExpired
 	default:

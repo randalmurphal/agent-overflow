@@ -71,7 +71,7 @@ type ProgressInput struct {
 // thread. It is pure, like Compose.
 func ComposeProgress(in ProgressInput) string {
 	var out strings.Builder
-	out.WriteString(dataNotice)
+	out.WriteString(DataNotice)
 	out.WriteString("\n\n")
 	fmt.Fprintf(&out, "Run %s (workflow %s) is running — goal %s.",
 		untrustedtext.Field(in.Run.ItemID), untrustedtext.Field(in.Run.WorkflowID),

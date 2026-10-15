@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -223,6 +224,73 @@ func TestClaudeMergeFold_TwoMessagesBecomeOneRow(t *testing.T) {
 	}
 	if !sawRemoval {
 		t.Errorf("no remove event for the folded row %s — its Zone 2 marker would never clear", rowA.ID)
+	}
+}
+
+// foldTwo folds two quiet flush sends into one row as the CLI's boundary
+// merge does and returns the survivor's meta.
+func foldTwo(t *testing.T, textA, textB string, metaA, metaB usermessage.Meta) usermessage.Meta {
+	t.Helper()
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	mergeFoldSend(t, router, "t1", "user:3:flush:1", "uuid-a", textA, nil, metaA, 3, 4)
+	rowB := mergeFoldSend(t, router, "t1", "user:3:flush:2", "uuid-b", textB, nil, metaB, 3, 5)
+	if err := router.Handle(mergeEcho(t, "t1", "uuid-a", textBlocks(textA), false)); err != nil {
+		t.Fatalf("echo A: %v", err)
+	}
+	if err := router.Handle(mergeEcho(t, "t1", "uuid-b", textBlocks(textA, textB), true)); err != nil {
+		t.Fatalf("echo B: %v", err)
+	}
+	survivor, found := rowSummary(t, st, "t1", rowB.ID)
+	if !found {
+		t.Fatalf("survivor row %s is gone", rowB.ID)
+	}
+	if want := textA + usermessage.JoinSeparator + textB; survivor.Summary != want {
+		t.Fatalf("survivor summary:\n got %q\nwant %q", survivor.Summary, want)
+	}
+	meta, err := usermessage.FromItem(survivor)
+	if err != nil {
+		t.Fatalf("decode survivor meta: %v", err)
+	}
+	return meta
+}
+
+// A row the CLI folded from an agent's request and the person's message
+// records each member's part with its origin, so a Stop or a session end can
+// give the person back only their text.
+func TestClaudeMergeFold_RecordsEachMembersPartAndOrigin(t *testing.T) {
+	request := "Fix the nil check."
+	person := "and also update the docs"
+	origin := &usermessage.OriginThread{ThreadID: "lead", Title: "Lead", Token: "tok-1", Kind: "send"}
+	meta := foldTwo(t, request, person,
+		usermessage.Meta{SendID: "thread-request:tok-1", Origin: usermessage.OriginAgentThread, OriginThread: origin},
+		usermessage.Meta{SendID: "send-b"})
+
+	want := []usermessage.JoinedPart{
+		{SendID: "thread-request:tok-1", Bytes: len(request), Origin: usermessage.OriginAgentThread, OriginThread: origin},
+		{SendID: "send-b", Bytes: len(person)},
+	}
+	if !reflect.DeepEqual(meta.JoinedParts, want) {
+		t.Fatalf("joinedParts:\n got %+v\nwant %+v", meta.JoinedParts, want)
+	}
+	got, agents, ok := usermessage.SplitPersonParts(request+usermessage.JoinSeparator+person, meta)
+	if !ok || got != person || len(agents) != 1 {
+		t.Fatalf("split: person %q, %d agent parts, ok %v; want %q, 1, true", got, len(agents), ok, person)
+	}
+}
+
+// A member that is itself a joined row whose recorded parts do not describe
+// its text leaves the fold with no parts, so nothing splits it by lengths
+// that are wrong.
+func TestClaudeMergeFold_RecordsNoPartsAMemberCannotSupport(t *testing.T) {
+	stale := usermessage.Meta{
+		SendID:        "send-a",
+		JoinedSendIDs: []string{"send-a", "send-c"},
+		JoinedParts:   []usermessage.JoinedPart{{SendID: "send-a", Bytes: 3}, {SendID: "send-c", Bytes: 99}},
+	}
+	meta := foldTwo(t, "one"+usermessage.JoinSeparator+"two", "three", stale, usermessage.Meta{SendID: "send-b"})
+	if meta.JoinedParts != nil {
+		t.Fatalf("joinedParts: got %+v, want none", meta.JoinedParts)
 	}
 }
 

@@ -107,8 +107,14 @@ func (a *App) runSendsPendingWorker() {
 // triage's queue and claim, the dispatcher's batches, and the pending sends
 // awaiting their echo. Dispatch bookkeeping is held across the triage read,
 // as in queueSnapshotForThread, so a message moving between the two is
-// seen on one side.
+// seen on one side. A message counts only while the thread has a session
+// live or starting: one queued with no process waits for the next start,
+// and nothing is working on it (the session registry reports each change,
+// sessionManager.changed).
 func (a *App) readSendsPending(threadID string) bool {
+	if !a.sessionManager().liveOrStarting(threadID) {
+		return false
+	}
 	a.flushDispatch.mu.Lock()
 	defer a.flushDispatch.mu.Unlock()
 	if len(a.pendingFlushDispatchItemsLocked(threadID)) > 0 {

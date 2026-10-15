@@ -75,15 +75,15 @@ func (a *SenderAgent) sentence(who string) string {
 	return fmt.Sprintf("%s is a standing agent, a thread the user promoted. Its role, in its own words: %q", who, a.Role)
 }
 
-// footerMarker opens every footer. The receiver is told the last `---`
+// FooterMarker opens every footer. The receiver is told the last `---`
 // block of a message is the footer, and a body line that starts this way
 // is quoted before delivery so nothing above the footer reads as one.
-const footerMarker = "Agent request from thread "
+const FooterMarker = "Agent request from thread "
 
 // FooterStart is how a footer opens after the body it ends. A body line
 // that opens like the marker is quoted (QuoteFooterMimics), so the text
 // before FooterStart's first occurrence is the message without its footer.
-const FooterStart = "\n---\n" + footerMarker
+const FooterStart = "\n---\n" + FooterMarker
 
 // QuoteFooterMimics quote-prefixes every line of a request body that opens
 // like the footer marker. The body is the sender's own text and carries no
@@ -92,22 +92,38 @@ const FooterStart = "\n---\n" + footerMarker
 // left alone: a rule between paragraphs is ordinary Markdown, and only the
 // last block is the footer.
 func QuoteFooterMimics(body string) string {
-	if !strings.Contains(body, footerMarker) {
+	if !strings.Contains(body, FooterMarker) {
 		return body
 	}
 	lines := strings.Split(body, "\n")
 	for index, line := range lines {
-		if strings.HasPrefix(strings.TrimLeft(line, " \t"), footerMarker) {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), FooterMarker) {
 			lines[index] = "> " + line
 		}
 	}
 	return strings.Join(lines, "\n")
 }
 
+// StripFooter returns a request message without its footer: the sender's
+// text, which is what names the work. A text with no footer is returned
+// unchanged. The footer is the last block opening with the marker, which
+// QuoteFooterMimics keeps unique.
+func StripFooter(text string) string {
+	opening := "---\n" + FooterMarker
+	if strings.HasPrefix(text, opening) {
+		return ""
+	}
+	index := strings.LastIndex(text, "\n"+opening)
+	if index < 0 {
+		return text
+	}
+	return strings.TrimRight(text[:index], "\n")
+}
+
 // String renders the footer. It always starts with the "Agent request"
 // marker the server instructions tell the receiver to look for.
 func (f Footer) String() string {
-	lines := []string{"---", fmt.Sprintf("%s%q (%s%s).", footerMarker, f.Title, f.ThreadID, onComputer(f.Computer))}
+	lines := []string{"---", fmt.Sprintf("%s%q (%s%s).", FooterMarker, f.Title, f.ThreadID, onComputer(f.Computer))}
 	if f.Agent != nil {
 		line := f.Agent.sentence("The sender")
 		if f.RoutesPrompts {
@@ -141,8 +157,11 @@ const (
 	WakeErrored     = "errored"
 	WakeCancelled   = "cancelled"
 	WakeInterrupted = "interrupted"
-	WakeExpired     = "expired"
-	WakeReminder    = "reminder"
+	// WakeStopped is an interruption a person's Stop made; its Text is what
+	// the turn said before it, possibly nothing.
+	WakeStopped  = "stopped"
+	WakeExpired  = "expired"
+	WakeReminder = "reminder"
 )
 
 // Wake is the status line and body of a message delivered to the thread
@@ -199,7 +218,26 @@ func (w Wake) status() string {
 		}
 		return fmt.Sprintf("%s%s was cancelled.", who, token)
 	case WakeInterrupted:
-		return fmt.Sprintf("%s%s was interrupted by a restart of %s.", who, token, restartedComputer(w.Computer))
+		// The reason the interruption recorded, as its own sentence; a
+		// restart names the computer that restarted.
+		switch w.Text {
+		case InterruptRestart:
+			return fmt.Sprintf("%s%s was interrupted by a restart of %s.", who, token, restartedComputer(w.Computer))
+		case "":
+			return fmt.Sprintf("%s%s: %s", who, token, InterruptTurn)
+		}
+		// What a turn its session ended had written is an answer, clipped
+		// as one.
+		if written, ok := strings.CutPrefix(w.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar); ok {
+			return fmt.Sprintf("%s%s: %s%s%s", who, token, InterruptSessionEndedMidTurn, SessionEndedWrittenSoFar, WakeBody(written, w.Token))
+		}
+		return fmt.Sprintf("%s%s: %s", who, token, w.Text)
+	case WakeStopped:
+		status := fmt.Sprintf("%s%s: %s", who, token, WakePersonStopped)
+		if w.Text == "" {
+			return status
+		}
+		return fmt.Sprintf("%s Its last message:\n%s", status, w.body())
 	case WakeExpired:
 		return fmt.Sprintf("%s%s did not answer within a day.", who, token)
 	case WakeReminder:
@@ -207,6 +245,62 @@ func (w Wake) status() string {
 	default:
 		return fmt.Sprintf("%s%s settled.", who, token)
 	}
+}
+
+// WakePersonStopped is the status of a request whose turn a person's Stop
+// cut before it answered.
+const WakePersonStopped = "The person stopped this turn before it answered."
+
+// Why a request was interrupted: the answer an interrupted settlement
+// records, which its wake states (WakeInterrupted). A person's Stop is
+// WakeStopped instead, with what the turn said.
+const (
+	// InterruptRestart: the computer that held the request restarted.
+	InterruptRestart = "This computer restarted before the request finished."
+	// InterruptSessionEndedUnread: the thread's session ended, by a crash,
+	// a stop, a teardown or a replacement, before the provider took the
+	// request's message in.
+	InterruptSessionEndedUnread = "The thread's session ended before it read the request."
+	// InterruptSessionEndedUnanswered: the session ended after the provider
+	// took the message in and before the turn that reads it opened.
+	InterruptSessionEndedUnanswered = "The thread's session ended before it answered the request."
+	// InterruptSessionEndedMidTurn: the session ended during the turn that
+	// read the message. Its answer goes on with what the turn had written
+	// by then (SessionEndedWrittenSoFar), when it wrote anything.
+	InterruptSessionEndedMidTurn = "The thread's session ended during the turn that read the request."
+	// InterruptTurn: something other than a person's Stop interrupted the
+	// turn, such as a workflow taking the thread over.
+	InterruptTurn = "The turn was interrupted before it answered."
+	// InterruptNeverStarted: the request was accepted and its thread was
+	// never created.
+	InterruptNeverStarted = "That request was accepted but its thread was never created."
+	// InterruptNotTakenIn: the provider gave the request's message back
+	// before taking it in, and the request could not go back to its queue
+	// (a cancelled send with the session alive, a failed Codex resend).
+	InterruptNotTakenIn = "The thread did not take the request in."
+	// InterruptNotTakenInToComposer: the message was not taken in and was
+	// joined with the person's own text it could not be split from, so all
+	// of it went back to the target thread's composer.
+	InterruptNotTakenInToComposer = "The thread did not take the request in, and its message went back to that thread's composer."
+)
+
+// SessionEndedWrittenSoFar introduces, after InterruptSessionEndedMidTurn,
+// what the turn had written when its session ended.
+const SessionEndedWrittenSoFar = " What it had written by then:\n\n"
+
+// InterruptSessionEndedReasons are the reasons a request reads when its
+// thread's session ended before a turn answered it.
+var InterruptSessionEndedReasons = []string{
+	InterruptSessionEndedUnread, InterruptSessionEndedUnanswered, InterruptSessionEndedMidTurn,
+}
+
+// InterruptMoved is the reason of a request whose thread was moved to
+// destination, another computer, before it answered.
+func InterruptMoved(destination string) string {
+	if destination == "" {
+		destination = "another computer"
+	}
+	return "The thread was moved to " + destination + " before it answered."
 }
 
 func (w Wake) body() string { return WakeBody(w.Text, w.Token) }

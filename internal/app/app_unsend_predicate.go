@@ -5,6 +5,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // evaluateInterruptRevertPredicate runs the backend revert eligibility
@@ -102,17 +103,37 @@ func (a *App) unsendTurnMessage(threadID string, turnIndex int) (store.Item, str
 		// the plain interrupt path handle this case.
 		return store.Item{}, "turn has steered user messages", nil
 	}
+	if _, _, ok := splitUnsentMessage(userItem); !ok {
+		return store.Item{}, "message joins an agent's it cannot split", nil
+	}
 	return userItem, "", nil
 }
 
+// splitUnsentMessage cuts the message a Stop un-sends into the person's text,
+// which goes back to the composer, and the agents' members Claude joined into
+// it, which go back to their owners (usermessage.SplitPersonParts). ok is
+// false when nothing tells the two apart; the un-send declines then.
+func splitUnsentMessage(item store.Item) (string, []usermessage.AgentPart, bool) {
+	meta, err := usermessage.FromItem(item)
+	if err != nil {
+		return "", nil, false
+	}
+	return usermessage.SplitPersonParts(item.Summary, meta)
+}
+
 // isReaderAuthoredUserItem reports whether item is a top-level message the
-// user sent, as opposed to a subagent prompt (parented) or a wire-only echo
-// of content the provider consumed without an AO send.
+// user sent, as opposed to a subagent prompt (parented), a wire-only echo
+// of content the provider consumed without an AO send, or a message an
+// agent or the app wrote (usermessage.IsAgentMessage), which is never the
+// person's to take back. A row whose meta does not decode is not read as
+// the person's either.
 func isReaderAuthoredUserItem(item store.Item) bool {
-	return item.Kind == string(provider.ItemUserText) &&
-		item.Role == "user" &&
-		item.ParentID == "" &&
-		!store.IsWireOnlyUserItem(item)
+	if item.Kind != string(provider.ItemUserText) || item.Role != "user" ||
+		item.ParentID != "" || store.IsWireOnlyUserItem(item) {
+		return false
+	}
+	meta, err := usermessage.FromItem(item)
+	return err == nil && !usermessage.IsAgentMessage(meta)
 }
 
 // pendingFlushWorkCount sums every queued / in-flight follow-up message the

@@ -257,10 +257,22 @@ export async function readRow(page: Page, tool: string, shot: (name: string) => 
     await expect(row).toHaveCount(1, { timeout: 500 });
   }).toPass({ timeout: 30_000 });
   await shootRow(row, shot(`${tool}-collapsed`));
+  // Where the row sits on screen, net of its activity run's own clip: with
+  // the reader above the bottom (shootRow left the follow), the timeline must
+  // not move a row they open. A run's clip that follows its own end is the
+  // run's.
+  const placed = () => row.evaluate((el) => {
+    const clip = el.closest<HTMLElement>('[data-testid="activity-run-clip"]');
+    return el.getBoundingClientRect().top + (clip?.scrollTop ?? 0);
+  });
+  const timelineTop = () => page.getByTestId('message-timeline-scroll').evaluate((el) => Math.round(el.scrollTop));
+  const placedBefore = await placed();
+  const timelineBefore = await timelineTop();
   await row.getByTestId('tool-call-card-toggle').click();
   await expect(row.getByTestId('tool-call-card-toggle')).toHaveAttribute('aria-expanded', 'true');
   const body = row.getByTestId('tool-call-card-body');
   await expect(body).toBeVisible();
+  expect(Math.abs((await placed()) - placedBefore), `${tool} row moved when it opened; timeline scrollTop ${timelineBefore} -> ${await timelineTop()}`).toBeLessThanOrEqual(1);
   await expect(body.getByText('Loading…')).toHaveCount(0);
   await expect(row.getByTestId('tool-call-card-ao-undecoded')).toHaveCount(0);
   await expect(body).not.toHaveText(/"[A-Za-z_]+":/);

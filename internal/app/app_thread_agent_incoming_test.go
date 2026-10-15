@@ -1,11 +1,13 @@
 package app
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/usermessage"
@@ -110,6 +112,9 @@ func TestThreadAgentStopAllWithdrawsIncomingAndRefusesAPersonsMessage(t *testing
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
+	if _, err := f.app.registerQueueItem(target.ID, "mine too", SendMessageOptions{SendID: "composer-send-1"}, injectedQueueOptions{preserveDraft: true}); err != nil {
+		t.Fatalf("queue the person's message: %v", err)
+	}
 	if _, err := f.app.StopThreadAgentIncoming(t.Context(), target.ID, "composer-send-1"); err == nil {
 		t.Fatal("a person's queued message was withdrawn as an agent's")
 	}
@@ -140,9 +145,10 @@ func TestThreadAgentIncomingWakesSendsAndQuestionsWithdrawToTheirOwners(t *testi
 	}, func(string, string) bool { return true })
 	if err := a.queueAgentNotice(agentNotice{
 		threadID: thread.ID, sendID: prompt.sendID(),
-		origin:     usermessage.OriginAgentWake,
-		originWake: &usermessage.OriginWake{Kind: "question", Label: "worker", ThreadID: "worker-thread"},
-		prepare:    func() (string, bool, error) { return `Thread "worker" asks`, true, nil },
+		origin:      usermessage.OriginAgentWake,
+		originWake:  &usermessage.OriginWake{Kind: "question", Label: "worker", ThreadID: "worker-thread"},
+		prepare:     func() (string, bool, error) { return `Thread "worker" asks`, true, nil },
+		startFailed: func(err error) string { return "the agent could not start: " + err.Error() },
 	}); err != nil {
 		t.Fatalf("queue the worker's question: %v", err)
 	}
@@ -171,5 +177,71 @@ func TestThreadAgentIncomingWakesSendsAndQuestionsWithdrawToTheirOwners(t *testi
 	}
 	if a.workerPrompts.isRouted(prompt.token) {
 		t.Fatal("the worker's question is still routed to the agent; it should be back with the user")
+	}
+}
+
+// A remote job's completion and a workflow run's wake are incoming rows: the
+// queue marks them an agent's. Withdrawn, the completion goes back to its
+// watch as a queue drop sends it, and the workflow's wake is dropped. A
+// person's queued message is not an incoming row and cannot be withdrawn as
+// one.
+func TestThreadAgentIncomingCompletionsAndWorkflowWakes(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	a.startSessionFn = func(string) error { return errors.New("the provider binary is missing") }
+	thread := remoteWatchThread(t, a, string(provider.Claude))
+	w := completedRemoteWatch(t, a, thread)
+	if err := a.queueAgentNotice(a.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})); err != nil {
+		t.Fatalf("queue the completion: %v", err)
+	}
+	a.waitAgentNoticeWork()
+	if err := a.queueWorkflowWake(thread.ID, "wf-1", "Phase build finished.", nil); err != nil {
+		t.Fatalf("queue the workflow wake: %v", err)
+	}
+	person, err := a.registerQueueItem(thread.ID, "and mine", SendMessageOptions{SendID: "composer-1"}, injectedQueueOptions{preserveDraft: true})
+	if err != nil {
+		t.Fatalf("queue the person's message: %v", err)
+	}
+	completion := remoteCompletionSendID(w)
+	incoming := a.incomingAgentSendIDs(thread.ID)
+	if len(incoming) != 2 || incoming[0] != completion || !strings.HasPrefix(incoming[1], workflowWakeSendIDRoot) {
+		t.Fatalf("incoming = %q, want the completion and the workflow wake", incoming)
+	}
+	if _, err := a.StopThreadAgentIncoming(t.Context(), thread.ID, person.SendID); err == nil {
+		t.Fatal("withdrew the person's message as an incoming one")
+	}
+
+	for _, id := range incoming {
+		stop, err := a.StopThreadAgentIncoming(t.Context(), thread.ID, id)
+		if err != nil || stop.Outcome != threadAgentStopped {
+			t.Fatalf("withdraw %s = %+v, %v", id, stop, err)
+		}
+	}
+	// The withdrawn completion is dismissed, not handed back: the watcher
+	// would queue a pending one again on its next tick.
+	watch, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
+	if err != nil || watch.Notification != "dismissed" || watch.WakeIssue == "" {
+		t.Fatalf("watch = %+v, %v; want it dismissed with the reason", watch, err)
+	}
+	for range 3 {
+		due, err := a.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range due {
+			a.checkRemoteWatch(d)
+		}
+		a.checkRemoteWatch(watch)
+		a.waitAgentNoticeWork()
+	}
+	if durable, memory := queuedSendIDs(t, a, thread.ID); !slices.Equal(durable, []string{person.SendID}) || !slices.Equal(memory, []string{person.SendID}) {
+		t.Fatalf("queue after three watcher ticks = %q / %q, want the person's message alone", durable, memory)
+	}
+	jobs, err := a.ListThreadRemoteCommands(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Notification != "dismissed" || jobs[0].Receipt.ID == "" {
+		t.Fatalf("remote_jobs = %+v, want the job with its result", jobs)
 	}
 }

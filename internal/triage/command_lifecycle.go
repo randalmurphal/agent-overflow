@@ -212,6 +212,7 @@ func (r *Router) settleTerminalSend(evt provider.ProviderEvent, meta provider.Co
 // it was before the frame. Caller holds the flush anchor.
 func (r *Router) retireUnrunSend(threadID string, entry pendingSend, state provider.CommandLifecycleState) error {
 	item := unconfirmedFlushItemFromPending(entry)
+	item.Discarded = state == provider.CommandDiscarded
 	if item.DeferredItem == nil && item.QuietItem == nil {
 		row, found, err := r.store.GetThreadItem(threadID, entry.AOItemID)
 		if err != nil {

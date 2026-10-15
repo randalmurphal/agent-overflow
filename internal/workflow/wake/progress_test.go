@@ -20,7 +20,7 @@ func TestComposeProgressReportsTheGateAndAsksForNothing(t *testing.T) {
 		Outputs: []Output{{Name: "verdict", Value: "pass"}, {Name: "severity", Value: "low"}},
 	})
 	mustContain(t, message,
-		dataNotice,
+		DataNotice,
 		`Run "campaign-1" (workflow "campaign") is running — goal "Harden the workflow engine".`,
 		`This run finished phase "wave" (attempt 12) and continued: the gate chose "loop" to phase "wave".`,
 		`Workspace: "/work/campaign" on branch "ao/campaign".`,

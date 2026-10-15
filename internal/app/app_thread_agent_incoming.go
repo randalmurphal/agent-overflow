@@ -7,12 +7,11 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
-	"agent-overflow/internal/usermessage"
 )
 
 // The Agents segment's incoming rows are the messages agents and wakes
 // queued for a thread behind its current turn, read by the client from the
-// thread's queue (QueuedItem.Origin). A person can withdraw one before the
+// thread's queue (QueuedItem.AgentMessage). A person can withdraw one before the
 // thread's agent takes it in; each kind goes back the way a wholesale queue
 // drop sends it back, so its owner learns it was not delivered:
 //
@@ -23,7 +22,17 @@ import (
 //     still returns it;
 //   - a worker's question: back to the user in the worker;
 //   - a loop or watch wake: recorded on its row as not delivered;
-//   - an outside `thread send`: a notice in the thread.
+//   - an outside `thread send`: a notice in the thread;
+//   - a remote job's completion: dismissed on its watch with the reason
+//     (store.WithdrawRemoteCompletion), so it is never delivered again and
+//     remote_jobs and remote_status still return it;
+//   - a workflow run's wake: dropped, as a queue drop drops it.
+
+// stoppedRemoteCompletion dismisses a completion a person withdrew: a
+// completion handed back to its watch would be queued again on the next tick.
+func stoppedRemoteCompletion(int64) store.CompletionReturn {
+	return store.CompletionReturn{Issue: "The user withdrew it from the queue before the agent read it."}
+}
 
 // StopThreadAgentIncoming withdraws one message an agent or a wake queued
 // for the thread, named by its send id. A message the thread's agent
@@ -31,32 +40,21 @@ import (
 //
 //ao:scope threads:operate
 func (a *App) StopThreadAgentIncoming(ctx context.Context, threadID, sendID string) (ThreadAgentStop, error) {
-	if !incomingAgentSendID(sendID) {
-		return ThreadAgentStop{}, errorsx.Public(threadtools.CodeInvalidRequest,
-			"That queued message is not one an agent or a wake sent.", nil)
+	for _, item := range a.queueSnapshotForThread(threadID) {
+		if item.SendID == sendID && !item.AgentMessage {
+			return ThreadAgentStop{}, errorsx.Public(threadtools.CodeInvalidRequest,
+				"That queued message is not one an agent or a wake sent.", nil)
+		}
 	}
 	return a.withdrawIncomingAgentMessage(ctx, threadID, sendID), nil
 }
 
-// incomingAgentSendID reports a send id the app gives a message it queues
-// for an agent's thread on another's behalf. A person's composer send ids
-// are client-minted and carry none of these prefixes.
-func incomingAgentSendID(sendID string) bool {
-	if strings.HasPrefix(sendID, threadRequestSendIDPrefix) || agentAppPartRoot(sendID) != "" {
-		return true
-	}
-	_, _, ok := threadWakeFromSendID(sendID)
-	return ok
-}
-
 // incomingAgentSendIDs lists the thread's queued messages that are incoming
-// rows, in queue order. Interim: the origin and send id decide it, as the
-// frontend's agentMessageKind does, until the queue carries a
-// server-computed agent-message flag that replaces both checks.
+// rows, in queue order: those the queue marks an agent's (AgentMessage).
 func (a *App) incomingAgentSendIDs(threadID string) []string {
 	var out []string
 	for _, item := range a.queueSnapshotForThread(threadID) {
-		if (item.Origin == usermessage.OriginAgentThread || item.Origin == usermessage.OriginAgentWake) && incomingAgentSendID(item.SendID) {
+		if item.AgentMessage {
 			out = append(out, item.SendID)
 		}
 	}
@@ -74,7 +72,13 @@ func (a *App) withdrawIncomingAgentMessage(ctx context.Context, threadID, sendID
 	}
 	if token, late, ok := threadWakeFromSendID(sendID); ok {
 		deleteRow = func(row store.FlushQueueItem) error {
-			return a.store.WithdrawThreadWake(token, late, row.ID, false)
+			return a.store.WithdrawThreadWake(token, late, row.ID, store.WithdrawQueued)
+		}
+	}
+	computerID, requestID, isCompletion := remoteCompletionFromSendID(sendID)
+	if isCompletion {
+		deleteRow = func(row store.FlushQueueItem) error {
+			return a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID, store.WithdrawQueued, stoppedRemoteCompletion)
 		}
 	}
 	removal, err := a.removeQueuedItemWith(ctx, threadID, sendID, deleteRow)
@@ -95,6 +99,8 @@ func (a *App) withdrawIncomingAgentMessage(ctx context.Context, threadID, sendID
 		}); err != nil {
 			result.Failures = append(result.Failures, "tell its sender: "+err.Error())
 		}
+	case isCompletion:
+		a.emitBackgroundChanged(threadID)
 	case a.handBackWorkerPromptWake(sendID):
 	case strings.HasPrefix(sendID, agentSendIDRoot):
 		a.noteAgentSendNotDelivered(threadID, "the user withdrew it from the queue")

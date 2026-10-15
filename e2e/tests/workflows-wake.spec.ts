@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
+import { captureAgentMessageInView } from './wake-rows-helpers.js';
 import {
   assistantText,
   callChildren,
@@ -111,7 +112,7 @@ phases:
 cleanup: manual
 `;
 
-test('a bound run wakes its origin thread when it rests', async ({ harness }) => {
+test('a bound run wakes its origin thread when it rests', async ({ harness, page }) => {
   await setClaudeScenario(harness, 'wake-bound', [
     {
       steps: [
@@ -160,6 +161,15 @@ test('a bound run wakes its origin thread when it rests', async ({ harness }) =>
   const wake = await waitForUserMessage(harness, thread.id, (summary) =>
     summary.includes(`Run "${item.id}"`),
   );
+  // The wake is the workflow's report, not the person's: it renders as an
+  // agent row naming the workflow (docs/specs/agent-thread-tools.md, "How
+  // agent messages appear").
+  const items = (await harness.rpc<Array<ThreadItem & { meta?: string }>>('ListItems', thread.id, true)) ?? [];
+  const wakeItem = items.find((entry) => entry.kind === 'user_text' && entry.summary === wake)!;
+  expect(JSON.parse(wakeItem.meta ?? '{}')).toMatchObject({
+    origin: 'agent-wake',
+    originWake: { kind: 'workflow', label: 'wake-flow' },
+  });
   expect(wake).toContain('untrusted run data');
   expect(wake).toContain('is done');
   expect(wake).toContain('Outputs:');
@@ -172,6 +182,21 @@ test('a bound run wakes its origin thread when it rests', async ({ harness }) =>
   // A wake is a pointer, never a dump of the run record.
   expect(wake).not.toContain('gate_trace');
   expect(wake).not.toContain('neither needs the flag');
+
+  // On screen it is a workflow row naming the workflow and leading with the
+  // run's headline; the line written for the agent is the header's to say.
+  await harness.open(page);
+  await page.getByTestId('thread-row').getByText('Wake origin', { exact: true }).click();
+  const row = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="workflow"]');
+  await expect(row.getByTestId('agent-message-sender')).toHaveText('wake-flow');
+  await expect(row.getByTestId('agent-message-first-line')).toHaveText(
+    new RegExp(`^Run "${item.id}" \\(workflow "wake-flow"\\) is done`),
+  );
+  await row.getByTestId('agent-message-toggle').click();
+  const body = row.getByTestId('agent-message-body');
+  await expect(body).toContainText('"verdict": "true"');
+  await expect(body).not.toContainText('untrusted run data');
+  await captureAgentMessageInView(page, 'workflow-wake-row.png', row);
 
   // Unbinding is the off switch: the next resting transition reports nowhere.
   const unbound = await harness.rpc<{ originThreadId?: string }>(

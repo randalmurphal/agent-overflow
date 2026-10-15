@@ -896,6 +896,17 @@ keeps the DOM measurement non-load-bearing: a stale anchor, a re-rendered
 subtree, or a NaN can only pull the correction back toward zero (toward
 the historical behavior), never past it into an over-correction.
 
+A scroller inside a row (an activity run's clip) moves the anchor within
+its row with no scroll event on the timeline, which would read as growth
+above the reading position. A scroll from a scroller that contains the
+sampled anchor drops the anchor, and the next post-flush pass samples
+afresh; dropping instead of re-sampling keeps a clip that chases its own
+tail from costing a hit test per frame. A scroller beside the anchor (a
+code block scrolled sideways, a textarea) leaves it in place. Coverage:
+the clip, sideways and textarea cases in the same describe, and
+`readRow` in `ao-tool-rows-more-helpers.ts`, which checks a row opens
+downward from where it was clicked.
+
 Tracking is gated on `trackReadingAnchor`, which chat wires to "the
 controller does *not* hold bottom-follow intent". While pinned, the
 per-beat pin write already absorbs growth anywhere in the content, so the

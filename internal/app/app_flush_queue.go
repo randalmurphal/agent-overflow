@@ -74,6 +74,9 @@ type QueueFlushedItem struct {
 	SendID      string `json:"sendId,omitempty"`
 	UserItemID  string `json:"userItemId"`
 	Message     string `json:"message"`
+	// AgentMessage is usermessage.IsAgentMessage of the row the message
+	// became: an agent's message, which the queue preview leaves out.
+	AgentMessage bool `json:"agentMessage,omitempty"`
 }
 
 type QueueRestoredEvent struct {
@@ -457,6 +460,14 @@ func (a *App) pendingFlushDispatchItemsLocked(threadID string) []triage.QueuedFl
 	return out
 }
 
+// pendingFlushDispatchItems is pendingFlushDispatchItemsLocked for a caller
+// that does not hold the dispatch lock.
+func (a *App) pendingFlushDispatchItems(threadID string) []triage.QueuedFlushItem {
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	return a.pendingFlushDispatchItemsLocked(threadID)
+}
+
 // queueSnapshotForThread is the ONE queue snapshot every wire surface
 // publishes. A queued message is somewhere in the handoff chain at all
 // times — triage queue → triage claim → App dispatch batch → in-flight
@@ -756,13 +767,19 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 	// the one row they became: markItemsFlushed drops each queue id from
 	// Zone 1 and de-duplicates the additions by userItemId, so the overlay
 	// shows the joined message once and its echo clears it once.
+	joinedMeta, err := usermessage.FromItem(userItem)
+	if err != nil {
+		return nil, false, requeue, err
+	}
+	agentMessage := usermessage.IsAgentMessage(joinedMeta)
 	flushedItems := make([]QueueFlushedItem, 0, len(members))
 	for _, member := range members {
 		flushedItems = append(flushedItems, QueueFlushedItem{
-			QueueItemID: member.item.ID,
-			UserItemID:  userItem.ID,
-			Message:     joined.content,
-			SendID:      member.payload.SendID,
+			QueueItemID:  member.item.ID,
+			UserItemID:   userItem.ID,
+			Message:      joined.content,
+			SendID:       member.payload.SendID,
+			AgentMessage: agentMessage,
 		})
 	}
 
@@ -1081,6 +1098,11 @@ type injectedQueueOptions struct {
 	// persist atomically transfers an injector’s delivery responsibility to the
 	// ordinary durable queue. Nil uses the standard queue insert.
 	persist func(store.FlushQueueItem) error
+	// held queues the message without flushing it into a live session: the
+	// thread's next turn boundary or session start sends it. A message given
+	// back by a Stop or a session end sets it, so the giving back does not
+	// start the turn the Stop ended or resend into a session that failed it.
+	held bool
 	// heldWhileArchived refuses the message with errThreadArchived when the
 	// thread is archived, before persist runs. App-written notices set it
 	// (queueAgentNotice); a person's message is taken by an archived thread
@@ -1326,7 +1348,7 @@ func (a *App) registerQueueItem(
 		}
 	}
 	a.emitQueueStateChanged(threadID)
-	if _, ok := a.sessionManager().get(threadID); ok {
+	if _, ok := a.sessionManager().get(threadID); ok && !injected.held {
 		a.triage.FlushQueuedItems(threadID)
 	}
 	return wireItem, nil

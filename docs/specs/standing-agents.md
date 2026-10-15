@@ -539,10 +539,12 @@ for them: one that arrives after the archive is refused back to what
 sent it, and one queued just before it waits, without a start, for the
 archive to take it back. A person's answers to an agent's questions are
 the exception, as anything they type into an archived thread is.
-The queued message is badged with the wake's kind and
+The queued message carries the wake's kind and
 label, wrapped as untrusted text with the byte cap above, and carries
-no approval or user authority. The timeline and the send queue show its
-quoted data decoded; the agent reads it escaped. A wake that arrives
+no approval or user authority. The timeline shows it as an agent row
+([how agent messages appear](agent-thread-tools.md#how-agent-messages-appear))
+with its quoted data decoded; the agent reads it escaped. It is never
+listed in the send queue as the person's message. A wake that arrives
 while a turn is open is delivered like a reminder: on Claude it is
 queued to the CLI, which takes it in at its next step or as a turn of
 its own after the current one, and on Codex it is steered into the
@@ -727,10 +729,17 @@ closes up their spacing so the row holds at a phone width.
   kind (request, reply, wake, question), until they leave the queue. A
   live session takes a queued message at once, so one waits while the
   thread has no session that can take it: its start is pending or failed.
+  They are the queued messages the backend marks an agent's
+  (`QueuedItem.agentMessage`, the classifier of
+  [how agent messages appear](agent-thread-tools.md#how-agent-messages-appear)),
+  a remote job's completion and a workflow run's wake among the wakes.
   Their Stop withdraws the message and gives it back the way a queue drop
   does: a request's sender is told the user withdrew it, an answer is owed
   again and disarmed for `thread_status`, a worker's question goes back to
-  the user, a wake's row records it as not delivered.
+  the user, a wake's row records it as not delivered, and a workflow run's
+  wake is dropped. A completion is dismissed on its watch with the reason
+  instead of going back to it, which would queue it again on the next
+  check; `remote_jobs` and `remote_status` still return the result.
 - **Stop** (`StopThreadAgentRow`) cancels the request as `thread_cancel`
   does, with the caller's notify left armed: its agent is woken with the
   request cancelled by the user, not by itself. An agent's own

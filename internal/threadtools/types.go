@@ -301,9 +301,13 @@ type Item struct {
 	// Kind is the item kind: user_text, assistant_text, thinking,
 	// tool_call, tool_output, diff, subagent, error.
 	Kind string `json:"kind"`
-	// Role is what the transcript prefixes the row with: user, assistant,
-	// tool or system.
-	Role   string `json:"role"`
+	// Role is what the transcript prefixes the row with: user, agent,
+	// assistant, tool or system. A user_text another agent, a wake or
+	// another Claude session wrote is `agent`, never `user`.
+	Role string `json:"role"`
+	// From names the sender of an `agent` row: the sending thread's title
+	// and id, a loop or watch, a worker, a script or a Claude session.
+	From   string `json:"from,omitempty"`
 	TurnID string `json:"turn_id,omitempty"`
 	// Name is the tool name on a tool_call row.
 	Name string `json:"name,omitempty"`
@@ -395,7 +399,8 @@ type Hit struct {
 
 // LastMessage says who spoke last in a thread and how it ended.
 type LastMessage struct {
-	// Role is user or assistant.
+	// Role is user, agent (a message another agent or a wake wrote into
+	// the thread) or assistant.
 	Role string
 	// At is when the message was last written, in Unix milliseconds.
 	At int64

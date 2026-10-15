@@ -77,13 +77,118 @@ func JoinRenumberedTextLengths(parts []TextPart) (string, []int) {
 }
 
 // JoinedPart is one member of a joined message as it appears in the joined
-// text: its send id, empty for a member without one, and its length in
-// bytes, separator excluded. A joined message's member texts are free text,
-// an answer's or a job output's included, and can hold the separator, so
-// only these lengths split one back into its members.
+// text: its send id, empty for a member without one, its length in bytes,
+// separator excluded, and its attribution. A joined message's member texts
+// are free text, an answer's or a job output's included, and can hold the
+// separator, so only these lengths split one back into its members, and
+// only the attribution tells an agent's member from the person's.
 type JoinedPart struct {
-	SendID string `json:"sendId,omitempty"`
-	Bytes  int    `json:"bytes"`
+	SendID       string        `json:"sendId,omitempty"`
+	Bytes        int           `json:"bytes"`
+	Origin       string        `json:"origin,omitempty"`
+	OriginThread *OriginThread `json:"originThread,omitempty"`
+	OriginWake   *OriginWake   `json:"originWake,omitempty"`
+}
+
+// IsAgent reports whether the part is a message an agent or the app wrote.
+func (p JoinedPart) IsAgent() bool {
+	return IsAgentMessage(Meta{Origin: p.Origin})
+}
+
+// PartsOf names the members of a joined message: one part per member with
+// its length in the joined text (lengths, from JoinRenumberedTextLengths) and
+// attribution. A member that is itself a joined message contributes its own
+// parts while they still describe its text; when it has none, or renumbering
+// its image markers changed its length, the message's parts are unknown and
+// PartsOf returns nil.
+func PartsOf(members []Meta, texts []string, lengths []int) []JoinedPart {
+	parts := make([]JoinedPart, 0, len(members))
+	for i, member := range members {
+		if len(member.JoinedSendIDs) == 0 {
+			parts = append(parts, JoinedPart{
+				SendID: member.SendID, Bytes: lengths[i],
+				Origin: member.Origin, OriginThread: member.OriginThread, OriginWake: member.OriginWake,
+			})
+			continue
+		}
+		if lengths[i] != len(texts[i]) {
+			return nil
+		}
+		if _, ok := SplitJoinedParts(texts[i], member.JoinedParts); !ok {
+			return nil
+		}
+		parts = append(parts, member.JoinedParts...)
+	}
+	return parts
+}
+
+// RecordMembers records the members of the joined message m was joined
+// from: their parts (PartsOf), or, when the parts cannot be known, the
+// request token of every member an agent thread wrote, so each request still
+// finds the row that answered it.
+func (m *Meta) RecordMembers(members []Meta, texts []string, lengths []int) {
+	m.JoinedParts = PartsOf(members, texts, lengths)
+	m.JoinedOriginTokens = nil
+	if m.JoinedParts != nil {
+		return
+	}
+	var tokens []string
+	add := func(token string) {
+		if token != "" && !slices.Contains(tokens, token) {
+			tokens = append(tokens, token)
+		}
+	}
+	for _, member := range members {
+		switch {
+		case len(member.JoinedParts) > 0:
+			for _, part := range member.JoinedParts {
+				if part.OriginThread != nil {
+					add(part.OriginThread.Token)
+				}
+			}
+		case len(member.JoinedOriginTokens) > 0:
+			for _, token := range member.JoinedOriginTokens {
+				add(token)
+			}
+		case member.Origin == OriginAgentThread && member.OriginThread != nil:
+			add(member.OriginThread.Token)
+		}
+	}
+	m.JoinedOriginTokens = tokens
+}
+
+// SplitPersonParts cuts a joined row's text into the person's text and the
+// agents' members, by the parts recorded on its meta. ok is false when the
+// row holds an agent's member and no recorded parts describe its text and
+// name it: then nothing can tell the person's words from the agent's. A row
+// with no agent's member is the person's whole.
+func SplitPersonParts(text string, meta Meta) (person string, agents []AgentPart, ok bool) {
+	agentOrigin := meta.Origin == OriginAgentThread || meta.Origin == OriginAgentWake
+	if len(meta.JoinedParts) == 0 {
+		if agentOrigin {
+			return "", nil, false
+		}
+		return text, nil, true
+	}
+	members, fits := SplitJoinedParts(text, meta.JoinedParts)
+	if !fits || agentOrigin && !slices.ContainsFunc(meta.JoinedParts, JoinedPart.IsAgent) {
+		return "", nil, false
+	}
+	var kept []string
+	for i, part := range meta.JoinedParts {
+		if part.IsAgent() {
+			agents = append(agents, AgentPart{JoinedPart: part, Text: members[i]})
+			continue
+		}
+		kept = append(kept, members[i])
+	}
+	return strings.Join(kept, JoinSeparator), agents, true
+}
+
+// AgentPart is an agent's member of a joined message and its text.
+type AgentPart struct {
+	JoinedPart
+	Text string
 }
 
 // SplitJoinedParts cuts text into the members parts describe. ok is false
@@ -176,7 +281,6 @@ func (in Input) Projection() Meta {
 // retry of any LATER member resolves to this row instead of duplicating it.
 func JoinMetas(members []Meta) Meta {
 	var joined Meta
-	var tokens []string
 	for _, member := range members {
 		joined.Attachments = append(joined.Attachments, member.Attachments...)
 		if joined.SourceProposedPlan == nil {
@@ -210,17 +314,6 @@ func JoinMetas(members []Meta) Meta {
 		if joined.Origin == "" {
 			joined.Origin, joined.OriginThread, joined.OriginWake = member.Origin, member.OriginThread, member.OriginWake
 		}
-		// Every member's request token is kept, so each request an
-		// answer in this row settles can find it.
-		memberTokens := member.JoinedOriginTokens
-		if len(memberTokens) == 0 && member.OriginThread != nil && member.OriginThread.Token != "" {
-			memberTokens = []string{member.OriginThread.Token}
-		}
-		for _, token := range memberTokens {
-			if !slices.Contains(tokens, token) {
-				tokens = append(tokens, token)
-			}
-		}
 		ids := member.JoinedSendIDs
 		if len(ids) == 0 {
 			ids = []string{member.SendID}
@@ -236,9 +329,6 @@ func JoinMetas(members []Meta) Meta {
 				joined.JoinedSendIDs = append(joined.JoinedSendIDs, id)
 			}
 		}
-	}
-	if len(tokens) > 1 || (len(tokens) == 1 && (joined.OriginThread == nil || joined.OriginThread.Token != tokens[0])) {
-		joined.JoinedOriginTokens = tokens
 	}
 	return joined
 }
@@ -275,10 +365,11 @@ func (m Meta) isZero() bool {
 		m.Command == "" &&
 		m.SendID == "" &&
 		len(m.JoinedSendIDs) == 0 &&
+		len(m.JoinedOriginTokens) == 0 &&
 		m.Origin == "" &&
 		m.OriginThread == nil &&
-		len(m.JoinedOriginTokens) == 0 &&
 		m.OriginWake == nil &&
+		len(m.JoinedParts) == 0 &&
 		!m.ExpandComposerCommands
 }
 
@@ -305,6 +396,7 @@ var metaTypedKeys = []string{
 	"originThread",
 	"joinedOriginTokens",
 	"originWake",
+	"joinedParts",
 }
 
 // MergeJoinedMeta rewrites the typed usermessage fields of `existing` to those

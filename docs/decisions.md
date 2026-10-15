@@ -320,11 +320,30 @@ Mechanism in
   start. A standing agent is named with its role line on the footers it
   sends and on the wakes of its replies, on either computer: a thread on
   another computer behaves as a local one does.
+- Messages between agents are not the person's messages (ruling
+  2026-10-13). A thread tool's spawn prompt, request or question, the
+  answer that comes back, a loop, watch, outside send or worker wake, a
+  remote job's completion, a workflow run's wake, and a provider's own
+  agent message stay user-role on the wire and
+  `user_text` rows in the store, and render as a folded agent row naming
+  the sender, never as the user bubble; their footer is shown as facts,
+  never raw. They are not navigator ticks, composer recall or send-queue
+  preview entries, and the thread tools label them `agent` with their
+  sender. A Claude join holding the person's composer message stays the
+  person's, and so do a workflow phase prompt, which is a phase thread's
+  only user message, and the messages the person starts from a button
+  (answers, review comments, triage and PR discussion). A Stop that
+  un-sends such a join gives the person their text alone and gives each
+  agent's message back to its owner; a request is owed again and its
+  sender is told nothing. A person's Stop on a turn a request started
+  reaches the sender as the person's Stop, never as a restart (ruling
+  2026-10-14). Mechanism:
+  [how agent messages appear](specs/agent-thread-tools.md#how-agent-messages-appear).
 - Requests to other threads and agent messages queued for a thread list
   in the activity rail's Agents segment, apart from Background, with a
   user Stop that keeps the caller's wake armed and cascades into what a
   spawned thread runs on any computer; incoming agent messages list
-  there, and leave the composer's queue with slice 13 (standing agents
+  there instead of the composer's queue (standing agents
   rulings 20 and 21,
   [Agents segment](specs/standing-agents.md#agents-segment)).
 

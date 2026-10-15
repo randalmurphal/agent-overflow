@@ -48,8 +48,9 @@ type agentNotice struct {
 	// sendID is the notice's identity for send admission, so a repeated
 	// observation of the same event cannot queue it twice.
 	sendID string
-	// origin and originThread attribute the message in the timeline. Empty
-	// for a notice the app writes in its own voice.
+	// origin, originThread and originWake attribute the message in the
+	// timeline. Every notice that is not the person's own words (fromPerson)
+	// carries one, so it reads as an agent's message and not as theirs.
 	origin       string
 	originThread *usermessage.OriginThread
 	originWake   *usermessage.OriginWake
@@ -83,6 +84,9 @@ type agentNotice struct {
 // thread refuses it with errThreadArchived, which each caller treats as its
 // own reason not to proceed.
 func (a *App) queueAgentNotice(notice agentNotice) error {
+	if notice.prepare == nil || notice.startFailed == nil {
+		return fmt.Errorf("agent notice %s for %s names no body or no start failure message", notice.sendID, notice.threadID)
+	}
 	body, proceed, err := notice.prepare()
 	if err != nil || !proceed {
 		return err

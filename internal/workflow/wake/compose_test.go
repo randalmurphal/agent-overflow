@@ -42,7 +42,7 @@ func TestComposeDoneRunCarriesOutputsAndNeedsNoReply(t *testing.T) {
 		},
 	})
 	mustContain(t, message,
-		dataNotice,
+		DataNotice,
 		`Run "run-1" (workflow "build") is done — goal "Ship the importer".`,
 		"Outputs:",
 		`- "summary": "importer landed"`,

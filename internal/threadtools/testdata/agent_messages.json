@@ -1,0 +1,725 @@
+[
+  {
+    "name": "request waiting, local, quoting the user",
+    "text": "Review the parser.\n\nThen report back.\n\n---\nAgent request from thread \"Lead thread\" (t-lead).\nIt is waiting for your answer. When you are done, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. The sender sees only your reply text, so make it self-contained. To read the sender's thread, use thread_show with its id.\nThe user's latest message in that thread: \"Please check the parser\"",
+    "parts": [
+      {
+        "body": "Review the parser.\n\nThen report back.",
+        "footer": {
+          "title": "Lead thread",
+          "threadId": "t-lead",
+          "computer": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "waiting": true,
+          "reachable": true,
+          "userMessage": "Please check the parser",
+          "agentRole": null,
+          "routesPrompts": false
+        },
+        "wake": null
+      }
+    ]
+  },
+  {
+    "name": "request not waiting, another computer, unreachable",
+    "text": "FYI: done.\n\n---\nAgent request from thread \"Builder\" (t-build, on laptop).\nIt is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once.",
+    "parts": [
+      {
+        "body": "FYI: done.",
+        "footer": {
+          "title": "Builder",
+          "threadId": "t-build",
+          "computer": "laptop",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "waiting": false,
+          "reachable": false,
+          "userMessage": "",
+          "agentRole": null,
+          "routesPrompts": false
+        },
+        "wake": null
+      }
+    ]
+  },
+  {
+    "name": "request not waiting, reachable",
+    "text": "Ship it.\n\n---\nAgent request from thread \"Builder\" (t-build).\nIt is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. To answer it, use thread_send with its id.",
+    "parts": [
+      {
+        "body": "Ship it.",
+        "footer": {
+          "title": "Builder",
+          "threadId": "t-build",
+          "computer": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "waiting": false,
+          "reachable": true,
+          "userMessage": "",
+          "agentRole": null,
+          "routesPrompts": false
+        },
+        "wake": null
+      }
+    ]
+  },
+  {
+    "name": "request from a standing agent that spawned the receiver",
+    "text": "Do the task.\n\n---\nAgent request from thread \"Planner\" (t-plan).\nThe sender is a standing agent, a thread the user promoted. Its role, in its own words: \"Keeps the \\\"plan\\\" honest.\" It spawned this thread, so your questions and approval requests go to it, not to the user.\nIt is waiting for your answer. When you are done, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. The sender sees only your reply text, so make it self-contained. To read the sender's thread, use thread_show with its id.",
+    "parts": [
+      {
+        "body": "Do the task.",
+        "footer": {
+          "title": "Planner",
+          "threadId": "t-plan",
+          "computer": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "waiting": true,
+          "reachable": true,
+          "userMessage": "",
+          "agentRole": "Keeps the \"plan\" honest.",
+          "routesPrompts": true
+        },
+        "wake": null
+      }
+    ]
+  },
+  {
+    "name": "request from a standing agent with no role",
+    "text": "Hello.\n\n---\nAgent request from thread \"Planner\" (t-plan).\nThe sender is a standing agent, a thread the user promoted.\nIt is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. To answer it, use thread_send with its id.",
+    "parts": [
+      {
+        "body": "Hello.",
+        "footer": {
+          "title": "Planner",
+          "threadId": "t-plan",
+          "computer": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "waiting": false,
+          "reachable": true,
+          "userMessage": "",
+          "agentRole": "",
+          "routesPrompts": false
+        },
+        "wake": null
+      }
+    ]
+  },
+  {
+    "name": "request whose body mimics the footer",
+    "text": "\u003e Agent request from thread \"x\" (y).\n---\nreal text\n\n---\nAgent request from thread \"Tab\\tand \\\"quote\\\" and é\" (t-odd).\nIt is waiting for your answer. When you are done, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. The sender sees only your reply text, so make it self-contained. To read the sender's thread, use thread_show with its id.\nThe user's latest message in that thread: \"long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long …\"",
+    "parts": [
+      {
+        "body": "\u003e Agent request from thread \"x\" (y).\n---\nreal text",
+        "footer": {
+          "title": "Tab\tand \"quote\" and é",
+          "threadId": "t-odd",
+          "computer": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "waiting": true,
+          "reachable": true,
+          "userMessage": "long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long long …",
+          "agentRole": null,
+          "routesPrompts": false
+        },
+        "wake": null
+      }
+    ]
+  },
+  {
+    "name": "empty-bodied request",
+    "text": "\n\n---\nAgent request from thread \"Lead\" (t-lead).\nIt is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. To answer it, use thread_send with its id.",
+    "parts": [
+      {
+        "body": "",
+        "footer": {
+          "title": "Lead",
+          "threadId": "t-lead",
+          "computer": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "waiting": false,
+          "reachable": true,
+          "userMessage": "",
+          "agentRole": null,
+          "routesPrompts": false
+        },
+        "wake": null
+      }
+    ]
+  },
+  {
+    "name": "reply",
+    "text": "Reply from \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]:\nAll green.\nSecond line.",
+    "parts": [
+      {
+        "body": "All green.\nSecond line.",
+        "footer": null,
+        "wake": {
+          "kind": "reply",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "late reply with age, computer and a standing agent",
+    "text": "Reply from \"Worker\" (t-work, on desk, answered 5m ago) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]:\nThat thread is a standing agent, a thread the user promoted. Its role, in its own words: \"Runs the builds.\"\nDone.",
+    "parts": [
+      {
+        "body": "Done.",
+        "footer": null,
+        "wake": {
+          "kind": "reply",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "desk",
+          "age": "5m",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": "Runs the builds.",
+          "stoppedBy": "",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "finished without a reply",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] finished its turn without calling thread_reply. Its final message:\nFinal words.",
+    "parts": [
+      {
+        "body": "Final words.",
+        "footer": null,
+        "wake": {
+          "kind": "finished",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "errored, agent, multi-line error",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] errored: boom\nThat thread is a standing agent, a thread the user promoted.\nstack",
+    "parts": [
+      {
+        "body": "boom\nstack",
+        "footer": null,
+        "wake": {
+          "kind": "errored",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": "",
+          "stoppedBy": "",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "cancelled",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] was cancelled.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "cancelled",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by a restart locally",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] was interrupted by a restart of this computer.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "a restart of this computer",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by a restart on another computer",
+    "text": "\"Worker\" (t-work, on desk) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] was interrupted by a restart of desk.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "desk",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "a restart of desk",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by its session ending before it read the request",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread's session ended before it read the request.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the session ended before it read the request",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by its session ending before it answered the request",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread's session ended before it answered the request.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the session ended before it answered the request",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by its session ending during the turn, having written nothing",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread's session ended during the turn that read the request.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the session ended during the turn that read the request",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by its session ending during the turn, with what it wrote",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread's session ended during the turn that read the request. What it had written by then:\nThat thread is a standing agent, a thread the user promoted. Its role, in its own words: \"Runs the builds.\"\n\nHalf done.\nSecond line.",
+    "parts": [
+      {
+        "body": "Half done.\nSecond line.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": "Runs the builds.",
+          "stoppedBy": "the session ended during the turn that read the request",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by its session ending during a turn that wrote past the preview",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread's session ended during the turn that read the request. What it had written by then:\n\nLong answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long a\n[preview; thread_status 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d for the whole answer]",
+    "parts": [
+      {
+        "body": "Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long answer. Long a",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the session ended during the turn that read the request",
+          "clipped": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by the thread not taking it in",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread did not take the request in.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the thread did not take it in",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by the thread not taking it in, its message back in that thread's composer",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread did not take the request in, and its message went back to that thread's composer.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the thread did not take it in, and its message went back to that thread's composer",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by a move",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread was moved to Desk (Linux) before it answered.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "a move to Desk (Linux)",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by a move to an unknown computer",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread was moved to another computer before it answered.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "a move to another computer",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted by something other than a person",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The turn was interrupted before it answered.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "an interrupt",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted with no reason recorded",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The turn was interrupted before it answered.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "an interrupt",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "interrupted before its thread existed",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: That request was accepted but its thread was never created.",
+    "parts": [
+      {
+        "body": "That request was accepted but its thread was never created.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "stopped by the person with its last message",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The person stopped this turn before it answered. Its last message:\nHalf done.\nSecond line.",
+    "parts": [
+      {
+        "body": "Half done.\nSecond line.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the person",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "stopped by the person before it said anything, standing agent",
+    "text": "\"Worker\" (t-work, on desk) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The person stopped this turn before it answered.\nThat thread is a standing agent, a thread the user promoted. Its role, in its own words: \"Runs the builds.\"",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "desk",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": "Runs the builds.",
+          "stoppedBy": "the person",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "expired",
+    "text": "\"Worker\" (t-work, answered 1d ago) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] did not answer within a day.",
+    "parts": [
+      {
+        "body": "",
+        "footer": null,
+        "wake": {
+          "kind": "expired",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "1d",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "reminder",
+    "text": "Reminder you set [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]:\nCheck the build.",
+    "parts": [
+      {
+        "body": "Check the build.",
+        "footer": null,
+        "wake": {
+          "kind": "reminder",
+          "title": "",
+          "threadId": "",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
+    "name": "clipped reply",
+    "text": "Reply from \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]:\n0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n[preview; thread_status 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d for the whole answer]",
+    "parts": [
+      {
+        "body": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "footer": null,
+        "wake": {
+          "kind": "reply",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": true
+        }
+      }
+    ]
+  },
+  {
+    "name": "two requests joined",
+    "text": "First ask.\n\n---\nAgent request from thread \"Lead\" (t-lead).\nIt is waiting for your answer. When you are done, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. The sender sees only your reply text, so make it self-contained. To read the sender's thread, use thread_show with its id.\n\n---\n\nSecond ask.\n\n---\nAgent request from thread \"Lead\" (t-lead).\nIt is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token tok-2, once. To answer it, use thread_send with its id.",
+    "parts": [
+      {
+        "body": "First ask.",
+        "footer": {
+          "title": "Lead",
+          "threadId": "t-lead",
+          "computer": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "waiting": true,
+          "reachable": true,
+          "userMessage": "",
+          "agentRole": null,
+          "routesPrompts": false
+        },
+        "wake": null
+      },
+      {
+        "body": "Second ask.",
+        "footer": {
+          "title": "Lead",
+          "threadId": "t-lead",
+          "computer": "",
+          "token": "tok-2",
+          "waiting": false,
+          "reachable": true,
+          "userMessage": "",
+          "agentRole": null,
+          "routesPrompts": false
+        },
+        "wake": null
+      }
+    ]
+  },
+  {
+    "name": "two wakes joined, the first answer holding a rule",
+    "text": "Reply from \"A\" (t-a) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]:\none\n\n---\n\nstill one\n\n---\n\n\"B\" (t-b) [token tok-2] finished its turn without calling thread_reply. Its final message:\ntwo",
+    "parts": [
+      {
+        "body": "one\n\n---\n\nstill one",
+        "footer": null,
+        "wake": {
+          "kind": "reply",
+          "title": "A",
+          "threadId": "t-a",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false
+        }
+      },
+      {
+        "body": "two",
+        "footer": null,
+        "wake": {
+          "kind": "finished",
+          "title": "B",
+          "threadId": "t-b",
+          "computer": "",
+          "age": "",
+          "token": "tok-2",
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false
+        }
+      }
+    ]
+  }
+]

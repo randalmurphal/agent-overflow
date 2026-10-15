@@ -76,7 +76,7 @@ func remoteCompletionMessage(w store.RemoteWatch, computerName string, output re
 		computerName = w.ComputerID
 	}
 	r := w.Receipt
-	message := fmt.Sprintf("Remote job finished on %s: %s\ncomputer_id: %s\nrequest_id: %s\nWorkspace: %s\nResult: %s", computerName, w.Label, w.ComputerID, w.RequestID, r.Workspace, r.State)
+	message := fmt.Sprintf(remoteJobWakeHeader+"%s: %s\ncomputer_id: %s\nrequest_id: %s\nWorkspace: %s\nResult: %s", computerName, w.Label, w.ComputerID, w.RequestID, r.Workspace, r.State)
 	if r.ExitCode >= 0 {
 		message += fmt.Sprintf("; exit code: %d", r.ExitCode)
 	}

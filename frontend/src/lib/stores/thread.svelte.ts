@@ -292,6 +292,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // Read at dispose time, after the caller has already replaced `items`
     // with the surviving window — so this IS the "still loaded" set.
     loadedItems: getItems,
+    threadId: () => thread?.id ?? null,
   });
   // Per-item smoother + reveal-gate machinery lives in
   // threadStreamingReveal.svelte.ts. Item-window commits finalize through
@@ -1296,6 +1297,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      *  nothing about it goes to the backend. */
     isUserMessageExpanded: rowUiState.isUserMessageExpanded,
     setUserMessageExpanded: rowUiState.setUserMessageExpanded,
+    isUnsendDeclined: rowUiState.isUnsendDeclined,
+    setUnsendDeclined: rowUiState.setUnsendDeclined,
     diffCardExpandedOverride: rowUiState.diffCardExpandedOverride,
     setDiffCardExpanded: rowUiState.setDiffCardExpanded,
     /** Validity stamp for replaying a measured-size priors snapshot across a
