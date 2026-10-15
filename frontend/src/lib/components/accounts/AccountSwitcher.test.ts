@@ -136,7 +136,7 @@ describe('<AccountSwitcher> — selection', () => {
   it('shows the login countdown only for accounts near their deadline', async () => {
     const day = 24 * 60 * 60 * 1000;
     setBindingMock('ListProviderAccounts', async () => [
-      account({ id: 'claude-a', displayName: 'Work', active: true, refreshTokenExpiresAt: Date.now() + 2 * day }),
+      account({ id: 'claude-a', displayName: 'Work', active: true, refreshTokenExpiresAt: Date.now() + 2 * day + 30_000 }),
       account({ id: 'claude-b', displayName: 'Personal', refreshTokenExpiresAt: Date.now() + 20 * day }),
       account({ id: 'codex-a', provider: 'codex', displayName: 'Codex Team' }),
     ]);
@@ -146,7 +146,7 @@ describe('<AccountSwitcher> — selection', () => {
     });
 
     const expiring = await findByTestId('account-switcher-login-expiry-claude-a');
-    expect(expiring.textContent?.trim()).toBe('Login expires in 2 days');
+    expect(expiring.textContent?.trim()).toBe('Login expires in 2d');
     expect(expiring.className).toContain('text-warning');
     // Three weeks out is not news, and a countdown on every row would teach
     // people to ignore the one that matters.

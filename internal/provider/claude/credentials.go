@@ -144,3 +144,38 @@ func RefreshTokenExpired(data []byte, now time.Time) bool {
 	}
 	return !expiresAt.After(now)
 }
+
+// cliRefreshMargin is how close to its expiry the CLI renews an access token:
+// claude-code 2.1.284 treats a token as expired once now + 5 minutes reaches
+// `expiresAt`, and refreshes before using it.
+const cliRefreshMargin = 5 * time.Minute
+
+// LoginExpiresAt reports when this login stops working: the later of the
+// refresh token's deadline and the moment the CLI would try to renew the
+// current access token. An access token issued just before the deadline keeps
+// the login working for up to eight more hours, and only the renewal that
+// follows it fails. ok is false when the bytes name no refresh deadline, which
+// reads as unknown rather than expired (see RefreshTokenExpired).
+func LoginExpiresAt(data []byte) (time.Time, bool) {
+	deadline, ok := RefreshTokenExpiresAt(data)
+	if !ok {
+		return time.Time{}, false
+	}
+	if accessExpiresAt, ok := CredentialExpiresAt(data); ok {
+		if renewal := time.UnixMilli(accessExpiresAt).Add(-cliRefreshMargin); renewal.After(deadline) {
+			return renewal, true
+		}
+	}
+	return deadline, true
+}
+
+// LoginExpired reports that the login has stopped working: its refresh
+// deadline has passed and the CLI would now have to renew the access token,
+// which the server refuses. Unknown deadlines answer false.
+func LoginExpired(data []byte, now time.Time) bool {
+	expiresAt, ok := LoginExpiresAt(data)
+	if !ok {
+		return false
+	}
+	return !expiresAt.After(now)
+}

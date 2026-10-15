@@ -31,12 +31,12 @@ describe('providerAccountLoginExpiry', () => {
 
   it('counts the last week down without raising the alarm', () => {
     expect(expiry(NOW + 7 * DAY)).toEqual({
-      text: 'Login expires in 7 days',
+      text: 'Login expires in 7d',
       urgent: false,
       expired: false,
     });
     expect(expiry(NOW + 4 * DAY)).toEqual({
-      text: 'Login expires in 4 days',
+      text: 'Login expires in 4d',
       urgent: false,
       expired: false,
     });
@@ -44,31 +44,31 @@ describe('providerAccountLoginExpiry', () => {
 
   it('marks the last three days urgent', () => {
     expect(expiry(NOW + 3 * DAY)).toEqual({
-      text: 'Login expires in 3 days',
+      text: 'Login expires in 3d',
       urgent: true,
       expired: false,
     });
     expect(expiry(NOW + 2 * DAY)).toEqual({
-      text: 'Login expires in 2 days',
+      text: 'Login expires in 2d',
       urgent: true,
       expired: false,
     });
   });
 
-  it('rounds a partial day up and says "day" in the singular', () => {
-    // A deadline 90 minutes out has not passed, so it cannot read "in 0 days".
+  it('states the exact remaining time', () => {
+    // 29 hours is "1d 5h", not a rounded-up "2 days".
+    expect(expiry(NOW + 29 * 60 * 60 * 1000)).toEqual({
+      text: 'Login expires in 1d 5h',
+      urgent: true,
+      expired: false,
+    });
     expect(expiry(NOW + 90 * 60 * 1000)).toEqual({
-      text: 'Login expires in 1 day',
+      text: 'Login expires in 1h 30m',
       urgent: true,
       expired: false,
     });
-    expect(expiry(NOW + DAY)).toEqual({
-      text: 'Login expires in 1 day',
-      urgent: true,
-      expired: false,
-    });
-    expect(expiry(NOW + DAY + 1)).toEqual({
-      text: 'Login expires in 2 days',
+    expect(expiry(NOW + 30_000)).toEqual({
+      text: 'Login expires in <1m',
       urgent: true,
       expired: false,
     });
@@ -89,8 +89,10 @@ describe('providerAccountLoginExpiry', () => {
     expect(providerAccountLoginExpiry(account({ refreshTokenExpiresAt: Date.now() - DAY }))).toEqual(
       { text: 'Login expired', urgent: true, expired: true },
     );
+    // The clock moves between the two Date.now() reads; the slack keeps the
+    // span from landing a second short of two days.
     expect(
-      providerAccountLoginExpiry(account({ refreshTokenExpiresAt: Date.now() + 2 * DAY })),
-    ).toEqual({ text: 'Login expires in 2 days', urgent: true, expired: false });
+      providerAccountLoginExpiry(account({ refreshTokenExpiresAt: Date.now() + 2 * DAY + 30_000 })),
+    ).toEqual({ text: 'Login expires in 2d', urgent: true, expired: false });
   });
 });
