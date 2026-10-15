@@ -15,7 +15,9 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/composerdraft"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/untrustedtext"
 	"agent-overflow/internal/usermessage"
@@ -478,15 +480,17 @@ func (a *App) noteAgentSendNotDelivered(threadID, why string) {
 // keeps its schedule, and a watch keeps the wake's own text. An outside send
 // is thrown away with a notice, as at boot, and a worker's prompt goes back
 // to the user in the worker. An answer, a reminder or a completion goes back
-// to its request or watch, as a Stop's does. Another thread's request is
-// settled by the restore that called this (settleRequestsNotTakenIn), its
-// text going nowhere. When a person's message was joined with them, the
-// person's text alone goes back to the composer.
+// to its request or watch, as a Stop's does. Another thread's request goes
+// back to its queue, owed again, when its session ended (giveBackRequest);
+// when the provider refused it with its session alive, it settles, its text
+// going nowhere. When a person's message was joined with them, the person's
+// text alone goes back to the composer.
 func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlushItem, part composerdraft.Part, reason string) (composerdraft.Part, bool, notTakenIn) {
 	wakeOutcome, sendWhy := agentWakeOutcomeSessionEnded, "the session ended before the agent took it in"
 	if reason != queueRestoredReasonSessionDied && reason != queueRestoredReasonNotDelivered {
 		wakeOutcome, sendWhy = agentWakeOutcomeNotDelivered, "the provider did not take it in"
 	}
+	sessionEnded := reason == queueRestoredReasonSessionDied || item.Discarded
 	ids := unconfirmedSendIDs(item)
 	if !slices.ContainsFunc(ids, appWrittenSendID) {
 		return part, true, notTakenIn{}
@@ -518,12 +522,24 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 			if agentAppPartRoot(id) != "" && !strings.HasPrefix(id, agentSendIDRoot) {
 				owed.messages = append(owed.messages, appMessageOutcome{sendID: id, wakeOutcome: wakeOutcome})
 			}
+			// A request's text is in the composer now; queued again, it
+			// would be sent twice.
+			if token := threadRequestSendIDToken(id); token != "" {
+				owed.unread = append(owed.unread, unreadRequest{token: token, why: requestReturnedToComposer})
+			}
 		}
 		return part, true, owed
 	}
 	for _, id := range ids {
 		if agentAppPartRoot(id) != "" {
 			owed.messages = append(owed.messages, appMessageOutcome{sendID: id, wakeOutcome: wakeOutcome, body: bodies[id], sendWhy: sendWhy})
+		}
+		if token := threadRequestSendIDToken(id); token != "" {
+			if sessionEnded {
+				owed.requests = append(owed.requests, returnedRequest{token: token, body: bodies[id]})
+			} else {
+				owed.unread = append(owed.unread, unreadRequest{token: token, why: requestReturnedUnread})
+			}
 		}
 	}
 	if person != nil {
@@ -558,13 +574,114 @@ func (a *App) returnUnsentRequests(parts []usermessage.AgentPart) notTakenIn {
 		case threadRequestSendIDToken(part.SendID) != "":
 			token := threadRequestSendIDToken(part.SendID)
 			if a.threadTools().returnRequest(token) {
-				owed.requests = append(owed.requests, returnedRequest{token: token, body: part.Text})
+				owed.requests = append(owed.requests, returnedRequest{token: token, body: part.Text, unsent: true})
 			}
 		default:
 			log.Printf("interrupt-and-revert: an agent's message %q has no owner to go back to", part.SendID)
 		}
 	}
 	return owed
+}
+
+// teardownRequests is what a teardown owes other threads' requests whose
+// messages it drops before the agent took them in: their receipts are back
+// in `accepted` before the drop, so the session's end settles none of them,
+// and once the session is closed their messages go back on the queue.
+type teardownRequests struct {
+	// queued are requests whose messages never left the queue.
+	queued []returnedRequest
+	// sent are messages the provider was handed and never took in, wholly
+	// these requests', whose timeline rows go before they are queued again.
+	sent []teardownSend
+}
+
+type teardownSend struct {
+	userItemID  string
+	queueItemID string
+	requests    []returnedRequest
+}
+
+// returnRequestsAtTeardown takes back the requests a teardown is about to
+// drop: those still queued, and those in a message the provider was handed
+// and has not taken in that holds nothing else. A message joined with a
+// person's text is the thread's history and stays as it is; the session's
+// end settles its requests. Caller holds the thread's mutation lock.
+func (a *App) returnRequestsAtTeardown(threadID string) teardownRequests {
+	var owed teardownRequests
+	tools := a.threadTools()
+	rows, err := a.store.ListFlushQueueItems(threadID)
+	if err != nil {
+		logThreadRequestSweep("list the queued requests of "+threadID, err)
+	}
+	for _, row := range rows {
+		if token := threadRequestSendIDToken(row.SendID); token != "" && tools.returnRequestNotTakenIn(threadID, token) {
+			owed.queued = append(owed.queued, returnedRequest{token: token, body: row.Message})
+		}
+	}
+	for _, item := range a.triage.UnconfirmedFlushSends(threadID) {
+		ids := unconfirmedSendIDs(item)
+		if len(ids) == 0 || slices.ContainsFunc(ids, func(id string) bool { return threadRequestSendIDToken(id) == "" }) {
+			continue
+		}
+		bodies, person, split := splitSessionEndParts(ids, unconfirmedJoinedParts(item), a.restoredFlushDraftPart(threadID, item).Content)
+		if !split || person != nil {
+			continue
+		}
+		send := teardownSend{userItemID: item.UserItemID, queueItemID: item.QueueItemID}
+		if item.QuietItem != nil {
+			send.userItemID = item.QuietItem.ID
+		}
+		for _, id := range ids {
+			token := threadRequestSendIDToken(id)
+			if tools.returnRequestNotTakenIn(threadID, token) {
+				send.requests = append(send.requests, returnedRequest{token: token, body: bodies[id]})
+			}
+		}
+		if len(send.requests) > 0 {
+			owed.sent = append(owed.sent, send)
+		}
+	}
+	return owed
+}
+
+// giveBackTeardownRequests queues again what returnRequestsAtTeardown took
+// back, once the teardown has emptied the queue. A message the provider was
+// handed loses its timeline row first, or the queue would read the request
+// as sent already. A request that cannot be queued again (its row stays,
+// the thread is archived, the write fails) settles as never read.
+func (a *App) giveBackTeardownRequests(threadID string, owed teardownRequests) {
+	requests := owed.queued
+	var userItemIDs, queueItemIDs []string
+	for _, send := range owed.sent {
+		if send.userItemID != "" {
+			if err := a.cleanupStaleFlushRow(threadID, send.userItemID); err != nil {
+				log.Printf("thread tools: remove the row of %s's dropped request message %s: %v", threadID, send.userItemID, err)
+				for _, r := range send.requests {
+					a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread)
+				}
+				continue
+			}
+			userItemIDs = append(userItemIDs, send.userItemID)
+		}
+		if send.queueItemID != "" {
+			queueItemIDs = append(queueItemIDs, send.queueItemID)
+		}
+		requests = append(requests, send.requests...)
+	}
+	if len(userItemIDs)+len(queueItemIDs) > 0 {
+		a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
+			ThreadID:     threadID,
+			Reason:       queueRestoredReasonRequestRequeued,
+			QueueItemIDs: queueItemIDs,
+			UserItemIDs:  userItemIDs,
+		})
+	}
+	for _, r := range requests {
+		if err := a.threadTools().requeueRequest(r.token, threadID, r.body); err != nil {
+			log.Printf("thread tools: give request %s back to %s after its session's end: %v", r.token, threadID, err)
+			a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread)
+		}
+	}
 }
 
 // notTakenIn is what the app-written messages of unconfirmed items are owed
@@ -576,21 +693,32 @@ type notTakenIn struct {
 	messages []appMessageOutcome
 	// owned are the answers, reminders and completions, for their owners.
 	owned []ownedMessage
-	// requests are other threads' requests a Stop un-sent, which go back to
-	// their queue.
+	// requests are other threads' requests that go back to their queue: a
+	// Stop un-sent them, or their session ended before the agent took them
+	// in.
 	requests []returnedRequest
+	// unread are other threads' requests the provider refused with the
+	// session alive, or whose text went back to the composer, which settle.
+	unread []unreadRequest
 	// rowID is the queue row of an item wholly the app's, which no composer
 	// restore retires.
 	rowID string
 }
 
-// returnedRequest is another thread's request whose message a Stop un-sent,
-// its receipt already back in `accepted` (returnRequest, before the
-// interrupt, so the turn end does not settle it): by its token, with its
-// message's text.
+// returnedRequest is another thread's request whose message goes back to its
+// queue: by its token, with its message's text. unsent marks one a Stop
+// un-sent, its receipt already back in `accepted` (returnRequest, before the
+// interrupt, so the turn end does not settle it).
 type returnedRequest struct {
+	token  string
+	body   string
+	unsent bool
+}
+
+// unreadRequest is another thread's request a restore settles, with why.
+type unreadRequest struct {
 	token string
-	body  string
+	why   string
 }
 
 // appMessageOutcome is one app-written message the agent did not take in: a
@@ -627,7 +755,14 @@ func (a *App) settleNotTakenIn(threadID string, owed []notTakenIn) {
 		}
 		owned = append(owned, item.owned...)
 		for _, r := range item.requests {
-			logThreadRequestSweep("requeue the request "+r.token, a.threadTools().requeueRequest(r.token, threadID, r.body))
+			if r.unsent {
+				logThreadRequestSweep("requeue the request "+r.token, a.threadTools().requeueRequest(r.token, threadID, r.body))
+				continue
+			}
+			a.giveBackRequest(threadID, r.token, r.body)
+		}
+		for _, r := range item.unread {
+			a.settleUndeliveredReceipt(threadID, r.token, r.why)
 		}
 	}
 	if len(owned) > 0 {
@@ -699,14 +834,23 @@ func partsNameIDs(parts []usermessage.JoinedPart, ids []string) bool {
 }
 
 // unconfirmedJoinedParts is the parts a joined item's dispatch recorded:
-// from its pending send, or from its queue payload when it was requeued.
+// from its pending send, from its queue payload when it was requeued, or
+// from its row.
 func unconfirmedJoinedParts(item triage.UnconfirmedFlushItem) []usermessage.JoinedPart {
 	if len(item.JoinedParts) > 0 {
 		return item.JoinedParts
 	}
 	var payload flushQueuePayload
-	if len(item.Payload) > 0 && json.Unmarshal(item.Payload, &payload) == nil {
+	if len(item.Payload) > 0 && json.Unmarshal(item.Payload, &payload) == nil && len(payload.JoinedParts) > 0 {
 		return payload.JoinedParts
+	}
+	for _, row := range []*store.Item{item.DeferredItem, item.QuietItem} {
+		if row == nil {
+			continue
+		}
+		if meta, err := usermessage.FromItem(*row); err == nil && len(meta.JoinedParts) > 0 {
+			return meta.JoinedParts
+		}
 	}
 	return nil
 }

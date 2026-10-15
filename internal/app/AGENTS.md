@@ -144,9 +144,10 @@ paced on the wake retry ladder (`completionRedelivery`). A message
 Claude joined from a person's text and such parts is split by the lengths
 its dispatch recorded (`usermessage.JoinedPart`), and only the person's
 text goes back (`agentPartsNotTakenIn`); another thread's request in it
-goes back to its queue, owed again (`returnRequest`). A Stop that un-sends
-such a row does the same from the parts the row records
-(`returnUnsentRequests`). What the app's messages are owed
+goes back to its queue, owed again (`giveBackRequest`), from a session
+end, and a teardown does the same before it drops the queue
+(`returnRequestsAtTeardown`). A Stop that un-sends such a row does the
+same from the parts the row records (`returnUnsentRequests`). What the app's messages are owed
 is applied once that restore commits (`settleNotTakenIn`): a restore that
 fails requeues them whole. Whether a turn was a tick
 is read from the rows of the turn that ended, because a dispatch cannot know

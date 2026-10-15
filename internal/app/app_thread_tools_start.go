@@ -669,6 +669,37 @@ func (t threadToolsApp) requestDispatched(token, targetThreadID string) {
 func (t threadToolsApp) returnRequest(token string) bool {
 	unlock := t.app.threadRequestSettleLock(token)
 	defer unlock()
+	return t.returnRequestLocked(token)
+}
+
+// returnRequestNotTakenIn is returnRequest for a message a session's end took
+// back: it reports true for a request still `accepted` (its message never
+// left the queue) or `running` on threadID with no turn and not taken in by
+// the provider, now `accepted`, and false for any other, which the session
+// end settles.
+func (t threadToolsApp) returnRequestNotTakenIn(threadID, token string) bool {
+	unlock := t.app.threadRequestSettleLock(token)
+	defer unlock()
+	receipt, found, err := t.app.store.GetThreadRequestReceipt(token)
+	if err != nil {
+		log.Printf("thread tools: return request %s: %v", token, err)
+		return false
+	}
+	if !found || receipt.TargetThreadID != threadID {
+		return false
+	}
+	switch {
+	case receipt.State == store.ThreadReceiptAccepted:
+		return true
+	case receipt.State == store.ThreadReceiptRunning && receipt.TurnID == "" && !t.app.receiptTakenIn(threadID, token):
+		return t.returnRequestLocked(token)
+	}
+	return false
+}
+
+// returnRequestLocked moves a receipt and its request back to `accepted`.
+// The caller holds the token's settle lock.
+func (t threadToolsApp) returnRequestLocked(token string) bool {
 	returned, err := t.app.store.ReturnThreadReceipt(token)
 	if err != nil {
 		log.Printf("thread tools: return request %s: %v", token, err)
@@ -687,8 +718,9 @@ func (t threadToolsApp) returnRequest(token string) bool {
 
 // requeueRequest puts a returned request's message (body, footer included)
 // back on its target's queue, attributed as dispatchRequest attributed it. It
-// is held: the Stop that gave it back does not start a turn for it, and the
-// thread's next turn boundary or session start sends it.
+// is held: the Stop or session end that gave it back does not start a turn
+// for it, and the thread's next turn boundary or session start sends it. An
+// archived thread refuses it.
 func (t threadToolsApp) requeueRequest(token, targetThreadID, body string) error {
 	receipt, found, err := t.app.store.GetThreadRequestReceipt(token)
 	if err != nil {
@@ -698,9 +730,10 @@ func (t threadToolsApp) requeueRequest(token, targetThreadID, body string) error
 		return nil
 	}
 	_, err = t.app.registerQueueItem(targetThreadID, body, SendMessageOptions{SendID: threadRequestSendID(token)}, injectedQueueOptions{
-		preserveDraft: true,
-		held:          true,
-		origin:        usermessage.OriginAgentThread,
+		preserveDraft:     true,
+		held:              true,
+		heldWhileArchived: true,
+		origin:            usermessage.OriginAgentThread,
 		originThread: &usermessage.OriginThread{
 			ComputerID:   receipt.SourceComputerID,
 			ComputerName: receipt.SourceComputerName,

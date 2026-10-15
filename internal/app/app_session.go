@@ -1305,13 +1305,16 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool)
 	// triage drops them.
 	a.drainProviderEvents(threadID, "stop session")
 	var held []ownedMessage
+	var requests teardownRequests
 	if a.triage != nil {
-		held = a.dropQueueForTeardown(threadID, mutationsHeld)
+		held, requests = a.dropQueueForTeardown(threadID, mutationsHeld)
 	}
 	// The answers and remote completions the drop held go back to their
 	// requests and watches once the session is closed, so a completion the
 	// watcher queues again starts a session only after this one is gone.
+	// Other threads' requests go back on the queue the cleanup emptied.
 	defer a.giveBackToOwners(threadID, held)
+	defer a.giveBackTeardownRequests(threadID, requests)
 	err := a.closeProviderSession(threadID, sess)
 	if err == nil && sess.Provider == string(provider.Codex) {
 		err = a.retireCodexBackgroundRuntime(threadID)
@@ -1342,7 +1345,8 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool)
 
 // dropQueueForTeardown drops the thread's queue, durable rows, dispatch
 // batches and memory, and returns the answers and remote completions it
-// held for their owners. CleanupThread DROPS the queued messages rather
+// held for their owners, and the other threads' requests it took back
+// before the agent took them in (returnRequestsAtTeardown). CleanupThread DROPS the queued messages rather
 // than restoring them (teardownDeadPreInitSession is the path that
 // restores, and it does not come through here), so their durable rows go
 // with them: a row that outlived the queue it belonged to would put the
@@ -1361,15 +1365,16 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool)
 // memory cleanup is done, durable and in memory for the next session.
 // Nothing it runs takes the thread's action lock, which some of its
 // callers do not hold.
-func (a *App) dropQueueForTeardown(threadID string, mutationsHeld bool) []ownedMessage {
+func (a *App) dropQueueForTeardown(threadID string, mutationsHeld bool) ([]ownedMessage, teardownRequests) {
 	if !mutationsHeld {
 		defer a.threadApplication().LockMutations(threadID)()
 	}
+	requests := a.returnRequestsAtTeardown(threadID)
 	held := a.dropDurableFlushQueue(threadID)
 	held = append(held, a.unconfirmedOwnedMessages(threadID, held)...)
 	a.discardFlushDispatch(threadID)
 	a.triage.CleanupThread(threadID)
-	return held
+	return held, requests
 }
 
 // unconfirmedOwnedMessages names the answers, reminders and completions

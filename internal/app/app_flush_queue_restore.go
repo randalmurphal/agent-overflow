@@ -217,9 +217,6 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 		settlement.Settle()
 	}
 	a.settleNotTakenIn(threadID, owed)
-	for _, item := range restorable {
-		a.settleRequestsNotTakenIn(threadID, unconfirmedSendIDs(item), reason)
-	}
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 
 	a.emitQueueStateChanged(threadID)
@@ -284,6 +281,11 @@ const (
 	queueRestoredReasonResendFailed = "resend_failed"
 	queueRestoredReasonNeverQueued  = "provider_queue_never_taken"
 	queueRestoredReasonPurgeAborted = "provider_queue_purge_aborted"
+	// queueRestoredReasonRequestRequeued removes the rows of other threads'
+	// requests a teardown took back before the agent took them in; their
+	// messages are queued again rather than restored to the composer
+	// (giveBackTeardownRequests).
+	queueRestoredReasonRequestRequeued = "request_requeued"
 )
 
 // restoreEagerPersistedFlushesForReason is the body, parameterised by the
@@ -354,10 +356,6 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 		}
 	}
 	a.settleNotTakenIn(threadID, owed)
-	for _, p := range restorable {
-		row := store.Item{ThreadID: threadID, ID: p.UserItemID, Meta: p.Meta}
-		a.settleRequestsNotTakenIn(threadID, unconfirmedSendIDs(triage.UnconfirmedFlushItem{QuietItem: &row}), reason)
-	}
 	a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
 		ThreadID:     threadID,
 		Reason:       reason,

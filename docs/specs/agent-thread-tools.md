@@ -958,17 +958,26 @@ turn of its own, and is never bound to an earlier one, even when the CLI
 reports it `started` inside another message's turn. When the provider
 merges a message whose own echo already opened a turn into a later one,
 the binding moves to the turn that ran the merged message and the empty
-turn is ended. A message a restore took back, or lost with a session
-that ended, before any turn read it settles `interrupted`; the answer
-says the session ended before the thread read the request, or before it
-answered it when the provider had taken it in. A session that ends
-during the turn that read the request (a stop, a death, a replacement
-start) ends that turn and settles the request `interrupted` with what
-the turn had written. The three answers are the
+turn is ended. A session that ends (a stop, a death, a replacement start,
+an idle close) before the provider took the request's message in (no
+`started`, no echo) takes it back: the request returns to `accepted` and
+its message to the thread's queue, owed again, and the next session start
+delivers it; its sender is told nothing. The session-end settlement
+leaves a message the session still holds to the restore that takes it
+back. One the queue cannot take back (an archived thread, a failed write)
+settles `interrupted` saying the session ended before the thread read
+it. One the provider had taken in settles saying it ended before the
+thread answered it, and a session that ends during the turn that read
+the request ends that turn and settles the request `interrupted` with
+what the turn had written. The three answers are the
 `threadtools.InterruptSessionEnded*` sentences, which the sender's wake
-row shows as "Stopped by: the session ended ...". A restore never puts a
-request's text in the person's composer: a message that held the
-person's text gives back that text alone. For scratch threads
+row shows as "Stopped by: the session ended ...". A message the provider
+refuses while its session lives on (Claude's `cancelled`, a failed Codex
+resend) settles the request saying the thread did not take it in. A
+restore never puts a request's text in the person's composer on its
+own: a message that held the person's text gives back that text alone,
+and one that cannot be split gives back all of it and says so in the
+request's answer. For scratch threads
 only, any non-running state counts as rest (there is no human to
 unblock one), and the thread is deleted once its answer is stored.
 

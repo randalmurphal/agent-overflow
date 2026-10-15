@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 )
 
 // The settling half: how a request stops being open, and how the answer
@@ -104,26 +105,63 @@ func (a *App) settleReceiptsForEndedTurn(threadID string) {
 // death and a replacement each end that turn as interrupted (CleanupThread,
 // handleSessionDied, EndReplacedSessionTurn), and none of those ends is a
 // frame this observer sees.
+//
+// A message the agent never took in belongs to the restore that holds it
+// (a death's, a replacement's, a teardown's), which puts it back on its
+// queue or settles it when it cannot (giveBackRequest). Every restore holds
+// the thread action lock from taking the message until its receipt is back
+// in `accepted`, and the messages still held are read under that lock, so
+// this sees either the message held or the receipt returned, never the
+// moment between.
 func (a *App) settleReceiptsForEndedSession(threadID string) {
 	tokens, ok := a.runningReceiptTokens(threadID)
 	if !ok {
 		return
 	}
+	held, err := a.heldSendIDs(threadID)
+	if err != nil {
+		log.Printf("thread tools: read what %s still holds at its session's end: %v", threadID, err)
+		return
+	}
 	for _, token := range tokens {
-		if err := a.settleReceiptOnSessionEnd(threadID, token); err != nil {
+		if err := a.settleReceiptOnSessionEnd(threadID, token, held); err != nil {
 			log.Printf("thread tools: settle request %s on %s at its session's end: %v", token, threadID, err)
 		}
 	}
 }
 
+// heldSendIDs names the messages a thread's queue, dispatch or provider
+// registry still holds, read under the thread action lock.
+func (a *App) heldSendIDs(threadID string) (map[string]bool, error) {
+	unlock, err := a.threadLocks().LockCtx(a.lifeCtx(), threadID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	held := map[string]bool{}
+	if a.triage == nil {
+		return held, nil
+	}
+	items := a.triage.UnconfirmedFlushSends(threadID)
+	for _, queued := range append(a.triage.QueuedFlushItems(threadID), a.pendingFlushDispatchItems(threadID)...) {
+		items = append(items, triage.UnconfirmedFlushItem{QueueItemID: queued.ID, Payload: queued.Payload})
+	}
+	for _, item := range items {
+		for _, id := range unconfirmedSendIDs(item) {
+			held[id] = true
+		}
+	}
+	return held, nil
+}
+
 // settleReceiptOnSessionEnd settles one running receipt for its session's
-// end. An undelivered one settles as never answered; the message itself went
-// back to the composer with the rest of the session's unconfirmed sends, or
-// was lost with a process that had already started it. A delivered one
+// end. One the provider took in with no turn open yet settles as never
+// answered. One it never took in settles as never read, unless its message
+// is still held (held) and so its restore's to give back. A delivered one
 // settles interrupted with what its turn had written by then, unless that
 // turn ended on its own first, whose end then answers it as any turn end
 // does.
-func (a *App) settleReceiptOnSessionEnd(threadID, token string) error {
+func (a *App) settleReceiptOnSessionEnd(threadID, token string, held map[string]bool) error {
 	receipt, found, err := a.store.GetThreadRequestReceipt(token)
 	if err != nil {
 		return err
@@ -132,7 +170,12 @@ func (a *App) settleReceiptOnSessionEnd(threadID, token string) error {
 		return nil
 	}
 	if receipt.TurnID == "" {
-		a.settleUndeliveredReceipt(threadID, token, a.sessionEndedUnanswered(threadID, token))
+		switch {
+		case a.receiptTakenIn(threadID, token):
+			a.settleUndeliveredReceipt(threadID, token, threadtools.InterruptSessionEndedUnanswered)
+		case !held[threadRequestSendID(token)]:
+			a.settleUndeliveredReceipt(threadID, token, threadtools.InterruptSessionEndedUnread)
+		}
 		return nil
 	}
 	index, ok := threadRequestTurnIndex(threadID, receipt.TurnID)
@@ -174,43 +217,44 @@ func (a *App) settleReceiptOnSessionEnd(threadID, token string) error {
 	})
 }
 
-// sessionEndedUnanswered is the answer of a request whose session ended
-// before any turn read its message: never read, or taken in by the provider
-// with its turn not yet open.
-func (a *App) sessionEndedUnanswered(threadID, token string) string {
-	if a.receiptTakenIn(threadID, token) {
-		return threadtools.InterruptSessionEndedUnanswered
+// giveBackRequest puts a request whose message a session's end took back
+// before the agent took it in on its queue again, owed: its receipt returns
+// to `accepted`, its sender is told nothing, and the thread's next session
+// start sends it. One the agent did take in is the session end's to settle.
+// One its queue refuses (an archived thread, a failed write) settles as
+// never read.
+func (a *App) giveBackRequest(threadID, token, body string) {
+	tools := a.threadTools()
+	if !tools.returnRequestNotTakenIn(threadID, token) {
+		return
 	}
-	return threadtools.InterruptSessionEndedUnread
-}
-
-// settleRequestsNotTakenIn settles the requests among sendIDs whose messages
-// a restore gave back to the composer before the provider delivered them.
-// Nothing will deliver them now; a person who sends the text again sends a
-// message of their own.
-func (a *App) settleRequestsNotTakenIn(threadID string, sendIDs []string, reason string) {
-	for _, sendID := range sendIDs {
-		if token, ok := strings.CutPrefix(sendID, threadRequestSendIDPrefix); ok && token != "" {
-			why := requestReturnedUnread
-			if reason == queueRestoredReasonSessionDied {
-				why = a.sessionEndedUnanswered(threadID, token)
-			}
-			a.settleUndeliveredReceipt(threadID, token, why)
-		}
+	if err := tools.requeueRequest(token, threadID, body); err != nil {
+		log.Printf("thread tools: give request %s back to %s: %v", token, threadID, err)
+		a.settleReceiptNotRead(threadID, token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread)
 	}
 }
 
-// requestReturnedUnread is the answer of a request whose message a restore
-// gave back before the provider took it in, for a reason other than the
-// session's end (threadtools.InterruptSessionEndedReasons). The person's
-// composer gets back only the person's text of a message that held it.
-const requestReturnedUnread = "The thread did not take the request in."
+// The answers of a request whose message a restore gave back, with the
+// session alive, before the provider took it in: its text went nowhere, or
+// went back to the person's composer with the person's own text it was
+// joined with and could not be told apart from.
+const (
+	requestReturnedUnread     = "The thread did not take the request in."
+	requestReturnedToComposer = "The thread did not take the request in, and its message went back to that thread's composer."
+)
 
 // settleUndeliveredReceipt settles one receipt `interrupted` if it is still
 // running with no turn. The read and the write share the token's settle
 // lock, which a delivery's binding takes too, so a delivery that lands first
 // wins and this settles nothing.
 func (a *App) settleUndeliveredReceipt(threadID, token, why string) {
+	a.settleReceiptNotRead(threadID, token, store.ThreadReceiptRunning, why)
+}
+
+// settleReceiptNotRead settles one receipt `interrupted` with why if it is
+// still in state with no turn: `running` for a message the provider was
+// handed, `accepted` for one given back to a queue that refused it.
+func (a *App) settleReceiptNotRead(threadID, token, state, why string) {
 	work, err := func() (threadSettlementWork, error) {
 		unlock := a.threadRequestSettleLock(token)
 		defer unlock()
@@ -218,10 +262,10 @@ func (a *App) settleUndeliveredReceipt(threadID, token, why string) {
 		if err != nil {
 			return threadSettlementWork{}, err
 		}
-		if !found || receipt.TargetThreadID != threadID || receipt.State != store.ThreadReceiptRunning || receipt.TurnID != "" {
+		if !found || receipt.TargetThreadID != threadID || receipt.State != state || receipt.TurnID != "" {
 			return threadSettlementWork{}, nil
 		}
-		work, _, err := a.settleThreadReceiptLocked(token, []string{store.ThreadReceiptRunning}, store.ThreadRequestSettlement{
+		work, _, err := a.settleThreadReceiptLocked(token, []string{state}, store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptInterrupted,
 			Answer:     []byte(why),
 			AnswerKind: store.ThreadAnswerError,

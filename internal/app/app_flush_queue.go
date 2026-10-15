@@ -459,6 +459,14 @@ func (a *App) pendingFlushDispatchItemsLocked(threadID string) []triage.QueuedFl
 	return out
 }
 
+// pendingFlushDispatchItems is pendingFlushDispatchItemsLocked for a caller
+// that does not hold the dispatch lock.
+func (a *App) pendingFlushDispatchItems(threadID string) []triage.QueuedFlushItem {
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	return a.pendingFlushDispatchItemsLocked(threadID)
+}
+
 // queueSnapshotForThread is the ONE queue snapshot every wire surface
 // publishes. A queued message is somewhere in the handoff chain at all
 // times — triage queue → triage claim → App dispatch batch → in-flight
