@@ -16,6 +16,10 @@ import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 import { TransportError } from '../../transport/wsClient';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
+import { replaceAllThreads } from '../../stores/threads.svelte';
+import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
+import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
@@ -46,6 +50,24 @@ describe('<PaneTitleHandle>', () => {
     const title = getByTestId('pane-title');
     expect(title.tagName.toLowerCase()).toBe('button');
     expect(title).toHaveTextContent('Defaulted');
+  });
+
+  it('names an assistant with its computer while another computer holds the same name', async () => {
+    __resetEntityIndexForTest();
+    stageBackend({ id: 'laptop', name: 'Laptop' });
+    try {
+      const here = makeThread({ id: 'here', title: 'Ops', agentId: 'a1' });
+      noteThread('here', HOME_BACKEND);
+      noteThread('there', 'laptop');
+      replaceAllThreads([here, makeThread({ id: 'there', title: 'Ops', agentId: 'a2' })]);
+      const pane = await buildPane(here);
+      const { getByTestId } = render(PaneTitleHandle, { props: { pane } });
+      await tick();
+      expect(getByTestId('pane-title').textContent?.trim()).toMatch(/^Ops-\S/);
+    } finally {
+      replaceAllThreads([]);
+      resetStagedBackends();
+    }
   });
 
   it('lets a consumer override the title/input testids', async () => {

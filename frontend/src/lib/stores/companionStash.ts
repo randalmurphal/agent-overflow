@@ -4,14 +4,15 @@
 // companions open on it are recorded here under the thread's id and taken
 // down. The next time any pane mounts that thread they reopen as they were,
 // at their widths and in their order; an agent pane keeps its scope and
-// breadcrumb, and a side chat its conversation. Closing a companion yourself
-// forgets it. Deleting or archiving the thread forgets all of them and
-// deletes any side chat still hidden with it.
+// breadcrumb, a side chat its conversation, and an agent thread companion
+// the thread it shows. Closing a companion yourself forgets it. Deleting or
+// archiving the thread forgets all of them and deletes any side chat still
+// hidden with it.
 //
 // Plan, review and agent entries persist in this client's appStorage: the
-// kinds the pane layout persists. take-control and side-chat entries live
-// for the session, as their panes do, and a side chat's thread is swept at
-// boot. Browser is never recorded: its visibility is the backend's, and
+// kinds the pane layout persists. take-control, side-chat and agent-thread
+// entries live for the session, as their panes do, and a side chat's thread
+// is swept at boot. Browser is never recorded: its visibility is the backend's, and
 // browserCompanion.svelte.ts reopens it when the thread mounts.
 
 import type { Thread } from '../types/models';
@@ -42,7 +43,7 @@ import {
   mountThreadInPane,
 } from './panes.svelte';
 import { deleteSideChatThread } from './sideChatThread';
-import { addThreadRemovedObserver } from './threads.svelte';
+import { assistantCurrentThread, addThreadRemovedObserver, getThreadById } from './threads.svelte';
 import { addErrorToast } from './toast.svelte';
 
 type StashedKind = Exclude<CompanionKind, 'browser'>;
@@ -53,14 +54,17 @@ interface StashedCompanion {
   widthPx: number;
   /** agent: the scope and breadcrumb it was showing. */
   agentScope?: AgentPaneScopeSnapshot;
-  /** side-chat: the scratch thread it hosts. */
+  /** side-chat and agent-thread: the thread it hosts. */
   thread?: Thread;
 }
 
+type HostedKind = 'side-chat' | 'agent-thread';
+
 const stashByThread = new Map<string, StashedCompanion[]>();
-// Side chats being reopened, by pane id. The pane has no thread until its
-// mount settles, and leaving again before then must still record the chat.
-const reopeningSideChats = new Map<string, Thread>();
+// Side chats and agent thread companions being reopened, by pane id. The
+// pane has no thread until its mount settles, and leaving again before then
+// must still record it.
+const reopeningHosted = new Map<string, Thread>();
 let uninstall: (() => void) | null = null;
 
 function storageKey(threadId: string): string {
@@ -112,11 +116,13 @@ function stashEntry(
       const agentScope = agentScopeForPane(companion.sourcePaneId, threadId) ?? item?.agentScope;
       return agentScope ? { kind: 'agent', widthPx, agentScope } : null;
     }
-    case 'side-chat': {
+    case 'side-chat':
+    case 'agent-thread': {
       // A side chat still being forked has no thread to keep; closing it lets
-      // openSideChat delete the fork when it lands.
-      const thread = getPane(companion.paneId)?.thread ?? reopeningSideChats.get(companion.paneId);
-      return thread ? { kind: 'side-chat', widthPx, thread } : null;
+      // openSideChat delete the fork when it lands. An agent thread companion
+      // still mounting its first thread has nothing to reopen either.
+      const thread = getPane(companion.paneId)?.thread ?? reopeningHosted.get(companion.paneId);
+      return thread ? { kind: companion.kind, widthPx, thread } : null;
     }
     default:
       return { kind: companion.kind, widthPx };
@@ -203,7 +209,8 @@ function reopenStashedCompanions(paneId: string, threadId: string): void {
         openCompanion(paneId, 'agent', placement);
         break;
       case 'side-chat':
-        if (entry.thread) void reopenSideChat(paneId, threadId, entry.thread, placement.widthPx);
+      case 'agent-thread':
+        if (entry.thread) void reopenHosted(entry.kind, paneId, threadId, entry.thread, placement.widthPx);
         break;
       default:
         openCompanion(paneId, entry.kind, placement);
@@ -211,26 +218,30 @@ function reopenStashedCompanions(paneId: string, threadId: string): void {
   }
 }
 
-async function reopenSideChat(
+async function reopenHosted(
+  kind: HostedKind,
   sourcePaneId: string,
   sourceThreadId: string,
   stashedThread: Thread,
   widthPx: number | undefined,
 ): Promise<void> {
-  // The slot opens now so the side chat keeps its place among its siblings;
+  const label = kind === 'side-chat' ? 'side chat' : 'agent thread';
+  // The slot opens now so the companion keeps its place among its siblings;
   // it shows as preparing until its thread is confirmed and mounted.
-  const companion = openCompanion(sourcePaneId, 'side-chat', { widthPx, reveal: false });
+  const companion = openCompanion(sourcePaneId, kind, { widthPx, reveal: false });
   if (!companion) {
-    void deleteSideChatThread(stashedThread.id);
+    if (kind === 'side-chat') void deleteSideChatThread(stashedThread.id);
     return;
   }
   const pane = createPane(companion.paneId);
   const stillOwnsPane = () => getPane(companion.paneId) === pane;
-  reopeningSideChats.set(companion.paneId, stashedThread);
+  reopeningHosted.set(companion.paneId, stashedThread);
   try {
     let thread: Thread;
     try {
-      thread = (await GetThread(stashedThread.id)) as Thread;
+      thread = kind === 'side-chat'
+        ? (await GetThread(stashedThread.id)) as Thread
+        : hostedAgentThread(stashedThread);
     } catch (err) {
       // Its computer restarted and swept it: there is nothing left to reopen.
       if (err instanceof TransportError && err.code === 'not_found') {
@@ -241,36 +252,48 @@ async function reopenSideChat(
       throw err;
     }
     // Left again while the read was out: the stash recorded it from
-    // reopeningSideChats.
+    // reopeningHosted.
     if (!stillOwnsPane()) return;
-    await mountThreadInPane(thread, pane, 'committed', { background: true });
+    const mounted = await mountThreadInPane(thread, pane, 'committed', { background: true });
+    // Shown in another pane meanwhile: that pane was revealed instead, and
+    // this slot has nothing to show.
+    if (mounted !== pane && stillOwnsPane()) closeCompanion(companion.paneId);
   } catch (err) {
-    console.error('Failed to reopen the side chat:', err);
-    // Keep the conversation for the next visit rather than delete it over a
+    console.error(`Failed to reopen the ${label}:`, err);
+    // Keep the conversation for the next visit rather than drop it over a
     // failed read.
     if (stillOwnsPane()) {
       hideCompanion(companion.paneId);
       const entries = stashByThread.get(sourceThreadId) ?? [];
       stashByThread.set(sourceThreadId, [
         ...entries,
-        { kind: 'side-chat', widthPx: widthPx ?? 0, thread: stashedThread },
+        { kind, widthPx: widthPx ?? 0, thread: stashedThread },
       ]);
     }
     addErrorToast(
-      `The side chat could not be reopened (${userFacingError(err)}). It will try again when you return to this thread.`,
+      `The ${label} could not be reopened (${userFacingError(err)}). It will try again when you return to this thread.`,
       err,
     );
   } finally {
-    if (reopeningSideChats.get(companion.paneId) === stashedThread) {
-      reopeningSideChats.delete(companion.paneId);
+    if (reopeningHosted.get(companion.paneId) === stashedThread) {
+      reopeningHosted.delete(companion.paneId);
     }
   }
 }
 
+// The thread an agent thread companion reopens on: the latest row this
+// client holds, and an assistant's current thread when the one it showed was
+// superseded while hidden (docs/specs/standing-agents.md, "Next thread").
+function hostedAgentThread(stashed: Thread): Thread {
+  const latest = getThreadById(stashed.id) ?? stashed;
+  const agentId = latest.pastAgentId;
+  return (agentId ? assistantCurrentThread(agentId) : null) ?? latest;
+}
+
 // A deleted or archived thread takes its companions with it: those open on a
 // pane still showing it close for good, and what was hidden for it is
-// forgotten, side chats deleted. A deleted side chat also leaves the stash of
-// the thread it was hidden with.
+// forgotten, side chats deleted. A deleted side chat or agent thread also
+// leaves the stash of the thread it was hidden with.
 function onThreadRemoved(threadId: string): void {
   for (const pane of getAllPanes().values()) {
     if (pane.threadId === threadId) closeCompanionsForSource(pane.paneId);
@@ -278,7 +301,7 @@ function onThreadRemoved(threadId: string): void {
   const entries = stashByThread.get(threadId) ?? [];
   dropStash(threadId);
   for (const entry of entries) {
-    if (entry.thread) void deleteSideChatThread(entry.thread.id);
+    if (entry.kind === 'side-chat' && entry.thread) void deleteSideChatThread(entry.thread.id);
   }
   for (const [ownerId, ownerEntries] of stashByThread) {
     const kept = ownerEntries.filter((entry) => entry.thread?.id !== threadId);
@@ -302,5 +325,5 @@ export function resetCompanionStashForTest(): void {
   uninstall?.();
   uninstall = null;
   stashByThread.clear();
-  reopeningSideChats.clear();
+  reopeningHosted.clear();
 }

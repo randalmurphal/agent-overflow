@@ -14,13 +14,23 @@ import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem }
 const navigate = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../stores/threadItemNavigation', () => ({ navigateToThreadItem: navigate }));
 const opened = vi.hoisted(() => vi.fn());
+// Both tray openers hand the resolved thread to `place`, which is the pane's
+// agent thread companion.
+type Place = (thread: { id: string }) => Promise<unknown>;
 vi.mock('../chat/agentThreadOrigin', async (importOriginal) => {
   const original = await importOriginal<typeof import('../chat/agentThreadOrigin')>();
+  const open = (origin: { threadId: string }, place?: Place) => () => {
+    opened(origin.threadId);
+    void place?.({ id: origin.threadId });
+  };
   return {
     ...original,
-    agentThreadOriginChip: (origin: { threadId: string }) => ({ label: 'chip', open: () => opened(origin.threadId) }),
+    agentThreadOriginChip: (origin: { threadId: string }, _viewer: unknown, place?: Place) => ({ label: 'chip', open: open(origin, place) }),
+    agentThreadOpener: (origin: { threadId: string }, _viewer: unknown, place?: Place) => ({ computer: '', open: open(origin, place) }),
   };
 });
+const companion = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('../../stores/agentThreadCompanion', () => ({ openAgentThreadCompanion: companion }));
 
 function row(token: string, over: Partial<ThreadAgentRow> = {}): ThreadAgentRow {
   return {
@@ -57,6 +67,7 @@ describe('the Agents segment', () => {
     setBindingMock('GetRateLimitsSnapshots', async () => []);
     navigate.mockClear();
     opened.mockClear();
+    companion.mockClear();
     stopEvents = setupEventListeners();
   });
   afterEach(() => {
@@ -116,6 +127,7 @@ describe('the Agents segment', () => {
     const rows = await view.findAllByTestId('agent-tray-row');
     await fireEvent.click(within(rows[0]).getByTestId('agent-tray-row-open'));
     expect(opened).toHaveBeenCalledWith('t-child');
+    expect(companion).toHaveBeenCalledWith(pane, { id: 't-child' });
 
     await fireEvent.click(within(rows[1]).getByTestId('agent-tray-row-open'));
     expect(navigate).toHaveBeenCalledWith(pane, pane.threadId, 'user:wake-1');
@@ -205,6 +217,7 @@ describe('the Agents segment', () => {
     expect(within(r).getByTestId('agent-incoming-row-sender').textContent).toBe('chip');
     await fireEvent.click(within(r).getByTestId('agent-incoming-row-open'));
     expect(opened).toHaveBeenCalledWith('sender');
+    expect(companion).toHaveBeenCalledWith(pane, { id: 'sender' });
     const withdraw = vi.fn(async (): Promise<ThreadAgentStop> => ({ token: 'thread-request:tok', outcome: 'stopped', incoming: true }) as ThreadAgentStop);
     setBindingMock('StopThreadAgentIncoming', withdraw);
     await fireEvent.click(within(r).getByTestId('agent-incoming-row-stop'));

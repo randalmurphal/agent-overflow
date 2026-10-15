@@ -479,20 +479,21 @@
           <!-- Every pane body sits in its own boundary: a render throw in one
                pane tears down and reports that pane alone, never the strip. -->
           <RenderBoundary label="This panel" testId="pane-render-error">
-            {#if item.kind === 'side-chat'}
-              <!-- A side chat is a companion by lifetime, not by surface: it
-                   hosts an ordinary ChatView over its own scratch thread,
-                   registered in the pane registry under this companion pane
-                   id. -->
-              {@const sideChatPane = getPane(item.paneId)}
-              {#if sideChatPane?.threadId}
-                <ChatView pane={sideChatPane} />
+            {#if item.kind === 'side-chat' || item.kind === 'agent-thread'}
+              <!-- A side chat and an agent thread companion are companions by
+                   lifetime, not by surface: each hosts an ordinary ChatView,
+                   over a side chat's own scratch thread or over the thread an
+                   Agents row went to, registered in the pane registry under
+                   this companion pane id. -->
+              {@const hostedPane = getPane(item.paneId)}
+              {#if hostedPane?.threadId}
+                <ChatView pane={hostedPane} />
               {:else}
                 <div class="flex justify-end border-b border-border-subtle p-2">
                   <PaneCloseButton paneId={item.paneId} />
                 </div>
-                <div role="status" aria-busy="true" class="flex flex-1 items-center justify-center gap-2 px-4 text-sm text-fg-muted" data-testid="side-chat-preparing">
-                  <SteppedSpinner /> Preparing side chat…
+                <div role="status" aria-busy="true" class="flex flex-1 items-center justify-center gap-2 px-4 text-sm text-fg-muted" data-testid="{item.kind}-preparing">
+                  <SteppedSpinner /> {item.kind === 'side-chat' ? 'Preparing side chat…' : 'Opening thread…'}
                 </div>
               {/if}
             {:else if item.kind === 'take-control'}

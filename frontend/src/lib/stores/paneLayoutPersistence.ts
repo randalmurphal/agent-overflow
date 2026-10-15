@@ -108,9 +108,10 @@ function isSafePersistedThreadId(threadId: string): boolean {
   return threadId.length > 0 && threadId.length <= MAX_THREAD_ID_LENGTH;
 }
 
-// Live PTY/browser surfaces and side chats are deliberately absent: none of
-// them can be restored (a side chat's scratch thread is deleted with its pane,
-// and the boot sweep deletes any a restart left behind).
+// Live PTY/browser surfaces, side chats and agent thread companions are
+// deliberately absent: none of them is restored (a side chat's scratch thread
+// is deleted with its pane, and the boot sweep deletes any a restart left
+// behind; an agent thread companion lasts the session).
 function isPersistedCompanionKind(kind: unknown): kind is PersistedCompanionKind {
   return kind === 'plan' || kind === 'review' || kind === 'agent';
 }

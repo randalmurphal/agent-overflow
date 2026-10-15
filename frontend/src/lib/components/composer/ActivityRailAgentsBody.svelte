@@ -17,10 +17,12 @@
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { navigateToThreadItem } from '../../stores/threadItemNavigation';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { Thread } from '../../types/models';
   import { errString } from '../../utils/errors';
   import { isSettledAgentRow } from '../../utils/agentTray';
   import { agentStopReport, agentStopAllReport } from '../../utils/agentTrayStops';
-  import { agentThreadOriginChip } from '../chat/agentThreadOrigin';
+  import { agentThreadOpener } from '../chat/agentThreadOrigin';
+  import { openAgentThreadCompanion } from '../../stores/agentThreadCompanion';
   import AgentTrayRow from './AgentTrayRow.svelte';
   import AgentIncomingTrayRow from './AgentIncomingTrayRow.svelte';
   import type { AgentController, IncomingAgentMessage } from './activityRailAgents.svelte';
@@ -77,9 +79,12 @@
     expanded = next;
   }
 
-  // An open row opens the thread it went to. A settled one leaves the tray
-  // and shows where its answer landed: this thread's wake item when the
-  // answer came here, otherwise that thread.
+  const placeInCompanion = (thread: Thread) => openAgentThreadCompanion(pane, thread);
+
+  // An open row opens the thread it went to in this pane's agent thread
+  // companion. A settled one leaves the tray and shows where its answer
+  // landed: this thread's wake item when the answer came here, otherwise
+  // that thread, in the companion.
   function onActivate(row: ThreadAgentRow): void {
     if (!threadId) return;
     if (isSettledAgentRow(row)) {
@@ -94,15 +99,16 @@
       addToast('info', `${row.title} has no thread yet.`);
       return;
     }
-    const chip = agentThreadOriginChip(
+    const opener = agentThreadOpener(
       { threadId: target, computerId: row.computerId ?? '', computerName: row.computer ?? '', title: row.title, token: row.token, kind: '' },
       viewer,
+      placeInCompanion,
     );
-    if (!chip.open) {
+    if (!opener.open) {
       addToast('info', `${row.title} is on ${row.computer || 'a computer'} this window is not connected to.`);
       return;
     }
-    chip.open();
+    opener.open();
   }
 
   function report(title: string, stop: ThreadAgentStop): void {
@@ -209,6 +215,7 @@
           {now}
           isStopping={stopping.has(message.item.sendId ?? '') || stopAllInFlight}
           onStop={onStopIncoming}
+          place={placeInCompanion}
         />
       </li>
     {/each}

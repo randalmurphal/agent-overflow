@@ -1,5 +1,6 @@
 // Companion pane registry + lifecycle for every pane paired to a source
-// thread pane: plan, review, browser, take-control, and side-chat.
+// thread pane: plan, review, browser, take-control, side-chat and
+// agent-thread.
 //
 // Companions are snapped immediately to the source pane's right by
 // paneLayout.svelte.ts, and they belong to the THREAD the source pane was
@@ -7,12 +8,14 @@
 // hidden, not closed: companionStash.ts remembers them for the thread and
 // reopens them when it is shown again. Only an explicit close forgets one.
 //
-// take-control renders its own raw PTY surface, and side-chat an ordinary
-// thread pane over its own scratch thread, which can have companions of its
-// own. take-control, browser and side-chat are ephemeral: browser follows a
-// live Chrome target that cannot be restored, and a side chat's thread is
-// deleted when it is closed and swept at boot. The other kinds are persisted
-// and restored by paneLayoutPersistence.ts.
+// take-control renders its own raw PTY surface; side-chat and agent-thread
+// each an ordinary thread pane, over a side chat's own scratch thread or over
+// the thread an Agents row went to, which can have companions of its own.
+// take-control, browser, side-chat and agent-thread are ephemeral: browser
+// follows a live Chrome target that cannot be restored, a side chat's thread
+// is deleted when it is closed and swept at boot, and an agent thread
+// companion lasts the session. The other kinds are persisted and restored by
+// paneLayoutPersistence.ts.
 
 import {
   addPaneLayoutItem,
@@ -36,26 +39,28 @@ import { deleteSideChatThread } from './sideChatThread';
 
 export type CompanionKind = CompanionPaneKind;
 /**
- * The kinds CompanionPane hosts as panel bodies. take-control and side-chat
- * render whole surfaces of their own through PaneHost's dedicated branches.
+ * The kinds CompanionPane hosts as panel bodies. take-control, side-chat and
+ * agent-thread render whole surfaces of their own through PaneHost's
+ * dedicated branches.
  */
-export type CompanionPanelKind = Exclude<CompanionKind, 'take-control' | 'side-chat'>;
+export type CompanionPanelKind = Exclude<CompanionKind, 'take-control' | 'side-chat' | 'agent-thread'>;
 export type PersistedCompanionKind = Exclude<
   CompanionKind,
-  'take-control' | 'browser' | 'side-chat'
+  'take-control' | 'browser' | 'side-chat' | 'agent-thread'
 >;
 
 function isEphemeralCompanionKind(kind: CompanionKind): boolean {
-  return kind === 'take-control' || kind === 'browser' || kind === 'side-chat';
+  return kind === 'take-control' || kind === 'browser' || kind === 'side-chat' || kind === 'agent-thread';
 }
 
 /**
- * A side chat is the one companion that owns a ThreadPane of its own (the
- * registry entry under its companion pane id), so its close goes through
- * destroyPane and takes its scratch thread with it.
+ * A side chat and an agent thread companion own a ThreadPane each (the
+ * registry entry under the companion pane id), so their take-down goes
+ * through destroyPane. Only a side chat's close takes its thread with it:
+ * an agent thread companion shows a thread that lives on without it.
  */
 function isThreadHostingCompanionKind(kind: CompanionKind): boolean {
-  return kind === 'side-chat';
+  return kind === 'side-chat' || kind === 'agent-thread';
 }
 
 export interface CompanionPaneState {
@@ -175,7 +180,9 @@ export function openCompanion(
 
 /**
  * Close a companion for good: a side chat's thread is deleted, and so is
- * anything the side chat itself had open.
+ * anything the side chat itself had open. An agent thread companion's thread
+ * stays, with what it had open remembered for it like any pane leaving a
+ * thread.
  */
 export function closeCompanion(paneId: string): void {
   takeDownCompanion(paneId, 'close');
@@ -199,7 +206,8 @@ function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
   // one pane, and closing the one on screen must bring its thread back
   // rather than glide to whichever sibling companion is left.
   const wasOnScreen = isCompactLayout() && onScreenCompactPaneId() === paneId;
-  if (isThreadHostingCompanionKind(state.kind) && mode === 'close') {
+  const deletesThread = state.kind === 'side-chat' && mode === 'close';
+  if (deletesThread) {
     // First, while the side chat still exists: its own companions close
     // with it rather than being remembered for a thread about to be deleted.
     closeCompanionsForSource(paneId);
@@ -210,7 +218,7 @@ function takeDownCompanion(paneId: string, mode: 'close' | 'hide'): void {
     // item itself.
     const threadId = getPane(paneId)?.threadId ?? '';
     destroyPane(paneId);
-    if (mode === 'close') void deleteSideChatThread(threadId);
+    if (deletesThread) void deleteSideChatThread(threadId);
   } else {
     removePaneLayoutItem(paneId, { persist: !isEphemeralCompanionKind(state.kind) });
   }
@@ -285,9 +293,10 @@ export function closeCompanionsForSource(sourcePaneId: string): void {
   for (const paneId of paneIds) closeCompanion(paneId);
 }
 
-// Source panes and side chats both arrive here: a side chat IS a ThreadPane,
-// so destroyPane can name one directly (its thread was deleted elsewhere, or
-// Keep replaced the pane). Dropping its registration first keeps a stale
+// Source panes and thread-hosting companions both arrive here: a side chat or
+// an agent thread companion IS a ThreadPane, so destroyPane can name one
+// directly (its thread was deleted elsewhere, Keep or Open as Pane replaced
+// the pane, or a handoff found the successor already shown). Dropping its registration first keeps a stale
 // entry out of the registry; the cascade below is then the ordinary
 // source-pane case.
 function onPaneDestroyed(destroyedPaneId: string): void {

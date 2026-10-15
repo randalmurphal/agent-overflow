@@ -2,7 +2,8 @@
   // An incoming row of the activity rail's Agents body: a message another
   // thread's agent, a wake or a worker queued for this thread, while it is
   // held in the queue. It names the sender and the
-  // kind; clicking it opens the sending thread; Stop withdraws it from the
+  // kind; clicking it opens the sending thread in the pane's agent thread
+  // companion; Stop withdraws it from the
   // queue, and its sender is told (StopThreadAgentIncoming).
   import type { BackendKey } from '../../transport/backendKey';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
@@ -14,6 +15,7 @@
   } from '../../utils/userMessageMeta';
   import { agentThreadOriginChip } from '../chat/agentThreadOrigin';
   import type { IncomingAgentMessage } from './activityRailAgents.svelte';
+  import type { Thread } from '../../types/models';
   import Icon from '../primitives/Icon.svelte';
   import Inbox from '@lucide/svelte/icons/inbox';
 
@@ -25,12 +27,14 @@
     now: number;
     isStopping: boolean;
     onStop: (message: IncomingAgentMessage) => void;
+    /** Where the sending thread opens. */
+    place: (thread: Thread) => Promise<unknown>;
   }
 
-  let { message, viewer, now, isStopping, onStop }: Props = $props();
+  let { message, viewer, now, isStopping, onStop, place }: Props = $props();
 
   let originThread = $derived(userMessageOriginThread(message.item));
-  let chip = $derived(originThread ? agentThreadOriginChip(originThread, viewer) : null);
+  let chip = $derived(originThread ? agentThreadOriginChip(originThread, viewer, place) : null);
   let sender = $derived.by(() => {
     if (chip) return chip.label;
     const wake = userMessageOriginWake(message.item);

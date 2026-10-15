@@ -20,6 +20,7 @@
   import PaneHeaderLine from '../panes/PaneHeaderLine.svelte';
   import PaneCloseButton from '../panes/PaneCloseButton.svelte';
   import SideChatKeepButton from '../panes/SideChatKeepButton.svelte';
+  import AgentThreadOpenAsPaneButton from '../panes/AgentThreadOpenAsPaneButton.svelte';
   import ThreadTitleRegenerateButton from './ThreadTitleRegenerateButton.svelte';
   import ChatHeaderActions from './ChatHeaderActions.svelte';
   import ChatHeaderProject from './ChatHeaderProject.svelte';
@@ -61,6 +62,7 @@
           inputTestId="chat-header-title-input"
         />
         <SideChatKeepButton {pane} />
+        <AgentThreadOpenAsPaneButton {pane} />
         <ChatHeaderActions {pane} />
       </div>
       <ChatHeaderFactsLine {pane} />
@@ -77,6 +79,7 @@
       />
       <ThreadTitleRegenerateButton {pane} />
       <SideChatKeepButton {pane} />
+      <AgentThreadOpenAsPaneButton {pane} />
       <PaneCloseButton paneId={pane.paneId} testId="pane-close" />
       <ChatHeaderActions {pane} />
     {/if}

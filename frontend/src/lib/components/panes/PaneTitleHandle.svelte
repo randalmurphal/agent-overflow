@@ -19,6 +19,7 @@
   } from '../../stores/paneTitleRename';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { assistantDisplayName } from '../../stores/assistants.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -126,7 +127,7 @@
   // on the left alone. Measured on scroll, on resize and on a title change.
   const FADE_PX = 24;
   let scrollerEl: HTMLElement | undefined = $state(undefined);
-  const titleText = $derived(pane.thread?.title ?? '');
+  const titleText = $derived(pane.thread ? assistantDisplayName(pane.thread) : '');
 
   function updateFade(): void {
     const el = scrollerEl;
@@ -195,7 +196,7 @@
       draggable={onPaneDragStart != null && !isCompactLayout()}
       ondragstart={(event) => onPaneDragStart?.(event)}
       data-testid={titleTestId}
-      title={`${pane.thread.title} (right-click to rename)`}
+      title={`${titleText} (right-click to rename)`}
       class={[
         'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 compact:py-1.5 compact:select-none rounded-[var(--radius-field)] text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
         fade ? 'flex-1 overflow-hidden' : 'truncate',
@@ -208,9 +209,9 @@
           onscroll={updateFade}
           class="pane-title-fade block overflow-x-auto overflow-y-hidden whitespace-nowrap"
           data-testid="{titleTestId}-scroller"
-        >{pane.thread.title}</span>
+        >{titleText}</span>
       {:else}
-        {pane.thread.title}
+        {titleText}
       {/if}
     </button>
   {/if}

@@ -939,7 +939,8 @@ closes up their spacing so the row holds at a phone width.
   not come back when the pane returns.
 - **Incoming.** Messages other threads' agents, wakes and workers queued
   for this thread are rows too, labelled incoming with the sender and the
-  kind (request, reply, wake, question), until they leave the queue. A
+  kind (request, reply, wake, question), until they leave the queue.
+  Clicking one opens the sending thread in the companion pane below. A
   live session takes a queued message at once, so one waits while the
   thread has no session that can take it: its start is pending or failed.
   They are the queued messages the backend marks an agent's
@@ -1011,7 +1012,8 @@ A row's thread opens in a companion pane of kind `agent-thread` beside
 the pane whose Agents segment it came from, the way the subagent pane
 opens beside its thread ([agent visibility](agent-visibility.md)).
 Clicking another row swaps the thread in the same pane; a source pane
-has at most one. The pane is an ordinary thread view of that thread: its
+has at most one. A companion that fails to open its first thread closes
+with a toast. The pane is an ordinary thread view of that thread: its
 own timeline, its own composer and its own Stop, which interrupts only
 that thread, while the row's Stop keeps its cascade. Its header shows
 the thread's title, or the assistant's name with the clash suffix for an

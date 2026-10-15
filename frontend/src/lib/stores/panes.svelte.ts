@@ -619,7 +619,7 @@ async function replaceThreadInPane(
   if (!requested) {
     throw new Error(`Target pane "${targetPane}" is not registered.`);
   }
-  const target = threadHostPane(requested);
+  const target = mountOptions.inPlace ? requested : threadHostPane(requested);
   reportDuplicateMount(thread.id, target.paneId);
   if (!panes.has(target.paneId)) {
     registerPane(target.paneId, target, activation);
@@ -687,6 +687,12 @@ export interface MountThreadOptions {
    * look at.
    */
   background?: boolean;
+  /**
+   * Mount into the target pane even when it is a companion already holding
+   * a thread, which otherwise sends the open to its source pane
+   * (`threadHostPane`). The agent thread companion's swap to another row.
+   */
+  inPlace?: boolean;
 }
 
 /**
@@ -739,7 +745,7 @@ export function moveAssistantPanes(oldThreadId: string, current: Thread): void {
       destroyPane(pane.paneId);
       continue;
     }
-    void replaceThreadInPane(current, pane, getPaneActivation(pane.paneId), { background: true }).catch((err: unknown) => {
+    void replaceThreadInPane(current, pane, getPaneActivation(pane.paneId), { background: true, inPlace: true }).catch((err: unknown) => {
       console.error('Failed to move a pane to the assistant\'s new thread:', err);
       pane.setGeneralError('This assistant moved to a new thread, which could not be opened here.', err);
     });
