@@ -209,7 +209,7 @@ refusal is the call's error.
 ### `thread_show` (Q4)
 
 Reads one thread. Its result names the thread with the same
-`standing_agent` and `spawned_by` a `thread_search` row carries. Everything the database holds for it is reachable;
+`assistant` and `spawned_by` a `thread_search` row carries. Everything the database holds for it is reachable;
 the agent decides how much comes back per call and whether it comes
 back inline or as a file.
 

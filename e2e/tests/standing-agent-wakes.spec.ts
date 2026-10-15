@@ -19,10 +19,11 @@
 // and approval delivered to the standing agent that spawned it, answered
 // with thread_reply, and settled by the user answering in the worker; a
 // worker's approval or question handed back to the user, and notified, when
-// its agent's session died before taking it in; archive, delete, demote and
-// a move stopping loops and watches with the watch's processes gone, and a
-// long-running watch started again at boot; a wake capped at 64 KiB and a
-// watch run stopped at its timeout; a failed tick notifying, and
+// its agent's session died before taking it in; archive, delete and a move
+// stopping loops and watches with the watch's processes gone, New Thread,
+// Same Assistant moving them, and a long-running watch started again at
+// boot; a wake capped at 64 KiB and a watch run stopped at its timeout; a
+// failed tick notifying, and
 // notify_on_tick making a tick notify; wakes and outside sends queued at
 // quit recorded at boot, not put in the composer; a Claude wake flushed
 // mid-turn counted as a tick only when it runs as its own turn; a wake and
@@ -1227,9 +1228,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
   });
 }
 
-// Archive, delete and demote stop what they cancel: the rows say so and the
-// watch's whole process group is gone, the script and the child it started.
-// Demote cancels watches only; a loop is any thread's to keep. A graceful
+// Archive and delete stop what they cancel: the rows say so and the watch's
+// whole process group is gone, the script and the child it started. New
+// Thread, Same Assistant moves the loop and the watch to the successor,
+// where the watch runs again. A graceful
 // restart stops a long-running watch and the next boot starts it again
 // from scratch. A thread send to an archived thread is refused.
 const HOLD_SCRIPT = `echo $$ >> "$AO_AGENT_HOME/hold.pids"
