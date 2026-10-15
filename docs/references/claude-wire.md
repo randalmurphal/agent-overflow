@@ -1459,19 +1459,30 @@ timings. Writes are the client's stdin writes; `queued` acks are left out.
   mid-loop drained message's `completed` precedes it.
 
 What these orders mean for the delivery code in
-`internal/triage/send_delivery.go`:
+`internal/triage/send_delivery.go`, each checked by a replay of its
+fixture through the parser and router (`send_delivery_capture_test.go`,
+`TestReplayQueued<Fixture>20261015`):
 
-- `deliveryFloor`: in the deferred-pair case echo B opens B's own turn
-  before `started` B arrives, so the echo, not `started`, delivers B; the
-  floor only matters for a `started` that comes first, which 2.1.284 does
-  not write for a mid-loop drain.
-- `openQueuedEchoTurn` releasing a waiting delivery: in the cascade case
-  the echo is the first signal and is delivered into the turn it opens;
-  no delivery waits.
-- Merge-fold rebind (`SendDelivery.Rebind`): the captured order is the
-  init branch, for members written during a running turn and during a
-  cascade round. The no-init branch handles an order 2.1.284 does not
-  write.
+- A mid-loop drain is delivered by its echo, which opens the message's own
+  turn (`openQueuedEchoTurn`) when the message was deferred; its `started`
+  finds the delivery already reported. Midloop after cascade, deferred pair.
+- `deliveryFloor` decides the boundary merge of deferred members: `started`
+  B arrives while the turn A's merged-away echo opened is still open, and
+  the floor holds B for its own turn. Merge after cascade.
+- A turn start releases deliveries a `started` left waiting: the members of
+  a merge after a running turn, the held second of an idle pair. Boundary
+  merge, idle pair split.
+- Merge-fold rebind (`SendDelivery.Rebind`) moves A from the turn its
+  merged-away echo opened to the survivor's, with the init before the
+  survivor's echo. Merge after cascade.
+
+Two orders triage handles were not observed on 2.1.284. If a later CLI
+writes one of them, these tests already cover it:
+
+| Order not observed | Covering tests |
+|---|---|
+| `started` before the echo on a mid-loop drain | triage `TestSendDeliveryStartedBeforeAMidLoopEchoIsTheTurnTheEchoOpens`, `TestSendDeliveryOfASecondDeferredSendIsItsOwnTurn`, `TestSendDeliveryOfThreeDeferredSendsWaitsForEachOwnTurn`, `TestSendDeliveryOfADeferredSendBehindAPersonsMessageIsItsOwnTurn`; app `TestARequestDrainedAfterACascadeSettlesWithTheTurnItsEchoOpened`, `TestASecondDeferredRequestSettlesWithItsOwnTurn` |
+| A boundary merge with no `system/init` before the survivor's echo | triage `TestAMergeFoldedMemberEchoedIntoATurnOfItsOwnMovesToTheSurvivorsTurn/no_init`; app `TestAMergeFoldedRequestEchoedIntoATurnOfItsOwnSettlesWithTheSurvivor/no_init` |
 
 ### ⚠ The `priority` field is known and deliberately unused
 

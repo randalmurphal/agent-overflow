@@ -42,7 +42,9 @@ control channel aligned with verified provider behavior.
   off the frames it wrote (`codex_terminals.go`) and answers
   `thread/backgroundTerminals/list`, `terminate` and `clean` with the
   captured responses and kill frames. A scenario announces a terminal with its
-  `item/started` and never scripts the kill.
+  `item/started` and never scripts the kill. `clean` writes its kill frames in
+  the order the terminals started; upstream drains a hash map, so the real
+  order is unspecified.
 - Scope completion and buffered advances to a turn. An advance must never cross
   into the next turn; interruption discards remaining steps and advances.
 - Claude emits `system/init` and replay user echo once per received user turn.
