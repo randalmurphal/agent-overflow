@@ -7,6 +7,7 @@ import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks } from './mocks/bindings-app';
 import { resetPanesForTest } from '../lib/stores/panes.svelte';
+import { __observeThreadPanesForTest } from '../lib/stores/thread.svelte';
 import { __resetAgentPaneStateForTest } from '../lib/stores/agentPane.svelte';
 import { resetThreadsForTest } from '../lib/stores/threads.svelte';
 import { resetToastsForTest } from '../lib/stores/toast.svelte';
@@ -223,6 +224,11 @@ if (typeof globalThis.window !== 'undefined') {
   });
 }
 
+// Every pane a test creates, its replica write-back dropped after it
+// (afterEach below).
+const createdPanes: Array<{ __cancelReplicaWriteBackForTest(): void }> = [];
+__observeThreadPanesForTest((pane) => createdPanes.push(pane));
+
 beforeEach(() => {
   // The unit suite has no transport, so the wsClient's module-load snapshot
   // is `disconnected` — a state no test means to exercise, and one that
@@ -259,6 +265,10 @@ afterEach(() => {
   // session in module state, saved at unmount. Clear them after cleanup
   // so a jump in one test does not restore into the next test's mount.
   resetReviewScrollPositionsForTest();
+  // A pane's replica write-back fires 2s after its sync, into whatever
+  // replica the next test opened. Drop it for every pane the test created,
+  // registered or not.
+  for (const pane of createdPanes.splice(0)) pane.__cancelReplicaWriteBackForTest();
   // Panes built through helpers/chat.ts#buildPane register here and hold
   // timers against their thread (the replica write-back). Clear them
   // while the binding mocks they would call are still installed.

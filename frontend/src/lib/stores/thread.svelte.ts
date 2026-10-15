@@ -112,6 +112,21 @@ export type {
   PreserveViewportBottomOptions,
 } from './threadPaneShared';
 
+/** What the shared test teardown needs of a pane a test left behind. */
+interface PaneTeardownForTest {
+  __cancelReplicaWriteBackForTest(): void;
+}
+
+// Test-only: told of every pane created, so the shared test teardown can
+// stop the work a pane a test leaves behind would still do. Null outside
+// tests.
+let paneCreatedObserver: ((pane: PaneTeardownForTest) => void) | null = null;
+
+/** Test-only: observe every pane `createThreadPane` creates; null stops. */
+export function __observeThreadPanesForTest(observer: ((pane: PaneTeardownForTest) => void) | null): void {
+  paneCreatedObserver = observer;
+}
+
 /**
  * Creates a self-contained thread pane state instance.
  * Each pane tracks its own thread, unified timeline items, approvals,
@@ -735,7 +750,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     switchGeneration++;
   }
 
-  return {
+  const pane = {
     // --- Getters (reactive reads) ---
     get paneId() {
       return paneId;
@@ -1287,6 +1302,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return switchLoad.getLiveTouchedDuringSync() !== null;
     },
 
+    /**
+     * Test-only: drop the pending replica write-back. A pane a test leaves
+     * behind would otherwise write its window into a later test's replica
+     * when the timer fires. Not part of the production surface.
+     */
+    __cancelReplicaWriteBackForTest(): void {
+      switchLoad.cancelReplicaWriteBack();
+    },
+
     /** Append a streaming text delta to a loaded row. See threadItemStreamApply.ts. */
     applyItemDelta(evt: ItemDeltaEvent): void {
       itemStream.applyItemDelta(evt);
@@ -1682,6 +1706,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
   };
+  paneCreatedObserver?.(pane);
+  return pane;
 }
 
 export type ThreadPane = ReturnType<typeof createThreadPane>;

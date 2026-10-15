@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
-import { render, waitFor } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import '../../../app.css';
 import ProjectThreadList from './ProjectThreadList.svelte';
@@ -37,12 +37,23 @@ function row(container: HTMLElement, id: string): HTMLElement {
   return element;
 }
 
+// Settled once a full frame passes with no finite animation running. An
+// animation's finish handler runs in the frame after it finishes, and
+// Svelte's transitions act there: the zero-length lead animation's handler
+// starts the real one, and an exit transition's removes its element. So a
+// check between a finish and its frame sees nothing running while the DOM
+// is still about to change.
 async function settled(container: HTMLElement): Promise<void> {
   await tick();
-  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-  await waitFor(() => expect(container.getAnimations({ subtree: true }).filter(a =>
-    a.playState === 'running' && a.effect?.getComputedTiming().endTime !== Infinity,
-  )).toHaveLength(0));
+  for (;;) {
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    await tick();
+    const running = container.getAnimations({ subtree: true }).filter(a =>
+      a.playState === 'running' && a.effect?.getComputedTiming().endTime !== Infinity,
+    );
+    if (running.length === 0) return;
+    await Promise.all(running.map(a => a.finished.catch(() => undefined)));
+  }
 }
 
 async function sampleFocusedRow(container: HTMLElement, id: string, duration: number): Promise<void> {

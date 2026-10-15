@@ -245,6 +245,7 @@ export function createAgentScopeView(
     get removeItemsFromTurn() { return sourcePane.removeItemsFromTurn; },
     get removeRevertedItems() { return sourcePane.removeRevertedItems; },
     get __syncLedgerArmedForTest() { return sourcePane.__syncLedgerArmedForTest; },
+    get __cancelReplicaWriteBackForTest() { return sourcePane.__cancelReplicaWriteBackForTest; },
     get applyItemDelta() { return sourcePane.applyItemDelta; },
     get applyItemMeta() { return sourcePane.applyItemMeta; },
     get applyItemPatch() { return sourcePane.applyItemPatch; },
