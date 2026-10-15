@@ -619,15 +619,14 @@ func (a *App) runningWorkflowThreads(itemID string) ([]string, error) {
 		if err != nil {
 			return fmt.Errorf("read workflow run %s phases: %w", id, err)
 		}
-		current := store.WorkItemPhase{}
+		// The attempt the run is in is the one still running; GetWorkItem
+		// does not carry the current phase.
 		for _, phase := range phases {
-			if phase.PhaseID == item.CurrentPhaseID && phase.Attempt > current.Attempt {
-				current = phase
+			if phase.Status != "running" {
+				continue
 			}
-		}
-		if current.Attempt > 0 {
-			add(current.ThreadID)
-			units, err := a.store.ListWorkItemPhaseUnits(id, current.PhaseID, current.Attempt)
+			add(phase.ThreadID)
+			units, err := a.store.ListWorkItemPhaseUnits(id, phase.PhaseID, phase.Attempt)
 			if err != nil {
 				return fmt.Errorf("read workflow run %s units: %w", id, err)
 			}

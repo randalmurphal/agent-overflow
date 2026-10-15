@@ -4,17 +4,20 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/agenthome"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 
 	"github.com/google/uuid"
@@ -380,5 +383,72 @@ func TestAssistantRowsAreAnnouncedUnderWorkAdmission(t *testing.T) {
 		if reason, found := announced[id]; !found || reason == "" {
 			t.Errorf("row %s announced=%v outside a work admission", id, found)
 		}
+	}
+}
+
+// A name in use is refused with the code the inline editors branch on, naming
+// the assistant that holds it, from creation and from a rename alike; the
+// refused rename leaves the title as it was.
+func TestATakenAssistantNameIsRefusedWithItsCode(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	f.mockClaude(t, "Ready.")
+	ops, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectID: f.caller.ProjectID, Name: "Ops"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scout, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectID: f.caller.ProjectID, Name: "Scout"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMessage := `The assistant "Ops" already has that name; names are unique on this computer.`
+	_, err = f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectID: f.caller.ProjectID, Name: "ops"})
+	if code, message, ok := errorsx.PublicDetails(err); !ok || code != transport.ErrCodeAssistantNameTaken || message != wantMessage {
+		t.Fatalf("creation refusal = %q %q %v (%v)", code, message, ok, err)
+	}
+	err = f.app.RenameThread(scout.ID, " OPS ")
+	if code, message, ok := errorsx.PublicDetails(err); !ok || code != transport.ErrCodeAssistantNameTaken || message != wantMessage {
+		t.Fatalf("rename refusal = %q %q %v (%v)", code, message, ok, err)
+	}
+	row, err := f.app.store.GetThread(scout.ID)
+	if err != nil || row.Title != "Scout" {
+		t.Fatalf("refused rename left title %q (%v)", row.Title, err)
+	}
+	if ops.ID == scout.ID {
+		t.Fatal("two assistants share a thread")
+	}
+}
+
+// Deleting a project deletes its assistants with their homes, so its delete
+// preview names each one and its home folder; another project's list is empty.
+func TestProjectDeletionPreviewNamesTheProjectsAssistants(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	f.mockClaude(t, "Ready.")
+	thread, err := f.app.CreateAssistant(t.Context(), CreateAssistantOptions{ProjectID: f.caller.ProjectID, Name: "Ops"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, _, err := f.app.store.GetStandingAgent(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := f.app.ProjectDeletionPreview(f.caller.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []ProjectDeletionAssistant{{Name: "Ops", Home: agent.Home}}; !reflect.DeepEqual(preview.Assistants, want) {
+		t.Fatalf("assistants = %+v, want %+v", preview.Assistants, want)
+	}
+	other, err := f.app.CreateProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err = f.app.ProjectDeletionPreview(other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Assistants == nil || len(preview.Assistants) != 0 {
+		t.Fatalf("another project's assistants = %#v, want an empty list", preview.Assistants)
 	}
 }
