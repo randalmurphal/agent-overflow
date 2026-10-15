@@ -53,6 +53,8 @@
     onSendWithoutPlanComments?: () => void;
     onSendInNewThread?: () => void;
     onInterrupt: () => void;
+    /** Set on an assistant's current thread: End Session beside Interrupt. */
+    onEndSession?: () => void;
     hideSendButton?: boolean;
   }
 
@@ -70,6 +72,7 @@
     onSendWithoutPlanComments,
     onSendInNewThread,
     onInterrupt,
+    onEndSession,
     hideSendButton = false,
   }: Props = $props();
   let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
@@ -245,6 +248,7 @@
         {onSendWithoutPlanComments}
         {onSendInNewThread}
         {onInterrupt}
+        {onEndSession}
       />
     {/if}
   </div>

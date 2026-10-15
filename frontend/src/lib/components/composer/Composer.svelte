@@ -41,6 +41,7 @@
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
   import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
+  import { endThreadSession } from '../../stores/assistants.svelte';
   import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
   import {
     DeleteEmptyDraftThread,
@@ -784,6 +785,11 @@
     }
   }
 
+  function endSession() {
+    const thread = pane.thread;
+    if (thread) void endThreadSession(thread);
+  }
+
   function resetTextareaHeight() {
     surface?.resetInputHeight();
   }
@@ -1105,6 +1111,7 @@
       onSendWithoutPlanComments={(hasDraftPlanComments || hasDraftDiffReviewComments) && hasDraftContent ? () => send(false) : undefined}
       onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}
       onInterrupt={interrupt}
+      onEndSession={pane.thread?.agentId ? endSession : undefined}
     />
     <ComposerWorkspaceStrip {pane} />
   </div>

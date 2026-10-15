@@ -425,6 +425,22 @@ describe('<Composer>', () => {
     });
   });
 
+  it('ends an assistant thread\'s session from the session menu, and offers none on an ordinary thread', async () => {
+    const stop = setBindingMock('StopSession', vi.fn(async () => {}));
+    const pane = await buildPane(makeTestThread({ agentId: 'agent-1' }));
+    const draft = await buildDraft();
+    const view = render(Composer, { props: { pane, draft } });
+
+    await fireEvent.click(view.getByTestId('composer-session-menu'));
+    await fireEvent.click(await view.findByRole('menuitem', { name: 'End Session' }));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith('thread-1'));
+    view.unmount();
+
+    const plain = await buildPane(makeTestThread({}));
+    const plainView = render(Composer, { props: { pane: plain, draft: await buildDraft() } });
+    expect(plainView.queryByTestId('composer-session-menu')).toBeNull();
+  });
+
   it('uploads a pasted image on a claude thread (control for the claude-tui gate)', async () => {
     const pane = await buildPane(makeTestThread({ provider: 'claude' }));
     const draft = await buildDraft();

@@ -1033,9 +1033,10 @@ Stop it offers two actions: Interrupt (`InterruptTurn`), which stops the
 turn and keeps the session, and End Session (`StopSession`), which ends
 the provider process with its background agents and shells. The
 composer's Stop is Interrupt with a menu beside it holding both; the
-working indicator's Stop is Interrupt; End Session stays in that menu
-while a session is live and no turn runs, since an idle session can
-still hold background work. A workflow run's Pause is Interrupt for its
+working indicator's Stop is Interrupt; the menu stays beside Send while
+no turn runs, with Interrupt disabled and End Session available, since
+an idle session can still hold background work. End Session on a thread
+with no session does nothing. A workflow run's Pause is Interrupt for its
 members (it keeps their sessions, as it did); Pause and End Sessions
 also ends the session of every member it paused, and Resume starts them
 again on the same provider threads. The Agents row's Stop is unchanged.

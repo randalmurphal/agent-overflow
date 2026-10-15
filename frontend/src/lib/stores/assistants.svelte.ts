@@ -3,9 +3,12 @@
 // the editors branch on. Deleting an assistant's current thread deletes the
 // assistant and removes its home folder ("Deletion, archive and transfer"):
 // every confirmation of such a delete names the folder, and the delete is
-// always confirmed, whatever the confirmDelete setting says.
+// always confirmed, whatever the confirmDelete setting says. End Session is
+// an assistant thread's own action beside Interrupt ("Interrupt and end
+// session").
 
-import { GetStandingAgent } from './bindings';
+import { GetStandingAgent, StopSession } from './bindings';
+import { addErrorToast } from './toast.svelte';
 import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
 import { getThreads } from './threads.svelte';
 import { getSettings } from './settings.svelte';
@@ -16,6 +19,20 @@ import type { Thread } from '../types/models';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
 import { TransportError } from '../transport/wsClient';
+
+/**
+ * End Session: end the thread's provider process with its background agents
+ * and shells. A thread with no session is left as it is. Routed by the
+ * thread id to the computer that owns it.
+ */
+export async function endThreadSession(thread: Pick<Thread, 'id' | 'title'>): Promise<void> {
+  try {
+    await StopSession(thread.id);
+  } catch (err) {
+    console.error('Failed to end the session:', err);
+    addErrorToast(`Could not end the session of ${thread.title || 'this thread'}: ${userFacingError(err)}`, err);
+  }
+}
 
 /** A name another assistant on the computer holds; the message names it. */
 export function isAssistantNameTaken(err: unknown): err is TransportError {
