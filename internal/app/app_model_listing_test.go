@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,6 +151,15 @@ func TestStartupClaudeProbeRetriesUntilTheModelListArrives(t *testing.T) {
 	t.Cleanup(func() { claudeStartupProbeBackoff = previous })
 
 	app := newTestAppWithStore(t)
+	// A failed attempt must not emit provider:status: the frontend drops its
+	// cached model list on every provider-wide status frame, so a retry
+	// that emitted would blank the picker on each tick.
+	var statuses atomic.Int32
+	app.testEmitHook = func(name string, _ any) {
+		if name == "provider:status" {
+			statuses.Add(1)
+		}
+	}
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "claude")
 	attempts := filepath.Join(dir, "attempts")
@@ -176,6 +186,9 @@ func TestStartupClaudeProbeRetriesUntilTheModelListArrives(t *testing.T) {
 	}
 	if n := strings.Count(string(data), "x"); n != 3 {
 		t.Fatalf("probe ran %d times, want 3 (two failures, one success)", n)
+	}
+	if n := statuses.Load(); n != 0 {
+		t.Fatalf("failed probe attempts emitted %d provider:status frames, want none", n)
 	}
 	if got := app.defaultModelForProvider(string(provider.Claude)); got != "claude-opus-4-8" {
 		t.Fatalf("default after the retried probe = %q, want the CLI default claude-opus-4-8", got)

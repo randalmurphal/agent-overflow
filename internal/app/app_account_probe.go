@@ -70,6 +70,7 @@ var claudeStartupProbeBackoff = []time.Duration{
 // only looks again, so a CLI installed after launch is probed when it lands.
 func (a *App) retryClaudeStartupProbe(ctx context.Context) bool {
 	lookPath := a.resolveLookPath()
+	lastLogged := ""
 	for attempt := 0; ; attempt++ {
 		delay := claudeStartupProbeBackoff[min(attempt, len(claudeStartupProbeBackoff)-1)]
 		if binary := a.providerBinaryPath(string(provider.Claude)); binary != "" && lookPath(binary) == nil {
@@ -77,7 +78,12 @@ func (a *App) retryClaudeStartupProbe(ctx context.Context) bool {
 			if err == nil {
 				return true
 			}
-			log.Printf("claude startup probe failed (attempt %d), retrying in %s: %v", attempt+1, delay, err)
+			// One line per distinct failure: an expired login or a broken
+			// binary fails the same way every attempt.
+			if err.Error() != lastLogged {
+				lastLogged = err.Error()
+				log.Printf("claude startup probe failed (attempt %d), retrying until it answers: %v", attempt+1, err)
+			}
 		}
 		timer := time.NewTimer(delay)
 		select {
