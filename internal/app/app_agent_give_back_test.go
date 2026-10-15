@@ -40,7 +40,7 @@ func requireOwedAgain(t *testing.T, f *requestFixture, token string, late bool) 
 	t.Helper()
 	row := f.request(t, token)
 	if threadRequestDelivered(row, late) || row.Notify {
-		t.Fatalf("the request reads delivered %v as %q, notify %v; want it owed and disarmed", threadRequestDelivered(row, late), row.DeliveredHow, row.Notify)
+		t.Fatalf("the request reads delivered %v as %q, notify %v; want it owed and disarmed", threadRequestDelivered(row, late), row.DeliveryRoute(late), row.Notify)
 	}
 	if late && row.DeliveredAt == 0 {
 		t.Fatal("returning the late reply undid the first answer's delivery")
@@ -83,8 +83,8 @@ func queueOwnedAndPersonMessages(t *testing.T, f *requestFixture, token string, 
 		t.Fatalf("queueAgentNotice: %v", err)
 	}
 	f.app.waitAgentNoticeWork()
-	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued {
-		t.Fatalf("the wake was not queued: delivered as %q", row.DeliveredHow)
+	if row := f.request(t, token); row.DeliveryRoute(late) != store.ThreadWakeQueued {
+		t.Fatalf("the wake was not queued: delivered as %q", row.DeliveryRoute(late))
 	}
 }
 

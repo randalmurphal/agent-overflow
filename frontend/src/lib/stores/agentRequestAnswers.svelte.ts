@@ -5,9 +5,10 @@ import { GetThreadRequestStates } from './bindings';
 import { onThreadAgentRowsChanged, type ThreadAgentRowChange } from './eventsThreadAgentRows';
 import { answeredRequestTokens } from '../utils/answeredRequestTokens';
 
-// Whether the answer to each request a thread made has landed in that
-// thread's timeline, as the request ledger says (GetThreadRequestStates: the
-// confirmed wake row, loaded in a pane or not). A mounted tool row watches
+// Whether the answer to each request a thread made has reached that thread,
+// as the request ledger says (GetThreadRequestStates: the confirmed wake row,
+// loaded in a pane or not, or the reply of a call that collected the answer
+// and so left no wake row). A mounted tool row watches
 // its own token; the asks of one task are read in one call per thread, in
 // reads of at most MAX_TOKENS, and a change frame naming a token, or the
 // thread, or a lost frame, reads them again. A token the ledger does not
@@ -107,7 +108,7 @@ async function read(threadId: string, tokens: string[]): Promise<void> {
     console.warn('agent request answers: read', threadId, err);
     return;
   }
-  const byToken = new Map((states ?? []).map((state) => [state.token, Boolean(state.wakeItemId)]));
+  const byToken = new Map((states ?? []).map((state) => [state.token, state.answered]));
   let thread = answered.get(threadId);
   if (!thread) {
     thread = new SvelteMap();
