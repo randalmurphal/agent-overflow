@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"strconv"
 
@@ -226,10 +227,8 @@ func withClaudeTaskListEnv(env map[string]string, taskListID string) map[string]
 	if taskListID == "" {
 		return env
 	}
-	merged := make(map[string]string, len(env)+1)
-	for k, v := range env {
-		merged[k] = v
-	}
+	merged := make(map[string]string, len(env))
+	maps.Copy(merged, env)
 	merged[claudeTaskListIDEnvVar] = taskListID
 	return merged
 }
@@ -314,10 +313,8 @@ func withClaudeSessionEnvDefaults(env map[string]string, disableTodoReminders bo
 	if missing == 0 {
 		return env
 	}
-	merged := make(map[string]string, len(env)+missing)
-	for k, v := range env {
-		merged[k] = v
-	}
+	merged := make(map[string]string, len(env))
+	maps.Copy(merged, env)
 	for _, d := range defaults {
 		if _, ok := merged[d.name]; !ok {
 			merged[d.name] = d.value

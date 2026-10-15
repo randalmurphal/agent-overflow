@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"strconv"
 	"strings"
 	"unicode"
@@ -309,10 +310,8 @@ func withClaudeCrossSessionEnv(env map[string]string, cfg Config) map[string]str
 	if !cfg.CrossSessionEnabled {
 		return env
 	}
-	merged := make(map[string]string, len(env)+1)
-	for k, v := range env {
-		merged[k] = v
-	}
+	merged := make(map[string]string, len(env))
+	maps.Copy(merged, env)
 	merged[claudeHarborKiteEnv] = "1"
 	return merged
 }
