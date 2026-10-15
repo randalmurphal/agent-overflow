@@ -113,3 +113,36 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 		t.Error("a thread spawned by a thread that is no longer an assistant's still says it is agent-bound")
 	}
 }
+
+// An assistant another assistant created is spawned by it but is a row of
+// its own: archived, it is neither counted nor listed among its creator's
+// finished work.
+func TestACreatedAssistantIsNeverItsCreatorsChild(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "creator")
+	mustCreateThread(t, s, "created")
+	mustCreateThread(t, s, "worker")
+	mustCreateAssistant(t, s, "creator", "/h/creator")
+	mustCreateAssistant(t, s, "created", "/h/created")
+	for token, target := range map[string]string{"tok-created": "created", "tok-worker": "worker"} {
+		seedThreadRequest(t, s, token, "creator", ThreadRequestSpawn, 100)
+		if _, err := s.SetThreadRequestTarget(token, "", target, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"created", "worker"} {
+		if _, _, err := s.ArchiveThread(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	creator, err := s.GetThread("creator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creator.ArchivedChildCount != 1 {
+		t.Errorf("archived children = %d, want the worker alone", creator.ArchivedChildCount)
+	}
+	if listed, err := s.ListArchivedSpawnedThreads("creator"); err != nil || len(listed) != 1 || listed[0].ID != "worker" {
+		t.Errorf("archived threads spawned by the creator = %+v, %v; want the worker alone", listed, err)
+	}
+}

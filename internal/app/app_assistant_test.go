@@ -180,6 +180,11 @@ func TestNewAssistantToolCreatesAnAssistantThatReportsToItsCreator(t *testing.T)
 	}
 
 	creator := f.assistantCaller(t)
+	// A computer forwarding the call is refused here too, not only by the
+	// tool server in front of it.
+	if _, err := f.adapter().NewAssistant(threadtools.WithForwarded(t.Context()), f.callerIdentity(), call); err == nil || !strings.Contains(err.Error(), "never forwarded") {
+		t.Fatalf("a forwarded call = %v, want the refusal", err)
+	}
 	ack, err := f.adapter().NewAssistant(t.Context(), f.callerIdentity(), call)
 	if err != nil {
 		t.Fatalf("NewAssistant: %v", err)
@@ -451,4 +456,71 @@ func TestProjectDeletionPreviewNamesTheProjectsAssistants(t *testing.T) {
 	if preview.Assistants == nil || len(preview.Assistants) != 0 {
 		t.Fatalf("another project's assistants = %#v, want an empty list", preview.Assistants)
 	}
+}
+
+// Codex has no transcript to look for: its thread/resume refusal with no
+// rollout is the signal, and the assistant moves the same way. An ordinary
+// Codex thread's refusal stays the provider's own error.
+func TestACodexSessionTheProviderCleanedUpMovesTheAssistant(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	if _, err := f.app.settings.Update(map[string]any{"codexBinaryPath": writeCodexNoRolloutBinary(t)}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := createTestThread(t, f.app, string(provider.Codex), t.TempDir(), "gpt-5", threadmode.ModeChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testAssistant(t, f.app, thread.ID)
+	if _, err := f.app.store.UpdateSessionRef(thread.ID, "gone-rollout"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.app.StartSession(thread.ID); !errors.Is(err, errAssistantSessionGone) {
+		t.Fatalf("StartSession = %v, want errAssistantSessionGone", err)
+	}
+	if successor := awaitCurrentThread(t, f.app, thread.ID); successor == thread.ID {
+		t.Fatal("the assistant stayed on the thread whose session is gone")
+	}
+
+	plain, err := createTestThread(t, f.app, string(provider.Codex), t.TempDir(), "gpt-5", threadmode.ModeChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.store.UpdateSessionRef(plain.ID, "gone-rollout"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.StartSession(plain.ID); err == nil || errors.Is(err, errAssistantSessionGone) {
+		t.Fatalf("an ordinary thread's refused resume = %v, want the provider's own error", err)
+	}
+}
+
+// writeCodexNoRolloutBinary is a Codex app-server whose thread/resume finds
+// no rollout, as after the provider cleaned up the thread's session file.
+func writeCodexNoRolloutBinary(t *testing.T) string {
+	t.Helper()
+	script := `#!/bin/sh
+while IFS= read -r line; do
+    id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32600,"message":"no rollout found for thread id gone-rollout"}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/start"'; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"fresh-rollout"}}}\n' "$id"
+        continue
+    fi
+    printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+done
+`
+	path := filepath.Join(t.TempDir(), "codex-no-rollout.sh")
+	mockexec.Write(t, path, script)
+	return path
 }
