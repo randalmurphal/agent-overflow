@@ -14,7 +14,7 @@ import type { ThreadWakeRow } from '../../stores/bindings';
 function thread(id: string): Thread {
   return {
     id, title: id, provider: 'claude', model: 'test', projectId: 'project', projectPath: '/tmp/ws',
-    workspacePath: '/tmp/ws', createdAt: 0, updatedAt: 0, archived: false, agentPromotedAt: 1,
+    workspacePath: '/tmp/ws', createdAt: 0, updatedAt: 0, archived: false, agentId: 'agent-1',
   };
 }
 

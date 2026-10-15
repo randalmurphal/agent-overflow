@@ -248,16 +248,17 @@ func (s *Store) StandingAgentSpawnerOf(threadID string) (agentThreadID, title st
 // AssistantListing is one assistant as the thread tools list and address
 // it: the record, its name and whether its current thread is archived.
 type AssistantListing struct {
-	Agent    StandingAgent
-	Name     string
-	Archived bool
+	Agent     StandingAgent
+	Name      string
+	ProjectID string
+	Archived  bool
 }
 
 // ListAssistants lists this computer's assistants by name.
 func (s *Store) ListAssistants() (_ []AssistantListing, err error) {
 	action := "store: list assistants"
 	rows, err := s.reader().Query(`SELECT agents.id, agents.thread_id, agents.home, agents.notify_on_tick,
-		agents.creator_agent_id, agents.created_at, threads.title, threads.archived
+		agents.creator_agent_id, agents.created_at, threads.title, threads.project_id, threads.archived
 		FROM agents JOIN owned_threads AS threads ON threads.id = agents.thread_id
 		ORDER BY threads.title COLLATE NOCASE, agents.id`)
 	if err != nil {
@@ -269,7 +270,7 @@ func (s *Store) ListAssistants() (_ []AssistantListing, err error) {
 		var listing AssistantListing
 		var notify int
 		if err := rows.Scan(&listing.Agent.ID, &listing.Agent.ThreadID, &listing.Agent.Home, &notify,
-			&listing.Agent.CreatorAgentID, &listing.Agent.CreatedAt, &listing.Name, &listing.Archived); err != nil {
+			&listing.Agent.CreatorAgentID, &listing.Agent.CreatedAt, &listing.Name, &listing.ProjectID, &listing.Archived); err != nil {
 			return nil, fmt.Errorf("%s: scan: %w", action, err)
 		}
 		listing.Agent.NotifyOnTick = notify == 1

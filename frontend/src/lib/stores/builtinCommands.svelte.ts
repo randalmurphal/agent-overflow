@@ -7,6 +7,7 @@ import { selectedBackend } from './selectedBackend.svelte';
 // invocation, so these run callbacks must receive the *current* active thread
 // via ctx rather than closing over a cached value.
 
+import { confirmsThreadDelete } from './assistantDelete.svelte';
 import { tick } from 'svelte';
 import { SIDEBAR_JUMP_LIMIT } from './sidebarThreadOrder';
 import type { ThreadPane } from './thread.svelte';
@@ -412,7 +413,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           return;
         }
         const actionCtx = commandThreadActionCtx(t, pane);
-        if (getSettings().confirmDelete) {
+        if (confirmsThreadDelete([t])) {
           requestThreadActionConfirmation('delete', actionCtx);
           return;
         }

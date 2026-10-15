@@ -35,7 +35,7 @@ describe('agentWakes store', () => {
     resetBindingMocks();
     resetStagedBackends();
     resetAgentWakesForTest();
-    replaceAllThreads([thread('agent', { agentPromotedAt: 1 }), thread('plain')]);
+    replaceAllThreads([thread('agent', { agentId: 'agent' }), thread('plain')]);
   });
 
   it('files a row under the computer that answered it, so a later outage there keeps it', async () => {

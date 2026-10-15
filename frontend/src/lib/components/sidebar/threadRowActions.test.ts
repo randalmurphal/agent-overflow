@@ -3,9 +3,8 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import {
   archiveDoneChildrenAction,
   deleteThreadAction,
-  demoteThreadAction,
   forkThreadAction,
-  promoteThreadAction,
+  nextAssistantThreadAction,
   type ThreadActionCtx,
 } from './threadRowActions';
 import { buildPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
@@ -151,30 +150,20 @@ describe('standing agent actions', () => {
     clearThreadsForTest();
   });
 
-  it('promotes and demotes through the bindings, reporting a refusal', async () => {
-    const promote = setBindingMock('PromoteStandingAgent', async () => ({ threadId: 'thread-1' }));
-    const demote = setBindingMock('DemoteStandingAgent', async () => {});
-    const ctx = makeCtx({});
-    await promoteThreadAction(ctx);
-    await demoteThreadAction(ctx);
-    expect(promote).toHaveBeenCalledWith('thread-1');
-    expect(demote).toHaveBeenCalledWith('thread-1');
+  it("starts the assistant's next thread, shows it in the pane that asked, and reports a refusal", async () => {
+    const successor = makeBaseThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+    const next = setBindingMock('StartNextAssistantThread', async () => successor);
+    const ctx = { ...makeCtx({ agentId: 'agent-1' }), isActive: true };
+    await nextAssistantThreadAction(ctx);
+    expect(next).toHaveBeenCalledWith('thread-1');
+    expect(ctx.switchPane).toHaveBeenCalledWith(successor);
+    expect(getThreads().some((t) => t.id === 'thread-2')).toBe(true);
     expect(ctx.reportError).not.toHaveBeenCalled();
 
-    const demoteAndDelete = setBindingMock('DemoteStandingAgentAndDeleteHome', async () => {
-      throw new Error('the thread was demoted, but its home folder was not deleted: permission denied');
-    });
-    await demoteThreadAction(ctx, { deleteHome: true });
-    expect(demoteAndDelete).toHaveBeenCalledWith('thread-1');
-    expect(demote).toHaveBeenCalledTimes(1);
+    next.mockImplementation(async () => { throw new Error('this assistant is archived; unarchive it first'); });
+    await nextAssistantThreadAction(ctx);
     expect(ctx.reportError).toHaveBeenCalledTimes(1);
-    expect(((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][1] as Error).message).toContain('home folder was not deleted');
-    (ctx.reportError as ReturnType<typeof vi.fn>).mockClear();
-
-    promote.mockImplementation(async () => { throw new Error('only a chat or plan thread can be one'); });
-    await promoteThreadAction(ctx);
-    expect(ctx.reportError).toHaveBeenCalledTimes(1);
-    expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain('chat or plan');
+    expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain('archived');
   });
 
   it('archives the done children in order, drops their rows, and reports how many failed', async () => {

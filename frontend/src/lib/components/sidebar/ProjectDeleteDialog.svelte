@@ -16,6 +16,7 @@
   import Button from '../primitives/Button.svelte';
   import type { ProjectDeletionPreview } from '../../types/workflow';
   import { cleanupSummary, retainedInPreview } from '../../utils/projectCleanup';
+  import { projectAssistantsNote } from '../../stores/assistantDelete.svelte';
 
   interface Props {
     open: boolean;
@@ -47,12 +48,16 @@
     cleanupSummary(preview.runCount, preview.liveRunIds.length),
   );
   let retained = $derived(retainedInPreview(preview.worktrees));
+  let assistantsNote = $derived(projectAssistantsNote(preview.assistants));
 </script>
 
 <Modal {open} title="Delete Project" onClose={onCancel} width="lg" padding="comfortable">
   {#snippet children()}
     <div class="space-y-3 text-sm" data-testid="project-delete-dialog">
       <p class="text-[0.8125rem] text-fg-muted leading-relaxed">{threadSummary}</p>
+      {#if assistantsNote}
+        <p class="text-xs text-fg-muted" data-testid="project-delete-assistants">{assistantsNote}</p>
+      {/if}
       {#if workSummary}
         <p class="text-xs text-fg-muted" data-testid="project-delete-work">{workSummary}</p>
       {/if}

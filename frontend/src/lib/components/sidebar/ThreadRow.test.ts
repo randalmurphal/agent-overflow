@@ -405,13 +405,13 @@ describe('<ThreadRow> drag source', () => {
   });
 
   it.each([
-    ['a standing agent', { agentPromotedAt: 1 }],
+    ['a standing agent', { agentId: 'agent-1' }],
     ['a thread a standing agent spawned', { spawnedByThreadId: 'agent-1', spawnedByAgent: true }],
     // The agent's own row is archived, so it is not in the list; the bond
     // rides on the child's row.
     ['a thread an archived standing agent spawned', { spawnedByThreadId: 'archived-agent', spawnedByAgent: true }],
   ])('marks the payload of %s agent-bound, so no group takes the drop', async (_, overrides) => {
-    setBindingMock('ListThreads', async () => [makeThread({ id: 'agent-1', agentPromotedAt: 1 })]);
+    setBindingMock('ListThreads', async () => [makeThread({ id: 'agent-1', agentId: 'agent-1' })]);
     await refreshThreads();
     const thread = makeThread({ id: 'drag-bound', projectId: 'project-1', ...overrides });
     const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
@@ -1653,14 +1653,14 @@ describe('<ThreadRow> standing agent variant', () => {
   });
 
   it('offers no pin on an agent, even rendered as a plain row', () => {
-    const rendered = render(ThreadRow, { props: { thread: makeThread({ agentPromotedAt: 1, pinnedAt: 1 }), pane: createThreadPane() } });
+    const rendered = render(ThreadRow, { props: { thread: makeThread({ agentId: 'agent-1', pinnedAt: 1 }), pane: createThreadPane() } });
     expect(rendered.queryByTestId('thread-row-pin')).toBeNull();
     expect(rendered.queryByTestId('thread-row-agent-expand')).toBeNull();
     expect(rendered.getByTestId('thread-row').hasAttribute('data-sidebar-jump-target')).toBe(false);
   });
 
   it('renders the chevron, glyph and collapsed count, and folds only from the chevron', async () => {
-    const thread = makeThread({ agentPromotedAt: 1 });
+    const thread = makeThread({ agentId: 'agent-1' });
     const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { expanded: false, childCount: 3 } } });
     const row = rendered.getByTestId('thread-row');
     expect(row.getAttribute('data-sidebar-agent')).toBe('');
@@ -1670,31 +1670,33 @@ describe('<ThreadRow> standing agent variant', () => {
     expect(rendered.queryByTestId('thread-row-pin')).toBeNull();
     const chevron = rendered.getByTestId('thread-row-agent-expand');
     expect(chevron.getAttribute('aria-expanded')).toBe('false');
-    // The row renders what the list passes; the chevron writes the store.
-    setAgentExpanded('thread-1', false);
+    // The row renders what the list passes; the chevron writes the store,
+    // keyed by the assistant so a handoff keeps the fold.
+    setAgentExpanded('agent-1', false);
     await fireEvent.click(chevron);
+    expect(isAgentExpanded('agent-1')).toBe(true);
+    await fireEvent.click(chevron);
+    expect(isAgentExpanded('agent-1')).toBe(false);
     expect(isAgentExpanded('thread-1')).toBe(true);
-    await fireEvent.click(chevron);
-    expect(isAgentExpanded('thread-1')).toBe(false);
   });
 
   it('hides the count once expanded and when there is nothing under the agent', () => {
-    const open = render(ThreadRow, { props: { thread: makeThread({ agentPromotedAt: 1 }), pane: createThreadPane(), agent: { expanded: true, childCount: 3 } } });
+    const open = render(ThreadRow, { props: { thread: makeThread({ agentId: 'agent-1' }), pane: createThreadPane(), agent: { expanded: true, childCount: 3 } } });
     expect(open.queryByTestId('thread-row-agent-count')).toBeNull();
-    const empty = render(ThreadRow, { props: { thread: makeThread({ id: 'thread-2', agentPromotedAt: 1 }), pane: createThreadPane(), agent: { expanded: false, childCount: 0 } } });
+    const empty = render(ThreadRow, { props: { thread: makeThread({ id: 'thread-2', agentId: 'thread-2' }), pane: createThreadPane(), agent: { expanded: false, childCount: 0 } } });
     expect(empty.container.querySelector('[data-testid="thread-row-agent-count"]')).toBeNull();
     expect(empty.container.querySelector('[data-testid="thread-row-agent-expand"]')).not.toBeNull();
   });
 
   it('folds and unfolds from the keyboard on the row itself, not from a child control', async () => {
-    const rendered = render(ThreadRow, { props: { thread: makeThread({ agentPromotedAt: 1 }), pane: createThreadPane(), agent: { expanded: true, childCount: 1 } } });
+    const rendered = render(ThreadRow, { props: { thread: makeThread({ agentId: 'agent-1' }), pane: createThreadPane(), agent: { expanded: true, childCount: 1 } } });
     const row = rendered.getByTestId('thread-row');
     await fireEvent.keyDown(row, { key: 'ArrowLeft' });
-    expect(isAgentExpanded('thread-1')).toBe(false);
+    expect(isAgentExpanded('agent-1')).toBe(false);
     await fireEvent.keyDown(row, { key: 'ArrowRight' });
-    expect(isAgentExpanded('thread-1')).toBe(true);
+    expect(isAgentExpanded('agent-1')).toBe(true);
     await fireEvent.keyDown(rendered.getByTestId('thread-row-agent-expand'), { key: 'ArrowLeft' });
-    expect(isAgentExpanded('thread-1')).toBe(true);
+    expect(isAgentExpanded('agent-1')).toBe(true);
   });
 
   it('dims an archived child row', () => {

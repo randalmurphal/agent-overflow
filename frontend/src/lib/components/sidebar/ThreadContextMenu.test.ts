@@ -79,7 +79,6 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(visibleLabels(baseElement)).toEqual([
       'Open in New Pane',
       'Rename Thread',
-      'Promote to Standing Agent',
       'Fork Thread',
       'Mark Unread',
       'Pin Thread',
@@ -122,7 +121,6 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(visibleLabels(baseElement)).toEqual([
       'Open in New Pane',
       'Rename Thread',
-      'Promote to Standing Agent',
       'Fork Thread',
       'Mark Unread',
       'Move to Back Burner',
@@ -786,9 +784,10 @@ describe('<ThreadContextMenu> group items', () => {
   });
 });
 
-// A standing agent's row (docs/specs/standing-agents.md, "Sidebar") swaps
-// Promote for Demote, Loops and Watches and Archive Done Children, and
+// An assistant's row (docs/specs/standing-agents.md, "Sidebar") adds New
+// Thread, Same Assistant, Loops and Watches and Archive Done Children, and
 // drops the pin and group items; a thread it spawned drops the group items.
+// No thread offers promotion.
 
 describe('<ThreadContextMenu> standing agent', () => {
   beforeEach(() => {
@@ -824,37 +823,17 @@ describe('<ThreadContextMenu> standing agent', () => {
     return { ...view, pane };
   }
 
-  it.each([
-    [{ projectId: 'project-1' }, true],
-    [{ mode: 'plan' as const }, true],
-    [{ mode: 'terminal' as const }, false],
-    [{ archived: true }, false],
-    [{ isDraft: true }, false],
-    [{ agentPromotedAt: 1 }, false],
-  ])('offers Promote only on a chat or plan thread: %j → %s', (overrides, offered) => {
-    const labels = labelsOf(renderMenu(makeThread(overrides)).baseElement);
-    expect(labels.includes('Promote to Standing Agent')).toBe(offered);
-  });
-
-  it('promotes through the binding', async () => {
-    const promote = setBindingMock('PromoteStandingAgent', async () => ({ threadId: 'thread-1' }));
-    const { baseElement } = renderMenu(makeThread());
-    await fireEvent.click(item(baseElement, 'Promote to Standing Agent'));
-    await tick();
-    expect(promote).toHaveBeenCalledWith('thread-1');
-  });
-
   it('replaces the pin and group items on an agent row with the agent items, in order', () => {
     const { baseElement } = renderAgentMenu(
-      makeThread({ projectId: 'project-1', agentPromotedAt: 1, pinnedAt: 1, pinGroup: 0 }),
+      makeThread({ projectId: 'project-1', agentId: 'agent-1', pinnedAt: 1, pinGroup: 0 }),
       { agentBound: true },
     );
     expect(labelsOf(baseElement)).toEqual([
       'Open in New Pane',
       'Rename Thread',
+      'New Thread, Same Assistant',
       'Loops and Watches',
       'Archive Done Children',
-      'Demote Standing Agent',
       'Fork Thread',
       'Mark Unread',
       'Copy Path',
@@ -873,58 +852,51 @@ describe('<ThreadContextMenu> standing agent', () => {
     );
     const labels = labelsOf(baseElement);
     expect(labels).toContain('Pin Thread');
-    expect(labels).toContain('Promote to Standing Agent');
     expect(labels).not.toContain('Move to Group');
     expect(labels).not.toContain('Remove from Group');
-    expect(labels).not.toContain('Demote Standing Agent');
+    expect(labels).not.toContain('New Thread, Same Assistant');
   });
 
-  it('demotes behind a confirm that says Demote keeps the home, and only after it', async () => {
-    const demote = setBindingMock('DemoteStandingAgent', async () => {});
-    const { baseElement } = renderAgentMenu(makeThread({ agentPromotedAt: 1 }));
-    await fireEvent.click(item(baseElement, 'Demote Standing Agent'));
-    await tick();
-    expect(demote).not.toHaveBeenCalled();
-    const dialog = baseElement.querySelector('[role="alertdialog"], [role="dialog"]');
-    expect(dialog?.textContent).toContain('This thread becomes an ordinary thread. Its watches are cancelled; its loops stay as they are. Demote keeps its home directory; Demote and Delete Home removes it.');
-    await fireEvent.click(Array.from(baseElement.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Demote')!);
-    await tick();
-    expect(demote).toHaveBeenCalledWith('thread-1');
+  it('New Thread, Same Assistant starts the next thread through the binding', async () => {
+    const next = setBindingMock('StartNextAssistantThread', async () => makeThread({ id: 'thread-2', agentId: 'agent-1' }));
+    const { baseElement } = renderAgentMenu(makeThread({ agentId: 'agent-1' }));
+    await fireEvent.click(item(baseElement, 'New Thread, Same Assistant'));
+    await waitFor(() => expect(next).toHaveBeenCalledWith('thread-1'));
   });
 
-  it('deletes the home only through the confirm\'s own destructive choice', async () => {
-    const demote = setBindingMock('DemoteStandingAgent', async () => {});
-    const demoteAndDelete = setBindingMock('DemoteStandingAgentAndDeleteHome', async () => {});
-    const { baseElement } = renderAgentMenu(makeThread({ agentPromotedAt: 1 }));
-    await fireEvent.click(item(baseElement, 'Demote Standing Agent'));
+  it("confirms an assistant's delete with confirmDelete off, naming its home, and deletes only after it", async () => {
+    setBindingMock('GetSettings', async () => ({ confirmDelete: false }));
+    await loadSettings();
+    setBindingMock('StopSession', async () => {});
+    setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
+    const remove = setBindingMock('DeleteThread', async () => {});
+    const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
+    await fireEvent.click(item(baseElement, 'Delete'));
     await tick();
-    const choice = Array.from(baseElement.querySelectorAll('button')).find(
-      (b) => b.textContent?.trim() === 'Demote and Delete Home',
-    );
-    expect(choice).toBeTruthy();
-    await fireEvent.click(choice!);
-    await tick();
-    expect(demoteAndDelete).toHaveBeenCalledWith('thread-1');
-    expect(demote).not.toHaveBeenCalled();
+    const dialog = () => baseElement.querySelector('[role="alertdialog"], [role="dialog"]');
+    expect(dialog()?.textContent).toContain('Delete Assistant');
+    await waitFor(() => expect(dialog()?.textContent).toContain(
+      'The assistant "Ops" is deleted too, and its home folder /config/agents/agent-1 is removed with everything in it.',
+    ));
+    expect(remove).not.toHaveBeenCalled();
+    const confirm = Array.from(baseElement.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Delete');
+    if (!confirm) throw new Error('confirm button not rendered');
+    await fireEvent.click(confirm);
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('thread-1'));
   });
 
-  it('leaves Demote live but Demote and Delete Home inert without threads:autonomy', async () => {
-    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
-    try {
-      const demoteAndDelete = setBindingMock('DemoteStandingAgentAndDeleteHome', async () => {});
-      const { baseElement } = renderAgentMenu(makeThread({ agentPromotedAt: 1 }));
-      await fireEvent.click(item(baseElement, 'Demote Standing Agent'));
-      await tick();
-      const buttons = Array.from(baseElement.querySelectorAll('button'));
-      const choice = buttons.find((b) => b.textContent?.trim() === 'Demote and Delete Home') as HTMLButtonElement;
-      expect(choice.disabled).toBe(true);
-      expect(choice.getAttribute('title')).toBe('Not granted to this device');
-      expect((buttons.find((b) => b.textContent?.trim() === 'Demote') as HTMLButtonElement).disabled).toBe(false);
-      await fireEvent.click(choice);
-      expect(demoteAndDelete).not.toHaveBeenCalled();
-    } finally {
-      resetToLocalPage();
-    }
+  it("names every selected assistant's home in the bulk delete confirm", async () => {
+    replaceAllThreads([
+      makeThread({ id: 'a', projectId: 'project-1', title: 'Ops', agentId: 'agent-a' }),
+      makeThread({ id: 'b', projectId: 'project-1', title: 'Plain' }),
+    ]);
+    setThreadSelection(['a', 'b']);
+    setBindingMock('GetStandingAgent', async () => ({ id: 'agent-a', threadId: 'a', home: '/config/agents/agent-a' }));
+    const { baseElement } = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1' }));
+    await fireEvent.click(item(baseElement, 'Delete (2)'));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'The assistant "Ops" is deleted too, and its home folder /config/agents/agent-a is removed with everything in it.',
+    ));
   });
 
   it('hides the group items in bulk when the selection holds an agent or a spawned thread', () => {
@@ -967,9 +939,9 @@ describe('<ThreadContextMenu> standing agent', () => {
   });
 
   it('Loops and Watches opens the thread with its background rail open', async () => {
-    setBindingMock('GetThread', async () => makeThread({ agentPromotedAt: 1 }));
+    setBindingMock('GetThread', async () => makeThread({ agentId: 'agent-1' }));
     setBindingMock('GetThreadDisplayState', async () => null);
-    const { baseElement, pane } = renderAgentMenu(makeThread({ agentPromotedAt: 1 }));
+    const { baseElement, pane } = renderAgentMenu(makeThread({ agentId: 'agent-1' }));
     await fireEvent.click(item(baseElement, 'Loops and Watches'));
     // The rail opens once the thread is mounted, after the pane's switch
     // has read the thread's own rail preferences.
@@ -984,7 +956,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     const busy = makeThread({ id: 'child-busy', spawnedByThreadId: 'thread-1' });
     setThreadStatus('child-busy', 'awaiting-input');
     const { baseElement } = renderAgentMenu(
-      makeThread({ agentPromotedAt: 1 }),
+      makeThread({ agentId: 'agent-1' }),
       { agentChildren: [idle, busy, idle2] },
     );
     const row = item(baseElement, 'Archive Done Children (2)');

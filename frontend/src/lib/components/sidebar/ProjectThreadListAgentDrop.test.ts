@@ -56,7 +56,7 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
 
   function renderList() {
     const threads = [
-      thread('agent', { agentPromotedAt: 1, archivedChildCount: 1 }),
+      thread('agent', { agentId: 'agent', archivedChildCount: 1 }),
       thread('child', { spawnedByThreadId: 'agent' }),
       thread('loose', { groupId: 'ops' }),
     ];
@@ -162,7 +162,7 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     const rerender = (count: number) => view.rerender({
       projectId: 'project',
       threads: [
-        thread('agent', { agentPromotedAt: 1, archivedChildCount: count }),
+        thread('agent', { agentId: 'agent', archivedChildCount: count }),
         thread('child', { spawnedByThreadId: 'agent' }),
         thread('loose', { groupId: 'ops' }),
       ],
@@ -191,7 +191,7 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     await flush();
     expect(list).toHaveBeenCalledTimes(1);
     const rows = (promoted: boolean) => [
-      thread('agent', promoted ? { agentPromotedAt: 1, archivedChildCount: 1 } : {}),
+      thread('agent', promoted ? { agentId: 'agent', archivedChildCount: 1 } : {}),
       thread('child', { spawnedByThreadId: 'agent' }),
       thread('loose', { groupId: 'ops' }),
     ];

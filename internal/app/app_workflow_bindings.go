@@ -552,6 +552,106 @@ func (a *App) WorkflowPauseItem(ctx context.Context, itemID string) error {
 	return workflowEngine.PauseItem(itemID)
 }
 
+// WorkflowPauseItemAndEndSessions is Pause and End Sessions
+// (docs/specs/standing-agents.md, "Interrupt and end session"): the pause
+// WorkflowPauseItem makes, then the provider session of every thread the
+// paused runs were working in is ended, as End Session ends one. Resuming
+// starts them again on the same provider threads.
+//
+//ao:scope threads:autonomy
+//ao:route home
+func (a *App) WorkflowPauseItemAndEndSessions(ctx context.Context, itemID string) error {
+	workflowEngine, err := a.requireWorkflowEngine()
+	if err != nil {
+		return err
+	}
+	if err := a.authorizeScopedRunAction(ctx, itemID, "pause workflow run"); err != nil {
+		return err
+	}
+	// Read before the pause: it is the running members that hold sessions,
+	// and a paused member is no longer running.
+	threadIDs, err := a.runningWorkflowThreads(itemID)
+	if err != nil {
+		return err
+	}
+	if err := workflowEngine.PauseItem(itemID); err != nil {
+		return err
+	}
+	var errs []error
+	for _, threadID := range threadIDs {
+		if _, live := a.sessionManager().get(threadID); !live {
+			continue
+		}
+		if err := a.StopSession(threadID); err != nil {
+			errs = append(errs, fmt.Errorf("end the session of thread %s: %w", threadID, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("the run is paused, but %w", errors.Join(errs...))
+	}
+	return nil
+}
+
+// runningWorkflowThreads returns the threads the running members of itemID's
+// run tree are working in: each one's current phase attempt and its units.
+func (a *App) runningWorkflowThreads(itemID string) ([]string, error) {
+	var threadIDs []string
+	seen := map[string]bool{}
+	add := func(threadID string) {
+		if threadID != "" && !seen[threadID] {
+			seen[threadID] = true
+			threadIDs = append(threadIDs, threadID)
+		}
+	}
+	var walk func(id string, depth int) error
+	walk = func(id string, depth int) error {
+		if depth > engine.MaxCallDepth {
+			return fmt.Errorf("pause workflow run %s: tree is deeper than %d", itemID, engine.MaxCallDepth)
+		}
+		item, err := a.store.GetWorkItem(id)
+		if err != nil {
+			return fmt.Errorf("read workflow run %s: %w", id, err)
+		}
+		if engine.State(item.State) != engine.StateRunning {
+			return nil
+		}
+		phases, err := a.store.ListWorkItemPhases(id)
+		if err != nil {
+			return fmt.Errorf("read workflow run %s phases: %w", id, err)
+		}
+		current := store.WorkItemPhase{}
+		for _, phase := range phases {
+			if phase.PhaseID == item.CurrentPhaseID && phase.Attempt > current.Attempt {
+				current = phase
+			}
+		}
+		if current.Attempt > 0 {
+			add(current.ThreadID)
+			units, err := a.store.ListWorkItemPhaseUnits(id, current.PhaseID, current.Attempt)
+			if err != nil {
+				return fmt.Errorf("read workflow run %s units: %w", id, err)
+			}
+			for _, unit := range units {
+				add(unit.ThreadID)
+			}
+		}
+		children, err := a.store.ListWorkItemChildren(id)
+		if err != nil {
+			return fmt.Errorf("read workflow run %s children: %w", id, err)
+		}
+		for _, child := range children {
+			if err := walk(child.ID, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(itemID, 0); err != nil {
+		return nil, err
+	}
+	return threadIDs, nil
+}
+
 // WorkflowRequestSoftStop arms or clears a run tree's request to stop at its
 // next call boundary (D36). Nothing is interrupted and nothing starts: the run
 // keeps going and, the next time it would invoke a call, parks

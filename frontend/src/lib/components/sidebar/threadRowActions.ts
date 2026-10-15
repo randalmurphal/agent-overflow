@@ -16,19 +16,18 @@ import { withForkProgress } from '../../stores/forkPreparation.svelte';
 import {
   ArchiveThread,
   DeleteThread,
-  DemoteStandingAgent,
-  DemoteStandingAgentAndDeleteHome,
-  PromoteStandingAgent,
   ForkThread,
   GitRemoveWorktree,
   PinThread,
   RenameThread,
   SetThreadPinGroup,
+  StartNextAssistantThread,
   StopSession,
   UnarchiveThread,
   UnpinThread,
 } from '../../stores/bindings';
 import {
+  getThreadById,
   markThreadUnread,
   prependThread,
   removeThread,
@@ -95,30 +94,18 @@ export async function renameThreadAction(
 }
 
 /**
- * Promote the thread to a standing agent. The backend broadcasts every row
- * the promotion moved (the thread, the threads it spawned, an emptied
- * group), so nothing is patched here: the sidebar re-nests on the frames.
+ * New Thread, Same Assistant (docs/specs/standing-agents.md, "Next thread").
+ * The backend lists the new thread before it unlists the old one, and every
+ * client moves the panes that showed the old thread on that frame; the
+ * pane that asked is switched here too, so it does not wait on the frame.
  */
-export async function promoteThreadAction(ctx: ThreadActionCtx): Promise<void> {
+export async function nextAssistantThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
-    await PromoteStandingAgent(ctx.thread.id);
+    const successor = (await StartNextAssistantThread(ctx.thread.id)) as Thread;
+    if (!getThreadById(successor.id)) prependThread(successor);
+    if (ctx.isActive) await ctx.switchPane(successor);
   } catch (err) {
-    console.error('Failed to promote thread:', err);
-    ctx.reportError(userFacingError(err), err);
-  }
-}
-
-/**
- * Demote the agent. With `deleteHome` its home directory goes too; the
- * backend demotes first, so a deletion that fails is reported with the
- * path while the demotion stands.
- */
-export async function demoteThreadAction(ctx: ThreadActionCtx, opts: { deleteHome?: boolean } = {}): Promise<void> {
-  try {
-    if (opts.deleteHome) await DemoteStandingAgentAndDeleteHome(ctx.thread.id);
-    else await DemoteStandingAgent(ctx.thread.id);
-  } catch (err) {
-    console.error('Failed to demote thread:', err);
+    console.error('Failed to start the assistant\'s new thread:', err);
     ctx.reportError(userFacingError(err), err);
   }
 }

@@ -713,6 +713,18 @@ export function CountRunningBackgroundTasks(threadID: string): $CancellablePromi
     return $Call.ByID(2617952423, threadID);
 }
 
+/**
+ * CreateAssistant creates an assistant: its thread, titled with its name,
+ * its record and its home, and queues the opening message that starts the
+ * discussion of its role. A name another assistant here holds is refused
+ * naming that assistant, before anything is created.
+ */
+export function CreateAssistant(opts: app$0.CreateAssistantOptions): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(3231487239, opts).then(($result: any) => {
+        return $$createType7($result);
+    });
+}
+
 export function CreateDiffReviewComment(threadID: string, input: store$0.DiffReviewCommentInput): $CancellablePromise<store$0.DiffReviewComment> {
     return $Call.ByID(565306783, threadID, input).then(($result: any) => {
         return $$createType18($result);
@@ -907,27 +919,6 @@ export function DeleteThread(id: string): $CancellablePromise<void> {
  */
 export function DeleteThreadGroup(id: string): $CancellablePromise<void> {
     return $Call.ByID(4104302889, id);
-}
-
-/**
- * DemoteStandingAgent removes a thread's standing agent row and cancels its
- * watches, which only a standing agent may keep, withdrawing their queued
- * wakes. Its loops stay, since any thread may keep one, and its home stays on
- * disk. Demoting a thread that is not a standing agent does nothing.
- */
-export function DemoteStandingAgent(threadID: string): $CancellablePromise<void> {
-    return $Call.ByID(2416251970, threadID);
-}
-
-/**
- * DemoteStandingAgentAndDeleteHome demotes a standing agent as
- * DemoteStandingAgent does and then deletes its home: exactly the directory
- * its row recorded, and only when that is `<config>/agents/<thread-id>`. The
- * demotion stands when the deletion fails, and the error names the path.
- * Nothing is deleted for a thread that is not a standing agent.
- */
-export function DemoteStandingAgentAndDeleteHome(threadID: string): $CancellablePromise<void> {
-    return $Call.ByID(1239522167, threadID);
 }
 
 /**
@@ -1851,8 +1842,8 @@ export function GetSpinnerFiles(): $CancellablePromise<spinner$0.Files> {
 }
 
 /**
- * GetStandingAgent returns a thread's standing agent row, or nil when the
- * thread is not a standing agent.
+ * GetStandingAgent returns the assistant whose current thread this is, or
+ * nil.
  */
 export function GetStandingAgent(threadID: string): $CancellablePromise<store$0.StandingAgent | null> {
     return $Call.ByID(634025932, threadID).then(($result: any) => {
@@ -2649,9 +2640,9 @@ export function ListAgentComputers(): $CancellablePromise<app$0.AgentComputer[]>
 }
 
 /**
- * ListArchivedSpawnedThreads lists the archived threads a standing agent
- * spawned on this computer, newest activity first: what the agent row's
- * finished count opens.
+ * ListArchivedSpawnedThreads lists the archived threads an assistant's
+ * current thread spawned on this computer and the assistant's archived past
+ * threads, newest activity first: what the agent row's done footer opens.
  */
 export function ListArchivedSpawnedThreads(threadID: string): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(1323325584, threadID).then(($result: any) => {
@@ -3695,22 +3686,6 @@ export function ProjectDeletionPreview(projectID: string): $CancellablePromise<a
 export function PromoteScratchThread(threadID: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(4079123887, threadID).then(($result: any) => {
         return $$createType7($result);
-    });
-}
-
-/**
- * PromoteStandingAgent makes a thread a standing agent: it creates the home
- * `<config>/agents/<thread-id>/`, writes the README that names the agent, and
- * records the row. The thread and the threads it spawned leave their sidebar
- * groups, since the agent's row is where they nest, and a group that leaves
- * empty is deleted; every row that moved is broadcast. Promoting a standing
- * agent again returns its row unchanged. Refused for an archived thread, a
- * thread a workflow run that has not ended is bound to, a thread that is not
- * a chat or plan thread, and a thread that is not on this computer.
- */
-export function PromoteStandingAgent(threadID: string): $CancellablePromise<store$0.StandingAgent> {
-    return $Call.ByID(3186469152, threadID).then(($result: any) => {
-        return $$createType77($result);
     });
 }
 
@@ -4960,10 +4935,10 @@ export function SetPushSenderCredential(credentialJSON: string): $CancellablePro
 }
 
 /**
- * SetStandingAgentNotifyOnTick turns a standing agent's tick notifications on
- * or off. Off, the default, a turn only its loops and watches started raises
- * no notification at rest; on, it notifies like any other turn. Refused for a
- * thread that is not a standing agent.
+ * SetStandingAgentNotifyOnTick turns an assistant's tick notifications on or
+ * off. Off, the default, a turn only its loops and watches started raises no
+ * notification at rest; on, it notifies like any other turn. Refused for a
+ * thread that is no assistant's current thread.
  */
 export function SetStandingAgentNotifyOnTick(threadID: string, on: boolean): $CancellablePromise<store$0.StandingAgent> {
     return $Call.ByID(2532132305, threadID, on).then(($result: any) => {
@@ -5103,6 +5078,17 @@ export function ShutdownBackend(): $CancellablePromise<void> {
 export function StartCodexReview(threadID: string, target: app$0.CodexReviewTarget): $CancellablePromise<app$0.CodexReviewStarted> {
     return $Call.ByID(1913732562, threadID, target).then(($result: any) => {
         return $$createType192($result);
+    });
+}
+
+/**
+ * StartNextAssistantThread replaces an assistant's current thread with a new
+ * one and returns it. Refused for a thread that is not an assistant's
+ * current thread on this computer, and for an archived one.
+ */
+export function StartNextAssistantThread(threadID: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(4173453878, threadID).then(($result: any) => {
+        return $$createType7($result);
     });
 }
 
@@ -6145,6 +6131,17 @@ export function WorkflowMergeItem(itemID: string): $CancellablePromise<app$0.Wor
  */
 export function WorkflowPauseItem(itemID: string): $CancellablePromise<void> {
     return $Call.ByID(3764767257, itemID);
+}
+
+/**
+ * WorkflowPauseItemAndEndSessions is Pause and End Sessions
+ * (docs/specs/standing-agents.md, "Interrupt and end session"): the pause
+ * WorkflowPauseItem makes, then the provider session of every thread the
+ * paused runs were working in is ended, as End Session ends one. Resuming
+ * starts them again on the same provider threads.
+ */
+export function WorkflowPauseItemAndEndSessions(itemID: string): $CancellablePromise<void> {
+    return $Call.ByID(124764894, itemID);
 }
 
 /**

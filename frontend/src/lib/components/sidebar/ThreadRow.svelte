@@ -5,7 +5,7 @@
     jumpLabelForThread,
   } from '../../stores/keyboardModifiers.svelte';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
-  import { isStandingAgent, sidebarPinGroup } from '../../utils/sidebarTree';
+  import { assistantKey, isStandingAgent, sidebarPinGroup } from '../../utils/sidebarTree';
   import { getShowProviderIcons, setAgentExpanded, toggleAgent } from '../../stores/sidebar.svelte';
   import { asProviderID, providerLabel } from '../../providers/catalog';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
@@ -289,7 +289,7 @@
   function handleAgentChevronClick(e: MouseEvent): void {
     e.stopPropagation();
     if (editing) return;
-    toggleAgent(thread.id);
+    toggleAgent(assistantKey(thread));
   }
 
   function handleRowKeydown(e: KeyboardEvent): void {
@@ -307,7 +307,7 @@
     if (agent === null || e.target !== e.currentTarget) return;
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
       e.preventDefault();
-      setAgentExpanded(thread.id, e.key === 'ArrowRight');
+      setAgentExpanded(assistantKey(thread), e.key === 'ArrowRight');
     }
   }
 

@@ -180,7 +180,7 @@ describe('standing agent rows', () => {
 
   function agentThreads(): Thread[] {
     const threads = [
-      thread('agent', { agentPromotedAt: 10, archivedChildCount: 2, updatedAt: 5 }),
+      thread('agent', { agentId: 'agent', archivedChildCount: 2, updatedAt: 5 }),
       thread('worker-a', { spawnedByThreadId: 'agent', updatedAt: 4 }),
       thread('worker-b', { spawnedByThreadId: 'agent', updatedAt: 3 }),
       thread('loose', { pinnedAt: 1 }),

@@ -29,14 +29,13 @@
     copyThreadIdAction,
     copyThreadPathAction,
     deleteThreadAction,
-    demoteThreadAction,
     forkThreadAction,
     transferThreadAction,
     markThreadUnreadAction,
     PIN_GROUP_BACK,
     PIN_GROUP_FRONT,
+    nextAssistantThreadAction,
     pinThreadAction,
-    promoteThreadAction,
     setThreadPinGroupAction,
     unarchiveThreadAction,
     unpinThreadAction,
@@ -74,6 +73,12 @@
   import { hasScope } from '../../transport/scopes';
   import { countNoun } from '../../utils/format';
   import { canOfferConversationTransfer } from '../../stores/conversationTransfers.svelte';
+  import {
+    AssistantDeleteNote,
+    confirmsThreadDelete,
+    threadDeleteTitle,
+    withAssistantNote,
+  } from '../../stores/assistantDelete.svelte';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
 
   interface Props {
@@ -117,22 +122,14 @@
   let showArchiveConfirm = $state(false);
   let showBulkDeleteConfirm = $state(false);
   let showArchiveDoneConfirm = $state(false);
-  let showDemoteConfirm = $state(false);
 
-  // ── Standing agent ───────────────────────────────────────────────────────
+  // ── Assistant ────────────────────────────────────────────────────────────
   //
-  // Promotion rides `threads:autonomy` (it lets the thread register
-  // watches that run scripts), and so does deleting the home a demotion
-  // leaves; demotion and the children's archive ride
-  // `threads:operate` like every other write here. Only a chat or plan
-  // thread with a conversation can be promoted; the backend refuses the
-  // rest, and the item stays off the menu for those.
+  // An assistant's current thread offers New Thread, Same Assistant, its
+  // loops and watches and the children's archive, all riding
+  // `threads:operate` like every other write here; its delete is always
+  // confirmed and the confirm names its home folder.
   let isAgent = $derived(isStandingAgent(thread));
-  let canPromote = $derived(
-    !isAgent && !thread.archived && !thread.isDraft
-      && (thread.mode === undefined || thread.mode === 'chat' || thread.mode === 'plan'),
-  );
-  let autonomyUngranted = $derived(!threadHasScope('threads:autonomy', thread.id, thread.projectId));
   // Done: a spawned thread with nothing running and nothing waiting on
   // the user. Archiving it is what the agent's `N done` footer counts.
   let doneChildren = $derived(agentChildren.filter((child) => getEffectiveThreadStatus(child) === 'idle'));
@@ -145,6 +142,7 @@
   // Deleting a thread on a worktree removes it; the confirmation says which
   // terminals that closes.
   const deleteTerminalsNote = new TerminalsClosingNote();
+  const deleteAssistantNote = new AssistantDeleteNote();
   // Provider-update check: in flight while the backend reads the session
   // file (it builds the rows a refresh WOULD write, so it is a real read of
   // a possibly-large transcript, not an instant stat), then the plan it
@@ -309,9 +307,10 @@
 
   function handleDelete(): void {
     onClose();
-    if (getSettings().confirmDelete) {
+    if (confirmsThreadDelete([thread])) {
       showDeleteConfirm = true;
       deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete([thread]));
+      deleteAssistantNote.load([thread]);
     } else {
       void deleteThreadAction(ctx());
     }
@@ -472,6 +471,7 @@
               showBulkDeleteConfirm = true;
               const targets = selectedThreads.slice();
               deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete(targets));
+              deleteAssistantNote.load(targets);
             }}
           />
         {:else}
@@ -493,6 +493,15 @@
           />
           {#if isAgent}
             <MenuItem
+              label="New Thread, Same Assistant"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void nextAssistantThreadAction(ctx());
+              }}
+            />
+            <MenuItem
               label="Loops and Watches"
               onSelect={() => void openLoopsAndWatches()}
             />
@@ -503,25 +512,6 @@
               onSelect={() => {
                 onClose();
                 showArchiveDoneConfirm = true;
-              }}
-            />
-            <MenuItem
-              label="Demote Standing Agent"
-              disabled={operateUngranted}
-              title={ungrantedTitle}
-              onSelect={() => {
-                onClose();
-                showDemoteConfirm = true;
-              }}
-            />
-          {:else if canPromote}
-            <MenuItem
-              label="Promote to Standing Agent"
-              disabled={autonomyUngranted}
-              title={autonomyUngranted ? 'Not granted to this device' : undefined}
-              onSelect={() => {
-                onClose();
-                void promoteThreadAction(ctx());
               }}
             />
           {/if}
@@ -665,21 +655,23 @@
 
 <ConfirmDialog
   open={showDeleteConfirm}
-  title="Delete Thread"
-  description={withTerminalsNote(
+  title={threadDeleteTitle(thread)}
+  description={withAssistantNote(withTerminalsNote(
     'This will permanently delete this thread and all its messages. This action cannot be undone.',
     deleteTerminalsNote.note,
-  )}
+  ), deleteAssistantNote.note)}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={() => {
     showDeleteConfirm = false;
     deleteTerminalsNote.clear();
+    deleteAssistantNote.clear();
     void deleteThreadAction(ctx());
   }}
   onCancel={() => {
     showDeleteConfirm = false;
     deleteTerminalsNote.clear();
+    deleteAssistantNote.clear();
   }}
 />
 
@@ -713,30 +705,6 @@
   }}
 />
 
-<!-- Demotion keeps the home on disk (docs/specs/standing-agents.md,
-     "Standing agent"); the dialog is where the user is told so, and the
-     one place that offers to delete it. -->
-<ConfirmDialog
-  open={showDemoteConfirm}
-  title="Demote Standing Agent"
-  description="This thread becomes an ordinary thread. Its watches are cancelled; its loops stay as they are. Demote keeps its home directory; Demote and Delete Home removes it."
-  confirmLabel="Demote"
-  alternateLabel="Demote and Delete Home"
-  alternateDisabled={autonomyUngranted}
-  alternateTitle={autonomyUngranted ? 'Not granted to this device' : undefined}
-  onConfirm={() => {
-    showDemoteConfirm = false;
-    void demoteThreadAction(ctx());
-  }}
-  onAlternate={() => {
-    showDemoteConfirm = false;
-    void demoteThreadAction(ctx(), { deleteHome: true });
-  }}
-  onCancel={() => {
-    showDemoteConfirm = false;
-  }}
-/>
-
 <ConfirmDialog
   open={showArchiveDoneConfirm}
   title="Archive Done Children"
@@ -754,19 +722,21 @@
 <ConfirmDialog
   open={showBulkDeleteConfirm}
   title={`Delete ${selectedIds.size} Threads`}
-  description={withTerminalsNote(
+  description={withAssistantNote(withTerminalsNote(
     `This will permanently delete ${selectedIds.size} threads and all their messages. This action cannot be undone.`,
     deleteTerminalsNote.note,
-  )}
+  ), deleteAssistantNote.note)}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={() => {
     showBulkDeleteConfirm = false;
     deleteTerminalsNote.clear();
+    deleteAssistantNote.clear();
     void runBulk(deleteThreadAction);
   }}
   onCancel={() => {
     showBulkDeleteConfirm = false;
     deleteTerminalsNote.clear();
+    deleteAssistantNote.clear();
   }}
 />

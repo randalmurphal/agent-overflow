@@ -75,6 +75,16 @@ type ProjectDeletionPreview struct {
 	// project owns any run — deriving it again from the counts
 	// is how two surfaces end up disagreeing about what a deletion involves.
 	HasWork bool `json:"hasWork"`
+	// Assistants are the project's assistants, archived ones included:
+	// deleting the project deletes them and removes their home folders
+	// (docs/specs/standing-agents.md, "Deletion, archive and transfer").
+	Assistants []ProjectDeletionAssistant `json:"assistants"`
+}
+
+// ProjectDeletionAssistant is one assistant a project's deletion removes.
+type ProjectDeletionAssistant struct {
+	Name string `json:"name"`
+	Home string `json:"home"`
 }
 
 // ProjectDeletionPreview reports what deleting a project would do on the
@@ -101,6 +111,16 @@ func (a *App) ProjectDeletionPreview(projectID string) (ProjectDeletionPreview, 
 		LiveRunIDs: make([]string, 0),
 		Worktrees:  make([]ProjectCleanupWorktree, 0),
 		HasWork:    footprint.HasWork(),
+		Assistants: make([]ProjectDeletionAssistant, 0),
+	}
+	assistants, err := a.store.ListAssistants()
+	if err != nil {
+		return ProjectDeletionPreview{}, err
+	}
+	for _, assistant := range assistants {
+		if assistant.ProjectID == projectID {
+			preview.Assistants = append(preview.Assistants, ProjectDeletionAssistant{Name: assistant.Name, Home: assistant.Agent.Home})
+		}
 	}
 	if len(footprint.Roots()) == 0 {
 		return preview, nil

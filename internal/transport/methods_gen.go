@@ -98,6 +98,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ConfirmDevicePairing", ID: 3813775159, Scope: "access:admin", Route: "home", Remote: true},                        // main.App.ConfirmDevicePairing
 	{Name: "ConfirmSSHConnection", ID: 2052844871, Scope: "host", Route: "home", Remote: true},                                // main.App.ConfirmSSHConnection
 	{Name: "CountRunningBackgroundTasks", ID: 2617952423, Scope: "threads:read", Route: "thread"},                             // main.App.CountRunningBackgroundTasks
+	{Name: "CreateAssistant", ID: 3231487239, Scope: "threads:autonomy", Route: "selected"},                                   // main.App.CreateAssistant
 	{Name: "CreateDiffReviewComment", ID: 565306783, Scope: "threads:operate", Route: "thread"},                               // main.App.CreateDiffReviewComment
 	{Name: "CreateProject", ID: 969543070, Scope: "git:operate", Route: "selected"},                                           // main.App.CreateProject
 	{Name: "CreateProjectCheckout", ID: 617214578, Scope: "git:operate", Route: "selected"},                                   // main.App.CreateProjectCheckout
@@ -115,8 +116,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteSoundFile", ID: 2725195951, Scope: "settings:write", Route: "home"},                                         // main.App.DeleteSoundFile
 	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate", Route: "thread"},                                         // main.App.DeleteThread
 	{Name: "DeleteThreadGroup", ID: 4104302889, Scope: "threads:operate", Route: "home"},                                      // main.App.DeleteThreadGroup
-	{Name: "DemoteStandingAgent", ID: 2416251970, Scope: "threads:operate", Route: "thread"},                                  // main.App.DemoteStandingAgent
-	{Name: "DemoteStandingAgentAndDeleteHome", ID: 1239522167, Scope: "threads:autonomy", Route: "thread"},                    // main.App.DemoteStandingAgentAndDeleteHome
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                                        // main.App.DevicePairingStatus
 	{Name: "DisallowPreviewPort", ID: 1061100039, Scope: "access:admin", Route: "selected"},                                   // main.App.DisallowPreviewPort
 	{Name: "DiscardUnpreparedThreadTransfer", ID: 2309612888, Scope: "threads:operate", Route: "selected"},                    // main.App.DiscardUnpreparedThreadTransfer
@@ -314,7 +313,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ProbeCodexAccount", ID: 2614227175, Scope: "access:admin", Route: "home"},                                         // main.App.ProbeCodexAccount
 	{Name: "ProjectDeletionPreview", ID: 2575010484, Scope: "git:operate", Route: "project"},                                  // main.App.ProjectDeletionPreview
 	{Name: "PromoteScratchThread", ID: 4079123887, Scope: "threads:operate", Route: "thread"},                                 // main.App.PromoteScratchThread
-	{Name: "PromoteStandingAgent", ID: 3186469152, Scope: "threads:autonomy", Route: "thread"},                                // main.App.PromoteStandingAgent
 	{Name: "ProviderTerminalAttach", ID: 1393518281, Scope: "terminal:operate", Route: "thread"},                              // main.App.ProviderTerminalAttach
 	{Name: "ProviderTerminalDetach", ID: 2584141779, Scope: "terminal:operate", Route: "thread"},                              // main.App.ProviderTerminalDetach
 	{Name: "ProviderTerminalInput", ID: 1783659784, Scope: "terminal:operate", Route: "thread"},                               // main.App.ProviderTerminalInput
@@ -417,6 +415,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220, Scope: "settings:write", Route: "selected", StepUp: true},          // main.App.SetWorkspaceMcpServerEnabled
 	{Name: "ShutdownBackend", ID: 2115861089, Scope: "host", Route: "home"},                                                   // main.App.ShutdownBackend
 	{Name: "StartCodexReview", ID: 1913732562, Scope: "threads:operate", Route: "thread"},                                     // main.App.StartCodexReview
+	{Name: "StartNextAssistantThread", ID: 4173453878, Scope: "threads:autonomy", Route: "thread"},                            // main.App.StartNextAssistantThread
 	{Name: "StartProviderLogin", ID: 1484798083, Scope: "access:admin", Route: "home"},                                        // main.App.StartProviderLogin
 	{Name: "StartSSHComputer", ID: 531852766, Scope: "host", Route: "home", Remote: true},                                     // main.App.StartSSHComputer
 	{Name: "StartSSHConnection", ID: 2623175319, Scope: "host", Route: "home", Remote: true},                                  // main.App.StartSSHConnection
@@ -495,6 +494,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "WorkflowListUnresolvedItems", ID: 3613211765, Scope: "threads:read", Route: "project"},                            // main.App.WorkflowListUnresolvedItems
 	{Name: "WorkflowMergeItem", ID: 3006532931, Scope: "threads:autonomy", Route: "home"},                                     // main.App.WorkflowMergeItem
 	{Name: "WorkflowPauseItem", ID: 3764767257, Scope: "threads:autonomy", Route: "home"},                                     // main.App.WorkflowPauseItem
+	{Name: "WorkflowPauseItemAndEndSessions", ID: 124764894, Scope: "threads:autonomy", Route: "home"},                        // main.App.WorkflowPauseItemAndEndSessions
 	{Name: "WorkflowRequestSoftStop", ID: 2570221545, Scope: "threads:autonomy", Route: "home"},                               // main.App.WorkflowRequestSoftStop
 	{Name: "WorkflowRerunItem", ID: 1986594501, Scope: "threads:autonomy", Route: "home"},                                     // main.App.WorkflowRerunItem
 	{Name: "WorkflowResolveGate", ID: 3348479803, Scope: "threads:autonomy", Route: "home"},                                   // main.App.WorkflowResolveGate

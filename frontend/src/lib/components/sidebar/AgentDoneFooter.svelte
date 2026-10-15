@@ -7,6 +7,7 @@
   import type { SidebarAgentDoneNode } from '../../utils/sidebarTreeView';
   import { isAgentDoneExpanded, revealMoreAgentDone, toggleAgentDone } from '../../stores/sidebar.svelte';
   import { forgetArchivedChildren } from '../../stores/agentArchivedChildren.svelte';
+  import { assistantKey } from '../../utils/sidebarTree';
   import { THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
   import { GROUP_MEMBER_PIN_SLOT_LEFT_PX, sidebarGroupMemberPaddingLeftPx } from '../../utils/sidebarRowMetrics';
 
@@ -25,7 +26,7 @@
 <div class="flex items-center gap-1 pr-1" data-testid="thread-row-agent-done" data-expanded={node.expanded}>
   <button
     type="button"
-    onclick={(e) => { e.stopPropagation(); if (!isAgentDoneExpanded(node.agent.id)) forgetArchivedChildren(node.agent.id); toggleAgentDone(node.agent.id); }}
+    onclick={(e) => { e.stopPropagation(); if (!isAgentDoneExpanded(assistantKey(node.agent))) forgetArchivedChildren(node.agent.id); toggleAgentDone(assistantKey(node.agent)); }}
     aria-expanded={node.expanded}
     aria-label={node.expanded ? 'Hide finished threads' : 'Show finished threads'}
     data-testid="thread-row-agent-done-toggle"
@@ -48,7 +49,7 @@
   {#if node.expanded && node.hiddenCount > 0}
     <button
       type="button"
-      onclick={(e) => { e.stopPropagation(); revealMoreAgentDone(node.agent.id); }}
+      onclick={(e) => { e.stopPropagation(); revealMoreAgentDone(assistantKey(node.agent)); }}
       data-testid="thread-row-agent-done-more"
       class="flex items-center h-6 compact:h-9 px-2 rounded-[var(--radius-field)] text-[0.625rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
     >

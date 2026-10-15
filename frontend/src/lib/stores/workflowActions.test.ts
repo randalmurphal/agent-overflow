@@ -12,6 +12,7 @@ function bindings(): WorkflowActionBindings {
     dropUnit: vi.fn(async () => undefined),
     mergeItem: vi.fn(async () => ({ base: 'release', mode: 'ff', sha: '1234567890' })),
     pauseItem: vi.fn(async () => undefined),
+    pauseItemAndEndSessions: vi.fn(async () => undefined),
     requestSoftStop: vi.fn(async () => undefined),
     resolveGate: vi.fn(async () => undefined),
     resumeItem: vi.fn(async () => undefined),

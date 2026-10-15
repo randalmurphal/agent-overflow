@@ -148,10 +148,12 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 	if successor, err = a.store.GetThread(successor.ID); err != nil {
 		return store.Thread{}, fmt.Errorf("read the assistant's next thread: %w", err)
 	}
-	// The old row leaves the list as an archive does; the successor takes
-	// the agent row's place; the workers now nest under it.
-	a.broadcastThreadRow(triage.ThreadActionUnlisted, handOff.Old)
+	// The successor takes the agent row's place before the old row leaves
+	// the list as an archive does, so a client moves the panes that showed
+	// the old thread to it instead of closing them; the workers now nest
+	// under it.
 	a.broadcastThreadRow(triage.ThreadActionListed, successor)
+	a.broadcastThreadRow(triage.ThreadActionUnlisted, handOff.Old)
 	a.broadcastSpawnedThreadRows(successor.ID)
 	body := agenthome.HandOffMessage(agenthome.HandOff{
 		Name:             successor.Title,

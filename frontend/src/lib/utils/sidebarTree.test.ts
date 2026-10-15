@@ -463,7 +463,7 @@ describe('buildSidebarThreadTree with groups', () => {
 });
 
 describe('buildSidebarThreadTree with standing agents', () => {
-  const agent = mkThread('agent', { agentPromotedAt: 1000, updatedAt: 100 });
+  const agent = mkThread('agent', { agentId: 'agent', updatedAt: 100 });
 
   it('nests the live threads an agent spawned under it, sorted, and leaves the rest alone', () => {
     const tree = buildSidebarThreadTree({
@@ -510,7 +510,7 @@ describe('buildSidebarThreadTree with standing agents', () => {
     const tree = buildSidebarThreadTree({
       threads: [
         agent,
-        mkThread('quiet-agent', { agentPromotedAt: 1000, updatedAt: 9000 }),
+        mkThread('quiet-agent', { agentId: 'quiet-agent', updatedAt: 9000 }),
         mkThread('member', { groupId: 'g1', updatedAt: 8000 }),
         mkThread('pinned', { pinnedAt: 1, updatedAt: 9999 }),
         mkThread('child', { spawnedByThreadId: 'agent', updatedAt: 10 }),
@@ -525,7 +525,7 @@ describe('buildSidebarThreadTree with standing agents', () => {
     const tree = buildSidebarThreadTree({
       threads: [
         agent,
-        mkThread('promoted-child', { spawnedByThreadId: 'agent', agentPromotedAt: 2000 }),
+        mkThread('promoted-child', { spawnedByThreadId: 'agent', agentId: 'promoted-child' }),
         mkThread('grandchild', { spawnedByThreadId: 'promoted-child' }),
       ],
     });
@@ -538,7 +538,7 @@ describe('buildSidebarThreadTree with standing agents', () => {
   it('ignores a group or pin left on an agent row, and nests a spawned thread before its group', () => {
     const tree = buildSidebarThreadTree({
       threads: [
-        mkThread('agent', { agentPromotedAt: 1000, groupId: 'g1', pinnedAt: 5 }),
+        mkThread('agent', { agentId: 'agent', groupId: 'g1', pinnedAt: 5 }),
         mkThread('child', { spawnedByThreadId: 'agent', groupId: 'g1' }),
       ],
       groups: [mkGroup('g1')],

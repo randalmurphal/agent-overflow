@@ -48,7 +48,9 @@ export async function resolveWorkflowRun(
       // digest is the receipt a human reads, so the sweep must not skip past
       // it and no session receipt is recorded.
       addToast('info', request.kind === 'pause'
-        ? 'Paused — the in-flight turn was stopped, the worktree is kept'
+        ? request.endSessions
+          ? 'Paused and sessions ended, the worktree is kept'
+          : 'Paused — the in-flight turn was stopped, the worktree is kept'
         : 'Stopping — locks released, worktree kept');
       return true;
     }

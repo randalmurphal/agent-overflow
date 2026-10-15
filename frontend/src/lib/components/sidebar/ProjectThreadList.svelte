@@ -51,7 +51,7 @@
   import AgentDoneFooter from './AgentDoneFooter.svelte';
   import ThreadGroupRow from './ThreadGroupRow.svelte';
   import ThreadRow from './ThreadRow.svelte';
-  import { buildSidebarThreadTree } from '../../utils/sidebarTree';
+  import { assistantKey, buildSidebarThreadTree } from '../../utils/sidebarTree';
   import {
     flattenSidebarThreadTree,
     nextSidebarThreadRevealLimit,
@@ -171,10 +171,10 @@
   // list, and its open state goes with it.
   $effect(() => {
     for (const node of tree) {
-      if (node.kind !== 'agent' || !isAgentDoneExpanded(node.thread.id)) continue;
+      if (node.kind !== 'agent' || !isAgentDoneExpanded(assistantKey(node.thread))) continue;
       const count = node.thread.archivedChildCount ?? 0;
       if (count === 0) {
-        closeAgentDone(node.thread.id);
+        closeAgentDone(assistantKey(node.thread));
         continue;
       }
       loadArchivedChildren(node.thread.id, count);
@@ -455,7 +455,7 @@
               {pane}
               indent={node.depth + 1}
               inGroup={node.ownerGroupId !== null || node.ownerAgentId !== null}
-              agent={node.kind === 'agent' ? { expanded: isAgentExpanded(node.thread.id), childCount: node.children.length } : null}
+              agent={node.kind === 'agent' ? { expanded: isAgentExpanded(assistantKey(node.thread)), childCount: node.children.length } : null}
               agentChildren={node.kind === 'agent' ? node.children.map((child) => child.thread) : []}
               archivedChild={node.kind === 'thread' && node.archived === true}
               selected={isThreadSelected(node.thread.id)}

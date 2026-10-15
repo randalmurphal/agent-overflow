@@ -7,6 +7,7 @@
   // here too — Rename is the only action the parent still drives.
 
   import type { ProjectWithCounts } from '../../types/models';
+  import { projectAssistantsNote, withAssistantNote } from '../../stores/assistantDelete.svelte';
   import type { ProjectDeletionPreview } from '../../types/workflow';
   import {
     ArchiveProject,
@@ -64,6 +65,8 @@
   // Set only when the project owns workflow work — that is the case with more
   // to say than the one-line confirm can carry.
   let deletionPreview = $state<ProjectDeletionPreview | null>(null);
+  // The assistants the plain confirm's delete removes, named with their homes.
+  let deleteAssistantsNote = $state('');
   let deleting = $state(false);
 
   async function doNewGroup(): Promise<void> {
@@ -103,6 +106,7 @@
       if (preview.hasWork) {
         deletionPreview = preview;
       } else {
+        deleteAssistantsNote = projectAssistantsNote(preview.assistants);
         showDeleteConfirm = true;
       }
     } catch (err) {
@@ -243,7 +247,7 @@
 <ConfirmDialog
   open={showDeleteConfirm}
   title="Delete Project"
-  description={`Permanently delete "${labelText}" and all ${project.threadCount} thread${project.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`}
+  description={withAssistantNote(`Permanently delete "${labelText}" and all ${project.threadCount} thread${project.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`, deleteAssistantsNote)}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={() => {

@@ -35,26 +35,26 @@ let threads: Thread[] = $state([]);
 const catalogWriter = computerCatalogWriter('threads', () => threads, setThreads, (row) => threadBackend(row.id));
 
 // Every write to the list passes here except dropThreadsForDetachedBackend,
-// so a thread that stops being a standing agent in this list (demoted,
-// archived, deleted, or replaced by a row without the mark) takes its
-// agent-only sidebar state with it. A computer detaching keeps that state:
-// its agents are still agents, and the persisted fold must survive.
+// so a thread that stops being an assistant's current thread in this list
+// (handed off, archived, deleted, or replaced by a row without the mark)
+// takes its agent-only state with it, and an assistant with no current
+// thread left in the list takes its sidebar state (keyed by the assistant,
+// so a handoff keeps it). A computer detaching keeps that state: its
+// assistants are still assistants, and the persisted fold must survive.
 function setThreads(rows: Thread[]): void {
   const before = threads;
   threads = rows;
-  let after: Map<string, Thread> | null = null;
+  let currentThreadOf: Map<string, string> | null = null;
   for (const row of before) {
-    if (row.agentPromotedAt == null) continue;
-    after ??= new Map(rows.map((t) => [t.id, t]));
-    if (after.get(row.id)?.agentPromotedAt == null) endStandingAgent(row.id);
+    if (!row.agentId) continue;
+    currentThreadOf ??= new Map(rows.flatMap((t) => (t.agentId ? [[t.agentId, t.id] as const] : [])));
+    const current = currentThreadOf.get(row.agentId);
+    if (current === row.id) continue;
+    forgetArchivedChildren(row.id);
+    // The wakes store reads this one, so it listens rather than being called.
+    notifyStandingAgentEnded(row.id);
+    if (current === undefined) forgetAgentSidebarState(row.agentId);
   }
-}
-
-function endStandingAgent(id: string): void {
-  forgetAgentSidebarState(id);
-  forgetArchivedChildren(id);
-  // The wakes store reads this one, so it listens rather than being called.
-  notifyStandingAgentEnded(id);
 }
 // Ownership changes before the destination's row is applied. Fence the
 // former owner's offline snapshot and rewrite it without the moved row;
@@ -426,4 +426,9 @@ onBackendDetached(({ threadIds }) => dropThreadsForDetachedBackend(threadIds));
  */
 export function getThreadById(id: string): Thread | undefined {
   return threads.find((t) => t.id === id);
+}
+
+/** The listed current thread of the assistant with this id, if any. */
+export function assistantCurrentThread(agentId: string): Thread | undefined {
+  return threads.find((t) => t.agentId === agentId);
 }

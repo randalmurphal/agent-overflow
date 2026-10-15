@@ -64,6 +64,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3813775159: 'home', // ConfirmDevicePairing
 	2052844871: 'home', // ConfirmSSHConnection
 	2617952423: 'thread', // CountRunningBackgroundTasks
+	3231487239: 'selected', // CreateAssistant
 	565306783: 'thread', // CreateDiffReviewComment
 	969543070: 'selected', // CreateProject
 	617214578: 'selected', // CreateProjectCheckout
@@ -81,8 +82,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2725195951: 'home', // DeleteSoundFile
 	1186337974: 'thread', // DeleteThread
 	4104302889: 'home', // DeleteThreadGroup
-	2416251970: 'thread', // DemoteStandingAgent
-	1239522167: 'thread', // DemoteStandingAgentAndDeleteHome
 	604263015: 'home', // DevicePairingStatus
 	1061100039: 'selected', // DisallowPreviewPort
 	2309612888: 'selected', // DiscardUnpreparedThreadTransfer
@@ -280,7 +279,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2614227175: 'home', // ProbeCodexAccount
 	2575010484: 'project', // ProjectDeletionPreview
 	4079123887: 'thread', // PromoteScratchThread
-	3186469152: 'thread', // PromoteStandingAgent
 	1393518281: 'thread', // ProviderTerminalAttach
 	2584141779: 'thread', // ProviderTerminalDetach
 	1783659784: 'thread', // ProviderTerminalInput
@@ -383,6 +381,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2181574220: 'selected', // SetWorkspaceMcpServerEnabled
 	2115861089: 'home', // ShutdownBackend
 	1913732562: 'thread', // StartCodexReview
+	4173453878: 'thread', // StartNextAssistantThread
 	1484798083: 'home', // StartProviderLogin
 	531852766: 'home', // StartSSHComputer
 	2623175319: 'home', // StartSSHConnection
@@ -461,6 +460,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3613211765: 'project', // WorkflowListUnresolvedItems
 	3006532931: 'home', // WorkflowMergeItem
 	3764767257: 'home', // WorkflowPauseItem
+	124764894: 'home', // WorkflowPauseItemAndEndSessions
 	2570221545: 'home', // WorkflowRequestSoftStop
 	1986594501: 'home', // WorkflowRerunItem
 	3348479803: 'home', // WorkflowResolveGate

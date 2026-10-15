@@ -134,8 +134,8 @@ onThreadWakesChanged((change, backend) => {
   if (change.row) {
     if (change.row.kind === 'reminder') return;
     // A row of a thread that is not a standing agent is not state the
-    // sidebar shows; the agent row asks for its rows when it is promoted.
-    if (!current && getThreadById(threadId)?.agentPromotedAt == null) return;
+    // sidebar shows; the agent row asks for its rows when it mounts.
+    if (!current && !getThreadById(threadId)?.agentId) return;
     const rows = (current?.rows ?? []).filter((row) => row.id !== id);
     rows.push(change.row);
     setRows(threadId, (current?.backend ?? threadBackend(threadId) ?? backend) as BackendKey, rows);

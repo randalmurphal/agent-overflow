@@ -10,6 +10,7 @@ import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread } from '../types/models';
 import type { ThreadStatusPill } from './threadStatusPill';
 import {
+  assistantKey,
   sidebarNodeSection,
   statusPriority,
   type SidebarThreadTreeNode,
@@ -135,7 +136,7 @@ export function flattenSidebarThreadTree(
       }
       continue;
     }
-    const agentId = node.thread.id;
+    const agentId = assistantKey(node.thread);
     const collapsed = collapsedAgentIds !== undefined && collapsedAgentIds.has(agentId);
     const children = collapsed
       ? node.children.filter((child) => child.thread.id === input.activeThreadId)
@@ -173,7 +174,8 @@ export function flattenSidebarThreadTree(
 
 /** The each-block key of a visible row; a done footer keys on its agent. */
 export function sidebarVisibleNodeId(node: SidebarTreeVisibleNode): string {
-  if (node.kind === 'agent-done') return `${node.agent.id}:done`;
+  if (node.kind === 'agent-done') return `agent:${assistantKey(node.agent)}:done`;
+  if (node.kind === 'agent') return `agent:${assistantKey(node.thread)}`;
   return node.kind === 'group' ? node.group.id : node.thread.id;
 }
 

@@ -1363,16 +1363,21 @@ export class RemoteJob {
 }
 
 /**
- * StandingAgent is one row of standing_agents.
+ * StandingAgent is one assistant record.
  */
 export class StandingAgent {
+    "id": string;
     "threadId": string;
     "home": string;
     "notifyOnTick": boolean;
-    "promotedAt": number;
+    "creatorAgentId"?: string;
+    "createdAt": number;
 
     /** Creates a new StandingAgent instance. */
     constructor($$source: Partial<StandingAgent> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
         if (!("threadId" in $$source)) {
             this["threadId"] = "";
         }
@@ -1382,8 +1387,8 @@ export class StandingAgent {
         if (!("notifyOnTick" in $$source)) {
             this["notifyOnTick"] = false;
         }
-        if (!("promotedAt" in $$source)) {
-            this["promotedAt"] = 0;
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -1548,11 +1553,15 @@ export class Thread {
     "origin": ThreadOrigin;
 
     /**
-     * AgentPromotedAt is the standing agent row's promotion time, nil for a
-     * thread the user has not promoted (docs/specs/standing-agents.md). It
-     * is derived from standing_agents, not a persisted threads column.
+     * AgentID names the assistant whose current thread this is, "" for
+     * any other thread (docs/specs/standing-agents.md, "Standing agent").
+     * PastAgentID names the assistant a handoff superseded this thread for,
+     * and AgentSupersededAt is when. All three are derived from agents and
+     * agent_past_threads, not persisted threads columns.
      */
-    "agentPromotedAt"?: number | null;
+    "agentId"?: string;
+    "pastAgentId"?: string;
+    "agentSupersededAt"?: number | null;
 
     /**
      * SpawnedByThreadID names the local thread whose thread_spawn made this
@@ -1564,7 +1573,7 @@ export class Thread {
     "spawnedByThreadId"?: string;
 
     /**
-     * SpawnedByAgent is true when SpawnedByThreadID names a standing agent,
+     * SpawnedByAgent is true when SpawnedByThreadID names an assistant's current thread,
      * archived or not. The agent's row may be absent from a client's list
      * (archived, another project) while the group refusal still holds, so
      * the row says it is bound rather than leaving the client to look up
@@ -1574,7 +1583,8 @@ export class Thread {
 
     /**
      * ArchivedChildCount is how many threads this one spawned that are now
-     * archived. Only a standing agent's row carries it (zero elsewhere);
+     * archived, with its assistant's archived past threads. Only an
+     * assistant's current thread carries it (zero elsewhere);
      * the sidebar's agent row shows the count and lists them on demand.
      */
     "archivedChildCount"?: number;

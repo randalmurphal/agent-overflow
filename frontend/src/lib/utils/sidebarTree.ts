@@ -28,10 +28,10 @@
 //     group with a freshly-active member surfaces in the sort. An agent's
 //     is the newest of its own and its children's.
 //
-// A standing agent (docs/specs/standing-agents.md, "Sidebar"): a thread
-// with `agentPromotedAt` is an agent node, and the live threads whose
-// `spawnedByThreadId` names it, unless promoted themselves, are its
-// children. The backend keeps an agent and its children out of groups; a
+// A standing agent (docs/specs/standing-agents.md, "Sidebar"): an
+// assistant's current thread (`agentId`) is an agent node, and its children
+// are the live threads whose `spawnedByThreadId` names it, unless they are
+// assistants themselves, and its past threads that are not archived. The backend keeps an agent and its children out of groups; a
 // `groupId` or pin left on an agent's row is ignored here. An agent whose
 // row is not in the list (another project, archived) nests nothing: its
 // spawned threads render as plain rows.
@@ -149,9 +149,17 @@ export interface SidebarAgentTreeNode extends SidebarTreeNodeBase {
  */
 export type SidebarTreeNode = SidebarThreadTreeNode | SidebarGroupTreeNode | SidebarAgentTreeNode;
 
-/** A promoted thread: its row is an agent node. */
-export function isStandingAgent(thread: Pick<Thread, 'agentPromotedAt'>): boolean {
-  return thread.agentPromotedAt != null;
+/** An assistant's current thread: its row is an agent node. */
+export function isStandingAgent(thread: Pick<Thread, 'agentId'>): boolean {
+  return Boolean(thread.agentId);
+}
+
+/**
+ * The key of an agent row's sidebar state (its fold, its done footer): the
+ * assistant's id, so a handoff to a new thread keeps it.
+ */
+export function assistantKey(thread: Pick<Thread, 'id' | 'agentId'>): string {
+  return thread.agentId || thread.id;
 }
 
 export interface BuildSidebarThreadTreeInput {
@@ -351,10 +359,11 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
  * comparator, so a group with a running member rises within the group
  * section. Members sort by the same comparator, their own pins included.
  *
- * Agents: a promoted thread is an agent node in the same section, and a
- * thread it spawned is built at depth 1 under it, before any group its
- * `groupId` could name. A promoted thread never nests under its own
- * spawner: it is an agent row of its own.
+ * Agents: an assistant's current thread is an agent node in the same
+ * section, and a thread it spawned or a past thread of the assistant is
+ * built at depth 1 under it, before any group its `groupId` could name. An
+ * assistant never nests under the assistant that spawned it: it is an agent
+ * row of its own.
  */
 export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): SidebarTreeNode[] {
   const visibleThreads = input.threads.filter((thread) => !isHiddenThreadMode(thread.mode));
@@ -433,12 +442,13 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
 
   const groupsById = new Map(groups.map((group) => [group.id, group] as const));
   const agentIds = new Set(agents.map((agent) => agent.id));
+  const currentThreadOf = new Map(agents.map((agent) => [agent.agentId as string, agent.id] as const));
   const membersByGroup = new Map<string, Thread[]>();
   const childrenByAgent = new Map<string, Thread[]>();
   const nodes: SidebarTreeNode[] = [];
   for (const thread of visibleThreads) {
     if (agentIds.has(thread.id)) continue;
-    const spawner = thread.spawnedByThreadId;
+    const spawner = thread.pastAgentId ? currentThreadOf.get(thread.pastAgentId) : thread.spawnedByThreadId;
     if (spawner && agentIds.has(spawner)) {
       const bucket = childrenByAgent.get(spawner);
       if (bucket) bucket.push(thread);

@@ -726,6 +726,26 @@ export async function openThreadFromNavigation(
   return mountThreadInPane(thread, targetPane, 'preview');
 }
 
+/**
+ * Move every pane showing an assistant's superseded thread to its current
+ * thread: a handoff from this client or another, or the app's own after the
+ * provider cleaned up the session (docs/specs/standing-agents.md, "Next
+ * thread"). A pane closes instead when the current thread is already shown,
+ * since a thread is in one pane at a time. Focus stays where it is.
+ */
+export function moveAssistantPanes(oldThreadId: string, current: Thread): void {
+  for (const pane of panesShowingThread(oldThreadId)) {
+    if (findPaneShowingThread(current.id)) {
+      destroyPane(pane.paneId);
+      continue;
+    }
+    void replaceThreadInPane(current, pane, getPaneActivation(pane.paneId), { background: true }).catch((err: unknown) => {
+      console.error('Failed to move a pane to the assistant\'s new thread:', err);
+      pane.setGeneralError('This assistant moved to a new thread, which could not be opened here.', err);
+    });
+  }
+}
+
 export async function openThreadInNewPane(thread: Thread, insertIndex?: number): Promise<ThreadPane> {
   if (thread.forkPreparing) throw new Error('This fork is still being prepared.');
   // Probed before minting the pane: a thread that is already open must not
