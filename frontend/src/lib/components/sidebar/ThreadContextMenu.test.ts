@@ -25,7 +25,7 @@ import {
 } from '../../stores/sidebar.svelte';
 import type { Thread } from '../../types/models';
 import type { Settings } from '../../types/settings';
-import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -862,6 +862,18 @@ describe('<ThreadContextMenu> standing agent', () => {
     const { baseElement } = renderAgentMenu(makeThread({ agentId: 'agent-1' }));
     await fireEvent.click(item(baseElement, 'New Thread, Same Assistant'));
     await waitFor(() => expect(next).toHaveBeenCalledWith('thread-1'));
+  });
+
+  it('disables New Thread, Same Assistant on a device without threads:autonomy', async () => {
+    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
+    try {
+      const { baseElement } = renderAgentMenu(makeThread({ agentId: 'agent-1' }));
+      expect(item(baseElement, 'New Thread, Same Assistant').getAttribute('aria-disabled')).toBe('true');
+      expect(item(baseElement, 'New Thread, Same Assistant').getAttribute('title')).toBe('Not granted to this device');
+      expect(item(baseElement, 'Rename Thread').getAttribute('aria-disabled')).not.toBe('true');
+    } finally {
+      resetToLocalPage();
+    }
   });
 
   it("confirms an assistant's delete with confirmDelete off, naming its home, and deletes only after it", async () => {

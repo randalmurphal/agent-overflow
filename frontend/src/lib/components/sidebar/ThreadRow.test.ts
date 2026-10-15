@@ -44,7 +44,7 @@ import { refreshProjects, resetProjectsForTest } from '../../stores/projects.sve
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { isAgentExpanded, resetSidebarForTest, setAgentExpanded, setShowProviderIcons } from '../../stores/sidebar.svelte';
-import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
+import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -254,6 +254,19 @@ describe('<ThreadRow> inline actions without threads:operate', () => {
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
     expect(pin).not.toHaveBeenCalled();
     expect(archive).not.toHaveBeenCalled();
+  });
+
+  it('disables New Thread, Same Assistant without threads:autonomy, and enables it with it', async () => {
+    setBindingMock('ListThreadWakes', async () => []);
+    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
+    const thread = makeThread({ agentId: 'agent-1' });
+    const inert = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { expanded: false, childCount: 0 } } });
+    expect((inert.getByTestId('thread-row-next-thread') as HTMLButtonElement).disabled).toBe(true);
+    inert.unmount();
+
+    await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate', 'threads:autonomy']);
+    const granted = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { expanded: false, childCount: 0 } } });
+    expect((granted.getByTestId('thread-row-next-thread') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('disables delete on a terminal thread with the reason', async () => {

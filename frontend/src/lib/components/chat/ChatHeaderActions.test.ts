@@ -445,6 +445,16 @@ describe('<ChatHeaderActions> terminal controls without terminal:operate', () =>
     resetToLocalPage();
   });
 
+  it('disables New Thread, Same Assistant without threads:autonomy, which the next thread rides', async () => {
+    installSubscribeMock(status({}));
+    const pane = await buildPane(makeThread({ agentId: 'agent-1' }));
+    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    const next = getByTestId('chat-header-next-thread') as HTMLButtonElement;
+    expect(next.disabled).toBe(true);
+    expect(next.title).toBe(INERT);
+  });
+
   it('disables the desktop terminal toggle and take-control with the reason', async () => {
     installSubscribeMock(status({}));
     const pane = await buildPane(makeThread({ provider: 'claude-tui' }));

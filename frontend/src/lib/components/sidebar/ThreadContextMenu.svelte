@@ -229,6 +229,8 @@
       : !threadHasScope('threads:operate', thread.id, thread.projectId),
   );
   let ungrantedTitle = $derived(operateUngranted ? 'Not granted to this device' : undefined);
+  // StartNextAssistantThread rides threads:autonomy.
+  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', thread.id, thread.projectId));
 
   /**
    * Run an async per-thread action across the selection sequentially —
@@ -494,8 +496,8 @@
           {#if isAgent}
             <MenuItem
               label="New Thread, Same Assistant"
-              disabled={operateUngranted}
-              title={ungrantedTitle}
+              disabled={nextThreadUngranted}
+              title={nextThreadUngranted ? 'Not granted to this device' : undefined}
               onSelect={() => {
                 onClose();
                 void nextAssistantThreadAction(ctx());

@@ -62,7 +62,8 @@
   // New Thread, Same Assistant (docs/specs/standing-agents.md, "Next
   // thread"): on an assistant's current thread, desktop and compact.
   let isAssistant = $derived(Boolean(pane.thread?.agentId) && !pane.thread?.archived);
-  let nextThreadUngranted = $derived(!threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId));
+  // StartNextAssistantThread rides threads:autonomy.
+  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', pane.threadId, pane.thread?.projectId));
   function startNextAssistantThread(): void {
     const thread = pane.thread;
     if (!thread) return;
