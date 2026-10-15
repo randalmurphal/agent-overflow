@@ -10,15 +10,20 @@ import (
 	"path/filepath"
 )
 
-// processTemplate is the migrated image NewFromTemplate copies.
+// processTemplate is the migrated image NewScratchFromTemplate copies.
 var processTemplate = newMigratedTemplate(buildMigratedImage)
 
-// NewFromTemplate creates a database at path and opens it. The result is
-// what New returns for a missing file: the same schema, migration
-// version, deferred watermark and file-level PRAGMAs, and an identity of
-// its own. Only the migration rows' applied times differ. The file is a
-// copy of an empty database the migration chain ran on once per process,
-// so the chain is not replayed per database.
+// NewScratchFromTemplate creates a database at path and opens it. The
+// result is what New returns for a missing file: the same schema,
+// migration version, deferred watermark and file-level PRAGMAs, and an
+// identity of its own. Only the migration rows' applied times differ. The
+// file is a copy of an empty database the migration chain ran on once per
+// process, so the chain is not replayed per database.
+//
+// It is for a database the caller deletes after use. Neither the image
+// build nor the copy syncs anything to disk (scratchWriterConnPragmas), so
+// neither waits behind other writers' flushes, and a crash can leave the
+// file corrupt.
 //
 // The first call builds that image in a temporary directory beside path,
 // keeps it in memory for the life of the process and removes the
@@ -26,7 +31,7 @@ var processTemplate = newMigratedTemplate(buildMigratedImage)
 // returned and the next call builds again. path must not exist, nor may
 // a WAL or rollback journal beside it. The file is created with mode
 // 0600 and is removed again if the open fails.
-func NewFromTemplate(ctx context.Context, path string) (*Store, error) {
+func NewScratchFromTemplate(ctx context.Context, path string) (*Store, error) {
 	return processTemplate.open(ctx, path)
 }
 
@@ -57,7 +62,7 @@ func (t *migratedTemplate) open(ctx context.Context, path string) (*Store, error
 	if err := writeImage(path, image); err != nil {
 		return nil, err
 	}
-	s, err := NewWithOptions(path, Options{Context: ctx})
+	s, err := NewWithOptions(path, Options{Context: ctx, scratch: true})
 	if err != nil {
 		return nil, errors.Join(err, removeDatabaseFiles(path))
 	}
@@ -102,7 +107,7 @@ func (t *migratedTemplate) load(ctx context.Context, parent string) ([]byte, err
 // so the build fails instead.
 func buildMigratedImage(ctx context.Context, dir string) ([]byte, error) {
 	path := filepath.Join(dir, "template.db")
-	s, err := NewWithOptions(path, Options{Context: ctx})
+	s, err := NewWithOptions(path, Options{Context: ctx, scratch: true})
 	if err != nil {
 		return nil, err
 	}
@@ -138,17 +143,13 @@ func refuseSidecars(path string) error {
 	return nil
 }
 
-// writeImage creates path, which must not exist, with the image's bytes
-// and syncs it, so a later checkpoint never lands on unwritten pages.
+// writeImage creates path, which must not exist, with the image's bytes.
 func writeImage(path string, image []byte) error {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("store: create database from template: %w", err)
 	}
 	_, err = file.Write(image)
-	if err == nil {
-		err = file.Sync()
-	}
 	if closeErr := file.Close(); err == nil {
 		err = closeErr
 	}

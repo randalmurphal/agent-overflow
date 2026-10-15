@@ -1753,19 +1753,20 @@ type MigrationStep struct {
 // PRAGMAs, creates the version tracking table, and applies any unapplied
 // migrations in order.
 func runMigrations(db *sql.DB) error {
-	return runMigrationsContext(context.Background(), db, nil)
+	return runMigrationsContext(context.Background(), db, writerConnPragmas, nil)
 }
 
 // runMigrationsContext is runMigrations bounded by ctx, reporting each
 // pending migration, and each long-running part of a rebuild, to
-// onMigration (which may be nil) before it runs.
+// onMigration (which may be nil) before it runs. pragmas are the ones the
+// writer pool's DSN carries.
 // Cancelling ctx interrupts the running migration; its transaction rolls
 // back and it runs again on the next open.
-func runMigrationsContext(ctx context.Context, db *sql.DB, onMigration func(MigrationStep)) error {
+func runMigrationsContext(ctx context.Context, db *sql.DB, pragmas []connPragma, onMigration func(MigrationStep)) error {
 	if err := refuseNewerSchema(db); err != nil {
 		return err
 	}
-	if err := configureDatabase(db); err != nil {
+	if err := configureDatabase(db, pragmas); err != nil {
 		return err
 	}
 	if err := ensureMigrationTable(db); err != nil {
@@ -1872,7 +1873,7 @@ func refuseNewerSchema(db *sql.DB) error {
 	return nil
 }
 
-func configureDatabase(db *sql.DB) error {
+func configureDatabase(db *sql.DB, pragmas []connPragma) error {
 	// auto_vacuum before anything creates a table. It is a property of
 	// the database FILE, written into its header when the first table is
 	// created, and after that a plain PRAGMA cannot change it: on a
@@ -1909,7 +1910,7 @@ func configureDatabase(db *sql.DB) error {
 	// _pragma values verbatim and SQLite ignores an unknown PRAGMA name
 	// without complaining, so a typo would open cleanly and run the whole
 	// app with foreign keys off.
-	return verifyConnPragmas(db, writerConnPragmas)
+	return verifyConnPragmas(db, pragmas)
 }
 
 func ensureMigrationTable(db *sql.DB) error {

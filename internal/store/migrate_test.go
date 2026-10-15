@@ -185,7 +185,7 @@ func TestConfigureDatabaseWarnsOnFallback(t *testing.T) {
 	log.SetOutput(&logBuf)
 	t.Cleanup(func() { log.SetOutput(previous) })
 
-	if err := configureDatabase(db); err != nil {
+	if err := configureDatabase(db, writerConnPragmas); err != nil {
 		t.Fatalf("configureDatabase: %v", err)
 	}
 
@@ -1720,7 +1720,7 @@ func migrateThrough(t *testing.T, target int) *sql.DB {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 
-	if err := configureDatabase(db); err != nil {
+	if err := configureDatabase(db, writerConnPragmas); err != nil {
 		t.Fatalf("configure database: %v", err)
 	}
 	if err := ensureMigrationTable(db); err != nil {
@@ -1756,7 +1756,7 @@ func migratedDB(t *testing.T) *sql.DB {
 			t.Errorf("close migrated db: %v", err)
 		}
 	})
-	if err := configureDatabase(db); err != nil {
+	if err := configureDatabase(db, writerConnPragmas); err != nil {
 		t.Fatalf("configure database: %v", err)
 	}
 	return db
