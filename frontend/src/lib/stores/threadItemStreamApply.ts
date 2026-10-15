@@ -152,6 +152,7 @@ export function createThreadItemStreamApply(
   function upsertItemsBatch(
     incoming: Item[],
     optimisticItemIds?: ReadonlySet<string>,
+    opensStreams = false,
   ): ApplyItemUpsertsToWindowResult | null {
     const scope = options.scopeRootId ?? '';
     let rows = incoming;
@@ -164,7 +165,7 @@ export function createThreadItemStreamApply(
       }
       break;
     }
-    return rows.length > 0 ? upsertWindowRows(rows, optimisticItemIds) : null;
+    return rows.length > 0 ? upsertWindowRows(rows, optimisticItemIds, opensStreams) : null;
   }
 
   /** The event names a row of another scope, which this window never holds. */
@@ -174,7 +175,8 @@ export function createThreadItemStreamApply(
 
   function upsertWindowRows(
     incoming: Item[],
-    optimisticItemIds?: ReadonlySet<string>,
+    optimisticItemIds: ReadonlySet<string> | undefined,
+    opensStreams: boolean,
   ): ApplyItemUpsertsToWindowResult | null {
     const thread = options.getThread();
     return streamingReveal.withReconciledItems(incoming, (incoming) => {
@@ -210,14 +212,14 @@ export function createThreadItemStreamApply(
     }
     options.commitUpsertResult(next, (committed) => finishCommittedUpsert(committed, previousItems));
     return next;
-    });
+    }, opensStreams);
   }
 
   function applyProviderItemUpserts(
     incoming: Item[],
   ): ApplyItemUpsertsToWindowResult | null {
     const previousTail = options.getItems().at(-1);
-    const applied = upsertItemsBatch(incoming, options.optimisticItemIds);
+    const applied = upsertItemsBatch(incoming, options.optimisticItemIds, true);
     if (applied && applied.appendedItems.length > 0 && !timelineWindow.hasMoreNewer) {
       activityRuns.noteLiveAppend(applied.appendedItems, previousTail);
     }

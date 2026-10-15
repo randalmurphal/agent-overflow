@@ -3872,6 +3872,54 @@ describe('setupEventListeners', () => {
     expect(pane.lastLiveContentAt).toBeGreaterThan(0);
   });
 
+  // The turn's closing text streams right before the confirmation, and one
+  // flush applies its creation upsert in the same batch as the moved row,
+  // ahead of its deltas. The text row is the reveal frontier from that
+  // upsert, so the moved row stays withheld and the preview keeps it until
+  // the text has revealed.
+  it('keeps the preview while a text row streaming in the same flush withholds the confirmed row', async () => {
+    const quiet = makeItem({
+      id: 'user:1:flush:1', threadId: 'thread-a', turnIndex: 1, itemIndex: 1,
+      kind: 'user_text', role: 'user', summary: 'queued mid-turn', meta: '{"pendingFlush":true}',
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [
+      makeItem({ id: 'a:0', threadId: 'thread-a', turnIndex: 1, itemIndex: 0 }),
+      quiet,
+      makeItem({ id: 'tool:1', threadId: 'thread-a', turnIndex: 1, itemIndex: 2, kind: 'tool_call', role: 'assistant', toolName: 'Bash', status: 'completed' }),
+    ]);
+    markItemsFlushed('thread-a', [{ queueItemId: 'q-1', userItemId: quiet.id, message: quiet.summary }]);
+    await nextFrame();
+    expect(getFlushedForThread('thread-a')).toHaveLength(1);
+
+    const closing = makeItem({
+      id: 'a:final', threadId: 'thread-a', turnIndex: 1, itemIndex: 3,
+      kind: 'assistant_text', role: 'assistant', status: 'streaming', summary: '', streamEnd: 0, rev: -1,
+    });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: 'thread-a', item: closing });
+    emitWailsEvent('provider:item_event', {
+      action: 'delta', threadId: 'thread-a', itemId: closing.id, kind: 'assistant_text',
+      delta: 'The tree has one change.', offset: 0, updatedAt: closing.updatedAt,
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert', threadId: 'thread-a',
+      item: { ...quiet, itemIndex: 4, meta: '{}', updatedAt: quiet.updatedAt + 1 },
+    });
+    await nextFrame();
+
+    expect(pane.revealBoundary).toEqual({ turnIndex: 1, itemIndex: 3 });
+    expect(getFlushedForThread('thread-a')).toHaveLength(1);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'patch', threadId: 'thread-a', itemId: closing.id,
+      patch: { status: 'completed', updatedAt: closing.updatedAt + 1, rev: 7 },
+    });
+    await nextFrame();
+    pane.__flushItemSmoothersForTest();
+
+    expect(pane.revealBoundary).toBeNull();
+    expect(getFlushedForThread('thread-a')).toHaveLength(0);
+  });
+
   // The same confirmation reaching a pane scrolled back into history: the
   // ceiling holds (unloaded rows lie between it and the moved row), so the
   // row is not in this timeline and the preview keeps the message.
