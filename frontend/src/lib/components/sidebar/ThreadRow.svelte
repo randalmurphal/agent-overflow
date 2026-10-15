@@ -6,6 +6,7 @@
   } from '../../stores/keyboardModifiers.svelte';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
   import { assistantKey, isStandingAgent, sidebarPinGroup } from '../../utils/sidebarTree';
+  import { assistantDisplayName } from '../../stores/assistants.svelte';
   import { getShowProviderIcons, setAgentExpanded, toggleAgent } from '../../stores/sidebar.svelte';
   import { asProviderID, providerLabel } from '../../providers/catalog';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
@@ -280,6 +281,9 @@
   // holds, so no row of it offers a pin, the collapsed project's preview
   // of it included.
   let isAgent = $derived(isStandingAgent(thread));
+  // An assistant's name carries its computer while another attached
+  // computer has an assistant of the same name.
+  let rowTitle = $derived((isAgent ? assistantDisplayName(thread) : thread.title) || 'Untitled');
   let isPinned = $derived(!isAgent && thread.pinnedAt != null);
   // The pin, archive and delete controls write the row; inert with a reason
   // when the session lacks the grant, the same treatment the context menu
@@ -596,9 +600,9 @@
     <span
       data-testid="thread-row-title"
       class="text-xs truncate flex-1 min-w-0 {unread ? 'font-semibold text-fg' : agent !== null ? 'font-medium' : ''}"
-      title={thread.title || 'Untitled'}
+      title={rowTitle}
     >
-      {thread.title || 'Untitled'}
+      {rowTitle}
     </span>
     {#if agent !== null && !agent.expanded && agent.childCount > 0}
       <span

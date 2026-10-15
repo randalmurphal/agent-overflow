@@ -98,6 +98,8 @@ export type AgentMessageKind =
   | 'worker-approval'
   | 'job'
   | 'workflow'
+  | 'opening'
+  | 'handoff'
   | 'message'
   | 'task'
   | 'final-answer';
@@ -481,6 +483,8 @@ const KIND_LABELS: Record<Exclude<AgentMessageKind, WakeKind>, { label: string; 
   'worker-approval': { label: 'Allow', title: "Worker's approval request" },
   job: { label: 'Job', title: 'Remote job finished' },
   workflow: { label: 'Run', title: 'Workflow wake' },
+  opening: { label: 'Start', title: "Assistant's opening message" },
+  handoff: { label: 'Moved', title: 'New thread, same assistant' },
   message: { label: 'Msg', title: 'Message' },
   task: { label: 'Task', title: 'Task' },
   'final-answer': { label: 'Final', title: 'Final answer' },
@@ -544,6 +548,8 @@ const WAKE_ORIGIN_KINDS: Record<string, AgentMessageKind> = {
   approval: 'worker-approval',
   completion: 'job',
   workflow: 'workflow',
+  assistant: 'opening',
+  handoff: 'handoff',
 };
 
 /**
@@ -625,6 +631,16 @@ function fromWake(text: string, meta: UserMessageMeta): AgentMessage {
   const wake = decoded ?? { kind: 'send', label: '', threadId: '', computer: '' };
   const kind = WAKE_ORIGIN_KINDS[wake.kind];
   const { label, title } = labels(kind);
+  if (kind === 'opening' || kind === 'handoff') {
+    // An assistant's opening and handoff blocks: the app's own prose, not
+    // quoted data (docs/specs/standing-agents.md, "Standing agent").
+    return {
+      kind, kindLabel: label, kindTitle: title,
+      sender: 'Agent Overflow', senderThread: null, senderRole: '',
+      firstLine: firstLineOf(text),
+      parts: [{ body: text, footer: null, wake: null }],
+    };
+  }
   const worker = wake.threadId !== '';
   return {
     kind,

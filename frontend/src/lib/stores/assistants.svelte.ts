@@ -6,6 +6,8 @@
 // always confirmed, whatever the confirmDelete setting says.
 
 import { GetStandingAgent } from './bindings';
+import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
+import { getThreads } from './threads.svelte';
 import { getSettings } from './settings.svelte';
 import { withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -18,6 +20,26 @@ import { TransportError } from '../transport/wsClient';
 /** A name another assistant on the computer holds; the message names it. */
 export function isAssistantNameTaken(err: unknown): err is TransportError {
   return err instanceof TransportError && err.code === 'assistant_name_taken';
+}
+
+/** Two assistant names are the same name, as the store compares them. */
+export function sameAssistantName(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * The name an assistant's row and companion header show: its title, or
+ * `<name>-<computer>` while an assistant on another attached computer has
+ * the same name. The suffix is display only, never written to a title.
+ */
+export function assistantDisplayName(thread: Pick<Thread, 'id' | 'title' | 'agentId'>): string {
+  if (!thread.agentId) return thread.title;
+  const backend = threadBackend(thread.id) ?? HOME_BACKEND;
+  const clash = getThreads().some((other) => Boolean(other.agentId) && other.id !== thread.id
+    && sameAssistantName(other.title, thread.title) && (threadBackend(other.id) ?? HOME_BACKEND) !== backend);
+  if (!clash) return thread.title;
+  const entry = getAttachedBackends().find((candidate) => candidate.id === backend);
+  return `${thread.title}-${entry ? backendDisplayName(entry) : backend}`;
 }
 
 /** Whether deleting these threads deletes an assistant. */
