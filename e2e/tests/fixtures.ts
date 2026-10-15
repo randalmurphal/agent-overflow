@@ -56,10 +56,18 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
     },
     { scope: 'worker' },
   ],
-  harness: async ({ harnessWorker }, use) => {
-    await harnessWorker.awaitNoPages();
-    await harnessWorker.reset();
+  // The worker backend outlives the test, so its stderr tail is attached
+  // here when the test failed, including a reset that failed.
+  harness: async ({ harnessWorker }, use, testInfo) => {
+    try {
+      await harnessWorker.awaitNoPages();
+      await harnessWorker.reset();
+    } catch (error) {
+      await harnessWorker.attachStderr(testInfo);
+      throw error;
+    }
     await use(harnessWorker);
+    if (testInfo.status !== testInfo.expectedStatus) await harnessWorker.attachStderr(testInfo);
   },
   // Every test is also an uncaught-exception check. A component that throws
   // mid-render leaves stale DOM behind, which a functional assertion only

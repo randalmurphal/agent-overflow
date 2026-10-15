@@ -418,6 +418,14 @@ async function fakeShutdownBackend(answer: ShutdownAnswer): Promise<{
   };
 }
 
+test('stopping a backend inside a test attaches its stderr tail to the test', async () => {
+  const app = await launchHarness();
+  await app.close();
+  const attachment = test.info().attachments.find((entry) => entry.name === `backend ${app.bootstrap.pid} stderr`);
+  expect(attachment?.contentType).toBe('text/plain');
+  expect(attachment?.body?.toString()).toMatch(/store: migration v\d+ applied/);
+});
+
 test('a backend closing the socket on HarnessShutdown is a graceful stop, not a failure', async () => {
   test.skip(process.platform === 'win32', 'Windows teardown reconciles the Job Object tree after any shutdown');
   const backend = await fakeShutdownBackend('close');

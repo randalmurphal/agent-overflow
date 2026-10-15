@@ -8,6 +8,8 @@ states its own coverage; do not maintain a duplicate spec catalog here.
 ## Shared infrastructure
 
 - `src/harness.ts` owns backend launch and the TypeScript harness wire client.
+  A failed test carries each backend's last 200 stderr lines as a
+  `backend <pid> stderr` attachment; the trace holds the full text.
   Each backend's dev-server scan is scoped to the launching worker's process
   tree and its own, so a fake dev server must listen in the worker or a
   descendant of it. Every launch passes `HARNESS_TIMING`

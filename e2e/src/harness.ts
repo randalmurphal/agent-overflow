@@ -249,6 +249,7 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
       launchMemberProof,
       launchTreeProof,
       launchIdentity,
+      stderrTail,
     );
     await app.connect();
     await app.startWatchdog(opts.memoryLimitBytes ?? FALLBACK_MEMORY_LIMIT_BYTES);
