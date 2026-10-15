@@ -275,8 +275,8 @@ func TestASpawnBroadcastsItsThreadNamingTheSpawner(t *testing.T) {
 
 // A handoff takes the old row out of the list and lists the successor as
 // the assistant's row, counting the old thread among its archived children.
-// The successor is listed first: a client moves the panes that showed the
-// old thread to the assistant's current thread when the old row leaves.
+// The successor is listed first, and the old row's frame names it: a client
+// moves the panes that showed the old thread to it when the old row leaves.
 func TestAHandOffBroadcastsBothRows(t *testing.T) {
 	t.Parallel()
 	f := newOrganizeFixture(t)
@@ -299,6 +299,9 @@ func TestAHandOffBroadcastsBothRows(t *testing.T) {
 		case frame.Action == triage.ThreadActionUnlisted && frame.Thread.ID == agent.ID:
 			if listed == nil {
 				t.Error("the old row was unlisted before the successor was listed")
+			}
+			if frame.HandOffTo != successor.ID {
+				t.Errorf("the old row's frame names %q as its successor, want %s", frame.HandOffTo, successor.ID)
 			}
 			unlisted = frame.Thread
 		case frame.Action == triage.ThreadActionListed && frame.Thread.ID == successor.ID:

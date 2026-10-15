@@ -2004,10 +2004,28 @@ describe('setupEventListeners', () => {
       emitWailsEvent('thread:updated', {
         action: 'unlisted',
         thread: makeThread({ id: 'thread-1', title: 'Ops', archived: true, pastAgentId: 'agent-1' }),
+        handOffTo: 'thread-2',
       });
 
       await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
       expect(getThreads().map((t) => t.id)).toEqual(['thread-2']);
+    });
+
+    it("closes the pane of an assistant's past thread archived again, which no handoff names", async () => {
+      setBindingMock('ListThreads', async () => [
+        makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }),
+        makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' }),
+      ]);
+      await refreshThreads();
+      await buildPane(makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }));
+
+      emitWailsEvent('thread:updated', {
+        action: 'unlisted',
+        thread: makeThread({ id: 'thread-1', title: 'Ops', archived: true, pastAgentId: 'agent-1' }),
+      });
+
+      expect(findPaneShowingThread('thread-1')).toBeNull();
+      expect(findPaneShowingThread('thread-2')).toBeNull();
     });
 
     it('closes the pane of an archived thread that no handoff replaced', async () => {

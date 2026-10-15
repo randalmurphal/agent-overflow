@@ -7,7 +7,8 @@
 // breadcrumb, a side chat its conversation, and an agent thread companion
 // the thread it shows. Closing a companion yourself forgets it. Deleting or
 // archiving the thread forgets all of them and deletes any side chat still
-// hidden with it.
+// hidden with it; an agent thread companion showing an assistant's thread
+// that a handoff replaced follows to the assistant's current thread.
 //
 // Plan, review and agent entries persist in this client's appStorage: the
 // kinds the pane layout persists. take-control, side-chat and agent-thread
@@ -308,6 +309,19 @@ function onThreadRemoved(threadId: string): void {
     if (kept.length === ownerEntries.length) continue;
     if (kept.length > 0) stashByThread.set(ownerId, kept);
     else stashByThread.delete(ownerId);
+  }
+}
+
+/**
+ * New Thread, Same Assistant replaced `oldThreadId` with `successor`: an
+ * agent thread companion hidden showing the old thread will reopen on the
+ * successor. Runs before the old row is removed, which would forget it.
+ */
+export function followAssistantHandOffInStash(oldThreadId: string, successor: Thread): void {
+  for (const [ownerId, entries] of stashByThread) {
+    if (!entries.some((entry) => entry.kind === 'agent-thread' && entry.thread?.id === oldThreadId)) continue;
+    stashByThread.set(ownerId, entries.map((entry) =>
+      entry.kind === 'agent-thread' && entry.thread?.id === oldThreadId ? { ...entry, thread: successor } : entry));
   }
 }
 

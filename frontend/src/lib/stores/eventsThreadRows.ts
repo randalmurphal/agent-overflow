@@ -12,8 +12,9 @@ import { closePanesShowingThread, findPaneShowingThread, iterPanes, moveAssistan
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { refreshAgentWakes } from './agentWakes.svelte';
+import { followAssistantHandOffInStash } from './companionStash';
 import { addErrorToast, addToast } from './toast.svelte';
-import { assistantCurrentThread, getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
@@ -374,6 +375,8 @@ export interface ThreadUpdateEvent {
   title?: string;
   model?: string;
   sessionRef?: string;
+  /** On the `unlisted` frame of an assistant's old thread: its successor. */
+  handOffTo?: string;
   /**
    * A sidebar-activity bump from an activity-counting user_text persist,
    * and nothing else — turn completions and approval requests announce
@@ -452,9 +455,11 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       const id = evt.thread?.id ?? evt.id;
       if (!id) return;
       if (evt.thread) syncThreadRow(evt.thread);
-      // A handoff lists the assistant's new thread first: the panes that
-      // showed the old one move to it.
-      const successor = evt.thread?.pastAgentId ? assistantCurrentThread(evt.thread.pastAgentId) : undefined;
+      // A handoff lists the assistant's new thread first and names it here:
+      // the panes and hidden companions that showed the old one move to it.
+      // Archiving a past thread is not a handoff and closes its panes.
+      const successor = evt.handOffTo ? getThreadById(evt.handOffTo) : undefined;
+      if (successor) followAssistantHandOffInStash(id, successor);
       removeThread(id);
       if (successor) moveAssistantPanes(id, successor);
       else closePanesShowingThread(id);

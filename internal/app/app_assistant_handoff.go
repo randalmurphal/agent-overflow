@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/composerdraft"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
@@ -204,7 +205,7 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 	// the old thread to it instead of closing them; the workers now nest
 	// under it.
 	a.broadcastThreadRow(triage.ThreadActionListed, successor)
-	a.broadcastThreadRow(triage.ThreadActionUnlisted, handOff.Old)
+	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionUnlisted, Thread: &handOff.Old, HandOffTo: successor.ID})
 	a.broadcastSpawnedThreadRows(successor.ID)
 	body := agenthome.HandOffMessage(agenthome.HandOff{
 		Name:             successor.Title,

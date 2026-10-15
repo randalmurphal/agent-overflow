@@ -1325,6 +1325,10 @@ type ThreadUpdateEvent struct {
 	// cached row: the bump lands in the per-thread live-activity box, not
 	// in the row array (see eventsThreadRows.syncThreadActivity).
 	UpdatedAt *int64 `json:"updatedAt,omitempty"`
+	// HandOffTo, on the `unlisted` frame of an assistant's old thread, names
+	// the thread New Thread, Same Assistant replaced it with: a client moves
+	// what showed the old thread there. Any other unlisting closes it.
+	HandOffTo string `json:"handOffTo,omitempty"`
 }
 
 // The Action vocabulary, spelled once so an emit site cannot invent a value
