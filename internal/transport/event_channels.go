@@ -673,6 +673,19 @@ var channelPolicies = []ChannelPolicy{
 			"newest is what tells a client that reconnected to re-read.",
 	},
 	{
+		Channel:   eventchan.ProviderAccountSignIn,
+		Audience:  AudienceAny,
+		Retention: RetentionEphemeral,
+		Scope:     ScopeAccessAdmin,
+		Why: "Names the account a login landed on and whether it was " +
+			"added, renewed or switched to, for the toast every admin " +
+			"client shows. Same grant and audience as " +
+			"provider:accounts_changed, whose listing it describes. " +
+			"Ephemeral because it is a moment, not a state: a replayed " +
+			"frame toasts a sign-in that happened before the gap, and the " +
+			"listing a reconnecting client re-reads already holds the result.",
+	},
+	{
 		Channel:   eventchan.ProviderApproval,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

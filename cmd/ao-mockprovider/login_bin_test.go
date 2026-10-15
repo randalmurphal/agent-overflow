@@ -84,6 +84,51 @@ func TestClaudeSignInMockCompletesOnThePastedCode(t *testing.T) {
 	}
 }
 
+// A code naming an email signs that account in, and the probe of the home it
+// wrote reports that account on both of the probe's identity frames. This is
+// how a harness test gets a second account: adoption files a sign-in under
+// the identity the probe reports.
+func TestClaudeSignInMockSignsInTheAccountItsCodeNames(t *testing.T) {
+	session, configDir := startClaudeLoginMock(t)
+	urls, err := session.Authenticate(t.Context())
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	const email = "second@agent-overflow.test"
+	if err := session.SubmitCallback(t.Context(), mockClaudeLoginCode+":"+email, mockLoginState(t, urls.ManualURL)); err != nil {
+		t.Fatalf("SubmitCallback: %v", err)
+	}
+
+	args := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--max-turns", "0"}
+	p := startMock(t, args, []string{"CLAUDE_CONFIG_DIR=" + configDir}, t.TempDir())
+	initLine := p.expectLine(testTimeout)
+	p.send(`{"type":"control_request","request_id":"ao-probe-init","request":{"subtype":"initialize"}}`)
+	initialize := p.expectLine(testTimeout)
+	p.closeStdinAndExpectExit(0, testTimeout)
+
+	var init struct {
+		Account struct {
+			Email string `json:"email"`
+		} `json:"account"`
+	}
+	if err := json.Unmarshal([]byte(initLine), &init); err != nil || init.Account.Email != email {
+		t.Fatalf("system/init account = %q (%v), want %q\n  line: %s", init.Account.Email, err, email, initLine)
+	}
+	var ack struct {
+		Response struct {
+			Response struct {
+				Account struct {
+					Email string `json:"email"`
+				} `json:"account"`
+			} `json:"response"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(initialize), &ack); err != nil || ack.Response.Response.Account.Email != email {
+		t.Fatalf("initialize account = %q (%v), want %q\n  line: %s",
+			ack.Response.Response.Account.Email, err, email, initialize)
+	}
+}
+
 // One bad paste burns the flow: upstream closes its listener and clears the
 // slot, so everything after answers the no-active-flow sentence. That rule is
 // the reason AO restarts rather than re-prompts, and a mock that let a second

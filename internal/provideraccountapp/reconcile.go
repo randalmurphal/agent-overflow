@@ -124,7 +124,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 		return fmt.Errorf("%s credentials changed before account activation; retry", providerName)
 	}
 
-	account, changed, err := m.reconcileObservedAccountLocked(providerName, info, current)
+	account, signIn, changed, err := m.reconcileObservedAccountLocked(providerName, info, current)
 	if err == nil {
 		if m.fingerprints == nil {
 			m.fingerprints = make(map[string][32]byte)
@@ -142,6 +142,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 
 	m.invalidateProviderAccountProbe(providerName, binary)
 	m.emitProviderAccount(providerName, account, info, generation)
+	m.emitReconciledSignIn(signIn)
 
 	// Claude processes intentionally follow the canonical native credential
 	// store, so every live Claude session adopts the observed account without
@@ -175,14 +176,18 @@ func (m *Manager) canonicalProviderAccountProbe(
 }
 
 // reconcileObservedAccountLocked maps an observed provider identity onto the
-// saved credential set. The caller has verified that the canonical credential
-// value is stable and holds mu.
+// saved credential set and activates it, because the canonical credential is
+// what every provider process runs on. signIn says what that did to the saved
+// set; a rotation of the selected account's login reports none of it. The
+// caller has verified that the canonical credential value is stable and holds
+// mu.
 func (m *Manager) reconcileObservedAccountLocked(
 	providerName string,
 	info provider.AccountInfo,
 	credential provideraccounts.CredentialSnapshot,
 ) (
 	account provideraccounts.Account,
+	signIn SignIn,
 	changed bool,
 	retErr error,
 ) {
@@ -198,7 +203,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 		// than manufacturing a duplicate. There is no safe assignment when no
 		// managed account is active yet.
 		if !hasActive {
-			return active, false, nil
+			return active, SignIn{}, false, nil
 		}
 		target = active
 		found = true
@@ -221,7 +226,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 			target = active
 			found = true
 		case findErr != nil:
-			return provideraccounts.Account{}, false, fmt.Errorf(
+			return provideraccounts.Account{}, SignIn{}, false, fmt.Errorf(
 				"resolve observed %s account %s: %w",
 				providerName,
 				DescribeObservedAccount(info),
@@ -240,9 +245,15 @@ func (m *Manager) reconcileObservedAccountLocked(
 		target.ID = uuid.NewString()
 		target.Provider = providerName
 	}
+	var previous []byte
+	if found {
+		// Only classifies the outcome: a slot that cannot be read is treated
+		// as holding no deadline, which reports no renewal.
+		previous, _ = m.credentials.ReadCredential(providerName, target.ID, false)
+	}
 	saved, err := m.credentials.CaptureAccountCredential(providerName, target.ID)
 	if err != nil {
-		return provideraccounts.Account{}, false, err
+		return provideraccounts.Account{}, SignIn{}, false, err
 	}
 	restoreCredentialOnError := true
 	defer func() {
@@ -267,7 +278,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 		target.ID,
 		credential.Data,
 	); err != nil {
-		return provideraccounts.Account{}, false, fmt.Errorf(
+		return provideraccounts.Account{}, SignIn{}, false, fmt.Errorf(
 			"preserve externally selected %s credentials: %w",
 			providerName,
 			err,
@@ -275,14 +286,14 @@ func (m *Manager) reconcileObservedAccountLocked(
 	}
 	stable, err := m.credentials.ReadCredentialSnapshot(providerName, "", true)
 	if err != nil {
-		return provideraccounts.Account{}, false, fmt.Errorf(
+		return provideraccounts.Account{}, SignIn{}, false, fmt.Errorf(
 			"recheck externally selected %s credentials: %w",
 			providerName,
 			err,
 		)
 	}
 	if sha256.Sum256(stable.Data) != sha256.Sum256(credential.Data) {
-		return provideraccounts.Account{}, false, fmt.Errorf(
+		return provideraccounts.Account{}, SignIn{}, false, fmt.Errorf(
 			"%s credentials changed before metadata activation; retry",
 			providerName,
 		)
@@ -294,7 +305,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 	}
 	account, err = m.store.UpsertAndActivateCredential(updated)
 	if err != nil {
-		return provideraccounts.Account{}, false, fmt.Errorf(
+		return provideraccounts.Account{}, SignIn{}, false, fmt.Errorf(
 			"activate externally selected %s account metadata: %w",
 			providerName,
 			err,
@@ -302,11 +313,29 @@ func (m *Manager) reconcileObservedAccountLocked(
 	}
 	account = m.withRecordedLoginExpiry(account, credential.Data)
 	restoreCredentialOnError = false
+	signIn = SignIn{
+		Provider: providerName,
+		Account:  account,
+		Added:    !found,
+		Renewed:  found && CredentialLoginRenewed(providerName, previous, credential.Data),
+		Switched: hasActive && active.ID != account.ID,
+		Active:   true,
+	}
 	// Reaching this point means the canonical credential fingerprint changed.
 	// Publish the new generation even when provider identity metadata stayed
 	// identical so Codex threads reconnect before their next safe send.
 	changed = true
-	return account, changed, nil
+	return account, signIn, changed, nil
+}
+
+// emitReconciledSignIn publishes an adopted login's outcome. An added account
+// or a moved selection also changes the listing, which no per-account frame
+// can express.
+func (m *Manager) emitReconciledSignIn(signIn SignIn) {
+	if signIn.Added || signIn.Switched {
+		m.emitProviderAccountsChanged()
+	}
+	m.emitSignIn(signIn)
 }
 
 // rememberProviderCredentialFingerprintLocked records the exact credential

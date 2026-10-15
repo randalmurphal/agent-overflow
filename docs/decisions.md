@@ -332,6 +332,11 @@ Mechanism in
   (`opus`, `sonnet`) is refused as input with the offered IDs, and a Codex
   slug is passed as written for Codex to judge. An alias the CLI reports back
   is read only through its own model list (`internal/provider/AGENTS.md`).
+- A sign-in in Agent Overflow never switches accounts: it renews the saved
+  account its login belongs to or adds a new one at the bottom. Only the
+  first account on a machine becomes active by signing in. Saved accounts
+  stay in the order the user drags them into; being active does not move a
+  card.
 - Claude usage meters read only `/api/oauth/usage`. The stdio
   `rate_limit_event` (including 2.1.257 `unifiedWindows`) is not a quota
   source: it names no account, and responses to requests sent before an

@@ -4203,6 +4203,14 @@ export function RenewCanonicalDomainCert(): $CancellablePromise<network$0.Settin
 }
 
 /**
+ * ReorderProviderAccounts sets the order one provider's saved accounts are
+ * listed in. accountIDs must name every saved account exactly once.
+ */
+export function ReorderProviderAccounts(providerName: string, accountIDs: string[]): $CancellablePromise<void> {
+    return $Call.ByID(2861245989, providerName, accountIDs);
+}
+
+/**
  * RepairBackendAddress verifies a new address using an existing pairing's
  * certificate trust. It never enrolls another device or replaces its session.
  */

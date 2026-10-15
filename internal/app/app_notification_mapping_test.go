@@ -295,10 +295,20 @@ func TestProviderSignOutIsAnEdgeNotALevel(t *testing.T) {
 		t.Fatalf("body carried the status message: %q", send.Body)
 	}
 
-	// And signing back in takes it away.
+	// A sign-in that lands beside the selected account leaves it standing.
 	sends = settled(t, app, recorder, func() {
-		app.emit(eventchan.ProviderLogin, provideraccountapp.LoginState{
-			Provider: "claude", Phase: provideraccountapp.LoginPhaseSucceeded,
+		app.emit(eventchan.ProviderAccountSignIn, provideraccountapp.SignIn{
+			Provider: "claude", Added: true,
+		})
+	})
+	if len(sends) != 1 {
+		t.Fatalf("sends = %#v, want the alert still standing", sends)
+	}
+
+	// And signing the selected account back in takes it away.
+	sends = settled(t, app, recorder, func() {
+		app.emit(eventchan.ProviderAccountSignIn, provideraccountapp.SignIn{
+			Provider: "claude", Renewed: true, Active: true,
 		})
 	})
 	if len(sends) != 2 || !sends[1].Retract || sends[1].ID != send.ID {
@@ -313,8 +323,8 @@ func TestAnOrdinarySignInRetractsNothing(t *testing.T) {
 	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder, func() {
-		app.emit(eventchan.ProviderLogin, provideraccountapp.LoginState{
-			Provider: "codex", Phase: provideraccountapp.LoginPhaseSucceeded,
+		app.emit(eventchan.ProviderAccountSignIn, provideraccountapp.SignIn{
+			Provider: "codex", Added: true, Active: true,
 		})
 	})
 	if len(sends) != 0 {
@@ -322,8 +332,10 @@ func TestAnOrdinarySignInRetractsNothing(t *testing.T) {
 	}
 }
 
-// TestAnUnfinishedLoginIsNotASignIn: only the succeeded phase is an edge.
-func TestAnUnfinishedLoginIsNotASignIn(t *testing.T) {
+// TestASucceededLoginFlowIsNotASignIn: the flow's own success says nothing
+// about whether the provider is signed in again, because the login may have
+// landed beside the selected account. Only the sign-in outcome decides.
+func TestASucceededLoginFlowIsNotASignIn(t *testing.T) {
 	t.Parallel()
 	app, recorder := newNotificationMappingApp(t)
 	sends := settled(t, app, recorder,
@@ -334,7 +346,7 @@ func TestAnUnfinishedLoginIsNotASignIn(t *testing.T) {
 		},
 		func() {
 			app.emit(eventchan.ProviderLogin, provideraccountapp.LoginState{
-				Provider: "claude", Phase: provideraccountapp.LoginPhaseAwaitingBrowser,
+				Provider: "claude", Phase: provideraccountapp.LoginPhaseSucceeded,
 			})
 		},
 	)

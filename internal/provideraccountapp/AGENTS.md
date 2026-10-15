@@ -30,6 +30,15 @@ write. Rate-limit persistence and emission enter through narrow
   `loginId` through projected state rather than a blocking return.
 - Each attempt owns one provider process and closes it on success, failure,
   cancellation, or replacement.
+- Adoption lands a login by its identity and never switches: a saved account
+  is renewed in its slot, a new one is appended. Only a login for the selected
+  account, or the first login when none is selected, replaces the canonical
+  credential. Reconciliation of an outside login does switch, because every
+  provider process follows the canonical credential.
+- Every adoption reports its outcome as a `SignIn` (added, renewed,
+  switched). A credential change that is none of these, a token rotation or a
+  boot re-adoption, publishes nothing. Renewal is a later Claude refresh
+  deadline; Codex cannot tell a renewal from a rotation.
 - Build login and probe environments from the same layers: configured user
   environment, boot-mode overrides, then the isolated provider-home pin.
   Endpoint configuration is part of account identity.

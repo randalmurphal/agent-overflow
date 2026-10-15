@@ -450,6 +450,21 @@ export interface ProviderSessionAccountEvent extends ProviderAccountEvent {
   connected: boolean;
 }
 
+/** `provideraccountapp.SignIn`: where one login landed and what it did. */
+export interface ProviderAccountSignInEvent {
+  provider: ProviderID;
+  account: {
+    id: string;
+    email?: string;
+    displayName?: string;
+    subscriptionType?: string;
+  };
+  added: boolean;
+  renewed: boolean;
+  switched: boolean;
+  active: boolean;
+}
+
 export interface ProviderAccountUsageErrorEvent {
   provider: ProviderID;
   accountId: string;

@@ -353,6 +353,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RenameThread", ID: 727416435, Scope: "threads:operate", Route: "thread"},                                          // main.App.RenameThread
 	{Name: "RenameThreadGroup", ID: 723690026, Scope: "threads:operate", Route: "home"},                                       // main.App.RenameThreadGroup
 	{Name: "RenewCanonicalDomainCert", ID: 95139518, Scope: "host", Route: "home", Remote: true},                              // main.App.RenewCanonicalDomainCert
+	{Name: "ReorderProviderAccounts", ID: 2861245989, Scope: "access:admin", Route: "home"},                                   // main.App.ReorderProviderAccounts
 	{Name: "RepairBackendAddress", ID: 1188796788, Scope: "host", Route: "home", Remote: true},                                // main.App.RepairBackendAddress
 	{Name: "ReplyToPRThread", ID: 446243420, Scope: "git:operate", Route: "selected"},                                         // main.App.ReplyToPRThread
 	{Name: "ReportFrontendErrorBatch", ID: 2174329377, Scope: "host", Route: "home"},                                          // main.App.ReportFrontendErrorBatch

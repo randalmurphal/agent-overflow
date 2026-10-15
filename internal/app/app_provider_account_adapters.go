@@ -1,11 +1,8 @@
 package app
 
 import (
-	"context"
-
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/eventchan"
-	"agent-overflow/internal/externalurl"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -170,6 +167,10 @@ func (s providerAccountEventSink) PublishAccountsChanged() {
 	s.app.emit(eventchan.ProviderAccountsChanged, nil)
 }
 
+func (s providerAccountEventSink) PublishSignIn(signIn provideraccountapp.SignIn) {
+	s.app.emit(eventchan.ProviderAccountSignIn, signIn)
+}
+
 func (s providerAccountEventSink) PublishUsageError(providerName, accountID string, err error) {
 	s.app.emit(eventchan.ProviderAccountUsageError, map[string]string{
 		"provider": providerName, "accountId": accountID, "message": err.Error(),
@@ -191,7 +192,7 @@ func newProviderAccountManager(app *App) *provideraccountapp.Manager {
 		ShutdownError:   ErrShuttingDown,
 		CurrentSettings: app.currentSettings,
 		ProviderBinary:  app.providerBinaryPath,
-		OpenBrowser:     func(ctx context.Context, rawURL string) error { return externalurl.Open(ctx, rawURL) },
+		OpenBrowser:     app.openExternalURL,
 		LoginSpawnEnv:   func() map[string]string { return app.providerExtraEnv },
 		HTTPClient:      app.rateLimitProbeClient,
 		Sessions:        providerAccountSessionGateway{app: app},

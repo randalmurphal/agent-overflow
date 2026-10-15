@@ -5,9 +5,11 @@
   // logic itself lives in stores/providerAccounts.svelte.ts — shared with the
   // account-switcher picker, so a switch made in either surface is the same
   // state change. This component owns only the settings-side chrome: the
-  // "log in to another account" button, the cards, and the removal confirm.
+  // "log in to another account" button, the cards, their order, and the
+  // removal confirm.
 
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
+  import GripVertical from '@lucide/svelte/icons/grip-vertical';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Icon from '../primitives/Icon.svelte';
@@ -31,8 +33,11 @@
     providerLabel as resolveProviderLabel,
     refreshProviderAccountUsage,
     removeProviderAccount,
+    reorderProviderAccounts,
     switchProviderAccount,
   } from '../../stores/providerAccounts.svelte';
+  import { displacement, dropIndex, moveItem } from '../../utils/listReorder';
+  import { motionReduced } from '../../utils/reducedMotion';
   import { getProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
   import { providerFieldId, type SettingsProvider } from './fields';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -93,7 +98,201 @@
     if (account.needsLogin) return () => void startProviderLogin(provider, backend);
     return () => void switchProviderAccount(provider, account, backend);
   }
+
+  // ---- order ---------------------------------------------------------------
+  //
+  // The cards are in the order the user keeps them. A card moves by dragging
+  // its grip (mouse, pen or touch) or by arrow keys on the focused grip. While
+  // a card is held, the others slide aside to show where it will land; on
+  // release the new order is written and every card settles from where it
+  // was drawn to where it now sits.
+
+  interface CardDrag {
+    from: number;
+    to: number;
+    pointerId: number;
+    startY: number;
+    pointerY: number;
+    // Middles of every card when the drag began, and the held card's height
+    // plus the list gap: the distance each displaced card moves.
+    middles: number[];
+    span: number;
+    scroller: HTMLElement | null;
+    startScroll: number;
+    scrollDelta: number;
+    // The pointer has travelled past the threshold, so this is a drag rather
+    // than a press on the grip.
+    moving: boolean;
+  }
+
+  const DRAG_THRESHOLD_PX = 4;
+  const EDGE_SCROLL_PX = 48;
+  const MAX_EDGE_SCROLL_STEP_PX = 16;
+  const SETTLE_MS = 180;
+
+  let listEl: HTMLDivElement | undefined = $state(undefined);
+  let drag = $state.raw<CardDrag | null>(null);
+  let edgeScrollFrame = 0;
+  let reorderNotice = $state('');
+  let canReorder = $derived(admin && accounts.length > 1);
+
+  // Settings can close mid-drag (Escape, navigation): the edge-scroll frame
+  // must not outlive the cards it moves.
+  onDestroy(() => {
+    if (edgeScrollFrame) cancelAnimationFrame(edgeScrollFrame);
+    edgeScrollFrame = 0;
+    drag = null;
+  });
+
+  function cardOffset(index: number): number {
+    if (!drag?.moving) return 0;
+    if (index === drag.from) return drag.pointerY - drag.startY + drag.scrollDelta;
+    return displacement(index, drag.from, drag.to, drag.span);
+  }
+
+  function cardElements(): HTMLElement[] {
+    return listEl ? [...listEl.querySelectorAll<HTMLElement>('[data-account-card]')] : [];
+  }
+
+  function drawnTops(): Map<string, number> {
+    return new Map(cardElements().map((card) => [card.dataset.accountCard ?? '', card.getBoundingClientRect().top]));
+  }
+
+  // Slides every card from where it was drawn (`before`) to where the new
+  // order puts it, so neither a release nor a key press jumps.
+  async function settle(before: Map<string, number>, focusId?: string): Promise<void> {
+    await tick();
+    if (focusId) listEl?.querySelector<HTMLElement>(`[data-reorder-handle="${focusId}"]`)?.focus();
+    if (motionReduced()) return;
+    for (const card of cardElements()) {
+      const from = before.get(card.dataset.accountCard ?? '');
+      if (from === undefined) continue;
+      const delta = from - card.getBoundingClientRect().top;
+      if (Math.abs(delta) < 0.5) continue;
+      card.animate(
+        [{ transform: `translateY(${delta}px)` }, { transform: 'none' }],
+        { duration: SETTLE_MS, easing: 'cubic-bezier(0.33, 1, 0.68, 1)' },
+      );
+    }
+  }
+
+  function commitOrder(from: number, to: number, before: Map<string, number>, focusId?: string): void {
+    const moved = accounts[from];
+    if (!moved || from === to) return;
+    void reorderProviderAccounts(provider, moveItem(accounts.map((account) => account.id), from, to), backend);
+    reorderNotice = `Moved ${providerAccountName(moved)} to position ${to + 1} of ${accounts.length}.`;
+    void settle(before, focusId);
+  }
+
+  function scrollParent(node: HTMLElement): HTMLElement | null {
+    for (let el = node.parentElement; el; el = el.parentElement) {
+      const overflow = getComputedStyle(el).overflowY;
+      if (overflow === 'auto' || overflow === 'scroll') return el;
+    }
+    return null;
+  }
+
+  function startDrag(event: PointerEvent, index: number): void {
+    if (!canReorder || drag || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    const rects = cardElements().map((card) => card.getBoundingClientRect());
+    const held = rects[index];
+    if (!held) return;
+    const neighbour = rects[index + 1] ?? rects[index - 1];
+    const gap = neighbour
+      ? (neighbour.top > held.top ? neighbour.top - held.bottom : held.top - neighbour.bottom)
+      : 0;
+    const handle = event.currentTarget as HTMLElement;
+    handle.setPointerCapture(event.pointerId);
+    const scroller = scrollParent(handle);
+    drag = {
+      from: index,
+      to: index,
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      pointerY: event.clientY,
+      middles: rects.map((rect) => (rect.top + rect.bottom) / 2),
+      span: held.height + gap,
+      scroller,
+      startScroll: scroller?.scrollTop ?? 0,
+      scrollDelta: 0,
+      moving: false,
+    };
+  }
+
+  // Re-aims the held card at the pointer, in the coordinates the drag began
+  // in: the pointer's travel plus however far the page scrolled under it.
+  function aim(current: CardDrag, pointerY: number): CardDrag {
+    const scrollDelta = (current.scroller?.scrollTop ?? 0) - current.startScroll;
+    const middle = current.middles[current.from] + pointerY - current.startY + scrollDelta;
+    return { ...current, pointerY, scrollDelta, to: dropIndex(current.middles, current.from, middle) };
+  }
+
+  function moveDrag(event: PointerEvent): void {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const moving = drag.moving || Math.abs(event.clientY - drag.startY) >= DRAG_THRESHOLD_PX;
+    if (!moving) return;
+    drag = aim({ ...drag, moving }, event.clientY);
+    if (!edgeScrollFrame) edgeScrollFrame = requestAnimationFrame(edgeScroll);
+  }
+
+  // Scrolls the page while the held card is near its top or bottom edge, so
+  // a card can travel past what is on screen.
+  function edgeScroll(): void {
+    edgeScrollFrame = 0;
+    const scroller = drag?.moving ? drag.scroller : null;
+    if (!drag || !scroller) return;
+    const box = scroller.getBoundingClientRect();
+    const above = box.top + EDGE_SCROLL_PX - drag.pointerY;
+    const below = drag.pointerY - (box.bottom - EDGE_SCROLL_PX);
+    const reach = Math.max(above, below);
+    if (reach <= 0) return;
+    const step = Math.ceil(MAX_EDGE_SCROLL_STEP_PX * Math.min(1, reach / EDGE_SCROLL_PX));
+    const previous = scroller.scrollTop;
+    scroller.scrollTop += above > 0 ? -step : step;
+    if (scroller.scrollTop === previous) return;
+    drag = aim(drag, drag.pointerY);
+    edgeScrollFrame = requestAnimationFrame(edgeScroll);
+  }
+
+  function endDrag(event: PointerEvent, commit: boolean): void {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const ended = drag;
+    if (edgeScrollFrame) cancelAnimationFrame(edgeScrollFrame);
+    edgeScrollFrame = 0;
+    const before = drawnTops();
+    drag = null;
+    if (!ended.moving) return;
+    if (commit && ended.to !== ended.from) commitOrder(ended.from, ended.to, before);
+    else void settle(before);
+  }
+
+  function cancelDragOnEscape(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || !drag?.moving) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const before = drawnTops();
+    if (edgeScrollFrame) cancelAnimationFrame(edgeScrollFrame);
+    edgeScrollFrame = 0;
+    drag = null;
+    void settle(before);
+  }
+
+  function handleReorderKey(event: KeyboardEvent, index: number): void {
+    if (!canReorder || drag) return;
+    const last = accounts.length - 1;
+    const to =
+      event.key === 'ArrowUp' ? Math.max(0, index - 1)
+      : event.key === 'ArrowDown' ? Math.min(last, index + 1)
+      : event.key === 'Home' ? 0
+      : event.key === 'End' ? last
+      : null;
+    if (to === null) return;
+    event.preventDefault();
+    commitOrder(index, to, drawnTops(), accounts[index].id);
+  }
 </script>
+
+<svelte:window onkeydowncapture={cancelDragOnEscape} />
 
 <!--
   Not a SettingsField — the block is a header, a button and a list of cards
@@ -130,20 +329,50 @@
       The current native login will be saved automatically when detected.
     </p>
   {:else}
-    <div class="flex flex-col gap-2">
-      {#each accounts as account (account.id)}
+    <p class="sr-only" aria-live="polite">{reorderNotice}</p>
+    <div class="flex flex-col gap-2" bind:this={listEl}>
+      {#each accounts as account, index (account.id)}
         {@const limits = getProviderRateLimits(provider, account.id, backend)}
         {@const orgLabel = providerAccountOrgLabel(account)}
         {@const loginExpiry = providerAccountLoginExpiry(account)}
+        {@const held = drag?.moving === true && drag.from === index}
+        {@const offset = cardOffset(index)}
         <div
-          class="rounded-[var(--radius-field)] border px-3 py-2.5 {account.needsLogin
+          class="relative rounded-[var(--radius-field)] border px-3 py-2.5 {account.needsLogin
             ? 'border-warning/40 bg-surface-0'
             : account.active
               ? 'border-accent/45 bg-accent/5'
-              : 'border-border-subtle bg-surface-0'}"
+              : 'border-border-subtle bg-surface-0'} {held
+            ? 'z-10 shadow-menu'
+            : drag?.moving
+              ? 'transition-transform duration-150 ease-out'
+              : ''}"
+          style:transform={offset ? `translateY(${offset}px)` : undefined}
           data-testid="provider-account-{account.id}"
+          data-account-card={account.id}
         >
           <div class="flex items-start justify-between gap-3">
+            {#if canReorder}
+              <button
+                type="button"
+                class="-ml-1.5 flex h-5 w-4 shrink-0 touch-none items-center justify-center rounded-[var(--radius-field)] text-fg-hint hover:text-fg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:h-9 compact:w-7 {held
+                  ? 'cursor-grabbing'
+                  : 'cursor-grab'}"
+                aria-label={`Reorder ${providerAccountName(account)}`}
+                aria-roledescription="drag handle"
+                aria-keyshortcuts="ArrowUp ArrowDown Home End"
+                title="Drag to reorder, or use the arrow keys"
+                data-reorder-handle={account.id}
+                data-testid="provider-account-reorder-{account.id}"
+                onpointerdown={(event) => startDrag(event, index)}
+                onpointermove={moveDrag}
+                onpointerup={(event) => endDrag(event, true)}
+                onpointercancel={(event) => endDrag(event, false)}
+                onkeydown={(event) => handleReorderKey(event, index)}
+              >
+                <Icon icon={GripVertical} size={12} strokeWidth={1.75} />
+              </button>
+            {/if}
             <button
               type="button"
               class="min-w-0 flex-1 cursor-pointer text-left disabled:cursor-default"
@@ -168,11 +397,7 @@
                 >
                   {providerAccountName(account)}
                 </span>
-                {#if account.needsLogin}
-                  <span class="rounded-full bg-warning/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-warning">
-                    Sign in again
-                  </span>
-                {:else if account.active}
+                {#if account.active}
                   <span class="rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-accent">
                     Active
                   </span>
@@ -193,7 +418,7 @@
                     : 'text-fg-hint'}"
                   data-testid="provider-account-login-expiry-{account.id}"
                 >
-                  {loginExpiry.text}{loginExpiry.expired ? '. Sign in again to reconnect it.' : ''}
+                  {loginExpiry.text}
                 </span>
               {:else if account.needsLogin}
                 <span class="mt-0.5 block pl-4 text-[0.6875rem] text-fg-hint">
@@ -203,6 +428,22 @@
             </button>
 
             <div class="flex shrink-0 items-center gap-1">
+              <!-- Signing in renews whichever saved account the login belongs
+                   to, and never switches; offered from the week before the
+                   login ends. -->
+              {#if loginExpiry || account.needsLogin}
+                <button
+                  type="button"
+                  class="{GHOST_BUTTON_CLASS} font-medium text-warning hover:text-warning disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={credentialOpInFlight || !admin}
+                  title={ungrantedTitle}
+                  onclick={() => void startProviderLogin(provider, backend)}
+                  aria-label={`Sign in again to ${providerAccountName(account)}`}
+                  data-testid="provider-account-sign-in-{account.id}"
+                >
+                  Sign in again
+                </button>
+              {/if}
               <button
                 type="button"
                 class={GHOST_BUTTON_CLASS}

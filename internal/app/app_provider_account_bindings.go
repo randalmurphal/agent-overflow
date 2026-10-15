@@ -61,6 +61,18 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 	return managedProviderAccount(account), err
 }
 
+// ReorderProviderAccounts sets the order one provider's saved accounts are
+// listed in. accountIDs must name every saved account exactly once.
+//
+//ao:scope access:admin
+//ao:route home
+func (a *App) ReorderProviderAccounts(providerName string, accountIDs []string) error {
+	if a.providerAccounts == nil {
+		return errors.New("provider account storage is unavailable")
+	}
+	return a.providerAccounts.ReorderProviderAccounts(providerName, accountIDs)
+}
+
 // probeSwitchedProviderAccount runs the zero-token identity probe for the
 // account a switch just activated. The switch emits `provider:account` from
 // saved metadata without probing, and Claude's model catalog is learned per

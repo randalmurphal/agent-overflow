@@ -19,11 +19,51 @@ import (
 	"agent-overflow/internal/harness/scenario"
 )
 
-// claudeAccountJSON is the account object served on the probe's
-// system/init line and on initialize control_responses. Shape matches
-// internal/provider/claude/probe.go extractAccountInfoFromInitResponse
-// and internal/testutil/app.go WriteMockClaudeInit.
-const claudeAccountJSON = `{"email":"mock@agent-overflow.test","subscriptionType":"Claude Max","apiProvider":"firstParty","tokenSource":"claude.ai"}`
+// claudeAccount is the account object served on the probe's system/init
+// line and on initialize control_responses. Shape matches
+// internal/provider/claude/probe.go extractAccountInfoFromInitResponse and
+// internal/testutil/app.go WriteMockClaudeInit.
+type claudeAccount struct {
+	Email            string `json:"email"`
+	SubscriptionType string `json:"subscriptionType"`
+	APIProvider      string `json:"apiProvider"`
+	TokenSource      string `json:"tokenSource"`
+}
+
+func claudeAccountFor(email string) claudeAccount {
+	return claudeAccount{
+		Email: email, SubscriptionType: "Claude Max", APIProvider: "firstParty", TokenSource: "claude.ai",
+	}
+}
+
+// claudeAccountForHome is the account this process reports. The CLI reports
+// the account its config's `oauthAccount` record names: the `.claude.json` in
+// CLAUDE_CONFIG_DIR, or `~/.claude.json` without it. A harness test that needs
+// a second identity writes that record (the sign-in mock writes it for the
+// email its code names). Without one, mockLoginEmail.
+func claudeAccountForHome() claudeAccount {
+	path := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), ".claude.json")
+	if os.Getenv("CLAUDE_CONFIG_DIR") == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return claudeAccountFor(mockLoginEmail)
+		}
+		path = filepath.Join(home, ".claude.json")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return claudeAccountFor(mockLoginEmail)
+	}
+	var config struct {
+		OAuthAccount struct {
+			EmailAddress string `json:"emailAddress"`
+		} `json:"oauthAccount"`
+	}
+	if json.Unmarshal(data, &config) != nil || config.OAuthAccount.EmailAddress == "" {
+		return claudeAccountFor(mockLoginEmail)
+	}
+	return claudeAccountFor(config.OAuthAccount.EmailAddress)
+}
 
 // claudeModelsJSON is the `models` array the initialize control_response
 // carries. It is the ONLY input to internal/claudemodels' merge — the account
@@ -60,8 +100,14 @@ const claudeModelsJSON = `[` +
 // claudeInitializeResponsePayload is the inner response payload for a
 // control_request{subtype:"initialize"} ack — the probe reads
 // `account` and `models` out of it.
-const claudeInitializeResponsePayload = `{"commands":[],"agents":[],"models":` + claudeModelsJSON +
-	`,"account":` + claudeAccountJSON + `}`
+func claudeInitializeResponsePayload() string {
+	return mustJSON(struct {
+		Commands []any           `json:"commands"`
+		Agents   []any           `json:"agents"`
+		Models   json.RawMessage `json:"models"`
+		Account  claudeAccount   `json:"account"`
+	}{Commands: []any{}, Agents: []any{}, Models: json.RawMessage(claudeModelsJSON), Account: claudeAccountForHome()})
+}
 
 // claudeContextUsageResponsePayload is the inner response payload for a
 // control_request{subtype:"get_context_usage"} ack. Static: the mock has no
@@ -811,7 +857,6 @@ var claudeControlRequestKeys = map[string][]string{
 // (interrupt_receipt_v1, claude-wire.md); this mock queues none.
 var claudeControlAckPayloads = map[string]string{
 	"interrupt":         `{"still_queued":[]}`,
-	"initialize":        claudeInitializeResponsePayload,
 	"get_context_usage": claudeContextUsageResponsePayload,
 	"background_tasks":  claudeBackgroundTasksResponsePayload,
 	"mcp_status":        claudeMCPStatusResponsePayload,
@@ -848,7 +893,10 @@ func writeClaudeControlAck(w *lineWriter, requestID, subtype string, request jso
 		return
 	}
 	payload, ok := claudeControlAckPayloads[subtype]
-	if !ok {
+	switch {
+	case subtype == "initialize":
+		payload = claudeInitializeResponsePayload()
+	case !ok:
 		payload = "{}"
 	}
 	writeClaudeControlSuccess(w, requestID, payload)

@@ -154,9 +154,13 @@ func (a *App) tapNotification(name eventchan.Channel, data any) {
 			return notify.MapProviderAuth(a.observeProviderAuth(name, true))
 		})
 
-	case eventchan.ProviderLogin:
-		event, ok := data.(provideraccountapp.LoginState)
-		if !ok || event.Phase != provideraccountapp.LoginPhaseSucceeded {
+	case eventchan.ProviderAccountSignIn:
+		// Only a login that is now the selected one signs the provider back
+		// in. A sign-in that landed beside the selected account, which a
+		// sign-in in this app does unless nothing was selected, leaves the
+		// provider as signed out as it was.
+		event, ok := data.(provideraccountapp.SignIn)
+		if !ok || !event.Active {
 			return
 		}
 		name := event.Provider

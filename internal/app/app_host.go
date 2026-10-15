@@ -27,7 +27,19 @@ func (a *App) Version() string {
 //ao:scope host
 //ao:route home
 func (a *App) OpenExternalURL(rawURL string) error {
-	return externalurl.Open(context.Background(), rawURL)
+	return a.openExternalURL(context.Background(), rawURL)
+}
+
+// openExternalURL is the one system-browser open, for links and for a
+// provider sign-in's page.
+func (a *App) openExternalURL(ctx context.Context, rawURL string) error {
+	if a.externalURLsIsolated {
+		if _, err := externalurl.Validate(rawURL); err != nil {
+			return err
+		}
+		return externalurl.ErrNoOpener
+	}
+	return externalurl.Open(ctx, rawURL)
 }
 
 // BrowseDirectory lists the contents of path for the project-picker

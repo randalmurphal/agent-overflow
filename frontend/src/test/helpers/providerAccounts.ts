@@ -18,7 +18,6 @@ export function account(
     tokenSource: '',
     apiProvider: '',
     addedAt: 0,
-    lastUsedAt: 0,
     rateLimits: null,
     active: false,
     generation: 1,

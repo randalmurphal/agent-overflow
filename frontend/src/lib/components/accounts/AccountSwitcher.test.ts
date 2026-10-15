@@ -213,6 +213,37 @@ describe('<AccountSwitcher> — selection', () => {
   });
 });
 
+describe('<AccountSwitcher> — sign in again', () => {
+  it('offers a sign-in in a login\'s last week and after it, without switching', async () => {
+    const now = Date.now();
+    setBindingMock('ListProviderAccounts', async () => [
+      account({ id: 'claude-a', displayName: 'Work', active: true, needsLogin: true, refreshTokenExpiresAt: now - 60_000 }),
+      account({ id: 'claude-b', displayName: 'Personal', refreshTokenExpiresAt: now + 2 * 86_400_000 }),
+      account({ id: 'claude-c', displayName: 'Spare', refreshTokenExpiresAt: now + 20 * 86_400_000 }),
+    ]);
+    const loginMock = setBindingMock('StartProviderLogin', async () => ({
+      provider: 'claude',
+      phase: 'awaiting_code',
+      method: 'remote',
+      authorizeUrl: 'https://claude.ai/oauth/authorize?state=renew',
+    }));
+    const switchMock = setBindingMock('SwitchProviderAccount', async () => undefined);
+    const onClose = vi.fn();
+    const { findByTestId, queryByTestId, getByTestId } = render(AccountSwitcher, { open: true, onClose });
+
+    await findByTestId('account-switcher-sign-in-claude-b');
+    expect(queryByTestId('account-switcher-sign-in-claude-a')).not.toBeNull();
+    expect(queryByTestId('account-switcher-sign-in-claude-c')).toBeNull();
+    // The selected account keeps its Active tag while it needs a sign-in.
+    expect(getByTestId('account-switcher-row-claude-a').textContent).toContain('Active');
+
+    await fireEvent.click(getByTestId('account-switcher-sign-in-claude-b'));
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('claude', expect.any(String)));
+    expect(switchMock).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
 describe('<AccountSwitcher> — keyboard', () => {
   it('walks every provider’s rows with the arrow keys and selects with Enter', async () => {
     const switchMock = setBindingMock('SwitchProviderAccount', async () => undefined);

@@ -560,6 +560,10 @@ type App struct {
 	// tests assign a client pointing at a local httptest server. Nil uses
 	// the package-level singleton.
 	rateLimitProbeClientOverride *http.Client
+	// externalURLsIsolated makes every system-browser open answer
+	// externalurl.ErrNoOpener, as a host with no browser does. Only an
+	// isolated boot sets it: a test run must not open the developer's browser.
+	externalURLsIsolated bool
 	// netReach is where a LAN bind listens and which address it publishes.
 	// ConfigureIsolation confines an isolated boot to loopback unless it
 	// runs inside the test network namespace (network.IsolatedReach). The

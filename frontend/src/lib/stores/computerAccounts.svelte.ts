@@ -11,11 +11,13 @@ import {
   ProviderLoginState,
   RefreshProviderAccountUsage,
   RemoveProviderAccount,
+  ReorderProviderAccounts,
   StartProviderLogin,
   SubmitProviderLoginCode,
   SwitchProviderAccount,
 } from './bindings';
 import type { ManagedProviderAccount } from './bindings';
+import type { ProviderAccountSignInEvent } from '../types/events';
 import { canUseHostOpenExternalURL } from '../utils/externalLinks';
 import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
 import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
@@ -215,7 +217,12 @@ export class ComputerAccounts {
     try {
       const listed = (await this.call(() => ListProviderAccounts())) as ManagedProviderAccount[];
       if (generation !== this.loadGeneration) return;
-      this.accounts = listed ?? [];
+      let accounts = listed ?? [];
+      for (const provider of this.ACCOUNT_PROVIDERS) {
+        const order = this.pendingOrders[provider];
+        if (order) accounts = withProviderOrder(accounts, provider, order);
+      }
+      this.accounts = accounts;
       this.projectListing(this.accounts);
     } catch (error) {
       if (this.disposed || generation !== this.loadGeneration) return;
@@ -276,7 +283,7 @@ export class ComputerAccounts {
           `The ${label} login for ${providerAccountName(account)} expired. Sign in again to reconnect it.`,
         );
       } else {
-        addToast('success', `Switched ${label} account.`);
+        addToast('success', `Switched to ${label} account ${providerAccountName(account)}.`);
         switched = true;
       }
     } catch (error) {
@@ -297,6 +304,46 @@ export class ComputerAccounts {
     }
     return switched;
   }
+
+  /**
+   * Move one provider's accounts into `orderedIds`, which names each of its
+   * saved accounts once. The listing changes at once; the backend writes
+   * follow in call order, and a listing that lands while one is pending keeps
+   * the order the user made. A refused write reloads the backend's order.
+   */
+  async reorderProviderAccounts(provider: ProviderID, orderedIds: string[]): Promise<void> {
+    if (this.disposed) return;
+    const current = this.getProviderAccountsFor(provider).map((account) => account.id);
+    if (current.length === orderedIds.length && current.every((id, i) => id === orderedIds[i])) return;
+    const order = [...orderedIds];
+    this.pendingOrders[provider] = order;
+    this.accounts = withProviderOrder(this.accounts, provider, order);
+    const run = (this.reorderWrites[provider] ?? Promise.resolve()).then(async () => {
+      try {
+        await this.call(() => ReorderProviderAccounts(provider, order));
+      } catch (error) {
+        if (this.disposed) return;
+        if (this.pendingOrders[provider] === order) delete this.pendingOrders[provider];
+        const label = providerLabel(provider);
+        console.error(`${label} account reorder failed:`, error);
+        addErrorToast(
+          `${label} accounts were not reordered. ${userFacingError(error, 'Try again.')}`,
+          error,
+        );
+        await this.reloadProviderAccounts();
+      }
+    });
+    this.reorderWrites[provider] = run;
+    await run;
+    if (this.reorderWrites[provider] !== run) return;
+    delete this.reorderWrites[provider];
+    if (this.pendingOrders[provider] === order) delete this.pendingOrders[provider];
+  }
+
+  // The order a reorder has shown but the backend may not have written yet,
+  // and the chain of writes behind it, per provider.
+  private pendingOrders: Partial<Record<ProviderID, string[]>> = {};
+  private reorderWrites: Partial<Record<ProviderID, Promise<void>>> = {};
 
   /** Re-read one account's quotas from the provider and reload the listing. */
   async refreshProviderAccountUsage(
@@ -470,9 +517,33 @@ export class ComputerAccounts {
     if (state.phase === ProviderLoginPhase.LoginPhaseSucceeded) {
       // The panel has nothing left to show, and the listing behind it is stale
       // by exactly the account that just landed.
+      // Where the login landed is told by `provider:account_signin`.
       this.logins[provider] = this.idleLogin(provider);
       void this.reloadProviderAccounts();
-      addToast('success', `${providerLabel(provider)} account connected.`);
+    }
+  }
+
+  /**
+   * `provider:account_signin` — a login landed on a saved account, from a
+   * sign-in here or a provider-native login outside the app. Says which
+   * account and what it did; the listing reload rides
+   * `provider:accounts_changed` and `provider:login`.
+   */
+  applyProviderAccountSignIn(event: ProviderAccountSignInEvent | null | undefined): void {
+    if (this.disposed || !event?.account) return;
+    if (!hasScope('access:admin', this.backend)) return;
+    const provider = event.provider;
+    if (!this.ACCOUNT_PROVIDERS.includes(provider)) return;
+    const label = providerLabel(provider);
+    const name = providerAccountName(event.account);
+    if (event.added && event.switched) {
+      addToast('success', `Added and switched to ${label} account ${name}.`);
+    } else if (event.added) {
+      addToast('success', `Added ${label} account ${name}.`);
+    } else if (event.switched) {
+      addToast('success', `Switched to ${label} account ${name}.`);
+    } else if (event.renewed) {
+      addToast('success', `Renewed the ${label} sign-in for ${name}.`);
     }
   }
 
@@ -566,4 +637,25 @@ export class ComputerAccounts {
     }
   }
 
+}
+
+/**
+ * `accounts` with one provider's accounts in `order`, every other account
+ * where it was. An account `order` does not name keeps its place after the
+ * named ones, so a listing that gained a card while a reorder was pending
+ * still shows it.
+ */
+export function withProviderOrder(
+  accounts: ManagedProviderAccount[],
+  provider: ProviderID,
+  order: readonly string[],
+): ManagedProviderAccount[] {
+  const rank = new Map(order.map((id, index) => [id, index]));
+  const sorted = accounts
+    .filter((account) => account.provider === provider)
+    .map((account, index) => ({ account, key: rank.get(account.id) ?? order.length + index }))
+    .sort((a, b) => a.key - b.key)
+    .map((entry) => entry.account);
+  let next = 0;
+  return accounts.map((account) => (account.provider === provider ? sorted[next++] : account));
 }
