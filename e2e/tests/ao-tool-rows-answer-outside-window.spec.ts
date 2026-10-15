@@ -1,8 +1,9 @@
-// A send whose answer's wake row is outside the pane's loaded window still
-// reads "answer arrived": the Agents listing names the confirmed wake row
-// (ListThreadAgentRows' wakeItemId), so the row does not depend on the
-// wake being loaded (docs/specs/agent-thread-tools.md, How calls surface in
-// the timeline).
+// A send whose answer's wake row is outside the pane's loaded window, settled
+// long enough ago that the Agents listing has dropped it, still reads
+// "answer arrived": the row reads the request ledger, which names the
+// confirmed wake row (GetThreadRequestStates' wakeItemId), so it depends on
+// neither the wake being loaded nor the listing (docs/specs/agent-thread-tools.md,
+// How calls surface in the timeline).
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
@@ -43,12 +44,12 @@ for (const provider of ['claude', 'codex'] as const) {
       ] }],
     });
     const lead = seed.projects[0].threadIds[1];
-    // The request settled and its wake was confirmed just now, inside the
-    // listing's settled window.
+    // The request settled and its wake was confirmed two minutes ago, past
+    // the listing's settled window.
     const conn = new DatabaseSync(join(harness.bootstrap.dataDir, 'agent-overflow.db'));
     try {
       conn.exec('PRAGMA busy_timeout = 5000');
-      const now = Date.now();
+      const now = Date.now() - 120_000;
       conn.prepare(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, notify, state, answer, answer_kind,
         settled_at, delivered_at, delivered_how, confirmed_at, created_at, updated_at)
         VALUES (?, ?, 'send', ?, 1, 'finished', ?, 'final', ?, ?, 'queued', ?, ?, ?)`)
@@ -57,9 +58,12 @@ for (const provider of ['claude', 'codex'] as const) {
       conn.close();
     }
 
-    // The listing names the wake row, which the jump below leaves unloaded.
-    const listing = await harness.rpc<{ rows: { token: string; wakeItemId?: string }[] }>('ListThreadAgentRows', lead);
-    expect(listing.rows.find((row) => row.token === token)?.wakeItemId).toBeTruthy();
+    // The listing has dropped the request; the ledger names its wake row,
+    // which the jump below leaves unloaded.
+    const listing = await harness.rpc<{ rows: { token: string }[] }>('ListThreadAgentRows', lead);
+    expect(listing.rows.find((row) => row.token === token)).toBeUndefined();
+    const states = await harness.rpc<{ token: string; wakeItemId?: string }[]>('GetThreadRequestStates', lead, [token]);
+    expect(states.find((state) => state.token === token)?.wakeItemId).toBeTruthy();
     await harness.open(page);
     await page.getByTestId('thread-row-title').filter({ hasText: 'Lead far back' }).first().click();
     const scroller = page.getByTestId('message-timeline-scroll');

@@ -6840,6 +6840,37 @@ export class ThreadRecurringJob {
 }
 
 /**
+ * ThreadRequestState is one request a thread made as the ledger holds it:
+ * its state, and the caller's timeline row that delivered its answer once the
+ * provider confirmed that row, whether or not any pane has it loaded.
+ */
+export class ThreadRequestState {
+    "token": string;
+    "state": string;
+    "wakeItemId"?: string;
+
+    /** Creates a new ThreadRequestState instance. */
+    constructor($$source: Partial<ThreadRequestState> = {}) {
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadRequestState instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadRequestState {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ThreadRequestState($$parsedSource as Partial<ThreadRequestState>);
+    }
+}
+
+/**
  * ThreadTransferIntent is a public challenge, not authority to resume a thread.
  * The source keeps the activation secret until its retirement is durable.
  */

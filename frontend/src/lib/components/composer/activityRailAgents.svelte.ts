@@ -30,7 +30,6 @@ import { ListThreadAgentRows, type ThreadAgentRow } from '../../stores/bindings'
 import { getQueueForThread, type QueueItem } from '../../stores/sendQueue.svelte';
 import { userMessageOriginThread, userMessageOriginWake } from '../../utils/userMessageMeta';
 import { onThreadAgentRowsChanged } from '../../stores/eventsThreadAgentRows';
-import { noteListedAgentRows } from '../../stores/agentRequestAnswers.svelte';
 import { getTransportStatusFor, onBackendStatusChange } from '../../stores/transportStatus.svelte';
 import { threadBackend } from '../../transport/entityIndex';
 import { createRefreshScheduler } from '../../utils/refreshScheduler';
@@ -149,7 +148,6 @@ export function createAgentController(
     listed = next;
     hidden = more;
     callers = forThreadId ? agentRowCallers(forThreadId, next) : new Set();
-    if (forThreadId) noteListedAgentRows(forThreadId, next);
   }
 
   const refresh = createRefreshScheduler({

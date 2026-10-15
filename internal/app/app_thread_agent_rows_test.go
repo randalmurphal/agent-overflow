@@ -16,6 +16,8 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
+
+	"github.com/google/uuid"
 )
 
 func agentRowTokens(rows []ThreadAgentRow) []string {
@@ -424,6 +426,59 @@ func TestThreadAgentRowsNameTheWakeThatDeliveredTheAnswer(t *testing.T) {
 	}
 	if row, wake := listed(), f.wakeRow(t, token); row.WakeItemID != wake.ID {
 		t.Fatalf("WakeItemID = %q; want the wake row %q", row.WakeItemID, wake.ID)
+	}
+}
+
+// A tool row reads its request's answer from the ledger: the wake row the
+// provider confirmed, one joined with another answer's included, whether or
+// not the Agents listing still shows the request. A token the thread did
+// not make reads nothing, and an oversized read is refused.
+func TestThreadRequestStatesNameTheConfirmedWake(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	first := owedWakeSeeds()[0].seed(t, f)
+	second := owedWakeSeeds()[0].seed(t, f)
+	f.app.deliverThreadWake(first, false)
+	f.app.deliverThreadWake(second, false)
+	f.app.waitAgentNoticeWork()
+	envelope := dispatchUnconfirmed(t, f)
+	tokens := []string{first, second, uuid.NewString()}
+	states := func() []ThreadRequestState {
+		got, err := f.app.GetThreadRequestStates(f.caller.ID, tokens)
+		if err != nil {
+			t.Fatalf("GetThreadRequestStates: %v", err)
+		}
+		return got
+	}
+	for _, state := range states() {
+		if state.WakeItemID != "" {
+			t.Fatalf("an unconfirmed wake is named: %+v", state)
+		}
+	}
+	wireID, _ := envelope["uuid"].(string)
+	text, _ := envelopeText(t, envelope)
+	meta, _ := json.Marshal(map[string]any{"provider_item_id": wireID})
+	if err := f.app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: f.caller.ID, Content: text, Meta: meta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	wake := f.wakeRow(t, first)
+	got := states()
+	if len(got) != 2 || got[0].Token != first || got[1].Token != second {
+		t.Fatalf("states = %+v; want the two requests the thread made", got)
+	}
+	for _, state := range got {
+		if state.WakeItemID != wake.ID || state.State != store.ThreadRequestFinished {
+			t.Fatalf("state = %+v; want finished, answered in the joined wake %q", state, wake.ID)
+		}
+	}
+	if other, err := f.app.GetThreadRequestStates(uuid.NewString(), tokens); err != nil || len(other) != 0 {
+		t.Fatalf("another thread read %+v, %v; want nothing", other, err)
+	}
+	if _, err := f.app.GetThreadRequestStates(f.caller.ID, make([]string, maxThreadRequestStates+1)); err == nil {
+		t.Fatal("an oversized read was answered")
 	}
 }
 

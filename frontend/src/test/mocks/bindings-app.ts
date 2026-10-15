@@ -737,6 +737,7 @@ export const GetThreadWakeDetail = dispatch('GetThreadWakeDetail');
 export const WakeThreadWakeNow = dispatch('WakeThreadWakeNow');
 export const CancelThreadWake = dispatch('CancelThreadWake');
 export const ListThreadAgentRows = dispatch('ListThreadAgentRows');
+export const GetThreadRequestStates = dispatch('GetThreadRequestStates');
 export const StopThreadAgentRow = dispatch('StopThreadAgentRow');
 export const StopThreadAgentRows = dispatch('StopThreadAgentRows');
 export const StopThreadAgentIncoming = dispatch('StopThreadAgentIncoming');

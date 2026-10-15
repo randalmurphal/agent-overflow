@@ -295,12 +295,12 @@
 
   // A spawn, send or ask whose call returned before the answer: where the
   // request stands now. The answer's arrival is the wake row carrying its
-  // token, as the Agents listing reports it; until then, what the target
+  // token, as the request ledger reports it; until then, what the target
   // thread is doing.
   let aoAnswered = $derived(
     aoTool?.server === THREAD_TOOLS_SERVER
       && aoTool.result.token !== ''
-      && requestAnswered(pane?.threadId, pane?.items, aoTool.result.token),
+      && requestAnswered(pane?.threadId, aoTool.result.token),
   );
   let aoLive = $derived.by(() => {
     if (!aoTool || aoTool.server !== THREAD_TOOLS_SERVER) return '';

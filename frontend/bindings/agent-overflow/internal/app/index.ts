@@ -151,6 +151,7 @@ export {
     ThreadPeerRequest,
     ThreadPeerResolve,
     ThreadRecurringJob,
+    ThreadRequestState,
     ThreadTransferIntent,
     ThreadWakeDetail,
     ThreadWakeRow,

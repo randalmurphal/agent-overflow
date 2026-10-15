@@ -185,6 +185,46 @@ func (a *App) ListThreadAgentRows(ctx context.Context, threadID string) (ThreadA
 	return listing, err
 }
 
+// ThreadRequestState is one request a thread made as the ledger holds it:
+// its state, and the caller's timeline row that delivered its answer once the
+// provider confirmed that row, whether or not any pane has it loaded.
+type ThreadRequestState struct {
+	Token      string `json:"token"`
+	State      string `json:"state"`
+	WakeItemID string `json:"wakeItemId,omitempty"`
+}
+
+// maxThreadRequestStates bounds one GetThreadRequestStates read.
+const maxThreadRequestStates = 256
+
+// GetThreadRequestStates reads the requests among tokens that threadID made,
+// for the tool rows that made them, whether the Agents listing still shows
+// them or not. A token threadID did not make is left out.
+//
+//ao:scope threads:read
+func (a *App) GetThreadRequestStates(threadID string, tokens []string) ([]ThreadRequestState, error) {
+	if len(tokens) > maxThreadRequestStates {
+		return nil, fmt.Errorf("read request states: %d tokens, at most %d", len(tokens), maxThreadRequestStates)
+	}
+	out := make([]ThreadRequestState, 0, len(tokens))
+	seen := make(map[string]bool, len(tokens))
+	for _, token := range tokens {
+		if token == "" || seen[token] {
+			continue
+		}
+		seen[token] = true
+		row, found, err := a.store.GetThreadRequest(token)
+		if err != nil {
+			return nil, fmt.Errorf("read request %s: %w", token, err)
+		}
+		if !found || row.CallerThreadID != threadID {
+			continue
+		}
+		out = append(out, ThreadRequestState{Token: token, State: row.State, WakeItemID: a.threadAgentWakeItem(row)})
+	}
+	return out, nil
+}
+
 // threadAgentPeerMode is how a listing reads a spawn's rows on a paired
 // computer.
 type threadAgentPeerMode int

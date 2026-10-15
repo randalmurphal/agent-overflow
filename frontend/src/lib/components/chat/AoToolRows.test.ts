@@ -17,7 +17,8 @@ import { __resetItemProjectionSourceCacheForTest } from '../../utils/itemProject
 import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
 import type { Item } from '../../types/models';
 import type { ThreadAgentRow } from '../../stores/bindings';
-import { __resetAgentRequestAnswersForTest, noteListedAgentRows } from '../../stores/agentRequestAnswers.svelte';
+import { __resetAgentRequestAnswersForTest } from '../../stores/agentRequestAnswers.svelte';
+import { applyThreadAgentRowsChanged, applyThreadAgentRowsGap } from '../../stores/eventsThreadAgentRows';
 
 /** The pane surface the row reads: its expansion registry and its timeline. */
 function paneWith(items: Item[]): never {
@@ -60,6 +61,23 @@ function replyWith(data: string) {
   setBindingMock('GetPayloadPreview', vi.fn(async () => ({ data, size: data.length, isComplete: true })));
 }
 
+/**
+ * The request ledger as GetThreadRequestStates reads it: the wake row each
+ * token's answer landed in, '' while none has. Returns the mock.
+ */
+function ledger(wakes: Record<string, string>) {
+  const read = vi.fn(async (threadId: string, tokens: string[]) =>
+    tokens.filter((token) => threadId === THREAD && token in wakes).map((token) => ({ token, state: 'finished', wakeItemId: wakes[token] })),
+  );
+  setBindingMock('GetThreadRequestStates', read);
+  return read;
+}
+
+/** A change frame for TOKEN, as the backend sends it when the request changes. */
+function frameFor(threadId = THREAD) {
+  applyThreadAgentRowsChanged({ threadId, id: TOKEN, row: { token: TOKEN, callerThreadId: threadId } as ThreadAgentRow }, 'home');
+}
+
 const spawnAck = JSON.stringify({
   token: TOKEN, kind: 'spawn', thread_id: CHILD, title: 'Docs slice', state: 'running',
   outcome: 'backgrounded', revision: 0, notify: true, note: 'Still working. The answer will arrive here.',
@@ -71,6 +89,7 @@ describe('AO thread tool rows', () => {
     resetStagedBackends();
     __resetEntityIndexForTest();
     __resetItemProjectionSourceCacheForTest();
+    __resetAgentRequestAnswersForTest();
     resetThreadsForTest();
     clearThreadStatus(CHILD);
     projectSendResolved(CHILD);
@@ -123,7 +142,8 @@ describe('AO thread tool rows', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('follows the target thread until the answer\'s wake row lands', async () => {
+  it('follows the target thread until the ledger names the answer\'s wake row', async () => {
+    const read = ledger({ [TOKEN]: '' });
     replaceAllThreads([makeThread({ id: CHILD, title: 'Docs slice' })]);
     projectSendStarted(CHILD);
     const item = thread('thread_spawn', {
@@ -131,101 +151,54 @@ describe('AO thread tool rows', () => {
       ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'running', outcome: 'backgrounded' },
     });
     const view = render(GenericToolCallRow, { props: { item, pane: paneWith([item]) } });
-    expect(view.getByTestId('tool-call-card-ao-live-hint').textContent).toBe('(thread running)');
+    const hint = () => view.getByTestId('tool-call-card-ao-live-hint').textContent;
+    expect(hint()).toBe('(thread running)');
+    await waitFor(() => expect(read).toHaveBeenCalledWith(THREAD, [TOKEN]));
 
     setThreadStatus(CHILD, 'pending-approval');
-    await waitFor(() => expect(view.getByTestId('tool-call-card-ao-live-hint').textContent).toBe('(waiting on an approval)'));
+    await waitFor(() => expect(hint()).toBe('(waiting on an approval)'));
 
-    const wake = makeItem({
-      id: 'wake-1', threadId: THREAD, kind: 'user_text',
-      meta: JSON.stringify({ origin: 'agent-thread', originThread: { threadId: CHILD, title: 'Docs slice', token: TOKEN } }),
-    });
-    await view.rerender({ item, pane: paneWith([item, wake]) });
-    expect(view.getByTestId('tool-call-card-ao-live-hint').textContent).toBe('(answer arrived)');
+    // The answer lands outside anything loaded; the request's frame reads again.
+    ledger({ [TOKEN]: 'wake-1' });
+    frameFor();
+    await waitFor(() => expect(hint()).toBe('(answer arrived)'));
   });
 
-  it('reads its answer from the Agents listing, and the loaded rows only for a request the listing leaves out', async () => {
-    __resetAgentRequestAnswersForTest();
+  it('reads its answer from the ledger alone, and again on its frames and a lost one', async () => {
+    const read = ledger({ [TOKEN]: '' });
     replaceAllThreads([makeThread({ id: CHILD, title: 'Docs slice' })]);
     const item = thread('thread_send', {
       input: { thread_id: CHILD, message: 'm' },
       ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'queued', outcome: 'queued' },
     });
     const hint = (view: { getByTestId: (id: string) => HTMLElement }) => view.getByTestId('tool-call-card-ao-live-hint').textContent;
-    const listed = (wakeItemId: string) => ({ token: TOKEN, callerThreadId: THREAD, kind: 'send', threadId: CHILD, title: 'Docs slice', state: 'finished', wakeItemId }) as ThreadAgentRow;
+    // A wake row carrying the token is loaded, but the ledger has not
+    // confirmed it: the row says what the ledger says.
     const wake = makeItem({
       id: 'wake-1', threadId: THREAD, kind: 'user_text',
       meta: JSON.stringify({ origin: 'agent-thread', originThread: { threadId: CHILD, title: 'Docs slice', token: TOKEN } }),
     });
-
-    // The wake row is outside the loaded window; the listing names it.
-    const view = render(GenericToolCallRow, { props: { item, pane: paneWith([item]) } });
+    const view = render(GenericToolCallRow, { props: { item, pane: paneWith([item, wake]) } });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
     expect(hint(view)).not.toBe('(answer arrived)');
-    noteListedAgentRows(THREAD, [listed('wake-1')]);
+
+    // Another thread's frame reads nothing; this thread's does.
+    ledger({ [TOKEN]: 'wake-1' });
+    frameFor(CHILD);
+    await Promise.resolve();
+    expect(hint(view)).not.toBe('(answer arrived)');
+    applyThreadAgentRowsChanged({ threadId: THREAD }, 'home');
     await waitFor(() => expect(hint(view)).toBe('(answer arrived)'));
 
-    // A request the listing covers takes the listing's word over the loaded rows.
-    noteListedAgentRows(THREAD, [listed('')]);
-    await view.rerender({ item, pane: paneWith([item, wake]) });
+    // A lost frame reads every token again.
+    const again = ledger({ [TOKEN]: '' });
+    applyThreadAgentRowsGap('home');
+    await waitFor(() => expect(again).toHaveBeenCalledWith(THREAD, [TOKEN]));
     await waitFor(() => expect(hint(view)).not.toBe('(answer arrived)'));
-
-    // One it leaves out falls back to them; another thread's listing is not this one's.
-    noteListedAgentRows(THREAD, []);
-    noteListedAgentRows(CHILD, [{ ...listed(''), callerThreadId: CHILD }]);
-    await waitFor(() => expect(hint(view)).toBe('(answer arrived)'));
-    __resetAgentRequestAnswersForTest();
-  });
-
-  it('finds its answer in a row that joined answers which queued together', () => {
-    replaceAllThreads([makeThread({ id: CHILD, title: 'Docs slice' })]);
-    const item = thread('thread_send', {
-      input: { thread_id: CHILD, message: 'm' },
-      ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'queued', outcome: 'queued' },
-    });
-    // The chip keeps the first member's thread; this request's token is the second.
-    const joined = makeItem({
-      id: 'wake-1', threadId: THREAD, kind: 'user_text',
-      meta: JSON.stringify({
-        origin: 'agent-thread',
-        originThread: { threadId: 'other', title: 'Other', token: 'first-token' },
-        joinedParts: [
-          { sendId: 'a', bytes: 1, origin: 'agent-thread', originThread: { threadId: 'other', token: 'first-token' } },
-          { sendId: 'b', bytes: 1, origin: 'agent-thread', originThread: { threadId: CHILD, token: TOKEN } },
-        ],
-      }),
-    });
-    const view = render(GenericToolCallRow, { props: { item, pane: paneWith([item, joined]) } });
-    expect(view.getByTestId('tool-call-card-ao-live-hint').textContent).toBe('(answer arrived)');
-
-    // A wake joined first: the row is the wake's, and still answers the request.
-    const behindWake = makeItem({
-      id: 'wake-2', threadId: THREAD, kind: 'user_text',
-      meta: JSON.stringify({
-        origin: 'agent-wake',
-        originWake: { kind: 'loop', label: 'board' },
-        joinedParts: [
-          { sendId: 'a', bytes: 1, origin: 'agent-wake', originWake: { kind: 'loop', label: 'board' } },
-          { sendId: 'b', bytes: 1, origin: 'agent-thread', originThread: { threadId: CHILD, token: TOKEN } },
-        ],
-      }),
-    });
-    const other = render(GenericToolCallRow, { props: { item, pane: paneWith([item, behindWake]) } });
-    expect(other.getAllByTestId('tool-call-card-ao-live-hint').at(-1)!.textContent).toBe('(answer arrived)');
-
-    // A join whose members could not be measured lists the tokens instead.
-    const unmeasured = makeItem({
-      id: 'wake-3', threadId: THREAD, kind: 'user_text',
-      meta: JSON.stringify({
-        origin: 'agent-wake',
-        originWake: { kind: 'loop', label: 'board' },
-        joinedOriginTokens: ['first-token', TOKEN],
-      }),
-    });
-    const third = render(GenericToolCallRow, { props: { item, pane: paneWith([item, unmeasured]) } });
-    expect(third.getAllByTestId('tool-call-card-ao-live-hint').at(-1)!.textContent).toBe('(answer arrived)');
   });
 
   it('drops the reply\'s "still working" note once the answer has landed', async () => {
+    ledger({ [TOKEN]: 'wake-1' });
     replyWith(spawnAck);
     const item = thread('thread_spawn', {
       input: { prompt: 'p' },
