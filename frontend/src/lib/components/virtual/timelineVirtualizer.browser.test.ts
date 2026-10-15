@@ -1009,6 +1009,43 @@ describe('straddling-row attribution (reading anchor)', () => {
     expect(compensations.reduce((sum, c) => sum + c.delta, 0)).toBe(0);
   });
 
+  it('keeps the reader in place after a sideways scroll beside the anchor in its row', async () => {
+    const { harness, scrollEl, compensations } = await mountStraddled();
+    const row = rowEl(scrollEl, 'tall')!;
+    // A code block in the row that scrolls sideways: it moves nothing vertically.
+    const code = document.createElement('div');
+    code.style.cssText = 'position:absolute;left:0;top:0;width:100px;height:20px;overflow-x:auto;overflow-y:hidden';
+    const wide = document.createElement('div');
+    wide.style.cssText = 'width:1000px;height:20px';
+    code.appendChild(wide);
+    row.appendChild(code);
+    code.scrollLeft = 200;
+    await raf();
+    await raf();
+    expect(code.scrollLeft).toBe(200);
+    compensations.length = 0;
+    harness.growRowHead('tall', 60);
+    await waitForStableGeometry(scrollEl, 'head growth after a sideways scroll');
+    expect(compensations.reduce((sum, c) => sum + c.delta, 0)).toBe(60);
+  });
+
+  it('keeps the reader in place after a textarea scroll beside the anchor in its row', async () => {
+    const { harness, scrollEl, compensations } = await mountStraddled();
+    const row = rowEl(scrollEl, 'tall')!;
+    const area = document.createElement('textarea');
+    area.style.cssText = 'position:absolute;left:0;top:0;width:100px;height:40px';
+    area.value = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n');
+    row.appendChild(area);
+    area.scrollTop = 120;
+    await raf();
+    await raf();
+    expect(area.scrollTop).toBeGreaterThan(0);
+    compensations.length = 0;
+    harness.growRowHead('tall', 60);
+    await waitForStableGeometry(scrollEl, 'head growth after a textarea scroll');
+    expect(compensations.reduce((sum, c) => sum + c.delta, 0)).toBe(60);
+  });
+
   it('re-anchors between passes so successive growths each compensate once', async () => {
     const { harness, scrollEl, compensations } = await mountStraddled();
     const scrollTopBefore = scrollEl.scrollTop;

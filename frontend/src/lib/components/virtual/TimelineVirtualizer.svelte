@@ -1089,16 +1089,17 @@
     armScrollEnd();
   }
 
-  // A scroller inside a row (an activity run's clip) moves content within
-  // that row with no scroll event here, so a sampled anchor inside it no
-  // longer measures growth: the inner scroll would read as growth above the
-  // reading position. Drop it; the next post-flush pass samples afresh.
+  // A scroller that holds the sampled anchor (an activity run's clip) moves
+  // it with no scroll event here, so the anchor no longer measures growth:
+  // the inner scroll would read as growth above the reading position. Drop
+  // it; the next post-flush pass samples afresh. A scroller beside the
+  // anchor (a code block, a textarea) moves nothing the anchor measures.
   // Dropping rather than re-sampling keeps a clip that chases its own tail
   // every frame from costing a hit test per frame.
   function handleNestedScroll(event: Event): void {
     const anchor = readingAnchor;
     if (!anchor || event.target === observedScroller) return;
-    if (event.target instanceof Node && anchor.rowEl.contains(event.target)) readingAnchor = null;
+    if (event.target instanceof Node && event.target.contains(anchor.anchorEl)) readingAnchor = null;
   }
 
   function handleWheel(event: WheelEvent): void {
