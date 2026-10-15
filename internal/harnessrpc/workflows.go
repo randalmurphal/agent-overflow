@@ -354,11 +354,11 @@ func (h *Harness) prepareWorkflowReset() (func() error, error) {
 	if h.config.Host == nil || !h.config.Host.HasWorkflowEngine() {
 		return nil, nil
 	}
-	if err := h.config.Host.SetWorkflowGlobalPause(true); err != nil {
+	if err := h.config.Host.HoldWorkflowStarts(); err != nil {
 		return nil, fmt.Errorf("reset workflows: pause engine: %w", err)
 	}
 	resume := func() error {
-		if err := h.config.Host.SetWorkflowGlobalPause(false); err != nil {
+		if err := h.config.Host.ReleaseWorkflowStarts(); err != nil {
 			return fmt.Errorf("reset workflows: clear pause state: %w", err)
 		}
 		return nil

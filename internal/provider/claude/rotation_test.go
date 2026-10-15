@@ -38,13 +38,23 @@ func writeRotatingClaudeScript(t *testing.T, dir, credentialPath string, delay t
 	script := "#!/bin/bash\n" +
 		"read -r _ || true\n" +
 		`printf '%s\n' '` + response + `'` + "\n" +
-		fmt.Sprintf("( sleep %.2f; printf 'rotated' > %q ) &\n", delay.Seconds(), credentialPath) +
+		rotationWriter(credentialPath, delay) +
 		"writer=$!\n" +
 		"read -r _ || true\n" +
 		`kill "$writer" 2>/dev/null` + "\n" +
 		"exit 0\n"
 	mockexec.Write(t, path, script)
 	return path
+}
+
+// rotationWriter is the mock CLI's background credential write. It publishes
+// with a rename, as the CLI's plaintext store does (2.1.284 writes a staging
+// file and renames it over .credentials.json), so the probe never observes a
+// truncated credential that an in-place `>` write would expose.
+func rotationWriter(credentialPath string, delay time.Duration) string {
+	staging := credentialPath + ".staging"
+	return fmt.Sprintf("( sleep %.2f; printf 'rotated' > %q && mv -f %q %q ) &\n",
+		delay.Seconds(), staging, staging, credentialPath)
 }
 
 // The headline regression. Spawning the CLI against a credential at or past
@@ -128,7 +138,7 @@ func TestProbeAccountWaitsForRotationEvenWhenTheProbeFails(t *testing.T) {
 	script := "#!/bin/bash\n" +
 		"read -r _ || true\n" +
 		`printf '%s\n' '` + response + `'` + "\n" +
-		fmt.Sprintf("( sleep 0.40; printf 'rotated' > %q ) &\n", credentialPath) +
+		rotationWriter(credentialPath, 400*time.Millisecond) +
 		"writer=$!\n" +
 		"read -r _ || true\n" +
 		`kill "$writer" 2>/dev/null` + "\n" +
@@ -166,7 +176,7 @@ func TestProbeAccountLetsARotationLandAfterCallerCancellation(t *testing.T) {
 	// Never answers, so only the cancellation ends the probe.
 	script := "#!/bin/bash\n" +
 		"read -r _ || true\n" +
-		fmt.Sprintf("( sleep 0.40; printf 'rotated' > %q ) &\n", credentialPath) +
+		rotationWriter(credentialPath, 400*time.Millisecond) +
 		"writer=$!\n" +
 		"read -r _ || true\n" +
 		`kill "$writer" 2>/dev/null` + "\n" +

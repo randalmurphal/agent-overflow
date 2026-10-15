@@ -4,12 +4,12 @@ package supervise
 
 import "golang.org/x/sys/unix"
 
-// FreeBytes is the space an unprivileged process can still write on the
-// filesystem that holds path.
-func FreeBytes(path string) (uint64, error) {
+// ReadDiskSpace reads the filesystem that holds path.
+func ReadDiskSpace(path string) (DiskSpace, error) {
 	var stat unix.Statfs_t
 	if err := unix.Statfs(path, &stat); err != nil {
-		return 0, err
+		return DiskSpace{}, err
 	}
-	return uint64(stat.Bavail) * uint64(stat.Bsize), nil
+	size := uint64(stat.Bsize)
+	return DiskSpace{Available: uint64(stat.Bavail) * size, Used: (stat.Blocks - stat.Bfree) * size}, nil
 }

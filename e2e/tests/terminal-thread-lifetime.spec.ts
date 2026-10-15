@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
 import { launchFrontendClient } from './frontend-client-helpers.js';
-import { headlessPairing } from './headless-pairing-helpers.js';
+import { CONNECTED_AFTER_CONFIRM, headlessPairing } from './headless-pairing-helpers.js';
 import {
   SHELL_ENV,
   exitShell,
@@ -88,7 +88,7 @@ test('a paired computer ends its terminal threads on a last exit and on a crash'
       const verification = page.getByLabel('Verification number');
       await expect(verification).toBeVisible();
       await pairing.confirm((await verification.textContent())!.trim());
-      await expect(page.getByTestId('attached-system')).toContainText('Connected');
+      await expect(page.getByTestId('attached-system')).toContainText('Connected', CONNECTED_AFTER_CONFIRM);
     } finally { pairing.close(); }
     await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
 

@@ -86,6 +86,8 @@ func (h *harnessHost) PendingProviderEvents(threadID string) int {
 	return h.app.providerEvents.pending(threadID)
 }
 
+func (h *harnessHost) PauseMergedPRCleanup() (resume func()) { return h.app.pauseMergedPRCleanup() }
+
 func (h *harnessHost) ReplayLog() *replaylog.Manager { return h.app.replay }
 
 func (h *harnessHost) Shutdown(ctx context.Context) error { return h.app.Shutdown(ctx) }
@@ -337,8 +339,30 @@ func (h *harnessHost) SubscribeEvents() (*transport.Subscriber, error) {
 	return bus.Subscribe(), nil
 }
 
-func (h *harnessHost) SetWorkflowGlobalPause(paused bool) error {
-	return h.app.WorkflowSetGlobalPause(paused)
+// HoldWorkflowStarts sets only the engine's pause flag. WorkflowSetGlobalPause
+// would also persist it, and that settings write is an fsync, which waits for
+// whatever else the filesystem is flushing: under another process's bulk
+// writes it can hold a reset past its RPC deadline.
+func (h *harnessHost) HoldWorkflowStarts() error {
+	workflowEngine, err := h.app.requireWorkflowEngine()
+	if err != nil {
+		return err
+	}
+	return workflowEngine.PauseDetachedStarts(true)
+}
+
+// ReleaseWorkflowStarts leaves the engine unpaused and the persisted pause
+// clear. A pause a spec set through WorkflowSetGlobalPause is cleared through
+// it too, so the setting and the engine move together.
+func (h *harnessHost) ReleaseWorkflowStarts() error {
+	if h.app.currentSettings().WorkflowPaused {
+		return h.app.WorkflowSetGlobalPause(false)
+	}
+	workflowEngine, err := h.app.requireWorkflowEngine()
+	if err != nil {
+		return err
+	}
+	return workflowEngine.PauseDetachedStarts(false)
 }
 
 func (h *harnessHost) CancelWorkflowItem(ctx context.Context, itemID string) error {

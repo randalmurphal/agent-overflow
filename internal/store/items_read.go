@@ -697,6 +697,43 @@ func (s *Store) LatestHumanUserText(threadID string) (string, bool, error) {
 	return value.summary, value.found, err
 }
 
+// LatestHumanUserMessageAt returns when the newest user message of a thread
+// that no agent wrote was created, in unix milliseconds, and false when the
+// thread has none. The rows are LatestHumanUserText's. The merged-PR
+// worktree cleanup reads it to leave a worktree alone when the user kept
+// working in the thread after the merge.
+func (s *Store) LatestHumanUserMessageAt(threadID string) (int64, bool, error) {
+	type latest struct {
+		createdAt int64
+		found     bool
+	}
+	value, err := historyReadSnapshot(context.Background(), s, "latest human user message time", func(q sqlQueryer) (latest, error) {
+		query, args, err := timelineArms(q, threadID, timelineSelection{
+			Columns: func(string, string) string {
+				return `items.created_at AS created_at, items.turn_index AS turn_index, items.item_index AS item_index`
+			},
+			Where: readerAuthoredUserTextFilterFor("items.") +
+				` AND COALESCE(CASE WHEN json_valid(items.meta) THEN json_extract(items.meta, '$.origin') END, '') = ''`,
+			OrderBy: "turn_index DESC, item_index DESC",
+			Limit:   1,
+		})
+		if err != nil {
+			return latest{}, err
+		}
+		var createdAt int64
+		var turnIndex, itemIndex int
+		err = q.QueryRow(query, args...).Scan(&createdAt, &turnIndex, &itemIndex)
+		if errors.Is(err, sql.ErrNoRows) {
+			return latest{}, nil
+		}
+		if err != nil {
+			return latest{}, fmt.Errorf("store: latest human user message time on thread %s: %w", threadID, err)
+		}
+		return latest{createdAt, true}, nil
+	})
+	return value.createdAt, value.found, err
+}
+
 func (s *Store) GetThreadItem(threadID, id string) (Item, bool, error) {
 	return s.getThreadItem(s.reader(), threadID, id)
 }

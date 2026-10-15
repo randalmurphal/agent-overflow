@@ -100,6 +100,11 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			a.clearAutoReconnectAttempted(threadID)
 		}
 		a.dispatchTurnObservers(threadID, evt)
+		// A provider reroute rewrites the thread's model, which picks the
+		// override the next start would use.
+		if evt.Kind == provider.EventModelRerouted {
+			a.reconcileStalePromptSession(threadID)
+		}
 
 		// Dead-on-arrival reap: a wire error result before this session
 		// ever reached init means startup failed and the process is

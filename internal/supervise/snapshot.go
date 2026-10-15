@@ -81,13 +81,12 @@ type SnapshotOptions struct {
 	UpdateID string
 	// Progress, when set, receives copy progress.
 	Progress CopyProgress
-	// HostAvailable bounds the free space from outside the data directory's
-	// own filesystem, for a filesystem whose statfs does not describe the
-	// disk it lives on: inside WSL, the Windows drive that holds the
-	// distribution's virtual disk. nil means no such bound.
-	HostAvailable *uint64
-	// FreeBytes reads the data directory's free space. nil means FreeBytes.
-	FreeBytes func(path string) (uint64, error)
+	// Host bounds the free space from outside the data directory's own
+	// filesystem (HostDisk). nil means no such bound.
+	Host *HostDisk
+	// ReadSpace reads the data directory's filesystem. nil means
+	// ReadDiskSpace.
+	ReadSpace func(path string) (DiskSpace, error)
 	// CloneFile clones a file copy-on-write, as copyFile describes. nil
 	// means the platform's clone.
 	CloneFile func(in *os.File, destination string) (bool, error)
@@ -130,7 +129,7 @@ func TakeSnapshot(layout Layout, dataDir string, now time.Time, opts SnapshotOpt
 		// failed update rather than one it cannot undo.
 		return Snapshot{}, fmt.Errorf("%w in %s", errNoDatabase, dataDir)
 	}
-	if err := (SnapshotPlan{DatabaseBytes: total}).Check(dataDir, opts.HostAvailable, opts.FreeBytes); err != nil {
+	if err := (SnapshotPlan{DatabaseBytes: total}).Check(dataDir, opts.Host, opts.ReadSpace); err != nil {
 		return Snapshot{}, err
 	}
 	if err := os.MkdirAll(dir, dirPerm); err != nil {

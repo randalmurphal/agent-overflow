@@ -656,6 +656,105 @@ func TestPullListsResolveTheCheckoutsOrigin(t *testing.T) {
 	}
 }
 
+// The merged-PR detection reads the state and merge time of tracked pulls in
+// one request per repository: GitHub by the node id the open-PR lookup
+// reported, GitLab by iid. A pull the forge no longer resolves is absent.
+func TestPRStatesReadThroughTheAppsForgeCode(t *testing.T) {
+	fixture := githubFixture()
+	fixture.Repos = append(fixture.Repos, gitlabFixture().Repos...)
+	fixture.Repos[0].Pulls[1].MergedAt = "2026-10-13T12:00:00Z"
+	fixture.Repos[0].Pulls[1].NodeID = "PR_old"
+	r := newRig(t, fixture)
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "git@github.com:acme/widgets.git"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	open, err := r.core.ListOpenPRs(t.Context(), dir, "feat/widgets")
+	if err != nil || len(open) != 1 || open[0].ID == "" {
+		t.Fatalf("gh ListOpenPRs = %+v, %v; want the pull with its node id", open, err)
+	}
+	gh := func(number int, id string) gitops.TrackedPR {
+		return gitops.TrackedPR{Ref: gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: number}, NodeID: id}
+	}
+	states, err := r.core.ReadPRStates(t.Context(), []gitops.TrackedPR{gh(7, open[0].ID), gh(5, "PR_old"), gh(99, "PR_gone")})
+	if err != nil {
+		t.Fatalf("gh ReadPRStates: %v", err)
+	}
+	merged := states[5]
+	if len(states) != 2 || states[7].State != "open" || merged.State != "merged" || !merged.MergedAt.Equal(time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("gh ReadPRStates = %+v", states)
+	}
+	gl := func(number int) gitops.TrackedPR {
+		return gitops.TrackedPR{Ref: gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp/sub", Repo: "tool", Number: number}}
+	}
+	mrStates, err := r.core.ReadPRStates(t.Context(), []gitops.TrackedPR{gl(3), gl(2), gl(40)})
+	if err != nil {
+		t.Fatalf("glab ReadPRStates: %v", err)
+	}
+	if len(mrStates) != 2 || mrStates[3].State != "open" || mrStates[2].State != "merged" || mrStates[2].MergedAt.IsZero() {
+		t.Fatalf("glab ReadPRStates = %+v", mrStates)
+	}
+	if _, err := r.core.ReadPRStates(t.Context(), []gitops.TrackedPR{gh(7, open[0].ID), gl(3)}); err == nil {
+		t.Fatal("a read naming two repositories was accepted")
+	}
+	reads := 0
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Fatalf("unimplemented invocation: %+v", inv)
+		}
+		if inv.Route == "gh graphql PRStates" || (inv.Route == "glab api merge request list" && strings.Contains(inv.Path, "iids")) {
+			reads++
+		}
+	}
+	if reads != 2 {
+		t.Fatalf("state reads = %d, want one per repository", reads)
+	}
+}
+
+// A fork's pull or merge request from a branch of the same name is not
+// the checkout's: the app's open-PR lookup skips it on both forges.
+func TestOpenPRLookupSkipsForksThroughTheAppsForgeCode(t *testing.T) {
+	r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "acme/widgets", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Fork only", HeadRef: "lonely", HeadRepo: "stranger/widgets"},
+			{Number: 2, Title: "Fork", HeadRef: "topic", HeadRepo: "stranger/widgets"},
+			{Number: 3, Title: "Own", HeadRef: "topic"},
+		}},
+		{Forge: "gitlab", Project: "grp/tool", Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Fork only", HeadRef: "lonely", HeadRepo: "stranger/tool"},
+			{Number: 2, Title: "Own", HeadRef: "topic"},
+			{Number: 3, Title: "Fork", HeadRef: "topic", HeadRepo: "stranger/tool"},
+		}},
+	}})
+	for _, tc := range []struct {
+		origin string
+		own    int
+	}{
+		{"git@github.com:acme/widgets.git", 3},
+		{"git@gitlab.com:grp/tool.git", 2},
+	} {
+		dir := t.TempDir()
+		for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", tc.origin}} {
+			if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		if open, err := r.core.ListOpenPRs(t.Context(), dir, "lonely"); err != nil || len(open) != 0 {
+			t.Fatalf("%s: a fork's pull alone = %+v, %v; want none", tc.origin, open, err)
+		}
+		if open, err := r.core.ListOpenPRs(t.Context(), dir, "topic"); err != nil || len(open) != 1 || open[0].Number != tc.own {
+			t.Fatalf("%s: own and fork = %+v, %v; want only #%d", tc.origin, open, err, tc.own)
+		}
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Fatalf("unimplemented invocation: %+v", inv)
+		}
+	}
+}
+
 // The app's own create call opens a pull or merge request for the
 // checkout's branch, and the open-PR lookup git status makes finds it.
 func TestCreatePROpensOneTheAppThenFinds(t *testing.T) {

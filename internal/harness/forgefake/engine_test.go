@@ -346,7 +346,8 @@ func TestCreateOpensAPullForTheCheckoutsBranch(t *testing.T) {
 	}
 	srv := testServer(t, e)
 	open := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "acme", "name": "widgets", "head": branch})
-	if !strings.Contains(open.body, `"nodes":[{"number":8,"state":"OPEN","title":"Topic","url":"https://github.com/acme/widgets/pull/8"}]`) {
+	if !strings.Contains(open.body, `"number":8,"state":"OPEN","title":"Topic","url":"https://github.com/acme/widgets/pull/8"}]`) ||
+		!strings.Contains(open.body, `"nodes":[{"id":"PR_ao`) {
 		t.Fatalf("open pulls after create = %s", open.body)
 	}
 	var created8 struct {
@@ -1523,23 +1524,153 @@ func TestSetThreadResolvedChangesTheThread(t *testing.T) {
 	}
 }
 
+// PRStates answers pulls by node id with their state and merge time; an id
+// that does not resolve on the request's host is null beside a NOT_FOUND
+// error. A default node id survives a reseed and a new engine.
+func TestGitHubPRStates(t *testing.T) {
+	t.Parallel()
+	const fixture = `{"repos":[{"forge":"github","project":"a/b","pulls":[
+{"number":1,"title":"open"},
+{"number":2,"title":"closed","state":"closed"},
+{"number":3,"title":"merged","state":"merged","mergedAt":"2026-10-13T12:00:00Z"}]}]}`
+	e := New(Options{APIToken: testAPIToken})
+	seededFixture, err := seedJSON(e, fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[int]string{}
+	for _, p := range seededFixture.Repos[0].Pulls {
+		ids[p.Number] = p.NodeID
+	}
+	again := New(Options{APIToken: testAPIToken})
+	reseeded, err := seedJSON(again, fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range reseeded.Repos[0].Pulls {
+		if p.NodeID == "" || p.NodeID != ids[p.Number] {
+			t.Fatalf("pull #%d node id %q in a new engine, want %q", p.Number, p.NodeID, ids[p.Number])
+		}
+	}
+	srv := testServer(t, e)
+	answer := graphQL(t, srv, "github.com", "PRStates", map[string]any{"ids": []string{ids[3], ids[2], ids[1], "PR_missing"}})
+	var got struct {
+		Data struct {
+			Nodes []map[string]any `json:"nodes"`
+		} `json:"data"`
+		Errors []map[string]any `json:"errors"`
+	}
+	decodeBody(t, answer, &got)
+	nodes := got.Data.Nodes
+	if len(nodes) != 4 || nodes[3] != nil {
+		t.Fatalf("nodes = %+v", nodes)
+	}
+	if nodes[0]["state"] != "MERGED" || nodes[0]["mergedAt"] != "2026-10-13T12:00:00Z" || nodes[0]["number"] != float64(3) {
+		t.Fatalf("merged node = %+v", nodes[0])
+	}
+	if nodes[1]["state"] != "CLOSED" || nodes[1]["mergedAt"] != nil || nodes[2]["state"] != "OPEN" {
+		t.Fatalf("closed and open nodes = %+v %+v", nodes[1], nodes[2])
+	}
+	if len(got.Errors) != 1 || got.Errors[0]["type"] != "NOT_FOUND" {
+		t.Fatalf("errors = %+v, want one NOT_FOUND", got.Errors)
+	}
+	if inv := lastInvocation(t, e); inv.Route != "gh graphql PRStates" || inv.Unhandled {
+		t.Fatalf("invocation = %+v", inv)
+	}
+	other := graphQL(t, srv, "ghe.example", "PRStates", map[string]any{"ids": []string{ids[1]}})
+	if !strings.Contains(other.body, `"nodes":[null]`) || !strings.Contains(other.body, "NOT_FOUND") {
+		t.Fatalf("a pull on another host = %s", other.body)
+	}
+	if empty := graphQL(t, srv, "github.com", "PRStates", map[string]any{"ids": []string{}}); empty.status != 404 {
+		t.Fatalf("no ids = %+v, want unhandled", empty)
+	}
+	if _, err := seedJSON(New(Options{}), `{"repos":[{"forge":"github","project":"a/b","pulls":[{"number":1,"title":"x","mergedAt":"2026-10-13T12:00:00Z"}]}]}`); err == nil {
+		t.Fatal("an open pull with mergedAt was accepted")
+	}
+	if _, err := seedJSON(New(Options{}), `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[{"number":1,"title":"x","nodeId":"PR_x"}]}]}`); err == nil {
+		t.Fatal("a GitLab merge request with a node id was accepted")
+	}
+}
+
+// The merge request list answers named iids in any state with merged_at,
+// and refuses iids beside a filter it does not implement.
+func TestGitLabMergeRequestsByIID(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"repos":[{"forge":"gitlab","project":"g/r","pulls":[
+{"number":1,"title":"open"},
+{"number":2,"title":"closed","state":"closed"},
+{"number":3,"title":"merged","state":"merged","mergedAt":"2026-10-13T12:00:00Z"}]}]}`); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	list := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/g%2Fr/merge_requests?iids%5B%5D=3&iids%5B%5D=2&iids%5B%5D=9&per_page=100&state=all", "", nil)
+	var got []map[string]any
+	decodeBody(t, list, &got)
+	if len(got) != 2 || got[0]["iid"] != float64(3) || got[0]["state"] != "merged" || got[0]["merged_at"] != "2026-10-13T12:00:00Z" ||
+		got[1]["iid"] != float64(2) || got[1]["state"] != "closed" || got[1]["merged_at"] != nil {
+		t.Fatalf("merge requests by iid = %+v", got)
+	}
+	if inv := lastInvocation(t, e); inv.Route != "glab api merge request list" || inv.Unhandled {
+		t.Fatalf("invocation = %+v", inv)
+	}
+	if opened := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/g%2Fr/merge_requests?iids%5B%5D=1&state=opened", "", nil); opened.status != 404 {
+		t.Fatalf("iids with state=opened = %+v, want unhandled", opened)
+	}
+	for _, filter := range []string{"author_username=ao-author", "scope=created_by_me"} {
+		if filtered := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/g%2Fr/merge_requests?iids%5B%5D=1&state=all&"+filter, "", nil); filtered.status != 404 {
+			t.Fatalf("iids with %s = %+v, want unhandled", filter, filtered)
+		}
+	}
+}
+
+// source_branch matches a fork's merge request from a branch of the same
+// name, which answers the fork's own source_project_id; the simple view is
+// not implemented.
+func TestGitLabOpenMergeRequestsIncludeForks(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"repos":[{"forge":"gitlab","project":"g/r","id":77,"pulls":[
+{"number":1,"title":"own","headRef":"topic"},
+{"number":2,"title":"fork","headRef":"topic","headRepo":"stranger/r"}]}]}`); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	list := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/g%2Fr/merge_requests?per_page=100&source_branch=topic&state=opened", "", nil)
+	var got []map[string]any
+	decodeBody(t, list, &got)
+	if len(got) != 2 || got[0]["iid"] != float64(2) || got[0]["project_id"] != float64(77) || got[0]["source_project_id"] == float64(77) ||
+		got[1]["iid"] != float64(1) || got[1]["project_id"] != float64(77) || got[1]["source_project_id"] != float64(77) {
+		t.Fatalf("open merge requests = %+v", got)
+	}
+	if simple := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/projects/g%2Fr/merge_requests?source_branch=topic&state=opened&view=simple", "", nil); simple.status != 404 {
+		t.Fatalf("view=simple = %+v, want unhandled", simple)
+	}
+}
+
 // OpenPRsByHead lists a head's open pulls; MergedPRs pages merged ones
 // by first and after.
 func TestGitHubPullLists(t *testing.T) {
 	t.Parallel()
 	e := New(Options{APIToken: testAPIToken})
 	if _, err := seedJSON(e, `{"repos":[{"forge":"github","project":"a/b","pulls":[
-{"number":1,"title":"open","headRef":"topic"},
+{"number":1,"title":"open","headRef":"topic","nodeId":"PR_one"},
 {"number":2,"title":"closed","headRef":"topic","state":"closed"},
 {"number":3,"title":"m1","headRef":"h1","state":"merged","headSha":"`+strings.Repeat("1", 40)+`"},
 {"number":4,"title":"m2","headRef":"h2","state":"merged"},
-{"number":5,"title":"m3","headRef":"h3","state":"merged"}]}]}`); err != nil {
+{"number":5,"title":"m3","headRef":"h3","state":"merged"},
+{"number":6,"title":"fork","headRef":"topic","headRepo":"stranger/b","nodeId":"PR_fork"}]}]}`); err != nil {
 		t.Fatal(err)
 	}
 	srv := testServer(t, e)
 	open := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "a", "name": "b", "head": "topic"})
-	if !strings.Contains(open.body, `"nodes":[{"number":1,"state":"OPEN","title":"open","url":"https://github.com/a/b/pull/1"}]`) {
+	if !strings.Contains(open.body, `"nodes":[{"id":"PR_one","isCrossRepository":false,"number":1,"state":"OPEN","title":"open","url":"https://github.com/a/b/pull/1"},`+
+		`{"id":"PR_fork","isCrossRepository":true,"number":6,"state":"OPEN","title":"fork","url":"https://github.com/a/b/pull/6"}]`) ||
+		!strings.Contains(open.body, `"pageInfo":{"endCursor":"cursor:2","hasNextPage":false}`) {
 		t.Fatalf("open = %s", open.body)
+	}
+	if _, err := seedJSON(e, `{"repos":[{"forge":"github","project":"a/c","pulls":[{"number":1,"title":"self","headRepo":"a/c"}]}]}`); err == nil {
+		t.Fatal("a pull whose headRepo is its own repository was seeded")
 	}
 	if none := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "a", "name": "b", "head": "other"}); !strings.Contains(none.body, `"nodes":[]`) {
 		t.Fatalf("no open pull = %s", none.body)

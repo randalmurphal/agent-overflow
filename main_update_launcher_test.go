@@ -75,7 +75,9 @@ type launcherE2EHost struct {
 	e *launcherE2E
 }
 
-func (h launcherE2EHost) HostFreeBytes(string) (uint64, bool) { return 0, false }
+func (h launcherE2EHost) HostDisk(string) (supervise.HostDisk, bool) {
+	return supervise.HostDisk{}, false
+}
 func (h launcherE2EHost) InvalidatePayloadRecord(supervise.LauncherRecord) error {
 	h.e.note("invalidate")
 	return nil

@@ -173,8 +173,13 @@ func (a *App) reconcileProjectWorktrees(projectPath string, removed []string) {
 		canonicals = append(canonicals, canonical)
 	}
 	slices.Sort(canonicals)
+	core := a.gitCore()
 	for _, canonical := range canonicals {
 		path := gone[canonical]
+		// The git core keys its open-PR answers by the spelling a lookup
+		// used; RemoveWorktreeForce forgets them for removals the app makes.
+		core.ForgetPRCache(path)
+		core.ForgetPRCache(canonical)
 		_, announce := announced[canonical]
 		removal := &worktreeRemoval{projectID: project.ID, project: project.Path, path: path, cause: removedOutsideCause}
 		if a.appWorktreeRemovals.contains(path) {

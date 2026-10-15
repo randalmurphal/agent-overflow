@@ -40,8 +40,12 @@ type testHost struct {
 	// stopped is every StopSession call, in order. liveAfterStop is what
 	// each AwaitSessionEndWork returns in turn: the sessions the stops'
 	// work started. Exhausted, it reports none.
-	stopped       []string
-	liveAfterStop [][]string
+	stopped         []string
+	liveAfterStop   [][]string
+	mergedPRPauses  int
+	mergedPRResumes int
+	onPause         func()
+	onResume        func()
 }
 
 func newHarnessTestHost(t *testing.T) (*Harness, *testHost) {
@@ -171,7 +175,22 @@ func (h *testHost) ClearUIState() error {
 	}
 	return h.store.ClearUIState()
 }
-func (h *testHost) ResetSessionImporter()        {}
+func (h *testHost) ResetSessionImporter() {}
+
+// PauseMergedPRCleanup counts pauses and resumes and, through onPause and
+// onResume, lets a test see what the reset had done by then.
+func (h *testHost) PauseMergedPRCleanup() func() {
+	h.mergedPRPauses++
+	if h.onPause != nil {
+		h.onPause()
+	}
+	return func() {
+		h.mergedPRResumes++
+		if h.onResume != nil {
+			h.onResume()
+		}
+	}
+}
 func (h *testHost) DropRetainedEvents()          { h.droppedRetained++ }
 func (h *testHost) HasWorkflowEngine() bool      { return false }
 func (h *testHost) RequireWorkflowEngine() error { return fmt.Errorf("workflow engine unavailable") }
@@ -184,7 +203,8 @@ func (h *testHost) StartWorkflowRun(string, string, string, json.RawMessage, boo
 func (h *testHost) SubscribeEvents() (*transport.Subscriber, error) {
 	return nil, fmt.Errorf("event bus unavailable")
 }
-func (h *testHost) SetWorkflowGlobalPause(bool) error                { return nil }
+func (h *testHost) HoldWorkflowStarts() error                        { return nil }
+func (h *testHost) ReleaseWorkflowStarts() error                     { return nil }
 func (h *testHost) CancelWorkflowItem(context.Context, string) error { return nil }
 func (h *testHost) SyncWorkflowEngine() error                        { return nil }
 func (h *testHost) PublishStoreIdentity(identity store.Identity)     { h.published = &identity }

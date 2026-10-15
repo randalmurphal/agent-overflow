@@ -1,5 +1,7 @@
 package settings
 
+import "slices"
+
 // The persisted-write chokepoint.
 //
 // Every mutation this package persists goes through `mutate`. It is the only
@@ -105,37 +107,73 @@ func (s *Service) mutate(bucket string, class DeviceClass, apply func(current Se
 		if err != nil {
 			return Settings{}, err
 		}
+		// Prompt files (promptfiles.go) live outside the tiers, from the
+		// moment the store is attached. The prior texts are taken before
+		// apply for the same in-place reason as before, and the rows whose
+		// load still found inline text are persisted stripped by this write
+		// whether or not it moved them.
+		filesOwnPrompts := s.store != nil
+		var priorPrompts map[string]promptEntryState
+		var inlinePromptKeys []string
+		if filesOwnPrompts {
+			priorPrompts = promptEntriesByID(current)
+			inlinePromptKeys = s.promptLoad.inlineKeys
+		}
 
 		next, err := apply(current)
 		if err != nil {
 			return Settings{}, err
 		}
+		var promptWrites []promptFileWrite
+		var promptRemoves []string
+		if filesOwnPrompts {
+			promptWrites, promptRemoves = s.settlePromptOverrides(priorPrompts, &next)
+		}
+		// after keeps the prompt text, so an edit counts as a moved key and
+		// is announced; persisted is what the stores actually hold.
 		after, err := keyValues(next)
 		if err != nil {
 			return Settings{}, err
 		}
+		stored := persistedPromptOverrides(next, filesOwnPrompts)
+		persisted, err := keyValues(stored)
+		if err != nil {
+			return Settings{}, err
+		}
 		moved := changedKeys(before, after)
-		fileKeys, userKeys, deviceKeys := s.routeKeys(moved)
+		persist := moved
+		for _, key := range inlinePromptKeys {
+			if !slices.Contains(persist, key) {
+				persist = append(slices.Clone(persist), key)
+			}
+		}
+		fileKeys, userKeys, deviceKeys := s.routeKeys(persist)
 
+		// Prompt texts land before the rows that name them, so a failed
+		// write leaves the old rows over files that still hold their text.
+		if err := s.writePromptFiles(promptWrites); err != nil {
+			return Settings{}, err
+		}
 		// The file is written unless this write moved ONLY keys that no
 		// longer live in it. A font size must not fsync settings.json; a
 		// write that moved nothing still writes, because that is how a first
 		// save creates the file and how a stamped schema version lands.
-		if len(moved) == 0 || len(fileKeys) > 0 {
-			if err := s.writeSparse(next); err != nil {
+		if len(persist) == 0 || len(fileKeys) > 0 {
+			if err := s.writeSparse(stored); err != nil {
 				return Settings{}, err
 			}
 		}
 		if len(userKeys) > 0 {
-			if err := s.persistScope(s.store, UserScope, userKeys, after); err != nil {
+			if err := s.persistScope(s.store, UserScope, userKeys, stored, persisted); err != nil {
 				return Settings{}, err
 			}
 		}
 		if len(deviceKeys) > 0 {
-			if err := s.persistScope(s.store, deviceScope, deviceKeys, after); err != nil {
+			if err := s.persistScope(s.store, deviceScope, deviceKeys, stored, persisted); err != nil {
 				return Settings{}, err
 			}
 		}
+		s.removePromptFiles(promptRemoves)
 
 		// Cache the SHARED half only. next carries one caller's device slice
 		// AND its class defaults, and handing that to every later Get would
@@ -149,6 +187,10 @@ func (s *Service) mutate(bucket string, class DeviceClass, apply func(current Se
 		}
 		s.cached = &snapshot
 		s.cachedState = readFileState(s.path)
+		s.cachedPromptFiles = nil
+		if filesOwnPrompts {
+			s.cachedPromptFiles = s.stampPromptFiles(snapshot)
+		}
 
 		changes = groupByTier(moved)
 		return next, nil

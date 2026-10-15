@@ -160,14 +160,13 @@ func TestMCPSnapshotsRespectProviderAndWorkspaceOwnership(t *testing.T) {
 	}
 }
 
-func TestRemovalPurgesClaudeApplyDegradationAndPromptMemo(t *testing.T) {
+func TestRemovalPurgesClaudeApplyDegradation(t *testing.T) {
 	manager := New()
 	manager.Put("thread", Entry{Token: "session"})
 	manager.RegisterClaudeLiveApplies(map[string]ClaudeLiveApply{
 		"command": {SessionToken: "session", Axis: "effort", SentAt: time.Now()},
 	}, time.Now(), time.Hour)
 	manager.MarkClaudeLiveApplyDegraded("session", "effort")
-	manager.PutPromptRender("session", PromptRender{Rendered: "memo"})
 
 	manager.Take("thread")
 	if _, ok := manager.TakeClaudeLiveApply("command"); ok {
@@ -175,9 +174,6 @@ func TestRemovalPurgesClaudeApplyDegradationAndPromptMemo(t *testing.T) {
 	}
 	if manager.ClaudeLiveApplyIsDegraded("session", claude.LiveUpdate{Effort: "low"}, "effort", "fast") {
 		t.Fatal("degraded mark survived session removal")
-	}
-	if _, ok := manager.PromptRender("session"); ok {
-		t.Fatal("prompt memo survived session removal")
 	}
 }
 

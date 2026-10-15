@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "usage-limit-claude",
-  "description": "Claude turn that starts normally, then hits the account's usage limit: a rate_limit_event with status \"rejected\" (the 429 envelope, recorded at 100% used for the named window) followed by an assistant envelope carrying the top-level error enum \"rate_limit\" and the result{is_error:true} that closes the turn. Pins the two production surfaces a usage limit lights up from the stdio stream: the provider:usage ring reaching 100% with a reset time, and FailureReasonUsageLimit on the turn's failure meta, which is what parks a workflow run as OutcomeProviderUsageLimited instead of failing it. The durable usagebackoff hold is NOT reachable from here and is not pinned: that ledger is fed only by an HTTP 429 from Anthropic's OAuth usage endpoint, which no wire line can produce.",
+  "description": "Claude turn that starts normally, then hits the account's usage limit: a rate_limit_event with status \"rejected\" (the 429 envelope) followed by an assistant envelope carrying the top-level error enum \"rate_limit\" and the result{is_error:true} that closes the turn. Pins FailureReasonUsageLimit on the turn's failure meta, which is what parks a workflow run as OutcomeProviderUsageLimited instead of failing it, and that the rate_limit_event does not reach the usage meters: it cannot say which account it reports, so the meters read the OAuth usage endpoint instead. The durable usagebackoff hold is NOT reachable from here and is not pinned: that ledger is fed only by an HTTP 429 from Anthropic's OAuth usage endpoint, which no wire line can produce.",
   "provider": "claude",
   "turns": [
     {

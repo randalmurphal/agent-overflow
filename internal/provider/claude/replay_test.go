@@ -56,10 +56,14 @@ func loadNDJSONFixture(t *testing.T, path string) [][]byte {
 // a sample problem worth surfacing.
 func replayFixture(t *testing.T, path string) []provider.ProviderEvent {
 	t.Helper()
-	lines := loadNDJSONFixture(t, path)
-	parser := NewParser()
+	return replayParser(t, NewParser(), path)
+}
+
+// replayParser feeds a fixture to a parser the caller set up.
+func replayParser(t *testing.T, parser *Parser, path string) []provider.ProviderEvent {
+	t.Helper()
 	var events []provider.ProviderEvent
-	for i, line := range lines {
+	for i, line := range loadNDJSONFixture(t, path) {
 		got, err := parser.ParseLine(testThread, line)
 		if err != nil {
 			t.Fatalf("line %d (%.80s): parse error: %v", i+1, line, err)
@@ -1229,11 +1233,11 @@ func TestReplay_LocalAgentAsyncResume(t *testing.T) {
 // reconnect-robustness rule from parse_system.go's task_started case:
 // a parser that never observed the original launch (fixture lines 1-5
 // dropped, simulating a process restart mid-resume) has NEITHER a
-// taskToolUses binding for the task_id NOR an agentLaunchToolUses
-// marker for the SendMessage tool_use. The "local_agent task_started
-// bound to a non-launch tool_use" rule must still classify this as a
-// resume and mark the carrier backgrounded — name-agnostic, keyed only
-// on SendMessage never having been observed as an Agent tool_use.
+// taskToolUses binding for the task_id. The "local_agent task_started
+// bound to an observed call that starts no agent" rule must still
+// classify this as a resume and mark the carrier backgrounded, keyed on
+// the SendMessage tool_use having been observed as neither an Agent,
+// Task nor Skill call.
 // FAILS without that rule: with no prior taskToolUses entry, the
 // in-memory rebind check never fires, so the ack's EventToolComplete
 // carries no is_background and the reaper loses its protection signal

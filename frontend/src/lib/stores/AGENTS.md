@@ -37,9 +37,12 @@ exists. Use `transport/entityScopes.ts` for entity scope checks and
 Scope grants are transport facts, not store state. Import `hasScope` directly
 from `transport/scopes.ts`; do not wrap or re-export it. A passive loader checks
 the exact RPC scope before firing. Mount effects may rely on scope reactivity,
-but one-shot startup work must await `pageGrantsResolved()`. Suppress only typed
-passive connection failures with `isPassiveConnectionFailure`; writes, explicit
-actions, scope errors, and file errors remain visible.
+but one-shot startup work must await `pageGrantsResolved()`. A thread switch can
+run before the manifest from the replica catalog and must not wait for it: its
+gated legs check `pageGrantsKnown()` and run from `pageGrantsResolved()`.
+Suppress only typed passive connection failures with
+`isPassiveConnectionFailure`; writes, explicit actions, scope errors, and file
+errors remain visible.
 
 One thread may be mounted in only one pane. Enter through `mountThreadInPane`;
 `replaceThreadInPane` stays private. All writes to a pane's thread identity go

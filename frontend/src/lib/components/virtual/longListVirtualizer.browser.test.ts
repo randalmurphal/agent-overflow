@@ -105,7 +105,7 @@ describe('LongListVirtualizer', () => {
     expect(deepest).toBe(100_000 - VIEWPORT_PX);
     expect(position).toBe(0);
     expect(firstHeld.size).toBeGreaterThan(4);
-  }, 60_000);
+  });
 
   it('jumps to rows outside the held range and back', async () => {
     const { harness, scrollEl } = await mountHarness(makeRows(1000));
@@ -220,7 +220,7 @@ describe('LongListVirtualizer', () => {
     // scroll moves it: at most the rows a scroll mounts, at 4x.
     expect(largest).toBeLessThanOrEqual(LIMITS.limit + 4 * (VIEWPORT_PX + 2 * 1200 + 2000));
     expect(scrollEl.scrollHeight).toBeLessThanOrEqual(LIMITS.limit);
-  }, 60_000);
+  });
 
   it('reaches every row of a list taller than the browser can lay out', async () => {
     // 40M px, past Chromium's ~33.5M px element height limit.

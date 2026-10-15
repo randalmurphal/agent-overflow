@@ -12,9 +12,11 @@ sessions. See `docs/specs/prompt-tool-overrides.md`.
 - `Render` recognizes only the declared `Token*` constants in one left-to-right
   pass. Unknown placeholders remain verbatim, missing facts become empty text,
   and substituted values are never rescanned.
-- Adding a placeholder requires updating `Facts`, `Render`, the application fact
-  gatherer, render tests, and the frontend token list.
-  `TestPlaceholderTokensMatchTheFrontendMirror` enforces the shared vocabulary.
+- Adding a placeholder requires updating `Facts`, `Render`, `Placeholders`,
+  the application fact gatherer, render tests, and the frontend token list.
+  `TestPlaceholdersMatchTheFrontendMirror` pins the shared tokens, meanings
+  and providers; the prompts directory README is generated from
+  `Placeholders`.
 - Keep matching and rendering free of subprocesses, host probes, and writes so
   they remain safe on live reconciliation paths.
 - `ClaudeMemoryDir` delegates workspace encoding to

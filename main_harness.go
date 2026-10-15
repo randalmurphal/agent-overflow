@@ -273,6 +273,14 @@ type harnessTiming struct {
 	// published is asked for once the quick retries ran out
 	// (app.IsolationConfig.PRCILogWaitInterval).
 	PRCILogWait time.Duration
+	// MergedPRPoll is how often the merged-PR worktree cleanup reads one
+	// repository's tracked pull requests
+	// (app.IsolationConfig.MergedPRPollInterval).
+	MergedPRPoll time.Duration
+	// PRLookupRetry is how long a first failed open-PR lookup is cached
+	// before the forge is asked again
+	// (app.IsolationConfig.PRLookupRetryBase).
+	PRLookupRetry time.Duration
 	// IdleReap, IdleReapSweep and WakeupGrace are the idle-session
 	// reaper's inactivity window, sweep cadence and scheduled-wakeup grace
 	// (app.IsolationConfig.IdleReapThreshold / IdleReapInterval /
@@ -307,6 +315,8 @@ func parseHarnessTiming(value string) (harnessTiming, error) {
 		"pr-ci-live":        &timing.PRCILive,
 		"pr-ci-follow":      &timing.PRCIFollow,
 		"pr-ci-log-wait":    &timing.PRCILogWait,
+		"merged-pr-poll":    &timing.MergedPRPoll,
+		"pr-lookup-retry":   &timing.PRLookupRetry,
 		"idle-reap":         &timing.IdleReap,
 		"idle-reap-sweep":   &timing.IdleReapSweep,
 		"wakeup-grace":      &timing.WakeupGrace,
@@ -411,6 +421,8 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		PRCILiveInterval:        opts.Timing.PRCILive,
 		PRCIFollowInterval:      opts.Timing.PRCIFollow,
 		PRCILogWaitInterval:     opts.Timing.PRCILogWait,
+		MergedPRPollInterval:    opts.Timing.MergedPRPoll,
+		PRLookupRetryBase:       opts.Timing.PRLookupRetry,
 		IdleReapThreshold:       opts.Timing.IdleReap,
 		IdleReapInterval:        opts.Timing.IdleReapSweep,
 		WakeupReapGrace:         opts.Timing.WakeupGrace,

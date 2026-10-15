@@ -1,115 +1,58 @@
 package app
 
 import (
-	"agent-overflow/internal/testutil/mockexec"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/testutil"
 )
 
+// The PR's head and the base tip edit one line differently; the merge is
+// computed at the revision, from commits fetched into the clone.
 func TestGetPRMergeConflictsHappyPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script mock git is unix-only")
-	}
+	t.Parallel()
 	app := newTestAppWithStore(t)
-	workspace := initMainGitRepo(t)
-	ref := testWorkspaceRef(t, app, workspace)
-
-	binDir := t.TempDir()
-	logPath := filepath.Join(binDir, "git.log")
-	gitPath := filepath.Join(binDir, "git")
-	headOID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	treeOID := "cccccccccccccccccccccccccccccccccccccccc"
-	script := `#!/bin/sh
-printf '%s\n' "$*" >> "$AO_GIT_LOG"
-case "$*" in
-  "rev-parse --is-inside-work-tree")
-    echo true
-    exit 0
-    ;;
-  "fetch origin pull/9/head")
-    exit 0
-    ;;
-  "rev-parse FETCH_HEAD")
-    echo "$AO_HEAD_OID"
-    exit 0
-    ;;
-  "fetch origin main")
-    exit 0
-    ;;
-  "merge-tree --write-tree --name-only origin/main $AO_HEAD_OID")
-    cat <<EOF
-$AO_TREE_OID
-main.go
-
-CONFLICT (content): Merge conflict in main.go
-EOF
-    exit 1
-    ;;
-  "show $AO_TREE_OID:main.go")
-    cat <<EOF
-package main
-<<<<<<< ours
-left
-=======
-right
->>>>>>> theirs
-EOF
-    exit 0
-    ;;
-  *)
-    echo "unexpected args: $*" >&2
-    exit 9
-    ;;
-esac
-`
-	mockexec.Write(t, gitPath, script)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("AO_GIT_LOG", logPath)
-	t.Setenv("AO_HEAD_OID", headOID)
-	t.Setenv("AO_TREE_OID", treeOID)
-	app.git = gitops.NewCore()
+	origin := initMainGitRepo(t)
+	write := func(content string) {
+		if err := os.WriteFile(filepath.Join(origin, "README.txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		testutil.RunGit(t, origin, "commit", "-q", "-am", content)
+	}
+	clone := filepath.Join(t.TempDir(), "clone")
+	testutil.RunGit(t, origin, "clone", "-q", origin, clone)
+	testutil.RunGit(t, origin, "checkout", "-q", "-b", "feature")
+	write("feature\n")
+	head := revParseIn(t, origin, "HEAD")
+	testutil.RunGit(t, origin, "update-ref", "refs/pull/9/head", head)
+	testutil.RunGit(t, origin, "checkout", "-q", "main")
+	write("main\n")
+	ref := testWorkspaceRef(t, app, clone)
+	rev := gitops.PRRevision{BaseRef: "main", BaseSHA: revParseIn(t, origin, "main"), HeadSHA: head}
 
 	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 9}
-	result, err := app.GetPRMergeConflicts(ref, pr, "main", "feature-branch")
+	result, err := app.GetPRMergeConflicts(ref, pr, rev, "feature-branch")
 	if err != nil {
 		t.Fatalf("GetPRMergeConflicts: %v", err)
 	}
-	if !result.Conflicted || result.TreeOID != treeOID || result.BaseLabel != "origin/main" || result.HeadLabel != "feature-branch" {
+	if !result.Conflicted || result.BaseLabel != "origin/main" || result.HeadLabel != "feature-branch" {
 		t.Fatalf("result = %+v", result)
 	}
-	if strings.Join(result.Paths, ",") != "main.go" {
+	if strings.Join(result.Paths, ",") != "README.txt" {
 		t.Fatalf("paths = %v", result.Paths)
 	}
 
-	content, err := app.GetMergeConflictFile(ref, treeOID, "main.go")
+	content, err := app.GetMergeConflictFile(ref, result.TreeOID, "README.txt")
 	if err != nil {
 		t.Fatalf("GetMergeConflictFile: %v", err)
 	}
-	if !strings.Contains(content, "<<<<<<< ours") || !strings.Contains(content, ">>>>>>> theirs") {
-		t.Fatalf("content missing conflict markers:\n%s", content)
-	}
-
-	var conflictCalls []string
-	for _, line := range strings.Split(strings.TrimSpace(readAppTestFile(t, logPath)), "\n") {
-		if line == "rev-parse --is-inside-work-tree" {
-			continue
+	for _, want := range []string{"<<<<<<< ", "main", "=======", "feature", ">>>>>>> "} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("content lacks %q:\n%s", want, content)
 		}
-		conflictCalls = append(conflictCalls, line)
-	}
-	want := []string{
-		"fetch origin pull/9/head",
-		"rev-parse FETCH_HEAD",
-		"fetch origin main",
-		"merge-tree --write-tree --name-only origin/main " + headOID,
-		"show " + treeOID + ":main.go",
-	}
-	if strings.Join(conflictCalls, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("git calls:\n%s\nwant:\n%s", strings.Join(conflictCalls, "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -127,11 +70,13 @@ func TestGetPRMergeConflictsRequiresAGitWorkspace(t *testing.T) {
 	app := newTestAppWithStore(t)
 	pr := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 9}
 	// A zero ref names no project, so resolution refuses it outright.
-	if _, err := app.GetPRMergeConflicts(WorkspaceRef{}, pr, "main", ""); err == nil {
+	sha := strings.Repeat("a", 40)
+	rev := gitops.PRRevision{BaseRef: "main", BaseSHA: sha, HeadSHA: sha}
+	if _, err := app.GetPRMergeConflicts(WorkspaceRef{}, pr, rev, ""); err == nil {
 		t.Fatal("zero ref: expected a workspace resolution error")
 	}
 	noClone := testWorkspaceRef(t, app, t.TempDir())
-	_, err := app.GetPRMergeConflicts(noClone, pr, "main", "")
+	_, err := app.GetPRMergeConflicts(noClone, pr, rev, "")
 	if err == nil || !strings.Contains(err.Error(), "workspace is not a git repository") {
 		t.Fatalf("error = %v, want the not-a-repository refusal", err)
 	}

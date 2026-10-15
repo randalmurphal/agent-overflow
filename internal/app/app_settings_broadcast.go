@@ -1,6 +1,8 @@
 package app
 
 import (
+	"slices"
+
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/settings"
 )
@@ -55,11 +57,19 @@ func (a *App) registerSettingsBroadcast() {
 		return
 	}
 	a.settings.SetChangeObserver(func(changes []settings.TierChange) {
+		promptsMoved := false
 		for _, change := range changes {
 			a.emitEvent(eventchan.SettingsUpdated, SettingsUpdatedEvent{
 				Tier: string(change.Tier),
 				Keys: change.Keys,
 			})
+			promptsMoved = promptsMoved || slices.ContainsFunc(change.Keys, settings.IsPromptOverrideKey)
+		}
+		// A prompt override change (in the app, or a prompt file reload)
+		// never reaches a running session; it flags the live threads whose
+		// next start would use a different prompt.
+		if promptsMoved {
+			a.reconcileStalePromptSessions()
 		}
 	})
 }

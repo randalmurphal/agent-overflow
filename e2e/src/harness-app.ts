@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
-import type { Page } from '@playwright/test';
+import { test, type Page, type TestInfo } from '@playwright/test';
 
 import {
   type ProcessIdentity,
@@ -94,6 +94,8 @@ interface PendingRpc {
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** A socket close after the request was written answers this call. */
+  closeAnswers?: boolean;
 }
 
 /** A live harness-mode backend plus one WS connection to it. */
@@ -134,6 +136,8 @@ export class HarnessApp {
   private processTreeProof?: ProcessTreeProof;
   private processIdentity?: ProcessIdentity;
   private teardownComplete = false;
+  /** The backend's last stderr lines, kept by launchHarness. */
+  private readonly stderrTail: readonly string[];
 
   constructor(
     child: ChildProcess,
@@ -144,7 +148,9 @@ export class HarnessApp {
     memberProof?: ProcessGroupMemberProof,
     treeProof?: ProcessTreeProof,
     identity?: ProcessIdentity,
+    stderrTail: readonly string[] = [],
   ) {
+    this.stderrTail = stderrTail;
     this.child = child;
     this.bootstrap = bootstrap;
     this.url = bootstrap.url;
@@ -163,7 +169,7 @@ export class HarnessApp {
       markClosed: () => {
         this.closed = true;
       },
-      shutdown: () => this.rpc('HarnessShutdown'),
+      shutdown: () => this.requestShutdown(),
       closeSocket: () => this.ws?.close(),
       socketOpen: () => this.ws?.readyState === WebSocket.OPEN,
     });
@@ -184,7 +190,8 @@ export class HarnessApp {
       const err = new Error('harness WS closed unexpectedly');
       for (const p of this.pending.values()) {
         clearTimeout(p.timer);
-        p.reject(err);
+        if (p.closeAnswers) p.resolve(undefined);
+        else p.reject(err);
       }
       this.pending.clear();
     });
@@ -323,20 +330,42 @@ export class HarnessApp {
    * upgrade corpus asks for.
    */
   async rpcWithin<T = unknown>(timeoutMs: number, method: string, ...params: unknown[]): Promise<T> {
+    return (await this.call(timeoutMs, false, method, params)) as T;
+  }
+
+  /**
+   * Ask the backend to stop. The backend replies and then shuts down on its
+   * own, so its shutdown can close this socket before the reply arrives;
+   * once the request is written, that close is the acknowledgement. A close
+   * before the request was written, or an error reply, still fails.
+   */
+  async requestShutdown(): Promise<void> {
+    await this.call(RPC_TIMEOUT_MS, true, 'HarnessShutdown', []);
+  }
+
+  private async call(
+    timeoutMs: number,
+    closeAnswers: boolean,
+    method: string,
+    params: unknown[],
+  ): Promise<unknown> {
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       throw new Error(`rpc ${method}: WS is not connected`);
     }
     const id = `e2e-${this.nextId++}`;
+    let entry: PendingRpc | undefined;
     const result = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!this.pending.delete(id)) return;
         reject(new Error(`rpc ${method} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      entry = { resolve, reject, timer };
+      this.pending.set(id, entry);
     });
     try {
       ws.send(JSON.stringify({ type: 'rpc', id, method, params }));
+      if (entry) entry.closeAnswers = closeAnswers;
     } catch (error) {
       const pending = this.pending.get(id);
       if (pending) {
@@ -345,7 +374,7 @@ export class HarnessApp {
         pending.reject(error as Error);
       }
     }
-    return (await result) as T;
+    return await result;
   }
 
   /**
@@ -520,7 +549,7 @@ export class HarnessApp {
       closed: this.closed,
       identity: this.processIdentity,
       socketOpen: () => this.ws?.readyState === WebSocket.OPEN,
-      shutdown: () => this.rpc('HarnessShutdown'),
+      shutdown: () => this.requestShutdown(),
       closeSocket: () => this.ws?.close(),
     };
     const result = await terminateHarness(signal, state);
@@ -528,6 +557,18 @@ export class HarnessApp {
     this.processTreeProof = state.treeProof;
     this.teardownComplete = state.complete;
     this.closed = state.closed;
+    // A spec stops the backends it launched before Playwright knows whether
+    // it failed, so every stop inside a test attaches the tail. A body
+    // attachment is held in memory rather than written to the output
+    // directory, and the list reporter and the retain-on-failure trace show
+    // it only for a failure.
+    let info: TestInfo | undefined;
+    try {
+      info = test.info();
+    } catch {
+      // Outside a test: a worker fixture's teardown or a driver script.
+    }
+    if (info) await this.attachStderr(info);
     return result;
   }
 
@@ -580,6 +621,18 @@ export class HarnessApp {
   /** Leave the owned data root in place when close() stops the backend. */
   keepDataRoot(): void {
     this.dataRootKept = true;
+  }
+
+  /** Attach the backend's stderr tail to a test, so a failure carries the backend's side. */
+  async attachStderr(info: TestInfo): Promise<void> {
+    const name = `backend ${this.bootstrap.pid} stderr`;
+    // A worker restarted after a failure stops its backend under the failed
+    // test's info, which the fixture has already given the tail.
+    if (info.attachments.some((attachment) => attachment.name === name)) return;
+    await info.attach(name, {
+      body: this.stderrTail.join('\n'),
+      contentType: 'text/plain',
+    });
   }
 
   /** Terminate the backend and remove the temp data dir it owned. */

@@ -26,7 +26,6 @@ export interface ReviewDiffChunk {
 export interface ReviewDiffOpened {
   id: string;
   chunk: ReviewDiffChunk;
-  headSha?: string;
   /** Edits diffs: the payloads joined, in patch order. */
   payloadIds?: string[];
 }
@@ -34,8 +33,6 @@ export interface ReviewDiffOpened {
 export interface ReviewDiffRead {
   /** The whole patch, ended. */
   parser: PatchParser;
-  /** Pull request diffs: the head commit the diff was computed at. */
-  headSha: string;
   /** Runs once when evicted text of the patch can no longer be read. */
   onLost(listener: (err: PatchTextLost) => void): void;
   /** Releases the handle, if the read kept it, and the text's budget. */
@@ -119,7 +116,6 @@ export class ReviewDiffSource {
       if (!store.evictedAny) store.detachSource()?.release();
       read = {
         parser,
-        headSha: opened.headSha ?? '',
         onLost: (listener) => store.whenLost(listener),
         dispose: () => store.dispose(),
       };

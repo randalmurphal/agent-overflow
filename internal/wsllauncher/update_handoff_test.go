@@ -209,7 +209,7 @@ type fakePreflightHost struct {
 	preflightErr error
 	space        supervise.UpdateEvent
 	spaceErr     error
-	hostFree     *uint64
+	hostDisk     *supervise.HostDisk
 	calls        []string
 }
 
@@ -233,11 +233,11 @@ func (h *fakePreflightHost) RemoveStagedPayload(_ context.Context, record superv
 	return nil
 }
 
-func (h *fakePreflightHost) HostFreeBytes(string) (uint64, bool) {
-	if h.hostFree == nil {
-		return 0, false
+func (h *fakePreflightHost) HostDisk(string) (supervise.HostDisk, bool) {
+	if h.hostDisk == nil {
+		return supervise.HostDisk{}, false
 	}
-	return *h.hostFree, true
+	return *h.hostDisk, true
 }
 
 func TestPreflightStagedPayloadAsksTheTargetWhetherItsSnapshotFits(t *testing.T) {
@@ -248,8 +248,8 @@ func TestPreflightStagedPayloadAsksTheTargetWhetherItsSnapshotFits(t *testing.T)
 	short := "An update backs up the database first and needs 2.0 GB free. Free at least 1.0 GB and try again."
 
 	t.Run("fits", func(t *testing.T) {
-		free := uint64(5 << 30)
-		host := &fakePreflightHost{preflight: supervise.Preflight{Version: "2.0.0"}, space: ok, hostFree: &free}
+		disk := supervise.HostDisk{Free: 5 << 30, Allocated: 700 << 30, Drive: "D:"}
+		host := &fakePreflightHost{preflight: supervise.Preflight{Version: "2.0.0"}, space: ok, hostDisk: &disk}
 		answer := PreflightStagedPayload(t.Context(), host, request)
 		want := PreflightAnswer{OK: true, Version: "2.0.0", Fingerprint: "fp", StagedPayload: staged}
 		if answer != want || answer.Err() != nil {
@@ -258,7 +258,7 @@ func TestPreflightStagedPayloadAsksTheTargetWhetherItsSnapshotFits(t *testing.T)
 		wantCalls := []string{
 			"install Ubuntu " + staged,
 			"preflight " + staged,
-			supervise.UpdateSpaceCommand + "@" + staged + " --id " + id + " --host-free 5368709120",
+			supervise.UpdateSpaceCommand + "@" + staged + " --id " + id + " --host-free 5368709120 --host-disk-bytes 751619276800 --host-drive D:",
 		}
 		if strings.Join(host.calls, "\n") != strings.Join(wantCalls, "\n") {
 			t.Fatalf("calls = %q, want %q", host.calls, wantCalls)

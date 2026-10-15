@@ -5,6 +5,7 @@
   import ReviewIconButton from './ReviewIconButton.svelte';
   import type { DiffReviewComment } from '../../types/models';
   import { isImeComposingEvent } from '../../utils/imeComposition';
+  import { jumpPulse } from '../../utils/reviewJumpPulse';
 
   // The reader's own draft comment on the diff surface: the same card
   // shape as a PR thread, with an accent edge in place of a state edge
@@ -16,9 +17,11 @@
     orphaned?: boolean;
     onUpdate: (commentId: string, body: string) => Promise<void> | void;
     onDelete: (commentId: string) => Promise<void> | void;
+    /** The jump that landed here (utils/reviewJumpPulse); 0 for none. */
+    pulse?: number;
   }
 
-  let { comment, orphaned = false, onUpdate, onDelete }: Props = $props();
+  let { comment, orphaned = false, onUpdate, onDelete, pulse = 0 }: Props = $props();
   let editing = $state(false);
   let editBody = $state('');
   let busy = $state(false);
@@ -90,7 +93,7 @@
   <div class="pt-1">
     <ReviewAvatar login="you" name="You" initials="Y" size={20} />
   </div>
-  <div class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {orphaned ? 'border-dashed border-border-strong' : 'border-accent/40 border-l-[3px] border-l-accent'}">
+  <div class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {orphaned ? 'border-dashed border-border-strong' : 'border-accent/40 border-l-[3px] border-l-accent'}" {@attach jumpPulse(pulse)}>
     <div class="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 pr-1 {orphaned ? 'bg-surface-2/40' : 'bg-accent/6'}" title={commentLocation(comment)}>
       <span class="shrink-0 font-semibold text-fg">You</span>
       <span class="shrink-0 rounded-full bg-accent/12 px-1.5 py-px text-[0.625rem] text-accent">draft</span>

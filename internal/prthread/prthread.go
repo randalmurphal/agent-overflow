@@ -3,7 +3,10 @@
 // inner backtick runs cannot close.
 package prthread
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // ForgeNoun returns the short noun ("PR" / "MR") for the given forge
 // id. Unknown / empty forge ids fall back to "PR" — the same fallback
@@ -14,6 +17,16 @@ func ForgeNoun(forgeID string) string {
 		return "MR"
 	}
 	return "PR"
+}
+
+// Label names one change request the way its forge does: "PR #90" on
+// GitHub, "MR !12" on GitLab, as the frontend's prScopeLabel
+// (frontend/src/lib/utils/prReference.ts) does.
+func Label(forgeID string, number int) string {
+	if forgeID == "gitlab" {
+		return "MR !" + strconv.Itoa(number)
+	}
+	return "PR #" + strconv.Itoa(number)
 }
 
 // ForgeNounLong returns the long-form noun ("pull request" / "merge

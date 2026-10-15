@@ -94,6 +94,11 @@ type Migration struct {
 	// REFUSES the combination by name rather than dropping the Fix on the
 	// floor.
 	Fix func(tx *sql.Tx) error
+	// Check is an optional precondition that runs inside the migration's
+	// transaction before SQL. It refuses, with the cause, a database the
+	// migration cannot apply to; it changes nothing. Not supported on
+	// Rebuild migrations, which refuse it as they refuse a Fix.
+	Check func(tx *sql.Tx) error
 	// Rebuild marks a migration whose SQL performs a full table rebuild
 	// (CREATE new / copy / DROP old / RENAME) to change a CHECK or drop a
 	// NOT NULL that SQLite can't alter in place. Such a migration MUST run
@@ -198,7 +203,7 @@ CREATE INDEX idx_payload_chunks_payload_start
 	{
 		Version: 12,
 		Name:    "channel_max_turns",
-		// v142 drops channels.
+		// v143 drops channels.
 		SQL: `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
 	},
 	{
@@ -399,7 +404,7 @@ DELETE FROM diff_review_comments WHERE scope IN ('turn', 'session');`,
 	{
 		Version: 26,
 		Name:    "workflow_persistence",
-		// v144 drops automations and automation_cursors.
+		// v145 drops automations and automation_cursors.
 		SQL: `CREATE TABLE work_items (
     id             TEXT    PRIMARY KEY,
     project_id     TEXT    NOT NULL,
@@ -635,7 +640,7 @@ CREATE INDEX idx_work_item_units_worktree
 		// else entirely (an agent proposal id, a call site) and none of them are
 		// ever queried this way.
 		//
-		// v144 drops automations and this index.
+		// v145 drops automations and this index.
 		SQL: `ALTER TABLE automations ADD COLUMN last_fired_at INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE automations ADD COLUMN last_run_item_id TEXT NOT NULL DEFAULT '';
@@ -1730,16 +1735,17 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: groupedThreadPinsMigrationVersion, Name: "grouped_thread_pins", SQL: groupedThreadPinsV139SQL, Rebuild: true},
 	{Version: projectIdentityErrorMigrationVersion, Name: "project_identity_error", SQL: projectIdentityErrorV140SQL},
 	{Version: 141, Name: "repository_identity", SQL: repositoryIdentityV141SQL, Fix: scrubRepositoryCoordinates},
-	{Version: removeDiscussionsMigrationVersion, Name: "remove_discussions", SQL: removeDiscussionsV142SQL, Rebuild: true},
-	{Version: standingAgentsMigrationVersion, Name: "standing_agents", SQL: standingAgentsV143SQL},
-	{Version: removeAutomationsMigrationVersion, Name: "remove_automations", SQL: removeAutomationsV144SQL, Fix: mapAutomationRunsToManual},
-	{Version: workItemSourcesMigrationVersion, Name: "work_item_sources", SQL: workItemSourcesV145SQL, Rebuild: true},
-	{Version: agentWakeStderrMigrationVersion, Name: "agent_wake_stderr", SQL: agentWakeStderrV146SQL},
-	{Version: spawnLineageMigrationVersion, Name: "spawn_lineage", SQL: spawnLineageV147SQL},
-	{Version: deliveryConfirmationsMigrationVersion, Name: "delivery_confirmations", SQL: deliveryConfirmationsV148SQL},
-	{Version: answerAgentMigrationVersion, Name: "answer_agent", SQL: answerAgentV149SQL},
-	{Version: agentRowsRemoteMigrationVersion, Name: "agent_rows_remote", SQL: agentRowsRemoteV150SQL},
-	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV151SQL},
+	{Version: threadPullRequestsMigrationVersion, Name: "thread_pull_requests", SQL: threadPullRequestsV142SQL},
+	{Version: removeDiscussionsMigrationVersion, Name: "remove_discussions", SQL: removeDiscussionsV143SQL, Rebuild: true},
+	{Version: standingAgentsMigrationVersion, Name: "standing_agents", SQL: standingAgentsV144SQL},
+	{Version: removeAutomationsMigrationVersion, Name: "remove_automations", SQL: removeAutomationsV145SQL, Fix: mapAutomationRunsToManual},
+	{Version: workItemSourcesMigrationVersion, Name: "work_item_sources", SQL: workItemSourcesV146SQL, Rebuild: true},
+	{Version: agentWakeStderrMigrationVersion, Name: "agent_wake_stderr", SQL: agentWakeStderrV147SQL},
+	{Version: spawnLineageMigrationVersion, Name: "spawn_lineage", SQL: spawnLineageV148SQL},
+	{Version: deliveryConfirmationsMigrationVersion, Name: "delivery_confirmations", SQL: deliveryConfirmationsV149SQL},
+	{Version: answerAgentMigrationVersion, Name: "answer_agent", SQL: answerAgentV150SQL},
+	{Version: agentRowsRemoteMigrationVersion, Name: "agent_rows_remote", SQL: agentRowsRemoteV151SQL},
+	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV152SQL, Check: refusePreSyncReceiptOwnTurn},
 }
 
 // MigrationStep describes one pending migration as it begins, or a
@@ -1760,19 +1766,20 @@ type MigrationStep struct {
 // PRAGMAs, creates the version tracking table, and applies any unapplied
 // migrations in order.
 func runMigrations(db *sql.DB) error {
-	return runMigrationsContext(context.Background(), db, nil)
+	return runMigrationsContext(context.Background(), db, writerConnPragmas, nil)
 }
 
 // runMigrationsContext is runMigrations bounded by ctx, reporting each
 // pending migration, and each long-running part of a rebuild, to
-// onMigration (which may be nil) before it runs.
+// onMigration (which may be nil) before it runs. pragmas are the ones the
+// writer pool's DSN carries.
 // Cancelling ctx interrupts the running migration; its transaction rolls
 // back and it runs again on the next open.
-func runMigrationsContext(ctx context.Context, db *sql.DB, onMigration func(MigrationStep)) error {
+func runMigrationsContext(ctx context.Context, db *sql.DB, pragmas []connPragma, onMigration func(MigrationStep)) error {
 	if err := refuseNewerSchema(db); err != nil {
 		return err
 	}
-	if err := configureDatabase(db); err != nil {
+	if err := configureDatabase(db, pragmas); err != nil {
 		return err
 	}
 	if err := ensureMigrationTable(db); err != nil {
@@ -1879,7 +1886,7 @@ func refuseNewerSchema(db *sql.DB) error {
 	return nil
 }
 
-func configureDatabase(db *sql.DB) error {
+func configureDatabase(db *sql.DB, pragmas []connPragma) error {
 	// auto_vacuum before anything creates a table. It is a property of
 	// the database FILE, written into its header when the first table is
 	// created, and after that a plain PRAGMA cannot change it: on a
@@ -1916,7 +1923,7 @@ func configureDatabase(db *sql.DB) error {
 	// _pragma values verbatim and SQLite ignores an unknown PRAGMA name
 	// without complaining, so a typo would open cleanly and run the whole
 	// app with foreign keys off.
-	return verifyConnPragmas(db, writerConnPragmas)
+	return verifyConnPragmas(db, pragmas)
 }
 
 func ensureMigrationTable(db *sql.DB) error {
@@ -2075,6 +2082,12 @@ func applyMigrationContext(ctx context.Context, db *sql.DB, m Migration) error {
 		return fmt.Errorf("begin migration v%d: %w", m.Version, err)
 	}
 
+	if m.Check != nil {
+		if err := m.Check(tx); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration v%d (%s) refused: %w", m.Version, m.Name, err)
+		}
+	}
 	if strings.TrimSpace(m.SQL) != "" {
 		if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 			_ = tx.Rollback()
@@ -2150,6 +2163,9 @@ func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, ac
 	// consecutive migrations, which is what every existing pair does.
 	if m.Fix != nil {
 		return fmt.Errorf("migration v%d (%s): a Rebuild migration cannot carry a Fix; split the data fixup into its own migration", m.Version, m.Name)
+	}
+	if m.Check != nil {
+		return fmt.Errorf("migration v%d (%s): a Rebuild migration cannot carry a Check", m.Version, m.Name)
 	}
 	log.Printf("store: applying rebuild migration v%d: %s", m.Version, m.Name)
 	conn, err := db.Conn(ctx)

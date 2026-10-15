@@ -16,6 +16,7 @@
     threadBodyClass,
   } from '../../utils/reviewThreadStyle';
   import { relativeTime } from '../../utils/format';
+  import { jumpPulse } from '../../utils/reviewJumpPulse';
   import type { ReviewThread } from '../../types/models';
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
 
@@ -47,6 +48,8 @@
     /** Opens the overview's Conversation section at this thread; absent
      *  when that section does not exist (no PR overview on screen). */
     onJumpToConversation?: () => void;
+    /** The jump that landed here (utils/reviewJumpPulse); 0 for none. */
+    pulse?: number;
   }
 
   let {
@@ -64,6 +67,7 @@
     onSendReply,
     onResolve,
     onJumpToConversation,
+    pulse = 0,
   }: Props = $props();
   // Rows are virtualized: a windowing remount must not collapse a composer
   // that still holds drafted text (the text itself is store-backed). Only
@@ -93,7 +97,7 @@
   <div class="pt-1">
     <ReviewAvatar login={first?.authorLogin ?? ''} name={first?.authorName} size={20} />
   </div>
-  <div class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]}">
+  <div class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]}" {@attach jumpPulse(pulse)}>
     <div class="flex min-w-0 items-center gap-1.5 py-1 pl-2.5 {onJumpToConversation ? 'pr-1' : 'pr-2.5'} text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {collapsed || firstBody === '' ? '' : 'border-b border-border-subtle'}">
       <button
         type="button"

@@ -125,29 +125,41 @@ func TestMergeSnapshotKeepsLimitsAPartialReadingOmits(t *testing.T) {
 	}
 }
 
-// A whole answer whose entry loses the boundary check is still an entry the
-// server LISTED. Pruning it would delete a live quota over a stale reading.
-func TestMergeSnapshotKeepsAWholeAnswerEntryRejectedForAnOlderBoundary(t *testing.T) {
+// A whole answer replaces every limit it names even when the cached boundary
+// is LATER. A cached boundary can be wrong (a reading filed under the wrong
+// account, a boundary projected past an expired window), and honouring it
+// would reject every true reading until the wrong boundary passed: the
+// account would read 28% for days after the server reported 100%.
+func TestMergeSnapshotWholeAnswerReplacesALaterCachedBoundary(t *testing.T) {
 	current := provider.RateLimitsSnapshot{
 		Provider: string(provider.Claude),
 		Limits: []provider.RateLimitEntry{
 			// Already canonical, so normalization alone reports no change and
-			// the assertion below is about the merge and nothing else.
-			{LimitID: "session", LimitName: "Current session", WindowMins: 300, UsedPercent: 30, ResetsAt: 1_788_316_200},
+			// the assertions below are about the merge and nothing else.
+			{LimitID: "weekly_all", LimitName: "All models", WindowMins: 10080, UsedPercent: 28, ResetsAt: 1_792_537_200},
 		},
 	}
-	stale := provider.RateLimitsSnapshot{
+	whole := provider.RateLimitsSnapshot{
 		Provider: string(provider.Claude), Complete: true,
 		Limits: []provider.RateLimitEntry{
-			{LimitID: "session", LimitName: "Current session", WindowMins: 300, UsedPercent: 90, ResetsAt: 1_788_298_200},
+			{LimitID: "weekly_all", LimitName: "All models", WindowMins: 10080, UsedPercent: 100, ResetsAt: 1_792_411_200},
 		},
 	}
-	merged, changed := MergeSnapshot(current, stale)
-	if changed {
-		t.Fatalf("older-boundary reading changed the cache: %+v", merged.Limits)
+	merged, changed := MergeSnapshot(current, whole)
+	if !changed {
+		t.Fatal("a whole answer with an earlier boundary was rejected")
 	}
-	if len(merged.Limits) != 1 || merged.Limits[0].UsedPercent != 30 {
-		t.Fatalf("merged = %+v, want the cached window untouched", merged.Limits)
+	want := provider.RateLimitEntry{LimitID: "weekly_all", LimitName: "All models", WindowMins: 10080, UsedPercent: 100, ResetsAt: 1_792_411_200}
+	if len(merged.Limits) != 1 || merged.Limits[0] != want {
+		t.Fatalf("merged = %+v, want %+v", merged.Limits, want)
+	}
+
+	// The same reading without Complete is partial and still loses to the
+	// later cached boundary.
+	partial := whole
+	partial.Complete = false
+	if merged, changed := MergeSnapshot(current, partial); changed {
+		t.Fatalf("partial older-boundary reading changed the cache: %+v", merged.Limits)
 	}
 }
 

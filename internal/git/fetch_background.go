@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 )
 
 // CommonDir returns the canonical path of cwd's shared git directory —
@@ -65,9 +64,8 @@ func (c *Core) CommonDir(cwd string) (string, error) {
 //     depend on which worktree happened to win the tick.
 //
 // Concurrent calls for the same repository share one subprocess
-// (single-flight keyed on the common dir): the branch picker's warm-up
-// and this cadence otherwise race into two `git fetch` processes
-// contending for the same ref locks.
+// (single-flight keyed on the common dir) instead of queueing a second
+// identical fetch behind the remote-refs lock.
 //
 // Deliberately NOT `--prune` and NOT `--tags`: both silently move or
 // delete local refs the user can see, which is a surprise when it comes
@@ -117,19 +115,13 @@ func (c *Core) FetchRemotesBackground(ctx context.Context, cwd string) (bool, er
 
 // fetchOriginQuiet is the production body behind Core.fetchFn.
 func (c *Core) fetchOriginQuiet(ctx context.Context, cwd string) error {
-	_, stderr, err := c.executeSpec(commandSpec{
+	_, _, err := c.executeSpec(commandSpec{
 		binary: "git",
 		cwd:    cwd,
 		ctx:    ctx,
 		args:   []string{"fetch", "--quiet", "origin"},
 	})
-	if err != nil {
-		if message := strings.TrimSpace(stderr); message != "" {
-			return fmt.Errorf("git fetch origin: %s", message)
-		}
-		return fmt.Errorf("git fetch origin: %w", err)
-	}
-	return nil
+	return err
 }
 
 // fetchIsFresh reports whether key's last successful fetch is inside

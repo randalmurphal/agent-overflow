@@ -45,7 +45,7 @@ function shortRow(id: string, turnIndex: number): Item {
 }
 
 describe('recent-window prune quiet deferral', () => {
-  it('settle leaves the window intact; the prune lands after quiet with the viewport still at the bottom', { timeout: 30000 }, async () => {
+  it('settle leaves the window intact; the prune lands after quiet with the viewport still at the bottom', async () => {
     // One over ACTIVE_TIMELINE_WINDOW_MAX_ITEMS, seeded through the
     // initial-load path (which never prunes).
     const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;

@@ -199,6 +199,12 @@ type Config struct {
 	//   for stdio servers. The map provided here is wrapped under
 	//   "mcpServers" before serialization.
 	MCPServers map[string]any
+	// AgentLaunchByTask returns the tool_use id of the agent launch the
+	// thread's persisted history holds for a local_agent task id. The
+	// parser asks only for a §E6 resume whose launch it never saw (an
+	// earlier process ran it), so the resumed rows return to their root.
+	// Nil reads as "not found".
+	AgentLaunchByTask func(taskID string) (launchToolUseID string, found bool, err error)
 }
 
 // claudeSpawnEnv and claudeSpawnUnsetEnv are the two halves of a Claude

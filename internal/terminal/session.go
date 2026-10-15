@@ -234,6 +234,14 @@ func (s *Session) Summary() SessionSummary {
 	}
 }
 
+// isRunning reports whether the shell has not yet exited. It turns false
+// before the exit callback runs.
+func (s *Session) isRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running
+}
+
 // Close requests graceful shutdown of the underlying process. Returns once
 // the PTY and wait goroutines have unwound.
 func (s *Session) Close() error {
@@ -245,8 +253,8 @@ func (s *Session) Kill() error {
 	return s.proc.Kill()
 }
 
-// Done returns a channel that is closed after the session has fully exited
-// and its onExit callback has fired.
+// Done returns a channel that is closed once the shell has exited. The
+// onExit callback runs after it closes, once the output pump has drained.
 func (s *Session) Done() <-chan struct{} {
 	return s.proc.Done()
 }

@@ -5,7 +5,7 @@ import { launchHarness } from '../src/harness.js';
 import { waitForScrollSettle } from '../src/scroll.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
-import { RESULT_LINE, advance, claudeScenario, emit, seedAgentThread, startMock,
+import { RESULT_LINE, advance, claudeScenario, emit, listItems, seedAgentThread, startMock,
   taskStartedLine, taskUpdatedLine, textLines, toolUseLine, toolResultLine, waitForGate } from './agent-visibility-helpers.js';
 
 test('a remote agent pane retains loaded run history through a disconnected completion', async ({ page }) => {
@@ -48,6 +48,12 @@ test('a remote agent pane retains loaded run history through a disconnected comp
       const mock = await startMock(remote, thread);
       await remote.rpc('SendMessage', thread, 'Inspect remote history', null);
       await waitForGate(remote, 'finish');
+      // The gate opens once the mock has written the rows, which can be before
+      // the remote has persisted them. A page read then ships an older window
+      // and the rest arrive as live rows, so the run holds loaded rows above
+      // its window and the "earlier" click mounts those instead of a chunk.
+      await expect.poll(async () => (await listItems(remote, thread))
+        .filter(item => item.kind === 'tool_call' && item.status === 'completed').length).toBe(90);
       const main = page.getByTestId('message-timeline-scroll').first();
       await main.getByTestId('subagent-group-open-pane').first().click();
       const pane = page.getByTestId('companion-pane-agent-body');

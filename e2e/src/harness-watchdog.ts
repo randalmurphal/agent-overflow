@@ -6,9 +6,9 @@ import {
   captureProcessIdentity,
   captureProcessGroupMemberProof,
   captureProcessTreeProof,
+  processHoldState,
   processTreeRSS,
   terminateChildTreeAndWaitVerified,
-  verifyProcessIdentity,
   waitForOwnedTreeExit,
   type ProcessIdentity,
   type ProcessGroupMemberProof,
@@ -74,7 +74,14 @@ export class HarnessWatchdog {
     this.busy = true;
     try {
       const identity = this.identity;
-      if (!identity || !(await verifyProcessIdentity(identity))) {
+      // A backend that is exiting still holds its pid and is sampled; one that
+      // has been reaped leaves nothing to watch. Only reuse is a fault.
+      const state = identity && await processHoldState(identity);
+      if (state === 'released') {
+        this.stop();
+        return;
+      }
+      if (!identity || state === 'changed') {
         throw new Error(
           `harness watchdog: backend identity changed for pid ${this.options.child.pid ?? 'unknown'}`,
         );

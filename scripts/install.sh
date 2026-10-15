@@ -15,6 +15,7 @@ REPO=${AO_INSTALL_REPO:-randalmurphal/agent-overflow}
 DOWNLOAD_DIR=""
 ASSET_DIR=""
 CLEANUP_PATHS=""
+GITLAB_TAG=""
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || printf '%s' "$SCRIPT_DIR")
@@ -22,8 +23,8 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || printf '%s' "$S
 usage() {
 	cat <<'USAGE'
 Usage:
-  ./install.sh [--linux|--macos|--wsl] [PATH] [--download] [--version VERSION] [--source DIR_OR_URL] [--repo OWNER/REPO] [--dry-run]
-  ./install.sh --wsl --noremote --download --source DIR_OR_URL [--dry-run]
+  ./install.sh [--linux|--macos|--wsl] [PATH] [--download] [--version VERSION] [--source SOURCE] [--repo OWNER/REPO] [--dry-run]
+  ./install.sh --wsl --noremote --download --source SOURCE [--version VERSION] [--dry-run]
   ./install.sh --linux PATH [--prefix DIR|--system] [--dry-run]
   ./install.sh --macos PATH [--system] [--dry-run]
   ./install.sh --wsl PATH [--dry-run]
@@ -31,8 +32,12 @@ Usage:
 
 With no PATH, the installer auto-detects the platform, downloads the matching
 GitHub release artifact, verifies SHASUMS256, and installs it. With --source,
-artifacts come from DIR_OR_URL instead; a local directory never contacts
-GitHub.
+artifacts come from SOURCE instead:
+  DIR                        a local directory; makes no network request
+  https://URL                a directory of release files served over HTTPS
+  gitlab:HOST/GROUP/PROJECT  a GitLab project's release, read with the signed-in
+                             glab CLI (glab auth login --hostname HOST); --version
+                             picks the release, the latest without it
 
 --noremote installs the Windows/WSL launcher built without remote access,
 agent-overflow-wsl-noremote-amd64.exe. It applies only to --wsl, and its
@@ -43,6 +48,8 @@ Examples:
   curl -fsSL https://github.com/randalmurphal/agent-overflow/releases/download/v0.0.1/install.sh | sh -s -- --version 0.0.1
   ./scripts/install.sh --wsl --download --source ./dist/release/0.0.1
   ./scripts/install.sh --wsl --noremote --download --source ./dist/release-noremote/0.0.1
+  glab api --hostname HOST projects/GROUP%2FPROJECT/releases/permalink/latest/downloads/install.sh \
+    | sh -s -- --wsl --noremote --source gitlab:HOST/GROUP/PROJECT
 
 The installer copies already-built Agent Overflow artifacts. It does not build
 from source.
@@ -144,6 +151,77 @@ is_url() {
 			http://*|https://*) return 0 ;;
 			*) return 1 ;;
 		esac
+}
+
+is_gitlab_source() {
+	case "$1" in
+		gitlab:*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# gitlab_project prints the HOST/GROUP/PROJECT a gitlab: source names;
+# subgroups are allowed.
+gitlab_project() {
+	project=${SOURCE#gitlab:}
+	case "$project" in
+		*/*/*) ;;
+		*) echo "ERROR: --source gitlab: needs HOST/GROUP/PROJECT, got: $project" >&2; exit 2 ;;
+	esac
+	case "$project" in
+		/*|*/|*//*|*..*|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._/-]*)
+			echo "ERROR: unsafe GitLab project: $project" >&2
+			exit 2
+			;;
+	esac
+	printf '%s\n' "$project"
+}
+
+# gitlab_release_tag prints the tag to install from: --version, or the
+# project's latest release.
+gitlab_release_tag() {
+	project=$1
+	version=$(normalize_version "$VERSION")
+	if [ "$version" != latest ]; then
+		printf 'v%s\n' "$version"
+		return
+	fi
+	host=${project%%/*}
+	encoded=$(printf '%s' "${project#*/}" | sed 's#/#%2F#g')
+	release=$(glab api --hostname "$host" "projects/$encoded/releases/permalink/latest") || {
+		echo "ERROR: could not read the latest release of $project; check access with: glab auth login --hostname $host" >&2
+		exit 1
+	}
+	tag=$(printf '%s' "$release" | tr ',' '\n' | sed -n 's/^[{[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+	[ -n "$tag" ] || { echo "ERROR: could not find the latest release tag of $project" >&2; exit 1; }
+	version=$(normalize_version "$tag")
+	printf 'v%s\n' "$version"
+}
+
+# download_gitlab fetches one release file with glab. The tag is resolved on
+# the first file, so every file comes from the same release.
+download_gitlab() {
+	name=$1
+	dst=$2
+	project=$(gitlab_project)
+	host=${project%%/*}
+	command -v glab >/dev/null 2>&1 || {
+		echo "ERROR: --source gitlab: needs the GitLab CLI; install glab and run: glab auth login --hostname $host" >&2
+		exit 1
+	}
+	if [ -z "$GITLAB_TAG" ]; then
+		GITLAB_TAG=$(gitlab_release_tag "$project")
+	fi
+	printf 'Downloading %s from %s release %s\n' "$name" "$project" "$GITLAB_TAG"
+	stage=$(mktemp -d)
+	register_cleanup_path "$stage"
+	glab release download "$GITLAB_TAG" -R "https://$project" -n "$name" -D "$stage" >/dev/null || {
+		echo "ERROR: glab could not download $name from $project release $GITLAB_TAG" >&2
+		exit 1
+	}
+	# glab succeeds without downloading anything when no asset has the name.
+	[ -f "$stage/$name" ] || { echo "ERROR: $project release $GITLAB_TAG has no file named $name" >&2; exit 1; }
+	mv "$stage/$name" "$dst"
 }
 
 is_inside_wsl() {
@@ -259,7 +337,9 @@ copy_release_file() {
 	name=$1
 	dst=$2
 	if [ -n "$SOURCE" ]; then
-		if is_url "$SOURCE"; then
+		if is_gitlab_source "$SOURCE"; then
+			download_gitlab "$name" "$dst"
+		elif is_url "$SOURCE"; then
 			case "$SOURCE" in
 				https://*) ;;
 				*) echo "ERROR: --source URL must use https" >&2; exit 2 ;;
@@ -561,7 +641,7 @@ if [ "$UNINSTALL" -eq 0 ] && [ -z "$ARTIFACT" ]; then
 fi
 
 if [ "$NOREMOTE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ] && [ "$DOWNLOAD" -eq 1 ] && [ -z "$SOURCE" ]; then
-	echo "ERROR: --noremote downloads need --source DIR_OR_URL; the release without remote access is not published on GitHub" >&2
+	echo "ERROR: --noremote downloads need --source SOURCE; the release without remote access is not published on GitHub" >&2
 	exit 2
 fi
 

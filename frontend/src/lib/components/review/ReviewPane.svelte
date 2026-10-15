@@ -33,6 +33,7 @@
   import { countReviewComments, type CommentCounts } from '../../utils/reviewComments';
   import { fileExtensionLabel } from '../../utils/reviewTree';
   import { rateLimitMessage } from '../../utils/forgeFailure';
+  import { forgeLabels } from '../../utils/forgeLabels';
   import { threadHasScope } from '../../transport/entityScopes';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
   import Icon from '../primitives/Icon.svelte';
@@ -530,8 +531,17 @@
          fully loaded store and nothing on screen to say why. -->
     <RenderBoundary label="The review pane" testId="review-render-error">
     {#if review.error}
-      <div class="border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-error">
-        {review.error}
+      <!-- A failed refresh keeps the diff it was refreshing below this
+           banner; Retry runs the same load again. -->
+      <div class="flex items-start justify-between gap-3 border-b border-error/30 bg-error/10 px-3 py-2 text-xs text-error" data-testid="review-error">
+        <span class="max-h-32 min-w-0 overflow-y-auto whitespace-pre-wrap break-words" data-testid="review-error-message">{review.error}</span>
+        <button
+          type="button"
+          class="shrink-0 rounded border border-error/40 px-2 py-0.5 disabled:opacity-50"
+          disabled={review.loading}
+          onclick={() => { void review?.reload(); }}
+          data-testid="review-error-retry"
+        >Retry</button>
       </div>
     {/if}
     {#if branchesError && review.scope === 'branch'}
@@ -670,7 +680,10 @@
     {:else if review.loading && review.files.length === 0}
       <div class="px-4 py-3 text-xs text-fg-muted">Loading…</div>
     {:else if review.files.length === 0 && review.awaitingPR}
-      <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-awaiting-pr">Waiting for the pull request…</div>
+      <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-awaiting-pr">Waiting for the {forgeLabels(review.prRef?.forge).longSingular.toLowerCase()}…</div>
+    {:else if review.files.length === 0 && review.error}
+      <!-- Nothing loaded: the banner above says why. An empty diff is not
+           what the load found. -->
     {:else if review.files.length === 0}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-empty">No changed files.</div>
     {:else}
@@ -731,23 +744,25 @@
               consumeFocus={(nextAnchor) => review?.consumeDraftEditorFocus(nextAnchor) ?? false}
             />
           {/snippet}
-          {#snippet commentThread(threadKey, _anchor)}
+          {#snippet commentThread(threadKey, _anchor, pulse)}
             {@const comment = commentById(threadKey)}
             {#if comment}
               <ReviewCommentThread
                 {comment}
+                {pulse}
                 orphaned={review?.orphanedDraftIds().has(comment.id) ?? false}
                 onUpdate={(commentId, body) => review?.updateComment(commentId, body)}
                 onDelete={(commentId) => review?.deleteComment(commentId)}
               />
             {/if}
           {/snippet}
-          {#snippet prThread(thread, anchor, collapsed, orphaned)}
+          {#snippet prThread(thread, anchor, collapsed, orphaned, pulse)}
             <ReviewPRThreadRow
               {thread}
               {anchor}
               {collapsed}
               {orphaned}
+              {pulse}
               body={review?.replyBodyFor(thread.id) ?? ''}
               error={review?.replyErrorFor(thread.id) ?? null}
               sending={review?.sendingReply(thread.id) ?? false}

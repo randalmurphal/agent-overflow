@@ -67,6 +67,34 @@ func TestManagerOpenAndOutput(t *testing.T) {
 	}
 }
 
+// A shell can exit before Open registers it. Its exit callback has then
+// already run and deleted nothing, so registering it would list a dead
+// terminal forever.
+func TestManagerDoesNotListAShellThatExitedBeforeRegistration(t *testing.T) {
+	exited := make(chan struct{})
+	m := NewManager(nil, func(string, string, ExitStatus) { close(exited) })
+	terminalID := "early-exit"
+	sess, err := newSession(terminalID, "thread-early", SessionOptions{
+		Shell: "/bin/sh",
+		Args:  []string{"-c", "exit 0"},
+		Cwd:   t.TempDir(),
+	}, m.sessionOutputCB("thread-early"), m.sessionExitCB("thread-early", terminalID))
+	if err != nil {
+		t.Fatalf("newSession: %v", err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("exit callback did not fire")
+	}
+
+	m.register(sess)
+
+	if list := m.List("thread-early"); len(list) != 0 {
+		t.Fatalf("a terminal whose shell had exited is listed: %+v", list)
+	}
+}
+
 func TestManagerWriteResizeRoundTrip(t *testing.T) {
 	m := NewManager(nil, nil)
 	summary, err := m.Open("thread-w", SessionOptions{
@@ -102,8 +130,10 @@ func TestManagerReplayReturnsBuffer(t *testing.T) {
 	m := NewManager(nil, nil)
 	summary, err := m.Open("thread-r", SessionOptions{
 		Shell: "/bin/sh",
-		Args:  []string{"-c", "printf hello; sleep 0.1"},
-		Cwd:   t.TempDir(),
+		// The shell stays up until cleanup: an exited session is no longer
+		// listed, so a short-lived one would race the polling below.
+		Args: []string{"-c", "printf hello; sleep 30"},
+		Cwd:  t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)

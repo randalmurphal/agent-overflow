@@ -57,6 +57,7 @@ import type {
   ItemPatchEvent,
   ProviderSessionAccountEvent,
   ProviderStatusEvent,
+  SessionBannerKind,
   TodoStep,
   UserInputRequest,
 } from '../types/events';
@@ -333,6 +334,8 @@ export interface ErrorSurface {
   /** Its kind, with `'general'` reported as `null` — an untagged error has no action. */
   readonly generalErrorKind: 'session' | 'history-load' | null;
   readonly providerBanner: ProviderStatusEvent | null | undefined;
+  /** Thread-owned banner rows (stale binary, stale prompt), in display order. */
+  readonly sessionBanners: readonly ProviderStatusEvent[];
   readonly setPaneError: (message: string, kind?: PaneErrorKind, err?: unknown) => void;
   readonly clearPaneError: (kind?: PaneErrorKind) => void;
   /** `err`, when given, is the failure behind `message` (details and copy). */
@@ -342,6 +345,9 @@ export interface ErrorSurface {
   readonly clearGeneralError: () => void;
   readonly clearSessionError: () => void;
   readonly setProviderBanner: (status: ProviderStatusEvent | null | undefined) => void;
+  /** Raise (event) or withdraw (null) one thread-owned banner by kind. */
+  readonly setSessionBanner: (kind: SessionBannerKind, status: ProviderStatusEvent | null) => void;
+  readonly clearSessionBanners: () => void;
   readonly retryHistoryLoad: () => Promise<void>;
   readonly refreshFromBackend: (requireItems?: boolean) => Promise<void>;
 }

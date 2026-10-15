@@ -237,7 +237,7 @@ func (s *transcriptMirrorState) providerEvents(threadID string, result sessionim
 		}
 		event.Meta = mergeJSONMetaFlag(event.Meta, provider.MetaTranscriptSnapshotKey, true)
 		events = append(events, event)
-		if event.Kind == provider.EventToolStart && (isAgentLaunchToolName(event.ItemType) || event.ItemType == "Skill") {
+		if event.Kind == provider.EventToolStart && (isAgentLaunchToolName(event.ItemType) || event.ItemType == skillToolName) {
 			s.scopeOwners[event.ItemID] = projectionKey
 		}
 	}

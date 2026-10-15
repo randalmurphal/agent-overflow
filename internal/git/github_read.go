@@ -38,7 +38,7 @@ const (
 	githubContextFields = `__typename ` +
 		`... on CheckRun { databaseId name status conclusion startedAt completedAt detailsUrl checkSuite { workflowRun { databaseId url workflow { name } } } } ` +
 		`... on StatusContext { context state targetUrl createdAt description }`
-	githubDetailFields = `title body state isDraft baseRefName headRefName headRefOid url ` +
+	githubDetailFields = `title body state isDraft baseRefName baseRefOid headRefName headRefOid url ` +
 		`additions deletions changedFiles mergeable mergeStateStatus reviewDecision ` + githubActor + ` ` +
 		`latestReviews(first: 100) { nodes { ` + githubActor + ` body submittedAt state commit { oid } } }`
 )
@@ -209,6 +209,7 @@ type githubPullRaw struct {
 	State            string         `json:"state"`
 	IsDraft          bool           `json:"isDraft"`
 	BaseRefName      string         `json:"baseRefName"`
+	BaseRefOID       string         `json:"baseRefOid"`
 	HeadRefName      string         `json:"headRefName"`
 	HeadRefOID       string         `json:"headRefOid"`
 	URL              string         `json:"url"`
@@ -440,6 +441,7 @@ func githubPRDetail(pull *githubPullRaw, viewer string, checks []CheckStatus) PR
 		Draft:          pull.IsDraft,
 		HeadRefName:    pull.HeadRefName,
 		BaseRefName:    pull.BaseRefName,
+		BaseRefSHA:     pull.BaseRefOID,
 		HeadSHA:        pull.HeadRefOID,
 		URL:            pull.URL,
 		Additions:      pull.Additions,

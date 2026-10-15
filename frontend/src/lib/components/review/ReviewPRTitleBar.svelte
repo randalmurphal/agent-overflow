@@ -1,13 +1,11 @@
 <script lang="ts">
-  import ChevronDown from '@lucide/svelte/icons/chevron-down';
-  import ChevronUp from '@lucide/svelte/icons/chevron-up';
   import FileText from '@lucide/svelte/icons/file-text';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
   import ReviewAvatar from './ReviewAvatar.svelte';
   import ReviewCIChips from './ReviewCIChips.svelte';
-  import ReviewIconButton from './ReviewIconButton.svelte';
+  import ReviewUnresolvedStepper from './ReviewUnresolvedStepper.svelte';
   import { OpenExternalURL } from '../../stores/bindings';
   import { authorDisplayName } from '../../utils/reviewIdentity';
   import type { ForgeFailure } from '../../utils/forgeFailure';
@@ -119,27 +117,33 @@
             Description
           </button>
         {/if}
-        {#if conversationTotal > 0}
-          <span class="inline-flex items-center gap-0.5">
-            <button
-              type="button"
-              class="{peekClass} {unresolvedCount > 0 ? 'border-warning/40 text-warning hover:bg-warning/10' : 'border-border-subtle text-fg-muted hover:bg-surface-2 hover:text-fg'} {unresolvedCount > 0 ? 'rounded-r-none' : ''}"
-              data-testid="review-peek-conversation"
-              onclick={() => review?.jumpToOverview('conversation')}
-            >
+        {#if conversationTotal > 0 && unresolvedCount > 0}
+          <!-- With open threads the peek is the label segment of the
+               unresolved stepper, which walks the diff's thread rows. -->
+          <ReviewUnresolvedStepper
+            testid="review-unresolved-stepper-bar"
+            labelTestid="review-peek-conversation"
+            onLabel={() => review?.jumpToOverview('conversation')}
+            onStep={(direction) => review?.stepUnresolvedThread(direction, false)}
+          >
+            {#snippet label()}
               <Icon icon={MessagesSquare} size={12} />
-              Conversation
-              {#if unresolvedCount > 0}
-                <span class="tabular-nums">· {unresolvedCount} unresolved</span>
-              {/if}
-            </button>
-            {#if unresolvedCount > 0}
-              <span class="inline-flex h-6 items-center rounded-r-[var(--radius-field)] border border-l-0 border-warning/40 text-warning compact:h-8" data-testid="review-unresolved-stepper-bar">
-                <ReviewIconButton icon={ChevronUp} label="Previous unresolved thread" onclick={() => review?.stepUnresolvedThread(-1, false)} />
-                <ReviewIconButton icon={ChevronDown} label="Next unresolved thread" onclick={() => review?.stepUnresolvedThread(1, false)} />
-              </span>
-            {/if}
-          </span>
+              <!-- The phone's row has no room for the section's name
+                   beside the count; the icon names it there. -->
+              <span class="compact:hidden">Conversation ·</span>
+              {unresolvedCount} unresolved
+            {/snippet}
+          </ReviewUnresolvedStepper>
+        {:else if conversationTotal > 0}
+          <button
+            type="button"
+            class="{peekClass} border-border-subtle text-fg-muted hover:bg-surface-2 hover:text-fg"
+            data-testid="review-peek-conversation"
+            onclick={() => review?.jumpToOverview('conversation')}
+          >
+            <Icon icon={MessagesSquare} size={12} />
+            Conversation
+          </button>
         {/if}
       </div>
     {/if}

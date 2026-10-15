@@ -54,11 +54,17 @@ type ThreadLiveState struct {
 	// SessionCLIVersion / InstalledCLIVersion mirror the `binary_stale`
 	// provider:status push for refresh/reconnect: the build this thread's
 	// live process is running versus the build now on disk. Both empty
-	// unless the thread is currently flagged stale — that push happens
-	// once, on the transition, so a webview that connects afterwards has
-	// no other way to learn it. See app_provider_binary_watch.go.
+	// unless the thread is currently flagged stale and the user has not
+	// dismissed that version; the push happens once, on the transition, so
+	// a webview that connects afterwards has no other way to learn it. See app_provider_binary_watch.go.
 	SessionCLIVersion   string `json:"sessionCliVersion,omitempty"`
 	InstalledCLIVersion string `json:"installedCliVersion,omitempty"`
+	// PromptStale / PromptStaleRevision mirror the `prompt_stale`
+	// provider:status push for refresh/reconnect: the thread's live session
+	// runs a system prompt other than what its next start would use, and
+	// the user has not dismissed this revision. See app_prompt_stale.go.
+	PromptStale         bool `json:"promptStale,omitempty"`
+	PromptStaleRevision int  `json:"promptStaleRevision,omitempty"`
 }
 
 type LiveStateActiveTurn struct {
@@ -113,6 +119,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	state.ProviderAccount = a.providerSessionAccount(threadID)
 	state.Todo = a.threadLiveTodo(threadID)
 	state.SessionCLIVersion, state.InstalledCLIVersion = a.staleProviderBinaryVersions(threadID)
+	state.PromptStale, state.PromptStaleRevision = a.promptStaleRevision(threadID)
 	if a.triage == nil {
 		return state, nil
 	}

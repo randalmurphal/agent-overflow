@@ -113,6 +113,7 @@ func (a *App) newTriageRouter(st *store.Store) *triage.Router {
 	r := triage.NewRouter(st, a.emitWithReplay())
 	r.SetAssistantTextObservers(a.highlightService().ObserveAssistantTextDelta, a.highlightService().EndAssistantText)
 	r.SetDiffPayloadObserver(a.observeDiffPayloadPersisted)
+	r.SetCommandSettledObserver(a.observeCommandSettled)
 	r.SetCodeSpanEnricher(a.buildPersistedCodeSpans)
 	r.SetGeneratedImageImporter(a.importCodexGeneratedImage)
 	r.SetPromptRouter(a.routeWorkerPrompt)

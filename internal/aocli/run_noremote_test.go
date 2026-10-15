@@ -37,7 +37,7 @@ func TestNoremoteRefusesRemoteCommands(t *testing.T) {
 			t.Errorf("help offers %q in a build without remote access:\n%s", offered, rootUsage)
 		}
 	}
-	if !strings.Contains(rootUsage, "workflow new") {
+	if !strings.Contains(rootUsage, "thread send") {
 		t.Errorf("help lost the offline commands:\n%s", rootUsage)
 	}
 }

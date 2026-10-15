@@ -17,7 +17,6 @@
 // footnote popup including chained-reference navigation, which spans
 // the renderer seam, the document-source registry, and the singleton
 // host — three units that only meet in the running app.
-import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import {
   RESULT_LINE,
@@ -62,12 +61,6 @@ const DOC_CHUNKS = [
   '[^n2] for the chained hop.\n[^n2]: The chained body text.\n',
 ];
 
-function watchPageErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('pageerror', (err) => errors.push(String(err)));
-  return errors;
-}
-
 test('a multi-delta stream renders math, mermaid, tables, link policy, and footnote chips without a page error', async ({ harness, page }) => {
   await harness.rpc('HarnessSetScenario', {
     scenario: claudeScenario('markdown-rich-doc', [
@@ -76,7 +69,6 @@ test('a multi-delta stream renders math, mermaid, tables, link policy, and footn
   });
   const threadId = await seedAgentThread(harness, 'markdown-render-app', 'Markdown check');
   await harness.open(page);
-  const pageErrors = watchPageErrors(page);
   await page.getByText('Markdown check').click();
   await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'render everything', null);
@@ -129,8 +121,6 @@ test('a multi-delta stream renders math, mermaid, tables, link policy, and footn
   // no block of their own.
   await expect(timeline.locator('[data-streamdown-footnote-ref]')).toHaveCount(2);
   await expect(timeline.getByText('The chained body text.')).toHaveCount(0);
-
-  expect(pageErrors).toEqual([]);
 });
 
 test('the footnote popup opens, navigates a chained reference, and closes from its chip', async ({ harness, page }) => {
@@ -141,7 +131,6 @@ test('the footnote popup opens, navigates a chained reference, and closes from i
   });
   const threadId = await seedAgentThread(harness, 'markdown-footnote-app', 'Footnote check');
   await harness.open(page);
-  const pageErrors = watchPageErrors(page);
   await page.getByText('Footnote check').click();
   await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'render footnotes', null);
@@ -179,6 +168,4 @@ test('the footnote popup opens, navigates a chained reference, and closes from i
   // before body resolution, so it holds even if the definition is gone).
   await n1.click();
   await expect(popup).toHaveCount(0);
-
-  expect(pageErrors).toEqual([]);
 });

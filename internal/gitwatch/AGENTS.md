@@ -5,10 +5,13 @@ This package shares one watcher per canonical workspace, computes an initial
 filesystem changes, explicit refresh requests, and liveness polling.
 
 `NewManager` requires `StatusFn`. `FastStatusFn` is the network-free initial
-and liveness path, and marks a cold PR cache with `OpenPRLookupPending` so
-readers can tell its empty PR fields from an answer; `StatusFn` performs full
-refreshes. Both run under the watcher's context, or the `Subscribe` caller's
-for the initial read, so stopping a watcher cancels its forge lookup.
+and liveness path, and marks a PR cache with no current answer with
+`OpenPRLookupPending` so readers can tell its PR fields (the branch's last
+known PR, if any) from an answer; a pending initial status gets a full refresh.
+`StatusFn` performs full refreshes, and one whose PR lookup failed is
+repeated at its `OpenPRRecheckAt`. Both run under the watcher's context, or
+the `Subscribe` caller's for the initial read, so stopping a watcher cancels
+its forge lookup.
 Multiple subscribers to one workspace share cached status and watch roots.
 
 Watch roots include the workspace, pruned content subtrees, linked-worktree Git

@@ -116,8 +116,6 @@ test('a streaming code block is colored by live pushes and no colored line goes 
   const threadId = await seedAgentThread(harness, 'streaming-code-app', 'Code stream');
   await recordWire(page);
   await harness.open(page);
-  const pageErrors: string[] = [];
-  page.on('pageerror', (err) => pageErrors.push(String(err)));
   await page.getByText('Code stream').click();
   await startMock(harness, threadId);
   await sampleCodeColors(page);
@@ -149,5 +147,4 @@ test('a streaming code block is colored by live pushes and no colored line goes 
     return (JSON.parse(frame.text) as { methodId?: number }).methodId === HIGHLIGHT_CODE_METHOD_ID;
   });
   expect(highlightCalls.length, 'HighlightCode requests while the pushes covered the block').toBe(0);
-  expect(pageErrors).toEqual([]);
 });

@@ -91,8 +91,10 @@ test('removing a busy thread\'s worktree outside the app interrupts the turn, mo
   await expect(page.getByTestId('env-picker-trigger')).toHaveText('Base');
 
   // The thread says what happened, at its own position in the timeline.
-  await expect(page.getByText(/Worktree .*busy-wt was removed outside Agent Overflow\./)).toBeVisible();
-  await expect(page.getByText(/this thread now runs in Base/)).toBeVisible();
+  // It names the worktree by its directory and the root as Base, never by path.
+  await expect(page.getByTestId('notification-row').filter({ hasText: 'removed outside' })).toHaveText(
+    `Worktree ${basename(worktreePath)} was removed outside Agent Overflow. Its session was stopped, and this thread now runs in Base; the next message starts it there.`,
+  );
 
   // The queued message is back in the composer, not lost and not sent.
   await expect(queuedPreview).toHaveCount(0);
@@ -148,6 +150,8 @@ test('a worktree removed outside the app moves its thread to Base before the ses
   expect(exited(), 'the row moved only after the session exited').toBe(0);
   // The session still stops, and the thread says what happened.
   await expect.poll(exited, { timeout: 10_000 }).toBe(1);
-  await expect(page.getByText(/Worktree .*slow-exit-wt was removed outside Agent Overflow\./)).toBeVisible();
+  await expect(page.getByTestId('notification-row').filter({ hasText: 'removed outside' })).toHaveText(
+    `Worktree ${basename(worktreePath)} was removed outside Agent Overflow. Its session was stopped, and this thread now runs in Base; the next message starts it there.`,
+  );
   await expect(errorToasts(page)).toHaveCount(0);
 });

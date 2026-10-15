@@ -1472,8 +1472,8 @@ export class DeviceRevocationResult {
  * side is the only source needed). Scope mirrors the review pane's
  * scope selector; the extra fields disambiguate the new-side source
  * where the scope alone can't: CommitSHA for commit scope (a selected
- * commit in the workspace repo), HeadSHA for pr scope (the fetched
- * head commit).
+ * commit in the workspace repo), HeadSHA for pr scope (the head of the
+ * revision the diff was opened at).
  */
 export class DiffContextRequest {
     "scope": string;
@@ -4891,13 +4891,6 @@ export class ReviewDiffOpened {
     "chunk": ReviewDiffChunk;
 
     /**
-     * HeadSHA is the commit a pull request's diff was computed at, which
-     * the fetch can move past the head the caller last saw. Empty for
-     * every other diff.
-     */
-    "headSha"?: string;
-
-    /**
      * PayloadIDs are the edit payloads an edits diff joins, in patch
      * order; GetPayloadPatchSpans returns each one's highlight spans.
      * Empty for every other diff.
@@ -4921,13 +4914,13 @@ export class ReviewDiffOpened {
      */
     static createFrom($$source: any = {}): ReviewDiffOpened {
         const $$createField1_0 = $$createType83;
-        const $$createField3_0 = $$createType8;
+        const $$createField2_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("chunk" in $$parsedSource) {
             $$parsedSource["chunk"] = $$createField1_0($$parsedSource["chunk"]);
         }
         if ("payloadIds" in $$parsedSource) {
-            $$parsedSource["payloadIds"] = $$createField3_0($$parsedSource["payloadIds"]);
+            $$parsedSource["payloadIds"] = $$createField2_0($$parsedSource["payloadIds"]);
         }
         return new ReviewDiffOpened($$parsedSource as Partial<ReviewDiffOpened>);
     }
@@ -6271,12 +6264,21 @@ export class ThreadLiveState {
      * SessionCLIVersion / InstalledCLIVersion mirror the `binary_stale`
      * provider:status push for refresh/reconnect: the build this thread's
      * live process is running versus the build now on disk. Both empty
-     * unless the thread is currently flagged stale — that push happens
-     * once, on the transition, so a webview that connects afterwards has
-     * no other way to learn it. See app_provider_binary_watch.go.
+     * unless the thread is currently flagged stale and the user has not
+     * dismissed that version; the push happens once, on the transition, so
+     * a webview that connects afterwards has no other way to learn it. See app_provider_binary_watch.go.
      */
     "sessionCliVersion"?: string;
     "installedCliVersion"?: string;
+
+    /**
+     * PromptStale / PromptStaleRevision mirror the `prompt_stale`
+     * provider:status push for refresh/reconnect: the thread's live session
+     * runs a system prompt other than what its next start would use, and
+     * the user has not dismissed this revision. See app_prompt_stale.go.
+     */
+    "promptStale"?: boolean;
+    "promptStaleRevision"?: number;
 
     /** Creates a new ThreadLiveState instance. */
     constructor($$source: Partial<ThreadLiveState> = {}) {

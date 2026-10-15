@@ -176,6 +176,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.soundWatcher != nil {
 		record("close sound watcher", a.soundWatcher.Close())
 	}
+	if a.promptWatcher != nil {
+		record("close prompt watcher", a.promptWatcher.Close())
+	}
 	// Joins the reattach sweeps in flight. They take thread locks with the
 	// app context, cancelled above, so a sweep waiting on a lock returns
 	// here rather than after the sessions it would restart are gone.
@@ -256,6 +259,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// goroutine returns.
 	a.stopRetentionCleanup()
 	record("stop retention cleanup", nil)
+	// The merged-PR worktree cleanup removes worktrees and stops the
+	// sessions in them, so it is joined for the sweep's reasons too.
+	a.stopMergedPRCleanup()
+	record("stop merged PR worktree cleanup", nil)
 	// The boot-time completion of interrupted deletes takes the same
 	// path as the sweep, and is joined beside it for the same reasons.
 	a.waitPendingThreadDeletes()

@@ -479,7 +479,7 @@ func mustRemoteWatch(t *testing.T, s *Store, w RemoteWatch) RemoteWatch {
 
 // A completion whose queue row is still there never reached the provider,
 // so it goes back whatever its confirmation reads: a row queued before
-// v148 was recorded as confirmed by the migration's backfill.
+// v149 was recorded as confirmed by the migration's backfill.
 func TestWithdrawRemoteCompletionWithItsRowIgnoresTheConfirmation(t *testing.T) {
 	s, thread := remoteWatchTestThread(t)
 	w := finishedRemoteWatch(t, s, thread)

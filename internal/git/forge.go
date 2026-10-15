@@ -38,6 +38,10 @@ type Forge interface {
 	// preview's squash-merge detection: a gone local branch whose tip
 	// matches a merged PR head was fully pushed before the merge.
 	ListMergedPRHeads(ctx context.Context, cwd string, limit int) ([]MergedPRHead, error)
+	// ReadPRStates reads the state and merge time of every PR in prs, all
+	// of repo's repository, in one request per 100 PRs. A PR the forge does
+	// not resolve is absent from the answer. See pr_state.go.
+	ReadPRStates(ctx context.Context, repo PRReference, prs []TrackedPR) (map[int]PRState, error)
 	// CreatePR opens a PR/MR for the current branch in cwd. Returns the URL.
 	CreatePR(ctx context.Context, cwd, title, body, base string, draft bool) (string, error)
 	// ReadPR reads the parts of a PR/MR want names, the PR pump's one
@@ -119,15 +123,19 @@ const (
 // does not report one (GitHub review verdicts, bots, users without a
 // display name); clients then show the login.
 type PRDetail struct {
-	Number         int             `json:"number"`
-	Title          string          `json:"title"`
-	Body           string          `json:"body"`
-	AuthorLogin    string          `json:"authorLogin"`
-	AuthorName     string          `json:"authorName,omitempty"`
-	State          string          `json:"state"`
-	Draft          bool            `json:"draft"`
-	HeadRefName    string          `json:"headRefName"`
-	BaseRefName    string          `json:"baseRefName"`
+	Number      int    `json:"number"`
+	Title       string `json:"title"`
+	Body        string `json:"body"`
+	AuthorLogin string `json:"authorLogin"`
+	AuthorName  string `json:"authorName,omitempty"`
+	State       string `json:"state"`
+	Draft       bool   `json:"draft"`
+	HeadRefName string `json:"headRefName"`
+	BaseRefName string `json:"baseRefName"`
+	// BaseRefSHA is the base branch's tip the forge compares the PR
+	// against: GitHub's baseRefOid, GitLab's diff_refs.start_sha. Empty
+	// while GitLab is still preparing the merge request's diff.
+	BaseRefSHA     string          `json:"baseRefSHA"`
 	HeadSHA        string          `json:"headSHA"`
 	URL            string          `json:"url"`
 	Additions      int             `json:"additions"`
@@ -351,6 +359,10 @@ func (nullForge) ListOpenPRs(context.Context, string, string) ([]GitPR, error) {
 }
 
 func (nullForge) ListMergedPRHeads(context.Context, string, int) ([]MergedPRHead, error) {
+	return nil, ErrUnsupportedForge
+}
+
+func (nullForge) ReadPRStates(context.Context, PRReference, []TrackedPR) (map[int]PRState, error) {
 	return nil, ErrUnsupportedForge
 }
 

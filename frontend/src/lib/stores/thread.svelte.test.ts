@@ -639,14 +639,43 @@ describe('createThreadPane', () => {
     }));
 
     await pane.switchThread(makeThread({ id: 'thread-stale', provider: 'claude' }));
-    expect(pane.providerBanner?.status).toBe('binary_stale');
-    expect(pane.providerBanner?.sessionVersion).toBe('2.1.100');
-    expect(pane.providerBanner?.installedVersion).toBe('2.1.200');
-    expect(pane.providerBanner?.threadId).toBe('thread-stale');
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['binary_stale']);
+    expect(pane.sessionBanners[0].sessionVersion).toBe('2.1.100');
+    expect(pane.sessionBanners[0].installedVersion).toBe('2.1.200');
+    expect(pane.sessionBanners[0].threadId).toBe('thread-stale');
 
     versions = {};
     await pane.refreshFromBackend();
-    expect(pane.providerBanner?.status).toBe('binary_stale');
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['binary_stale']);
+  });
+
+  // The stale-prompt banner has the same snapshot leg: `promptStale` with
+  // its revision while the thread's next session would start with another
+  // system prompt. Set-only for the same reason as the binary leg.
+  it('hydrates the stale-prompt banner from live state, set-only', async () => {
+    const pane = createThreadPane();
+    let stale: { promptStale?: boolean; promptStaleRevision?: number } = {
+      promptStale: true,
+      promptStaleRevision: 2,
+    };
+    setBindingMock('GetThreadLiveState', async (threadId: string) => ({
+      threadId,
+      ...stale,
+    }));
+
+    await pane.switchThread(makeThread({ id: 'thread-stale', provider: 'claude' }));
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['prompt_stale']);
+    expect(pane.sessionBanners[0].revision).toBe(2);
+    expect(pane.sessionBanners[0].threadId).toBe('thread-stale');
+
+    stale = {};
+    await pane.refreshFromBackend();
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['prompt_stale']);
+
+    // A thread switch is a different session: nothing carries over.
+    setBindingMock('GetThreadLiveState', async (threadId: string) => ({ threadId }));
+    await pane.switchThread(makeThread({ id: 'thread-other', provider: 'claude' }));
+    expect(pane.sessionBanners).toEqual([]);
   });
 
   it('hydrates live server state on thread switch', async () => {

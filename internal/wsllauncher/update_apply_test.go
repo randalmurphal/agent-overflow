@@ -27,6 +27,7 @@ type fakeUpdateHost struct {
 	calls      []string
 	answers    map[string][]fakeAnswer
 	free       uint64
+	allocated  uint64
 	freeKnown  bool
 	failAt     string
 	// states records the durable record state when each command ran.
@@ -95,11 +96,11 @@ func (h *fakeUpdateHost) RunCommand(_ context.Context, distro, payload, command 
 	return answer.event, answer.err
 }
 
-func (h *fakeUpdateHost) HostFreeBytes(distro string) (uint64, bool) {
+func (h *fakeUpdateHost) HostDisk(distro string) (supervise.HostDisk, bool) {
 	if distro != "Ubuntu" {
 		h.t.Errorf("free space asked for distro %q", distro)
 	}
-	return h.free, h.freeKnown
+	return supervise.HostDisk{Free: h.free, Allocated: h.allocated}, h.freeKnown
 }
 
 func (h *fakeUpdateHost) step(name string) error {
@@ -225,7 +226,7 @@ func (f *updateFixture) wantRecord(state supervise.UpdateState, attempts int, re
 func TestApplyUpdateCommits(t *testing.T) {
 	f := newUpdateFixture(t)
 	f.save(supervise.UpdatePending, 0, false)
-	f.host.free, f.host.freeKnown = 5<<30, true
+	f.host.free, f.host.allocated, f.host.freeKnown = 5<<30, 700<<30, true
 	var progress []string
 	f.sequence.Progress = func(p startupprogress.Progress) { progress = append(progress, p.Detail) }
 	end, err := f.sequence.Apply(t.Context(), "u1")
@@ -233,7 +234,7 @@ func TestApplyUpdateCommits(t *testing.T) {
 		t.Fatalf("end = %+v, %v", end, err)
 	}
 	f.wantCalls(
-		"snapshot@staged --id u1 --host-free 5368709120",
+		"snapshot@staged --id u1 --host-free 5368709120 --host-disk-bytes 751619276800",
 		"trial-run@staged --id u1 --to 2.0.0 --attempt 1",
 		"discard@staged --id u1",
 		"invalidate", "commit-payload", "record", "publish",

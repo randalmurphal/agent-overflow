@@ -14,6 +14,7 @@ export {
     PRDetail,
     PRDiffRefs,
     PRReference,
+    PRRevision,
     ReviewComment,
     ReviewLineComment,
     ReviewReplyTo,

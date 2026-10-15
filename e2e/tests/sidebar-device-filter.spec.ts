@@ -4,7 +4,7 @@
 import { test, expect, type SeedResult } from './fixtures.js';
 import { launchHarness } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
-import { headlessPairing } from './headless-pairing-helpers.js';
+import { CONNECTED_AFTER_CONFIRM, headlessPairing } from './headless-pairing-helpers.js';
 
 for (const compact of [false, true]) {
   test.describe(compact ? 'phone viewport' : 'desktop viewport', () => {
@@ -25,7 +25,7 @@ for (const compact of [false, true]) {
         const verification = page.getByLabel('Verification number');
         await expect(verification).toBeVisible();
         await pairing.confirm((await verification.textContent())!.trim());
-        await expect(page.getByTestId('attached-system')).toContainText('Connected');
+        await expect(page.getByTestId('attached-system')).toContainText('Connected', CONNECTED_AFTER_CONFIRM);
         await page.getByRole('button', { name: 'Close Settings', exact: true }).click();
         const labels = page.getByTestId('project-item-label');
         await expect(labels).toHaveCount(2);

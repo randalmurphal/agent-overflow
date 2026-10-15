@@ -316,14 +316,21 @@ func (a *claudeAdapter) handleLine(line []byte) {
 				a.w.writeLine(frame, 0, 0)
 			}
 		case "stop_task":
-			// The named task's kill frames precede the ack (claude_tasks.go).
-			for _, frame := range a.tasks.killForStopTask(claudeStopTaskID(env.Request), time.Now()) {
+			// The named task's kill frames precede the ack; an awaited
+			// agent's launch answers after it (claude_tasks.go).
+			beforeAck, afterAck := a.tasks.killForStopTask(claudeStopTaskID(env.Request), time.Now())
+			for _, frame := range beforeAck {
 				a.w.writeLine(frame, 0, 0)
 			}
+			writeClaudeControlAck(a.w, env.RequestID, subtype, env.Request)
+			for _, frame := range afterAck {
+				a.w.writeLine(frame, 0, 0)
+			}
+			return
 		}
 		writeClaudeControlAck(a.w, env.RequestID, subtype, env.Request)
 		if subtype == "interrupt" {
-			for _, frame := range a.tasks.stopForegroundCommands() {
+			for _, frame := range a.tasks.stopForegroundCommands(time.Now()) {
 				a.w.writeLine(frame, 0, 0)
 			}
 			a.e.interruptTurn("")
@@ -345,10 +352,10 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		// user turn. The init + echo protocol frames (see the adapter
 		// doc) are written synchronously here so they precede every
 		// scenario step of the turn.
-		a.writeCommandLifecycle(claudeEnvelopeUUID(line), "queued")
 		if a.holdQueuedInput(line) {
 			return
 		}
+		a.writeCommandLifecycle(claudeEnvelopeUUID(line), "queued")
 		a.pickUpUserEnvelope(line)
 	}
 }
@@ -359,7 +366,9 @@ func (a *claudeAdapter) handleLine(line []byte) {
 // The decision and the append share heldMu with releaseHeldInput, and the
 // engine clears its active turn before calling that release, so an envelope
 // racing the turn's end is either held and drained by the release or picked
-// up here directly; never both, never neither.
+// up here directly; never both, never neither. A held envelope's `queued`
+// frame is written under the same lock, so a reader that has seen it can
+// count on the envelope being held: a drain or cancel that follows finds it.
 func (a *claudeAdapter) holdQueuedInput(line []byte) bool {
 	if a.e.sc.Claude == nil || !a.e.sc.Claude.HoldQueuedInput {
 		return false
@@ -369,6 +378,7 @@ func (a *claudeAdapter) holdQueuedInput(line []byte) bool {
 	if !a.e.turnActive() {
 		return false
 	}
+	a.writeCommandLifecycle(claudeEnvelopeUUID(line), "queued")
 	a.held = append(a.held, append([]byte(nil), line...))
 	return true
 }

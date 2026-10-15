@@ -310,6 +310,34 @@ describe('<SubagentGroup>', () => {
     expect(stopped.getByTestId('subagent-group-error').textContent).toContain('Agent stopped');
   });
 
+  it('says Claude could not resume a parked agent whose wake it dropped, not "failed"', () => {
+    const launch = mkAgentParent('bg', {
+      status: 'running',
+      isBackground: true,
+      input: { description: 'Bg subagent', subagent_type: 'Explore' },
+    });
+    const completionFor = (statusSource: string) => mkItem({
+      id: 'complete:bg',
+      kind: 'tool_completion',
+      toolName: 'Agent',
+      status: 'errored',
+      completionOf: 'bg',
+      completionLaunch: launch,
+      meta: JSON.stringify({ task_id: 'task-bg', status_source: statusSource }),
+    });
+    const dropped = render(SubagentGroupTestHarness, {
+      props: { group: mkGroup({ parentId: 'bg', parentItem: launch, completion: completionFor('wake_dropped') }) },
+    });
+    expect(dropped.getByTestId('subagent-group-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('error');
+    expect(dropped.getByTestId('subagent-group-error').textContent).toContain('Claude could not resume the agent');
+    dropped.unmount();
+
+    const failed = render(SubagentGroupTestHarness, {
+      props: { group: mkGroup({ parentId: 'bg', parentItem: launch, completion: completionFor('task_updated') }) },
+    });
+    expect(failed.getByTestId('subagent-group-error').textContent).toContain('Agent failed');
+  });
+
   it('keeps the status slot wrapper present in both running and completed states', () => {
     // Stability guard: running and terminal states share the same slot
     // wrapper so the transition does not shift adjacent chrome
