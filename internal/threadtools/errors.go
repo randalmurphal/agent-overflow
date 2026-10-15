@@ -88,7 +88,7 @@ func ambiguous(ref string, candidates []Candidate, paired bool) error {
 // resolutionIncomplete is what a fan-out returns instead of a confident
 // not found when a computer did not answer.
 func resolutionIncomplete(ref string, silent []Computer) error {
-	return errorsx.Public(CodeResolutionIncomplete, fmt.Sprintf("No thread matches %q on the computers that answered, and %s did not answer in time. The thread may be there. Try again, or name the computer with computer_id.", ref, computerList(silent)), nil)
+	return errorsx.Public(CodeResolutionIncomplete, fmt.Sprintf("No thread or assistant matches %q on the computers that answered, and %s did not answer in time. It may be there. Try again, or name the computer with computer_id.", ref, computerList(silent)), nil)
 }
 
 func computerList(computers []Computer) string {

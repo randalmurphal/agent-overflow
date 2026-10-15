@@ -138,6 +138,9 @@ func TestMissWithASilentComputerIsIncomplete(t *testing.T) {
 	if !strings.Contains(message, "Studio did not answer") {
 		t.Fatalf("the refusal does not name the silent computer: %s", message)
 	}
+	if !strings.HasPrefix(message, "No thread or assistant matches") {
+		t.Fatalf("the refusal does not say a name may be an assistant's: %s", message)
+	}
 }
 
 // TestMissEverywhereIsNotFound when every computer answered.

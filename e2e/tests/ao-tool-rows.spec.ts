@@ -103,7 +103,7 @@ for (const provider of ['claude', 'codex'] as const) {
     const refused = toolRow(page, 'read', 'thread nosuch1 · last 20 turns');
     await expect(refused).toHaveCount(1);
     await expect(refused.getByTestId('row-error-code').first()).toHaveText('thread_not_found');
-    await expect(refused).toContainText('No thread matches');
+    await expect(refused).toContainText('No thread or assistant matches');
     await shot('error-collapsed', refused);
     await expandRow(refused);
     await expect(refused.getByTestId('tool-call-card-ao-error')).not.toContainText('[thread_not_found]');
