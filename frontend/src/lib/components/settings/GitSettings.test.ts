@@ -54,6 +54,7 @@ describe('<GitSettings> — Repository sync', () => {
     await seed({ backgroundGitFetch: false });
     const { getByText } = render(GitSettings);
     expect(getByText(/only update when you fetch, pull, or sync/i)).toBeTruthy();
+    expect(getByText(/Merged PRs are only noticed for threads you have open/)).toBeTruthy();
   });
 });
 

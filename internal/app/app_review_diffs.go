@@ -158,8 +158,8 @@ func (a *App) OpenCommitDiff(ctx context.Context, ws WorkspaceRef, sha string, i
 // side is the only source needed). Scope mirrors the review pane's
 // scope selector; the extra fields disambiguate the new-side source
 // where the scope alone can't: CommitSHA for commit scope (a selected
-// commit in the workspace repo), HeadSHA for pr scope (the fetched
-// head commit).
+// commit in the workspace repo), HeadSHA for pr scope (the head of the
+// revision the diff was opened at).
 type DiffContextRequest struct {
 	Scope     string `json:"scope"`
 	CommitSHA string `json:"commitSHA"`
@@ -409,9 +409,9 @@ func (a *App) diffContextContent(action, workspace, threadID string, req DiffCon
 		}
 		return capContent(action, req.Path, content, maxBytes)
 	case "pr":
-		// The fetched head commit is present locally after OpenPRDiff's
-		// FetchRefOID (and with it every commit the PR carries). A selected
-		// per-commit diff reads that commit's tree instead of the head.
+		// The head commit is present locally once OpenPRDiff has run (and
+		// with it every commit the PR carries). A selected per-commit diff
+		// reads that commit's tree instead of the head.
 		sha := strings.TrimSpace(req.CommitSHA)
 		if sha == "" {
 			sha = strings.TrimSpace(req.HeadSHA)

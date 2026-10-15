@@ -1,11 +1,9 @@
 <script lang="ts">
-  import ChevronDown from '@lucide/svelte/icons/chevron-down';
-  import ChevronUp from '@lucide/svelte/icons/chevron-up';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import ReviewCollapsibleSection from './ReviewCollapsibleSection.svelte';
   import ReviewConversation from './ReviewConversation.svelte';
-  import ReviewIconButton from './ReviewIconButton.svelte';
   import ReviewResizableBody from './ReviewResizableBody.svelte';
+  import ReviewUnresolvedStepper from './ReviewUnresolvedStepper.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import type { PRDetail } from '../../types/models';
@@ -81,14 +79,14 @@
           </button>
         {/if}
         {#if unresolvedCount > 0}
-          <span
-            class="inline-flex h-6 shrink-0 items-center gap-0.5 rounded-[var(--radius-field)] border border-warning/40 pl-2 text-[0.6875rem] font-medium tabular-nums text-warning compact:h-8"
-            data-testid="review-conversation-open-count"
+          <ReviewUnresolvedStepper
+            testid="review-conversation-open-count"
+            prevTestid="review-unresolved-prev"
+            nextTestid="review-unresolved-next"
+            onStep={(direction) => review.stepUnresolvedThread(direction, true)}
           >
-            {unresolvedCount} unresolved
-            <ReviewIconButton icon={ChevronUp} label="Previous unresolved thread" testid="review-unresolved-prev" onclick={() => review.stepUnresolvedThread(-1, true)} />
-            <ReviewIconButton icon={ChevronDown} label="Next unresolved thread" testid="review-unresolved-next" onclick={() => review.stepUnresolvedThread(1, true)} />
-          </span>
+            {#snippet label()}{unresolvedCount} unresolved{/snippet}
+          </ReviewUnresolvedStepper>
         {/if}
       {/snippet}
       <!-- The default cap leaves the diff visible under the open section on

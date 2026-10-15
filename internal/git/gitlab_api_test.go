@@ -106,7 +106,7 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 			t.Fatalf("request %s went to %q with Private-Token %q", call.Path, call.Host, call.Header.Get("Private-Token"))
 		}
 	}
-	if d := read.Detail; d.Number != 7 || d.HeadSHA != "head2" || d.ReviewDecision != "APPROVED" || len(d.LatestReviews) != 1 ||
+	if d := read.Detail; d.Number != 7 || d.HeadSHA != "head2" || d.BaseRefSHA != "start" || d.ReviewDecision != "APPROVED" || len(d.LatestReviews) != 1 ||
 		d.Checks.Total != 1 || d.ChangedFiles != 3 || d.DiffRefs == nil || d.DiffRefs.StartSHA != "start" {
 		t.Fatalf("detail = %+v", d)
 	}
@@ -533,7 +533,10 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 			if q.Get("source_branch") == "none" {
 				return forgeAPIAnswer{Body: `null`}
 			}
-			return forgeAPIAnswer{Body: `[{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/3","iid":3,"title":"Fix","state":"opened"}]`}
+			// A fork's merge request from a branch of the same name comes
+			// first; it is not the project's own.
+			return forgeAPIAnswer{Body: `[{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/7","iid":7,"title":"Fork","state":"opened","project_id":10,"source_project_id":99},` +
+				`{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/3","iid":3,"title":"Fix","state":"opened","project_id":10,"source_project_id":10}]`}
 		case "merged":
 			perPage, _ := strconv.Atoi(q.Get("per_page"))
 			page, _ := strconv.Atoi(q.Get("page"))
@@ -570,8 +573,8 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 		t.Fatalf("ListMergedPRHeads(30) = %d heads, %v", len(heads), err)
 	}
 	want := []string{
-		"GET " + list + "?per_page=1&source_branch=feature%2Fx+y&state=opened&view=simple",
-		"GET " + list + "?per_page=1&source_branch=none&state=opened&view=simple",
+		"GET " + list + "?per_page=100&source_branch=feature%2Fx+y&state=opened",
+		"GET " + list + "?per_page=100&source_branch=none&state=opened",
 		"GET " + list + "?order_by=updated_at&per_page=100&sort=desc&state=merged",
 		"GET " + list + "?order_by=updated_at&page=2&per_page=100&sort=desc&state=merged",
 		"GET " + list + "?order_by=updated_at&per_page=30&sort=desc&state=merged",
@@ -583,6 +586,49 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 		if call.Host != "gitlab.com" {
 			t.Fatalf("list went to %q, want the origin's host", call.Host)
 		}
+	}
+}
+
+// Forks' merge requests from a branch of the same name fill whole pages
+// before the project's own: the lookup reads on until it finds it, and
+// stops after gitlabOpenMRsMaxPages pages of forks.
+func TestGitLabListOpenPRsReadsPastForks(t *testing.T) {
+	t.Parallel()
+	forkPage := func(page int) string {
+		rows := make([]string, 0, gitlabPageSize)
+		for i := range gitlabPageSize {
+			rows = append(rows, fmt.Sprintf(`{"web_url":"u","iid":%d,"title":"Fork","state":"opened","project_id":10,"source_project_id":%d}`, page*1000+i, 500+i))
+		}
+		return "[" + strings.Join(rows, ",") + "]"
+	}
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		u, err := url.Parse(call.Path)
+		if err != nil {
+			return forgeUnexpected(t, call)
+		}
+		page, _ := strconv.Atoi(u.Query().Get("page"))
+		page = max(page, 1)
+		next := http.Header{"X-Next-Page": {strconv.Itoa(page + 1)}}
+		if u.Query().Get("source_branch") == "own" && page == 2 {
+			return forgeAPIAnswer{Body: `[{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/4","iid":4,"title":"Own","state":"opened","project_id":10,"source_project_id":10}]`}
+		}
+		return forgeAPIAnswer{Body: forkPage(page), Header: next}
+	})
+	cwd := t.TempDir()
+	core.recordOrigin(cwd, originIdentity{url: "git@gitlab.com:grp/sub/app.git", known: true}, core.nowFn())
+	pulls, err := core.ListOpenPRs(t.Context(), cwd, "own")
+	if err != nil || len(pulls) != 1 || pulls[0].Number != 4 {
+		t.Fatalf("ListOpenPRs(own) = %+v, %v", pulls, err)
+	}
+	if n := len(calls.all()); n != 2 {
+		t.Fatalf("own lookup sent %d requests, want 2", n)
+	}
+	pulls, err = core.ListOpenPRs(t.Context(), cwd, "forks-only")
+	if err != nil || len(pulls) != 0 {
+		t.Fatalf("ListOpenPRs(forks-only) = %d pulls, %v", len(pulls), err)
+	}
+	if n := len(calls.all()) - 2; n != gitlabOpenMRsMaxPages {
+		t.Fatalf("forks-only lookup sent %d requests, want %d", n, gitlabOpenMRsMaxPages)
 	}
 }
 

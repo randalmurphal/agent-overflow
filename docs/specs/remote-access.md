@@ -3053,7 +3053,11 @@ leaves an explicit `identityError`. A previously verified ID remains usable
 only when a private origin-change stamp is unchanged. This stamp is a digest
 of the local origin locator before SSH resolution, never leaves the backend, and never
 matches different projects. A missing path or failed local Git read retains
-the last identity; an unsupported or absent forge origin cannot establish one.
+the last identity. A checkout with no origin, or an origin whose host (after
+SSH alias resolution) is neither GitHub nor GitLab, has no identity and no
+`identityError`: it is a plain folder to the app, not a failed verification.
+An SSH alias `ssh -G` cannot resolve stays an error, since it may name a
+forge.
 
 Creation, workspace registration and session import derive identity through
 `projectapp`. `RefreshIdentity` re-reads every row, archived included, once
@@ -3068,7 +3072,8 @@ identity warning rechecks it through `RefreshProjectIdentity`. The machine
 picker also refreshes the source before validating a chosen destination.
 `CreateProjectCheckout` enforces equal verified IDs inside the API. Failed
 verification cannot be bypassed with a matching URL or commit. Plain
-non-Git folders remain supported as independent projects.
+folders, including Git checkouts with no GitHub or GitLab origin, remain
+supported as independent projects.
 
 The client groups entries in `utils/repoKey.ts` only when multiple backends
 are attached. Each computer contributes at most one member, its oldest live

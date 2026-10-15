@@ -249,6 +249,15 @@ export function pageGrantsResolved(): Promise<void> {
 }
 
 /**
+ * Whether `pageGrantsResolved()` has resolved. For one-shot work that must
+ * not wait for the manifest itself: it skips its gated legs now and runs
+ * them from `pageGrantsResolved()`.
+ */
+export function pageGrantsKnown(): boolean {
+  return pageGrantsSettled;
+}
+
+/**
  * The home answer read OUTSIDE a reactive context before the manifest has
  * spoken is a lie the caller will never see corrected: the merged idle
  * memory trim did exactly that at mount, answered "not on host", and

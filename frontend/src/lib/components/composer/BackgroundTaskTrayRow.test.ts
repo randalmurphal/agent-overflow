@@ -539,4 +539,26 @@ describe('<BackgroundTaskTrayRow> agent run state', () => {
     }), 'claude');
     expect(stopped.getByTestId('agent-row-error').textContent).toContain('Agent stopped');
   });
+
+  it('says Claude could not resume the agent when a dropped wake ended it, not "failed"', () => {
+    const launch = agentLaunch();
+    const dropped = makeItem({
+      id: 'complete:bg-agent',
+      threadId: 'thread-1',
+      kind: 'tool_completion',
+      toolName: 'Agent',
+      status: 'errored',
+      completionOf: launch.id,
+      meta: JSON.stringify({ task_id: 'task-agent', status_source: 'wake_dropped' }),
+    });
+    const view = renderTrayRow(taskFor(launch, { completion: dropped, status: 'completed' }), 'claude');
+    expect(view.getByTestId('agent-row-error').textContent).toContain('Claude could not resume the agent');
+    view.unmount();
+
+    const failed = renderTrayRow(taskFor(launch, {
+      completion: { ...dropped, meta: JSON.stringify({ task_id: 'task-agent', status_source: 'task_updated' }) },
+      status: 'completed',
+    }), 'claude');
+    expect(failed.getByTestId('agent-row-error').textContent).toContain('Agent failed');
+  });
 });

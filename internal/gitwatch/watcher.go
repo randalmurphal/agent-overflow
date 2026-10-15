@@ -345,9 +345,35 @@ func (w *workspaceWatcher) run() {
 			retryArmed = true
 		}
 	}
+	// prRecheck re-runs a refresh when a failed open-PR lookup is due to
+	// be asked again (GitStatus.OpenPRRecheckAt). A forge that recovers
+	// changes nothing on disk, so without it the PR fields keep the
+	// failure until some unrelated local change. Each refresh replaces the
+	// schedule; one with no failed lookup clears it.
+	prRecheck := time.NewTimer(time.Hour)
+	if !prRecheck.Stop() {
+		<-prRecheck.C
+	}
+	prRecheckArmed := false
+	schedulePRRecheck := func(at time.Time) {
+		if prRecheckArmed && !prRecheck.Stop() {
+			select {
+			case <-prRecheck.C:
+			default:
+			}
+		}
+		prRecheckArmed = !at.IsZero()
+		if prRecheckArmed {
+			prRecheck.Reset(max(time.Until(at), 0))
+		}
+	}
+	defer prRecheck.Stop()
 	refresh := func() bool {
-		changed, err := w.refresh()
+		changed, recheckAt, err := w.refresh()
 		settle(err)
+		if err == nil {
+			schedulePRRecheck(recheckAt)
+		}
 		return changed
 	}
 
@@ -421,6 +447,9 @@ func (w *workspaceWatcher) run() {
 		case <-retry.C:
 			retryArmed = false
 			refreshEdge()
+		case <-prRecheck.C:
+			prRecheckArmed = false
+			refresh()
 		case <-w.refreshCh:
 			// A refresh nothing on the fs side asked for (subscriber
 			// attach, post-action refresh). If it observes real working-
@@ -468,28 +497,32 @@ func (w *workspaceWatcher) requestRefresh() {
 // error for a real change. Reports whether the observed status differed
 // from lastStatus on any non-PR field — the run loop's miss-detection signal (PR fields change
 // through cache warming, not the filesystem, so they prove nothing
-// about watchpoint health).
+// about watchpoint health). prRecheckAt is the fetched status's
+// OpenPRRecheckAt, whether or not it was broadcast; zero when suppressed.
 //
 // The broadcast runs UNDER w.mu so a concurrent removeSubscriber can't
 // close(s.updates) on a sub we're about to send to — sending on a
 // closed channel panics even from a non-blocking select. The sends are
 // themselves non-blocking (buffer size 1, supersede-on-overflow), so
 // the lock is held for microseconds bounded by len(subscribers).
-func (w *workspaceWatcher) refresh() (nonPRChanged bool, err error) {
+func (w *workspaceWatcher) refresh() (nonPRChanged bool, prRecheckAt time.Time, err error) {
 	if w.isSuppressed() {
-		return false, nil
+		return false, time.Time{}, nil
 	}
 	status, err := w.statusFn(w.ctx, w.cwd)
 	if err != nil {
 		log.Printf("gitwatch: status fetch for %s: %v", w.cwd, err)
-		return false, err
+		return false, time.Time{}, err
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	// Rechecked under the lock: a hold taken while statusFn ran must still
 	// keep this status off the wire.
-	if w.suppressed > 0 || status.Equal(w.lastStatus) {
-		return false, nil
+	if w.suppressed > 0 {
+		return false, time.Time{}, nil
+	}
+	if status.Equal(w.lastStatus) {
+		return false, status.OpenPRRecheckAt, nil
 	}
 	nonPRChanged = statusDiffersIgnoringPR(status, w.lastStatus)
 	w.lastStatus = status
@@ -507,7 +540,7 @@ func (w *workspaceWatcher) refresh() (nonPRChanged bool, err error) {
 		default:
 		}
 	}
-	return nonPRChanged, nil
+	return nonPRChanged, status.OpenPRRecheckAt, nil
 }
 
 // probeLiveness checks whether the working tree drifted from lastStatus
@@ -565,8 +598,8 @@ func (w *workspaceWatcher) suppress() func() {
 // second field list) keeps the comparison honest when GitStatus grows a
 // field: Equal is the single place that must learn about it.
 func statusDiffersIgnoringPR(a, b gitops.GitStatus) bool {
-	a.OpenPRURL, a.OpenPRNumber, a.OpenPRLookupError, a.OpenPRLookupPending = "", 0, "", false
-	b.OpenPRURL, b.OpenPRNumber, b.OpenPRLookupError, b.OpenPRLookupPending = "", 0, "", false
+	a.OpenPRURL, a.OpenPRNumber, a.OpenPRLookupError, a.OpenPRLookupPending, a.OpenPRRecheckAt = "", 0, "", false, time.Time{}
+	b.OpenPRURL, b.OpenPRNumber, b.OpenPRLookupError, b.OpenPRLookupPending, b.OpenPRRecheckAt = "", 0, "", false, time.Time{}
 	return !a.Equal(b)
 }
 

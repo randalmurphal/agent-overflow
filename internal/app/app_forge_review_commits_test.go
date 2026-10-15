@@ -1,10 +1,12 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/testutil"
@@ -44,12 +46,23 @@ func prRef() gitops.PRReference {
 	return gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "owner", Repo: "repo", Number: 5}
 }
 
+// prRev is the revision the forge reports for prCloneFixture's PR: its head
+// and the base branch's tip on origin.
+func prRev(t *testing.T, clone string, head string) gitops.PRRevision {
+	t.Helper()
+	base, _, err := gitops.NewCore().Execute(clone, "rev-parse", "refs/remotes/origin/main")
+	if err != nil {
+		t.Fatalf("rev-parse origin/main: %v", err)
+	}
+	return gitops.PRRevision{BaseRef: "main", BaseSHA: strings.TrimSpace(base), HeadSHA: head}
+}
+
 func TestListPRCommitsFromLocalClone(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	ref, _, prSHAs := prCloneFixture(t, app)
+	ref, clone, prSHAs := prCloneFixture(t, app)
 
-	commits, err := app.ListPRCommits(ref, prRef(), "main", "")
+	commits, err := app.ListPRCommits(ref, prRef(), prRev(t, clone, prSHAs[0]))
 	if err != nil {
 		t.Fatalf("ListPRCommits() error = %v", err)
 	}
@@ -68,56 +81,69 @@ func TestListPRCommitsWithoutCloneErrors(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	noClone := testWorkspaceRef(t, app, t.TempDir()) // not a git repo
+	sha := strings.Repeat("a", 40)
 
-	_, err := app.ListPRCommits(noClone, prRef(), "main", "")
+	_, err := app.ListPRCommits(noClone, prRef(), gitops.PRRevision{BaseRef: "main", BaseSHA: sha, HeadSHA: sha})
 	if err == nil || !strings.Contains(err.Error(), "workspace is not a git repository") {
 		t.Fatalf("ListPRCommits() error = %v, want the not-a-repository refusal", err)
 	}
 }
 
-func TestListPRCommitsWithKnownHeadSkipsFetch(t *testing.T) {
+// Every PR read whose commits are already in the clone answers without
+// origin: the remote is broken, so any fetch would fail them.
+func TestPRReadsSkipTheNetworkWhenCommitsAreLocal(t *testing.T) {
 	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	ref, clone, prSHAs := prCloneFixture(t, app)
-	// Break the remote: any fetch now fails, so a passing listing proves
-	// the known-head fast path skipped the network entirely.
+	rev := prRev(t, clone, prSHAs[0])
 	testutil.RunGit(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone"))
 
-	commits, err := app.ListPRCommits(ref, prRef(), "main", prSHAs[0])
+	commits, err := app.ListPRCommits(ref, prRef(), rev)
 	if err != nil {
-		t.Fatalf("ListPRCommits() with known head error = %v", err)
+		t.Fatalf("ListPRCommits() error = %v", err)
 	}
 	if len(commits) != 2 || commits[0].SHA != prSHAs[0] {
-		t.Fatalf("expected the local listing from the known head, got %+v", commits)
+		t.Fatalf("expected the local listing, got %+v", commits)
 	}
-
-	// OpenPRCommitDiff takes the same no-fetch fast path when the commit
-	// is already local.
-	patch, err := openPRCommitPatch(t, app, ref, prSHAs[0])
+	patch, err := openPRCommitPatch(t, app, ref, rev, prSHAs[0])
 	if err != nil {
-		t.Fatalf("OpenPRCommitDiff() with local commit error = %v", err)
+		t.Fatalf("OpenPRCommitDiff() error = %v", err)
 	}
 	if !strings.Contains(patch, "+second.txt content") {
 		t.Fatalf("expected the commit diff from local objects, got:\n%s", patch)
 	}
+	ctx, _ := reviewDiffConn(t)
+	if _, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false); err != nil {
+		t.Fatalf("OpenPRDiff() error = %v", err)
+	}
 }
 
-func TestListPRCommitsRequiresBaseRef(t *testing.T) {
+func TestPRReadsRefuseAnInvalidRevision(t *testing.T) {
 	t.Parallel()
-	app := newTestAppWithStore(t)
-	ref, _, _ := prCloneFixture(t, app)
-
-	if _, err := app.ListPRCommits(ref, prRef(), "  ", ""); err == nil {
-		t.Fatal("expected error for an empty base ref")
+	app := newReviewDiffTestApp(t)
+	ref, clone, prSHAs := prCloneFixture(t, app)
+	valid := prRev(t, clone, prSHAs[0])
+	ctx, _ := reviewDiffConn(t)
+	for name, rev := range map[string]gitops.PRRevision{
+		"empty base ref": {BaseRef: "  ", BaseSHA: valid.BaseSHA, HeadSHA: valid.HeadSHA},
+		"no base commit": {BaseRef: "main", HeadSHA: valid.HeadSHA},
+		"short head":     {BaseRef: "main", BaseSHA: valid.BaseSHA, HeadSHA: prSHAs[0][:12]},
+	} {
+		if _, err := app.ListPRCommits(ref, prRef(), rev); err == nil {
+			t.Errorf("%s: ListPRCommits accepted %+v", name, rev)
+		}
+		if _, err := app.OpenPRDiff(ctx, ref, prRef(), rev, false); err == nil {
+			t.Errorf("%s: OpenPRDiff accepted %+v", name, rev)
+		}
 	}
 }
 
 func TestOpenPRCommitDiffFromLocalClone(t *testing.T) {
 	t.Parallel()
 	app := newReviewDiffTestApp(t)
-	ref, _, prSHAs := prCloneFixture(t, app)
+	ref, clone, prSHAs := prCloneFixture(t, app)
 
-	patch, err := openPRCommitPatch(t, app, ref, prSHAs[0])
+	patch, err := openPRCommitPatch(t, app, ref, prRev(t, clone, prSHAs[0]), prSHAs[0])
 	if err != nil {
 		t.Fatalf("OpenPRCommitDiff() error = %v", err)
 	}
@@ -133,9 +159,49 @@ func TestOpenPRCommitDiffWithoutCloneErrors(t *testing.T) {
 	t.Parallel()
 	app := newReviewDiffTestApp(t)
 	noClone := testWorkspaceRef(t, app, t.TempDir())
+	sha := strings.Repeat("a", 40)
 
-	_, err := openPRCommitPatch(t, app, noClone, strings.Repeat("a", 40))
+	_, err := openPRCommitPatch(t, app, noClone, gitops.PRRevision{BaseRef: "main", BaseSHA: sha, HeadSHA: sha}, sha)
 	if err == nil || !strings.Contains(err.Error(), "workspace is not a git repository") {
 		t.Fatalf("OpenPRCommitDiff() error = %v, want the not-a-repository refusal", err)
+	}
+}
+
+// A PR read that could not fetch its commits has the PR's pump emit its
+// next successful poll even though the snapshot is unchanged: that frame is
+// the pane's cue to retry. One frame per failure, then dedup resumes.
+func TestFailedPRReadMakesTheNextUnchangedPollEmit(t *testing.T) {
+	t.Parallel()
+	app := newReviewDiffTestApp(t)
+	stubPRCIFetch(app)
+	app.prUpdates.interval = time.Hour
+	app.prUpdates.fetchFn = func(_ context.Context, got gitops.PRReference) (prUpdateSnapshot, error) {
+		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
+	}
+	sub, err := app.SubscribePRUpdates(context.Background(), prRef())
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = app.UnsubscribePRUpdates(context.Background(), sub.ID) })
+	app.prUpdates.mu.Lock()
+	pump := app.prUpdates.pumps[sub.PRKey]
+	app.prUpdates.mu.Unlock()
+	if _, changed := app.pollPRUpdate(pump); changed {
+		t.Fatal("an unchanged poll emitted before any read failed")
+	}
+
+	ref, clone, prSHAs := prCloneFixture(t, app)
+	testutil.RunGit(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone"))
+	missing := gitops.PRRevision{BaseRef: "main", BaseSHA: strings.Repeat("d", 40), HeadSHA: prSHAs[0]}
+	if _, err := app.ListPRCommits(ref, prRef(), missing); err == nil {
+		t.Fatal("ListPRCommits succeeded without its base commit")
+	}
+
+	evt, changed := app.pollPRUpdate(pump)
+	if !changed || evt.Error != "" || evt.Detail.HeadSHA != "head-a" || evt.Seq <= sub.Seq {
+		t.Fatalf("poll after the failed read = %+v changed=%v, want the unchanged snapshot under a new seq", evt, changed)
+	}
+	if _, changed := app.pollPRUpdate(pump); changed {
+		t.Fatal("a second unchanged poll emitted; the failure should cue one frame")
 	}
 }

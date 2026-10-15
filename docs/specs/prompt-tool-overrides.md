@@ -11,8 +11,11 @@ A settings surface (Agents group) where the user can:
 
 1. **Replace the provider's default system prompt** per provider, scoped
    to selected models: Claude via `--system-prompt`, Codex via
-   `baseInstructions`. Toggleable per entry; takes effect on the next
-   session started, never disturbing running sessions.
+   `baseInstructions`. Toggleable per entry. A change applies at each
+   thread's next session start, never to a running session
+   ([Reconcile semantics](#reconcile-semantics-what-a-settings-edit-does-to-a-live-session)).
+   Each prompt's text is a file the user or an agent edits directly
+   ([Prompt files](#prompt-files)).
 2. **Disable built-in tools** per provider so their schemas never reach
    the model context (e.g. Claude's `Workflow`, because the user runs
    AO's own workflow engine instead). Claude's tools payload is ~92KB of schemas,
@@ -71,10 +74,9 @@ PTY launch (`--model`, `--effort`, `--resume` in
 - `{{MEMORY_DIR}}` and `ensureClaudeMemoryDir` cover claude-tui:
   same binary, same `<claudeHome>/projects/<slug>/memory`, and the CLI
   stops creating it under a replaced prompt either way.
-- Reconcile pins for claudetui: `reconcileSettingsOwnedAxes` converges
-  the prompt axis for HEADLESS Claude only, and claudetui has no
-  live-update surface (any diff is a restart), so the pin is what keeps
-  a settings edit from restarting a live TUI session.
+- Reconcile pins for claudetui: claudetui has no live-update surface
+  (any diff is a restart), so the pin in `reconcileSettingsOwnedAxes` is
+  what keeps a settings edit from restarting a live TUI session.
 
 ### Why Claude gets the FILE flag
 
@@ -95,7 +97,7 @@ the wrong channel twice over:
 directory's `claude-prompts/`; `Session.Close` and every failed-spawn path
 remove it, and boot empties the directory for a backend that exited
 without closing its sessions. The rendered prompt is additionally
-capped at `maxRenderedSystemPromptBytes` (256KB) at composition time.
+capped at `promptoverride.MaxRenderedPromptBytes` (256KB) at composition time.
 Rendering is multiplicative, so a prompt inside the settings length
 limit can still render to tens of megabytes. Over the cap the spawn
 fails with both sizes named; it is never silently truncated.
@@ -103,11 +105,15 @@ fails with both sizes named; it is never silently truncated.
 ## Settings shape
 
 ```go
-// internal/settings/settings.go
+// internal/settings/promptoverrides.go
 type PromptOverride struct {
+    ID      string   `json:"id"`                // canonical UUID, names the prompt file
     Enabled bool     `json:"enabled"`
-    Models  []string `json:"models"`  // normalized slugs, no context-tier markers
-    Prompt  string   `json:"prompt"`
+    Models  []string `json:"models"`            // normalized slugs, no context-tier markers; [] never null
+    Prompt  string   `json:"prompt,omitempty"`  // text of <configDir>/prompts/<id>.md; never on the wire
+    Path    string   `json:"path,omitempty"`    // computed, never persisted
+    Problem string   `json:"problem,omitempty"` // computed, never persisted
+    Blank   bool     `json:"blank,omitempty"`   // wire only: the file holds no text that applies
 }
 
 ClaudePromptOverrides []PromptOverride `json:"claudePromptOverrides,omitempty"`
@@ -128,9 +134,60 @@ Decisions (2026-08-17, with user):
 - Matching normalizes via `provider.NormalizeModelSlug` and strips the
   context-tier marker (`[1m]`) before comparison.
 
+On the wire (`GetSettings`, `UpdateSettings` and the provider env
+replies, all through `redactedSettings`) an entry carries `id`,
+`enabled`, `models`, `path`, `problem` and `blank`, never `prompt`
+(`settings.PromptOverridesForWire`). `blank` is true when the file is
+empty, whitespace only, or has a `problem`. `Prompt` still decodes from a
+stored row, because `MigratePromptFiles` reads the inline text of rows
+from before the files.
+
 `ClaudeDisabledTools` holds raw tool names (unknown names are harmless
 to the CLI). `CodexDisabledTools` holds **curated toggle ids**. Codex
 has no flat disallow list; each id maps to config keys (see below).
+
+### Prompt files
+
+Decisions 2026-10-11 and 2026-10-14 (with user): each override's text
+lives only in its file, which the user or an agent edits; Settings has no
+text editor. `internal/settings/promptfiles.go` owns the mechanism.
+
+- **Location.** `<configDir>/prompts/<id>.md` (directory 0700, file
+  0600, written atomically through `atomicfile`). The settings row in the
+  user tier holds `id`, `enabled` and `models` only. The load fills
+  `Prompt` from the file in memory; it never crosses the wire.
+- **Ids.** `Service.mutate` mints a UUID for an entry without one. A
+  write that names an id no current entry has gets a fresh one, so a
+  client never chooses the filename. An id that is not a UUID, or that
+  repeats within or across the two provider lists, is rejected on write
+  and cleared on load. A `.md` file in the directory with no entry is
+  ignored.
+- **Writes.** A write ignores any text a client sends
+  (`restoreStoredPromptTexts`). Adding an entry creates its empty file;
+  removing one deletes its file. `Path` and `Problem` are computed on
+  load; a value sent by a client is ignored.
+- **External edits.** `Get` stats every prompt file and reloads when one
+  changed, so the next read sees an edit. `assetwatch.PromptWatcher`
+  watches the directory; on an edit the app calls `ReloadPromptFiles`,
+  which announces both override keys to attached clients, and the
+  settings change observer then flags the live threads the edit affects
+  ([Reconcile semantics](#reconcile-semantics-what-a-settings-edit-does-to-a-live-session)).
+  The watcher does not suppress the app's own writes: they only create or
+  delete an entry's file, and the reload they cause changes nothing.
+- **Limits.** A file over `MaxPromptOverrideLen`, or one that carries its
+  provider's list past `MaxPromptOverridesTotalLen`, loads as an empty
+  prompt with `Problem` naming the path and size. The entry stays in the
+  list, so a later save cannot drop it, and an empty prompt never matches.
+- **README.** Boot writes `<configDir>/prompts/README.md`
+  (`settings.PromptReadmeName`) from `promptoverride.ReadmeMarkdown`: the
+  file naming and Settings mapping, the placeholder table
+  (`promptoverride.Placeholders`), the limits, and when an edit applies.
+  A user can point an agent at it.
+- **Migration.** `MigratePromptFiles` runs after `AttachTierStore` at
+  startup: a row that still carries inline text, or lacks an id, gets an
+  id and a file, and the row is persisted without the text. Before the
+  tier store is attached (the pre-database boot readers and a store-less
+  service) the text stays inline in the row.
 
 ## Prompt application
 
@@ -145,12 +202,14 @@ a `promptOverrideResolution` (the matched entry plus whether it applied),
 so every downstream consumer (today `ensureClaudeMemoryDir`) acts on
 the same decision from the same snapshot. A settings save landing
 mid-spawn cannot make the created directory disagree with the rendered
-prompt. `reconcileSettingsOwnedAxes` returns the same type for the same
-reason, non-zero only when THAT reconcile actually rendered something.
+prompt.
 
 ### Placeholder rendering
 
-Rendered at spawn from values AO already has:
+Rendered at spawn from values AO already has. The user-facing meaning of
+each token and the providers that render it are
+`promptoverride.Placeholders`, which the Settings legend and the prompts
+README both follow:
 
 | Placeholder | Source |
 |---|---|
@@ -168,8 +227,8 @@ Environment section. Codex mostly does not: `include_environment_context`
 Only known tokens are substituted; any other `{{...}}` text passes
 through literally (user decision 2026-08-17: typos stay visible in the
 session rather than erroring or being stripped, and prose containing
-braces never fights the renderer). The settings UI shows a legend of
-the available placeholders next to the prompt editor.
+braces never fights the renderer). The settings UI shows a read-only
+legend of the available placeholders beside each provider's overrides.
 
 ### Memory (Claude)
 
@@ -177,10 +236,10 @@ Under a replaced system prompt the CLI stops mkdir-ing the memory dir,
 but recall (MEMORY.md → first-user-message system-reminder) still works.
 When an override containing `{{MEMORY_DIR}}` is active, AO creates the
 directory at spawn so the prompt's "it already exists" claim holds.
-`ensureClaudeMemoryDir` runs wherever an override is RENDERED (the
-spawn path, and the reconcile path when a live prompt swap lands), takes the
-resolution rather than re-matching, and is never fatal: a failure lands
-as thread error state and the session starts anyway.
+`ensureClaudeMemoryDir` runs on the spawn path, the one place an
+override is rendered, takes the resolution rather than re-matching, and
+is never fatal: a failure lands as thread error state and the session
+starts anyway.
 
 ### Codex specifics
 
@@ -277,49 +336,64 @@ The live-config reconciler (`app_session_config.go
 liveApplySessionConfig`) diffs freshly built options against
 `sess.launchOpts` and escalates non-live-appliable diffs to a deferred
 restart. Before diffing it calls **`reconcileSettingsOwnedAxes`**
-(`app_session_prompt_override.go`), which resolves the four
-settings-owned axes:
+(`app_session_prompt_override.go`), which resolves the settings-owned
+axes:
 
 | Axis | Live session behavior |
 |---|---|
 | `DisabledTools` | **Pinned** to `sess.launchOpts`. Spawn-only on every provider, so a diff could only queue a restart nobody asked for. |
 | `DisableTodoReminders` | **Pinned**, same reason (an env var, fixed at spawn). |
-| `SystemPrompt`, headless Claude on CLI ≥ 2.1.214 | **Converges live** when the change lands on a non-empty prompt: an override edited, or one turned on. `claude.PlanLiveUpdate` carries it as `LiveUpdate.SystemPrompt` and `ApplyLiveUpdate` sends it on `set_model` (see `claude-wire.md`). On 2.1.267+ this holds only for a process spawned with `--system-prompt-snapshot off` ([Claude prompt snapshot](#claude-prompt-snapshot)); a process spawned while the installed version was unknown takes the deferred restart instead, since the snapshot would mask the swap, and its respawn passes the opt-out. Turning an override OFF is a **deferred restart**: `set_model.system_prompt` must be a non-empty string and has no revert-to-built-in form, so only a respawn without `--system-prompt-file` restores the CLI's own prompt. |
-| `SystemPrompt`, Codex / claude-tui | **Pinned.** Neither has a prompt-swap wire, so re-resolving could only ever queue a deferred restart for an edit the user expected to affect the NEXT session, the contract those two keep. |
-| `SystemPrompt`, headless Claude on an older CLI | **Deferred restart.** The reconciler resolves and `PlanLiveUpdate` plans it as usual; the version gate lives one layer down in `ApplyLiveUpdate`, which answers `ErrLiveUpdateRequiresRestart`. Older builds ACK `set_model.system_prompt` without applying it (the one failure mode with no wire signal at all), so an unknown version counts as too old. |
-| `ClaudeThinking`, headless Claude on CLI ≥ 2.1.214 | **Converges live** for every explicit value. `claude.PlanLiveUpdate` carries it as `LiveUpdate.Thinking` and `ApplyLiveUpdate` sends one `set_max_thinking_tokens` control request (`max_thinking_tokens` for off/budget, `thinking_display` for the display axis). Returning to Claude's own choice is a **deferred restart**: `max_thinking_tokens: null` is accepted and does nothing, so only a respawn without the flag resets it. Same version gate and same unknown-version-is-too-old posture as `SystemPrompt`. |
+| `SystemPrompt`, settings override, every provider | **Pinned; per-thread `prompt_stale` banner.** A prompt change never applies to a running session (decision 2026-10-14): no `set_model.system_prompt` swap, no deferred restart. Nothing is matched or rendered on the reconcile path. It applies at the thread's next session start; until then the thread shows the banner described below. |
+| `ClaudeThinking`, headless Claude on CLI ≥ 2.1.214 | **Converges live** for every explicit value. `claude.PlanLiveUpdate` carries it as `LiveUpdate.Thinking` and `ApplyLiveUpdate` sends one `set_max_thinking_tokens` control request (`max_thinking_tokens` for off/budget, `thinking_display` for the display axis). Returning to Claude's own choice is a **deferred restart**: `max_thinking_tokens: null` is accepted and does nothing, so only a respawn without the flag resets it. Below the version floor, or with the version unknown, the change is a deferred restart. |
 | `ClaudeThinking`, Codex / claude-tui | **Never resolved at all.** `ClaudeThinkingForProvider` answers the zero value for anything but headless `claude`, on BOTH paths. claude-tui drives the same binary but has no control-request channel, so an axis it could never apply must not diff either. |
-
-"Changed" is decided on the **stored, unrendered** override text
-(`SessionOptions.SystemPromptOverrideSource`), never the rendered one. A
-rendered comparison would report a diff every time the workspace's git
-state moved under a `{{GIT_BLOCK}}` and reconcile forever.
 
 `applySettingsOwnedAxes` (spawn) and `reconcileSettingsOwnedAxes`
 (reconcile) are a **pair**, and `buildSessionOptions` stamps none of
 these axes so the pairing cannot be forgotten:
 
-- `ClaudeThinking` is the one axis a *settings save alone* has to act on:
-  every other axis here is spawn-only, so nothing would reconcile until an
-  unrelated thread-config edit happened to. `UpdateSettings` therefore
-  fans out `reconcileLiveClaudeSessions` on the `claudeThinking` key, off
-  the binding's goroutine.
+- `claudeThinking` and `claudeCrossSession` are the keys a *settings save
+  alone* has to act on: every other axis here is spawn-only, so nothing
+  would reconcile until an unrelated thread-config edit happened to.
+  `UpdateSettings` therefore fans out `reconcileLiveClaudeSessions` on
+  those keys (`liveClaudeSettingsAxes`), off the binding's goroutine.
+  Neither prompt override key is in that list.
 - Adding a settings-owned axis means touching BOTH. An axis stamped only
   on the spawn side would queue a deferred restart on every live session
   the next time anything reconciled, the failure the pin exists to
   prevent, re-introduced silently.
-- The reconcile path stays **cheap in the common case**: today's entry is
-  matched (a slug comparison: no git, no `Render`), and its stored text
-  compared against the session's. Unchanged is the overwhelmingly common
-  case and pins. Only a real Settings edit reaches `Render` and its up-to
-  two git subprocesses, and `reconcilePromptOverrideRender` memoizes that
-  per session token. The deferred-restart watcher re-runs the whole
-  reconcile once a second while a thread is busy, so a change that cannot
-  be applied live would otherwise pay for it on every poll.
-- A live prompt swap re-runs `ensureClaudeMemoryDir`: under a replaced
-  system prompt the CLI stops creating the directory a rendered
-  `{{MEMORY_DIR}}` promises already exists, and that is as true of a swap
-  as of a spawn.
+
+### Prompt changed banner
+
+`app_prompt_stale.go` owns it, beside the stale-binary banner
+(`app_provider_binary_watch.go`).
+
+- **Stale.** A live session is stale when the stored override text its next start would use
+  (`promptoverride.Match` on today's settings for the thread's provider
+  and model; an entry whose file is blank or has a `Problem` is no
+  override) differs from `launch.SystemPromptOverrideSource`. Decided on
+  the stored, unrendered text, so a workspace's git state moving under a
+  `{{GIT_BLOCK}}` never flags anything.
+- **Triggers.** The settings change observer on either override key (an
+  edit in Settings or a prompt file reload), a session start (a fresh
+  launch matches, and an edit that landed during the spawn flags it), a
+  thread model change and a provider model reroute recompute it. A
+  session leaving the session map (stop, restart, death, reap) withdraws
+  its flag at once.
+- **Wire.** Entering or changing within stale emits a thread-scoped
+  `provider:status` `{kind:"prompt_stale", threadId, provider,
+  actionable:true, message, revision}`. `revision` increases on every
+  change and is never reused. Clearing emits `{status:"ready", threadId,
+  provider, withdrawKind:"prompt_stale"}`. The flag is pinned to the
+  session token that earned it, and `GetThreadLiveState` mirrors it as
+  `promptStale` and `promptStaleRevision` for a reconnecting pane.
+- **Dismiss.** `DismissSessionBanner(threadID, "prompt_stale")` records
+  the dismissed revision and emits the withdraw; hydration omits a
+  dismissed banner, and the next revision shows it again. Ignored or
+  dismissed, the change applies when the session next restarts.
+  `DismissSessionBanner(threadID, "binary_stale")` dismisses the
+  stale-binary banner for the installed version it names, until that
+  version changes again; its withdrawals carry
+  `withdrawKind:"binary_stale"`.
 
 ## App guide
 
@@ -379,18 +453,14 @@ app-managed server adds one.
 By default the CLI records the first request's rendered system prompt in
 the transcript and reuses it on every `--resume`. With that default a
 resumed session keeps its first guide and ignores a changed or removed
-`--system-prompt-file`, and the snapshot masks a live
-`set_model.system_prompt`, so neither the guide nor the override axis
-above reaches an existing conversation. Both Claude providers therefore pass
+`--system-prompt-file`, so neither the guide nor an edited override
+reaches an existing conversation, and the banner's Restart would resume
+the old prompt. Both Claude providers therefore pass
 `--system-prompt-snapshot off` (`claude.SystemPromptSnapshotArgs`)
 whenever the installed version is known and at least 2.1.267, with or
 without a guide or override. Off, the prompt renders fresh at every
 start; the default body is byte-identical across resumes of one build,
-so the prompt cache is unaffected. The session records whether the
-opt-out was passed (`spawnedWithSnapshotOff`), and on 2.1.267+
-`supportsLiveSystemPrompt` refuses a live `set_model.system_prompt`
-without it, so a swap the snapshot would mask becomes a deferred
-restart rather than an acknowledged no-op.
+so the prompt cache is unaffected.
 
 The version comes from `installedProviderVersion`: the token the last
 probe recorded (the boot status probe in `GetProviderStatuses` or the
@@ -402,13 +472,20 @@ default.
 ## UI
 
 New section in the Agents group (`sections.ts`): per provider, a list
-of override entries (enable toggle, model multi-select chips with the
-same interaction as `ProviderModelChips` but a selection set rather than
-a hide-list, and a prompt editor), plus the disabled-tools row (curated
-toggle set for Codex; known-tool chips + free-form add for Claude).
-Settings JSON needs no migration (sparse write + unknown-field
-preservation already handle new fields); frontend `types/settings.ts`
-and the section registry are the only wiring.
+of override entries plus the disabled-tools row (curated toggle set for
+Codex; known-tool chips + free-form add for Claude). There is no prompt
+text editor (decision 2026-10-14): the text is the entry's file.
+
+- An entry shows its enable toggle, model multi-select chips (the same
+  interaction as `ProviderModelChips`, but a selection set rather than a
+  hide-list), its prompt file path with an icon-only Open button
+  (`openInEditor`, offered only where the page has host scope), and a
+  warning while `blank` is true: its `problem` when it has one,
+  otherwise that the file is empty.
+- Adding an entry creates its empty file; removing one deletes it.
+- A copy-instructions control copies text pointing an agent at the
+  prompts directory and its README.
+- The placeholder legend is read-only.
 
 ## Non-goals / later
 

@@ -13,6 +13,7 @@ import type {
   ProviderSessionAccountEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
+  SessionBannerKind,
   SessionDiedEvent,
   TurnCompletedEvent,
   TurnStartedEvent,
@@ -63,6 +64,8 @@ type ProviderEventPane = ThreadPaneIngest &
     | 'clearSessionError'
     | 'providerBanner'
     | 'setProviderBanner'
+    | 'setSessionBanner'
+    | 'clearSessionBanners'
   >;
 
 function ingestPanes(): Iterable<ProviderEventPane> {
@@ -279,7 +282,13 @@ const KIND_TO_LEGACY_STATUS: Record<NonNullable<ProviderStatusEvent['kind']>, Pr
   unauthenticated: 'unauthenticated',
   version_incompatible: 'version_too_old',
   binary_stale: 'binary_stale',
+  prompt_stale: 'prompt_stale',
 };
+
+/** The kinds that live in a pane's per-kind session banner rows. */
+function sessionBannerKind(kind: ProviderStatusEvent['kind']): SessionBannerKind | null {
+  return kind === 'binary_stale' || kind === 'prompt_stale' ? kind : null;
+}
 
 export function applyProviderStatus(evt: ProviderStatusEvent, backend: BackendKey = HOME_BACKEND): void {
   if (!evt) return;
@@ -319,10 +328,11 @@ export function applyProviderStatus(evt: ProviderStatusEvent, backend: BackendKe
 
   // A thread-scoped clear WITHDRAWS the pane's own banner rather than
   // pinning it to "nothing": `undefined` lets the pane fall back to the
-  // provider-global status, so a pane whose stale-binary banner was just
+  // provider-global status, so a pane whose session banner was just
   // withdrawn still shows the provider-wide auth failure every other pane
   // shows. `null` here would make it the one pane showing nothing.
   const banner = effectiveStatus === 'ready' ? undefined : normalized;
+  const sessionKind = sessionBannerKind(evt.kind);
   for (const pane of ingestPanes()) {
     if (pane.thread?.provider !== provider) continue;
     if (threadMachine(pane.threadId ?? '', pane.thread?.projectId) !== backend) continue;
@@ -331,13 +341,32 @@ export function applyProviderStatus(evt: ProviderStatusEvent, backend: BackendKe
     // is provider-global (legacy behavior) and fans out to every matching
     // pane as before.
     if (evt.threadId && pane.threadId !== evt.threadId) continue;
-    // A thread-scoped banner is owned by its thread: only a thread-scoped
-    // withdrawal (or the session's disconnect) may take it down. Letting a
-    // provider-global event reset the slot would drop it for good, because
-    // the backend raises it on transitions only — the account probe emits
-    // a global status on every recheck, including the refresh button.
-    if (!evt.threadId && pane.providerBanner?.threadId) continue;
-    pane.setProviderBanner(evt.threadId ? banner : undefined);
+    if (!evt.threadId) {
+      // A thread-scoped banner is owned by its thread: only a thread-scoped
+      // withdrawal (or the session's disconnect) may take it down. Letting a
+      // provider-global event reset the slot would drop it for good, because
+      // the backend raises it on transitions only: the account probe emits
+      // a global status on every recheck, including the refresh button.
+      if (!pane.providerBanner?.threadId) pane.setProviderBanner(undefined);
+      continue;
+    }
+    // The session banner kinds (stale binary, stale prompt) are rows of
+    // their own, side by side, each withdrawn by name. A withdrawal with
+    // no name takes every thread-owned banner down.
+    if (sessionKind && banner) {
+      pane.setSessionBanner(sessionKind, banner);
+      continue;
+    }
+    if (!banner) {
+      if (evt.withdrawKind) {
+        pane.setSessionBanner(evt.withdrawKind, null);
+      } else {
+        pane.clearSessionBanners();
+        pane.setProviderBanner(undefined);
+      }
+      continue;
+    }
+    pane.setProviderBanner(banner);
   }
 }
 
@@ -385,15 +414,13 @@ export function applyProviderSessionAccount(evt: ProviderSessionAccountEvent): v
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.setProviderSessionAccount(evt.connected ? evt : null);
-    // A `binary_stale` banner is a claim about the session that is running:
-    // it is pinned to the binary it started on. A disconnect retires that
-    // claim however it happened (restart, crash, idle sweep, user stop), and
-    // the next session's own status event is what may raise it again. Every
-    // other banner kind describes the INSTALL rather than this session, so
-    // scope the clear to the one status whose premise just went away.
-    if (!evt.connected && pane.providerBanner?.status === 'binary_stale') {
-      pane.setProviderBanner(undefined);
-    }
+    // The session banners (stale binary, stale prompt) are claims about the
+    // session that is running: pinned to the binary and the prompt it
+    // started with. A disconnect retires those claims however it happened
+    // (restart, crash, idle sweep, user stop), and the next session's own
+    // status events are what may raise them again. Every other banner kind
+    // describes the INSTALL rather than this session and stays.
+    if (!evt.connected) pane.clearSessionBanners();
   }
 }
 

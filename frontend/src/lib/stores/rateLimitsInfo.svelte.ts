@@ -53,7 +53,11 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot, backend: Bac
     let candidate = entry;
     if (prior) {
       const resetDelta = entry.resetsAt - prior.resetsAt;
-      if (resetDelta < -RESET_JITTER_TOLERANCE_SECONDS) continue;
+      // A partial reading from an older window is stale. A complete reading
+      // is the server's whole answer and replaces the stored entry even when
+      // the stored boundary is later: a wrong later boundary would otherwise
+      // reject every true reading until it passed.
+      if (resetDelta < -RESET_JITTER_TOLERANCE_SECONDS && !snapshot.complete) continue;
       // Same window: the NEWEST reading wins, even when its used-percent is
       // lower. Every event carries the server's current answer, and the
       // server legitimately lowers same-window utilization — a limit
@@ -79,9 +83,7 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot, backend: Bac
     // A provider drops a bucket once it has no usage, which is what a
     // mid-window reset produces, and merging alone kept the pre-reset
     // percentage for the rest of the window (2026-09-01: a Fable weekly row
-    // stuck at 90% while session and all-models read 0%). A limit the loop
-    // above rejected still counts as named — the server listed it, so its
-    // stored value stays the better answer. MergeSnapshot in
+    // stuck at 90% while session and all-models read 0%). MergeSnapshot in
     // internal/providerlifecycleapp is this rule's twin; change both.
     const present = new Set<string>();
     for (const entry of snapshot.limits) {
@@ -125,16 +127,15 @@ function limitsForAccount(provider: ProviderID, accountId: string | undefined, b
   return accounts.get(key) ?? (key !== LEGACY_ACCOUNT ? accounts.get(LEGACY_ACCOUNT) : undefined);
 }
 
-// Every getter reads through this accessor: it projects entries whose reset
-// boundary has passed to 0% used, and re-runs consumers when a boundary
-// passes (expiryGeneration). The projection is read-time only — the stored
-// entry keeps the server-reported boundary untouched, because the next
-// window's boundary is server-assigned and cannot be derived from the old
-// one (Claude re-anchors 5h windows; a fabricated `old + window` boundary
-// sat 10 minutes past the real next boundary on 2026-08-07 and made the
-// stale-window guard in setProviderRateLimits reject every real post-reset
-// snapshot for the entire window). formatResetCountdown renders the passed
-// boundary as "Resetting now" until the next snapshot lands.
+// Every getter reads through this accessor: it projects an entry whose reset
+// boundary has passed to 0% used with no reset time, and re-runs consumers
+// when a boundary passes (expiryGeneration). The next window starts at the
+// account's first request after the reset, so its boundary is unknown until a
+// reading reports it (Claude anchors both 5h and weekly windows on first use;
+// a fabricated `old + window` boundary sat 10 minutes past the real one on
+// 2026-08-07). The projection is read-time only: the stored entry keeps the
+// server-reported boundary for the stale-reading guard in
+// setProviderRateLimits.
 function entriesForAccount(provider: ProviderID, accountId: string | undefined, backend: BackendKey): RateLimitEntry[] {
   void expiryGeneration;
   const nowSeconds = Date.now() / 1000;
@@ -143,8 +144,8 @@ function entriesForAccount(provider: ProviderID, accountId: string | undefined, 
 }
 
 function projectExpired(entry: RateLimitEntry, nowSeconds: number): RateLimitEntry {
-  if (entry.resetsAt <= 0 || entry.resetsAt > nowSeconds || entry.usedPercent === 0) return entry;
-  return { ...entry, usedPercent: 0 };
+  if (entry.resetsAt <= 0 || entry.resetsAt > nowSeconds) return entry;
+  return { ...entry, usedPercent: 0, resetsAt: 0 };
 }
 
 function defaultLimit(provider: ProviderID, entries: RateLimitEntry[]): RateLimitEntry | null {

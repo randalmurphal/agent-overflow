@@ -33,6 +33,7 @@
 {#if limits.length > 0}
   <div class="mt-2 grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
     {#each limits as limit, limitIndex (limitKeys[limitIndex] ?? limitIndex)}
+      {@const countdown = formatResetCountdown(limit.resetsAt)}
       <div class="min-w-0">
         <div class="flex items-center justify-between gap-2 text-[0.65625rem]">
           <span class="truncate text-fg-muted">{limitLabel(limit)}</span>
@@ -44,10 +45,8 @@
             style:width={`${Math.max(0, Math.min(100, limit.usedPercent))}%`}
           ></div>
         </div>
-        {#if limit.resetsAt > 0}
-          <p class="mt-0.5 text-[0.625rem] text-fg-hint">
-            {formatResetCountdown(limit.resetsAt)}
-          </p>
+        {#if countdown}
+          <p class="mt-0.5 text-[0.625rem] text-fg-hint">{countdown}</p>
         {/if}
       </div>
     {/each}

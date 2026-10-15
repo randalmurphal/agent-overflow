@@ -9,10 +9,11 @@ import { expect, test } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
-import { headlessPairing } from './headless-pairing-helpers.js';
+import { CONNECTED_AFTER_CONFIRM, headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { seedForge, expectEveryForgeCallHandled } from './forge-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
+import { expectTransferComplete } from './conversation-transfer-helpers.js';
 
 interface Seed { projects: Array<{ projectId: string; path: string }> }
 interface ProjectRow { project: { id: string; name: string; path: string; repositoryID?: string; identityError?: string } }
@@ -86,7 +87,7 @@ for (const renamed of [false, true]) test(`one repository at different paths mer
     await expect(verification).toBeVisible();
     await pairing.confirm((await verification.textContent())!.trim());
     const computerRow = page.getByTestId('attached-system');
-    await expect(computerRow).toContainText('Connected');
+    await expect(computerRow).toContainText('Connected', CONNECTED_AFTER_CONFIRM);
     const [{ id: remoteId }] = await home.rpc<Array<{ id: string }>>('ListBackends');
     await home.rpc('RenameBackend', remoteId, 'Desktop');
     await expect(computerRow).toContainText('Desktop');
@@ -137,6 +138,7 @@ for (const renamed of [false, true]) test(`one repository at different paths mer
     await expect(add).toBeEnabled();
     await add.click();
     await expect(modal).not.toBeVisible();
+    await expectTransferComplete(home, remote, draft.id);
     await expect(page.getByTestId('machine-picker-trigger')).toContainText('Desktop');
     const remoteProjects = await remote.rpc<ProjectRow[]>('ListProjects');
     expect(remoteProjects.find((entry) => entry.project.name === 'picker-app-checkout')?.project.repositoryID).toBe('github:github.com:101');

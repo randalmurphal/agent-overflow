@@ -24,6 +24,46 @@ const (
 	TokenMemoryDir = "{{MEMORY_DIR}}"
 )
 
+// Placeholder describes one token of the vocabulary: what it renders to and
+// which providers' sessions render it to a value.
+type Placeholder struct {
+	Token   string
+	Meaning string
+	// Providers are the provider ids whose sessions render the token to a
+	// value. Any other provider renders it empty.
+	Providers []string
+}
+
+var (
+	allPromptProviders    = []string{"claude", "claude-tui", "codex"}
+	claudePromptProviders = []string{"claude", "claude-tui"}
+)
+
+// Placeholders is the vocabulary as the user reads it: the Settings legend
+// (frontend/src/lib/utils/promptOverrides.ts PROMPT_PLACEHOLDERS, pinned by
+// TestPlaceholdersMatchTheFrontendMirror) and the prompts directory README
+// (ReadmeMarkdown). One entry per Token* constant.
+var Placeholders = []Placeholder{
+	{TokenWorkDir, "The session's working directory.", allPromptProviders},
+	{TokenIsGitRepo, "Whether that directory is a git repository.", allPromptProviders},
+	{TokenGitBlock, "Branch, status and recent commits. Empty outside a repository.", allPromptProviders},
+	{TokenPlatform, "Host operating system.", allPromptProviders},
+	{TokenOSVersion, "Host operating system version.", allPromptProviders},
+	{TokenModelName, "The session model's display name.", allPromptProviders},
+	{TokenModelID, "The session model's wire id.", allPromptProviders},
+	{TokenMemoryDir, "Claude's per-project memory directory, created when this is used.", claudePromptProviders},
+}
+
+// MaxRenderedPromptBytes bounds what a rendered override may grow to. The
+// stored prompt is already length-limited, but rendering is
+// multiplicative: {{GIT_BLOCK}} expands to a repository snapshot, so a
+// prompt repeating the token can render to tens of megabytes, every byte of
+// which is context the model pays for on every turn. 256 KB is far above
+// any real prompt (Claude's own default body is about 12 KB). A spawn whose
+// override renders larger fails with both sizes named; truncating instead
+// would hand the model a prompt cut mid-sentence.
+const MaxRenderedPromptBytes = 256_000
+
 // Facts are the spawn-time values the placeholders render to. Every field
 // is a plain string: an absent fact renders as empty, never as the raw
 // token, because a prompt that still shows `{{GIT_BLOCK}}` to the model is

@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { tick, untrack } from 'svelte';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import ReviewAvatar from './ReviewAvatar.svelte';
   import ReviewConversationCommits from './ReviewConversationCommits.svelte';
   import ReviewConversationThread from './ReviewConversationThread.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import { relativeTime } from '../../utils/format';
+  import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
   import { visibleBody } from '../../utils/reviewComments';
   import { authorDisplayName } from '../../utils/reviewIdentity';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
@@ -61,14 +63,37 @@
 
   // One-shot scroll to a jumped-to thread (inline strip, stepper or peek
   // control). Runs after the cards render; consuming clears it so a later
-  // remount of the row does not replay the scroll.
+  // remount of the row does not replay the scroll. The landed-on card
+  // pulses: it is held here, with a generation so the same card pulses
+  // again on a repeat jump, for the pulse's lifetime and then forgotten,
+  // so a later remount of the card does not replay the pulse either.
+  let pulse: { threadId: string; generation: number } | null = $state(null);
+  let pulseTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     const target = review.pendingConversationThreadId;
     if (!target || !rootEl) return;
     const el = rootEl.querySelector(`[data-thread-id="${CSS.escape(target)}"]`);
-    el?.scrollIntoView({ block: 'nearest' });
     review.consumePendingConversationThreadId();
+    if (!el) return;
+    // A freshly mounted feed's card bodies lay out a flush after mount
+    // (ReviewResizableBody waits the same tick), so scrolling now would
+    // aim at a shorter feed. The jump owns the section's reading offset
+    // (the store drops the remembered one when it stages the jump):
+    // record where it landed, scroll event or not, so a remount of the
+    // overview row comes back here.
+    const scroller = rootEl.parentElement;
+    void tick().then(() => {
+      if (!el.isConnected) return;
+      el.scrollIntoView({ block: 'nearest' });
+      if (scroller) review.setOverviewSectionScrollTop('conversation', scroller.scrollTop);
+    });
+    untrack(() => {
+      pulse = { threadId: target, generation: (pulse?.generation ?? 0) + 1 };
+      clearTimeout(pulseTimer);
+      pulseTimer = setTimeout(() => { pulse = null; }, REVIEW_JUMP_PULSE_MS);
+    });
   });
+  $effect(() => () => clearTimeout(pulseTimer));
 </script>
 
 <div bind:this={rootEl} class="relative px-3 py-3.5 text-xs" data-testid="review-conversation">
@@ -84,6 +109,7 @@
           {review}
           thread={entry.thread}
           inDiff={entry.thread.path !== '' && diffPaths.has(entry.thread.path)}
+          pulse={pulse?.threadId === entry.thread.id ? pulse.generation : 0}
         />
       {:else if entry.kind === 'verdict'}
         {@const body = visibleBody(entry.verdict.body)}

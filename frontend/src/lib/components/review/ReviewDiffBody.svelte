@@ -19,6 +19,7 @@
     resolveReadingAnchor,
     type ReadingAnchor,
   } from '../../utils/reviewAnchor';
+  import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
   import {
     BlockRowsCache,
     buildReviewRows,
@@ -76,9 +77,11 @@
      * non-empty; absent, those rows render nothing. */
     draftEditor?: Snippet<[anchor: CommentAnchor]>;
     /** Renders comment-thread rows. Required whenever `drafts` is
-     * non-empty; absent, those rows render nothing. */
-    commentThread?: Snippet<[threadKey: string, anchor: CommentAnchor]>;
-    prThread?: Snippet<[thread: ReviewThread, anchor: CommentAnchor, collapsed: boolean, orphaned: boolean]>;
+     * non-empty; absent, those rows render nothing. `pulse` is the
+     * row-key jump that landed on the row (utils/reviewJumpPulse), 0
+     * for none. */
+    commentThread?: Snippet<[threadKey: string, anchor: CommentAnchor, pulse: number]>;
+    prThread?: Snippet<[thread: ReviewThread, anchor: CommentAnchor, collapsed: boolean, orphaned: boolean, pulse: number]>;
     /** The PR overview (meta, Description, Conversation) as the list's
      * first row, so it scrolls off with the diff. Absent on every other
      * scope. */
@@ -99,8 +102,9 @@
     painted?: PaintedSpans | null;
     jumpToFilePath?: string | null;
     onJumpConsumed?: () => void;
-    /** Row-key jump (comments list): scrolls to the exact row and
-     * flash-highlights it. Keys are buildReviewRows' rowKeys. */
+    /** Row-key jump (a thread's card, the unresolved stepper): scrolls
+     * to the exact row and pulses its card. Keys are buildReviewRows'
+     * rowKeys. */
     jumpToRowKey?: string | null;
     onJumpRowConsumed?: () => void;
     onTopFileChange?: (fileIndex: number) => void;
@@ -316,13 +320,19 @@
     });
   });
 
-  // Row-key jump from the comments list. The store expands the file
-  // (and thread) BEFORE setting the key, so the same flush's row model
-  // already contains the target row; the key is consumed either way so
-  // a stale request can't re-fire on a later rebuild.
-  let flashRowKey: string | null = $state(null);
-  let flashTimer: ReturnType<typeof setTimeout> | undefined;
-  const flashRow = $derived(flashRowKey === null ? null : (built.rows[built.rowKeys.indexOf(flashRowKey)] ?? null));
+  // Row-key jump. The store expands the file (and thread) BEFORE setting
+  // the key, so the same flush's row model already contains the target
+  // row; the key is consumed either way so a stale request can't re-fire
+  // on a later rebuild. The landed-on row's card pulses: the row is held
+  // here, with a generation so the same row pulses again on a repeat
+  // jump, for the pulse's lifetime and then forgotten, so a later
+  // remount of the row (it is virtualized) does not replay the pulse.
+  let pulse: { rowKey: string; generation: number } | null = $state(null);
+  let pulseTimer: ReturnType<typeof setTimeout> | undefined;
+  const pulseRow = $derived.by(() => {
+    const current = pulse;
+    return current ? (built.rows[built.rowKeys.indexOf(current.rowKey)] ?? null) : null;
+  });
   $effect(() => {
     const key = jumpToRowKey;
     const ref = listRef;
@@ -331,18 +341,19 @@
     untrack(() => {
       onJumpRowConsumed?.();
       if (rowIndex < 0) return;
-      // The overview is a destination, not a find: no flash, and it
+      // The overview is a destination, not a find: no pulse, and it
       // sits above every file so nothing overlays its top.
       if (key === REVIEW_OVERVIEW_ROW_KEY) {
         ref.scrollToIndex(rowIndex);
         return;
       }
       ref.scrollToIndex(rowIndex, { offset: -REVIEW_FILE_HEADER_BAR_PX });
-      flashRowKey = key;
-      clearTimeout(flashTimer);
-      flashTimer = setTimeout(() => { flashRowKey = null; }, 1600);
+      pulse = { rowKey: key, generation: (pulse?.generation ?? 0) + 1 };
+      clearTimeout(pulseTimer);
+      pulseTimer = setTimeout(() => { pulse = null; }, REVIEW_JUMP_PULSE_MS);
     });
   });
+  $effect(() => () => clearTimeout(pulseTimer));
 
   const stickyFile = $derived(stickyFileIndex >= 0 ? (files[stickyFileIndex] ?? null) : null);
 
@@ -486,7 +497,7 @@
       >
         {#snippet children(row: ReviewRow)}
           {@const file = files[row.fileIndex]}
-          {@const flashing = row === flashRow}
+          {@const rowPulse = row === pulseRow && pulse ? pulse.generation : 0}
           {#if row.kind === 'overview'}
             {@render overview?.()}
           {:else if !file}
@@ -529,12 +540,12 @@
               {@render draftEditor?.(row.anchor)}
             </div>
           {:else if row.kind === 'comment-thread'}
-            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
-              {@render commentThread?.(row.threadKey, row.anchor)}
+            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
+              {@render commentThread?.(row.threadKey, row.anchor, rowPulse)}
             </div>
           {:else}
-            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1 transition-colors duration-700 {flashing ? 'bg-accent/15' : ''}">
-              {@render prThread?.(row.thread, row.anchor, row.collapsed, row.orphaned)}
+            <div class="mx-[var(--review-slab-inset)] border-x border-border-subtle bg-surface-1">
+              {@render prThread?.(row.thread, row.anchor, row.collapsed, row.orphaned, rowPulse)}
             </div>
           {/if}
         {/snippet}

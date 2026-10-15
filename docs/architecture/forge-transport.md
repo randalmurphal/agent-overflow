@@ -89,8 +89,9 @@ Two kinds of forge method, two sources of the host:
   unparseable origin fails with `*git.OriginUnknownError` instead of
   guessing. GitLab names the project in the path as
   `projects/<url.PathEscape(path)>`. GitHub branch lookups use GraphQL
-  `pullRequests(headRefName:)`, which needs no head owner, so a fork's
-  branch resolves without `OWNER:branch`. Repository identity (`forge:host:id`) already carries the
+  `pullRequests(headRefName:)`, which needs no head owner and also matches
+  forks' branches of the same name; the lookup drops those (below).
+  Repository identity (`forge:host:id`) already carries the
   host; GitHub's is `GET repos/OWNER/REPO`, GitLab's
   `GET projects/<escaped path>`.
 
@@ -205,12 +206,81 @@ request (`StreamCIJobLog`, as on GitHub).
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
 
 Git status looks up a branch's open PR (`lookupOpenPR`,
-`internal/git/status_pr_cache.go`). A branch with no
+`internal/git/status_pr_cache.go`). The forges' head-branch filters also
+match a fork's PR from a branch of the same name, so `ListOpenPRs` keeps
+only PRs whose head is the origin repository: GitHub
+`OpenPRsByHead` nodes with `isCrossRepository` false (paged, at most
+`githubReadMaxPages` pages of 100), GitLab merge requests whose
+`source_project_id` is their `project_id` (the full view, since the simple
+one lacks it; paged by 100 until one is found, at most
+`gitlabOpenMRsMaxPages` pages). A branch with no
 `refs/remotes/origin/<branch>` has no PR, so it is answered without a
 forge request. An answer is cached for `prLookupTTL` (30s), a "no open PR"
 included and never longer. A failed lookup is retried after 20s, doubling
 per consecutive failure of that (workspace, branch) up to 15 minutes, and
-keeps showing the PR it last found; a success resets the count.
+keeps showing the PR it last found; a success resets the count. Both the
+TTL and the wait run from when the forge answered, so a request that hung
+does not use up the wait after it. The
+status watcher re-runs the lookup when that retry is due
+(`GitStatus.OpenPRRecheckAt`), since a forge that recovers changes nothing
+on disk; `AO_HARNESS_TIMING` `pr-lookup-retry` shortens the first retry
+for specs. An answer outlives its expiry as the branch's last known PR:
+only an answer from the forge replaces it, and the fast status a
+subscribe returns carries it, marked pending, while the lookup runs. The
+cache is bounded by `prCacheMaxEntries` (evicting the entry stored
+longest ago), not by age. `InvalidatePRCache` (a subscribe, an explicit
+refresh) makes a workspace's answers stale, and a lookup in flight
+across it does not cache its result; `ForgetPRCache` drops them when the
+worktree is removed, in the app or outside it. The app's create action, and an
+agent command that settles running `gh pr create` or `glab mr create`
+(`git.CreatesPullRequest`), invalidate and look the branch up again at
+once (`Core.RefreshOpenPR`), so the new PR shows without waiting out a
+cached "no open PR" and is tracked whether or not a pane watches it.
+
+## Merged PR worktree cleanup
+
+`internal/app/app_worktree_merge_cleanup.go` removes a linked worktree
+when the PR its threads track merges; the product rules are in
+[decisions](../decisions.md). Every fresh `lookupOpenPR` answer (not a
+cache hit) reaches the app through `Core.SetOpenPRObserver`. An open PR
+seen for a thread's linked worktree is recorded in `thread_pull_requests`
+(one row per thread, with the GitHub node id). A lookup that answers "no
+open PR" for a branch whose tracked PR is still unmerged reads that PR's
+state once (a failed read leaves it to the poll); the memo of reads made
+holds only threads whose tracked PR is still pending and in its worktree.
+
+States are read in one request per repository, batched by
+`Forge.ReadPRStates`: GitHub `PRStates` (`nodes(ids:)` over the tracked
+node ids, `state` and `mergedAt`), GitLab
+`projects/P/merge_requests?iids[]=N&state=all`. Up to 100 PRs per request.
+A PR the forge no longer has counts as closed.
+
+| Trigger | Requests |
+|---|---|
+| A repository with no unmerged tracked PR whose thread is in its worktree | none |
+| Poll, per repository with one, while background fetch is on (every 5 minutes, first after 45s from boot or the first tick after it is turned on) | 1 state read |
+| A failed poll | the next after 10, 20, 30 minutes (doubling from the poll interval, capped at 30) |
+| A watched lookup that stops finding the tracked PR | 1 state read |
+| Acting on a merged PR, after the local checks pass | 1 open-PR lookup of the branch (one page unless forks' PRs share the name) |
+| An act-time lookup that fails, or still lists the merged PR as open | the next after 2, 4, 8 ... minutes, capped at 30, per repository |
+| A removal git refuses | no request; the removal retries after 2, 4, 8 ... minutes, capped at 30 |
+
+A `*forgeapi.RateLimitedError` waits until its `Until` instead. Two
+goroutines run the cleanup, serialized per pass. The worker handles
+lookup answers and turn ends, always. The poll, which reads states and
+retries waiting PRs on its tick, runs only while
+`Settings.BackgroundGitFetch` is on: `UpdateSettings` starts it, or stops
+and joins it, with no restart (`reconcileMergedPRPoll`). With the setting
+off the cleanup sends no request of its own; a merged PR waiting for a
+retry is tried again at the next act pass a turn end or a merge found by
+a lookup starts, and the worker's start arms that turn-end pass when a
+previous run left one (`armMergedPRWaiting`, a store read). Both wait for the first client's reads like other unattended
+work. An act pass that finds a
+thread busy marks itself waiting and runs again when a turn completes;
+each pass first skips what is backing off, so a busy or failing worktree
+costs no forge request per pass. `AO_HARNESS_TIMING` `merged-pr-poll`
+shortens the poll, and with it the one-minute tick these retries start
+from, for specs.
 
 ## Requests
 

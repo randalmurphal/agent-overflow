@@ -23,9 +23,10 @@ type UpdateHost interface {
 	// RunCommand runs one update command of the backend at payload in
 	// distro.
 	RunCommand(ctx context.Context, distro, payload, command string, args []string, onProgress func(startupprogress.Progress)) (supervise.UpdateEvent, error)
-	// HostFreeBytes is the free space on the Windows drive that holds the
-	// distribution's virtual disk. ok is false when it is unknown.
-	HostFreeBytes(distro string) (free uint64, ok bool)
+	// HostDisk is the free space on the Windows drive that holds the
+	// distribution's virtual disk and what that disk occupies there. ok is
+	// false when the free space is unknown.
+	HostDisk(distro string) (disk supervise.HostDisk, ok bool)
 	// CommitPayload renames the staged payload over the stable path. The
 	// staged payload being gone means an earlier commit already moved it.
 	CommitPayload(ctx context.Context, record supervise.LauncherRecord) error
@@ -277,8 +278,8 @@ func (l *launcherSteps) RemoveRecord() error {
 
 func (l *launcherSteps) Snapshot(ctx context.Context, progress func(startupprogress.Progress)) (supervise.UpdateEvent, error) {
 	var args []string
-	if free, ok := l.s.Host.HostFreeBytes(l.record.Distro); ok {
-		args = append(args, "--host-free", strconv.FormatUint(free, 10))
+	if disk, ok := l.s.Host.HostDisk(l.record.Distro); ok {
+		args = append(args, disk.Args()...)
 	}
 	return l.command(ctx, l.record.TrialPayload(), supervise.UpdateSnapshotCommand, progress, args...)
 }

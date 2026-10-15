@@ -896,12 +896,8 @@ func (a *App) readClaudeAppliedSettings(threadID, sessionToken string) (*claude.
 // `model_switch: "family_alias_stepped_down"`), so this is the only channel
 // that can state the applied model.
 //
-// MODEL ONLY. A system-prompt swap rides the same set_model, but
-// claude.AppliedSettings carries model, effort, advisor and ultracode and
-// nothing about the prompt, so there is no prompt to verify here — an empty
-// `requested` therefore returns before the round trip rather than after it,
-// instead of putting a control_request on stdin to read an answer that cannot
-// contain the fact being checked.
+// MODEL ONLY: an empty `requested` returns before the round trip rather
+// than putting a control_request on stdin with nothing to check.
 //
 // Observation only: nothing is reverted on a mismatch. The CLI accepted the
 // request and the session is running a legitimate model; forcing a restart

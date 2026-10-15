@@ -73,7 +73,8 @@ several owners:
   persistence, and rollback;
 - project/worktree deletion and workspace switching across workflow/session
   cancellation, setup runs, git/filesystem mutation, persistence, events, and
-  restart;
+  restart, including the merged-PR worktree cleanup, which gates on every
+  occupant's live state;
 - conversation transfer and remote command placement across ownership,
   filesystem handoff, provider state, and execution admission;
 - agent thread request acceptance, settlement, and wake delivery across

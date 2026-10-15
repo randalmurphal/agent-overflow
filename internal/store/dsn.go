@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -74,6 +75,20 @@ var writerConnPragmas = []connPragma{
 	{name: "recursive_triggers", dsnValue: "0", want: 0},
 	{name: "wal_autocheckpoint", dsnValue: strconv.Itoa(walCheckpointBoundPages), want: walCheckpointBoundPages},
 }
+
+// scratchWriterConnPragmas are writerConnPragmas for a database its caller
+// deletes after use (NewScratchFromTemplate) with synchronous=OFF: no
+// commit, checkpoint or close waits for the disk. A crash can corrupt
+// such a file, and nothing reads it again.
+var scratchWriterConnPragmas = func() []connPragma {
+	pragmas := slices.Clone(writerConnPragmas)
+	for i := range pragmas {
+		if pragmas[i].name == "synchronous" {
+			pragmas[i] = connPragma{name: "synchronous", dsnValue: "OFF", want: 0}
+		}
+	}
+	return pragmas
+}()
 
 // readerConnPragmas are the settings every read-pool connection must
 // carry.

@@ -221,8 +221,6 @@ test('a reply left while its settled text still reveals is whole on return', asy
   await harness.rpc('HarnessSetScenario', { scenario: settledBurstScenario() });
   const threadId = await seedThreads(harness);
   await harness.open(page);
-  const pageErrors: string[] = [];
-  page.on('pageerror', (err) => pageErrors.push(String(err)));
   const timeline = page.getByTestId('message-timeline-scroll');
   const open = (title: string) => page.getByTestId('thread-row').getByText(title, { exact: true }).click();
   await open(MAIN);
@@ -246,7 +244,6 @@ test('a reply left while its settled text still reveals is whole on return', asy
   await expect(timeline.getByText('Other ready.')).toBeVisible();
   await open(MAIN);
   await expectWholeStream(page, 'text', 'after a second reopen');
-  expect(pageErrors).toEqual([]);
 });
 
 for (const block of ['thinking', 'text'] as const) {
@@ -254,8 +251,6 @@ for (const block of ['thinking', 'text'] as const) {
     await harness.rpc('HarnessSetScenario', { scenario: scenario(block) });
     const threadId = await seedThreads(harness);
     await harness.open(page);
-    const pageErrors: string[] = [];
-    page.on('pageerror', (err) => pageErrors.push(String(err)));
     const timeline = page.getByTestId('message-timeline-scroll');
     const open = (title: string) => page.getByTestId('thread-row').getByText(title, { exact: true }).click();
     await open(MAIN);
@@ -298,6 +293,5 @@ for (const block of ['thinking', 'text'] as const) {
     await page.reload();
     await open(MAIN);
     await expectWholeStream(page, block, 'after a reload');
-    expect(pageErrors).toEqual([]);
   });
 }

@@ -352,10 +352,11 @@ export class GitStatus {
 
     /**
      * OpenPRLookupPending is set by StatusFast when the PR cache holds no
-     * live entry for the branch: the open-PR fields above are not an
-     * answer yet, and the follow-up Status call that warms the cache
-     * broadcasts the real ones. A reader that needs the answer (the review
-     * pane choosing between "no PR" and "not yet") waits on it.
+     * current entry for the branch: the open-PR fields above are the last
+     * PR the branch was known to have (empty when none), not an answer
+     * yet, and the follow-up Status call that asks the forge broadcasts
+     * the answer. A reader that needs the answer (the review pane choosing
+     * between "no PR" and "not yet") waits on it.
      */
     "openPrLookupPending"?: boolean;
 
@@ -433,6 +434,13 @@ export class PRDetail {
     "draft": boolean;
     "headRefName": string;
     "baseRefName": string;
+
+    /**
+     * BaseRefSHA is the base branch's tip the forge compares the PR
+     * against: GitHub's baseRefOid, GitLab's diff_refs.start_sha. Empty
+     * while GitLab is still preparing the merge request's diff.
+     */
+    "baseRefSHA": string;
     "headSHA": string;
     "url": string;
     "additions": number;
@@ -470,6 +478,9 @@ export class PRDetail {
         }
         if (!("baseRefName" in $$source)) {
             this["baseRefName"] = "";
+        }
+        if (!("baseRefSHA" in $$source)) {
+            this["baseRefSHA"] = "";
         }
         if (!("headSHA" in $$source)) {
             this["headSHA"] = "";
@@ -509,18 +520,18 @@ export class PRDetail {
      * Creates a new PRDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): PRDetail {
-        const $$createField16_0 = $$createType9;
-        const $$createField17_0 = $$createType10;
-        const $$createField19_0 = $$createType12;
+        const $$createField17_0 = $$createType9;
+        const $$createField18_0 = $$createType10;
+        const $$createField20_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
-            $$parsedSource["latestReviews"] = $$createField16_0($$parsedSource["latestReviews"]);
+            $$parsedSource["latestReviews"] = $$createField17_0($$parsedSource["latestReviews"]);
         }
         if ("checks" in $$parsedSource) {
-            $$parsedSource["checks"] = $$createField17_0($$parsedSource["checks"]);
+            $$parsedSource["checks"] = $$createField18_0($$parsedSource["checks"]);
         }
         if ("diffRefs" in $$parsedSource) {
-            $$parsedSource["diffRefs"] = $$createField19_0($$parsedSource["diffRefs"]);
+            $$parsedSource["diffRefs"] = $$createField20_0($$parsedSource["diffRefs"]);
         }
         return new PRDetail($$parsedSource as Partial<PRDetail>);
     }
@@ -608,6 +619,45 @@ export class PRReference {
     static createFrom($$source: any = {}): PRReference {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new PRReference($$parsedSource as Partial<PRReference>);
+    }
+}
+
+/**
+ * PRRevision is the pull request state a local read is computed at, as the
+ * forge last reported it: the head commit and the base branch's tip. Every
+ * PR read of one snapshot (diff, commit list, merge conflicts) uses the
+ * same pair, so they agree with each other and with the forge.
+ */
+export class PRRevision {
+    "baseRef": string;
+
+    /**
+     * BaseSHA is the base branch's tip (PRDetail.BaseRefSHA).
+     */
+    "baseSHA": string;
+    "headSHA": string;
+
+    /** Creates a new PRRevision instance. */
+    constructor($$source: Partial<PRRevision> = {}) {
+        if (!("baseRef" in $$source)) {
+            this["baseRef"] = "";
+        }
+        if (!("baseSHA" in $$source)) {
+            this["baseSHA"] = "";
+        }
+        if (!("headSHA" in $$source)) {
+            this["headSHA"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PRRevision instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PRRevision {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PRRevision($$parsedSource as Partial<PRRevision>);
     }
 }
 

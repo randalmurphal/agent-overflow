@@ -10,7 +10,7 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { launchFrontendClient } from './frontend-client-helpers.js';
-import { headlessPairing } from './headless-pairing-helpers.js';
+import { CONNECTED_AFTER_CONFIRM, headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { RESULT_LINE, advance, claudeScenario, emit, listItems, seedAgentThread, startMock, textLines, waitForGate } from './agent-visibility-helpers.js';
 import { confirmOnHost, instrument, type PairingInvite } from './offhost-helpers.js';
@@ -85,8 +85,8 @@ export function multihostRecoveryFlow(): void {
           const verification = page.getByLabel('Verification number');
           await expect(verification).toBeVisible();
           await pairing.confirm((await verification.textContent())!.trim());
-          await expect(page.getByTestId('attached-system')).toHaveCount(index + 1);
-          await expect(page.getByTestId('attached-system')).toContainText(Array(index + 1).fill('Connected'));
+          await expect(page.getByTestId('attached-system')).toHaveCount(index + 1, CONNECTED_AFTER_CONFIRM);
+          await expect(page.getByTestId('attached-system')).toContainText(Array(index + 1).fill('Connected'), CONNECTED_AFTER_CONFIRM);
         } finally { pairing.close(); }
       }
       await page.getByRole('button', { name: 'Close Settings', exact: true }).click();

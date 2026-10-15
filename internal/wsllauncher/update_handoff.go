@@ -8,7 +8,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"agent-overflow/internal/atomicfile"
@@ -79,7 +78,7 @@ type PreflightHost interface {
 	Preflight(ctx context.Context, distro, payload string) (supervise.Preflight, error)
 	RunCommand(ctx context.Context, distro, payload, command string, args []string, onProgress func(startupprogress.Progress)) (supervise.UpdateEvent, error)
 	RemoveStagedPayload(ctx context.Context, record supervise.LauncherRecord) error
-	HostFreeBytes(distro string) (free uint64, ok bool)
+	HostDisk(distro string) (disk supervise.HostDisk, ok bool)
 }
 
 // PreflightRequest is the old launcher's question to the new one.
@@ -120,8 +119,8 @@ func PreflightStagedPayload(ctx context.Context, host PreflightHost, req Preflig
 			return fail("the new backend did not start: %v", err)
 		}
 		args := []string{"--id", req.ID}
-		if free, ok := host.HostFreeBytes(req.Distro); ok {
-			args = append(args, "--host-free", strconv.FormatUint(free, 10))
+		if disk, ok := host.HostDisk(req.Distro); ok {
+			args = append(args, disk.Args()...)
 		}
 		space, err := host.RunCommand(ctx, req.Distro, staged, supervise.UpdateSpaceCommand, args, nil)
 		switch {

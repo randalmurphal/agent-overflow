@@ -169,6 +169,34 @@ func TestRepositoryLookupResolvesSSHHostOnOwningComputer(t *testing.T) {
 		t.Fatalf("alias: %+v", result)
 	}
 }
+
+// A checkout with no forge to verify against (no origin, or an origin on a
+// host that is neither GitHub nor GitLab, including through an SSH alias) has
+// no identity and no error: nothing failed. An alias ssh cannot resolve is
+// still an error, since it may name a forge.
+func TestRepositoryLookupWithoutAForgeIsNotAnError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "tool")
+	mockexec.Write(t, fake, "#!/bin/sh\nif [ \"$AO_FORGE_CLI\" = ssh ]; then\n  case \"$*\" in *broken-alias*) exit 255 ;; esac\n  printf 'hostname bitbucket.org\\n'\nelse exit 1; fi\n")
+	api, _ := newForgeAPIService(t, func(call forgeAPICall) forgeAPIAnswer { return forgeUnexpected(t, call) })
+	c := NewCore(WithIsolatedForgeCLIs(fake, nil), WithForgeAPI(api))
+	for name, remote := range map[string]string{
+		"no origin":             "",
+		"unsupported host":      "https://bitbucket.org/team/repo.git",
+		"alias to another host": "git@bitbucket-work:team/repo.git",
+	} {
+		result := c.ResolveRepository(context.Background(), dir, RepoIdentity{Repository: true, RemoteURL: remote})
+		if result.LookupError != "" || result.LookupRetryable || result.RepositoryID != "" || result.IdentitySource != "" {
+			t.Errorf("%s: %+v, want no identity and no error", name, result)
+		}
+	}
+	broken := c.ResolveRepository(context.Background(), dir, RepoIdentity{Repository: true, RemoteURL: "git@broken-alias:team/repo.git"})
+	if !strings.Contains(broken.LookupError, "SSH") {
+		t.Fatalf("unresolvable alias: %+v, want the SSH error", broken)
+	}
+}
+
 func TestRepositoryLookupConcurrentCallsAndBoundedCache(t *testing.T) {
 	t.Parallel()
 	c, forge := newGitLabLookupCore(t)
@@ -292,10 +320,11 @@ func TestLocalRepositoryIdentityDoesNotWaitForForgeLookups(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	// No network identity exists for these remotes, even while every lookup slot
-	// is busy. They return an explicit unavailable identity without forge admission.
+	// is busy. They return no identity and no error without forge admission;
+	// admission under the cancelled context would report the cancellation.
 	for _, remote := range []string{"", "/srv/local", "https://unsupported.example/a/b"} {
 		result := c.ResolveRepository(ctx, t.TempDir(), RepoIdentity{Repository: true, RemoteURL: remote})
-		if result.LookupError == "" || result.RepositoryID != "" {
+		if result.LookupError != "" || result.RepositoryID != "" {
 			t.Fatalf("local identity waited on forge: %+v", result)
 		}
 	}
@@ -372,8 +401,8 @@ func TestRepositoryLookupMarksForgeUnavailabilityRetryableAndLogsWhy(t *testing.
 		t.Fatalf("invalid forge answer: %+v, want a non-retryable error", invalid)
 	}
 	unsupported := c.ResolveRepository(context.Background(), t.TempDir(), RepoIdentity{Repository: true, RemoteURL: "https://unsupported.example/a/b"})
-	if unsupported.LookupError == "" || unsupported.LookupRetryable {
-		t.Fatalf("unsupported forge: %+v, want a non-retryable error", unsupported)
+	if unsupported.LookupError != "" || unsupported.LookupRetryable || unsupported.RepositoryID != "" || unsupported.IdentitySource != "" {
+		t.Fatalf("unsupported forge: %+v, want no identity and no error", unsupported)
 	}
 	if logged.Len() != 0 {
 		t.Fatalf("a forge that answered logged %q", logged.String())

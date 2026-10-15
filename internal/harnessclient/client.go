@@ -24,6 +24,10 @@ type pendingCall struct {
 	method string
 	result chan json.RawMessage
 	fail   chan error
+	// closeAnswers makes a lost connection this call's reply. It is set
+	// before the request is written: a close before or during the write
+	// fails the write, which the caller sees instead.
+	closeAnswers bool
 }
 
 // Client is one WebSocket connection to a harness instance: RPC by
@@ -158,6 +162,16 @@ func (c *Client) Close() error {
 	return err
 }
 
+// Shutdown asks the backend to stop through HarnessShutdown. The backend
+// replies and then shuts down on its own, so its shutdown can close this
+// connection before the reply arrives; once the request is written, that
+// close is the acknowledgement. An error reply, or a connection that is
+// gone before the request is written, still fails.
+func (c *Client) Shutdown(ctx context.Context) error {
+	_, err := c.call(ctx, "HarnessShutdown", nil, true)
+	return err
+}
+
 // Call invokes a backend method by exported name. Harness* methods and
 // every bound App method share one namespace on this wire.
 func (c *Client) Call(ctx context.Context, method string, params ...any) (json.RawMessage, error) {
@@ -175,7 +189,16 @@ func (c *Client) Call(ctx context.Context, method string, params ...any) (json.R
 // CallRaw is Call with parameters already encoded — the shape a CLI has,
 // which takes its arguments as JSON text and must not re-encode them.
 func (c *Client) CallRaw(ctx context.Context, method string, params []json.RawMessage) (json.RawMessage, error) {
-	call := &pendingCall{method: method, result: make(chan json.RawMessage, 1), fail: make(chan error, 1)}
+	return c.call(ctx, method, params, false)
+}
+
+func (c *Client) call(ctx context.Context, method string, params []json.RawMessage, closeAnswers bool) (json.RawMessage, error) {
+	call := &pendingCall{
+		method:       method,
+		result:       make(chan json.RawMessage, 1),
+		fail:         make(chan error, 1),
+		closeAnswers: closeAnswers,
+	}
 
 	c.mu.Lock()
 	if c.closed {
@@ -298,14 +321,14 @@ func (c *Client) readLoop() {
 	for {
 		_, data, err := c.conn.Read(context.Background())
 		if err != nil {
-			c.failAll(err)
+			c.failAll(err, true)
 			return
 		}
 		var frame serverFrame
 		if err := json.Unmarshal(data, &frame); err != nil {
 			// A frame we cannot parse is a contract break, not a transient:
 			// fail loudly rather than silently dropping wire traffic.
-			c.failAll(fmt.Errorf("decode server frame: %w", err))
+			c.failAll(fmt.Errorf("decode server frame: %w", err), false)
 			_ = c.conn.Close(websocket.StatusProtocolError, "undecodable frame")
 			return
 		}
@@ -364,7 +387,10 @@ func (c *Client) completeReplay(id string) {
 	}
 }
 
-func (c *Client) failAll(err error) {
+// failAll ends every pending call. connectionLost answers a call whose
+// reply is the connection closing; an undecodable frame is a contract
+// break and fails it.
+func (c *Client) failAll(err error, connectionLost bool) {
 	c.mu.Lock()
 	if c.closeErr == nil {
 		c.closeErr = err
@@ -378,6 +404,10 @@ func (c *Client) failAll(err error) {
 	c.replaySequences = map[string]map[string]*replaySequence{}
 	c.mu.Unlock()
 	for _, call := range pending {
+		if connectionLost && call.closeAnswers {
+			call.result <- nil
+			continue
+		}
 		call.fail <- fmt.Errorf("%s: %w", call.method, err)
 	}
 	for _, done := range replays {

@@ -117,16 +117,12 @@ func (a *App) liveApplySessionConfig(threadID string, reassertModel bool) bool {
 		return true
 	}
 
-	// Resolve the settings-owned axes (SystemPrompt, DisabledTools,
-	// DisableTodoReminders) against what this session
-	// launched with. The tool lists pin — they are spawn-only on every
-	// provider, so a diff could only queue a restart nobody asked for. A
-	// headless-Claude prompt override converges when (and only when) the
-	// STORED override text changed, which is a Settings edit and never the
-	// workspace's git state moving under a rendered {{GIT_BLOCK}}. See
-	// reconcileSettingsOwnedAxes for the rule and applySettingsOwnedAxes
-	// for the spawn half of the pair.
-	promptOverride := a.reconcileSettingsOwnedAxes(thread, sess.Token, &opts, sess.LaunchOptions)
+	// Pin the settings-owned axes the session cannot change while it runs
+	// (the tool lists, the todo-reminder switch, the settings-level system
+	// prompt) to what it launched with, and resolve the Claude thinking and
+	// peer-inbox axes. See reconcileSettingsOwnedAxes for the rule and
+	// applySettingsOwnedAxes for the spawn half of the pair.
+	a.reconcileSettingsOwnedAxes(thread, &opts, sess.LaunchOptions)
 
 	_, fallbackRevision := a.triage.EffectiveModelSnapshot(threadID)
 	switch {
@@ -176,12 +172,6 @@ func (a *App) liveApplySessionConfig(threadID string, reassertModel bool) bool {
 			if unwind != nil {
 				unwind(applied)
 			}
-			if applied.SystemPrompt {
-				// The prompt swap landed even though a later axis did not,
-				// so the rendered override's {{MEMORY_DIR}} promise is live
-				// now — same reason the success path below creates it.
-				a.ensureClaudeMemoryDir(thread, opts.WorkDir, promptOverride)
-			}
 			// ErrLiveUpdateRequiresRestart is the expected "can't do this
 			// one live" signal (bypassPermissions escalation, fast-mode
 			// enable without the spawn opt-in, /effort or /fast not
@@ -202,24 +192,8 @@ func (a *App) liveApplySessionConfig(threadID string, reassertModel bool) bool {
 			// get_settings is the only channel that does. Read it back off
 			// the reconciler's goroutine — the round-trip is out of band and
 			// nothing here waits on it.
-			//
-			// Deliberately NOT fired for a prompt-only update, even though
-			// the prompt rides the same set_model: `applied` carries model,
-			// effort, advisor and ultracode and nothing about the system
-			// prompt (claude.AppliedSettings), so the round trip would put a
-			// control_request on stdin to verify a fact the answer cannot
-			// contain. The prompt swap's confirmation is the set_model ack
-			// itself — the CLI applies the prompt only when it accepts the
-			// model, which is why the two ride one request.
 			go a.readBackClaudeAppliedModel(threadID, sess.Token, update.Model)
 		}
-		// A live prompt swap may have landed. Under a replaced system
-		// prompt the CLI stops creating the memory directory the rendered
-		// override promises already exists, so create it here for the same
-		// reason the spawn path does. No-op unless this reconcile actually
-		// rendered an override using {{MEMORY_DIR}}; MkdirAll is idempotent
-		// when the spawn already made it.
-		a.ensureClaudeMemoryDir(thread, opts.WorkDir, promptOverride)
 		return true
 	case sess.Codex != nil:
 		update, ok := codex.PlanLiveUpdate(sess.LaunchOptions, opts)

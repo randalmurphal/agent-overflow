@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // GitStatus summarizes repository state for a thread workspace.
@@ -32,11 +33,17 @@ type GitStatus struct {
 	// a successful lookup that found no open PR/MR for the branch.
 	OpenPRLookupError string `json:"openPrLookupError,omitempty"`
 	// OpenPRLookupPending is set by StatusFast when the PR cache holds no
-	// live entry for the branch: the open-PR fields above are not an
-	// answer yet, and the follow-up Status call that warms the cache
-	// broadcasts the real ones. A reader that needs the answer (the review
-	// pane choosing between "no PR" and "not yet") waits on it.
+	// current entry for the branch: the open-PR fields above are the last
+	// PR the branch was known to have (empty when none), not an answer
+	// yet, and the follow-up Status call that asks the forge broadcasts
+	// the answer. A reader that needs the answer (the review pane choosing
+	// between "no PR" and "not yet") waits on it.
 	OpenPRLookupPending bool `json:"openPrLookupPending,omitempty"`
+	// OpenPRRecheckAt is when a failed open-PR lookup is asked again; set
+	// by Status beside OpenPRLookupError, zero otherwise. Not sent: the
+	// status watcher re-checks at that time, since nothing on disk changes
+	// when the forge recovers.
+	OpenPRRecheckAt time.Time `json:"-"`
 	// PendingOperation surfaces an in-progress multi-step operation.
 	// Values: "merge", "rebase", "bisect", or "" when none is pending. The
 	// commit dialog shows it as a notice; git itself decides whether a
@@ -67,6 +74,7 @@ func (s GitStatus) Equal(other GitStatus) bool {
 		s.OpenPRNumber == other.OpenPRNumber &&
 		s.OpenPRLookupError == other.OpenPRLookupError &&
 		s.OpenPRLookupPending == other.OpenPRLookupPending &&
+		s.OpenPRRecheckAt.Equal(other.OpenPRRecheckAt) &&
 		s.PendingOperation == other.PendingOperation
 }
 
@@ -79,16 +87,19 @@ func (c *Core) Status(ctx context.Context, cwd string) (GitStatus, error) {
 	}
 	if status.Branch != "" && status.Forge != "" {
 		status.OpenPRURL, status.OpenPRNumber, status.OpenPRLookupError = c.lookupOpenPR(ctx, cwd, status.Branch)
+		if status.OpenPRLookupError != "" {
+			status.OpenPRRecheckAt = c.openPRRecheckAt(cwd, status.Branch)
+		}
 	}
 	return status, nil
 }
 
 // StatusFast is the same as Status but uses only cached PR info,
-// avoiding the network call to gh/glab. Returns immediately even when
-// the PR cache is cold, with OpenPRLookupPending set so readers can tell
-// the empty PR fields from an answer; the caller is expected to arrange
-// a follow-up full Status call that warms the cache and broadcasts the
-// PR fields.
+// avoiding the network call to the forge. Returns immediately even when
+// the PR cache holds no current answer, with OpenPRLookupPending set and
+// the branch's last known PR in the PR fields; the caller is expected to
+// arrange a follow-up full Status call that asks the forge and
+// broadcasts the answer.
 func (c *Core) StatusFast(cwd string) (GitStatus, error) {
 	status, err := c.baseStatus(cwd)
 	if err != nil || !status.IsRepo {

@@ -176,6 +176,9 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// a.sessions via stopSession; running it concurrently with
 		// Step 4's snapshotAndClear would race the session map.
 		"stop retention cleanup",
+		// The merged-PR cleanup removes worktrees and stops the sessions
+		// in them: joined before the session close for the same reason.
+		"stop merged PR worktree cleanup",
 		// "stop pending thread deletes" joins the boot-time completion
 		// of interrupted deletes, which takes the sweep's delete path.
 		"stop pending thread deletes",

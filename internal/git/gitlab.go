@@ -84,8 +84,17 @@ func (f *gitlabForge) gitlabOriginProject(cwd string) (*forgeapi.Client, string,
 	return client, gitlabProjectPath(project), nil
 }
 
+// gitlabOpenMRsMaxPages bounds the pages one open merge request lookup
+// reads past forks' merge requests from a branch of the same name.
+const gitlabOpenMRsMaxPages = 5
+
 // ListOpenPRs returns the open merge request whose source is the given
-// branch of cwd's origin project.
+// branch of cwd's origin project itself. The source_branch filter also
+// matches a fork's branch of the same name, which is someone else's work:
+// a merge request counts only when its source project is the target
+// project. GitLab keeps one open merge request per source branch, so the
+// read stops at it. The full view is read because the simple one carries
+// no source_project_id.
 func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error) {
 	sourceBranch := strings.TrimSpace(head)
 	if sourceBranch == "" {
@@ -95,22 +104,35 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 	if err != nil {
 		return nil, err
 	}
-	var raw []struct {
-		WebURL string `json:"web_url"`
-		IID    int    `json:"iid"`
-		Title  string `json:"title"`
-		State  string `json:"state"`
-	}
 	request := forgeapi.Request{
 		Path:  project + "/merge_requests",
-		Query: url.Values{"state": {"opened"}, "source_branch": {sourceBranch}, "per_page": {"1"}, "view": {"simple"}},
+		Query: url.Values{"state": {"opened"}, "source_branch": {sourceBranch}, "per_page": {strconv.Itoa(gitlabPageSize)}},
 	}
-	if _, err := client.JSON(ctx, request, &raw); err != nil {
+	pulls := []GitPR{}
+	page, pages := 1, 0
+	err = client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+		var raw []struct {
+			WebURL          string `json:"web_url"`
+			IID             int    `json:"iid"`
+			Title           string `json:"title"`
+			State           string `json:"state"`
+			ProjectID       int64  `json:"project_id"`
+			SourceProjectID int64  `json:"source_project_id"`
+		}
+		if err := json.Unmarshal(resp.Body, &raw); err != nil {
+			return false, fmt.Errorf("GitLab open merge requests: decode response: %w", err)
+		}
+		for _, r := range raw {
+			if r.SourceProjectID != r.ProjectID {
+				continue
+			}
+			pulls = append(pulls, GitPR{URL: r.WebURL, Number: r.IID, Title: r.Title, State: NormalizePRState(r.State)})
+		}
+		pages++
+		return len(pulls) == 0 && pages < gitlabOpenMRsMaxPages && len(raw) == gitlabPageSize && advanceGitLabPage(resp, &page), nil
+	})
+	if err != nil {
 		return nil, err
-	}
-	pulls := make([]GitPR, 0, len(raw))
-	for _, r := range raw {
-		pulls = append(pulls, GitPR{URL: r.WebURL, Number: r.IID, Title: r.Title, State: NormalizePRState(r.State)})
 	}
 	return pulls, nil
 }
@@ -297,6 +319,7 @@ func gitlabPRDetail(raw gitlabMRRaw, approvals []ReviewVerdict) PRDetail {
 		Draft:          raw.Draft || raw.WorkInProgress,
 		HeadRefName:    raw.SourceBranch,
 		BaseRefName:    raw.TargetBranch,
+		BaseRefSHA:     raw.DiffRefs.StartSHA,
 		HeadSHA:        raw.headSHA(),
 		URL:            raw.WebURL,
 		ChangedFiles:   parseGitLabChangesCount(raw.ChangesCount),

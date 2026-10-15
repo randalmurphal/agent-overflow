@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -46,13 +47,12 @@ const (
 	// refreshes invalidate the cwd cache before re-checking.
 	prLookupErrorBase = 20 * time.Second
 	prLookupErrorMax  = 15 * time.Minute
-	// prStickyRetention is how long past its own expiry a cache entry is
-	// kept so a failed lookup can still serve the last PR it saw (see
-	// lookupOpenPR). It only widens the sweep horizon: the entry is never
-	// served as a fresh answer past expiresAt, so this trades a few dozen
-	// bytes per recently-visited branch for a badge that survives a `gh`
-	// rate-limit or auth blip on a workspace that has been idle a while.
-	prStickyRetention = 30 * time.Minute
+	// prCacheMaxEntries bounds the open-PR cache. Entries are kept past
+	// their expiry as each branch's last known PR (see
+	// storePRLookupLocked), so the bound is a count, not an age: far more
+	// (workspace, branch) pairs than a session looks at, at a few hundred
+	// bytes each.
+	prCacheMaxEntries = 1024
 
 	// FetchStaleWindow is how long after a successful `git fetch` the
 	// app considers remote-tracking refs fresh enough to skip another
@@ -128,15 +128,28 @@ type Core struct {
 
 	// prCache memoizes lookupOpenPR results so a refresh storm (gitwatch
 	// firing every fs-event-debounce) doesn't translate into a `gh pr
-	// list` storm. Keyed on (cwd, branch); cleared per-cwd after PR/MR
-	// creation and explicit refresh paths. A process-global TTL'd cache is
-	// the documented carve-out in internal/CLAUDE.md anti-patterns.
+	// list` storm. Keyed on (cwd, branch); made stale per-cwd after PR/MR
+	// creation and explicit refresh paths, and dropped per-cwd when the
+	// worktree is removed. A process-global TTL'd cache is the documented
+	// carve-out in internal/CLAUDE.md anti-patterns.
 	//
 	// RWMutex: the hot path (gitwatch refresh → lookupOpenPR) hits the
 	// cache as a read most of the time; only cache misses + explicit
 	// invalidation take the writer lock.
 	prCacheMu sync.RWMutex
 	prCache   map[string]prCacheEntry
+	// prCacheEpochs counts InvalidatePRCache and ForgetPRCache calls per cwd. A lookup
+	// caches its answer only when no invalidation of its cwd ran while it
+	// was in flight, so an answer read before a PR was created cannot
+	// outlive the invalidation that announced it. Bounded by the
+	// workspaces invalidated in this process.
+	prCacheEpochs map[string]uint64
+	// prLookupErrorBase replaces the constant of that name as the time a
+	// first failed open-PR lookup is cached (prLookupErrorDelay); zero
+	// keeps the constant. Set only by WithPRLookupErrorBase.
+	prLookupErrorBase time.Duration
+	// openPRObserver receives every fresh open-PR answer (pr_state.go).
+	openPRObserver atomic.Pointer[func(OpenPRObservation)]
 
 	// forgeCache memoizes origin-URL classification per cwd. TTL'd via
 	// forgeDetectionTTL (5 min); written by Core.Status each refresh
@@ -236,7 +249,12 @@ type prCacheEntry struct {
 	url         string
 	number      int
 	lookupError string
-	expiresAt   time.Time
+	// expiresAt ends the entry's use as a current answer; zero once
+	// InvalidatePRCache made it stale.
+	expiresAt time.Time
+	// storedAt is when the entry was written, for the eviction order of
+	// prCacheMaxEntries.
+	storedAt time.Time
 	// failures counts the consecutive failed lookups this entry's
 	// expiresAt backs off over (prLookupErrorDelay); zero after a success.
 	failures int
@@ -258,6 +276,18 @@ func prCacheKey(cwd, branch string) string {
 // owner cannot build fails the owner, not the Core.
 func WithForgeAPI(svc *forgeapi.Service) CoreOption {
 	return func(c *Core) { c.forgeAPI = svc }
+}
+
+// WithPRLookupErrorBase replaces prLookupErrorBase, the time a first
+// failed open-PR lookup is cached before the forge is asked again. For a
+// harness boot, whose tests do not wait out the product backoff; a
+// non-positive base keeps the product value.
+func WithPRLookupErrorBase(base time.Duration) CoreOption {
+	return func(c *Core) {
+		if base > 0 {
+			c.prLookupErrorBase = base
+		}
+	}
 }
 
 // ForgeAPI returns the transport WithForgeAPI installed, nil when the
@@ -293,6 +323,7 @@ func NewCore(opts ...CoreOption) *Core {
 		timeout:        defaultTimeout,
 		maxOutputBytes: defaultMaxOutputBytes,
 		prCache:        make(map[string]prCacheEntry),
+		prCacheEpochs:  make(map[string]uint64),
 		forgeCache:     make(map[string]forgeCacheEntry),
 		gitDirCache:    make(map[string]string),
 		commonDirCache: make(map[string]string),
@@ -366,7 +397,7 @@ func (c *Core) executeInteractive(cwd string, args ...string) (stdout, stderr st
 // The nested git inherits our environment, so the opt-out has to be made
 // here rather than at a git call site we never see.
 func (c *Core) runBinaryInteractive(ctx context.Context, binary, cwd string, args ...string) (commandResult, error) {
-	return c.runSpec(commandSpec{ctx: ctx, binary: binary, cwd: cwd, allowCredentialPrompt: true, args: args})
+	return c.runSpec(commandSpec{ctx: ctx, binary: binary, cwd: cwd, allowCredentialPrompt: true, updatesRemoteRefs: true, args: args})
 }
 
 func (c *Core) executeSpec(spec commandSpec) (stdout, stderr string, err error) {
@@ -375,13 +406,28 @@ func (c *Core) executeSpec(spec commandSpec) (stdout, stderr string, err error) 
 		return "", "", err
 	}
 	if result.exitCode != 0 {
-		return result.stdout, result.stderr, fmt.Errorf(
-			"%s exited with code %d",
-			formatCommand(spec.binary, spec.args...),
-			result.exitCode,
-		)
+		return result.stdout, result.stderr, exitError(spec, result)
 	}
 	return result.stdout, result.stderr, nil
+}
+
+// exitErrorStderrBytes bounds the stderr an exit error carries. git prints
+// its diagnosis last, so the tail is the part kept.
+const exitErrorStderrBytes = 4 << 10
+
+// exitError describes a non-zero exit with the command's own diagnosis:
+// the exit code alone cannot tell a network failure from a lock or a
+// missing ref.
+func exitError(spec commandSpec, result commandResult) error {
+	command := formatCommand(spec.binary, spec.args...)
+	stderr := strings.TrimSpace(result.stderr)
+	if stderr == "" {
+		return fmt.Errorf("%s exited with code %d", command, result.exitCode)
+	}
+	if len(stderr) > exitErrorStderrBytes {
+		stderr = "…" + strings.ToValidUTF8(stderr[len(stderr)-exitErrorStderrBytes:], "")
+	}
+	return fmt.Errorf("%s exited with code %d: %s", command, result.exitCode, stderr)
 }
 
 // CreateWorktree creates a new worktree backed by a new branch.
@@ -541,6 +587,7 @@ func (c *Core) RemoveWorktreeForce(cwd, path string, force bool) error {
 	c.commonDirCacheMu.Lock()
 	delete(c.commonDirCache, path)
 	c.commonDirCacheMu.Unlock()
+	c.ForgetPRCache(path)
 	return nil
 }
 
@@ -664,10 +711,15 @@ type commandSpec struct {
 	// omission.
 	//
 	// Set it ONLY for commands a human just asked for and is waiting on:
-	// push, pull, explicit fetch/prune, and the forge CLIs' create paths
+	// push, pull, explicit fetch/prune, the commits an open review pane's
+	// PR read lacks (EnsurePRObjects), and the forge CLIs' create paths
 	// (which shell out to `git push` themselves). Never for anything on a
 	// timer, a watcher edge, or a picker's opportunistic warm-up.
 	allowCredentialPrompt bool
+	// updatesRemoteRefs takes the repository's remote-refs lock for a
+	// command lockRemoteRefs cannot recognize from its argv: a forge CLI
+	// that runs `git push` itself.
+	updatesRemoteRefs bool
 	// extraEnv is appended after the shared environment. os/exec keeps the
 	// last occurrence of a duplicated key, so entries here override both
 	// the inherited environment and the shared defaults below.
@@ -700,12 +752,17 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	}
 
 	// Taken before the timeout starts, so waiting for another worktree
-	// command does not spend this one's budget.
+	// or remote-refs command does not spend this one's budget.
 	unlockWorktreeAdmin, err := c.lockWorktreeAdmin(spec)
 	if err != nil {
 		return commandResult{}, err
 	}
 	defer unlockWorktreeAdmin()
+	unlockRemoteRefs, err := c.lockRemoteRefs(spec)
+	if err != nil {
+		return commandResult{}, err
+	}
+	defer unlockRemoteRefs()
 
 	parent := spec.ctx
 	if parent == nil {

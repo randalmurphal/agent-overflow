@@ -209,6 +209,7 @@ export const StartSession = dispatch('StartSession');
 export const AutoResumeThread = dispatch('AutoResumeThread');
 export const StopSession = dispatch('StopSession');
 export const ReconnectSession = dispatch('ReconnectSession');
+export const DismissSessionBanner = dispatch('DismissSessionBanner');
 export const SendMessage = dispatch('SendMessage');
 export const SendMessageWithOptions = dispatch('SendMessageWithOptions');
 export const SteerMessageWithOptions = dispatch('SteerMessageWithOptions');

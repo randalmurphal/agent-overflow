@@ -40,15 +40,15 @@ export interface MigrationException {
 }
 
 export const migrationExceptions: MigrationException[] = [
-  { version: 142, table: 'channels', dropped: true, reason: 'v142 removes discussions and their channels' },
-  { version: 142, table: 'channel_messages', dropped: true, reason: 'v142 removes discussions and their channel messages' },
-  { version: 142, table: 'discussion_definitions', dropped: true, reason: 'v142 removes discussion definitions' },
-  { version: 142, table: 'threads', columns: ['mode'], reason: 'v142 turns a former discussion thread into a chat thread' },
-  { version: 142, table: 'scratch_threads', columns: ['return_mode'], reason: 'v142 returns a side chat opened from a discussion to chat mode' },
-  { version: 142, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v142 keeps only model favorites; discussion favorites are removed' },
-  { version: 144, table: 'automations', dropped: true, reason: 'v144 removes the workflow scheduler and drops its automations' },
-  { version: 144, table: 'automation_cursors', dropped: true, reason: "v144 drops the scheduler's per-source cursors with its automations" },
-  { version: 144, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v144 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
+  { version: 143, table: 'channels', dropped: true, reason: 'v143 removes discussions and their channels' },
+  { version: 143, table: 'channel_messages', dropped: true, reason: 'v143 removes discussions and their channel messages' },
+  { version: 143, table: 'discussion_definitions', dropped: true, reason: 'v143 removes discussion definitions' },
+  { version: 143, table: 'threads', columns: ['mode'], reason: 'v143 turns a former discussion thread into a chat thread' },
+  { version: 143, table: 'scratch_threads', columns: ['return_mode'], reason: 'v143 returns a side chat opened from a discussion to chat mode' },
+  { version: 143, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v143 keeps only model favorites; discussion favorites are removed' },
+  { version: 145, table: 'automations', dropped: true, reason: 'v145 removes the workflow scheduler and drops its automations' },
+  { version: 145, table: 'automation_cursors', dropped: true, reason: "v145 drops the scheduler's per-source cursors with its automations" },
+  { version: 145, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v145 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
 ];
 
 /**
@@ -202,6 +202,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'proposed_plan_comments', reason: 'review comments on a proposed plan' },
   { table: 'thread_drafts', columns: ['pending_plan_implementation'], values: { has_content: [0] }, reason: 'a draft seeded from an accepted plan, and an empty draft that only holds attachments' },
   { table: 'diff_review_comments', reason: 'review comments on a pull request diff through the forge' },
+  { table: 'thread_pull_requests', reason: "an open pull request a forge reports for a thread's linked worktree; the top-up seeds no forge pull request" },
   { table: 'chat_bar_favorites', values: { provider: ['codex', 'claude-tui'] }, reason: 'favorites of other providers; one favorite proves the table' },
   { table: 'chat_model_profiles', values: { provider: ['claude-tui'], reasoning_effort: ['none', 'minimal', 'low', 'high', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last; the claude-tui provider has no mock' },
 
@@ -223,7 +224,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'work_items', columns: ['wake_signature', 'pending_guidance', 'auto_resume_at', 'budget', 'triage_thread_id', 'origin_thread_id', 'disposition', 'parent_item_id', 'parent_phase_id', 'parent_unit_id', 'parent_attempt', 'call_depth', 'soft_stop', 'source_ref'], values: { state: ['running', 'needs-human', 'failed'], workflow_scope: ['shared'], source: ['agent', 'call'], reason: ['gate', 'question', 'stuck', 'stalled', 'budget-exhausted', 'retries-exhausted', 'provider-retries-exhausted', 'provider-usage-limited', 'loop-limit-exhausted', 'check-failed-genuine', 'agent-error', 'wiring-error', 'disposition', 'setup-failed', 'taken-over', 'unit-failed', 'child-failed', 'paused', 'checkpoint'] }, reason: 'running and needs-human are states a run passes through; the rest are failures, budgets, child runs, shared-scope and agent-started runs the top-up does not stage; source_ref is set only on a run a phase started or a call phase invoked' },
   { table: 'work_item_phases', columns: ['park_cause', 'provider_usage_scope_id'], values: { status: ['running', 'failed', 'superseded'] }, reason: 'running is a state a phase passes through; failed, superseded and parked phases need a failing or looping run' },
   { table: 'work_item_units', reason: 'a phase fanned out into units (a fan-out workflow definition)' },
-  { table: 'projects', columns: ['color', 'workflow_queue_paused', 'workflow_concurrency', 'remote_url', 'root_commit', 'repository_id', 'identity_source'], reason: 'repository identity needs a forge remote; the queue pause and concurrency are project settings the top-up leaves default; color is set by no App method' },
+  { table: 'projects', columns: ['color', 'workflow_queue_paused', 'workflow_concurrency', 'remote_url', 'root_commit', 'repository_id'], reason: 'a verified repository_id needs a repository the forge serves (the top-up only writes a failed read); remote_url and root_commit are retired; the queue pause and concurrency are project settings the top-up leaves default; color is set by no App method' },
 
   // Fork internals.
   { table: 'edit_file_snapshots', reason: 'a file checkpoint of an Edit the mock performs for real; the library scenarios edit through frames only' },

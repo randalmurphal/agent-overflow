@@ -261,7 +261,7 @@ func TestReadPRParsesRecordedTicks(t *testing.T) {
 func TestReadPRActorShapes(t *testing.T) {
 	t.Parallel()
 	const answer = `{"data":{"viewer":{"login":"me"},"repository":{"pullRequest":{
-		"number":5,"title":"t","body":"","state":"OPEN","isDraft":false,"baseRefName":"main","headRefName":"f","headRefOid":"abc","url":"u",
+		"number":5,"title":"t","body":"","state":"OPEN","isDraft":false,"baseRefName":"main","baseRefOid":"base1","headRefName":"f","headRefOid":"abc","url":"u",
 		"additions":0,"deletions":0,"changedFiles":0,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":null,
 		"author":{"login":"dependabot"},
 		"latestReviews":{"nodes":[
@@ -288,6 +288,9 @@ func TestReadPRActorShapes(t *testing.T) {
 		t.Fatalf("ReadPR: %v", err)
 	}
 	d := got.Detail
+	if d.BaseRefSHA != "base1" || d.HeadSHA != "abc" {
+		t.Fatalf("revision = base %q head %q, want baseRefOid and headRefOid", d.BaseRefSHA, d.HeadSHA)
+	}
 	if d.AuthorLogin != "dependabot" || d.AuthorName != "" || d.ViewerIsAuthor {
 		t.Fatalf("PR author = %q %q viewer %v", d.AuthorLogin, d.AuthorName, d.ViewerIsAuthor)
 	}
@@ -950,7 +953,11 @@ func TestGitHubOriginScopedLists(t *testing.T) {
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch call.Op {
 		case "OpenPRsByHead":
-			return githubData(`{"repository":{"pullRequests":{"nodes":[{"url":"https://github.com/acme/repo/pull/3","number":3,"title":"Fix","state":"OPEN"}]}}}`)
+			// A fork's pull request from a branch of the same name is not
+			// the repository's own.
+			return githubData(`{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
+				`{"url":"https://github.com/acme/repo/pull/7","number":7,"title":"Fork","state":"OPEN","isCrossRepository":true},` +
+				`{"url":"https://github.com/acme/repo/pull/3","number":3,"title":"Fix","state":"OPEN","isCrossRepository":false}]}}}`)
 		case "MergedPRs":
 			first := int(call.Vars["first"].(float64))
 			after, _ := call.Vars["after"].(string)
@@ -988,6 +995,44 @@ func TestGitHubOriginScopedLists(t *testing.T) {
 	}
 	if v := sent[2].Vars; v["first"] != float64(50) || v["after"] != "100" {
 		t.Fatalf("second MergedPRs page = %v", v)
+	}
+}
+
+// Forks' pull requests from a branch of the same name fill a whole page
+// before the repository's own: the lookup follows the cursor to it, and
+// stops after githubReadMaxPages pages of forks.
+func TestGitHubListOpenPRsReadsPastForks(t *testing.T) {
+	t.Parallel()
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op != "OpenPRsByHead" {
+			return forgeUnexpected(t, call)
+		}
+		after, _ := call.Vars["after"].(string)
+		page, _ := strconv.Atoi(after)
+		if call.Vars["head"] == "own" && page == 1 {
+			return githubData(`{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PR_own","url":"https://github.com/acme/repo/pull/4","number":4,"title":"Own","state":"OPEN","isCrossRepository":false}]}}}`)
+		}
+		nodes := make([]string, 0, 100)
+		for i := range 100 {
+			nodes = append(nodes, fmt.Sprintf(`{"id":"PR_f%d","url":"u","number":%d,"title":"Fork","state":"OPEN","isCrossRepository":true}`, i, page*1000+i))
+		}
+		return githubData(fmt.Sprintf(`{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":true,"endCursor":"%d"},"nodes":[%s]}}}`, page+1, strings.Join(nodes, ",")))
+	})
+	cwd := t.TempDir()
+	seedForgeCacheGitHubOrigin(t, core, cwd, "https://github.com/acme/repo.git")
+	pulls, err := core.ListOpenPRs(t.Context(), cwd, "own")
+	if err != nil || len(pulls) != 1 || pulls[0].Number != 4 || pulls[0].ID != "PR_own" {
+		t.Fatalf("ListOpenPRs(own) = %+v, %v", pulls, err)
+	}
+	if sent := calls.all(); len(sent) != 2 || sent[1].Vars["after"] != "1" {
+		t.Fatalf("own lookup sent %v", calls.ops())
+	}
+	pulls, err = core.ListOpenPRs(t.Context(), cwd, "forks-only")
+	if err != nil || len(pulls) != 0 {
+		t.Fatalf("ListOpenPRs(forks-only) = %d pulls, %v", len(pulls), err)
+	}
+	if n := len(calls.all()) - 2; n != githubReadMaxPages {
+		t.Fatalf("forks-only lookup sent %d requests, want %d", n, githubReadMaxPages)
 	}
 }
 

@@ -35,7 +35,16 @@ type mirroredCommand struct {
 	skillName         string
 	provisional       bool
 	forked            bool
-	pendingOutput     []provider.ProviderEvent
+	// forkTaskID is the task a local_agent task_started naming no tool_use
+	// announced while the command ran (Claude 2.1.284+): the fork's own,
+	// which the mirror confirms by its agentId. An older CLI's fork has
+	// none, so its row gets no task to be stopped by.
+	forkTaskID string
+	// forkFailed: the fork's own task ended without completing. A stopped
+	// typed fork's turn still ends with a successful result
+	// (forked_skill_direct_command_stop_task_20261014).
+	forkFailed    bool
+	pendingOutput []provider.ProviderEvent
 }
 
 func (l *directSlashCommands) note(uuid, content string, opts provider.SendOptions) {
@@ -122,6 +131,19 @@ func (p *Parser) holdMirroredCommandOutput(commandUUID string, events []provider
 	return true
 }
 
+// directCommandLaunchPrefix marks the row a direct command stands on. The
+// command has no tool_use of its own, so nothing Claude forwards on stdout
+// is ever parented to it.
+const directCommandLaunchPrefix = "claude-command:"
+
+func directCommandLaunchID(commandUUID string) string {
+	return directCommandLaunchPrefix + commandUUID
+}
+
+func isDirectCommandLaunchID(id string) bool {
+	return strings.HasPrefix(id, directCommandLaunchPrefix)
+}
+
 func (p *Parser) provisionalMirroredCommandEvent(threadID, commandUUID string, now time.Time) []provider.ProviderEvent {
 	if p == nil || p.transcriptMirror == nil {
 		return nil
@@ -130,7 +152,7 @@ func (p *Parser) provisionalMirroredCommandEvent(threadID, commandUUID string, n
 	if command == nil || command.launchID != "" {
 		return nil
 	}
-	command.launchID = "claude-command:" + commandUUID
+	command.launchID = directCommandLaunchID(commandUUID)
 	command.provisional = true
 	input := map[string]any{"command": "/" + command.command.Name}
 	if command.command.Argument != "" {
@@ -175,6 +197,30 @@ func (p *Parser) settleMirroredCommandAtTurnResult(threadID string, failed bool,
 		terminal = provider.CommandCancelled
 	}
 	return p.finishMirroredCommand(threadID, commandUUID, terminal, now)
+}
+
+// noteCommandForkTask records the first unbound local_agent task the
+// running command announces: a typed fork's task_started names no tool_use.
+func (p *Parser) noteCommandForkTask(taskID string) {
+	if p == nil || p.transcriptMirror == nil || p.activeCommandUUID == "" {
+		return
+	}
+	if command := p.transcriptMirror.commands[p.activeCommandUUID]; command != nil && command.forkTaskID == "" {
+		command.forkTaskID = taskID
+	}
+}
+
+// noteMirroredForkTerminal records a typed fork's own task terminal on its
+// command, so a fork that was stopped settles its row as failed.
+func (p *Parser) noteMirroredForkTerminal(taskID, status string) {
+	if p == nil || p.transcriptMirror == nil || status == "" || status == "completed" {
+		return
+	}
+	for _, command := range p.transcriptMirror.commands {
+		if command.forked && command.agentID == taskID {
+			command.forkFailed = true
+		}
+	}
 }
 
 func (p *Parser) finishMirroredCommand(threadID, commandUUID string, terminal provider.CommandLifecycleState, now time.Time) []provider.ProviderEvent {
@@ -270,7 +316,7 @@ func (p *Parser) finishMirroredCommand(threadID, commandUUID string, terminal pr
 	// can still close the command-lifecycle bracket as cancelled after the
 	// fork's own reporting tool failed and recovered; that transport state must
 	// not overwrite the answer the command actually returned.
-	if terminal != provider.CommandCompleted && forkResult == nil {
+	if (terminal != provider.CommandCompleted && forkResult == nil) || command.forkFailed {
 		metaFields["is_error"] = true
 	}
 	if forkResult != nil {

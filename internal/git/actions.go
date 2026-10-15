@@ -168,8 +168,8 @@ func splitUpstreamRef(ref string, remoteNames []string) (string, string, bool) {
 // Not single-flighted, unlike the background cadence: this is one
 // user-initiated warm-up per picker open, and joining it to an in-flight
 // origin-only background fetch would silently narrow it from --all.
-// Two concurrent fetches of one repo are safe (git locks per ref); the
-// shared window makes the overlap window at most one fetch long.
+// A concurrent fetch of the repository waits on the remote-refs lock
+// (lockRemoteRefs) rather than racing it for the same refs.
 //
 // This is a network command nobody explicitly asked for (the branch
 // picker warms it on open), so it deliberately keeps the non-interactive
@@ -266,18 +266,8 @@ func (c *Core) Checkout(cwd, branch string) error {
 	return c.executeCheckout(cwd, branch)
 }
 
-// executeCheckout keeps git's diagnosis attached to a failed checkout. The
-// generic command error only carries the exit code, while checkout's stderr
-// identifies the actionable blocker: dirty files, an active worktree, an
-// unresolved merge, and so on.
 func (c *Core) executeCheckout(cwd string, args ...string) error {
-	_, stderr, err := c.Execute(cwd, append([]string{"checkout"}, args...)...)
-	if err == nil {
-		return nil
-	}
-	if message := strings.TrimSpace(stderr); message != "" {
-		return fmt.Errorf("%w: %s", err, message)
-	}
+	_, _, err := c.Execute(cwd, append([]string{"checkout"}, args...)...)
 	return err
 }
 

@@ -6,6 +6,16 @@ import { productBinary, spawnProduct } from '../src/product-process.js';
 import type { HarnessApp } from '../src/harness.js';
 import type { PairingInvite } from './offhost-helpers.js';
 
+/**
+ * How long either computer may take to show the other after `confirm`.
+ * Each side reaches the other through its device client's credential
+ * exchanges (the activation probe, the reciprocal pairing's renewal), and
+ * one exchange that stalls holds the next for the client's request timeout
+ * (deviceclient pinTimeout, 10s), so the default expect timeout is below
+ * what the app promises.
+ */
+export const CONNECTED_AFTER_CONFIRM = { timeout: 20_000 };
+
 export async function headlessPairing(harness: HarnessApp) {
   const child = spawnProduct(productBinary('agent-overflow'),
     ['pair', '--json', '--class', 'desktop', '--config-root', harness.bootstrap.dataDir],

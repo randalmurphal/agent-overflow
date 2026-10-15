@@ -67,43 +67,6 @@ func (c *Core) MergeTreeConflicts(cwd, base, head string) (MergeTreeResult, erro
 	}
 }
 
-func (c *Core) FetchRefOID(cwd, remote, ref string) (string, error) {
-	remote = strings.TrimSpace(remote)
-	ref = strings.TrimSpace(ref)
-	if err := validateFetchArg("git fetch remote", remote); err != nil {
-		return "", err
-	}
-	if err := validateFetchArg("git fetch ref", ref); err != nil {
-		return "", err
-	}
-	if _, _, err := c.executeInteractive(cwd, "fetch", remote, ref); err != nil {
-		return "", err
-	}
-	// FETCH_HEAD is overwritten by the next fetch, so capture the OID
-	// immediately before fetching anything else.
-	stdout, _, err := c.Execute(cwd, "rev-parse", "FETCH_HEAD")
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(stdout), nil
-}
-
-func (c *Core) FetchBranch(cwd, remote, branch string) error {
-	remote = strings.TrimSpace(remote)
-	branch = strings.TrimSpace(branch)
-	if err := validateFetchArg("git fetch remote", remote); err != nil {
-		return err
-	}
-	if branch == "" {
-		return fmt.Errorf("git fetch branch is required")
-	}
-	if err := validateBranchName(branch); err != nil {
-		return err
-	}
-	_, _, err := c.executeInteractive(cwd, "fetch", remote, branch)
-	return err
-}
-
 func (c *Core) ShowTreeFile(cwd, treeOID, path string) (string, error) {
 	treeOID = strings.TrimSpace(treeOID)
 	if !treeOIDPattern.MatchString(treeOID) {
@@ -207,17 +170,4 @@ func attributeMergeMessages(messages, paths []string) (map[string][]string, []st
 		notes[best] = append(notes[best], message)
 	}
 	return notes, rest
-}
-
-func validateFetchArg(label, value string) error {
-	if value == "" {
-		return fmt.Errorf("%s is required", label)
-	}
-	if strings.ContainsRune(value, '\x00') {
-		return fmt.Errorf("%s must not contain NUL", label)
-	}
-	if strings.HasPrefix(value, "-") {
-		return fmt.Errorf("%s must not start with '-'", label)
-	}
-	return nil
 }

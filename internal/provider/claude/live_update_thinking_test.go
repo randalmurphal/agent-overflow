@@ -383,3 +383,13 @@ func hasArgSequence(args, want []string) bool {
 	}
 	return false
 }
+
+// liveUpdateSessionAtVersion builds a live-update test session whose CLI has
+// reported a version, standing in for the `system/init` the fake script does
+// not emit.
+func liveUpdateSessionAtVersion(t *testing.T, cfg Config, version string) (*Session, string) {
+	t.Helper()
+	s, capturePath := liveUpdateTestSession(t, cfg)
+	s.noteCLIVersion(version)
+	return s, capturePath
+}

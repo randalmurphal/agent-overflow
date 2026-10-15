@@ -48,15 +48,6 @@ type ThreadProcess struct {
 	PID int
 }
 
-// PromptRender is one session-token-scoped system-prompt render memo.
-type PromptRender struct {
-	Source   string
-	WorkDir  string
-	Model    string
-	Rendered string
-	Oversize bool
-}
-
 // ClaudeLiveApply is one asynchronous /effort or /fast confirmation.
 type ClaudeLiveApply struct {
 	ThreadID        string
@@ -99,7 +90,6 @@ type Manager struct {
 	liveClaudeReconcileDirty            bool
 	reconcileSessionConfigFn            func(string)
 	readClaudeAppliedSettingsFn         func(string, string) (*claude.AppliedSettings, error)
-	promptRenders                       map[string]PromptRender
 	idleReaperStop                      chan struct{}
 	idleReaperWG                        sync.WaitGroup
 	retentionCleanupStop                chan struct{}
@@ -117,7 +107,6 @@ func New() *Manager {
 		claudeLiveApplies:          make(map[string]ClaudeLiveApply),
 		claudeLiveApplyDegraded:    make(map[liveApplyKey]struct{}),
 		claudeLiveApplyGenerations: make(map[liveApplyKey]uint64),
-		promptRenders:              make(map[string]PromptRender),
 	}
 }
 
@@ -695,19 +684,6 @@ func (m *Manager) HasActiveTurnOrRecent(cutoffNano int64) bool {
 	return false
 }
 
-func (m *Manager) PromptRender(sessionToken string) (PromptRender, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	render, ok := m.promptRenders[sessionToken]
-	return render, ok
-}
-
-func (m *Manager) PutPromptRender(sessionToken string, render PromptRender) {
-	m.mu.Lock()
-	m.promptRenders[sessionToken] = render
-	m.mu.Unlock()
-}
-
 func (m *Manager) purgeClaudeLiveConfigState(sessionToken string) {
 	for id, apply := range m.claudeLiveApplies {
 		if apply.SessionToken == sessionToken {
@@ -724,5 +700,4 @@ func (m *Manager) purgeClaudeLiveConfigState(sessionToken string) {
 			delete(m.claudeLiveApplyGenerations, key)
 		}
 	}
-	delete(m.promptRenders, sessionToken)
 }

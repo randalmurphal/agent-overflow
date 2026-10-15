@@ -170,8 +170,9 @@ export function formatDurationMs(ms: number): string {
  *
  * Sub-minute → "Resets in <1m" (collapse so we don't flicker through
  * "in 59s"/"in 58s" — at sub-minute the countdown is no longer the
- * meaningful fact). Past timestamps → "Resetting now" (the wire is
- * stale by a few seconds; the next event will refresh it).
+ * meaningful fact). Unset and past timestamps → "": a passed boundary
+ * says nothing about when the next window ends, which starts at the
+ * account's next request.
  *
  * The wire is in seconds for both providers (Anthropic + OpenAI
  * convention). Callers pass the raw `resetsAt` value; this function
@@ -179,8 +180,8 @@ export function formatDurationMs(ms: number): string {
  */
 export function formatResetCountdown(resetsAtSeconds: number): string {
   const span = formatCountdownSpan(resetsAtSeconds * 1000, Date.now());
-  if (span === '') return '';
-  return span === 'now' ? 'Resetting now' : `Resets in ${span}`;
+  if (span === '' || span === 'now') return '';
+  return `Resets in ${span}`;
 }
 
 /**

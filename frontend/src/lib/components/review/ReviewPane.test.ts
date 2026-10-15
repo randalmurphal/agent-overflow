@@ -229,6 +229,7 @@ describe('<ReviewPane>', () => {
       draft: false,
       headRefName: 'feature',
       baseRefName: 'main',
+      baseRefSHA: 'base-main',
       headSHA: 'sha-a',
       url: 'https://github.com/owner/repo/pull/5',
       additions: 1,
@@ -522,6 +523,7 @@ describe('<ReviewPane>', () => {
       draft: false,
       headRefName: 'feature',
       baseRefName: 'main',
+      baseRefSHA: 'base-main',
       headSHA: 'sha-a',
       url: 'https://github.com/owner/repo/pull/5',
       // A distinctive additions count that appears nowhere else, so a leaked
@@ -578,6 +580,7 @@ describe('<ReviewPane>', () => {
       title: 'Add feature',
       headRefName: 'feature',
       baseRefName: 'main',
+      baseRefSHA: 'base-main',
       headSHA: 'sha-a',
       url: 'https://github.com/owner/repo/pull/5',
       checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
@@ -638,6 +641,7 @@ describe('<ReviewPane>', () => {
       draft: false,
       headRefName: 'feature',
       baseRefName: 'main',
+      baseRefSHA: 'base-main',
       headSHA: 'sha-a',
       url: 'https://github.com/owner/repo/pull/5',
       additions: 3,
@@ -718,6 +722,7 @@ describe('<ReviewPane>', () => {
       draft: false,
       headRefName: 'feature',
       baseRefName: 'main',
+      baseRefSHA: 'base-main',
       headSHA: 'sha-a',
       url: 'https://github.com/owner/repo/pull/5',
       additions: 3,
@@ -879,6 +884,7 @@ describe('<ReviewPane>', () => {
       draft: false,
       headRefName: 'feature',
       baseRefName: 'main',
+      baseRefSHA: 'base-main',
       headSHA: 'sha-a',
       url: 'https://github.com/owner/repo/pull/5',
       additions: 1,
@@ -1100,6 +1106,7 @@ function prDetailFor(headSHA: string): PRDetail {
     draft: false,
     headRefName: 'feature',
     baseRefName: 'main',
+    baseRefSHA: 'base-main',
     headSHA,
     url: 'https://github.com/owner/repo/pull/5',
     additions: 1,
@@ -1176,6 +1183,30 @@ async function openColoredConflicts(view: Awaited<ReturnType<typeof renderPRScop
     expectOwnColors(view.container);
   });
 }
+
+describe('<ReviewPane> load failures', () => {
+  it('says why a diff failed instead of "No changed files", and Retry loads it', async () => {
+    let fail = true;
+    const diff = setReviewDiffMock('OpenWorkspaceDiff', async () => {
+      if (fail) throw new Error('git diff exited with code 128: fatal: bad object');
+      return patch();
+    });
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(view.getByTestId('review-error-message').textContent).toContain('fatal: bad object');
+    });
+    expect(view.queryByTestId('review-empty')).not.toBeInTheDocument();
+
+    fail = false;
+    const calls = diff.mock.calls.length;
+    await fireEvent.click(view.getByTestId('review-error-retry'));
+    await waitFor(() => {
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+    });
+    expect(diff.mock.calls.length).toBe(calls + 1);
+    expect(view.queryByTestId('review-error')).not.toBeInTheDocument();
+  });
+});
 
 describe('<ReviewPane> span-cache ownership', () => {
   const DRAFT_ID = 'draft:source-pane:project-1:chat:1';

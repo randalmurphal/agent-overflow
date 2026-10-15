@@ -25,6 +25,7 @@ import {
   THINKING_TAIL_RUNES,
   getSmoothingClockForTest,
   isReasoningTailKind,
+  isSmoothLiveContentKind,
   trimToTailRunes,
 } from './threadPaneShared';
 import { getSettings } from './settings.svelte';
@@ -114,6 +115,8 @@ export interface RevealRouting {
   applyPatch(itemId: string, patch: ItemPatchEvent['patch']): Item | null;
   /** A wholesale commit installed `rows`: place the deltas held for them. */
   afterRowsCommitted(rows: readonly Item[]): void;
+  /** Provider upserts installed `rows`: each streaming row gates from now. */
+  openStreams(rows: readonly Item[]): void;
 }
 
 export function createRevealRouting(options: RevealRoutingOptions): RevealRouting {
@@ -480,6 +483,25 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
     }
   }
 
+  /**
+   * A provider upsert that creates a streaming row opens its stream: the
+   * row is the reveal frontier from that commit, not from its first delta.
+   * Triage sends the row blank with its text as deltas right behind it, and
+   * one event flush applies its upsert batch before those deltas, so a gate
+   * derived in between would reveal the rows after it and then withhold
+   * them again. Window loads do not open streams: a stored streaming row
+   * may have no live stream left to settle it.
+   */
+  function openStreams(rows: readonly Item[]): void {
+    for (const row of rows) {
+      if (row.status !== 'streaming' || !isSmoothLiveContentKind(row.kind)) continue;
+      if (itemSmoothers.has(row.id)) continue;
+      const current = options.getItemById(row.id);
+      if (current?.status !== 'streaming') continue;
+      getOrCreateSmoothing(row.id, current.summary, current.streamEnd);
+    }
+  }
+
   function applyPatchState(itemId: string, patch: ItemPatchEvent['patch']): void {
     const smoothing = itemSmoothers.get(itemId);
     if (!smoothing) return;
@@ -585,5 +607,6 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
     appendStreamingDelta,
     applyPatch,
     afterRowsCommitted,
+    openStreams,
   };
 }

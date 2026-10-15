@@ -8,6 +8,8 @@ import {
   subagentProgressRevision,
 } from './subagentProgress.svelte';
 import { threadHasScope } from '../transport/entityScopes';
+import { pageGrantsKnown } from '../transport/scopes';
+import { HOME_BACKEND } from '../transport/backendKey';
 import type { Item, Thread } from '../types/models';
 import type {
   PendingInteractiveRequests,
@@ -74,6 +76,12 @@ export interface ThreadLiveStateHydrationOptions {
    * clears stay with the `provider:status` / disconnect events.
    */
   hydrateBinaryStaleBanner(sessionVersion: string, installedVersion: string): void;
+  /**
+   * Snapshot leg of the stale-prompt banner: the backend's change revision
+   * while the thread's next session would start with a different system
+   * prompt, 0 otherwise. Set-only like the binary leg.
+   */
+  hydratePromptStaleBanner(revision: number): void;
 }
 
 export interface LiveStateFetchResult {
@@ -231,6 +239,7 @@ export function createThreadLiveStateHydration(
       snapshot.sessionCliVersion ?? '',
       snapshot.installedCliVersion ?? '',
     );
+    options.hydratePromptStaleBanner(snapshot.promptStale ? (snapshot.promptStaleRevision ?? 1) : 0);
   }
 
   async function startLiveStateFetch(
@@ -276,7 +285,11 @@ export function createThreadLiveStateHydration(
     // Only the SNAPSHOT is lost. The channels that keep an open thread
     // current are threads:read and reach a view-only session normally,
     // so a thread opened mid-turn still fills in as the turn streams.
-    if (threadHasScope('threads:operate', threadID)) {
+    //
+    // Before HOME's manifest the grants are unknown, so neither leg is
+    // decided; the switch refreshes once they land (runGatedLegsOnGrants).
+    const grantsPending = backend === HOME_BACKEND && !pageGrantsKnown();
+    if (!grantsPending && threadHasScope('threads:operate', threadID)) {
       try {
         snapshot = (await withBackendTarget(backend, () => GetThreadLiveState(threadID))) as ThreadLiveState;
         if (snapshot && previousFlushed.length > 0) {
@@ -311,7 +324,7 @@ export function createThreadLiveStateHydration(
     }
     // Degraded leg: pending approvals/questions block the user, so they
     // get their own fetch when the full snapshot did not land.
-    if (snapshot === null && threadHasScope('approvals:respond', threadID)) {
+    if (snapshot === null && !grantsPending && threadHasScope('approvals:respond', threadID)) {
       try {
         fallbackInteractive = (await withBackendTarget(backend, () => ListPendingInteractiveRequests(threadID))) as PendingInteractiveRequests;
       } catch (fallbackErr) {

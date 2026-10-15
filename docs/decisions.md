@@ -157,13 +157,55 @@ Mechanism in
   refuses busy threads; a workflow's cleanup keeps its own force rules. A
   removal that did not wait for idle threads stops a running turn as
   interrupted, its background tasks show as died like an app restart, and
-  queued messages return to the composer. Only a removal the app did not
+  queued messages return to the composer. A removal the app did not
   perform (Claude's, or one made outside) puts a warning notice on each
   moved thread, at its own timeline position, saying who removed the
-  worktree and that it now runs in Base. Terminals opened in the worktree
+  worktree and that it now runs in Base; so does the merged-PR cleanup
+  below, with a neutral notice. A removal the user asked for says nothing.
+  Notices name the worktree by its directory and the project root as Base,
+  never by path. Terminals opened in the worktree
   close, and one `worktree:removed` event moves draft placeholders on it to
   Base on every client. A project whose root is itself gone is left alone;
   there is nothing to reattach to.
+- When a thread's pull request merges, its linked worktree is removed and
+  its threads move to Base (user ruling 2026-10-13). The app tracks the PR
+  a thread's worktree branch has OPEN when a lookup finds it (git status,
+  the app's own create, an agent's `gh pr create` / `glab mr create`), and
+  never adopts a merged or closed PR found by branch name. Only a PR whose
+  head is the origin repository itself counts, here and in the header
+  badge: a fork's PR from a branch of the same name is someone else's. A
+  merge is the forge's merged state; a PR closed without merging changes
+  nothing until a lookup sees it open again. It acts once per PR, and only
+  when the thread runs in a linked worktree (never the project root), no
+  user message in it is newer than the merge, the branch has no open PR
+  now, and every thread in the worktree is idle (it waits while one is
+  busy); the branch, the user's messages and the threads in the worktree
+  are checked again with the threads locked, immediately before the
+  removal. Unpushed commits do not block, since the local branch keeps
+  them; uncommitted changes, untracked files included, keep the worktree
+  with one warning notice and are never forced. Moved threads get "PR #90
+  merged. Removed worktree fix-pr-diff-fetch; this thread now runs in
+  Base." (GitLab "MR !12"); a kept worktree gets "PR #90 merged. Kept
+  worktree fix-pr-diff-fetch: 3 uncommitted files." once. A removal git
+  refuses is told once ("Kept worktree fix-pr-diff-fetch: removing it
+  failed.") and retried with a growing wait; the removal notice follows if
+  a retry succeeds. No card, banner, toast or button. A worktree already
+  gone counts as done; the worktree registry watch reconciles it. A
+  failure to read a thread or the forge is retried later, never taken as
+  a reason to skip. The periodic state read follows "Fetch remotes in the
+  background": off, the app reads no PR state on its own, and a turned-on
+  setting picks up what merged meanwhile at its next pass, without a
+  restart. A lookup of a thread on screen that stops finding its PR still
+  reads that PR once, and the create paths still look the branch up.
+  Mechanism:
+  [forge transport](architecture/forge-transport.md#merged-pr-worktree-cleanup).
+- A branch's PR/MR stays in the header badge, the git menu and the review
+  pane until the forge answers that the branch has no open PR (user ruling
+  2026-10-14). Opening a thread asks the forge again but keeps showing the
+  last known PR meanwhile; a failed lookup keeps it, with the error in the
+  git menu item's tooltip, and is retried on its backoff while the thread
+  is open. Only
+  an origin re-pointed at another repository drops it without an answer.
 - Draft worktree and branch operations are DISK state, not thread state:
   project-scoped RPCs, bound to the thread at send or creation. Accepted
   consequences: an abandoned draft's worktree stays in pickers; a restart
@@ -258,6 +300,12 @@ Mechanism in
   way. Agent thread requests, their cancels and workflow takeovers are
   not gated. Wire facts:
   [claude-wire.md §Background task ownership](references/claude-wire.md#background-task-ownership).
+- A forked skill is an awaited agent with a different label. Its card has
+  no Stop and no background action; its agent pane's Stop ends the fork
+  alone (the main turn goes on after a fork the model launched, and a
+  typed command's turn ends with its fork); the turn's Stop ends
+  everything (ruling 2026-10-14). The CLI refuses to background a fork
+  ([claude-wire.md §E9](references/claude-wire.md#e9-forked-skill-skill-tool-context-fork)).
 - Pre-existing dangling Codex child rows in old fork threads are left inert
   on purpose (`internal/store/AGENTS.md`).
 - A standing agent's home: the app reads two well-known files from it,
@@ -307,9 +355,10 @@ Mechanism in
   (`opus`, `sonnet`) is refused as input with the offered IDs, and a Codex
   slug is passed as written for Codex to judge. An alias the CLI reports back
   is read only through its own model list (`internal/provider/AGENTS.md`).
-- Claude 2.1.257 `rate_limit_info.unifiedWindows`: not parsed yet by
-  ruling (revisit once the shape is stable; supporting it adds a visible
-  overage row, its own decision).
+- Claude usage meters read only `/api/oauth/usage`. The stdio
+  `rate_limit_event` (including 2.1.257 `unifiedWindows`) is not a quota
+  source: it names no account, and responses to requests sent before an
+  account switch land after it.
 - Binary upgrades under a running app: per-thread restart button, never an
   auto-recycle of sessions; no version ranking or auto-default.
 - Session import (`internal/sessionimport/AGENTS.md`): one AO thread per
@@ -335,6 +384,16 @@ Mechanism in
   known to be 2.1.267 or newer, guide or not, so a resume runs the current
   prompt; the default body is stable across resumes of one build, so the
   prompt cache is unaffected (same spec §Claude prompt snapshot).
+- System prompt override text lives only in its file under
+  `<configDir>/prompts`, which the user or an agent edits; Settings has no
+  text editor and its row holds id, enabled and models (decided with the user
+  2026-10-11, text-only-in-file ruling 2026-10-14; same spec §Prompt files).
+- A prompt change never applies to a running session: no live swap and no
+  automatic restart. It applies at the thread's next session start. Each live
+  thread whose next start would use a different prompt shows a dismissible
+  "system prompt changed" banner with Restart; a later change shows it again,
+  and a restart or the session's death withdraws it. The stale-binary banner
+  is dismissible the same way (2026-10-14; same spec §Reconcile semantics).
 - Cursor as a provider: `docs/specs/cursor-provider.md`.
 
 ## Workflows
@@ -383,6 +442,10 @@ and anti-changes that live only here:
   a private GitLab project through the user's `glab` login, with no stored
   token. It does not clean up remote state, since its users have none.
   `docs/architecture/noremote-build.md`.
+- Repository identity exists only for GitHub and GitLab checkouts. A Git
+  repository with no origin or another forge's origin is a plain folder:
+  no identity warning on its project, and on another computer it becomes
+  its own project ([project identity](specs/remote-access.md#7d-project-identity)).
 - Cross-device advisory toasts are not worth fixing; only sticky
   misattributed banners get connection attribution.
 - Browser pane: an embedded real engine per platform, never a streamed

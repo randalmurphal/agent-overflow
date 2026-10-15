@@ -18,6 +18,7 @@
     threadBodyClass,
   } from '../../utils/reviewThreadStyle';
   import { relativeTime } from '../../utils/format';
+  import { jumpPulse } from '../../utils/reviewJumpPulse';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import type { ReviewThread } from '../../types/models';
 
@@ -37,9 +38,11 @@
     thread: ReviewThread;
     /** The thread's file is in the rendered diff (the jump has a target). */
     inDiff: boolean;
+    /** The jump that landed here (utils/reviewJumpPulse); 0 for none. */
+    pulse?: number;
   }
 
-  let { review, thread, inDiff }: Props = $props();
+  let { review, thread, inDiff, pulse = 0 }: Props = $props();
 
   // The composer's text is store-backed; only the open/closed flag is
   // local, seeded open when drafted text survives a row unmount.
@@ -48,7 +51,6 @@
 
   const repliesOpen = $derived(review.conversationThreadExpanded(thread.id));
   const threadState = $derived(reviewThreadState(thread));
-  const unresolved = $derived(threadState === 'unresolved');
   const settled = $derived(threadState === 'resolved' || threadState === 'outdated');
   const first = $derived(thread.comments[0]);
   const firstBody = $derived(visibleBody(first?.body ?? ''));
@@ -69,8 +71,6 @@
   const contextFile = $derived(
     inDiff && thread.line ? (review.files.find((file) => file.path === thread.path) ?? null) : null,
   );
-  const isCurrent = $derived(review.unresolvedCursor === thread.id && unresolved);
-
   function openReply(): void {
     replying = true;
     // Replying into a folded thread: unfold so the reply lands in view.
@@ -88,7 +88,8 @@
     <ReviewAvatar login={first?.authorLogin ?? ''} name={first?.authorName} size={28} />
   </div>
   <div
-    class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 transition-shadow {THREAD_CARD_CLASS[threadState]} {isCurrent ? 'shadow-[0_0_0_2px_var(--color-accent)]' : ''}"
+    class="min-w-0 overflow-hidden rounded-[var(--radius-control)] border bg-surface-1 {THREAD_CARD_CLASS[threadState]}"
+    {@attach jumpPulse(pulse)}
   >
     <div class="flex min-w-0 items-center gap-1.5 py-1.5 px-3 text-[0.75rem] {THREAD_HEAD_CLASS[threadState]} {firstBody === '' && !contextFile ? '' : 'border-b border-border-subtle'}">
       <span class="shrink-0 font-semibold text-fg" title={first ? `@${first.authorLogin}` : ''}>{first ? authorDisplayName(first) : ''}</span>

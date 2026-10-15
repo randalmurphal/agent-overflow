@@ -581,5 +581,5 @@ describe('single volatile Streamdown block', () => {
         referenceDom,
       );
     }
-  }, 30_000);
+  });
 });

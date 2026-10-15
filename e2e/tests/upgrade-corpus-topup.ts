@@ -5,6 +5,7 @@
 // it still writes what the schema can hold. The steps are fixed: one thread
 // per library scenario in topUpScenarios, driven through the mock provider
 // the way a user's turn runs, then the sidebar and workflow operations.
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import * as path from 'node:path';
 import { expect } from '@playwright/test';
@@ -77,6 +78,8 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
   // version bump).
   const project = await timed(() => ensureTopUpProject(harness, version));
   ms.project = project.ms;
+  const unverified = await timed(() => ensureUnverifiedProject(harness, version));
+  ms.unverifiedProject = unverified.ms;
   const { projectId } = project.value;
   const nonce = randomBytes(3).toString('hex');
 
@@ -256,7 +259,7 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
   // Workflow runs add a thread per phase beside the threads listed here,
   // so the thread counts are floors.
   const growth: CensusGrowth = {
-    exact: { projects: project.value.created ? 1 : 0, archivedProjects: 1, pinned: 2, groups: 1 },
+    exact: { projects: (project.value.created ? 1 : 0) + (unverified.value.created ? 1 : 0), archivedProjects: 1, pinned: 2, groups: 1 },
     atLeast: { threads: threadIds.length - 1, archived: 1 },
   };
   return { projectId, growth, threadIds, scenarioThreads, workItemId: workflow.value, ms };
@@ -273,6 +276,26 @@ const THREAD_VARIANTS: Array<{ title: string; provider?: 'claude' | 'codex'; mod
 ];
 
 /** The top-up's project, seeded with its workflow definitions, or found from an earlier run at this version. */
+/**
+ * A project whose GitHub origin the forge does not have, so its identity
+ * read fails and the row carries an identity error. A checkout with no
+ * origin carries none: it is a plain folder.
+ */
+async function ensureUnverifiedProject(harness: HarnessApp, version: string): Promise<{ created: boolean }> {
+  const name = `topup-unverified-v${version}`;
+  const rows = (await harness.rpc<Array<{ project: { path: string } }> | null>('ListProjects')) ?? [];
+  if (rows.some((row) => path.basename(row.project.path) === name)) return { created: false };
+  const seeded = await harness.rpc<{ projects: Array<{ projectId: string; path: string }> }>('HarnessSeed', {
+    projects: [{ name, repo: { commits: [{ message: 'init', files: { 'README.md': `# Unverified v${version}\n` } }] } }],
+  });
+  const [project] = seeded.projects;
+  const env = { ...process.env, HOME: path.join(harness.bootstrap.dataRoot, 'home'), GIT_CONFIG_NOSYSTEM: '1' };
+  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/ao-corpus/${name}.git`], { cwd: project.path, env, stdio: 'ignore' });
+  const refreshed = await harness.rpc<{ identityError?: string }>('RefreshProjectIdentity', project.projectId);
+  expect(refreshed.identityError, 'an origin the forge does not have left no identity error').toBeTruthy();
+  return { created: true };
+}
+
 async function ensureTopUpProject(harness: HarnessApp, version: string): Promise<{ projectId: string; created: boolean }> {
   const name = `topup-v${version}`;
   const rows = (await harness.rpc<Array<{ project: { id: string; path: string } }> | null>('ListProjects')) ?? [];

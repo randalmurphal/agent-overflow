@@ -268,8 +268,8 @@ func (r *Router) emitStreamingBlockStart(
 // Used for top-level blocks recovered from a never-streamed assistant
 // snapshot (CLI-internal retry — see parse_assistant.go's
 // appendRecoveredBlockEvent). The frontend animates only content that
-// arrives as deltas (per-item smoothers are created by the delta
-// path); a completed upsert mounts the row fully formed, which lands
+// arrives as deltas (a per-item smoother reveals a streaming row's
+// deltas); a completed upsert mounts the row fully formed, which lands
 // as a multi-viewport one-frame jump when the recovery races a
 // still-revealing thinking row (the reveal gate withholds the new row
 // behind the draining frontier, then releases it wholesale).

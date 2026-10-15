@@ -121,11 +121,10 @@
   // says which is which rather than making one claim for both. See
   // app_session_prompt_override.go: applySettingsOwnedAxes is the spawn half
   // of the pair, reconcileSettingsOwnedAxes the live half.
-  let promptTiming = $derived(
-    provider === 'claude'
-      ? 'An edit, or turning one on, reaches running headless sessions right away; turning one off applies when the session restarts. Claude TUI sessions pick it up on their next start.'
-      : 'Applies to sessions started later.',
-  );
+  // A prompt change never reaches a running session: it applies when the
+  // thread's session next starts, and a running thread shows a banner that
+  // offers the restart (docs/decisions.md, 2026-10-14).
+  const promptTiming = "Applies when a thread's session next starts. Running threads show a banner offering a restart.";
 </script>
 
 <div class="settings-sections">

@@ -30,6 +30,9 @@ type repositoryLookups struct {
 
 // ResolveRepository enriches local Git coordinates using the owning computer's
 // forge login. Failures remain visible; the transient origin is discarded.
+// A checkout with no origin, or an origin on a host that is neither GitHub
+// nor GitLab, has no forge identity to verify: that is its state, not a
+// failure, so it carries no LookupError and is treated like a plain folder.
 // No response body enters the returned identity, which is stored
 // and sent to paired clients. A failed forge call logs one redacted line on
 // this computer instead.
@@ -39,9 +42,6 @@ func (c *Core) ResolveRepository(ctx context.Context, cwd string, identity RepoI
 	identity.RemoteURL = ""
 	locator := repoidentity.Locator(raw)
 	if locator == "" {
-		if identity.Repository {
-			identity.LookupError = "This checkout has no supported forge origin. Repository identity could not be verified."
-		}
 		return identity
 	}
 	// This checkout-local stamp must also be available when admission or SSH
@@ -51,7 +51,6 @@ func (c *Core) ResolveRepository(ctx context.Context, cwd string, identity RepoI
 	forge := classifyOriginURL("https://"+locator, c.gitLabHostsSnapshot())
 	if forge == "" && !isSSHRemote(raw) {
 		identity.IdentitySource = ""
-		identity.LookupError = "Repository identity is not available for this forge."
 		return identity
 	}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -85,7 +84,6 @@ func (c *Core) ResolveRepository(ctx context.Context, cwd string, identity RepoI
 	}
 	if forge == "" {
 		identity.IdentitySource = ""
-		identity.LookupError = "Repository identity is not available for this forge."
 		return identity
 	}
 	key := forge + ":" + locator

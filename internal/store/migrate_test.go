@@ -184,7 +184,7 @@ func TestConfigureDatabaseWarnsOnFallback(t *testing.T) {
 	log.SetOutput(&logBuf)
 	t.Cleanup(func() { log.SetOutput(previous) })
 
-	if err := configureDatabase(db); err != nil {
+	if err := configureDatabase(db, writerConnPragmas); err != nil {
 		t.Fatalf("configureDatabase: %v", err)
 	}
 
@@ -1649,7 +1649,7 @@ func TestMigrationV33RemovesQueueFromWorkItems(t *testing.T) {
 
 // TestV12ChannelMaxTurnsColumn covers the plain ALTER TABLE ADD COLUMN
 // migration: a pre-existing channel row must backfill to 8, new rows can
-// set an explicit value, and the NOT NULL constraint is enforced. v142
+// set an explicit value, and the NOT NULL constraint is enforced. v143
 // drops the table.
 func TestV12ChannelMaxTurnsColumn(t *testing.T) {
 	db := migrateThrough(t, 11)
@@ -1707,7 +1707,7 @@ func migrateThrough(t *testing.T, target int) *sql.DB {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 
-	if err := configureDatabase(db); err != nil {
+	if err := configureDatabase(db, writerConnPragmas); err != nil {
 		t.Fatalf("configure database: %v", err)
 	}
 	if err := ensureMigrationTable(db); err != nil {
@@ -1743,7 +1743,7 @@ func migratedDB(t *testing.T) *sql.DB {
 			t.Errorf("close migrated db: %v", err)
 		}
 	})
-	if err := configureDatabase(db); err != nil {
+	if err := configureDatabase(db, writerConnPragmas); err != nil {
 		t.Fatalf("configure database: %v", err)
 	}
 	return db

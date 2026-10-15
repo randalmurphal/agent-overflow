@@ -25,10 +25,6 @@ import (
 //     respawn is what adds the opt-in;
 //   - an /effort or /fast apply on a session that has not advertised that
 //     command (older CLI, gated account, or no init yet);
-//   - a system-prompt swap on a session whose CLI has not (yet) proved it
-//     is new enough to APPLY set_model.system_prompt, or whose current
-//     model is unknown (set_model must carry one, and there is no
-//     prompt-only request shape);
 //   - a thinking change on a session whose CLI has not (yet) proved it
 //     carries the set_max_thinking_tokens handler.
 //
@@ -100,22 +96,8 @@ type LiveUpdate struct {
 	Effort string
 	// FastMode is the fast-mode state to apply via the /fast command.
 	FastMode FastModeChange
-	// SystemPrompt is the replacement custom system prompt to apply via
-	// `set_model.system_prompt`, effective from the next turn on. Always
-	// non-empty: the field has no revert-to-built-in form (the CLI rejects
-	// an empty string outright, "system_prompt must be a non-empty string
-	// when present"), so an override being turned OFF is a restart. Turning
-	// one ON is live — the handler's setter is an unguarded assignment onto
-	// the same slot `--system-prompt-file` fills, so populating an empty
-	// slot is not a special case. See PlanLiveUpdate.
-	//
-	// It rides set_model rather than a request of its own, which makes the
-	// model the carrier: an update with a prompt and no model change
-	// re-sends the model the session is already running.
-	SystemPrompt string
 	// Thinking is the extended-thinking change to apply via one
-	// `set_max_thinking_tokens` control_request. Like the prompt axis it is
-	// ASYMMETRIC: turning thinking off or pinning a budget is live, and the
+	// `set_max_thinking_tokens` control_request. It is ASYMMETRIC: turning thinking off or pinning a budget is live, and the
 	// return to "whatever Claude Code decides" is not — `max_thinking_tokens:
 	// null` is a documented no-op, so only a respawn without the flag
 	// restores the CLI's own choice. PlanLiveUpdate refuses that direction.
@@ -162,11 +144,11 @@ func IsLiveEffortTier(tier string) bool {
 //
 // A model that declares no reasoning effort suppresses effort in the CLI
 // request builder, so switching to it needs only set_model. Switching back
-// reasserts the target effort through /effort. The system prompt has a hole:
-// `set_model.system_prompt` must be non-empty, so turning an override OFF is
-// a restart — but its setter assigns unconditionally onto the slot
-// `--system-prompt-file` fills, so turning one ON is live, exactly like
-// swapping one for another.
+// reasserts the target effort through /effort. The system prompt is
+// spawn-only here: a diff on it falls through to the DeepEqual and demands
+// a restart. The app never lets a settings-level override reach this diff
+// (reconcileSettingsOwnedAxes pins it); only a feature-owned prompt does,
+// and that one converges by restart.
 //
 // Resume, ResumeAt, and ForkSession are session lifecycle state, not
 // config — a live session's resume cursor legitimately drifts from the
@@ -197,19 +179,6 @@ func PlanLiveUpdate(prev, next provider.SessionOptions) (LiveUpdate, bool) {
 		// Carried by the update — take the axis out of the equality check.
 		// This also reasserts effort after leaving a model without effort.
 		prevCfg.ReasoningEffort, nextCfg.ReasoningEffort = "", ""
-	}
-	// The prompt swap rides update.Model's set_model (or a re-send of the
-	// current model when the model itself is unchanged), so it is blanked
-	// out of the equality check once carried. Unlike the effort axis this
-	// is NOT symmetric: only the empty NEXT side falls through to the
-	// DeepEqual below and demands a restart, because set_model's
-	// system_prompt has no revert-to-built-in form. Turning an override ON
-	// is carried live — the CLI's setter assigns unconditionally onto the
-	// slot `--system-prompt-file` would otherwise have filled at spawn, so
-	// an empty prior value is not a special case on the wire.
-	if prevCfg.SystemPrompt != nextCfg.SystemPrompt && nextCfg.SystemPrompt != "" {
-		update.SystemPrompt = nextCfg.SystemPrompt
-		prevCfg.SystemPrompt, nextCfg.SystemPrompt = "", ""
 	}
 	// The thinking axis rides a request of its own. A refused transition
 	// (the return to ThinkingDefault) is deliberately NOT blanked, so it
@@ -350,18 +319,6 @@ func (s *Session) validateLiveUpdate(update LiveUpdate) error {
 			return ErrLiveUpdateRequiresRestart
 		}
 	}
-	if update.SystemPrompt != "" {
-		if !s.supportsLiveSystemPrompt() {
-			return ErrLiveUpdateRequiresRestart
-		}
-		// set_model has no prompt-only form: the request must name a model,
-		// and a session whose model we cannot state (no Config.Model, no
-		// acked set_model) has nothing to re-send. Restarting is what
-		// grounds it.
-		if s.effectiveConfigModel(update) == "" {
-			return ErrLiveUpdateRequiresRestart
-		}
-	}
 	if update.Thinking.Apply {
 		if !s.supportsLiveThinking() {
 			return ErrLiveUpdateRequiresRestart
@@ -407,7 +364,7 @@ func (s *Session) validateLiveUpdate(update LiveUpdate) error {
 // LiveApplyOutcome names which — the axes are separate wire operations
 // (set_model, set_permission_mode, set_max_thinking_tokens, then two
 // stdin commands), so a set_max_thinking_tokens that times out against a
-// busy CLI leaves a session genuinely running the new prompt on the old
+// busy CLI leaves a session genuinely running the new model on the old
 // thinking budget.
 //
 // Callers MUST fold the applied axes into whatever they record as the
@@ -441,18 +398,11 @@ func (s *Session) ApplyLiveUpdate(ctx context.Context, update LiveUpdate, preSen
 		preSend(receipt)
 	}
 
-	// One set_model carries both the model and the prompt swap. When only
-	// the prompt changed it re-sends the model EXACTLY as last accepted
-	// (marker and all) — the CLI applies the prompt only when it accepts
-	// the model, so a prompt-only update still has to win the model check.
-	if update.Model != "" || update.SystemPrompt != "" {
-		if err := s.setModel(ctx, s.effectiveConfigModel(update), update.SystemPrompt); err != nil {
+	if update.Model != "" {
+		if err := s.setModel(ctx, update.Model); err != nil {
 			return applied, err
 		}
-		// One request, both axes: the CLI applies the prompt only when it
-		// accepts the model, so there is no half of this to report.
-		applied.Model = update.Model != ""
-		applied.SystemPrompt = update.SystemPrompt != ""
+		applied.Model = true
 	}
 	if update.BasePermissionMode != "" {
 		if err := s.setBasePermissionMode(ctx, update.BasePermissionMode); err != nil {
@@ -509,7 +459,6 @@ func (s *Session) ApplyLiveUpdate(ctx context.Context, update LiveUpdate, preSen
 // here and rejected there, and both are true statements about it.
 type LiveApplyOutcome struct {
 	Model              bool
-	SystemPrompt       bool
 	BasePermissionMode bool
 	Thinking           bool
 	Effort             bool
@@ -541,10 +490,6 @@ func CommitLiveUpdate(prev, next provider.SessionOptions, applied LiveApplyOutco
 			// sends /effort, even when prev's ignored option named a tier.
 			committed.ReasoningEffort = ""
 		}
-	}
-	if applied.SystemPrompt {
-		committed.SystemPrompt = next.SystemPrompt
-		committed.SystemPromptOverrideSource = next.SystemPromptOverrideSource
 	}
 	if applied.BasePermissionMode {
 		// The runtime mode is the single option behind the permission mode,
@@ -598,15 +543,9 @@ func (s *Session) sendConfigCommand(ctx context.Context, command, id string) err
 }
 
 // setModel switches the live session's active model via the CLI's set_model
-// control_request, optionally replacing the custom system prompt in the same
-// request.
-//
-// The two are ONE decision on the CLI side: the prompt is stored only after
-// the model passes the recognized / allowed checks, and a rejected model
-// answers `{ok:false, error}` with the prompt untouched (2.1.237 handler,
-// telemetry `system_prompt_switch: "model_switch_rejected"`). So an error
-// return here means NEITHER axis applied — never "the model failed but the
-// prompt landed" — and the caller's restart fallback re-grounds both.
+// control_request. The request's optional `system_prompt` field is never
+// sent: a system prompt change applies only at the thread's next session
+// start (docs/decisions.md 2026-10-14).
 //
 // The success payload is a bare `{}`: there is no schema for a set_model
 // success body and the handler returns `{ok:true}` with nothing else, so the
@@ -614,15 +553,11 @@ func (s *Session) sendConfigCommand(ctx context.Context, command, id string) err
 // family alias down to a concrete model it still answers ok (telemetry
 // `model_switch: "family_alias_stepped_down"`), which is why the structured
 // read-back (get_settings.go) is what records what is actually running.
-func (s *Session) setModel(ctx context.Context, model, systemPrompt string) error {
+func (s *Session) setModel(ctx context.Context, model string) error {
 	opName := "set model " + model
 	request := map[string]any{
 		"subtype": "set_model",
 		"model":   model,
-	}
-	if systemPrompt != "" {
-		opName += " with system prompt"
-		request["system_prompt"] = systemPrompt
 	}
 	res, err := s.sendControlRequest(ctx, opName, request)
 	if err != nil {

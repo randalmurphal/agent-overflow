@@ -143,7 +143,7 @@ func TestUsageLimitScenariosCarryTheUsageLimitReason(t *testing.T) {
 			t.Fatalf("LoadLibrary: %v", err)
 		}
 		parser := claude.NewParser()
-		var sawUsageLimit, sawSpentWindow bool
+		var sawUsageLimit bool
 		for _, line := range collectEmitLines(s, vars) {
 			events, err := parser.ParseLine("thread-test", []byte(line))
 			if err != nil {
@@ -153,27 +153,15 @@ func TestUsageLimitScenariosCarryTheUsageLimitReason(t *testing.T) {
 				if event.Failure != nil && event.Failure.Reason == provider.FailureReasonUsageLimit {
 					sawUsageLimit = true
 				}
+				// The rejected rate_limit_event cannot say which account it
+				// reports, so it must not reach the usage meters.
 				if event.Kind == provider.EventRateLimits {
-					var snapshot provider.RateLimitsSnapshot
-					if err := json.Unmarshal(event.Meta, &snapshot); err != nil {
-						t.Fatalf("decode rate limits meta: %v", err)
-					}
-					for _, limit := range snapshot.Limits {
-						// A refused window is spent by definition, and the
-						// reset time is the only thing that tells the user
-						// when it clears.
-						if limit.UsedPercent == 100 && limit.ResetsAt > 0 {
-							sawSpentWindow = true
-						}
-					}
+					t.Errorf("rate_limit_event reached the meters: %s", event.Meta)
 				}
 			}
 		}
 		if !sawUsageLimit {
 			t.Error("no event carried FailureReasonUsageLimit; a workflow run would fail instead of parking")
-		}
-		if !sawSpentWindow {
-			t.Error("no rate-limit snapshot reported a spent window with a reset time")
 		}
 	})
 

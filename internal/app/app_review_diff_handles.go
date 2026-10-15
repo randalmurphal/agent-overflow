@@ -50,10 +50,6 @@ type ReviewDiffChunk = gitdiff.Chunk
 type ReviewDiffOpened struct {
 	ID    string          `json:"id"`
 	Chunk ReviewDiffChunk `json:"chunk"`
-	// HeadSHA is the commit a pull request's diff was computed at, which
-	// the fetch can move past the head the caller last saw. Empty for
-	// every other diff.
-	HeadSHA string `json:"headSha,omitempty"`
 	// PayloadIDs are the edit payloads an edits diff joins, in patch
 	// order; GetPayloadPatchSpans returns each one's highlight spans.
 	// Empty for every other diff.

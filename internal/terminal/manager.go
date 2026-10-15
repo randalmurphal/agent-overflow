@@ -59,12 +59,20 @@ func (m *Manager) Open(threadID string, opts SessionOptions) (SessionSummary, er
 	if err != nil {
 		return SessionSummary{}, err
 	}
-
-	m.mu.Lock()
-	m.sessions[terminalID] = sess
-	m.mu.Unlock()
-
+	m.register(sess)
 	return sess.Summary(), nil
+}
+
+// register lists a spawned session unless its shell has already exited. The
+// exit callback deletes the session under m.mu after clearing running, so a
+// shell that exits before this point has had its delete find nothing, and
+// listing it now would keep a dead terminal forever.
+func (m *Manager) register(sess *Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sess.isRunning() {
+		m.sessions[sess.ID()] = sess
+	}
 }
 
 // Write sends data to the terminal with the given ID.

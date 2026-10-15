@@ -23,7 +23,10 @@ axis before the first write and register pending confirmations in `preSend`.
 Model, permission, thinking, effort, and fast-mode updates have different wire
 confirmations; preserve partial state until each confirmation arrives. Returning
 thinking control to the CLI default requires restart. Account switches do not:
-the CLI reloads its canonical credential on the next request.
+the CLI reloads its canonical credential on the next request. The system
+prompt is never updated live: `LiveUpdate` carries none, so a prompt diff is a
+restart, and `--system-prompt-snapshot off` is what lets that restart's
+`--resume` use the new prompt.
 
 ## Credentials
 

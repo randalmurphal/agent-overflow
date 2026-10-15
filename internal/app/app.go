@@ -171,6 +171,10 @@ type App struct {
 	// spinnerWatcher it also suppresses this process's own cue writes,
 	// which are RPCs rather than hand edits.
 	soundWatcher *assetwatch.SoundWatcher
+	// promptWatcher watches <configDir>/prompts so a system prompt override
+	// edited as a file reaches attached screens and live Claude sessions
+	// without a save in the app. Nil on the same terms as themeWatcher.
+	promptWatcher *assetwatch.PromptWatcher
 	// turnObservers fans provider events out to internal App features after
 	// triage handling has been attempted.
 	turnObservers appTurnObserverState
@@ -452,6 +456,9 @@ type App struct {
 	// prUpdates is the PR-scope review-pane polling concern
 	// (`app_pr_updates.go`).
 	prUpdates appPRUpdateState
+	// mergedPRs removes a thread's worktree once its pull request merges
+	// (`app_worktree_merge_cleanup.go`).
+	mergedPRs mergedPRCleanupState
 	// reviewDiffs holds the review diffs clients are reading
 	// (`app_review_diff_handles.go`).
 	reviewDiffs appReviewDiffState
@@ -468,6 +475,10 @@ type App struct {
 	// reported and the live threads flagged stale against it. Zero value
 	// ready; the watcher goroutine only runs from Start.
 	providerBinaries appProviderBinaryWatchState
+	// promptStale is the set of live threads whose settings-level system
+	// prompt would differ at their next session start
+	// (app_prompt_stale.go).
+	promptStale appPromptStaleState
 	// claudeApp owns application-facing reads and controls for live Claude
 	// sessions. Account and process lifecycle stay with their own services.
 	claudeAppOnce sync.Once
@@ -680,6 +691,10 @@ type App struct {
 	// never resolves them on PATH. The zero value is the desktop
 	// behavior. Set once before Start; never mutated afterwards.
 	forgeCLIs isolatedForgeCLIs
+	// prLookupRetryBase replaces how long the git.Core caches a first
+	// failed open-PR lookup (git.WithPRLookupErrorBase); zero keeps the
+	// product value. Only a harness boot sets it. Set once before Start.
+	prLookupRetryBase time.Duration
 	// providerBinaryOverride, when non-empty, wins over the settings-
 	// backed provider binary paths in providerBinaryPath. Harness mode
 	// points it at ao-mockprovider so the "providers are always mocked"

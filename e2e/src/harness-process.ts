@@ -171,15 +171,6 @@ function isShellExecutable(executable: string): boolean {
   return name === 'sh' || name === 'dash' || name === 'bash' || name === 'zsh';
 }
 
-export async function verifyProcessIdentity(identity: ProcessIdentity): Promise<boolean> {
-  try {
-    const current = await captureProcessIdentity(identity.pid);
-    return sameProcessIdentity(identity, current);
-  } catch {
-    return false;
-  }
-}
-
 export async function captureProcessGroupMemberProof(
   identity: ProcessIdentity,
 ): Promise<ProcessGroupMemberProof | undefined> {
@@ -208,15 +199,39 @@ async function captureProcessGroupMemberProofForGroup(
   return undefined;
 }
 
-export async function verifyProcessGroupMemberProof(
-  proof: ProcessGroupMemberProof,
-): Promise<boolean> {
+export type ProcessHoldState = 'held' | 'released' | 'changed';
+
+/**
+ * Whether a captured Unix identity's pid is still held by that process. A
+ * process that is exiting, or a zombie, has no readable Linux exe link, so a
+ * full capture fails while its stat still carries the captured birth and
+ * group. Such a pid cannot have been reused, and its group is still safe to
+ * signal; a different birth or group is reuse.
+ */
+export async function processHoldState(identity: ProcessIdentity): Promise<ProcessHoldState> {
+  let current: ProcessIdentity;
   try {
-    const current = await captureProcessIdentity(proof.pid);
-    return sameProcessIdentity(proof, current);
-  } catch {
-    return false;
+    current = await captureProcessIdentityOnce(identity.pid);
+  } catch (error) {
+    if (process.platform === 'linux') {
+      let stat: string;
+      try {
+        stat = await readFile(`/proc/${identity.pid}/stat`, 'utf8');
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') return 'released';
+        throw statError;
+      }
+      const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+      return fields[19] === identity.birth && Number(fields[2]) === identity.groupId ? 'held' : 'changed';
+    }
+    try {
+      process.kill(identity.pid, 0);
+    } catch (probeError) {
+      if ((probeError as NodeJS.ErrnoException).code === 'ESRCH') return 'released';
+    }
+    throw new Error(`harness process ${identity.pid} identity query failed while it is alive: ${(error as Error).message}`);
   }
+  return sameProcessIdentity(identity, current) ? 'held' : 'changed';
 }
 
 export async function captureProcessTreeProof(identity: ProcessIdentity): Promise<ProcessTreeProof> {
@@ -248,7 +263,10 @@ export async function processTreeRSS(identity: ProcessIdentity): Promise<number>
   const rows = await processRows();
   const byPid = new Map(rows.map((row) => [row.pid, row]));
   const root = byPid.get(identity.pid);
-  if (!root || root.birth !== identity.birth) {
+  // A root that is exiting reports no VmRSS and drops out of the rows, and a
+  // reaped one owns no tree; neither has anything left to measure.
+  if (!root) return 0;
+  if (root.birth !== identity.birth) {
     throw new Error(`harness watchdog: process identity changed for pid ${identity.pid}`);
   }
   const children = new Map<number, ProcessRow[]>();
@@ -449,7 +467,8 @@ export async function waitForOwnedTreeExit(
 }
 
 /**
- * Recheck only identities captured from this launch. A Unix process-group
+ * Recheck only identities captured from this launch. One that still holds its
+ * pid is alive, even mid-exit, since it can still hold files. A Unix process-group
  * probe can return EPERM after the owned members are gone (notably on macOS),
  * and treating that ambiguous kernel answer as proof of survival both lies in
  * diagnostics and preserves a disposable data root forever.
@@ -467,7 +486,13 @@ export async function ownedProcessTreeAlive(
     const key = `${proof.pid}:${proof.birth}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    if (await verifyProcessIdentity(proof)) return true;
+    try {
+      if ((await processHoldState(proof)) === 'held') return true;
+    } catch (error) {
+      // A pid that exists but cannot be queried proves nothing about this
+      // launch; treating it as survival would preserve the root forever.
+      console.error(`harness teardown could not verify owned pid ${proof.pid}: ${(error as Error).message}`);
+    }
   }
   // When launch failed before any identity could be captured, absence of a
   // proof is not permission to declare the process gone. The ChildProcess
@@ -493,11 +518,12 @@ export async function terminateChildTreeAndWaitVerified(
       return;
     }
     if (!child.pid || !unixProcessGroupAlive(child.pid)) return;
-    if (!memberProof || !(await verifyProcessGroupMemberProof(memberProof))) {
-      throw new Error(`refusing to signal group for dead pid ${child.pid}: no matching member proof`);
-    }
     // The group remains the ownership boundary after its leader exits. The
     // surviving member proof prevents a recycled group from being signalled.
+    if (!(await authorizeGroupSignal(
+      child, identity, memberProof, treeProof,
+      `refusing to signal group for dead pid ${child.pid}: no matching member proof`,
+    ))) return;
     await terminateChildTree(child, signal);
     const exited = await waitForOwnedTreeExit(child, signal === 'SIGKILL' ? 5_000 : 500);
     if (exited.resolved) return;
@@ -512,31 +538,20 @@ export async function terminateChildTreeAndWaitVerified(
     }
     return;
   }
-  if (!identity) {
-    if (!memberProof || !(await verifyProcessGroupMemberProof(memberProof))) {
-      throw new Error(`refusing to signal pid ${child.pid ?? 'unknown'} without process identity or member proof`);
-    }
-  } else if (!(await verifyProcessIdentity(identity))) {
-    throw new Error(`refusing to signal pid ${child.pid ?? 'unknown'} without matching process identity`);
-  }
+  if (!(await authorizeGroupSignal(
+    child, identity, memberProof, treeProof,
+    `refusing to signal pid ${child.pid ?? 'unknown'} without a held process identity or member proof`,
+  ))) return;
   await terminateChildTree(child, signal);
   const exited = await waitForOwnedTreeExit(child, signal === 'SIGKILL' ? 5_000 : 500);
   if (exited.resolved) return;
-  if (identity) {
-    if (!(await verifyProcessIdentity(identity))) {
-      // The group leader can exit after the graceful group signal while an
-      // owned helper (Chromium is the common case) is still unwinding. The
-      // original leader identity cannot authenticate escalation any more, but
-      // a previously captured, still-live member identity can. This is the
-      // same proven-group case handled above when the leader was already gone
-      // on entry; cover the race where it disappears during the grace window.
-      if (!memberProof || !(await verifyProcessGroupMemberProof(memberProof))) {
-        throw new Error(`refusing escalation because pid ${identity.pid} identity changed`);
-      }
-    }
-  } else if (!memberProof || !(await verifyProcessGroupMemberProof(memberProof))) {
-    throw new Error(`refusing escalation because pid ${child.pid ?? 'unknown'} member proof changed`);
-  }
+  // The group leader can exit during the grace window while an owned helper
+  // (Chromium is the common case) is still unwinding, and the members can
+  // finish exiting while their proofs are read.
+  if (!(await authorizeGroupSignal(
+    child, identity, memberProof, treeProof,
+    `refusing escalation because no captured process of group ${child.pid ?? 'unknown'} still holds its pid`,
+  ))) return;
   await terminateChildTree(child, 'SIGKILL');
   const forced = await waitForOwnedTreeExit(child, 5_000);
   if (!forced.resolved) {
@@ -544,6 +559,49 @@ export async function terminateChildTreeAndWaitVerified(
       `harness process ${identity?.pid ?? child.pid ?? 'unknown'} survived verified forced termination`,
     );
   }
+}
+
+/**
+ * Prove the group named by the leader's pid is still this launch's before it
+ * is signalled. Any captured process that still holds its pid proves it: the
+ * leader, the member proof, or a tree-proof descendant in the group, so a
+ * caller holding only a tree proof is covered too. A leader pid now naming
+ * another process is reuse and refuses outright. Returns false when nothing
+ * owned is left to signal.
+ */
+async function authorizeGroupSignal(
+  child: ChildProcess,
+  identity: ProcessIdentity | undefined,
+  memberProof: ProcessGroupMemberProof | undefined,
+  treeProof: ProcessTreeProof | undefined,
+  refusal: string,
+): Promise<boolean> {
+  let leader: ProcessHoldState = 'released';
+  if (identity) {
+    try {
+      leader = await processHoldState(identity);
+    } catch (error) {
+      if ((await waitForOwnedTreeExit(child, 0)).resolved) return false;
+      throw new Error(`${refusal}: leader pid ${identity.pid} cannot be verified: ${(error as Error).message}`);
+    }
+  }
+  if (leader === 'held') return true;
+  const unverified: string[] = [];
+  if (leader === 'released') {
+    const members = [memberProof, ...(treeProof?.descendants ?? []).filter((proof) => proof.groupId === child.pid)];
+    for (const member of members) {
+      if (!member) continue;
+      try {
+        if ((await processHoldState(member)) === 'held') return true;
+      } catch (error) {
+        // One member that cannot be queried proves nothing; another can.
+        unverified.push(`pid ${member.pid}: ${(error as Error).message}`);
+      }
+    }
+  }
+  if ((await waitForOwnedTreeExit(child, 0)).resolved) return false;
+  if (leader === 'changed') throw new Error(`${refusal}: leader pid ${identity?.pid} now names another process`);
+  throw new Error(unverified.length ? `${refusal}; unverified members: ${unverified.join('; ')}` : refusal);
 }
 
 type IdentityState = 'match' | 'gone' | 'changed';

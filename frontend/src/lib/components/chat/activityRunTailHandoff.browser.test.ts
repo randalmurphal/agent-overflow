@@ -238,7 +238,7 @@ describe('tail handoff', () => {
       document.dispatchEvent(new PointerEvent('pointerup', { buttons: 0, pointerType: 'mouse' }));
       selection.removeAllRanges();
     }
-  }, 20_000);
+  });
 
   it('closing prose behind the reveal gate neither kills the controller nor strands the glide nor flashes the scrollbar', async () => {
     const threadId = 'thread-handoff-a';
@@ -315,7 +315,7 @@ describe('tail handoff', () => {
     expect(clip.dataset.scrollOwner, 'the settle half owns the clip after the handoff').toBe(
       'settle',
     );
-  }, 30_000);
+  });
 
   it('activity landing after the handoff stays owner-driven', async () => {
     // The stress shape: content keeps landing in the run after the prose
@@ -352,7 +352,7 @@ describe('tail handoff', () => {
 
     expect(saw, 'follow writes are owner-driven; the thumb is for readers').toBe(false);
     expect(clipGap(clip), 'the follow must still hold the bottom').toBeLessThanOrEqual(DRIFT_PX);
-  }, 20_000);
+  });
 
   it('a real reader scroll still shows the thumb', async () => {
     // The suppression must not swallow the thumb's whole reason to exist:
@@ -374,7 +374,7 @@ describe('tail handoff', () => {
       await raf();
     }
     await waitFor(() => barShowing(bar), 'bar to show on a reader scroll');
-  }, 20_000);
+  });
 
   it('an escaped reader survives the handoff unpinned', async () => {
     // The controller records escapes this component never gets a gesture
@@ -428,5 +428,5 @@ describe('tail handoff', () => {
       Math.abs(clip.scrollTop - parked),
       'the settle observer must not pin a reader who had escaped',
     ).toBeLessThanOrEqual(DRIFT_PX);
-  }, 20_000);
+  });
 });

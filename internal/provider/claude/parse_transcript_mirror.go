@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,6 +36,9 @@ type transcriptMirrorState struct {
 	totalPendingBytes int
 	pendingWarned     map[string]struct{}
 	degradedCommands  map[string]struct{}
+	// terminalTasks queues, oldest first, the tasks whose projection stays
+	// open past their terminal (finishMirroredTask).
+	terminalTasks []string
 }
 
 type mirrorTaskScope struct {
@@ -78,9 +82,19 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 	if err := json.Unmarshal(raw["entries"], &envelope.Entries); err != nil {
 		return nil, fmt.Errorf("parse transcript_mirror entries: %w", err)
 	}
-	if len(envelope.Entries) == 0 {
-		return nil, nil
+	// Queue operations are session records, not transcript rows; only a
+	// dropped agent wake among them is an event (parse_queue_operation.go).
+	entries, dropped := takeQueueOperations(threadID, envelope.Entries, now)
+	if len(entries) == 0 {
+		return dropped, nil
 	}
+	envelope.Entries = entries
+	events, err := p.parseTranscriptMirrorEntries(threadID, envelope, now)
+	return append(dropped, events...), err
+}
+
+// parseTranscriptMirrorEntries routes a mirror batch's transcript rows.
+func (p *Parser) parseTranscriptMirrorEntries(threadID string, envelope transcriptMirrorEnvelope, now time.Time) ([]provider.ProviderEvent, error) {
 	if envelope.FilePath == "" {
 		envelope.FilePath = envelope.LegacyFilePath
 	}
@@ -123,7 +137,17 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 			return events, fmt.Errorf("inspect transcript_mirror %q: %w", envelope.FilePath, err)
 		}
 		binding := state.taskScopes[classification.agentID]
-		if !classification.provesSkillFork() && binding.scope == "" {
+		if binding.scope != "" && !binding.needsProjection && state.scopeOwners[binding.scope] != "" {
+			// The launch the agent's metadata named was projected after
+			// the metadata arrived: the agent runs inside a projected scope.
+			binding.needsProjection = true
+			state.taskScopes[classification.agentID] = binding
+		}
+		// A launch inside a projected scope announces its agent before the
+		// mirror delivers the launch itself (forked_skill_direct_command),
+		// so the agent's batches wait for it like unclassified ones.
+		awaitingLaunch := binding.scope != "" && !binding.needsProjection && p.awaitsTaskCall(binding.scope)
+		if !classification.provesSkillFork() && (binding.scope == "" || awaitingLaunch) {
 			if state.bufferPending(projectionKey, p.activeCommandUUID, envelope.Entries) {
 				events = append(events, transcriptMirrorDegradedEvent(
 					threadID, p.activeCommandUUID, state.commands[p.activeCommandUUID].launchID, now,
@@ -193,12 +217,15 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 	// outer command. A sidechain agent_metadata row without toolUseId proves
 	// Claude created a Skill fork. Ordinary Agent sidechains carry toolUseId
 	// and can inherit the surrounding inline skill's attribution.
-	if projection == nil && p.activeCommandUUID != "" && facts.provesSkillFork() {
+	// A bound agent is not this command's fork: the fork's own task_started
+	// names no tool_use, while a resumed fork and a forked Skill call
+	// inside the fork are bound by theirs.
+	if projection == nil && p.activeCommandUUID != "" && facts.provesSkillFork() && p.taskToolUseRef(facts.agentID).ToolUseID == "" {
 		commandState := state.commands[p.activeCommandUUID]
 		if commandState != nil {
 			launchID := commandState.launchID
 			if launchID == "" {
-				launchID = "claude-command:" + p.activeCommandUUID
+				launchID = directCommandLaunchID(p.activeCommandUUID)
 			}
 			commandState.launchID = launchID
 			commandState.agentID = facts.agentID
@@ -217,6 +244,11 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 			if commandState.command.Argument != "" {
 				input["args"] = commandState.command.Argument
 			}
+			// The fork's agentId is its task id. Its task_started named no
+			// tool_use, so this is where the fork's terminal finds its row,
+			// and where a later resume finds the root its rows return to.
+			p.rememberTaskToolUse(facts.agentID, launchID)
+			p.rememberTaskTranscriptRoot(facts.agentID, launchID)
 			metaFields := map[string]any{
 				"toolName":          "Skill",
 				"input":             input,
@@ -226,6 +258,11 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 					"commandName": skillName,
 				},
 				provider.MetaTranscriptMirroredKey: true,
+			}
+			// The task the row can be stopped by, when the CLI announced one.
+			if commandState.forkTaskID == facts.agentID {
+				metaFields["task_id"] = facts.agentID
+				metaFields["task_type"] = "local_agent"
 			}
 			if commandState.provisional {
 				metaFields["meta_update_only"] = true
@@ -272,14 +309,8 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 	}
 	projection.remember(unseenFacts)
 	projected := state.providerEvents(threadID, result, projectionKey)
-	p.rememberProjectedToolParents(projected)
-	events = append(events, projected...)
+	events = append(events, p.observeProjectedToolCalls(threadID, projected)...)
 	state.observeBindings(rows, projection.scope, projectionKey)
-	if binding := state.taskScopes[projection.agentID]; binding.terminal && binding.projectionKey == projectionKey {
-		closed := projection.projector.Close()
-		events = append(events, state.providerEvents(threadID, closed, projectionKey)...)
-		state.removeProjection(projectionKey)
-	}
 	return events, nil
 }
 
@@ -412,9 +443,9 @@ func (p *Parser) tapUnprojectedCompaction(
 	// resumed agent that is the TRANSCRIPT ROOT — the original launch —
 	// never the newest carrier: the lifecycle rebinds onto the carrier
 	// but the agent's conversation tree does not move (claude-wire.md
-	// §E6). The current binding is the fallback for the reconnect edge,
-	// where this parser never saw the original; triage's carrier-parent
-	// rewrite covers the rest.
+	// §E6). The current binding is the fallback when no root is known
+	// (an earlier process launched the agent and the history named
+	// none); triage's carrier-parent rewrite covers the rest.
 	scope := p.taskTranscriptRoot(agentID)
 	if scope == "" {
 		scope = state.taskScopes[agentID].scope
@@ -468,7 +499,7 @@ func (p *Parser) ensureTranscriptMirrorState() *transcriptMirrorState {
 
 func transcriptMirrorDegradedEvent(threadID, commandUUID, launchID string, now time.Time) provider.ProviderEvent {
 	if launchID == "" {
-		launchID = "claude-command:" + commandUUID
+		launchID = directCommandLaunchID(commandUUID)
 	}
 	meta, _ := json.Marshal(map[string]string{"kind": "transcript_mirror_degraded"})
 	return provider.ProviderEvent{
@@ -484,14 +515,18 @@ func transcriptMirrorDegradedEvent(threadID, commandUUID, launchID string, now t
 }
 
 // finishMirroredTask runs at a task's stop (its task_notification) and at
-// its kill (final). An agent that stops while a background task it owns is
-// still running is PARKED, not done: the CLI wakes it when the task
-// reports (claude-wire.md §E6b), and a projected agent's woken rounds
-// arrive only through its projection. So a stop keeps a projection and its
-// binding while the agent owns a live background task, and releases them
-// at the first stop that finds none. A kill releases them regardless: a
-// killed agent never wakes. Session end releases whatever is left
-// (closeTranscriptMirrors).
+// its kill (final). Claude writes an agent's last message to its
+// transcript after the task's terminal (every typed fork and projected
+// agent capture, claude-wire.md §E9), so the terminal does not close the
+// agent's projection: it stays open for that message until its command
+// ends, the agent is resumed, the session closes, or
+// maxTerminalMirrorTasks later terminals retire it.
+//
+// An agent that stops while a background task it owns is still running is
+// PARKED, not done: the CLI wakes it when the task reports
+// (claude-wire.md §E6b), and its woken rounds arrive only through its
+// projection, so its binding is not marked terminal at all. A killed agent
+// never wakes and is marked regardless.
 func (p *Parser) finishMirroredTask(threadID, taskID string, final bool) []provider.ProviderEvent {
 	if p == nil || p.transcriptMirror == nil {
 		return nil
@@ -513,30 +548,150 @@ func (p *Parser) finishMirroredTask(threadID, taskID string, final bool) []provi
 	if !final && p.ownsLiveBackgroundTask(binding.scope) {
 		return events
 	}
-	key := binding.projectionKey
-	projection := state.projections[key]
-	if projection == nil || projection.agentID != taskID {
-		binding.terminal = true
-		state.taskScopes[taskID] = binding
-		return events
+	binding.terminal = true
+	state.taskScopes[taskID] = binding
+	return append(events, state.retireTerminalTask(threadID, taskID)...)
+}
+
+// maxTerminalMirrorTasks bounds the projections kept open past their
+// agent's terminal for its last message. The message lands within the
+// same flush as the terminal; this many later terminals is far beyond it.
+const maxTerminalMirrorTasks = 64
+
+// retireTerminalTask queues a terminal task's projection and closes the
+// oldest one past maxTerminalMirrorTasks. A queued task whose binding was
+// released, or resumed, since is skipped.
+func (s *transcriptMirrorState) retireTerminalTask(threadID, taskID string) []provider.ProviderEvent {
+	s.terminalTasks = slices.DeleteFunc(s.terminalTasks, func(queued string) bool { return queued == taskID })
+	s.terminalTasks = append(s.terminalTasks, taskID)
+	var events []provider.ProviderEvent
+	for len(s.terminalTasks) > maxTerminalMirrorTasks {
+		oldest := s.terminalTasks[0]
+		s.terminalTasks = s.terminalTasks[1:]
+		if s.taskScopes[oldest].terminal {
+			events = append(events, s.closeTaskProjection(threadID, oldest)...)
+		}
 	}
-	delete(state.taskScopes, taskID)
-	result := projection.projector.Close()
-	events = append(events, state.providerEvents(threadID, result, key)...)
-	state.removeProjection(key)
 	return events
 }
 
-// rememberProjectedToolParents records the scope of each tool call a
-// projection emitted, as the stdout path records a forwarded tool_use's
-// parent, so a background task a projected call starts resolves to the
-// agent that owns it (ownsLiveBackgroundTask).
-func (p *Parser) rememberProjectedToolParents(events []provider.ProviderEvent) {
-	for _, event := range events {
-		if event.Kind == provider.EventToolStart && event.ItemID != "" && event.ParentToolUseID != "" {
-			p.rememberToolUseParent(event.ItemID, event.ParentToolUseID)
-		}
+// closeTaskProjection closes the agent's projection, flushing what its
+// projector holds, and releases its binding.
+func (s *transcriptMirrorState) closeTaskProjection(threadID, taskID string) []provider.ProviderEvent {
+	binding := s.taskScopes[taskID]
+	delete(s.taskScopes, taskID)
+	projection := s.projections[binding.projectionKey]
+	if projection == nil || projection.agentID != taskID {
+		return nil
 	}
+	events := s.providerEvents(threadID, projection.projector.Close(), binding.projectionKey)
+	s.removeProjection(binding.projectionKey)
+	return events
+}
+
+// resumeMirrorTask points a resumed agent's mirror binding at its
+// transcript root. A typed fork's root is its command row: it has no
+// launching tool_use for Claude to forward its rows under, so the mirror
+// stays the only surface they reach and they are projected under the root
+// again (local_agent_resumed_by_typed_fork_20261014). An agent with a
+// launching tool_use streams its resumed rounds on stdout (captured for an
+// awaited agent), so a projection its earlier run left open only for its
+// last message is closed rather than fed twice. A parked agent's
+// projection is left as it is: no capture shows where a parked agent's
+// resumed rounds go.
+func (p *Parser) resumeMirrorTask(threadID, taskID, root string) []provider.ProviderEvent {
+	if p == nil {
+		return nil
+	}
+	if !isDirectCommandLaunchID(root) {
+		if p.transcriptMirror == nil || !p.transcriptMirror.taskScopes[taskID].terminal {
+			return nil
+		}
+		return p.transcriptMirror.closeTaskProjection(threadID, taskID)
+	}
+	state := p.ensureTranscriptMirrorState()
+	var events []provider.ProviderEvent
+	binding := state.taskScopes[taskID]
+	if binding.scope != root {
+		events = state.closeTaskProjection(threadID, taskID)
+		binding = mirrorTaskScope{scope: root}
+	}
+	binding.needsProjection = true
+	binding.terminal = false
+	state.taskScopes[taskID] = binding
+	return events
+}
+
+// awaitsTaskCall reports whether a task is bound to toolUseID, a call the
+// session mirror has not delivered yet (unclassifiedTaskCalls).
+func (p *Parser) awaitsTaskCall(toolUseID string) bool {
+	if p == nil {
+		return false
+	}
+	_, ok := p.unclassifiedTaskCalls.get(toolUseID)
+	return ok
+}
+
+// observeProjectedToolCalls records each tool call a projection emitted
+// the way the stdout path records a forwarded one, so a background task a
+// projected call starts resolves to the agent that owns it
+// (ownsLiveBackgroundTask) and its task_started is classified by the call
+// that started it. It also finishes what the stdout path does at a call's
+// task_started and result:
+//
+//   - A call a task_started bound before the mirror delivered it is
+//     classified now. A launch records the task's transcript root; any
+//     other call is a §E6 resume, and its resume events follow the call.
+//   - A resume carrier's completion is the resume's ack and carries
+//     is_background, as parse_user.go marks one on stdout.
+func (p *Parser) observeProjectedToolCalls(threadID string, events []provider.ProviderEvent) []provider.ProviderEvent {
+	out := make([]provider.ProviderEvent, 0, len(events))
+	for _, event := range events {
+		switch event.Kind {
+		case provider.EventToolStart:
+			if event.ItemID == "" {
+				break
+			}
+			p.rememberToolUseName(event.ItemID, event.ItemType)
+			if event.ParentToolUseID != "" {
+				p.rememberToolUseParent(event.ItemID, event.ParentToolUseID)
+			}
+			start, unclassified := p.unclassifiedTaskCalls.get(event.ItemID)
+			if !unclassified || event.ItemType == "" {
+				break
+			}
+			p.unclassifiedTaskCalls.delete(event.ItemID)
+			if start.resumes == "" && startsAgent(event.ItemType) {
+				p.rememberTaskTranscriptRoot(start.taskID, event.ItemID)
+				break
+			}
+			fields, prompt, closed := p.beginTaskResume(threadID, event.ItemID, start.resumes, start, event.Timestamp)
+			fields["task_id"] = start.taskID
+			fields["task_type"] = "local_agent"
+			meta, _ := json.Marshal(fields)
+			out = append(out, event)
+			out = append(out, closed...)
+			out = append(out, provider.ProviderEvent{
+				Kind:            provider.EventToolStart,
+				ThreadID:        threadID,
+				ItemID:          event.ItemID,
+				Meta:            meta,
+				ParentToolUseID: event.ParentToolUseID,
+				Timestamp:       event.Timestamp,
+			})
+			if prompt != nil {
+				out = append(out, *prompt)
+			}
+			continue
+		case provider.EventToolComplete:
+			if p.backgroundOrigin(event.ItemID) == backgroundFromTaskStarted {
+				event.Meta = mergeJSONMetaFlag(event.Meta, "is_background", true)
+				p.clearBackground(event.ItemID)
+			}
+		}
+		out = append(out, event)
+	}
+	return out
 }
 
 func (s *transcriptMirrorState) removeProjection(key string) {

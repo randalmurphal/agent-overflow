@@ -220,7 +220,7 @@ func TestSnapshotCommandReportsTheSchemaItBacksUp(t *testing.T) {
 		r := newCommandRig(t)
 		writeFile(t, r.db, "live")
 		cmd := r.command("u1")
-		cmd.FreeBytes = freeSpace(1)
+		cmd.ReadSpace = freeSpace(1)
 		cmd.SchemaVersion = schemaUnderTheLock(r, 118, nil)
 		if result := cmd.Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeRefused || result.Schema != 118 {
 			t.Fatalf("result = %+v, want refused with schema 118", result)
@@ -260,7 +260,7 @@ func TestSnapshotCommandRefusesWithoutChangingAnything(t *testing.T) {
 		r := newCommandRig(t)
 		writeFile(t, r.db, "live")
 		cmd := r.command("u1")
-		cmd.FreeBytes = freeSpace(1)
+		cmd.ReadSpace = freeSpace(1)
 		result := cmd.Snapshot(context.Background(), nil)
 		if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, "Free at least") {
 			t.Fatalf("result = %+v", result)
@@ -272,9 +272,19 @@ func TestSnapshotCommandRefusesWithoutChangingAnything(t *testing.T) {
 	t.Run("host drive short", func(t *testing.T) {
 		r := newCommandRig(t)
 		writeFile(t, r.db, "live")
-		host := uint64(1)
+		host := HostDisk{Free: 1}
 		result := r.command("u1").Snapshot(context.Background(), &host)
 		if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, hostDiskDescription) {
+			t.Fatalf("result = %+v", result)
+		}
+	})
+	t.Run("host drive full under a disk with unused blocks", func(t *testing.T) {
+		r := newCommandRig(t)
+		writeFile(t, r.db, "live")
+		host := HostDisk{Free: 1, Allocated: 2 << 30}
+		cmd := r.command("u1")
+		cmd.ReadSpace = diskSpace(SnapshotSpaceNeeded(4), 1<<30)
+		if result := cmd.Snapshot(context.Background(), &host); result.Outcome != UpdateOutcomeOK {
 			t.Fatalf("result = %+v", result)
 		}
 	})
@@ -309,16 +319,22 @@ func TestSpaceCommandAnswersWithoutTheLock(t *testing.T) {
 		t.Fatalf("no database = %+v, want the snapshot step to refuse it", result)
 	}
 	writeFile(t, r.db, strings.Repeat("x", 4000))
-	cmd.FreeBytes = freeSpace(SnapshotSpaceNeeded(4000) - 1)
+	cmd.ReadSpace = freeSpace(SnapshotSpaceNeeded(4000) - 1)
 	result := cmd.Space(nil)
 	if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, "Free at least 1 MB") {
 		t.Fatalf("short disk = %+v", result)
 	}
-	cmd.FreeBytes = freeSpace(SnapshotSpaceNeeded(4000))
-	host := uint64(1)
+	cmd.ReadSpace = freeSpace(SnapshotSpaceNeeded(4000))
+	host := HostDisk{Free: 1}
 	if result := cmd.Space(&host); result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, hostDiskDescription) {
 		t.Fatalf("short host drive = %+v", result)
 	}
+	host.Allocated = 1 << 30
+	cmd.ReadSpace = diskSpace(SnapshotSpaceNeeded(4000), 0)
+	if result := cmd.Space(&host); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("full host drive under a disk with unused blocks = %+v", result)
+	}
+	cmd.ReadSpace = freeSpace(SnapshotSpaceNeeded(4000))
 	if result := cmd.Space(nil); result.Outcome != UpdateOutcomeOK {
 		t.Fatalf("enough room = %+v", result)
 	}

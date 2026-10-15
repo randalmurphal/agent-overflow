@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/harness/forgefake"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
@@ -223,6 +226,47 @@ func TestExternalWorktreeRemovalClosesTerminalsOpenedInIt(t *testing.T) {
 
 	if got := f.app.terminals.Matching(func(terminal.SessionSummary) bool { return true }); len(got) != 0 {
 		t.Fatalf("open terminals after the external removal = %+v, want none", got)
+	}
+}
+
+// An external removal forgets the worktree's open-PR answers, as the
+// in-app removal does (RemoveWorktreeForce): a checkout re-created at the
+// path starts with no last known PR.
+func TestExternalWorktreeRemovalForgetsItsOpenPR(t *testing.T) {
+	t.Parallel()
+	f := newWatchFixture(t)
+	worktree := f.worktree(t, "feature-pr")
+	_ = testutil.RunGitAllowError(f.repo, "remote", "remove", "origin")
+	testutil.RunGit(t, f.repo, "remote", "add", "origin", "https://github.com/acme/widgets.git")
+	testutil.RunGit(t, f.repo, "update-ref", "refs/remotes/origin/feature-pr", "feature-pr")
+	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
+	if _, err := engine.Seed(forgefake.Fixture{Repos: []forgefake.Repo{{Forge: "github", Project: "acme/widgets", Pulls: []forgefake.Pull{
+		{Number: 5, Title: "Work", HeadRef: "feature-pr", NodeID: "PR_five"},
+	}}}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(engine)
+	t.Cleanup(srv.Close)
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", Isolated: &forgeapi.Isolated{BaseURL: srv.URL, Token: mergeForgeToken}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	f.app.git = gitops.NewCore(gitops.WithForgeAPI(svc))
+	if status, err := f.app.git.Status(t.Context(), worktree); err != nil || status.OpenPRNumber != 5 {
+		t.Fatalf("Status before removal = PR %d, err %v; want PR 5", status.OpenPRNumber, err)
+	}
+
+	testutil.RunGit(t, f.repo, "worktree", "remove", "--force", worktree)
+	f.app.reconcileProjectWorktrees(f.repo, []string{worktree})
+	testutil.RunGit(t, f.repo, "worktree", "add", worktree, "feature-pr")
+
+	status, err := f.app.git.StatusFast(worktree)
+	if err != nil {
+		t.Fatalf("StatusFast: %v", err)
+	}
+	if status.OpenPRURL != "" || status.OpenPRNumber != 0 {
+		t.Fatalf("re-created checkout's fast status shows PR %d (%q), want no last known PR", status.OpenPRNumber, status.OpenPRURL)
 	}
 }
 

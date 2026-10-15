@@ -52,6 +52,7 @@ function detailStub(overrides: Partial<PRDetail> = {}): PRDetail {
     state: 'open',
     draft: false,
     baseRefName: 'main',
+    baseRefSHA: 'base-main',
     headRefName: 'feature',
     headSHA: 'sha-a',
     url: 'https://github.com/owner/repo/pull/5',
@@ -924,7 +925,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     // content forever.
     expect(conflicts).toHaveBeenCalledTimes(1); // the first mock, superseded
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.treeOID).toBe('tree-2');
-    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.headSHA).toBe('sha-b');
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.revision.headSHA).toBe('sha-b');
     expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.get('main.go')).toBe('content for sha-b');
     viewing();
     a.release();
@@ -984,7 +985,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     await flush();
 
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.treeOID).toBe('tree-2');
-    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.headSHA).toBe('sha-b');
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.revision.headSHA).toBe('sha-b');
     expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.get('main.go')).toBe('content for sha-b');
     expect(peekPRConflicts(KEY, CONFLICT_WS).loading).toBe(false);
     viewing();
@@ -1039,7 +1040,7 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
 
     expect(recompute).toHaveBeenCalledTimes(1);
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.treeOID).toBe('tree-2');
-    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.headSHA).toBe('sha-b');
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.revision.headSHA).toBe('sha-b');
     expect(peekPRConflicts(KEY, CONFLICT_WS).contentByPath.get('main.go')).toBe('content for sha-b');
     expect(peekPRConflicts(KEY, CONFLICT_WS).error).toBeNull();
     viewing();
@@ -1104,8 +1105,69 @@ describe('prReviewStore — merge conflicts follow the PR', () => {
     await flush();
 
     expect(recompute).toHaveBeenCalledTimes(1);
-    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.baseRefName).toBe('develop');
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.revision.baseRef).toBe('develop');
     expect(peekPRConflicts(KEY, CONFLICT_WS).state?.paths).toEqual([]);
+    viewing();
+    a.release();
+  });
+
+  it('recomputes the tree when the base tip moves under the same branch', async () => {
+    installSubscribeMock();
+    installConflictMocks();
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    const recompute = setBindingMock('GetPRMergeConflicts', async () => ({
+      conflicted: false, treeOID: 'tree-4', baseLabel: 'origin/main', headLabel: 'feature', paths: [], notes: {}, messages: [],
+    }));
+
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub({ baseRefSHA: 'base-main-2' }), threads: [], headSHA: 'sha-a' });
+    await flush();
+
+    expect(recompute).toHaveBeenCalledTimes(1);
+    expect(recompute.mock.calls[0][2]).toEqual({ baseRef: 'main', baseSHA: 'base-main-2', headSHA: 'sha-a' });
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.revision.baseSHA).toBe('base-main-2');
+    viewing();
+    a.release();
+  });
+
+  it('a view opened before the forge reports a base tip loads when one arrives', async () => {
+    installSubscribeMock();
+    const { conflicts } = installConflictMocks();
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub({ baseRefSHA: '' }));
+    expect(conflicts).not.toHaveBeenCalled();
+    expect(peekPRConflicts(KEY, CONFLICT_WS).error).toBeNull();
+
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a' });
+    await flush();
+
+    expect(conflicts).toHaveBeenCalledTimes(1);
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.treeOID).toBe('tree-1');
+    viewing();
+    a.release();
+  });
+
+  it('a failed tree load retries on the next frame of the same revision', async () => {
+    installSubscribeMock();
+    const a = attachPR(KEY, { ref: REF });
+    await flush();
+    const viewing = permitPRConflictReconcile(KEY, CONFLICT_WS);
+    setBindingMock('GetPRMergeConflicts', async () => {
+      throw new Error('fetch pull request commits: exited with code 128');
+    });
+    await openPRConflicts(KEY, CONFLICT_WS, REF, detailStub());
+    expect(peekPRConflicts(KEY, CONFLICT_WS).error).toContain('code 128');
+
+    const { conflicts } = installConflictMocks();
+    applyPRUpdatedEvent({ prKey: KEY, detail: detailStub(), threads: [], headSHA: 'sha-a', seq: 90 });
+    await flush();
+
+    expect(conflicts).toHaveBeenCalledTimes(1);
+    expect(peekPRConflicts(KEY, CONFLICT_WS).error).toBeNull();
     viewing();
     a.release();
   });
@@ -1219,8 +1281,9 @@ describe('prReviewStore — merge conflicts per checkout', () => {
 
   /** Merge-tree and file reads that fail for a checkout no longer registered. */
   function installCheckoutMocks(removed: Set<string>) {
-    const conflicts = setBindingMock('GetPRMergeConflicts', async (ws: WorkspaceRef, _ref: unknown, base: string) => {
+    const conflicts = setBindingMock('GetPRMergeConflicts', async (ws: WorkspaceRef, _ref: unknown, rev: { baseRef: string }) => {
       if (removed.has(ws.workspacePath)) throw new Error('workspace_not_registered');
+      const base = rev.baseRef;
       return {
         conflicted: true,
         treeOID: `tree ${ws.workspacePath} ${base}`,
@@ -1299,7 +1362,7 @@ describe('prReviewStore — merge conflicts per checkout', () => {
     await flush();
 
     expect(conflicts.mock.calls.map((call) => call[0])).toEqual([OTHER_WS]);
-    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.baseRefName).toBe('main');
+    expect(peekPRConflicts(KEY, CONFLICT_WS).state?.revision.baseRef).toBe('main');
     viewing();
     a.release();
   });

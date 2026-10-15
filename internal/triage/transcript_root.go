@@ -58,6 +58,29 @@ func (r *Router) TranscriptRootID(threadID string, launch store.Item) (string, e
 	return root.ID, nil
 }
 
+// AgentLaunchByTask is the transcript root of a Claude local_agent task
+// from the thread's history: the oldest agent launch row carrying the
+// task id, resolved through any carrier. A carrier whose root row is gone
+// is not a root, so it answers not found. The Claude parser asks this for
+// a §E6 resume whose launch an earlier process ran (claude.Config).
+func (r *Router) AgentLaunchByTask(threadID, taskID string) (string, bool, error) {
+	launch, found, err := r.store.FindOriginalAgentLaunchByTaskID(threadID, taskID, "")
+	if err != nil {
+		return "", false, fmt.Errorf("triage: agent launch by task id %s/%s: %w", threadID, taskID, err)
+	}
+	if !found || !store.IsAgentTranscriptLaunch(launch) {
+		return "", false, nil
+	}
+	if !isResumeCarrierMeta(DecodeToolStartMeta([]byte(launch.Meta))) {
+		return launch.ID, true, nil
+	}
+	root, found, err := r.transcriptRoot(threadID, launch)
+	if err != nil || !found {
+		return "", false, err
+	}
+	return root.ID, true, nil
+}
+
 // transcriptRootOrSelf resolves the row whose scope an agent's rows
 // belong to. A non-carrier is its own root and costs no store read.
 func (r *Router) transcriptRootOrSelf(threadID string, launch store.Item) (store.Item, error) {
@@ -177,7 +200,7 @@ func (r *Router) carrierRootRewrite(threadID, parentToolUseID string) string {
 }
 
 // stampTranscriptRootOnCarrier records the resolved root on the carrier's
-// own meta patch when the parser could not (the reconnect edge). One
+// own meta patch when the parser could not (it never saw the launch). One
 // stamp makes every later reader — this process, a restarted one, and the
 // frontend — answer "is this a carrier" from the row alone. A stamp that
 // names another row is corrected: rootID was resolved through the stamp,

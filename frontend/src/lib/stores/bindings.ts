@@ -94,6 +94,7 @@ export {
   AutoResumeThread,
   StopSession,
   ReconnectSession,
+  DismissSessionBanner,
   SendMessage,
   InterruptTurn,
   InterruptAndRevertIfClean,

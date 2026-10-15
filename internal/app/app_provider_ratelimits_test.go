@@ -343,3 +343,54 @@ func TestProbeCodexRateLimits_EmitsRateLimitsWithoutAccount(t *testing.T) {
 		t.Fatalf("limits = %+v, want 39/36 used", evt.RateLimits.Limits)
 	}
 }
+
+// TestProbeClaudeRateLimits_ReplacesAWrongLaterBoundary pins that the usage
+// endpoint's whole answer corrects a cached row whose reset boundary is later
+// than the true one. Honouring the wrong boundary rejected every true reading,
+// so the row read 28% while the server reported the account at 100%.
+func TestProbeClaudeRateLimits_ReplacesAWrongLaterBoundary(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	tmpHome := testProviderHome(t, app)
+	credsDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(credsDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(credsDir, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"bearer-test"}}`), 0o600); err != nil {
+		t.Fatalf("write creds: %v", err)
+	}
+
+	trueReset := time.Now().Add(5 * 24 * time.Hour).Truncate(time.Hour).UTC()
+	wrongReset := trueReset.Add(35 * time.Hour)
+	poisoned := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude),
+		Limits: []provider.RateLimitEntry{{
+			LimitID: "weekly_all", LimitName: "All models", WindowMins: 10080,
+			UsedPercent: 28, ResetsAt: wrongReset.Unix(),
+		}},
+	}
+	app.emit("provider:usage", provider.UsageEvent{Action: "rate_limits", RateLimits: &poisoned})
+
+	srv := newUsageTestServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"limits":[{"kind":"weekly_all","group":"weekly","percent":100,"resets_at":"` +
+			trueReset.Format(time.RFC3339) + `","scope":null}]}`))
+	}))
+	defer srv.Close()
+	srvURL, _ := url.Parse(srv.URL)
+	app.rateLimitProbeClientOverride = &http.Client{
+		Transport: redirectRoundTripper{target: srvURL, inner: http.DefaultTransport},
+	}
+
+	if err := app.probeClaudeRateLimits(context.Background()); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+
+	got := app.GetRateLimitsSnapshots()
+	if len(got) != 1 || len(got[0].Limits) != 1 {
+		t.Fatalf("snapshots = %+v, want one weekly_all row", got)
+	}
+	if entry := got[0].Limits[0]; entry.UsedPercent != 100 || entry.ResetsAt != trueReset.Unix() {
+		t.Fatalf("weekly_all = %+v, want 100%% resetting at %d", entry, trueReset.Unix())
+	}
+}

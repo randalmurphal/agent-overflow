@@ -161,6 +161,39 @@ describe('<NotificationRow> permission notices', () => {
     expect(row.querySelector('.lucide-icon')?.getAttribute('class')).toContain('triangle');
   });
 
+  // The merged-PR worktree cleanup reports what the app did on its own in
+  // the neutral tone, and why it kept a worktree in the warning tone
+  // (internal/app/app_worktree_merge_cleanup.go). Text only: no action.
+  it('gives a worktree_cleanup notice the neutral tone and a kept worktree the warning tone', () => {
+    const removed = render(NotificationRow, {
+      props: {
+        item: makeNotification(
+          { kind: 'worktree_cleanup' },
+          'PR #90 merged. Removed worktree fix-pr-diff-fetch; this thread now runs in Base.',
+        ),
+      },
+    });
+    const row = removed.getByTestId('notification-row');
+    expect(row.textContent).toContain('Removed worktree fix-pr-diff-fetch');
+    expect(row.className).toContain('text-fg-subtle');
+    expect(row.className).not.toContain('text-warning');
+    expect(row.getAttribute('role')).toBeNull();
+    expect(row.querySelector('a, button')).toBeNull();
+    removed.unmount();
+
+    const kept = render(NotificationRow, {
+      props: {
+        item: makeNotification(
+          { kind: 'warning' },
+          'PR #90 merged. Kept worktree fix-pr-diff-fetch: 3 uncommitted files.',
+        ),
+      },
+    });
+    const keptRow = kept.getByTestId('notification-row');
+    expect(keptRow.className).toContain('text-warning');
+    expect(keptRow.querySelector('a, button')).toBeNull();
+  });
+
   it('surfaces transcript mirror data loss as a warning', () => {
     const { getByTestId } = render(NotificationRow, {
       props: {

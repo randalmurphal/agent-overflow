@@ -3102,10 +3102,9 @@ describe('setupEventListeners', () => {
     expect(fiveHour?.resetsAt).toBe(4102444800);
   });
 
-  // Claude emits one window per `rate_limit_event` (5h XOR 7d). A
-  // subsequent event for the OTHER window must merge into the same
-  // provider slot, not replace it. Codex emits both together; we test
-  // the harder Claude case here because it's the merge-correctness pin.
+  // A partial reading can carry one window (5h XOR 7d). A subsequent
+  // reading for the OTHER window must merge into the same provider
+  // slot, not replace it.
   it('merges Claude single-window updates without clobbering the other window', async () => {
     await buildPane();
 
@@ -3306,21 +3305,20 @@ describe('setupEventListeners', () => {
       installedVersion: '2.1.257',
     } as unknown as ProviderStatusEvent);
 
-    expect(pane.providerBanner?.status).toBe('binary_stale');
-    expect(pane.providerBanner?.sessionVersion).toBe('2.1.219');
-    expect(pane.providerBanner?.installedVersion).toBe('2.1.257');
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['binary_stale']);
+    expect(pane.sessionBanners[0].sessionVersion).toBe('2.1.219');
+    expect(pane.sessionBanners[0].installedVersion).toBe('2.1.257');
+    expect(pane.providerBanner).toBeUndefined();
     // A second pane on the same provider is running its own session on its
     // own binary — a thread-scoped status must not leak into it.
-    expect(other.providerBanner).toBeUndefined();
+    expect(other.sessionBanners).toEqual([]);
     // Nor into the provider-global cache the next thread switch seeds from.
     expect(getProviderStatus('claude')?.status).not.toBe('binary_stale');
   });
 
-  // The withdrawal speaks the legacy vocabulary: a thread-scoped
-  // `status: 'ready'` with no kind. It withdraws the pane's own banner
-  // (undefined) rather than pinning it empty (null), so the pane falls
-  // back to the provider-global status like every unflagged pane.
-  it('clears a thread-scoped banner on a ready event for that thread', async () => {
+  // The withdrawal is a thread-scoped `status: 'ready'` naming the kind it
+  // withdraws; without a name it takes every thread-owned banner down.
+  it('withdraws one session banner by kind and leaves the other', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
     emitWailsEvent('provider:status', {
       kind: 'binary_stale',
@@ -3328,7 +3326,49 @@ describe('setupEventListeners', () => {
       threadId: 'thread-1',
       installedVersion: '2.1.257',
     } as unknown as ProviderStatusEvent);
-    expect(pane.providerBanner?.status).toBe('binary_stale');
+    emitWailsEvent('provider:status', {
+      kind: 'prompt_stale',
+      provider: 'claude',
+      threadId: 'thread-1',
+      revision: 3,
+    } as unknown as ProviderStatusEvent);
+    // Prompt first: it is the row the user caused.
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['prompt_stale', 'binary_stale']);
+    expect(pane.sessionBanners[0].revision).toBe(3);
+
+    emitWailsEvent('provider:status', {
+      provider: 'claude',
+      status: 'ready',
+      threadId: 'thread-1',
+      withdrawKind: 'prompt_stale',
+    } as unknown as ProviderStatusEvent);
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['binary_stale']);
+
+    // A later change re-raises the same kind in place, revision and all.
+    emitWailsEvent('provider:status', {
+      kind: 'prompt_stale',
+      provider: 'claude',
+      threadId: 'thread-1',
+      revision: 4,
+    } as unknown as ProviderStatusEvent);
+    expect(pane.sessionBanners.map((b) => b.revision ?? 0)).toEqual([4, 0]);
+  });
+
+  it('clears every thread-scoped banner on an unnamed ready event for that thread', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
+    emitWailsEvent('provider:status', {
+      kind: 'binary_stale',
+      provider: 'claude',
+      threadId: 'thread-1',
+      installedVersion: '2.1.257',
+    } as unknown as ProviderStatusEvent);
+    emitWailsEvent('provider:status', {
+      kind: 'prompt_stale',
+      provider: 'claude',
+      threadId: 'thread-1',
+      revision: 1,
+    } as unknown as ProviderStatusEvent);
+    expect(pane.sessionBanners).toHaveLength(2);
 
     emitWailsEvent('provider:status', {
       provider: 'claude',
@@ -3336,19 +3376,26 @@ describe('setupEventListeners', () => {
       threadId: 'thread-1',
     } as unknown as ProviderStatusEvent);
 
+    expect(pane.sessionBanners).toEqual([]);
     expect(pane.providerBanner).toBeUndefined();
   });
 
   // The banner claims a RUNNING session is pinned to the old binary. Once
   // the session is gone the claim is false however it ended, and no ready
   // event is owed for a session that no longer exists.
-  it('clears binary_stale when the session disconnects', async () => {
+  it('clears the session banners when the session disconnects', async () => {
     const pane = await buildPane(makeThread({ id: 'thread-1', provider: 'claude' }));
     emitWailsEvent('provider:status', {
       kind: 'binary_stale',
       provider: 'claude',
       threadId: 'thread-1',
       installedVersion: '2.1.257',
+    } as unknown as ProviderStatusEvent);
+    emitWailsEvent('provider:status', {
+      kind: 'prompt_stale',
+      provider: 'claude',
+      threadId: 'thread-1',
+      revision: 1,
     } as unknown as ProviderStatusEvent);
 
     emitWailsEvent('provider:session_account', {
@@ -3358,7 +3405,7 @@ describe('setupEventListeners', () => {
       account: {},
     });
 
-    expect(pane.providerBanner).toBeUndefined();
+    expect(pane.sessionBanners).toEqual([]);
   });
 
   // A withdrawn thread-scoped banner must not hide the provider-global one:
@@ -3376,14 +3423,16 @@ describe('setupEventListeners', () => {
       provider: 'claude',
       message: 'Re-authenticate',
     } as unknown as ProviderStatusEvent);
-    expect(pane.providerBanner?.status).toBe('binary_stale');
+    expect(pane.sessionBanners.map((b) => b.kind)).toEqual(['binary_stale']);
 
     emitWailsEvent('provider:status', {
       provider: 'claude',
       status: 'ready',
       threadId: 'thread-1',
+      withdrawKind: 'binary_stale',
     } as unknown as ProviderStatusEvent);
 
+    expect(pane.sessionBanners).toEqual([]);
     expect(pane.providerBanner).toBeUndefined();
     expect(getProviderStatus('claude')?.status).toBe('unauthenticated');
   });
@@ -3821,6 +3870,54 @@ describe('setupEventListeners', () => {
     expect(getFlushedForThread('thread-a')).toHaveLength(0);
     expect(markStructuralContentPending).toHaveBeenCalled();
     expect(pane.lastLiveContentAt).toBeGreaterThan(0);
+  });
+
+  // The turn's closing text streams right before the confirmation, and one
+  // flush applies its creation upsert in the same batch as the moved row,
+  // ahead of its deltas. The text row is the reveal frontier from that
+  // upsert, so the moved row stays withheld and the preview keeps it until
+  // the text has revealed.
+  it('keeps the preview while a text row streaming in the same flush withholds the confirmed row', async () => {
+    const quiet = makeItem({
+      id: 'user:1:flush:1', threadId: 'thread-a', turnIndex: 1, itemIndex: 1,
+      kind: 'user_text', role: 'user', summary: 'queued mid-turn', meta: '{"pendingFlush":true}',
+    });
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [
+      makeItem({ id: 'a:0', threadId: 'thread-a', turnIndex: 1, itemIndex: 0 }),
+      quiet,
+      makeItem({ id: 'tool:1', threadId: 'thread-a', turnIndex: 1, itemIndex: 2, kind: 'tool_call', role: 'assistant', toolName: 'Bash', status: 'completed' }),
+    ]);
+    markItemsFlushed('thread-a', [{ queueItemId: 'q-1', userItemId: quiet.id, message: quiet.summary }]);
+    await nextFrame();
+    expect(getFlushedForThread('thread-a')).toHaveLength(1);
+
+    const closing = makeItem({
+      id: 'a:final', threadId: 'thread-a', turnIndex: 1, itemIndex: 3,
+      kind: 'assistant_text', role: 'assistant', status: 'streaming', summary: '', streamEnd: 0, rev: -1,
+    });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: 'thread-a', item: closing });
+    emitWailsEvent('provider:item_event', {
+      action: 'delta', threadId: 'thread-a', itemId: closing.id, kind: 'assistant_text',
+      delta: 'The tree has one change.', offset: 0, updatedAt: closing.updatedAt,
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert', threadId: 'thread-a',
+      item: { ...quiet, itemIndex: 4, meta: '{}', updatedAt: quiet.updatedAt + 1 },
+    });
+    await nextFrame();
+
+    expect(pane.revealBoundary).toEqual({ turnIndex: 1, itemIndex: 3 });
+    expect(getFlushedForThread('thread-a')).toHaveLength(1);
+
+    emitWailsEvent('provider:item_event', {
+      action: 'patch', threadId: 'thread-a', itemId: closing.id,
+      patch: { status: 'completed', updatedAt: closing.updatedAt + 1, rev: 7 },
+    });
+    await nextFrame();
+    pane.__flushItemSmoothersForTest();
+
+    expect(pane.revealBoundary).toBeNull();
+    expect(getFlushedForThread('thread-a')).toHaveLength(0);
   });
 
   // The same confirmation reaching a pane scrolled back into history: the

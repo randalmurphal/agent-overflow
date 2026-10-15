@@ -71,6 +71,10 @@ func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
 // redactedSettings is the projection every bound method returning a full
 // Settings value goes through.
 //
+// Prompt override texts are left out: each lives in its file, which the
+// user edits there, and the entry carries Blank instead
+// (settings.PromptOverridesForWire).
+//
 // SECURITY: the values of custom environment variables flagged sensitive
 // are cleared. A LAN-attached token-holder calling GetSettings must not be
 // able to harvest credentials — a sensitive environment value has no read
@@ -82,6 +86,8 @@ func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
 func redactedSettings(current settings.Settings) settings.Settings {
 	current.ClaudeCustomEnv = settings.RedactProviderEnvVars(current.ClaudeCustomEnv)
 	current.CodexCustomEnv = settings.RedactProviderEnvVars(current.CodexCustomEnv)
+	current.ClaudePromptOverrides = settings.PromptOverridesForWire(current.ClaudePromptOverrides)
+	current.CodexPromptOverrides = settings.PromptOverridesForWire(current.CodexPromptOverrides)
 	return current
 }
 
@@ -140,7 +146,7 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 	}
 	if patchTouchesLiveClaudeAxis(patch) {
 		// The settings-owned session axes a LIVE session reacts to. They
-		// converge three different ways and each needs its own trigger,
+		// converge two different ways and each needs its own trigger,
 		// because nothing else reconciles on a settings save — the
 		// remaining axes here are spawn-only with no live consequence at
 		// all, so without this the change would sit in the file until some
@@ -151,18 +157,12 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 		//     Code decides", which has no wire form and defers a restart.
 		//   - claudeCrossSession binds once at spawn, so it can only
 		//     converge by a DEFERRED restart the reconciler queues.
-		//   - claudePromptOverrides is the headline live apply:
-		//     reconcileSettingsOwnedAxes RESOLVES the override rather than
-		//     pinning it, so an edited-or-enabled entry lands live as
-		//     set_model.system_prompt and a disabled one defers a restart.
-		//     Without this key the axis that motivated the whole live path
-		//     would never fire from the save that causes it.
 		//
-		// codexPromptOverrides is deliberately NOT a trigger:
-		// reconcileSettingsOwnedAxes PINS the prompt on every non-Claude
-		// provider (no set_model.system_prompt wire there), so the sweep
-		// could only be a no-op. Codex converges on its next spawn, which
-		// is the contract docs/specs/prompt-tool-overrides.md states.
+		// Neither prompt override key is a trigger: a prompt change never
+		// applies to a running session (docs/decisions.md 2026-10-14) and
+		// reconcileSettingsOwnedAxes pins it, so the sweep could only be a
+		// no-op. The settings change observer flags the live threads whose
+		// prompt would differ at their next start (reconcileStalePromptSessions).
 		//
 		// Off the binding's goroutine: reconciling N threads means N control
 		// requests, each with its own timeout, and a wedged provider process
@@ -187,6 +187,11 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 		// tools after the manager accepts the new config. Process teardown and
 		// provider refresh remain asynchronous and require no provider restart.
 		a.scheduleBrowserSettings(next)
+	}
+	if _, ok := patch["backgroundGitFetch"]; ok {
+		// Off means no background forge reads either: the merged-PR poll
+		// stops (and is joined) or starts with the setting, no restart.
+		a.reconcileMergedPRPoll(0)
 	}
 	a.ReconfigureObservability(prev, next)
 	if _, ok := patch["editor"]; ok {
@@ -219,7 +224,6 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 var liveClaudeSettingsAxes = [...]string{
 	"claudeThinking",
 	"claudeCrossSession",
-	"claudePromptOverrides",
 }
 
 // patchTouchesLiveClaudeAxis reports whether an UpdateSettings patch names
