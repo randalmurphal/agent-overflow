@@ -84,31 +84,31 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
   const busy = busyProject.threadIds[0];
   const hold = provider === 'claude';
 
-  await setScenario(
-    harness,
-    busyProject.path,
-    threadToolsScenario({
-      name: `${tag}-busy-script`,
-      provider,
-      echoUserMessage: true,
-      turns: [
-        { steps: hold ? [{ gate: 'hold-busy' }] : [], text: 'Still on the first task.' },
-        {
-          steps: [
-            // Codex starts this turn at once: held until the request's
-            // thread_send has answered, so the reply wakes the lead
-            // instead of riding back inside that call's answer.
-            ...(hold ? [] : [{ gate: 'hold-reply' }]),
-            { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
-            { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: REPLY } } },
-          ],
-          text: 'Answered at the boundary.',
-        },
-        { text: 'Glad to help.' },
-      ],
-      afterTurns: 'silent',
-    }),
-  );
+  const busyScript = threadToolsScenario({
+    name: `${tag}-busy-script`,
+    provider,
+    echoUserMessage: true,
+    turns: [
+      { steps: hold ? [{ gate: 'hold-busy' }] : [], text: 'Still on the first task.' },
+      {
+        steps: [
+          // Codex starts this turn at once: held until the request's
+          // thread_send has answered, so the reply wakes the lead
+          // instead of riding back inside that call's answer.
+          ...(hold ? [] : [{ gate: 'hold-reply' }]),
+          { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+          { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: REPLY } } },
+        ],
+        text: 'Answered at the boundary.',
+      },
+      { text: 'Glad to help.' },
+    ],
+    afterTurns: 'silent',
+  });
+  // The CLI holds what is queued into the held turn and runs it as a turn of
+  // its own after it, as the real CLI does; without the hold the mock would
+  // open that turn while the held one still runs.
+  await setScenario(harness, busyProject.path, hold ? { ...busyScript, claude: { holdQueuedInput: true } } : busyScript);
   await setScenario(
     harness,
     auditProject.path,
