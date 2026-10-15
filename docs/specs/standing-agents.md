@@ -325,7 +325,9 @@ assistant's current thread on this computer, and for an archived one.
 2. One store transaction (`HandOffAssistant`) makes it the record's
    `thread_id`, records the old thread in `agent_past_threads` with the
    time, archives it, moves its live loops and watches to the successor,
-   moves every `thread_requests` row it is the caller of (reminders
+   moves its remote jobs whose completion is still owed (`pending`, or
+   queued and unconfirmed) so the watcher, which skips an archived
+   thread, reports them there, moves every `thread_requests` row it is the caller of (reminders
    included, as caller and target), setting `made_in_thread_id` to the
    old thread unless an earlier handoff already set it, and points every
    receipt addressed to it that its session has not taken in (state
@@ -334,8 +336,9 @@ assistant's current thread on this computer, and for an archived one.
    for it goes on: an answer, reminder or remote completion to its owner,
    which delivers it to the successor; a request not taken in to the
    successor's queue; a worker's prompt to the successor, since its
-   spawn row moved. A loop or watch wake still queued is recorded as not
-   delivered and the next fire says so. A request the old thread had read
+   spawn row moved; a loop or watch wake, taken back before the queue is
+   dropped, to the successor's queue, keeping the wake's row and a
+   watch's `last_output`. A request the old thread had read
    and not answered settles `interrupted` with "The assistant moved to a
    new thread before it answered. Its previous thread is <id>; read it
    with thread_show to see what was done, or ask the assistant again by
@@ -345,18 +348,19 @@ assistant's current thread on this computer, and for an archived one.
    <id> with this one, what moved, the tokens and senders of the requests
    step 3 interrupted, and to read the previous thread with `thread_show`
    before acting on what it was doing, then tell the user in one short
-   paragraph what it picked up. The client switches the pane that showed
-   the old thread to the successor.
+   paragraph what it picked up. The old thread's unlisted frame names the
+   successor (`handOffTo`); only that marker moves the panes that showed
+   the old thread, and a hidden agent thread companion, to the successor.
+   Any other unlisted frame closes them.
 
 The old thread is then a past thread: it keeps its history, lists in the
 assistant's done footer with the time it was superseded, and is never
 current again. Every app-written message addressed to a past thread
 (`queueAgentNotice`, the one door) is queued on its assistant's current
 thread instead, so a request, worker or run that raced the handoff never
-wakes the archived thread. A wake from a request a handoff moved reads
-as any other: the successor's opening block already said the answers to
-its previous thread's requests arrive here, and `thread_status` lists
-them. A call forwarded to a paired
+wakes the archived thread. A wake from a request made in a past thread
+names it after the status line: "Made in thread <id>, before New
+Thread, Same Assistant; now <id>." A call forwarded to a paired
 computer about such a request names the thread that made it as its
 source, which is the thread that computer's receipt recorded.
 
@@ -399,8 +403,14 @@ the check the workflow runner's resume makes), and a Codex start's
 `thread/resume` refusal (`codex.IsThreadNotFound`, the workflow runner's
 signal) marks it. The successor's opening block says the provider
 cleaned up the previous thread's session, names that thread's id, says
-Agent Overflow's history of it is intact and that its last message may
-not have reached the assistant, and asks it to tell the user.
+Agent Overflow's history of it is intact, and asks it to tell the user.
+When the start was a send by the person, the send fails with
+`assistant_session_gone`: its text and attachments become the
+successor's composer draft rather than a message, the client shows the
+error as a notice instead of restoring the old composer, and the opening
+block says the message that found the session gone waits unsent in the
+user's composer. A handoff that fails puts the draft back in the old
+thread's composer.
 
 ### Agent home contents
 
@@ -553,7 +563,9 @@ place under the successor. Differences from an ordinary thread row:
 - New Thread, Same Assistant: an icon-only hover action on the row
   (`aria-label` "New Thread, Same Assistant"), shown at rest under the
   compact layout, and the same item in its menu
-  ([Next thread](#next-thread)).
+  ([Next thread](#next-thread)). Without `threads:autonomy`, which the
+  call needs, the action, the menu item and the header button are
+  disabled with the reason.
 - Context menu: Open, Rename, New Thread Same Assistant, Loops and
   Watches (opens the thread with its background tray open), Archive Done
   Children (the spawned threads and past threads whose effective status
