@@ -483,6 +483,27 @@
     ]
   },
   {
+    "name": "interrupted by a handoff",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The assistant moved to a new thread before it answered. Its previous thread is t-old; read it with thread_show to see what was done, or ask the assistant again by name.",
+    "parts": [
+      {
+        "body": "Its previous thread is t-old; read it with thread_show to see what was done, or ask the assistant again by name.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the assistant moving to a new thread",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
     "name": "interrupted by something other than a person",
     "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The turn was interrupted before it answered.",
     "parts": [

@@ -307,9 +307,13 @@ var InterruptSessionEndedReasons = []string{
 // request and before it answered. It names the old thread, so the sender
 // can read what was done.
 func InterruptHandedOff(previousThreadID string) string {
-	return "The assistant moved to a new thread before it answered. Its previous thread is " + previousThreadID +
+	return InterruptHandedOffSentence + " Its previous thread is " + previousThreadID +
 		"; read it with thread_show to see what was done, or ask the assistant again by name."
 }
+
+// InterruptHandedOffSentence opens InterruptHandedOff; the frontend reads
+// the stopper from it and shows the rest.
+const InterruptHandedOffSentence = "The assistant moved to a new thread before it answered."
 
 // InterruptMoved is the reason of a request whose thread was moved to
 // destination, another computer, before it answered.

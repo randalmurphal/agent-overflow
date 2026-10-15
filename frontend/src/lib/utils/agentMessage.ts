@@ -299,6 +299,9 @@ export function parseRequestText(text: string): AgentMessagePart[] | null {
   return parts;
 }
 
+/** threadtools InterruptHandedOffSentence: New Thread, Same Assistant replaced the thread. */
+const HANDED_OFF = 'The assistant moved to a new thread before it answered.';
+
 /** A person's Stop, in place of the restart line; its last message may follow. */
 const PERSON_STOPPED = ': The person stopped this turn before it answered.';
 const PERSON_STOPPED_ANSWER = ' Its last message:';
@@ -343,7 +346,12 @@ function interruptReason(sentence: string, after: string): { stoppedBy: string; 
   if (sentence === 'The turn was interrupted before it answered.') return { stoppedBy: 'an interrupt', body: '' };
   if (sentence === 'That request was accepted but its thread was never created.') return { stoppedBy: '', body: sentence };
   const moved = /^The thread was moved to (.+) before it answered\.$/.exec(sentence);
-  return moved ? { stoppedBy: `a move to ${moved[1]}`, body: '' } : null;
+  if (moved) return { stoppedBy: `a move to ${moved[1]}`, body: '' };
+  // threadtools InterruptHandedOff: the rest names the previous thread.
+  if (sentence.startsWith(`${HANDED_OFF} `)) {
+    return { stoppedBy: 'the assistant moving to a new thread', body: sentence.slice(HANDED_OFF.length + 1) };
+  }
+  return null;
 }
 
 const WAKE_TAILS: ReadonlyArray<{ kind: WakeKind; opening: string; body: 'line' | 'next' | 'none' }> = [
