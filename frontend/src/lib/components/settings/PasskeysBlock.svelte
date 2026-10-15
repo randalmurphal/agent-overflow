@@ -153,7 +153,7 @@
     <Button
       variant="ghost"
       size="sm"
-      class="shrink-0 whitespace-nowrap"
+      class="shrink-0"
       disabled={acting || !usable}
       onclick={() => void register()}
     >

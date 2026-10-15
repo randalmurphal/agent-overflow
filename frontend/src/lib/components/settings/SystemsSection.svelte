@@ -379,14 +379,14 @@
           <Button
             variant="secondary"
             size="sm"
-            class="shrink-0 whitespace-nowrap"
+            class="shrink-0"
             disabled={adding}
             onclick={() => void scan()}
           >
             Scan
           </Button>
         {/if}
-        <Button type="submit" variant="primary" size="sm" class="shrink-0 whitespace-nowrap" disabled={adding || !link.trim()}>
+        <Button type="submit" variant="primary" size="sm" class="shrink-0" disabled={adding || !link.trim()}>
           Connect
         </Button>
       </form>

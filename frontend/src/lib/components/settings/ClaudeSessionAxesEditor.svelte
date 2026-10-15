@@ -171,8 +171,8 @@
     hint="How deep subagents may spawn further subagents, and how many may run at once. 0 leaves each to Claude Code."
     align="start"
   >
-    <div class="flex items-center gap-3">
-      <label class="flex items-center gap-1.5 text-[0.6875rem] text-fg-muted">
+    <div class="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
+      <label class="flex items-center gap-1.5 whitespace-nowrap text-[0.6875rem] text-fg-muted">
         Depth
         <input
           type="number"
@@ -190,7 +190,7 @@
           class="{INPUT_CLASS} w-16 text-right tabular-nums"
         />
       </label>
-      <label class="flex items-center gap-1.5 text-[0.6875rem] text-fg-muted">
+      <label class="flex items-center gap-1.5 whitespace-nowrap text-[0.6875rem] text-fg-muted">
         At once
         <input
           type="number"

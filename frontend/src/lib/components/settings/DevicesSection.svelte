@@ -321,7 +321,7 @@
           : 'Devices allowed to use this computer. Confirm matching numbers on both screens before granting access.'}
     />
     {#if !unavailable}
-      <Button variant="primary" size="sm" class="shrink-0 whitespace-nowrap" onclick={openPairing}>
+      <Button variant="primary" size="sm" class="shrink-0" onclick={openPairing}>
         Allow a device to connect
       </Button>
     {/if}
