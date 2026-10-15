@@ -642,10 +642,15 @@ in the caller's project and workspace, with provider and model as
 and it is started as a spawn whose prompt is the opening block for a
 created assistant: its creator, that it reports to it, that it has no
 grants, and the role text quoted as the creator's words. It answers as
-a spawn answers, its questions and approvals go to its creator, and its
-row is a top-level assistant row. A name an assistant on this computer
-holds is refused naming it. Returns the spawn's result with the
-assistant's `assistant_id`, `name` and `home`.
+a spawn answers, with `notify` always on and no wait, so its reply
+arrives in the creator's thread as a message; its questions and
+approvals go to its creator, and its row is a top-level assistant row,
+never nested under the creator. A name an assistant on this computer
+holds is refused naming it. Returns the spawn's receipt with the
+assistant's `assistant_id`, `name` and `home`. An opening message that
+fails after the assistant exists is refused naming the assistant, which
+stays for the user to delete or for its creator to `thread_send` its
+role to.
 
 ## Server instructions
 
@@ -673,7 +678,8 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > lists recent threads with what each is doing now, who spoke last and
 > how it ended (`last_message`), its group, pin and archive state; your
 > own thread is marked `self`. Narrow with `computers`, `project_id`,
-> `group` (by name), `state` or `spawned_by_me`. Check `errors` and
+> `group` (by name), `state`, `spawned_by_me`, or `agents` for the
+> assistants with each one's role line. Check `errors` and
 > `indexing` before treating an empty result as conclusive. Open a hit
 > with `thread_show` `around` its item id. Read what a thread concluded
 > with `thread_show` `last_answer`, and its recent end with the default:
@@ -704,7 +710,9 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > current task. Use `thread_spawn` when the user asks for a separate
 > thread, when another provider or model should do the work, or when
 > the work should be visible in the sidebar and outlive your turn. You
-> cannot send to or ask your own thread.
+> cannot send to or ask your own thread. An assistant may create another
+> assistant that reports to it with `thread_new_assistant`, giving its
+> `name` and your opening `role` text; a worker cannot.
 >
 > Defaults. Omit provider, model, effort and runtime mode to inherit
 > yours. Use `thread_options` when you want another provider, model,
@@ -798,7 +806,8 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > connection is down, and each says when it expires.
 >
 > Ids are UUIDs; a prefix of six or more characters works when it is
-> unambiguous. Never guess an id: take it from a result.
+> unambiguous. An assistant's name addresses its current thread wherever
+> a thread id is taken. Never guess an id: take it from a result.
 
 With no paired computers the first paragraph says "on this computer",
 the "Other computers" paragraph is absent, and `computers` and

@@ -121,7 +121,7 @@ func readThreadWake(text string) (title, body string, reminder, ok bool) {
 		return "", "", false, false
 	}
 	_, rest := cutWakeToken(naming[len(quoted)+close+1:])
-	if line, next, _ := strings.Cut(after, "\n"); strings.HasPrefix(line, "That thread is a standing agent, a thread the user promoted.") {
+	if line, next, _ := strings.Cut(after, "\n"); strings.HasPrefix(line, "That thread "+threadtools.AgentSentence) || strings.HasPrefix(line, "That thread "+threadtools.PromotedAgentSentence) {
 		after = next
 	}
 	switch {

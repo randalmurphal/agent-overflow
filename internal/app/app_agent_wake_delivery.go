@@ -88,6 +88,11 @@ func (a *App) deliverAgentWake(ctx context.Context, row store.AgentWake, fireAt 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// A handoff moves a row while a run of it is in flight: the wake is the
+	// thread's that holds the row now.
+	if current, found, err := a.store.GetAgentWake(row.ID); err == nil && found {
+		row.ThreadID = current.ThreadID
+	}
 	thread, err := a.store.GetThread(row.ThreadID)
 	if err != nil {
 		return fmt.Errorf("read the thread: %w", err)
@@ -441,6 +446,12 @@ func (a *App) discardAgentWakeAtBoot(row store.FlushQueueItem) bool {
 	case strings.HasPrefix(row.SendID, agentSendIDRoot):
 		a.noteAgentSendNotDelivered(row.ThreadID, "the app quit before the agent took it in")
 		return true
+	case strings.HasPrefix(row.SendID, assistantSendIDRoot):
+		// An assistant's opening is its orientation, not data that a later
+		// fire replays: it waits, held, for the thread's next start.
+		threadID, sendID, body := row.ThreadID, row.SendID, row.Message
+		a.goAgentNoticeWork(threadID, func() { a.requeueAssistantMessage(threadID, sendID, body) })
+		return true
 	}
 	wakeID, fireAt, ok := agentWakeFromSendID(row.SendID)
 	if !ok {
@@ -452,6 +463,17 @@ func (a *App) discardAgentWakeAtBoot(row store.FlushQueueItem) bool {
 		a.emitAgentWakeChanged(row.ThreadID, wakeID)
 	}
 	return true
+}
+
+// outsideSendNotTakenIn is what an outside send its thread never took in
+// is owed: on a thread a handoff superseded it goes on to the assistant's
+// current thread, and on any other the thread is told it was not delivered.
+func (a *App) outsideSendNotTakenIn(threadID, body, why string) {
+	if current, ok := a.assistantCurrentThread(threadID); ok && body != "" {
+		a.redeliverOutsideSend(current, body)
+		return
+	}
+	a.noteAgentSendNotDelivered(threadID, why)
 }
 
 // noteAgentSendNotDelivered tells the thread's person that an outside
@@ -758,7 +780,9 @@ func (a *App) settleNotTakenIn(threadID string, owed []notTakenIn) {
 			switch {
 			case a.handBackWorkerPromptWake(m.sendID):
 			case strings.HasPrefix(m.sendID, agentSendIDRoot):
-				a.noteAgentSendNotDelivered(threadID, m.sendWhy)
+				a.outsideSendNotTakenIn(threadID, m.body, m.sendWhy)
+			case strings.HasPrefix(m.sendID, assistantSendIDRoot):
+				a.requeueAssistantMessage(threadID, m.sendID, m.body)
 			default:
 				if wakeID, _, ok := agentWakeFromSendID(m.sendID); ok {
 					a.noteAgentWakeUndelivered(threadID, wakeID, m.wakeOutcome, m.body)
@@ -884,7 +908,7 @@ func joinedPartsOf(text string, parts []usermessage.JoinedPart) []usermessage.Jo
 // thread (a loop or watch wake, an outside send, a worker's prompt), or
 // empty for any other message, which is a person's.
 func agentAppPartRoot(sendID string) string {
-	for _, root := range []string{agentWakeSendIDRoot, agentSendIDRoot, workerPromptSendIDRoot} {
+	for _, root := range []string{agentWakeSendIDRoot, agentSendIDRoot, workerPromptSendIDRoot, assistantSendIDRoot} {
 		if strings.HasPrefix(sendID, root) {
 			return root
 		}
@@ -1080,7 +1104,11 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 	returned := false
 	for _, m := range messages {
 		if token, late, ok := threadWakeFromSendID(m.sendID); ok {
-			logThreadRequestSweep("return "+m.sendID+" to its request", a.store.WithdrawThreadWake(token, late, m.rowID, m.withdrawal()))
+			err := a.store.WithdrawThreadWake(token, late, m.rowID, m.withdrawal())
+			logThreadRequestSweep("return "+m.sendID+" to its request", err)
+			if err == nil {
+				a.redeliverHandedOffWake(threadID, token, late)
+			}
 			continue
 		}
 		if computerID, requestID, ok := remoteCompletionFromSendID(m.sendID); ok {
@@ -1213,7 +1241,7 @@ func (a *App) withdrawQueuedAgentMessages(threadID string, match func(sendID str
 			continue
 		}
 		if !a.handBackWorkerPromptWake(row.SendID) && strings.HasPrefix(row.SendID, agentSendIDRoot) {
-			a.noteAgentSendNotDelivered(threadID, why)
+			a.outsideSendNotTakenIn(threadID, row.Message, why)
 		}
 	}
 	return errors.Join(errs...)

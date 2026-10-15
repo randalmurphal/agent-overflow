@@ -223,7 +223,7 @@ func (a *App) startPeerAgentRowsLocked() {
 // askPeerAgentRows runs one queued call and records its answer.
 func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 	defer a.threadRequestsWG.Done()
-	listing, err := a.peerThreadAgentRows(a.lifeCtx(), spawn.TargetComputerID, spawn.CallerThreadID,
+	listing, err := a.peerThreadAgentRows(a.lifeCtx(), spawn.TargetComputerID, spawn.MadeIn(),
 		spawn.TargetThreadID, threadAgentRowDepth-1)
 	shutdown := errors.Is(err, context.Canceled) && a.lifeCtx().Err() != nil
 	c := &a.threadAgentPeers

@@ -849,7 +849,11 @@ attached) and finishes normally.
 
 **Pause is first-class.** Pausing a run interrupts its in-flight turn(s)
 through the §12 teardown (partial envelope recorded, locks released) and parks
-`needs-human(paused)`. **Resume** creates the next attempt **on the same
+`needs-human(paused)`; the members keep their provider sessions. **Pause
+and End Sessions** does the same and then ends the session of every
+member it paused, with its background work, so nothing of the run stays
+resident ([standing agents ruling 29](standing-agents.md#interrupt-and-end-session)).
+**Resume** creates the next attempt **on the same
 provider thread** with a continue message, the identical mechanics as
 answering a question below, so the agent keeps its session context across the
 pause. If that provider context has disappeared, the unsent continuation is

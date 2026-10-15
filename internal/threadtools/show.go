@@ -44,17 +44,17 @@ type showResult struct {
 	State      string `json:"state,omitempty"`
 	Provider   string `json:"provider,omitempty"`
 	Model      string `json:"model,omitempty"`
-	// StandingAgent and SpawnedBy are Thread's.
-	StandingAgent bool   `json:"standing_agent,omitempty"`
-	SpawnedBy     string `json:"spawned_by,omitempty"`
-	Window        string `json:"window"`
-	From          int64  `json:"from_position,omitempty"`
-	To            int64  `json:"to_position,omitempty"`
-	Items         int    `json:"items"`
-	Bytes         int    `json:"bytes"`
-	Done          bool   `json:"done"`
-	Cursor        string `json:"cursor,omitempty"`
-	Transcript    string `json:"transcript,omitempty"`
+	// Assistant and SpawnedBy are Thread's.
+	Assistant  *Assistant `json:"assistant,omitempty"`
+	SpawnedBy  string     `json:"spawned_by,omitempty"`
+	Window     string     `json:"window"`
+	From       int64      `json:"from_position,omitempty"`
+	To         int64      `json:"to_position,omitempty"`
+	Items      int        `json:"items"`
+	Bytes      int        `json:"bytes"`
+	Done       bool       `json:"done"`
+	Cursor     string     `json:"cursor,omitempty"`
+	Transcript string     `json:"transcript,omitempty"`
 	// File is set by to_file instead of Transcript.
 	File *ExportFile `json:"file,omitempty"`
 	Note string      `json:"note,omitempty"`
@@ -161,19 +161,19 @@ func (c *session) showLocal(ctx context.Context, target Target, args showArgs, p
 	}
 	id, name := c.stamp(Computer{ID: target.ComputerID, Name: target.Computer})
 	result := showResult{
-		ThreadID:      thread.ID,
-		ComputerID:    id,
-		Computer:      name,
-		Title:         thread.Title,
-		State:         State(thread, live),
-		Provider:      thread.Provider,
-		Model:         thread.Model,
-		StandingAgent: thread.StandingAgent,
-		SpawnedBy:     thread.SpawnedBy,
-		Window:        window.name,
-		From:          bounds.From,
-		To:            bounds.To,
-		Done:          true,
+		ThreadID:   thread.ID,
+		ComputerID: id,
+		Computer:   name,
+		Title:      thread.Title,
+		State:      State(thread, live),
+		Provider:   thread.Provider,
+		Model:      thread.Model,
+		Assistant:  thread.Assistant,
+		SpawnedBy:  thread.SpawnedBy,
+		Window:     window.name,
+		From:       bounds.From,
+		To:         bounds.To,
+		Done:       true,
 	}
 	if note := partialNote(target.Partial); note != "" {
 		result.Note = note

@@ -202,8 +202,10 @@ func TestStandingAgentsMigration(t *testing.T) {
 	if want := []string{"w-armed", "w-running", "w-long"}; !slices.Equal(liveIDs, want) {
 		t.Errorf("live wakes = %v, want %v", liveIDs, want)
 	}
+	// v153 made each row an assistant whose id is its thread's, keeping
+	// the home as it was.
 	if agent, found, err := s.GetStandingAgent("watcher"); err != nil || !found ||
-		agent != (StandingAgent{ThreadID: "watcher", Home: "/h/watcher", NotifyOnTick: true, PromotedAt: 11}) {
+		agent != (StandingAgent{ID: "watcher", ThreadID: "watcher", Home: "/h/watcher", NotifyOnTick: true, CreatedAt: 11}) {
 		t.Errorf("watcher's agent row = %+v found=%v err=%v", agent, found, err)
 	}
 
@@ -211,7 +213,7 @@ func TestStandingAgentsMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var agents, wakes int
-	if err := s.db.QueryRow(`SELECT (SELECT count(*) FROM standing_agents), (SELECT count(*) FROM agent_wakes)`).
+	if err := s.db.QueryRow(`SELECT (SELECT count(*) FROM agents), (SELECT count(*) FROM agent_wakes)`).
 		Scan(&agents, &wakes); err != nil {
 		t.Fatal(err)
 	}

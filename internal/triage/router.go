@@ -961,8 +961,13 @@ func (r *Router) handleThreadRename(evt provider.ProviderEvent) error {
 	if evt.Content == "" {
 		return nil
 	}
-	if err := r.store.UpdateTitle(evt.ThreadID, evt.Content); err != nil {
+	// An assistant's title is its name, which only the user renames.
+	renamed, err := r.store.UpdateProviderTitle(evt.ThreadID, evt.Content)
+	if err != nil {
 		return fmt.Errorf("update thread title: %w", err)
+	}
+	if !renamed {
+		return nil
 	}
 	r.emitThreadPatch(evt.ThreadID, ThreadUpdateEvent{Title: &evt.Content})
 	return nil

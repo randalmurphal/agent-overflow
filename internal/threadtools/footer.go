@@ -66,13 +66,21 @@ type SenderAgent struct {
 	Role string
 }
 
+// AgentSentence follows the sender or the answering thread on a footer or a
+// wake when it is an assistant's thread. Messages written before assistants
+// replaced promotion say PromotedAgentSentence.
+const (
+	AgentSentence         = "is a standing agent."
+	PromotedAgentSentence = "is a standing agent, a thread the user promoted."
+)
+
 // sentence says the sender or the answering thread is a standing agent and
 // quotes its role line.
 func (a *SenderAgent) sentence(who string) string {
 	if a.Role == "" {
-		return who + " is a standing agent, a thread the user promoted."
+		return who + " " + AgentSentence
 	}
-	return fmt.Sprintf("%s is a standing agent, a thread the user promoted. Its role, in its own words: %q", who, a.Role)
+	return fmt.Sprintf("%s %s Its role, in its own words: %q", who, AgentSentence, a.Role)
 }
 
 // FooterMarker opens every footer. The receiver is told the last `---`
@@ -292,6 +300,15 @@ const SessionEndedWrittenSoFar = " What it had written by then:\n\n"
 // thread's session ended before a turn answered it.
 var InterruptSessionEndedReasons = []string{
 	InterruptSessionEndedUnread, InterruptSessionEndedUnanswered, InterruptSessionEndedMidTurn,
+}
+
+// InterruptHandedOff is the reason of a request whose thread, an
+// assistant's, was replaced by New Thread, Same Assistant after it read the
+// request and before it answered. It names the old thread, so the sender
+// can read what was done.
+func InterruptHandedOff(previousThreadID string) string {
+	return "The assistant moved to a new thread before it answered. Its previous thread is " + previousThreadID +
+		"; read it with thread_show to see what was done, or ask the assistant again by name."
 }
 
 // InterruptMoved is the reason of a request whose thread was moved to

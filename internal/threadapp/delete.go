@@ -74,7 +74,7 @@ func (s *Service) DeleteThread(threadID string, ports DeletePorts) error {
 	}
 	threadFound := threadErr == nil
 	var spawned []string
-	if threadFound && thread.AgentPromotedAt != nil {
+	if threadFound && thread.AgentID != "" {
 		if spawned, err = database.ListSpawnedThreadIDs(threadID); err != nil {
 			return fmt.Errorf("delete thread %s: %w", threadID, err)
 		}

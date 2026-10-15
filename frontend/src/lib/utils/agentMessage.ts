@@ -124,7 +124,9 @@ export interface AgentMessage {
 
 const FOOTER_MARKER = 'Agent request from thread ';
 const JOIN_SEPARATOR = '\n\n---\n\n';
-const AGENT_SENTENCE = 'is a standing agent, a thread the user promoted.';
+const AGENT_SENTENCE = 'is a standing agent.';
+// Messages written before assistants replaced promotion say this instead.
+const PROMOTED_AGENT_SENTENCE = 'is a standing agent, a thread the user promoted.';
 const ROLE_PREFIX = ' Its role, in its own words: ';
 const ROUTES_SENTENCE = ' It spawned this thread, so your questions and approval requests go to it, not to the user.';
 const WAITING_PREFIX = 'It is waiting for your answer. When you are done, call thread_reply with token ';
@@ -203,8 +205,10 @@ function readThreadNaming(text: string): { title: string; threadId: string; comp
 
 /** The standing-agent sentence after `who`, or null when the line is not one. */
 function readAgentSentence(line: string, who: string): { role: string; rest: string } | null {
-  const opening = `${who} ${AGENT_SENTENCE}`;
-  if (!line.startsWith(opening)) return null;
+  const opening = [AGENT_SENTENCE, PROMOTED_AGENT_SENTENCE]
+    .map((sentence) => `${who} ${sentence}`)
+    .find((candidate) => line.startsWith(candidate));
+  if (!opening) return null;
   let rest = line.slice(opening.length);
   let role = '';
   if (rest.startsWith(ROLE_PREFIX)) {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,87 +12,183 @@ import (
 	"time"
 
 	"agent-overflow/internal/agenthome"
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
 
-// Standing agents (docs/specs/standing-agents.md, "Standing agent"): a thread
-// the user promoted. Promotion gives it a home directory under the config
-// directory and lets it register watches; demotion takes the row away and
-// leaves the home on disk.
+// Assistants (docs/specs/standing-agents.md, "Standing agent"): a standing
+// agent is a record with its own id, a home under the config directory and
+// one current thread. The user creates one with CreateAssistant, an
+// assistant creates one with thread_new_assistant, and New Thread, Same
+// Assistant (StartNextAssistantThread) gives it a new current thread.
 
-// errNotAStandingAgentThread refuses a promotion the thread cannot take.
-var errNotAStandingAgentThread = errors.New("this thread cannot be promoted")
+// Wake kinds of the app-written messages that start an assistant's threads.
+const (
+	assistantWakeKindOpening = "assistant"
+	assistantWakeKindHandOff = "handoff"
+)
 
-// PromoteStandingAgent makes a thread a standing agent: it creates the home
-// `<config>/agents/<thread-id>/`, writes the README that names the agent, and
-// records the row. The thread and the threads it spawned leave their sidebar
-// groups, since the agent's row is where they nest, and a group that leaves
-// empty is deleted; every row that moved is broadcast. Promoting a standing
-// agent again returns its row unchanged. Refused for an archived thread, a
-// thread a workflow run that has not ended is bound to, a thread that is not
-// a chat or plan thread, and a thread that is not on this computer.
-//
-//ao:scope threads:autonomy
-func (a *App) PromoteStandingAgent(threadID string) (store.StandingAgent, error) {
-	unlock := a.threadLocks().Lock(threadID)
-	defer unlock()
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return store.StandingAgent{}, fmt.Errorf("%w: the thread is not on this computer", errNotAStandingAgentThread)
-	}
-	if err := a.store.CheckThreadTransferAccess(threadID); err != nil {
-		var moved *store.ThreadTransferError
-		if errors.As(err, &moved) {
-			return store.StandingAgent{}, fmt.Errorf("%w: the thread is not on this computer", errNotAStandingAgentThread)
-		}
-		return store.StandingAgent{}, err
-	}
-	if thread.ForkPreparing {
-		return store.StandingAgent{}, fmt.Errorf("%w: the fork is still being prepared", errNotAStandingAgentThread)
-	}
-	if thread.Archived {
-		return store.StandingAgent{}, fmt.Errorf("%w: the thread is archived", errNotAStandingAgentThread)
-	}
-	if thread.Mode != threadmode.ModeChat && thread.Mode != threadmode.ModePlan {
-		return store.StandingAgent{}, fmt.Errorf("%w: only a chat or plan thread can be one", errNotAStandingAgentThread)
-	}
-	if live, err := a.store.ThreadHasLiveWorkflowRun(threadID); err != nil {
-		return store.StandingAgent{}, err
-	} else if live {
-		return store.StandingAgent{}, fmt.Errorf("%w: a workflow run that has not ended is bound to it", errNotAStandingAgentThread)
-	}
-	if a.configDir == "" {
-		return store.StandingAgent{}, errors.New("promote a standing agent: no config directory")
-	}
-	home := filepath.Join(a.configDir, "agents", threadID)
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return store.StandingAgent{}, fmt.Errorf("create the agent's home: %w", err)
-	}
-	if err := a.writeStandingAgentReadme(home, thread); err != nil {
-		return store.StandingAgent{}, err
-	}
-	promotion, err := a.store.PromoteStandingAgent(threadID, home, time.Now().UnixMilli())
-	if err != nil {
-		return store.StandingAgent{}, err
-	}
-	if promotion.Promoted {
-		// The agent's own row carries agentPromotedAt now, and every live
-		// thread it spawned carries spawnedByAgent, grouped before or not;
-		// each is re-read as it stands after the ungrouping. The group
-		// frames go last: a client drops a group only once no row names it.
-		a.broadcastThreadRowByID(threadID)
-		a.broadcastSpawnedThreadRows(threadID)
-		for _, group := range promotion.DeletedGroups {
-			a.emitThreadGroup("delete", group)
-		}
-	}
-	return promotion.Agent, nil
+// assistantSendIDRoot names the app-written messages that open an
+// assistant's thread, `assistant:<kind>:<id>`. They are the assistant's
+// orientation: one its session never took in goes back on its queue, held
+// (requeueAssistantMessage).
+const assistantSendIDRoot = "assistant:"
+
+func assistantSendID(kind, id string) string { return assistantSendIDRoot + kind + ":" + id }
+
+// assistantSendIDKind reads the wake kind back out of an assistant
+// message's send id.
+func assistantSendIDKind(sendID string) string {
+	rest, _ := strings.CutPrefix(sendID, assistantSendIDRoot)
+	kind, _, _ := strings.Cut(rest, ":")
+	return kind
 }
 
-// GetStandingAgent returns a thread's standing agent row, or nil when the
-// thread is not a standing agent.
+// errNotAssistantThread refuses an assistant action on a thread that is no
+// assistant's current thread here.
+var errNotAssistantThread = errors.New("this thread is not an assistant's current thread on this computer")
+
+// CreateAssistantOptions is New Assistant's dialog: the name and the
+// project and workspace choice a new thread offers.
+type CreateAssistantOptions struct {
+	ProjectID         string `json:"projectId"`
+	Name              string `json:"name"`
+	WorktreeBranch    string `json:"worktreeBranch,omitempty"`
+	WorktreeBase      string `json:"worktreeBase,omitempty"`
+	WorktreeBaseLocal bool   `json:"worktreeBaseLocal,omitempty"`
+	WorktreePath      string `json:"worktreePath,omitempty"`
+	Branch            string `json:"branch,omitempty"`
+}
+
+// CreateAssistant creates an assistant: its thread, titled with its name,
+// its record and its home, and queues the opening message that starts the
+// discussion of its role. A name another assistant here holds is refused
+// naming that assistant, before anything is created.
+//
+//ao:scope threads:autonomy
+//ao:route selected
+func (a *App) CreateAssistant(ctx context.Context, opts CreateAssistantOptions) (store.Thread, error) {
+	thread, agent, err := a.createAssistant(ctx, assistantSpec{
+		name: opts.Name,
+		thread: CreateThreadOptions{
+			ProjectID:         opts.ProjectID,
+			WorktreeBranch:    opts.WorktreeBranch,
+			WorktreeBase:      opts.WorktreeBase,
+			WorktreeBaseLocal: opts.WorktreeBaseLocal,
+			WorktreePath:      opts.WorktreePath,
+			Branch:            opts.Branch,
+		},
+	})
+	if err != nil {
+		return store.Thread{}, err
+	}
+	body := agenthome.OpeningMessage(thread.Title, agent.Home)
+	if err := a.queueAssistantMessage(thread.ID, assistantSendID(assistantWakeKindOpening, agent.ID), thread.Title, body); err != nil {
+		return thread, fmt.Errorf("the assistant was created, but its opening message could not be queued: %w", err)
+	}
+	return thread, nil
+}
+
+// assistantSpec is what an assistant is created from.
+type assistantSpec struct {
+	name   string
+	thread CreateThreadOptions
+	// creatorAgentID names the assistant that created this one.
+	creatorAgentID string
+}
+
+// createAssistant makes the thread, the record and the home, and
+// broadcasts the row once it is an assistant's. A clash found when the
+// record is written deletes the thread again.
+func (a *App) createAssistant(ctx context.Context, spec assistantSpec) (store.Thread, store.StandingAgent, error) {
+	name := strings.TrimSpace(spec.name)
+	if err := a.store.CheckAssistantName(name); err != nil {
+		return store.Thread{}, store.StandingAgent{}, err
+	}
+	if a.configDir == "" {
+		return store.Thread{}, store.StandingAgent{}, errors.New("create an assistant: no config directory")
+	}
+	opts := spec.thread
+	opts.Title, opts.Mode, opts.GroupID = name, string(threadmode.ModeChat), ""
+	thread, err := a.createThreadRow(ctx, opts, false)
+	if err != nil {
+		return store.Thread{}, store.StandingAgent{}, err
+	}
+	agent := store.StandingAgent{
+		ID:             entityid.New(),
+		ThreadID:       thread.ID,
+		CreatorAgentID: spec.creatorAgentID,
+		CreatedAt:      time.Now().UnixMilli(),
+	}
+	agent.Home = filepath.Join(a.configDir, "agents", agent.ID)
+	undo := func(cause error) (store.Thread, store.StandingAgent, error) {
+		if err := a.DeleteThread(thread.ID); err != nil {
+			log.Printf("assistants: delete the thread %s of an assistant that was not created: %v", thread.ID, err)
+		}
+		return store.Thread{}, store.StandingAgent{}, cause
+	}
+	if err := os.MkdirAll(agent.Home, 0o700); err != nil {
+		return undo(fmt.Errorf("create the assistant's home: %w", err))
+	}
+	if err := a.writeAssistantReadme(agent, thread); err != nil {
+		return undo(err)
+	}
+	if err := a.store.CreateStandingAgent(agent); err != nil {
+		if removeErr := os.RemoveAll(agent.Home); removeErr != nil {
+			log.Printf("assistants: remove the home %s of an assistant that was not created: %v", agent.Home, removeErr)
+		}
+		return undo(err)
+	}
+	created, err := a.store.GetThread(thread.ID)
+	if err != nil {
+		return store.Thread{}, store.StandingAgent{}, fmt.Errorf("read the new assistant's thread: %w", err)
+	}
+	a.broadcastThreadRow(triage.ThreadActionListed, created)
+	return created, agent, nil
+}
+
+// queueAssistantMessage queues an app-written message that opens an
+// assistant's thread and starts its session.
+func (a *App) queueAssistantMessage(threadID, sendID, name, body string) error {
+	kind := assistantSendIDKind(sendID)
+	return a.queueAgentNotice(agentNotice{
+		threadID:   threadID,
+		sendID:     sendID,
+		origin:     usermessage.OriginAgentWake,
+		originWake: &usermessage.OriginWake{Kind: kind, Label: name},
+		prepare:    func() (string, bool, error) { return body, true, nil },
+		startFailed: func(err error) string {
+			return "This assistant's opening message is queued, but its agent could not start: " + err.Error()
+		},
+	})
+}
+
+// requeueAssistantMessage puts an opening message its session never took in
+// back on its thread's queue, held: the next session start sends it. A
+// thread that is archived or gone takes none.
+func (a *App) requeueAssistantMessage(threadID, sendID, body string) {
+	kind := assistantSendIDKind(sendID)
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		log.Printf("assistants: requeue %s on %s: %v", sendID, threadID, err)
+		return
+	}
+	if _, err := a.registerQueueItem(threadID, body, SendMessageOptions{SendID: sendID}, injectedQueueOptions{
+		preserveDraft:     true,
+		held:              true,
+		heldWhileArchived: true,
+		origin:            usermessage.OriginAgentWake,
+		originWake:        &usermessage.OriginWake{Kind: kind, Label: thread.Title},
+	}); err != nil && !errors.Is(err, errThreadArchived) {
+		log.Printf("assistants: requeue %s on %s: %v", sendID, threadID, err)
+	}
+}
+
+// GetStandingAgent returns the assistant whose current thread this is, or
+// nil.
 //
 //ao:scope threads:read
 func (a *App) GetStandingAgent(threadID string) (*store.StandingAgent, error) {
@@ -102,86 +199,44 @@ func (a *App) GetStandingAgent(threadID string) (*store.StandingAgent, error) {
 	return &row, nil
 }
 
-// DemoteStandingAgent removes a thread's standing agent row and cancels its
-// watches, which only a standing agent may keep, withdrawing their queued
-// wakes. Its loops stay, since any thread may keep one, and its home stays on
-// disk. Demoting a thread that is not a standing agent does nothing.
-//
-//ao:scope threads:operate
-func (a *App) DemoteStandingAgent(threadID string) error {
-	_, _, err := a.demoteStandingAgent(threadID)
-	return err
-}
-
-// DemoteStandingAgentAndDeleteHome demotes a standing agent as
-// DemoteStandingAgent does and then deletes its home: exactly the directory
-// its row recorded, and only when that is `<config>/agents/<thread-id>`. The
-// demotion stands when the deletion fails, and the error names the path.
-// Nothing is deleted for a thread that is not a standing agent.
+// DeleteAssistantWithHome deletes an assistant's current thread, which
+// deletes the assistant, and then its home: exactly the directory its record
+// names, and only when that is `<config>/agents/<agent-id>`. The deletion
+// stands when the home's does not, and the error names the folder.
 //
 //ao:scope threads:autonomy
-func (a *App) DemoteStandingAgentAndDeleteHome(threadID string) error {
-	home, found, err := a.demoteStandingAgent(threadID)
-	if !found {
+func (a *App) DeleteAssistantWithHome(threadID string) error {
+	agent, found, err := a.store.GetStandingAgent(threadID)
+	if err != nil {
 		return err
 	}
-	deleteErr := a.deleteStandingAgentHome(threadID, home)
-	if err == nil {
-		return deleteErr
+	if !found {
+		return errNotAssistantThread
 	}
-	return errors.Join(err, deleteErr)
+	if err := a.DeleteThread(threadID); err != nil {
+		return err
+	}
+	return a.deleteAssistantHome(agent)
 }
 
-// demoteStandingAgent removes the row and cancels the watches, returning the
-// home the removed row recorded; found is false when there was no row.
-func (a *App) demoteStandingAgent(threadID string) (home string, found bool, err error) {
-	unlock := a.threadLocks().Lock(threadID)
-	row, found, err := a.store.GetStandingAgent(threadID)
-	if err != nil {
-		unlock()
-		return "", false, err
-	}
-	if _, err := a.store.DemoteStandingAgent(threadID); err != nil {
-		unlock()
-		return "", false, err
-	}
-	ids, err := a.store.CancelAgentWakesForThread(threadID, store.AgentWakeWatch,
-		"cancelled: the thread is no longer a standing agent")
-	for _, id := range ids {
-		a.stopAgentWakeRun(id)
-	}
-	unlock()
-	// The row's agentPromotedAt and archivedChildCount are gone with the
-	// agent row, and its spawned threads' spawnedByAgent with them; the
-	// sidebar renders them all as plain threads again.
-	a.broadcastThreadRowByID(threadID)
-	a.broadcastSpawnedThreadRows(threadID)
-	if len(ids) > 0 {
-		a.emitAgentWakesRemoved(threadID, ids)
-	}
-	if len(ids) > 0 {
-		err = errors.Join(err, a.withdrawCancelledAgentWakes(threadID, ids...))
-	}
-	return row.Home, found, err
-}
-
-// deleteStandingAgentHome removes a demoted agent's home. The recorded path
-// must be the one promotion creates for this thread; any other path is
-// refused rather than deleted. A failure's innermost layer, the one a toast
-// shows, says the demotion stood and carries no path; the layer around it
+// deleteAssistantHome removes a deleted assistant's home. The recorded path
+// must be the one creation makes for it, or a migrated record's
+// `<config>/agents/<thread-id>`, which is its id; any other path is refused
+// rather than deleted. A failure's innermost layer, the one a toast shows,
+// says the thread was deleted and carries no path; the layer around it
 // names the recorded home and the expected folder or where removal stopped.
-func (a *App) deleteStandingAgentHome(threadID, home string) error {
+func (a *App) deleteAssistantHome(agent store.StandingAgent) error {
 	var reason error
 	at := ""
 	agents := filepath.Join(a.configDir, "agents")
-	want := filepath.Join(agents, threadID)
+	want := filepath.Join(agents, agent.ID)
 	switch {
-	case home == "":
-		reason = errors.New("its row records no home")
+	case agent.Home == "":
+		reason = errors.New("its record names no home")
 	case a.configDir == "":
 		reason = errors.New("no config directory")
-	case filepath.Clean(home) != want || filepath.Dir(want) != agents:
-		reason = errors.New("it is not this agent's folder in the app's agents folder")
+	case filepath.Clean(agent.Home) != want || filepath.Dir(want) != agents:
+		reason = errors.New("it is not this assistant's folder in the app's agents folder")
 		at = fmt.Sprintf(" (expected %s)", want)
 	default:
 		reason = os.RemoveAll(want)
@@ -194,13 +249,13 @@ func (a *App) deleteStandingAgentHome(threadID, home string) error {
 		at = fmt.Sprintf(" (stopped at %s)", pathErr.Path)
 		reason = pathErr.Err
 	}
-	return fmt.Errorf("delete the agent's home %q%s: %w", home, at,
-		fmt.Errorf("the thread was demoted, but its home folder was not deleted: %v", reason))
+	return fmt.Errorf("delete the assistant's home %q%s: %w", agent.Home, at,
+		fmt.Errorf("the assistant was deleted, but its home folder was not: %v", reason))
 }
 
-// ListArchivedSpawnedThreads lists the archived threads a standing agent
-// spawned on this computer, newest activity first: what the agent row's
-// finished count opens.
+// ListArchivedSpawnedThreads lists the archived threads an assistant's
+// current thread spawned on this computer and the assistant's archived past
+// threads, newest activity first: what the agent row's done footer opens.
 //
 //ao:scope threads:read
 //ao:route thread
@@ -209,11 +264,11 @@ func (a *App) ListArchivedSpawnedThreads(threadID string) ([]store.Thread, error
 }
 
 // broadcastSpawnedThreadRows re-emits the live threads spawnerID spawned:
-// their rows' spawnedByAgent follows the spawner's standing agent row, so
-// a promotion, demotion or move of the spawner changes what their menus
-// and drags allow. A delete passes the ids itself (broadcastThreadRowsByID),
-// since the cascade has already dropped the spawn rows this reads.
-// Log-and-continue, as broadcastThreadRowByID.
+// their rows' spawnedByAgent follows whether the spawner is an assistant's
+// current thread, so creation, a handoff or a move of it changes what their
+// menus and drags allow. A delete passes the ids itself
+// (broadcastThreadRowsByID), since the cascade has already dropped the
+// spawn rows this reads. Log-and-continue, as broadcastThreadRowByID.
 func (a *App) broadcastSpawnedThreadRows(spawnerID string) {
 	ids, err := a.store.ListSpawnedThreadIDs(spawnerID)
 	if err != nil {
@@ -229,31 +284,42 @@ func (a *App) broadcastThreadRowsByID(ids []string) {
 	}
 }
 
-// broadcastSpawnerRow re-emits the standing agent that spawned child: the
-// agent row's archivedChildCount moves when a spawned thread is archived,
-// unarchived or deleted. A spawner that is not a standing agent carries no
+// broadcastSpawnerRow re-emits the assistant that spawned child, or whose
+// past thread child is: the agent row's archivedChildCount moves when such
+// a thread is archived, unarchived or deleted. Any other spawner carries no
 // count, so nothing is said for it. Log-and-continue, as
 // broadcastThreadRowByID: the child's change is already durable and the
 // sidebar converges on the next ListThreads.
 func (a *App) broadcastSpawnerRow(child store.Thread) {
-	if child.SpawnedByThreadID == "" {
+	parentID := child.SpawnedByThreadID
+	if child.PastAgentID != "" {
+		agent, found, err := a.store.GetAgent(child.PastAgentID)
+		if err != nil {
+			log.Printf("broadcast the assistant of past thread %s: %v", child.ID, err)
+			return
+		}
+		if found {
+			parentID = agent.ThreadID
+		}
+	}
+	if parentID == "" {
 		return
 	}
-	spawner, err := a.store.GetThread(child.SpawnedByThreadID)
+	parent, err := a.store.GetThread(parentID)
 	if err != nil {
-		log.Printf("broadcast spawner %s of thread %s: %v", child.SpawnedByThreadID, child.ID, err)
+		log.Printf("broadcast spawner %s of thread %s: %v", parentID, child.ID, err)
 		return
 	}
-	if spawner.AgentPromotedAt == nil {
+	if parent.AgentID == "" {
 		return
 	}
-	a.broadcastThreadRow(triage.ThreadActionFull, spawner)
+	a.broadcastThreadRow(triage.ThreadActionFull, parent)
 }
 
-// SetStandingAgentNotifyOnTick turns a standing agent's tick notifications on
-// or off. Off, the default, a turn only its loops and watches started raises
-// no notification at rest; on, it notifies like any other turn. Refused for a
-// thread that is not a standing agent.
+// SetStandingAgentNotifyOnTick turns an assistant's tick notifications on or
+// off. Off, the default, a turn only its loops and watches started raises no
+// notification at rest; on, it notifies like any other turn. Refused for a
+// thread that is no assistant's current thread.
 //
 //ao:scope threads:operate
 func (a *App) SetStandingAgentNotifyOnTick(threadID string, on bool) (store.StandingAgent, error) {
@@ -262,46 +328,57 @@ func (a *App) SetStandingAgentNotifyOnTick(threadID string, on bool) (store.Stan
 		return store.StandingAgent{}, err
 	}
 	if !found {
-		return store.StandingAgent{}, fmt.Errorf("thread %s is not a standing agent", threadID)
+		return store.StandingAgent{}, errNotAssistantThread
 	}
 	return row, nil
 }
 
-// writeStandingAgentReadme writes the home's README unless one is there: a
-// home kept from an earlier promotion is the agent's, README included.
-func (a *App) writeStandingAgentReadme(home string, thread store.Thread) error {
+// assistantCurrentThread maps a thread a handoff superseded to its
+// assistant's current thread; ok is false for every other thread. A failed
+// read is logged and reads as not superseded, so the message goes where it
+// was addressed, as before handoffs existed.
+func (a *App) assistantCurrentThread(threadID string) (string, bool) {
+	current, found, err := a.store.AssistantCurrentThreadOf(threadID)
+	if err != nil {
+		log.Printf("assistants: %v", err)
+		return "", false
+	}
+	return current, found
+}
+
+// writeAssistantReadme writes the home's README unless one is there.
+func (a *App) writeAssistantReadme(agent store.StandingAgent, thread store.Thread) error {
 	project := thread.ProjectID
 	if row, err := a.store.GetProject(thread.ProjectID); err == nil {
 		project = fmt.Sprintf("%s (%s)", row.Name, row.Path)
 	} else {
-		log.Printf("standing agents: read project %s for the README of %s: %v", thread.ProjectID, thread.ID, err)
+		log.Printf("assistants: read project %s for the README of %s: %v", thread.ProjectID, agent.ID, err)
 	}
-	file, err := os.OpenFile(filepath.Join(home, "README.md"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := os.OpenFile(filepath.Join(agent.Home, "README.md"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, fs.ErrExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("write the agent's README: %w", err)
+		return fmt.Errorf("write the assistant's README: %w", err)
 	}
-	_, writeErr := file.WriteString(standingAgentReadme(thread, project))
+	_, writeErr := file.WriteString(assistantReadme(agent, thread, project))
 	if err := errors.Join(writeErr, file.Close()); err != nil {
-		return fmt.Errorf("write the agent's README: %w", err)
+		return fmt.Errorf("write the assistant's README: %w", err)
 	}
 	return nil
 }
 
-func standingAgentReadme(thread store.Thread, project string) string {
-	title := strings.TrimSpace(thread.Title)
-	if title == "" {
-		title = "Standing agent"
-	}
+func assistantReadme(agent store.StandingAgent, thread store.Thread, project string) string {
 	return fmt.Sprintf(`# %s
 
-This directory is the home of a standing agent in Agent Overflow. The agent
-owns it and keeps its durable state here; no layout is prescribed.
+This directory is the home of an assistant (a standing agent) in Agent
+Overflow. The assistant owns it and keeps its durable state here; no layout
+is prescribed. Its current thread changes when the user starts a new
+thread for it; this home stays.
 
-- Agent: %s
-- Thread id: %s
+- Assistant: %s
+- Assistant id: %s
+- First thread: %s
 - Project: %s
 
 ## What it can register
@@ -315,40 +392,59 @@ owns it and keeps its durable state here; no layout is prescribed.
 
 thread_status lists them, and thread_cancel with a label stops one.
 
-A script outside the app can message the agent:
+A script outside the app can message the assistant's thread:
 
-    agent-overflow thread send %s "text"
-`, title, title, thread.ID, project, thread.ID)
+    agent-overflow thread send <thread-id> "text"
+`, thread.Title, thread.Title, agent.ID, thread.ID, project)
 }
 
-// standingAgentPrompt is the block a standing agent's sessions carry beside
-// the app guide (docs/specs/standing-agents.md, "Agent home contents"): its
-// home, its thread id, that the home is its own and to load the agent-home
-// skill, then the text of the home's instructions.md and MEMORY.md under
-// their headings (agenthome.ReadSessionBlock). "" for any other thread. It is
-// read at every start and resume and never while a session runs, so a
-// promotion or a rewrite of either file reaches the next session, a demotion
-// leaves the block out, and a session's prompt is fixed for its life.
-// Problems are the file reads that failed for a reason other than absence;
-// the start proceeds without that file and the caller surfaces them.
+// standingAgentPrompt is the block an assistant's sessions carry beside the
+// app guide (docs/specs/standing-agents.md, "Agent home contents"): who it
+// is, read from the record (name, id, current thread, home, the creator it
+// reports to), the skill sentence, then the text of the home's
+// instructions.md and MEMORY.md under their headings
+// (agenthome.ReadSessionBlock). "" for any other thread, a past one
+// included. It is read at every start and resume and never while a session
+// runs, so a rename or a rewrite of either file reaches the next session and
+// a session's prompt is fixed for its life. Problems are the file reads that
+// failed for a reason other than absence; the start proceeds without that
+// file and the caller surfaces them.
 func (a *App) standingAgentPrompt(thread store.Thread) (block string, problems []error, err error) {
 	row, found, err := a.store.GetStandingAgent(thread.ID)
 	if err != nil {
-		return "", nil, fmt.Errorf("read the standing agent row of %s: %w", thread.ID, err)
+		return "", nil, fmt.Errorf("read the assistant of %s: %w", thread.ID, err)
 	}
 	if !found {
 		return "", nil, nil
 	}
+	identity := agenthome.Identity{Name: thread.Title, AgentID: row.ID, ThreadID: thread.ID, Home: row.Home}
+	if row.CreatorAgentID != "" {
+		identity.CreatorName, identity.CreatorThreadID = a.assistantName(row.CreatorAgentID)
+	}
+	sentence := agenthome.IdentitySentence(identity)
 	if row.Home == "" {
-		return standingAgentPromptText(row), nil, nil
+		return sentence, nil, nil
 	}
 	home := agenthome.ReadSessionBlock(row.Home)
-	return joinPromptParts(standingAgentPromptText(row), home.Text), home.Problems, nil
+	return joinPromptParts(sentence, home.Text), home.Problems, nil
 }
 
-func standingAgentPromptText(row store.StandingAgent) string {
-	return fmt.Sprintf("You are a standing agent: the user promoted this thread (id %s). Your home is %s. You own that directory and keep your durable state there. %s",
-		row.ThreadID, row.Home, agenthome.LoadSkillSentence)
+// assistantName reads an assistant's name and current thread, empty when it
+// is gone or unreadable.
+func (a *App) assistantName(agentID string) (name, threadID string) {
+	agent, found, err := a.store.GetAgent(agentID)
+	if err != nil {
+		log.Printf("assistants: read assistant %s: %v", agentID, err)
+	}
+	if !found {
+		return "", ""
+	}
+	thread, err := a.store.GetThread(agent.ThreadID)
+	if err != nil {
+		log.Printf("assistants: read the thread of assistant %s: %v", agentID, err)
+		return "", agent.ThreadID
+	}
+	return thread.Title, agent.ThreadID
 }
 
 // reportStandingAgentHomeProblems logs each failed read of a standing agent's

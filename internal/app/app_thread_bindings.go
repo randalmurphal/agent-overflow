@@ -118,6 +118,17 @@ func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store
 // createThread is shared with agent requests and harness seeds. Only the
 // user-facing binding above remembers the selection as composer defaults.
 func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, error) {
+	thread, err := a.createThreadRow(ctx, opts, rememberDefaults)
+	if thread.ID != "" {
+		a.broadcastThreadRow(triage.ThreadActionListed, thread)
+	}
+	return thread, err
+}
+
+// createThreadRow is createThread without the broadcast, for a caller that
+// writes more of the row's derived state (an assistant's record) before the
+// sidebar first sees it.
+func (a *App) createThreadRow(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, error) {
 	endWork, admitErr := a.workAdmission.begin(ctx)
 	if admitErr != nil {
 		return store.Thread{}, admitErr
@@ -159,7 +170,6 @@ func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememb
 	if rememberDefaults {
 		profileErr = a.rememberCreatedThreadProfile(thread, opts)
 	}
-	a.broadcastThreadRow(triage.ThreadActionListed, thread)
 	return thread, profileErr
 }
 

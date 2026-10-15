@@ -273,12 +273,16 @@ func (s *Store) AdvanceThreadTransfer(id, phase, manifestHash string) (ThreadTra
 			return ThreadTransfer{}, err
 		}
 	}
-	// A move retires the thread here, and a standing agent's home stays on
-	// this computer: the conversation arrives as an ordinary thread, and its
-	// retired row here is no agent either. Its loops and watches were
-	// cancelled when the move began.
+	// A move retires the thread here, and an assistant's home stays on this
+	// computer: the conversation arrives as an ordinary thread, and its
+	// retired row here is no assistant's either. Moving an assistant's
+	// current thread deletes the assistant, and a past thread stops being
+	// one. Its loops and watches were cancelled when the move began.
 	if phase == "committed" && row.Kind == "move" {
-		if _, err := tx.Exec(`DELETE FROM standing_agents WHERE thread_id = ?`, row.ThreadID); err != nil {
+		if _, err := tx.Exec(`DELETE FROM agents WHERE thread_id = ?`, row.ThreadID); err != nil {
+			return ThreadTransfer{}, err
+		}
+		if _, err := tx.Exec(`DELETE FROM agent_past_threads WHERE thread_id = ?`, row.ThreadID); err != nil {
 			return ThreadTransfer{}, err
 		}
 	}

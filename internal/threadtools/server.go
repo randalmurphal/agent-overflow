@@ -104,6 +104,8 @@ func (s *Server) call(ctx context.Context, caller Caller, name string, args json
 		return call.loop(ctx, args)
 	case "thread_watch":
 		return call.watch(ctx, args)
+	case "thread_new_assistant":
+		return call.newAssistant(ctx, args)
 	default:
 		return nil, invalidf("There is no tool named %q. The thread tools are: %s.", name, joinNames(ToolNames))
 	}

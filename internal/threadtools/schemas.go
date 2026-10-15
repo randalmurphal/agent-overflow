@@ -15,7 +15,7 @@ import (
 // the computer parameters exist at all. No tool is pairing-only, so no
 // tool ever appears or disappears; only the computer parameters do.
 
-// ToolNames is the fifteen tools, in the order Tools returns them.
+// ToolNames is the sixteen tools, in the order Tools returns them.
 var ToolNames = []string{
 	"thread_search",
 	"thread_show",
@@ -32,6 +32,7 @@ var ToolNames = []string{
 	"thread_remind",
 	"thread_loop",
 	"thread_watch",
+	"thread_new_assistant",
 }
 
 // Tools returns the schemas for one shape.
@@ -52,6 +53,7 @@ func (s *Server) Tools(shape Shape) []map[string]any {
 		remindSchema(),
 		loopSchema(s.wakeFloor),
 		watchSchema(s.wakeFloor),
+		newAssistantSchema(),
 	}
 }
 
@@ -122,6 +124,7 @@ func searchSchema(shape Shape) map[string]any {
 		},
 		"archived":      map[string]any{"type": "boolean", "description": "true lists only archived threads, false only unarchived ones. Omitted, a query searches both and a listing shows unarchived threads only, as the sidebar does."},
 		"spawned_by_me": map[string]any{"type": "boolean", "description": "Only threads this thread spawned, forks included. A thread it merely sent to or asked is not listed; thread_status lists those requests."},
+		"agents":        map[string]any{"type": "boolean", "description": "Only assistants' current threads. Each row's assistant gives the assistant's id, its name (suffixed -<computer> where two computers in the result have an assistant of that name) and its role line, and the row carries its current thread and computer."},
 		"group":         map[string]any{"type": "string", "description": "Only threads filed in this sidebar group, by its name (case-insensitive, every project's group of that name) or its id. A computer with no such group refuses the search rather than answering with no threads."},
 		"since":         map[string]any{"type": "string", "description": "RFC 3339 timestamp with an offset. Only threads active since then."},
 		"limit": map[string]any{
@@ -132,7 +135,7 @@ func searchSchema(shape Shape) map[string]any {
 		},
 		"cursor": map[string]any{"type": "string", "description": "Opaque cursor from a previous thread_search result, passed back unchanged to continue past limit. Omit to start over."},
 	}
-	description := "Find threads, or list them. With query it is a full-text search over settled message text, tool call summaries and titles; without one it lists recent threads by last activity. Either way each row carries the thread id, title, project, provider, model, current state, last activity, branch, group, pin tier, archived and unread flags, last_message (who spoke last in the latest turn, when, and the end of what they said, which shows whether a thread that is idle is waiting on an answer), self on the calling thread's own row, and with a query the matched item id and a snippet. Open a hit with thread_show around its item id, or read what a thread concluded with thread_show window last_answer. Scratch threads are never listed; workflow threads are. Check indexing before treating an empty result as conclusive: a computer still building its index covers only what it has indexed so far."
+	description := "Find threads, or list them. With query it is a full-text search over settled message text, tool call summaries and titles; without one it lists recent threads by last activity. Either way each row carries the thread id, title, project, provider, model, current state, last activity, branch, group, pin tier, archived and unread flags, last_message (who spoke last in the latest turn, when, and the end of what they said, which shows whether a thread that is idle is waiting on an answer), assistant on an assistant's current thread (its id, name and role line), self on the calling thread's own row, and with a query the matched item id and a snippet. Open a hit with thread_show around its item id, or read what a thread concluded with thread_show window last_answer. Scratch threads are never listed; workflow threads are. Check indexing before treating an empty result as conclusive: a computer still building its index covers only what it has indexed so far."
 	if shape.Paired() {
 		properties["computers"] = map[string]any{
 			"type":        "array",

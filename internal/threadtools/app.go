@@ -28,8 +28,10 @@ type App interface {
 	// no live provider session returns the zero value and no error.
 	LiveState(ctx context.Context, threadID string) (LiveState, error)
 
-	// ResolveThreadRef matches a full thread id or a prefix of at least
-	// MinPrefixLen characters against this computer's threads, bounded to
+	// ResolveThreadRef matches a full thread id, an assistant's name
+	// (case-insensitively, as its current thread, with
+	// Candidate.Assistant set) or an id prefix of at least MinPrefixLen
+	// characters against this computer's threads, bounded to
 	// MaxResolutionCandidates rows. Hidden workflow threads are included;
 	// scratch threads are excluded unless the caller owns them. A thread
 	// this computer moved away is reported through Resolution.MovedTo
@@ -77,6 +79,11 @@ type App interface {
 	// the token, writes the request row and dispatches locally or to the
 	// destination computer.
 	Spawn(ctx context.Context, caller Caller, call SpawnCall) (RequestAck, error)
+
+	// NewAssistant creates an assistant for a caller that is an assistant's
+	// current thread on this computer, and starts it as the caller's spawn
+	// with its opening block, answer notification armed.
+	NewAssistant(ctx context.Context, caller Caller, call NewAssistantCall) (NewAssistantAck, error)
 
 	// Send continues an existing thread as if the user had typed the
 	// message: queued at the turn boundary mid-turn, sent now when idle.
