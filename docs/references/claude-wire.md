@@ -3918,7 +3918,9 @@ Four properties that decide how it can be used:
    `sonnet`, `haiku`. An alias space and an id space share one `value` field.
 2. **No context windows.** The array says nothing about 200k vs 1M.
 3. **Older models are absent.** opus-4.x and sonnet-4-6 do not appear on
-   2.1.219 and still run. Absence is not a denial.
+   2.1.219 and still run. Absence means the CLI does not offer the model, not
+   that it stopped running: AO leaves it out of pickers and keeps it for
+   threads already on it.
 4. **`[1m]` is baked into id strings, inconsistently.** `opus[1m]` resolves to
    `claude-opus-5[1m]` (marker kept) while `claude-fable-5[1m]` resolves to
    `claude-fable-5` (marker dropped). Consumers must strip it from both sides.

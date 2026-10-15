@@ -64,10 +64,17 @@ type FastModeTier struct {
 
 // ModelInfo describes a model available from a provider.
 type ModelInfo struct {
-	Slug         string        `json:"slug"`
-	Name         string        `json:"name"`
-	Provider     string        `json:"provider"`
-	IsCustom     bool          `json:"isCustom,omitempty"`
+	Slug     string `json:"slug"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	IsCustom bool   `json:"isCustom,omitempty"`
+	// Unlisted marks a catalog row the provider did not offer in its latest
+	// model list. The row still resolves capabilities for threads already on
+	// the model; pickers leave it out. A catalog no provider answer backs
+	// marks nothing.
+	Unlisted bool `json:"unlisted,omitempty"`
+	// IsDefault marks the model the provider names as its own default.
+	IsDefault    bool          `json:"isDefault,omitempty"`
 	Capabilities []string      `json:"capabilities,omitempty"`
 	FastModeTier *FastModeTier `json:"fastModeTier,omitempty"`
 	// SupportsAutoMode is deliberately three-state: nil means no source
@@ -88,8 +95,8 @@ var ClaudeModels = []ModelInfo{
 		// Fable 5 is the top tier above Opus. Same launch surface as
 		// Opus 4.8 (1M context, low→max effort, xhigh default). Fast
 		// mode is an Opus-only feature, so it is intentionally absent
-		// here. Listed first, so it is the FallbackModelForProvider
-		// default for new threads.
+		// here. Listed first, so it is the new-thread default only until
+		// the CLI reports its own default.
 		Slug:             "claude-fable-5",
 		Name:             "Claude Fable 5",
 		Provider:         "claude",
@@ -161,6 +168,18 @@ var ClaudeModels = []ModelInfo{
 		Provider:         "claude",
 		ContextWindows:   claudeContextOptionsDefaultingToStandard(),
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
+	},
+	{
+		// The CLI reports no context windows, and the nearest catalog family
+		// (Haiku 4.5) is 200k only, so this entry exists to carry the 1M
+		// tier. Same shape as Sonnet 5 in the CLI's capability table
+		// (native 1M, standard default): requests over 100k tokens are
+		// billed at a higher tier, so 1M stays opt-in.
+		Slug:             "claude-haiku-5-5",
+		Name:             "Claude Haiku 5.5",
+		Provider:         "claude",
+		ContextWindows:   claudeContextOptionsDefaultingToStandard(),
+		ReasoningEfforts: claudeEffortOptions("medium", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
 		// No reasoning efforts: the CLI's own model list on 2.1.219 reports

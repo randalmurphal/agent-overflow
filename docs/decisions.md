@@ -327,7 +327,15 @@ Mechanism in
   (`internal/provideraccounts/AGENTS.md` has the case table).
 - A model that exists only as probe enrichment (`claude-fable-5-1`) is not
   added to the hand catalog; the point of enrichment is that a new model
-  needs no release (see `internal/claudemodels/AGENTS.md`).
+  needs no release (see `internal/claudemodels/AGENTS.md`). The exception is
+  a model whose context windows the nearest catalog family gets wrong, since
+  the CLI reports none (`claude-haiku-5-5`, 1M against Haiku 4.5's 200k).
+- Model pickers offer what the provider's latest model list offers, plus any
+  model a thread ran in the last week, and start new threads on the
+  provider's own default. Before the first answer they offer the shipped
+  list. Rows the list omits stay for capability lookup, so threads already on
+  them keep running; a model the provider truly withdrew fails in the
+  timeline (ruling 2026-10-15).
 - Model inputs are full model IDs. AO keeps no alias table: a Claude alias
   (`opus`, `sonnet`) is refused as input with the offered IDs, and a Codex
   slug is passed as written for Codex to judge. An alias the CLI reports back

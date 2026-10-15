@@ -6,6 +6,7 @@ import {
   getProviderModels,
   invalidateProviderModels,
   preloadProviderModelsForSettings,
+  providerModelsPending,
   resetProviderModelsForTest,
 } from './providerModels.svelte';
 import {
@@ -68,6 +69,53 @@ describe('provider model catalog', () => {
     await expect(ensureProviderModels('codex')).resolves.toEqual(models);
     expect(getModels).toHaveBeenCalledOnce();
     expect(getProviderModels('codex')).toEqual(models);
+  });
+
+  it('keeps retrying a failed load on its own until the list arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const models: ModelInfo[] = [{ slug: 'gpt-6.1-sol', name: 'GPT-6.1-Sol', provider: 'codex' }];
+      setBindingMock('GetModelsForProvider', async () => {
+        calls += 1;
+        if (calls <= 2) throw new Error('app-server not ready');
+        return modelCatalog(models);
+      });
+
+      await expect(ensureProviderModels('codex')).rejects.toThrow('app-server not ready');
+      expect(providerModelsPending('codex')).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(calls).toBe(2);
+      expect(getProviderModels('codex')).toEqual([]);
+      expect(providerModelsPending('codex')).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(calls).toBe(3);
+      expect(getProviderModels('codex')).toEqual(models);
+      expect(providerModelsPending('codex')).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(calls).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('invalidation cancels a scheduled retry', async () => {
+    vi.useFakeTimers();
+    try {
+      const getModels = setBindingMock('GetModelsForProvider', async () => {
+        throw new Error('down');
+      });
+      await expect(ensureProviderModels('codex')).rejects.toThrow('down');
+      invalidateProviderModels('codex');
+      expect(providerModelsPending('codex')).toBe(false);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(getModels).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('preloads enabled provider model lists', async () => {

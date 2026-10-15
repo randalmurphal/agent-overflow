@@ -218,7 +218,7 @@ func (t threadToolsApp) applySpawnModel(opts *CreateThreadOptions, call threadto
 		// caller did not earn.
 		opts.Model, opts.ReasoningEffort = "", ""
 	}
-	option, err := t.providerOption(opts.Provider)
+	option, resolvable, err := t.providerModelOptions(opts.Provider)
 	if err != nil || len(option.Models) == 0 {
 		return errorsx.Public(threadtools.CodeInvalidRequest,
 			fmt.Sprintf("This computer offers no models for %q. thread_options lists what it has.", opts.Provider), err)
@@ -230,7 +230,7 @@ func (t threadToolsApp) applySpawnModel(opts *CreateThreadOptions, call threadto
 		opts.Model = option.DefaultModel
 	}
 	var model threadtools.ModelOption
-	for _, candidate := range option.Models {
+	for _, candidate := range resolvable {
 		if candidate.Slug == opts.Model {
 			model = candidate
 			break

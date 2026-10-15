@@ -260,6 +260,9 @@
         hiddenByProvider.set(provider, hidden);
       }
       if (hidden.has(fav.value)) return false;
+      // A model the provider stopped listing leaves Favorites the same way it
+      // leaves the submenu; the star returns if the provider lists it again.
+      if (getModels(provider).some((model) => model.slug === fav.value && model.unlisted)) return false;
       // A starred model is reachable exactly when its provider's own
       // submenu is — one rule, so a favorite can never be the back door
       // onto a provider the picker is not offering.

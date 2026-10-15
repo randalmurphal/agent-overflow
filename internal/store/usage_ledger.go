@@ -649,3 +649,36 @@ func validateUsageRow(row UsageLedgerRow) error {
 	}
 	return nil
 }
+
+// RecentUsageModels returns the distinct model spellings that recorded usage
+// under any of providers at or after since (Unix milliseconds), as written:
+// callers fold `[1m]` and dated spellings onto catalog slugs themselves.
+func (s *Store) RecentUsageModels(providers []string, since int64) ([]string, error) {
+	if len(providers) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(providers)+1)
+	args = append(args, since)
+	for _, p := range providers {
+		args = append(args, p)
+	}
+	query := `SELECT DISTINCT model FROM usage_ledger
+		WHERE created_at >= ? AND model <> '' AND provider IN (?` + strings.Repeat(",?", len(providers)-1) + `)`
+	rows, err := s.reader().Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: recent usage models: %w", err)
+	}
+	defer rows.Close()
+	var models []string
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return nil, fmt.Errorf("store: scan recent usage model: %w", err)
+		}
+		models = append(models, model)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: recent usage models: %w", err)
+	}
+	return models, nil
+}

@@ -3,7 +3,10 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
+	"slices"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/editor"
 	"agent-overflow/internal/provider"
@@ -255,7 +258,50 @@ func patchTouchesLiveClaudeAxis(patch map[string]any) bool {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) GetModelsForProvider(providerName string) (provider.ModelCatalog, error) {
-	return a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
+	catalog, err := a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
+	if err != nil {
+		return catalog, err
+	}
+	a.listRecentlyUsedModels(&catalog)
+	return catalog, nil
+}
+
+// recentModelUseWindow is how long a model that ran keeps its picker row after
+// the provider's list stops offering it. The provider's list is a
+// server-gated shortlist that can omit a working model from one answer; a model
+// that ran recently is assumed still available, and a turn on it that the
+// provider refuses reports the error in the timeline.
+const recentModelUseWindow = 7 * 24 * time.Hour
+
+// listRecentlyUsedModels clears Unlisted on catalog rows whose model recorded
+// usage within recentModelUseWindow. When the ledger cannot be read every row
+// is listed, so a store failure never hides a model the user can run.
+func (a *App) listRecentlyUsedModels(catalog *provider.ModelCatalog) {
+	if !slices.ContainsFunc(catalog.Models, func(m provider.ModelInfo) bool { return m.Unlisted }) {
+		return
+	}
+	// Only the Claude catalog carries Unlisted rows; the two Claude
+	// providers run the same models.
+	family := []string{string(provider.Claude), string(provider.ClaudeTUI)}
+	var recent []string
+	var err error
+	if a.store == nil {
+		err = fmt.Errorf("store unavailable")
+	} else {
+		recent, err = a.store.RecentUsageModels(family, time.Now().Add(-recentModelUseWindow).UnixMilli())
+	}
+	if err != nil {
+		log.Printf("model catalog: listing every model, recent usage unreadable: %v", err)
+	}
+	used := make(map[string]bool, len(recent))
+	for _, model := range recent {
+		used[provider.NormalizeModelSlug(family[0], model)] = true
+	}
+	for i := range catalog.Models {
+		if err != nil || used[catalog.Models[i].Slug] {
+			catalog.Models[i].Unlisted = false
+		}
+	}
 }
 
 func (a *App) refreshCodexModelCatalog() {

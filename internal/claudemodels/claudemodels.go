@@ -92,8 +92,9 @@ func FormatDrift(drift []Drift) string {
 //
 //  1. **Nothing in base is ever dropped or reordered.** The wire is a
 //     five-row picker shortlist that omits still-usable older models
-//     (opus-4.x, sonnet-4-6 are absent on 2.1.219), so wire ABSENCE carries no
-//     information. Base order also decides the fallback model for new threads.
+//     (opus-4.x, sonnet-4-6 are absent on 2.1.219), and a thread on one must
+//     still resolve its capabilities. Which rows a picker offers, and in what
+//     order, is ModelsFor's answer (markListed), not Merge's.
 //  2. **Base owns context windows, and no row's `displayName` ever becomes a
 //     model name.** The wire reports no windows at all, and its `displayName`
 //     names a picker ROW, not a model — "Default (recommended)" and "Opus (1M
@@ -592,13 +593,13 @@ func NewCatalogWith(base []provider.ModelInfo) *Catalog {
 // handled here rather than at the call site so no caller can get the rule
 // wrong: an unreadable array is NO information, so the previous entry stands.
 //
-// Absence never subtracts, in either shape. An empty (or absent) array, and a
-// non-empty array missing models this identity learned earlier, both leave the
-// learned models served: the list is the CLI's picker shortlist, its rows are
-// server-gated, and one degraded answer must not remove a model the user's
-// threads are running (merge rule 1 applied to learned models, not just
-// shipped ones). The one event that voids learned models is the binary behind
-// the entry changing — DropBinary, driven by the provider-binary watcher.
+// Absence never subtracts from the lookup list, in either shape. An empty (or
+// absent) array leaves the previous answer standing, and a non-empty array
+// missing models this identity learned earlier keeps them served, marked
+// Unlisted by ModelsFor: a thread running one must still resolve its
+// capabilities (merge rule 1 applied to learned models, not just shipped
+// ones). The one event that voids learned models is the binary behind the
+// entry changing — DropBinary, driven by the provider-binary watcher.
 func (c *Catalog) Store(key provider.ProbeCacheKey, wire []claude.WireModel, wireErr error) []Drift {
 	if wireErr != nil {
 		return []Drift{{
@@ -816,10 +817,13 @@ func (c *Catalog) ModelsFor(
 
 	c.mu.Lock()
 	source := c.base
-	if entry, ok := c.entries[key.String()]; ok {
-		source, enriched = entry.models, true
-	} else if entry, ok := c.newestForBinaryLocked(key.Binary); ok {
-		source, enriched = entry.models, true
+	var wire []claude.WireModel
+	entry, ok := c.entries[key.String()]
+	if !ok {
+		entry, ok = c.newestForBinaryLocked(key.Binary)
+	}
+	if ok && len(entry.wire) > 0 {
+		source, wire, enriched = entry.models, entry.wire, true
 	}
 	models = provider.CloneModels(source)
 	c.mu.Unlock()
@@ -827,7 +831,45 @@ func (c *Catalog) ModelsFor(
 	for i := range models {
 		models[i].Provider = providerName
 	}
-	return models, enriched
+	return markListed(models, wire), enriched
+}
+
+// markListed orders models as the CLI listed them and marks the rest
+// Unlisted, keeping them after the listed ones for capability lookup. The
+// model the CLI's `default` row resolves to is marked IsDefault. With no wire
+// rows (no probe yet, or a CLI too old to report models) nothing is marked.
+func markListed(models []provider.ModelInfo, wire []claude.WireModel) []provider.ModelInfo {
+	if len(wire) == 0 {
+		return models
+	}
+	rank := make(map[string]int, len(wire))
+	for _, row := range wire {
+		if slug := row.CanonicalSlug(); slug != "" {
+			if _, seen := rank[slug]; !seen {
+				rank[slug] = len(rank)
+			}
+		}
+	}
+	defaultSlug := claude.ModelAliases(wire)["default"]
+	for i := range models {
+		_, listed := rank[models[i].Slug]
+		models[i].Unlisted = !listed
+		models[i].IsDefault = listed && models[i].Slug == defaultSlug
+	}
+	slices.SortStableFunc(models, func(a, b provider.ModelInfo) int {
+		ra, aListed := rank[a.Slug]
+		rb, bListed := rank[b.Slug]
+		switch {
+		case aListed && bListed:
+			return ra - rb
+		case aListed:
+			return -1
+		case bListed:
+			return 1
+		}
+		return 0
+	})
+	return models
 }
 
 // AliasesFor returns the alias map (claude.ModelAliases) of the wire rows

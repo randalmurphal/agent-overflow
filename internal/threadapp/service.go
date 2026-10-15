@@ -31,6 +31,9 @@ type ModelPolicy interface {
 	// ValidateModel refuses a model input that is not a model ID
 	// (provider.ValidateModelID against the merged catalog).
 	ValidateModel(providerName, model string) error
+	// DefaultModel is the model a provider's thread starts on with no
+	// remembered choice: the provider's own default when it names one.
+	DefaultModel(providerName string) string
 }
 
 // WorktreeCut describes one fresh worktree. Branch is the branch it checks

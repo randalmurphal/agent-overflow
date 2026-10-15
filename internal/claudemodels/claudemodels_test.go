@@ -1189,3 +1189,91 @@ func TestCatalogReportsEnrichmentProvenance(t *testing.T) {
 		t.Error("a provider this catalog does not serve must not claim enrichment")
 	}
 }
+
+// The served list follows the CLI's latest answer: listed models in the CLI's
+// order with its default marked, every other catalog row kept after them as
+// Unlisted so threads already on it still resolve capabilities.
+func TestModelsForMarksWhatTheLatestAnswerLists(t *testing.T) {
+	catalog := NewCatalogWith([]provider.ModelInfo{
+		{Slug: "claude-opus-5", Name: "Opus 5", Provider: "claude"},
+		{Slug: "claude-opus-4-5", Name: "Opus 4.5", Provider: "claude"},
+		{Slug: "claude-haiku-4-5", Name: "Haiku 4.5", Provider: "claude"},
+	})
+	catalog.Store(testKey("a"), []claude.WireModel{
+		{Value: "default", ResolvedModel: "claude-opus-5-5[1m]"},
+		{Value: "opus", ResolvedModel: "claude-opus-5-5"},
+		{Value: "haiku", ResolvedModel: "claude-haiku-4-5-20251001"},
+		{Value: "claude-opus-5", ResolvedModel: "claude-opus-5"},
+	}, nil)
+
+	models, enriched := catalog.ModelsFor(testKey("a"), string(provider.Claude))
+	if !enriched {
+		t.Fatal("enriched = false for a probed identity")
+	}
+	want := []string{"claude-opus-5-5", "claude-haiku-4-5", "claude-opus-5", "claude-opus-4-5"}
+	if !slices.Equal(slugs(models), want) {
+		t.Fatalf("order = %v, want %v", slugs(models), want)
+	}
+	for _, m := range models {
+		if m.Unlisted != (m.Slug == "claude-opus-4-5") {
+			t.Errorf("%s Unlisted = %v", m.Slug, m.Unlisted)
+		}
+		if m.IsDefault != (m.Slug == "claude-opus-5-5") {
+			t.Errorf("%s IsDefault = %v", m.Slug, m.IsDefault)
+		}
+	}
+
+	// A later answer that drops opus-5 unlists it; nothing remembers it.
+	catalog.Store(testKey("a"), []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5-5"}}, nil)
+	models, _ = catalog.ModelsFor(testKey("a"), string(provider.Claude))
+	if m, _ := findModel(models, "claude-opus-5"); !m.Unlisted {
+		t.Error("a model the latest answer dropped stayed listed")
+	}
+	if m, ok := findModel(models, "claude-opus-5-5"); !ok || m.Unlisted || m.IsDefault {
+		t.Errorf("opus-5-5 = %+v, %v; want listed, not default (no default row)", m, ok)
+	}
+}
+
+// A CLI that answers without a model list (too old to report one) leaves the
+// shipped catalog in place, unmarked and not claimed as a probe answer.
+func TestModelsForTreatsAnAnswerWithoutModelsAsUnprobed(t *testing.T) {
+	catalog := NewCatalog()
+	catalog.Store(testKey("a"), nil, nil)
+	models, enriched := catalog.ModelsFor(testKey("a"), string(provider.Claude))
+	if enriched {
+		t.Fatal("enriched = true for an answer with no models")
+	}
+	if !slices.Equal(slugs(models), slugs(provider.ClaudeModels)) {
+		t.Fatalf("models = %v, want the shipped catalog", slugs(models))
+	}
+	for _, m := range models {
+		if m.Unlisted || m.IsDefault {
+			t.Fatalf("%s marked (Unlisted=%v IsDefault=%v) with no answer", m.Slug, m.Unlisted, m.IsDefault)
+		}
+	}
+}
+
+// Haiku 5.5 as CLI 2.1.300 reports it: the shipped entry supplies the 1M
+// tier the wire cannot report, and the wire's effort levels apply.
+func TestHaiku55TakesItsContextWindowsFromTheShippedEntry(t *testing.T) {
+	catalog := NewCatalog()
+	catalog.Store(testKey("a"), []claude.WireModel{{
+		Value: "haiku", ResolvedModel: "claude-haiku-5-5",
+		SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"},
+	}}, nil)
+	models, _ := catalog.ModelsFor(testKey("a"), string(provider.Claude))
+	haiku, ok := findModel(models, "claude-haiku-5-5")
+	if !ok || haiku.Unlisted {
+		t.Fatalf("haiku 5.5 = %+v, %v; want listed", haiku, ok)
+	}
+	var tokens []int
+	for _, w := range haiku.ContextWindows {
+		tokens = append(tokens, w.Tokens)
+	}
+	if !slices.Contains(tokens, provider.ClaudeExtendedContextWindow) {
+		t.Errorf("context windows = %v, want the 1M tier", tokens)
+	}
+	if got := effortSlugs(haiku.ReasoningEfforts); !slices.Equal(got, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Errorf("efforts = %v", got)
+	}
+}

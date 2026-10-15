@@ -1,6 +1,10 @@
 package app
 
 import (
+	"context"
+	"log"
+	"time"
+
 	"agent-overflow/internal/provider"
 )
 
@@ -37,10 +41,50 @@ func (a *App) probeStartupAccountInfo() {
 		return
 	}
 
+	a.startupProbeWG.Add(2)
 	go func() {
-		if _, err := a.ProbeClaudeAccount(); err == nil {
+		defer a.startupProbeWG.Done()
+		if a.retryClaudeStartupProbe(a.lifeCtx()) {
 			a.providerLifecycleService().RequestClaudeUsage()
 		}
 	}()
-	go func() { _, _ = a.ProbeCodexAccount() }()
+	go func() {
+		defer a.startupProbeWG.Done()
+		_, _ = a.ProbeCodexAccount()
+	}()
+}
+
+// claudeStartupProbeBackoff is the wait before each retry of a failed
+// startup Claude probe; the last delay repeats. Tests shorten it.
+var claudeStartupProbeBackoff = []time.Duration{
+	15 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute,
+}
+
+// retryClaudeStartupProbe runs the Claude account probe until it succeeds or
+// ctx ends, and reports whether it succeeded. The probe is what reports the
+// CLI's model list; until one succeeds the picker serves the saved or shipped
+// list. A failed probe emits nothing, and an expired login fails before any
+// process is spawned, so a retry costs at most one bounded subprocess.
+//
+// While the binary does not resolve nothing is spawned or logged; the loop
+// only looks again, so a CLI installed after launch is probed when it lands.
+func (a *App) retryClaudeStartupProbe(ctx context.Context) bool {
+	lookPath := a.resolveLookPath()
+	for attempt := 0; ; attempt++ {
+		delay := claudeStartupProbeBackoff[min(attempt, len(claudeStartupProbeBackoff)-1)]
+		if binary := a.providerBinaryPath(string(provider.Claude)); binary != "" && lookPath(binary) == nil {
+			_, err := a.ProbeClaudeAccount()
+			if err == nil {
+				return true
+			}
+			log.Printf("claude startup probe failed (attempt %d), retrying in %s: %v", attempt+1, delay, err)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
 }
