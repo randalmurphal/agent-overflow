@@ -1,12 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeItem } from '../../test/helpers/chat';
 import { createThreadMessageUiState } from './threadMessageUiState.svelte';
+import { __resetUnsendDeclinesForTest, isUnsendDeclined, noteUnsendDeclined } from './unsendDeclines.svelte';
 
-function fixture() {
+beforeEach(() => __resetUnsendDeclinesForTest());
+
+function fixture(threadId: string | null = 't-1') {
   const provisional = makeItem({ id: 'optimistic:send', kind: 'user_text', meta: '{"sendId":"send"}' });
   const confirmed = { ...provisional, id: 'user:send' };
   const items = new Map([[provisional.id, provisional]]);
-  const ui = createThreadMessageUiState({ getItemById: id => items.get(id), loadedItems: () => items.values() });
+  const ui = createThreadMessageUiState({ getItemById: id => items.get(id), loadedItems: () => items.values(), threadId: () => threadId });
   const confirm = () => { items.delete(provisional.id); items.set(confirmed.id, confirmed); ui.disposeItems([provisional]); };
   return { provisional, confirmed, items, ui, confirm };
 }
@@ -42,24 +45,35 @@ describe('message presentation lifetime', () => {
     revoke.mockRestore();
   });
 
-  it('keeps a declined un-send across confirmation and forgets it when the message leaves retention', () => {
-    const { provisional, confirmed, items, ui, confirm } = fixture();
+  it('keeps a declined un-send across confirmation, retention and a thread switch, for its thread only', () => {
+    const { provisional, confirmed, ui, confirm } = fixture();
     ui.setUnsendDeclined(provisional.id);
     ui.setUnsendDeclined(provisional.id);
     confirm();
     expect(ui.isUnsendDeclined(confirmed.id)).toBe(true);
-    expect(ui.stats().unsendDeclinedMessages).toBe(1);
-    ui.prune(new Set([confirmed.id]));
-    expect(ui.isUnsendDeclined(confirmed.id)).toBe(true);
     ui.prune(new Set());
-    expect(ui.isUnsendDeclined(confirmed.id)).toBe(false);
-    ui.setUnsendDeclined(confirmed.id);
-    items.delete(confirmed.id);
-    ui.disposeItems([confirmed]);
-    expect(ui.stats().unsendDeclinedMessages).toBe(0);
-    ui.setUnsendDeclined(confirmed.id);
     ui.clear();
-    expect(ui.stats().unsendDeclinedMessages).toBe(0);
+    expect(ui.isUnsendDeclined(confirmed.id)).toBe(true);
+    // A pane that loads the thread again reads the same fact.
+    const returned = fixture();
+    returned.confirm();
+    expect(returned.ui.isUnsendDeclined(returned.confirmed.id)).toBe(true);
+    expect(fixture('t-2').ui.isUnsendDeclined(confirmed.id)).toBe(false);
+    const draft = fixture(null);
+    draft.ui.setUnsendDeclined(draft.provisional.id);
+    expect(draft.ui.isUnsendDeclined(draft.provisional.id)).toBe(false);
+  });
+
+  it('bounds the declines it keeps, dropping the least recently declined thread first', () => {
+    for (let i = 0; i < 64; i++) noteUnsendDeclined(`t-${i}`, 'send:a');
+    noteUnsendDeclined('t-0', 'send:b');
+    noteUnsendDeclined('t-64', 'send:a');
+    expect(isUnsendDeclined('t-0', 'send:a')).toBe(true);
+    expect(isUnsendDeclined('t-1', 'send:a')).toBe(false);
+    expect(isUnsendDeclined('t-64', 'send:a')).toBe(true);
+    for (let i = 0; i < 65; i++) noteUnsendDeclined('t-0', `send:${i}`);
+    expect(isUnsendDeclined('t-0', 'send:0')).toBe(false);
+    expect(isUnsendDeclined('t-0', 'send:64')).toBe(true);
   });
 
   it('collapses and expands through either representation without carrying state to another thread', () => {

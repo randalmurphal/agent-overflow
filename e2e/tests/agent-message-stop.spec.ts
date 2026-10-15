@@ -129,7 +129,10 @@ for (const provider of ['claude', 'codex'] as const) {
   test(`${provider}: Stop on a joined message it cannot split leaves it in place and says why`, async ({ harness, page }) => {
     test.setTimeout(180_000);
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-      projects: [{ name: `stop-joined-${provider}`, repo: {}, threads: [{ title: 'Joined target', provider }] }],
+      projects: [{ name: `stop-joined-${provider}`, repo: {}, threads: [
+        { title: 'Joined target', provider },
+        { title: 'Elsewhere', provider, turns: [{ userText: 'somewhere else', items: [{ kind: 'assistant_text', summary: 'Answered elsewhere.' }] }] },
+      ] }],
     });
     const project = seed.projects[0];
     const thread = project.threadIds[0];
@@ -178,5 +181,17 @@ for (const provider of ['claude', 'codex'] as const) {
     const row = page.locator('[data-item-id]').filter({ has: declined });
     await expect(row).toHaveCount(1);
     await captureAgentMessage(page, `${provider}-unsend-declined.png`, row);
+
+    // The fact lasts the session: leaving the thread and coming back keeps it.
+    await openThread(page, 'Elsewhere');
+    await expect(page.getByText('Answered elsewhere.', { exact: true })).toBeVisible();
+    await expect(declined).toHaveCount(0);
+    await openThread(page, 'Joined target');
+    await expect(declined).toHaveText("Not un-sent: joined with Lead's request");
+    // A reload forgets it; the message itself stays.
+    await page.reload();
+    await openThread(page, 'Joined target');
+    await expect(page.getByText('my half of it', { exact: false }).first()).toBeVisible();
+    await expect(declined).toHaveCount(0);
   });
 }

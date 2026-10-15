@@ -276,6 +276,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // Read at dispose time, after the caller has already replaced `items`
     // with the surviving window — so this IS the "still loaded" set.
     loadedItems: getItems,
+    threadId: () => thread?.id ?? null,
   });
   // Per-item smoother + reveal-gate machinery lives in
   // threadStreamingReveal.svelte.ts. Item-window commits finalize through

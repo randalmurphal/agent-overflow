@@ -40,6 +40,7 @@ interface ThreadRowUiStateOptions {
   getItemById(itemId: string): Item | undefined;
   /** The committed window determines whether a dropped record's message or payload still has a reader. */
   loadedItems(): Iterable<Item>;
+  threadId(): string | null;
 }
 
 export interface ThreadRowUiState {
