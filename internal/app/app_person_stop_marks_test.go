@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"testing"
 
 	"agent-overflow/internal/store"
@@ -16,6 +17,21 @@ func insertTurns(t *testing.T, app *App, threadID string, turns ...store.Turn) {
 	}
 }
 
+// bindRunningReceipt binds a running request to the thread's turn turnIndex,
+// as a dispatch that started the turn for it does.
+func bindRunningReceipt(t *testing.T, app *App, threadID, token string, turnIndex int) {
+	t.Helper()
+	if _, _, err := app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: token, OwnerDeviceID: "d", Kind: "send", TargetThreadID: threadID, State: store.ThreadReceiptAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := app.store.MarkThreadReceiptRunning(token, "u:"+token, threadRequestTurnKey(threadID, turnIndex)); err != nil || !ok {
+		t.Fatalf("mark %s running: %v %v", token, ok, err)
+	}
+	app.noteReceiptRunning(threadID, token)
+}
+
 // A second Stop before the first stopped turn settles keeps the first turn's
 // mark: each turn's requests read the person's Stop.
 func TestEveryStoppedTurnKeepsItsPersonStopMark(t *testing.T) {
@@ -23,8 +39,8 @@ func TestEveryStoppedTurnKeepsItsPersonStopMark(t *testing.T) {
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "stop-marks-two-turns", "claude", t.TempDir())
 	insertTurns(t, app, thread.ID, store.Turn{TurnID: "t0", TurnIndex: 0, StartedAt: 10}, store.Turn{TurnID: "t1", TurnIndex: 1, StartedAt: 20})
-	app.noteReceiptRunning(thread.ID, "tok-0")
-	app.noteReceiptRunning(thread.ID, "tok-1")
+	bindRunningReceipt(t, app, thread.ID, "tok-0", 0)
+	bindRunningReceipt(t, app, thread.ID, "tok-1", 1)
 	app.notePersonStop(thread.ID, 0)
 	app.notePersonStop(thread.ID, 1)
 	for index, startedAt := range map[int]int64{0: 10, 1: 20} {
@@ -47,7 +63,7 @@ func TestTwoThreadsKeepTheirOwnPersonStopMarks(t *testing.T) {
 	b := siblingThread(t, app, a, "stop-marks-b")
 	for _, id := range []string{a.ID, b.ID} {
 		insertTurns(t, app, id, store.Turn{TurnID: id + "-t0", TurnIndex: 0, StartedAt: 10})
-		app.noteReceiptRunning(id, "tok-"+id)
+		bindRunningReceipt(t, app, id, "tok-"+id, 0)
 		app.notePersonStop(id, 0)
 	}
 	for _, id := range []string{a.ID, b.ID} {
@@ -64,17 +80,8 @@ func TestASettledTurnTakesOnlyItsOwnPersonStopMark(t *testing.T) {
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "stop-marks-settle", "claude", t.TempDir())
 	insertTurns(t, app, thread.ID, store.Turn{TurnID: "t0", TurnIndex: 0, StartedAt: 10}, store.Turn{TurnID: "t1", TurnIndex: 1, StartedAt: 20})
-	for index, token := range []string{"tok-0", "tok-1"} {
-		if _, _, err := app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
-			Token: token, OwnerDeviceID: "d", Kind: "send", TargetThreadID: thread.ID, State: store.ThreadReceiptAccepted,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if ok, err := app.store.MarkThreadReceiptRunning(token, "u:"+token, threadRequestTurnKey(thread.ID, index)); err != nil || !ok {
-			t.Fatalf("mark %s running: %v %v", token, ok, err)
-		}
-		app.noteReceiptRunning(thread.ID, token)
-	}
+	bindRunningReceipt(t, app, thread.ID, "tok-0", 0)
+	bindRunningReceipt(t, app, thread.ID, "tok-1", 1)
 	app.notePersonStop(thread.ID, 0)
 	app.notePersonStop(thread.ID, 1)
 
@@ -91,5 +98,35 @@ func TestASettledTurnTakesOnlyItsOwnPersonStopMark(t *testing.T) {
 	}
 	if !app.personStopped(thread.ID, store.Turn{TurnIndex: 1, StartedAt: 20}) {
 		t.Error("turn 0's settlement took turn 1's mark")
+	}
+}
+
+// A person stopping their own turns while an agent's request waits queued on
+// the thread (its receipt accepted, in the running gate) records no mark:
+// those turns settle no receipt, so nothing would take one.
+func TestOwnTurnStopsBehindAQueuedRequestKeepNoMarks(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(t)
+	thread := createAppTestThread(t, app, "stop-marks-queued", "claude", t.TempDir())
+	if _, _, err := app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: "tok-q", OwnerDeviceID: "d", Kind: "send", TargetThreadID: thread.ID, State: store.ThreadReceiptAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.noteReceiptRunning(thread.ID, "tok-q")
+	for i := range 50 {
+		done := int64(100*i + 50)
+		insertTurns(t, app, thread.ID, store.Turn{TurnID: fmt.Sprintf("t%d", i), TurnIndex: i, StartedAt: int64(100 * i), CompletedAt: &done, StopReason: "interrupted"})
+		app.notePersonStop(thread.ID, i)
+		app.settleReceiptsForEndedTurn(thread.ID, false)
+	}
+	app.threadRequests.mu.Lock()
+	kept := len(app.threadRequests.personStops[thread.ID])
+	app.threadRequests.mu.Unlock()
+	if kept != 0 {
+		t.Fatalf("%d marks kept for turns that settle no receipt", kept)
+	}
+	if _, ok := app.runningReceiptTokens(thread.ID); !ok {
+		t.Fatal("the queued request left the gate")
 	}
 }

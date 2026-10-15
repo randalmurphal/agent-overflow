@@ -287,13 +287,11 @@ type personStop struct {
 
 // notePersonStop records that a person's Stop is cutting the thread's open
 // turn (turnIndex), before the interrupt is sent, so the turn end that
-// follows settles its receipts as the person's Stop. A thread whose turns
-// settle no receipt records nothing.
+// follows settles its receipts as the person's Stop. Only a turn a running
+// receipt is bound to records one: no other turn end settles a receipt, so
+// nothing would ever take its mark.
 func (a *App) notePersonStop(threadID string, turnIndex int) {
-	if turnIndex < 0 {
-		return
-	}
-	if _, ok := a.runningReceiptTokens(threadID); !ok {
+	if turnIndex < 0 || !a.turnSettlesAReceipt(threadID, turnIndex) {
 		return
 	}
 	turn, found, err := a.store.GetTurnByThreadIndex(threadID, turnIndex)
@@ -317,6 +315,26 @@ func (a *App) notePersonStop(threadID string, turnIndex int) {
 		a.threadRequests.personStops = make(map[string][]personStop)
 	}
 	a.threadRequests.personStops[threadID] = append(a.threadRequests.personStops[threadID], stop)
+}
+
+// turnSettlesAReceipt reports whether a running receipt of the thread is
+// bound to turnIndex.
+func (a *App) turnSettlesAReceipt(threadID string, turnIndex int) bool {
+	tokens, _ := a.runningReceiptTokens(threadID)
+	for _, token := range tokens {
+		receipt, found, err := a.store.GetThreadRequestReceipt(token)
+		if err != nil {
+			log.Printf("thread tools: read request %s of %s: %v", token, threadID, err)
+			continue
+		}
+		if !found || receipt.TargetThreadID != threadID || receipt.State != store.ThreadReceiptRunning {
+			continue
+		}
+		if index, ok := threadRequestTurnIndex(threadID, receipt.TurnID); ok && index == turnIndex {
+			return true
+		}
+	}
+	return false
 }
 
 // forgetPersonStop drops the marks on turnIndex: the Stop's interrupt did
