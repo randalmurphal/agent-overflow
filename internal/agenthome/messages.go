@@ -78,6 +78,9 @@ type HandOff struct {
 	// SessionLost says the provider cleaned up the previous thread's
 	// session, so the app moved the assistant here itself.
 	SessionLost bool
+	// Carried says the message the user was sending when the session was
+	// found gone waits, unsent, in their composer on this thread.
+	Carried bool
 }
 
 // HandOffMessage opens an assistant's next thread.
@@ -96,9 +99,12 @@ func HandOffMessage(h HandOff) string {
 			fmt.Fprintf(&b, "\n- token %s from %q (%s)", r.Token, r.SenderTitle, r.SenderID)
 		}
 	}
-	if h.SessionLost {
+	switch {
+	case h.Carried:
+		fmt.Fprintf(&b, "\n\nThe message the user was sending when the session was found gone did not reach you; it waits, unsent, in their composer here. Read your previous thread with thread_show (thread_id %s) before acting on anything it was doing, then tell the user in one short paragraph that the provider cleaned up your session, what you picked up and what you are waiting on.", h.PreviousThreadID)
+	case h.SessionLost:
 		fmt.Fprintf(&b, "\n\nThe last message to your previous thread may not have reached you. Read it with thread_show (thread_id %s) before acting on anything it was doing, then tell the user in one short paragraph that the provider cleaned up your session, what you picked up and what you are waiting on.", h.PreviousThreadID)
-	} else {
+	default:
 		fmt.Fprintf(&b, "\n\nRead your previous thread with thread_show (thread_id %s) before acting on anything it was doing, then tell the user in one short paragraph what you picked up and what you are waiting on.", h.PreviousThreadID)
 	}
 	return b.String()

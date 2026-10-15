@@ -39,6 +39,14 @@ export function isAssistantNameTaken(err: unknown): err is TransportError {
   return err instanceof TransportError && err.code === 'assistant_name_taken';
 }
 
+/**
+ * A send whose start found the assistant's provider session gone: the
+ * assistant moves to a new thread, which holds the message in its composer.
+ */
+export function isAssistantSessionGone(err: unknown): err is TransportError {
+  return err instanceof TransportError && err.code === 'assistant_session_gone';
+}
+
 /** Two assistant names are the same name, as the store compares them. */
 export function sameAssistantName(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();

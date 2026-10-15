@@ -10,7 +10,8 @@ import { beginUndoableSend, retireUndoableSend, type SendUndoOutcome } from '../
 import { SendMessageWithOptions } from '../../stores/bindings';
 import type { Attachment } from '../../types/attachment';
 import type { TerminalChip } from '../../types/draft';
-import { addErrorToast } from '../../stores/toast.svelte';
+import { addErrorToast, addToast } from '../../stores/toast.svelte';
+import { isAssistantSessionGone } from '../../stores/assistants.svelte';
 import { isUndeliveredSendError } from '../../stores/transportStatus.svelte';
 import { confirmUnsentMessageRestore } from '../../stores/unsentMessageConfirmation.svelte';
 import { userFacingError } from '../../utils/userFacingError';
@@ -87,6 +88,13 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
       outcome = isUndeliveredSendError(err) ? 'unknown' : 'failed';
       if (sendStarted && outcome === 'failed') projectSendResolved(opts.threadId);
       opts.reportError(`Send interrupted during preparation: ${userFacingError(err)}`, err);
+      return false;
+    }
+    // The backend put the text in the assistant's new thread's composer;
+    // restoring it here as well would leave it in two.
+    if (isAssistantSessionGone(err)) {
+      if (sendStarted) projectSendResolved(opts.threadId);
+      addToast('info', err.message);
       return false;
     }
     // Flip to error so the sidebar pill reads "Failed" — the user

@@ -229,6 +229,10 @@ type App struct {
 	// assistantSessionLoss holds the threads whose session-loss handoff is
 	// running (recoverAssistantSessionLoss).
 	assistantSessionLoss sync.Map
+	// assistantSessionLossCarry holds, by thread, the person's message whose
+	// send found the assistant's session gone, for the handoff that follows
+	// to put in its successor's composer (carryAcrossSessionLoss).
+	assistantSessionLossCarry sync.Map
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup

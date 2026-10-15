@@ -617,6 +617,11 @@ const (
 	// agent"); the message names that assistant, and a client shows it
 	// where the name was typed.
 	ErrCodeAssistantNameTaken = "assistant_name_taken"
+	// ErrCodeAssistantSessionGone refuses a send to an assistant's thread
+	// whose provider session the provider cleaned up: the assistant moves to
+	// a new thread and the message waits in that thread's composer, so a
+	// client does not put it back in this one's.
+	ErrCodeAssistantSessionGone = "assistant_session_gone"
 	// ErrCodeClientOverloaded refuses an RPC this connection has no slot
 	// for: it already holds Config.MaxConcurrentRPCs in flight. The call
 	// was never started, so a client may reissue it once one of its own

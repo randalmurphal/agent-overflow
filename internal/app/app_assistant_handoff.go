@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"agent-overflow/internal/agenthome"
+	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
@@ -43,6 +45,10 @@ func (a *App) StartNextAssistantThread(ctx context.Context, threadID string) (st
 // with it and the assistant continues in a new thread
 // (recoverAssistantSessionLoss).
 var errAssistantSessionGone = errors.New("the provider no longer has this assistant's session, so the assistant continues in a new thread")
+
+// assistantSessionGoneMessage is what a person whose send found the session
+// gone is told.
+const assistantSessionGoneMessage = "The provider cleaned up this assistant's session. It continues in a new thread, and your message is waiting in that thread's composer."
 
 // requireAssistantClaudeSession refuses a Claude or Claude TUI resume of an
 // assistant's current thread whose transcript is gone, before the start
@@ -79,12 +85,57 @@ func (a *App) recoverAssistantSessionLoss(threadID string) {
 		if err != nil {
 			log.Printf("assistants: %s lost its provider session and could not move to a new thread: %v", threadID, err)
 			a.emitErrorToThread(threadID, "The provider cleaned up this assistant's session, and moving it to a new thread failed: "+err.Error()+". Use New Thread, Same Assistant to try again.")
+			a.returnSessionLossCarry(threadID)
 			return
 		}
 		log.Printf("assistants: %s lost its provider session; it continues in %s", threadID, successor.ID)
 	})
 	if !started {
 		a.assistantSessionLoss.Delete(threadID)
+	}
+}
+
+// carryAcrossSessionLoss puts the person's message whose send found the
+// session gone in the successor's composer, and reports whether there was
+// one. The send stored it before it let go of the old thread's action lock,
+// which the handoff has taken since.
+func (a *App) carryAcrossSessionLoss(oldThreadID, successorID string) bool {
+	value, found := a.assistantSessionLossCarry.LoadAndDelete(oldThreadID)
+	if !found {
+		return false
+	}
+	userItem := value.(store.Item)
+	draft, err := a.composerDraftFromUserItemWithClonedAttachments(successorID, userItem, time.Now().UnixMilli())
+	if err == nil {
+		err = a.writeThreadDraft(transport.ClientIdentity{}, draft)
+	}
+	if err != nil {
+		log.Printf("assistants: carry the message to %s into %s: %v", oldThreadID, successorID, err)
+		a.restoreSessionLossCarry(oldThreadID, userItem)
+		return false
+	}
+	return true
+}
+
+// returnSessionLossCarry puts the message back in the old thread's composer
+// when the handoff failed. It waits for the send that stored it to let go of
+// the thread's action lock.
+func (a *App) returnSessionLossCarry(threadID string) {
+	unlock := a.threadLocks().Lock(threadID)
+	unlock()
+	if value, found := a.assistantSessionLossCarry.LoadAndDelete(threadID); found {
+		a.restoreSessionLossCarry(threadID, value.(store.Item))
+	}
+}
+
+func (a *App) restoreSessionLossCarry(threadID string, userItem store.Item) {
+	part, err := composerdraft.PartFromUserItem(userItem)
+	if err == nil {
+		_, err = a.mergeAndUpsertThreadDraft(threadID, []composerdraft.Part{part})
+	}
+	if err != nil {
+		log.Printf("assistants: put the message back in %s's composer: %v", threadID, err)
+		a.emitErrorToThread(threadID, "Your message could not be put back in the composer: "+err.Error())
 	}
 }
 
@@ -162,6 +213,7 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 		MovedRequests:    handOff.MovedRequests,
 		Interrupted:      a.interruptedByHandOff(interrupted),
 		SessionLost:      sessionLost,
+		Carried:          sessionLost && a.carryAcrossSessionLoss(threadID, successor.ID),
 	})
 	if err := a.queueAssistantMessage(successor.ID, assistantSendID(assistantWakeKindHandOff, threadID), successor.Title, body); err != nil {
 		return successor, fmt.Errorf("the assistant moved to its new thread, but its opening block could not be queued: %w", err)

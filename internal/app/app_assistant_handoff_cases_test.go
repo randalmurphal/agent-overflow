@@ -7,11 +7,15 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
+
+	"github.com/google/uuid"
 )
 
 // mockClaudeHoldingTheTurnRecording is mockClaudeHoldingTheTurn that logs
@@ -321,5 +325,39 @@ func TestARemoteCompletionOfAPastThreadReachesTheCurrentThread(t *testing.T) {
 	}
 	if rows := durableQueueRows(t, a, old.ID); len(rows) != 0 {
 		t.Fatalf("past thread's queue = %+v, want nothing", rows)
+	}
+}
+
+// A person's send that finds the assistant's session gone is refused with
+// its code, and the text waits in the successor's composer, not the past
+// thread's; the opening block says so instead of "may not have reached you".
+func TestASendThatFindsTheSessionGoneCarriesItsText(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	stdinLog := f.mockClaudeRecording(t, "picked up")
+	thread, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testAssistant(t, f.app, thread.ID)
+	if _, err := f.app.store.UpdateSessionRef(thread.ID, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = f.app.SendMessageWithOptions(t.Context(), thread.ID, "Anything new?", SendMessageOptions{SendID: uuid.NewString()})
+	if code, _, ok := errorsx.PublicDetails(err); !ok || code != transport.ErrCodeAssistantSessionGone {
+		t.Fatalf("send = %v, want %s", err, transport.ErrCodeAssistantSessionGone)
+	}
+	successor := awaitCurrentThread(t, f.app, thread.ID)
+	opening := awaitSent(t, stdinLog, func(text string) bool { return strings.HasPrefix(text, `You are "`) })
+	if !strings.Contains(opening, "waits, unsent, in their composer here") || strings.Contains(opening, "may not have reached you") {
+		t.Fatalf("opening block:\n%s", opening)
+	}
+	waitUntil(t, 20*time.Second, func() bool {
+		draft, found, err := f.app.store.GetThreadDraft(successor)
+		return err == nil && found && draft.Content == "Anything new?"
+	})
+	if draft, found, err := f.app.store.GetThreadDraft(thread.ID); err != nil || (found && draft.Content != "") {
+		t.Fatalf("past thread's composer = %+v %v, want it empty", draft, err)
 	}
 }

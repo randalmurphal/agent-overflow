@@ -10,6 +10,7 @@ import (
 	"time"
 
 	attachmentstore "agent-overflow/internal/attachment"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/planrevision"
 	"agent-overflow/internal/provider"
@@ -17,11 +18,11 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflowhost"
-
 	"github.com/google/uuid"
 )
 
@@ -689,6 +690,13 @@ func (a *App) sendMessageLocked(
 		if startErr := a.startSession(ctx, threadID); startErr != nil {
 			err = fmt.Errorf("start session: %w", startErr)
 			a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
+			if errors.Is(startErr, errAssistantSessionGone) && opts.Origin == "" {
+				// The handoff that start set off puts the person's text in
+				// the new thread's composer, so the client keeps it out of
+				// this one's.
+				a.assistantSessionLossCarry.Store(threadID, userItem)
+				return store.Item{}, errorsx.Public(transport.ErrCodeAssistantSessionGone, assistantSessionGoneMessage, err)
+			}
 			return store.Item{}, fmt.Errorf("send message: %w", err)
 		}
 		sess, ok = a.sessionManager().get(threadID)

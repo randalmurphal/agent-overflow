@@ -6,10 +6,11 @@
 // gone (Claude: the transcript file is missing; Codex: thread/resume finds
 // no rollout); the app moves the assistant to a new thread on its own; the
 // successor's opening block says the provider cleaned up the previous
-// thread's session and that the last message may not have arrived, and
-// reaches the provider; the pane follows to the successor and the previous
-// thread sits in the done footer. A plain thread whose session is gone is
-// not moved anywhere.
+// thread's session, and reaches the provider; the person's message whose
+// send found the session gone waits in the successor's composer, not the
+// past thread's, and the opening says so; the pane follows to the successor
+// and the previous thread sits in the done footer. A plain thread whose
+// session is gone is not moved anywhere.
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -62,7 +63,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const input = (await moved).report.input ?? '';
     expect(input).toContain('You are "Ops", a standing agent.');
     expect(input).toContain("Agent Overflow's history of the previous thread is intact.");
-    expect(input).toContain(`The last message to your previous thread may not have reached you. Read it with thread_show (thread_id ${first})`);
+    expect(input).toContain('The message the user was sending when the session was found gone did not reach you; it waits, unsent, in their composer here.');
+    expect(input).not.toContain('may not have reached you');
 
     let second = '';
     await expect
@@ -73,6 +75,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       .not.toBe('');
     expect((await harness.rpc<{ threadId: string }>('GetStandingAgent', second)).threadId).toBe(second);
     expect(await harness.rpc('GetStandingAgent', first)).toBeNull();
+
+    // The message waits in the successor's composer, and only there.
+    await expect(page.getByTestId('toast-message')).toContainText('your message is waiting in that thread');
+    await expect(page.getByLabel('Message Input').filter({ visible: true })).toHaveValue('Anything new?');
+    await expect.poll(async () => (await harness.rpc<{ content: string }>('GetDraft', second)).content).toBe('Anything new?');
+    expect((await harness.rpc<{ content: string }>('GetDraft', first)).content).toBe('');
 
     // The pane follows; the opening row says why; the previous thread is done.
     const opening = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="handoff"]');
