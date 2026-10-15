@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"strings"
 	"time"
 
@@ -481,22 +482,11 @@ func (a *App) sessionProcessEnv(
 	if len(custom) == 0 && len(a.providerExtraEnv) == 0 && len(credential.env) == 0 && a.cliBinDir == "" {
 		return env
 	}
-	merged := make(
-		map[string]string,
-		len(env)+len(custom)+len(a.providerExtraEnv)+len(credential.env)+1,
-	)
-	for k, v := range env {
-		merged[k] = v
-	}
-	for k, v := range custom {
-		merged[k] = v
-	}
-	for k, v := range a.providerExtraEnv {
-		merged[k] = v
-	}
-	for k, v := range credential.env {
-		merged[k] = v
-	}
+	merged := make(map[string]string, max(len(env), len(custom), len(a.providerExtraEnv), len(credential.env)))
+	maps.Copy(merged, env)
+	maps.Copy(merged, custom)
+	maps.Copy(merged, a.providerExtraEnv)
+	maps.Copy(merged, credential.env)
 	if a.cliBinDir != "" {
 		prependCLIBinDir(merged, a.cliBinDir)
 	}

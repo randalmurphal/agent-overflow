@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1271,13 +1272,11 @@ func (s *Service) writeSparse(current Settings) error {
 	// if the unknown-fields map somehow contains a clashing key — this
 	// can happen only if Settings gained a field since loadFromFile was
 	// called, and the new field is a known one now.
-	merged := make(map[string]any, len(sparse)+len(s.unknownFields))
+	merged := make(map[string]any, max(len(sparse), len(s.unknownFields)))
 	for k, v := range s.unknownFields {
 		merged[k] = v
 	}
-	for k, v := range sparse {
-		merged[k] = v
-	}
+	maps.Copy(merged, sparse)
 
 	data, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {

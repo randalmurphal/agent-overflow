@@ -6,7 +6,9 @@ package provider
 // and textgen assemble full []string environments directly.
 
 import (
+	"maps"
 	"os"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/appimage"
@@ -30,12 +32,9 @@ import (
 // environment, so the duplicate never gets to exist.
 func BuildEnvironment(overrides map[string]string, unset ...string) []string {
 	base := appimage.Scrub(os.Environ())
-	removed := make([]string, 0, len(unset)+len(overrides))
-	removed = append(removed, unset...)
-	for key := range overrides {
-		removed = append(removed, key)
-	}
-	env := filterEnvironment(base, removed...)
+	// Clipped so the override names land in a copy, never in the spare
+	// capacity of a caller's unset slice.
+	env := filterEnvironment(base, slices.AppendSeq(slices.Clip(unset), maps.Keys(overrides))...)
 	for key, value := range overrides {
 		if strings.EqualFold(key, "PATH") {
 			if existing := envValue(base, "PATH"); existing != "" {

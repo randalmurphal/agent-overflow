@@ -256,7 +256,7 @@ func buildEnv(cfg Config, gatewayURL, hookURL, hookToken string) []string {
 	// The task-list key is the thread's identity (Config.TaskListID), so an
 	// inherited value is dropped even when cfg carries none to state.
 	owned[claude.TaskListIDEnv] = struct{}{}
-	out := make([]string, 0, len(base)+6)
+	out := make([]string, 0, len(base))
 	haveTodoOptIn := false
 	haveReminderMode := false
 	for _, kv := range base {
