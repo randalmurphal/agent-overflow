@@ -31,15 +31,20 @@ import (
 //   - is then acknowledged with `{"still_queued":[]}`;
 //   - stops a foreground command still running, the main thread's or an
 //     agent's, with `task_notification{stopped}` carrying
-//     `output_file:""` and no `task_updated`, after the ack; an awaited
-//     agent or forked skill still running gets the same notification
-//     naming its output file (2.1.284, forked_skill_interrupt_20261014);
+//     `output_file:""` and no `task_updated`, after the ack;
+//   - stops an awaited agent still running after the ack, its launch
+//     answering as a rejected tool use: an Agent with the background
+//     shells it owns (the level set, then each shell's kill), then
+//     `task_updated{killed}` and `task_notification{stopped}` naming its
+//     output file; a forked skill with the notification alone (2.1.284,
+//     local_agent_foreground_interrupt_20261014 and
+//     forked_skill_interrupt_20261014);
 //   - leaves the main thread's own background shells running.
 //
-// The CLI writes an agent's shell terminals on either side of the ack
-// (before it in capture D, after it in A). AO reads each frame on its
-// own, so this ledger writes every kill before the ack and every
-// foreground stop after it.
+// The CLI writes an async agent's shell terminals on either side of the
+// ack (before it in capture D, after it in A). AO reads each frame on its
+// own, so this ledger writes an async agent's kills before the ack and
+// every foreground stop, an awaited agent's with its shells, after it.
 //
 // A `control_request{stop_task}` kills the one task it names the same way,
 // before its ack (claude-wire.md §E6b captures B and E of 2026-09-08): an
@@ -49,9 +54,12 @@ import (
 // the interrupt writes that agent's kill; no capture has it on its own. An
 // awaited agent or forked skill gets `task_updated{killed}` and
 // `task_notification{stopped}` before the ack and, after it, the
-// `[Request interrupted by user]` row in its sidechain and its launch's
-// error tool_result, after which the main turn goes on (2.1.284,
-// forked_skill_stop_task_20261014 and local_agent_foreground_stop_task_20261014).
+// `[Request interrupted by user]` row in its sidechain, the kill of the
+// background shells it owns, and its launch's error tool_result, after
+// which the main turn goes on (2.1.284, forked_skill_stop_task_20261014
+// and local_agent_foreground_stop_task_20261014). A typed forked command
+// has no launch: it gets the kill frames alone
+// (forked_skill_direct_command_stop_task_20261014).
 // A task that is not running gets the ack alone, as the CLI answers a task it
 // no longer has (§E6b, dropped wake capture of 2026-10-14).
 //
@@ -66,8 +74,9 @@ type claudeTaskLedger struct {
 	order []string
 	tasks map[string]*claudeTask
 	// parentOf maps a tool_use id to the parent_tool_use_id its assistant
-	// frame carried.
+	// frame carried, nameOf to its tool name.
 	parentOf map[string]string
+	nameOf   map[string]string
 	// killedAgents counts the agents the last interrupt killed, for the
 	// interrupted result's subagent_stats.
 	killedAgents int
@@ -80,6 +89,8 @@ type claudeTask struct {
 	id, toolUseID, taskType, description string
 	background                           bool
 	parentToolUseID                      string
+	// launchTool is the name of the tool_use that started the task.
+	launchTool string
 	// stopped is set by task_updated{completed|failed}: the task reported.
 	// A stopped agent is parked while a shell it owns still runs.
 	stopped bool
@@ -94,6 +105,7 @@ func newClaudeTaskLedger() *claudeTaskLedger {
 	return &claudeTaskLedger{
 		tasks:    make(map[string]*claudeTask),
 		parentOf: make(map[string]string),
+		nameOf:   make(map[string]string),
 		tasksDir: filepath.Join(home, "ao-mock-tasks", strconv.Itoa(os.Getpid())),
 	}
 }
@@ -137,6 +149,7 @@ func (l *claudeTaskLedger) observe(line string) {
 		var blocks []struct {
 			Type string `json:"type"`
 			ID   string `json:"id"`
+			Name string `json:"name"`
 		}
 		if json.Unmarshal(env.Message.Content, &blocks) != nil {
 			return
@@ -144,6 +157,7 @@ func (l *claudeTaskLedger) observe(line string) {
 		for _, block := range blocks {
 			if block.Type == "tool_use" && block.ID != "" {
 				l.parentOf[block.ID] = env.ParentToolUseID
+				l.nameOf[block.ID] = block.Name
 			}
 		}
 	case env.Type != "system":
@@ -156,6 +170,7 @@ func (l *claudeTaskLedger) observe(line string) {
 		if env.ToolUseID != "" {
 			t.toolUseID = env.ToolUseID
 			t.parentToolUseID = l.parentOf[env.ToolUseID]
+			t.launchTool = l.nameOf[env.ToolUseID]
 		}
 		if env.TaskType != "" {
 			t.taskType = env.TaskType
@@ -261,7 +276,7 @@ func (l *claudeTaskLedger) killForStopTask(taskID string, now time.Time) (before
 		}
 	}
 	if t.taskType == "local_agent" && !t.background {
-		return l.stopAwaitedAgentLocked(t, endTime, emitLevelSet)
+		return l.stopAwaitedAgentLocked(t, endTime)
 	}
 	if t.taskType == "local_agent" {
 		l.killAgentLocked(t, endTime, emitLevelSet, &frames)
@@ -275,30 +290,50 @@ func (l *claudeTaskLedger) killForStopTask(taskID string, now time.Time) (before
 	return append(frames, taskUpdatedKilledFrame(t.id, endTime), taskNotificationStoppedFrame(t, l.writeOutputFile(t.id))), nil
 }
 
-// stopAwaitedAgentLocked stops a running awaited agent or forked skill
-// with the background shells it owns. Its launch answers with an error
-// tool_result, so the main turn goes on.
-func (l *claudeTaskLedger) stopAwaitedAgentLocked(agent *claudeTask, endTime int64, emitLevelSet func()) (beforeAck, afterAck []string) {
-	if agent.stopped || agent.killed || agent.toolUseID == "" {
+// stopAwaitedAgentLocked stops a running awaited agent or forked skill.
+// Its kill precedes the ack; after it come the interrupted row its
+// sidechain ends on, the kill of the background shells it owns, and its
+// launch's error tool_result, so the main turn goes on. A typed forked
+// command has no launch to answer and no shells this ledger can tie to it.
+func (l *claudeTaskLedger) stopAwaitedAgentLocked(agent *claudeTask, endTime int64) (beforeAck, afterAck []string) {
+	if agent.stopped || agent.killed {
 		return nil, nil
 	}
 	agent.killed = true
-	beforeAck = append(beforeAck,
+	beforeAck = []string{
 		taskUpdatedKilledFrame(agent.id, endTime),
-		taskNotificationStoppedFrame(agent, l.outputFilePath(agent.id)))
-	for _, shellID := range l.order {
-		shell := l.tasks[shellID]
-		if !l.liveShellOwnedByLocked(shell, agent) {
-			continue
+		taskNotificationStoppedFrame(agent, l.outputFilePath(agent.id)),
+	}
+	if agent.toolUseID == "" {
+		return beforeAck, nil
+	}
+	afterAck = append(afterAck, interruptedSidechainFrame(agent))
+	afterAck = append(afterAck, l.killOwnedShellsLocked(agent, endTime)...)
+	afterAck = append(afterAck, launchErrorFrame(agent, "[Request interrupted by user for tool use]", "Error: [Request interrupted by user for tool use]"))
+	return beforeAck, afterAck
+}
+
+// killOwnedShellsLocked kills the running background shells an agent owns:
+// the level set without them, then each one's `task_updated{killed}` and
+// `task_notification{stopped}`.
+func (l *claudeTaskLedger) killOwnedShellsLocked(agent *claudeTask, endTime int64) []string {
+	var shells []*claudeTask
+	for _, id := range l.order {
+		if shell := l.tasks[id]; l.liveShellOwnedByLocked(shell, agent) {
+			shell.killed = true
+			shells = append(shells, shell)
 		}
-		shell.killed = true
-		emitLevelSet()
-		beforeAck = append(beforeAck,
+	}
+	if len(shells) == 0 {
+		return nil
+	}
+	frames := []string{l.levelSetLocked()}
+	for _, shell := range shells {
+		frames = append(frames,
 			taskUpdatedKilledFrame(shell.id, endTime),
 			taskNotificationStoppedFrame(shell, l.writeOutputFile(shell.id)))
 	}
-	afterAck = append(afterAck, awaitedAgentStoppedFrames(agent)...)
-	return beforeAck, afterAck
+	return frames
 }
 
 // killAgentLocked kills a running or parked background agent and the
@@ -333,23 +368,40 @@ func (l *claudeTaskLedger) killAgentLocked(agent *claudeTask, endTime int64, emi
 }
 
 // stopForegroundCommands marks every foreground command still running,
-// the main thread's or an agent's, and returns their stopped
-// notifications. The caller writes them after the ack.
-func (l *claudeTaskLedger) stopForegroundCommands() []string {
+// the main thread's or an agent's, and returns the frames that report
+// them. The caller writes them after the ack.
+func (l *claudeTaskLedger) stopForegroundCommands(now time.Time) []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	endTime := now.UnixMilli()
 	var frames []string
 	for _, id := range l.order {
 		t := l.tasks[id]
-		if t.background || t.stopped || t.killed || t.toolUseID == "" {
+		if t.background || t.stopped || t.killed {
+			continue
+		}
+		if t.taskType != "local_agent" {
+			if t.toolUseID == "" {
+				continue
+			}
+			t.killed = true
+			frames = append(frames, taskNotificationStoppedFrame(t, ""))
 			continue
 		}
 		t.killed = true
-		outputFile := ""
-		if t.taskType == "local_agent" {
-			outputFile = l.outputFilePath(t.id)
+		// A forked skill (its launch a Skill call, or a typed command
+		// with none) gets the notification alone; an Agent its shells'
+		// kill and its own first.
+		if t.launchTool != "" && t.launchTool != "Skill" {
+			frames = append(frames, l.killOwnedShellsLocked(t, endTime)...)
+			frames = append(frames, taskUpdatedKilledFrame(t.id, endTime))
 		}
-		frames = append(frames, taskNotificationStoppedFrame(t, outputFile))
+		frames = append(frames, taskNotificationStoppedFrame(t, l.outputFilePath(t.id)))
+		if t.toolUseID != "" {
+			frames = append(frames, launchErrorFrame(t,
+				"The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
+				"User rejected tool use"))
+		}
 	}
 	return frames
 }
@@ -429,48 +481,55 @@ func taskUpdatedKilledFrame(taskID string, endTime int64) string {
 	})
 }
 
-// awaitedAgentStoppedFrames are what a stopped awaited agent's launch
-// answers with: the interrupted row its sidechain ends on, then the
-// launch's error tool_result on the stream that launched it.
-func awaitedAgentStoppedFrames(agent *claudeTask) []string {
+// interruptedSidechainFrame is the row a stopped awaited agent's
+// sidechain ends on.
+func interruptedSidechainFrame(agent *claudeTask) string {
+	return mustJSON(map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role":    "user",
+			"content": []map[string]any{{"type": "text", "text": "[Request interrupted by user]"}},
+		},
+		"parent_tool_use_id": agent.toolUseID,
+	})
+}
+
+// launchErrorFrame is an awaited agent's launch answering with an error
+// on the stream that launched it.
+func launchErrorFrame(agent *claudeTask, content, toolUseResult string) string {
 	var launchParent any
 	if agent.parentToolUseID != "" {
 		launchParent = agent.parentToolUseID
 	}
-	return []string{
-		mustJSON(map[string]any{
-			"type": "user",
-			"message": map[string]any{
-				"role":    "user",
-				"content": []map[string]any{{"type": "text", "text": "[Request interrupted by user]"}},
-			},
-			"parent_tool_use_id": agent.toolUseID,
-		}),
-		mustJSON(map[string]any{
-			"type": "user",
-			"message": map[string]any{
-				"role": "user",
-				"content": []map[string]any{{
-					"type":        "tool_result",
-					"content":     "[Request interrupted by user for tool use]",
-					"is_error":    true,
-					"tool_use_id": agent.toolUseID,
-				}},
-			},
-			"parent_tool_use_id": launchParent,
-			"tool_use_result":    "Error: [Request interrupted by user for tool use]",
-		}),
-	}
+	return mustJSON(map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role": "user",
+			"content": []map[string]any{{
+				"type":        "tool_result",
+				"content":     content,
+				"is_error":    true,
+				"tool_use_id": agent.toolUseID,
+			}},
+		},
+		"parent_tool_use_id": launchParent,
+		"tool_use_result":    toolUseResult,
+	})
 }
 
 func taskNotificationStoppedFrame(t *claudeTask, outputFile string) string {
-	return mustJSON(map[string]any{
+	frame := map[string]any{
 		"type":        "system",
 		"subtype":     "task_notification",
 		"task_id":     t.id,
-		"tool_use_id": t.toolUseID,
 		"status":      "stopped",
 		"output_file": outputFile,
 		"summary":     t.description,
-	})
+	}
+	// A typed forked command's task names no tool_use, and its
+	// notification carries no key for one.
+	if t.toolUseID != "" {
+		frame["tool_use_id"] = t.toolUseID
+	}
+	return mustJSON(frame)
 }

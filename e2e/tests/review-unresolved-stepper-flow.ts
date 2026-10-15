@@ -467,11 +467,22 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
     await press(chip.getByRole('button', { name: 'Next unresolved thread' }));
     const retryCard = card(THREADS.retry.id);
     await expect(retryCard).toBeInViewport();
-    const held = await expectPulsing(retryCard);
-    await page.waitForTimeout(400);
-    const later = await pulseOf(retryCard);
-    expect(later.running).toBe(1);
-    expect(later.boxShadow).toBe(held.boxShadow);
+    // Read from the running animation itself: a wall-clock wait can outlast
+    // the pulse on a loaded host.
+    let held = { ring: 'none', frames: [] as string[] };
+    await expect
+      .poll(async () => {
+        held = await retryCard.evaluate((el) => ({
+          ring: getComputedStyle(el).boxShadow,
+          frames: ((el.getAnimations()[0]?.effect as KeyframeEffect | null)?.getKeyframes() ?? []).map((frame) =>
+            String(frame.boxShadow),
+          ),
+        }));
+        return held.frames.length;
+      }, { timeout: 3_000 })
+      .toBeGreaterThan(1);
+    expect(held.ring).not.toBe('none');
+    expect(new Set(held.frames).size, `reduced-motion keyframes ${held.frames.join(' | ')}`).toBe(1);
     await expectPulseGone(retryCard);
     await page.emulateMedia({ reducedMotion: 'no-preference' });
 

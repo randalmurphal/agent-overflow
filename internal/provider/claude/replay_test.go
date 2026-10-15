@@ -56,10 +56,14 @@ func loadNDJSONFixture(t *testing.T, path string) [][]byte {
 // a sample problem worth surfacing.
 func replayFixture(t *testing.T, path string) []provider.ProviderEvent {
 	t.Helper()
-	lines := loadNDJSONFixture(t, path)
-	parser := NewParser()
+	return replayParser(t, NewParser(), path)
+}
+
+// replayParser feeds a fixture to a parser the caller set up.
+func replayParser(t *testing.T, parser *Parser, path string) []provider.ProviderEvent {
+	t.Helper()
 	var events []provider.ProviderEvent
-	for i, line := range lines {
+	for i, line := range loadNDJSONFixture(t, path) {
 		got, err := parser.ParseLine(testThread, line)
 		if err != nil {
 			t.Fatalf("line %d (%.80s): parse error: %v", i+1, line, err)

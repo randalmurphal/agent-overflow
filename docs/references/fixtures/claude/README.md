@@ -105,19 +105,34 @@ behavior. These back parser replay tests and the reference docs in
   - `forked_skill_stop_task_20261014.ndjson` /
     `forked_skill_interrupt_20261014.ndjson`: a running fork stopped by
     `stop_task` and by `interrupt` (the control requests themselves are
-    not in the files).
+    not in the files). Back `TestForkedSkillTaskSettlesTheSkillRow` and
+    the mock's awaited-agent stop frames.
   - `forked_skill_background_refused_20261014.ndjson`: `background_tasks`
     on a running fork answers `{backgrounded:false}`.
   - `forked_skill_direct_command_20261014.ndjson`: `/probe-fork` typed
     as the user message: `task_started` with no `tool_use_id`, and the
     fork's Agent announced before the mirror delivers its tool_use. Backs
-    `TestReplay_ForkedSkillDirectCommandTaskAndChild`.
+    `TestReplay_ForkedSkillDirectCommandTaskAndChild` and
+    `TestReplay_TypedForkWithoutATaskNamesNoTask`.
+  - `forked_skill_direct_command_stop_task_20261014.ndjson` /
+    `forked_skill_direct_command_interrupt_20261014.ndjson`: a typed
+    `/slow-fork` stopped after its first tool call; the kill frames name
+    no tool_use, nothing answers a launch, and the turn's result is
+    `success`. Back `TestReplay_TypedForkSettlesByItsTaskTerminal`.
+  - `forked_skill_in_agent_20261014.ndjson`: an awaited Agent calls the
+    Skill tool; the fork ends with its notification alone and its
+    result on the agent's sidechain has no `tool_use_result`. Backs
+    `TestForkedSkillInAnAgentSettlesInPlace`.
 - `local_agent_backgrounded_midrun_20261014.ndjson`: an awaited Agent
   moved to the background with `background_tasks` mid-run, then the
   session mirror carries its rows; its background shell is killed at
   its stop and nothing wakes it. Backs `TestBackgroundedAgentKeepsItsLabel`.
-- `local_agent_foreground_stop_task_20261014.ndjson`: `stop_task` on a
-  running awaited Agent, the same shape as the fork's.
+- `local_agent_foreground_stop_task_20261014.ndjson` /
+  `local_agent_foreground_interrupt_20261014.ndjson`: `stop_task` and
+  `interrupt` on a running awaited Agent that owns a background shell.
+  `stop_task` kills the shell after the ack; `interrupt` kills it, then
+  the agent. Back `TestAwaitedAgentStopKillsItsShell` and the mock's
+  awaited-agent stop frames.
 
   All of these: `system/init` and `rate_limit_event` dropped, mirror
   `attachment` entries dropped (account and environment context), host

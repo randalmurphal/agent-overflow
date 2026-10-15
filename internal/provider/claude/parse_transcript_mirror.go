@@ -227,8 +227,7 @@ func (p *Parser) parseTranscriptMirrorEntries(threadID string, envelope transcri
 				input["args"] = commandState.command.Argument
 			}
 			// The fork's agentId is its task id. Its task_started named no
-			// tool_use, so this is where the command row learns the task it
-			// can be stopped by and the fork's terminal finds its row.
+			// tool_use, so this is where the fork's terminal finds its row.
 			p.rememberTaskToolUse(facts.agentID, launchID)
 			metaFields := map[string]any{
 				"toolName":          "Skill",
@@ -238,9 +237,12 @@ func (p *Parser) parseTranscriptMirrorEntries(threadID string, envelope transcri
 					"agentId":     facts.agentID,
 					"commandName": skillName,
 				},
-				"task_id":                          facts.agentID,
-				"task_type":                        "local_agent",
 				provider.MetaTranscriptMirroredKey: true,
+			}
+			// The task the row can be stopped by, when the CLI announced one.
+			if commandState.forkTaskID == facts.agentID {
+				metaFields["task_id"] = facts.agentID
+				metaFields["task_type"] = "local_agent"
 			}
 			if commandState.provisional {
 				metaFields["meta_update_only"] = true

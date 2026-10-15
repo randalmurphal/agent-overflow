@@ -188,11 +188,12 @@ export function taskStartedLine(
     type: 'system',
     subtype: 'task_started',
     task_id: taskId,
-    tool_use_id: toolUseId,
     description,
     subagent_type: 'general-purpose',
     task_type: opts.taskType ?? 'local_agent',
   };
+  // A typed forked command's task names no tool_use (claude-wire.md §E9).
+  if (toolUseId) envelope.tool_use_id = toolUseId;
   if (opts.ownedBySubagent) envelope.owned_by_subagent = true;
   if (opts.prompt) envelope.prompt = opts.prompt;
   return j(envelope);
@@ -566,14 +567,24 @@ export function itemMeta(item: Item | undefined): Record<string, unknown> {
  * timestamp, so the parser stamps each with its arrival time. The mirror
  * binds them to the launch the parser armed for `agentId` (the task id)
  * on `task_updated{is_backgrounded:true}`.
+ *
+ * A typed forked command's agent (claude-wire.md §E9) is proven by an
+ * `agent_metadata` row with no `toolUseId` (`metadata`) and rows that name
+ * the skill (`attributionSkill`).
  */
 export function transcriptMirrorLine(
   agentId: string,
   rows: Array<{ text?: string; tool?: { id: string; name: string; result: string } }>,
+  opts: { metadata?: boolean; attributionSkill?: string } = {},
 ): string {
   const entries: Json[] = [];
+  if (opts.metadata) entries.push({ type: 'agent_metadata', agentType: 'general-purpose' });
   let prev: string | null = null;
-  const sidechain = { isSidechain: true, agentId };
+  const sidechain = {
+    isSidechain: true,
+    agentId,
+    ...(opts.attributionSkill ? { attributionSkill: opts.attributionSkill } : {}),
+  };
   let n = 0;
   for (const row of rows) {
     n += 1;

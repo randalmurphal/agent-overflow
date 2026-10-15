@@ -809,9 +809,15 @@ func (p *Parser) parseTaskStartedEvent(
 	taskType := readRawString(raw["task_type"])
 	toolUseID := firstNonEmpty(readRawString(raw["tool_use_id"]), readRawString(raw["toolUseId"]))
 	if toolUseID == "" {
-		// The one shape that names no tool_use is a parked agent's wake
-		// (claude-wire.md §E6b). Nothing else on this wire omits it.
+		// Two shapes name no tool_use: a parked agent's wake
+		// (claude-wire.md §E6b), for a task already bound, and a typed
+		// forked command's own task (§E9), whose launch the session
+		// mirror names later.
 		if taskType != "local_agent" {
+			return nil, nil
+		}
+		if p.taskToolUseRef(taskID).ToolUseID == "" {
+			p.noteCommandForkTask(taskID)
 			return nil, nil
 		}
 		return p.parseTaskWakeEvent(threadID, taskID, raw, now), nil
@@ -1425,8 +1431,9 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 	// task_updated (claude-wire.md §E9), so a terminal status releases the
 	// liveness flag as the task_updated terminal does: a depth-2 fork's
 	// result carries no tool_use_result and would otherwise read as an ack.
-	if NormalizeTaskTerminalStatus(fields.Status) != "" {
+	if terminal := NormalizeTaskTerminalStatus(fields.Status); terminal != "" {
 		p.clearLiveAgentTask(firstNonEmpty(fields.ToolUseID, p.taskToolUseRef(taskID).ToolUseID))
+		p.noteMirroredForkTerminal(taskID, terminal)
 	}
 	events := p.finishMirroredTask(threadID, taskID, false)
 	return append(events, p.buildBackgroundTaskNotificationEvent(threadID, fields, now)), nil

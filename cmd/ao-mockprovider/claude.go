@@ -330,7 +330,7 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		}
 		writeClaudeControlAck(a.w, env.RequestID, subtype, env.Request)
 		if subtype == "interrupt" {
-			for _, frame := range a.tasks.stopForegroundCommands() {
+			for _, frame := range a.tasks.stopForegroundCommands(time.Now()) {
 				a.w.writeLine(frame, 0, 0)
 			}
 			a.e.interruptTurn("")

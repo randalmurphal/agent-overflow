@@ -407,7 +407,8 @@ func TestClaudeStopTaskStopsAnAwaitedFork(t *testing.T) {
 }
 
 // forked_skill_interrupt_20261014: an interrupt stops a running fork with
-// a notification after the ack, naming its output file.
+// a notification after the ack, naming its output file, and the Skill call
+// answers as a rejected tool use.
 func TestClaudeInterruptStopsAnAwaitedFork(t *testing.T) {
 	env := writeScenarioFile(t, claudeHoldScenario("claude-interrupt-fork", claudeTextBlockLines, claudeForkLaunchLines), "")
 	p := startMock(t, claudeSessionArgs, env, t.TempDir())
@@ -419,7 +420,113 @@ func TestClaudeInterruptStopsAnAwaitedFork(t *testing.T) {
 	if file := expectStopped(t, p.expectLine(testTimeout), "task-fork", "tu-skill", "/review"); file == "" {
 		t.Fatal("the interrupted fork's notification names no output file")
 	}
+	rejected := p.expectLine(testTimeout)
+	if !strings.Contains(rejected, `"tool_use_id":"tu-skill"`) || !strings.Contains(rejected, `"is_error":true`) ||
+		!strings.Contains(rejected, `"tool_use_result":"User rejected tool use"`) {
+		t.Fatalf("want the Skill call's rejected result, got %s", rejected)
+	}
 	expectInterruptedResult(t, p.expectLine(testTimeout), 0)
 	p.closeStdinAndExpectExit(0, testTimeout)
 	validateClaudeFrames(t, p.all)
+}
+
+// An awaited Agent that started a background shell of its own.
+var claudeAwaitedAgentShellLines = []string{
+	`{"type":"assistant","message":{"id":"msg-agent","role":"assistant","content":[{"type":"tool_use","id":"tu-agent","name":"Agent","input":{"description":"sweep"}}]}}`,
+	`{"type":"system","subtype":"task_started","task_id":"task-agent","tool_use_id":"tu-agent","description":"sweep","subagent_type":"general-purpose","is_backgrounded":false,"spawn_depth":1,"task_type":"local_agent"}`,
+	`{"type":"assistant","parent_tool_use_id":"tu-agent","message":{"id":"msg-owned","role":"assistant","content":[{"type":"tool_use","id":"tu-owned","name":"Bash","input":{"command":"sleep 75","run_in_background":true}}]}}`,
+	`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-owned","task_type":"local_bash","description":"sleep 75"}]}`,
+	`{"type":"system","subtype":"task_started","task_id":"task-owned","tool_use_id":"tu-owned","description":"sleep 75","is_backgrounded":true,"task_type":"local_bash"}`,
+}
+
+// local_agent_foreground_stop_task_20261014: the agent's kill precedes the
+// ack; its interrupted row, its shell's kill and its launch's error result
+// follow it.
+func TestClaudeStopTaskStopsAnAwaitedAgentAndItsShells(t *testing.T) {
+	env := writeScenarioFile(t, claudeHoldScenario("claude-stop-awaited-agent", claudeTextBlockLines, claudeAwaitedAgentShellLines), "")
+	p := startMock(t, claudeSessionArgs, env, t.TempDir())
+
+	p.send(userLine)
+	p.expectLineContaining(`"task_id":"task-owned","tool_use_id"`, testTimeout)
+	p.send(stopTaskLine("stop-1", "task-agent"))
+	expectKilled(t, p.expectLine(testTimeout), "task-agent")
+	expectStopped(t, p.expectLine(testTimeout), "task-agent", "tu-agent", "sweep")
+	expectStopTaskAck(t, p.expectLine(testTimeout), "stop-1")
+	if row := p.expectLine(testTimeout); !strings.Contains(row, `"parent_tool_use_id":"tu-agent"`) || !strings.Contains(row, `[Request interrupted by user]`) {
+		t.Fatalf("want the agent's interrupted sidechain row, got %s", row)
+	}
+	expectLevelSet(t, p.expectLine(testTimeout))
+	expectKilled(t, p.expectLine(testTimeout), "task-owned")
+	expectStopped(t, p.expectLine(testTimeout), "task-owned", "tu-owned", "sleep 75")
+	if result := p.expectLine(testTimeout); !strings.Contains(result, `"tool_use_id":"tu-agent"`) || !strings.Contains(result, `"is_error":true`) {
+		t.Fatalf("want the Agent call's error result, got %s", result)
+	}
+	endHeldTurn(t, p)
+}
+
+// local_agent_foreground_interrupt_20261014: after the ack, the shell the
+// agent owns is killed, then the agent, and its launch answers as a
+// rejected tool use.
+func TestClaudeInterruptStopsAnAwaitedAgentAndItsShells(t *testing.T) {
+	env := writeScenarioFile(t, claudeHoldScenario("claude-interrupt-awaited-agent", claudeTextBlockLines, claudeAwaitedAgentShellLines), "")
+	p := startMock(t, claudeSessionArgs, env, t.TempDir())
+
+	p.send(userLine)
+	p.expectLineContaining(`"task_id":"task-owned","tool_use_id"`, testTimeout)
+	p.send(interruptLine)
+	expectInterruptAck(t, p.expectLine(testTimeout))
+	expectLevelSet(t, p.expectLine(testTimeout))
+	expectKilled(t, p.expectLine(testTimeout), "task-owned")
+	expectStopped(t, p.expectLine(testTimeout), "task-owned", "tu-owned", "sleep 75")
+	expectKilled(t, p.expectLine(testTimeout), "task-agent")
+	expectStopped(t, p.expectLine(testTimeout), "task-agent", "tu-agent", "sweep")
+	if rejected := p.expectLine(testTimeout); !strings.Contains(rejected, `"tool_use_id":"tu-agent"`) ||
+		!strings.Contains(rejected, `"tool_use_result":"User rejected tool use"`) {
+		t.Fatalf("want the Agent call's rejected result, got %s", rejected)
+	}
+	expectInterruptedResult(t, p.expectLine(testTimeout), 0)
+	p.closeStdinAndExpectExit(0, testTimeout)
+	validateClaudeFrames(t, p.all)
+}
+
+// A typed forked command (`/review`) as 2.1.284 announces it: a
+// local_agent task that names no tool_use.
+var claudeTypedForkLines = []string{
+	`{"type":"system","subtype":"task_started","task_id":"task-typed","description":"/review","subagent_type":"general-purpose","is_backgrounded":false,"spawn_depth":1,"task_type":"local_agent"}`,
+}
+
+// forked_skill_direct_command_stop_task_20261014 and
+// forked_skill_direct_command_interrupt_20261014: a typed fork stops as a
+// fork launched by a Skill call does, but there is no launch to answer and
+// no notification key for one.
+func TestClaudeStopsATypedFork(t *testing.T) {
+	t.Run("stop_task", func(t *testing.T) {
+		env := writeScenarioFile(t, claudeHoldScenario("claude-stop-typed-fork", claudeTextBlockLines, claudeTypedForkLines), "")
+		p := startMock(t, claudeSessionArgs, env, t.TempDir())
+
+		p.send(userLine)
+		p.expectLineContaining(`"task_id":"task-typed"`, testTimeout)
+		p.send(stopTaskLine("stop-1", "task-typed"))
+		expectKilled(t, p.expectLine(testTimeout), "task-typed")
+		stopped := p.expectLine(testTimeout)
+		expectStopped(t, stopped, "task-typed", "", "/review")
+		if strings.Contains(stopped, `"tool_use_id"`) {
+			t.Fatalf("a typed fork's notification names a tool_use: %s", stopped)
+		}
+		expectStopTaskAck(t, p.expectLine(testTimeout), "stop-1")
+		endHeldTurn(t, p)
+	})
+	t.Run("interrupt", func(t *testing.T) {
+		env := writeScenarioFile(t, claudeHoldScenario("claude-interrupt-typed-fork", claudeTextBlockLines, claudeTypedForkLines), "")
+		p := startMock(t, claudeSessionArgs, env, t.TempDir())
+
+		p.send(userLine)
+		p.expectLineContaining(`"task_id":"task-typed"`, testTimeout)
+		p.send(interruptLine)
+		expectInterruptAck(t, p.expectLine(testTimeout))
+		expectStopped(t, p.expectLine(testTimeout), "task-typed", "", "/review")
+		expectInterruptedResult(t, p.expectLine(testTimeout), 0)
+		p.closeStdinAndExpectExit(0, testTimeout)
+		validateClaudeFrames(t, p.all)
+	})
 }

@@ -2,6 +2,7 @@ package claude
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -13,20 +14,9 @@ import (
 const (
 	fixtureForkedSkillTaskStarted   = "../../../docs/references/fixtures/claude/forked_skill_task_started_20261014.ndjson"
 	fixtureForkedSkillDirectCommand = "../../../docs/references/fixtures/claude/forked_skill_direct_command_20261014.ndjson"
+	fixtureTypedForkStopTask        = "../../../docs/references/fixtures/claude/forked_skill_direct_command_stop_task_20261014.ndjson"
+	fixtureTypedForkInterrupt       = "../../../docs/references/fixtures/claude/forked_skill_direct_command_interrupt_20261014.ndjson"
 )
-
-func replayParser(t *testing.T, parser *Parser, path string) []provider.ProviderEvent {
-	t.Helper()
-	var events []provider.ProviderEvent
-	for i, line := range loadNDJSONFixture(t, path) {
-		got, err := parser.ParseLine(testThread, line)
-		if err != nil {
-			t.Fatalf("line %d: parse error: %v", i+1, err)
-		}
-		events = append(events, got...)
-	}
-	return events
-}
 
 // resumePrompts are the §E6 resume prompt rows a replay emitted. A launch
 // read as a resume emits one; no capture here resumes anything.
@@ -133,50 +123,72 @@ func TestReplay_ForkedSkillDirectCommandTaskAndChild(t *testing.T) {
 	}
 }
 
-// A fork at depth 2 (a Skill call inside an agent) ends with a
-// task_notification alone, and its result arrives on the sidechain with no
-// tool_use_result. The notification must release the live-agent flag, or
-// that result reads as an async ack and the Skill row never settles.
-func TestTaskNotificationTerminalReleasesLiveAgentTask(t *testing.T) {
+// An older CLI announces no task for a fork (claude-wire.md §E9, 2.1.237).
+// Its typed fork is still the fork card, but its row names no task: a
+// Stop would send stop_task for a task the CLI does not have.
+func TestReplay_TypedForkWithoutATaskNamesNoTask(t *testing.T) {
+	const (
+		commandUUID = "11111111-2222-4333-8444-555555555555"
+		launchID    = "claude-command:" + commandUUID
+	)
+	session := &Session{}
+	session.directCommands.note(commandUUID, "/probe-fork", provider.SendOptions{})
+	parser := NewParser()
+	parser.peerTurns = session
+	var classified map[string]any
+	for i, line := range loadNDJSONFixture(t, fixtureForkedSkillDirectCommand) {
+		if strings.Contains(string(line), `"task_id":"a2e2453ee0d214c2a"`) && strings.Contains(string(line), `"task_started"`) {
+			continue
+		}
+		events, err := parser.ParseLine(testThread, line)
+		if err != nil {
+			t.Fatalf("line %d: %v", i+1, err)
+		}
+		for _, evt := range filterKinds(events, provider.EventToolStart) {
+			if evt.ItemID == launchID && evt.ItemType == "Skill" {
+				classified = decodeMetaMap(t, evt.Meta)
+			}
+		}
+	}
+	if classified == nil || classified["skillFork"] == nil {
+		t.Fatalf("the typed fork was not classified as a fork: %+v", classified)
+	}
+	if _, has := classified["task_id"]; has {
+		t.Fatalf("a fork with no announced task names one: %+v", classified)
+	}
+}
+
+// A stopped typed fork's turn still ends with a successful result, and no
+// launch exists for the CLI to answer with an error. The fork's own
+// stopped notification is what settles its command row as failed; a fork
+// that finished settles it as completed.
+func TestReplay_TypedForkSettlesByItsTaskTerminal(t *testing.T) {
+	const commandUUID = "11111111-2222-4333-8444-555555555555"
 	for _, tc := range []struct {
-		name       string
-		notify     bool
-		background bool
+		name, fixture, command string
+		failed                 bool
 	}{
-		{name: "terminal notification", notify: true, background: false},
-		{name: "no terminal yet", notify: false, background: true},
+		{"completed", fixtureForkedSkillDirectCommand, "/probe-fork", false},
+		{"stop_task", fixtureTypedForkStopTask, "/slow-fork", true},
+		{"interrupt", fixtureTypedForkInterrupt, "/slow-fork", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			session := &Session{}
+			session.directCommands.note(commandUUID, tc.command, provider.SendOptions{})
 			parser := NewParser()
-			lines := []string{
-				`{"type":"assistant","message":{"id":"msg-agent","role":"assistant","content":[{"type":"tool_use","id":"toolu_agent","name":"Agent","input":{"description":"outer","prompt":"p"}}]},"parent_tool_use_id":null}`,
-				`{"type":"system","subtype":"task_started","task_id":"task-agent","tool_use_id":"toolu_agent","description":"outer","task_type":"local_agent","spawn_depth":1}`,
-				`{"type":"assistant","message":{"id":"msg-skill","role":"assistant","content":[{"type":"tool_use","id":"toolu_skill","name":"Skill","input":{"skill":"review"}}]},"parent_tool_use_id":"toolu_agent"}`,
-				`{"type":"system","subtype":"task_started","task_id":"task-fork","tool_use_id":"toolu_skill","description":"/review","task_type":"local_agent","spawn_depth":2}`,
-			}
-			if tc.notify {
-				lines = append(lines, `{"type":"system","subtype":"task_notification","task_id":"task-fork","tool_use_id":"toolu_skill","status":"completed","summary":"/review"}`)
-			}
-			lines = append(lines, `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_skill","content":"Skill \"review\" completed (forked execution).\n\nResult:\nok"}]},"parent_tool_use_id":"toolu_agent"}`)
-			var events []provider.ProviderEvent
-			for i, line := range lines {
-				got, err := parser.ParseLine(testThread, []byte(line))
-				if err != nil {
-					t.Fatalf("line %d: %v", i+1, err)
-				}
-				events = append(events, got...)
-			}
-			var completion map[string]any
+			parser.peerTurns = session
+			events := replayParser(t, parser, tc.fixture)
+			var completions []map[string]any
 			for _, evt := range filterKinds(events, provider.EventToolComplete) {
-				if evt.ItemID == "toolu_skill" {
-					completion = decodeMetaMap(t, evt.Meta)
+				if evt.ItemID == "claude-command:"+commandUUID {
+					completions = append(completions, decodeMetaMap(t, evt.Meta))
 				}
 			}
-			if completion == nil {
-				t.Fatal("no completion for the depth-2 Skill call")
+			if len(completions) != 1 || completions[0]["directCommandFork"] != true {
+				t.Fatalf("want one completion of the forked command row, got %+v", completions)
 			}
-			if got := completion["is_background"] == true; got != tc.background {
-				t.Fatalf("depth-2 Skill completion is_background = %v, want %v", got, tc.background)
+			if failed := completions[0]["is_error"] == true; failed != tc.failed {
+				t.Fatalf("command row completion is_error = %v, want %v: %+v", failed, tc.failed, completions[0])
 			}
 		})
 	}

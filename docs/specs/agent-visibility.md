@@ -219,8 +219,9 @@ own stop (`agentStopScope`, `internal/triage/agent_stops.go`;
   timeline: a jump would release bottom-follow, which a reader pinned to
   a streaming tail did not ask for (2026-08-31), so a launch outside the
   loaded window resolves through the digest or agent pane's independent
-  paged scope without changing the main window. A fork never appears
-  there: it is awaited and cannot be backgrounded (Q8).
+  paged scope without changing the main window. A fork is never
+  backgrounded itself (Q8); it is listed only below a backgrounded agent
+  it runs in.
 - Background action: icon button on a running inline agent or Bash row
   (Claude only: `background_tasks` control_request by `tool_use_id`);
   no keyboard shortcut (Q9). Claude stops forwarding the node through the

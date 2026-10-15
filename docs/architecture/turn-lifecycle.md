@@ -327,12 +327,15 @@ stays hidden from the tray (its own sibling excludes it), and the
 CARRIER is what surfaces there during round 2, with the agent-centric
 summary.
 
-**Known edge**: if the parser restarts and loses BOTH the
-`taskToolUses` binding AND the `toolUseNames` record of the resuming
-call (a double restart mid-stream), the resume
-is undetectable from that instance's state alone and the round is
-reaper-unprotected. Not engineered around. See the parser's
-`task_started` case comment.
+**Known edge**: a resume whose task binding is gone (a parser restart,
+or the `taskToolUses` reset at its cap) is detected only when the
+resuming call was observed first. A call the session mirror delivers,
+inside a typed fork or a backgrounded agent, arrives after its
+`task_started`, so that round reads as a launch and is
+reaper-unprotected. A typed fork's own Agent launches arrive the same
+way and are far more common, which is why an unobserved call counts as
+a launch. Not engineered around. See the parser's `task_started` case
+comment.
 
 ### Parking: an async agent whose owned shell outlives its stop
 
