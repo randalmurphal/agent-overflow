@@ -37,7 +37,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	// After the build, which needs the real home's Go caches. The mock reads
-	// the account its config home names (claudeAccountJSONForHome), so every
+	// the account its config home names (claudeAccountForHome), so every
 	// process it starts gets an empty home rather than the developer's.
 	home := filepath.Join(tmp, "home")
 	if err := os.Mkdir(home, 0o700); err != nil {

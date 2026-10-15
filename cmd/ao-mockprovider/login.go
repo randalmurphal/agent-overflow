@@ -37,11 +37,11 @@ import (
 const mockClaudeLoginCode = "mock-auth-code"
 
 // mockLoginEmail is the identity a mock sign-in lands on unless its code names
-// another. It matches the account the probe reports (claudeAccountJSON) and
+// another. It matches the account the probe reports (claudeAccountForHome) and
 // the one the Codex `account/read` answer carries, because adoption resolves
 // the saved slot by the identity the PROBE observed. A Claude sign-in writes
 // its email into the home's oauthAccount record, which is what the probe
-// reports from (claudeAccountJSONForHome).
+// reports from (claudeAccountForHome).
 const mockLoginEmail = "mock@agent-overflow.test"
 
 // isClaudeLoginInvocation matches claude.loginArgs(). `-p` plus
@@ -179,7 +179,7 @@ func (m *claudeLoginMock) callback(requestID string, request json.RawMessage) {
 		writeClaudeControlError(m.w, requestID, err.Error())
 		return
 	}
-	writeClaudeControlSuccess(m.w, requestID, `{"account":`+claudeAccountJSONFor(email)+`}`)
+	writeClaudeControlSuccess(m.w, requestID, mustJSON(map[string]claudeAccount{"account": claudeAccountFor(email)}))
 }
 
 // writeCredential lands the two files adoption reads out of the login home:
@@ -211,10 +211,16 @@ func (m *claudeLoginMock) writeCredential(email string) error {
 	if err := writeMockLoginFile(filepath.Join(m.configDir, ".credentials.json"), credential); err != nil {
 		return err
 	}
-	identity := fmt.Sprintf(
-		`{"oauthAccount":{"accountUuid":"mock-account-uuid","emailAddress":%s,`+
-			`"organizationUuid":"mock-org-uuid","organizationName":"Mock Org"}}`,
-		mustJSON(email))
+	type oauthAccount struct {
+		AccountUUID      string `json:"accountUuid"`
+		EmailAddress     string `json:"emailAddress"`
+		OrganizationUUID string `json:"organizationUuid"`
+		OrganizationName string `json:"organizationName"`
+	}
+	identity := mustJSON(map[string]oauthAccount{"oauthAccount": {
+		AccountUUID: "mock-account-uuid", EmailAddress: email,
+		OrganizationUUID: "mock-org-uuid", OrganizationName: "Mock Org",
+	}})
 	return writeMockLoginFile(filepath.Join(m.configDir, ".claude.json"), identity)
 }
 

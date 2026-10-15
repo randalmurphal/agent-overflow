@@ -19,31 +19,40 @@ import (
 	"agent-overflow/internal/harness/scenario"
 )
 
-// claudeAccountJSON is the account object served on the probe's
-// system/init line and on initialize control_responses when the config home
-// names no signed-in account (claudeAccountJSONForHome). Shape matches
-// internal/provider/claude/probe.go extractAccountInfoFromInitResponse
-// and internal/testutil/app.go WriteMockClaudeInit.
-const claudeAccountJSON = `{"email":"mock@agent-overflow.test","subscriptionType":"Claude Max","apiProvider":"firstParty","tokenSource":"claude.ai"}`
+// claudeAccount is the account object served on the probe's system/init
+// line and on initialize control_responses. Shape matches
+// internal/provider/claude/probe.go extractAccountInfoFromInitResponse and
+// internal/testutil/app.go WriteMockClaudeInit.
+type claudeAccount struct {
+	Email            string `json:"email"`
+	SubscriptionType string `json:"subscriptionType"`
+	APIProvider      string `json:"apiProvider"`
+	TokenSource      string `json:"tokenSource"`
+}
 
-// claudeAccountJSONForHome is the account this process reports. The CLI
-// reports the account its config's `oauthAccount` record names: the
-// `.claude.json` in CLAUDE_CONFIG_DIR, or `~/.claude.json` without it. A
-// harness test that needs a second identity writes that record (the sign-in
-// mock writes it for the email its code names). Without one, the fixed mock
-// identity.
-func claudeAccountJSONForHome() string {
+func claudeAccountFor(email string) claudeAccount {
+	return claudeAccount{
+		Email: email, SubscriptionType: "Claude Max", APIProvider: "firstParty", TokenSource: "claude.ai",
+	}
+}
+
+// claudeAccountForHome is the account this process reports. The CLI reports
+// the account its config's `oauthAccount` record names: the `.claude.json` in
+// CLAUDE_CONFIG_DIR, or `~/.claude.json` without it. A harness test that needs
+// a second identity writes that record (the sign-in mock writes it for the
+// email its code names). Without one, mockLoginEmail.
+func claudeAccountForHome() claudeAccount {
 	path := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), ".claude.json")
 	if os.Getenv("CLAUDE_CONFIG_DIR") == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return claudeAccountJSON
+			return claudeAccountFor(mockLoginEmail)
 		}
 		path = filepath.Join(home, ".claude.json")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return claudeAccountJSON
+		return claudeAccountFor(mockLoginEmail)
 	}
 	var config struct {
 		OAuthAccount struct {
@@ -51,14 +60,9 @@ func claudeAccountJSONForHome() string {
 		} `json:"oauthAccount"`
 	}
 	if json.Unmarshal(data, &config) != nil || config.OAuthAccount.EmailAddress == "" {
-		return claudeAccountJSON
+		return claudeAccountFor(mockLoginEmail)
 	}
-	return claudeAccountJSONFor(config.OAuthAccount.EmailAddress)
-}
-
-// claudeAccountJSONFor is claudeAccountJSON describing email.
-func claudeAccountJSONFor(email string) string {
-	return `{"email":` + mustJSON(email) + `,"subscriptionType":"Claude Max","apiProvider":"firstParty","tokenSource":"claude.ai"}`
+	return claudeAccountFor(config.OAuthAccount.EmailAddress)
 }
 
 // claudeModelsJSON is the `models` array the initialize control_response
@@ -97,8 +101,12 @@ const claudeModelsJSON = `[` +
 // control_request{subtype:"initialize"} ack — the probe reads
 // `account` and `models` out of it.
 func claudeInitializeResponsePayload() string {
-	return `{"commands":[],"agents":[],"models":` + claudeModelsJSON +
-		`,"account":` + claudeAccountJSONForHome() + `}`
+	return mustJSON(struct {
+		Commands []any           `json:"commands"`
+		Agents   []any           `json:"agents"`
+		Models   json.RawMessage `json:"models"`
+		Account  claudeAccount   `json:"account"`
+	}{Commands: []any{}, Agents: []any{}, Models: json.RawMessage(claudeModelsJSON), Account: claudeAccountForHome()})
 }
 
 // claudeContextUsageResponsePayload is the inner response payload for a
