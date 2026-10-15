@@ -14,7 +14,7 @@ test('compact: New Assistant from the project menu opens the assistant with its 
     projects: [{ name: 'compact-assistant-create', repo: {}, threads: [{ title: 'Ordinary', turns: [{ userText: 'hi', items: [{ kind: 'assistant_text', summary: 'ready' }] }] }] }],
   });
   const { path: cwd } = seed.projects[0];
-  await setScenario(harness, cwd, plainScenario({ name: 'compact-assistant-create', provider: 'claude', texts: ['I am Ops. What am I responsible for?'], afterTurns: 'repeatLast' }));
+  await setScenario(harness, cwd, plainScenario({ name: 'compact-assistant-create', provider: 'claude', texts: ['I am Ops. What am I responsible for?'], afterTurns: 'repeatLast', echoUserMessage: true }));
   await harness.open(page);
 
   const project = page.getByTestId('project-item').filter({ hasText: 'compact-assistant-create' });

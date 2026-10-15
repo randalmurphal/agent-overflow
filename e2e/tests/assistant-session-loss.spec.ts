@@ -27,7 +27,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     });
     const { path: cwd, threadIds } = seed.projects[0];
     const [first] = threadIds;
-    const scenario = plainScenario({ name: `assistant-session-loss-${provider}`, provider, texts: ['On it.'], afterTurns: 'repeatLast' });
+    const scenario = plainScenario({ name: `assistant-session-loss-${provider}`, provider, texts: ['On it.'], afterTurns: 'repeatLast', echoUserMessage: true });
     await setScenario(harness, cwd, scenario);
 
     // A first turn gives the thread a provider session; the session ends.
@@ -90,7 +90,7 @@ test('a plain thread whose session is gone stays where it is', async ({ harness 
   });
   const { path: cwd, threadIds } = seed.projects[0];
   const [thread] = threadIds;
-  await setScenario(harness, cwd, plainScenario({ name: 'plain-session-loss', provider: 'claude', texts: ['On it.'], afterTurns: 'repeatLast' }));
+  await setScenario(harness, cwd, plainScenario({ name: 'plain-session-loss', provider: 'claude', texts: ['On it.'], afterTurns: 'repeatLast', echoUserMessage: true }));
   const firstTurn = awaitTurnCompleted(harness, thread);
   await harness.rpc('SendMessage', thread, 'Check the board.', null);
   await firstTurn;

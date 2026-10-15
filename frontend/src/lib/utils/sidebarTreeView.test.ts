@@ -678,6 +678,18 @@ describe('flattenSidebarThreadTree with standing agents', () => {
     expect(rows[1].ownerAgentId).toBe('ops');
   });
 
+  it('lists a past thread once while it is both still live and already in the done list', () => {
+    const successor = mkThread('agent-next', { agentId: 'ops', archivedChildCount: 1 });
+    const past = mkThread('agent', { pastAgentId: 'ops', updatedAt: 10 });
+    const rows = flattenSidebarThreadTree({
+      nodes: buildSidebarThreadTree({ threads: [successor, past, plain] }),
+      expandedDoneAgentIds: new Set(['ops']),
+      archivedChildrenOf: () => [{ ...past, archived: true }, archived[0]],
+    });
+    expect(rows.map(sidebarVisibleNodeId)).toEqual(['agent:ops', 'agent', 'done-1', 'agent:ops:done', 'plain']);
+    expect(rows[1].kind === 'thread' && rows[1].archived !== true).toBe(true);
+  });
+
   it('cuts off on the fields an agent row and its footer render', () => {
     const base = flattenSidebarThreadTree({ nodes: tree() });
     expect(sameSidebarVisibleNodes(base, flattenSidebarThreadTree({ nodes: tree() }))).toBe(true);

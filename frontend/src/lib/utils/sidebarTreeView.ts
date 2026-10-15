@@ -150,10 +150,14 @@ export function flattenSidebarThreadTree(
     let loading = false;
     let hiddenCount = 0;
     if (expanded) {
-      const archived = input.archivedChildrenOf?.(node.thread) ?? null;
-      if (archived === null) {
+      const loaded = input.archivedChildrenOf?.(node.thread) ?? null;
+      if (loaded === null) {
         loading = true;
       } else {
+        // A thread a handoff just superseded can be in the done list before
+        // its row leaves the live list; it shows once, as the live row.
+        const live = new Set(node.children.map((child) => child.thread.id));
+        const archived = loaded.filter((thread) => !live.has(thread.id));
         const limit = input.doneLimitOf?.(agentId) ?? THREAD_PREVIEW_LIMIT;
         const shown = archived.slice(0, limit);
         hiddenCount = Math.max(0, archived.length - shown.length);

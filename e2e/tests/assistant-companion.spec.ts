@@ -29,6 +29,11 @@ function mainPane(page: Page) {
   return page.locator('section[data-pane-kind="thread"]');
 }
 
+/** The ordinary pane whose header shows `title`. */
+function paneTitled(page: Page, title: string) {
+  return mainPane(page).filter({ has: page.getByTestId('chat-header-title').getByText(title, { exact: true }) });
+}
+
 /** Whether a live mock runs in cwd. */
 async function liveIn(harness: HarnessApp, cwd: string): Promise<boolean> {
   const mocks = await harness.rpc<(MockInfo & { exited: boolean })[]>('HarnessListMocks');
@@ -76,7 +81,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(companion(page).getByTestId('chat-header-title')).toHaveText(WORKER);
     await expect(mainPane(page).getByTestId('chat-header-title')).toHaveText(LEAD);
     await expect(companion(page).getByTestId('agent-thread-open-as-pane')).toBeVisible();
-    await captureAgentMessage(page, `${provider}-assistant-companion.png`, mainPane(page), companion(page));
+    await captureAgentMessage(page, `${provider}-assistant-companion.png`, companion(page));
 
     // ---- Its own Stop interrupts the worker, not the assistant.
     const interrupt = companion(page).getByTestId('composer-interrupt');
@@ -98,11 +103,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await companion(page).getByTestId('agent-thread-open-as-pane').click();
     await expect(companion(page)).toHaveCount(0);
     await expect(mainPane(page)).toHaveCount(2);
-    await expect(mainPane(page).getByTestId('chat-header-title').filter({ hasText: WORKER })).toBeVisible();
-    await captureAgentMessage(page, `${provider}-assistant-companion-open-as-pane.png`, mainPane(page).filter({ hasText: WORKER }));
+    await expect(paneTitled(page, WORKER)).toHaveCount(1);
+    await captureAgentMessage(page, `${provider}-assistant-companion-open-as-pane.png`, paneTitled(page, WORKER));
 
     // ---- The session menu on the assistant: Interrupt off while idle, End Session ends it.
-    const leadPane = mainPane(page).filter({ has: page.getByTestId('chat-header-title').getByText(LEAD, { exact: true }) });
+    const leadPane = paneTitled(page, LEAD);
     expect(await liveIn(harness, leadProject.path)).toBe(true);
     await leadPane.getByTestId('composer-session-menu').click();
     const menu = page.getByRole('menu', { name: 'Session' });

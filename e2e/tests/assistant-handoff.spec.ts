@@ -70,7 +70,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const loop = await awaitToolAnswer(harness, { tool: 'thread_loop', cwd });
     expect(loop.isError, loop.text).toBe(false);
     await awaitTurnCompleted(harness, first);
-    await setScenario(harness, cwd, plainScenario({ name: `assistant-handoff-${provider}`, provider, texts: ['Picked up the board check.'], afterTurns: 'repeatLast' }));
+    await setScenario(harness, cwd, plainScenario({ name: `assistant-handoff-${provider}`, provider, texts: ['Picked up the board check.'], afterTurns: 'repeatLast', echoUserMessage: true }));
 
     await harness.open(page);
     await row(page, first).click();

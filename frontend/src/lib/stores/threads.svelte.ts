@@ -43,6 +43,7 @@ const catalogWriter = computerCatalogWriter('threads', () => threads, setThreads
 // assistants are still assistants, and the persisted fold must survive.
 function setThreads(rows: Thread[]): void {
   const before = threads;
+  rows = oneCurrentThreadPerAssistant(before, rows);
   threads = rows;
   let currentThreadOf: Map<string, string> | null = null;
   for (const row of before) {
@@ -55,6 +56,34 @@ function setThreads(rows: Thread[]): void {
     notifyStandingAgentEnded(row.id);
     if (current === undefined) forgetAgentSidebarState(row.agentId);
   }
+}
+
+/**
+ * An assistant has one current thread. A handoff lists the new thread
+ * before the old one leaves, so a write that holds two current threads of
+ * one assistant keeps the one that was not current before (the newest when
+ * both are new) and holds the other as the past thread it now is.
+ */
+function oneCurrentThreadPerAssistant(before: readonly Thread[], rows: Thread[]): Thread[] {
+  let current: Map<string, Thread> | null = null;
+  let duplicated = false;
+  for (const row of rows) {
+    if (!row.agentId) continue;
+    current ??= new Map();
+    const held = current.get(row.agentId);
+    if (held === undefined) {
+      current.set(row.agentId, row);
+      continue;
+    }
+    duplicated = true;
+    const wasCurrent = (t: Thread) => before.some((b) => b.id === t.id && b.agentId === t.agentId);
+    const heldWas = wasCurrent(held);
+    if (heldWas !== wasCurrent(row) ? heldWas : row.createdAt > held.createdAt) current.set(row.agentId, row);
+  }
+  if (!duplicated) return rows;
+  return rows.map((row) => (row.agentId && current!.get(row.agentId) !== row
+    ? { ...row, agentId: undefined, pastAgentId: row.agentId }
+    : row));
 }
 // Ownership changes before the destination's row is applied. Fence the
 // former owner's offline snapshot and rewrite it without the moved row;

@@ -42,12 +42,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
   test(`${provider}: New Assistant creates the record, the home and the thread, opens the role discussion, and refuses a name in use`, async ({ harness, page }) => {
     test.setTimeout(180_000);
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-      projects: [{ name: `assistant-create-${provider}`, repo: {}, threads: [{ title: 'Ordinary', provider }] }],
+      projects: [{ name: `assistant-create-${provider}`, repo: {}, threads: [{ title: 'Ordinary', provider, turns: [{ userText: 'hi', items: [{ kind: 'assistant_text', summary: 'ready' }] }] }] }],
     });
     const { projectId, path: cwd, threadIds } = seed.projects[0];
     // A new thread takes the provider and model used last.
     await harness.rpc('CreateThread', { projectId, provider, model: MODEL[provider], mode: 'chat' });
-    await setScenario(harness, cwd, plainScenario({ name: `assistant-create-${provider}`, provider, texts: ['I am Ops. What am I responsible for?'], afterTurns: 'repeatLast' }));
+    await setScenario(harness, cwd, plainScenario({ name: `assistant-create-${provider}`, provider, texts: ['I am Ops. What am I responsible for?'], afterTurns: 'repeatLast', echoUserMessage: true }));
 
     await harness.open(page);
     const project = page.getByTestId('project-item').filter({ hasText: `assistant-create-${provider}` });

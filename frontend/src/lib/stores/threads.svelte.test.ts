@@ -248,6 +248,22 @@ describe('standing agent state on removal', () => {
     expect(getAgentWakeRows('agent')).toEqual([]);
   });
 
+  it('holds one current thread per assistant while a handoff lists the new thread before the old one leaves', async () => {
+    await primeAgentState();
+    prependThread(makeThread('agent-next', { agentId: 'agent', createdAt: 5 }));
+    const current = getThreads().filter((t) => t.agentId === 'agent');
+    expect(current.map((t) => t.id)).toEqual(['agent-next']);
+    expect(getThreads().find((t) => t.id === 'agent')).toMatchObject({ agentId: undefined, pastAgentId: 'agent' });
+    expect(isAgentDoneExpanded('agent')).toBe(true);
+    // Two new rows of one assistant in one write: the newest is current.
+    setBindingMock('ListThreads', async () => [
+      makeThread('a', { agentId: 'other', createdAt: 1 }),
+      makeThread('b', { agentId: 'other', createdAt: 2 }),
+    ]);
+    await refreshThreads();
+    expect(getThreads().filter((t) => t.agentId === 'other').map((t) => t.id)).toEqual(['b']);
+  });
+
   it('is cleared when the row comes back without the mark', async () => {
     await primeAgentState();
     replaceThread(agent(false));

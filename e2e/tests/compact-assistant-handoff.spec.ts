@@ -5,7 +5,7 @@
 // header's button does the same from the thread screen.
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
-import { capture } from './wake-rows-helpers.js';
+import { captureAgentMessage } from './wake-rows-helpers.js';
 import { plainScenario, setScenario, threadRows } from './thread-tools-helpers.js';
 
 async function handedOff(harness: HarnessApp, cwd: string, previous: string) {
@@ -34,7 +34,7 @@ test('compact: the row and header buttons move the assistant to a new thread', a
   });
   const { path: cwd, threadIds } = seed.projects[0];
   const [first] = threadIds;
-  await setScenario(harness, cwd, plainScenario({ name: 'compact-assistant-handoff', provider: 'claude', texts: ['Picked up.'], afterTurns: 'repeatLast' }));
+  await setScenario(harness, cwd, plainScenario({ name: 'compact-assistant-handoff', provider: 'claude', texts: ['Picked up.'], afterTurns: 'repeatLast', echoUserMessage: true }));
 
   await harness.open(page);
   const width = page.viewportSize()!.width;
@@ -44,7 +44,7 @@ test('compact: the row and header buttons move the assistant to a new thread', a
   const box = (await button.boundingBox())!;
   expect(box.x + box.width).toBeLessThanOrEqual(width);
   expect(box.width).toBeGreaterThanOrEqual(32);
-  await capture(page, 'compact-assistant-row-next-thread.png', firstRow);
+  await captureAgentMessage(page, 'compact-assistant-row-next-thread.png', firstRow);
 
   // ---- From the row: the successor is the agent row, the old thread its done child.
   const fromRow = handedOff(harness, cwd, first);
@@ -61,7 +61,7 @@ test('compact: the row and header buttons move the assistant to a new thread', a
   await expect(page.getByTestId('chat-header-title')).toHaveText('Ops');
   const header = page.getByTestId('chat-header-next-thread').filter({ visible: true });
   await expect(header).toBeInViewport({ ratio: 1 });
-  await capture(page, 'compact-assistant-header-next-thread.png', page.getByTestId('chat-header-title-row'));
+  await captureAgentMessage(page, 'compact-assistant-header-next-thread.png', page.getByTestId('chat-header-title-row'));
   const fromHeader = handedOff(harness, cwd, second);
   await header.tap();
   await fromHeader;
@@ -72,6 +72,6 @@ test('compact: the row and header buttons move the assistant to a new thread', a
   await expect(handoff).toHaveCount(1);
   await expect(handoff.getByTestId('agent-message-sender')).toHaveText('Agent Overflow');
   await expect(handoff).toContainText(second);
-  await capture(page, 'compact-assistant-handoff.png', handoff);
+  await captureAgentMessage(page, 'compact-assistant-handoff.png', handoff);
   expect((await harness.rpc<{ threadId: string }>('GetStandingAgent', third)).threadId).toBe(third);
 });
