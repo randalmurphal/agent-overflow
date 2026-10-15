@@ -408,6 +408,8 @@ func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
 					if !slices.Equal(memory, want) {
 						t.Errorf("queued again %q, want %q", memory, want)
 					}
+					// Queued again with no session: nothing is working on it.
+					assertNothingPending(t, f.app, f.caller.ID)
 					return
 				}
 				outcome := agentWakeOutcomeSessionEnded
