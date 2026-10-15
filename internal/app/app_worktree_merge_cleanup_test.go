@@ -712,6 +712,20 @@ func TestMergedPRCleanupPauseJoinsAndResumesFromNothing(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	// Hold the poll's next request inside the fake forge, already counted,
+	// so the pause lands while it is in flight. Counting is server-side: a
+	// request the poll sent before the pause but the server had not yet
+	// handled would otherwise be counted after the pause returned.
+	held, release := make(chan struct{}), make(chan struct{})
+	m.during(func() {
+		close(held)
+		<-release
+	})
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the poll never sent its next read")
+	}
 	c.pollMu.Lock()
 	pollDone := c.pollDone
 	c.pollMu.Unlock()
@@ -720,6 +734,7 @@ func TestMergedPRCleanupPauseJoinsAndResumesFromNothing(t *testing.T) {
 	c.mu.Unlock()
 
 	resume := m.app.pauseMergedPRCleanup()
+	close(release)
 	for name, done := range map[string]chan struct{}{"poll": pollDone, "worker": workerDone} {
 		select {
 		case <-done:
