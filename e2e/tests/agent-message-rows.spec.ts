@@ -404,7 +404,10 @@ for (const provider of ['claude', 'codex'] as const) {
     // A native select's open menu is drawn outside the page, so the shot
     // lists the groups in place.
     const select = review.getByTestId('review-edit-select');
-    await select.evaluate((el: HTMLSelectElement) => { el.size = 6; });
+    await select.evaluate((el: HTMLSelectElement) => {
+      el.size = 6;
+      el.style.minWidth = '20rem';
+    });
     await captureAgentMessage(page, `${provider}-edits-selector.png`, select);
   });
 }
