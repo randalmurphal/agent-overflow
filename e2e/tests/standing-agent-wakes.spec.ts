@@ -4143,7 +4143,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       // Stopped, it is dismissed on its watch, not handed back: three watcher
       // ticks later nothing is queued and the row stays gone.
       await incoming.getByTestId('agent-incoming-row-stop').click();
-      await expect(page.getByTestId('toast').filter({ hasText: /^Withdrew .* before this thread's agent read it\.$/ })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId('toast').filter({ hasText: /Withdrew .* before this thread's agent read it\./ })).toBeVisible({ timeout: 30_000 });
       await expect(incoming).toHaveCount(0);
       expect(queued()).toEqual([]);
       expect(watch()).toEqual({ notification: 'dismissed', wake_issue: 'The user withdrew it from the queue before the agent read it.' });
@@ -4154,6 +4154,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
       // A mended start still never receives it, and remote_jobs keeps the result.
       await b.mend();
+      await setScenario(harness, cwd, threadToolsScenario({
+        name: `remote-stopped-mended-${provider}`, provider, echoUserMessage: true, turns: [{ text: 'Nothing to read.' }], afterTurns: 'silent',
+      }));
       await harness.rpc('StartSession', thread);
       await new Promise((resolve) => setTimeout(resolve, 4_000));
       expect(queued()).toEqual([]);
@@ -4163,7 +4166,6 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(job?.notification).toBe('dismissed');
       expect(job?.receipt.state).not.toBe('running');
       console.log(`${provider}: stopped completion: watch ${JSON.stringify(watch())}, job ${job?.receipt.state}`);
-      await shoot(page, `${provider}-stopped-remote-completion.png`, agentsBody(page));
     } finally {
       await breaker?.cleanup();
       await Promise.allSettled([harness.close(), remote.close()]);

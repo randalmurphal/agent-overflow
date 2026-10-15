@@ -49,19 +49,26 @@ for (const provider of ['claude', 'codex'] as const) {
     try {
       conn.exec('PRAGMA busy_timeout = 5000');
       const now = Date.now();
-      conn.prepare(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, answer, answer_kind,
+      conn.prepare(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, notify, state, answer, answer_kind,
         settled_at, delivered_at, delivered_how, confirmed_at, created_at, updated_at)
-        VALUES (?, ?, 'send', ?, 'finished', ?, 'final', ?, ?, 'queued', ?, ?, ?)`)
+        VALUES (?, ?, 'send', ?, 1, 'finished', ?, 'final', ?, ?, 'queued', ?, ?, ?)`)
         .run(token, lead, workerId, Buffer.from('Rebased.'), now, now, now, now - 60_000, now);
     } finally {
       conn.close();
     }
 
+    // The listing names the wake row, which the jump below leaves unloaded.
+    const listing = await harness.rpc<{ rows: { token: string; wakeItemId?: string }[] }>('ListThreadAgentRows', lead);
+    expect(listing.rows.find((row) => row.token === token)?.wakeItemId).toBeTruthy();
     await harness.open(page);
     await page.getByTestId('thread-row-title').filter({ hasText: 'Lead far back' }).first().click();
     const scroller = page.getByTestId('message-timeline-scroll');
     await expect(scroller.getByText('The worker rebased.', { exact: true })).toBeVisible();
     await page.getByTestId('message-nav-rail').getByRole('button', { name: 'Jump to first message', exact: true }).click();
+    // The send folds into the first turn's activity run.
+    const run = page.getByTestId('activity-run').filter({ hasText: 'Thread send' });
+    await expect(run).toHaveCount(1);
+    if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
     const send = toolRow(page, 'send', /Docs worker/);
     await expect(send).toHaveCount(1);
     await expect(scroller.getByText('The worker rebased.', { exact: true })).toHaveCount(0);
