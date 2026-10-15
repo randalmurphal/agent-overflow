@@ -73,8 +73,6 @@ func TestCodexUnimplementedMethodIsMethodNotFound(t *testing.T) {
 		"config/batchWrite",
 		"config/mcpServer/reload",
 		"mcpServer/oauth/login",
-		"thread/backgroundTerminals/terminate",
-		"thread/backgroundTerminals/clean",
 	}
 	var buf bytes.Buffer
 	a := newCodexUnitAdapter(t, &buf, nil)

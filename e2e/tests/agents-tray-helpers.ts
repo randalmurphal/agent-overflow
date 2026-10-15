@@ -67,16 +67,6 @@ export function backgroundShellSteps(provider: ProviderName): TurnStep[] {
   }];
 }
 
-/** What a Codex session answers to a terminal's stop: the scenario's own. */
-export function codexTerminateAnswer(provider: ProviderName): Record<string, unknown> {
-  return provider === 'codex'
-    ? { codex: { responses: {
-      'thread/backgroundTerminals/terminate': '{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"terminated":true}}',
-      'thread/backgroundTerminals/clean': '{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{}}',
-    } } }
-    : {};
-}
-
 export interface AgentsTree {
   lead: string;
   leadPath: string;
@@ -125,7 +115,6 @@ export async function seedAgentsTree(
         { text: 'Noted.' },
       ],
     }),
-    ...codexTerminateAnswer(provider),
   });
   await setScenario(harness, tree.childPath, {
     ...threadToolsScenario({
@@ -139,7 +128,6 @@ export async function seedAgentsTree(
         { text: 'Noted.' },
       ],
     }),
-    ...codexTerminateAnswer(provider),
   });
   await setScenario(harness, tree.grandPath, threadToolsScenario({
     name: `${tag}-grand`, provider, echoUserMessage: true,

@@ -32,17 +32,25 @@ type prCIFixture struct {
 	logErrs     map[string]error
 	// logCuts cuts the next download of a job off after that many bytes.
 	logCuts map[string]int
+	// resumeGate, when set, holds every resumed download (a request from
+	// an offset) until it is closed.
+	resumeGate chan struct{}
 	// ciInteractive and logInteractive record, per fetch, whether its
 	// context carried the interactive mark.
 	ciInteractive  []bool
 	logInteractive []bool
 	// logRequests is every log request, in order.
-	logRequests  []gitops.CIJobLogRequest
-	ciFetches    atomic.Int32
-	logFetches   atomic.Int32
-	snapshotHead atomic.Pointer[string]
-	ciEvents     chan PRCIUpdatedEvent
-	logEvents    chan PRCILogEvent
+	logRequests []gitops.CIJobLogRequest
+	ciFetches   atomic.Int32
+	logFetches  atomic.Int32
+	// logFetchesAtTerminal is logFetches when a pipeline fetch first
+	// answered with no job live, or -1. The pump fetches the pipeline and
+	// then the logs on one goroutine, so every later log fetch is of a
+	// completed job.
+	logFetchesAtTerminal atomic.Int32
+	snapshotHead         atomic.Pointer[string]
+	ciEvents             chan PRCIUpdatedEvent
+	logEvents            chan PRCILogEvent
 }
 
 func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
@@ -55,6 +63,7 @@ func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
 		ciEvents:  make(chan PRCIUpdatedEvent, 64),
 		logEvents: make(chan PRCILogEvent, 64),
 	}
+	f.logFetchesAtTerminal.Store(-1)
 	head := "head-a"
 	f.snapshotHead.Store(&head)
 	f.app.prUpdates.interval = time.Hour
@@ -70,6 +79,9 @@ func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
 		f.ciInteractive = append(f.ciInteractive, forgeapi.IsInteractive(ctx))
 		f.stepsFor = append(f.stepsFor, slices.Sorted(slices.Values(stepsFor)))
 		f.ciFetches.Add(1)
+		if f.pipelineErr == nil && !gitops.CIPipelineLive(f.pipeline) {
+			f.logFetchesAtTerminal.CompareAndSwap(-1, f.logFetches.Load())
+		}
 		return f.pipeline, f.pipelineErr
 	}
 	f.app.configDir = t.TempDir()
@@ -80,7 +92,15 @@ func newPRCIFixture(t *testing.T, streams bool) *prCIFixture {
 		f.logRequests = append(f.logRequests, req)
 		text, err, cut := f.logs[req.JobID], f.logErrs[req.JobID], f.logCuts[req.JobID]
 		delete(f.logCuts, req.JobID)
+		gate := f.resumeGate
 		f.mu.Unlock()
+		if gate != nil && req.From > 0 {
+			select {
+			case <-gate:
+			case <-ctx.Done():
+				return false, ctx.Err()
+			}
+		}
 		if err != nil {
 			return false, err
 		}
