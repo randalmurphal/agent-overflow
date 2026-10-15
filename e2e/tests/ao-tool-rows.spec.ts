@@ -49,7 +49,9 @@ for (const provider of ['claude', 'codex'] as const) {
 
     // The spawn link opens the spawned thread in a pane; then back to the lead.
     await spawn.getByTestId('tool-call-card-ao-link').click();
-    await expect(page.getByTestId('user-message-thread-origin').filter({ hasText: `from ${LEAD_TITLE}` }).first()).toBeVisible();
+    // The spawned thread opens on the lead's prompt, an agent row from it.
+    const spawnPrompt = page.locator(`[data-testid="agent-message-row"][data-agent-message-kind="spawn"]`);
+    await expect(spawnPrompt.getByTestId('agent-message-sender').filter({ hasText: LEAD_TITLE }).first()).toBeVisible();
     await openLead(harness, page);
 
     // Send: the target's title and the message's first line.

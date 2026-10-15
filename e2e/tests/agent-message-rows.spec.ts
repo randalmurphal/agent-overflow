@@ -394,8 +394,7 @@ for (const provider of ['claude', 'codex'] as const) {
     });
     await harness.open(page);
     await openThread(page, 'Edits mix');
-    await page.getByRole('button', { name: 'Thread actions', exact: true }).click();
-    await page.getByRole('menuitem', { name: /Review changes/ }).click();
+    await page.getByTestId('review-toggle').click();
     const review = page.getByTestId('review-pane');
     await review.getByTestId('review-scope-select').selectOption('edits');
     const groups = review.getByTestId('review-edit-select').locator('optgroup');

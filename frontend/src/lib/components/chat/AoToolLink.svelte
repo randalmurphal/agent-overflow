@@ -13,7 +13,7 @@
   let target = $derived.by(() => {
     if (link.kind === 'run') return { computer: '', open: () => openWorkflowRunInOverlay(link.id) };
     return agentThreadOpener(
-      { threadId: link.id, title: link.label, computerId: link.computerId, computerName: link.computerName, token: '' },
+      { threadId: link.id, title: link.label, computerId: link.computerId, computerName: link.computerName, token: '', kind: '' },
       viewer,
     );
   });
