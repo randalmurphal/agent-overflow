@@ -71,6 +71,7 @@ function makePane(): TestPane {
     threadId: 'thread-1',
     isUserMessageExpanded: rowUiState.isUserMessageExpanded,
     setUserMessageExpanded: rowUiState.setUserMessageExpanded,
+    isUnsendDeclined: rowUiState.isUnsendDeclined,
     attachmentCacheFor: () => undefined,
     scrollController: {
       preserveScrollAnchor(anchor: HTMLElement, action: () => void | Promise<void>) {
