@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import type { Item } from '../types/models';
 import { GetThreadRequestStates } from './bindings';
@@ -25,7 +26,11 @@ const MAX_TOKENS = 256;
 /** What the ledger said: answered or not, or null for a token it does not know. */
 type Ledger = boolean | null;
 
+// A row reads its own token's key, which changes only when its answer does.
 const answered = new SvelteMap<string, SvelteMap<string, Ledger>>();
+// Recency, kept apart so that reordering wakes no reader: threads in the
+// order they were last read, each with its tokens in the order last asked.
+const recency = new Map<string, Set<string>>();
 // The mounted rows watching each token, by thread.
 const watched = new Map<string, Map<string, number>>();
 // Tokens to read, by thread, until the next microtask.
@@ -57,7 +62,8 @@ export function watchRequestAnswer(threadId: string | null | undefined, token: s
     watched.set(threadId, thread);
   }
   thread.set(token, (thread.get(token) ?? 0) + 1);
-  if (answered.get(threadId)?.get(token) === undefined) ask(threadId, [token]);
+  // Read untracked: the watch belongs to the row's mount, not to its answer.
+  if (untrack(() => answered.get(threadId)?.get(token)) === undefined) ask(threadId, [token]);
   let released = false;
   return () => {
     if (released) return;
@@ -103,50 +109,55 @@ async function read(threadId: string, tokens: string[]): Promise<void> {
   }
   const byToken = new Map((states ?? []).map((state) => [state.token, Boolean(state.wakeItemId)]));
   let thread = answered.get(threadId);
-  if (thread) {
-    answered.delete(threadId);
-  } else {
+  if (!thread) {
     thread = new SvelteMap();
+    answered.set(threadId, thread);
   }
-  answered.set(threadId, thread);
+  const order = recency.get(threadId) ?? new Set<string>();
+  recency.delete(threadId);
+  recency.set(threadId, order);
   for (const token of tokens) {
-    thread.delete(token);
-    thread.set(token, byToken.get(token) ?? null);
+    order.delete(token);
+    order.add(token);
+    const state = byToken.get(token) ?? null;
+    if (!thread.has(token) || thread.get(token) !== state) thread.set(token, state);
   }
-  trim(thread, watched.get(threadId));
-  if (answered.size > MAX_THREADS) {
-    for (const id of answered.keys()) {
-      if (answered.size <= MAX_THREADS) break;
-      if (!watched.has(id)) answered.delete(id);
-    }
+  trim(thread, order, watched.get(threadId));
+  for (const id of recency.keys()) {
+    if (recency.size <= MAX_THREADS) break;
+    if (watched.has(id)) continue;
+    answered.delete(id);
+    recency.delete(id);
   }
 }
 
 /** Drops a thread's least recently asked unwatched tokens past MAX_TOKENS. */
-function trim(thread: SvelteMap<string, Ledger>, watching: ReadonlyMap<string, number> | undefined): void {
+function trim(thread: SvelteMap<string, Ledger>, order: Set<string>, watching: ReadonlyMap<string, number> | undefined): void {
   let unwatched = 0;
-  for (const token of thread.keys()) if (!watching?.has(token)) unwatched++;
-  for (const token of thread.keys()) {
+  for (const token of order) if (!watching?.has(token)) unwatched++;
+  for (const token of order) {
     if (unwatched <= MAX_TOKENS) return;
     if (watching?.has(token)) continue;
     thread.delete(token);
+    order.delete(token);
     unwatched--;
   }
 }
 
 function readAgain(change: ThreadAgentRowChange | null): void {
   if (!change) {
-    for (const [threadId, thread] of answered) ask(threadId, [...thread.keys()]);
+    for (const [threadId, order] of recency) ask(threadId, [...order]);
     return;
   }
-  const thread = answered.get(change.threadId);
-  if (!thread) return;
-  if (!change.id) ask(change.threadId, [...thread.keys()]);
-  else if (thread.has(change.id)) ask(change.threadId, [change.id]);
+  const order = recency.get(change.threadId);
+  if (!order) return;
+  if (!change.id) ask(change.threadId, [...order]);
+  else if (order.has(change.id)) ask(change.threadId, [change.id]);
 }
 
 export function __resetAgentRequestAnswersForTest(): void {
   answered.clear();
+  recency.clear();
   watched.clear();
   due.clear();
   unsubscribe?.();

@@ -1,6 +1,8 @@
+import { flushSync } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { __resetAgentRequestAnswersForTest, requestAnswered, watchRequestAnswer } from './agentRequestAnswers.svelte';
+import { applyThreadAgentRowsChanged } from './eventsThreadAgentRows';
 
 afterEach(() => {
   __resetAgentRequestAnswersForTest();
@@ -19,7 +21,62 @@ function answeredLedger() {
   return read;
 }
 
+/**
+ * Mounts one row per token as GenericToolCallRow does: an effect that
+ * watches its token and one that reads its answer. Counts each effect's runs
+ * by token.
+ */
+function mountRows(threadId: string, tokens: readonly string[]) {
+  const watches = new Map<string, number>();
+  const reads = new Map<string, number>();
+  const unmount = $effect.root(() => {
+    for (const token of tokens) {
+      $effect(() => {
+        watches.set(token, (watches.get(token) ?? 0) + 1);
+        return watchRequestAnswer(threadId, token);
+      });
+      $effect(() => {
+        reads.set(token, (reads.get(token) ?? 0) + 1);
+        requestAnswered(threadId, undefined, token);
+      });
+    }
+  });
+  flushSync();
+  const total = (runs: Map<string, number>) => [...runs.values()].reduce((sum, n) => sum + n, 0);
+  return { unmount, watches, reads, total };
+}
+
 describe('agent request answers', () => {
+  it('reruns only the changed row on a frame for one token, and no row\'s watch', async () => {
+    const tokens = Array.from({ length: 300 }, (_, i) => `tok-${i}`);
+    const answers = new Map(tokens.map((token) => [token, '']));
+    setBindingMock('GetThreadRequestStates', vi.fn(async (_thread: string, asked: string[]) =>
+      asked.map((token) => ({ token, state: 'finished', wakeItemId: answers.get(token) ?? '' }))));
+    const rows = mountRows('lead', tokens);
+    await settle();
+    flushSync();
+    const watches = rows.total(rows.watches);
+    const reads = new Map(rows.reads);
+
+    // Read again, unchanged: nothing reruns.
+    applyThreadAgentRowsChanged({ threadId: 'lead', id: 'tok-7' }, 'home');
+    await settle();
+    flushSync();
+    expect(rows.total(rows.watches)).toBe(watches);
+    expect(rows.reads).toEqual(reads);
+
+    // Answered: only its own row reads it again.
+    answers.set('tok-7', 'wake-7');
+    applyThreadAgentRowsChanged({ threadId: 'lead', id: 'tok-7' }, 'home');
+    await settle();
+    flushSync();
+    expect(rows.total(rows.watches)).toBe(watches);
+    expect([...rows.reads].filter(([token, n]) => n !== reads.get(token))).toEqual([['tok-7', reads.get('tok-7')! + 1]]);
+    expect(requestAnswered('lead', undefined, 'tok-7')).toBe(true);
+    rows.unmount();
+  });
+
+
   it('keeps every token a mounted row watches, past one read, and reads none of them again', async () => {
     const tokens = Array.from({ length: 300 }, (_, i) => `tok-${i}`);
     const read = answeredLedger();
