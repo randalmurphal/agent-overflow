@@ -22,7 +22,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { launchHarness } from '../src/harness.js';
 import { startTogether } from './launch-helpers.js';
-import { captureAgentMessage } from './wake-rows-helpers.js';
+import { captureAgentMessage, captureAgentMessageInView as keep } from './wake-rows-helpers.js';
 import {
   AUDIT,
   AUDIT_ANSWER,
@@ -71,10 +71,7 @@ async function expand(row: Locator): Promise<Locator> {
 
 const fact = (body: Locator, label: string) => body.locator(`[data-fact="${label}"]`);
 
-async function keep(page: Page, name: string, ...targets: Locator[]): Promise<void> {
-  for (const target of targets) await target.scrollIntoViewIfNeeded();
-  await captureAgentMessage(page, name, ...targets);
-}
+
 
 for (const provider of ['claude', 'codex'] as const) {
   test(`${provider}: a spawn prompt, a request and the replies render as agent rows that never tick`, async ({

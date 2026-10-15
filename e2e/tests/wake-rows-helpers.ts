@@ -17,6 +17,7 @@ import {
   type ProviderName,
   type ScriptedTurn,
 } from './thread-tools-helpers.js';
+import { escapeTimelineFollow } from './timeline-follow-helpers.js';
 
 /** The computer name a capture may show. */
 export const DEVICE_NAME = 'Wake tray computer';
@@ -245,3 +246,15 @@ export async function captureAgentMessage(page: Page, name: string, ...targets: 
   await mkdir(dir, { recursive: true });
   await copyFile(test.info().outputPath(name), `${dir}/${name}`);
 }
+
+/**
+ * captureAgentMessage of rows brought into view with the timeline's follow
+ * left first, so a timeline following its bottom does not carry a row the
+ * test just opened back out of view.
+ */
+export async function captureAgentMessageInView(page: Page, name: string, ...targets: Locator[]): Promise<void> {
+  await escapeTimelineFollow(page);
+  for (const target of targets) await target.scrollIntoViewIfNeeded();
+  await captureAgentMessage(page, name, ...targets);
+}
+

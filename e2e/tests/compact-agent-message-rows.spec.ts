@@ -7,7 +7,7 @@
 // and is checked on desktop.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
-import { captureAgentMessage as keep } from './wake-rows-helpers.js';
+import { captureAgentMessageInView as keep } from './wake-rows-helpers.js';
 import { expectUncovered, showTextUncovered } from './standing-agent-home-contents-helpers.js';
 import {
   AUDIT,

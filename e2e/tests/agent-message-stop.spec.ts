@@ -11,7 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
-import { captureAgentMessage } from './wake-rows-helpers.js';
+import { captureAgentMessage, captureAgentMessageInView } from './wake-rows-helpers.js';
 import { awaitGate, awaitToolAnswer, setScenario, threadToolsScenario, type TurnStep } from './thread-tools-helpers.js';
 
 const openThread = async (page: Page, title: string) => {
@@ -113,8 +113,7 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(fact(body, 'Stopped by')).toHaveText('the person');
     await expect(body).not.toContainText('restart');
     if (provider === 'claude') await expect(body.getByTestId('agent-message-text')).toContainText(PARTIAL);
-    await wake.scrollIntoViewIfNeeded();
-    await captureAgentMessage(page, `${provider}-person-stop-expanded.png`, wake);
+    await captureAgentMessageInView(page, `${provider}-person-stop-expanded.png`, wake);
     const raw = db<{ summary: string }>(harness,
       `SELECT summary FROM items WHERE thread_id = ? AND kind = 'user_text' AND summary LIKE '%[token ' || ? || ']%'`, sender, token);
     expect(raw.map((row) => row.summary).join('\n')).toContain('The person stopped this turn before it answered.');
