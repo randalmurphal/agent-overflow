@@ -35,8 +35,10 @@ export function abandonedWholeResponse(item: Item): boolean {
   return meta?.from_block_index === 0;
 }
 
-/** Ids of every row the loaded abandonment records discard. */
-export function discardedItemIds(items: readonly Item[]): ReadonlySet<string> {
+/** Ids of every row the loaded abandonment records discard. A surface
+ * with no row array (a pane stub, a facade mid-switch) discards nothing. */
+export function discardedItemIds(items: readonly Item[] | undefined): ReadonlySet<string> {
+  if (!items) return EMPTY;
   const cached = cache.get(items);
   if (cached) return cached;
   let ids: Set<string> | null = null;

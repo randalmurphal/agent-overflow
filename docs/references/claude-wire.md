@@ -3295,7 +3295,9 @@ verbatim.
 - `content_block_delta`: `{index, delta: {type: ..., ...}}`
 - `content_block_stop`: `{index}`
 - `message_delta`: mid-message `stop_reason` / `usage` updates
-- `message_stop`: closes an assistant message
+- `message_stop`: closes an assistant message; one the CLI produced itself
+  for a response it stopped reading carries `abandoned_blocks` on the
+  envelope (§`abandoned_blocks` below)
 
 ### Delta types
 - `text_delta: {text}`: ✅ handled

@@ -76,7 +76,10 @@
      read straight off the resolved item so the DOM cannot disagree with
      what the pane thinks it rendered. Three attributes, no state, no
      cost: keep it that way rather than growing a per-renderer vocabulary
-     here. -->
+     here. `data-discarded` is the one derived fact beside them: it is not
+     on the item (the row is immutable history) but on the record row that
+     follows it, and the snapshot has to answer "is this row shown as
+     discarded" without reading two rows. -->
 <div
   data-item-id={displayItem.id}
   data-item-kind={displayItem.kind}

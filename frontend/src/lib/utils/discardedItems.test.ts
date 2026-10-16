@@ -49,6 +49,8 @@ describe('discardedItems', () => {
     const fewer = items.slice(0, 1);
     expect(discardedItemIds(fewer).size).toBe(0);
     expect(discardedItemIds([]).size).toBe(0);
+    // A surface with no row array discards nothing rather than throwing.
+    expect(discardedItemIds(undefined).size).toBe(0);
   });
 
   it('finds what Claude wrote next in the record scope and stops at the next user message', () => {
