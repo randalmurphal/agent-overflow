@@ -181,7 +181,10 @@ export interface ThreadGroup {
  * - `terminal_interaction` is the Codex-only background-terminal wait or
  *   interaction marker persisted from typed `write_stdin` notifications.
  * - `notification` is a provider notification row that must not mutate
- *   tool/task lifecycle state.
+ *   tool/task lifecycle state. `meta.kind` discriminates renderers:
+ *   `session_died`, and `abandoned_blocks`, the record that Claude
+ *   discarded the streamed rows named in `meta.item_ids` after a stalled
+ *   response (`utils/discardedItems.ts` derives their muted marking).
  * - `command_result` is the output of a slash command the provider CLI ran
  *   itself (`/usage`, `/context`, a skill). Role `system`, written completed
  *   in one shot, never streams, and never model output — it must not render

@@ -217,6 +217,23 @@ describe('run boundaries', () => {
 
       expect(run(nodes, 0).live).toBe(true);
     });
+
+    // The abandoned-blocks record describes the prose (or reasoning) before
+    // it, so it is never swallowed into a collapsible run where its note
+    // would hide; it breaks the run like prose, mirroring the store's rule.
+    it('the abandoned-blocks record breaks a run instead of joining it', () => {
+      const record = () => leaf({ id: 'rec', kind: 'notification', toolName: 'abandoned_blocks' });
+      const nodes = project([
+        leaf({ id: 'k1', kind: 'thinking' }),
+        record(),
+        tool('t1', 'Bash'),
+      ]);
+      expect(nodes.map((n) => n.kind)).toEqual(['activity_run', 'leaf', 'activity_run']);
+      expect(run(nodes, 0).memberItemIds).toEqual(['k1']);
+
+      const withheld = project([tool('t1', 'Bash')], { withheld: [record()] });
+      expect(run(withheld, 0).live).toBe(false);
+    });
   });
 
   it.each([

@@ -45,9 +45,14 @@
     labelText,
     idPrefix,
     toggleAriaLabel,
+    discarded = false,
   }: {
     pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost;
     item: Item;
+    // The row was discarded by the provider after a stalled response and is
+    // kept as a muted record (utils/discardedItems.ts). Presentation only:
+    // the row's content, expansion and reveal behave as for any settled row.
+    discarded?: boolean;
     // Payload-expansion namespace for this row kind — keeps a thinking row, a
     // compaction reasoning row, and a sibling compaction divider from colliding
     // on the same item id.
@@ -145,7 +150,8 @@
   controls={bodyDomId}
   ariaLabel={toggleAriaLabel}
   testId={`${idPrefix}-toggle`}
-  class="!items-start rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
+  class="!items-start rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20 {discarded ? 'discarded-reasoning' : ''}"
+  headerTestId={`${idPrefix}-header`}
   buttonClass="!items-start"
   onToggle={(event) => preservePaneScrollAnchor(pane, event, handleToggle)}
 >
@@ -161,6 +167,13 @@
     />
   {/snippet}
   {#snippet actions()}
+    {#if discarded}
+      <span
+        class="shrink-0 rounded-full border border-border px-1.5 py-px text-[0.5625rem] uppercase tracking-wide text-fg-hint"
+        data-testid={`${idPrefix}-discarded`}
+        title="Claude discarded this after the response stalled"
+      >Discarded</span>
+    {/if}
     <time class="shrink-0 pt-[2px] text-[0.625rem] tabular-nums text-fg-hint" datetime={isoTime}>{time}</time>
   {/snippet}
 </TranscriptDisclosureHeader>

@@ -183,6 +183,15 @@ type Parser struct {
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.
 	streamBlockTypes map[string]string
+	// streamMessageIDs is the API id (`msg_...`) of the response currently
+	// streaming per parent_tool_use_id, taken from its `message_start`.
+	// It is the fallback for the envelope's own `api_message_id`, which
+	// Claude Code 2.1.300+ stamps on every stream_event of a response and
+	// older CLIs omit. Block lifecycle events carry it as
+	// provider.MetaAPIMessageIDKey so triage can tie a row to the response
+	// an `abandoned_blocks` message_stop later names. One entry per scope,
+	// released at that scope's message_stop and at the turn boundary.
+	streamMessageIDs map[string]string
 	// streamedMessageIDs records every `message.id` seen on a
 	// stream_event.message_start this turn. It is the discriminator the
 	// coalesced `assistant` snapshot uses to decide whether a text/thinking
@@ -467,6 +476,7 @@ func (p *Parser) Close() {
 	p.subagentModelStamped = nil
 	p.agentLaunchEfforts = recentMap[agentLaunchEffort]{}
 	p.streamBlockTypes = nil
+	p.streamMessageIDs = nil
 	p.streamedMessageIDs = nil
 	p.recoveredBlockSeq = nil
 	p.subagentRecoveredBlocks = nil
@@ -1151,6 +1161,44 @@ func streamBlockKey(parentToolUseID string, index int) string {
 	return fmt.Sprintf("%s:%d", parentToolUseID, index)
 }
 
+// rememberStreamMessageID records the API id of the response that just
+// opened on a scope's stream; see the streamMessageIDs field doc.
+func (p *Parser) rememberStreamMessageID(parentToolUseID, id string) {
+	if p == nil || id == "" {
+		return
+	}
+	if p.streamMessageIDs == nil {
+		p.streamMessageIDs = make(map[string]string)
+	}
+	if len(p.streamMessageIDs) >= parserStreamBlockCap {
+		p.streamMessageIDs = make(map[string]string)
+	}
+	p.streamMessageIDs[parentToolUseID] = id
+}
+
+// streamAPIMessageID is the API id of the response a stream_event belongs
+// to: the envelope's `api_message_id` when the CLI stamped one, else the
+// id remembered from the scope's `message_start`. Empty when neither is
+// known (an older CLI mid-response, a plugin-rewritten event).
+func (p *Parser) streamAPIMessageID(raw map[string]json.RawMessage, parentToolUseID string) string {
+	if id := readRawString(raw["api_message_id"]); id != "" {
+		return id
+	}
+	if p == nil || p.streamMessageIDs == nil {
+		return ""
+	}
+	return p.streamMessageIDs[parentToolUseID]
+}
+
+// forgetStreamMessageID releases a scope's remembered response id at its
+// message_stop.
+func (p *Parser) forgetStreamMessageID(parentToolUseID string) {
+	if p == nil || p.streamMessageIDs == nil {
+		return
+	}
+	delete(p.streamMessageIDs, parentToolUseID)
+}
+
 // rememberStreamedMessageID records a message id observed on a
 // stream_event.message_start. See the streamedMessageIDs field doc for
 // why this is a set and how the assistant-snapshot recovery path uses
@@ -1256,6 +1304,7 @@ func (p *Parser) clearSnapshotRecoveryState() {
 		return
 	}
 	p.streamedMessageIDs = nil
+	p.streamMessageIDs = nil
 	p.recoveredBlockSeq = nil
 }
 

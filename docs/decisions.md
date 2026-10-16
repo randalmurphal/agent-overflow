@@ -122,6 +122,12 @@ Mechanism in
   anything outside the window is one page away and scrolling toward it
   always loads (an upward gesture pages older even at the very top and in
   a window too short for the scroll geometry to express direction).
+- Text Claude discards after a stalled response (`abandoned_blocks`,
+  [claude-wire.md §abandoned_blocks](references/claude-wire.md#abandoned_blocks-a-response-cut-short-21300)) stays in
+  the timeline as it streamed, muted, with a note after it; the reply
+  continues below. Nothing disappears and nothing re-streams in its place
+  (ruling 2026-10-16). The rows are not rewritten: the note is its own row
+  naming them, and the marking is derived from it.
 
 ## Sidebar, threads, drafts
 

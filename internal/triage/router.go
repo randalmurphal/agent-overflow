@@ -467,6 +467,8 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 			return r.settleCompactionReasoning(evt)
 		}
 		return r.handleContentBlockStop(evt)
+	case provider.EventBlocksAbandoned:
+		return r.handleBlocksAbandoned(evt)
 	case provider.EventSessionStatus:
 		return r.handleSessionStatus(evt)
 	case provider.EventRateLimits:

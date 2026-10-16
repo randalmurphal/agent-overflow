@@ -1420,6 +1420,34 @@ html.light .working-sprite {
 }
 
 /*
+ * A streamed row Claude discarded after a stalled response
+ * (utils/discardedItems.ts). The row keeps its content and controls; it is
+ * dimmed behind a hairline rule so it reads as the record of what was shown
+ * rather than as part of the answer. Opacity rather than a color swap keeps
+ * code blocks, links and the markdown palette consistent with their
+ * neighbours in both themes; the rule is the theme's strong border.
+ */
+.discarded-row {
+  position: relative;
+  padding-left: 0.75rem;
+  opacity: 0.62;
+}
+.discarded-row::before {
+  content: '';
+  position: absolute;
+  top: 0.25rem;
+  bottom: 0.25rem;
+  left: 0;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-border-strong);
+}
+/* A reasoning row sits on the activity rail, which is already its edge. */
+.discarded-reasoning {
+  opacity: 0.62;
+}
+
+/*
  * Run map connective tissue (RUN-MAP §2 node geometry, §6 layout).
  *
  * The map reads as a centered flow rather than a list: nodes are intrinsic

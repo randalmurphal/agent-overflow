@@ -313,7 +313,7 @@ func (p *Parser) appendRecoveredBlockEvent(
 		ItemID:          recoveredBlockItemID(messageID, index),
 		Content:         content,
 		ContentPresent:  true,
-		Meta:            blockMeta(index, blockType),
+		Meta:            blockMeta(index, blockType, messageID),
 		ParentToolUseID: parentToolUseID,
 		Timestamp:       now,
 	})

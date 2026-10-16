@@ -23,7 +23,8 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | `error` | `handleError`: persist error row, mark turn items errored on fatal, emit `provider:item_event` upsert + `thread:error_notice` (the sidebar's Failed badge, on a wildcard channel — see below). |
 | `compact_boundary` | `handleCompaction`: persist compaction marker; emit an included context-window snapshot when present, otherwise emit `provider:usage` reset. |
 | `rate_limits` | `handleRateLimits`: emit `provider:usage` (rate_limits). |
-| `content_block_start` / `content_block_stop` | Streaming text/thinking block markers; settle streaming rows on stop. |
+| `content_block_start` / `content_block_stop` | Streaming text/thinking block markers; settle streaming rows on stop. A start's `apiMessageId` and `index` bind the row the first delta creates to its API response (`abandoned_blocks.go`). |
+| `blocks_abandoned` | `handleBlocksAbandoned`: persist one `notification` row (`meta.kind` `abandoned_blocks`, `meta.item_ids` the discarded rows) after the rows the named response streamed from the index on; nothing when no bound row is at or above the index. The discarded rows are never written. |
 | `model_rerouted` | `handleThreadModelUpdate`: persist new model, emit `thread:updated`. |
 | `model_fallback` | `handleModelFallback`: persist the provider's warning as a notification, retain the requested model, and emit/hydrate the session-scoped effective model. |
 | `thread_renamed` | `handleThreadRename`: persist new title, emit `thread:updated`. |

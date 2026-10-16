@@ -3314,6 +3314,45 @@ cost, terminal_reason). But it is
 **not** the only signal that the round has ended; see soft-round-close
 below.
 
+### `abandoned_blocks`: a response cut short (2.1.300+)
+
+When the byte watchdog stops reading a response (no bytes for
+`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS`, default 180 s, clamped to 10 s
+through 30 min), the CLI closes it itself: a `content_block_stop` for any
+open block, then a `message_stop` whose ENVELOPE (not the inner event)
+carries `abandoned_blocks`:
+
+```json
+{"type": "stream_event", "event": {"type": "message_stop"},
+ "parent_tool_use_id": null, "api_message_id": "msg_01",
+ "abandoned_blocks": {"api_message_id": "msg_01", "from_block_index": 1}}
+```
+
+Every content block of that response at `from_block_index` and above was
+streamed but has no assistant message and never will: it is not in the
+transcript. `from_block_index` is the count of blocks whose assistant
+message was already emitted, so 0 means the whole response; it can exceed
+every index seen, in which case nothing visible was lost. What follows is
+unspecified by the key: in captures, a synthetic `isSynthetic:true` user
+nudge, then a continuation `message_start` when at least one block had
+finished, or a non-streamed retry (`assistant` under a new id, no
+`message_start`) when the stall was inside block 0. 2.1.284 does not send
+the key. The CLI's close events hardcode `parent_tool_use_id: null`, and
+subagent output never streams, so there is no scoped signal; a subagent's
+stall delivers its partial message whole and a retry under a new id.
+
+`api_message_id` (2.1.300+) sits on every stream_event envelope of a
+response, `message_start` through `message_stop`, and on the CLI's own
+close events; absent from older CLIs and from plugin-rewritten events.
+
+AO: the parser names each block's response on its `content_block_start` /
+`content_block_stop` meta (`apiMessageId`, from the envelope key or the
+scope's `message_start`) and turns the `message_stop` into
+`EventBlocksAbandoned`. Triage never rewrites the rows the blocks streamed
+into; it writes one `notification` row (`meta.kind: abandoned_blocks`,
+`meta.item_ids`) after them, and the UI derives the muted marking from it
+([decisions](../decisions.md#streaming-and-reveal)).
+
 ### Soft round close: `message_delta.stop_reason`
 
 The wire-typed signal that the parent assistant has stopped emitting
@@ -4982,6 +5021,20 @@ with `run_in_background`), `system/task_started` (backgrounded +
 foreground), `user` backgrounded placeholder (E2), `system/task_updated`
 terminal, `system/task_notification`, `user` inline tool_result (E1),
 `result` envelope.
+
+### `docs/references/fixtures/claude/stream_abandoned_{midblock,twoblock,afterblock}_20261016.ndjson`
+**Scenario**: Claude Code 2.1.300 against a fake API on loopback with
+`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` at its 10 s floor and
+`--include-partial-messages`; the fake stalls inside block 0 (midblock:
+`from_block_index` 0, retry as a bare `assistant` snapshot under
+`msg_fake_02`), inside block 1 after block 0 finished (twoblock:
+`from_block_index` 1, continuation streamed under `msg_fake_02`), or
+between blocks (afterblock: `from_block_index` 1 with no block 1 seen).
+Paths rewritten to `/home/user/spike`; nothing else edited.
+
+**Shapes covered**: `stream_event` envelopes with `api_message_id`, the
+CLI's own `content_block_stop` + `message_stop` with `abandoned_blocks`,
+the `isSynthetic:true` user nudge, `transcript_mirror`.
 
 ### `docs/references/fixtures/claude/ndjson_task.log`
 **Scenario**: `Task` subagent with `run_in_background: true` + `TaskOutput`

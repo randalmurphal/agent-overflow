@@ -41,7 +41,15 @@
     __aoMarkdownDiagnostics?: AssistantMarkdownDiagnostics;
   };
 
-  let { pane, item }: { pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost; item: Item } = $props();
+  let { pane, item, discarded = false }: {
+    pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost;
+    item: Item;
+    // Claude discarded this text after a stalled response and the reply
+    // went on without it (utils/discardedItems.ts). The row keeps its text,
+    // time and copy control; it is muted and tagged so it reads as a record
+    // of what the user saw, not as part of the answer.
+    discarded?: boolean;
+  } = $props();
 
   // A schema-bound turn answers with one unfenced JSON document, often a
   // single line tens of KB long; as prose that line re-pairs its `_` and
@@ -299,7 +307,7 @@
   });
 </script>
 
-<div class="group" data-item-kind={item.kind}>
+<div class="group {discarded ? 'discarded-row' : ''}" data-item-kind={item.kind}>
   <div
     bind:this={bodyRoot}
     class="text-fg-muted"
@@ -331,6 +339,15 @@
           title="Sent while the model kept working; not the turn's final answer"
         >
           Interim
+        </span>
+      {/if}
+      {#if discarded}
+        <span
+          class="rounded-full border border-border px-1.5 py-px text-[0.5625rem] uppercase tracking-wide text-fg-hint"
+          data-testid="assistant-message-discarded"
+          title="Claude discarded this after the response stalled"
+        >
+          Discarded
         </span>
       {/if}
       <span
