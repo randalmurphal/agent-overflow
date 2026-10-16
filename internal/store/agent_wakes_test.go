@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/threadmode"
 )
 
 // v144 over a populated database: the rows it finds survive and every
@@ -340,7 +342,8 @@ func TestQueueAgentWakeRefusesMoreThanAheadQueuedWakes(t *testing.T) {
 }
 
 // A move retires its thread when it commits, and the agent row goes in the
-// same write; a copy, and a move cancelled before it commits, keep the row.
+// same write, reported with its home after the commit; a copy, and a move
+// cancelled before it commits, keep the row.
 func TestCommittedMoveDropsTheStandingAgent(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -348,6 +351,8 @@ func TestCommittedMoveDropsTheStandingAgent(t *testing.T) {
 		mustCreateThread(t, s, id)
 		mustCreateAssistant(t, s, id, "/home/"+id)
 	}
+	var deleted []string
+	s.OnAgentRecordDeleted(func(home string) { deleted = append(deleted, home) })
 	isAgent := func(id string) bool {
 		t.Helper()
 		_, found, err := s.GetStandingAgent(id)
@@ -383,6 +388,38 @@ func TestCommittedMoveDropsTheStandingAgent(t *testing.T) {
 	transfer("cancelled", "move", "prepared", "canceled")
 	if !isAgent("copied") || !isAgent("cancelled") {
 		t.Fatalf("copy kept the agent: %v, cancelled move kept it: %v", isAgent("copied"), isAgent("cancelled"))
+	}
+	if !slices.Equal(deleted, []string{"/home/moved"}) {
+		t.Fatalf("reported deleted records %v, want the moved assistant's home alone", deleted)
+	}
+}
+
+// A thread delete reports the home of the assistant record it deletes,
+// whether the thread goes or is retired to a holder its forks read; a
+// thread that is no assistant's reports nothing.
+func TestDeletingAThreadReportsItsAssistantRecord(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"agent", "plain"} {
+		mustCreateThread(t, s, id)
+	}
+	mustCreateAssistant(t, s, "agent", "/home/agent")
+	// An assistant thread a pointer fork reads, which its delete retires.
+	seedLinearSource(t, s, "held", 2)
+	mustCreateAssistant(t, s, "held", "/home/held")
+	mustPointerFork(t, s, "held", "reader", ForkCut{})
+	var deleted []string
+	s.OnAgentRecordDeleted(func(home string) { deleted = append(deleted, home) })
+	for _, id := range []string{"plain", "agent", "held"} {
+		if err := s.DeleteThread(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !slices.Equal(deleted, []string{"/home/agent", "/home/held"}) {
+		t.Fatalf("reported deleted records %v, want the two assistants' homes", deleted)
+	}
+	if held, err := s.GetThread("held"); err != nil || held.Mode != threadmode.ModeHolder {
+		t.Fatalf("the read thread = %+v, %v; want it retired to a holder", held, err)
 	}
 }
 

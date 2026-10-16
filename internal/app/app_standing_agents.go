@@ -233,6 +233,15 @@ func (a *App) GetStandingAgent(threadID string) (*store.StandingAgent, error) {
 	return &row, nil
 }
 
+// assistantRoles is the role-line cache. Its first use subscribes it to
+// the store's deletion of assistant records, so the home of every
+// assistant deleted, moved away or retired is forgotten whichever writer
+// dropped the record; an entry exists only after that first use.
+func (a *App) assistantRoles() *agenthome.RoleCache {
+	a.agentRolesOnce.Do(func() { a.store.OnAgentRecordDeleted(a.agentRoles.Forget) })
+	return &a.agentRoles
+}
+
 // assistantHomeForDelete is the thread delete's AssistantHome: deleting an
 // assistant's current thread deletes the assistant, and its home goes with
 // it. Only the directory creation makes, `<config>/agents/<agent-id>` (a
@@ -265,9 +274,6 @@ func (a *App) assistantHomeForDelete(threadID string) (func() error, error) {
 			fmt.Errorf("this assistant was not deleted: %s", reason))
 	}
 	return func() error {
-		// The role it cached goes with the home, removed or not: a home
-		// made again at the path is read afresh.
-		defer a.agentRoles.Forget(agent.Home)
 		err := os.RemoveAll(want)
 		if err == nil {
 			return nil

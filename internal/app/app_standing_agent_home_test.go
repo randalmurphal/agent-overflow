@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,8 +9,10 @@ import (
 	"time"
 
 	"agent-overflow/internal/agenthome"
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 // An assistant's home (docs/specs/standing-agents.md, "Standing agent"): its
@@ -264,37 +267,61 @@ func TestDeletingAnAssistantWhoseHomeCannotBeRemovedFinishesLater(t *testing.T) 
 	}
 }
 
-// Deleting an assistant drops the role line the app cached for its home: a
-// home made again at that path, with a file of the same length and time,
-// is read afresh rather than answered from the deleted assistant's entry.
-func TestDeletingAnAssistantForgetsItsCachedRole(t *testing.T) {
+// An assistant's record leaving this computer drops the role line the app
+// cached for its home, whichever writer deletes the record: deleting its
+// thread, or committing its move, which keeps the home folder here. A home
+// file of the same length and time read afterwards is read afresh rather
+// than answered from the old entry.
+func TestAnAssistantRecordDeletedForgetsItsCachedRole(t *testing.T) {
 	t.Parallel()
-	f := newThreadToolsFixture(t)
-	thread := f.thread(t, "agent")
-	row := testAssistant(t, f.app, thread.ID)
-	file := filepath.Join(row.Home, agenthome.InstructionsFile)
-	old := time.Unix(1_700_000_000, 0)
-	write := func(text string) {
-		t.Helper()
-		if err := os.MkdirAll(row.Home, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(file, []byte(text), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chtimes(file, old, old); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write("Reviewer\n")
-	if role, err := f.app.agentRoles.Role(row.Home); err != nil || role != "Reviewer" {
-		t.Fatalf("role = %q, %v", role, err)
-	}
-	if err := f.app.DeleteThread(thread.ID); err != nil {
-		t.Fatal(err)
-	}
-	write("Releaser\n")
-	if role, err := f.app.agentRoles.Role(row.Home); err != nil || role != "Releaser" {
-		t.Fatalf("role after the delete = %q, %v; want the new file's", role, err)
+	for _, how := range []string{"delete", "move"} {
+		t.Run(how, func(t *testing.T) {
+			t.Parallel()
+			f := newThreadToolsFixture(t)
+			thread := f.thread(t, "agent")
+			row := testAssistant(t, f.app, thread.ID)
+			file := filepath.Join(row.Home, agenthome.InstructionsFile)
+			old := time.Unix(1_700_000_000, 0)
+			write := func(text string) {
+				t.Helper()
+				if err := os.MkdirAll(row.Home, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(file, []byte(text), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(file, old, old); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write("Reviewer\n")
+			if role, err := f.app.assistantRoles().Role(row.Home); err != nil || role != "Reviewer" {
+				t.Fatalf("role = %q, %v", role, err)
+			}
+			switch how {
+			case "delete":
+				if err := f.app.DeleteThread(thread.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "move":
+				move, err := f.app.store.CreateThreadTransfer(store.ThreadTransfer{ID: entityid.New(), ThreadID: thread.ID, PeerBackendID: entityid.New(),
+					Kind: "move", Direction: "outgoing", ActivationHash: strings.Repeat("a", 64), PrivateState: json.RawMessage(`{}`)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, phase := range []string{"prepared", "committed"} {
+					if _, err := f.app.store.AdvanceThreadTransfer(move.ID, phase, strings.Repeat("b", 64)); err != nil {
+						t.Fatalf("advance %s: %v", phase, err)
+					}
+				}
+				if _, found, err := f.app.store.GetStandingAgent(thread.ID); err != nil || found {
+					t.Fatalf("the committed move kept the assistant: %v %v", found, err)
+				}
+			}
+			write("Releaser\n")
+			if role, err := f.app.assistantRoles().Role(row.Home); err != nil || role != "Releaser" {
+				t.Fatalf("role after the record went = %q, %v; want the new file's", role, err)
+			}
+		})
 	}
 }

@@ -92,6 +92,8 @@ type Store struct {
 	// threadRequestChanged is the function OnThreadRequestChanged set, or
 	// nil.
 	threadRequestChanged atomic.Pointer[func(ThreadRequestChange)]
+	// agentRecordDeleted is the function OnAgentRecordDeleted set, or nil.
+	agentRecordDeleted atomic.Pointer[func(home string)]
 }
 
 // Options configures NewWithOptions.

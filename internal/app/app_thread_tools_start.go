@@ -134,7 +134,7 @@ func (t threadToolsApp) senderAgent(threadID string) (*threadtools.SenderAgent, 
 	}
 	agent := &threadtools.SenderAgent{}
 	if row.Home != "" {
-		role, err := t.app.agentRoles.Role(row.Home)
+		role, err := t.app.assistantRoles().Role(row.Home)
 		if err != nil {
 			log.Printf("thread tools: read the role line of standing agent %s from %s: %v", threadID, row.Home, err)
 		}

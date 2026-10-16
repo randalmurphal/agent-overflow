@@ -215,9 +215,10 @@ type App struct {
 	threadAgentPeers threadAgentPeerCache
 	// agentRoles keeps each standing agent's role line until its
 	// instructions file changes, for the sends, spawns, settlements and
-	// thread reads that name it; a deleted assistant's home is forgotten
-	// (assistantHomeForDelete). Zero value ready.
-	agentRoles agenthome.RoleCache
+	// thread reads that name it. Read it through assistantRoles, which
+	// makes the store's deletion of an assistant record forget its home.
+	agentRoles     agenthome.RoleCache
+	agentRolesOnce sync.Once
 	// threadRequestsWG joins the request sweep goroutine at shutdown, the
 	// way remoteWatchWG joins the remote completion watcher.
 	threadRequestsWG sync.WaitGroup

@@ -174,6 +174,11 @@ func (s *Store) finishThreadDelete(id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// Retired or deleted, the thread is no assistant's any more.
+	deletedHome, err := deleteAgentRecordTx(tx, id)
+	if err != nil {
+		return false, err
+	}
 	retired, err := retireToHolderTx(tx, id)
 	if err != nil {
 		return false, err
@@ -204,6 +209,7 @@ func (s *Store) finishThreadDelete(id string) (bool, error) {
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("store: commit delete thread %s: %w", id, err)
 	}
+	s.noteAgentRecordDeleted(deletedHome)
 	if reads {
 		s.holdersMayBeReleased()
 	}

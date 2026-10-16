@@ -421,3 +421,41 @@ func (s *Store) RetargetThreadReceipt(token, fromThreadID, toThreadID string) (m
 	s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	return true, nil
 }
+
+// OnAgentRecordDeleted sets the function the store calls, after it
+// commits, with the home of each assistant record a write deleted: a
+// thread delete, which deletes the thread or retires it to a holder, and
+// the commit of a move, which keeps the home on this computer. Every
+// writer that drops an agents row goes through deleteAgentRecordTx. fn must
+// not block. nil clears it.
+func (s *Store) OnAgentRecordDeleted(fn func(home string)) {
+	if fn == nil {
+		s.agentRecordDeleted.Store(nil)
+		return
+	}
+	s.agentRecordDeleted.Store(&fn)
+}
+
+func (s *Store) noteAgentRecordDeleted(home string) {
+	if home == "" {
+		return
+	}
+	if fn := s.agentRecordDeleted.Load(); fn != nil {
+		(*fn)(home)
+	}
+}
+
+// deleteAgentRecordTx deletes the assistant record of threadID, if it has
+// one, and returns its home, which the caller reports after its commit
+// (noteAgentRecordDeleted).
+func deleteAgentRecordTx(tx *sql.Tx, threadID string) (string, error) {
+	var home string
+	err := tx.QueryRow(`DELETE FROM agents WHERE thread_id = ? RETURNING home`, threadID).Scan(&home)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: delete the assistant record of %s: %w", threadID, err)
+	}
+	return home, nil
+}

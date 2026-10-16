@@ -119,7 +119,7 @@ func (p *threadProjector) assistant(thread store.Thread) *threadtools.Assistant 
 		}
 		return out
 	}
-	role, err := p.app.agentRoles.Role(agent.Home)
+	role, err := p.app.assistantRoles().Role(agent.Home)
 	if err != nil {
 		log.Printf("thread tools: read the role line of assistant %s from %s: %v", agent.ID, agent.Home, err)
 	}
