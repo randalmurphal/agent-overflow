@@ -4,6 +4,7 @@ import {
   forgetThreadRowFrames,
   noteThreadPatchFrame,
   noteThreadRowFrame,
+  threadFramedSince,
   threadReplyRow,
   threadRowFrameMark,
 } from './threadRowFrames';
@@ -52,5 +53,21 @@ describe('threadReplyRow', () => {
     forgetThreadRowFrames('t-deleted');
     const reply = row('t-deleted');
     expect(threadReplyRow(reply, mark, undefined)).toBe(reply);
+  });
+});
+
+describe('threadFramedSince', () => {
+  it('counts a whole-row frame and a patch naming a row field, not an activity-only patch', () => {
+    const mark = threadRowFrameMark();
+    expect(threadFramedSince('t-framed', mark)).toBe(false);
+    noteThreadPatchFrame('t-framed', {});
+    expect(threadFramedSince('t-framed', mark)).toBe(false);
+    noteThreadPatchFrame('t-framed', { title: 'renamed' });
+    expect(threadFramedSince('t-framed', mark)).toBe(true);
+
+    const later = threadRowFrameMark();
+    expect(threadFramedSince('t-framed', later)).toBe(false);
+    noteThreadRowFrame('t-framed');
+    expect(threadFramedSince('t-framed', later)).toBe(true);
   });
 });

@@ -12,7 +12,7 @@
 import { getAttachedBackends, attachedBackendEntry, backendDisplayName, backendReachable } from '../../stores/attachedBackends.svelte';
 import { getThreadById } from '../../stores/threads.svelte';
 import { openThreadInPane, findPaneShowingThread, focusPane, revealPane, syncThreadReply } from '../../stores/panes.svelte';
-import { threadRowFrameMark, threadRowFramedSince } from '../../stores/threadRowFrames';
+import { threadFramedSince, threadRowFrameMark } from '../../stores/threadRowFrames';
 import { GetThread } from '../../stores/bindings';
 import { withBackendTarget } from '../../transport/backends';
 import type { BackendKey } from '../../transport/backendKey';
@@ -94,9 +94,11 @@ export function agentThreadOpener(
  * where `place` puts it. The row is read from its own computer
  * when this client does not already hold it, and the read teaches the RPC
  * router which computer owns the id, so the pane's own calls route there.
- * A thread:updated frame for that row which lands during the read reaches
- * nothing (no list or pane holds the row yet), so the row is read again
- * once the pane holds it, and that read is applied through the reply guard.
+ * A thread:updated frame for that row which lands during the read, a whole
+ * row or a patch, reaches nothing (no list or pane holds the row yet), so
+ * the row is read again once the pane holds it, and that read is applied
+ * through the reply guard. The thread is open by then: a failed second read
+ * is reported as a failed refresh, and the pane converges on the next frame.
  */
 export async function openAgentThreadOrigin(
   origin: UserMessageOriginThread,
@@ -120,9 +122,15 @@ export async function openAgentThreadOrigin(
     if (!row?.id) throw new Error('That thread is no longer on that computer.');
     noteThread(row.id, backend, row.ownershipEpoch ?? 0);
     await place(row);
-    if (!threadRowFramedSince(row.id, mark)) return;
+    if (!threadFramedSince(row.id, mark)) return;
     const again = threadRowFrameMark();
-    const fresh = (await withBackendTarget(backend, () => GetThread(row.id))) as Thread | null;
+    let fresh: Thread | null;
+    try {
+      fresh = (await withBackendTarget(backend, () => GetThread(row.id))) as Thread | null;
+    } catch (err) {
+      addErrorToast(`Opened ${origin.title || 'that thread'}, but could not refresh it: ${errString(err)}`, err);
+      return;
+    }
     if (fresh?.id) syncThreadReply(fresh, again);
   } catch (err) {
     addErrorToast(`Could not open ${origin.title || 'that thread'}: ${errString(err)}`, err);

@@ -14,6 +14,7 @@ import {
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { installPaneMocks, makeThread } from '../../../test/helpers/chat';
 import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -108,6 +109,7 @@ describe('openAgentThreadOrigin', () => {
     resetPanesForTest();
     resetPaneLayoutForTest();
     replaceAllThreads([]);
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   it('reveals the pane already showing the thread, so a compact strip moves to it', async () => {
@@ -147,6 +149,38 @@ describe('openAgentThreadOrigin', () => {
     await openAgentThreadOrigin(origin(), HOME_BACKEND, (thread) => openThreadInPane(thread, 'main'));
     expect(getPane('main')?.thread?.title).toBe('Renamed meanwhile');
     expect(reads).toBe(2);
+  });
+
+  it('keeps a renamed title a patch brought during the read over the older read', async () => {
+    const read = makeThread({ id: 'thread-9', title: 'Auth rewrite' });
+    setBindingMock('SwitchThread', async () => read);
+    let reads = 0;
+    setBindingMock('GetThread', async () => {
+      reads += 1;
+      if (reads > 1) return { ...read, title: 'Renamed meanwhile' };
+      applyThreadUpdated({ action: 'patch', id: 'thread-9', title: 'Renamed meanwhile' });
+      return read;
+    });
+    await openAgentThreadOrigin(origin(), HOME_BACKEND, (thread) => openThreadInPane(thread, 'main'));
+    expect(getPane('main')?.thread?.title).toBe('Renamed meanwhile');
+    expect(reads).toBe(2);
+  });
+
+  it('reports a failed second read as a failed refresh of the thread it opened', async () => {
+    const read = makeThread({ id: 'thread-9', title: 'Auth rewrite' });
+    setBindingMock('SwitchThread', async () => read);
+    let reads = 0;
+    setBindingMock('GetThread', async () => {
+      reads += 1;
+      if (reads > 1) throw new Error('connection lost');
+      applyThreadUpdated({ action: 'full', thread: { ...read, title: 'Renamed meanwhile' } });
+      return read;
+    });
+    await openAgentThreadOrigin(origin(), HOME_BACKEND, (thread) => openThreadInPane(thread, 'main'));
+    expect(getPane('main')?.threadId).toBe('thread-9');
+    const messages = getToasts().map((toast) => toast.message);
+    expect(messages.some((message) => message.startsWith('Opened Auth rewrite, but could not refresh it'))).toBe(true);
+    expect(messages.some((message) => message.startsWith('Could not open'))).toBe(false);
   });
 
   it('reads a row once when no frame lands during the read', async () => {

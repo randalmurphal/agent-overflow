@@ -61,6 +61,17 @@ export function threadRowFramedSince(threadId: string, mark: number): boolean {
 }
 
 /**
+ * Whether any frame that changes the thread's row, a whole row or a patch
+ * naming a row field, arrived after `mark`. A caller whose row no list or
+ * pane held during the call uses it: such a frame reached nothing.
+ */
+export function threadFramedSince(threadId: string, mark: number): boolean {
+  const frames = framesByThread.get(threadId);
+  if (!frames) return false;
+  return frames.row > mark || PATCHED_FIELDS.some((field) => (frames.fields[field] ?? 0) > mark);
+}
+
+/**
  * The row to apply for `reply`, an RPC answer for a call started at `mark`:
  * null when a whole-row frame arrived since, otherwise `reply` with each
  * field a later patch named taken from `current`, the row the client holds.
