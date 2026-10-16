@@ -90,7 +90,7 @@ export function deriveClaudeSubagentLabel(
 }
 
 /**
- * Subagent model affix string for an Agent tool call. Resolution order:
+ * Subagent model id for an Agent tool call. Resolution order:
  *   1. parentMeta.subagent_model — stamped by the Claude parser on the
  *      first subagent assistant envelope (most authoritative).
  *   2. input.model — user-supplied alias on the tool input (surfaces
@@ -101,22 +101,45 @@ export function deriveClaudeSubagentLabel(
  * Non-Agent tool names return '' so a row with `isSubagent` false in
  * the classifier never renders a stray "()" affix.
  */
-export function deriveClaudeSubagentModelLabel(
+export function deriveClaudeSubagentModel(
   input: Record<string, unknown> | null,
   parentMeta: Record<string, unknown> | null,
   toolName: string,
 ): string {
   // `Task` is the older name for the same tool (see subagentLaunchInfo);
-  // both carry the same input shape, so both resolve a model label.
+  // both carry the same input shape, so both resolve a model.
   if (toolName !== 'Agent' && toolName !== 'Task') return '';
-  const stamped =
-    parentMeta && typeof parentMeta.subagent_model === 'string'
-      ? parentMeta.subagent_model.trim()
-      : '';
-  if (stamped) return displayModelLabel('claude', stamped);
-  const requested = readStringField(input, 'model');
-  if (requested) return displayModelLabel('claude', requested);
-  return '';
+  const stamped = readStringField(parentMeta, 'subagent_model');
+  if (stamped) return stamped;
+  return readStringField(input, 'model');
+}
+
+/** `deriveClaudeSubagentModel` as the display label ('' when unknown). */
+export function deriveClaudeSubagentModelLabel(
+  input: Record<string, unknown> | null,
+  parentMeta: Record<string, unknown> | null,
+  toolName: string,
+): string {
+  const model = deriveClaudeSubagentModel(input, parentMeta, toolName);
+  return model ? displayModelLabel('claude', model) : '';
+}
+
+/**
+ * The effort slug an Agent tool call asked its subagent to run at:
+ * `input.effort` (Claude Code 2.1.292+), else `meta.inherited_effort`, the
+ * effort of the agent that launched it, which the parser stamped at launch
+ * (internal/provider/claude/subagent_effort.go). A fork ignores its input
+ * effort and runs at its launcher's. '' when neither is known.
+ */
+export function deriveClaudeSubagentEffort(
+  input: Record<string, unknown> | null,
+  parentMeta: Record<string, unknown> | null,
+  toolName: string,
+): string {
+  if (toolName !== 'Agent' && toolName !== 'Task') return '';
+  const inherited = readStringField(parentMeta, 'inherited_effort');
+  if (readStringField(input, 'subagent_type') === 'fork') return inherited;
+  return readStringField(input, 'effort') || inherited;
 }
 
 /**

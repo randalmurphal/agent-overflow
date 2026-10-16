@@ -43,6 +43,7 @@
 import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
 import { displayModelLabel } from './modelLabels';
+import { effortLabel } from './effortLabels';
 import { extractClaudeTaskID } from './claudeTaskMeta';
 import {
   deriveClaudeSubagentLabel,
@@ -141,12 +142,12 @@ export function codexSubagentDisplayLabel(label: string, role: string, fallback:
 
 export function codexModelEffortAffix(model: string, reasoningEffort: string): string {
   const modelLabel = model ? displayModelLabel('codex', model) : '';
-  return [modelLabel, reasoningEffort].filter(Boolean).join(' ');
+  return [modelLabel, effortLabel(reasoningEffort.trim())].filter(Boolean).join(' ');
 }
 
 export function codexAgentMetadataAffix(role: string, model: string, reasoningEffort: string): string {
   const modelLabel = model ? displayModelLabel('codex', model) : '';
-  return [role.trim() || 'default', modelLabel, reasoningEffort.trim()].filter(Boolean).join(' - ');
+  return [role.trim() || 'default', modelLabel, effortLabel(reasoningEffort.trim())].filter(Boolean).join(' - ');
 }
 
 /**
@@ -421,6 +422,8 @@ export interface ClaudeResumeCarrierIdentity {
   agentType: string;
   /** The ORIGINAL agent's model ('' when unstamped). */
   model: string;
+  /** The effort slug the ORIGINAL agent ran at ('' when unstamped). */
+  effort: string;
   /**
    * The one-line task beside the name — the original launch description.
    * Empty when the description already IS the name (no `subagent_type`
@@ -433,8 +436,9 @@ export interface ClaudeResumeCarrierIdentity {
  * Identity for a §E6 resume carrier. The resuming tool is a
  * `SendMessage`, so its own input says nothing about the agent; the
  * parser stamps the ORIGINAL agent's `subagent_type` + `description` off
- * the rebind `task_started`, triage copies `subagent_model` from the
- * original launch row in the keep-running flip, and the row Summary is
+ * the rebind `task_started`, triage copies `subagent_model` and
+ * `subagent_effort` from the original launch row in the keep-running flip,
+ * and the row Summary is
  * rewritten to `Agent: <description>`. Read the stamps first, fall back
  * to un-prefixing the summary, and never render the bare tool name.
  */
@@ -446,6 +450,8 @@ export function claudeResumeCarrierIdentity(item: Item): ClaudeResumeCarrierIden
     typeof meta?.subagent_type === 'string' ? meta.subagent_type.trim() : '';
   const model =
     typeof meta?.subagent_model === 'string' ? meta.subagent_model.trim() : '';
+  const effort =
+    typeof meta?.subagent_effort === 'string' ? meta.subagent_effort.trim() : '';
   let description =
     typeof meta?.description === 'string' ? meta.description.trim() : '';
   if (!description) {
@@ -457,7 +463,7 @@ export function claudeResumeCarrierIdentity(item: Item): ClaudeResumeCarrierIden
   const name = agentType
     ? titleCaseClaudeSubagentToken(agentType)
     : description || 'Agent';
-  return { name, agentType, model, description: agentType ? description : '' };
+  return { name, agentType, model, effort, description: agentType ? description : '' };
 }
 
 /**

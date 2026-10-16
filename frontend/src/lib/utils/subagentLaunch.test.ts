@@ -257,9 +257,9 @@ describe('subagentLaunchInfo — SendMessage resume carrier (claude-wire.md §E6
 
   it('carries the original agent identity when the triage stamps are present', () => {
     // Parser stamps subagent_type + description off the rebind
-    // task_started; triage copies subagent_model from the original
-    // launch row in the keep-running flip. With all three present the
-    // carrier renders exactly like the original launch: title-cased
+    // task_started; triage copies subagent_model and subagent_effort from
+    // the original launch row in the keep-running flip. With them present
+    // the carrier renders exactly like the original launch: title-cased
     // type as the name, model affix, description beside it.
     const item = mkItem({
       id: 'toolu_resume',
@@ -272,6 +272,7 @@ describe('subagentLaunchInfo — SendMessage resume carrier (claude-wire.md §E6
         description: 'Frontend transitive suppression fix',
         subagent_type: 'general-purpose',
         subagent_model: 'claude-opus-4-7',
+        subagent_effort: 'xhigh',
       }),
     });
 
@@ -288,6 +289,7 @@ describe('subagentLaunchInfo — SendMessage resume carrier (claude-wire.md §E6
       name: 'General Purpose',
       agentType: 'general-purpose',
       model: 'claude-opus-4-7',
+      effort: 'xhigh',
       description: 'Frontend transitive suppression fix',
     });
   });
@@ -470,7 +472,8 @@ describe('subagentLaunchInfo — Codex spawn_agent', () => {
     const info = codexSubagentLaunchInfo(identified);
     expect(info.agentLabel).toBe('Heisenberg [migration_bridge]');
     expect(info.title).toBe('Spawned Heisenberg [migration_bridge]');
-    expect(info.modelAffix).toBe('default - GPT 5.6 Sol - high');
+    // The effort reads as the effort picker labels it.
+    expect(info.modelAffix).toBe('default - GPT 5.6 Sol - High');
     expect(codexSubagentTaskDescription(info)).toBe('');
     expect(subagentLaunchInfo(identified, NO_CHILDREN)).toEqual({
       kind: 'agent',

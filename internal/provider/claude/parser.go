@@ -169,6 +169,10 @@ type Parser struct {
 	// once per parent rather than on every assistant envelope inside
 	// the subagent's lifetime.
 	subagentModelStamped map[string]bool
+	// sessionEffort and agentLaunchEfforts back the `inherited_effort`
+	// stamp on Agent launches (subagent_effort.go).
+	sessionEffort      string
+	agentLaunchEfforts recentMap[agentLaunchEffort]
 	// streamBlockTypes tracks partial-message content block types by
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.
@@ -448,6 +452,7 @@ func (p *Parser) Close() {
 	p.liveAgentTaskToolUses = nil
 	p.ownedBackgroundTasks = nil
 	p.subagentModelStamped = nil
+	p.agentLaunchEfforts = recentMap[agentLaunchEffort]{}
 	p.streamBlockTypes = nil
 	p.streamedMessageIDs = nil
 	p.recoveredBlockSeq = nil

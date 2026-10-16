@@ -566,22 +566,15 @@ func isFastCommandReply(text string) bool {
 }
 
 // parseEffortSetText extracts the tier from a `/effort` success reply,
-// accepting only tiers AO models as thread config (claude.IsLiveEffortTier
-// — the same vocabulary the send side validates, so the two cannot drift).
+// accepting only tiers AO models as thread config (claude.EffortSetReplyTier,
+// the parser's reader of the same reply, so the two cannot drift).
 // "ultracode" and "auto" are real CLI tiers a user can set by hand, but
 // they have no thread-row representation (the per-provider CHECK constraint
 // would reject them), so they deliberately do not sync — the session honors
 // them, AO just cannot record them.
 func parseEffortSetText(text string) (provider.ReasoningEffort, bool) {
-	rest, ok := strings.CutPrefix(text, effortSetTextPrefix)
-	if !ok {
-		return "", false
-	}
-	fields := strings.Fields(rest)
-	if len(fields) == 0 || !claude.IsLiveEffortTier(fields[0]) {
-		return "", false
-	}
-	return provider.ReasoningEffort(fields[0]), true
+	tier, ok := claude.EffortSetReplyTier(text)
+	return provider.ReasoningEffort(tier), ok
 }
 
 // fastModeSDKUnavailableText is the /fast reply on a process spawned

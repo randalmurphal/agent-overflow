@@ -1157,6 +1157,7 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 			"subagent_type": "general-purpose",
 			"model":         "opus",
 		},
+		"inherited_effort": "xhigh",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
@@ -1313,6 +1314,10 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 	}
 	if carrierMeta["subagent_model"] != "claude-opus-4-7" {
 		t.Fatalf("carrier meta.subagent_model = %v, want claude-opus-4-7 (Subn stamp preferred over input alias)", carrierMeta["subagent_model"])
+	}
+	// The original named no effort, so it ran at the effort it inherited.
+	if carrierMeta["subagent_effort"] != "xhigh" {
+		t.Fatalf("carrier meta.subagent_effort = %v, want the original launch's inherited xhigh", carrierMeta["subagent_effort"])
 	}
 
 	// Reaper-protection pin: the carrier must be the row that keeps

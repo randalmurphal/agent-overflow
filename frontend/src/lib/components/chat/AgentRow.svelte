@@ -52,10 +52,16 @@
   import { formatDurationMs, formatTimeOfDay } from '../../utils/format';
   import {
     deriveClaudeSubagentDescription,
+    deriveClaudeSubagentEffort,
     deriveClaudeSubagentLabel,
-    deriveClaudeSubagentModelLabel,
+    deriveClaudeSubagentModel,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
+  import {
+    claudeSubagentCatalogModel,
+    modelEffortAffix,
+    subagentEffortLabel,
+  } from '../../utils/subagentEffort';
   import {
     agentScopeRootId,
     claudeResumeCarrierIdentity,
@@ -140,11 +146,25 @@
   let agentLabel = $derived(
     carrierIdentity?.name ?? deriveClaudeSubagentLabel(agentInputObject, agentToolName),
   );
-  let modelLabel = $derived(
+  let model = $derived(
     carrierIdentity
-      ? (carrierIdentity.model ? displayModelLabel('claude', carrierIdentity.model) : '')
-      : deriveClaudeSubagentModelLabel(agentInputObject, displayMeta, agentToolName),
+      ? carrierIdentity.model
+      : deriveClaudeSubagentModel(agentInputObject, displayMeta, agentToolName),
   );
+  let effort = $derived(
+    carrierIdentity
+      ? carrierIdentity.effort
+      : deriveClaudeSubagentEffort(agentInputObject, displayMeta, agentToolName),
+  );
+  // "Opus 4.7 xHigh": the model and the effort it runs at, in one affix.
+  let modelLabel = $derived(modelEffortAffix(
+    model ? displayModelLabel('claude', model) : '',
+    subagentEffortLabel(
+      'claude',
+      effort,
+      claudeSubagentCatalogModel(effectiveDisplayItem.threadId, pane?.thread?.projectId, model),
+    ),
+  ));
   let description = $derived(
     carrierIdentity ? carrierIdentity.description : deriveClaudeSubagentDescription(agentInputObject),
   );

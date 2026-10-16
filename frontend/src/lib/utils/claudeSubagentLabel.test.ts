@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   deriveClaudeSubagentDescription,
+  deriveClaudeSubagentEffort,
   deriveClaudeSubagentLabel,
   deriveClaudeSubagentModelLabel,
   readClaudeSubagentInput,
@@ -148,6 +149,30 @@ describe('deriveClaudeSubagentModelLabel', () => {
         'Agent',
       ),
     ).toBe('Opus');
+  });
+});
+
+describe('deriveClaudeSubagentEffort', () => {
+  it('reads the effort the launch input names', () => {
+    expect(deriveClaudeSubagentEffort({ effort: 'max' }, { inherited_effort: 'low' }, 'Agent')).toBe('max');
+    expect(deriveClaudeSubagentEffort({ effort: 'high' }, null, 'Task')).toBe('high');
+  });
+
+  it('falls back to the effort the launch inherited when its input names none', () => {
+    expect(deriveClaudeSubagentEffort({}, { inherited_effort: 'xhigh' }, 'Agent')).toBe('xhigh');
+    expect(deriveClaudeSubagentEffort({ effort: '  ' }, { inherited_effort: 'xhigh' }, 'Agent')).toBe('xhigh');
+  });
+
+  it('ignores the input effort of a fork, which runs at its launcher\'s effort', () => {
+    expect(
+      deriveClaudeSubagentEffort({ subagent_type: 'fork', effort: 'low' }, { inherited_effort: 'xhigh' }, 'Agent'),
+    ).toBe('xhigh');
+    expect(deriveClaudeSubagentEffort({ subagent_type: 'fork', effort: 'low' }, {}, 'Agent')).toBe('');
+  });
+
+  it('returns "" for other tools and when nothing is known', () => {
+    expect(deriveClaudeSubagentEffort({ effort: 'max' }, { inherited_effort: 'low' }, 'Skill')).toBe('');
+    expect(deriveClaudeSubagentEffort(null, null, 'Agent')).toBe('');
   });
 });
 

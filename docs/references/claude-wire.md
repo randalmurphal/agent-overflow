@@ -2164,10 +2164,12 @@ original launch's own Summary (or `"Agent: " + description` as a
 fallback), so the carrier reads "Agent: Frontend transitive
 suppression fix" instead of "SendMessage: …", and copies the
 original's `subagent_model` (the Subn stamp, else the launch
-`input.model` alias) plus any missing `subagent_type`/`description`
-onto the carrier meta — which is what lets the frontend render the
+`input.model` alias) plus any missing `subagent_type`/`description`,
+and the effort the original ran at as `subagent_effort`
+([§Agent effort](#agent-effort)), onto the carrier meta — which is
+what lets the frontend render the
 carrier row, tray entry and completion card with the resumed agent's
-own type and model (`claudeResumeCarrierIdentity`,
+own type, model and effort (`claudeResumeCarrierIdentity`,
 frontend `utils/subagentLaunch.ts`) instead of the raw recipient id
 and the parent thread's model. Round 2's
 `task_updated`/`task_notification` then write a NEW
@@ -3010,6 +3012,40 @@ Content is usually a one-element text block array; a bare string is the
 same fact in the other shape. The `isMeta` / `isCompactSummary` /
 `isVisibleInTranscriptOnly` rows that ride the same envelope shape are
 CLI machinery and are not prompts.
+
+---
+
+## Agent effort
+
+Source-read from the 2.1.300 bundle. The `Agent` tool takes an optional
+`effort` input. A subagent runs at the first of:
+
+1. the `CLAUDE_CODE_EFFORT` environment override;
+2. the launch's `input.effort` (ignored for `subagent_type: "fork"`);
+3. the agent definition's frontmatter `effort`;
+4. the effort of the agent that launched it: the enclosing subagent's for a
+   nested launch, else the session's for that model.
+
+The result is clamped to the subagent's model: `xhigh` or `max` the model
+does not offer becomes `high`, and a model with no effort tiers runs with
+none. With no explicit effort, an experiment may lower it.
+
+No stream field reports the subagent's effective effort. Session-mirror
+assistant rows carry the request's `effort`, unverified as a source for
+effort-capable subagents. The agent's `.meta.json` records only an explicit
+`effort`.
+
+AO records what was true at launch. The parser stamps the launching agent's
+effort on each Agent/Task launch as `meta.inherited_effort`: the session's
+resolved `--effort`, moved by `/effort` success replies ("Set effort level
+to <tier>", cleared for a tier AO cannot represent), or the enclosing
+launch's own effort for a nested one. A re-delivered launch keeps its first
+stamp (`internal/provider/claude/subagent_effort.go`,
+`internal/triage/launch_effort.go`). The row shows `input.effort`, else the
+stamp, clamped against the subagent model's catalog entry
+(`frontend/src/lib/utils/subagentEffort.ts`). Frontmatter effort, the
+environment override and the experiment are not visible to AO, so a row
+can show the inherited effort where the CLI used another.
 
 ---
 

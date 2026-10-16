@@ -49,9 +49,15 @@
   import { createSharedNowClock } from './useRunningElapsed.svelte';
   import {
     deriveClaudeSubagentDescription,
-    deriveClaudeSubagentModelLabel,
+    deriveClaudeSubagentEffort,
+    deriveClaudeSubagentModel,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
+  import {
+    claudeSubagentCatalogModel,
+    modelEffortAffix,
+    subagentEffortLabel,
+  } from '../../utils/subagentEffort';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     decoratedSubagentAggregates,
@@ -217,16 +223,28 @@
   let launchInfo = $derived(subagentLaunchInfo(identityItem, launchCtx));
   let kindLabel = $derived(launchInfo?.kind ?? 'agent');
   let agentTitle = $derived(launchInfo?.name ?? (parentToolName || 'Agent'));
+  // The model and the effort it runs at ("Opus 4.7 xHigh"). Codex reports
+  // the child's own; a Claude launch names them, or the child inherits the
+  // session's.
   let modelLabel = $derived.by(() => {
-    if (launchInfo?.model) {
-      const model = displayModelLabel(launchInfo.provider, launchInfo.model);
-      return launchInfo.reasoningEffort ? `${model} ${launchInfo.reasoningEffort}` : model;
+    if (launchInfo?.provider === 'codex') {
+      if (!launchInfo.model) return '';
+      return modelEffortAffix(
+        displayModelLabel('codex', launchInfo.model),
+        subagentEffortLabel('codex', launchInfo.reasoningEffort ?? '', undefined),
+      );
     }
-    const named = deriveClaudeSubagentModelLabel(inputObject, parentMeta, parentToolName);
-    if (named) return named;
-    if (launchInfo?.provider !== 'claude') return '';
-    const inherited = pane?.effectiveModel || pane?.thread?.model || '';
-    return inherited ? displayModelLabel('claude', inherited) : '';
+    const model = launchInfo?.model
+      || deriveClaudeSubagentModel(inputObject, parentMeta, parentToolName)
+      || (launchInfo?.provider === 'claude' ? pane?.effectiveModel || pane?.thread?.model || '' : '');
+    if (!model) return '';
+    const effort = isClaudeResumeCarrierItem(parent)
+      ? claudeResumeCarrierIdentity(parent).effort
+      : deriveClaudeSubagentEffort(inputObject, parentMeta, parentToolName);
+    return modelEffortAffix(
+      displayModelLabel('claude', model),
+      subagentEffortLabel('claude', effort, claudeSubagentCatalogModel(parent.threadId, pane?.thread?.projectId, model)),
+    );
   });
   // The one-line task beside the title. Codex spawns read their OWN
   // shape (V1's plaintext prompt; V2 adds nothing, because its prompt is

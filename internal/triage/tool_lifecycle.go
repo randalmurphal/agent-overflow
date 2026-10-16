@@ -267,7 +267,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 		item.ParentID = stringsx.FirstNonEmptyTrimmed(existing.ParentID, eventParentID(evt))
 		item.ToolName = toolName
 		item.IsBackground = existing.IsBackground || meta.IsBackground
-		item.Meta = MergeStoredToolCallMeta(existing.Meta, evt.ItemType, toolName, evt.Meta)
+		item.Meta = keepLaunchInheritedEffort(existing.Meta, MergeStoredToolCallMeta(existing.Meta, evt.ItemType, toolName, evt.Meta))
 		if existing.Status == "" {
 			item.Status = statusRunning
 		}
@@ -1701,6 +1701,9 @@ func (r *Router) resumeCarrierIdentity(threadID string, launch store.Item) (stri
 		if carrierMeta.SubagentType == "" && origInput.SubagentType != "" {
 			patch["subagent_type"] = origInput.SubagentType
 		}
+		if effort := launchRunEffort(original.Meta, origInput); effort != "" {
+			patch["subagent_effort"] = effort
+		}
 		if carrierMeta.Description == "" && origInput.Description != "" {
 			patch["description"] = truncatePreview(origInput.Description, 80)
 		}
@@ -1723,6 +1726,7 @@ type launchIdentity struct {
 	Model        string `json:"model"`
 	SubagentType string `json:"subagent_type"`
 	Description  string `json:"description"`
+	Effort       string `json:"effort"`
 }
 
 // launchInputIdentity reads launchIdentity off a persisted launch row's

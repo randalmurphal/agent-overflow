@@ -100,11 +100,13 @@ var toolMetaRules = map[string]ToolMetaRule{
 	"WebFetch": {
 		KeepInput: []string{"url", "prompt"},
 	},
+	// `effort` names the effort the subagent runs at (the row's model
+	// affix and a resume carrier's identity read it).
 	"Task": {
-		KeepInput: []string{"description", "prompt", "subagent_type"},
+		KeepInput: []string{"description", "prompt", "subagent_type", "effort"},
 	},
 	"Agent": {
-		KeepInput: []string{"description", "prompt", "subagent_type"},
+		KeepInput: []string{"description", "prompt", "subagent_type", "effort"},
 	},
 }
 
