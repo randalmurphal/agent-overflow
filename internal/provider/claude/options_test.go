@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -914,5 +915,27 @@ func TestBuildArgsRendersAllowedTools(t *testing.T) {
 	}
 	if !slices.Equal(allowed, []string{"mcp__ao-thread-tools__*"}) {
 		t.Errorf("allowed tools reaching argv = %v, want only the wildcard entry", allowed)
+	}
+}
+
+// The child environment raises Claude's MCP description cap so the
+// thread-tools guide reaches the model whole, and the value is a default:
+// a user's custom environment can set its own. The guide-length bound
+// against the same constant lives in threadtools' instructions test.
+func TestSpawnEnvRaisesTheMCPDescriptionCap(t *testing.T) {
+	want := strconv.Itoa(provider.ClaudeMCPDescriptionLengthLimit)
+	if want != "16384" {
+		t.Fatalf("ClaudeMCPDescriptionLengthLimit = %s, want the CLI's own tool-search cap 16384", want)
+	}
+	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", ThreadID: "thread-1", Model: "claude-opus-4-7"})
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	if value, found := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv); !found || value != want {
+		t.Fatalf("%s = %q (present=%v), want %s", provider.ClaudeMCPDescriptionLengthEnv, value, found, want)
+	}
+
+	cfg.Env = map[string]string{provider.ClaudeMCPDescriptionLengthEnv: "8192"}
+	env = provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	if value, _ := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv); value != "8192" {
+		t.Fatalf("%s = %q, want the user's 8192 to outrank AO's default", provider.ClaudeMCPDescriptionLengthEnv, value)
 	}
 }
