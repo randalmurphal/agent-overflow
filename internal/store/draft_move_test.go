@@ -186,6 +186,40 @@ func TestHandOffThreadDraftMovesWholeOrNotAtAll(t *testing.T) {
 	}
 }
 
+// The handoff records on the past thread's row the text and attachment ids
+// it moved, and nothing when it moved no draft.
+func TestHandOffThreadDraftRecordsWhatItMoved(t *testing.T) {
+	s := newTestStore(t)
+	past := createDraftCleanupThread(t, s, "past", "chat")
+	next := createDraftCleanupThread(t, s, "next", "chat")
+	other := createDraftCleanupThread(t, s, "other", "chat")
+	for _, q := range []string{
+		`INSERT INTO agents (id, thread_id, home, created_at) VALUES ('agent', 'next', '/h', 1)`,
+		`INSERT INTO agent_past_threads (thread_id, agent_id, superseded_at) VALUES ('past', 'agent', 2)`,
+		`INSERT INTO agent_past_threads (thread_id, agent_id, superseded_at) VALUES ('other', 'agent', 1)`,
+	} {
+		if _, err := s.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	draft := ThreadDraft{ThreadID: past.ID, Content: "typed note", Attachments: `["att-1"]`, TerminalChips: `[{"id":"c"}]`}
+	if _, err := s.UpsertThreadDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HandOffThreadDraft(past.ID, &draft, ThreadDraft{ThreadID: next.ID, Content: "typed note"}); err != nil {
+		t.Fatal(err)
+	}
+	if moved, found, err := s.MovedDraftOf(past.ID); err != nil || !found || moved.Content != "typed note" || moved.Attachments != `["att-1"]` {
+		t.Fatalf("moved draft = %+v %v %v", moved, found, err)
+	}
+	if moved, found, err := s.MovedDraftOf(other.ID); err != nil || !found || moved.Content != "" || moved.Attachments != "[]" {
+		t.Fatalf("a past thread nothing moved from = %+v %v %v", moved, found, err)
+	}
+	if _, found, err := s.MovedDraftOf(next.ID); err != nil || found {
+		t.Fatalf("current thread found as past: %v %v", found, err)
+	}
+}
+
 func TestSameDraftComparesAsTheConsumingDeleteDoes(t *testing.T) {
 	stored := ThreadDraft{ThreadID: "t", Content: "x", Attachments: "[]", TerminalChips: "[]", UpdatedAt: 5}
 	if !SameDraft(stored, ThreadDraft{Content: "x"}) {

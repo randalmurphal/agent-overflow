@@ -313,24 +313,26 @@ func (a *App) moveComposerLocked(oldThreadID, successorID string, items []store.
 }
 
 // refuseSendOfMovedDraft refuses a send from an assistant's past thread that
-// consumes a draft the thread no longer holds: the handoff moved it to the
-// assistant's current thread, whose composer shows it, so sending it here as
-// well would leave the text in two places. A past thread's draft changes
-// only by that move, so a consume snapshot that no longer matches it is the
-// signal. Other sends to a past thread go through. The caller holds the
-// lock the move holds through the consume: the action lock for a send, the
-// mutation lock for a queued one.
+// consumes the draft the handoff took from it (MovedDraftOf): that text waits
+// in the assistant's current thread's composer, so sending it here as well
+// would leave it in two places. Every other send to a past thread goes
+// through as on any thread, a consume snapshot that matches nothing stored
+// included. The caller holds the lock the move holds through the consume:
+// the action lock for a send, the mutation lock for a queued one.
 func (a *App) refuseSendOfMovedDraft(threadID string, consume *DraftSnapshot) error {
 	if consume == nil {
 		return nil
 	}
-	current, past, err := a.store.AssistantCurrentThreadOf(threadID)
-	if err != nil || !past {
+	moved, past, err := a.store.MovedDraftOf(threadID)
+	if err != nil || !past || (moved.Content == "" && moved.Attachments == "[]") {
 		return err
 	}
 	expected, err := encodeThreadDraft(threadID, *consume)
 	if err != nil {
 		return err
+	}
+	if moved.Content != expected.Content || moved.Attachments != expected.Attachments {
+		return nil
 	}
 	stored, _, err := a.store.GetThreadDraft(threadID)
 	if err != nil {
@@ -338,6 +340,10 @@ func (a *App) refuseSendOfMovedDraft(threadID string, consume *DraftSnapshot) er
 	}
 	if store.SameDraft(stored, expected) {
 		return nil
+	}
+	current, _, err := a.store.AssistantCurrentThreadOf(threadID)
+	if err != nil {
+		return err
 	}
 	thread, err := a.store.GetThread(current)
 	if err != nil {

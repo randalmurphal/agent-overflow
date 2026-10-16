@@ -350,12 +350,15 @@ while its own handoff of the assistant runs.
    draft in the old thread and says so in the successor. A client
    showing the old thread saves what was typed there and holds its
    composer until the handoff ends, so text typed just before the click
-   moves too. A send from the old thread that consumes the draft the
-   move took is refused (`assistant_draft_moved`, "Your unsent text
-   moved to <name>; send it from there."), and the client shows that as
-   a notice without restoring the text. A send that consumed the draft
-   before the move is sent and nothing moves; any other send to a past
-   thread goes through.
+   moves too. The same transaction records the text and attachment ids
+   it moved on the past thread's `agent_past_threads` row. A send from
+   the old thread whose consume snapshot is that text, and no longer the
+   thread's stored draft, is refused (`assistant_draft_moved`, "Your
+   unsent text moved to <name>; send it from there."), and the client
+   shows that as a notice without restoring the text. A send that
+   consumed the draft before the move is sent and nothing moves; any
+   other send to a past thread goes through as on any thread, one whose
+   snapshot another client's save replaced included.
 4. The old session is torn down as an archive tears down. What was queued
    for it goes on: an answer, reminder or remote completion to its owner,
    which delivers it to the successor; a request not taken in to the

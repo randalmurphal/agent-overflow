@@ -144,6 +144,22 @@ func (s *Store) GetAgent(agentID string) (StandingAgent, bool, error) {
 	return agent, true, nil
 }
 
+// MovedDraftOf is the composer draft a handoff moved from the past thread
+// threadID to the next one, its text and attachment ids; found is false for
+// a thread that is no assistant's past thread.
+func (s *Store) MovedDraftOf(threadID string) (moved ThreadDraft, found bool, err error) {
+	err = s.reader().QueryRow(`SELECT moved_draft, moved_draft_attachments FROM agent_past_threads WHERE thread_id = ?`, threadID).
+		Scan(&moved.Content, &moved.Attachments)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadDraft{}, false, nil
+	}
+	if err != nil {
+		return ThreadDraft{}, false, fmt.Errorf("store: read the draft a handoff moved from %s: %w", threadID, err)
+	}
+	moved.ThreadID = threadID
+	return moved, true, nil
+}
+
 // AssistantCurrentThreadOf maps a thread a handoff superseded to its
 // assistant's current thread. Found is false for every other thread,
 // current threads included.

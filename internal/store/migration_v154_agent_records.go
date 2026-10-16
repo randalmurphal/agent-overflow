@@ -10,7 +10,11 @@ package store
 // lists the threads an assistant had before, with when each was superseded;
 // it cascades from the thread and from the assistant, so deleting a past
 // thread leaves the assistant alone and deleting the assistant leaves its
-// past threads as ordinary threads. `thread_requests.made_in_thread_id` is
+// past threads as ordinary threads. `moved_draft` and
+// `moved_draft_attachments` are the text and attachment ids of the composer
+// draft the handoff moved from the past thread to the next one, so a send
+// of that draft from the past thread can be told where it went; empty when
+// none moved. `thread_requests.made_in_thread_id` is
 // the thread that made a request a handoff moved to its assistant's next
 // thread, empty when the caller made it. `remote_watches` gains its twin,
 // `launched_in_thread_id`: the thread that launched the job, which the
@@ -35,7 +39,9 @@ CREATE TABLE agents (
 CREATE TABLE agent_past_threads (
     thread_id        TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
     agent_id         TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    superseded_at    INTEGER NOT NULL
+    superseded_at    INTEGER NOT NULL,
+    moved_draft      TEXT NOT NULL DEFAULT '',
+    moved_draft_attachments TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX idx_agent_past_threads_agent ON agent_past_threads(agent_id, superseded_at DESC);
 INSERT INTO agents (id, thread_id, home, notify_on_tick, creator_agent_id, created_at)

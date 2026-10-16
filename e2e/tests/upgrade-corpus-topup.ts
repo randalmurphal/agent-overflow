@@ -160,6 +160,10 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     const told = await assistant(`Top-up v${version} ${nonce}: told every tick`);
     await harness.rpc('SetStandingAgentNotifyOnTick', told, true);
     const moved = await assistant(`Top-up v${version} ${nonce}: moved on`);
+    // Unsent text with an attachment, which the handoff moves to the new
+    // thread and records on the past thread's row.
+    const note = await uploadAttachment(harness, moved, 'handoff.txt', 'text/plain', Buffer.from(`Handoff v${version}\n`));
+    await harness.rpc('SaveDraft', moved, `Top-up handoff draft v${version} [File #1]`, [note], [], null);
     const successor = await harness.rpc<{ id: string }>('StartNextAssistantThread', moved);
     await awaitTurnCompleted(harness, successor.id, TURN_TIMEOUT_MS);
     threadIds.push(successor.id);

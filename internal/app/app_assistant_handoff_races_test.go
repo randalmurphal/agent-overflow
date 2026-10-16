@@ -433,3 +433,119 @@ func TestAQueuedSendOfAMovedDraftIsRefused(t *testing.T) {
 		t.Fatalf("queued send with nothing to consume = %v", err)
 	}
 }
+
+// An unarchived past thread whose draft a second client saved over: the
+// first client's send of its own text is sent, as on any thread, because
+// the handoff never moved that text.
+func TestASendFromAPastThreadAfterAnotherClientsSaveIsSent(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	f.mockClaude(t, "ok", "ok", "ok", "ok")
+	f.assistantCaller(t)
+	if err := f.app.SaveDraft(t.Context(), f.caller.ID, "moved note", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	successor, err := f.app.StartNextAssistantThread(t.Context(), f.caller.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.app.waitAgentNoticeWork()
+	if _, err := f.app.UnarchiveThread(f.caller.ID); err != nil {
+		t.Fatalf("unarchive the past thread: %v", err)
+	}
+	past := f.caller.ID
+	if err := f.app.SaveDraft(t.Context(), past, "client one text", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.SaveDraft(t.Context(), past, "client two text", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.SendMessageWithOptions(t.Context(), past, "client one text", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "client one text"}}); err != nil {
+		t.Fatalf("send = %v, want it sent", err)
+	}
+	if n := sentTexts(t, f.app, past, "client one text"); n != 1 {
+		t.Fatalf("client one's text sent %d times", n)
+	}
+	if got := draftContent(t, f.app, past); got != "client two text" {
+		t.Fatalf("past thread's draft = %q, want client two's", got)
+	}
+	// The text the handoff moved is still refused from the past thread.
+	_, err = f.app.SendMessageWithOptions(t.Context(), past, "moved note", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "moved note"}})
+	if code, _, _ := errorsx.PublicDetails(err); code != transport.ErrCodeAssistantDraftMoved {
+		t.Fatalf("send of the moved text = %v, want %s", err, transport.ErrCodeAssistantDraftMoved)
+	}
+	if got := draftContent(t, f.app, successor.ID); got != "moved note" {
+		t.Fatalf("successor's composer = %q", got)
+	}
+	// The same text typed again in the past thread and queued from there is
+	// that thread's own draft, and goes.
+	if err := f.app.SaveDraft(t.Context(), past, "moved note", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.RegisterQueueItem(t.Context(), past, "moved note", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "moved note"}}); err != nil {
+		t.Fatalf("queued send of the retyped text = %v, want it queued", err)
+	}
+	if got := draftContent(t, f.app, past); got != "" {
+		t.Fatalf("past thread's draft = %q, want the queued text consumed", got)
+	}
+}
+
+func sentTexts(t *testing.T, a *App, threadID, text string) int {
+	t.Helper()
+	items, err := a.store.ListItems(threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, it := range items {
+		if it.Role == "user" && strings.Contains(it.Summary, text) {
+			n++
+		}
+	}
+	return n
+}
+
+// A session loss found while a manual handoff runs: the send that found it
+// is carried by that handoff, once, into its successor, and no second
+// thread is made.
+func TestASessionLossDuringAManualHandOffIsCarriedOnce(t *testing.T) {
+	t.Parallel()
+	for run := range 5 {
+		f, threadID, _ := lostSessionAssistant(t)
+		before := threadCount(t, f.app)
+		agentID := assistantIDOf(t, f.app, threadID)
+		// The manual handoff holds the assistant, as StartNextAssistantThread
+		// does before nextAssistantThread takes the action lock.
+		if !f.app.assistantHandOffs.begin(agentID, threadID) {
+			t.Fatal("begin")
+		}
+		_, sendErr := f.app.SendMessageWithOptions(t.Context(), threadID, "lost-session message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "lost-session message"}})
+		successor, err := f.app.nextAssistantThread(t.Context(), threadID, false)
+		f.app.endAssistantHandOff(agentID, threadID, successor.ID)
+		if err != nil {
+			t.Fatalf("run %d: manual handoff: %v", run, err)
+		}
+		f.app.waitAgentNoticeWork()
+		if code, _, _ := errorsx.PublicDetails(sendErr); code != transport.ErrCodeAssistantSessionGone {
+			t.Fatalf("run %d: send = %v, want %s", run, sendErr, transport.ErrCodeAssistantSessionGone)
+		}
+		threads, err := f.app.store.ListThreads()
+		if err != nil {
+			t.Fatal(err)
+		}
+		archived, err := f.app.store.ListArchivedThreads()
+		if err != nil {
+			t.Fatal(err)
+		}
+		copies := 0
+		for _, th := range append(threads, archived...) {
+			copies += strings.Count(draftContent(t, f.app, th.ID), "lost-session message")
+		}
+		if next := draftContent(t, f.app, successor.ID); copies != 1 || next != "lost-session message" {
+			t.Errorf("run %d: carried text in %d drafts, successor's %q", run, copies, next)
+		}
+		if made := len(threads) + len(archived) - before; made != 1 {
+			t.Errorf("run %d: %d threads made, want 1", run, made)
+		}
+	}
+}
