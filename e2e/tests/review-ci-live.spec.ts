@@ -114,6 +114,19 @@ async function distanceFromBottom(scroll: Locator): Promise<number> {
   return scroll.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
 }
 
+// A reader moves to the log's end. One wheel lands at the end the list has
+// laid out; tail rows that mount there can measure taller than their
+// estimate and move the end past it before the scroll event reports, which
+// leaves the reader short and still escaped. A reader keeps wheeling, so
+// this does too until the view reaches the end.
+async function wheelToEnd(page: Page, scroll: Locator): Promise<void> {
+  await scroll.hover();
+  await expect.poll(async () => {
+    await page.mouse.wheel(0, 100_000);
+    return distanceFromBottom(scroll);
+  }).toBeLessThanOrEqual(24);
+}
+
 async function openJobLog(page: Page, review: Locator, stage: string, job: string) {
   await review.getByTestId('review-ci-chip').filter({ hasText: stage }).click();
   await page.getByTestId('review-ci-job').filter({ hasText: job }).click();
@@ -178,10 +191,8 @@ test('a running GitLab job shows its sections, follows its trace into an open se
 
   // A reader who moves to the end follows the trace as it grows, with no
   // click.
-  await scroll.hover();
-  await page.mouse.wheel(0, 100_000);
+  await wheelToEnd(page, scroll);
   await expect(scroll).toContainText('step 1 done');
-  await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
   repo = await moveCI(harness, repo, { jobs: [{ id: JOB_ID, name: 'unit', stage: 'test', status: 'running', log: gitlabTrace(2) }] });
   await expect(scroll).toContainText('step 2 done');
   await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
@@ -211,9 +222,8 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   await expect(script).toContainText('1m 6s');
   // The escaped reader was left alone; wheeling back down re-sticks.
   expect(await scroll.evaluate((el) => el.scrollTop)).toBe(0);
-  await page.mouse.wheel(0, 100_000);
+  await wheelToEnd(page, scroll);
   await expect(scroll).toContainText('job finished');
-  await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
   await expect(section(log, `output:section:step_script:${T0 + 4}`)).toContainText('Job succeeded');
   await expect(chip).toHaveAttribute('title', /1 success/);
 
@@ -346,10 +356,8 @@ test('a running GitHub job lists its steps, waits out a log the forge has not pu
   await expect(scroll).not.toContainText('Syncing repository');
 
   // At the end it follows growth with no click, before the job completes.
-  await scroll.hover();
-  await page.mouse.wheel(0, 100_000);
+  await wheelToEnd(page, scroll);
   await expect(scroll).toContainText('step 1 done');
-  await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
   repo = await moveCI(harness, repo, { jobs: [{ ...runningJob, log: githubLog(2) }] });
   await expect(scroll).toContainText('step 2 done');
   await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
