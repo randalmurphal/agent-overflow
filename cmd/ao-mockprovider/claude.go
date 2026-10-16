@@ -990,13 +990,20 @@ func writeClaudeControlError(w *lineWriter, requestID, message string) {
 // routes control responses by that prefix.
 func writeClaudeControlErrorCode(w *lineWriter, requestID, message, code string) {
 	log.Printf("claude: refusing control_request: %s", message)
-	var errorCode string
-	if code != "" {
-		errorCode = `,"error_code":` + mustJSON(code)
+	// Struct fields marshal in declaration order, so "type" leads.
+	type controlError struct {
+		Subtype   string `json:"subtype"`
+		RequestID string `json:"request_id"`
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_code,omitempty"`
 	}
-	w.writeLine(fmt.Sprintf(
-		`{"type":"control_response","response":{"subtype":"error","request_id":%s,"error":%s%s}}`,
-		mustJSON(requestID), mustJSON(message), errorCode), 0, 0)
+	w.writeLine(mustJSON(struct {
+		Type     string       `json:"type"`
+		Response controlError `json:"response"`
+	}{
+		Type:     "control_response",
+		Response: controlError{Subtype: "error", RequestID: requestID, Error: message, ErrorCode: code},
+	}), 0, 0)
 }
 
 // sendApproval emits a CanUseTool control_request and registers a
