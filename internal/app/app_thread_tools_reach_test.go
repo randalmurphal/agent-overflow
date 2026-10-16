@@ -1818,15 +1818,15 @@ func TestThreadToolsLateCollectionStatesTheAnswersAge(t *testing.T) {
 	})
 
 	answeredAt := time.Now().Add(-time.Hour).UnixMilli()
-	settled, err := pair.dest.store.SettleThreadRequestReceipt(spawn.Token, store.ThreadReceiptOpenStates(),
+	result, err := pair.dest.store.SettleLocalThreadRequest(spawn.Token, store.ThreadReceiptOpenStates(),
 		store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptReplied,
 			Answer:     []byte("the backfill touched 412 rows"),
 			AnswerKind: store.ThreadAnswerReply,
 			SettledAt:  answeredAt,
-		})
-	if err != nil || !settled {
-		t.Fatalf("settle the receipt an hour ago: settled=%v err=%v", settled, err)
+		}, store.ThreadRequestReplied)
+	if err != nil || !result.Settled {
+		t.Fatalf("settle the receipt an hour ago: settled=%v err=%v", result.Settled, err)
 	}
 
 	pair.poll(t)

@@ -105,9 +105,9 @@ func TestHarnessResetDropsDetachedThreadRequestReceipts(t *testing.T) {
 		t.Fatalf("accept receipt: %v", err)
 	}
 	now := time.Now().UnixMilli()
-	if _, err := app.store.SettleThreadRequestReceipt("receipt-reset", store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+	if _, err := app.store.SettleLocalThreadRequest("receipt-reset", store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 		State: store.ThreadReceiptFinished, SettledAt: now, ExpiresAt: now + time.Hour.Milliseconds(),
-	}); err != nil {
+	}, store.ThreadRequestFinished); err != nil {
 		t.Fatalf("settle receipt: %v", err)
 	}
 

@@ -666,31 +666,36 @@ func TestThreadToolsWritesNeedAutonomyForAnAutonomousThread(t *testing.T) {
 
 // A receipt accepted whose thread was never created is settled here, not
 // left for the next boot: the retry that finds it reads a refusal, the
-// receipt reads interrupted, and no second thread is created for it.
+// receipt reads interrupted, and no second thread is created for it. Only a
+// paired computer's request is retried with its token; a local one mints a
+// fresh token each call.
 func TestThreadSpawnSettlesAReceiptWhoseThreadWasNeverCreated(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	adapter := f.adapter()
+	const peerDevice = "peer-device"
 	origin, err := adapter.localOrigin(f.callerIdentity())
 	if err != nil {
 		t.Fatalf("localOrigin: %v", err)
 	}
+	origin.caller = threadtools.Caller{ThreadID: "peer-caller", ComputerID: "peer"}
+	origin.foreign, origin.ownerDevice = true, peerDevice
 
 	// The state a crash between the two writes leaves behind: an accepted
 	// receipt with no target thread.
 	const token = "half-created-token"
 	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
 		Token:            token,
-		OwnerDeviceID:    threadReceiptLocalOwner,
-		SourceComputerID: "local-computer",
-		SourceThreadID:   f.caller.ID,
+		OwnerDeviceID:    peerDevice,
+		SourceComputerID: "peer",
+		SourceThreadID:   "peer-caller",
 		Kind:             store.ThreadRequestSpawn,
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
 	before := threadIDsInStore(t, f.app)
 
-	_, err = adapter.acceptSpawn(t.Context(), origin, token, threadtools.SpawnCall{Prompt: "try again"})
+	_, err = adapter.acceptSpawn(t.Context(), origin, token, threadtools.SpawnCall{Prompt: "try again", ProjectID: f.caller.ProjectID})
 	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
 		t.Fatalf("retry of a half-created request: code = %q, err = %v", code, err)
 	}
@@ -1303,12 +1308,12 @@ func TestThreadLateReplyIsRefusedOnceTheHoldHasRunOut(t *testing.T) {
 
 	// Age the receipt: its hold ended a minute ago.
 	receipt := f.receipt(t, ack.Token)
-	aged, err := f.app.store.SettleThreadRequestReceipt(ack.Token, []string{store.ThreadReceiptFinished}, store.ThreadRequestSettlement{
+	result, err := f.app.store.SettleLocalThreadRequest(ack.Token, []string{store.ThreadReceiptFinished}, store.ThreadRequestSettlement{
 		State: store.ThreadReceiptFinished, Answer: receipt.Answer, AnswerKind: receipt.AnswerKind,
 		SettledAt: receipt.SettledAt, ExpiresAt: time.Now().Add(-time.Minute).UnixMilli(),
-	})
-	if err != nil || !aged {
-		t.Fatalf("age receipt: aged=%v err=%v", aged, err)
+	}, store.ThreadRequestFinished)
+	if err != nil || !result.Settled {
+		t.Fatalf("age receipt: aged=%v err=%v", result.Settled, err)
 	}
 
 	_, err = f.adapter().Reply(t.Context(), f.targetIdentity(t, ack.ThreadID), threadtools.ReplyCall{

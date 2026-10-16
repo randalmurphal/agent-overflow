@@ -164,3 +164,102 @@ func TestALocalSettlementLeavesOtherComputersRows(t *testing.T) {
 		t.Fatalf("the outbound request took another computer's answer: %+v", row)
 	}
 }
+
+// A local spawn or ask writes its source row and receipt in one
+// transaction, before the thread that answers exists, and names that
+// thread on both rows, accepting the source row, in one more.
+func TestALocalSpawnIsAcceptedInTwoTransactions(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"caller", "made"} {
+		mustCreateThread(t, s, id)
+	}
+	var changes []ThreadRequestChange
+	s.OnThreadRequestChanged(func(c ThreadRequestChange) { changes = append(changes, c) })
+	request := ThreadRequest{Token: "tok", CallerThreadID: "caller", Kind: ThreadRequestSpawn, Notify: true, State: ThreadRequestUnconfirmed}
+	receipt := ThreadRequestReceipt{Token: "tok", OwnerDeviceID: "local", SourceThreadID: "caller", Kind: ThreadRequestSpawn}
+	if n := commitsOf(t, s, func() {
+		got, err := s.AcceptLocalThreadRequest(request, receipt)
+		if err != nil || got.State != ThreadReceiptAccepted || got.TargetThreadID != "" {
+			t.Fatalf("accept = %+v, %v", got, err)
+		}
+	}); n != 1 {
+		t.Fatalf("accepting a local spawn took %d transactions, want 1", n)
+	}
+	if row, _, _ := s.GetThreadRequest("tok"); row.State != ThreadRequestUnconfirmed || row.TargetThreadID != "" {
+		t.Fatalf("source before its thread = %+v", row)
+	}
+	if n := commitsOf(t, s, func() {
+		if err := s.NameLocalThreadRequestTarget("tok", "made"); err != nil {
+			t.Fatal(err)
+		}
+	}); n != 1 {
+		t.Fatalf("naming the thread took %d transactions, want 1", n)
+	}
+	if row, _, _ := s.GetThreadRequest("tok"); row.State != ThreadRequestAccepted || row.TargetThreadID != "made" || !row.Notify {
+		t.Fatalf("source after its thread = %+v", row)
+	}
+	if got, _, _ := s.GetThreadRequestReceipt("tok"); got.TargetThreadID != "made" {
+		t.Fatalf("receipt after its thread = %+v", got)
+	}
+	if len(changes) != 2 || changes[1].CallerThreadID != "caller" {
+		t.Fatalf("changes = %+v, want the insert and the naming reported with their caller", changes)
+	}
+	// A receipt that already names its thread is not repointed, and the
+	// source row is left with it.
+	if err := s.NameLocalThreadRequestTarget("tok", "caller"); err == nil {
+		t.Fatal("a second naming was not refused")
+	}
+	if row, _, _ := s.GetThreadRequest("tok"); row.TargetThreadID != "made" {
+		t.Fatalf("source after a refused naming = %+v", row)
+	}
+}
+
+// A spawn settled before its thread is named keeps its settled state; a
+// spawn written accepted with no thread, or a receipt with no local source
+// row, is refused with nothing written.
+func TestNamingALocalSpawnKeepsItsSettlementAndRefusesTheRest(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"caller", "made"} {
+		mustCreateThread(t, s, id)
+	}
+	spawn := func(token string) (ThreadRequest, ThreadRequestReceipt) {
+		return ThreadRequest{Token: token, CallerThreadID: "caller", Kind: ThreadRequestSpawn, State: ThreadRequestUnconfirmed},
+			ThreadRequestReceipt{Token: token, OwnerDeviceID: "local", Kind: ThreadRequestSpawn}
+	}
+	request, receipt := spawn("settled")
+	if _, err := s.AcceptLocalThreadRequest(request, receipt); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.SettleThreadRequest("settled", ThreadRequestOpenStates(), ThreadRequestSettlement{
+		State: ThreadRequestCancelled, Answer: []byte("x"), AnswerKind: ThreadAnswerError,
+	}); err != nil || !ok {
+		t.Fatalf("settle = %v, %v", ok, err)
+	}
+	if err := s.NameLocalThreadRequestTarget("settled", "made"); err != nil {
+		t.Fatal(err)
+	}
+	if row, _, _ := s.GetThreadRequest("settled"); row.State != ThreadRequestCancelled || row.TargetThreadID != "made" {
+		t.Fatalf("a settled spawn after its naming = %+v", row)
+	}
+
+	request, receipt = spawn("accepted-early")
+	request.State = ThreadRequestAccepted
+	if _, err := s.AcceptLocalThreadRequest(request, receipt); err == nil {
+		t.Fatal("a spawn written accepted with no thread was not refused")
+	}
+	if _, found, _ := s.GetThreadRequestReceipt("accepted-early"); found {
+		t.Fatal("the refused spawn left a receipt")
+	}
+
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: "foreign", OwnerDeviceID: "peer", Kind: ThreadRequestSpawn}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.NameLocalThreadRequestTarget("foreign", "made"); err == nil {
+		t.Fatal("a receipt with no local source row was named")
+	}
+	if got, _, _ := s.GetThreadRequestReceipt("foreign"); got.TargetThreadID != "" {
+		t.Fatalf("the refused naming wrote the receipt: %+v", got)
+	}
+}

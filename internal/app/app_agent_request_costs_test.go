@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,5 +144,87 @@ func TestAWatchFireReadsItsRowOnce(t *testing.T) {
 	// before the queue's own read did: 23.
 	if reads > 19 {
 		t.Errorf("the fire read the store %d times, want at most 19", reads)
+	}
+}
+
+// A spawn or an ask on this computer writes its request and receipt in one
+// transaction and names the thread it made on both, accepting the request,
+// in one more. Before, the request, the receipt, the receipt's thread, the
+// request's thread and its acceptance were five.
+func TestALocalSpawnOrAskIsAcceptedInTwoTransactions(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	adapter := f.adapter()
+	origin, err := adapter.localOrigin(f.callerIdentity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{store.ThreadRequestSpawn, store.ThreadRequestAsk} {
+		made, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+		if err != nil {
+			t.Fatal(err)
+		}
+		token := newThreadRequestToken()
+		before := storeCostOf(f.app.store)
+		target, fresh, err := adapter.acceptRequest(origin, store.ThreadRequest{
+			Token: token, Kind: kind, OriginThreadID: f.caller.ID, Notify: true,
+		}, func() (store.Thread, error) { return made, nil })
+		cost := storeCostOf(f.app.store).since(before)
+		if err != nil || target != made.ID || !fresh {
+			t.Fatalf("%s: accept = %q %v, %v", kind, target, fresh, err)
+		}
+		if cost.commits != 2 || cost.writes > 4 {
+			t.Errorf("%s: the accept cost %+v, want 2 commits and at most 4 writes", kind, cost)
+		}
+		if row := f.request(t, token); row.State != store.ThreadRequestAccepted || row.TargetThreadID != made.ID ||
+			row.Kind != kind || row.CallerThreadID != f.caller.ID || !row.Notify {
+			t.Fatalf("%s: request = %+v", kind, row)
+		}
+		if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptAccepted || receipt.TargetThreadID != made.ID {
+			t.Fatalf("%s: receipt = %+v", kind, receipt)
+		}
+	}
+}
+
+// A session's end reads each running receipt once, under its settle lock,
+// and settles from that read: one the provider took in with no turn open,
+// and one whose turn was still open.
+func TestASessionEndReadsEachReceiptOnce(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(t)
+	thread := createAppTestThread(t, app, "session-end-reads", "claude", t.TempDir())
+	insertTurns(t, app, thread.ID, store.Turn{TurnID: "t0", TurnIndex: 0, StartedAt: 10})
+	runningReceipt(t, app, thread.ID, "tok-mid-turn", 0)
+	if _, _, err := app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: "tok-taken-in", OwnerDeviceID: "d", Kind: store.ThreadRequestSend, TargetThreadID: thread.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if marked, err := app.store.MarkThreadReceiptDispatched("tok-taken-in", "u:tok-taken-in"); err != nil || !marked {
+		t.Fatalf("mark = %v, %v", marked, err)
+	}
+	app.noteReceiptTakenIn(thread.ID, "tok-taken-in")
+
+	// Before, the receipt was read again by the settlement: 7 and 5 reads.
+	for token, want := range map[string]struct {
+		why   string
+		reads uint64
+	}{
+		"tok-mid-turn": {threadtools.InterruptSessionEndedMidTurn, 6},
+		"tok-taken-in": {threadtools.InterruptSessionEndedUnanswered, 3},
+	} {
+		before := app.store.ReadCount()
+		if err := app.settleReceiptOnSessionEnd(thread.ID, token, map[string]bool{}); err != nil {
+			t.Fatalf("%s: %v", token, err)
+		}
+		app.threadRequestsWG.Wait()
+		reads := app.store.ReadCount() - before
+		receipt, _, err := app.store.GetThreadRequestReceipt(token)
+		if err != nil || receipt.State != store.ThreadReceiptInterrupted || !strings.HasPrefix(string(receipt.Answer), want.why) {
+			t.Fatalf("%s: receipt = %+v, %v", token, receipt, err)
+		}
+		if reads > want.reads {
+			t.Errorf("%s: the session end read the store %d times, want at most %d", token, reads, want.reads)
+		}
 	}
 }

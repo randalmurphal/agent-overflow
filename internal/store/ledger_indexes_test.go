@@ -189,7 +189,7 @@ func TestThreadRequestSweepAfterTheSkip(t *testing.T) {
 	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: "old-send", OwnerDeviceID: "local", Kind: ThreadRequestSend, TargetThreadID: "child", CreatedAt: 10}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SettleThreadRequestReceipt("old-send", ThreadReceiptOpenStates(), ThreadRequestSettlement{State: ThreadReceiptFinished, SettledAt: 20}); err != nil {
+	if _, err := s.SettleLocalThreadRequest("old-send", ThreadReceiptOpenStates(), ThreadRequestSettlement{State: ThreadReceiptFinished, SettledAt: 20}, ThreadRequestFinished); err != nil {
 		t.Fatal(err)
 	}
 	seedAgentRequest(t, s, "old-spawn", "lead", ThreadRequestSpawn, "child", false, 10)

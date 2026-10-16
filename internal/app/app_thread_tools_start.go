@@ -228,38 +228,11 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 				"This thread is an assistant's, and the threads it spawns nest under its own sidebar row rather than in a group. Omit group.", nil)
 		}
 	}
-	return t.startLocalRequest(ctx, caller, store.ThreadRequest{
-		Kind:           store.ThreadRequestSpawn,
-		OriginThreadID: call.FromThread,
-		Notify:         call.Notify,
-	}, call.WaitSeconds, func(token string) (string, error) {
-		return t.acceptSpawn(ctx, origin, token, call)
-	})
-}
-
-// startLocalRequest is the source half of a spawn, send or ask this computer
-// answers itself: write the row, accept it here, and return the receipt the
-// caller reads.
-//
-// The row is written before the acceptance, as the remote path writes it: the
-// token exists before any work can run under it, so a failure part way
-// through names a request the caller can ask about rather than leaving a
-// thread nothing records. Everything the call can refuse without writing has
-// been refused by the time this runs.
-func (t threadToolsApp) startLocalRequest(
-	ctx context.Context, caller threadtools.Caller, row store.ThreadRequest,
-	waitSeconds int, accept func(token string) (string, error),
-) (threadtools.RequestAck, error) {
-	row.Token = newThreadRequestToken()
-	row.CallerThreadID = caller.ThreadID
-	row.State = store.ThreadRequestUnconfirmed
-	if err := t.app.store.InsertThreadRequest(row); err != nil {
+	token := newThreadRequestToken()
+	if _, err := t.acceptSpawn(ctx, origin, token, call); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	if _, err := accept(row.Token); err != nil {
-		return threadtools.RequestAck{}, err
-	}
-	return t.ackRequest(ctx, caller, row.Token, waitSeconds)
+	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
 }
 
 // acceptSpawn is the destination half of a spawn: create the thread,
@@ -274,7 +247,12 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
-	target, fresh, err := t.acceptRequest(origin, token, store.ThreadRequestSpawn, "", func() (store.Thread, error) {
+	target, fresh, err := t.acceptRequest(origin, store.ThreadRequest{
+		Token:          token,
+		Kind:           store.ThreadRequestSpawn,
+		OriginThreadID: call.FromThread,
+		Notify:         call.Notify,
+	}, func() (store.Thread, error) {
 		return t.createSpawnedThread(ctx, call, create)
 	})
 	if err != nil {
@@ -357,7 +335,11 @@ func (t threadToolsApp) acceptSend(ctx context.Context, origin threadRequestOrig
 		return "", t.failRequest(token, errorsx.Public(threadtools.CodeSelfSend,
 			"A thread cannot send to itself.", nil))
 	}
-	_, fresh, err := t.acceptRequest(origin, token, store.ThreadRequestSend, target.ID, nil)
+	_, fresh, err := t.acceptRequest(origin, store.ThreadRequest{
+		Token:          token,
+		Kind:           store.ThreadRequestSend,
+		TargetThreadID: target.ID,
+	}, nil)
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
@@ -411,17 +393,14 @@ func (t threadToolsApp) Ask(ctx context.Context, caller threadtools.Caller, call
 	if err := t.refuseSelf(caller, call.ThreadID, "ask"); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	source, err := t.localThread(call.ThreadID)
-	if err != nil {
+	if _, err := t.localThread(call.ThreadID); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	return t.startLocalRequest(ctx, caller, store.ThreadRequest{
-		Kind:           store.ThreadRequestAsk,
-		OriginThreadID: source.ID,
-		Notify:         call.Notify,
-	}, call.WaitSeconds, func(token string) (string, error) {
-		return t.acceptAsk(ctx, origin, token, call)
-	})
+	token := newThreadRequestToken()
+	if _, err := t.acceptAsk(ctx, origin, token, call); err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
 }
 
 // acceptAsk is the destination half of an ask: fork the named thread into
@@ -431,7 +410,12 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
-	target, fresh, err := t.acceptRequest(origin, token, store.ThreadRequestAsk, "", func() (store.Thread, error) {
+	target, fresh, err := t.acceptRequest(origin, store.ThreadRequest{
+		Token:          token,
+		Kind:           store.ThreadRequestAsk,
+		OriginThreadID: source.ID,
+		Notify:         call.Notify,
+	}, func() (store.Thread, error) {
 		return t.app.forkScratchThread(ctx, source, scratchForkOptions{
 			TitlePrefix: askScratchTitlePrefix,
 			// Read-only WHATEVER the source runs: an ask is a question, and
@@ -469,19 +453,38 @@ func (t threadToolsApp) refuseSelf(caller threadtools.Caller, threadID, verb str
 }
 
 // acceptRequest writes the destination row, creates the thread that answers
-// when the kind has one to create, and advances the source row when it is on
-// this computer.
+// when the kind has one to create, and names it on the source row when that
+// row is on this computer.
+//
+// For this computer's own caller, request is the source row: written with
+// the receipt in one transaction before any work can run under the token, so
+// a failure part way through names a request the caller can ask about
+// rather than leaving a thread nothing records. A paired computer's request
+// has its source row there; only its token, kind and target are used here.
 //
 // The receipt is the record of record: a retry with the same token returns
 // the existing acceptance and `create` never runs again, which is what makes
 // a lost reply safe to retry with no second spawn, fork or message. `fresh`
 // is false for exactly that retry, so the dispatch does not run twice
-// either.
+// either. A local token is fresh, so it is never a retry.
 func (t threadToolsApp) acceptRequest(
-	origin threadRequestOrigin, token, kind, targetThreadID string,
+	origin threadRequestOrigin, request store.ThreadRequest,
 	create func() (store.Thread, error),
 ) (target string, fresh bool, err error) {
-	receipt, created, err := t.app.store.AcceptThreadRequestReceipt(threadReceiptFor(origin, token, kind, targetThreadID))
+	token, kind := request.Token, request.Kind
+	receiptRow := threadReceiptFor(origin, token, kind, request.TargetThreadID)
+	var receipt store.ThreadRequestReceipt
+	created := true
+	if origin.foreign {
+		receipt, created, err = t.app.store.AcceptThreadRequestReceipt(receiptRow)
+	} else {
+		request.CallerThreadID = origin.caller.ThreadID
+		request.State = store.ThreadRequestUnconfirmed
+		if request.TargetThreadID != "" {
+			request.State = store.ThreadRequestAccepted
+		}
+		receipt, err = t.app.store.AcceptLocalThreadRequest(request, receiptRow)
+	}
 	if err != nil {
 		return "", false, err
 	}
@@ -508,7 +511,13 @@ func (t threadToolsApp) acceptRequest(
 			return "", false, err
 		}
 		target = thread.ID
-		if _, err := t.app.store.SetThreadReceiptTarget(token, target); err != nil {
+		if origin.foreign {
+			if _, err := t.app.store.SetThreadReceiptTarget(token, target); err != nil {
+				return "", false, err
+			}
+		} else if err := t.app.store.NameLocalThreadRequestTarget(token, target); err != nil {
+			// One write names the thread on both rows and accepts the source
+			// row; a request a settlement already moved keeps its state.
 			return "", false, err
 		}
 	}
@@ -516,20 +525,10 @@ func (t threadToolsApp) acceptRequest(
 		return "", false, fmt.Errorf("thread tools: request %s has no target thread", token)
 	}
 	if !origin.foreign {
-		// No title: a thread on this computer is named from its own row.
-		if _, err := t.app.store.SetThreadRequestTarget(token, "", target, "", ""); err != nil {
-			return "", false, err
-		}
-		if created && kind == store.ThreadRequestSpawn {
+		if kind == store.ThreadRequestSpawn {
 			// The row went out at creation without a spawner; now the
 			// request names it, so the sidebar can nest the thread.
 			t.app.announceThread(triage.ThreadActionFull, target)
-		}
-		// Conditional: a request that already settled during dispatch keeps
-		// its settled state, and a no-op means the other path won, not an
-		// error.
-		if _, err := t.app.store.AdvanceThreadRequestState(token, store.ThreadRequestUnconfirmed, store.ThreadRequestAccepted); err != nil {
-			return "", false, err
 		}
 	} else {
 		// This thread now answers a paired computer's request, so it serves

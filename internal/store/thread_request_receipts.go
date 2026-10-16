@@ -158,20 +158,25 @@ func (s *Store) AcceptThreadRequestReceipt(r ThreadRequestReceipt) (ThreadReques
 }
 
 // AcceptLocalThreadRequest writes a request one of this computer's threads
-// makes to another of them, both rows in one transaction: the source row,
-// already `accepted` and naming its target, and the receipt that answers
-// it. It is for a request whose target thread exists before it is
-// accepted (a send); a spawn or an ask names its thread only after the
-// receipt, and writes the two rows apart. The token is fresh, so a
-// receipt already holding it is an error rather than a retry.
+// makes to another of them, both rows in one transaction: the source row
+// and the receipt that answers it. A request whose target thread exists
+// before it is accepted (a send) is written `accepted` and naming it. A
+// spawn or an ask creates its thread after the receipt, so its row is
+// written `unconfirmed` with no target, and NameLocalThreadRequestTarget
+// names the thread and accepts it. The token is fresh, so a receipt
+// already holding it is an error rather than a retry.
 func (s *Store) AcceptLocalThreadRequest(request ThreadRequest, receipt ThreadRequestReceipt) (ThreadRequestReceipt, error) {
 	action := fmt.Sprintf("store: accept local thread request %s", request.Token)
-	if receipt.Token != request.Token || receipt.Kind != request.Kind || receipt.TargetThreadID == "" ||
+	if receipt.Token != request.Token || receipt.Kind != request.Kind ||
 		receipt.TargetThreadID != request.TargetThreadID || request.TargetComputerID != "" {
 		return ThreadRequestReceipt{}, fmt.Errorf("%s: the receipt must name the request's token, kind and local target", action)
 	}
-	if request.State != ThreadRequestAccepted {
-		return ThreadRequestReceipt{}, fmt.Errorf("%s: a local request is written accepted, not %q", action, request.State)
+	want := ThreadRequestAccepted
+	if request.TargetThreadID == "" {
+		want = ThreadRequestUnconfirmed
+	}
+	if request.State != want {
+		return ThreadRequestReceipt{}, fmt.Errorf("%s: a local request is written %s, not %q", action, want, request.State)
 	}
 	receipt, err := receipt.validated(action)
 	if err != nil {
@@ -194,6 +199,51 @@ func (s *Store) AcceptLocalThreadRequest(request ThreadRequest, receipt ThreadRe
 	}
 	s.noteThreadRequestChanged(ThreadRequestChange{Token: request.Token, CallerThreadID: request.CallerThreadID})
 	return stored, nil
+}
+
+// NameLocalThreadRequestTarget names the thread a local spawn or ask
+// created, on its receipt and its source row in one transaction, and
+// accepts the source row unless a settlement already moved it. The receipt
+// must still have no target and the source row must be this computer's
+// own: anything else is an error, and nothing is written.
+func (s *Store) NameLocalThreadRequestTarget(token, threadID string) error {
+	action := fmt.Sprintf("store: name local thread request %s target", token)
+	if threadID == "" {
+		return fmt.Errorf("%s: thread id is required", action)
+	}
+	now := nowMillis()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.Exec(`UPDATE thread_request_receipts SET target_thread_id = ?, updated_at = ?
+		  WHERE token = ? AND target_thread_id IS NULL`, threadID, now, token)
+	if err != nil {
+		return fmt.Errorf("%s: receipt: %w", action, err)
+	}
+	if named, err := rowsChanged(result, action); err != nil {
+		return err
+	} else if !named {
+		return fmt.Errorf("%s: no receipt is waiting for its thread", action)
+	}
+	var caller string
+	if err := tx.QueryRow(`UPDATE thread_requests
+		    SET target_thread_id = ?, target_thread_title = '', target_provider = '', updated_at = ?,
+		        state = CASE WHEN state = ? THEN ? ELSE state END
+		  WHERE token = ? AND target_computer_id = '' AND lineage_only = 0
+		  RETURNING caller_thread_id`,
+		threadID, now, ThreadRequestUnconfirmed, ThreadRequestAccepted, token).Scan(&caller); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%s: no local source row", action)
+		}
+		return fmt.Errorf("%s: source: %w", action, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: commit: %w", action, err)
+	}
+	s.noteThreadRequestChanged(ThreadRequestChange{Token: token, CallerThreadID: caller})
+	return nil
 }
 
 const insertThreadReceiptSQL = `INSERT INTO thread_request_receipts (
@@ -416,17 +466,6 @@ func (s *Store) ReturnThreadReceipt(token string) (bool, error) {
 	return rowsChanged(result, action)
 }
 
-// SettleThreadRequestReceipt stores the whole answer on the destination row
-// and bumps the revision, provided the row is still in one of `from`. The
-// turn-end observer passes {running} so a thread_reply that landed first
-// wins; the cancel path passes both open states. The app settles through
-// SettleLocalThreadRequest, which also hands the answer to a source row on
-// this computer; this writes the receipt alone.
-func (s *Store) SettleThreadRequestReceipt(token string, from []string, settlement ThreadRequestSettlement) (bool, error) {
-	_, settled, err := settleThreadReceiptRow(s.db, token, from, settlement)
-	return settled, err
-}
-
 // settleThreadReceiptRow is the receipt's conditional settlement on q, and
 // the row as it left it.
 func settleThreadReceiptRow(q sqlQueryer, token string, from []string, settlement ThreadRequestSettlement) (ThreadRequestReceipt, bool, error) {
@@ -487,7 +526,9 @@ type LocalSettlement struct {
 // in one transaction: the receipt is written provided it is still in one
 // of from, the source row takes the receipt's answer in sourceState
 // provided it is still open, and the receipt records the revision the
-// source stored. The receipt keeps its own copy of the answer.
+// source stored. The receipt keeps its own copy of the answer. The
+// turn-end observer passes {running} so a thread_reply that landed first
+// wins; the cancel path passes both open states.
 func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement ThreadRequestSettlement, sourceState string) (LocalSettlement, error) {
 	action := fmt.Sprintf("store: settle local thread request %s", token)
 	if _, ok := threadRequestStates[sourceState]; !ok {
