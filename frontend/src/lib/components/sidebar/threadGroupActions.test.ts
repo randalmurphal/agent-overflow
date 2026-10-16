@@ -63,8 +63,8 @@ describe('threadGroupActions', () => {
     resetBindingMocks();
     __resetEntityIndexForTest();
     resetThreadGroupsForTest();
-    for (const t of [...getThreads()]) removeThread(t.id);
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const t of getThreads()) removeThread(t.id);
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   describe('createThreadGroupAction', () => {

@@ -44,7 +44,7 @@ function makeCtx(thread: Partial<Thread>): ThreadActionCtx {
 }
 
 function clearThreadsForTest(): void {
-  for (const t of [...getThreads()]) removeThread(t.id);
+  for (const t of getThreads()) removeThread(t.id);
 }
 
 describe('forkThreadAction', () => {
@@ -52,7 +52,7 @@ describe('forkThreadAction', () => {
     resetBindingMocks();
     clearThreadsForTest();
     collapseProject('project-1');
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
     setBindingMock('GetSettings', async () => makeSettings());
     await loadSettings();
   });
