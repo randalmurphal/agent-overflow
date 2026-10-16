@@ -186,6 +186,25 @@ describe('backgroundTaskOutput store', () => {
     await flush();
   });
 
+  it('shows a read failure that landed while the watch reply was in flight, and releases the id', async () => {
+    let resolveWatch: (value: unknown) => void = () => {};
+    setBindingMock('WatchBackgroundTaskOutput', () => new Promise((resolve) => { resolveWatch = resolve; }));
+    const unwatch = setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
+    const attachment = attachBackgroundTaskOutput(THREAD, LAUNCH);
+    await flush();
+    // The backend's read failed right after its seed: the failure frame
+    // reached this page before the reply, which is the seed under its id.
+    applyBackgroundTaskOutputEvent(frame({ seq: 1, ended: true, error: 'read task output: gone' }), { backendId: '' });
+    resolveWatch(snapshot());
+    await flush();
+    expect(attachment.current?.text).toBe('line 1\n');
+    expect(attachment.current?.ended).toBe(true);
+    expect(attachment.current?.error).toBe('read task output: gone');
+    attachment.release();
+    await flush();
+    expect(unwatch).toHaveBeenCalledWith(THREAD, 'w-1');
+  });
+
   it("a superseded acquisition's reply leaves the new acquisition's held frames alone", async () => {
     const replies: Array<(value: unknown) => void> = [];
     const watch = setBindingMock('WatchBackgroundTaskOutput', () => new Promise((resolve) => { replies.push(resolve); }));

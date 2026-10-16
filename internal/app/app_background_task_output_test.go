@@ -4,10 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/tasktail"
 	"agent-overflow/internal/transport"
 )
 
@@ -218,12 +221,37 @@ func TestWatchBindingsGoWithTheTaskOrTheUnwatch(t *testing.T) {
 	}
 }
 
+// collectBackgroundTaskOutputFrames records every frame the app emits on
+// provider:background_task_output.
+func collectBackgroundTaskOutputFrames(app *App) func() []tasktail.Event {
+	var mu sync.Mutex
+	var frames []tasktail.Event
+	app.testEmitHook = func(name string, data any) {
+		if name != string(eventchan.ProviderBackgroundTaskOutput) {
+			return
+		}
+		if evt, ok := data.(tasktail.Event); ok {
+			mu.Lock()
+			frames = append(frames, evt)
+			mu.Unlock()
+		}
+	}
+	return func() []tasktail.Event {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]tasktail.Event(nil), frames...)
+	}
+}
+
 // The task ends while the watch is being opened, after the tailer holds
 // it and before the method answers: nothing stays bound for a watch that
-// is already gone, and the client is told the tail ended.
+// is already gone, and the reply is the seed under its id, so the page
+// takes the frames the end emitted past it (the last line, then Ended)
+// as it would a live end.
 func TestWatchEndedWhileOpeningHoldsNoCleanup(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
+	frames := collectBackgroundTaskOutputFrames(app)
 	path := writeTaskOutput(t, t.TempDir(), "task-r.output", "line 1\n")
 	seedTaskOutputThread(t, app, "thread-tail-race", "launch-r", `{"task_id":"task-r","output_file":"`+path+`"}`)
 	ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
@@ -231,6 +259,9 @@ func TestWatchEndedWhileOpeningHoldsNoCleanup(t *testing.T) {
 	var acquired string
 	app.taskOutput.afterAcquire = func(watchID string) {
 		acquired = watchID
+		if err := os.WriteFile(path, []byte("line 1\nline 2\n"), 0o644); err != nil {
+			t.Error(err)
+		}
 		tailer.EndLaunch("thread-tail-race", "launch-r")
 	}
 	snap, err := app.WatchBackgroundTaskOutput(ctx, "thread-tail-race", "launch-r")
@@ -249,8 +280,54 @@ func TestWatchEndedWhileOpeningHoldsNoCleanup(t *testing.T) {
 	if tailer.Watching() != 0 {
 		t.Fatalf("the tailer holds nothing; watching %d", tailer.Watching())
 	}
-	if snap.WatchID != "" || !snap.Ended || snap.Data != "line 1\n" {
-		t.Fatalf("the client learns the tail ended, with the tail: %+v", snap)
+	if snap.WatchID != acquired || snap.Ended || snap.Data != "line 1\n" {
+		t.Fatalf("the reply is the seed under its id: %+v", snap)
+	}
+	got := frames()
+	if len(got) != 2 || got[0].Seq <= snap.Seq || got[0].Append != "line 2\n" || !got[1].Ended || got[1].Error != "" {
+		t.Fatalf("the end's frames follow the seed: %+v", got)
+	}
+}
+
+// The read fails while the watch is being opened: the reply is the seed
+// under its id and the failure frame, with its error, follows it, as a
+// live read failure does; an ended reply would show frozen output and
+// no error.
+func TestWatchReadFailedWhileOpeningShowsTheFailure(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	frames := collectBackgroundTaskOutputFrames(app)
+	// Not yet written at the seed, so the follow holds no file; a
+	// directory at the path then fails the next read.
+	path := filepath.Join(t.TempDir(), "task-f.output")
+	seedTaskOutputThread(t, app, "thread-tail-fail", "launch-f", `{"task_id":"task-f","output_file":"`+path+`"}`)
+	ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	tailer := app.backgroundTaskTailer()
+	var acquired string
+	app.taskOutput.afterAcquire = func(watchID string) {
+		acquired = watchID
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Error(err)
+		}
+		tailer.Poll()
+	}
+	snap, err := app.WatchBackgroundTaskOutput(ctx, "thread-tail-fail", "launch-f")
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	if acquired == "" {
+		t.Fatal("the hook did not run")
+	}
+	if state.HasCleanup(backgroundTaskOutputCleanupKey(acquired)) || app.taskOutput.has(acquired) || tailer.Watching() != 0 {
+		t.Fatalf("a failed read leaves nothing bound: cleanup %v record %v watching %d",
+			state.HasCleanup(backgroundTaskOutputCleanupKey(acquired)), app.taskOutput.has(acquired), tailer.Watching())
+	}
+	if snap.WatchID != acquired || snap.Ended || snap.Error != "" {
+		t.Fatalf("the reply is the seed under its id: %+v", snap)
+	}
+	got := frames()
+	if len(got) != 1 || got[0].Seq <= snap.Seq || !got[0].Ended || got[0].Error == "" {
+		t.Fatalf("the failure frame, with its error, follows the seed: %+v", got)
 	}
 }
 

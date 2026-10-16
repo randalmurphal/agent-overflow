@@ -245,13 +245,16 @@ func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchIte
 		return snapshot, nil
 	}
 	if state != nil && !a.taskOutput.has(watchID) {
-		// The record went while the watch was being opened: the task
-		// ended (the tailer dropped the watch and said so) or the
-		// connection did (its cleanup ran). Either way nothing holds the
-		// watch now, and the tail answers as ended.
+		// The record went while the watch was being opened: the
+		// connection closed (its cleanup ran before the tailer held the
+		// watch, so release it here) or the tailer dropped the watch
+		// (the task ended or its read failed) and said so. The reply is
+		// the seed as read, under the id: what the drop emitted (the
+		// last lines, the Ended frame, a read failure's error) is this
+		// watch's, carried by frames past the seed's seq, and the page
+		// shows them as the live end it is. An ended reply would hide
+		// the failure and lose those lines.
 		tailer.Release(threadID, watchID, owner)
-		snapshot.WatchID = ""
-		snapshot.Ended = true
 	}
 	return snapshot, nil
 }
