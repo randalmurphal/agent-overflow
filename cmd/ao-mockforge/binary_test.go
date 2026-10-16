@@ -22,6 +22,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/forgefake"
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 // fakeBin is ao-mockforge, built once per run and executed by a real
@@ -45,7 +46,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "build ao-mockforge: %v\n%s", err, out)
 		os.Exit(1)
 	}
-	code := m.Run()
+	code := providerpath.Run(m)
 	_ = os.RemoveAll(tmp)
 	os.Exit(code)
 }

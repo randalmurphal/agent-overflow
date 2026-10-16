@@ -663,6 +663,9 @@ export interface ProviderStatus {
   installed: boolean;
   version: string;
   binaryPath: string;
+  /** The npm wrapper on PATH that binaryPath was resolved from, when the
+   *  backend runs the native binary the wrapper would spawn. */
+  wrapperPath?: string;
   status: "ready" | "not_found" | "error";
   message: string;
 }

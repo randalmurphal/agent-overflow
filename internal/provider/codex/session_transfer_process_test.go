@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 // A real child process with an intentionally tiny wire vocabulary. It cannot
@@ -27,7 +29,7 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	os.Exit(providerpath.Run(m))
 }
 
 func runTransferTestServer() error {

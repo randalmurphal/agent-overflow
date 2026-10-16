@@ -4,6 +4,7 @@ package app
 
 import (
 	"os"
+	"os/exec"
 	"testing"
 
 	"agent-overflow/internal/kerneltest"
@@ -60,6 +61,10 @@ func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	if _, err := app.settings.Update(kerneltest.ProviderBinarySettings(isolation.PoisonedBinary)); err != nil {
 		t.Fatalf("poison provider binary settings: %v", err)
 	}
+	// A test that restores the default `codex` setting must not have it
+	// resolved to the developer's installed native binary. Tests of that
+	// resolution install their own lookup over this.
+	app.codexLookPathFn = func(string) (string, error) { return "", exec.ErrNotFound }
 
 	// The live Codex model catalog spawns `codex app-server` for `model/list`
 	// as a side effect of ordinary thread creation. Disable it the same way

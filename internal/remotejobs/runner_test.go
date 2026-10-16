@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil/providerpath"
 	"github.com/google/uuid"
 )
 
@@ -25,7 +26,7 @@ func TestMain(m *testing.M) {
 	if role := os.Getenv("AO_TEST_REMOTE_HELPER"); role != "" {
 		os.Exit(remoteHelper(role))
 	}
-	os.Exit(storetest.Run(m))
+	os.Exit(providerpath.Guard(func() int { return storetest.Run(m) }))
 }
 
 func remoteHelper(role string) int {

@@ -6,9 +6,10 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil/providerpath"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
+func TestMain(m *testing.M) { os.Exit(providerpath.Guard(func() int { return storetest.Run(m) })) }
 
 func TestCloneYieldsAWorkingMigratedStore(t *testing.T) {
 	s := storetest.Clone(t)

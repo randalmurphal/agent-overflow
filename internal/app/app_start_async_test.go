@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/mockexec"
 )
 
 // recordingBootProgress records reported phases. A phase named in block
@@ -102,6 +103,9 @@ func newBootTestApp(t *testing.T) *App {
 	a := NewApp()
 	a.dataDirOverride = t.TempDir()
 	ConfigureIsolation(a, IsolationConfig{
+		// The background work a boot starts probes every provider; it
+		// runs this mock, never an installed CLI.
+		ProviderBinary:    bootTestProviderBinary(t),
 		CredentialHome:    home,
 		UseFileKeychain:   true,
 		MockBrowserEngine: true,
@@ -114,6 +118,14 @@ func newBootTestApp(t *testing.T) *App {
 	t.Cleanup(forge.Close)
 	SetForgeAPI(a, ForgeAPI{BaseURL: forge.URL, Token: "boot-test-token"})
 	return a
+}
+
+// bootTestProviderBinary answers a version probe and ends anything else at
+// once, which a boot's account probes report as a failed probe.
+func bootTestProviderBinary(t *testing.T) string {
+	t.Helper()
+	return mockexec.Write(t, filepath.Join(t.TempDir(), "provider"),
+		"#!/bin/sh\nif [ \"$1\" = --version ]; then echo '0.0.0 (boot test mock)'; fi\nexit 0\n")
 }
 
 // asyncStartGoroutines counts goroutines still running the desktop Start.
