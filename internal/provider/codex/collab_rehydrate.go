@@ -18,6 +18,10 @@ type collabHistoryOwnership struct {
 	ChildThreadID string
 	AgentPath     string
 	LaunchMeta    collabLaunchMeta
+	// ProfileKnown marks a MultiAgentV2 spawn row that already records the
+	// child's effective model: V2 rows take it only from the started
+	// activity or the child's thread/resume, never from requested values.
+	ProfileKnown bool
 }
 
 type collabHistoryJob struct {
@@ -47,6 +51,14 @@ func (s *Session) rehydrateCollabOwnership(launches []ResumeCollabLaunch) {
 		if !s.registerHistoricalChildOwnership("", ownership.ChildThreadID, ownership.AgentPath, ownership.ParentItemID) {
 			continue
 		}
+		if ownership.ProfileKnown {
+			s.rememberCollabReceiverMeta(collabReceiverMeta{
+				ThreadID:        ownership.ChildThreadID,
+				Model:           ownership.LaunchMeta.Model,
+				ReasoningEffort: ownership.LaunchMeta.ReasoningEffort,
+				ProfileKnown:    true,
+			})
+		}
 		s.scheduleCollabMetadataRead(ownership.ChildThreadID, ownership.ParentItemID, ownership.LaunchMeta)
 		mapped = append(mapped, ownership.ChildThreadID)
 		s.enqueueCollabHistoryJob(collabHistoryJob{Ownership: ownership, Generation: generation})
@@ -64,6 +76,7 @@ func collabResumeOwnerships(launches []ResumeCollabLaunch) ([]collabHistoryOwner
 		var stored struct {
 			Input struct {
 				Tool              string   `json:"tool"`
+				ActivityKind      string   `json:"activityKind"`
 				Prompt            string   `json:"prompt"`
 				Model             string   `json:"model"`
 				ReasoningEffort   string   `json:"reasoningEffort"`
@@ -92,6 +105,8 @@ func collabResumeOwnerships(launches []ResumeCollabLaunch) ([]collabHistoryOwner
 			AgentPath:         agentPath,
 			ReceiverThreadIDs: append([]string(nil), receivers...),
 		}
+		profileKnown := len(receivers) == 1 && strings.TrimSpace(stored.Input.ActivityKind) != "" &&
+			strings.TrimSpace(stored.Input.Model) != ""
 		for _, childThreadID := range receivers {
 			childAgentPath := ""
 			if len(receivers) == 1 {
@@ -102,6 +117,7 @@ func collabResumeOwnerships(launches []ResumeCollabLaunch) ([]collabHistoryOwner
 				ChildThreadID: childThreadID,
 				AgentPath:     childAgentPath,
 				LaunchMeta:    launchMeta,
+				ProfileKnown:  profileKnown,
 			})
 		}
 	}

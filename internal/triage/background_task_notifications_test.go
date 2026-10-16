@@ -1157,6 +1157,7 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 			"subagent_type": "general-purpose",
 			"model":         "opus",
 		},
+		"inherited_effort": "xhigh",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
@@ -1260,6 +1261,8 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 		"task_type":           "local_agent",
 		"resumes_tool_use_id": originalLaunchID,
 		"description":         description,
+		// The parser's record of the sender's effort at resume time.
+		"inherited_effort": "low",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
@@ -1313,6 +1316,15 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 	}
 	if carrierMeta["subagent_model"] != "claude-opus-4-7" {
 		t.Fatalf("carrier meta.subagent_model = %v, want claude-opus-4-7 (Subn stamp preferred over input alias)", carrierMeta["subagent_model"])
+	}
+	// The original named no effort, so the resumed round runs at the
+	// effort its carrier recorded at resume time, not the xhigh the
+	// original inherited when it launched.
+	if v, ok := carrierMeta["subagent_effort"]; ok {
+		t.Fatalf("carrier meta.subagent_effort = %v, want none: the original named no effort", v)
+	}
+	if carrierMeta["inherited_effort"] != "low" {
+		t.Fatalf("carrier meta.inherited_effort = %v, want its resume-time low", carrierMeta["inherited_effort"])
 	}
 
 	// Reaper-protection pin: the carrier must be the row that keeps

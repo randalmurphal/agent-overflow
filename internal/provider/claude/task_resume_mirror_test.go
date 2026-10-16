@@ -30,12 +30,23 @@ const (
 	resumeForkResumedTail = "msg_011Cg3BsdwAb6pHqQTcoaPsX#0"
 )
 
+// rootOnlyLaunchLookup adapts a lookup that knows only the launch id.
+func rootOnlyLaunchLookup(lookup func(string) (string, bool, error)) func(string) (AgentLaunchRecord, bool, error) {
+	if lookup == nil {
+		return nil
+	}
+	return func(taskID string) (AgentLaunchRecord, bool, error) {
+		root, found, err := lookup(taskID)
+		return AgentLaunchRecord{ToolUseID: root}, found, err
+	}
+}
+
 func resumeForkParser(lookup func(string) (string, bool, error)) *Parser {
 	session := &Session{}
 	session.directCommands.note(resumeForkCommandUUID, "/resume-fork a43133614d8d4014b", provider.SendOptions{})
 	parser := NewParser()
 	parser.peerTurns = session
-	parser.agentLaunchLookup = lookup
+	parser.agentLaunchLookup = rootOnlyLaunchLookup(lookup)
 	return parser
 }
 
@@ -275,7 +286,7 @@ func TestTaskBindingSurvivesLaterTasks(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parser := NewParser()
-			parser.agentLaunchLookup = tc.lookup
+			parser.agentLaunchLookup = rootOnlyLaunchLookup(tc.lookup)
 			parse := func(line string) []provider.ProviderEvent {
 				t.Helper()
 				events, err := parser.ParseLine(testThread, []byte(line))

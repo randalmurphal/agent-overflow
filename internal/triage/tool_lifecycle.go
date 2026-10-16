@@ -208,6 +208,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 			log.Printf("triage: merge correlation fields into item meta %s: %v", itemID, err)
 			return existing, true, nil
 		}
+		mergedMeta = keepFirstLaunchStamps(existing.Meta, mergedMeta)
 		parentChanged := parentToolUseID != "" && existing.ParentID == ""
 		if mergedMeta == existing.Meta && !parentChanged {
 			return existing, true, nil
@@ -267,7 +268,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 		item.ParentID = stringsx.FirstNonEmptyTrimmed(existing.ParentID, eventParentID(evt))
 		item.ToolName = toolName
 		item.IsBackground = existing.IsBackground || meta.IsBackground
-		item.Meta = MergeStoredToolCallMeta(existing.Meta, evt.ItemType, toolName, evt.Meta)
+		item.Meta = keepLaunchStamps(existing.Meta, MergeStoredToolCallMeta(existing.Meta, evt.ItemType, toolName, evt.Meta))
 		if existing.Status == "" {
 			item.Status = statusRunning
 		}
@@ -1694,12 +1695,21 @@ func (r *Router) resumeCarrierIdentity(threadID string, launch store.Item) (stri
 		if carrierMeta.SubagentModel == "" {
 			if model := origMeta.SubagentModel; model != "" {
 				patch["subagent_model"] = model
+			} else if model := launchRequestedModel(original.Meta); model != "" {
+				patch["subagent_model"] = model
 			} else if origInput.Model != "" {
 				patch["subagent_model"] = origInput.Model
 			}
 		}
 		if carrierMeta.SubagentType == "" && origInput.SubagentType != "" {
 			patch["subagent_type"] = origInput.SubagentType
+		}
+		// subagent_effort: the effort the launch named, which the resumed
+		// round runs at. Without one the round runs at its sender's effort at
+		// resume time, which the parser stamped on the carrier itself
+		// (inherited_effort).
+		if effort := launchNamedEffort(origInput); effort != "" {
+			patch["subagent_effort"] = effort
 		}
 		if carrierMeta.Description == "" && origInput.Description != "" {
 			patch["description"] = truncatePreview(origInput.Description, 80)
@@ -1723,6 +1733,7 @@ type launchIdentity struct {
 	Model        string `json:"model"`
 	SubagentType string `json:"subagent_type"`
 	Description  string `json:"description"`
+	Effort       string `json:"effort"`
 }
 
 // launchInputIdentity reads launchIdentity off a persisted launch row's

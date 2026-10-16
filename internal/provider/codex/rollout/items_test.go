@@ -589,3 +589,24 @@ func TestParsePaginatedReadsBothSleepDurationSpellings(t *testing.T) {
 		})
 	}
 }
+
+func TestParsePaginatedSpawnTakesTheStartedActivityProfile(t *testing.T) {
+	spawn := `{"timestamp":"2026-08-07T19:07:49.000Z","ordinal":5,"type":"response_item","payload":{"type":"function_call","name":"spawn_agent","arguments":"{\"task_name\":\"reviewer\"}","call_id":"spawn-1"}}`
+	started := pagLine(t, 6, "2026-08-07T19:07:50.000Z", map[string]any{
+		"type": "SubAgentActivity", "id": "spawn-1", "kind": "started",
+		"agent_thread_id": "child-1", "agent_path": "/root/reviewer",
+		"model": "gpt-5.6-luna", "reasoning_effort": "low",
+	}, 1786133870000, 1786133870100)
+
+	res := parseFixture(t, writeRollout(t, testSessionID,
+		paginatedMetaLine, taskStartedLine, spawn, started, taskCompleteLn))
+	starts := eventsOfKind(res.Events, provider.EventToolStart)
+	if len(starts) == 0 {
+		t.Fatal("no spawn start")
+	}
+	last := starts[len(starts)-1]
+	if !strings.Contains(string(last.Meta), `"model":"gpt-5.6-luna"`) ||
+		!strings.Contains(string(last.Meta), `"reasoningEffort":"low"`) {
+		t.Fatalf("spawn meta = %s, want the activity's profile", last.Meta)
+	}
+}

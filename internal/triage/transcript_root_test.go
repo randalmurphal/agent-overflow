@@ -655,14 +655,15 @@ func TestReplayedReannounceSequenceKeepsEveryRoundUnderTheOriginalLaunch(t *test
 // earlier process ran. The answer is the agent's transcript root: the
 // launch row, through any carrier, or a typed fork's command row. A
 // carrier whose root row is gone and a task that is not an agent's have
-// none.
+// none. The answer carries the effort the launch named and its model, which
+// a resumed round runs at.
 func TestAgentLaunchByTaskAnswersTheTranscriptRoot(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	for i, item := range []store.Item{
-		{ID: "toolu_launch", ToolName: "Agent", Meta: `{"task_id":"agent-1","task_type":"local_agent"}`},
+		{ID: "toolu_launch", ToolName: "Agent", Meta: `{"task_id":"agent-1","task_type":"local_agent","input":{"prompt":"p","effort":"low"},"subagent_model":"claude-opus-4-7"}`},
 		{ID: "toolu_carrier_first", ToolName: "SendMessage", Meta: `{"task_id":"agent-3","task_type":"local_agent","resumes_tool_use_id":"toolu_launch_3"}`},
-		{ID: "toolu_launch_3", ToolName: "Agent", Meta: `{"task_id":"agent-3-original"}`},
+		{ID: "toolu_launch_3", ToolName: "Agent", Meta: `{"task_id":"agent-3-original","input":{"subagent_type":"fork","effort":"max"},"requested_model":"claude-haiku-4-5"}`},
 		{ID: "toolu_carrier", ToolName: "SendMessage", Meta: `{"task_id":"agent-1","task_type":"local_agent","resumes_tool_use_id":"toolu_launch","transcript_root_id":"toolu_launch"}`},
 		{ID: "claude-command:c1", ToolName: "Skill", Meta: `{"task_id":"fork-1","task_type":"local_agent","skillFork":{"agentId":"fork-1","commandName":"review"}}`},
 		{ID: "toolu_orphan_carrier", ToolName: "SendMessage", Meta: `{"task_id":"agent-2","task_type":"local_agent","resumes_tool_use_id":"toolu_pruned","transcript_root_id":"toolu_gone_root"}`},
@@ -675,22 +676,24 @@ func TestAgentLaunchByTaskAnswersTheTranscriptRoot(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		task, want string
-		found      bool
+		task  string
+		want  AgentLaunch
+		found bool
 	}{
-		{"agent-1", "toolu_launch", true},
-		{"fork-1", "claude-command:c1", true},
-		{"agent-2", "", false},
-		{"agent-3", "toolu_launch_3", true},
-		{"bash-1", "", false},
-		{"unknown", "", false},
+		{"agent-1", AgentLaunch{ID: "toolu_launch", NamedEffort: "low", Model: "claude-opus-4-7"}, true},
+		{"fork-1", AgentLaunch{ID: "claude-command:c1"}, true},
+		{"agent-2", AgentLaunch{}, false},
+		// A fork's input effort is not one it runs at.
+		{"agent-3", AgentLaunch{ID: "toolu_launch_3", Model: "claude-haiku-4-5"}, true},
+		{"bash-1", AgentLaunch{}, false},
+		{"unknown", AgentLaunch{}, false},
 	} {
 		got, found, err := router.AgentLaunchByTask("t1", tc.task)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.task, err)
 		}
 		if got != tc.want || found != tc.found {
-			t.Errorf("AgentLaunchByTask(%s) = %q, %v; want %q, %v", tc.task, got, found, tc.want, tc.found)
+			t.Errorf("AgentLaunchByTask(%s) = %+v, %v; want %+v, %v", tc.task, got, found, tc.want, tc.found)
 		}
 	}
 }

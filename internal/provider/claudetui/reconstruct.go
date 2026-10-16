@@ -62,6 +62,11 @@ type assistantEnvelope struct {
 	// ParentToolUseID nests a subagent assistant message (and the tool_use
 	// starts inside it) under its parent Agent tool_call. Empty for the main loop.
 	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
+	// RequestEffort is the main-loop request's `output_config.effort` (""
+	// when it named none), the parser's record of the session's effort for
+	// the Agent launches in this message (claude.RequestEffortKey). Nil for a
+	// subagent message.
+	RequestEffort *string `json:"ao_request_effort,omitempty"`
 }
 
 type assistantMessage struct {
@@ -286,7 +291,7 @@ func (a *messageAssembler) ensureBlock(index int) {
 // response (empty for the main loop); it threads through as top-level
 // parent_tool_use_id so the shared parser nests the message and its tool_use
 // starts under that Agent card.
-func (a *messageAssembler) assistantLine(parentToolUseID string) json.RawMessage {
+func (a *messageAssembler) assistantLine(parentToolUseID string, requestEffort *string) json.RawMessage {
 	content := make([]json.RawMessage, 0, len(a.order))
 	for _, idx := range a.order {
 		content = append(content, a.renderBlock(idx))
@@ -301,6 +306,7 @@ func (a *messageAssembler) assistantLine(parentToolUseID string) json.RawMessage
 			Usage:   a.usage,
 		},
 		ParentToolUseID: parentToolUseID,
+		RequestEffort:   requestEffort,
 	}
 	return mustMarshal(env)
 }

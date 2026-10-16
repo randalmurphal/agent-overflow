@@ -34,6 +34,22 @@ type subagentOwnership struct {
 	agentThreadID string
 }
 
+// subagentProfile is the child's resolved model and reasoning effort that a
+// `started` activity records from codex 0.162 on. Older records have none.
+type subagentProfile struct {
+	model           string
+	reasoningEffort string
+}
+
+func (p subagentProfile) applyTo(input map[string]any) {
+	if p.model != "" {
+		input["model"] = p.model
+	}
+	if p.reasoningEffort != "" {
+		input["reasoningEffort"] = p.reasoningEffort
+	}
+}
+
 // applySubAgentActivity emits child lifecycle, records the agent-path → spawn
 // mapping for later final delivery, and promotes messages to timeline tools.
 func (c *converter) applySubAgentActivity(env envelope) {
@@ -48,7 +64,8 @@ func (c *converter) applySubAgentActivity(env envelope) {
 	kind := strings.TrimSpace(p.Kind)
 	parent := c.toolItemIDs[eventID]
 	if kind == "started" {
-		parent = c.recordSubagentStart(eventID, agentPath, agentThreadID)
+		profile := subagentProfile{model: strings.TrimSpace(p.Model), reasoningEffort: strings.TrimSpace(p.ReasoningEffort)}
+		parent = c.recordSubagentStart(eventID, agentPath, agentThreadID, profile)
 	}
 	if kind == "interacted" {
 		c.emitCollabInteraction(eventID, agentPath, agentThreadID)
@@ -70,7 +87,7 @@ func (c *converter) applySubAgentActivity(env envelope) {
 	c.emitNotification(subAgentSummary(agentPath, p.Kind), meta, parent)
 }
 
-func (c *converter) recordSubagentStart(eventID, agentPath, agentThreadID string) string {
+func (c *converter) recordSubagentStart(eventID, agentPath, agentThreadID string, profile subagentProfile) string {
 	if eventID == "" || agentPath == "" {
 		return c.toolItemIDs[eventID]
 	}
@@ -82,6 +99,9 @@ func (c *converter) recordSubagentStart(eventID, agentPath, agentThreadID string
 		return c.toolItemIDs[eventID]
 	}
 	c.subagentStarts[eventID] = ownership
+	if profile != (subagentProfile{}) {
+		c.subagentProfiles[eventID] = profile
+	}
 	ref, found := c.toolRefs[eventID]
 	if !found {
 		return ""
@@ -89,7 +109,7 @@ func (c *converter) recordSubagentStart(eventID, agentPath, agentThreadID string
 	parent := ref.itemID
 	c.agentParents[agentPath] = ref
 	if tool := c.tools[eventID]; tool != nil {
-		c.applySubagentOwnership(tool, ownership)
+		c.applySubagentOwnership(tool, ownership, profile)
 		c.emit(provider.ProviderEvent{
 			Kind: provider.EventToolStart, TurnID: tool.turnID, TurnIndex: tool.turnIndex,
 			ItemID: tool.itemID, ItemType: tool.itemType, Role: "assistant",
@@ -101,6 +121,7 @@ func (c *converter) recordSubagentStart(eventID, agentPath, agentThreadID string
 	if agentThreadID != "" {
 		input["receiverThreadIds"] = []string{agentThreadID}
 	}
+	profile.applyTo(input)
 	c.emit(provider.ProviderEvent{
 		Kind: provider.EventToolStart, TurnID: ref.turnID, TurnIndex: ref.turnIndex,
 		ItemID: parent, ItemType: ref.itemType, Role: "assistant",
@@ -113,7 +134,7 @@ func (c *converter) recordSubagentStart(eventID, agentPath, agentThreadID string
 	return parent
 }
 
-func (c *converter) applySubagentOwnership(tool *openTool, ownership subagentOwnership) {
+func (c *converter) applySubagentOwnership(tool *openTool, ownership subagentOwnership, profile subagentProfile) {
 	input := map[string]any{}
 	if len(tool.input) > 0 && json.Unmarshal(tool.input, &input) != nil {
 		c.corrupt++
@@ -126,6 +147,7 @@ func (c *converter) applySubagentOwnership(tool *openTool, ownership subagentOwn
 	if ownership.agentPath != "" {
 		input["agentPath"] = ownership.agentPath
 	}
+	profile.applyTo(input)
 	tool.input = metaJSON(input)
 	tool.isBackground = true
 }

@@ -10,8 +10,11 @@ Multi-agent behavior is source-verified against `rust-v0.153.4`
 from the checked-in public TypeScript schema.
 
 Child-profile resolution was re-verified on 2026-08-29 against
-`rust-v0.150.1`. The public V2 `SubAgentActivity` has no model or effort.
+`rust-v0.150.1`, when the public V2 `SubAgentActivity` had no model or effort.
 `thread/resume` returns both from the effective child `ThreadConfigSnapshot`.
+At `rust-v0.162.1` a `started` activity carries the child's effective `model`
+and `reasoningEffort` (`multi_agents_v2/spawn.rs`; rollout keys `model` and
+`reasoning_effort`).
 
 ## Sources
 
@@ -629,9 +632,14 @@ The V2 item is:
   "type": "subAgentActivity",
   "kind": "started",
   "agentThreadId": "<child-thread-id>",
-  "agentPath": "/root/reviewer"
+  "agentPath": "/root/reviewer",
+  "model": "gpt-5.6-sol",
+  "reasoningEffort": "high"
 }
 ```
+
+`model` and `reasoningEffort` appear on `started` only, from codex 0.162.1
+(see the header); earlier activities omit them.
 
 `kind` is `started | interacted | interrupted | completed`. The first three
 use the function call id. `started` establishes the stable spawn id.
@@ -720,7 +728,8 @@ tool output. These raw items can carry the same label metadata:
 
 Agent Overflow treats the typed `item/*` lifecycle as authoritative for the
 visible tool row. `thread/read` is the primary label source. A metadata-only
-child `thread/resume` is the profile source. Raw response items are only an
+child `thread/resume` is the profile source, except for a V2 child whose
+`started` activity carried its profile. Raw response items are only an
 additional typed signal when present, not a prerequisite.
 
 ### MultiAgentV2 spawn normalization
@@ -757,7 +766,10 @@ model-chosen `task_name` is the whole plaintext statement of what the child
 was asked to do, and a display label derived from it is the same string
 twice. The canonical activity,
 cached `thread/started`, and `thread/read` metadata provide path and display
-label. They do not provide the effective model or effort. Agent Overflow sends
+label. A codex 0.162.1+ `started` activity also carries the effective model
+and effort: the spawn row records them and AO makes no profile read for that
+child, live, on resume from a V2 row that recorded a model, or on recovery
+from `thread/items/list`. For any other child, Agent Overflow sends
 `thread/resume {threadId, excludeTurns:true}` with no overrides after typed
 ownership arrives. The response's top-level `model` and `reasoningEffort`
 describe the child after Codex has applied explicit requests, defaults, and

@@ -81,6 +81,11 @@ type messagesRequest struct {
 	Tools     []toolDef         `json:"tools"`
 	Messages  []json.RawMessage `json:"messages"`
 	System    json.RawMessage   `json:"system"`
+	// OutputConfig carries the effort the request runs at; absent when the
+	// CLI sent none (auto, or a model without effort tiers).
+	OutputConfig struct {
+		Effort string `json:"effort"`
+	} `json:"output_config"`
 }
 
 // toolNames returns the declared tool names, for the synthetic system:init.

@@ -29,9 +29,12 @@
   import { liveSubagentProgress } from '../../stores/subagentProgress.svelte';
   import { resolveSubagentProgress } from '../../utils/subagentProgress';
   import {
-    deriveClaudeSubagentModelLabel,
+    deriveClaudeSubagentEffort,
+    deriveClaudeSubagentEffortAlternatives,
+    deriveClaudeSubagentModel,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
+  import { claudeThreadSubagentEffortLabel, subagentEffortLabel } from '../../utils/subagentEffort';
   import {
     claudeResumeCarrierIdentity,
     codexSubagentLaunchInfo,
@@ -108,27 +111,37 @@
   // `subagent_model` is the answer. Only when neither names one does the
   // child inherit the live session model; the provider label is the last
   // resort for restored rows whose thread is unavailable.
-  let namedModelLabel = $derived.by(() => {
-    if (codexInfo) return codexInfo.model ? displayModelLabel('codex', codexInfo.model) : '';
-    const fromLaunch = deriveClaudeSubagentModelLabel(
-      inputObject,
-      parentMeta,
-      identity?.toolName ?? '',
-    );
-    if (fromLaunch) return fromLaunch;
-    const carrierModel =
-      lifecycle && isClaudeResumeCarrierItem(lifecycle)
-        ? claudeResumeCarrierIdentity(lifecycle).model
-        : '';
-    return carrierModel ? displayModelLabel('claude', carrierModel) : '';
+  let carrierIdentity = $derived(
+    lifecycle && isClaudeResumeCarrierItem(lifecycle) ? claudeResumeCarrierIdentity(lifecycle) : null,
+  );
+  let namedModel = $derived.by(() => {
+    if (codexInfo) return codexInfo.model;
+    return deriveClaudeSubagentModel(inputObject, parentMeta, identity?.toolName ?? '')
+      || (carrierIdentity?.model ?? '');
   });
+  // The model the child runs: the named one, else (Claude only) the live
+  // session model it inherits.
+  let model = $derived(
+    namedModel || (provider === 'codex' ? '' : pane?.effectiveModel || pane?.thread?.model || ''),
+  );
   let modelLabel = $derived.by(() => {
-    if (namedModelLabel) return namedModelLabel;
-    if (provider === 'codex') return 'Codex · Model unavailable';
-    const inherited = pane?.effectiveModel || pane?.thread?.model || '';
-    return inherited ? displayModelLabel(provider, inherited) : providerLabel(provider);
+    if (model) return displayModelLabel(provider, model);
+    return provider === 'codex' ? 'Codex · Model unavailable' : providerLabel(provider);
   });
-  let effortLabel = $derived(codexInfo?.reasoningEffort ?? '');
+  // The effort it runs at, labelled as the effort picker labels it. A
+  // resumed round runs at its own carrier's effort, which can differ from
+  // the launch's when the session's effort moved before the resume.
+  let effortLabel = $derived.by(() => {
+    if (codexInfo) return subagentEffortLabel('codex', codexInfo.reasoningEffort, undefined);
+    const effort = carrierIdentity
+      ? carrierIdentity.effort
+      : deriveClaudeSubagentEffort(inputObject, parentMeta, identity?.toolName ?? '');
+    const alternatives = carrierIdentity
+      ? carrierIdentity.effortAlternatives
+      : deriveClaudeSubagentEffortAlternatives(inputObject, parentMeta, identity?.toolName ?? '');
+    const threadId = identity?.threadId ?? lifecycle?.threadId ?? '';
+    return claudeThreadSubagentEffortLabel(threadId, pane?.thread?.projectId, model, effort, alternatives);
+  });
 
   // The chip's elapsed timer runs from the LIFECYCLE row — the launch, or
   // the resume that started the round now running — on the shared 1Hz
