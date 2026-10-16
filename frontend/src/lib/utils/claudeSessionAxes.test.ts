@@ -86,10 +86,9 @@ describe('thinking axis', () => {
     expect(CLAUDE_THINKING_MODE_OPTIONS[0].value).toBe('');
     expect(CLAUDE_THINKING_DISPLAY_OPTIONS[0].value).toBe('');
     expect(CLAUDE_THINKING_MODE_OPTIONS[0].description.toLowerCase()).not.toContain('off');
-    // The two hidden-thinking values are the pair a user most easily
-    // misreads as each other: one stops the thinking, the other only stops
-    // the text.
-    expect(CLAUDE_THINKING_MODE_OPTIONS[1].description).toContain('No extended thinking');
+    // Every current Claude model rejects disabled thinking, so there is no
+    // off; hiding the text is the display axis, and says Claude still thinks.
+    expect(CLAUDE_THINKING_MODE_OPTIONS.map((o) => o.value)).toEqual(['', 'budget']);
     expect(CLAUDE_THINKING_DISPLAY_OPTIONS[2].description).toContain('Claude still thinks');
   });
 
@@ -116,7 +115,6 @@ describe('thinking axis', () => {
       display: 'omitted',
       budgetTokens: 2048,
     });
-    expect(thinkingPatch('off', 2048, '')).toEqual({ mode: 'off', display: '' });
     expect(thinkingPatch('', 2048, 'summarized')).toEqual({ mode: '', display: 'summarized' });
   });
 
@@ -127,12 +125,9 @@ describe('thinking axis', () => {
   // Only the return to Claude's own choice has no wire form: every explicit
   // mode is expressible as a set_max_thinking_tokens request.
   it.each([
-    ['', 'off', false],
     ['', 'budget', false],
-    ['off', 'budget', false],
-    ['budget', 'off', false],
+    ['budget', 'budget', false],
     ['', '', false],
-    ['off', '', true],
     ['budget', '', true],
   ] as const)('defers %s -> %s: %s', (from, to, want) => {
     expect(thinkingChangeDefersRestart(from, to)).toBe(want);
