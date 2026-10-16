@@ -618,6 +618,24 @@ describe('createUseStickToBottomController', () => {
       fireKey(scrollEl, key);
       expect(controller.escapedFromLock).toBe(false);
     });
+
+    it.each([
+      ['a textarea', () => document.createElement('textarea')],
+      ['an input', () => document.createElement('input')],
+      ['a select', () => document.createElement('select')],
+      ['inside a contenteditable', () => {
+        const editor = document.createElement('div');
+        editor.setAttribute('contenteditable', 'true');
+        const line = document.createElement('p');
+        editor.append(line);
+        return line;
+      }],
+    ])('%s: ArrowUp moves the caret and keeps follow', (_name, make) => {
+      const field = make();
+      contentEl.append(field.closest('[contenteditable]') ?? field);
+      fireKey(field, 'ArrowUp');
+      expect(controller.escapedFromLock).toBe(false);
+    });
   });
 
   describe('touch handler', () => {
@@ -1094,6 +1112,9 @@ describe('createUseStickToBottomController', () => {
     });
 
     it('does not extend downward gesture consent through layout motion', async () => {
+      // The wheel's first scroll is its landing, short of the bottom; the
+      // layout motion after it renews nothing, so the end it later reaches
+      // is not the reader's.
       const ro = getRO();
       ro.fire(contentEl, 800);
       fireWheel(scrollEl, -50, scrollEl);
@@ -2233,9 +2254,13 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBe(822);
     });
 
-    it('reaching an earlier aimed-at end after the down input expired stays escaped', async () => {
+    it('reaching an earlier aimed-at end after the down input was spent stays escaped', async () => {
       await escapeTo(100);
-      fireWheel(scrollEl, 100_000, scrollEl);
+      // One notch, spent by its own scroll short of the end it aimed at.
+      fireWheel(scrollEl, 100, scrollEl);
+      geom.scrollTop = 200;
+      fireScroll(scrollEl);
+      await nextTimer();
       mockNow += 300;
       await waitRealMs(300);
       growTail();
@@ -2245,6 +2270,21 @@ describe('createUseStickToBottomController', () => {
 
       expect(controller.escapedFromLock).toBe(true);
       expect(geom.scrollTop).toBe(400);
+    });
+
+    it('a wheel to the end whose scroll lands on the aimed-at end after the window re-sticks and follows', async () => {
+      await escapeTo(100);
+      fireWheel(scrollEl, 100_000, scrollEl);
+      mockNow += 300;
+      await waitRealMs(300);
+      growTail();
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      for (let i = 0; i < 120 && geom.scrollTop < 977; i += 1) await nextFrame();
+      expect(geom.scrollTop).toBe(977);
     });
 
     it('pointer-tap on the scrollbar escapes immediately and does not safety-net repin', async () => {
@@ -6028,7 +6068,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.escapedFromLock).toBe(true);
     });
 
-    it('recent down intent expires before a later bottom-landing scroll', async () => {
+    it('a down gesture re-sticks when its scroll lands at the bottom after the down-intent window', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -6039,9 +6079,63 @@ describe('createUseStickToBottomController — spring chase', () => {
       await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
 
-      fireWheel(scrollEl, 50, scrollEl);
+      fireWheel(scrollEl, 300, scrollEl);
       await waitMs(300);
 
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('a landing re-stick follows content that grew before its deferred check', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // The landing reveals rows whose measurement grows the content
+      // while the reader is still escaped.
+      fireWheel(scrollEl, 50, scrollEl);
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      geom.scrollHeight = 1300;
+      geom.contentHeight = 1100;
+      ro.fire(contentEl, 1100);
+      expect(geom.scrollTop).toBe(400);
+      await nextTimer();
+
+      expect(controller.isSticky).toBe(true);
+      for (let i = 0; i < 120 && geom.scrollTop < 700; i += 1) await nextFrame();
+      expect(geom.scrollTop).toBe(700);
+    });
+
+    it('an old down intent does not consent to an unrelated later landing at the bottom', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // The wheel's own scroll lands short of the bottom.
+      fireWheel(scrollEl, 50, scrollEl);
+      geom.scrollTop = 150;
+      fireScroll(scrollEl);
+      await nextTimer();
+      await waitMs(300);
+
+      // A scroll with no input reaches the end later.
       geom.scrollTop = 400;
       fireScroll(scrollEl);
       await nextTimer();

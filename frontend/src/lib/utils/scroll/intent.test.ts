@@ -39,6 +39,7 @@ interface Harness {
     restoreConsentArmed: boolean;
     distanceFromBottom: number;
     resizeCorrelated: boolean;
+    resizeDifference: number;
     lastExplained: number | null;
   };
   spring: {
@@ -76,6 +77,7 @@ function harness(
     // immediate re-stick branch; the tests that want that branch set it to 0.
     distanceFromBottom: 100,
     resizeCorrelated: false,
+    resizeDifference: 0,
     lastExplained: null as number | null,
   };
 
@@ -109,7 +111,7 @@ function harness(
     refreshIsNearBottom,
     spring,
     sampleResizeCorrelation: () => state.resizeCorrelated,
-    resizeDifferenceNow: () => 0,
+    resizeDifferenceNow: () => state.resizeDifference,
     noteUserScroll,
     lastExplainedScrollTop: () => state.lastExplained,
     followBottom,
@@ -745,6 +747,487 @@ describe('deferred scroll pass', () => {
 
     expect(h.state.escaped).toBe(false);
     expect(h.state.isAtBottom).toBe(true);
+  });
+
+  describe('a down gesture whose scroll lands after the down-intent window', () => {
+    // A loaded host can deliver the landing scroll event long after the
+    // wheel; the window is 250 ms.
+    const PAST_WINDOW_MS = 300;
+    const pastWindow = () => new Promise((r) => setTimeout(r, PAST_WINDOW_MS));
+
+    // The wheel asks for `deltaY` px; the view sits 100 px above the bottom.
+    function wheeledDownWhileEscaped(deltaY = 100): Harness {
+      const h = build();
+      h.state.escaped = true;
+      h.state.distanceFromBottom = 100;
+      h.scrollEl.scrollTop = 400;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+      wheel(h.scrollEl, { deltaY });
+      return h;
+    }
+
+    function landAt(h: Harness, distanceFromBottom: number, top = 500): void {
+      h.state.distanceFromBottom = distanceFromBottom;
+      h.scrollEl.scrollTop = top;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+    }
+
+    it('re-sticks when it lands at the bottom', async () => {
+      const h = wheeledDownWhileEscaped();
+      await pastWindow();
+      landAt(h, 0);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(false);
+      expect(h.state.isAtBottom).toBe(true);
+    });
+
+    it('re-sticks when the landing is resize-correlated', async () => {
+      const h = wheeledDownWhileEscaped();
+      await pastWindow();
+      h.state.resizeCorrelated = true;
+      landAt(h, 0);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(false);
+    });
+
+    it('stays escaped when it lands outside the re-stick epsilon', async () => {
+      const h = wheeledDownWhileEscaped();
+      await pastWindow();
+      landAt(h, AUTO_FOLLOW_BOTTOM_EPSILON_PX + 1, 500 - AUTO_FOLLOW_BOTTOM_EPSILON_PX - 1);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    it('stays escaped after an upward escape in between', async () => {
+      const h = wheeledDownWhileEscaped();
+      wheel(h.scrollEl, { deltaY: -10 });
+      await pastWindow();
+      landAt(h, 0);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    it('stays escaped when an escape lands before the deferred pass', async () => {
+      const h = wheeledDownWhileEscaped();
+      await pastWindow();
+      landAt(h, 0);
+      wheel(h.scrollEl, { deltaY: -10 });
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    it('is consumed by a landing short of the bottom that spends it, so a later scroll with no input to the end stays escaped', async () => {
+      // Find-in-page, a focus scroll or an anchor moves the view with no
+      // input of its own; the earlier gesture already landed.
+      const h = wheeledDownWhileEscaped(40);
+      landAt(h, 60, 440);
+      await settleDeferredPass();
+      expect(h.state.escaped).toBe(true);
+
+      await pastWindow();
+      landAt(h, 0, 500);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    it('is not consumed by a scroll the controller wrote', async () => {
+      const h = wheeledDownWhileEscaped();
+      h.intent.noteProgrammaticWrite(450);
+      h.scrollEl.scrollTop = 450;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+      await pastWindow();
+      landAt(h, 0, 500);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(false);
+    });
+
+    it('is armed again by a second wheel after its first landing', async () => {
+      const h = wheeledDownWhileEscaped(40);
+      landAt(h, 60, 440);
+      await settleDeferredPass();
+      await pastWindow();
+      wheel(h.scrollEl, { deltaY: 60 });
+      await pastWindow();
+      landAt(h, 0, 500);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(false);
+    });
+
+    it('stays escaped after the controller placed the view at the bottom and escaped again', async () => {
+      const h = wheeledDownWhileEscaped();
+      h.intent.clearRecentDownIntent();
+      h.intent.setEscapedFromLock(true);
+      await pastWindow();
+      landAt(h, 0);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    describe('navigation keys typed into an editable inside the scroller', () => {
+      function escapedWith(target: () => HTMLElement): { h: Harness; field: HTMLElement } {
+        const h = build();
+        h.state.escaped = true;
+        h.state.distanceFromBottom = 100;
+        h.scrollEl.scrollTop = 400;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        const field = target();
+        h.child.append(field.closest('[contenteditable]') ?? field);
+        return { h, field };
+      }
+      function islandButton(): HTMLElement {
+        const editor = document.createElement('div');
+        editor.setAttribute('contenteditable', 'true');
+        const island = document.createElement('div');
+        island.setAttribute('contenteditable', 'false');
+        const button = document.createElement('button');
+        island.append(button);
+        editor.append(island);
+        return button;
+      }
+      function editableLine(): HTMLElement {
+        const editor = document.createElement('div');
+        editor.setAttribute('contenteditable', 'true');
+        const line = document.createElement('p');
+        editor.append(line);
+        return line;
+      }
+      const input = (type: string, attrs: Record<string, string> = {}) => () => {
+        const el = document.createElement('input');
+        el.type = type;
+        for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, value);
+        return el;
+      };
+      const textarea = (attrs: Record<string, string> = {}) => () => {
+        const el = document.createElement('textarea');
+        for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, value);
+        return el;
+      };
+
+      it.each(['End', 'PageDown', 'ArrowDown'])('%s in a textarea arms no landing, so a later scroll with no input to the end stays escaped', async (k) => {
+        const { h, field } = escapedWith(textarea());
+        key(field, k);
+        await pastWindow();
+        // A find-in-page or caret scroll reaches the end.
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it.each([
+        ['a text input', input('text')],
+        ['a number input', input('number')],
+        ['a select', () => document.createElement('select')],
+        ['a line inside a contenteditable', editableLine],
+      ])('End in %s arms no landing', async (_name, make) => {
+        const { h, field } = escapedWith(make);
+        key(field, 'End');
+        await pastWindow();
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it.each([
+        ['a readonly textarea', textarea({ readonly: '' })],
+        ['a disabled textarea', textarea({ disabled: '' })],
+        ['a readonly text input', input('text', { readonly: '' })],
+        ['a checkbox', input('checkbox')],
+        ['a button in a non-editable island of an editor', islandButton],
+      ])('End in %s scrolls the log, so its late landing at the bottom re-sticks', async (_name, make) => {
+        const { h, field } = escapedWith(make);
+        key(field, 'End');
+        await pastWindow();
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+    });
+
+    it('a fractional wheel delta leaves no sub-pixel travel for a later no-input move onto the end', async () => {
+      const h = build();
+      h.state.escaped = true;
+      h.state.distanceFromBottom = 600;
+      h.scrollEl.scrollTop = 200;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+      wheel(h.scrollEl, { deltaY: 100 });
+      // The browser moved 99.33 px (DPR 1.5 rounding), far short of the end.
+      landAt(h, 500.67, 299.33);
+      await settleDeferredPass();
+      await pastWindow();
+      // With no input, something moves the view 3 px onto the end.
+      landAt(h, 0, 302.33);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    describe('a smooth-scrolled wheel that lands over several events', () => {
+      it('re-sticks when the first late event is mid-animation and the next reaches the end', async () => {
+        const h = wheeledDownWhileEscaped();
+        await pastWindow();
+        // The first event a stalled main thread delivers is mid-animation;
+        // the next is the end of the same gesture.
+        landAt(h, 40, 460);
+        await new Promise((r) => setTimeout(r, 16));
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+
+      it('is cleared once its events spend the travel short of the bottom', async () => {
+        const h = wheeledDownWhileEscaped(60);
+        await pastWindow();
+        landAt(h, 80, 420);
+        landAt(h, 40, 460);
+        await settleDeferredPass();
+        expect(h.state.escaped).toBe(true);
+
+        // No input: a find-in-page or focus scroll reaches the end.
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('does not take a jump further than its travel as its landing', async () => {
+        const h = build();
+        h.state.escaped = true;
+        h.state.distanceFromBottom = 1000;
+        h.scrollEl.scrollTop = 400;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        wheel(h.scrollEl, { deltaY: 100 });
+        await pastWindow();
+        // A find-in-page jump lands at the end, far beyond one notch.
+        landAt(h, 0, 1400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('is cleared when its travel is spent exactly', async () => {
+        const h = build();
+        h.state.escaped = true;
+        h.state.distanceFromBottom = 67;
+        h.scrollEl.scrollTop = 400;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        wheel(h.scrollEl, { deltaY: 60 });
+        await pastWindow();
+        landAt(h, 7, 460);
+        await settleDeferredPass();
+        // A few pixels with no input reach the re-stick epsilon.
+        landAt(h, 4, 463);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('is cleared by an upward scroll mid-gesture', async () => {
+        const h = wheeledDownWhileEscaped();
+        landAt(h, 50, 450);
+        landAt(h, 70, 430);
+        await pastWindow();
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('is cleared by a native clamp landing short of where the wheel aimed', async () => {
+        const h = wheeledDownWhileEscaped();
+        await pastWindow();
+        // The range shrank beneath the view: the browser clamps it to the
+        // new maximum, an explained position beyond it.
+        h.state.lastExplained = 600;
+        landAt(h, 0, 450);
+        await settleDeferredPass();
+        expect(h.state.escaped).toBe(true);
+
+        h.state.lastExplained = null;
+        landAt(h, 0, 480);
+        await settleDeferredPass();
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('is extended by a second wheel', async () => {
+        const h = wheeledDownWhileEscaped(40);
+        landAt(h, 70, 430);
+        wheel(h.scrollEl, { deltaY: 60 });
+        await pastWindow();
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+
+      it('measures a line-mode wheel in lines', async () => {
+        const h = build();
+        h.state.escaped = true;
+        h.state.distanceFromBottom = 48;
+        h.scrollEl.scrollTop = 400;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        wheel(h.scrollEl, { deltaY: 3, deltaMode: WheelEvent.DOM_DELTA_LINE });
+        await pastWindow();
+        landAt(h, 0, 448);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+    });
+
+    describe('an anchoring shift while a landing is pending', () => {
+      function shiftBy(h: Harness, px: number, distanceFromBottom: number): void {
+        h.state.resizeCorrelated = true;
+        h.state.resizeDifference = px;
+        landAt(h, distanceFromBottom, h.scrollEl.scrollTop + px);
+        h.state.resizeCorrelated = false;
+        h.state.resizeDifference = 0;
+      }
+
+      it('spends none of the travel, so the later landing at the bottom re-sticks', async () => {
+        const h = wheeledDownWhileEscaped();
+        // Rows inserted above move the view by the gesture's own size.
+        shiftBy(h, 100, 100);
+        await settleDeferredPass();
+        await pastWindow();
+        landAt(h, 0, 600);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+
+      it('is not the landing when it reaches the bottom itself', async () => {
+        const h = wheeledDownWhileEscaped();
+        await pastWindow();
+        shiftBy(h, 100, 0);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+    });
+
+    describe('End and PageDown carry their travel', () => {
+      function keyedDownWhileEscaped(k: string, distanceFromBottom: number): Harness {
+        const h = build();
+        h.state.escaped = true;
+        h.state.distanceFromBottom = distanceFromBottom;
+        h.scrollEl.scrollTop = 400;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        key(h.scrollEl, k);
+        return h;
+      }
+
+      it('a late smooth End re-sticks at its final event', async () => {
+        const h = keyedDownWhileEscaped('End', 1000);
+        await pastWindow();
+        landAt(h, 700, 700);
+        landAt(h, 300, 1100);
+        landAt(h, 0, 1400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+
+      it('a late End landing on the end it aimed at re-sticks though the bottom moved', async () => {
+        const h = keyedDownWhileEscaped('End', 1000);
+        await pastWindow();
+        landAt(h, 700, 700);
+        // Rows mounting at the tail moved the bottom 577 px below the end
+        // End's scroll was computed for.
+        landAt(h, 577, 1400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+
+      it('an upward event after End ends it', async () => {
+        const h = keyedDownWhileEscaped('End', 1000);
+        landAt(h, 700, 700);
+        landAt(h, 750, 650);
+        await pastWindow();
+        landAt(h, 0, 1400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('a controller write ends an End', async () => {
+        const h = keyedDownWhileEscaped('End', 1000);
+        h.intent.noteProgrammaticWrite(500);
+        h.scrollEl.scrollTop = 500;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        await pastWindow();
+        landAt(h, 0, 1400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('a PageDown that lands short of the bottom is cleared', async () => {
+        // A viewport is 500 px; the browser's page step is shorter.
+        const h = keyedDownWhileEscaped('PageDown', 2000);
+        await pastWindow();
+        landAt(h, 1760, 640);
+        landAt(h, 1563, 837);
+        await settleDeferredPass();
+        // No input: a find-in-page or focus scroll reaches the end.
+        landAt(h, 0, 2400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('a PageDown that reaches the bottom re-sticks', async () => {
+        const h = keyedDownWhileEscaped('PageDown', 300);
+        await pastWindow();
+        landAt(h, 150, 550);
+        landAt(h, 0, 700);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+    });
+
+    it('a key gesture is spent by its first scroll event, wherever it lands', async () => {
+      const h = build();
+      h.state.escaped = true;
+      h.state.distanceFromBottom = 100;
+      h.scrollEl.scrollTop = 400;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+      key(h.scrollEl, 'ArrowDown');
+      landAt(h, 60, 440);
+      await settleDeferredPass();
+      await pastWindow();
+      landAt(h, 0, 500);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    it('a key gesture landing at the bottom late re-sticks', async () => {
+      const h = build();
+      h.state.escaped = true;
+      h.state.distanceFromBottom = 100;
+      h.scrollEl.scrollTop = 400;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+      key(h.scrollEl, 'End');
+      await pastWindow();
+      landAt(h, 0, 500);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(false);
+    });
   });
 
   it('does not re-stick without down intent', async () => {

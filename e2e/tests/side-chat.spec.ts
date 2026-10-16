@@ -12,7 +12,10 @@
 // which comes back with it; and a reload restores the source pane alone,
 // because no side-chat pane is ever persisted. Creating a grouped draft
 // from a focused side chat targets its source pane and preserves the
-// group's collapse state.
+// group's collapse state. A Send click made while the pane strip's reveal
+// glide is still moving toward the side chat sends: the glide yields to the
+// scroll that brought Send into view instead of moving Send out from under
+// the pointer.
 // Spec: docs/specs/agent-thread-tools.md, docs/decisions.md (companions).
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { Page } from '@playwright/test';
@@ -52,6 +55,7 @@ function sideChatShowing(page: Page, threadId: string) {
 async function seedSource(
   harness: HarnessApp,
   otherTitles: string[] = [],
+  provider: 'claude' | 'codex' = 'claude',
 ): Promise<{ threadId: string; projectId: string; path: string; otherIds: string[] }> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
@@ -60,7 +64,7 @@ async function seedSource(
         repo: {},
         threads: [SOURCE_TITLE, ...otherTitles].map((title) => ({
           title,
-          provider: 'claude',
+          provider,
           turns: [
             {
               userText: 'start the migration',
@@ -454,5 +458,47 @@ for (const action of ['sidebar', 'side-chat'] as const) {
     await target.getByTestId('composer-send').click();
     await harness.waitForEvent('provider:turn_completed');
     await expect(target.getByTestId('assistant-message-body').last()).toContainText('Ready to fork.');
+  });
+}
+
+for (const provider of ['claude', 'codex'] as const) {
+  test(`${provider}: a Send click while the strip glides to the side chat sends`, async ({ harness, page }) => {
+    const source = await seedSource(harness, [], provider);
+    await setScenario(harness, source.path, plainScenario({ name: `side-chat-glide-${provider}`, provider, texts: ['On it.'] }));
+    await harness.open(page);
+    await page.getByTestId('thread-row').filter({ hasText: SOURCE_TITLE }).click();
+    await runOneTurn(page, harness, 'read the migration');
+    await runSideChat(page);
+    await sideChatPane(page).getByLabel('Message Input').fill('a side question');
+
+    // Reveal the side chat again from the strip's start, as opening it does.
+    // On a frame where the glide is still on its way, Send is scrolled into
+    // view, as a pointer tool or the reader does; then it is pressed and
+    // released a couple of frames apart. Both land on Send only if the
+    // strip stays where that scroll put it.
+    const paneId = await sideChatPane(page).getAttribute('data-pane-id');
+    const send = sideChatPane(page).getByTestId('composer-send');
+    const mid = await send.evaluate((el, id) => new Promise<{ gliding: number; left: number; x: number; y: number }>((resolve) => {
+      const strip = document.querySelector<HTMLElement>('[data-testid="pane-host"]')!;
+      strip.scrollLeft = 0;
+      window.dispatchEvent(new CustomEvent('agent-overflow:reveal-pane', { detail: { paneId: id } }));
+      const step = () => {
+        const left = strip.scrollLeft;
+        if (left === 0) { requestAnimationFrame(step); return; }
+        el.scrollIntoView({ block: 'end', inline: 'end' });
+        const box = el.getBoundingClientRect();
+        resolve({ gliding: left, left: strip.scrollLeft, x: box.x + box.width / 2, y: box.y + box.height / 2 });
+      };
+      requestAnimationFrame(step);
+    }), paneId);
+    expect(mid.left, 'the scroll into view moved the strip mid-glide').not.toBe(mid.gliding);
+    const box = { x: mid.x, y: mid.y, width: 0, height: 0 };
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await page.mouse.up();
+
+    await expect(sideChatPane(page).getByTestId('user-message-bubble').filter({ hasText: 'a side question' })).toBeVisible();
+    await harness.waitForEvent('provider:turn_completed');
   });
 }

@@ -2032,14 +2032,44 @@ func TestBackgroundTaskNotification_ReplayPreservesOriginalTimelinePosition(t *t
 	}
 }
 
-func TestReadClaudeTaskOutputFileRejectsPathsOutsideAllowedTempRoots(t *testing.T) {
-	repoFile, err := filepath.Abs("../../go.mod")
+// pinAllowedClaudeOutputRoots replaces the allowed roots with one directory
+// under the test's temp dir and returns it with a sibling directory outside
+// it, so a rejection test does not depend on where the checkout or the
+// system temp dir sits.
+func pinAllowedClaudeOutputRoots(t *testing.T) (allowed, outside string) {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
-		t.Fatalf("abs path: %v", err)
+		t.Fatalf("resolve temp dir: %v", err)
 	}
-	if _, _, err := readClaudeTaskOutputFile(repoFile, 1024); err == nil {
-		t.Fatal("expected non-temp repo path to be rejected")
+	allowed = filepath.Join(base, "allowed")
+	outside = filepath.Join(base, "outside")
+	for _, dir := range []string{allowed, outside} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
 	}
+	resetAllowedClaudeOutputRootsForTest()
+	t.Cleanup(resetAllowedClaudeOutputRootsForTest)
+	allowedClaudeOutputRootsOnce.Do(func() { allowedClaudeOutputRootsCache = []string{allowed} })
+	return allowed, outside
+}
+
+func expectOutsideAllowedRoots(t *testing.T, path string) {
+	t.Helper()
+	_, _, err := readClaudeTaskOutputFile(path, 1024)
+	if err == nil || !strings.Contains(err.Error(), "outside allowed roots") {
+		t.Fatalf("read %s: err = %v, want the outside-allowed-roots refusal", path, err)
+	}
+}
+
+func TestReadClaudeTaskOutputFileRejectsPathsOutsideAllowedTempRoots(t *testing.T) {
+	_, outside := pinAllowedClaudeOutputRoots(t)
+	target := filepath.Join(outside, "task.output")
+	if err := os.WriteFile(target, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	expectOutsideAllowedRoots(t, target)
 }
 
 // TestReadClaudeTaskOutputFile_AcceptsSymlinkInsideAllowedRoot pins the
@@ -2082,21 +2112,16 @@ func TestReadClaudeTaskOutputFile_AcceptsSymlinkInsideAllowedRoot(t *testing.T) 
 // symlink rejection would let an attacker who plants a malicious
 // `output_file` entry escape the allow-list.
 func TestReadClaudeTaskOutputFile_RejectsSymlinkOutsideAllowedRoots(t *testing.T) {
-	// The target lives outside any allowed root. The repo's go.mod is
-	// a stable file we know we control inside this checkout.
-	target, err := filepath.Abs("../../go.mod")
-	if err != nil {
-		t.Fatalf("abs target: %v", err)
+	allowed, outside := pinAllowedClaudeOutputRoots(t)
+	target := filepath.Join(outside, "task.jsonl")
+	if err := os.WriteFile(target, []byte(`{"hello":"world"}`), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
 	}
-	dir := t.TempDir()
-	link := filepath.Join(dir, "escape.output")
+	link := filepath.Join(allowed, "escape.output")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
-
-	if _, _, err := readClaudeTaskOutputFile(link, 1024); err == nil {
-		t.Fatal("expected symlink resolving outside allowed roots to be rejected")
-	}
+	expectOutsideAllowedRoots(t, link)
 }
 
 // TestAllowedClaudeOutputRoots_IncludesClaudeProjectsDir asserts that

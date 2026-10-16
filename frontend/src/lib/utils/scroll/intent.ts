@@ -22,6 +22,7 @@ import { trace } from './trace';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import { touchDragConsumedBelow, wheelConsumedBelow } from './wheelAttribution';
 import { recordScrollEventObservation } from './eventObservation';
+import { wheelDeltaPx } from './overlayScrollbar';
 
 const RECENT_DOWN_INTENT_WINDOW_MS = 250;
 const SCROLLBAR_DRAG_SESSION_FAILSAFE_MS = 30_000;
@@ -88,6 +89,24 @@ function installModuleSelectionListeners(): void {
 /** Test-only escape hatch to reset the module-global primary-button state. */
 export function resetScrollIntentModuleStateForTest(): void {
   primaryButtonHeld = false;
+}
+
+// Input types whose navigation keys move a caret or change a value.
+const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set(['text', 'search', 'url', 'tel', 'email', 'password', 'number']);
+
+/**
+ * The target consumes navigation keys itself (a writable text field, a
+ * select, editable content), so they do not move the scroller. A readonly
+ * or disabled text field, a checkbox, or a button in a non-editable island
+ * of an editor leaves them to the scroller.
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (target instanceof HTMLTextAreaElement) return !target.readOnly && !target.disabled;
+  if (target instanceof HTMLInputElement) {
+    return TEXT_INPUT_TYPES.has(target.type) && !target.readOnly && !target.disabled;
+  }
+  if (target instanceof HTMLSelectElement) return true;
+  return target instanceof HTMLElement && target.isContentEditable;
 }
 
 export function isSelectingInside(scrollEl: HTMLElement): boolean {
@@ -235,10 +254,29 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   // target it started with). Landing on it counts as reaching the bottom.
   // A position past it is not arrival: content inserted above shifts
   // every position, and a step computed after the bottom moved passed it
-  // without aiming there. -1 when no down input is live.
+  // without aiming there. -1 when no down input is live: neither the
+  // recent window nor a pending landing (below), which can arrive late.
   let downIntentShownEnd = -1;
   let recentDownIntentVersion = 0;
   let recentDownIntentClearTimer: ReturnType<typeof setTimeout> | null = null;
+  // A down gesture made while escaped, still waiting for its scroll to land.
+  // Unlike the recent-down-intent window it has no clock: a loaded host can
+  // deliver the landing scroll events long after the input. A gesture with
+  // a known travel carries it: a wheel its delta, PageDown a viewport, End
+  // no limit. A smooth scroll lands over several events, and each untagged
+  // one spends what it moved; an anchoring shift is layout, not the
+  // gesture, and spends nothing. One that lands at the bottom while travel
+  // remains re-sticks; spending it all, moving up, or moving further than
+  // remains ends the gesture, so a later scroll with no input of its own
+  // (find-in-page, focus, an anchor) finds nothing pending. A controller
+  // write ends an End, whose travel never runs out. An arrow key or touch
+  // has no known travel, so its first untagged scroll is its landing. An
+  // escape, a re-stick or a detach also ends it; the version fences a
+  // deferred check against those.
+  let downLandingPending = false;
+  let downLandingVersion = 0;
+  let downLandingTravelPx = 0;
+  let downLandingOneEvent = false;
   let scrollbarDragSessionActive = false;
   let scrollbarDragSessionVersion = 0;
   let scrollbarDragSessionFailsafeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -246,8 +284,8 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   let touchStartY: number | null = null;
   let touchStartX: number | null = null;
   // Baseline so `scrolledDown` can be computed for the re-stick path.
-  // Re-stick requires both recent down input and a real downward scroll
-  // event landing at the bottom (or at the end that input aimed at); this
+  // Re-stick requires both down input and a real downward scroll event
+  // landing at the bottom (or at the end that input aimed at); this
   // baseline keeps layout clamps from masquerading as user-driven down
   // motion.
   let lastObservedScrollTopForRestick = -1;
@@ -272,12 +310,38 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   function clearRecentDownIntent(opts: { bumpVersion?: boolean } = {}): void {
     recentDownIntentUntil = 0;
-    downIntentShownEnd = -1;
+    if (!downLandingPending) downIntentShownEnd = -1;
     if (opts.bumpVersion ?? true) recentDownIntentVersion += 1;
     if (recentDownIntentClearTimer) {
       clearTimeout(recentDownIntentClearTimer);
       recentDownIntentClearTimer = null;
     }
+  }
+
+  function clearDownLanding(): void {
+    endDownLanding();
+    downLandingTravelPx = 0;
+    downLandingVersion += 1;
+  }
+
+  function endDownLanding(): void {
+    downLandingPending = false;
+    if (!hasRecentDownIntent()) downIntentShownEnd = -1;
+  }
+
+  // Spends one untagged scroll event's movement from the pending gesture.
+  // True when the event is within what the gesture asked for, so it may
+  // be the gesture's landing.
+  function spendDownLanding(moved: number, unattributed: boolean, layoutShift: boolean): boolean {
+    if (layoutShift || (moved === 0 && !unattributed)) return false;
+    if (unattributed || moved < 0 || moved > downLandingTravelPx + AUTO_FOLLOW_BOTTOM_EPSILON_PX) {
+      endDownLanding();
+      return false;
+    }
+    downLandingTravelPx -= moved;
+    // Under a pixel left is a fractional delta's rounding, not travel.
+    if (downLandingOneEvent || !(downLandingTravelPx >= 1)) endDownLanding();
+    return true;
   }
 
   function hasRecentDownIntent(): boolean {
@@ -332,6 +396,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   function restickFromUserInput(source: 'wheel' | 'key' | 'touch' | 'scroll'): void {
     clearRecentDownIntent({ bumpVersion: false });
+    clearDownLanding();
     deps.setEscaped(false);
     deps.setIsAtBottom(true);
     deps.spring.clearStopRequest();
@@ -345,13 +410,22 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     });
   }
 
-  function recordRecentDownIntent(source: 'wheel' | 'key' | 'touch'): void {
+  /**
+   * `travelPx`: how far the gesture asked to move (unbounded for End);
+   * `oneEvent`: no known travel, so its first scroll event is its landing.
+   */
+  function recordRecentDownIntent(source: 'wheel' | 'key' | 'touch', travelPx: number, oneEvent: boolean): void {
     deps.onScrollInput?.();
     if (!deps.escaped()) return;
     clearProgrammaticScrollState();
     deps.setRestoreConsentArmed(false);
     recentDownIntentVersion += 1;
     extendRecentDownIntent();
+    downLandingTravelPx = downLandingPending && !downLandingOneEvent && !oneEvent
+      ? downLandingTravelPx + travelPx
+      : travelPx;
+    downLandingOneEvent = oneEvent;
+    downLandingPending = true;
     const el = deps.getScrollEl();
     const distFromBottom = el ? deps.distanceFromBottom() : 0;
     downIntentShownEnd = el ? el.scrollTop + distFromBottom : -1;
@@ -423,6 +497,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   function setEscapedFromLock(next: boolean): void {
     if (!next && !scrollbarDragSessionActive) clearScrollbarDragSession();
+    clearDownLanding();
     if (next) {
       clearRecentDownIntent();
       // User explicitly broke from auto-follow — bail any in-flight
@@ -520,7 +595,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       return;
     }
 
-    recordRecentDownIntent('wheel');
+    recordRecentDownIntent('wheel', wheelDeltaPx(e.deltaY, e.deltaMode, scrollEl.clientHeight), false);
   }
 
   function handlePointerDown(e: PointerEvent): void {
@@ -593,7 +668,12 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     // skipped on the tagged path — the spring fires at 60Hz during a
     // chase, and both are wasted work when we already know this is our
     // own write.
-    if (tagged) return;
+    if (tagged) {
+      // An End's travel never runs out; the controller moving the view
+      // ends it as spending would.
+      if (downLandingPending && downLandingTravelPx === Number.POSITIVE_INFINITY && !downLandingOneEvent) endDownLanding();
+      return;
+    }
     const distFromBottomAtEvent = deps.refreshIsNearBottom();
     // No tagged field here: the tagged bail above means this record only
     // ever describes untagged (user-attributed) events.
@@ -617,6 +697,14 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     const downIntentVersionAtEvent = recentDownIntentVersion;
     const shownEndAtEvent = downIntentShownEnd;
     const resizeDifferenceAtEvent = deps.resizeDifferenceNow();
+    const downLandingVersionAtEvent = downLandingVersion;
+    // A move the content resize accounts for whole is an anchoring shift,
+    // not the reader's.
+    const layoutShift = resizeCorrelatedScroll
+      && previousObserved >= 0
+      && Math.abs(scrollTopAtEvent - previousObserved - resizeDifferenceAtEvent) <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+    const downLandingAtEvent = downLandingPending
+      && spendDownLanding(scrollTopAtEvent - previousObserved, previousObserved < 0 || nativeClamp, layoutShift);
     const scrollbarDragSessionAtEvent = scrollbarDragSessionActive;
     const scrollbarDragSessionVersionAtEvent = scrollbarDragSessionVersion;
     const scrolledDown = previousObserved < 0
@@ -667,7 +755,20 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       const hasLiveScrollbarDragRestickIntent =
         eventCameFromCurrentScrollbarDrag
         && scrolledDown;
-      const hasLiveDownIntent = hasLiveRecentDownIntent || hasLiveScrollbarDragRestickIntent;
+      // A down gesture's own scroll landing at the bottom, however late.
+      // The gesture landed on the end its input aimed at, though the
+      // bottom has since moved below it (see downIntentShownEnd); an
+      // anchoring shift is not arrival.
+      const landedAtShownEnd = shownEndAtEvent >= 0
+        && !layoutShift
+        && Math.abs(scrollTopAtEvent - shownEndAtEvent) <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+      const landedFromDownGesture = downLandingAtEvent
+        && downLandingVersion === downLandingVersionAtEvent
+        && scrolledDown
+        && !nativeClamp
+        && (distFromBottomAtEvent <= AUTO_FOLLOW_BOTTOM_EPSILON_PX || landedAtShownEnd);
+      const hasLiveDownIntent = hasLiveRecentDownIntent || hasLiveScrollbarDragRestickIntent
+        || landedFromDownGesture;
       if (resizeCorrelatedScroll && !hasLiveDownIntent) {
         if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent.deferred.bailRO', () => ({
           resizeDifference: Math.round(deps.resizeDifferenceNow()),
@@ -686,17 +787,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
         return;
       }
 
-      // The gesture landed on the end its input aimed at, though the
-      // bottom has since moved below it (see downIntentShownEnd). A move
-      // the content resize accounts for whole is an anchoring shift, not
-      // the reader's.
-      const layoutShift = resizeCorrelatedScroll
-        && previousObserved >= 0
-        && Math.abs(scrollTopAtEvent - previousObserved - resizeDifferenceAtEvent) <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
-      const reachedShownEnd = hasLiveRecentDownIntent
-        && shownEndAtEvent >= 0
-        && !layoutShift
-        && Math.abs(scrollTopAtEvent - shownEndAtEvent) <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+      const reachedShownEnd = (hasLiveRecentDownIntent || landedFromDownGesture) && landedAtShownEnd;
       const willRestick = hasLiveDownIntent
         && scrolledDown
         && deps.escaped()
@@ -728,8 +819,13 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   // Keydown / touch handlers (intent signals).
   function handleKeydown(e: KeyboardEvent): void {
+    // A navigation key typed into an editor inside the scroller (a message
+    // being edited, a plan-review comment) moves the caret, not the scroller.
+    if (isEditableTarget(e.target)) return;
     if (UP_KEYS.has(e.key)) escapeFromUserInput('key');
-    if (DOWN_KEYS.has(e.key)) recordRecentDownIntent('key');
+    if (e.key === 'End') recordRecentDownIntent('key', Number.POSITIVE_INFINITY, false);
+    else if (e.key === 'PageDown') recordRecentDownIntent('key', deps.getScrollEl()?.clientHeight ?? 0, false);
+    else if (DOWN_KEYS.has(e.key)) recordRecentDownIntent('key', Number.POSITIVE_INFINITY, true);
   }
   function handleTouchStart(e: TouchEvent): void {
     touchStartY = e.touches[0]?.clientY ?? null;
@@ -758,7 +854,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     // moves UP while already escaped is the matching "scroll back toward
     // bottom" input signal (DOWN intent).
     if (dy > 1) escapeFromUserInput('touch');
-    if (dy < -1) recordRecentDownIntent('touch');
+    if (dy < -1) recordRecentDownIntent('touch', Number.POSITIVE_INFINITY, true);
   }
   function handleTouchEnd(): void {
     touchStartY = null;
@@ -809,6 +905,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     detachListeners = undefined;
     clearProgrammaticScrollState();
     clearRecentDownIntent();
+    clearDownLanding();
     clearScrollbarDragSession();
     touchStartY = null;
     lastObservedScrollTopForRestick = -1;
@@ -835,7 +932,10 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     clearRestoreConsent: () => {
       deps.setRestoreConsentArmed(false);
     },
-    clearRecentDownIntent: () => clearRecentDownIntent(),
+    clearRecentDownIntent: () => {
+      clearRecentDownIntent();
+      clearDownLanding();
+    },
     clearScrollbarDragSession: () => clearScrollbarDragSession(),
     noteProgrammaticWrite,
     debugState: () => ({

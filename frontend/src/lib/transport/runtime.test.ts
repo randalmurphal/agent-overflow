@@ -180,6 +180,17 @@ describe('Events.On', () => {
     __resetEntityIndexForTest();
   });
 
+  it("hands the source's transfer row to its subscriber after the thread moved away", () => {
+    const subscription = captureSubscription();
+    const handler = vi.fn();
+    const off = Events.On('thread:transfer', handler);
+    noteThread('moving', 'gpu', 1);
+    subscription.deliver({ id: 'op', threadId: 'moving', direction: 'outgoing', phase: 'complete' });
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ phase: 'complete' }) }));
+    off();
+    __resetEntityIndexForTest();
+  });
+
   it('stamps each event with the backend the connection identified as', () => {
     setBackendIdentityFromBootstrap('62c8a1de-0a3f-4f4b-9d0a-2b6b1a5b0f11', 'gen-1');
     const subscription = captureSubscription();

@@ -2,10 +2,14 @@
 // in its last block's row, which keeps its key and re-measures through
 // ResizeObserver once the block reads its new lines. The view must land at the true
 // bottom after that re-measure, follow further growth for a reader at
-// the bottom, and leave a reader who wheeled away alone. Expanding a
-// section holds its row where it was instead of following to the end.
+// the bottom, including one who wheeled back there however late the
+// scroll landed, and leave a reader who wheeled away alone. Navigation
+// keys typed into an editor inside the log move its caret and say nothing
+// about following. Expanding a section holds its row where it was
+// instead of following to the end.
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { userEvent } from 'vitest/browser';
 import { flushSync, mount, unmount } from 'svelte';
 import { SvelteSet } from 'svelte/reactivity';
 import '../../../app.css';
@@ -139,6 +143,124 @@ describe('ReviewCILogView tail follow', () => {
     p.log = lint.state;
     flushSync();
     await settledAtBottom(scroll, 'the new job at its tail');
+  });
+
+  it('follows again once a reader\'s wheel to the end lands, however late its scroll event', async () => {
+    const { p, scroll, fake } = mountLog();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
+    await settledAtBottom(scroll, 'the opened log at its tail');
+    // The landing below returns to the pin's own scrollTop: let the pin's
+    // write tokens expire so it reads as the reader's scroll, as it does
+    // after any real reading.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+
+    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+    scroll.scrollTop -= 600;
+    await raf();
+    await raf();
+
+    // The wheel back down is the reader's; a loaded host delivers its
+    // scroll to the end well past the 250 ms down-intent window.
+    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 600, bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    scroll.scrollTop = scroll.scrollHeight;
+    await settledAtBottom(scroll, 'the reader at the end');
+
+    fake.grow(numberedLines(GROWTH_LINES, FIRST_LINES + 1));
+    p.log = fake.state;
+    flushSync();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES + GROWTH_LINES}`) === true, 'the grown log');
+    await settledAtBottom(scroll, 'the tail after growth');
+  });
+
+  for (const key of ['End', 'ArrowDown']) {
+    it(`stays put when a scroll with no input reaches the end after ${key} was typed in an editor inside the log`, async () => {
+      const { p, scroll, fake } = mountLog();
+      await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
+      await settledAtBottom(scroll, 'the opened log at its tail');
+      await new Promise((resolve) => setTimeout(resolve, 600));
+
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+      scroll.scrollTop -= 600;
+      await raf();
+      await raf();
+
+      const editor = document.createElement('textarea');
+      editor.value = 'a comment being edited';
+      scroll.firstElementChild!.prepend(editor);
+      editor.focus({ preventScroll: true });
+      const before = scroll.scrollTop;
+      await userEvent.keyboard(`{${key}}`);
+      await raf();
+      await raf();
+      expect(scroll.scrollTop, 'the key moved the caret, not the log').toBe(before);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      // Find-in-page, a focus scroll or the caret reaches the end with no input.
+      scroll.scrollTop = scroll.scrollHeight;
+      await raf();
+      await raf();
+      const readingAt = scroll.scrollTop;
+
+      fake.grow(numberedLines(GROWTH_LINES, FIRST_LINES + 1));
+      p.log = fake.state;
+      flushSync();
+      await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES + GROWTH_LINES}`) === true, 'the grown log');
+      for (let i = 0; i < 12; i += 1) await raf();
+      expect(scroll.scrollTop).toBe(readingAt);
+    });
+  }
+
+  it('keeps following when ArrowUp is typed in an editor inside the log', async () => {
+    const { p, scroll, fake } = mountLog();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
+    await settledAtBottom(scroll, 'the opened log at its tail');
+
+    const editor = document.createElement('textarea');
+    editor.value = 'first line\nsecond line';
+    scroll.firstElementChild!.append(editor);
+    await settledAtBottom(scroll, 'the tail with the editor');
+    editor.focus({ preventScroll: true });
+    await userEvent.keyboard('{ArrowUp}');
+
+    fake.grow(numberedLines(GROWTH_LINES, FIRST_LINES + 1));
+    p.log = fake.state;
+    flushSync();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES + GROWTH_LINES}`) === true, 'the grown log');
+    await settledAtBottom(scroll, 'the tail after growth');
+  });
+
+  it('stays put when a scroll with no input reaches the end after a wheel landed short of it', async () => {
+    const { p, scroll, fake } = mountLog();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
+    await settledAtBottom(scroll, 'the opened log at its tail');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+
+    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+    scroll.scrollTop -= 600;
+    await raf();
+    await raf();
+
+    // One notch down, landing mid-log.
+    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true }));
+    scroll.scrollTop += 120;
+    await raf();
+    await raf();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    // Find-in-page, a focus scroll or an anchor reaches the end with no input.
+    scroll.scrollTop = scroll.scrollHeight;
+    await raf();
+    await raf();
+    const readingAt = scroll.scrollTop;
+
+    fake.grow(numberedLines(GROWTH_LINES, FIRST_LINES + 1));
+    p.log = fake.state;
+    flushSync();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES + GROWTH_LINES}`) === true, 'the grown log');
+    for (let i = 0; i < 12; i += 1) await raf();
+    expect(scroll.scrollTop).toBe(readingAt);
+    expect(distanceFromBottom(scroll)).toBeGreaterThan(AT_BOTTOM_PX);
   });
 
   it('holds an expanded section at its row instead of following to the end', async () => {
