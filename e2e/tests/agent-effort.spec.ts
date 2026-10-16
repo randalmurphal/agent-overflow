@@ -43,7 +43,7 @@ async function shoot(page: Page, testInfo: TestInfo, region: import('@playwright
   for (const theme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme: theme });
     await expect(page.locator('html')).toHaveClass(theme === 'dark' ? /dark/ : /^(?!.*\bdark\b).*$/);
-    await region.screenshot({ path: testInfo.outputPath(`effort-${name}-v3-${theme}.png`) });
+    await region.screenshot({ path: testInfo.outputPath(`effort-${name}-v4-${theme}.png`) });
   }
   await page.emulateMedia({ colorScheme: 'light' });
 }
@@ -83,7 +83,7 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
             effort: 'medium',
             run_in_background: false,
           }),
-          taskStartedLine('task-deep', 'tu-deep', 'deep review'),
+          taskStartedLine('task-deep', 'tu-deep', 'deep review', { subagentType: 'reviewer' }),
           // An alias whose family disagrees on effort; the subagent turns
           // out to run on Haiku 4.5, which drops the requested max.
           toolUseLine('msg-scout', 'tu-scout', 'Agent', {
@@ -93,7 +93,7 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
             model: 'haiku',
             effort: 'max',
           }),
-          taskStartedLine('task-scout', 'tu-scout', 'quick scout'),
+          taskStartedLine('task-scout', 'tu-scout', 'quick scout', { subagentType: 'scout' }),
         ]),
         { waitSignal: { name: 'agents-run' } },
         emit([
@@ -112,7 +112,7 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
             prompt: 'sweep the repo',
             run_in_background: true,
           }),
-          taskStartedLine('task-bg', 'tu-bg', 'background sweep'),
+          taskStartedLine('task-bg', 'tu-bg', 'background sweep', { subagentType: 'sweeper' }),
           asyncAgentAckLine('tu-bg', 'task-bg', 'background sweep'),
           backgroundTasksChangedLine([SWEEP_TASK]),
           ...textLines('msg-bg-text', 'Sweeping.', 'tu-bg'),
@@ -130,7 +130,7 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
           // The session's effort moves before the sweeper is resumed.
           effortReplyLine('msg-effort', 'Set effort level to low (this session only): Quick'),
           ...textLines('msg-lead-2', 'Asking the sweeper once more.'),
-          ...agentResumeLines('msg-resume', 'tu-resume', 'task-bg', 'background sweep', 'Sweep the docs too.'),
+          ...agentResumeLines('msg-resume', 'tu-resume', 'task-bg', 'background sweep', 'Sweep the docs too.', 'sweeper'),
           backgroundTasksChangedLine([SWEEP_TASK]),
           RESULT_LINE,
           taskUpdatedLine('task-bg', { status: 'completed', end_time: 1787415969999 }),
@@ -191,10 +191,9 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
   await harness.rpc('SendMessage', threadId, 'sweep again', null);
   await resumed;
   const resumeRow = timeline.locator('[data-item-id="tu-resume"]');
-  // (The resume's name comes from the rebind's wire `subagent_type`.)
-  await expect(resumeRow.getByTestId('agent-row-preview')).toContainText('(Mock 1 · Low)');
+  await expect(resumeRow.getByTestId('agent-row-preview')).toContainText('Sweeper(Mock 1 · Low)');
   const resumedCard = cards.filter({ hasText: 'Second sweep finished' });
-  await expect(resumedCard.getByTestId('subagent-group-label')).toContainText('(Mock 1 · Low)');
+  await expect(resumedCard.getByTestId('subagent-group-label')).toHaveText('Sweeper(Mock 1 · Low)');
   // The first run keeps the effort it ran at.
   await expect(sweepCard.getByTestId('subagent-group-label')).toHaveText('Sweeper(Mock 1 · xHigh)');
   await shoot(page, testInfo, timeline, 'claude-resume');
