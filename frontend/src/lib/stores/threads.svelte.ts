@@ -24,6 +24,7 @@ import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { onBackendDetached } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { withLocalReadMarker } from './threadReadWrites';
+import { threadReplyRow } from './threadRowFrames';
 import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelte';
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn' | 'hasFailedTurn'>>;
@@ -164,6 +165,19 @@ export function resetThreadsForTest(): void {
 
 export function prependThread(thread: Thread): void {
   catalogWriter.mutate(threadBackend(thread.id), (rows) => [thread, ...rows.filter((t) => t.id !== thread.id)]);
+}
+
+/**
+ * `prependThread` for a row an RPC returned, from a call started at `mark`
+ * (threadRowFrameMark): a thread:updated frame that arrived during the call
+ * (the new row's `listed` echo, a later write) is kept over the reply
+ * (threadRowFrames.ts). Returns the row the sidebar now holds.
+ */
+export function prependThreadReply(reply: Thread, mark: number): Thread {
+  const held = getThreadById(reply.id);
+  const row = threadReplyRow(reply, mark, held) ?? held ?? reply;
+  prependThread(row);
+  return row;
 }
 
 let threadRemovedObservers: Array<(id: string) => void> = [];

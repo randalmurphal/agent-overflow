@@ -26,7 +26,7 @@ import {
 } from '../../stores/bindings';
 import {
   markThreadUnread,
-  prependThread,
+  prependThreadReply,
   removeThread,
   updateThreadPinState,
   updateThreadTitle,
@@ -115,9 +115,9 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
  */
 export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    const mark = threadRowFrameMark();
     const created = await withForkProgress(ctx.thread, async () => (await ForkThread(ctx.thread.id, null)) as Thread);
-    const forked = await autoPinNewThread(created);
-    prependThread(forked);
+    const forked = prependThreadReply(await autoPinNewThread(created), mark);
     if (forked.projectId) expandProject(forked.projectId);
     await ctx.switchPane(forked);
     addToast('info', `Forked "${ctx.thread.title}" into a new thread.`);

@@ -11,7 +11,7 @@
     StopSession,
     UnarchiveThread,
   } from '../../stores/bindings';
-  import { prependThread } from '../../stores/threads.svelte';
+  import { prependThreadReply } from '../../stores/threads.svelte';
   import { closePanesShowingThread } from '../../stores/panes.svelte';
   import {
     syncRemovedWorktreeThreads,
@@ -53,9 +53,10 @@
 
   async function handleUnarchive(thread: Thread): Promise<void> {
     try {
-      const restored = (await UnarchiveThread(thread.id)) as Thread;
+      const mark = threadRowFrameMark();
+      const reply = (await UnarchiveThread(thread.id)) as Thread;
       archivedThreads = archivedThreads.filter((t) => t.id !== thread.id);
-      prependThread(restored);
+      const restored = prependThreadReply(reply, mark);
       addToast('info', `Unarchived "${restored.title || 'thread'}".`);
     } catch (err) {
       console.error('Failed to unarchive thread:', err);

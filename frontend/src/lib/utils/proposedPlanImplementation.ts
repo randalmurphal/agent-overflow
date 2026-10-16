@@ -11,7 +11,7 @@ import {
 } from '../stores/bindings';
 import { mountThreadInPane, syncThreadReply } from '../stores/panes.svelte';
 import { threadRowFrameMark } from '../stores/threadRowFrames';
-import { prependThread } from '../stores/threads.svelte';
+import { prependThreadReply } from '../stores/threads.svelte';
 import { expandProject } from '../stores/sidebar.svelte';
 import { projectSendResolved, projectSendStarted } from '../stores/threadStatuses.svelte';
 import { addErrorToast, addToast } from '../stores/toast.svelte';
@@ -130,6 +130,7 @@ export async function implementProposedPlanInNewThread(
     const draftContent = buildPlanImplementationPrompt(planMarkdown);
     const sourceIntent = worktreeIntentForThread(sourceThread);
 
+    const mark = threadRowFrameMark();
     let created = (await withBackendTarget(backend, () => CreateThread({
       projectId,
       provider: sourceThread.provider,
@@ -183,9 +184,9 @@ export async function implementProposedPlanInNewThread(
       const cutForThread = !!created.worktreePath
         && !sameNormalizedPath(created.worktreePath, sourceThread.worktreePath ?? '');
       if (cutForThread) {
-        const mark = threadRowFrameMark();
+        const removalMark = threadRowFrameMark();
         await GitRemoveWorktree(created.id)
-          .then((removal) => syncRemovedWorktreeThreads(removal as WorktreeRemovalResult, mark))
+          .then((removal) => syncRemovedWorktreeThreads(removal as WorktreeRemovalResult, removalMark))
           .catch((cleanupErr) => {
             console.error('Failed to clean up orphan implementation worktree:', cleanupErr);
           });
@@ -206,7 +207,7 @@ export async function implementProposedPlanInNewThread(
       // out elsewhere.
       clearWorktreeIntent(sourceThread.id);
     }
-    prependThread(created);
+    created = prependThreadReply(created, mark);
     if (created.projectId) expandProject(created.projectId);
     await mountThreadInPane(created, pane);
     return true;

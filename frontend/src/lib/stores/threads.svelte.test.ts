@@ -4,6 +4,7 @@ import {
   getThreadLiveActivityAt,
   refreshThreads,
   prependThread,
+  prependThreadReply,
   removeThread,
   updateThreadTitle,
   updateThreadModel,
@@ -12,6 +13,8 @@ import {
 } from './threads.svelte';
 import type { Thread } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { applyThreadUpdated } from './eventsThreadRows';
+import { threadRowFrameMark } from './threadRowFrames';
 
 function makeThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -60,6 +63,20 @@ describe('threads store', () => {
       await refreshThreads();
       prependThread(makeThread('a'));
       expect(getThreads().map((t) => t.id)).toEqual(['a', 'b', 'c']);
+    });
+
+    // A create's reply is read before its `listed` echo leaves, and a
+    // later write's frame can land before the reply too.
+    it('prependThreadReply keeps a frame that arrived during the call', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('b')]);
+      await refreshThreads();
+      const mark = threadRowFrameMark();
+      applyThreadUpdated({ action: 'listed', thread: makeThread('fresh', { title: 'Named meanwhile' }) });
+      const held = prependThreadReply(makeThread('fresh'), mark);
+      expect(held.title).toBe('Named meanwhile');
+      expect(getThreads().map((t) => [t.id, t.title])).toEqual([['fresh', 'Named meanwhile'], ['b', 'Thread b']]);
+      const later = threadRowFrameMark();
+      expect(prependThreadReply(makeThread('fresh', { title: 'Reply' }), later).title).toBe('Reply');
     });
 
     it('removeThread drops the matching id and leaves others', async () => {

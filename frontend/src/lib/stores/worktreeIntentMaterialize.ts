@@ -175,7 +175,7 @@ async function runThreadMutation(
   }
   if (!updated) return null;
 
-  syncThreadReply(updated, mark);
+  updated = syncThreadReply(updated, mark);
   const selectedBranch = intent.creatingBranch ? intent.newBranchName : intent.attachBranch;
   if (updated.projectId && selectedBranch) {
     recordBranchSelection(updated.projectId, selectedBranch);
