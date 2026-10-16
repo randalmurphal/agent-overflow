@@ -268,6 +268,19 @@ Mechanism in
   as an assistant's spawned child or past thread; every other
   thread renders flat under its project or group
   ([standing agents](specs/standing-agents.md) ruling 15 and "Sidebar").
+- Agent rows and groups (ruling 2026-10-16,
+  [standing agents](specs/standing-agents.md) rulings 4, 5 and 30 to
+  35): a spawned thread's answer to its spawner, an error included,
+  marks it read unless it is pinned; a settled idle child folds into the
+  agent's done footer beside the archived ones, and archive stays the
+  only persisted done state; a group and an agent row each show the
+  project's preview limit of members, pinned members exempt; a
+  collapsed agent row or group shows its members' bubbled dot, replacing
+  the 2026-09-02 rule that a collapsed group renders none of it; running
+  sorts above unread inside a container; a child spawned into another
+  project on this computer nests under its agent, not in its own
+  project's list. Mark All Read on either marks every member in one
+  call.
 - Thread content search matches title and workspace path only. Searching
   message text server-side (t3-code does) is undecided, not rejected.
 - A fork is a snapshot of its source at the cut. Nothing the source does

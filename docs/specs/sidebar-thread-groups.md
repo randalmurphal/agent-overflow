@@ -3,16 +3,19 @@
 Status: design signed off 2026-09-02, implemented on `main` the same day
 (store v76, bindings, sidebar UI, e2e `sidebar-thread-groups.spec.ts`).
 Revised 2026-09-28: groups are their own section and not pinnable;
-members pin individually (store v139).
+members pin individually (store v139). Revised 2026-10-16: a group
+bounds its members, a collapsed group carries its members' dot, and
+running members sort above unread ones
+([standing agents](standing-agents.md) rulings 31 to 34).
 
 ## Goal
 
 Let the user gather threads of one project under a named, collapsible
 row in the sidebar. A group's top row is not a thread: it has a
 name, a chevron, and nothing else of its own; its activity and sort
-position come from its members. It shows no status of its own: a
-running member moves the group up its section, it does not light the
-row.
+position come from its members. Expanded, it shows no status of its
+own: a running member moves the group up its section, it does not light
+the row. Collapsed, it carries its members' bubbled dot.
 
 ## Decisions
 
@@ -33,9 +36,12 @@ row.
   joined. Auto-pin on first send never fires for a thread that is
   already in a group. A member's pin is never a numbered jump target;
   jumps count top-level front-burner threads only.
-- **Collapsed group.** Shows a member count. Its members' status still
-  bubbles for the SORT but nothing of it renders on the row (ruling
-  2026-09-02). A group remains collapsed when a member becomes focused.
+- **Collapsed group.** Shows a member count and one status dot: the
+  bubbled status of its members, so an unread member lights it and it
+  goes dark once every member is read and idle (ruling 2026-10-16,
+  replacing the 2026-09-02 rule that nothing of the bubbled status
+  renders on the row). Expanded, the group row shows no dot and each
+  member its own. A group remains collapsed when a member becomes focused.
   Only the focused member appears directly beneath it. Other open panes
   do not add rows to this preview. Focus changes replace or remove the
   preview without changing saved expansion state. Expanding restores
@@ -46,12 +52,22 @@ row.
   remain visible when they exceed the limit, leaving no preview slots
   for unpinned rows. Drafts and threads open in panes retain their
   visibility exceptions. A group takes one slot; its members take none.
+- **Member bound.** Inside a group, the members show the project's
+  preview limit (8), then a show-more footer under the group's rail that
+  reveals the project's increment (20) per click, with the hidden
+  members' rolled-up dot as the project footer has it. Pinned members
+  always show and take no slot; a member open in a pane is never hidden
+  by the bound. The paging is session state per group. The same bound
+  cuts a standing agent's live children (ruling 2026-10-16).
 - **No nesting.** No groups inside groups, and threads do not nest under
   threads. Render depth inside a group is two (group, member).
 - **One project.** A group belongs to one project and cannot span
   projects. Dropping a thread on a group in another project is a no-op.
 - **Ordering inside a group is the normal comparator** (drafts, front
-  burner, back burner, status tier, activity, id). No manual ordering.
+  burner, back burner, status tier, activity, id), with one split the
+  top level does not make: running members sort above unread ones, so
+  the order is needs-you, running, unread, idle (ruling 2026-10-16).
+  No manual ordering.
   A pinned member orders inside its group; for the group's bubbled
   status and sort, members rank by status alone, so a pinned idle member
   never masks a blocked one.
@@ -67,7 +83,8 @@ row.
   from Group". Multi-select gets the same two when every selected thread
   shares one project. Project header: "New Group…", also a hover-revealed
   folder-plus button beside New Thread. Group row: New Thread, Rename
-  Group, Archive Threads, Ungroup All, Delete Group. A grouped thread
+  Group, Mark All Read (every member in one call), Archive Threads,
+  Ungroup All, Delete Group. A grouped thread
   row keeps the normal pin affordance and pin menu items.
 - **New thread.** The group row's plus button and New Thread menu item open
   the normal draft composer with that group's project and computer. Membership
