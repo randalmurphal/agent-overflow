@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/harness/scenario"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 // mockBin is the ao-mockprovider binary built once per test run by
@@ -54,7 +55,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "unset CLAUDE_CONFIG_DIR: %v\n", err)
 		os.Exit(1)
 	}
-	code := m.Run()
+	code := providerpath.Run(m)
 	_ = os.RemoveAll(tmp)
 	os.Exit(code)
 }

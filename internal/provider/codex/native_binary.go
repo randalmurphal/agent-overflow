@@ -63,7 +63,7 @@ func resolveNativeBinary(resolved, goos, goarch string) NativeBinary {
 		vendorRoot = filepath.Join(platformRoot, "vendor")
 	}
 	native := filepath.Join(vendorRoot, triple, "bin", "codex")
-	if !isExecutableFile(native) {
+	if !IsExecutableFile(native) {
 		return unchanged
 	}
 	return NativeBinary{Path: native, Wrapper: wrapper}
@@ -133,7 +133,9 @@ func resolveNodePackage(fromDir, name string) (string, bool) {
 	}
 }
 
-func isExecutableFile(path string) bool {
+// IsExecutableFile reports whether path is a regular file with an execute
+// bit, which is what a resolved native binary must still be to run.
+func IsExecutableFile(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }

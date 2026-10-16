@@ -15,7 +15,9 @@ the provider process owns turn state.
   `bin/codex.js` Node wrapper, every spawn, version probe and the binary
   watch use the vendored native binary that wrapper would launch
   (`internal/provider/codex/native_binary.go`). An explicit binary setting,
-  or a layout the resolver does not recognize, runs as configured.
+  or a layout the resolver does not recognize, runs as configured. The
+  resolution is cached per PATH until the next binary watch tick, a change
+  to the setting or a provider status read (`internal/app/app_codex_binary.go`).
 
 ## Session Identity
 

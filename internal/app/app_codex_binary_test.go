@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -234,5 +236,91 @@ func TestProviderStatusesNameTheNativeBinaryAndItsWrapper(t *testing.T) {
 	}
 	if !strings.Contains(codexStatus.Version, "0.162.1") {
 		t.Fatalf("codex version = %q, want the native binary's answer", codexStatus.Version)
+	}
+}
+
+// The default resolution walks PATH once and then answers from memory until
+// something can have changed it: the binary watch tick, a change to the
+// setting, a status read or a different PATH.
+func TestDefaultCodexBinaryWalksPathOncePerInvalidation(t *testing.T) {
+	app := newTestAppWithStore(t)
+	stubProviderBinaryDetect(t, func(string) string { return "0.162.1" })
+	// Serial: no codex on PATH at all, so the status read's own probe of the
+	// bare default finds nothing either.
+	t.Setenv("PATH", t.TempDir())
+	claude := mockexec.Write(t, filepath.Join(t.TempDir(), "claude"), "#!/bin/sh\necho '2.1.100 (Claude Code)'\n")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": claude}); err != nil {
+		t.Fatalf("set claude binary: %v", err)
+	}
+	walks := 0
+	app.codexLookPathFn = func(string) (string, error) {
+		walks++
+		return "", exec.ErrNotFound
+	}
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": "codex"}); err != nil {
+		t.Fatalf("restore default codex setting: %v", err)
+	}
+	app.invalidateDefaultCodexBinary()
+	read := func(want int, after string) {
+		t.Helper()
+		for range 100 {
+			if got := app.providerBinaryPath(string(provider.Codex)); got != "codex" {
+				t.Fatalf("providerBinaryPath(codex) = %q, want the bare default", got)
+			}
+		}
+		if walks != want {
+			t.Fatalf("after %s: %d PATH walks, want %d", after, walks, want)
+		}
+	}
+
+	read(1, "100 reads with codex absent")
+	app.sweepProviderBinaries()
+	read(2, "a binary watch tick")
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{"codexBinaryPath": "codex"}); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+	read(3, "a codexBinaryPath save")
+	if _, err := app.GetProviderStatuses(); err != nil {
+		t.Fatalf("GetProviderStatuses: %v", err)
+	}
+	read(4, "a provider status read")
+	t.Setenv("PATH", t.TempDir())
+	read(5, "a PATH change")
+}
+
+// A cached native binary that is gone, as after an npm uninstall or a Node
+// version switch, is resolved again before anything spawns it.
+func TestDefaultCodexBinaryDropsARemovedNativeBinary(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	f := newCodexNpmFixture(t, t.TempDir())
+	writeProviderBinaryFile(t, f.wrapper, "exit 0")
+	writeProviderBinaryFile(t, f.native, "exit 0")
+	walks := 0
+	app.codexLookPathFn = func(string) (string, error) {
+		walks++
+		return f.command, nil
+	}
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": "codex"}); err != nil {
+		t.Fatalf("restore default codex setting: %v", err)
+	}
+	app.invalidateDefaultCodexBinary()
+
+	for range 10 {
+		if got := app.providerBinaryPath(string(provider.Codex)); got != nativePath(t, f) {
+			t.Fatalf("providerBinaryPath(codex) = %q, want the native binary", got)
+		}
+	}
+	if walks != 1 {
+		t.Fatalf("%d PATH walks for 10 reads of a present native binary, want 1", walks)
+	}
+	if err := os.Remove(f.native); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.providerBinaryPath(string(provider.Codex)); got != "codex" {
+		t.Fatalf("providerBinaryPath(codex) = %q after the native binary was removed, want the bare default", got)
+	}
+	if walks != 2 {
+		t.Fatalf("%d PATH walks, want the removal to force one more", walks)
 	}
 }

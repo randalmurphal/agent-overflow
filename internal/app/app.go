@@ -537,6 +537,9 @@ type App struct {
 	// Production leaves it nil; test fixtures install one so the default
 	// never resolves against the developer's PATH.
 	codexLookPathFn func(string) (string, error)
+	// defaultCodexBinaryCache is the default `codex` setting's resolution
+	// (app_codex_binary.go).
+	defaultCodexBinaryCache defaultCodexBinaryCache
 	// emitEventFn is a test-only override for a.emitEvent. It takes the
 	// channel in its WIRE spelling rather than as an eventchan.Channel —
 	// it is an observation seam, not an emit site, so it has nothing to

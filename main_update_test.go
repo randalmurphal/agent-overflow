@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/supervise"
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 // The update commands are tested as the launcher runs them: this test binary
@@ -37,7 +38,7 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == supervise.UpdateTrialCommand && os.Getenv(updateTrialStubEnv) != "" {
 		os.Exit(runTrialStub(os.Getenv(updateTrialStubEnv), os.Args[2:]))
 	}
-	os.Exit(m.Run())
+	os.Exit(providerpath.Run(m))
 }
 
 // runTrialStub is the trial's real protocol around a boot that reports one

@@ -1,8 +1,10 @@
 package app
 
 import (
+	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/settings"
@@ -20,6 +22,19 @@ func (a *App) codexBinary() codex.NativeBinary {
 	return a.defaultCodexBinary()
 }
 
+// defaultCodexBinaryCache holds the default setting's resolution for the PATH
+// it was made under. Every Codex spawn, model lookup and capability check
+// reads the binary, and resolving it walks PATH, which on WSL includes the
+// Windows directories. The cache is dropped by the binary watch tick, which
+// re-resolves within providerBinaryWatchInterval of an install, upgrade or
+// removal, by a change to the setting and by a provider status read.
+type defaultCodexBinaryCache struct {
+	mu      sync.Mutex
+	valid   bool
+	pathEnv string
+	binary  codex.NativeBinary
+}
+
 // defaultCodexBinary is what the default `codex` setting runs. An npm
 // install puts a Node wrapper on PATH whose only job is to spawn its vendored
 // native binary; running that binary directly saves the Node process every
@@ -28,10 +43,24 @@ func (a *App) codexBinary() codex.NativeBinary {
 // lookup and its errors read as before. An explicit path setting never comes
 // here.
 //
-// Resolved per call rather than cached: an npm upgrade, uninstall or Node
-// version switch moves or removes the native binary, and a stale answer would
-// fail a spawn the wrapper would have served.
+// A cached native binary is confirmed with one stat before it is returned:
+// an npm uninstall or a Node version switch removes it, and spawning the
+// missing file would fail where the wrapper or a fresh lookup could serve.
 func (a *App) defaultCodexBinary() codex.NativeBinary {
+	pathEnv := os.Getenv("PATH")
+	cache := &a.defaultCodexBinaryCache
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.valid && cache.pathEnv == pathEnv && (cache.binary.Wrapper == "" || codex.IsExecutableFile(cache.binary.Path)) {
+		return cache.binary
+	}
+	cache.binary = a.resolveDefaultCodexBinary()
+	cache.pathEnv = pathEnv
+	cache.valid = true
+	return cache.binary
+}
+
+func (a *App) resolveDefaultCodexBinary() codex.NativeBinary {
 	command := settings.DefaultSettings.CodexBinaryPath
 	lookPath := a.codexLookPathFn
 	if lookPath == nil {
@@ -46,6 +75,14 @@ func (a *App) defaultCodexBinary() codex.NativeBinary {
 		return codex.NativeBinary{Path: command}
 	}
 	return native
+}
+
+// invalidateDefaultCodexBinary makes the next read resolve the default
+// setting again.
+func (a *App) invalidateDefaultCodexBinary() {
+	a.defaultCodexBinaryCache.mu.Lock()
+	a.defaultCodexBinaryCache.valid = false
+	a.defaultCodexBinaryCache.mu.Unlock()
 }
 
 // codexWrapperFor names the npm wrapper the Codex binary at binaryPath was

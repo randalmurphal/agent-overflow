@@ -25,6 +25,9 @@ func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 	// Identity before the probe, for the reason recordProbedProviderVersion
 	// states. A binary that does not resolve is reported by the statuses and
 	// recorded by nobody.
+	// A status read reports what is installed now, not what the last tick
+	// saw: the settings page reads it after the user installs or moves codex.
+	a.invalidateDefaultCodexBinary()
 	identities := make(map[string]providerBinaryIdentity, 2)
 	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
 		if identity, ok := a.resolveProviderBinaryIdentity(providerName); ok {
@@ -207,6 +210,7 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 		editor.RefreshEditors()
 	}
 	if _, ok := patch["codexBinaryPath"]; ok {
+		a.invalidateDefaultCodexBinary()
 		a.refreshCodexModelCatalog()
 	}
 	if _, ok := patch["gitlabSelfHostedHosts"]; ok {

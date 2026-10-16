@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil/providerpath"
 	"agent-overflow/internal/wsldistro"
 )
 
@@ -44,7 +45,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	code := storetest.Run(m)
+	code := providerpath.Guard(func() int { return storetest.Run(m) })
 	if err := removeFixtureTemplates(); err != nil {
 		fmt.Fprintf(os.Stderr, "remove fixture templates: %v\n", err)
 		if code == 0 {
