@@ -5,6 +5,7 @@ import (
 
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 )
@@ -120,4 +121,27 @@ func (a *App) codexDeveloperInstructions(threadID, appGuide string, registered m
 		parts = append(parts, a.threadToolsServer().Instructions(a.threadToolsShape(threadID)))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// codexDeveloperInstructionsDelivery gives a Codex session the record of
+// what threadID's Codex thread last received as developer instructions,
+// and the write that updates it. A resumed thread restores its context
+// from the rollout and never shows a changed `developerInstructions` to
+// the model, so the session injects a changed composition once
+// (internal/provider/codex/developer_instructions.go).
+func (a *App) codexDeveloperInstructionsDelivery(threadID, resumeRef string) (*codex.DeveloperInstructionsDelivery, error) {
+	delivery := &codex.DeveloperInstructionsDelivery{
+		Record: func(codexThreadID, digest string) error {
+			return a.store.PutCodexDeveloperInstructionsDigest(threadID, codexThreadID, digest)
+		},
+	}
+	if resumeRef == "" {
+		return delivery, nil
+	}
+	received, _, err := a.store.CodexDeveloperInstructionsDigest(threadID, resumeRef)
+	if err != nil {
+		return nil, err
+	}
+	delivery.Received = received
+	return delivery, nil
 }

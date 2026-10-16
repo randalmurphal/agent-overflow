@@ -2,6 +2,8 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -31,28 +33,180 @@ import (
 // that named only AO's guide would silently drop the user's own value.
 // AO therefore reads the thread cwd's configured value first and appends
 // to it, and sends nothing at all when it cannot.
+//
+// A resumed thread does not show a changed value to the model. Codex
+// restores the model's context from the rollout
+// (record_initial_history -> apply_rollout_reconstruction), the restored
+// TurnContextItem carries no developer instructions, and developer
+// instructions are not a world-state section, so no diff is emitted: the
+// model keeps the text the thread started with until a compaction rebuilds
+// the context from the thread-level value. AO therefore tracks the digest
+// of the text each thread last received and, when a resume composes a
+// different one, injects it once as a developer message with
+// `thread/inject_items`, which Codex writes to the rollout so later resumes
+// keep it (docs/references/codex-wire.md, verified against 0.162.1).
 
-// resolveDeveloperInstructions composes what this thread will carry: the
-// cwd's own configured instructions with AO's guide appended. An empty
-// guide yields "", and so does a config read that failed: the caller then
-// omits the override entirely rather than replacing a value it could not
-// read, and the failure reaches the thread as a non-fatal error so the
-// user knows this session runs without the guide.
-func (s *Session) resolveDeveloperInstructions(ctx context.Context, guide string) string {
+// DeveloperInstructionsDelivery is the record of what a thread's model has
+// read as developer instructions. A Config without one (a throwaway
+// session that only forks or reverts) neither checks nor injects.
+type DeveloperInstructionsDelivery struct {
+	// Received is the DeveloperInstructionsDigest of the text the thread
+	// being resumed last received, or "" when nothing is recorded. An
+	// unknown record never matches, so the composed text is injected.
+	Received string
+	// Record persists that the Codex thread codexThreadID now holds the
+	// text with this digest: after a fresh thread/start and after an
+	// injection.
+	Record func(codexThreadID, digest string) error
+}
+
+// DeveloperInstructionsDigest identifies one composed text.
+func DeveloperInstructionsDigest(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
+}
+
+// composedDeveloperInstructions is one composition: text is what the model
+// should read (the cwd's configured instructions, then AO's guide), and
+// override the `developerInstructions` value to send, empty when AO has
+// nothing to append so the configured value stands. known is false when
+// the configured half could not be read.
+type composedDeveloperInstructions struct {
+	text     string
+	override string
+	known    bool
+}
+
+// composeDeveloperInstructions reads the cwd's configured instructions and
+// appends guide. The read is skipped only when there is nothing to append
+// and nothing to check. A failed read sends no override rather than
+// replacing a value AO could not read, and reaches the thread as a
+// non-fatal error.
+func (s *Session) composeDeveloperInstructions(ctx context.Context, guide string) composedDeveloperInstructions {
 	guide = strings.TrimSpace(guide)
-	if guide == "" {
-		return ""
+	if guide == "" && s.developerInstructionsRecord == nil {
+		return composedDeveloperInstructions{}
 	}
 	configured, err := s.configuredDeveloperInstructions(ctx)
 	if err != nil {
-		s.emitNonFatalError(fmt.Sprintf(
-			"Could not read this workspace's Codex developer instructions, so Agent Overflow's guide was left out of this session: %v", err))
-		return ""
+		if guide != "" {
+			s.emitNonFatalError(fmt.Sprintf(
+				"Could not read this workspace's Codex developer instructions, so Agent Overflow's guide was left out of this session: %v", err))
+		} else {
+			s.emitNonFatalError(fmt.Sprintf(
+				"Could not read this workspace's Codex developer instructions, so a change to them may not reach this thread: %v", err))
+		}
+		return composedDeveloperInstructions{}
 	}
-	if configured == "" {
-		return guide
+	composed := composedDeveloperInstructions{text: guide, known: true}
+	switch {
+	case configured == "":
+	case guide == "":
+		composed.text = configured
+	default:
+		composed.text = configured + "\n\n" + guide
 	}
-	return configured + "\n\n" + guide
+	if guide != "" {
+		composed.override = composed.text
+	}
+	return composed
+}
+
+// EnsureDeveloperInstructions composes guide with the cwd's configured
+// instructions and injects the result when the thread has not received
+// it. Session start runs the same check (ensureDeveloperInstructions); a
+// caller that applies a change before a turn calls this while the thread
+// is idle, before turn/start. The thread-level value Codex installs after
+// a compaction stays the one this session started or resumed with.
+func (s *Session) EnsureDeveloperInstructions(ctx context.Context, guide string) error {
+	return s.ensureDeveloperInstructions(ctx, s.composeDeveloperInstructions(ctx, guide))
+}
+
+// RestoreDeveloperInstructions gives the thread back the developer
+// instructions this session started with, after an in-place history cut.
+// Upstream reloads a reverted thread from its rollout, and the cut can drop
+// the message that delivered them; Revert has already forgotten what the
+// thread received, so this injects once and records. It is the session's
+// own text, not a new composition: a settings change made since still
+// applies at the next session start. A failure reaches the thread as a
+// non-fatal error, as at session start.
+func (s *Session) RestoreDeveloperInstructions(ctx context.Context) {
+	s.mu.Lock()
+	composed := s.developerInstructionsComposed
+	s.mu.Unlock()
+	s.reportDeveloperInstructionsFailure(s.ensureDeveloperInstructions(ctx, composed))
+}
+
+// ensureDeveloperInstructions injects composed's text as one developer
+// message when its digest differs from the one the thread last received,
+// then records the new digest. An untracked session and an unknown
+// composition do nothing. Either failure leaves the next session start to
+// send the text again.
+func (s *Session) ensureDeveloperInstructions(ctx context.Context, composed composedDeveloperInstructions) error {
+	if s.developerInstructionsRecord == nil || !composed.known {
+		return nil
+	}
+	digest := DeveloperInstructionsDigest(composed.text)
+	s.mu.Lock()
+	received := s.developerInstructionsReceived
+	s.mu.Unlock()
+	if digest == received {
+		return nil
+	}
+	if _, err := s.sendRequest(ctx, "thread/inject_items", map[string]any{
+		"threadId": s.rootThreadID(),
+		"items": []any{map[string]any{
+			"type": "message",
+			"role": "developer",
+			"content": []any{map[string]any{
+				"type": "input_text",
+				"text": developerInstructionsUpdate(composed.text),
+			}},
+		}},
+	}); err != nil {
+		return fmt.Errorf("codex: inject changed developer instructions: %w", err)
+	}
+	return s.recordDeveloperInstructions(digest)
+}
+
+// recordDeveloperInstructions notes that the thread now holds the text
+// with digest. A failed record costs one repeated injection at the next
+// session start.
+func (s *Session) recordDeveloperInstructions(digest string) error {
+	s.mu.Lock()
+	s.developerInstructionsReceived = digest
+	s.mu.Unlock()
+	if err := s.developerInstructionsRecord(s.rootThreadID(), digest); err != nil {
+		return fmt.Errorf("codex: record delivered developer instructions: %w", err)
+	}
+	return nil
+}
+
+// forgetDeveloperInstructions drops what the session knows the thread
+// received. A history cut can remove an injected message.
+func (s *Session) forgetDeveloperInstructions() {
+	s.mu.Lock()
+	s.developerInstructionsReceived = ""
+	s.mu.Unlock()
+}
+
+// reportDeveloperInstructionsFailure puts a failed check on the thread.
+func (s *Session) reportDeveloperInstructionsFailure(err error) {
+	if err == nil {
+		return
+	}
+	s.emitNonFatalError(fmt.Sprintf(
+		"Agent Overflow could not confirm that this Codex thread has its current developer instructions; its next session start sends them again: %v", err))
+}
+
+// developerInstructionsUpdate is the injected message. It names what it
+// replaces narrowly: the permissions, environment and collaboration-mode
+// messages are developer messages too, and stay in force.
+func developerInstructionsUpdate(text string) string {
+	if text == "" {
+		return "The developer instructions given at the start of this conversation, and any later update of them, no longer apply. Other context, such as permissions and the environment, is unchanged."
+	}
+	return "The developer instructions for this conversation have changed. The text below replaces the developer instructions given at its start and any earlier update of them. Other context, such as permissions and the environment, is unchanged.\n\n" + text
 }
 
 // configuredDeveloperInstructions reads the cwd-scoped

@@ -154,6 +154,8 @@ type Report struct {
 	SessionRef string `json:"sessionRef,omitempty"`
 	// SessionConfig is set only on ReportSessionConfig reports.
 	SessionConfig *SessionConfig `json:"sessionConfig,omitempty"`
+	// InjectedItems is set only on ReportInjectedItems reports.
+	InjectedItems []InjectedItem `json:"injectedItems,omitempty"`
 	// Gate names the waitSignal gate an advance report concerns: the gate
 	// that was RELEASED (ReportAdvanceReleased) or the name the buffered
 	// advance carried (ReportAdvanceBuffered). Empty is a real value on
@@ -249,7 +251,20 @@ const (
 	// as it is observable — for Claude that is argv at boot, for Codex the
 	// thread/start params.
 	ReportSessionConfig = "session_config"
+	// ReportInjectedItems carries the messages a Codex mock received
+	// through `thread/inject_items`: SessionRef is the thread, and
+	// InjectedItems the messages in request order. Posted before the
+	// answer. It is how a spec sees the developer instructions the app
+	// injects into a resumed thread, which no turn input carries.
+	ReportInjectedItems = "injected_items"
 )
+
+// InjectedItem is one message item of a `thread/inject_items` request:
+// its role and the text of its content parts, joined.
+type InjectedItem struct {
+	Role string `json:"role"`
+	Text string `json:"text"`
+}
 
 // AdvanceDroppedDetail is the ReportAdvanceBuffered Detail marking an
 // advance that was thrown away rather than parked, because the turn's

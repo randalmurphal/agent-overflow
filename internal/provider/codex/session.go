@@ -312,6 +312,17 @@ type Session struct {
 	// appended guide. Guarded by mu; read by ForkAt, which has to carry
 	// it onto the child thread. Empty means no override was sent.
 	developerInstructions string
+	// developerInstructionsReceived is the digest of the developer
+	// instructions the thread last received, "" when unknown, and
+	// developerInstructionsRecord persists a new one; nil means this
+	// session does not track delivery. See developer_instructions.go. The
+	// digest is guarded by mu; the callback is fixed at construction.
+	developerInstructionsReceived string
+	developerInstructionsRecord   func(codexThreadID, digest string) error
+	// developerInstructionsComposed is the composition this session
+	// started with, which RestoreDeveloperInstructions gives back to the
+	// thread after a history cut. Guarded by mu.
+	developerInstructionsComposed composedDeveloperInstructions
 	// rehydrateParams holds the thread-scoped params this session loaded
 	// its thread with that turn/start does not repeat (see
 	// threadRehydrateParams). Guarded by mu; read by Resume.
@@ -708,6 +719,10 @@ type Config struct {
 	// a user's configured value from being replaced. See
 	// developer_instructions.go.
 	DeveloperInstructions string
+	// DeveloperInstructionsDelivery records what the thread's model has
+	// read as developer instructions, so a resume can inject a changed
+	// text. Nil for a session that never runs a turn.
+	DeveloperInstructionsDelivery *DeveloperInstructionsDelivery
 	// ServiceTier is Codex's native speed tier. "priority" is sent as
 	// serviceTier on thread/start|resume and turn/start. It must not rewrite
 	// Model; fast mode does not change the selected model.

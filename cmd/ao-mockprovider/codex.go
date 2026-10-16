@@ -258,6 +258,8 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		})
 		a.respond(id, method, vars)
 		a.emitSteeredUserMessage(params, vars)
+	case "thread/inject_items":
+		a.injectItems(id, params)
 	case "thread/fork":
 		a.forkThread(id, params)
 	case "thread/revert":

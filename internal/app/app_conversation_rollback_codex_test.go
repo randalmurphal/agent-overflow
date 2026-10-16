@@ -3,9 +3,11 @@ package app
 import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -491,6 +493,12 @@ type codexForkMock struct {
 	// revertErrorMessage makes `thread/revert` answer invalid_request
 	// with this message instead of succeeding.
 	revertErrorMessage string
+	// injectLogPath captures every `thread/inject_items` request; the mock
+	// answers them, and `config/read`, only when it is set.
+	injectLogPath string
+	// turnsTail is the turn `thread/turns/list` reports as the thread's
+	// newest before any fork sets one.
+	turnsTail string
 }
 
 func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
@@ -546,13 +554,27 @@ func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
 			`printf '{"jsonrpc":"2.0","id":%%s,"error":{"code":-32600,"message":"%s"}}\n' "$id"`,
 			mock.revertErrorMessage)
 	}
+	injectClauses := ""
+	if mock.injectLogPath != "" {
+		injectClauses = fmt.Sprintf(`    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/inject_items"'; then
+        /bin/echo "$line" >> '%s'
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"config/read"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"config":{}}}\n' "$id"
+        continue
+    fi
+`, mock.injectLogPath)
+	}
 	script := fmt.Sprintf(`#!/bin/sh
+tail='%s'
 while IFS= read -r line; do
     id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
     if [ -z "$id" ]; then
         continue
     fi
-    if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
+%s    if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
         printf '{"jsonrpc":"2.0","id":%%s,"result":%s}\n' "$id"
         continue
     fi
@@ -596,7 +618,7 @@ while IFS= read -r line; do
         continue
     fi
 done
-`, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
+`, mock.turnsTail, injectClauses, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
 		logRevertRequest, revertReply, logInterruptRequest, logForkRequest, tailExpr,
 		mock.forkedThreadID)
 
@@ -672,9 +694,17 @@ func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
 		historyMode:     "paginated",
 	}
 	thread := paginatedRevertThread(t, app, "codex-inplace-revert", mock)
+	if err := app.store.PutCodexDeveloperInstructionsDigest(thread.ID, "provider-inplace-revert", strings.Repeat("d", 64)); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("revert: %v", err)
+	}
+	// The cut can drop a developer-instructions message injected at an
+	// earlier resume, so the thread's next start must send the text again.
+	if _, ok, err := app.store.CodexDeveloperInstructionsDigest(thread.ID, "provider-inplace-revert"); err != nil || ok {
+		t.Fatalf("delivered-instructions record after an in-place revert = (%v, %v), want it forgotten", ok, err)
 	}
 
 	revertRequest := readCodexRevertRequest(t, mock.revertLogPath)
@@ -762,6 +792,127 @@ func TestConversationRollbackCodexLiveRevertForgetsToolCallLinks(t *testing.T) {
 		t.Fatalf("thread/revert request = %s, want beforeTurnId turn-b", request)
 	}
 	requireLinksForgotten()
+}
+
+// TestConversationRollbackCodexLiveRevertRestoresDeveloperInstructions: a
+// live in-place revert keeps the session, but upstream reloads the thread
+// from its rollout and the cut can drop the message that delivered the
+// session's developer instructions. The session injects its own text once
+// more after the cut, before the rollback returns, and records it.
+func TestConversationRollbackCodexLiveRevertRestoresDeveloperInstructions(t *testing.T) {
+	t.Parallel()
+	requireLiveRevertRestoresDeveloperInstructions(t, "codex-live-cut-instructions", codexForkMock{})
+}
+
+// The same restore on the revert's other success path: the cut is refused
+// because its anchor is already gone, and the provider confirms the thread
+// already sits on the boundary (a retry of a cut that landed), so the
+// rollback converges in place.
+func TestConversationRollbackCodexLiveRevertAlreadyAppliedRestoresDeveloperInstructions(t *testing.T) {
+	t.Parallel()
+	requireLiveRevertRestoresDeveloperInstructions(t, "codex-live-cut-applied", codexForkMock{
+		revertErrorMessage: "turn not found: turn-b",
+		turnsTail:          "turn-a",
+	})
+}
+
+// requireLiveRevertRestoresDeveloperInstructions drives a live in-place
+// revert of a two-turn thread over a mock built from base and asserts the
+// session's own text was injected again after the cut and recorded.
+func requireLiveRevertRestoresDeveloperInstructions(t *testing.T, name string, base codexForkMock) {
+	t.Helper()
+	app := newTestApp(t)
+	app.triage = triage.NewRouter(app.store, app.emit)
+	workspace := t.TempDir()
+	thread := createAppTestThread(t, app, name, "codex", workspace)
+	thread.SessionRef = "provider-" + name
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
+	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
+
+	wireLog := filepath.Join(t.TempDir(), "wire.log")
+	mock := base
+	mock.resumedThreadID = thread.SessionRef
+	mock.forkedThreadID = "unused-fork"
+	mock.userAgent = "codex_cli_rs/0.149.0 (Linux; x86_64)"
+	mock.historyMode = "paginated"
+	mock.revertLogPath = wireLog
+	mock.injectLogPath = wireLog
+	binary := writeCodexForkAtBinary(t, mock)
+	delivery, err := app.codexDeveloperInstructionsDelivery(thread.ID, thread.SessionRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Binary:                        binary,
+		Model:                         "test-model",
+		WorkDir:                       workspace,
+		ResumeThreadID:                thread.SessionRef,
+		DeveloperInstructions:         "session guide",
+		DeveloperInstructionsDelivery: delivery,
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := sess.Close(); err != nil {
+			t.Errorf("close session: %v", err)
+		}
+	})
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex),
+		Token:    name + "-token",
+		Codex:    sess,
+	})
+
+	// The thread had no record, so the resume injected once.
+	if got := wireMethods(t, wireLog); !slices.Equal(got, []string{"thread/inject_items"}) {
+		t.Fatalf("wire after the resume = %v, want one injection", got)
+	}
+	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if active, ok := app.activeCodexSession(thread.ID); !ok || active != sess {
+		t.Fatal("the live session was replaced; the cut did not converge in place")
+	}
+	if got := wireMethods(t, wireLog); !slices.Equal(got, []string{"thread/inject_items", "thread/revert", "thread/inject_items"}) {
+		t.Fatalf("wire after the live revert = %v, want the session's text injected again after the cut", got)
+	}
+	data, err := os.ReadFile(wireLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if !strings.Contains(lines[2], "session guide") {
+		t.Fatalf("second injection = %s, want the session's own text", lines[2])
+	}
+	if _, ok, err := app.store.CodexDeveloperInstructionsDigest(thread.ID, thread.SessionRef); err != nil || !ok {
+		t.Fatalf("record after the restore = (%v, %v), want it written again", ok, err)
+	}
+}
+
+// wireMethods lists the methods of the requests logged at path, in order.
+func wireMethods(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	var methods []string
+	for _, line := range strings.Split(string(data), "\n") {
+		var req struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal([]byte(line), &req) == nil && req.Method != "" {
+			methods = append(methods, req.Method)
+		}
+	}
+	return methods
 }
 
 // TestConversationRollbackCodexForksBelowTheRevertFloor: 0.147 has no
