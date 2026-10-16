@@ -1269,7 +1269,8 @@ Fixture: `fixtures/codex/thread_unload_cold_resume_20261016.ndjson`.
   rollout, and developer instructions are not a world-state section, so no
   diff is emitted. The model kept following the original instructions
   after both resume paths, and the new text was absent from the rollout.
-  It took effect after `thread/compact/start`, which rebuilds the context.
+  It took effect after `thread/compact/start`, which rebuilds the context
+  (run on the immediate cold-resume path only).
 - The model's own account of its tools is unreliable after a resume: it
   answered "missing" in the same turn that produced an `imageView` item.
   Read the tool item, not the reply.
