@@ -753,13 +753,14 @@ describe('deferred scroll pass', () => {
     const PAST_WINDOW_MS = 300;
     const pastWindow = () => new Promise((r) => setTimeout(r, PAST_WINDOW_MS));
 
-    function wheeledDownWhileEscaped(): Harness {
+    // The wheel asks for `deltaY` px; the view sits 100 px above the bottom.
+    function wheeledDownWhileEscaped(deltaY = 100): Harness {
       const h = build();
       h.state.escaped = true;
       h.state.distanceFromBottom = 100;
       h.scrollEl.scrollTop = 400;
       h.scrollEl.dispatchEvent(new Event('scroll'));
-      wheel(h.scrollEl, { deltaY: 10 });
+      wheel(h.scrollEl, { deltaY });
       return h;
     }
 
@@ -818,10 +819,10 @@ describe('deferred scroll pass', () => {
       expect(h.state.escaped).toBe(true);
     });
 
-    it('is consumed by a landing away from the bottom, so a later scroll with no input to the end stays escaped', async () => {
+    it('is consumed by a landing short of the bottom that spends it, so a later scroll with no input to the end stays escaped', async () => {
       // Find-in-page, a focus scroll or an anchor moves the view with no
       // input of its own; the earlier gesture already landed.
-      const h = wheeledDownWhileEscaped();
+      const h = wheeledDownWhileEscaped(40);
       landAt(h, 60, 440);
       await settleDeferredPass();
       expect(h.state.escaped).toBe(true);
@@ -846,11 +847,11 @@ describe('deferred scroll pass', () => {
     });
 
     it('is armed again by a second wheel after its first landing', async () => {
-      const h = wheeledDownWhileEscaped();
+      const h = wheeledDownWhileEscaped(40);
       landAt(h, 60, 440);
       await settleDeferredPass();
       await pastWindow();
-      wheel(h.scrollEl, { deltaY: 10 });
+      wheel(h.scrollEl, { deltaY: 60 });
       await pastWindow();
       landAt(h, 0, 500);
       await settleDeferredPass();
@@ -867,6 +868,149 @@ describe('deferred scroll pass', () => {
       await settleDeferredPass();
 
       expect(h.state.escaped).toBe(true);
+    });
+
+    describe('a smooth-scrolled wheel that lands over several events', () => {
+      it('re-sticks when the first late event is mid-animation and the next reaches the end', async () => {
+        const h = wheeledDownWhileEscaped();
+        await pastWindow();
+        // The first event a stalled main thread delivers is mid-animation;
+        // the next is the end of the same gesture.
+        landAt(h, 40, 460);
+        await new Promise((r) => setTimeout(r, 16));
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+
+      it('is cleared once its events spend the travel short of the bottom', async () => {
+        const h = wheeledDownWhileEscaped(60);
+        await pastWindow();
+        landAt(h, 80, 420);
+        landAt(h, 40, 460);
+        await settleDeferredPass();
+        expect(h.state.escaped).toBe(true);
+
+        // No input: a find-in-page or focus scroll reaches the end.
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('does not take a jump further than its travel as its landing', async () => {
+        const h = build();
+        h.state.escaped = true;
+        h.state.distanceFromBottom = 1000;
+        h.scrollEl.scrollTop = 400;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        wheel(h.scrollEl, { deltaY: 100 });
+        await pastWindow();
+        // A find-in-page jump lands at the end, far beyond one notch.
+        landAt(h, 0, 1400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('is cleared when its travel is spent exactly', async () => {
+        const h = build();
+        h.state.escaped = true;
+        h.state.distanceFromBottom = 67;
+        h.scrollEl.scrollTop = 400;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        wheel(h.scrollEl, { deltaY: 60 });
+        await pastWindow();
+        landAt(h, 7, 460);
+        await settleDeferredPass();
+        // A few pixels with no input reach the re-stick epsilon.
+        landAt(h, 4, 463);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('is cleared by an upward scroll mid-gesture', async () => {
+        const h = wheeledDownWhileEscaped();
+        landAt(h, 50, 450);
+        landAt(h, 70, 430);
+        await pastWindow();
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('is cleared by a native clamp landing short of where the wheel aimed', async () => {
+        const h = wheeledDownWhileEscaped();
+        await pastWindow();
+        // The range shrank beneath the view: the browser clamps it to the
+        // new maximum, an explained position beyond it.
+        h.state.lastExplained = 600;
+        landAt(h, 0, 450);
+        await settleDeferredPass();
+        expect(h.state.escaped).toBe(true);
+
+        h.state.lastExplained = null;
+        landAt(h, 0, 480);
+        await settleDeferredPass();
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('is extended by a second wheel', async () => {
+        const h = wheeledDownWhileEscaped(40);
+        landAt(h, 70, 430);
+        wheel(h.scrollEl, { deltaY: 60 });
+        await pastWindow();
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+
+      it('measures a line-mode wheel in lines', async () => {
+        const h = build();
+        h.state.escaped = true;
+        h.state.distanceFromBottom = 48;
+        h.scrollEl.scrollTop = 400;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        wheel(h.scrollEl, { deltaY: 3, deltaMode: WheelEvent.DOM_DELTA_LINE });
+        await pastWindow();
+        landAt(h, 0, 448);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+    });
+
+    it('a key gesture is spent by its first scroll event, wherever it lands', async () => {
+      const h = build();
+      h.state.escaped = true;
+      h.state.distanceFromBottom = 100;
+      h.scrollEl.scrollTop = 400;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+      key(h.scrollEl, 'ArrowDown');
+      landAt(h, 60, 440);
+      await settleDeferredPass();
+      await pastWindow();
+      landAt(h, 0, 500);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
+    it('a key gesture landing at the bottom late re-sticks', async () => {
+      const h = build();
+      h.state.escaped = true;
+      h.state.distanceFromBottom = 100;
+      h.scrollEl.scrollTop = 400;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+      key(h.scrollEl, 'End');
+      await pastWindow();
+      landAt(h, 0, 500);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(false);
     });
   });
 

@@ -131,7 +131,8 @@ export function scrollTopForWheel(
   );
 }
 
-function wheelDeltaPx(deltaY: number, deltaMode: number, clientHeight: number): number {
+/** A wheel event's delta in pixels, whatever unit its device reports. */
+export function wheelDeltaPx(deltaY: number, deltaMode: number, clientHeight: number): number {
   if (deltaMode === 1) return deltaY * WHEEL_LINE_PX;
   if (deltaMode === 2) return deltaY * Math.max(1, clientHeight);
   return deltaY;

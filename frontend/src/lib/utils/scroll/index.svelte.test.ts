@@ -6042,7 +6042,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       await nextTimer();
       expect(controller.escapedFromLock).toBe(true);
 
-      fireWheel(scrollEl, 50, scrollEl);
+      fireWheel(scrollEl, 300, scrollEl);
       await waitMs(300);
 
       geom.scrollTop = 400;

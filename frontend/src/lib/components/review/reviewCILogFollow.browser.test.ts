@@ -158,7 +158,7 @@ describe('ReviewCILogView tail follow', () => {
 
     // The wheel back down is the reader's; a loaded host delivers its
     // scroll to the end well past the 250 ms down-intent window.
-    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true }));
+    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 600, bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 400));
     scroll.scrollTop = scroll.scrollHeight;
     await settledAtBottom(scroll, 'the reader at the end');
@@ -183,7 +183,7 @@ describe('ReviewCILogView tail follow', () => {
 
     // One notch down, landing mid-log.
     scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true }));
-    scroll.scrollTop += 200;
+    scroll.scrollTop += 120;
     await raf();
     await raf();
     await new Promise((resolve) => setTimeout(resolve, 400));

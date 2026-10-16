@@ -22,6 +22,7 @@ import { trace } from './trace';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import { touchDragConsumedBelow, wheelConsumedBelow } from './wheelAttribution';
 import { recordScrollEventObservation } from './eventObservation';
+import { wheelDeltaPx } from './overlayScrollbar';
 
 const RECENT_DOWN_INTENT_WINDOW_MS = 250;
 const SCROLLBAR_DRAG_SESSION_FAILSAFE_MS = 30_000;
@@ -241,14 +242,18 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   let recentDownIntentClearTimer: ReturnType<typeof setTimeout> | null = null;
   // A down gesture made while escaped, still waiting for its scroll to land.
   // Unlike the recent-down-intent window it has no clock: a loaded host can
-  // deliver the landing scroll event long after the input. The first
-  // untagged scroll event after the gesture is its landing and consumes it,
-  // wherever it lands; a landing at the bottom re-sticks. A later scroll
-  // with no input of its own (find-in-page, focus, an anchor) therefore
-  // finds nothing pending. An escape, a re-stick or a detach also ends it;
-  // the version fences a deferred check against those.
+  // deliver the landing scroll events long after the input. A wheel carries
+  // the travel it asked for: a smooth scroll lands over several events, and
+  // each untagged one spends what it moved. One that lands at the bottom
+  // while travel remains re-sticks; spending it all, moving up, or moving
+  // further than remains ends the gesture, so a later scroll with no input
+  // of its own (find-in-page, focus, an anchor) finds nothing pending. A
+  // key or touch has no travel in pixels, so its first untagged scroll is
+  // its landing. An escape, a re-stick or a detach also ends it; the
+  // version fences a deferred check against those.
   let downLandingPending = false;
   let downLandingVersion = 0;
+  let downLandingTravelPx = 0;
   let scrollbarDragSessionActive = false;
   let scrollbarDragSessionVersion = 0;
   let scrollbarDragSessionFailsafeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -292,7 +297,22 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   function clearDownLanding(): void {
     downLandingPending = false;
+    downLandingTravelPx = 0;
     downLandingVersion += 1;
+  }
+
+  // Spends one untagged scroll event's movement from the pending gesture.
+  // True when the event is within what the gesture asked for, so it may
+  // be the gesture's landing.
+  function spendDownLanding(moved: number, unattributed: boolean): boolean {
+    if (moved === 0 && !unattributed) return false;
+    if (unattributed || moved < 0 || moved > downLandingTravelPx + AUTO_FOLLOW_BOTTOM_EPSILON_PX) {
+      downLandingPending = false;
+      return false;
+    }
+    downLandingTravelPx -= moved;
+    if (!(downLandingTravelPx > 0 && Number.isFinite(downLandingTravelPx))) downLandingPending = false;
+    return true;
   }
 
   function hasRecentDownIntent(): boolean {
@@ -361,13 +381,17 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     });
   }
 
-  function recordRecentDownIntent(source: 'wheel' | 'key' | 'touch'): void {
+  /** `travelPx`: the pixels a wheel asked for; a key or touch has none. */
+  function recordRecentDownIntent(source: 'wheel' | 'key' | 'touch', travelPx = Number.POSITIVE_INFINITY): void {
     deps.onScrollInput?.();
     if (!deps.escaped()) return;
     clearProgrammaticScrollState();
     deps.setRestoreConsentArmed(false);
     recentDownIntentVersion += 1;
     extendRecentDownIntent();
+    downLandingTravelPx = downLandingPending && Number.isFinite(downLandingTravelPx)
+      ? downLandingTravelPx + travelPx
+      : travelPx;
     downLandingPending = true;
     const el = deps.getScrollEl();
     const distFromBottom = el ? deps.distanceFromBottom() : 0;
@@ -538,7 +562,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       return;
     }
 
-    recordRecentDownIntent('wheel');
+    recordRecentDownIntent('wheel', wheelDeltaPx(e.deltaY, e.deltaMode, scrollEl.clientHeight));
   }
 
   function handlePointerDown(e: PointerEvent): void {
@@ -635,9 +659,8 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     const downIntentVersionAtEvent = recentDownIntentVersion;
     const shownEndAtEvent = downIntentShownEnd;
     const resizeDifferenceAtEvent = deps.resizeDifferenceNow();
-    const downLandingAtEvent = downLandingPending;
     const downLandingVersionAtEvent = downLandingVersion;
-    downLandingPending = false;
+    const downLandingAtEvent = downLandingPending && spendDownLanding(scrollTopAtEvent - previousObserved, previousObserved < 0 || nativeClamp);
     const scrollbarDragSessionAtEvent = scrollbarDragSessionActive;
     const scrollbarDragSessionVersionAtEvent = scrollbarDragSessionVersion;
     const scrolledDown = previousObserved < 0
