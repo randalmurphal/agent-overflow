@@ -1421,30 +1421,22 @@ html.light .working-sprite {
 
 /*
  * A streamed row Claude discarded after a stalled response
- * (utils/discardedItems.ts). The row keeps its content and controls; it is
- * dimmed behind a hairline rule so it reads as the record of what was shown
- * rather than as part of the answer. Opacity rather than a color swap keeps
- * code blocks, links and the markdown palette consistent with their
- * neighbours in both themes; the rule is the theme's strong border.
+ * (utils/discardedItems.ts). The row keeps its content, controls and
+ * geometry; it is dimmed so it reads as the record of what was shown rather
+ * than as part of the answer. The mark lands after the text has streamed, so
+ * it must not touch layout: no padding, border, indent or width-taking
+ * label, or the text rewraps and everything below moves. Opacity rather than
+ * a color swap keeps code blocks, links and the markdown palette consistent
+ * with their neighbours. The strengths are solved per applied theme and mode
+ * from the colors the cascade paints, the least dim that keeps the text at
+ * the 4.5:1 body floor (theme/discardedDim.ts writes --fade-discarded*);
+ * until that has run, nothing is dimmed.
  */
 .discarded-row {
-  position: relative;
-  padding-left: 0.75rem;
-  opacity: 0.62;
+  opacity: var(--fade-discarded, 1);
 }
-.discarded-row::before {
-  content: '';
-  position: absolute;
-  top: 0.25rem;
-  bottom: 0.25rem;
-  left: 0;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--color-border-strong);
-}
-/* A reasoning row sits on the activity rail, which is already its edge. */
 .discarded-reasoning {
-  opacity: 0.62;
+  opacity: var(--fade-discarded-reasoning, 1);
 }
 
 /*

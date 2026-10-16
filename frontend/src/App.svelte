@@ -65,6 +65,7 @@
     readWindowGroundHex,
     stampBootTheme,
   } from './lib/theme/themeApply.svelte';
+  import { applyDiscardedDim } from './lib/theme/discardedDim';
   import { applyFonts } from './lib/utils/fonts';
   import { startAmbientTicker } from './lib/utils/ambientTicker';
   import { startIdleMemoryTrim } from './lib/utils/idleMemoryTrim';
@@ -371,6 +372,17 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
     const ground = readWindowGroundHex();
     stampBootTheme(applied.mode, ground, applied.cssText);
     if (ground) void syncWindowBackground(ground);
+  });
+
+  // The discarded-row dimming is solved against the colors the cascade now
+  // paints (theme/discardedDim.ts), so it re-derives after every applied
+  // theme and mode change. Not gated on the appearance answer: before it,
+  // the boot stamp's palette is what is on screen, and that is what the
+  // dim has to keep readable.
+  $effect(() => {
+    getAppliedTheme();
+    getResolvedTheme();
+    applyDiscardedDim();
   });
 
   $effect(() => {
