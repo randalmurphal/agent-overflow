@@ -28,13 +28,17 @@ export async function expectHeadersShareTheWidth(panes: Locator[]): Promise<void
       const scroller = el.querySelector<HTMLElement>('.pane-title-fade');
       const text = scroller ?? el;
       const style = getComputedStyle(text);
-      const fadeRight = parseFloat(style.getPropertyValue('--fade-right')) || 0;
+      // The fade spans about two characters (2em) at the title's size; a
+      // narrower one reads as a letter cut in half.
+      const raw = style.getPropertyValue('--fade-right').trim();
+      const fontPx = parseFloat(style.fontSize);
+      const fadeRight = raw.endsWith('em') ? parseFloat(raw) * fontPx : parseFloat(raw) || 0;
       const mask = style.getPropertyValue('mask-image') || style.getPropertyValue('-webkit-mask-image');
       return {
         client: el.clientWidth,
         overflows: text.scrollWidth > text.clientWidth + 1,
         cut: scroller
-          ? scroller.scrollLeft <= 1 && fadeRight > 0 && mask.includes('gradient')
+          ? scroller.scrollLeft <= 1 && fadeRight >= 2 * fontPx - 0.5 && mask.includes('gradient')
           : style.textOverflow === 'ellipsis' && style.overflowX === 'hidden',
       };
     });

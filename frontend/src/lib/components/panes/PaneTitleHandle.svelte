@@ -125,7 +125,9 @@
   // scroll position: a fade appears only on an edge with text beyond it,
   // so a title that fits shows none and a swiped-to-the-end title fades
   // on the left alone. Measured on scroll, on resize and on a title change.
-  const FADE_PX = 24;
+  // The fade spans about two characters at the title's own size, so the
+  // last visible letters dim rather than reading as cut.
+  const FADE = '2em';
   let scrollerEl: HTMLElement | undefined = $state(undefined);
   const titleText = $derived(pane.thread ? assistantDisplayName(pane.thread) : '');
 
@@ -133,8 +135,8 @@
     const el = scrollerEl;
     if (!el) return;
     const beyondRight = el.scrollWidth - el.clientWidth - el.scrollLeft;
-    el.style.setProperty('--fade-left', el.scrollLeft > 1 ? `${FADE_PX}px` : '0px');
-    el.style.setProperty('--fade-right', beyondRight > 1 ? `${FADE_PX}px` : '0px');
+    el.style.setProperty('--fade-left', el.scrollLeft > 1 ? FADE : '0px');
+    el.style.setProperty('--fade-right', beyondRight > 1 ? FADE : '0px');
   }
 
   $effect(() => {

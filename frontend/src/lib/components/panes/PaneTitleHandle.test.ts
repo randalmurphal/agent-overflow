@@ -105,12 +105,12 @@ describe('<PaneTitleHandle>', () => {
     Object.defineProperty(scroller, 'clientWidth', { configurable: true, get: () => 200 });
     await fireEvent.scroll(scroller);
     expect(scroller.style.getPropertyValue('--fade-left')).toBe('0px');
-    expect(scroller.style.getPropertyValue('--fade-right')).toBe('24px');
+    expect(scroller.style.getPropertyValue('--fade-right')).toBe('2em');
 
     // Swiped to the end: fade left only.
     scroller.scrollLeft = 200;
     await fireEvent.scroll(scroller);
-    expect(scroller.style.getPropertyValue('--fade-left')).toBe('24px');
+    expect(scroller.style.getPropertyValue('--fade-left')).toBe('2em');
     expect(scroller.style.getPropertyValue('--fade-right')).toBe('0px');
   });
 
