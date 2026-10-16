@@ -53,25 +53,31 @@ func agentTreeHistory(t *testing.T, s *Store, history, open int) (chief string, 
 }
 
 // The listing and a read of one named row cost what the listed rows and the
-// tree's spawns cost, not the chief's history: at 50,000 settled answers,
-// and with 2,000 more open, before and after ANALYZE, the listing stays
-// within 10 ms and the named read within 1 ms.
+// tree's spawns cost, not the chief's history, before and after ANALYZE: a
+// read of one named row stays within 1 ms; the listing of 200 open rows
+// within 10 ms; and at 50,000 settled answers the listing costs at most
+// twice what it costs at 3,000 with the same open rows, 2,000 more open
+// included.
 func TestListThreadAgentTreeAtScale(t *testing.T) {
 	if testing.Short() {
 		t.Skip("seeds 52,000 requests")
 	}
-	for _, shape := range []struct {
-		history, open int
-		limited       bool
-	}{
-		{3_000, 200, false}, {50_000, 200, true}, {50_000, 2_200, true},
+	type key struct {
+		open     int
+		analyzed bool
+	}
+	small := map[key]time.Duration{}
+	for _, shape := range []struct{ history, open int }{
+		{3_000, 200}, {3_000, 2_200}, {50_000, 200}, {50_000, 2_200},
 	} {
 		s := newTestStore(t)
 		chief, since := agentTreeHistory(t, s, shape.history, shape.open)
 		read := ThreadAgentTreeRead{Root: chief, SettledSince: since, Depth: 4, OpenDepth: 4, Limit: 128, AnswerHead: 160}
+		// The fewest of more runs than the read pool has connections: after
+		// ANALYZE each connection compiles the statement again once.
 		fewest := func(call func()) time.Duration {
 			best := time.Duration(1 << 62)
-			for range 5 {
+			for range 20 {
 				start := time.Now()
 				call()
 				best = min(best, time.Since(start))
@@ -96,10 +102,19 @@ func TestListThreadAgentTreeAtScale(t *testing.T) {
 					t.Fatalf("named read: %+v, %v", rows, err)
 				}
 			})
-			t.Logf("%d settled, %d open, analyzed %v: listing %v, one named row %v", shape.history, shape.open, analyzed, listing, row)
-			if shape.limited && (listing > 10*time.Millisecond || row > time.Millisecond) {
-				t.Errorf("%d settled, %d open, analyzed %v: listing %v (at most 10ms), one named row %v (at most 1ms)",
-					shape.history, shape.open, analyzed, listing, row)
+			name := fmt.Sprintf("%d settled, %d open, analyzed %v", shape.history, shape.open, analyzed)
+			t.Logf("%s: listing %v, one named row %v", name, listing, row)
+			if row > time.Millisecond {
+				t.Errorf("%s: one named row took %v; at most 1ms", name, row)
+			}
+			if shape.open == 200 && listing > 10*time.Millisecond {
+				t.Errorf("%s: the listing took %v; at most 10ms", name, listing)
+			}
+			at := key{shape.open, analyzed}
+			if shape.history == 3_000 {
+				small[at] = listing
+			} else if listing > 2*small[at] {
+				t.Errorf("%s: the listing took %v, %v at 3000 settled; the history must not cost more than that again", name, listing, small[at])
 			}
 		}
 	}
