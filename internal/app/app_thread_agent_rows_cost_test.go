@@ -1,0 +1,183 @@
+package app
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
+)
+
+// agentTreeShape is a standing agent's tree at the size the Agents segment
+// is read at: one chief that spawned three managers, which spawned ten
+// workers, with the chief owed 200 open sends and holding 300 settled
+// answers of 4 KiB each, every one confirmed in a wake row of its own.
+type agentTreeShape struct {
+	open, settled []string
+}
+
+const (
+	agentTreeManagers = 3
+	agentTreeWorkers  = 10
+	agentTreeOpen     = 200
+	agentTreeSettled  = 300
+	agentTreeAnswer   = 4 << 10
+)
+
+func seedAgentTree(t *testing.T, f *requestFixture) agentTreeShape {
+	t.Helper()
+	chief := f.caller.ID
+	now := time.Now().UnixMilli()
+	created := now - int64(agentTreeOpen+agentTreeSettled+agentTreeManagers+agentTreeWorkers) - 1000
+	insert := func(r store.ThreadRequest) {
+		t.Helper()
+		created++
+		r.CreatedAt = created
+		if err := f.app.store.InsertThreadRequest(r); err != nil {
+			t.Fatalf("insert %s: %v", r.Token, err)
+		}
+	}
+	thread := func() string {
+		t.Helper()
+		th, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+		if err != nil {
+			t.Fatalf("create thread: %v", err)
+		}
+		return th.ID
+	}
+	managers := make([]string, agentTreeManagers)
+	for i := range managers {
+		managers[i] = thread()
+		insert(store.ThreadRequest{Token: fmt.Sprintf("spawn-m%d", i), CallerThreadID: chief, Kind: store.ThreadRequestSpawn,
+			TargetThreadID: managers[i], Notify: true, State: store.ThreadRequestRunning})
+	}
+	workers := make([]string, agentTreeWorkers)
+	for i := range workers {
+		workers[i] = thread()
+		insert(store.ThreadRequest{Token: fmt.Sprintf("spawn-w%d", i), CallerThreadID: managers[i%agentTreeManagers],
+			Kind: store.ThreadRequestSpawn, TargetThreadID: workers[i], Notify: true, State: store.ThreadRequestRunning})
+	}
+	var shape agentTreeShape
+	answer := []byte(strings.Repeat("answer text ", agentTreeAnswer/12+1)[:agentTreeAnswer])
+	// Settled and open sends interleave, so a listing bounded at its row
+	// limit reads both kinds.
+	for i := 0; i < agentTreeOpen+agentTreeSettled; i++ {
+		target := workers[i%agentTreeWorkers]
+		if i%5 < 2 && len(shape.open) < agentTreeOpen || len(shape.settled) == agentTreeSettled {
+			token := fmt.Sprintf("open-%03d", len(shape.open))
+			insert(store.ThreadRequest{Token: token, CallerThreadID: chief, Kind: store.ThreadRequestSend,
+				TargetThreadID: target, Notify: true, State: store.ThreadRequestRunning})
+			shape.open = append(shape.open, token)
+			continue
+		}
+		token := fmt.Sprintf("settled-%03d", len(shape.settled))
+		insert(store.ThreadRequest{Token: token, CallerThreadID: chief, Kind: store.ThreadRequestSend,
+			TargetThreadID: target, Notify: true, State: store.ThreadRequestRunning})
+		if ok, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+			State: store.ThreadRequestFinished, Answer: answer, AnswerKind: store.ThreadAnswerFinal, SettledAt: now,
+		}); err != nil || !ok {
+			t.Fatalf("settle %s: %v %v", token, ok, err)
+		}
+		meta, err := json.Marshal(map[string]any{"sendId": threadWakeSendID(token), "origin": "agent-wake"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.app.store.UpsertItem(store.Item{
+			ID: "wake-" + token, ThreadID: chief, TurnIndex: len(shape.settled) + 1, Kind: "user_text", Role: "user",
+			Status: "completed", Summary: "the answer", Meta: string(meta), CreatedAt: now, UpdatedAt: now,
+		}, nil); err != nil {
+			t.Fatalf("write the wake row of %s: %v", token, err)
+		}
+		if ok, err := f.app.store.MarkThreadRequestDelivered(token, store.ThreadWakeQueued, now, false); err != nil || !ok {
+			t.Fatalf("mark %s delivered: %v %v", token, ok, err)
+		}
+		f.app.confirmOwnedDeliveries(chief, []string{threadWakeSendID(token)})
+		shape.settled = append(shape.settled, token)
+	}
+	waitAgentEmitsIdle(t, f.app)
+	return shape
+}
+
+// waitAgentEmitsIdle waits out the frames the seeding queued.
+func waitAgentEmitsIdle(t *testing.T, a *App) {
+	t.Helper()
+	waitUntil(t, 30*time.Second, func() bool {
+		e := &a.threadAgentEmits
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return !e.draining
+	})
+}
+
+// agentTreeCost is what one leg costs per call: read statements and time.
+type agentTreeCost struct {
+	reads float64
+	per   time.Duration
+}
+
+func measureAgentTree(a *App, runs int, call func()) agentTreeCost {
+	call()
+	start, reads := time.Now(), a.store.ReadCount()
+	for range runs {
+		call()
+	}
+	return agentTreeCost{
+		reads: float64(a.store.ReadCount()-reads) / float64(runs),
+		per:   time.Since(start) / time.Duration(runs),
+	}
+}
+
+// TestAgentTreeReadCost measures the Agents segment's reads over the tree
+// above: the listing, a tool rows' state read of 256 settled tokens, and
+// the change frames of the 200 open sends. Run it alone for its timings.
+func TestAgentTreeReadCost(t *testing.T) {
+	f := newRequestFixture(t)
+	shape := seedAgentTree(t, f)
+	chief := f.caller.ID
+
+	list := measureAgentTree(f.app, 20, func() {
+		listing, err := f.app.ListThreadAgentRows(t.Context(), chief)
+		if err != nil || len(listing.Rows) != threadAgentRowLimit || !listing.Hidden {
+			t.Fatalf("ListThreadAgentRows: %d rows, hidden %v, %v", len(listing.Rows), listing.Hidden, err)
+		}
+		for _, row := range listing.Rows {
+			if strings.HasPrefix(row.Token, "settled-") && (row.WakeItemID != "wake-"+row.Token || row.Answer == "") {
+				t.Fatalf("settled row %+v; want its answer and wake row", row)
+			}
+		}
+	})
+	states := measureAgentTree(f.app, 20, func() {
+		got, err := f.app.GetThreadRequestStates(chief, shape.settled[:maxThreadRequestStates])
+		if err != nil || len(got) != maxThreadRequestStates {
+			t.Fatalf("GetThreadRequestStates: %d states, %v", len(got), err)
+		}
+		for _, state := range got {
+			if !state.Answered || state.WakeItemID != "wake-"+state.Token {
+				t.Fatalf("state %+v; want answered in its wake row", state)
+			}
+		}
+	})
+	frames := measureAgentTree(f.app, 20, func() {
+		e := &f.app.threadAgentEmits
+		e.mu.Lock()
+		for _, token := range shape.open {
+			e.tokens[token] = struct{}{}
+		}
+		e.draining = true
+		e.mu.Unlock()
+		f.app.drainThreadAgentEmits()
+	})
+	resume := measureAgentTree(f.app, 20, func() {
+		if err := f.app.requireAssistantClaudeSession(f.caller, provider.SessionOptions{Resume: "session-1", WorkDir: t.TempDir()}); err != nil {
+			t.Fatalf("requireAssistantClaudeSession: %v", err)
+		}
+	})
+	t.Logf("assistant session check on a Claude resume: %.1f reads, %v per start", resume.reads, resume.per)
+	t.Logf("listing: %.1f reads, %v per call", list.reads, list.per)
+	t.Logf("request states (256 tokens): %.1f reads, %v per call", states.reads, states.per)
+	t.Logf("frames (200 tokens): %.1f reads, %v per drain", frames.reads, frames.per)
+}
