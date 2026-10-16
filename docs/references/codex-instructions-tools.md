@@ -35,7 +35,9 @@ while a connection subscribes to it or it is active
 (`request_processors/thread_processor.rs:39-153`, `:3546-3588`). A resident
 idle thread with no subscriber is shut down and cold-resumed instead
 ([codex-wire.md](codex-wire.md#thread-unload-and-cold-resume-verified-01621)).
-AO's one-app-server-per-session model dodges this; a shared app-server would not.
+AO's one-app-server-per-session model dodges this; a shared app-server must
+unload a thread before restarting it
+([codex-app-server-sharing.md](../specs/codex-app-server-sharing.md#end-session)).
 
 ### What the default actually is
 
@@ -138,7 +140,9 @@ config/read. `core/src/session/mod.rs` resolves developer instructions from
 config on cold start/resume, whereas base instructions explicitly consult
 conversation history. On a resume the resolved value does not reach the model
 until the context is rebuilt by compaction
-([codex-wire.md](codex-wire.md#thread-unload-and-cold-resume-verified-01621)). AO therefore reads cwd-scoped config before appending
+([codex-wire.md](codex-wire.md#thread-unload-and-cold-resume-verified-01621)); a
+`thread/inject_items` developer message does
+([per-thread channels](codex-wire.md#developer-instructions-across-a-restart-and-per-thread-channels-verified-01621)). AO therefore reads cwd-scoped config before appending
 its own text: the app guide, then the guides of the browser and thread tools
 servers when those are on
 ([prompt-tool-overrides.md §App guide](../specs/prompt-tool-overrides.md#app-guide)).
