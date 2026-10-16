@@ -34,7 +34,8 @@ import {
   updateThreadPinState,
   updateThreadTitle,
 } from '../../stores/threads.svelte';
-import { closePanesShowingThread } from '../../stores/panes.svelte';
+import { closePanesShowingThread, panesShowingThread } from '../../stores/panes.svelte';
+import { getComposerDraftForPane } from '../../stores/composerDraftRegistry.svelte';
 import {
   syncRemovedWorktreeThreads,
   type WorktreeRemovalResult,
@@ -109,14 +110,47 @@ export async function renameThreadAction(
  * pane that asked is switched here too, so it does not wait on the frame.
  */
 export async function nextAssistantThreadAction(ctx: ThreadActionCtx): Promise<void> {
+  const release = holdComposerForHandOff(ctx.thread.id);
+  if (!release) return;
   try {
+    await saveComposerForHandOff(ctx.thread.id);
     const successor = (await StartNextAssistantThread(ctx.thread.id)) as Thread;
     if (!getThreadById(successor.id)) prependThread(successor);
     if (ctx.isActive) await ctx.switchPane(successor);
   } catch (err) {
     console.error('Failed to start the assistant\'s new thread:', err);
     ctx.reportError(userFacingError(err), err);
+  } finally {
+    release();
   }
+}
+
+function handOffComposer(threadId: string) {
+  for (const pane of panesShowingThread(threadId)) {
+    const draft = getComposerDraftForPane(pane.paneId);
+    if (draft?.persists && draft.threadId === threadId) return draft;
+  }
+  return undefined;
+}
+
+/**
+ * The handoff moves the old thread's saved draft, so the composer showing
+ * it is held inert until the handoff ends: nothing typed during it is left
+ * behind. Null when a handoff already holds it.
+ */
+function holdComposerForHandOff(threadId: string): (() => void) | null {
+  const draft = handOffComposer(threadId);
+  if (!draft) return () => {};
+  if (draft.moving) return null;
+  return draft.beginMove();
+}
+
+/** Text typed just before the click may not have reached its debounced save. */
+async function saveComposerForHandOff(threadId: string): Promise<void> {
+  const draft = handOffComposer(threadId);
+  if (!draft) return;
+  await draft.settleUploads();
+  await draft.prepareForSend();
 }
 
 /**

@@ -327,8 +327,11 @@ assistant's current thread on this computer, and for an archived one.
    time, archives it, moves its live loops and watches to the successor,
    moves its remote jobs whose completion is still owed (`pending`, or
    queued and unconfirmed) so the watcher, which skips an archived
-   thread, reports them there, moves every `thread_requests` row it is the caller of (reminders
-   included, as caller and target), setting `made_in_thread_id` to the
+   thread, reports them there (a watch's `launched_in_thread_id` keeps
+   the thread that launched the job, which the destination's receipt
+   names, so the successor reads, cancels and stops it), moves every
+   `thread_requests` row it is the caller of (reminders included, as
+   caller and target), setting `made_in_thread_id` to the
    old thread unless an earlier handoff already set it, and points every
    receipt addressed to it that its session has not taken in (state
    `accepted`) at the successor, with a local request's own target.
@@ -343,6 +346,14 @@ assistant's current thread on this computer, and for an archived one.
    new thread before it answered. Its previous thread is <id>; read it
    with thread_show to see what was done, or ask the assistant again by
    name." Running watch processes restart under the successor.
+4. The old thread's composer draft moves to the successor's, after any
+   texts a session loss carried, one blank line between them, with its
+   attachments copied into the successor and its terminal chips and
+   plan link kept; the old draft is cleared. A client showing the old
+   thread saves what was typed there and holds its composer until the
+   handoff ends, so text typed just before the click moves too. A move
+   that fails leaves the draft in the old thread and says so in the
+   successor.
 4. The successor is opened with an app-written block (wake kind
    `handoff`): its name and that the user replaced its previous thread
    <id> with this one, what moved, the tokens and senders of the requests

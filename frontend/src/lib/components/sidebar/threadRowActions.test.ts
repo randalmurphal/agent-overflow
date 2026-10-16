@@ -8,7 +8,11 @@ import {
   type ThreadActionCtx,
 } from './threadRowActions';
 import { buildPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { createThreadPane } from '../../stores/thread.svelte';
+import { createComposerDraftStore, resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
+import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
+import type { Draft } from '../../types/draft';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import {
   getThreads,
@@ -164,6 +168,54 @@ describe('standing agent actions', () => {
     await nextAssistantThreadAction(ctx);
     expect(ctx.reportError).toHaveBeenCalledTimes(1);
     expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain('archived');
+  });
+
+  it('saves the text typed just before New Thread, Same Assistant and holds the composer until the handoff ends', async () => {
+    resetComposerDraftSnapshotsForTest();
+    const saved = new Map<string, Draft>();
+    const order: string[] = [];
+    setBindingMock('GetDraft', async (id: string) => saved.get(id) ?? { threadId: id, content: '', attachmentIds: [], terminalChips: [], sourceProposedPlan: null, updatedAt: 0 });
+    setBindingMock('ListAttachments', async () => []);
+    const save = setBindingMock('SaveDraft', async (id: string, content: string) => {
+      order.push(`save ${id} ${content}`);
+      saved.set(id, { threadId: id, content, attachmentIds: [], terminalChips: [], sourceProposedPlan: null, updatedAt: 0 });
+    });
+    const ctx = { ...makeCtx({ agentId: 'agent-1' }), isActive: true };
+    const pane = createThreadPane({ paneId: 'handoff-draft' });
+    pane.replaceThread(ctx.thread);
+    registerPaneForTest(pane.paneId, pane);
+    const draft = createComposerDraftStore({ debounceMs: 60_000 });
+    const dispose = registerComposerDraft(pane.paneId, draft);
+    try {
+      await draft.setThread('thread-1');
+      draft.setContent('half-typed note');
+      let finish!: () => void;
+      const next = setBindingMock('StartNextAssistantThread', async () => {
+        order.push(`hand off, composer held ${draft.moving}`);
+        await new Promise<void>((resolve) => { finish = resolve; });
+        return makeBaseThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      });
+      const first = nextAssistantThreadAction(ctx);
+      await vi.waitFor(() => expect(next).toHaveBeenCalledTimes(1));
+      await nextAssistantThreadAction(ctx);
+      expect(next).toHaveBeenCalledTimes(1);
+      finish();
+      await first;
+      expect(order).toEqual(['save thread-1 half-typed note', 'hand off, composer held true']);
+      expect(draft.moving).toBe(false);
+      expect(draft.hasPendingSave).toBe(false);
+
+      // A save that fails stops the handoff, so the text is not left behind.
+      draft.setContent('newer note');
+      save.mockImplementation(async () => { throw new Error('disk full'); });
+      await nextAssistantThreadAction(ctx);
+      expect(next).toHaveBeenCalledTimes(1);
+      expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]).toBe('Disk full.');
+      expect(draft.moving).toBe(false);
+    } finally {
+      dispose();
+      await draft.setThread(null);
+    }
   });
 
   it('archives the done children in order, drops their rows, and reports how many failed', async () => {
