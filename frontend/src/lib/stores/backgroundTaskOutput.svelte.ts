@@ -49,7 +49,7 @@ export function backgroundTaskOutputKey(threadId: string, launchId: string): str
   return `${threadId}\u0000${launchId}`;
 }
 
-function splitKey(key: string): { threadId: string; launchId: string } {
+export function splitBackgroundTaskOutputKey(key: string): { threadId: string; launchId: string } {
   const at = key.indexOf('\u0000');
   return { threadId: key.slice(0, at), launchId: key.slice(at + 1) };
 }
@@ -95,10 +95,10 @@ function tailFromSnapshot(snapshot: BackgroundTaskOutputSnapshot): BackgroundTas
 
 const store = createEntityStore<BackgroundTaskOutputTail, void>({
   name: 'backgroundTaskOutput',
-  backendForKey: (key) => threadBackend(splitKey(key).threadId),
+  backendForKey: (key) => threadBackend(splitBackgroundTaskOutputKey(key).threadId),
   rawValue: true,
   source: async ({ key, apply, signal }) => {
-    const { threadId, launchId } = splitKey(key);
+    const { threadId, launchId } = splitBackgroundTaskOutputKey(key);
     const backend = threadBackend(threadId);
     const owner = Symbol(key);
     const issue = () => WatchBackgroundTaskOutput(threadId, launchId);

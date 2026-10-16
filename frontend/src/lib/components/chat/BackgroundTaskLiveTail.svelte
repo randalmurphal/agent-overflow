@@ -16,6 +16,8 @@
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
   import {
     attachBackgroundTaskOutput,
+    backgroundTaskOutputKey,
+    splitBackgroundTaskOutputKey,
     type BackgroundTaskOutputTail,
   } from '../../stores/backgroundTaskOutput.svelte';
   import type { EntityAttachment } from '../../stores/entityStore.svelte';
@@ -36,10 +38,12 @@
     maxHeight?: string;
   } = $props();
 
+  // The attach effect keys on the ids' VALUES: a parent re-rendering with
+  // a fresh but equal pair must not release and re-acquire the watch.
+  let launchKey = $derived(backgroundTaskOutputKey(threadId, launchId));
   let attachment = $state.raw<EntityAttachment<BackgroundTaskOutputTail> | null>(null);
   $effect(() => {
-    const thread = threadId;
-    const launch = launchId;
+    const { threadId: thread, launchId: launch } = splitBackgroundTaskOutputKey(launchKey);
     const current = untrack(() => attachBackgroundTaskOutput(thread, launch));
     attachment = current;
     return () => {

@@ -1753,6 +1753,16 @@ Per agent-overflow spec, triage keeps the `tool_call` row at
 `tool_completion` row comes later via the task lifecycle. See
 [`turn-lifecycle.md`](../architecture/turn-lifecycle.md).
 
+The ack TEXT is the wire's one launch-time statement of the task's
+output file: every wording ends in `Output is being written to:
+<tasks dir>/<task_id>.output.` while the structured sibling carries only
+`backgroundTaskId`. The parser reads the path up to that basename
+(`sessionimport.BackgroundAckOutputFile`) into the completion's
+`output_file` meta, and triage stamps it on the launch row when it keeps
+the launch running, so the tray can follow the file before any
+`task_notification` names it. A Monitor launch names no file; its launch
+row gets the first notification's `output_file`.
+
 
 **The launch flag is a hint, never a verdict.** A `run_in_background:
 true` launch can be REFUSED: a PreToolUse hook deny, or "Permission to

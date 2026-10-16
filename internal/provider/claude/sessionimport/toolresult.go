@@ -231,8 +231,12 @@ const backgroundAckOutputFileMarker = "Output is being written to: "
 // `<tasks dir>/<task_id>.output`, so the path is read up to that basename
 // and anything else after the marker yields "": the sentence that follows
 // the path ("You will be notified…", "If it exits…") is punctuated with a
-// period the path's own characters cannot be told from. A relative path
-// yields "" as well; the file is only ever read by its absolute path.
+// period the path's own characters cannot be told from, so a basename
+// found past a sentence boundary is not the path. A relative path yields
+// "" as well; the file is only ever read by its absolute path. A space
+// inside the path is allowed: the tasks directory sits under the
+// temporary root and a sanitized spelling of the working directory, and
+// either can hold one.
 func BackgroundAckOutputFile(text, taskID string) string {
 	taskID = strings.TrimSpace(taskID)
 	if taskID == "" {
@@ -251,7 +255,7 @@ func BackgroundAckOutputFile(text, taskID string) string {
 		return ""
 	}
 	path := strings.TrimSpace(rest[:end+len(base)])
-	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, " \t") {
+	if !strings.HasPrefix(path, "/") || strings.Contains(path, ". ") || strings.ContainsAny(path, "\t\r") {
 		return ""
 	}
 	return path

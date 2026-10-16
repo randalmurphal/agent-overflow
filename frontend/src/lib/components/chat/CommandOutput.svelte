@@ -56,6 +56,7 @@
     hostActions,
     bodyRequiresPayload = false,
     liveTail = null,
+    onExpandedChange,
   }: {
     pane?: PaneSession & RowUiRegistry & ScrollHost;
     item: Item;
@@ -83,6 +84,9 @@
      * tail of that file (BackgroundTaskLiveTail) until the completion's
      * payload is loaded. The tray row supplies it; timeline rows never do. */
     liveTail?: { threadId: string; launchId: string } | null;
+    /** Reports the body opening and closing to a host that sizes itself
+     * around an open body (the tray list grows for an open tail). */
+    onExpandedChange?: (expanded: boolean) => void;
   } = $props();
   let effectiveDisplayItem = $derived(displayItem ?? item);
   let effectiveStatusItem = $derived(statusItem ?? item);
@@ -270,6 +274,10 @@
   });
 
   keepExpandedPayloadFresh(() => expansion, () => hasPayload);
+  $effect(() => {
+    const expanded = expansion.expanded;
+    untrack(() => onExpandedChange?.(expanded));
+  });
 </script>
 
 <div class="group/tool overflow-hidden" data-testid="command-output-row">

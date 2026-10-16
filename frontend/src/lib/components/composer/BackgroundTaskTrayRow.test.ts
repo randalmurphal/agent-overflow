@@ -8,6 +8,8 @@ import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ProviderID } from '../../providers/catalog';
 import { tick } from 'svelte';
 import { applySubagentProgress, resetForTest } from '../../stores/subagentProgress.svelte';
+import { __resetBackgroundTaskOutputForTest } from '../../stores/backgroundTaskOutput.svelte';
+import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { replaceSubagentRunStates, resetForTest as resetSubagentRunStates } from '../../stores/subagentRunState.svelte';
 
 function taskFor(anchor: Item, overrides: Partial<TrayTask> = {}): TrayTask {
@@ -353,6 +355,53 @@ describe('<BackgroundTaskTrayRow> doors (agent-visibility)', () => {
     expect(view.getByTestId('command-output-command')).toHaveTextContent('Wait thirty seconds');
     expect(view.getByTestId('command-output-toggle')).not.toHaveAttribute('aria-disabled', 'true');
     expect(view.queryByTestId('background-task-tray-row-digest')).toBeNull();
+  });
+
+  it('keeps one tail watch while the tray rebuilds a running Claude command\u2019s task', async () => {
+    const watch = setBindingMock('WatchBackgroundTaskOutput', async () => ({
+      watchId: 'w-1', seq: 0, data: 'compiling…\n', truncated: false, size: 11, ended: false,
+    }));
+    const unwatch = setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
+    const launchFields: Partial<Item> = {
+      id: 'L1', kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true, summary: 'make build',
+      meta: JSON.stringify({ input: { command: 'make build' }, task_id: 'b1', output_file: '/tmp/tasks/b1.output' }),
+    };
+    const onToggleExpanded = vi.fn();
+    const view = render(BackgroundTaskTrayRow, {
+      props: {
+        task: taskFor(makeItem(launchFields)),
+        stopTarget: 'b1',
+        isStopping: false,
+        provider: 'claude' as ProviderID,
+        onStop: vi.fn(),
+        pane: paneStub,
+        expanded: false,
+        onToggleExpanded,
+      },
+    });
+    try {
+      const header = view.getByTestId('command-output-toggle');
+      expect(header).not.toHaveAttribute('aria-disabled', 'true');
+      await fireEvent.click(header);
+      for (let i = 0; i < 6; i += 1) await tick();
+      expect(onToggleExpanded).toHaveBeenCalledTimes(1);
+      expect(watch).toHaveBeenCalledTimes(1);
+      expect(view.getByTestId('background-task-live-tail-scroll')).toHaveTextContent('compiling…');
+
+      // Every tray delta and elapsed tick hands the row a rebuilt task with
+      // fresh item objects; the watch is keyed by the launch, not the object.
+      await view.rerender({ task: taskFor(makeItem(launchFields), { elapsedMs: 4_000 }), expanded: true });
+      for (let i = 0; i < 6; i += 1) await tick();
+      expect(watch).toHaveBeenCalledTimes(1);
+      expect(unwatch).not.toHaveBeenCalled();
+      expect(view.getByTestId('background-task-live-tail-scroll')).toHaveTextContent('compiling…');
+    } finally {
+      view.unmount();
+      for (let i = 0; i < 6; i += 1) await tick();
+      expect(unwatch).toHaveBeenCalledWith('thread-1', 'w-1');
+      __resetBackgroundTaskOutputForTest();
+      resetBindingMocks();
+    }
   });
 
   it('shows a running agent\u2019s live tool count, tokens and activity line', () => {

@@ -167,6 +167,7 @@ func DecodeToolCompleteMetaObject(obj map[string]json.RawMessage) ToolCompleteMe
 	var m ToolCompleteMeta
 	decodeRawField(obj, "is_background", &m.IsBackground)
 	decodeRawField(obj, "watch_task", &m.WatchTask)
+	decodeRawField(obj, "output_file", &m.OutputFile)
 	decodeRawField(obj, "is_error", &m.IsError)
 	decodeRawField(obj, "exit_code", &m.ExitCode)
 	decodeRawField(obj, "item_status", &m.ItemStatus)

@@ -174,10 +174,22 @@
     if (!launch || !launch.isBackground || task.status !== 'running') return null;
     return extractClaudeTaskOutputFile(launch) ? { threadId: launch.threadId, launchId: launch.id } : null;
   });
-  let liveTail = $state<{ threadId: string; launchId: string } | null>(null);
+  // One object per launch: the task is rebuilt on every tray delta and
+  // elapsed tick, and a fresh but equal object would re-key the tail and
+  // its watch each time.
+  let liveTail = $state.raw<{ threadId: string; launchId: string } | null>(null);
   $effect(() => {
-    if (liveTailWhileRunning !== null) liveTail = liveTailWhileRunning;
+    const next = liveTailWhileRunning;
+    if (next === null) return;
+    if (liveTail?.threadId === next.threadId && liveTail.launchId === next.launchId) return;
+    liveTail = next;
   });
+  // A command row's body is the command output's own; the host only learns
+  // whether it is open, so the list grows around an open tail as it does
+  // around an open digest.
+  function onCommandBodyExpanded(open: boolean): void {
+    if (open !== expanded) onToggleExpanded?.(task);
+  }
 </script>
 
 <div
@@ -262,6 +274,7 @@
         showTimestamp={false}
         bodyRequiresPayload
         {liveTail}
+        onExpandedChange={onToggleExpanded ? onCommandBodyExpanded : undefined}
         hostActions={hasStopAction ? stopAction : undefined}
       />
     {:else if presentation.kind === 'agent'}

@@ -71,6 +71,13 @@ execution's history (its saved bounds, or without them the rows since the
 previous completion) and settled values, a Claude card every row up to the
 stop ([§Agent runs and stops](#agent-runs-and-stops)).
 
+An expanded running Claude command row in the tray shows its command and
+a live tail of its output file, following the newest line until the
+reader scrolls up and resuming when they return to the bottom. The file
+is followed only while a row is open (`WatchBackgroundTaskOutput`,
+`provider:background_task_output`), the follow ends with the task, and
+the completion card then carries the output as before.
+
 The separate agent pane contains the agent's continuous history across
 executions, including correctly scoped nested-agent activity. Live status
 belongs to the pane and background tray, independently of historical events.

@@ -301,7 +301,9 @@ Mechanism in
   `summary`, written with the card; a later notification of the same stop
   can give an answerless card its report but never replaces or clears one
   (ruling 2026-09-25). A command's `output_file` is still read into the
-  bounded `command_output` payload.
+  bounded `command_output` payload, and followed live in the tray while
+  the command runs (ruling 2026-10-16: the file is tailed by the app,
+  never through the CLI's `TaskOutput`).
 - Monitor idle-wake: the CLI writes `<task-notification>` to the
   transcript only. A transcript-tail backfill was proposed and declined.
 - A Claude Stop kills every running or parked background agent, from any

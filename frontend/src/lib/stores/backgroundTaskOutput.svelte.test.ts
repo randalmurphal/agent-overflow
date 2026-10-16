@@ -163,7 +163,7 @@ describe('backgroundTaskOutput store', () => {
     applyBackgroundTaskOutputEvent(frame({ seq: 1, append: big, size: big.length }), { backendId: '' });
     expect(attachment.current?.text.length).toBeLessThanOrEqual(TAIL_BYTES);
     expect(attachment.current?.text.startsWith('x')).toBe(true);
-    expect(attachment.current?.text.length % line.length).toBe(0);
+    expect((attachment.current?.text.length ?? 0) % line.length).toBe(0);
     expect(attachment.current?.truncated).toBe(true);
     attachment.release();
     await flush();

@@ -88,6 +88,12 @@ func TestBackgroundAckOutputFile(t *testing.T) {
 			t.Fatalf("%q: got %q, want %q", text, got, path)
 		}
 	}
+	// A space in the path is a space in the temporary root or the working
+	// directory's spelling, not a sentence boundary.
+	const spaced = "/tmp/claude-502/-home-a-user-My Project/de4518bd/tasks/bdq6lce49.output"
+	if got := BackgroundAckOutputFile("Command running in background with ID: bdq6lce49. Output is being written to: "+spaced+". You will be notified.", "bdq6lce49"); got != spaced {
+		t.Fatalf("spaced path: got %q, want %q", got, spaced)
+	}
 	for _, text := range []string{
 		"",
 		"Command running in background with ID: bdq6lce49.",
