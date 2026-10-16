@@ -324,9 +324,10 @@ section: exported as `BASH_MAX_TIMEOUT_MS` (hours in ms) into every
 Claude spawn, headless (`claude.WithCommandTimeoutEnv` in
 `claudeSpawnEnv`) and claude-tui (the same helper on the override map
 before `BuildEnvironment`), as a DEFAULT a custom-env value outranks; the
-row names an overriding custom-env entry. Precedence on both paths:
-Claude's own `settings.json` `env` block, then the custom environment,
-then the setting, then an inherited host value. It rides
+row names an overriding custom-env entry. Precedence on both paths: the
+custom environment, then the setting, then an inherited host value; a
+value in Claude's own `settings.json` `env` block can still win inside
+the CLI (`docs/references/claude.md`). It rides
 `SessionOptions.ClaudeMaxCommandTimeoutHours`, stamped and pinned like
 `DisableTodoReminders`. The CLI behavior it controls is in
 `docs/references/claude.md` (background commands stop at their timeout).

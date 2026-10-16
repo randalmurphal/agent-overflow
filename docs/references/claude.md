@@ -167,5 +167,8 @@ our own code.
   of the Claude Code settings page, default 5 h) on both spawn paths,
   same user-overridable-default posture as the todo opt-in; it never
   sets `BASH_DEFAULT_TIMEOUT_MS`, which would also move the 2 min
-  foreground default. A value in Claude's own `settings.json` `env`
-  block still outranks both. Verified on 2.1.300 binary analysis.
+  foreground default. The 30 min background default holds for AO's
+  streaming sessions; a single-shot `-p` session uses 10 min instead. A
+  value in Claude's own `settings.json` `env` block is applied over the
+  spawned environment unless the CLI judges the launch host-orchestrated
+  (not exercised). Verified on 2.1.300 binary analysis.
