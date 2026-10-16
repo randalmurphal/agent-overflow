@@ -185,6 +185,15 @@ describe('thread wakes store', () => {
     expect(reran(() => applyThreadWakesChanged({ threadId: 'busy-8', id: 'l-busy-8', removed: true }, HOME_BACKEND))).toEqual(['busy-8']);
     // A reminder is not the sidebar's: no row reruns.
     expect(reran(() => applyThreadWakesChanged({ threadId: 'busy-9', id: 'r1', row: row('r1', { kind: 'reminder' }) }, HOME_BACKEND))).toEqual([]);
+    // A resync that finds what the store holds reruns nothing.
+    setBindingMock('ListStandingAgentWakes', async () => [
+      ...busy.filter((id) => id !== 'busy-8').map((threadId) => ({ threadId, rows: [row(`l-${threadId}`, threadId === 'busy-7' ? { state: 'running' } : {})] })),
+      { threadId: 'idle-3', rows: [row('l1')] },
+    ]);
+    const before = new Map(runs);
+    await refreshAgentWakes();
+    flushSync();
+    expect([...runs].filter(([id, n]) => n !== before.get(id))).toEqual([]);
     unmount();
   });
 

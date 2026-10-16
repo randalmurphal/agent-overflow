@@ -151,11 +151,20 @@ function isLoop(row: ThreadWakeRow): boolean {
   return row.kind === 'loop' || row.kind === 'watch';
 }
 
+function sameRow(a: ThreadWakeRow, b: ThreadWakeRow): boolean {
+  const keys = Object.keys(a) as Array<keyof ThreadWakeRow>;
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
+}
+
+/**
+ * Writes the thread's loops unless they are what it holds, so a resync or a
+ * replayed frame that changes nothing reruns no reader. A known thread with
+ * no rows keeps its key: a reader of a missing key reruns on every other
+ * thread's arrival and departure.
+ */
 function setLoops(threadId: string, backend: BackendKey, rows: readonly ThreadWakeRow[]): void {
   const current = untrack(() => loops.get(threadId));
-  // A known thread with no rows keeps its key: a reader of a missing key
-  // reruns on every other thread's arrival and departure.
-  if (current && current.backend === backend && current.rows.length === 0 && rows.length === 0) return;
+  if (current && current.backend === backend && current.rows.length === rows.length && rows.every((row, i) => sameRow(row, current.rows[i]))) return;
   loops.set(threadId, { backend, rows: rows.length === 0 ? NO_ROWS : rows });
 }
 
