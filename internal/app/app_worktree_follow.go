@@ -11,7 +11,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/triage"
 )
 
 // The provider can move its own working directory mid-session: Claude's
@@ -118,21 +117,23 @@ func (a *App) applyProviderWorkspaceChange(threadID, sessionToken string, change
 		return
 	}
 
-	moved := !gitops.SameFilesystemPath(thread.WorkspacePath, target.WorkspacePath) ||
-		thread.WorktreePath != target.WorktreePath ||
-		thread.Branch != target.Branch
-	thread.WorkspacePath = target.WorkspacePath
-	thread.WorktreePath = target.WorktreePath
-	thread.Branch = target.Branch
+	thread, _, moved, err := a.moveThreadRowLocked(threadID, func(t *store.Thread) bool {
+		moved := !gitops.SameFilesystemPath(t.WorkspacePath, target.WorkspacePath) ||
+			t.WorktreePath != target.WorktreePath ||
+			t.Branch != target.Branch
+		t.WorkspacePath = target.WorkspacePath
+		t.WorktreePath = target.WorktreePath
+		t.Branch = target.Branch
+		return moved
+	})
+	if err != nil {
+		a.emitWireErrorToThread(threadID, fmt.Sprintf("Claude moved to %s, but the thread could not be updated: %v", change.Cwd, err))
+		return
+	}
 	if moved {
-		if err := a.store.UpdateThread(thread); err != nil {
-			a.emitWireErrorToThread(threadID, fmt.Sprintf("Claude moved to %s, but the thread could not be updated: %v", change.Cwd, err))
-			return
-		}
 		// A setup run still going for the workspace the thread left
 		// describes a checkout it no longer occupies.
 		a.releaseThreadWorktreeSetup(threadID, thread.WorkspacePath)
-		a.broadcastThreadRow(triage.ThreadActionFull, thread)
 	}
 
 	if change.RemovedWorktree {

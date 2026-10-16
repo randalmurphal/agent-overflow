@@ -195,6 +195,10 @@ func (a *App) markThreadFocused(threadID string) {
 		defer a.markThreadRead.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 		defer cancel()
+		// The mutation lock spans the write and its broadcast, as in
+		// MarkThreadRead, so this row cannot reach clients after a later
+		// write's row (moveThreadRowLocked).
+		defer a.threadApplication().LockMutations(threadID)()
 		row, changed, err := a.store.MarkThreadReadNow(ctx, threadID)
 		if err != nil {
 			// Nobody is waiting on this write, so a failure would

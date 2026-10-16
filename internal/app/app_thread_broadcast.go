@@ -25,6 +25,12 @@ import (
 //     both carry the same post-write row, the echo converges to the state the
 //     optimistic apply already reached instead of flickering through a
 //     different one.
+//
+// Clients keep the last row they receive, so a row must not be emitted after
+// a newer one. A read stamp holds the thread's mutation lock from its write
+// to its broadcast, and a workspace move broadcasts under the same lock
+// (moveThreadRowLocked), so a stamped row from before the move cannot arrive
+// after it.
 
 // broadcastThreadRow emits one changed row. Action is the receiver's
 // instruction (triage.ThreadActionFull / Listed / Unlisted); see

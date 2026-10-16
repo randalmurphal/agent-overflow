@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +155,34 @@ func TestFollowEnterWorktreeMovesThreadRowWithoutRestart(t *testing.T) {
 	if !samePath(broadcast.WorkspacePath, worktree) || broadcast.Branch != "worktree-feature-x" {
 		t.Errorf("broadcast row = %+v, want the moved workspace", broadcast)
 	}
+}
+
+// The followed row is broadcast under the mutation lock, so a read stamp
+// written before the move cannot reach clients after it
+// (TestWorktreeRemovalRowIsNotOvertakenByAReadStamp).
+func TestFollowEnterWorktreeRowIsNotOvertakenByAReadStamp(t *testing.T) {
+	t.Parallel()
+	f := newFollowFixture(t, "thread-follow-read-stamp")
+	worktree := f.cliWorktree(t, "feature-stamp")
+	f.app.sessionManager().put(f.thread.ID, session{Provider: string(provider.Claude), Token: "token-live"})
+	meta, err := json.Marshal(provider.WorkspaceChangeMeta{
+		Tool: "EnterWorktree", Cwd: worktree, WorktreePath: worktree, Branch: "worktree-feature-stamp",
+	})
+	if err != nil {
+		t.Fatalf("marshal meta: %v", err)
+	}
+	handler := f.app.sessionEventHandler(f.thread.ID, "token-live", string(provider.Claude))
+	raceReadStamp(t, f.app, f.thread.ID, f.rows, func() error {
+		handler(provider.ProviderEvent{Kind: provider.EventWorkspaceChanged, ThreadID: f.thread.ID, ItemID: "tool-wt-1", Meta: meta, Timestamp: time.Now()})
+		for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			for _, row := range f.rows.fullRowsFor(f.thread.ID) {
+				if samePath(row.WorkspacePath, worktree) {
+					return nil
+				}
+			}
+		}
+		return errors.New("the followed row was never broadcast")
+	})
 }
 
 func TestFollowExitWorktreeKeepReturnsThreadToProjectRoot(t *testing.T) {

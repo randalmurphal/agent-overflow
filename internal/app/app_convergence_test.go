@@ -106,6 +106,22 @@ func TestAttachThreadWorktreeBroadcastsTheMovedRow(t *testing.T) {
 	assertThreadRowBroadcast(t, snapshot(), updated)
 }
 
+// A checkout move broadcasts under the mutation lock, so a read stamp
+// written before the move cannot reach clients after it
+// (TestWorktreeRemovalRowIsNotOvertakenByAReadStamp).
+func TestAttachThreadWorktreeRowIsNotOvertakenByAReadStamp(t *testing.T) {
+	t.Parallel()
+	f := newFollowFixture(t, "thread-attach-read-stamp")
+	testutil.RunGit(t, f.repo, "branch", "feature/attach-stamp")
+	var updated store.Thread
+	raceReadStamp(t, f.app, f.thread.ID, f.rows, func() error {
+		var err error
+		updated, err = f.app.AttachThreadWorktree(f.thread.ID, "feature/attach-stamp")
+		return err
+	})
+	_ = f.app.gitCore().RemoveWorktreeForce(f.repo, updated.WorktreePath, true)
+}
+
 // The chokepoint's other rule, inherited from switchThreadWorkspace: a move
 // that moves nothing says nothing. Re-selecting the workspace a thread already
 // sits in is not a change, and a frame for it would wake every sidebar row.
