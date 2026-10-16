@@ -10,9 +10,10 @@
 // record being loaded; the window derives it from the record only for a
 // live row the wire has not re-pushed yet (utils/discardedItems.ts).
 //
-// Two edges. The first is a cold load: the thread puts the discarded row
-// exactly at a jump's newest edge (the slice around the first message ships
-// 100 rows after it, the row is the 100th and the record the 101st). The
+// Two edges. The first is a cold load, for a text row and for a reasoning
+// row: the thread puts the discarded row exactly at a jump's newest edge
+// (the slice around the first message ships 100 rows after it, the row is
+// the 100th and the record the 101st). The
 // second is the live path: the row streams, the record lands, the wire
 // refresh re-pushes the row with `discardedBy`, and the window cut on the
 // next older page (ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS kept from the head)
@@ -157,6 +158,81 @@ test('a discarded row served without its record is still marked', async ({ harne
   // rows after it (the record first) are asked for and held.
   await expectMarkedAtNewestEdge(scroller, cutRow, record, hold, CUT_TEXT);
   await expect(scroller.getByText(RETRY_TEXT, { exact: true })).toBeVisible();
+});
+
+// The same cold-load edge with a reasoning row. Its only visible marks are
+// the dim, which a theme can leave at nothing (reasoning text already at the
+// contrast floor is not dimmed), and the scissors that take its kind icon's
+// place; the record below is not loaded, so the cue has to carry it.
+test('a discarded reasoning row served without its record still shows the cue', async ({ harness, page }) => {
+  const CUT_TURN = 49;
+  const API_MESSAGE_ID = 'msg_cut_thinking';
+  const CUT_ROW = 'cut-thinking-row';
+  const RECORD = `notification:${CUT_TURN}:abandoned:${API_MESSAGE_ID}`;
+  const CUT_TEXT = 'Reasoning Claude streamed and then dropped from its transcript.';
+  const RETRY_TEXT = 'The answer Claude gave after the retry.';
+  const LABEL = 'Discarded by Claude after the response stalled';
+  const hold = await holdPaging(page, Number.POSITIVE_INFINITY);
+
+  await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'abandoned-paging-thinking', repo: {}, threads: [{ title: 'Reasoning cut at the edge', provider: 'claude', turns: [
+      { userText: 'First question', items: [answer('First answer.'), answer('First answer, continued.')] },
+      { userText: 'Earlier question', items: [answer('Earlier answer.')], repeat: 48 },
+      // Rows 99..102: the question, the discarded reasoning, the record, the retry.
+      { userText: 'Cut question', items: [
+        { id: CUT_ROW, kind: 'thinking', summary: CUT_TEXT, meta: { api_message_id: API_MESSAGE_ID, block_index: 0 } },
+        {
+          id: RECORD, kind: 'notification', role: 'system', toolName: 'abandoned_blocks',
+          summary: RECORD_SUMMARY,
+          meta: { kind: 'abandoned_blocks', title: RECORD_SUMMARY, api_message_id: API_MESSAGE_ID, from_block_index: 0, item_ids: [CUT_ROW] },
+        },
+        { kind: 'assistant_text', summary: RETRY_TEXT, meta: { api_message_id: 'msg_retry', block_index: 0 } },
+      ] },
+      { userText: 'Later question', items: [answer('Later answer.')], repeat: 110 },
+    ] }] }],
+  });
+
+  // Light mode: the default theme leaves this reasoning undimmed there.
+  await page.emulateMedia({ colorScheme: 'light' });
+  await harness.open(page);
+  await page.getByTestId('thread-row').getByText('Reasoning cut at the edge', { exact: true }).click();
+  const scroller = page.getByTestId('message-timeline-scroll');
+  await expect(scroller.getByText('Later answer.', { exact: true }).last()).toBeVisible();
+  const record = scroller.locator(`[data-item-id="${RECORD}"]`);
+
+  await page.getByTestId('message-nav-rail').getByRole('button', { name: 'Jump to first message', exact: true }).click();
+  await expect(scroller.getByText('First question', { exact: true })).toBeInViewport();
+
+  // The window's newest edge holds the reasoning's run; the record is held.
+  const run = scroller.getByTestId('activity-run');
+  await expect.poll(async () => {
+    await scroller.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    return run.count();
+  }).toBe(1);
+  if ((await run.getAttribute('data-collapsed')) === 'true') {
+    await run.getByTestId('activity-run-header').click();
+    await expect(run).toHaveAttribute('data-collapsed', 'false');
+  }
+  const row = scroller.locator(`[data-item-id="${CUT_ROW}"]`);
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeInViewport();
+  await expect.poll(() => hold.heldNewer).toBeGreaterThan(0);
+  await expect(record).toHaveCount(0);
+
+  await expect(row).toHaveAttribute('data-discarded', 'true');
+  await expect(row.locator('.discarded-reasoning')).toHaveCSS('opacity', '1');
+  const slot = row.getByTestId('thinking-toggle-icon-slot');
+  const cue = slot.getByTestId('thinking-discarded');
+  await expect(cue).toBeVisible();
+  await expect(cue).toHaveAttribute('title', LABEL);
+  await expect(cue).toHaveAttribute('aria-label', LABEL);
+  await expect(slot.locator('[data-icon="brain"]')).toHaveCount(0);
+  await expect(record).toHaveCount(0);
+
+  hold.releaseNewer();
+  await expect(record).toHaveCount(1);
+  await expect(row).toHaveAttribute('data-discarded', 'true');
+  await expect(cue).toBeVisible();
 });
 
 // The live path. 210 seeded exchanges (420 rows) and a live turn of 801

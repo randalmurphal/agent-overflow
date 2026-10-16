@@ -60,13 +60,6 @@
   --fade-muted: 80%;
   --fade-subtle: 55%;
   --fade-hint: 30%;
-  /* Dimming of a row Claude discarded (.discarded-row, .discarded-reasoning),
-     solved like the tiers above: the least opacity that keeps the dimmed
-     text at the 4.5:1 body floor on --surface-0. Text-row prose is
-     --fg-muted (4.57:1 at 61%); reasoning is already --fg-muted/70 (4.56:1
-     at 87%). */
-  --fade-discarded: 61%;
-  --fade-discarded-reasoning: 87%;
   /* Cobalt-violet primary. Replaces the prior generic dev-tool blue so
      the app reads as a chosen color, not the default Tailwind accent. */
   --accent: oklch(0.58 0.19 276);
@@ -203,10 +196,6 @@ html.light {
   --fade-muted: 87%;
   --fade-subtle: 67%;
   --fade-hint: 39%;
-  /* Text-row prose 4.52:1 at 70%. Light reasoning starts at 4.52:1
-     undimmed, so any dim drops it under the floor: it stays undimmed. */
-  --fade-discarded: 70%;
-  --fade-discarded-reasoning: 100%;
   --accent: oklch(0.55 0.18 276);
   --info: oklch(0.55 0.17 250);
   /* Status colors tuned for ≥4.5:1 contrast on --surface-0 light.
@@ -1438,14 +1427,16 @@ html.light .working-sprite {
  * it must not touch layout: no padding, border, indent or width-taking
  * label, or the text rewraps and everything below moves. Opacity rather than
  * a color swap keeps code blocks, links and the markdown palette consistent
- * with their neighbours; the strengths are per mode and per row kind
- * (--fade-discarded*), held at the body contrast floor.
+ * with their neighbours. The strengths are solved per applied theme and mode
+ * from the colors the cascade paints, the least dim that keeps the text at
+ * the 4.5:1 body floor (theme/discardedDim.ts writes --fade-discarded*);
+ * until that has run, nothing is dimmed.
  */
 .discarded-row {
-  opacity: var(--fade-discarded);
+  opacity: var(--fade-discarded, 1);
 }
 .discarded-reasoning {
-  opacity: var(--fade-discarded-reasoning);
+  opacity: var(--fade-discarded-reasoning, 1);
 }
 
 /*

@@ -447,7 +447,7 @@ export const EXCLUDED_VAR_PREFIXES: Readonly<Record<string, string>> = {
   '--animate-': 'animation registrations, not colors',
   '--run-map-': 'run-map lane geometry (lengths)',
   '--fade-':
-    'fade strengths (percentages) for the tokens.css fg tiers and the discarded-row dimming — mode-split in app.css because alpha compositing washes out faster toward a light ground; themes tune the tiers by overriding fg-muted/subtle/hint, not these',
+    'fade strengths (percentages) for the tokens.css fg tiers — mode-split in app.css because alpha compositing washes out faster toward a light ground; themes tune the tiers by overriding fg-muted/subtle/hint, not these',
 };
 
 /** Individually excluded var names, with the reason. */

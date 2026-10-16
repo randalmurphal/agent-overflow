@@ -197,21 +197,28 @@ const EXPECTED: Record<Case, Expected> = {
 
 type Theme = 'light' | 'dark';
 
-/** The computed dimming, `--fade-discarded*` in app.css: per mode and row
- * kind, the least that keeps the dimmed text at the 4.5:1 body floor. */
+/** The computed dimming under the default theme: per mode and row kind,
+ * the least that keeps the dimmed text at the 4.5:1 body floor
+ * (theme/discardedDim.ts; its browser test measures every built-in). Light
+ * reasoning text is at the floor undimmed, so it is not dimmed. */
 const OPACITY: Record<Theme, { text: string; reasoning: string }> = {
   dark: { text: '0.61', reasoning: '0.87' },
   light: { text: '0.7', reasoning: '1' },
 };
 
-/** A text row's tag sits beside its time; a reasoning row's label is for
- * screen readers only, since a visible tag would narrow the text beside it. */
-async function expectDiscardedLabel(row: Locator, kind: Case): Promise<void> {
-  if (kind === 'thinking') {
-    const label = row.getByTestId('thinking-discarded');
-    await expect(label).toHaveText('Discarded by Claude after the response stalled');
-    await expect(label).toHaveCSS('position', 'absolute');
-    await expect(label).toHaveCSS('width', '1px');
+const DISCARDED_LABEL = 'Discarded by Claude after the response stalled';
+
+/** A text row's tag sits beside its time; a reasoning row's kind icon
+ * becomes the record's scissors in the same box, since a visible tag would
+ * narrow the text beside it. */
+async function expectDiscardedCue(row: Locator, kind: 'text' | 'reasoning'): Promise<void> {
+  if (kind === 'reasoning') {
+    const slot = row.getByTestId('thinking-toggle-icon-slot');
+    const cue = slot.getByTestId('thinking-discarded');
+    await expect(cue).toBeVisible();
+    await expect(cue).toHaveAttribute('title', DISCARDED_LABEL);
+    await expect(cue).toHaveAttribute('aria-label', DISCARDED_LABEL);
+    await expect(slot.locator('[data-icon="brain"]')).toHaveCount(0);
     return;
   }
   await expect(row.getByTestId('assistant-message-discarded')).toHaveText('Discarded');
@@ -234,7 +241,7 @@ interface Box { x: number; y: number; width: number; height: number }
  * its text (the time and tag footer of a text row, the time of a reasoning
  * header), in the scroller's content coordinates so a scroll of the
  * timeline does not read as a shift. */
-interface RowGeometry { row: Box; text: Box; after: Box }
+interface RowGeometry { row: Box; text: Box; after: Box; lead: Box | null }
 
 /**
  * Reads the row's geometry once it has held still for a run of frames, so
@@ -243,7 +250,7 @@ interface RowGeometry { row: Box; text: Box; after: Box }
  */
 async function settledGeometry(page: Page, itemId: string, kind: Case): Promise<RowGeometry> {
   const result = await page.evaluate(
-    async ({ itemId, textSelector, afterSelector }) => {
+    async ({ itemId, textSelector, afterSelector, leadSelector }) => {
       const scroller = document.querySelector<HTMLElement>('[data-testid="message-timeline-scroll"]');
       const row = document.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(itemId)}"]`);
       if (!scroller || !row) return { error: `missing ${scroller ? 'row' : 'scroller'}` };
@@ -256,7 +263,9 @@ async function settledGeometry(page: Page, itemId: string, kind: Case): Promise<
       const read = (): RowGeometry | null => {
         const text = box(row.querySelector(textSelector));
         const after = box(row.querySelector(afterSelector));
-        return text && after ? { row: box(row)!, text, after } : null;
+        const lead = leadSelector ? box(row.querySelector(leadSelector)) : null;
+        if (leadSelector && !lead) return null;
+        return text && after ? { row: box(row)!, text, after, lead } : null;
       };
       const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       const stableFrames = 20;
@@ -275,8 +284,14 @@ async function settledGeometry(page: Page, itemId: string, kind: Case): Promise<
       return { error: `row geometry did not settle: ${JSON.stringify(last)}` };
     },
     kind === 'thinking'
-      ? { itemId, textSelector: '[data-testid="thinking-body"]', afterSelector: '[data-testid="thinking-header"] time' }
-      : { itemId, textSelector: '[data-testid="assistant-message-body"]', afterSelector: '[data-testid="assistant-message-meta"]' },
+      ? {
+          itemId,
+          textSelector: '[data-testid="thinking-body"]',
+          afterSelector: '[data-testid="thinking-header"] time',
+          // The kind icon's box, where the discard cue takes its place.
+          leadSelector: '[data-testid="thinking-toggle-icon-slot"]',
+        }
+      : { itemId, textSelector: '[data-testid="assistant-message-body"]', afterSelector: '[data-testid="assistant-message-meta"]', leadSelector: '' },
   );
   if ('error' in result) throw new Error(result.error);
   return result.geometry;
@@ -296,7 +311,7 @@ async function expectMarked(timeline: Locator, kind: Case, theme: Theme): Promis
   await expect(discarded).toHaveAttribute('data-item-kind', kind === 'thinking' ? 'thinking' : 'assistant_text');
   await expect(discarded).toHaveAttribute('data-item-status', 'completed');
   await expect(discarded).toContainText(want.discardedText);
-  await expectDiscardedLabel(discarded, kind);
+  await expectDiscardedCue(discarded, kind === 'thinking' ? 'reasoning' : 'text');
   const dimmed = discarded.locator(kind === 'thinking' ? '.discarded-reasoning' : '.discarded-row');
   await expect(dimmed).toHaveCSS('opacity', OPACITY[theme][kind === 'thinking' ? 'reasoning' : 'text']);
 
@@ -375,6 +390,7 @@ for (const theme of ['light', 'dark'] as const) {
       await expect(row).toHaveAttribute('data-item-status', 'completed');
       await expect(row).toContainText(kind === 'thinking' ? THINKING.trim().slice(-30) : 'if len(evt.Meta) == 0 {', { timeout: 20_000 });
       await expect(row).not.toHaveAttribute('data-discarded', 'true');
+      if (kind === 'thinking') await expect(row.getByTestId('thinking-toggle-icon-slot').locator('[data-icon="brain"]')).toHaveCount(1);
       const itemId = (await row.getAttribute('data-item-id'))!;
       const before = await settledGeometry(page, itemId, kind);
 
@@ -385,13 +401,14 @@ for (const theme of ['light', 'dark'] as const) {
       const marked = timeline.locator(`[data-item-id="${itemId}"]`);
       await expect(marked).toHaveAttribute('data-discarded', 'true');
       await expect(timeline.getByTestId('abandoned-blocks-notification')).toBeVisible();
-      await expectDiscardedLabel(marked, kind);
+      await expectDiscardedCue(marked, kind === 'thinking' ? 'reasoning' : 'text');
       await expect(marked.locator(kind === 'thinking' ? '.discarded-reasoning' : '.discarded-row'))
         .toHaveCSS('opacity', OPACITY[theme][kind === 'thinking' ? 'reasoning' : 'text']);
       const after = await settledGeometry(page, itemId, kind);
       // Marking moves nothing: the row keeps its box, its text keeps its
-      // width and wrap, and the line after the text (where the tag lands
-      // beside the time) keeps its place and height.
+      // width and wrap, the line after the text (where the tag lands beside
+      // the time) keeps its place and height, and a reasoning row's cue
+      // fills the kind icon's box exactly.
       expect(after, 'row geometry unchanged by the mark').toEqual(before);
 
       await advance(harness, mockId, GATE_REPLY);
@@ -426,3 +443,48 @@ for (const theme of ['light', 'dark'] as const) {
     });
   }
 }
+
+// The dim is solved for the theme on screen, not fixed for the default
+// palette: under Gruvbox dark the default's strength would put text-row prose
+// under the floor (theme/discardedDim.browser.test.ts measures every
+// built-in). Seeded, so the row is served marked.
+test('the dim is solved for a non-default theme', async ({ harness, page }) => {
+  const TEXT_ROW = 'gruvbox-cut-text';
+  const THINK_ROW = 'gruvbox-cut-thinking';
+  const RECORD = 'notification:0:abandoned:msg_gruvbox';
+  await harness.rpc('SetAppearance', { mode: 'dark', uiTheme: 'gruvbox', codeTheme: 'github' });
+  try {
+    await harness.rpc('HarnessSeed', {
+      projects: [{ name: 'abandoned-gruvbox', repo: {}, threads: [{ title: 'Abandoned under Gruvbox', provider: 'claude', turns: [
+        { userText: 'say something long', items: [
+          { id: THINK_ROW, kind: 'thinking', summary: THINKING, meta: { api_message_id: 'msg_gruvbox', block_index: 0 } },
+          { id: TEXT_ROW, kind: 'assistant_text', summary: PARTIAL_HEAD, meta: { api_message_id: 'msg_gruvbox', block_index: 1 } },
+          {
+            id: RECORD, kind: 'notification', role: 'system', toolName: 'abandoned_blocks',
+            summary: 'Discarded by Claude after a stalled response',
+            meta: { kind: 'abandoned_blocks', title: 'Discarded by Claude after a stalled response', api_message_id: 'msg_gruvbox', from_block_index: 0, item_ids: [THINK_ROW, TEXT_ROW] },
+          },
+          { kind: 'assistant_text', summary: RETRY },
+        ] },
+      ] }] }],
+    });
+    await page.setViewportSize({ width: 1280, height: 1000 });
+    await harness.open(page);
+    await page.getByTestId('thread-row').getByText('Abandoned under Gruvbox', { exact: true }).click();
+    const timeline = page.getByTestId('message-timeline-scroll');
+    await expect(timeline.getByText(RETRY.slice(0, 40))).toBeVisible();
+    await expandThinkingRun(timeline);
+    const text = timeline.locator(`[data-item-id="${TEXT_ROW}"]`);
+    const thinking = timeline.locator(`[data-item-id="${THINK_ROW}"]`);
+    await expect(text).toHaveAttribute('data-discarded', 'true');
+    await expect(thinking).toHaveAttribute('data-discarded', 'true');
+    await expectDiscardedCue(thinking, 'reasoning');
+    // Gruvbox dark's fg-muted on its ground: prose 9.66:1 undimmed, 4.58:1 at
+    // 0.62 and under the floor at the default's 0.61; reasoning 5.43:1,
+    // 4.52:1 at 0.88.
+    await expect(text.locator('.discarded-row')).toHaveCSS('opacity', '0.62');
+    await expect(thinking.locator('.discarded-reasoning')).toHaveCSS('opacity', '0.88');
+  } finally {
+    await harness.rpc('SetAppearance', { mode: 'system', uiTheme: 'default', codeTheme: 'github' });
+  }
+});

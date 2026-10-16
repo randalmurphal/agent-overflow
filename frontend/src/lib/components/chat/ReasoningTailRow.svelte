@@ -21,6 +21,8 @@
     createPayloadExpansion,
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
+  import Scissors from '@lucide/svelte/icons/scissors';
+  import Icon from '../primitives/Icon.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   // The component above is the SVG dispatcher; this is its `kind` union. Aliased
@@ -143,6 +145,7 @@
 
   const time = $derived(formatTimeOfDay(item.createdAt));
   const isoTime = $derived(new Date(item.createdAt).toISOString());
+  const DISCARDED_LABEL = 'Discarded by Claude after the response stalled';
 </script>
 
 <TranscriptDisclosureHeader
@@ -155,7 +158,24 @@
   buttonClass="!items-start"
   onToggle={(event) => preservePaneScrollAnchor(pane, event, handleToggle)}
 >
-  {#snippet icon()}<ToolKindIcon kind={iconKind} ariaLabel={iconAriaLabel} />{/snippet}
+  {#snippet icon()}
+    {#if discarded}
+      <!-- The discard cue takes the kind icon's place, in the same box: a
+           visible tag would take its width from the text beside it and
+           rewrap it the moment the mark lands, and the dim alone can be
+           nothing where the theme's reasoning text is already at the
+           contrast floor. The scissors match the record row's. -->
+      <span
+        class="flex size-3.5 items-center justify-center text-fg-subtle"
+        role="img"
+        aria-label={DISCARDED_LABEL}
+        title={DISCARDED_LABEL}
+        data-testid={`${idPrefix}-discarded`}
+      ><Icon icon={Scissors} size={14} strokeWidth={2} /></span>
+    {:else}
+      <ToolKindIcon kind={iconKind} ariaLabel={iconAriaLabel} />
+    {/if}
+  {/snippet}
   {#snippet label()}<span data-testid={`${idPrefix}-label`}>{labelText}</span>{/snippet}
   {#snippet body()}
     <TailClampedText
@@ -167,13 +187,6 @@
     />
   {/snippet}
   {#snippet actions()}
-    {#if discarded}
-      <!-- Screen readers only: a visible tag here would take its width from
-           the body beside it and rewrap the text the moment the mark lands.
-           The abandonment record directly below says it for sighted
-           readers. -->
-      <span class="sr-only" data-testid={`${idPrefix}-discarded`}>Discarded by Claude after the response stalled</span>
-    {/if}
     <time class="shrink-0 pt-[2px] text-[0.625rem] tabular-nums text-fg-hint" datetime={isoTime}>{time}</time>
   {/snippet}
 </TranscriptDisclosureHeader>
