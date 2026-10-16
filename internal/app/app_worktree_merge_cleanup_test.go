@@ -728,7 +728,17 @@ func TestMergedPRCleanupPauseJoinsAndResumesFromNothing(t *testing.T) {
 		}
 	}
 	m.seed(t, "merged")
+	// A request the pause cancelled can still reach the forge after the
+	// poll returned; let it land before counting.
 	before := m.requests.Load()
+	for {
+		time.Sleep(5 * c.interval)
+		n := m.requests.Load()
+		if n == before {
+			break
+		}
+		before = n
+	}
 	// A lookup backoff left from before the pause; nothing else prunes one
 	// for a repository nobody tracks.
 	backoffFor(&c.lookups, "stale").next = time.Now().Add(time.Hour)
