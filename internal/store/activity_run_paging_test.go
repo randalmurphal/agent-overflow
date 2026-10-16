@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,9 +17,9 @@ import (
 
 // seedRunThread writes one turn of visible top-level rows from a compact
 // spec: "p" is a prose row, "t" a tool call, "r" a still-running tool
-// call, "k" a thinking row, "n" a notification, "c" the completion of the
-// row before it. Ids are the spec letter plus the row index, so a failure
-// names the row that broke.
+// call, "k" a thinking row, "n" a notification, "a" the abandoned-blocks
+// record, "c" the completion of the row before it. Ids are the spec letter
+// plus the row index, so a failure names the row that broke.
 func seedRunThread(t *testing.T, s *Store, threadID, spec string) []string {
 	t.Helper()
 	if err := s.CreateThread(makeThread(threadID, "claude")); err != nil {
@@ -46,6 +47,8 @@ func seedRunThread(t *testing.T, s *Store, threadID, spec string) []string {
 			item.Kind = "thinking"
 		case 'n':
 			item.Kind, item.Role, item.ToolName = "notification", "system", "task_notification"
+		case 'a':
+			item.Kind, item.Role, item.ToolName = "notification", "system", AbandonedBlocksNotificationKind
 		case 'c':
 			if i == 0 {
 				t.Fatalf("seed letter c needs a row before it")
@@ -338,6 +341,43 @@ func TestCursorPagesAdmitWholeUnits(t *testing.T) {
 		t.Errorf("forward stub memberCount = %d, want 40", stub.MemberCount)
 	}
 	assertPageAccounts(t, s, "t", newer, ids[1:41])
+}
+
+// TestAbandonedBlocksRecordBreaksARun: a notification after a run member
+// is absorbed into the run, but the abandoned-blocks record is not; it
+// ships as its own row and the run ends at the thinking row before it, so
+// a collapsed run never hides the record of what the stall discarded.
+func TestAbandonedBlocksRecordBreaksARun(t *testing.T) {
+	for _, tc := range []struct {
+		spec        string
+		wantMembers int
+		wantShipped []int
+	}{
+		{spec: "pknp", wantMembers: 2, wantShipped: []int{0, 1, 2, 3}},
+		{spec: "pkap", wantMembers: 1, wantShipped: []int{0, 1, 2, 3}},
+	} {
+		s := newTestStore(t)
+		ids := seedRunThread(t, s, "t", tc.spec)
+		tail := TimelineCursor{TurnIndex: 0, ItemIndex: len(ids), ItemID: "after-tail"}
+		page, err := s.ListItemsBeforeCursor(context.Background(), "t", tail, 10, 10, TimelineSelection{})
+		if err != nil {
+			t.Fatalf("%s: page: %v", tc.spec, err)
+		}
+		stub := onlyRun(t, page)
+		if stub.MemberCount != tc.wantMembers {
+			t.Errorf("%s: run members = %d, want %d", tc.spec, stub.MemberCount, tc.wantMembers)
+		}
+		if stub.FirstItemID != ids[1] {
+			t.Errorf("%s: run starts at %s, want the thinking row %s", tc.spec, stub.FirstItemID, ids[1])
+		}
+		want := make([]string, 0, len(tc.wantShipped))
+		for _, i := range tc.wantShipped {
+			want = append(want, ids[i])
+		}
+		if got := pageItemIDs(page); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: shipped %v, want %v", tc.spec, got, want)
+		}
+	}
 }
 
 // TestForwardPageKeepsAGrownRunWhole: when a run grew past the caller's

@@ -61,6 +61,18 @@ const (
 	EventContentBlockStart EventKind = "content_block_start"
 	EventContentBlockStop  EventKind = "content_block_stop"
 
+	// EventBlocksAbandoned is Claude's statement that the content blocks of
+	// one API response from an index on were streamed but discarded: the
+	// CLI stopped reading the response (stalled or failed stream), so those
+	// blocks have no assistant message and are not in the provider
+	// transcript. It rides the `abandoned_blocks` key of a `message_stop`
+	// the CLI produced itself (claude-wire.md §abandoned_blocks). Triage
+	// keeps the rows it already wrote for those blocks untouched and
+	// records the abandonment as its own notification row referencing
+	// them; the UI derives the discarded marking from that row. Meta is
+	// BlocksAbandonedMeta.
+	EventBlocksAbandoned EventKind = "blocks_abandoned"
+
 	// EventBackgroundTaskTerminal is the additive Claude-only task-lifecycle
 	// terminal signal, emitted when `system/task_updated` lands with a
 	// terminal `patch.status` OR when a TaskOutput `tool_use_result.task`
@@ -270,6 +282,7 @@ var AllEventKinds = []EventKind{
 	EventThreadRenamed,
 	EventContentBlockStart,
 	EventContentBlockStop,
+	EventBlocksAbandoned,
 	EventBackgroundTaskTerminal,
 	EventBackgroundTaskNotification,
 	EventSessionWakeup,
@@ -778,6 +791,23 @@ type AgentWakeDroppedMeta struct {
 type BackgroundTaskStopAckedMeta struct {
 	TaskID string `json:"taskId"`
 }
+
+// BlocksAbandonedMeta is the typed payload for EventBlocksAbandoned: the
+// API id of the response that was cut short and the first content block
+// index the CLI discarded. Every block of that response at FromBlockIndex
+// and above is gone from the provider transcript; FromBlockIndex 0 means
+// the whole response. The index can exceed every block the stream
+// delivered, in which case nothing visible was discarded.
+type BlocksAbandonedMeta struct {
+	APIMessageID   string `json:"apiMessageId"`
+	FromBlockIndex int    `json:"fromBlockIndex"`
+}
+
+// MetaAPIMessageIDKey is the content-block lifecycle meta key carrying the
+// API id (`msg_...`) of the response a streamed block belongs to, beside
+// `index` and `blockType`. Triage stamps it onto the block's row so a later
+// EventBlocksAbandoned can name the rows it discards.
+const MetaAPIMessageIDKey = "apiMessageId"
 
 // MetaUserContentBlockDigestKey carries an `EventUserText` echo's content
 // blocks as a per-block fingerprint list, in wire order — the shape a provider

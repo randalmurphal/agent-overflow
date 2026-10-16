@@ -52,9 +52,10 @@ func (r activityScanRow) isRailRow() bool {
 	return r.PayloadKind != railExemptPayloadKind
 }
 
-// isBell reports a notification an activity run can absorb.
+// isBell reports a notification an activity run can absorb: every
+// notification but the abandoned-blocks record (discarded_rows.go).
 func (r activityScanRow) isBell() bool {
-	return r.Kind == notificationKind
+	return r.Kind == notificationKind && r.ToolName != AbandonedBlocksNotificationKind
 }
 
 // isFailedStatus and isRunningStatus are §4's status rules.

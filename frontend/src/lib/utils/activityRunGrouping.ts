@@ -26,6 +26,7 @@
 // it cannot derive alone — see `ActivityRunIdentity`.
 
 import type { Item } from '../types/models';
+import { ABANDONED_BLOCKS_NOTIFICATION_KIND } from './discardedItems';
 import { fileChangeDisplayRowCount } from './fileChangeRows';
 import {
   timelineNodeRepresentativeItem,
@@ -205,7 +206,18 @@ function isRunMember(node: TimelineNode, getItem: (id: string) => Item | undefin
   if (node.kind === 'activity_run') return false;
   const item = currentLeafItem(node, getItem);
   return timelineNodeHasRail(node, item)
-    || (item?.kind === 'notification' && identity.isLoadedMember(item.id));
+    || (item !== null && isBell(item) && identity.isLoadedMember(item.id));
+}
+
+/**
+ * A notification a run can absorb: every notification but the
+ * abandoned-blocks record, which is about the prose before it, not about
+ * activity, and breaks the run as that prose would. Mirrors the store's
+ * `isBell` (internal/store/activity_runs.go) so a page's run stubs and this
+ * pass agree on membership.
+ */
+function isBell(item: Item): boolean {
+  return item.kind === 'notification' && item.toolName !== ABANDONED_BLOCKS_NOTIFICATION_KIND;
 }
 
 /**
@@ -233,7 +245,7 @@ function isAbsorbedNotification(
   getItem: (id: string) => Item | undefined,
 ): boolean {
   const item = currentLeafItem(node, getItem);
-  return item !== null && item.kind === 'notification';
+  return item !== null && isBell(item);
 }
 
 /** Every positional identity item one run row represents. */

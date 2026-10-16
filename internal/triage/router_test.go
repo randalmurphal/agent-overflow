@@ -89,6 +89,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventThreadRenamed:              true,
 		provider.EventContentBlockStart:          true,
 		provider.EventContentBlockStop:           true,
+		provider.EventBlocksAbandoned:            true,
 		provider.EventBackgroundTaskTerminal:     true, // Wave 1 — new, Wave 2 wires triage
 		provider.EventBackgroundTaskNotification: true, // Claude task_notification is a notification, not a terminal lifecycle signal
 		provider.EventSessionWakeup:              true, // Claude ScheduleWakeup ack; records pending in-process wakeup for reaper protection

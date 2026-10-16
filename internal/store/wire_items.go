@@ -9,12 +9,14 @@ import (
 
 // ItemReadIsDecorated reports whether a page read of this row can differ
 // from the stored row: a subagent anchor takes its descendant aggregate
-// from its children (decorateSubagentAnchors) and a proposed plan takes
+// from its children (decorateSubagentAnchors), a proposed plan takes
 // its state and comment count from the plan tables
-// (decorateProposedPlanItems). Completions also carry their launch context.
-// An emitter must push such a row as a page
-// would read it, or a client holding the undecorated copy at the stored
-// revision could prove a window fresh whose card is behind (§3.1).
+// (decorateProposedPlanItems), a completion carries its launch context
+// and a response-stamped text or thinking row carries the abandonment
+// record that names it (decorateDiscardedRows). An emitter must push such
+// a row as a page would read it, or a client holding the undecorated copy
+// at the stored revision could prove a window fresh whose card is behind
+// (§3.1).
 //
 // The predicate is the decorators' own admission test, widened to every
 // row they would consider; ProbeWireItem narrows it.
@@ -24,6 +26,10 @@ func ItemReadIsDecorated(item Item) bool {
 		return item.ToolName != "collab_agent"
 	case "tool_completion":
 		return item.CompletionOf != ""
+	case "assistant_text", "thinking":
+		if discardableRowResponseID(item) != "" {
+			return true
+		}
 	}
 	return item.Role == "assistant" && item.PayloadKind == "proposed_plan"
 }
@@ -36,7 +42,8 @@ type WireItemProbe struct {
 	// so the write's read-back is the page read. Imported, dirty and
 	// readTime rows, unstamped carriers, and unstamped rows of a thread
 	// whose backfill is pending still need ListWireItems. Completions and
-	// plans always do.
+	// plans always do; a response-stamped text or thinking row does once
+	// its abandonment record exists.
 	NeedsDecoration bool
 	// Anchors reports a tool call that may anchor subagent rows: it holds
 	// a stamp, or its read walks. Every anchor carries a stamp once its
@@ -52,8 +59,19 @@ func (s *Store) ProbeWireItem(item Item) (WireItemProbe, error) {
 	if !ItemReadIsDecorated(item) {
 		return WireItemProbe{}, nil
 	}
-	if item.Kind != "tool_call" || item.PayloadKind == "proposed_plan" {
+	if item.PayloadKind == "proposed_plan" || item.Kind == "tool_completion" {
 		return WireItemProbe{NeedsDecoration: true}, nil
+	}
+	if apiMessageID := discardableRowResponseID(item); apiMessageID != "" {
+		// A response-stamped row reads decorated only once its record
+		// exists: the settle of a block the CLI abandoned can land after
+		// the record (content_block_stop settles asynchronously).
+		recordID := AbandonedBlocksRecordID(item.TurnIndex, item.ParentID, apiMessageID)
+		exists, err := abandonmentRecordExistsTx(s.reader(), item.ThreadID, recordID)
+		if err != nil {
+			return WireItemProbe{}, fmt.Errorf("store: decide decoration of %s/%s: %w", item.ThreadID, item.ID, err)
+		}
+		return WireItemProbe{NeedsDecoration: exists}, nil
 	}
 	decider, err := newSubagentWalkDecider(s.reader(), item.ThreadID, map[string]Item{item.ID: item})
 	if err != nil {

@@ -51,6 +51,7 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		}
 		if json.Unmarshal(eventObj["message"], &msg) == nil {
 			p.rememberStreamedMessageID(msg.ID)
+			p.rememberStreamMessageID(parentToolUseID, firstNonEmpty(readRawString(raw["api_message_id"]), msg.ID))
 		}
 		p.startAdvisorMessage(parentToolUseID)
 		return p.startUsageMessage(threadID, parentToolUseID, eventObj["message"], now), nil
@@ -69,7 +70,7 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		return []provider.ProviderEvent{{
 			Kind:            provider.EventContentBlockStart,
 			ThreadID:        threadID,
-			Meta:            blockMeta(index, blockType),
+			Meta:            blockMeta(index, blockType, p.streamAPIMessageID(raw, parentToolUseID)),
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
 		}}, nil
@@ -80,10 +81,20 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 		return []provider.ProviderEvent{{
 			Kind:            provider.EventContentBlockStop,
 			ThreadID:        threadID,
-			Meta:            blockMeta(index, blockType),
+			Meta:            blockMeta(index, blockType, p.streamAPIMessageID(raw, parentToolUseID)),
 			ParentToolUseID: parentToolUseID,
 			Timestamp:       now,
 		}}, nil
+
+	case "message_stop":
+		// The CLI closes a response it stopped reading (stalled or failed
+		// stream) with a message_stop of its own whose envelope carries
+		// `abandoned_blocks`: the response's blocks from that index on
+		// were streamed but will never get an assistant message and are
+		// not in the transcript (claude-wire.md §abandoned_blocks). The
+		// API's own message_stop carries no such key and emits nothing.
+		defer p.forgetStreamMessageID(parentToolUseID)
+		return p.blocksAbandonedEvent(threadID, raw, parentToolUseID, now), nil
 
 	case "content_block_delta":
 		deltaRaw, ok := eventObj["delta"]
@@ -164,16 +175,59 @@ func (p *Parser) parseStreamEvent(threadID string, raw map[string]json.RawMessag
 	}
 }
 
-// blockMeta builds the {index, blockType} JSON meta carried by content-
-// block lifecycle events (content_block_start / content_block_stop) and by
-// the snapshot-recovery EventContentBlockStop (parse_assistant.go). triage
-// reads "blockType" from it via blockTypeForStop; "index" is informational.
-func blockMeta(index int, blockType string) json.RawMessage {
-	meta, _ := json.Marshal(map[string]any{
+// blockMeta builds the {index, blockType, apiMessageId} JSON meta carried
+// by content-block lifecycle events (content_block_start /
+// content_block_stop) and by the snapshot-recovery EventContentBlockStop
+// (parse_assistant.go). triage reads "blockType" from it via
+// blockTypeForStop, and stamps "index" and "apiMessageId" onto the block's
+// row at content_block_start so an abandoned_blocks message_stop can name
+// the rows it discards; apiMessageId is omitted when unknown.
+func blockMeta(index int, blockType, apiMessageID string) json.RawMessage {
+	fields := map[string]any{
 		"index":     index,
 		"blockType": blockType,
-	})
+	}
+	if apiMessageID != "" {
+		fields[provider.MetaAPIMessageIDKey] = apiMessageID
+	}
+	meta, _ := json.Marshal(fields)
 	return meta
+}
+
+// blocksAbandonedEvent reads a message_stop envelope's `abandoned_blocks`
+// into an EventBlocksAbandoned, or nil when the key is absent or does not
+// name a response. The key is an envelope sibling of `event`, not a field
+// of the inner event. ParentToolUseID passes through unchanged: the CLI
+// emits the key only for the top-level stream today (its close events
+// hardcode a null parent), and a scoped signal would mark that scope's
+// rows the same way.
+func (p *Parser) blocksAbandonedEvent(threadID string, raw map[string]json.RawMessage, parentToolUseID string, now time.Time) []provider.ProviderEvent {
+	abandonedRaw := raw["abandoned_blocks"]
+	if len(abandonedRaw) == 0 {
+		return nil
+	}
+	var abandoned struct {
+		APIMessageID   string `json:"api_message_id"`
+		FromBlockIndex int    `json:"from_block_index"`
+	}
+	if json.Unmarshal(abandonedRaw, &abandoned) != nil {
+		return nil
+	}
+	apiMessageID := firstNonEmpty(abandoned.APIMessageID, p.streamAPIMessageID(raw, parentToolUseID))
+	if apiMessageID == "" || abandoned.FromBlockIndex < 0 {
+		return nil
+	}
+	meta, _ := json.Marshal(provider.BlocksAbandonedMeta{
+		APIMessageID:   apiMessageID,
+		FromBlockIndex: abandoned.FromBlockIndex,
+	})
+	return []provider.ProviderEvent{{
+		Kind:            provider.EventBlocksAbandoned,
+		ThreadID:        threadID,
+		Meta:            meta,
+		ParentToolUseID: parentToolUseID,
+		Timestamp:       now,
+	}}
 }
 
 // buildSoftTurnComplete inspects a top-level `message_delta` envelope

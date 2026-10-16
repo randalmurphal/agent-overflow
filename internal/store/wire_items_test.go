@@ -21,6 +21,9 @@ func TestItemReadIsDecorated(t *testing.T) {
 		{"proposed plan", Item{Kind: "assistant_text", Role: "assistant", PayloadKind: "proposed_plan"}, true},
 		{"user text", Item{Kind: "user_text", Role: "user"}, false},
 		{"assistant text", Item{Kind: "assistant_text", Role: "assistant"}, false},
+		{"response-stamped text", Item{Kind: "assistant_text", Role: "assistant", Meta: `{"api_message_id":"msg_1","block_index":0}`}, true},
+		{"response-stamped thinking", Item{Kind: "thinking", Role: "assistant", Meta: `{"api_message_id":"msg_1","block_index":0}`}, true},
+		{"stamped tool result", Item{Kind: "tool_result", Role: "assistant", Meta: `{"api_message_id":"msg_1"}`}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

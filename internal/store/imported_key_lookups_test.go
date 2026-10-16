@@ -327,6 +327,12 @@ func keyedLookups(th string) []keyedLookup {
 		{name: "ListWireItems", run: func(t *testing.T, s *Store) {
 			must[[]Item](t, "wire items")(s.ListWireItems(th, []string{"launch-1", "answer-1"}))
 		}},
+		{name: "ProbeWireItem response-stamped row", run: func(t *testing.T, s *Store) {
+			row := Item{ThreadID: th, ID: "answer-1", Kind: "assistant_text", Role: "assistant", TurnIndex: 1, Meta: `{"api_message_id":"msg_1"}`}
+			if probe, err := s.ProbeWireItem(row); err != nil || probe.NeedsDecoration {
+				t.Errorf("probe = %+v, %v; no record exists", probe, err)
+			}
+		}},
 		{name: "ListWireItemsBehind", run: func(t *testing.T, s *Store) {
 			must[[]Item](t, "behind")(s.ListWireItemsBehind(th, map[string]int64{"child-1": 0, "done-1": 0}))
 		}},

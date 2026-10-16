@@ -27,9 +27,12 @@ func (r *Router) handleContentBlockStart(evt provider.ProviderEvent) error {
 	if eventParentID(evt) == "" {
 		r.maybeReopenSettledRound(evt)
 	}
-	// Block starts are otherwise preserved from the provider so stop
-	// events can deterministically settle the right streaming item, but
-	// the first actual delta still owns item creation/index assignment.
+	// Park the block's response id and index for the row the first delta
+	// creates (abandoned_blocks.go). Block starts are otherwise preserved
+	// from the provider so stop events can deterministically settle the
+	// right streaming item, but the first actual delta still owns item
+	// creation/index assignment.
+	r.noteStreamBlockStart(evt.ThreadID, eventParentID(evt), evt.Meta)
 	return nil
 }
 

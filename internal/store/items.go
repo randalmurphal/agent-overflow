@@ -213,6 +213,9 @@ func insertItemTx(tx *sql.Tx, w *cardWrite, item Item, label string) error {
 		return fmt.Errorf("%s: %w", label, err)
 	}
 	w.inserted(row, hasChild)
+	if err := stampDiscardedRowsTx(tx, item); err != nil {
+		return err
+	}
 	return indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary)
 }
 
