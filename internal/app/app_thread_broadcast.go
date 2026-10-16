@@ -1,9 +1,6 @@
 package app
 
 import (
-	"context"
-
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -20,15 +17,20 @@ import (
 //   - A write that changed nothing announces nothing. That is why the store
 //     hands back a changed flag rather than a rows-affected count: SQLite
 //     counts a row as affected when the assignment restates the value it held.
-//   - A row frame is announced by thread id, never built from a row the
-//     caller holds. announceThread reads the row under the thread's announce
-//     lock and emits it before releasing, so frames leave in the order their
-//     rows were read and the last one a client keeps is never older than the
-//     last write (triage.ThreadAnnouncer). A row the caller held could predate
-//     another writer's commit and arrive after that writer's frame. The frame
-//     can therefore be newer than the row the initiating RPC returned; the
-//     initiator converges on it. TestThreadRowFramesComeFromTheAnnouncer
-//     rejects a row frame built anywhere else.
+//   - Every frame leaves through triage.ThreadAnnouncer. A row frame is
+//     announced by thread id and read under the thread's announce lock; a
+//     patch (announceThreadPatch) and a deletion (broadcastThreadDeleted)
+//     are emitted under the same lock after their commit. Frames therefore
+//     leave in the order their rows were read, and no frame describing an
+//     earlier state follows one describing a later state.
+//     TestThreadUpdatedFramesComeFromTheAnnouncer (internal/triage) rejects
+//     any other emit.
+//   - An RPC that returns a row returns one read before its own frame
+//     leaves, and the two reach the client as separate frames in either
+//     order. The client therefore applies a returned row only when no frame
+//     for that thread arrived after the call started
+//     (frontend/src/lib/stores/threadRowFrames.ts); otherwise the frame is
+//     the newer state.
 
 // threadAnnouncer is the process's one thread row announcer, shared with the
 // triage router (newTriageRouter).
@@ -51,13 +53,6 @@ func (a *App) announceThread(action, threadID string) {
 	a.threadAnnouncer().Announce(a.emitEvent, action, threadID)
 }
 
-// announceThreadWithin is announceThread for a caller whose wait ctx bounds.
-func (a *App) announceThreadWithin(ctx context.Context, action, threadID string, changed bool) {
-	if changed {
-		a.threadAnnouncer().AnnounceWithin(ctx, a.emitEvent, action, threadID)
-	}
-}
-
 // announceThreadIfChanged is the guard every mutation binding routes
 // through: the store's changed flag decides whether anything is said at all.
 func (a *App) announceThreadIfChanged(action, threadID string, changed bool) {
@@ -67,12 +62,15 @@ func (a *App) announceThreadIfChanged(action, threadID string, changed bool) {
 	a.announceThread(action, threadID)
 }
 
+// announceThreadPatch emits the named fields of a committed write
+// (triage.ThreadAnnouncer.AnnouncePatch).
+func (a *App) announceThreadPatch(threadID string, patch triage.ThreadUpdateEvent) {
+	a.threadAnnouncer().AnnouncePatch(a.emitEvent, threadID, patch)
+}
+
 // broadcastThreadDeleted announces a row that no longer exists in SQLite. It
 // carries the id alone: there is no row left to send, and a client holding
 // one drops it plus its caches.
 func (a *App) broadcastThreadDeleted(threadID string) {
-	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
-		Action: triage.ThreadActionDeleted,
-		ID:     threadID,
-	})
+	a.threadAnnouncer().AnnounceDeleted(a.emitEvent, threadID)
 }

@@ -1288,10 +1288,10 @@ const (
 	ThreadActionDeleted  = "deleted"
 )
 
+// emitThreadPatch announces fields of a write already committed, through
+// the process's one ThreadAnnouncer so it is ordered with every row frame.
 func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
-	patch.Action = ThreadActionPatch
-	patch.ID = threadID
-	r.emit(eventchan.ThreadUpdated, patch)
+	r.announcer.AnnouncePatch(r.emit, threadID, patch)
 }
 
 // emitThreadRow announces the thread's row as a `full` frame, through the

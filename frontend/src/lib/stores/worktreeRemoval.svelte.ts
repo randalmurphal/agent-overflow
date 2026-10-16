@@ -1,7 +1,7 @@
 // What every caller of a worktree removal shares: applying the rows the
 // removal answered with, and telling the person which terminals it closes.
 import { GitWorktreeStatus, type WorktreeStatus } from './bindings';
-import { syncThread } from './panes.svelte';
+import { syncThreadReply } from './panes.svelte';
 import { threadHasScope } from '../transport/entityScopes';
 import type { GitWorkspaceState, WorkspaceRef } from '../types/git';
 import type { Thread } from '../types/models';
@@ -19,12 +19,13 @@ export interface WorktreeRemovalResult {
 }
 
 /**
- * Applies the rows an in-app removal answered with. Callers run this before
- * anything reads their own workspace again: the `thread:updated` broadcast of
- * the same rows is an event, and events can arrive after the reply.
+ * Applies the rows an in-app removal started at `mark` (threadRowFrameMark)
+ * answered with. Callers run this before anything reads their own workspace
+ * again: the `thread:updated` broadcast of the same rows is an event, and
+ * events can arrive after the reply.
  */
-export function syncRemovedWorktreeThreads(removal: WorktreeRemovalResult | null | undefined): void {
-  for (const thread of removal?.reattached ?? []) syncThread(thread);
+export function syncRemovedWorktreeThreads(removal: WorktreeRemovalResult | null | undefined, mark: number): void {
+  for (const thread of removal?.reattached ?? []) syncThreadReply(thread, mark);
 }
 
 /** The confirmation line for the terminals a removal closes, or '' for none. */

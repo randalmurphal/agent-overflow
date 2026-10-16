@@ -6,7 +6,8 @@
   import { ListDiscussions, StartDiscussion, GetThread } from '../../stores/bindings';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { syncThread } from '../../stores/panes.svelte';
+  import { syncThreadReply } from '../../stores/panes.svelte';
+  import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import DiscussionPicker from './DiscussionPicker.svelte';
 
   let {
@@ -85,10 +86,11 @@
     startError = null;
     starting = true;
     try {
+      const mark = threadRowFrameMark();
       await StartDiscussion(thread.id, selected.name);
       try {
         const refreshed = (await GetThread(thread.id)) as Thread;
-        syncThread(refreshed);
+        syncThreadReply(refreshed, mark);
       } catch (refreshErr) {
         console.error('Failed to refresh thread after StartDiscussion:', refreshErr);
       }

@@ -14,7 +14,8 @@ import { addErrorToast } from '../../stores/toast.svelte';
 import { isUndeliveredSendError } from '../../stores/transportStatus.svelte';
 import { confirmUnsentMessageRestore } from '../../stores/unsentMessageConfirmation.svelte';
 import { userFacingError } from '../../utils/userFacingError';
-import { syncThread } from '../../stores/panes.svelte';
+import { syncThreadReply } from '../../stores/panes.svelte';
+import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import {
   projectSendResolved,
   projectSendStarted,
@@ -73,12 +74,13 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
     projectSendStarted(opts.threadId);
     sendStarted = true;
 
+    const mark = threadRowFrameMark();
     let updated = (await SendMessageWithOptions(opts.threadId, opts.message, opts.options)) as Thread;
     if (autoPinAfterSend) {
       try { updated = await autoPinNewThread(updated); }
       catch (err) { opts.reportError(`Message sent, but pinning the thread failed: ${userFacingError(err)}`, err); }
     }
-    syncThread(updated);
+    syncThreadReply(updated, mark);
     outcome = 'accepted';
     return true;
   } catch (err) {

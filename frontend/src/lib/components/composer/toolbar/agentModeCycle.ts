@@ -4,7 +4,8 @@
 import type { ThreadPane } from '../../../stores/thread.svelte';
 import type { Thread } from '../../../types/models';
 import { UpdateThreadMode } from '../../../stores/bindings';
-import { syncThread } from '../../../stores/panes.svelte';
+import { syncThreadReply } from '../../../stores/panes.svelte';
+import { threadRowFrameMark } from '../../../stores/threadRowFrames';
 import { addErrorToast } from '../../../stores/toast.svelte';
 import { cycleMode, type CycleMode } from '../../../utils/modeCycle';
 import { isScratchThreadMode, renderedThreadMode } from '../../../utils/threadModes';
@@ -37,8 +38,9 @@ export async function cycleAgentMode(pane: ThreadPane): Promise<void> {
   const threadId = pane.threadId;
   if (!threadId) return;
   try {
+    const mark = threadRowFrameMark();
     const updated = (await UpdateThreadMode(threadId, next)) as Thread;
-    syncThread(updated);
+    syncThreadReply(updated, mark);
   } catch (err) {
     console.error('agent mode toggle: UpdateThreadMode failed', err);
     addErrorToast(`Failed to switch mode: ${errString(err)}`, err);

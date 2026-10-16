@@ -9,7 +9,8 @@ import {
   SaveDraft,
   SendMessageWithOptions,
 } from '../stores/bindings';
-import { mountThreadInPane, syncThread } from '../stores/panes.svelte';
+import { mountThreadInPane, syncThreadReply } from '../stores/panes.svelte';
+import { threadRowFrameMark } from '../stores/threadRowFrames';
 import { prependThread } from '../stores/threads.svelte';
 import { expandProject } from '../stores/sidebar.svelte';
 import { projectSendResolved, projectSendStarted } from '../stores/threadStatuses.svelte';
@@ -65,11 +66,12 @@ export async function implementProposedPlan(
     // Through the shared builder like every other send vector, so this one
     // carries an idempotency id too: Implement is a button a person can hit
     // twice while the socket is deciding whether it is alive.
+    const mark = threadRowFrameMark();
     const updated = (await SendMessageWithOptions(pane.threadId, IMPLEMENT_PROMPT, buildSendOptions({
       attachmentIds: [],
       sourceProposedPlan: source,
     }))) as Thread;
-    syncThread(updated);
+    syncThreadReply(updated, mark);
     return true;
   } catch (err) {
     console.error(`${failureLabel}:`, err);
@@ -181,8 +183,9 @@ export async function implementProposedPlanInNewThread(
       const cutForThread = !!created.worktreePath
         && !sameNormalizedPath(created.worktreePath, sourceThread.worktreePath ?? '');
       if (cutForThread) {
+        const mark = threadRowFrameMark();
         await GitRemoveWorktree(created.id)
-          .then((removal) => syncRemovedWorktreeThreads(removal as WorktreeRemovalResult))
+          .then((removal) => syncRemovedWorktreeThreads(removal as WorktreeRemovalResult, mark))
           .catch((cleanupErr) => {
             console.error('Failed to clean up orphan implementation worktree:', cleanupErr);
           });

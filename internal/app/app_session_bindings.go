@@ -11,7 +11,7 @@ import (
 )
 
 // markThreadReadTimeout bounds a read-state stamp's wait for the single
-// writer connection and then for its turn to announce the row. It matches the busy_timeout PRAGMA on purpose: past
+// writer connection. It matches the busy_timeout PRAGMA on purpose: past
 // five seconds the writer isn't contended, it's wedged, and waiting
 // longer only parks a goroutine that shutdown then has to join.
 const markThreadReadTimeout = 5 * time.Second
@@ -208,7 +208,12 @@ func (a *App) markThreadFocused(threadID string) {
 		// on one device clears the Completed pill on the others. A focus
 		// that found the marker already current changes nothing and stays
 		// off the wire, which is the common case.
-		a.announceThreadWithin(ctx, triage.ThreadActionFull, row.ID, changed)
+		// The frame waits on the life context, not the stamp's deadline: a
+		// slow announcement still reaches clients, and only shutdown, which
+		// cancels the life context before joining the stamps, drops it.
+		if changed {
+			a.threadAnnouncer().AnnounceWithin(a.lifeCtx(), a.emitEvent, triage.ThreadActionFull, row.ID)
+		}
 	}()
 }
 

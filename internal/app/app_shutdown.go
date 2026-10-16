@@ -323,10 +323,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	// Step 3g: join the background thread read-state stamps. Each one is a
 	// SQLite write, so it has to land before Step 9 closes the store.
-	// Bounded without a timeout here: every stamp carries its own
-	// markThreadReadTimeout, which bounds both its write and its wait to
-	// announce the row, so the join cannot outlast the longest one already
-	// in flight.
+	// Bounded without a timeout here: every stamp's write carries its own
+	// markThreadReadTimeout, and its wait to announce the row ends with the
+	// app context Step 1b cancelled, so the join cannot outlast the longest
+	// write already in flight.
 	a.stopMarkThreadReads()
 	record("stop thread read stamps", nil)
 

@@ -38,6 +38,7 @@ import {
 } from '../utils/workspaceKey';
 import { backendKeyForOrigin, withBackendTarget } from '../transport/backends';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { threadRowFrameMark } from './threadRowFrames';
 
 /** What a source needs from whoever is holding the key. */
 export interface GitStatusCtx {
@@ -180,8 +181,9 @@ installGitStatusEventListener();
 // `setWorkflowsOverlayExclusion`), so there is no registration order to get
 // right and no test reset that can disarm it.
 export interface GitStatusPaneBridge {
-  /** Push a persisted thread row into the registry and every pane on it. */
-  syncThread(thread: Thread): void;
+  /** Push a thread row an RPC started at `mark` returned into the registry
+   *  and every pane on it (panes.svelte#syncThreadReply). */
+  syncThreadReply(reply: Thread, mark: number): Thread;
   /** Surface a failure on the panes still looking at that workspace. Takes
    *  the WORKSPACE KEY (`utils/workspaceKey.ts`), not a bare path. */
   reportWorkspaceError(workspaceKey: string, message: string, err?: unknown): void;
@@ -240,12 +242,13 @@ async function drainBranchPersistQueue(): Promise<void> {
         // would write one machine's observed branch onto the rows of every
         // thread the OTHER machine holds in the identically-named
         // directory.
+        const mark = threadRowFrameMark();
         const rows = (await withBackendTarget(workspaceKeyBackend(workspaceKey), () =>
           UpdateThreadBranch(workspaceKeyPath(workspaceKey), branch),
         )) as Thread[] | null;
         if (rows && rows.length > 0) {
           const paneBridge = bridge();
-          for (const row of rows) paneBridge?.syncThread(row);
+          for (const row of rows) paneBridge?.syncThreadReply(row, mark);
         }
       } catch (err) {
         console.error('Failed to persist observed git branch:', err);

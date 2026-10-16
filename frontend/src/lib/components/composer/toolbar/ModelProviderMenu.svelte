@@ -29,7 +29,8 @@
     getProviderModels,
   } from '../../../stores/providerModels.svelte';
   import ProviderIcon from '../../shared/ProviderIcon.svelte';
-  import { syncThread } from '../../../stores/panes.svelte';
+  import { syncThreadReply } from '../../../stores/panes.svelte';
+  import { threadRowFrameMark } from '../../../stores/threadRowFrames';
   import { getSettings } from '../../../stores/settings.svelte';
   import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
@@ -213,10 +214,11 @@
         addToast('info', 'Start the thread before adding a discussion.');
         return;
       }
+      const mark = threadRowFrameMark();
       await StartDiscussionByID(threadId, fav.value);
       try {
         const refreshed = (await GetThread(threadId)) as Thread;
-        syncThread(refreshed);
+        syncThreadReply(refreshed, mark);
       } catch (refreshErr) {
         console.error('Failed to refresh thread after StartDiscussionByID:', refreshErr);
       }

@@ -9,17 +9,20 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// ThreadAnnouncer builds every thread:updated frame that carries a row.
+// ThreadAnnouncer builds every thread:updated frame.
 //
-// Clients keep the last row they receive, so a frame must never carry a row
-// older than one already sent. A writer that broadcast the row it held could
-// break that whatever lock it took: its row is a read from before another
-// writer's commit, and nothing ordered its emit after that writer's. The
-// announcer takes the thread id instead and reads the row while holding a
-// per-thread lock that it also holds for the emit, so frames leave in the
-// order their rows were read, and the last frame for a thread is read after
-// the last write that announced. The lock is a leaf: nothing else is taken
-// while it is held, so a caller may hold any other lock.
+// Clients keep the last row they receive and apply a patch over it, so no
+// frame may leave after a frame that describes a later state. A writer that
+// emitted on its own could break that whatever lock it took: a row it read
+// before another writer's commit, or a patch it sent while another frame
+// carrying the row from before that patch was still on its way. Every frame
+// therefore leaves through one per-thread lock, held from the read (for a
+// row frame) or after the commit (for a patch or a deletion) until the emit.
+// Frames then leave in the order their rows were read, a row frame read
+// before a patch's commit leaves before that patch, and the last row frame
+// for a thread is read after the last write that announced. The lock is a
+// leaf: nothing else is taken while it is held, so a caller may hold any
+// other lock.
 //
 // One announcer serves the whole process (the App's, shared with the
 // Router), because two would order frames only among their own callers.
@@ -40,8 +43,9 @@ func (an *ThreadAnnouncer) Announce(emit func(eventchan.Channel, any), action, t
 	an.AnnounceWithin(context.Background(), emit, action, threadID)
 }
 
-// AnnounceWithin is Announce for a caller whose wait is bounded: a ctx that
-// ends while the frame waits for the announce lock drops the frame, logged.
+// AnnounceWithin is Announce for a caller whose wait for the lock ctx bounds:
+// a ctx that ends first emits nothing, logged. Callers pass a context that
+// ends only at shutdown, when no client is left to read the frame.
 func (an *ThreadAnnouncer) AnnounceWithin(ctx context.Context, emit func(eventchan.Channel, any), action, threadID string) {
 	if threadID == "" {
 		return
@@ -58,6 +62,33 @@ func (an *ThreadAnnouncer) AnnounceWithin(ctx context.Context, emit func(eventch
 		return
 	}
 	emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: action, Thread: &row})
+}
+
+// AnnouncePatch emits the named fields of a write the caller has committed,
+// as a `patch` frame. Call it after the commit: a row frame read before the
+// commit then leaves before the patch, and one read after it carries the
+// patched fields already. patch carries no row; its Action and ID are set
+// here.
+func (an *ThreadAnnouncer) AnnouncePatch(emit func(eventchan.Channel, any), threadID string, patch ThreadUpdateEvent) {
+	if threadID == "" {
+		return
+	}
+	patch.Action = ThreadActionPatch
+	patch.ID = threadID
+	patch.Thread = nil
+	defer an.locks.Lock(threadID)()
+	emit(eventchan.ThreadUpdated, patch)
+}
+
+// AnnounceDeleted emits the id-only `deleted` frame for a row the caller has
+// deleted. A row frame read before the delete leaves before it; one that
+// reads after it finds no row and emits nothing.
+func (an *ThreadAnnouncer) AnnounceDeleted(emit func(eventchan.Channel, any), threadID string) {
+	if threadID == "" {
+		return
+	}
+	defer an.locks.Lock(threadID)()
+	emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: ThreadActionDeleted, ID: threadID})
 }
 
 // Hold takes threadID's announce lock and returns its release. Tests use it

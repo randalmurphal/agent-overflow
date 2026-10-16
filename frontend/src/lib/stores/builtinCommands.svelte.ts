@@ -30,8 +30,9 @@ import {
   openThreadFromNavigation,
   openThreadInNewPane,
   openThreadInPane,
-  syncThread,
+  syncThreadReply,
 } from './panes.svelte';
+import { threadRowFrameMark } from './threadRowFrames';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
 import { closeFocusedBrowserTab } from './browserCompanion.svelte';
 import type { PaneLayoutItem } from './paneLayout.svelte';
@@ -550,8 +551,9 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           return;
         }
         try {
+          const mark = threadRowFrameMark();
           const updated = (await UpdateThreadMode(t.id, next)) as Thread;
-          syncThread(updated);
+          syncThreadReply(updated, mark);
         } catch (err) {
           addErrorToast(userFacingError(err), err);
         }

@@ -11,7 +11,8 @@
 // no `$state`, because callers invoke it imperatively and never subscribe.
 
 import { GetThread, RenameThread } from './bindings';
-import { syncThread } from './panes.svelte';
+import { syncThreadReply } from './panes.svelte';
+import { threadRowFrameMark } from './threadRowFrames';
 import type { Thread } from '../types/models';
 import { errString } from '../utils/errors';
 
@@ -66,9 +67,10 @@ export async function renameThreadTitle(
   const next = title.trim();
   if (next === '' || next === currentTitle) return { ok: true };
   try {
+    const mark = threadRowFrameMark();
     await RenameThread(threadId, next);
     const updated = (await GetThread(threadId)) as Thread;
-    syncThread(updated);
+    syncThreadReply(updated, mark);
     return { ok: true };
   } catch (err) {
     console.error('Rename thread failed:', err);

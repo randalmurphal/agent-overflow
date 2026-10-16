@@ -282,9 +282,7 @@ func (a *App) RenameThread(id string, title string) error {
 	if err := a.threadApplication().Rename(id, title); err != nil {
 		return err
 	}
-	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
-		Action: triage.ThreadActionPatch, ID: id, Title: &title,
-	})
+	a.announceThreadPatch(id, triage.ThreadUpdateEvent{Title: &title})
 	a.syncPeerSessionNameAsync(id)
 	return nil
 }

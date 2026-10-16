@@ -26,7 +26,8 @@
     WorktreeStatus,
     type WorktreeListItem,
   } from '../../../stores/bindings';
-  import { syncThread } from '../../../stores/panes.svelte';
+  import { syncThreadReply } from '../../../stores/panes.svelte';
+  import { threadRowFrameMark } from '../../../stores/threadRowFrames';
   import { placeholderWorkspaceOf } from '../../../stores/draftWorkspaceSync';
   import {
     syncRemovedWorktreeThreads,
@@ -266,8 +267,9 @@
     }
     applying = true;
     try {
+      const mark = threadRowFrameMark();
       const updated = (await UpdateThreadWorkspace(threadId, path)) as Thread;
-      syncThread(updated);
+      syncThreadReply(updated, mark);
       addToast('info', `Workspace switched to ${pathBasename(path) || path}`);
     } catch (err) {
       console.error('UpdateThreadWorkspace failed:', err);
@@ -382,11 +384,12 @@
     removing = true;
     refreshHeld = false;
     try {
+      const mark = threadRowFrameMark();
       const removal = (await RemoveOtherWorktree(ws, path, force)) as WorktreeRemovalResult;
       removing = false;
       // The moved rows first: this pane's own row may be one of them, and
       // the list refresh below reads its workspace.
-      syncRemovedWorktreeThreads(removal);
+      syncRemovedWorktreeThreads(removal, mark);
       // Guarded, not aborted: the removal happened whatever this pane did
       // under the await. Other draft composers in the removed directory
       // are moved by the worktree:removed event.

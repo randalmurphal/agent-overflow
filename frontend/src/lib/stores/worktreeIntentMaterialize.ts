@@ -14,7 +14,8 @@ import {
   PrepareThreadWorktree,
 } from './bindings';
 import { workspaceRefForThread } from '../utils/workspaceKey';
-import { syncThread } from './panes.svelte';
+import { syncThreadReply } from './panes.svelte';
+import { threadRowFrameMark } from './threadRowFrames';
 import { recordBranchSelection } from './branchMru';
 import type { Thread } from '../types/models';
 import {
@@ -133,6 +134,7 @@ async function runThreadMutation(
 ): Promise<Thread | null> {
   const { targetThread, intent } = opts;
   let updated: Thread | null = null;
+  const mark = threadRowFrameMark();
   if (intent.mode === 'new-worktree' && intent.creatingBranch) {
     const wire = resolveBaseForWire(intent.newBranchBase, targetThread.branch ?? '');
     updated = (await PrepareThreadWorktree(
@@ -173,7 +175,7 @@ async function runThreadMutation(
   }
   if (!updated) return null;
 
-  syncThread(updated);
+  syncThreadReply(updated, mark);
   const selectedBranch = intent.creatingBranch ? intent.newBranchName : intent.attachBranch;
   if (updated.projectId && selectedBranch) {
     recordBranchSelection(updated.projectId, selectedBranch);
