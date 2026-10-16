@@ -122,8 +122,10 @@ it changed. `codeql.yml` scans Go and
 TypeScript; `dependabot.yml` tracks Go, npm, Gradle and action versions;
 `dependency-review-action` checks pull request dependency changes.
 
-The two lint jobs gate new issues only: `scripts/ci-change.sh` reads the
-change from the GitHub API and `go-lint` runs with `--new-from-patch`, while
+The two lint jobs gate new issues only: `scripts/ci-change.sh` writes the
+change (a pull request's merge against the base branch it merged into,
+checked by `scripts/test-ci-change.sh`) and `go-lint` runs with
+`--new-from-patch`, while
 `frontend-lint` runs `--deny-warnings` on the changed frontend files. Both
 widen to the whole tree once the existing backlog is cleared
 (`make go-lint` and `make frontend-lint` show it). Branch protection
