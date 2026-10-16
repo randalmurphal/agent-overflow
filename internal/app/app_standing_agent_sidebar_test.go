@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -278,9 +279,11 @@ func TestASpawnBroadcastsItsThreadNamingTheSpawner(t *testing.T) {
 // the assistant's row, counting the old thread among its archived children.
 // The successor is listed first, and the old row's frame names it: a client
 // moves the panes that showed the old thread to it when the old row leaves.
+// The successor's session starts for its opening block.
 func TestAHandOffBroadcastsBothRows(t *testing.T) {
 	t.Parallel()
 	f := newOrganizeFixture(t)
+	started := stubNoticeStarts(f.app)
 	agent := f.thread(t, "agent")
 	archived := f.thread(t, "archived-child")
 	recordSpawn(t, f.app, "tok-archived", agent.ID, archived.ID)
@@ -314,6 +317,9 @@ func TestAHandOffBroadcastsBothRows(t *testing.T) {
 	}
 	if listed == nil || listed.AgentID != agent.ID || listed.ArchivedChildCount != 2 || listed.Title != agent.Title {
 		t.Errorf("successor frame = %+v, want the assistant's row counting the archived child and the past thread", listed)
+	}
+	if got := started(); !slices.Equal(got, []string{successor.ID}) {
+		t.Errorf("the handoff started sessions on %v, want its successor %s", got, successor.ID)
 	}
 }
 

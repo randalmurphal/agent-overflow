@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,6 +30,27 @@ func noticeTestThread(t *testing.T, a *App, id string) store.Thread {
 		t.Fatalf("CreateThread: %v", err)
 	}
 	return thread
+}
+
+// stubNoticeStarts stands in for the session starts queued notices make, for
+// a test that causes one without being about the session: no provider runs.
+// started joins the notice work, so no start outlives the test, and returns
+// the threads started.
+func stubNoticeStarts(a *App) (started func() []string) {
+	var mu sync.Mutex
+	var threads []string
+	a.startSessionFn = func(threadID string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		threads = append(threads, threadID)
+		return nil
+	}
+	return func() []string {
+		a.waitAgentNoticeWork()
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(threads)
+	}
 }
 
 func noticeRows(t *testing.T, a *App, threadID, prefix string) []string {
