@@ -84,7 +84,7 @@ func NormalizeInteractionMode(mode string) InteractionMode {
 // not import this package (see internal/settings/AGENTS.md §Anti-patterns);
 // the app layer converts between them at its single stamping site.
 //
-// Mode is "" (leave it to the CLI), "off", or "budget"; BudgetTokens is
+// Mode is "" (leave it to the CLI) or "budget"; BudgetTokens is
 // meaningful only with "budget"; Display is "", "summarized" or "omitted".
 // Validation lives in internal/settings — this is a transport shape, and
 // internal/provider/claude re-normalizes what it renders anyway.

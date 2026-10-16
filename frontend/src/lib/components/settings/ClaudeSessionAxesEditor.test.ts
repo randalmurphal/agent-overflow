@@ -130,6 +130,15 @@ describe('<ClaudeSessionAxesEditor>', () => {
 
   // Thinking is the one axis here that reaches a RUNNING session, and the
   // budget field only exists in the mode that uses it.
+  // Every current Claude model rejects disabled thinking and the CLI runs
+  // adaptive thinking instead, so the picker offers no way to ask for it.
+  it('offers only the default and a fixed budget', async () => {
+    await seed();
+    const { getByTestId } = render(ClaudeSessionAxesEditor);
+    const options = [...(getByTestId('settings-claude-thinking-mode') as HTMLSelectElement).options];
+    expect(options.map((o) => o.value)).toEqual(['', 'budget']);
+  });
+
   it('reveals the budget field only in budget mode and writes the whole key', async () => {
     await seed();
     const { getByTestId, queryByTestId } = render(ClaudeSessionAxesEditor);
@@ -197,10 +206,13 @@ describe('<ClaudeSessionAxesEditor>', () => {
       'Applies to running sessions too',
     );
 
-    await fireEvent.change(getByTestId('settings-claude-thinking-mode'), {
-      target: { value: 'off' },
-    });
-    await waitFor(() => expect(lastPatch()).toEqual({ claudeThinking: { mode: 'off', display: '' } }));
+    const budget = getByTestId('settings-claude-thinking-budget') as HTMLInputElement;
+    await fireEvent.change(budget, { target: { value: '4096' } });
+    await waitFor(() =>
+      expect(lastPatch()).toEqual({
+        claudeThinking: { mode: 'budget', display: '', budgetTokens: 4096 },
+      }),
+    );
     expect(queryByTestId('settings-claude-thinking-deferred')).toBeNull();
 
     await fireEvent.change(getByTestId('settings-claude-thinking-mode'), {

@@ -3584,7 +3584,11 @@ CLI binary; the subtypes we use or plan to use:
     `display` changes. (`CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1` is what
     makes the budget matter everywhere.)
   - **`max_thinking_tokens: 0` is DISABLE**, not "unset": the request
-    becomes `thinking: {"type":"disabled"}` and `display` is dropped.
+    becomes `thinking: {"type":"disabled"}` and `display` is dropped. AO
+    never sends it and offers no thinking-off setting: the 2.1.300 model
+    catalog marks every current model (Fable 5 and 5.1, Opus, Sonnet and
+    Haiku 5.5) `rejects_disabled_thinking`, and for those the CLI runs
+    adaptive thinking in place of `--thinking disabled`.
   - **`max_thinking_tokens: null` is a NO-OP.** It is accepted and
     changes nothing. There is no reset-to-default form, so returning a
     session to the CLI's own choice requires a respawn.

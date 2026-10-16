@@ -132,14 +132,12 @@ export class ClaudeSubagentLimits {
  * headless Claude sessions Agent Overflow spawns.
  * 
  * BudgetTokens is meaningful ONLY with Mode == budget, and the validators
- * enforce that rather than trusting it: a stored budget beside mode "off"
- * would be a value that reads as configuration and behaves as nothing.
+ * enforce that rather than trusting it: a stored budget beside the default
+ * mode would be a value that reads as configuration and behaves as nothing.
  * 
  * Mode and Display are two independent axes on the CLI side and stay
  * independent here — `thinking_display` alone is an accepted live request
- * (spike-verified 2.1.237) — with one exception the wire imposes: a
- * DISABLED session drops display entirely, so Display beside Mode "off" is
- * inert rather than wrong.
+ * (spike-verified 2.1.237).
  */
 export class ClaudeThinking {
     "mode"?: string;
@@ -774,8 +772,8 @@ export class Settings {
 
     /**
      * ClaudeThinking is the extended-thinking preference for headless
-     * Claude sessions: leave it to Claude Code, turn thinking off, or pin
-     * a fixed token budget — plus whether thinking text reaches the wire.
+     * Claude sessions: leave it to Claude Code or pin a fixed token budget
+     * — plus whether thinking text reaches the wire.
      * 
      * It sits beside the four axes above but is NOT one of them: those
      * ride the `--settings` block and are spawn-only, while this one has
