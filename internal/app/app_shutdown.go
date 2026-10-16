@@ -256,6 +256,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// record; appCtx is cancelled, so it is waking to exit or finishing one
 	// bounded probe.
 	a.startupProbeWG.Wait()
+	// A permission-mode follow writes the thread row; appCtx is cancelled,
+	// so it is returning or finishing one bounded write.
+	a.permissionModeFollowWG.Wait()
 	a.stopIdleSessionReaper()
 	record("stop idle session reaper", nil)
 

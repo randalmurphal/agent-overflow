@@ -14,12 +14,18 @@
   import { THINKING_PAYLOAD_EXPANSION_STATE_KEY } from '../../utils/payloadVersion';
   import ReasoningTailRow from './ReasoningTailRow.svelte';
 
-  let { pane, item }: { pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost; item: Item } = $props();
+  let { pane, item, discarded = false }: {
+    pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost;
+    item: Item;
+    /** Claude discarded this reasoning after a stalled response (TimelineLeaf). */
+    discarded?: boolean;
+  } = $props();
 </script>
 
 <ReasoningTailRow
   {pane}
   {item}
+  {discarded}
   stateKey={THINKING_PAYLOAD_EXPANSION_STATE_KEY}
   iconKind="brain"
   iconAriaLabel="think"

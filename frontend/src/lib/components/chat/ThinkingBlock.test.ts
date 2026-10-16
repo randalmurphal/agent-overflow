@@ -53,6 +53,23 @@ describe('<ThinkingBlock>', () => {
     expect(container.querySelector('time[datetime]')).not.toBeNull();
   });
 
+  // Reasoning Claude discarded after a stalled response stays readable and
+  // expandable; the header is dimmed behind a rule and tagged after its
+  // label (utils/discardedItems.ts). An unmarked row carries neither.
+  it('dims and tags a discarded row and leaves an unmarked row alone', () => {
+    const discarded = render(ThinkingBlock, {
+      props: { item: makeItem({ kind: 'thinking', summary: 'Let me think about ' }), discarded: true },
+    });
+    expect(discarded.getByTestId('thinking-discarded').textContent).toBe('Discarded');
+    expect(discarded.getByTestId('thinking-header').className).toContain('discarded-reasoning');
+    expect(discarded.getByTestId('thinking-body').textContent).toBe('Let me think about');
+    discarded.unmount();
+
+    const plain = render(ThinkingBlock, { props: { item: makeItem({ kind: 'thinking', summary: 'reasoning' }) } });
+    expect(plain.queryByTestId('thinking-discarded')).toBeNull();
+    expect(plain.getByTestId('thinking-header').className).not.toContain('discarded-reasoning');
+  });
+
   it('renders the brain icon in the gutter', () => {
     // The think row used to share the checklist icon, which read as
     // "todo list" next to actual TodoWrite rows. The brain icon is a

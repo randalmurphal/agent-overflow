@@ -297,20 +297,23 @@ func (s Settings) MaxCommandTimeoutHoursForProvider(providerName string) int {
 // Code decide" — here that is the CLI's own per-model choice (adaptive on
 // models that support it, its built-in budget otherwise).
 //
-// The asymmetry worth knowing before reading the validator: "off" and
-// "budget" both have a live wire form, and the return to "default" does
-// NOT. `max_thinking_tokens: null` is accepted and is a documented NO-OP
+// There is no "off": every current Claude model rejects disabled thinking,
+// and the CLI silently runs adaptive thinking in its place (2.1.300 model
+// catalog, `rejects_disabled_thinking`). A value stored by an earlier
+// version loads as the default (sanitizeClaudeThinking).
+//
+// The asymmetry worth knowing before reading the validator: "budget" has a
+// live wire form, and the return to "default" does NOT.
+// `max_thinking_tokens: null` is accepted and is a documented NO-OP
 // (spike-verified 2.1.237), so there is no reset request — only a respawn
 // without the flag restores the CLI's own choice.
 const (
 	ClaudeThinkingModeDefault = ""
-	ClaudeThinkingModeOff     = "off"
 	ClaudeThinkingModeBudget  = "budget"
 )
 
 var allowedClaudeThinkingModes = map[string]bool{
 	ClaudeThinkingModeDefault: true,
-	ClaudeThinkingModeOff:     true,
 	ClaudeThinkingModeBudget:  true,
 }
 
@@ -357,14 +360,12 @@ const (
 // headless Claude sessions Agent Overflow spawns.
 //
 // BudgetTokens is meaningful ONLY with Mode == budget, and the validators
-// enforce that rather than trusting it: a stored budget beside mode "off"
-// would be a value that reads as configuration and behaves as nothing.
+// enforce that rather than trusting it: a stored budget beside the default
+// mode would be a value that reads as configuration and behaves as nothing.
 //
 // Mode and Display are two independent axes on the CLI side and stay
 // independent here — `thinking_display` alone is an accepted live request
-// (spike-verified 2.1.237) — with one exception the wire imposes: a
-// DISABLED session drops display entirely, so Display beside Mode "off" is
-// inert rather than wrong.
+// (spike-verified 2.1.237).
 type ClaudeThinking struct {
 	Mode         string `json:"mode,omitempty"`
 	BudgetTokens int    `json:"budgetTokens,omitempty"`
@@ -378,8 +379,8 @@ func validateClaudeThinking(field string, value ClaudeThinking) (ClaudeThinking,
 	value.Mode = strings.TrimSpace(value.Mode)
 	value.Display = strings.TrimSpace(value.Display)
 	if !allowedClaudeThinkingModes[value.Mode] {
-		return ClaudeThinking{}, fmt.Errorf("%s.mode must be %q, %q or empty for Claude Code's own choice",
-			field, ClaudeThinkingModeOff, ClaudeThinkingModeBudget)
+		return ClaudeThinking{}, fmt.Errorf("%s.mode must be %q or empty for Claude Code's own choice",
+			field, ClaudeThinkingModeBudget)
 	}
 	if !allowedClaudeThinkingDisplays[value.Display] {
 		return ClaudeThinking{}, fmt.Errorf("%s.display must be %q, %q or empty",

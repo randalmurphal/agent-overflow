@@ -462,6 +462,9 @@ func updateExistingItem(tx *sql.Tx, w *cardWrite, item Item, old subagentRow) er
 	); err != nil {
 		return fmt.Errorf("store: update item %s: %w", item.ID, err)
 	}
+	if err := stampDiscardedRowsTx(tx, item); err != nil {
+		return err
+	}
 	// This is where an assistant message or a tool call leaves the running
 	// state, so this is where its text enters the search index. A row that
 	// is still streaming indexes nothing; the streaming appends

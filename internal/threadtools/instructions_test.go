@@ -5,6 +5,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf16"
+
+	"agent-overflow/internal/provider"
 )
 
 // backticked pulls every `code span` out of the instructions. The leading
@@ -150,6 +153,35 @@ func TestServerInstructionsMatchTheAssembledText(t *testing.T) {
 	for _, shape := range []Shape{soloShape(), pairedShape()} {
 		if server.Instructions(shape) != instructionsFor(shape) {
 			t.Errorf("paired=%v: Instructions does not return the assembled text", shape.Paired())
+		}
+	}
+}
+
+// jsLength is a string's length as Claude Code (JavaScript) counts it:
+// UTF-16 code units.
+func jsLength(s string) int {
+	return len(utf16.Encode([]rune(s)))
+}
+
+// TestInstructionsFitClaudesMCPDescriptionCap: Claude Code cuts MCP server
+// instructions and each tool description at
+// CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH and the model reads only the cut
+// text. Claude sessions spawn with provider.ClaudeMCPDescriptionLengthLimit,
+// so the guide and every description must fit under that value or the
+// sections at the end silently stop reaching the model.
+func TestInstructionsFitClaudesMCPDescriptionCap(t *testing.T) {
+	limit := provider.ClaudeMCPDescriptionLengthLimit
+	for _, shape := range []Shape{soloShape(), pairedShape()} {
+		text := New(newFakeApp("laptop")).Instructions(shape)
+		t.Logf("paired=%v: guide is %d characters", shape.Paired(), jsLength(text))
+		if n := jsLength(text); n > limit {
+			t.Errorf("paired=%v: the guide is %d characters, over the %d Claude sessions are given", shape.Paired(), n, limit)
+		}
+		for _, tool := range New(newFakeApp("laptop")).Tools(shape) {
+			description, _ := tool["description"].(string)
+			if n := jsLength(description); n > limit {
+				t.Errorf("paired=%v: %s's description is %d characters, over %d", shape.Paired(), tool["name"], n, limit)
+			}
 		}
 	}
 }

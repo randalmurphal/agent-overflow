@@ -14,8 +14,9 @@ import (
 )
 
 // transcript_mirror is the live, append-only view enabled by
-// --session-mirror. It is the only wire surface for a direct command's fork
-// root and for the tail of a foreground agent after background_tasks stops
+// --session-mirror. It is the only live wire surface for a direct command's
+// fork root (2.1.300 replays the finished fork on stdout too;
+// mirrorProjectsStdoutRow drops the replay) and for the tail of a foreground agent after background_tasks stops
 // forwarding that sidechain on ordinary stdout.
 type transcriptMirrorEnvelope struct {
 	FilePath       string            `json:"filePath"`
@@ -719,6 +720,32 @@ func (p *Parser) noteMirrorTaskScope(taskID, toolUseID string, requireOwned bool
 	binding.scope = toolUseID
 	binding.needsProjection = true
 	state.taskScopes[taskID] = binding
+}
+
+// mirrorProjectsStdoutRow reports whether a stdout assistant or user row
+// belongs to an agent whose rows the session mirror projects under a direct
+// command: a typed fork, or an agent the fork launched. Claude 2.1.300 also
+// replays such a fork's turns on stdout after its task_notification, each
+// row naming its agent in agent_id; the fork's own rows carry
+// parent_tool_use_id "forked-command-<skill>", which no item has. The
+// projection already delivers those rows, so the replay is dropped. A fork
+// the mirror did not project keeps its stdout rows, and an older CLI sends
+// no agent_id.
+func (p *Parser) mirrorProjectsStdoutRow(raw map[string]json.RawMessage) bool {
+	if p == nil || p.transcriptMirror == nil {
+		return false
+	}
+	agentID := readRawString(raw["agent_id"])
+	if agentID == "" || readRawString(raw["parent_tool_use_id"]) == "" {
+		return false
+	}
+	state := p.transcriptMirror
+	binding := state.taskScopes[agentID]
+	if !binding.needsProjection {
+		return false
+	}
+	projection := state.projections[binding.projectionKey]
+	return projection != nil && projection.agentID == agentID && projection.commandUUID != ""
 }
 
 func (p *Parser) closeTranscriptMirrors() {

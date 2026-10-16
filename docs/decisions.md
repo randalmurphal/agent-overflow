@@ -122,6 +122,13 @@ Mechanism in
   anything outside the window is one page away and scrolling toward it
   always loads (an upward gesture pages older even at the very top and in
   a window too short for the scroll geometry to express direction).
+- Text Claude discards after a stalled response (`abandoned_blocks`,
+  [claude-wire.md §abandoned_blocks](references/claude-wire.md#abandoned_blocks-a-response-cut-short-21300)) stays in
+  the timeline as it streamed, muted, with a note after it; the reply
+  continues below. Nothing disappears and nothing re-streams in its place
+  (ruling 2026-10-16). The rows are not rewritten: the note is its own row
+  naming them, and a read of a row it names serves the row marked
+  (`Item.discardedBy`) whether or not the note is in the loaded window.
 
 ## Sidebar, threads, drafts
 
@@ -397,6 +404,14 @@ Mechanism in
   "system prompt changed" banner with Restart; a later change shows it again,
   and a restart or the session's death withdraws it. The stale-binary banner
   is dismissible the same way (2026-10-14; same spec §Reconcile semantics).
+- When Claude Code leaves auto on a model without auto mode, the thread's
+  runtime mode follows what the CLI runs, with a warning notice. No other
+  mode the CLI moves to on its own changes the thread's access. Switching
+  back to a model whose remembered settings carry Auto restores Auto with a
+  notice of its own (rulings 2026-10-15 and 2026-10-16; `claude-wire.md`
+  §system/status).
+- Claude offers no thinking-off setting: current models reject disabled
+  thinking and the CLI runs adaptive thinking instead (ruling 2026-10-15).
 - Cursor as a provider: `docs/specs/cursor-provider.md`.
 
 ## Workflows

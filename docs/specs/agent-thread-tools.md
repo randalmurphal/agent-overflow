@@ -527,6 +527,11 @@ composed `developerInstructions` on `thread/start`, `thread/resume` and
 developer instructions the user configured, the app guide, and the
 browser guide
 ([prompt-tool-overrides.md §App guide](prompt-tool-overrides.md#app-guide)).
+Claude cuts server instructions at `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`
+characters (4096 unset, on 2.1.300), so headless Claude sessions spawn with
+it set to 16384 (`provider.ClaudeMCPDescriptionLengthLimit`, a default a
+custom environment can override) and a test keeps the guide under that.
+claude-tui does not register this server.
 The text, maintained beside the tool schemas in `internal/threadtools`:
 
 > These tools let you work with other Agent Overflow threads, on this

@@ -718,5 +718,6 @@ func (a *App) finishThreadModelUpdate(update threadapp.ModelUpdate) (store.Threa
 	}
 	profileErr := a.rememberChatModelProfileFields(updated, nil)
 	a.announceThreadIfChanged(triage.ThreadActionFull, updated.ID, update.SelectionChanged())
+	a.noticeClaudeAutoRestored(update, updated)
 	return updated, profileErr
 }

@@ -150,11 +150,6 @@ export const CLAUDE_THINKING_MODE_OPTIONS: AxisOption<ClaudeThinkingMode>[] = [
       'Claude Code decides per model — adaptive thinking where the model supports it.',
   },
   {
-    value: 'off',
-    label: 'Off',
-    description: 'No extended thinking. Claude answers without a thinking block.',
-  },
-  {
     value: 'budget',
     label: 'Fixed budget',
     description: 'Caps thinking at the number of tokens you set below.',

@@ -201,9 +201,10 @@ export interface ClaudeSubagentLimits {
 /**
  * How much Claude thinks before it answers. `''` is Claude Code's own
  * per-model choice (adaptive where the model supports it, its built-in
- * budget otherwise) — not "off".
+ * budget otherwise). There is no off: current Claude models reject disabled
+ * thinking.
  */
-export type ClaudeThinkingMode = 'off' | 'budget';
+export type ClaudeThinkingMode = 'budget';
 
 /**
  * Whether thinking text reaches the wire. `''` is Agent Overflow's default,

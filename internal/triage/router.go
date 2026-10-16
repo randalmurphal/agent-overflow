@@ -479,6 +479,8 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 			return r.settleCompactionReasoning(evt)
 		}
 		return r.handleContentBlockStop(evt)
+	case provider.EventBlocksAbandoned:
+		return r.handleBlocksAbandoned(evt)
 	case provider.EventSessionStatus:
 		return r.handleSessionStatus(evt)
 	case provider.EventRateLimits:
@@ -563,6 +565,11 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		// timeline record; the thread's workspace columns are owned by the
 		// app's worktree transactions (app_worktree_follow.go), which the
 		// session event handler dispatches to. Nothing to persist here.
+		return nil
+	case provider.EventPermissionModeChanged:
+		// The thread's runtime mode is a thread-row column the app owns
+		// (app_claude_permission_mode.go), and the app posts the notice
+		// row. Nothing to persist here.
 		return nil
 	default:
 		// No-op: the event has no routing decision. Return the sentinel so

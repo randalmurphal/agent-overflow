@@ -36,6 +36,11 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 			p.model = strings.TrimSpace(info.Model)
 		}
 		meta, _ := json.Marshal(info)
+		// init's `permissionMode` is not a change report: it restates the
+		// startup resolution, which for a supervised spawn (no
+		// --permission-mode flag) includes the user's own defaultMode
+		// setting. Changes arrive on system/status; the session reads init
+		// only for the auto drop (permission_mode.go).
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventInit,
 			ThreadID:  threadID,
@@ -211,42 +216,75 @@ const (
 //   - `{"status":"requesting"}` — the CLI opened an API request. Fires
 //     constantly during ordinary turns; deliberately dropped because
 //     turn activity is already wire-pushed through the round lifecycle.
+//   - `{"status":null,"permissionMode":"default"}` — the session's
+//     permission mode changed, whoever changed it (2.1.300 bundle). Becomes
+//     EventPermissionModeChanged; the session drops echoes of AO's own
+//     set_permission_mode requests (permission_mode.go).
 //
 // Unknown status values are dropped like `requesting` — this channel is
 // additive and a new value must not become an event nothing routes.
 func parseStatusEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
+	var events []provider.ProviderEvent
+	if mode, ok := permissionModeEvent(threadID, raw, now); ok {
+		events = append(events, mode)
+	}
+	compaction, err := compactionStatusEvent(threadID, raw, now)
+	if err != nil {
+		return nil, err
+	}
+	if compaction != nil {
+		events = append(events, *compaction)
+	}
+	return events, nil
+}
+
+// compactionStatusEvent is the compaction half of parseStatusEvent: nil for a
+// status frame that says nothing about compaction.
+func compactionStatusEvent(threadID string, raw map[string]json.RawMessage, now time.Time) (*provider.ProviderEvent, error) {
 	status := readRawString(raw["status"])
 	compactResult := readRawString(raw["compact_result"])
+	var meta provider.CompactionStatusMeta
 	switch {
 	case status == "compacting":
-		meta, err := json.Marshal(provider.CompactionStatusMeta{Active: true})
-		if err != nil {
-			return nil, fmt.Errorf("parse system status: marshal compacting meta: %w", err)
-		}
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventCompactionStatus,
-			ThreadID:  threadID,
-			Meta:      meta,
-			Timestamp: now,
-		}}, nil
+		meta = provider.CompactionStatusMeta{Active: true}
 	case compactResult != "":
-		meta, err := json.Marshal(provider.CompactionStatusMeta{
+		meta = provider.CompactionStatusMeta{
 			Active:       false,
 			Result:       compactResult,
 			ErrorMessage: readRawString(raw["compact_error"]),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("parse system status: marshal compact_result meta: %w", err)
 		}
-		return []provider.ProviderEvent{{
-			Kind:      provider.EventCompactionStatus,
-			ThreadID:  threadID,
-			Meta:      meta,
-			Timestamp: now,
-		}}, nil
 	default:
 		return nil, nil
 	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return nil, fmt.Errorf("parse system status: marshal compaction meta: %w", err)
+	}
+	return &provider.ProviderEvent{
+		Kind:      provider.EventCompactionStatus,
+		ThreadID:  threadID,
+		Meta:      encoded,
+		Timestamp: now,
+	}, nil
+}
+
+// permissionModeEvent reads the `permissionMode` key of a `system/status`
+// frame. Absent or empty is no signal.
+func permissionModeEvent(threadID string, raw map[string]json.RawMessage, now time.Time) (provider.ProviderEvent, bool) {
+	mode := strings.TrimSpace(readRawString(raw["permissionMode"]))
+	if mode == "" {
+		return provider.ProviderEvent{}, false
+	}
+	meta, err := json.Marshal(provider.PermissionModeChangeMeta{Mode: mode})
+	if err != nil {
+		return provider.ProviderEvent{}, false
+	}
+	return provider.ProviderEvent{
+		Kind:      provider.EventPermissionModeChanged,
+		ThreadID:  threadID,
+		Meta:      meta,
+		Timestamp: now,
+	}, true
 }
 
 // readRawStringAny returns the first non-empty string among the named

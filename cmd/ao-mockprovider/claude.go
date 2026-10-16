@@ -199,6 +199,10 @@ type claudeAdapter struct {
 	// drainHeldInput / releaseHeldInput).
 	heldMu sync.Mutex
 	held   [][]byte
+
+	// permission follows the permission mode and model the process runs
+	// (claude_permission_mode.go).
+	permission *claudePermissionMode
 }
 
 func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
@@ -209,6 +213,7 @@ func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
 		mcpServers:    claudeMCPServerSpecs(flagValue(args, "--mcp-config")),
 		sessionMirror: slices.Contains(args, "--session-mirror"),
 		tasks:         newClaudeTaskLedger(),
+		permission:    newClaudePermissionMode(args),
 	}
 	w.onLine(a.noteEnvelope)
 	return a
@@ -382,7 +387,22 @@ func (a *claudeAdapter) handleLine(line []byte) {
 			}
 			return
 		}
+		var beforeAck, afterAck []string
+		var refusal, refusalCode string
+		if required, known := claudeControlRequestKeys[subtype]; known && missingControlRequestKeys(env.Request, required) == "" {
+			beforeAck, afterAck, refusal, refusalCode = a.permission.frames(subtype, env.Request)
+		}
+		if refusal != "" {
+			writeClaudeControlErrorCode(a.w, env.RequestID, refusal, refusalCode)
+			return
+		}
+		for _, frame := range beforeAck {
+			a.w.writeLine(frame, 0, 0)
+		}
 		writeClaudeControlAck(a.w, env.RequestID, subtype, env.Request)
+		for _, frame := range afterAck {
+			a.w.writeLine(frame, 0, 0)
+		}
 		if subtype == "interrupt" {
 			for _, frame := range a.tasks.stopForegroundCommands(time.Now()) {
 				a.w.writeLine(frame, 0, 0)
@@ -590,6 +610,7 @@ func (a *claudeAdapter) writeInit(vars scenario.Vars) {
 		"model":               "claude-opus-4-7",
 		"cwd":                 vars["CWD"],
 		"tools":               []string{"Task", "Bash", "Read", "Write", "Edit"},
+		"permissionMode":      a.permission.current(),
 		"claude_code_version": a.e.providerVersion(),
 	}), 0, 0)
 }
@@ -960,10 +981,29 @@ func writeClaudeControlSuccess(w *lineWriter, requestID, payload string) {
 // shape — `subtype:"error"` plus `error` — which is what
 // session_control.go's reader turns into the caller's error message.
 func writeClaudeControlError(w *lineWriter, requestID, message string) {
+	writeClaudeControlErrorCode(w, requestID, message, "")
+}
+
+// writeClaudeControlErrorCode adds the `error_code` the CLI names beside
+// some refusals (set_permission_mode's "auto_mode_model"); empty omits it.
+// The line leads with `"type":"control_response"` as the CLI's does: AO
+// routes control responses by that prefix.
+func writeClaudeControlErrorCode(w *lineWriter, requestID, message, code string) {
 	log.Printf("claude: refusing control_request: %s", message)
-	w.writeLine(fmt.Sprintf(
-		`{"type":"control_response","response":{"subtype":"error","request_id":%s,"error":%s}}`,
-		mustJSON(requestID), mustJSON(message)), 0, 0)
+	// Struct fields marshal in declaration order, so "type" leads.
+	type controlError struct {
+		Subtype   string `json:"subtype"`
+		RequestID string `json:"request_id"`
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_code,omitempty"`
+	}
+	w.writeLine(mustJSON(struct {
+		Type     string       `json:"type"`
+		Response controlError `json:"response"`
+	}{
+		Type:     "control_response",
+		Response: controlError{Subtype: "error", RequestID: requestID, Error: message, ErrorCode: code},
+	}), 0, 0)
 }
 
 // sendApproval emits a CanUseTool control_request and registers a

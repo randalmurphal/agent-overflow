@@ -272,8 +272,8 @@ type Settings struct {
 	ClaudeToolMemoryLimit string `json:"claudeToolMemoryLimit,omitempty"`
 
 	// ClaudeThinking is the extended-thinking preference for headless
-	// Claude sessions: leave it to Claude Code, turn thinking off, or pin
-	// a fixed token budget — plus whether thinking text reaches the wire.
+	// Claude sessions: leave it to Claude Code or pin a fixed token budget
+	// — plus whether thinking text reaches the wire.
 	//
 	// It sits beside the four axes above but is NOT one of them: those
 	// ride the `--settings` block and are spawn-only, while this one has

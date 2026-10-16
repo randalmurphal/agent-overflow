@@ -330,6 +330,8 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		addModelFallbackNotificationMeta(meta, raw)
 	case permissionDeniedNotificationKind, permissionRetryNotificationKind:
 		addPermissionNoticeMeta(meta, raw)
+	case abandonedBlocksNotificationKind:
+		addAbandonedBlocksNotificationMeta(meta, raw)
 	}
 
 	encoded, err := json.Marshal(meta)

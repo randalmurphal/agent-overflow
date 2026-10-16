@@ -490,6 +490,53 @@ the inactive close (carrying the error string); `requesting` and
 unknown statuses are dropped. Triage projects the window onto
 `provider:compacting` (see `internal/triage/compaction_status.go`).
 
+### Permission mode reports (2.1.300 bundle, not live-captured)
+
+A third family reports every change of the session's permission mode,
+whoever made it:
+
+```json
+{"type":"system","subtype":"status","status":null,
+ "permissionMode":"default","uuid":"...","session_id":"..."}
+```
+
+The headless loop installs the reporter on the session state's
+`onPermissionModeChanged`, which the app-state subscriber calls whenever
+`toolPermissionContext.mode` changes. A `set_permission_mode` from the
+client produces one too, written around its ack (the state update and the
+ack share one updater, so the report can follow the ack). `system/init`
+also carries `permissionMode`, but restates the startup resolution, which
+for a spawn without `--permission-mode` includes the user's
+`permissions.defaultMode`. Leaving plan (ExitPlanMode) can likewise land on
+that `defaultMode`.
+
+Since 2.1.299 the CLI changes mode on its own in one case AO must follow:
+`set_model` to a model without auto mode, on a session running `auto`,
+moves the session to `default` (logged `auto mode disabled: model X does
+not support auto mode`) and reports it before the `set_model` ack. The
+support check (`iD`) refuses auto for the 4.6 generation and older and for
+every Haiku but 5.5. A later `set_permission_mode` `auto` on such a model
+is refused with `auto mode unavailable for this model` and
+`error_code:"auto_mode_model"`. In plan the switch changes nothing and
+reports nothing: plan keeps auto as the mode to return to, so the refusal
+is what leaving plan for auto meets. A process started with
+`--permission-mode auto` on such a model goes through the startup gate,
+and the bundle suggests it starts on `default`; only its `system/init`
+would say so.
+
+The parser emits `EventPermissionModeChanged` for every status report. The
+session (`internal/provider/claude/permission_mode.go`) drops a report that
+matches a `set_permission_mode` in flight or the mode it already runs, and
+adopts only `default` while its base is `auto`, as both its current and
+base mode, forwarding it. Any other report only updates the mode the
+session believes the CLI runs, so the next turn restores the base. The
+same drop is taken from a refused `auto` (`auto_mode_model`) and from an
+init that says `default` while the session runs auto. The app
+(`internal/app/app_claude_permission_mode.go`) moves the thread's runtime
+mode to `approval-required` without a restart and posts a warning notice
+naming the model. A later switch to a model whose remembered settings carry
+Auto restores it with a notice of its own.
+
 ## `system` model-fallback family
 
 Four subtypes, one shape, one meaning each: the model the user asked for
@@ -2256,7 +2303,8 @@ Bash tasks do not evict them, and the history covers what rotates out.
 
 **A resume the session mirror delivers**: a call inside a typed fork
 (§E9) reaches the parser only through the mirror, after its
-`task_started`. The parser binds the task and holds the classification
+`task_started` (2.1.300's stdout replay of the finished fork is
+dropped, §E9). The parser binds the task and holds the classification
 until the mirror projects the call; the call's name or the task's
 earlier binding then decides launch or resume, and the resume's meta
 and prompt row follow the call's row as they do on stdout (triage
@@ -2619,8 +2667,8 @@ shapes reach AO, and the parser handles both.
   that wakes the main agent when it finishes. A fork does not park.
 - **A directly entered forked command** (`/code-review high`) gets the
   same `task_started` with NO `tool_use_id`, and its terminal
-  notification names none either. Its rows arrive only through the
-  session mirror. AO records the task the running command announces
+  notification names none either. While it runs, its rows arrive only
+  through the session mirror. AO records the task the running command announces
   and stamps it on the row when the mirror proves the fork with that
   agentId (§transcript_mirror). The Agent the fork launches is
   announced by `task_started` before the mirror delivers its tool_use,
@@ -2629,6 +2677,17 @@ shapes reach AO, and the parser handles both.
   under it. Every projected agent's last message reaches the mirror
   after its task terminal, so a terminal keeps the agent's projection
   open (`forked_skill_direct_command_20261014.ndjson`).
+- **2.1.300 also replays a finished typed fork on stdout.** After the
+  fork's `task_notification` (and a repeated `system/init`), the CLI
+  writes every row of the fork and of the agents it launched as ordinary
+  `user`/`assistant` envelopes carrying `agent_id`. The fork's own rows
+  name `parent_tool_use_id: "forked-command-<skill>"`, which no tool_use
+  has; its agents' rows name their launch. The fork's last message
+  reaches stdout here before the mirror delivers it. The parser drops a
+  stdout row whose `agent_id` names an agent the mirror projects under a
+  direct command (`mirrorProjectsStdoutRow`); the projection already
+  carries it. 2.1.284 sends no such replay and no `agent_id`
+  (`forked_skill_direct_command_stdout_replay_20261016.ndjson`).
 - **A typed fork can be resumed** by `SendMessage` to its agentId. The
   resumed fork's `agent_metadata` again names no tool_use and its rows
   reach only the mirror; they project under the command row the fork
@@ -3236,7 +3295,9 @@ verbatim.
 - `content_block_delta`: `{index, delta: {type: ..., ...}}`
 - `content_block_stop`: `{index}`
 - `message_delta`: mid-message `stop_reason` / `usage` updates
-- `message_stop`: closes an assistant message
+- `message_stop`: closes an assistant message; one the CLI produced itself
+  for a response it stopped reading carries `abandoned_blocks` on the
+  envelope (§`abandoned_blocks` below)
 
 ### Delta types
 - `text_delta: {text}`: ✅ handled
@@ -3254,6 +3315,48 @@ remains authoritative for the cumulative turn payload (token usage,
 cost, terminal_reason). But it is
 **not** the only signal that the round has ended; see soft-round-close
 below.
+
+### `abandoned_blocks`: a response cut short (2.1.300+)
+
+When the byte watchdog stops reading a response (no bytes for
+`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS`, default 180 s, clamped to 10 s
+through 30 min), the CLI closes it itself: a `content_block_stop` for any
+open block, then a `message_stop` whose ENVELOPE (not the inner event)
+carries `abandoned_blocks`:
+
+```json
+{"type": "stream_event", "event": {"type": "message_stop"},
+ "parent_tool_use_id": null, "api_message_id": "msg_01",
+ "abandoned_blocks": {"api_message_id": "msg_01", "from_block_index": 1}}
+```
+
+Every content block of that response at `from_block_index` and above was
+streamed but has no assistant message and never will: it is not in the
+transcript. `from_block_index` is the count of blocks whose assistant
+message was already emitted, so 0 means the whole response; it can exceed
+every index seen, in which case nothing visible was lost. What follows is
+unspecified by the key: in captures, a synthetic `isSynthetic:true` user
+nudge, then a continuation `message_start` when at least one block had
+finished, or a non-streamed retry (`assistant` under a new id, no
+`message_start`) when the stall was inside block 0. 2.1.284 does not send
+the key. The CLI's close events hardcode `parent_tool_use_id: null`, and
+subagent output never streams, so there is no scoped signal; a subagent's
+stall delivers its partial message whole and a retry under a new id.
+
+`api_message_id` (2.1.300+) sits on every stream_event envelope of a
+response, `message_start` through `message_stop`, and on the CLI's own
+close events; absent from older CLIs and from plugin-rewritten events.
+
+AO: the parser names each block's response on its `content_block_start` /
+`content_block_stop` meta (`apiMessageId`, from the envelope key or the
+scope's `message_start`) and turns the `message_stop` into
+`EventBlocksAbandoned`. Triage never rewrites the rows the blocks streamed
+into; it writes one `notification` row (`meta.kind: abandoned_blocks`,
+`meta.item_ids`) after them. The store serves each named row with the
+record's id (`Item.discardedBy`, `decorateDiscardedRows`) and stamps the
+rows when the record is written, so the muted marking holds whether or
+not the record is in the loaded window
+([decisions](../decisions.md#streaming-and-reveal)).
 
 ### Soft round close: `message_delta.stop_reason`
 
@@ -3584,7 +3687,11 @@ CLI binary; the subtypes we use or plan to use:
     `display` changes. (`CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1` is what
     makes the budget matter everywhere.)
   - **`max_thinking_tokens: 0` is DISABLE**, not "unset": the request
-    becomes `thinking: {"type":"disabled"}` and `display` is dropped.
+    becomes `thinking: {"type":"disabled"}` and `display` is dropped. AO
+    never sends it and offers no thinking-off setting: the 2.1.300 model
+    catalog marks every current model (Fable 5 and 5.1, Opus, Sonnet and
+    Haiku 5.5) `rejects_disabled_thinking`, and for those the CLI runs
+    adaptive thinking in place of `--thinking disabled`.
   - **`max_thinking_tokens: null` is a NO-OP.** It is accepted and
     changes nothing. There is no reset-to-default form, so returning a
     session to the CLI's own choice requires a respawn.
@@ -4073,7 +4180,8 @@ Two gaps make this surface necessary:
 - A directly entered forked command such as `/code-review high` produces only
   its outer `<synthetic>` command result on ordinary stdout. Its fork-root
   prompt, tool calls, results, and final assistant row arrive live in the
-  mirrored sidechain. The file starts with
+  mirrored sidechain (2.1.300 also replays them on stdout once the fork
+  ends; §E9 says how AO drops that replay). The file starts with
   `agent_metadata {agentType:"general-purpose"}` and no `toolUseId`; root
   assistant rows carry `isSidechain:true`, `attributionSkill`, and `agentId`.
   Those facts dynamically prove a Skill fork without a command-name list.
@@ -4918,6 +5026,20 @@ with `run_in_background`), `system/task_started` (backgrounded +
 foreground), `user` backgrounded placeholder (E2), `system/task_updated`
 terminal, `system/task_notification`, `user` inline tool_result (E1),
 `result` envelope.
+
+### `docs/references/fixtures/claude/stream_abandoned_{midblock,twoblock,afterblock}_20261016.ndjson`
+**Scenario**: Claude Code 2.1.300 against a fake API on loopback with
+`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` at its 10 s floor and
+`--include-partial-messages`; the fake stalls inside block 0 (midblock:
+`from_block_index` 0, retry as a bare `assistant` snapshot under
+`msg_fake_02`), inside block 1 after block 0 finished (twoblock:
+`from_block_index` 1, continuation streamed under `msg_fake_02`), or
+between blocks (afterblock: `from_block_index` 1 with no block 1 seen).
+Paths rewritten to `/home/user/spike`; nothing else edited.
+
+**Shapes covered**: `stream_event` envelopes with `api_message_id`, the
+CLI's own `content_block_stop` + `message_stop` with `abandoned_blocks`,
+the `isSynthetic:true` user nudge, `transcript_mirror`.
 
 ### `docs/references/fixtures/claude/ndjson_task.log`
 **Scenario**: `Task` subagent with `run_in_background: true` + `TaskOutput`
