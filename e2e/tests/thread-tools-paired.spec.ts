@@ -16,7 +16,8 @@
 // forwarded request and replying through thread_reply; a cancel that stops
 // work there; the Agents segment nesting a thread spawned over there with
 // its own spawn, named by that computer, and a Stop on its row cascading
-// there into its background shell, its turn and its own spawn; a deleted
+// there into its background shell, its turn and its own spawn; a nested
+// row over there naming the wake row its answer reached there; a deleted
 // caller stopping the scratch ask it left there; a
 // destination too old to carry the tools; a reply written while the calling
 // computer was off arriving once it is back; and forgetting a computer with

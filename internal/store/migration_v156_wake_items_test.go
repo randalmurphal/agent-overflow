@@ -97,10 +97,10 @@ func seedConfirmedWakes(t *testing.T, db *sql.DB, callers []string, n int) {
 	mustExec(t, db, `COMMIT`)
 }
 
-// v156's fill is one statement per wake, so it runs at open: 50,000
-// confirmed answers (30 days of retention at 1,700 wakes a day) take well
-// under the open's budget, and each lookup probes its index by the
-// caller's key.
+// v156's fill is one statement per column and a keyed write per joined
+// wake, so it runs at open: 50,000 confirmed answers (30 days of retention
+// at 1,700 wakes a day) take well under the open's budget, and each lookup
+// probes its index by the caller's key.
 func TestMigrationV156WakeItemsAtScale(t *testing.T) {
 	if testing.Short() {
 		t.Skip("seeds 50,000 requests")
