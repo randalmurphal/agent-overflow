@@ -111,11 +111,17 @@ async function expectClearOfComposer(page: Page, row: ReturnType<Page['locator']
   }, { message: 'the row is in view above the composer' }).toBe(true);
 }
 
+/**
+ * Both rows are measured in one frame: the timeline can still be scrolling
+ * to follow the newest row, and two separate reads would see two scroll
+ * positions.
+ */
 async function expectAbove(upper: ReturnType<Page['locator']>, lower: ReturnType<Page['locator']>): Promise<void> {
-  const [a, b] = [await upper.boundingBox(), await lower.boundingBox()];
+  const [a, b] = [await upper.elementHandle(), await lower.elementHandle()];
   expect(a, 'upper row is laid out').not.toBeNull();
   expect(b, 'lower row is laid out').not.toBeNull();
-  expect(a!.y).toBeLessThan(b!.y);
+  const tops = await upper.page().evaluate(([x, y]) => [x.getBoundingClientRect().top, y.getBoundingClientRect().top], [a!, b!] as const);
+  expect(tops[0], 'upper row sits above the lower row').toBeLessThan(tops[1]);
 }
 
 test('an armed recurring cron job keeps its session alive until CronDelete releases it', async ({ page }) => {
