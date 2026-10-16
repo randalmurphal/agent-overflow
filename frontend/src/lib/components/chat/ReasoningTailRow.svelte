@@ -151,7 +151,7 @@
 <TranscriptDisclosureHeader
   {expanded}
   controls={bodyDomId}
-  ariaLabel={toggleAriaLabel}
+  ariaLabel={discarded ? `${toggleAriaLabel}, discarded by Claude after the response stalled` : toggleAriaLabel}
   testId={`${idPrefix}-toggle`}
   class="!items-start rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20 {discarded ? 'discarded-reasoning' : ''}"
   headerTestId={`${idPrefix}-header`}
@@ -164,11 +164,12 @@
            visible tag would take its width from the text beside it and
            rewrap it the moment the mark lands, and the dim alone can be
            nothing where the theme's reasoning text is already at the
-           contrast floor. The scissors match the record row's. -->
+           contrast floor. The scissors match the record row's. The
+           button's own label names the discard (it overrides any label
+           inside it), so the cue is hidden from assistive tech. -->
       <span
         class="flex size-3.5 items-center justify-center text-fg-subtle"
-        role="img"
-        aria-label={DISCARDED_LABEL}
+        aria-hidden="true"
         title={DISCARDED_LABEL}
         data-testid={`${idPrefix}-discarded`}
       ><Icon icon={Scissors} size={14} strokeWidth={2} /></span>

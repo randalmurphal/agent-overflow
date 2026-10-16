@@ -225,7 +225,7 @@ test('a discarded reasoning row served without its record still shows the cue', 
   const cue = slot.getByTestId('thinking-discarded');
   await expect(cue).toBeVisible();
   await expect(cue).toHaveAttribute('title', LABEL);
-  await expect(cue).toHaveAttribute('aria-label', LABEL);
+  await expect(row.getByTestId('thinking-toggle')).toHaveAccessibleName('Toggle Thinking Block, discarded by Claude after the response stalled');
   await expect(slot.locator('[data-icon="brain"]')).toHaveCount(0);
   await expect(record).toHaveCount(0);
 

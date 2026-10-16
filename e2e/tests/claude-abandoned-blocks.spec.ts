@@ -217,7 +217,7 @@ async function expectDiscardedCue(row: Locator, kind: 'text' | 'reasoning'): Pro
     const cue = slot.getByTestId('thinking-discarded');
     await expect(cue).toBeVisible();
     await expect(cue).toHaveAttribute('title', DISCARDED_LABEL);
-    await expect(cue).toHaveAttribute('aria-label', DISCARDED_LABEL);
+    await expect(row.getByTestId('thinking-toggle')).toHaveAccessibleName('Toggle Thinking Block, discarded by Claude after the response stalled');
     await expect(slot.locator('[data-icon="brain"]')).toHaveCount(0);
     return;
   }
