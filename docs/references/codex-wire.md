@@ -1267,8 +1267,10 @@ Fixture: `fixtures/codex/thread_unload_cold_resume_20261016.ndjson`.
   this connection's subscription; the thread stays in `thread/loaded/list`.
 - A loaded thread with no subscriber and not active unloads after
   `thread_unload_delay_secs` (config; measured 60.0 s at the default and
-  3.0 s at `3`). The clock starts at the later of the last unsubscribe
-  and the last activity. The app-server then writes
+  3.0 s at `3`; with `-c thread_unload_delay_secs=0` on the spawn,
+  `thread/closed` followed the unsubscribe response within 15 ms, and
+  `-c` and `config.toml` behave the same). The clock starts at the later
+  of the last unsubscribe and the last activity. The app-server then writes
   `thread/closed {threadId}`, drops it from `thread/loaded/list` and kills
   its MCP children. The notification reaches the unsubscribed connection.
 - `thread/resume` on a loaded, idle, unsubscribed thread with any override
@@ -1314,6 +1316,41 @@ Same spike. Several threads on one app-server:
 - `mcpServerStatus/list` spawns its own connections
   ([`mcpServerStatus/list`](#mcpserverstatuslist)), so it is not a count of
   running servers.
+
+### Developer instructions across a restart and per-thread channels (verified 0.162.1)
+
+Spike 2026-10-16, codex-cli 0.162.1, `gpt-5.6-luna` (`gpt-6-luna` is
+refused for a ChatGPT account: "not supported when using Codex with a
+ChatGPT account"). Fixture:
+`fixtures/codex/developer_instructions_shared_process_20261016.ndjson`.
+Each step asked for a reply ending in the token the current instructions
+name.
+
+- A thread started with token A in one process, then resumed in a second
+  process with `developerInstructions` naming B, replied with A. A restart
+  is the same cold resume as the one in
+  [Thread unload and cold resume](#thread-unload-and-cold-resume-verified-01621),
+  for the same reason.
+- `thread/inject_items {threadId, items:[{type:"message", role:"developer",
+  content:[{type:"input_text", text}]}]}` on the idle thread answers `{}`;
+  the next reply followed the injected token. The item is written to the
+  rollout as a `developer` message (`core/src/session/inject.rs`).
+- `turn/start` `additionalContext: {"<key>": {value, kind:"application"}}`
+  (experimental) was followed. It reaches history as one developer message
+  `<key>value</key>`, emitted only when the value for the key changed
+  since the thread was loaded (`core/src/state/additional_context.rs`);
+  the same value on the next two turns wrote nothing. A value is
+  middle-truncated to 1,000 tokens (`context-fragments/src/additional_context.rs`).
+- A second thread started on the same process with its own token D replied
+  with D; the first thread kept its own token on its next turn.
+- After `thread/compact/start` the first thread replied with B, the
+  thread-level value from the resume: compaction rebuilds the context from
+  the thread's configuration and drops the injected and additional-context
+  messages. The additional context sent again with the same value was not
+  re-emitted, so it stayed lost.
+- Keeping client developer messages across compaction is the
+  `retain_client_developer_messages` feature, under development and off by
+  default (`features/src/lib.rs`).
 
 ### `model/safetyBuffering/updated`
 
