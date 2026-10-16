@@ -585,6 +585,7 @@ export function createUseStickToBottomController(
     },
     lastExplainedScrollTop: () => chokepoint.lastExplainedScrollTop(),
     onScrollInput: () => { scrollInputRevision += 1; },
+    followBottom: notifyLiveContentMaybeGrew,
   });
 
   // Snapshot of the flags the pure delivery resolver decides over.

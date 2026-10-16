@@ -4,8 +4,10 @@
 // backend's index lists them, nothing expanded on its own and no line
 // read until a row opens; an expanded row holds its place, and a reader
 // who moves to the end follows its growth while one who scrolled up keeps
-// their place; the chips and an open job log follow a running GitLab job
-// without a click, and the polling stops once every job is terminal; the
+// their place, and End brings them back to the end though the rows
+// mounting there measure taller while it scrolls; the chips and an open
+// job log follow a running GitLab job without a click, and the polling
+// stops once every job is terminal; the
 // saved log and a section sent to chat carry no section markers; a
 // running GitHub job lists its steps live (read only while its log is
 // open), waits without an error while the forge answers 404 for its log,
@@ -114,20 +116,6 @@ async function distanceFromBottom(scroll: Locator): Promise<number> {
   return scroll.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
 }
 
-// A reader moves to the log's end. Workaround for a scroll controller gap:
-// one jump to the end (a wheel, End) lands at the end the list has laid
-// out, tail rows that mount there measure taller than their estimate, and
-// the re-stick rule leaves the reader short of the new end and escaped.
-// Until the controller re-sticks on that landing, this wheels again until
-// the view reaches the end.
-async function wheelToEnd(page: Page, scroll: Locator): Promise<void> {
-  await scroll.hover();
-  await expect.poll(async () => {
-    await page.mouse.wheel(0, 100_000);
-    return distanceFromBottom(scroll);
-  }).toBeLessThanOrEqual(24);
-}
-
 async function openJobLog(page: Page, review: Locator, stage: string, job: string) {
   await review.getByTestId('review-ci-chip').filter({ hasText: stage }).click();
   await page.getByTestId('review-ci-job').filter({ hasText: job }).click();
@@ -192,8 +180,10 @@ test('a running GitLab job shows its sections, follows its trace into an open se
 
   // A reader who moves to the end follows the trace as it grows, with no
   // click.
-  await wheelToEnd(page, scroll);
+  await scroll.hover();
+  await page.mouse.wheel(0, 100_000);
   await expect(scroll).toContainText('step 1 done');
+  await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
   repo = await moveCI(harness, repo, { jobs: [{ id: JOB_ID, name: 'unit', stage: 'test', status: 'running', log: gitlabTrace(2) }] });
   await expect(scroll).toContainText('step 2 done');
   await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
@@ -221,10 +211,13 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   await expect(log).toContainText('success');
   await expect(script).toHaveAttribute('data-status', 'done');
   await expect(script).toContainText('1m 6s');
-  // The escaped reader was left alone; wheeling back down re-sticks.
+  // The escaped reader was left alone; End takes them back to the end,
+  // which the tail rows mounting there move while End's scroll runs.
   expect(await scroll.evaluate((el) => el.scrollTop)).toBe(0);
-  await wheelToEnd(page, scroll);
+  await scroll.focus();
+  await page.keyboard.press('End');
   await expect(scroll).toContainText('job finished');
+  await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
   await expect(section(log, `output:section:step_script:${T0 + 4}`)).toContainText('Job succeeded');
   await expect(chip).toHaveAttribute('title', /1 success/);
 
@@ -357,8 +350,10 @@ test('a running GitHub job lists its steps, waits out a log the forge has not pu
   await expect(scroll).not.toContainText('Syncing repository');
 
   // At the end it follows growth with no click, before the job completes.
-  await wheelToEnd(page, scroll);
+  await scroll.hover();
+  await page.mouse.wheel(0, 100_000);
   await expect(scroll).toContainText('step 1 done');
+  await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
   repo = await moveCI(harness, repo, { jobs: [{ ...runningJob, log: githubLog(2) }] });
   await expect(scroll).toContainText('step 2 done');
   await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);

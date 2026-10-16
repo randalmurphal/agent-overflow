@@ -2106,6 +2106,147 @@ describe('createUseStickToBottomController', () => {
       expect(controller.isSticky).toBe(false);
     });
 
+    // A jump to the end lands at the bottom the input aimed at, and rows
+    // mounting there can measure taller first: the scroll event then
+    // reports the jump short of a bottom that moved. Reaching the aimed-at
+    // end re-sticks and follows to the moved bottom.
+    async function escapeTo(top: number): Promise<void> {
+      getRO().fire(contentEl, 800);
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = top;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+    }
+    function growTail(): void {
+      // The bottom target moves from 400 to 977.
+      geom.scrollHeight = 1577;
+      geom.contentHeight = 1377;
+      getRO().fire(contentEl, 1377);
+    }
+
+    it('a wheel to the end re-sticks and follows when the bottom grew before its scroll event', async () => {
+      await escapeTo(100);
+      fireWheel(scrollEl, 100_000, scrollEl);
+      growTail();
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+      expect(geom.scrollTop).toBe(977);
+    });
+
+    it('an End key scroll re-sticks and follows when the bottom grew while it animated', async () => {
+      await escapeTo(0);
+      fireKey(scrollEl, 'End');
+      geom.scrollTop = 150;
+      fireScroll(scrollEl);
+      await nextTimer();
+      growTail();
+      geom.scrollTop = 300;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+      // The animation keeps the target it started with.
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      expect(geom.scrollTop).toBe(977);
+    });
+
+    it('a down scroll short of the end its input aimed at stays escaped', async () => {
+      await escapeTo(100);
+      fireWheel(scrollEl, 290, scrollEl);
+      growTail();
+      geom.scrollTop = 390;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(390);
+    });
+
+    it('each down input aims at the bottom as it stands then, not where an earlier one aimed', async () => {
+      await escapeTo(100);
+      fireWheel(scrollEl, 100, scrollEl);
+      growTail();
+      // The reader is still scrolling: this input aims at the moved
+      // bottom (977), so a step that stops on the earlier end (400) is
+      // not arrival.
+      fireWheel(scrollEl, 300, scrollEl);
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(400);
+    });
+
+    it('a step that passes the aimed-at end after the bottom moved is not arrival', async () => {
+      await escapeTo(100);
+      fireWheel(scrollEl, 400, scrollEl);
+      growTail();
+      // The browser computed the step after the bottom moved, so it was
+      // not clamped to the end the input aimed at.
+      geom.scrollTop = 500;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(500);
+    });
+
+    it('content inserted above that shifts the reader onto the aimed-at end is not arrival', async () => {
+      await escapeTo(100);
+      fireWheel(scrollEl, 100, scrollEl);
+      // 300px of rows land above the reader; the browser's scroll anchoring
+      // moves scrollTop with them, exactly onto the end the wheel aimed at.
+      geom.scrollHeight = 1300;
+      geom.contentHeight = 1100;
+      getRO().fire(contentEl, 1100);
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(400);
+    });
+
+    it('content inserted above that shifts the reader past the aimed-at end is not arrival', async () => {
+      await escapeTo(100);
+      fireWheel(scrollEl, 100, scrollEl);
+      geom.scrollTop = 200;
+      fireScroll(scrollEl);
+      await nextTimer();
+      geom.scrollHeight = 1622;
+      geom.contentHeight = 1422;
+      getRO().fire(contentEl, 1422);
+      geom.scrollTop = 822;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(822);
+    });
+
+    it('reaching an earlier aimed-at end after the down input expired stays escaped', async () => {
+      await escapeTo(100);
+      fireWheel(scrollEl, 100_000, scrollEl);
+      mockNow += 300;
+      await waitRealMs(300);
+      growTail();
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(true);
+      expect(geom.scrollTop).toBe(400);
+    });
+
     it('pointer-tap on the scrollbar escapes immediately and does not safety-net repin', async () => {
       stubScrollbarGutter(scrollEl);
 

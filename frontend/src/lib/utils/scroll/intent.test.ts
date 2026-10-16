@@ -87,6 +87,7 @@ function harness(
   };
   const refreshIsNearBottom = vi.fn(() => state.distanceFromBottom);
   const noteUserScroll = vi.fn();
+  const followBottom = vi.fn();
 
   const deps: ScrollIntentDeps = {
     getScrollEl: () => scrollEl,
@@ -111,6 +112,7 @@ function harness(
     resizeDifferenceNow: () => 0,
     noteUserScroll,
     lastExplainedScrollTop: () => state.lastExplained,
+    followBottom,
   };
 
   const intent = createScrollIntent(deps);
