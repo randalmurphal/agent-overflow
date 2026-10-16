@@ -269,3 +269,76 @@ test('a task that ends while its tail is open shows its last line, then its card
   await card.getByTestId('command-output-toggle').click();
   await expect(card.locator('.ansi-body')).toContainText('Build succeeded');
 });
+
+const WATCH_COMMAND = 'until [ -f /tmp/gate.done ]; do sleep 5; done';
+const WATCH_FILE = 'tasks/task-watch.output';
+
+// A Monitor's launch ack names no file. Its first notification does, and
+// from then on the tray row tails the file like a backgrounded Bash.
+test("a Monitor's tray row tails its output once a notification names the file", async ({ harness, page }) => {
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('background-task-live-tail-monitor', [
+      { writeFile: { path: WATCH_FILE, content: '' } },
+      emit([
+        ...textLines('msg-lead', 'Watching the gate.'),
+        toolUseLine('msg-watch', 'tu-watch', 'Monitor', { command: WATCH_COMMAND, description: 'gate done', timeout_ms: 1800000 }),
+        taskStartedLine('task-watch', 'tu-watch', 'gate done', { taskType: 'local_bash' }),
+        toolResultLine(
+          'tu-watch',
+          'Monitor started (task task-watch, timeout 1800000ms). You will be notified on each event. Keep working — do not poll or sleep.',
+          { toolUseResult: { taskId: 'task-watch', timeoutMs: 1800000 } },
+        ),
+        backgroundTasksChangedLine([{ task_id: 'task-watch', task_type: 'local_bash', description: 'gate done' }]),
+        RESULT_LINE,
+      ]),
+      { waitSignal: { name: 'event-1' } },
+      { writeFile: { path: WATCH_FILE, content: 'matched: gate opened\n', append: true } },
+      emit([
+        taskNotificationLine('task-watch', 'tu-watch', 'matched: gate opened', { outputFile: `\${CWD}/${WATCH_FILE}`, uuid: 'watch-1' }),
+      ]),
+      { waitSignal: { name: 'event-2' } },
+      { writeFile: { path: WATCH_FILE, content: 'matched: gate closed\n', append: true } },
+      { waitSignal: { name: 'finish' } },
+      emit([
+        taskUpdatedLine('task-watch', { status: 'completed', end_time: 1787419845000 }),
+        taskNotificationLine('task-watch', 'tu-watch', 'Monitor timed out after 1800000ms', { uuid: 'watch-2' }),
+        backgroundTasksChangedLine([]),
+      ]),
+    ]),
+  });
+  const threadId = await seedAgentThread(harness, 'Monitor tail-app', 'Monitor tail');
+  await harness.open(page);
+  await page.getByTestId('thread-row-title').getByText('Monitor tail', { exact: true }).click();
+  const mockId = await startMock(harness, threadId);
+  const completed = harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('SendMessage', threadId, 'watch the gate', null);
+  await completed;
+  await page.getByTestId('activity-rail-background-toggle').click();
+  const row = page.getByTestId('activity-rail-background-body').locator('[data-testid="background-task-tray-row"][data-row-id="tu-watch"]');
+  await expect(row.getByTestId('background-task-tray-row-status')).toHaveAttribute('data-status', 'running');
+  // No file is known yet: the row is a command row with a dead chevron.
+  await expect(row.getByTestId('command-output-command')).toHaveText('gate done');
+  const toggle = row.getByTestId('command-output-toggle');
+  await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+
+  // The notification names the file: the tray delta marks the row
+  // tailable without writing the launch row, and the tail opens on it.
+  await waitForGate(harness, 'event-1');
+  await advance(harness, mockId, 'event-1');
+  await expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
+  const launch = (await listItems(harness, threadId)).find((item) => item.id === 'tu-watch');
+  expect(launch?.meta ?? '').not.toContain('output_file');
+  expect(launch?.meta ?? '').not.toContain('tail_available');
+  await toggle.click();
+  const scroll = row.getByTestId('background-task-live-tail-scroll');
+  await expect(scroll).toContainText('matched: gate opened');
+
+  // Later output follows without another notification.
+  await waitForGate(harness, 'event-2');
+  await advance(harness, mockId, 'event-2');
+  await expect(scroll).toContainText('matched: gate closed');
+
+  await waitForGate(harness, 'finish');
+  await advance(harness, mockId, 'finish');
+  await expect(row).toHaveCount(0);
+});

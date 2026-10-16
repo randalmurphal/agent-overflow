@@ -177,8 +177,12 @@ func (a *App) UnwatchBackgroundTaskOutput(ctx context.Context, threadID, watchID
 		return nil
 	}
 	state := transport.ConnStateFromContext(ctx)
-	state.UnbindCleanup(backgroundTaskOutputCleanupKey(watchID))
-	a.backgroundTaskTailer().Release(threadID, watchID, backgroundTaskOutputOwner(state))
+	// The cleanup stays bound until the release it would make has been
+	// made: a release that does not land (wrong thread) leaves the watch,
+	// and the connection's end must still release it.
+	if a.backgroundTaskTailer().Release(threadID, watchID, backgroundTaskOutputOwner(state)) {
+		state.UnbindCleanup(backgroundTaskOutputCleanupKey(watchID))
+	}
 	return nil
 }
 

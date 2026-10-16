@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -580,5 +581,56 @@ func TestCutsLandOnCharacterBoundaries(t *testing.T) {
 	events := rec.all()
 	if len(events) != 1 || !events[0].Reset || !utf8.ValidString(events[0].Append) || events[0].Append != strings.Repeat("é", 3) {
 		t.Fatalf("burst frame: %+v", events)
+	}
+}
+
+// Two first watches on one file overlap: whichever seeds second reads
+// with the other registered, so its read is the other's frame, not a
+// silent skip.
+func TestOverlappingFirstWatchesLoseNothing(t *testing.T) {
+	rec := &recorder{}
+	tailer := newTailer(t, rec, DefaultTailBytes)
+	path := filepath.Join(t.TempDir(), "task.output")
+	appendFile(t, path, "line 1\n")
+	registered := make(chan struct{})
+	proceed := make(chan struct{})
+	var held atomic.Bool
+	// The first watch stops between its registration and its seed read;
+	// the second runs to completion in that window.
+	tailer.beforeSeed = func() {
+		if held.CompareAndSwap(false, true) {
+			close(registered)
+			<-proceed
+		}
+	}
+	var first Snapshot
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		snap, err := tailer.Watch("t1", "launch-1", path, "c1")
+		if err != nil {
+			t.Error(err)
+		}
+		first = snap
+	}()
+	<-registered
+	appendFile(t, path, "line 2\n")
+	second, err := tailer.Watch("t1", "launch-1", path, "c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendFile(t, path, "line 3\n")
+	close(proceed)
+	<-done
+
+	if second.Seq != 1 || second.Data != "line 1\nline 2\n" {
+		t.Fatalf("second snapshot: %+v", second)
+	}
+	if first.Seq != 2 || first.Data != "line 1\nline 2\nline 3\n" {
+		t.Fatalf("first snapshot (seeded last): %+v", first)
+	}
+	events := rec.all()
+	if len(events) != 2 || events[1].Seq != 2 || events[1].Append != "line 3\n" {
+		t.Fatalf("the first watch's seed read is the second watch's frame: %+v", events)
 	}
 }

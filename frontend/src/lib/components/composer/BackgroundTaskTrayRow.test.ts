@@ -404,6 +404,50 @@ describe('<BackgroundTaskTrayRow> doors (agent-visibility)', () => {
     }
   });
 
+  it('tails a running Monitor once its tray row says the backend can resolve its file', async () => {
+    const watch = setBindingMock('WatchBackgroundTaskOutput', async () => ({
+      watchId: 'w-m', seq: 0, data: 'matched: gate open\n', truncated: false, size: 19, ended: false,
+    }));
+    setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
+    const command = 'until [ -f /tmp/gate.done ]; do sleep 5; done';
+    const monitor = (extra: Record<string, unknown>) => makeItem({
+      id: 'W1', kind: 'tool_call', toolName: 'Monitor', status: 'running', isBackground: true, summary: `Monitor: ${command}`,
+      meta: JSON.stringify({ input: { command, description: 'gate done' }, task_id: 'task-watch', watch_task: true, ...extra }),
+    });
+    const view = render(BackgroundTaskTrayRow, {
+      props: {
+        task: taskFor(monitor({})),
+        stopTarget: 'task-watch',
+        isStopping: false,
+        provider: 'claude' as ProviderID,
+        onStop: vi.fn(),
+        pane: paneStub,
+        expanded: false,
+        onToggleExpanded: vi.fn(),
+      },
+    });
+    try {
+      // The Monitor is a command row on the tray; with no file known yet
+      // its chevron is not live.
+      expect(view.getByTestId('command-output-command')).toHaveTextContent('gate done');
+      expect(view.getByTestId('command-output-toggle')).toHaveAttribute('aria-disabled', 'true');
+
+      // The served mark arrives with the tray delta the notification sent.
+      await view.rerender({ task: taskFor(monitor({ tail_available: true })) });
+      const header = view.getByTestId('command-output-toggle');
+      expect(header).not.toHaveAttribute('aria-disabled', 'true');
+      await fireEvent.click(header);
+      for (let i = 0; i < 6; i += 1) await tick();
+      expect(watch).toHaveBeenCalledWith('thread-1', 'W1');
+      expect(view.getByTestId('background-task-live-tail-scroll')).toHaveTextContent('matched: gate open');
+    } finally {
+      view.unmount();
+      for (let i = 0; i < 6; i += 1) await tick();
+      __resetBackgroundTaskOutputForTest();
+      resetBindingMocks();
+    }
+  });
+
   it('shows a running agent\u2019s live tool count, tokens and activity line', () => {
     // The tray is a running background agent's live surface (user ruling
     // 2026-08-23): the launch row never changes and the card does not

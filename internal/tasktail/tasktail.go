@@ -124,6 +124,10 @@ type Tailer struct {
 	watches map[string]watchRef
 	closed  bool
 
+	// beforeSeed, when set by a test, runs between a watch's registration
+	// and its seed read, where another Watch can interleave.
+	beforeSeed func()
+
 	stop chan struct{}
 	done chan struct{}
 
@@ -201,7 +205,6 @@ func (t *Tailer) Watch(threadID, launchID, path, owner string) (Snapshot, error)
 		return Snapshot{}, ErrTooManyWatches
 	}
 	f := t.follows[key]
-	shared := f != nil
 	if f == nil {
 		f = &follow{key: key, path: path, watchers: make(map[string]struct{})}
 		t.follows[key] = f
@@ -212,14 +215,19 @@ func (t *Tailer) Watch(threadID, launchID, path, owner string) (Snapshot, error)
 	f.mu.Unlock()
 	t.mu.Unlock()
 
+	if t.beforeSeed != nil {
+		t.beforeSeed()
+	}
 	// Seed the follow before answering, so the snapshot carries the tail
-	// as it stands rather than waiting a poll for it. On a fresh follow
-	// the seed emits nothing, the snapshot is its frame; on a follow
-	// others already hold, what the file gained since their last poll is
-	// their frame, which this snapshot also carries (its seq is the
-	// frame's, so the new watcher drops it as already seen).
+	// as it stands rather than waiting a poll for it. Whether the read is
+	// anyone's frame is decided here, under the follow's lock: a watch
+	// alone on the follow gets its snapshot and no frame; with another
+	// watch registered, what the file gained is that watch's frame, which
+	// this snapshot also carries (its seq is the frame's, so the new
+	// watcher drops it as already seen). Two first watches that overlap
+	// each read with the other registered, so neither read is silent.
 	f.mu.Lock()
-	t.pollLocked(f, shared)
+	t.pollLocked(f, len(f.watchers) > 1)
 	snapshot := Snapshot{
 		WatchID:   watchID,
 		Seq:       f.seq,
@@ -250,16 +258,16 @@ func newWatchID() (string, error) {
 }
 
 // Release ends one watch, if owner is the one that opened it and the
-// watch is on threadID. The follow ends with its last watch. Unknown ids
-// and another owner's ids are no-ops: the connection cleanup and the
-// client's own release may both name the same watch, and a guessed id
-// must change nothing.
-func (t *Tailer) Release(threadID, watchID, owner string) {
+// watch is on threadID, and reports whether it did. The follow ends with
+// its last watch. Unknown ids and another owner's ids are no-ops: the
+// connection cleanup and the client's own release may both name the same
+// watch, and a guessed id must change nothing.
+func (t *Tailer) Release(threadID, watchID, owner string) bool {
 	t.mu.Lock()
 	ref, ok := t.watches[watchID]
 	if !ok || ref.owner != owner || ref.key.thread != threadID {
 		t.mu.Unlock()
-		return
+		return false
 	}
 	delete(t.watches, watchID)
 	f := t.follows[ref.key]
@@ -282,6 +290,7 @@ func (t *Tailer) Release(threadID, watchID, owner string) {
 		f.closeFileLocked()
 		f.mu.Unlock()
 	}
+	return true
 }
 
 // dropEnded removes a follow whose read failed, with every watch on it,

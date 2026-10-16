@@ -76,7 +76,10 @@ a live tail of its output file, following the newest line until the
 reader scrolls up and resuming when they return to the bottom. The file
 is followed only while a row is open (`WatchBackgroundTaskOutput`,
 `provider:background_task_output`), the follow ends with the task, and
-the completion card then carries the output as before.
+the completion card then carries the output as before. A Monitor is a
+command row on the tray; its launch names no file, so its row becomes
+expandable when a notification has named one, which the tray row carries
+as the served `tail_available` mark (never written to the launch row).
 
 The separate agent pane contains the agent's continuous history across
 executions, including correctly scoped nested-agent activity. Live status

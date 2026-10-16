@@ -220,7 +220,10 @@ function resolveTrayToolPresentation(input: ToolPresentationInput): ToolPresenta
   const statusItem = input.statusItem ?? input.item;
   const outputItem = input.outputItem ?? input.item;
 
-  if (isCommandPresentation(displayItem, outputItem)) {
+  // A Monitor is a command on the tray: its row shows the command it
+  // watches, and its open body the live tail of what that command prints
+  // (claude-wire.md §E7), the same way a backgrounded Bash does.
+  if (isCommandPresentation(displayItem, outputItem) || isClaudeMonitorTool(displayItem)) {
     return commandPresentation(outputItem, displayItem, statusItem);
   }
 
@@ -248,6 +251,10 @@ function resolveTrayToolPresentation(input: ToolPresentationInput): ToolPresenta
     displayItem,
     statusItem,
   };
+}
+
+function isClaudeMonitorTool(item: Item): boolean {
+  return item.toolName === 'Monitor';
 }
 
 function commandPresentation(

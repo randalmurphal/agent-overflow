@@ -186,6 +186,78 @@ describe('backgroundTaskOutput store', () => {
     await flush();
   });
 
+  it("a superseded acquisition's reply leaves the new acquisition's held frames alone", async () => {
+    const replies: Array<(value: unknown) => void> = [];
+    const watch = setBindingMock('WatchBackgroundTaskOutput', () => new Promise((resolve) => { replies.push(resolve); }));
+    const unwatch = setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
+    // Expand, collapse before the reply, expand again.
+    const first = attachBackgroundTaskOutput(THREAD, LAUNCH);
+    await flush();
+    first.release();
+    await flush();
+    const second = attachBackgroundTaskOutput(THREAD, LAUNCH);
+    await flush();
+    expect(watch).toHaveBeenCalledTimes(2);
+    // The obsolete reply lands first; a frame past the live reply's seed
+    // lands after it and before the live reply.
+    replies[0]!(snapshot({ watchId: 'w-1' }));
+    await flush();
+    applyBackgroundTaskOutputEvent(frame({ seq: 1, append: 'early\n', size: 13 }), { backendId: '' });
+    replies[1]!(snapshot({ watchId: 'w-2' }));
+    await flush();
+    expect(second.current?.text).toBe('line 1\nearly\n');
+    expect(second.current?.seq).toBe(1);
+    // The obsolete reply's watch is released; the live one is not.
+    expect(unwatch).toHaveBeenCalledWith(THREAD, 'w-1');
+    expect(unwatch).not.toHaveBeenCalledWith(THREAD, 'w-2');
+    second.release();
+    await flush();
+  });
+
+  it('re-acquires the watch when more frames landed before the reply than it holds', async () => {
+    let resolveWatch: (value: unknown) => void = () => {};
+    let calls = 0;
+    const watch = setBindingMock('WatchBackgroundTaskOutput', () => new Promise((resolve) => {
+      calls += 1;
+      if (calls === 1) resolveWatch = resolve;
+      else resolve(snapshot({ watchId: `w-${calls}`, seq: 700, data: 'all of it\n' }));
+    }));
+    setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
+    const attachment = attachBackgroundTaskOutput(THREAD, LAUNCH);
+    await flush();
+    for (let seq = 1; seq <= 600; seq += 1) {
+      applyBackgroundTaskOutputEvent(frame({ seq, append: `${seq}\n` }), { backendId: '' });
+    }
+    resolveWatch(snapshot());
+    await flush();
+    expect(watch).toHaveBeenCalledTimes(2);
+    expect(attachment.current?.text).toBe('all of it\n');
+    expect(attachment.current?.seq).toBe(700);
+    attachment.release();
+    await flush();
+  });
+
+  it('re-acquires the watch when the held frames skip a seq', async () => {
+    let resolveWatch: (value: unknown) => void = () => {};
+    let calls = 0;
+    const watch = setBindingMock('WatchBackgroundTaskOutput', () => new Promise((resolve) => {
+      calls += 1;
+      if (calls === 1) resolveWatch = resolve;
+      else resolve(snapshot({ watchId: `w-${calls}`, seq: 3, data: 'a\nb\nc\n' }));
+    }));
+    setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
+    const attachment = attachBackgroundTaskOutput(THREAD, LAUNCH);
+    await flush();
+    applyBackgroundTaskOutputEvent(frame({ seq: 1, append: 'b\n' }), { backendId: '' });
+    applyBackgroundTaskOutputEvent(frame({ seq: 3, append: 'd\n' }), { backendId: '' });
+    resolveWatch(snapshot({ data: 'a\n' }));
+    await flush();
+    expect(watch).toHaveBeenCalledTimes(2);
+    expect(attachment.current?.text).toBe('a\nb\nc\n');
+    attachment.release();
+    await flush();
+  });
+
   it('re-watches every held tail of a thread after a transport gap on the channel', async () => {
     let calls = 0;
     const watch = setBindingMock('WatchBackgroundTaskOutput', async () => {

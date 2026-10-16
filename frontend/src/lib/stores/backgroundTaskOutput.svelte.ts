@@ -86,10 +86,18 @@ interface LiveWatch {
 const liveWatches = new Map<string, LiveWatch>();
 
 // Frames that arrived for a key whose watch reply is still in flight,
-// replayed over the reply in seq order. Bounded: past the bound the
-// oldest frame goes, and the seq skip that leaves re-sources the key.
+// replayed over the reply in seq order. Each acquisition owns its buffer
+// (`owner`): a reply that is no longer the key's acquisition leaves the
+// current one's frames alone. Bounded: past the bound the buffer is
+// marked overflowed and the reply re-sources the key, as a seq the replay
+// cannot continue does.
 const PENDING_FRAMES_MAX = 512;
-const pendingFrames = new Map<string, Array<{ evt: BackgroundTaskOutputEvent; origin: BackendKey | undefined }>>();
+interface PendingFrames {
+  owner: symbol;
+  frames: Array<{ evt: BackgroundTaskOutputEvent; origin: BackendKey | undefined }>;
+  overflowed: boolean;
+}
+const pendingFrames = new Map<string, PendingFrames>();
 
 function tailFromSnapshot(snapshot: BackgroundTaskOutputSnapshot): BackgroundTaskOutputTail {
   const bounded = boundTail(snapshot.data ?? '', TAIL_BYTES);
@@ -113,20 +121,23 @@ const store = createEntityStore<BackgroundTaskOutputTail, void>({
     const backend = threadBackend(threadId);
     const owner = Symbol(key);
     const issue = () => WatchBackgroundTaskOutput(threadId, launchId);
-    pendingFrames.set(key, []);
+    const pending: PendingFrames = { owner, frames: [], overflowed: false };
+    pendingFrames.set(key, pending);
+    const releasePending = () => {
+      if (pendingFrames.get(key)?.owner === owner) pendingFrames.delete(key);
+    };
     let snapshot: BackgroundTaskOutputSnapshot;
     try {
       snapshot = (await (backend === undefined ? issue() : withBackendTarget(backend, issue))) as BackgroundTaskOutputSnapshot;
     } catch (err) {
-      pendingFrames.delete(key);
+      releasePending();
       throw err;
     }
+    releasePending();
     const watchId = snapshot.watchId ?? '';
     // A thread the index has not attributed yet routed by the default
     // thread route, which is the home computer's.
     const minted = backend ?? HOME_BACKEND;
-    const held = pendingFrames.get(key) ?? [];
-    pendingFrames.delete(key);
     if (signal.aborted) {
       return async () => {
         if (watchId) await releaseWatch(minted, threadId, watchId);
@@ -135,14 +146,25 @@ const store = createEntityStore<BackgroundTaskOutputTail, void>({
     if (watchId) liveWatches.set(key, { watchId, backend: minted, owner });
     apply(tailFromSnapshot(snapshot));
     // Frames the backend sent after its seed read and before this reply
-    // landed continue the snapshot's seq; the rest it already carried.
+    // landed continue the snapshot's seq; the rest it already carried. A
+    // frame the replay cannot continue to, or a buffer that overflowed,
+    // means frames are missing: the key is sourced again.
+    const held = pending.frames.filter(({ origin }) => origin === undefined || origin === minted);
     held.sort((a, b) => a.evt.seq - b.evt.seq);
-    for (const { evt, origin } of held) {
-      if (origin !== undefined && origin !== minted) continue;
+    let missed = pending.overflowed;
+    for (const { evt } of held) {
       const current = store.snapshot(key);
-      if (current === null || current.ended || evt.seq !== current.seq + 1) continue;
+      if (current === null || current.ended) break;
+      if (evt.seq <= current.seq) continue;
+      if (evt.seq !== current.seq + 1) {
+        missed = true;
+        break;
+      }
       store.apply(key, appendFrame(current, evt));
     }
+    if (missed && !store.snapshot(key)?.ended) queueMicrotask(() => {
+      if (liveWatches.get(key)?.owner === owner) store.invalidate(key);
+    });
     return async () => {
       const live = liveWatches.get(key);
       if (live?.owner === owner) liveWatches.delete(key);
@@ -197,10 +219,10 @@ export function applyBackgroundTaskOutputFrame(
   const key = backgroundTaskOutputKey(evt.threadId, evt.launchId);
   const live = liveWatches.get(key);
   if (!live) {
-    const held = pendingFrames.get(key);
-    if (held) {
-      held.push({ evt, origin });
-      if (held.length > PENDING_FRAMES_MAX) held.shift();
+    const pending = pendingFrames.get(key);
+    if (pending) {
+      if (pending.frames.length >= PENDING_FRAMES_MAX) pending.overflowed = true;
+      else pending.frames.push({ evt, origin });
     }
     return;
   }

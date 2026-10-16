@@ -133,3 +133,29 @@ func TestWatchBackgroundTaskOutputResolvesMonitorFileFromItsNotification(t *test
 		t.Fatal(err)
 	}
 }
+
+// A release that names another thread leaves the watch and its
+// connection cleanup alone, so the connection's end still releases it.
+func TestUnwatchOnAnotherThreadKeepsTheConnectionCleanup(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	path := writeTaskOutput(t, t.TempDir(), "task-c.output", "line 1\n")
+	seedTaskOutputThread(t, app, "thread-tail-cleanup", "launch-c", `{"task_id":"task-c","output_file":"`+path+`"}`)
+
+	ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	snap, err := app.WatchBackgroundTaskOutput(ctx, "thread-tail-cleanup", "launch-c")
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	tailer := app.backgroundTaskTailer()
+	if err := app.UnwatchBackgroundTaskOutput(ctx, "thread-elsewhere", snap.WatchID); err != nil {
+		t.Fatalf("unwatch with another thread: %v", err)
+	}
+	if got := tailer.Watching(); got != 1 {
+		t.Fatalf("a release naming another thread releases nothing; watching %d", got)
+	}
+	state.RunCleanups()
+	if got := tailer.Watching(); got != 0 {
+		t.Fatalf("the connection's end releases the watch; watching %d", got)
+	}
+}

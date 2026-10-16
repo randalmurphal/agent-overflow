@@ -24,6 +24,17 @@ export function extractClaudeTaskOutputFile(item: Item): string | null {
 }
 
 /**
+ * Whether the backend can tail a running launch's output: the launch row
+ * names its file, or the tray row carries the served `tail_available`
+ * mark a Monitor gets once a notification has named one
+ * (triage.TrayTailAvailableKey). The watch itself resolves the file.
+ */
+export function claudeTaskTailAvailable(item: Item): boolean {
+  if (extractClaudeTaskOutputFile(item) !== null) return true;
+  return parseJsonObject(item.meta)?.tail_available === true;
+}
+
+/**
  * Whether a `notification` row records an event of a WATCH task
  * (Claude's Monitor — claude-wire.md §E7) rather than the single
  * completion bell of an ordinary background task.
