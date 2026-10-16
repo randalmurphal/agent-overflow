@@ -268,7 +268,8 @@ Threads share a connection when all of these match:
 
 - the resolved binary identity (path, size, mtime, version);
 - the provider home (`CODEX_HOME` as resolved by the account owner);
-- the account credential generation and account id (`providerSessionMatchesAccount`);
+- the account credential generation and account id
+  (`providerSessionMatchesAccount`);
 - a digest of the process environment as `sessionProcessEnv` builds it,
   with every `AO_*` name removed (they move per thread, see
   [Identity](#identity));
@@ -364,15 +365,17 @@ AO stores, per thread, a digest of the developer instructions the thread
 last received, persisted on the thread's row so it survives an app
 restart. A start whose composed value differs from that digest, on a
 resumed or forked thread, sends one `thread/inject_items` developer
-message before the session is handed to a caller. The message states that it replaces the
-earlier developer instructions and carries the whole new text. The digest
-is written when the injection succeeds; a failed injection is a non-fatal
-error on the thread, like a failed `config/read` today, and the next start
-tries again. A fresh `thread/start` writes the digest of what it sent,
+message before the session is handed to a caller. The message states
+that it replaces the earlier developer instructions and carries the
+whole new text. The digest is written when the injection succeeds; a
+failed injection is a non-fatal error on the thread, like a failed
+`config/read` today, and the next start tries again. A fresh `thread/start` writes the digest of what it sent,
 since a new thread shows its start value. An existing thread has no
 digest, which counts as different: it gets one injection at its next
-start. A fork child inherits no digest; its first start injects when its
-composed value differs from the digest its parent last received.
+start. A fork child has no digest and always gets one injection at its
+first start: a fork at `lastTurnId` cuts history, so the child can lack an
+injection its parent received after the cut, and the parent's digest says
+nothing about what the child's history holds.
 `additionalContext` is not used: AO's guide and a home block
 exceed its 1,000-token cap.
 
@@ -383,8 +386,11 @@ connection.
 
 ## Identity
 
-`AO_ENDPOINT`, `AO_TOKEN` and `AO_THREAD_ID` leave the spawn environment
-(`sessionProcessEnv`, `app_session.go`) and ride the session's
+At stage 1 the `ao` credential stays in the spawn environment, as today:
+the key holds one thread per process, so the environment is still that
+thread's own. At stage 2, `AO_ENDPOINT`, `AO_TOKEN` and `AO_THREAD_ID`
+leave the spawn environment (`sessionProcessEnv`, `app_session.go`) and
+ride the session's
 `thread/start` and `thread/resume` as
 `config.shell_environment_policy.set`, which reaches that thread's shell
 commands only and is not written under `CODEX_HOME`
@@ -396,15 +402,9 @@ session enters the session map, revoked when it leaves
 (`app_session_runtime.go`). A cold resume carries the current session's
 token because every start sends the `config` bag.
 
-`shell_environment_policy` covers shell commands only. With sharing on, a
+`shell_environment_policy` covers shell commands only, so from stage 2 a
 user's Codex hooks and stdio MCP servers from `config.toml` no longer see
-`AO_*`, so `agent-overflow remote` run from one of them reports that it is
-not inside a session, the legible failure `mintAOCredential` already gives
-a session without a credential. Mitigation when a user needs it: AO can
-set `mcp_servers.<name>.env` per thread in the same `config` bag after
-reading the server list with `config/read`; hooks have no per-thread
-environment and stay without it. In stage 1 nothing changes for them,
-since the key still isolates each thread.
+`AO_*` ([decision 4](#decisions-for-the-user)).
 
 The raw provider event log logs outbound frames too, and its Codex
 redactor only rewrites `in` frames (`newCodexProviderEventLogRedactor`,
@@ -412,8 +412,8 @@ redactor only rewrites `in` frames (`newCodexProviderEventLogRedactor`,
 `thread/start` and `thread/resume`. The redactor masks
 `shell_environment_policy.set.AO_TOKEN` in outbound frames (row 17).
 
-Test: a Go test that the Codex spawn environment has no `AO_*` name and
-that `buildThreadParams` carries all three under
+Test, at stage 2: a Go test that the Codex spawn environment has no `AO_*`
+name and that `buildThreadParams` carries all three under
 `shell_environment_policy.set`; a harness spec with two Codex threads on
 one mock process where each thread's shell step reports its own
 `AO_THREAD_ID`, and after End Session of one, its token is refused by the
@@ -453,10 +453,10 @@ this change.
 
 | # | Assumption | Code | New invariant | Test |
 |---|---|---|---|---|
-| 1 | The `ao` credential is process environment | `app_session_runtime.go:248` `mintAOCredential`; `app_session.go:509` `sessionProcessEnv` | Codex carries it per thread in `shell_environment_policy.set`; the pool key never sees it | [Identity](#identity) |
+| 1 | The `ao` credential is process environment | `app_session_runtime.go:248` `mintAOCredential`; `app_session.go:509` `sessionProcessEnv` | From stage 2, Codex carries it per thread in `shell_environment_policy.set`; the pool key never sees it | [Identity](#identity) |
 | 2 | A start is a cold resume | `session_start.go:168` `startOrResumeThread`; `session_helpers.go:18` `buildThreadParams` | A start on a connection where the thread is loaded first unloads it, so every override applies | Mock enforces Codex's rule that a resume of a loaded, subscribed thread ignores overrides; Go test that a restart on one connection sends `thread/unsubscribe`, waits for `thread/closed`, then resumes; harness spec that changes the runtime mode of a thread sharing a process and reads the mock's reported thread config |
 | 3 | A session owns the process, ids, pending map and read loop | `jsonrpc.go:23-130`, `:457-565`; `session_start.go:27-148` | `Conn` owns them; ids are unique per connection; closing a session never closes the pipe | Go test over a fake pipe: two sessions with concurrent requests, one closed mid-request, the other's responses still delivered |
-| 4 | Every frame on the pipe belongs to one root | `child_routing.go:85`, `:152`; `session_notifications.go:43-80`; `server_requests.go:56-67` | The connection routes by `threadId` to the owning session, and `thread/started` by `sessionId`. Frames for a thread no session owns go to the session whose `thread/start` is in flight (one at a time per connection); otherwise into today's deferred-child quarantine, lifted from the session to the connection with its bounds and deadline, until a session's ownership items claim the child and receive its held frames in order. At the deadline a held server request is rejected and notifications are dropped with a drift warning, as today. A server request with no `threadId` (`attestation/generate`, `account/chatgptAuthTokens/refresh`) is the connection's to answer, never a root's | Go replay of interleaved fixtures from two roots with collaboration children, with and without child `thread/started`, asserting no frame or server request reaches a non-owner and none is dropped while a claim is pending; `codex-collab.spec.ts` and `agent-visibility-codex.spec.ts` with a second thread on the same process |
+| 4 | Every frame on the pipe belongs to one root | `child_routing.go:85`, `:152`; `session_notifications.go:43-80`; `server_requests.go:56-67` | The connection routes by `threadId` to the owning session, and `thread/started` by `sessionId`. Frames for a thread no session owns go to the session whose `thread/start` is in flight (one at a time per connection); otherwise into today's deferred-child quarantine, lifted from the session to the connection with its deadline and its bounds kept per owning root (128 events per child, 512 events and 4 MiB per root, `child_routing.go:14-16`; a frame held before any claim counts against the root its `thread/started` `sessionId` names, or against an unattributed pool of the same size), until a session's ownership items claim the child and receive its held frames in order. At the deadline a held server request is rejected and notifications are dropped with a drift warning, as today. A server request with no `threadId` (`attestation/generate`, `account/chatgptAuthTokens/refresh`) is the connection's to answer, never a root's | Go replay of interleaved fixtures from two roots with collaboration children, with and without child `thread/started`, asserting no frame or server request reaches a non-owner and none is dropped while a claim is pending; `codex-collab.spec.ts` and `agent-visibility-codex.spec.ts` with a second thread on the same process |
 | 5 | Process-wide notifications are per session | `session_notifications.go:31-41`; `protocol.go:180-193`; `protocol_thread.go:219`; `app_session.go:720-737` | Per the [connection-scoped table](#what-becomes-connection-scoped): process facts once per connection, thread-shown notices to every session, optional `threadId` routed when present; fanned-out events never bump `Liveness` | Go tests: one `skills/changed` on a three-session connection calls the handler once; one `account/rateLimits/updated` yields one `EventRateLimits` per session and leaves every session's activity stamp unchanged; a `configWarning` writes one warning row per session; `mcpServer/oauthLogin/completed` with a `threadId` reaches only that session |
 | 6 | A read loop's end is one thread's end | `jsonrpc.go:471-517`; `readloop.go:31` | Each session on a dead connection gets its own teardown | [Crash and restart](#crash-and-restart) |
 | 7 | Close, End Session and the orphan reaper act on a PID | `session.go:854-920`; `app_session_runtime.go:174`; `app_orphan_reaper.go:74-107`; `app_session_reaper.go:138` | Session close is the [End Session](#end-session) sequence; the reaper watches connections | Go tests for the close sequence and the bounded wait; harness spec: End Session on one of two threads leaves the other's turn running, kills only the ended thread's terminals, and the mock's loaded list drops only that thread |
@@ -466,7 +466,7 @@ this change.
 | 11 | A dev server descends from its thread's process | `app_preview.go:406` `devServerOwners`; `sessionruntime/manager.go:447` | `devServerOwners` reads `Session.OwnedProcesses` with no provider branch: a Codex session returns its background terminals' `osPid` from `thread/backgroundTerminals/list`, a Claude session its connection's process | Go test: two Codex sessions on one connection, each with a terminal, attribute a listener to the right thread; a Claude session still attributes by its process |
 | 12 | Process-wide reads may borrow any thread's session | `app_codex_bindings.go:189-212`; `codexapp/service.go:35-36`, `:139`, `:214`; `manager.go:371-399` | They use a registry connection of the matching key or a one-shot | Go test that no codexapp read reaches a session |
 | 13 | A forked thread is released when its process exits | `session_fork.go`; mock `codex_writer_lock.go` | Every thread a connection loads is owned by one session or unsubscribed at once | `codex-revert.spec.ts` and `fork-midturn.spec.ts` with sharing on; mock refuses a resume while it still holds the fork loaded |
-| 14 | A resume or a fork delivers developer instructions | `session_start.go:168`; `session_fork.go` `forkThreadWith`; `developer_instructions.go` | A changed composed value is injected once per change, on resumed and forked threads, against a digest persisted on the thread row | [Instructions delivery](#instructions-delivery): Go tests that a changed value sends one `thread/inject_items` and an unchanged one none, that a thread with no digest gets one injection, that a fork child compares against its parent's digest, and that the digest survives an app restart; mock reports injected items; `standing-agent-home-contents.spec.ts` asserts the injection after an `instructions.md` rewrite on Codex |
+| 14 | A resume or a fork delivers developer instructions | `session_start.go:168`; `session_fork.go` `forkThreadWith`; `developer_instructions.go` | A changed composed value is injected once per change, on resumed and forked threads, against a digest persisted on the thread row | [Instructions delivery](#instructions-delivery): Go tests that a changed value sends one `thread/inject_items` and an unchanged one none, that a thread with no digest gets one injection, that a fork child injects once at its first start, and that the digest survives an app restart; mock reports injected items; `standing-agent-home-contents.spec.ts` asserts the injection after an `instructions.md` rewrite on Codex |
 | 15 | The binary banner is a session fact | `app_provider_binary_watch.go` | It is a connection fact projected to sessions | Existing watcher tests with two sessions on one connection |
 | 16 | Starts on a process never overlap | `NewSession`, `session_start.go:27` | At most one `thread/start` or `thread/fork` in flight per connection | Go test with concurrent opens on one connection |
 | 17 | Outbound frames carry no secret | `raw_tool_calls.go:357` `newCodexProviderEventLogRedactor` (`in` only) | Outbound `thread/start`, `thread/resume` and `thread/fork` are logged with `AO_TOKEN` masked | Go test that a logged outbound start frame contains no token |
@@ -547,13 +547,15 @@ the identity spec, the crash spec and the account-switch spec.
 Stages:
 
 1. **Connection and session split, key per thread.** The interface split,
-   the registry, the instructions fix, the `AO_*` move, the multi-thread
-   mock with minted thread ids and child `thread/started`. The pool key
-   includes the AO thread id, so every thread still gets its own process.
-   Every existing spec passes, with only the helper and scenario updates
-   the minted ids require; the new unit tests pass. This stage changes no visible behavior except the
-   instructions defect.
-2. **Sharing on.** The thread id leaves the key. The whole e2e suite runs
+   the registry, the instructions fix, the multi-thread mock with minted
+   thread ids and child `thread/started`. The pool key includes the AO
+   thread id, so every thread still gets its own process, and `AO_*` stays
+   in its spawn environment. Every existing spec passes, with only the
+   helper and scenario updates the minted ids require; the new unit tests
+   pass. This stage changes no visible behavior except the instructions
+   defect.
+2. **Sharing on.** The thread id leaves the key and `AO_*` moves to
+   `shell_environment_policy.set`. The whole e2e suite runs
    with sharing; the crash, identity, End Session and account specs run
    here. Specs that start more than one Codex thread exercise shared
    processes, on the mock changes stage 1 made (unique ids, child
@@ -614,6 +616,16 @@ now ends every thread on the process at once.
 3. **Order.** Ship the instructions fix now, before the sharing work.
    Pick: yes; it is small, independent, and standing agents on Codex are
    wrong without it.
+4. **`AO_*` outside shell commands at stage 2.** Per-thread environment
+   reaches shell commands only, so a user's Codex hooks and stdio MCP
+   servers from `config.toml` lose `AO_*`, and `agent-overflow remote` run
+   from one of them reports that it is not inside a session, the legible
+   failure a session without a credential already gives. Mitigation: AO
+   sets `mcp_servers.<name>.env` per thread in the same `config` bag after
+   reading the server list with `config/read`; hooks have no per-thread
+   environment and stay without it. Pick: ship the MCP mitigation with
+   stage 2 and accept the loss for hooks; the only way to keep it for
+   hooks is a process per thread, which is what stage 2 removes.
 
 Decided (veto if wrong): the pool lives in `sessionruntime`; the key is as
 listed; a 5-minute empty-connection grace; `thread_unload_delay_secs=0` on
@@ -621,8 +633,7 @@ AO's processes; the process cwd is the probe working directory; account
 moves stay lazy at the next send; one thread start in flight per
 connection; the deferred-child quarantine moves to the connection;
 `thread/inject_items` as the change channel with a digest on the thread
-row; user hooks and `config.toml` stdio MCP servers lose `AO_*` once
-sharing is on.
+row.
 
 ## Not established
 
