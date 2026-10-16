@@ -129,7 +129,7 @@ func TestMigrationV156WakeItemsAtScale(t *testing.T) {
 		if err := db.QueryRow(`SELECT COUNT(*) FROM thread_requests WHERE wake_item_id <> 'row-' || token`).Scan(&missing); err != nil || missing != 0 {
 			t.Errorf("%d of %d answers without their row, %v", missing, n, err)
 		}
-		if elapsed > 5*time.Second {
+		if elapsed > 2*time.Second {
 			t.Errorf("v%d took %v over %d confirmed answers; its fill belongs in a deferred phase", wakeItemsMigrationVersion, elapsed, n)
 		}
 		if err := db.Close(); err != nil {
