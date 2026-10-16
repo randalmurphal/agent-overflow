@@ -549,3 +549,149 @@ func TestASessionLossDuringAManualHandOffIsCarriedOnce(t *testing.T) {
 		}
 	}
 }
+
+// handedOffDraft hands off an assistant thread whose draft is content with
+// attachments uploaded files, and returns the past thread, its successor
+// and the attachment ids in their draft order.
+func handedOffDraft(t *testing.T, content string, attachments int) (f *requestFixture, past, successor string, ids []string) {
+	t.Helper()
+	f = newAssistantFixture(t)
+	f.mockClaude(t, "ok", "ok", "ok", "ok")
+	f.assistantCaller(t)
+	if attachments > 0 {
+		attStore, err := attachment.NewStore(attachment.Config{RootDir: filepath.Join(t.TempDir(), "attachments")}, f.app.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.app.attachments = attStore
+		for i := range attachments {
+			ids = append(ids, uploadTestAttachment(t, f.app, f.caller.ID, "note-"+string(rune('a'+i))+".txt", "text/plain", []byte("x")).ID)
+		}
+	}
+	if content != "" || len(ids) > 0 {
+		if err := f.app.SaveDraft(t.Context(), f.caller.ID, content, ids, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next, err := f.app.StartNextAssistantThread(t.Context(), f.caller.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.app.waitAgentNoticeWork()
+	return f, f.caller.ID, next.ID, ids
+}
+
+// sendConsuming sends text with ids from threadID, consuming the snapshot
+// a client holds of them, and returns the refusal's code.
+func sendConsuming(t *testing.T, a *App, threadID, text string, ids []string) string {
+	t.Helper()
+	_, err := a.SendMessageWithOptions(t.Context(), threadID, text, SendMessageOptions{
+		SendID: uuid.NewString(), AttachmentIDs: ids, ConsumeDraft: &DraftSnapshot{Content: text, AttachmentIDs: ids},
+	})
+	if err == nil {
+		return ""
+	}
+	code, _, _ := errorsx.PublicDetails(err)
+	if code == "" {
+		t.Fatalf("send = %v, want a coded refusal or none", err)
+	}
+	return code
+}
+
+// The moved text typed again in the unarchived past thread and saved there
+// is that thread's own draft: it is sent and consumed.
+func TestTheMovedTextRetypedInThePastThreadIsSent(t *testing.T) {
+	t.Parallel()
+	f, past, successor, _ := handedOffDraft(t, "moved note", 0)
+	if _, err := f.app.UnarchiveThread(past); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.SaveDraft(t.Context(), past, "moved note", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if code := sendConsuming(t, f.app, past, "moved note", nil); code != "" {
+		t.Fatalf("send refused with %s", code)
+	}
+	if n := sentTexts(t, f.app, past, "moved note"); n != 1 {
+		t.Fatalf("sent %d times", n)
+	}
+	if got := draftContent(t, f.app, past); got != "" {
+		t.Fatalf("past thread's draft = %q, want it consumed", got)
+	}
+	if got := draftContent(t, f.app, successor); got != "moved note" {
+		t.Fatalf("successor's composer = %q", got)
+	}
+}
+
+// The record is the moved draft with its attachments in their order. A
+// stale client's send of it is refused; the same files in another order are
+// not that draft, so the send goes and the successor's composer keeps its
+// copy.
+func TestTheMovedDraftIsRefusedOnlyWithItsAttachmentsInOrder(t *testing.T) {
+	t.Parallel()
+	f, past, successor, ids := handedOffDraft(t, "two files", 2)
+	if code := sendConsuming(t, f.app, past, "two files", ids); code != transport.ErrCodeAssistantDraftMoved {
+		t.Fatalf("send of the moved draft: code %q, want %s", code, transport.ErrCodeAssistantDraftMoved)
+	}
+	if code := sendConsuming(t, f.app, past, "two files", []string{ids[1], ids[0]}); code != "" {
+		t.Fatalf("send with the files swapped refused with %s", code)
+	}
+	if n := sentTexts(t, f.app, past, "two files"); n != 1 {
+		t.Fatalf("sent %d times", n)
+	}
+	if got := draftContent(t, f.app, successor); got != "two files" {
+		t.Fatalf("successor's composer = %q", got)
+	}
+}
+
+// A handoff with an empty draft records nothing and refuses nothing.
+func TestAHandOffOfAnEmptyDraftRecordsNothing(t *testing.T) {
+	t.Parallel()
+	f, past, _, _ := handedOffDraft(t, "", 0)
+	moved, found, err := f.app.store.MovedDraftOf(past)
+	if err != nil || !found || moved.Content != "" || moved.Attachments != "[]" {
+		t.Fatalf("MovedDraftOf = %+v, %v, %v; want an empty record", moved, found, err)
+	}
+	if _, err := f.app.UnarchiveThread(past); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.SaveDraft(t.Context(), past, "later note", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if code := sendConsuming(t, f.app, past, "later note", nil); code != "" {
+		t.Fatalf("send refused with %s", code)
+	}
+	if n := sentTexts(t, f.app, past, "later note"); n != 1 {
+		t.Fatalf("sent %d times", n)
+	}
+}
+
+// The moved text retyped by one client while another saved other text over
+// it is the recorded draft and no longer the stored one, so it is refused;
+// the text is still in the successor's composer and the other client's
+// draft stays.
+func TestTheMovedTextRetypedAfterAnotherClientsSaveIsRefused(t *testing.T) {
+	t.Parallel()
+	f, past, successor, _ := handedOffDraft(t, "moved note", 0)
+	if _, err := f.app.UnarchiveThread(past); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.SaveDraft(t.Context(), past, "moved note", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.SaveDraft(t.Context(), past, "client two text", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if code := sendConsuming(t, f.app, past, "moved note", nil); code != transport.ErrCodeAssistantDraftMoved {
+		t.Fatalf("code %q, want %s", code, transport.ErrCodeAssistantDraftMoved)
+	}
+	if n := sentTexts(t, f.app, past, "moved note"); n != 0 {
+		t.Fatalf("sent %d times", n)
+	}
+	if got := draftContent(t, f.app, past); got != "client two text" {
+		t.Fatalf("past thread's draft = %q, want client two's", got)
+	}
+	if got := draftContent(t, f.app, successor); got != "moved note" {
+		t.Fatalf("successor's composer = %q", got)
+	}
+}
