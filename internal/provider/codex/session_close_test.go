@@ -126,6 +126,8 @@ var sessionCloseFieldDispositions = map[string]string{
 	"workDir":  "identity",
 	"developerInstructions": "bounded thread-level text composed once at start; a closed session's " +
 		"value is the honest teardown answer, like turnConfig",
+	"rehydrateParams": "bounded: four thread-level keys copied once at start; read only by Resume, " +
+		"which a closed session refuses before writing",
 	"binary":         "identity",
 	"nextID":         "request-id counter",
 	"controlMu":      "root control-operation lock",

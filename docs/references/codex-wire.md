@@ -1041,6 +1041,17 @@ value no echo can ever match.
 reconfigured. It requires a non-empty `expectedTurnId`, which
 `turn_processor.rs` checks before the request reaches the session.
 
+**AO pins `features.instant_interrupt = false`.** The feature is on by
+default from 0.162 (`codex-rs/features/src/lib.rs`, commit `a028250541`).
+With it on, steered input cancels the sampling request in flight
+(`StepContext.preempt`, `core/src/session/mod.rs`): the cut `agentMessage`
+gets `item/started` and deltas but never `item/completed`. AO's steer
+contract is that the model finishes its current output and then reads the
+message, so `threadFeatureOverrides` (`session_helpers.go`) sends the key
+in the `config` map of every `thread/start`, `thread/resume` (including the
+reconcile reload in `Session.Resume`) and `thread/fork`. Older builds log
+it as an unknown feature key and continue.
+
 **Three refusals share one JSON-RPC code.** All arrive as -32600
 `invalid_request`, so the code discriminates nothing and the payload has to
 be read (`classifySteerRejection`, `session_turn.go`).
