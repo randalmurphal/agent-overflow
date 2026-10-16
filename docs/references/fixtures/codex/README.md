@@ -30,3 +30,19 @@ writes"), `gpt-6-luna`, one run each:
 All: `initialize`, `thread/start` and their responses, `thread/started`,
 streaming deltas, token usage, rate limits, MCP startup, remote-control and
 account notifications dropped; host paths synthetic.
+
+Thread unload and cold resume on codex-cli 0.162.1 (codex-wire.md §"Thread
+unload and cold resume"), `gpt-6-luna`, one run:
+
+- `thread_unload_cold_resume_20261016.ndjson`: a thread started with
+  developer instructions, stdio MCP server `alpha` and `view_image`
+  disabled; a resume while subscribed that changes all three is ignored;
+  `thread/unsubscribe` then an immediate resume cold-starts it (`notLoaded`,
+  `beta` starts, an `imageView` item appears, the reply keeps the original
+  end token); a second unsubscribe is followed 60 s later by
+  `thread/closed`, an empty `thread/loaded/list` and `notLoaded` from a
+  third unsubscribe; a resume after the close starts `gamma`.
+  `thread/start` and `thread/resume` responses are cut to the thread id and
+  status plus `model`, `approvalPolicy`, `approvalsReviewer`, `sandbox`
+  and `reasoningEffort`; `turn/completed` items emptied; the stdio server
+  is a stub at a synthetic path. Otherwise dropped as above.
