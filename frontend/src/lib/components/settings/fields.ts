@@ -332,6 +332,15 @@ const STATIC_FIELDS = [
     keywords: ['gpu', 'battery', 'lag', 'slow machine', 'reduce motion'],
   },
   {
+    id: 'performance.disable-gpu-vsync',
+    section: 'performance',
+    label: 'Disable GPU vsync',
+    hint: "Pace frames from a timer instead of the display's vblank signal. Fixes a periodic hitch in scrolling and streaming text on Windows when monitors run at different refresh rates. Applies on next launch.",
+    keywords: ['stutter', 'jitter', 'hitch', 'choppy', 'smooth', 'frame pacing', 'vblank', 'windows', 'launcher'],
+    // Rendered only on a WSL backend started by the Windows launcher.
+    conditional: true,
+  },
+  {
     id: 'performance.keep-awake-screen',
     section: 'performance',
     label: 'Keep-awake includes screen',

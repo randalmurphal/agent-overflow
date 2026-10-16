@@ -2165,6 +2165,17 @@ export function GetWSLDistroPreference(): $CancellablePromise<string> {
 }
 
 /**
+ * GetWebviewGPUVsyncDisabled reports whether the Windows launcher starts
+ * its WebView2 environments with --disable-gpu-vsync (Settings >
+ * Performance). False when the preference isn't readable: not running
+ * under WSL, no launcher-injected AGENT_OVERFLOW_WIN_APPDATA, or no
+ * wsl.json yet.
+ */
+export function GetWebviewGPUVsyncDisabled(): $CancellablePromise<boolean> {
+    return $Call.ByID(1563269625);
+}
+
+/**
  * GetWorkspaceActivity answers "is anything running in this directory, and
  * which threads are they?" for the frontend's workspace-change lock. The
  * counters gate the directory-destructive affordance (remove worktree);
@@ -4955,6 +4966,17 @@ export function SetThreadPinGroup(id: string, group: number): $CancellablePromis
  */
 export function SetWSLDistroPreference(name: string): $CancellablePromise<string> {
     return $Call.ByID(3978807241, name);
+}
+
+/**
+ * SetWebviewGPUVsyncDisabled persists the GPU vsync preference to the
+ * launcher's wsl.json. The launcher reads it once at start, so the change
+ * applies on the next Windows-side launch; this session's WebView2
+ * environments keep their current flags. Distro and install metadata are
+ * preserved by load-mutate-save.
+ */
+export function SetWebviewGPUVsyncDisabled(disabled: boolean): $CancellablePromise<boolean> {
+    return $Call.ByID(4062584181, disabled);
 }
 
 /**

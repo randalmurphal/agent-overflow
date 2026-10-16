@@ -368,3 +368,91 @@ func TestSetWSLDistroPreference_CreatesConfigOnFirstWrite(t *testing.T) {
 		t.Errorf("first-write did not land on disk: %+v", cfg)
 	}
 }
+
+func TestGetWebviewGPUVsyncDisabled_UnreadableIsFalse(t *testing.T) {
+	app := &App{}
+	withWSLSeams(t,
+		func() bool { return false },
+		nil,
+		func() (string, bool) {
+			t.Fatal("WSLConfigDir should not be called when IsWSL=false")
+			return "", false
+		},
+	)
+	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got {
+		t.Fatalf("not WSL: got (%v, %v), want (false, nil)", got, err)
+	}
+
+	withWSLSeams(t, func() bool { return true }, nil, func() (string, bool) { return "", false })
+	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got {
+		t.Fatalf("no config dir: got (%v, %v), want (false, nil)", got, err)
+	}
+
+	withWSLSeams(t, func() bool { return true }, nil, func() (string, bool) { return t.TempDir(), true })
+	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got {
+		t.Fatalf("missing file: got (%v, %v), want (false, nil)", got, err)
+	}
+}
+
+func TestSetWebviewGPUVsyncDisabled_RejectsOutsideLauncher(t *testing.T) {
+	app := &App{}
+	withWSLSeams(t, func() bool { return false }, nil, func() (string, bool) { return "", false })
+	if _, err := app.SetWebviewGPUVsyncDisabled(true); err == nil {
+		t.Fatal("expected error when not on WSL")
+	}
+	withWSLSeams(t, func() bool { return true }, nil, func() (string, bool) { return "", false })
+	_, err := app.SetWebviewGPUVsyncDisabled(true)
+	if err == nil || !strings.Contains(err.Error(), "launcher config directory") {
+		t.Fatalf("expected config-dir error, got %v", err)
+	}
+}
+
+func TestSetWebviewGPUVsyncDisabled_RoundTripsAndPreservesOtherFields(t *testing.T) {
+	app := &App{}
+	dir := t.TempDir()
+	if err := wsldistro.Save(dir, &wsldistro.Config{
+		Distro:          "Ubuntu-24.04",
+		InstalledVer:    "v0.1.0",
+		InstalledSHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		InstalledDistro: "Ubuntu-24.04",
+	}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	withWSLSeams(t, func() bool { return true }, nil, func() (string, bool) { return dir, true })
+
+	// off -> on
+	got, err := app.SetWebviewGPUVsyncDisabled(true)
+	if err != nil || !got {
+		t.Fatalf("set on: got (%v, %v)", got, err)
+	}
+	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || !got {
+		t.Fatalf("get after on: got (%v, %v)", got, err)
+	}
+	cfg, err := wsldistro.Load(dir)
+	if err != nil || cfg == nil {
+		t.Fatalf("reload: %v %+v", err, cfg)
+	}
+	if cfg.Distro != "Ubuntu-24.04" || cfg.InstalledVer != "v0.1.0" || cfg.InstalledDistro != "Ubuntu-24.04" ||
+		cfg.InstalledSHA256 != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+		t.Fatalf("other fields not preserved: %+v", cfg)
+	}
+
+	// on -> off
+	if got, err := app.SetWebviewGPUVsyncDisabled(false); err != nil || got {
+		t.Fatalf("set off: got (%v, %v)", got, err)
+	}
+	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got {
+		t.Fatalf("get after off: got (%v, %v)", got, err)
+	}
+
+	// A file with no distro yet still takes the preference.
+	empty := t.TempDir()
+	withWSLSeams(t, func() bool { return true }, nil, func() (string, bool) { return empty, true })
+	if got, err := app.SetWebviewGPUVsyncDisabled(true); err != nil || !got {
+		t.Fatalf("set on fresh: got (%v, %v)", got, err)
+	}
+	cfg, err = wsldistro.Load(empty)
+	if err != nil || cfg == nil || !cfg.DisableGPUVsync || cfg.Distro != "" {
+		t.Fatalf("fresh file: %v %+v", err, cfg)
+	}
+}

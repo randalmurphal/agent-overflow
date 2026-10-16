@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 	"unsafe"
@@ -71,6 +70,11 @@ type Config struct {
 	// the launcher): an empty value is refused rather than letting
 	// WebView2 pick a shared default.
 	UserDataDir string
+	// ExtraBrowserArgs are Chromium switches the launcher adds to the pane
+	// environment beside the host's own DevTools port, so a display
+	// preference set for the app window applies to the pane too. Validated
+	// by ValidateExtraBrowserArgs at construction.
+	ExtraBrowserArgs []string
 	// Logf writes to launcher.log.
 	Logf func(string, ...any)
 	// Report posts one BrowserHostReport back to the backend.
@@ -159,6 +163,9 @@ func New(config Config) (*Host, error) {
 	}
 	if config.OnMain == nil {
 		return nil, errors.New("browser host main-thread dispatcher is required")
+	}
+	if err := ValidateExtraBrowserArgs(config.ExtraBrowserArgs); err != nil {
+		return nil, err
 	}
 	if config.Logf == nil {
 		config.Logf = log.Printf
@@ -454,12 +461,8 @@ func (h *Host) startEnvironment() {
 		h.config.Logf("browser host: reading installed WebView2 version: %v", err)
 	}
 
-	// --remote-debugging-port goes on the PANE environment ONLY. If two
-	// environments carry it the first browser process to start wins the
-	// port and the isolation inverts SILENTLY: the debug endpoint would
-	// then serve the app's own UI and none of the pane's pages. The SPA
-	// environment must never be given this flag "just in case".
-	args := "--remote-debugging-port=" + strconv.Itoa(h.cdpPort)
+	// The port is the pane environment's alone; see paneEnvironmentArgs.
+	args := paneEnvironmentArgs(h.cdpPort, h.config.ExtraBrowserArgs)
 	options, optionsPtr := newEnvOptions(args, installed)
 
 	handler := newEnvironmentCompletedHandler(func(hr uintptr, env *iCoreWebView2Environment) {
