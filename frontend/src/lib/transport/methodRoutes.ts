@@ -166,6 +166,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3380106838: 'home', // GetUIState
 	3135466533: 'all', // GetUsageStats
 	294719565: 'home', // GetWSLDistroPreference
+	1563269625: 'home', // GetWebviewGPUVsyncDisabled
 	673985705: 'selected', // GetWorkspaceActivity
 	1598126927: 'workspace', // GitCheckout
 	1971060042: 'workspace', // GitCommit
@@ -372,6 +373,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup
 	3978807241: 'home', // SetWSLDistroPreference
+	4062584181: 'home', // SetWebviewGPUVsyncDisabled
 	3648660014: 'home', // SetWindowBackgroundColor
 	2181574220: 'selected', // SetWorkspaceMcpServerEnabled
 	2115861089: 'home', // ShutdownBackend

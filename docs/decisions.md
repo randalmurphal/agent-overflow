@@ -35,6 +35,16 @@ workaround because it changes the sandbox boundary.
 Measurement methods and interpretation belong in
 [the performance reference](../.claude/skills/perf-investigation/REFERENCE.md).
 
+Chromium's vblank frame pacing stays the default on Windows. A machine
+driving monitors at different refresh rates can present every slow glide
+with a periodic hitch that no animation-frame trace shows; Settings >
+Performance > Disable GPU vsync opts that machine into timer pacing
+(`--disable-gpu-vsync` on the app window and the browser pane, applied on
+the next launch). It is an opt-in, not a default or an automatic detection,
+because vblank pacing is the better clock wherever it works. The scroll
+spring is not the lever for this symptom: a CSS animation with no JavaScript
+hitches the same way.
+
 ## Background maintenance
 
 Nothing the app does to maintain its own storage may be noticeable. No visible

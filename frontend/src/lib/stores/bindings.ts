@@ -262,6 +262,10 @@ export {
   ListWSLDistros,
   GetWSLDistroPreference,
   SetWSLDistroPreference,
+  // Launcher GPU vsync preference (Settings → Performance), stored in the
+  // same wsl.json; the launcher reads it on its next start.
+  GetWebviewGPUVsyncDisabled,
+  SetWebviewGPUVsyncDisabled,
 
   // Host app launchers: editor, browser URL opener, catalog, persistence.
   OpenInEditor,

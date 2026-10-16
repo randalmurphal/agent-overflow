@@ -151,6 +151,26 @@ const webviewLogEnv = "AGENT_OVERFLOW_WEBVIEW_LOG"
 // across the WSL→Windows interop hop via WSLENV.
 const webviewSoftwareEnv = "AGENT_OVERFLOW_WEBVIEW_SOFTWARE"
 
+// disableGPUVsyncArg makes Chromium pace frames from a timer instead of
+// the GPU's vblank signal. On a Windows machine driving monitors at
+// different refresh rates the vblank path presents unevenly (a periodic
+// hitch in every scroll glide and streamed line, visible in a plain CSS
+// animation with no dropped animation frames), and this switch removes it
+// at the display's full rate. Opt-in from Settings > Performance because
+// vblank pacing is the better clock wherever it works; the preference is
+// stored in wsl.json and read once at launch.
+const disableGPUVsyncArg = "--disable-gpu-vsync"
+
+// displayBrowserArgs returns the switches a user's display preferences add
+// to BOTH WebView2 environments, the app window and the browser pane, so
+// one restart changes them together.
+func displayBrowserArgs(disableGPUVsync bool) []string {
+	if !disableGPUVsync {
+		return nil
+	}
+	return []string{disableGPUVsyncArg}
+}
+
 // webviewExtraArgsEnv appends raw Chromium switches (space-separated) to
 // browserArgs. Diagnostic/experiment knob — memory-policy A/Bs like
 // --force-gpu-mem-available-mb run on the soak rig through this without a
@@ -288,7 +308,7 @@ func main() {
 	// The new launcher of an in-app update shows the loading page with the
 	// update's progress and needs no distro list or picker.
 	if applier {
-		app := buildApp(nil, "/loading", "", false, true)
+		app := buildApp(nil, "/loading", "", false, true, cfg != nil && cfg.DisableGPUVsync)
 		app.updateApplyID, app.updateApplyDistro = flags.UpdateApply, flags.Distro
 		app.updateApplyTransient = !flags.RememberDistro
 		app.run()
@@ -330,7 +350,7 @@ func main() {
 	// buildApp creates the window (and, when chosen != "", kicks off the
 	// backend launch) on ApplicationStarted — see its doc for why creation is
 	// deferred into the running app loop.
-	app := buildApp(distros, initialURL, chosen, transient, false)
+	app := buildApp(distros, initialURL, chosen, transient, false, cfg != nil && cfg.DisableGPUVsync)
 	logBootPhase("launcher.before_run", bootStarted)
 
 	app.run()
@@ -530,6 +550,10 @@ type launcherApp struct {
 	// (browserhost.go). Guarded by mu like the bridge above, because
 	// directives arrive on their own goroutine.
 	browserHost *webview2host.Host
+	// disableGPUVsync is the wsl.json display preference read at launch
+	// (displayBrowserArgs); the pane environment is created later and must
+	// get the same switches the app window got.
+	disableGPUVsync bool
 	// browserReports serializes the host's answers back to the backend.
 	// It is deliberately NOT under mu: its jobs take mu themselves, and
 	// submission happens from a WebView2 completion handler on the UI
@@ -1353,10 +1377,14 @@ func (a *launcherApp) win() *application.WebviewWindow {
 // update (wsllauncher.Join); that launch owns the identity, the WebView2
 // profile with its DevTools port, and notifications. The applier gets its
 // own profile and neither of the others.
-func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient, applier bool) *launcherApp {
+func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient, applier, disableGPUVsync bool) *launcherApp {
 	a := &launcherApp{
 		distros:                 distros,
 		notificationActivations: wsllauncher.NewNotificationActivationQueue(),
+		disableGPUVsync:         disableGPUVsync,
+	}
+	if disableGPUVsync {
+		log.Printf("webview2: GPU vsync disabled by Settings > Performance (%s on the app window and the browser pane)", disableGPUVsyncArg)
 	}
 	a.notificationContext, a.notificationCancel = context.WithCancel(context.Background())
 	notificationService := newLauncherNotificationService(func(target notify.Target) {
@@ -1408,7 +1436,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 				return startupFailureHTML(nil)
 			}, func() startuppage.Report { return a.loading.Report(time.Now()) }),
 		},
-		Windows: webviewBrowserOptions(mode, profileDir, diagnosticsDir, !applier),
+		Windows: webviewBrowserOptions(mode, profileDir, diagnosticsDir, !applier, disableGPUVsync),
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
 		// would crash us silently.
@@ -1707,6 +1735,10 @@ func wslSingleInstanceMode() string {
 // production gets no port at all. devTools false omits it for a window that
 // runs beside the one that owns the mode's port.
 //
+// disableGPUVsync is the Settings > Performance preference
+// (displayBrowserArgs); the browser pane's environment takes the same
+// switches through ensureBrowserHost.
+//
 // Memory experiments tried and pulled back: --single-process (~290 MB
 // savings, but couples all rendering work onto one thread pool and
 // removes the renderer-crash recovery boundary), --enable-low-end-
@@ -1716,7 +1748,7 @@ func wslSingleInstanceMode() string {
 // single-process turns any future big-memory feature — large diffs,
 // terminal log dumps — into a whole-window crash). Revisit if memory
 // becomes a real constraint.
-func browserArgs(mode string, devTools bool) []string {
+func browserArgs(mode string, devTools, disableGPUVsync bool) []string {
 	args := []string{
 		"--disable-background-networking",
 		"--disable-component-update",
@@ -1759,6 +1791,7 @@ func browserArgs(mode string, devTools bool) []string {
 	if os.Getenv(webviewSoftwareEnv) != "" {
 		args = append(args, "--disable-gpu")
 	}
+	args = append(args, displayBrowserArgs(disableGPUVsync)...)
 	// Raw switch pass-through for experiments (see webviewExtraArgsEnv).
 	// Appended last so an experiment can override an unconditional arg —
 	// Chromium keeps the final occurrence of a duplicated switch. A bare
@@ -1774,9 +1807,9 @@ func browserArgs(mode string, devTools bool) []string {
 //
 // Chromium defaults own text antialiasing and scroller placement. Paired
 // overrides can promote content-sized layers and increase raster memory.
-func webviewBrowserOptions(mode, userDataDir, diagnosticsDir string, devTools bool) application.WindowsOptions {
+func webviewBrowserOptions(mode, userDataDir, diagnosticsDir string, devTools, disableGPUVsync bool) application.WindowsOptions {
 	return application.WindowsOptions{
-		AdditionalBrowserArgs: browserArgs(mode, devTools),
+		AdditionalBrowserArgs: browserArgs(mode, devTools, disableGPUVsync),
 		DisabledFeatures:      browserDisabledFeatures(),
 		// Stable per-mode WebView2 profile. Without this the profile path
 		// defaults to %APPDATA%\<exe name>, and dev builds carry a unique

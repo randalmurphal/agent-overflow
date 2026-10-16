@@ -200,6 +200,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetUIState", ID: 3380106838, Scope: "session", Route: "home"},                                                     // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533, Scope: "threads:read", Route: "all"},                                              // main.App.GetUsageStats
 	{Name: "GetWSLDistroPreference", ID: 294719565, Scope: "host", Route: "home"},                                             // main.App.GetWSLDistroPreference
+	{Name: "GetWebviewGPUVsyncDisabled", ID: 1563269625, Scope: "host", Route: "home"},                                        // main.App.GetWebviewGPUVsyncDisabled
 	{Name: "GetWorkspaceActivity", ID: 673985705, Scope: "git:operate", Route: "selected"},                                    // main.App.GetWorkspaceActivity
 	{Name: "GitCheckout", ID: 1598126927, Scope: "git:operate", Route: "workspace"},                                           // main.App.GitCheckout
 	{Name: "GitCommit", ID: 1971060042, Scope: "git:operate", Route: "workspace"},                                             // main.App.GitCommit
@@ -406,6 +407,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", Route: "thread", StepUp: true},               // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate", Route: "thread"},                                    // main.App.SetThreadPinGroup
 	{Name: "SetWSLDistroPreference", ID: 3978807241, Scope: "host", Route: "home", StepUp: true},                              // main.App.SetWSLDistroPreference
+	{Name: "SetWebviewGPUVsyncDisabled", ID: 4062584181, Scope: "host", Route: "home", StepUp: true},                          // main.App.SetWebviewGPUVsyncDisabled
 	{Name: "SetWindowBackgroundColor", ID: 3648660014, Scope: "host", Route: "home"},                                          // main.App.SetWindowBackgroundColor
 	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220, Scope: "settings:write", Route: "selected", StepUp: true},          // main.App.SetWorkspaceMcpServerEnabled
 	{Name: "ShutdownBackend", ID: 2115861089, Scope: "host", Route: "home"},                                                   // main.App.ShutdownBackend
