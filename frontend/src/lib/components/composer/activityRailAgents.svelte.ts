@@ -4,11 +4,13 @@
 // ListThreadAgentRows when its thread opens, after its computer reconnects or
 // loses a `thread:agent_rows_changed` frame, and on a frame that names its
 // thread or a thread its list nests, which the backend sends after each
-// change to a request or to the thread it went to. A frame about a row it
-// lists that runs here reads that row alone (GetThreadAgentRow) and keeps
-// its place; any other frame, and a row the read says left the listing,
-// reads the list. Nothing polls. Reads go through one rate-bounded refresh
-// scheduler, so a row read never lands over a newer list.
+// change to a request or to the thread it went to. Frames about rows it
+// lists that run here read those rows alone, in one read of at most
+// MAX_ROW_READ (GetThreadAgentRows), and keep their places; more rows than
+// that, any other frame, and a row the read says left the listing read the
+// list. Nothing polls. Reads go through one rate-bounded refresh scheduler,
+// so a burst of frames is one read and a row read never lands over a newer
+// list.
 //
 // A settled row stays AGENT_ROW_SETTLED_LINGER_MS from when this pane first
 // saw it settled, then leaves; the thread's wake item is the durable record.
@@ -29,7 +31,7 @@
 
 import { untrack } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import { GetThreadAgentRow, ListThreadAgentRows, type ThreadAgentRow } from '../../stores/bindings';
+import { GetThreadAgentRows, ListThreadAgentRows, type ThreadAgentRow } from '../../stores/bindings';
 import { getQueueForThread, type QueueItem } from '../../stores/sendQueue.svelte';
 import { userMessageOriginThread, userMessageOriginWake } from '../../utils/userMessageMeta';
 import { onThreadAgentRowsChanged } from '../../stores/eventsThreadAgentRows';
@@ -45,6 +47,10 @@ import {
 import { AGENT_ROW_SETTLED_LINGER_MS } from './activityRailBackground.svelte';
 
 const REFRESH_DELAY_MS = 100;
+// The backend's bound on one row read (maxThreadAgentRowReads). A read of
+// up to this many rows is as many statements as a read of the list, over
+// those rows alone; past it the list is read.
+const MAX_ROW_READ = 32;
 const REFRESH_MAX_WAIT_MS = 400;
 // Threads whose settled rows' first sight and dismissals the pane keeps
 // after it moves to another thread; the least recently shown goes first.
@@ -170,16 +176,17 @@ export function createAgentController(
    * read of the list can place.
    */
   async function readRows(id: string, tokens: string[], token: RefreshToken): Promise<boolean> {
+    if (tokens.length > MAX_ROW_READ) return false;
     let reads;
     try {
-      reads = await Promise.all(tokens.map((one) => GetThreadAgentRow(id, one)));
+      reads = await GetThreadAgentRows(id, tokens);
     } catch (err) {
-      if (token.isCurrent() && id === threadId) console.error('ActivityRail: GetThreadAgentRow failed:', err);
+      if (token.isCurrent() && id === threadId) console.error('ActivityRail: GetThreadAgentRows failed:', err);
       return false;
     }
     if (!token.isCurrent() || id !== threadId) return true;
     const byToken = new Map<string, ThreadAgentRow>();
-    for (const read of reads) {
+    for (const read of reads ?? []) {
       if (!read?.listed || !read.row) return false;
       byToken.set(read.row.token, read.row);
     }
@@ -291,6 +298,10 @@ export function createAgentController(
         if (change === null ? threadBackend(threadId) !== backend : !callers.has(change.threadId)) return;
         if (change?.id && !listDue && patchable(change.id)) rowsDue.add(change.id);
         else listDue = true;
+        if (rowsDue.size > MAX_ROW_READ) {
+          listDue = true;
+          rowsDue.clear();
+        }
         refresh.request({ immediate: change === null });
       });
       const cancelStatus = onBackendStatusChange((backend, status) => {

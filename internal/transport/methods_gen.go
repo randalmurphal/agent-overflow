@@ -179,7 +179,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetTerminalReplay", ID: 2329592604, Scope: "terminal:operate", Route: "home"},                                     // main.App.GetTerminalReplay
 	{Name: "GetThemeFiles", ID: 2000462111, Scope: "settings:read", Route: "home"},                                            // main.App.GetThemeFiles
 	{Name: "GetThread", ID: 1098302047, Scope: "threads:read", Route: "thread"},                                               // main.App.GetThread
-	{Name: "GetThreadAgentRow", ID: 1208623168, Scope: "threads:read", Route: "thread"},                                       // main.App.GetThreadAgentRow
+	{Name: "GetThreadAgentRows", ID: 2599465033, Scope: "threads:read", Route: "thread"},                                      // main.App.GetThreadAgentRows
 	{Name: "GetThreadContextUsage", ID: 3852033265, Scope: "threads:operate", Route: "thread"},                                // main.App.GetThreadContextUsage
 	{Name: "GetThreadDefaults", ID: 3362481473, Scope: "threads:operate", Route: "selected"},                                  // main.App.GetThreadDefaults
 	{Name: "GetThreadItem", ID: 1969869112, Scope: "threads:read", Route: "thread"},                                           // main.App.GetThreadItem

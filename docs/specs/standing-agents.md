@@ -1170,14 +1170,18 @@ closes up their spacing so the row holds at a phone width.
   thread opens, after a reconnect or a lost frame, and on a frame naming
   the thread or a thread its list nests that is not about a local row the
   pane lists: a new row, a frame about every request of a caller, a row a
-  paired computer listed or a spawn on one. A frame about a local row the
-  pane lists reads that row alone (`GetThreadAgentRow`), and the pane
-  keeps the row's place, depth and nesting marks; a row the read says is
-  no longer listed reads the list again. Reads go through the
-  rate-bounded refresh scheduler.
+  paired computer listed or a spawn on one. Frames about local rows the
+  pane lists read those rows alone, up to 32 per read
+  (`GetThreadAgentRows`), and the pane keeps each row's place, depth and
+  nesting marks; past 32, or when the read says a row is no longer
+  listed, the pane reads the list. Reads go through the rate-bounded
+  refresh scheduler, so a burst of frames is one read.
 - **Reads.** A listing is a constant number of statements whatever the
   tree's size: the tree with each row's depth in one recursive read, the
-  targets' titles and providers in one, their last messages in one. A row
+  targets' titles and providers in one, their last messages in one. A
+  thread two spawns reach is walked once, under the first. A read of
+  named rows is as many statements (their places in the lineage, the
+  rows, their targets) over those rows alone. A row
   carries the head of its answer (what the row shows), never the whole
   answer or the late reply, and names its wake item from the request
   (`thread_requests.wake_item_id`, `late_wake_item_id`, recorded when the

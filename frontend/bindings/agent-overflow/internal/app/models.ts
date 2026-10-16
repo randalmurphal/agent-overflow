@@ -5971,11 +5971,15 @@ export class ThreadAgentRow {
  * settled window.
  */
 export class ThreadAgentRowRead {
+    "token": string;
     "row"?: ThreadAgentRow | null;
     "listed": boolean;
 
     /** Creates a new ThreadAgentRowRead instance. */
     constructor($$source: Partial<ThreadAgentRowRead> = {}) {
+        if (!("token" in $$source)) {
+            this["token"] = "";
+        }
         if (!("listed" in $$source)) {
             this["listed"] = false;
         }
@@ -5987,10 +5991,10 @@ export class ThreadAgentRowRead {
      * Creates a new ThreadAgentRowRead instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadAgentRowRead {
-        const $$createField0_0 = $$createType99;
+        const $$createField1_0 = $$createType99;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("row" in $$parsedSource) {
-            $$parsedSource["row"] = $$createField0_0($$parsedSource["row"]);
+            $$parsedSource["row"] = $$createField1_0($$parsedSource["row"]);
         }
         return new ThreadAgentRowRead($$parsedSource as Partial<ThreadAgentRowRead>);
     }

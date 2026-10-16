@@ -526,7 +526,7 @@ export {
   WakeThreadWakeNow,
   CancelThreadWake,
   ListThreadAgentRows,
-  GetThreadAgentRow,
+  GetThreadAgentRows,
   GetThreadRequestStates,
   StopThreadAgentIncoming,
   StopThreadAgentRow,

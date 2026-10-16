@@ -2,7 +2,9 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -137,7 +139,9 @@ func measureAgentTree(a *App, runs int, call func()) agentTreeCost {
 
 // TestAgentTreeReadCost pins the Agents segment's reads over the tree above
 // to a number of statements that does not grow with it: the listing (the
-// thread, the tree, its targets' names and last messages), a tool rows'
+// thread, the tree, its targets' names and last messages), a pane's read of
+// up to 32 rows at two levels (as many statements as the listing, so a pane
+// reads named rows up to that bound and the list past it), a tool rows'
 // state read of 256 settled tokens, the change frames of the 200 open sends,
 // and an assistant's session check on a Claude resume. Run it alone for its
 // timings.
@@ -159,11 +163,30 @@ func TestAgentTreeReadCost(t *testing.T) {
 		}
 	})
 	tree := measureAgentTree(f.app, 20, func() {
-		if _, _, err := newThreadAgentView(f.app).tree(chief, threadAgentRowDepth, "", threadAgentRowLimit); err != nil {
+		if _, _, err := newThreadAgentView(f.app).tree(chief, threadAgentRowDepth, nil, threadAgentRowLimit); err != nil {
 			t.Fatal(err)
 		}
 	})
 	t.Logf("tree read alone: %.1f reads, %v per call", tree.reads, tree.per)
+	// Row reads of the chief's open sends and the managers' spawns, at one
+	// and two levels.
+	named := append(slices.Clone(shape.open), "spawn-w0", "spawn-w1", "spawn-w2")
+	rowReads := map[int]agentTreeCost{}
+	for _, n := range []int{1, 8, maxThreadAgentRowReads} {
+		tokens := append(slices.Clone(named[:n-min(n, 3)]), named[len(named)-min(n, 3):]...)
+		rowReads[n] = measureAgentTree(f.app, 20, func() {
+			reads, err := f.app.GetThreadAgentRows(chief, tokens)
+			if err != nil || len(reads) != n {
+				t.Fatalf("GetThreadAgentRows: %d reads, %v", len(reads), err)
+			}
+			for _, read := range reads {
+				if !read.Listed {
+					t.Fatalf("%s is not listed", read.Token)
+				}
+			}
+		})
+		t.Logf("row read of %d: %.1f reads, %v per call", n, rowReads[n].reads, rowReads[n].per)
+	}
 	states := measureAgentTree(f.app, 20, func() {
 		got, err := f.app.GetThreadRequestStates(chief, shape.settled[:maxThreadRequestStates])
 		if err != nil || len(got) != maxThreadRequestStates {
@@ -185,9 +208,18 @@ func TestAgentTreeReadCost(t *testing.T) {
 		e.mu.Unlock()
 		f.app.drainThreadAgentEmits()
 	})
+	// An assistant's thread whose transcript is gone: the check reads the
+	// capability, looks for the file and finds none.
+	assistant := f.plainThread(t)
+	testAssistant(t, f.app, assistant.ID)
+	assistant, err := f.app.store.GetThread(assistant.ID)
+	if err != nil || assistant.AgentID == "" {
+		t.Fatalf("the assistant's thread reads agent %q, %v", assistant.AgentID, err)
+	}
+	workDir := t.TempDir()
 	resume := measureAgentTree(f.app, 20, func() {
-		if err := f.app.requireAssistantSession(f.caller, provider.SessionOptions{Resume: "session-1", WorkDir: t.TempDir()}); err != nil {
-			t.Fatalf("requireAssistantSession: %v", err)
+		if err := f.app.requireAssistantSession(assistant, provider.SessionOptions{Resume: "session-1", WorkDir: workDir}); !errors.Is(err, errAssistantSessionGone) {
+			t.Fatalf("requireAssistantSession = %v; want the session gone", err)
 		}
 	})
 	t.Logf("assistant session check on a Claude resume: %.1f reads, %v per start", resume.reads, resume.per)
@@ -200,6 +232,8 @@ func TestAgentTreeReadCost(t *testing.T) {
 	}{
 		{"the listing", list.reads, 4}, {"the tree", tree.reads, 1}, {"the request states", states.reads, 1},
 		{"a drain of frames", frames.reads, 1}, {"the session check", resume.reads, 0},
+		{"a row read of 1", rowReads[1].reads, 4}, {"a row read of 8", rowReads[8].reads, 4},
+		{"a row read of 32", rowReads[maxThreadAgentRowReads].reads, 4},
 	} {
 		if leg.reads > leg.most {
 			t.Errorf("%s ran %.1f reads; want at most %.0f", leg.name, leg.reads, leg.most)

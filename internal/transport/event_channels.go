@@ -1413,7 +1413,7 @@ var channelPolicies = []ChannelPolicy{
 			"on, delivered) or its target's turn, prompt, title or latest " +
 			"activity changed; no id is every request of the thread. The " +
 			"frame names the row and carries none of it: a reader reads " +
-			"the row (GetThreadAgentRow) or the list. Scope threads:read " +
+			"the row (GetThreadAgentRows) or the list. Scope threads:read " +
 			"because ListThreadAgentRows, the pull half, carries it. NOT " +
 			"EntityFiltered: a pane lists the rows of threads its own " +
 			"thread spawned, which no pane may be watching. Never " +
