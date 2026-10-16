@@ -20,9 +20,10 @@ import (
 //   - Every frame leaves through triage.ThreadAnnouncer. A row frame is
 //     announced by thread id and read under the thread's announce lock; a
 //     patch (announceThreadPatch) and a deletion (broadcastThreadDeleted)
-//     are emitted under the same lock after their commit, and so is an
-//     assistant handoff's `unlisted` frame naming the successor
-//     (ThreadAnnouncer.AnnounceHandOff), read like any row. Frames therefore
+//     are emitted under the same lock after their commit. An assistant
+//     handoff's frame naming the successor (ThreadAnnouncer.AnnounceHandOff)
+//     is read like any row, and its action follows that row: `unlisted`
+//     while archived, `full` if an unarchive landed first. Frames therefore
 //     leave in the order their rows were read, and no frame describing an
 //     earlier state follows one describing a later state.
 //     TestThreadUpdatedFramesComeFromTheAnnouncer (internal/triage) rejects

@@ -482,7 +482,21 @@ for (const provider of ['claude', 'codex'] as const) {
     // strip stays where that scroll put it.
     const paneId = await sideChatPane(page).getAttribute('data-pane-id');
     const send = sideChatPane(page).getByTestId('composer-send');
-    const mid = await send.evaluate((el, id) => new Promise<{ gliding: number; left: number; x: number; y: number }>((resolve) => {
+    // The side chat's own opening glide settles first, so the reveal below
+    // starts a glide of its own from the strip's start.
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      const strip = document.querySelector<HTMLElement>('[data-testid="pane-host"]')!;
+      let last = strip.scrollLeft;
+      let still = 0;
+      const tick = () => {
+        const now = strip.scrollLeft;
+        still = now === last ? still + 1 : 0;
+        last = now;
+        if (still >= 10) resolve(); else requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }));
+    const mid = await send.evaluate((el, id) => new Promise<{ gliding: number; left: number; next: number; x: number; y: number }>((resolve) => {
       const strip = document.querySelector<HTMLElement>('[data-testid="pane-host"]')!;
       strip.scrollLeft = 0;
       window.dispatchEvent(new CustomEvent('agent-overflow:reveal-pane', { detail: { paneId: id } }));
@@ -491,11 +505,15 @@ for (const provider of ['claude', 'codex'] as const) {
         if (left === 0) { requestAnimationFrame(step); return; }
         el.scrollIntoView({ block: 'end', inline: 'end' });
         const box = el.getBoundingClientRect();
-        resolve({ gliding: left, left: strip.scrollLeft, x: box.x + box.width / 2, y: box.y + box.height / 2 });
+        const scrolled = strip.scrollLeft;
+        // The next frame is the glide's next step: it must leave the strip
+        // where the scroll into view put it.
+        requestAnimationFrame(() => resolve({ gliding: left, left: scrolled, next: strip.scrollLeft, x: box.x + box.width / 2, y: box.y + box.height / 2 }));
       };
       requestAnimationFrame(step);
     }), paneId);
     expect(mid.left, 'the scroll into view moved the strip mid-glide').not.toBe(mid.gliding);
+    expect(mid.next, 'the glide left the strip where the scroll put it').toBe(mid.left);
     const box = { x: mid.x, y: mid.y, width: 0, height: 0 };
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();

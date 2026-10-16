@@ -376,7 +376,11 @@ export interface ThreadUpdateEvent {
   title?: string;
   model?: string;
   sessionRef?: string;
-  /** On the `unlisted` frame of an assistant's old thread: its successor. */
+  /**
+   * On the frame of an assistant's old thread: its successor. The frame is
+   * `unlisted`, or `full` when the old thread was unarchived since the
+   * handoff; either way what showed the old thread moves to the successor.
+   */
   handOffTo?: string;
   /**
    * A sidebar-activity bump from an activity-counting user_text persist,
@@ -457,10 +461,8 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       const id = evt.thread?.id ?? evt.id;
       if (!id) return;
       if (evt.thread) syncThreadRow(evt.thread);
-      // A handoff lists the assistant's new thread first and names it here:
-      // the panes and hidden companions that showed the old one move to it.
       // Archiving a past thread is not a handoff and closes its panes.
-      const successor = evt.handOffTo ? getThreadById(evt.handOffTo) : undefined;
+      const successor = handOffSuccessor(evt);
       if (successor) followAssistantHandOffInStash(id, successor);
       removeThread(id);
       if (successor) moveAssistantPanes(id, successor);
@@ -482,9 +484,24 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       // 'full': the row's current state. Says nothing about membership,
       // so a row this client does not have is not invented here — the
       // authoritative ListThreads resync owns that.
-      if (evt.thread?.id) syncThreadRow(evt.thread);
+      if (!evt.thread?.id) return;
+      syncThreadRow(evt.thread);
+      // A handoff whose old thread was unarchived before it was announced:
+      // the row stays listed, and what showed it still moves.
+      const successor = handOffSuccessor(evt);
+      if (successor) {
+        followAssistantHandOffInStash(evt.thread.id, successor);
+        moveAssistantPanes(evt.thread.id, successor);
+      }
     }
   }
+}
+
+// A handoff lists the assistant's new thread first and names it on the old
+// thread's frame: the panes and hidden companions that showed the old one
+// move to it.
+function handOffSuccessor(evt: ThreadUpdateEvent): Thread | undefined {
+  return evt.handOffTo ? getThreadById(evt.handOffTo) : undefined;
 }
 
 function noteThreadFrame(evt: ThreadUpdateEvent): void {

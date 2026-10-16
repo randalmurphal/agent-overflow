@@ -156,8 +156,59 @@ func TestImportCodexDelegatedThreadOpensWithTheDelegatedPrompt(t *testing.T) {
 	if meta["origin"] != rollout.DelegatedInputOrigin || meta[rollout.MetaDelegationSourceThreadKey] != "source-thread" {
 		t.Errorf("user meta = %v, want the delegation origin and source", meta)
 	}
+	// Someone typed it, in the other thread: it keeps edit and fork.
+	if _, wireOnly := meta["wire_only"]; wireOnly {
+		t.Errorf("user meta = %v, want the delegated prompt without wire_only", meta)
+	}
 	if got := len(itemsByKind(items, "tool_call")); got != 0 {
 		t.Errorf("tool_call rows = %d, want none: %s", got, itemKinds(items))
+	}
+}
+
+// A turn the CLI started from a cron job imports its prompt with the origin
+// the live row carries, wire-only as the live row is: nobody typed it, so it
+// has no edit or fork actions. The typed prompt before it is neither.
+func TestImportClaudeScheduledTurnPromptIsWireOnly(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	scheduled := homes.claudeUserRow("u2", "a1", "Reply with CRON-FIRED.", 2_000)
+	scheduled["isMeta"], scheduled["promptSource"], scheduled["turnOrigin"] = true, "system", "scheduled"
+	homes.writeClaudeSession(t, claudeSessionA,
+		homes.claudeUserRow("u1", "", "schedule a ping", 0),
+		homes.claudeAssistantRow("a1", "u1", "msg-1", []any{claudeTextBlock("Scheduled.")}, 1_000, nil),
+		scheduled,
+		homes.claudeAssistantRow("a2", "u2", "msg-2", []any{claudeTextBlock("CRON-FIRED")}, 3_000, nil),
+	)
+	d := homes.deps(st)
+	outcome := importFixtureRow(t, d, scanOne(t, d, ProviderClaude))
+	if len(outcome.Threads) != 1 {
+		t.Fatalf("threads = %d, want 1", len(outcome.Threads))
+	}
+	items, err := st.ListItems(outcome.Threads[0].ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	users := itemsByKind(items, "user_text")
+	if len(users) != 2 {
+		t.Fatalf("user_text rows = %d, want the typed and the scheduled prompt: %s", len(users), itemKinds(items))
+	}
+	for _, user := range users {
+		var meta map[string]any
+		if err := json.Unmarshal([]byte(user.Meta), &meta); err != nil {
+			t.Fatalf("decode user meta %q: %v", user.Meta, err)
+		}
+		switch user.Summary {
+		case "schedule a ping":
+			if meta["origin"] != nil || meta["wire_only"] != nil {
+				t.Errorf("typed prompt meta = %v, want no origin and not wire-only", meta)
+			}
+		case "Reply with CRON-FIRED.":
+			if meta["origin"] != "scheduled" || meta["wire_only"] != true {
+				t.Errorf("scheduled prompt meta = %v, want origin scheduled and wire_only true", meta)
+			}
+		default:
+			t.Errorf("unexpected user row %q", user.Summary)
+		}
 	}
 }
 

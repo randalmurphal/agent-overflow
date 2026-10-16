@@ -64,11 +64,13 @@ func (an *ThreadAnnouncer) AnnounceWithin(ctx context.Context, emit func(eventch
 	emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: action, Thread: &row})
 }
 
-// AnnounceHandOff emits threadID's current row as `unlisted` with HandOffTo
-// naming successorID: an assistant's old thread leaving the list because
-// the assistant moved to successorID, so a client moves the panes showing
-// it instead of closing them. Announce after the successor's `listed`
-// frame, so a client has the row it moves to.
+// AnnounceHandOff emits threadID's current row with HandOffTo naming
+// successorID: an assistant moved from this thread to successorID, so a
+// client moves the panes showing it there instead of closing them. The
+// action follows the row read: `unlisted` while it is archived, as the
+// handoff leaves it, and `full` once an unarchive landed after the handoff,
+// so the frame never takes a listed row out of the sidebar. Announce after
+// the successor's `listed` frame, so a client has the row it moves to.
 func (an *ThreadAnnouncer) AnnounceHandOff(emit func(eventchan.Channel, any), threadID, successorID string) {
 	if threadID == "" {
 		return
@@ -79,7 +81,11 @@ func (an *ThreadAnnouncer) AnnounceHandOff(emit func(eventchan.Channel, any), th
 		log.Printf("announce thread %s handoff: %v", threadID, err)
 		return
 	}
-	emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: ThreadActionUnlisted, Thread: &row, HandOffTo: successorID})
+	action := ThreadActionFull
+	if row.Archived {
+		action = ThreadActionUnlisted
+	}
+	emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: action, Thread: &row, HandOffTo: successorID})
 }
 
 // AnnouncePatch emits the named fields of a write the caller has committed,

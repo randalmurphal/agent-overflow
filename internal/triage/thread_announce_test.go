@@ -60,6 +60,14 @@ func TestAnnounceHandOffReadsTheRowUnderTheLock(t *testing.T) {
 		got.Thread.ID != "old" || got.Thread.Title != "renamed meanwhile" || !got.Thread.Archived {
 		t.Fatalf("handoff frame = %+v (row %+v), want the row read after the lock, unlisted, handing off to next", got, got.Thread)
 	}
+
+	// Unarchived since the handoff: the row stays listed, and the frame
+	// still names the successor.
+	stored.Archived = false
+	announcer.AnnounceHandOff(func(_ eventchan.Channel, payload any) { got = payload.(ThreadUpdateEvent) }, "old", "next")
+	if got.Action != ThreadActionFull || got.HandOffTo != "next" || got.Thread == nil || got.Thread.Archived {
+		t.Fatalf("handoff frame of an unarchived row = %+v, want full, handing off to next", got)
+	}
 }
 
 // A patch carries the stored value of each field it names, whatever its

@@ -2011,6 +2011,25 @@ describe('setupEventListeners', () => {
       expect(getThreads().map((t) => t.id)).toEqual(['thread-2']);
     });
 
+    it("moves a pane on a handoff whose old thread was unarchived first, and keeps that row listed", async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+
+      emitWailsEvent('thread:updated', { action: 'listed', thread: successor });
+      emitWailsEvent('thread:updated', {
+        action: 'full',
+        thread: makeThread({ id: 'thread-1', title: 'Ops', archived: false, pastAgentId: 'agent-1' }),
+        handOffTo: 'thread-2',
+      });
+
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+      expect(getThreads().map((t) => t.id).sort()).toEqual(['thread-1', 'thread-2']);
+      expect(getThreads().find((t) => t.id === 'thread-1')?.pastAgentId).toBe('agent-1');
+    });
+
     it("closes the pane of an assistant's past thread archived again, which no handoff names", async () => {
       setBindingMock('ListThreads', async () => [
         makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }),

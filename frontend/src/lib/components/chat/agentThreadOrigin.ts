@@ -11,7 +11,8 @@
 
 import { getAttachedBackends, attachedBackendEntry, backendDisplayName, backendReachable } from '../../stores/attachedBackends.svelte';
 import { getThreadById } from '../../stores/threads.svelte';
-import { openThreadInPane, findPaneShowingThread, focusPane, revealPane } from '../../stores/panes.svelte';
+import { openThreadInPane, findPaneShowingThread, focusPane, revealPane, syncThreadReply } from '../../stores/panes.svelte';
+import { threadRowFrameMark, threadRowFramedSince } from '../../stores/threadRowFrames';
 import { GetThread } from '../../stores/bindings';
 import { withBackendTarget } from '../../transport/backends';
 import type { BackendKey } from '../../transport/backendKey';
@@ -93,6 +94,9 @@ export function agentThreadOpener(
  * where `place` puts it. The row is read from its own computer
  * when this client does not already hold it, and the read teaches the RPC
  * router which computer owns the id, so the pane's own calls route there.
+ * A thread:updated frame for that row which lands during the read reaches
+ * nothing (no list or pane holds the row yet), so the row is read again
+ * once the pane holds it, and that read is applied through the reply guard.
  */
 export async function openAgentThreadOrigin(
   origin: UserMessageOriginThread,
@@ -106,14 +110,20 @@ export async function openAgentThreadOrigin(
       revealPane(open.paneId);
       return;
     }
-    let thread = getThreadById(origin.threadId);
-    if (!thread) {
-      const row = (await withBackendTarget(backend, () => GetThread(origin.threadId))) as Thread | null;
-      if (!row?.id) throw new Error('That thread is no longer on that computer.');
-      noteThread(row.id, backend, row.ownershipEpoch ?? 0);
-      thread = row;
+    const held = getThreadById(origin.threadId);
+    if (held) {
+      await place(held);
+      return;
     }
-    await place(thread);
+    const mark = threadRowFrameMark();
+    const row = (await withBackendTarget(backend, () => GetThread(origin.threadId))) as Thread | null;
+    if (!row?.id) throw new Error('That thread is no longer on that computer.');
+    noteThread(row.id, backend, row.ownershipEpoch ?? 0);
+    await place(row);
+    if (!threadRowFramedSince(row.id, mark)) return;
+    const again = threadRowFrameMark();
+    const fresh = (await withBackendTarget(backend, () => GetThread(row.id))) as Thread | null;
+    if (fresh?.id) syncThreadReply(fresh, again);
   } catch (err) {
     addErrorToast(`Could not open ${origin.title || 'that thread'}: ${errString(err)}`, err);
   }

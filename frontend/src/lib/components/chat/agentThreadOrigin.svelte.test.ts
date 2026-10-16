@@ -6,11 +6,14 @@ import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/
 import {
   createPane,
   getFocusedPaneId,
+  getPane,
   openThreadInNewPane,
   openThreadInPane,
   resetPanesForTest,
 } from '../../stores/panes.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
+import { applyThreadUpdated } from '../../stores/eventsThreadRows';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installPaneMocks, makeThread } from '../../../test/helpers/chat';
 import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -125,5 +128,37 @@ describe('openAgentThreadOrigin', () => {
     }
     expect(getFocusedPaneId()).toBe(pane.paneId);
     expect(revealed).toEqual([pane.paneId]);
+  });
+
+  // The row this client does not hold is read, and a frame for it that
+  // lands during the read reaches no list or pane: the pane ends on the
+  // newer row, not the read's.
+  it('keeps a row a frame brought during the read over the older read', async () => {
+    const read = makeThread({ id: 'thread-9', title: 'Auth rewrite' });
+    const renamed = { ...read, title: 'Renamed meanwhile' };
+    setBindingMock('SwitchThread', async () => read);
+    let reads = 0;
+    setBindingMock('GetThread', async () => {
+      reads += 1;
+      if (reads > 1) return renamed;
+      applyThreadUpdated({ action: 'full', thread: renamed });
+      return read;
+    });
+    await openAgentThreadOrigin(origin(), HOME_BACKEND, (thread) => openThreadInPane(thread, 'main'));
+    expect(getPane('main')?.thread?.title).toBe('Renamed meanwhile');
+    expect(reads).toBe(2);
+  });
+
+  it('reads a row once when no frame lands during the read', async () => {
+    const read = makeThread({ id: 'thread-9', title: 'Auth rewrite' });
+    setBindingMock('SwitchThread', async () => read);
+    let reads = 0;
+    setBindingMock('GetThread', async () => {
+      reads += 1;
+      return read;
+    });
+    await openAgentThreadOrigin(origin(), HOME_BACKEND, (thread) => openThreadInPane(thread, 'main'));
+    expect(getPane('main')?.thread?.title).toBe('Auth rewrite');
+    expect(reads).toBe(1);
   });
 });
