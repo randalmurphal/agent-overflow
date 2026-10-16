@@ -39,6 +39,7 @@ interface Harness {
     restoreConsentArmed: boolean;
     distanceFromBottom: number;
     resizeCorrelated: boolean;
+    resizeDifference: number;
     lastExplained: number | null;
   };
   spring: {
@@ -76,6 +77,7 @@ function harness(
     // immediate re-stick branch; the tests that want that branch set it to 0.
     distanceFromBottom: 100,
     resizeCorrelated: false,
+    resizeDifference: 0,
     lastExplained: null as number | null,
   };
 
@@ -109,7 +111,7 @@ function harness(
     refreshIsNearBottom,
     spring,
     sampleResizeCorrelation: () => state.resizeCorrelated,
-    resizeDifferenceNow: () => 0,
+    resizeDifferenceNow: () => state.resizeDifference,
     noteUserScroll,
     lastExplainedScrollTop: () => state.lastExplained,
     followBottom,
@@ -977,6 +979,107 @@ describe('deferred scroll pass', () => {
         wheel(h.scrollEl, { deltaY: 3, deltaMode: WheelEvent.DOM_DELTA_LINE });
         await pastWindow();
         landAt(h, 0, 448);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+    });
+
+    describe('an anchoring shift while a landing is pending', () => {
+      function shiftBy(h: Harness, px: number, distanceFromBottom: number): void {
+        h.state.resizeCorrelated = true;
+        h.state.resizeDifference = px;
+        landAt(h, distanceFromBottom, h.scrollEl.scrollTop + px);
+        h.state.resizeCorrelated = false;
+        h.state.resizeDifference = 0;
+      }
+
+      it('spends none of the travel, so the later landing at the bottom re-sticks', async () => {
+        const h = wheeledDownWhileEscaped();
+        // Rows inserted above move the view by the gesture's own size.
+        shiftBy(h, 100, 100);
+        await settleDeferredPass();
+        await pastWindow();
+        landAt(h, 0, 600);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+
+      it('is not the landing when it reaches the bottom itself', async () => {
+        const h = wheeledDownWhileEscaped();
+        await pastWindow();
+        shiftBy(h, 100, 0);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+    });
+
+    describe('End and PageDown carry their travel', () => {
+      function keyedDownWhileEscaped(k: string, distanceFromBottom: number): Harness {
+        const h = build();
+        h.state.escaped = true;
+        h.state.distanceFromBottom = distanceFromBottom;
+        h.scrollEl.scrollTop = 400;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        key(h.scrollEl, k);
+        return h;
+      }
+
+      it('a late smooth End re-sticks at its final event', async () => {
+        const h = keyedDownWhileEscaped('End', 1000);
+        await pastWindow();
+        landAt(h, 700, 700);
+        landAt(h, 300, 1100);
+        landAt(h, 0, 1400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+
+      it('an upward event after End ends it', async () => {
+        const h = keyedDownWhileEscaped('End', 1000);
+        landAt(h, 700, 700);
+        landAt(h, 750, 650);
+        await pastWindow();
+        landAt(h, 0, 1400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('a controller write ends an End', async () => {
+        const h = keyedDownWhileEscaped('End', 1000);
+        h.intent.noteProgrammaticWrite(500);
+        h.scrollEl.scrollTop = 500;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        await pastWindow();
+        landAt(h, 0, 1400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('a PageDown that lands short of the bottom is cleared', async () => {
+        // A viewport is 500 px; the browser's page step is shorter.
+        const h = keyedDownWhileEscaped('PageDown', 2000);
+        await pastWindow();
+        landAt(h, 1760, 640);
+        landAt(h, 1563, 837);
+        await settleDeferredPass();
+        // No input: a find-in-page or focus scroll reaches the end.
+        landAt(h, 0, 2400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it('a PageDown that reaches the bottom re-sticks', async () => {
+        const h = keyedDownWhileEscaped('PageDown', 300);
+        await pastWindow();
+        landAt(h, 150, 550);
+        landAt(h, 0, 700);
         await settleDeferredPass();
 
         expect(h.state.escaped).toBe(false);

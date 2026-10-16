@@ -734,20 +734,23 @@ escapes synchronously when it targets the timeline or a descendant.
 
 Down input (wheel, key, touch) is the only consent path for re-sticking
 after escape. A down gesture made while escaped stays pending until its
-scroll lands, with no clock. A wheel carries the travel it asked for
-(`deltaY` in pixels, line and page modes converted by `wheelDeltaPx`; a
-second wheel adds to it), because a smooth scroll lands over several
-events. Each untagged scroll event spends what it moved; one that lands at
-the bottom (within `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) while travel remains
-re-sticks however late a loaded host delivers it, even inside a
-resize-correlated cascade. Spending the travel, an upward event, a native
-clamp, or an event that moves further than the travel left plus the
-epsilon ends the gesture, so a scroll with no input of its own
-(find-in-page, focus, an anchor) after it does not re-stick. A key or
-touch has no travel in pixels: its first untagged scroll event is its
-landing, wherever it lands. A controller write is tagged and spends
-nothing. An upward escape, a re-stick or a detach also ends the pending
-gesture. Motion that continues a gesture
+scroll lands, with no clock. A gesture with a known travel carries it,
+because a smooth scroll lands over several events: a wheel its `deltaY` in
+pixels (line and page modes converted by `wheelDeltaPx`; a second wheel
+adds to it), PageDown the scroller's `clientHeight`, End no limit. Each
+untagged scroll event spends what it moved; one that lands at the bottom
+(within `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) while travel remains re-sticks
+however late a loaded host delivers it, even inside a resize-correlated
+cascade. Spending the travel, an upward event, a native clamp, or an
+event that moves further than the travel left plus the epsilon ends the
+gesture, so a scroll with no input of its own (find-in-page, focus, an
+anchor) after it does not re-stick. An anchoring shift (a scroll the
+content resize accounts for whole) is layout, not the gesture: it spends
+nothing, ends nothing, and is never the landing. A controller write is
+tagged and spends nothing; it ends an End, whose travel never runs out.
+An arrow key or touch has no known travel: its first untagged scroll
+event is its landing, wherever it lands. An upward escape, a re-stick or
+a detach also ends the pending gesture. Motion that continues a gesture
 past its first scroll event re-sticks through the 250 ms recent
 down-intent window, which each further downward user scroll renews. Re-stick
 uses the distance from bottom captured at scroll-event time so streaming
