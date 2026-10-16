@@ -210,8 +210,8 @@ func typedThreadFrameViolations(fset *token.FileSet, file *ast.File, info *types
 	report := func(node ast.Node, what string) {
 		found = append(found, fmt.Sprintf("%s: %s", fset.Position(node.Pos()), what))
 	}
-	writes := threadFieldWriteSites(file)
-	params := parameterObjects(file, info)
+	writes := writeSites(file)
+	params := parameterObjects(file, info, writes)
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.Ident:
@@ -260,10 +260,10 @@ func typedThreadFrameViolations(fset *token.FileSet, file *ast.File, info *types
 // so a constant equal to it is caught wherever it is built.
 const threadUpdatedChannelValue = "thread:updated"
 
-// threadFieldWriteSites collects the identifiers naming a field in a write
-// position: a composite literal key, an assignment or increment target, or
-// an address taken (a pointer to the field can be written through).
-func threadFieldWriteSites(file *ast.File) map[*ast.Ident]bool {
+// writeSites collects the identifiers naming a variable or field in a write
+// position: a composite literal key, an assignment, range or increment
+// target, or an address taken (a pointer can be written through).
+func writeSites(file *ast.File) map[*ast.Ident]bool {
 	sites := map[*ast.Ident]bool{}
 	mark := func(expr ast.Expr) {
 		for {
@@ -291,6 +291,14 @@ func threadFieldWriteSites(file *ast.File) map[*ast.Ident]bool {
 			}
 		case *ast.IncDecStmt:
 			mark(node.X)
+		case *ast.RangeStmt:
+			if node.Tok == token.ASSIGN {
+				for _, target := range []ast.Expr{node.Key, node.Value} {
+					if target != nil {
+						mark(target)
+					}
+				}
+			}
 		case *ast.UnaryExpr:
 			if node.Op == token.AND {
 				mark(node.X)
@@ -339,8 +347,9 @@ func nonConstantChannelArgs(call *ast.CallExpr, info *types.Info, params map[typ
 }
 
 // parameterObjects collects every function and method parameter declared in
-// file.
-func parameterObjects(file *ast.File, info *types.Info) map[types.Object]bool {
+// file that is never written: a parameter assigned in its body, or whose
+// address is taken, no longer holds what its caller passed.
+func parameterObjects(file *ast.File, info *types.Info, writes map[*ast.Ident]bool) map[types.Object]bool {
 	params := map[types.Object]bool{}
 	add := func(fields *ast.FieldList) {
 		if fields == nil {
@@ -361,6 +370,9 @@ func parameterObjects(file *ast.File, info *types.Info) map[types.Object]bool {
 		}
 		return true
 	})
+	for id := range writes {
+		delete(params, info.Uses[id])
+	}
 	return params
 }
 
