@@ -465,6 +465,10 @@ for (const provider of ['claude', 'codex'] as const) {
   test(`${provider}: a Send click while the strip glides to the side chat sends`, async ({ harness, page }) => {
     const source = await seedSource(harness, [], provider);
     await setScenario(harness, source.path, plainScenario({ name: `side-chat-glide-${provider}`, provider, texts: ['On it.'] }));
+    // A strip narrower than the two panes, so revealing the side chat
+    // scrolls it: at the default viewport a side chat at its companion
+    // minimum fits beside its source.
+    await page.setViewportSize({ width: 1100, height: 720 });
     await harness.open(page);
     await page.getByTestId('thread-row').filter({ hasText: SOURCE_TITLE }).click();
     await runOneTurn(page, harness, 'read the migration');
