@@ -682,6 +682,13 @@ export class ProviderStatus {
     "installed": boolean;
     "version"?: string;
     "binaryPath": string;
+
+    /**
+     * WrapperPath is the launcher on PATH that BinaryPath was resolved
+     * from, when Agent Overflow runs the binary that launcher would spawn
+     * (the npm Codex wrapper's native binary). Empty otherwise.
+     */
+    "wrapperPath"?: string;
     "status": string;
     "message"?: string;
 

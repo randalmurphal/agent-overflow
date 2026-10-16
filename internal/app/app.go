@@ -532,6 +532,11 @@ type App struct {
 	// Tests install a fake so they can simulate "only claude installed"
 	// without touching $PATH.
 	lookPathFn func(string) error
+	// codexLookPathFn replaces exec.LookPath when the default `codex`
+	// setting is resolved to the binary it runs (defaultCodexBinary).
+	// Production leaves it nil; test fixtures install one so the default
+	// never resolves against the developer's PATH.
+	codexLookPathFn func(string) (string, error)
 	// emitEventFn is a test-only override for a.emitEvent. It takes the
 	// channel in its WIRE spelling rather than as an eventchan.Channel —
 	// it is an observation seam, not an emit site, so it has nothing to

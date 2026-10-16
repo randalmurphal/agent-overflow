@@ -32,9 +32,12 @@ func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 		}
 	}
 	statuses := a.providerDiscoveryService().ProviderStatuses()
-	for _, status := range statuses {
+	for i, status := range statuses {
 		if identity, ok := identities[status.Provider]; ok {
 			a.recordProbedProviderVersion(status.Provider, identity, status)
+		}
+		if status.Provider == string(provider.Codex) && status.Installed {
+			statuses[i].WrapperPath = a.codexWrapperFor(status.BinaryPath)
 		}
 	}
 	return statuses, nil
@@ -333,10 +336,7 @@ func (a *App) providerBinaryPath(providerName string) string {
 		}
 		return settings.DefaultSettings.ClaudeBinaryPath
 	case string(provider.Codex):
-		if path := strings.TrimSpace(cfg.CodexBinaryPath); path != "" {
-			return path
-		}
-		return settings.DefaultSettings.CodexBinaryPath
+		return a.codexBinary().Path
 	default:
 		return ""
 	}

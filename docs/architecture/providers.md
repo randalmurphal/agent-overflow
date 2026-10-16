@@ -11,6 +11,11 @@ the provider process owns turn state.
   --verbose`. NDJSON both directions. Authentication is via the CLI's own
   OAuth flow. We don't see credentials.
 - Codex: `codex app-server`. JSON-RPC 2.0 over stdio. One process per thread.
+  When the default `codex` setting resolves to the npm package's
+  `bin/codex.js` Node wrapper, every spawn, version probe and the binary
+  watch use the vendored native binary that wrapper would launch
+  (`internal/provider/codex/native_binary.go`). An explicit binary setting,
+  or a layout the resolver does not recognize, runs as configured.
 
 ## Session Identity
 
