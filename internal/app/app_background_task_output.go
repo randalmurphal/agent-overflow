@@ -49,6 +49,50 @@ var (
 type appBackgroundTaskOutputState struct {
 	once   sync.Once
 	tailer atomic.Pointer[tasktail.Tailer]
+
+	// bindings is the app's own record of every watch bound to a
+	// connection cleanup: which connection, and which thread the watch
+	// was opened on. The tailer lets go of a watch on its own when the
+	// task ends or its read fails, so an Unwatch that follows gets no
+	// release from it; the binding is unbound from this record, by the
+	// caller's thread, and from the tailer's Dropped report, so a
+	// long-lived connection does not keep a cleanup per task it watched.
+	mu       sync.Mutex
+	bindings map[string]backgroundTaskOutputBinding
+}
+
+type backgroundTaskOutputBinding struct {
+	threadID string
+	state    *transport.ConnState
+}
+
+// bindWatch records a watch bound to state's cleanup.
+func (s *appBackgroundTaskOutputState) bindWatch(watchID, threadID string, state *transport.ConnState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bindings == nil {
+		s.bindings = make(map[string]backgroundTaskOutputBinding)
+	}
+	s.bindings[watchID] = backgroundTaskOutputBinding{threadID: threadID, state: state}
+}
+
+// unbindWatch drops the record of watchID and unbinds its cleanup, when
+// the record exists and, if a caller is named, was made by that caller
+// for threadID. It reports whether the record was dropped.
+func (s *appBackgroundTaskOutputState) unbindWatch(watchID, threadID string, caller *transport.ConnState) bool {
+	s.mu.Lock()
+	binding, ok := s.bindings[watchID]
+	if ok && caller != nil && (binding.state != caller || binding.threadID != threadID) {
+		ok = false
+	}
+	if ok {
+		delete(s.bindings, watchID)
+	}
+	s.mu.Unlock()
+	if ok {
+		binding.state.UnbindCleanup(backgroundTaskOutputCleanupKey(watchID))
+	}
+	return ok
 }
 
 // backgroundTaskTailer builds the tailer on first use. Its frames leave
@@ -60,6 +104,13 @@ func (a *App) backgroundTaskTailer() *tasktail.Tailer {
 				a.emit(eventchan.ProviderBackgroundTaskOutput, evt)
 			},
 			Resolve: triage.ResolveClaudeTaskOutputPath,
+			// A watch the tailer let go of (task ended, read failed) has
+			// nothing left for its connection cleanup to release.
+			Dropped: func(watchIDs []string) {
+				for _, watchID := range watchIDs {
+					a.taskOutput.unbindWatch(watchID, "", nil)
+				}
+			},
 		}))
 	})
 	return a.taskOutput.tailer.Load()
@@ -156,11 +207,13 @@ func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchIte
 		// A false return means the connection is already tearing down:
 		// the safety net it would have provided is gone, so release now.
 		if !state.BindCleanup(backgroundTaskOutputCleanupKey(snapshot.WatchID), func() {
+			a.taskOutput.unbindWatch(snapshot.WatchID, "", nil)
 			a.backgroundTaskTailer().Release(threadID, snapshot.WatchID, owner)
 		}) {
 			a.backgroundTaskTailer().Release(threadID, snapshot.WatchID, owner)
 			return tasktail.Snapshot{}, fmt.Errorf("background task output: connection closing")
 		}
+		a.taskOutput.bindWatch(snapshot.WatchID, threadID, state)
 	}
 	return snapshot, nil
 }
@@ -177,12 +230,16 @@ func (a *App) UnwatchBackgroundTaskOutput(ctx context.Context, threadID, watchID
 		return nil
 	}
 	state := transport.ConnStateFromContext(ctx)
-	// The cleanup stays bound until the release it would make has been
-	// made: a release that does not land (wrong thread) leaves the watch,
-	// and the connection's end must still release it.
-	if a.backgroundTaskTailer().Release(threadID, watchID, backgroundTaskOutputOwner(state)) {
-		state.UnbindCleanup(backgroundTaskOutputCleanupKey(watchID))
+	// The binding is this connection's record of the watch, dropped only
+	// by the connection that made it, for the thread it was made on: a
+	// release that cannot land (wrong thread) leaves the watch and its
+	// cleanup, and the connection's end still releases it. The tailer's
+	// own release may already have nothing to do: a task that ended took
+	// its watches with it, and the binding still goes.
+	if state != nil {
+		a.taskOutput.unbindWatch(watchID, threadID, state)
 	}
+	a.backgroundTaskTailer().Release(threadID, watchID, backgroundTaskOutputOwner(state))
 	return nil
 }
 

@@ -88,10 +88,15 @@ type Snapshot struct {
 // Config wires a Tailer. Emit receives every frame; Resolve canonicalises
 // an output path and refuses one outside the allowed roots, returning an
 // error that satisfies errors.Is(err, fs.ErrNotExist) while the file is
-// not yet written. Zero durations and sizes take the defaults.
+// not yet written. Dropped, when set, receives the ids of the watches the
+// tailer let go of on its own (the task ended, the read failed, Close),
+// never one a Release ended; the caller releases what it bound to them.
+// Called with no tailer lock held. Zero durations and sizes take the
+// defaults.
 type Config struct {
 	Emit       func(Event)
 	Resolve    func(path string) (string, error)
+	Dropped    func(watchIDs []string)
 	Interval   time.Duration
 	TailBytes  int
 	MaxWatches int
@@ -172,6 +177,9 @@ func New(cfg Config) *Tailer {
 	}
 	if cfg.Resolve == nil {
 		cfg.Resolve = func(path string) (string, error) { return path, nil }
+	}
+	if cfg.Dropped == nil {
+		cfg.Dropped = func([]string) {}
 	}
 	t := &Tailer{
 		cfg:     cfg,
@@ -298,21 +306,28 @@ func (t *Tailer) Release(threadID, watchID, owner string) bool {
 // them. Called with no lock held.
 func (t *Tailer) dropEnded(f *follow) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.follows[f.key] != f {
+		t.mu.Unlock()
 		return
 	}
 	f.mu.Lock()
 	if !f.ended {
 		f.mu.Unlock()
+		t.mu.Unlock()
 		return
 	}
+	dropped := make([]string, 0, len(f.watchers))
 	for watchID := range f.watchers {
 		delete(t.watches, watchID)
+		dropped = append(dropped, watchID)
 	}
 	f.dropped = true
 	f.mu.Unlock()
 	delete(t.follows, f.key)
+	t.mu.Unlock()
+	if len(dropped) > 0 {
+		t.cfg.Dropped(dropped)
+	}
 }
 
 // EndLaunch ends the follow of launchID: a last read of the file, then
@@ -328,14 +343,15 @@ func (t *Tailer) EndLaunch(threadID, launchID string) {
 	}
 	delete(t.follows, key)
 	f.mu.Lock()
+	dropped := make([]string, 0, len(f.watchers))
 	for watchID := range f.watchers {
 		delete(t.watches, watchID)
+		dropped = append(dropped, watchID)
 	}
 	f.mu.Unlock()
 	t.mu.Unlock()
 
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if !f.ended && !f.dropped {
 		t.pollLocked(f, true)
 	}
@@ -353,6 +369,10 @@ func (t *Tailer) EndLaunch(threadID, launchID string) {
 		})
 	}
 	f.closeFileLocked()
+	f.mu.Unlock()
+	if len(dropped) > 0 {
+		t.cfg.Dropped(dropped)
+	}
 }
 
 // Close stops polling, joins the poll goroutine and closes every file.
@@ -368,6 +388,10 @@ func (t *Tailer) Close() {
 	for _, f := range t.follows {
 		follows = append(follows, f)
 	}
+	dropped := make([]string, 0, len(t.watches))
+	for watchID := range t.watches {
+		dropped = append(dropped, watchID)
+	}
 	t.follows = make(map[followKey]*follow)
 	t.watches = make(map[string]watchRef)
 	t.mu.Unlock()
@@ -377,6 +401,9 @@ func (t *Tailer) Close() {
 		f.dropped = true
 		f.closeFileLocked()
 		f.mu.Unlock()
+	}
+	if len(dropped) > 0 {
+		t.cfg.Dropped(dropped)
 	}
 }
 

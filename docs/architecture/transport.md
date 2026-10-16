@@ -406,8 +406,10 @@ open running command row additionally holds one `WatchBackgroundTaskOutput`
 watch per connection and applies `provider:background_task_output` frames,
 filtered by thread; the watch belongs to the connection that opened it
 (only that connection's release lands), is released on collapse and with
-the connection, and ends with the task. A gap on the channel re-watches
-every held tail.
+the connection, and ends with the task; the app keeps its own record of
+each bound watch so the cleanup is unbound by the task's end or the
+client's release even after the tailer has let the watch go. A gap on the
+channel re-watches every held tail.
 `provider:background_tasks_changed` is a payload-free, wildcard refetch nudge
 for readers that must hear about threads no pane shows.
 

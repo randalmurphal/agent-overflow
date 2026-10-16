@@ -154,8 +154,66 @@ func TestUnwatchOnAnotherThreadKeepsTheConnectionCleanup(t *testing.T) {
 	if got := tailer.Watching(); got != 1 {
 		t.Fatalf("a release naming another thread releases nothing; watching %d", got)
 	}
+	if !state.HasCleanup(backgroundTaskOutputCleanupKey(snap.WatchID)) {
+		t.Fatal("a release naming another thread leaves the connection's cleanup bound")
+	}
 	state.RunCleanups()
 	if got := tailer.Watching(); got != 0 {
 		t.Fatalf("the connection's end releases the watch; watching %d", got)
+	}
+}
+
+// A task that ended took its watch with it; the page's Unwatch that
+// follows still drops the connection's cleanup for it, and a page that
+// never unwatches is covered by the end itself.
+func TestWatchBindingsGoWithTheTaskOrTheUnwatch(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	dir := t.TempDir()
+	pathA := writeTaskOutput(t, dir, "task-ea.output", "a\n")
+	pathB := writeTaskOutput(t, dir, "task-eb.output", "b\n")
+	seedTaskOutputThread(t, app, "thread-tail-end", "launch-ea", `{"task_id":"task-ea","output_file":"`+pathA+`"}`)
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "launch-eb", ThreadID: "thread-tail-end", TurnIndex: 1, Kind: "tool_call", Role: "assistant",
+		Status: "running", IsBackground: true, Summary: "Bash: make b", ToolName: "Bash",
+		Meta: `{"task_id":"task-eb","output_file":"` + pathB + `"}`, CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	tailer := app.backgroundTaskTailer()
+
+	// Ended, then unwatched by the page.
+	snapA, err := app.WatchBackgroundTaskOutput(ctx, "thread-tail-end", "launch-ea")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyA := backgroundTaskOutputCleanupKey(snapA.WatchID)
+	if !state.HasCleanup(keyA) {
+		t.Fatal("the watch binds a cleanup on its connection")
+	}
+	tailer.EndLaunch("thread-tail-end", "launch-ea")
+	if err := app.UnwatchBackgroundTaskOutput(ctx, "thread-tail-end", snapA.WatchID); err != nil {
+		t.Fatal(err)
+	}
+	if state.HasCleanup(keyA) {
+		t.Fatal("after the task ended, the page's unwatch must still drop the connection's cleanup")
+	}
+
+	// Ended with no unwatch at all.
+	snapB, err := app.WatchBackgroundTaskOutput(ctx, "thread-tail-end", "launch-eb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyB := backgroundTaskOutputCleanupKey(snapB.WatchID)
+	tailer.EndLaunch("thread-tail-end", "launch-eb")
+	if state.HasCleanup(keyB) {
+		t.Fatal("the task's end drops the cleanup of a watch it took")
+	}
+	app.taskOutput.mu.Lock()
+	left := len(app.taskOutput.bindings)
+	app.taskOutput.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("no binding record outlives its watch; %d left", left)
 	}
 }
