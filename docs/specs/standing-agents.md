@@ -404,13 +404,17 @@ the check the workflow runner's resume makes), and a Codex start's
 signal) marks it. The successor's opening block says the provider
 cleaned up the previous thread's session, names that thread's id, says
 Agent Overflow's history of it is intact, and asks it to tell the user.
-When the start was a send by the person, the send fails with
-`assistant_session_gone`: its text and attachments become the
-successor's composer draft rather than a message, the client shows the
-error as a notice instead of restoring the old composer, and the opening
-block says the message that found the session gone waits unsent in the
-user's composer. A handoff that fails puts the draft back in the old
-thread's composer.
+When the start was a send by the person and the handoff is running,
+the send fails with `assistant_session_gone`: its text and attachments
+join the successor's composer draft rather than becoming a message, the
+client shows the error as a notice instead of restoring the old
+composer, and the opening block says how many messages wait unsent in
+the user's composer. Every send that finds the session gone while the
+handoff runs is kept, in the order sent, one blank line between them.
+A handoff that fails, or never starts because the app is stopping, puts
+them back in the old thread's composer; a send that finds the session
+gone with no handoff running fails as any start failure does, and its
+client keeps the text.
 
 ### Agent home contents
 
