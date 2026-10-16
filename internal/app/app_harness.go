@@ -18,6 +18,7 @@ import (
 	replaylog "agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/def"
 )
 
@@ -230,7 +231,7 @@ func (h *harnessHost) ArchiveThread(threadID string) error {
 }
 
 func (h *harnessHost) BroadcastThreadRow(threadID string) {
-	h.app.broadcastThreadRowByID(threadID)
+	h.app.announceThread(triage.ThreadActionFull, threadID)
 }
 
 func (h *harnessHost) StopSession(threadID string) error {

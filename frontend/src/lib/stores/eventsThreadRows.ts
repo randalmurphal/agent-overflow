@@ -16,6 +16,7 @@ import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prepen
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
+import { forgetThreadRowFrames, noteThreadPatchFrame, noteThreadRowFrame } from './threadRowFrames';
 import { deferEmptyDraftDeletion } from './emptyDraftCleanup';
 import { GetThread } from './bindings';
 import { withBackendTarget } from '../transport/backends';
@@ -359,10 +360,10 @@ function patchMatchesThread(
  * row, because sidebar membership is not derivable from the row alone.
  *
  * Every persisted thread-row mutation sends one, which is what makes a
- * second attached client converge without a refresh. The client that issued
- * the mutation may also have applied its RPC result optimistically; the
- * broadcast row IS that RPC's return value, so the echo lands on state the
- * optimistic apply already reached rather than moving it somewhere else.
+ * second attached client converge without a refresh. The issuing client
+ * also applies its RPC result, which was read before this frame left and
+ * can be older than it; threadRowFrames.ts keeps that reply from undoing a
+ * frame that arrived after the call started.
  */
 export interface ThreadUpdateEvent {
   /** 'full' | 'patch' | 'listed' | 'unlisted' | 'deleted' */
@@ -398,6 +399,7 @@ export function applyThreadErrorNotice(evt: ThreadErrorNoticeEvent): void {
 
 export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
   if (!evt) return;
+  noteThreadFrame(evt);
   switch (evt.action) {
     case 'patch': {
       if (!evt.id) return;
@@ -472,6 +474,14 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       if (evt.thread?.id) syncThreadRow(evt.thread);
     }
   }
+}
+
+function noteThreadFrame(evt: ThreadUpdateEvent): void {
+  const id = evt.thread?.id ?? evt.id;
+  if (!id) return;
+  if (evt.action === 'deleted') forgetThreadRowFrames(id);
+  else if (evt.action === 'patch') noteThreadPatchFrame(id, evt);
+  else if (evt.thread) noteThreadRowFrame(id);
 }
 
 export function applyModeChanged(payload: ModeChangedPayload): void {

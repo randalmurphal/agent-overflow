@@ -143,15 +143,18 @@ go-build:
 # every interface or dials out reaches nothing beyond the namespace in any
 # WSL networking mode. `go test` itself runs under bin/ao-netns rather than
 # through `-exec`, which would disable the test cache. go-prefetch fetches,
-# on the host network first, what the named packages and their tests import
-# plus the module's tools, since a test may run `go tool wails3`. The CI
+# on the host network first, what every package of the module and its tests
+# import plus the module's tools, since a test may run `go tool wails3` and
+# a whole-tree contract test (TestThreadUpdatedFramesComeFromTheAnnouncer)
+# lists and compiles every package whichever packages are named. The CI
 # toolchain image carries that set rather than the whole module graph, and
 # can lag go.mod, so a bare `go mod download` here would reach the proxy
-# from every job and a narrower prefetch would strand a tool in the namespace.
+# from every job and a narrower prefetch would strand a module in the
+# namespace.
 # Narrow a run with GO_TEST_PKGS and GO_TEST_FLAGS:
 #   make go-test GO_TEST_PKGS=./internal/shellenv GO_TEST_FLAGS='-run TestSync -count=1'
 NETNS := $(CURDIR)/bin/ao-netns
-go-prefetch = go list -deps -test $(1) tool > /dev/null
+go-prefetch = go list -e -deps -test $(1) tool > /dev/null
 GO_TEST_PKGS ?= $(GO_PACKAGE_ROOTS)
 GO_TEST_FLAGS ?=
 
@@ -166,7 +169,7 @@ go-test: netns-tool
 	packages=$$(go list $(GO_TEST_PKGS)); \
 	if [ -n "$(GO_TEST_EXCLUDE)" ]; then packages=$$(printf '%s\n' $$packages | grep -vE '$(GO_TEST_EXCLUDE)' || true); fi; \
 	if [ -z "$$packages" ]; then echo "ERROR: no Go packages found"; exit 1; fi; \
-	$(call go-prefetch,$$packages); \
+	$(call go-prefetch,$(GO_PACKAGE_ROOTS)); \
 	$(NETNS) go test $(GO_TEST_FLAGS) $$packages
 
 # Static checks. Each is one CI job (.github/workflows/ci.yml) and runs the
@@ -244,7 +247,7 @@ frontend-lint: $(FRONTEND_DEPS)
 # tighten only if you've measured headroom.
 RACE_PKGS := ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... ./internal/browser/... ./internal/app/... .
 test-race: netns-tool
-	$(call go-prefetch,$(RACE_PKGS))
+	$(call go-prefetch,$(GO_PACKAGE_ROOTS))
 	$(NETNS) go test -race -timeout 1800s $(RACE_PKGS)
 
 # provider-smoke is the real-provider gate: it drives one trivial workflow

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/sessionruntime"
@@ -788,7 +787,9 @@ func (a *App) syncThreadEffortFromWire(threadID, sessionToken string, tier provi
 		return
 	}
 	if changed {
-		if err := a.store.UpdateThread(sanitized); err != nil {
+		// Only the effort column: the row was read above, and a write to
+		// another column since then (a followed worktree move) must survive.
+		if _, _, err := a.store.UpdateReasoningEffort(threadID, sanitized.ReasoningEffort); err != nil {
 			a.emitErrorToThread(threadID, fmt.Sprintf("effort sync: persist: %v", err))
 			return
 		}
@@ -800,9 +801,7 @@ func (a *App) syncThreadEffortFromWire(threadID, sessionToken string, tier provi
 			a.emitErrorToThread(threadID, err.Error())
 		}
 	}
-	if changed {
-		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &sanitized})
-	}
+	a.announceThreadIfChanged(triage.ThreadActionFull, threadID, changed)
 }
 
 // firstLine truncates a command answer to its first line for error surfaces.

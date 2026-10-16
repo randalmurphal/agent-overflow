@@ -70,8 +70,8 @@ func (e appWorktreeSetupEvents) Setup(event worktreesetupapp.Event) {
 	e.app.emitEvent(eventchan.WorktreeSetup, projectWorktreeSetupEvent(event))
 }
 
-func (e appWorktreeSetupEvents) ThreadUpdated(thread store.Thread) {
-	e.app.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &thread})
+func (e appWorktreeSetupEvents) ThreadUpdated(threadID string) {
+	e.app.announceThread(triage.ThreadActionFull, threadID)
 }
 
 func (a *App) startThreadWorktreeSetup(thread store.Thread) {

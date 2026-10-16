@@ -18,6 +18,7 @@
   } from '../../stores/bindings';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import type { PanelContext } from '../../stores/panelContext.svelte';
+  import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import type { Thread } from '../../types/models';
   import {
     normalizePlanMarkdownForExport,
@@ -111,8 +112,8 @@
   });
 
   $effect(() => {
-    threadId;
-    currentPlan?.id;
+    void threadId;
+    void currentPlan?.id;
 
     if (!isUiRenderTraceEnabled()) return;
     recordUiTrace('plan-sidebar.state', {
@@ -195,8 +196,9 @@
 
     sendingDrafts = true;
     try {
+      const mark = threadRowFrameMark();
       const updated = (await SendPlanRevisionComments(tid, planId, draftIds)) as Thread;
-      ctx.replaceThread(updated);
+      ctx.syncThreadReply(updated, mark);
       await refreshPlanComments(tid, planId);
     } catch (err) {
       console.error('Failed to send plan comments:', err);

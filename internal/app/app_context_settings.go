@@ -149,6 +149,6 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 		profile.AutoCompactStandardPercent = refreshed.AutoCompactStandardPercent
 		profile.AutoCompactExtendedPercent = refreshed.AutoCompactExtendedPercent
 	})
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed, changed)
+	a.announceThreadIfChanged(triage.ThreadActionFull, refreshed.ID, changed)
 	return refreshed, profileErr
 }

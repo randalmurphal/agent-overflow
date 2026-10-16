@@ -2581,6 +2581,49 @@ func TestProposedPlanPersistBroadcastsTheThreadRow(t *testing.T) {
 	}
 }
 
+// The plan row frame goes through the announcer the router was given, so it
+// is ordered with the App's frames and carries the row as it is when it
+// leaves: a rename landing while the frame waits is in it.
+func TestProposedPlanRowFrameUsesTheSharedAnnouncer(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	shared := NewThreadAnnouncer(st.GetThread)
+	router.SetThreadAnnouncer(shared)
+
+	release := shared.Hold("t1")
+	done := make(chan error, 1)
+	go func() {
+		done <- router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventProposedPlan,
+			ThreadID:  "t1",
+			ItemID:    "plan-1",
+			Content:   "# Ship it\n\n- one",
+			Timestamp: time.Now(),
+		})
+	}()
+	finished := false
+	var handleErr error
+	for deadline := time.Now().Add(15 * time.Second); !finished && shared.Refs("t1") < 2 && time.Now().Before(deadline); {
+		select {
+		case handleErr = <-done:
+			finished = true
+		case <-time.After(time.Millisecond):
+		}
+	}
+	renameErr := st.UpdateTitle("t1", "Renamed while the frame waited")
+	release()
+	if !finished {
+		handleErr = <-done
+	}
+	if handleErr != nil || renameErr != nil {
+		t.Fatalf("handle plan: %v, rename: %v", handleErr, renameErr)
+	}
+	rows := threadRowEmissions(t, emissions.snapshot())
+	if len(rows) == 0 || rows[len(rows)-1].Title != "Renamed while the frame waited" {
+		t.Fatalf("thread row frames = %+v, want the last one renamed", rows)
+	}
+}
+
 func TestNonPlanPersistBroadcastsNoThreadRow(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")

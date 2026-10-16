@@ -265,7 +265,7 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 		return store.Thread{}, forkRefusal(fmt.Errorf("fork thread: create fork thread: %w", err))
 	}
 	cleanups.Add(func() error { return a.cleanupForkThread(fork.ID) })
-	a.broadcastThreadRow(triage.ThreadActionListed, fork)
+	a.announceThread(triage.ThreadActionListed, fork.ID)
 
 	if err := ctx.Err(); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
@@ -304,7 +304,7 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
-	a.broadcastThreadRow(triage.ThreadActionListed, ready)
+	a.announceThread(triage.ThreadActionListed, ready.ID)
 	return ready, nil
 }
 
@@ -412,7 +412,7 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 		return store.Thread{}, forkRefusal(fmt.Errorf("fork thread from message: create fork thread: %w", err))
 	}
 	cleanups.Add(func() error { return a.cleanupForkThread(fork.ID) })
-	a.broadcastThreadRow(triage.ThreadActionListed, fork)
+	a.announceThread(triage.ThreadActionListed, fork.ID)
 	timing.next("attachments")
 	promptDraft, err := a.composerDraftFromUserItemWithClonedAttachments(fork.ID, item, promptDraftUpdatedAt)
 	if err != nil {
@@ -461,7 +461,7 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
-	a.broadcastThreadRow(triage.ThreadActionListed, ready)
+	a.announceThread(triage.ThreadActionListed, ready.ID)
 	return ready, nil
 }
 

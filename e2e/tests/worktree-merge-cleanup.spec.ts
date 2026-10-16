@@ -421,6 +421,9 @@ test('a turn running when the PR merges delays the cleanup until it ends', async
   expect(existsSync(fixture.worktreePath)).toBe(false);
   await expectEveryForgeCallHandled(harness);
   await expect(errorToasts(page)).toHaveCount(0);
+  // The page's read stamp for the finished turn lands around the move; the
+  // pane must not fall back to the row from before it.
+  await expect(page.getByTestId('env-picker-trigger')).toHaveText('Base');
 });
 
 test('a message the user sent after the merge keeps the worktree, with no notice', async ({ harness, page }) => {

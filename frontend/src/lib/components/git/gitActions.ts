@@ -15,6 +15,7 @@ import {
   syncRemovedWorktreeThreads,
   type WorktreeRemovalResult,
 } from '../../stores/worktreeRemoval.svelte';
+import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import type {
@@ -126,6 +127,7 @@ export async function runPullAction(ctx: GitActionCtx): Promise<void> {
 
 export async function runRemoveWorktreeAction(ctx: RemoveWorktreeCtx): Promise<void> {
   try {
+    const mark = threadRowFrameMark();
     const removal = (await RemoveOtherWorktree(
       ctx.workspace,
       ctx.worktreePath,
@@ -134,7 +136,7 @@ export async function runRemoveWorktreeAction(ctx: RemoveWorktreeCtx): Promise<v
     // This pane's own row moved to the project root; applying it now points
     // the pane's status at the root. Draft composers in the removed
     // directory are moved by the worktree:removed event.
-    syncRemovedWorktreeThreads(removal);
+    syncRemovedWorktreeThreads(removal, mark);
     addToast('success', 'Worktree removed');
   } catch (err) {
     console.error('Remove worktree failed:', err);

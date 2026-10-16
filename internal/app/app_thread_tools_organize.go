@@ -157,11 +157,11 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 	if result.CreatedGroup != nil {
 		a.emitThreadGroup("create", *result.CreatedGroup)
 	}
-	a.broadcastThreadRowIfChanged(organizeThreadAction(result), result.Thread, result.Changed)
+	a.announceThreadIfChanged(organizeThreadAction(result), result.Thread.ID, result.Changed)
 	// The discussion children a group move carried, as SetThreadGroup's own
 	// binding announces them.
 	for _, carried := range result.Carried {
-		a.broadcastThreadRow(triage.ThreadActionFull, carried)
+		a.announceThread(triage.ThreadActionFull, carried.ID)
 	}
 	return result, nil
 }

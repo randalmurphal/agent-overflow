@@ -1,10 +1,12 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { deleteThreadAction, forkThreadAction, type ThreadActionCtx } from './threadRowActions';
+import { deleteThreadAction, forkThreadAction, pinThreadAction, setThreadPinGroupAction, unpinThreadAction, type ThreadActionCtx } from './threadRowActions';
+import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { buildPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import {
+  getThreadById,
   getThreads,
   prependThread,
   removeThread,
@@ -42,7 +44,7 @@ function makeCtx(thread: Partial<Thread>): ThreadActionCtx {
 }
 
 function clearThreadsForTest(): void {
-  for (const t of [...getThreads()]) removeThread(t.id);
+  for (const t of getThreads()) removeThread(t.id);
 }
 
 describe('forkThreadAction', () => {
@@ -50,7 +52,7 @@ describe('forkThreadAction', () => {
     resetBindingMocks();
     clearThreadsForTest();
     collapseProject('project-1');
-    for (const toast of [...getToasts()]) removeToast(toast.id);
+    for (const toast of getToasts()) removeToast(toast.id);
     setBindingMock('GetSettings', async () => makeSettings());
     await loadSettings();
   });
@@ -134,5 +136,52 @@ describe('deleteThreadAction', () => {
     expect(order).toEqual(['remove', 'delete, sibling at /tmp/work']);
     expect(siblingPane.thread?.worktreePath).toBe('');
     expect(siblingPane.thread?.branch).toBe('main');
+  });
+});
+
+// The organize thread tool pins and unpins concurrently with the person: a
+// whole-row frame that lands during the call is newer than its reply.
+describe('pin replies', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    clearThreadsForTest();
+  });
+
+  it('keeps an unpin frame that arrived during PinThread', async () => {
+    const ctx = makeCtx({ id: 'pin-raced' });
+    prependThread(ctx.thread);
+    setBindingMock('PinThread', async () => {
+      applyThreadUpdated({ action: 'full', thread: { ...ctx.thread, pinnedAt: undefined, title: 'Unpinned by the tool' } });
+      return { ...ctx.thread, pinnedAt: 500, pinGroup: 0 };
+    });
+    await pinThreadAction(ctx);
+    expect(getThreadById('pin-raced')?.pinnedAt).toBeUndefined();
+    expect(getThreadById('pin-raced')?.title).toBe('Unpinned by the tool');
+  });
+
+  it('keeps a pin frame that arrived during UnpinThread or SetThreadPinGroup', async () => {
+    const ctx = makeCtx({ id: 'unpin-raced', pinnedAt: 100, pinGroup: 0 });
+    prependThread(ctx.thread);
+    setBindingMock('UnpinThread', async () => {
+      applyThreadUpdated({ action: 'full', thread: { ...ctx.thread, pinnedAt: 700, pinGroup: 1 } });
+      return { ...ctx.thread, pinnedAt: undefined, pinGroup: undefined };
+    });
+    await unpinThreadAction(ctx);
+    expect(getThreadById('unpin-raced')?.pinnedAt).toBe(700);
+    setBindingMock('SetThreadPinGroup', async () => {
+      applyThreadUpdated({ action: 'full', thread: { ...ctx.thread, pinnedAt: 800, pinGroup: 0 } });
+      return { ...ctx.thread, pinnedAt: 700, pinGroup: 1 };
+    });
+    await setThreadPinGroupAction(ctx, 1);
+    expect(getThreadById('unpin-raced')?.pinnedAt).toBe(800);
+    expect(getThreadById('unpin-raced')?.pinGroup).toBe(0);
+  });
+
+  it('applies the reply when no frame arrived during the call', async () => {
+    const ctx = makeCtx({ id: 'pin-quiet' });
+    prependThread(ctx.thread);
+    setBindingMock('PinThread', async () => ({ ...ctx.thread, pinnedAt: 500, pinGroup: 0 }));
+    await pinThreadAction(ctx);
+    expect(getThreadById('pin-quiet')?.pinnedAt).toBe(500);
   });
 });

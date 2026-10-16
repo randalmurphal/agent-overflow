@@ -21,7 +21,8 @@
   import type { DiscussionDefinition } from '../../../types/discussion';
   import type { Thread } from '../../../types/models';
   import { GetThread, StartDiscussionByID } from '../../../stores/bindings';
-  import { syncThread } from '../../../stores/panes.svelte';
+  import { syncThreadReply } from '../../../stores/panes.svelte';
+  import { threadRowFrameMark } from '../../../stores/threadRowFrames';
   import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import MenuItem from '../../primitives/MenuItem.svelte';
@@ -68,6 +69,7 @@
         addToast('info', 'Start the thread before adding a discussion.');
         return;
       }
+      const mark = threadRowFrameMark();
       await StartDiscussionByID(threadId, def.id);
       // StartDiscussion does NOT emit `thread:updated`, so we refresh the
       // thread manually — matching DiscussionStartFlow. Without this the
@@ -75,7 +77,7 @@
       // the prior mode until the user reloads.
       try {
         const refreshed = (await GetThread(threadId)) as Thread;
-        syncThread(refreshed);
+        syncThreadReply(refreshed, mark);
       } catch (refreshErr) {
         console.error('Failed to refresh thread after StartDiscussion:', refreshErr);
       }

@@ -1,6 +1,6 @@
 import type { Item, Thread } from '../types/models';
 import type { WorkspaceRef } from '../types/git';
-import { mountThreadInPane, syncThread } from './panes.svelte';
+import { mountThreadInPane, syncThreadReply } from './panes.svelte';
 import type { ThreadPane } from './thread.svelte';
 
 /**
@@ -57,10 +57,10 @@ export interface PanelContext {
   /** Close this panel (X button, ESC, programmatic). Generic across panel
    *  kinds — injected by the owning shell. */
   close(): void;
-  /** Sync an updated thread to every UI surface holding it (the owning
-   *  pane plus the global threads registry). Use after a panel action
-   *  mutates the thread server-side. */
-  replaceThread(thread: Thread): void;
+  /** Sync the thread row a panel action's RPC returned, from a call started
+   *  at `mark` (threadRowFrameMark), to every UI surface holding it
+   *  (panes.svelte#syncThreadReply). */
+  syncThreadReply(reply: Thread, mark: number): Thread;
   /** Show another thread after a panel action creates one. Routes through the
    *  pane-mount chokepoint, so it reveals an already-open thread rather than
    *  mounting a second copy of it — and the pane's new contents are persisted
@@ -93,7 +93,7 @@ export function makePanelContext(pane: ThreadPane, close: () => void): PanelCont
     getItemById: (itemId) => pane.getItemById(itemId),
     closeAgentPane: () => pane.closeAgentPane(),
     close,
-    replaceThread: syncThread,
+    syncThreadReply,
     switchThread: async (thread) => { await mountThreadInPane(thread, pane); },
   };
 }

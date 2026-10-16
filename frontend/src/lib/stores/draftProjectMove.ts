@@ -4,7 +4,8 @@ import type { Draft, DraftSnapshot } from '../types/draft';
 import type { ThreadPane } from './thread.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { mountThreadInPane } from './panes.svelte';
-import { prependThread, removeThread } from './threads.svelte';
+import { prependThreadReply, removeThread } from './threads.svelte';
+import { threadRowFrameMark } from './threadRowFrames';
 import { noteThread, projectBackend, resolveThreadBackend } from '../transport/entityIndex';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { seedDefaultWorktreeIntentForDraft, hasStagedWorktreeIntent, isWorktreeIntentApplying } from './worktreeIntent.svelte';
@@ -67,6 +68,7 @@ export async function moveDraftProject(
       terminalChips: local.terminalChips, sourceProposedPlan: local.sourceProposedPlan,
     } : snapshot(await GetDraft(id) as Draft);
     if (!ownsPane()) return false;
+    const mark = threadRowFrameMark();
     if (sourceBackend === destinationBackend) {
       destination = await withBackendTarget(destinationBackend, () => CreateThread(draftThreadOptions(source!, project.id)));
       noteThread(destination.id, destinationBackend);
@@ -87,7 +89,7 @@ export async function moveDraftProject(
     published = true;
     if (local) forgetDraftSnapshotIfMatches(id, local);
     if (ownsPane() && draft && local && draftSnapshotMatchesPersistedState(draft.snapshot(), local)) draft.clearLocalForSend();
-    prependThread(destination);
+    destination = prependThreadReply(destination, mark);
     seedDefaultWorktreeIntentForDraft(destination);
     const shouldMount = ownsPane();
     if (shouldMount) {

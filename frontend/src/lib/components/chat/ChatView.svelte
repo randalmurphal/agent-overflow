@@ -16,7 +16,8 @@
   import {
     ForkThreadFromMessage,
   } from '../../stores/bindings';
-  import { markThreadRead, prependThread, updateThreadReadState } from '../../stores/threads.svelte';
+  import { markThreadRead, prependThreadReply, updateThreadReadState } from '../../stores/threads.svelte';
+  import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import { getFocusedThreadPaneId, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
@@ -343,16 +344,16 @@
   });
 
   $effect(() => {
-    pane.threadId;
-    pane.loading;
-    pane.items.length;
-    pane.timelineRevision;
-    pane.pendingApprovals.length;
-    getActiveTurn(pane.threadId)?.turnId;
-    pane.latestSettledTurn?.turnId;
-    pane.showTerminal;
-    pane.showPlanSidebar;
-    pane.showReviewPane;
+    void pane.threadId;
+    void pane.loading;
+    void pane.items.length;
+    void pane.timelineRevision;
+    void pane.pendingApprovals.length;
+    void getActiveTurn(pane.threadId)?.turnId;
+    void pane.latestSettledTurn?.turnId;
+    void pane.showTerminal;
+    void pane.showPlanSidebar;
+    void pane.showReviewPane;
 
     if (!isUiRenderTraceEnabled()) return;
     recordUiTrace('chat.state', summarizePaneForTrace(pane));
@@ -401,10 +402,11 @@
     if (!thread || forkingMessageItemId) return;
     forkingMessageItemId = item.id;
     try {
+      const mark = threadRowFrameMark();
       const created = await withForkProgress(thread, async () => (await ForkThreadFromMessage(thread.id, item.id)) as Thread);
-      const forked = await autoPinNewThread(created);
+      const pinned = await autoPinNewThread(created);
       if (pane.thread?.id !== thread.id) return;
-      prependThread(forked);
+      const forked = prependThreadReply(pinned, mark);
       if (forked.projectId) expandProject(forked.projectId);
       await openThreadInPane(forked, pane);
       addToast('info', 'Forked from this message into a new thread.');

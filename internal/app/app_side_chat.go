@@ -143,7 +143,7 @@ func (a *App) PromoteScratchThread(ctx context.Context, threadID string) (store.
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("promote scratch thread: %w", err)
 	}
-	a.broadcastThreadRow(triage.ThreadActionListed, promoted)
+	a.announceThread(triage.ThreadActionListed, promoted.ID)
 	return promoted, nil
 }
 

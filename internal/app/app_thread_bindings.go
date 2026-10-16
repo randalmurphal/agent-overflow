@@ -159,7 +159,7 @@ func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememb
 	if rememberDefaults {
 		profileErr = a.rememberCreatedThreadProfile(thread, opts)
 	}
-	a.broadcastThreadRow(triage.ThreadActionListed, thread)
+	a.announceThread(triage.ThreadActionListed, thread.ID)
 	return thread, profileErr
 }
 
@@ -187,7 +187,7 @@ func (a *App) StartTerminal(ctx context.Context, opts StartTerminalOptions) (sto
 	if err != nil {
 		return store.Thread{}, err
 	}
-	a.broadcastThreadRow(triage.ThreadActionListed, thread)
+	a.announceThread(triage.ThreadActionListed, thread.ID)
 	return thread, nil
 }
 
@@ -282,9 +282,7 @@ func (a *App) RenameThread(id string, title string) error {
 	if err := a.threadApplication().Rename(id, title); err != nil {
 		return err
 	}
-	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
-		Action: triage.ThreadActionPatch, ID: id, Title: &title,
-	})
+	a.announceThreadPatch(id, triage.ThreadUpdateEvent{Title: &title})
 	a.syncPeerSessionNameAsync(id)
 	return nil
 }
@@ -319,7 +317,7 @@ func (a *App) MarkThreadRead(id string) error {
 	if err != nil {
 		return err
 	}
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+	a.announceThreadIfChanged(triage.ThreadActionFull, row.ID, changed)
 	return nil
 }
 
@@ -339,7 +337,7 @@ func (a *App) MarkThreadUnread(id string) error {
 	if err != nil {
 		return err
 	}
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+	a.announceThreadIfChanged(triage.ThreadActionFull, row.ID, changed)
 	return nil
 }
 
@@ -358,7 +356,7 @@ func (a *App) PinThread(id string) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+	a.announceThreadIfChanged(triage.ThreadActionFull, row.ID, changed)
 	return row, nil
 }
 
@@ -377,7 +375,7 @@ func (a *App) SetThreadPinGroup(id string, group int) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+	a.announceThreadIfChanged(triage.ThreadActionFull, row.ID, changed)
 	return row, nil
 }
 
@@ -395,7 +393,7 @@ func (a *App) UnpinThread(id string) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+	a.announceThreadIfChanged(triage.ThreadActionFull, row.ID, changed)
 	return row, nil
 }
 
@@ -490,7 +488,7 @@ func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, erro
 	// The row broadcast is the row returned, read after the session
 	// reconcile: the initiator's optimistic apply and its own echo then
 	// carry identical bytes.
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed, changed)
+	a.announceThreadIfChanged(triage.ThreadActionFull, refreshed.ID, changed)
 	return refreshed, profileErr
 }
 
@@ -517,7 +515,7 @@ func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
 	profileErr := a.rememberChatModelProfileFields(refreshed, func(profile *store.ChatModelProfile) {
 		profile.FastMode = refreshed.FastMode
 	})
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed, changed)
+	a.announceThreadIfChanged(triage.ThreadActionFull, refreshed.ID, changed)
 	return refreshed, profileErr
 }
 
@@ -558,7 +556,7 @@ func (a *App) UpdateThreadBranch(workspacePath, branch string) ([]store.Thread, 
 		return nil, err
 	}
 	for index := range rows {
-		a.broadcastThreadRow(triage.ThreadActionFull, rows[index])
+		a.announceThread(triage.ThreadActionFull, rows[index].ID)
 	}
 	return rows, nil
 }
@@ -719,7 +717,7 @@ func (a *App) finishThreadModelUpdate(update threadapp.ModelUpdate) (store.Threa
 		return store.Thread{}, err
 	}
 	profileErr := a.rememberChatModelProfileFields(updated, nil)
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, updated, update.SelectionChanged())
+	a.announceThreadIfChanged(triage.ThreadActionFull, updated.ID, update.SelectionChanged())
 	a.noticeClaudeAutoRestored(update, updated)
 	return updated, profileErr
 }

@@ -24,6 +24,7 @@ import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { onBackendDetached } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { withLocalReadMarker } from './threadReadWrites';
+import { threadReplyRow, threadRowFramedSince } from './threadRowFrames';
 import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelte';
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn' | 'hasFailedTurn'>>;
@@ -164,6 +165,19 @@ export function resetThreadsForTest(): void {
 
 export function prependThread(thread: Thread): void {
   catalogWriter.mutate(threadBackend(thread.id), (rows) => [thread, ...rows.filter((t) => t.id !== thread.id)]);
+}
+
+/**
+ * `prependThread` for a row an RPC returned, from a call started at `mark`
+ * (threadRowFrameMark): a thread:updated frame that arrived during the call
+ * (the new row's `listed` echo, a later write) is kept over the reply
+ * (threadRowFrames.ts). Returns the row the sidebar now holds.
+ */
+export function prependThreadReply(reply: Thread, mark: number): Thread {
+  const held = getThreadById(reply.id);
+  const row = threadReplyRow(reply, mark, held) ?? held ?? reply;
+  prependThread(row);
+  return row;
 }
 
 let threadRemovedObservers: Array<(id: string) => void> = [];
@@ -316,7 +330,11 @@ export function updateThreadPinState(
   id: string,
   pinnedAt: number | undefined,
   pinGroup: number | undefined,
+  // threadRowFrameMark() taken before the pin RPC this answers: a whole-row
+  // frame since then already carries a pin at least as new (threadRowFrames.ts).
+  mark: number,
 ): void {
+  if (threadRowFramedSince(id, mark)) return;
   catalogWriter.mutate(threadBackend(id), (rows) => rows.map((t) =>
     t.id === id ? { ...t, pinnedAt, pinGroup } : t,
   ));
@@ -331,7 +349,13 @@ export function updateThreadPinState(
  * The backend also emits thread:updated `replace` for each row, which is
  * what reaches the panes; this is the instant-feedback half.
  */
-export function updateThreadGroupState(rows: readonly Thread[]): void {
+export function updateThreadGroupState(
+  replied: readonly Thread[],
+  // threadRowFrameMark() taken before the SetThreadGroup call: a row a
+  // whole-row frame has carried since is newer than the reply's.
+  mark: number,
+): void {
+  const rows = replied.filter((row) => !threadRowFramedSince(row.id, mark));
   if (rows.length === 0) return;
   const byId = new Map(rows.map((row) => [row.id, row] as const));
   catalogWriter.mutate(rows.map((row) => threadBackend(row.id)), (current) => current.map((t) => {

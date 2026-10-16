@@ -23,7 +23,7 @@ type admissionSetupEvents struct {
 func (e *admissionSetupEvents) Setup(Event) {
 	e.once.Do(func() { close(e.entered); <-e.resume })
 }
-func (*admissionSetupEvents) ThreadUpdated(store.Thread) {}
+func (*admissionSetupEvents) ThreadUpdated(string) {}
 
 func TestSetupAdmissionOutlivesLaunchAndEndsAfterCleanup(t *testing.T) {
 	root := t.TempDir()
@@ -151,7 +151,7 @@ func (e *recordingSetupEvents) Setup(event Event) {
 	e.frames = append(e.frames, event)
 }
 
-func (*recordingSetupEvents) ThreadUpdated(store.Thread) {}
+func (*recordingSetupEvents) ThreadUpdated(string) {}
 
 func (e *recordingSetupEvents) mark() int {
 	e.mu.Lock()

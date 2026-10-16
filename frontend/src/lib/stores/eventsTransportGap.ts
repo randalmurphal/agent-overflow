@@ -35,7 +35,8 @@ import { resyncWorktreeSetups } from './eventsWorktreeSetup';
 import { revalidateDraftWorktrees } from './eventsWorktreeRemoved';
 import { markImportConnectionLost } from './sessionImport.svelte';
 import { releaseThreadTitleGenerationPending } from './threadTitleGeneration.svelte';
-import { getThreads } from './threads.svelte';
+import { getThreadById, getThreads } from './threads.svelte';
+import { threadReplyRow, threadRowFrameMark } from './threadRowFrames';
 import { threadHasScope } from '../transport/entityScopes';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
@@ -268,8 +269,14 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
         const threadId = pane.threadId;
         if (!threadHasScope('threads:operate', threadId)) continue;
         seen.add(threadId);
+        const mark = threadRowFrameMark();
         void GetThread(threadId).then((thread) => {
-          const t = thread as Thread | null;
+          const read = thread as Thread | null;
+          if (!read) return;
+          // A thread:updated frame that arrived during the read is newer;
+          // its row is re-seeded the same way.
+          const held = getThreadById(threadId) ?? (pane.thread?.id === threadId ? pane.thread : undefined);
+          const t = threadReplyRow(read, mark, held) ?? held;
           if (!t) return;
           // The re-fetched DB row is the authority after a gap. Drop
           // the live usage side cache BEFORE the pane replaceThread

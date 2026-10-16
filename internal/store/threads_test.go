@@ -865,6 +865,57 @@ func TestUpdateModeDoesNotBumpUpdatedAt(t *testing.T) {
 	}
 }
 
+// The checkout write moves the triple and nothing else, reports a restated
+// triple as no change, and a missing row as ErrNoRows.
+func TestUpdateThreadCheckoutWritesOnlyTheTriple(t *testing.T) {
+	s := newTestStore(t)
+	thr := makeThread("thread-checkout", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	if err := s.UpdateTitle(thr.ID, "Renamed"); err != nil {
+		t.Fatalf("UpdateTitle(): %v", err)
+	}
+	row, changed, err := s.UpdateThreadCheckout(thr.ID, "/tmp/wt", "/tmp/wt", "feature")
+	if err != nil || !changed {
+		t.Fatalf("UpdateThreadCheckout() = changed %v, %v", changed, err)
+	}
+	if row.WorkspacePath != "/tmp/wt" || row.WorktreePath != "/tmp/wt" || row.Branch != "feature" || row.Title != "Renamed" {
+		t.Fatalf("row = %+v, want the triple moved and the title kept", row)
+	}
+	if _, changed, err := s.UpdateThreadCheckout(thr.ID, "/tmp/wt", "/tmp/wt", "feature"); err != nil || changed {
+		t.Fatalf("restated checkout = changed %v, %v; want no change", changed, err)
+	}
+	row, changed, err = s.UpdateThreadCheckout(thr.ID, "/tmp/root", "", "main")
+	if err != nil || !changed || row.WorktreePath != "" {
+		t.Fatalf("move to the root = %+v changed %v, %v", row, changed, err)
+	}
+	if _, _, err := s.UpdateThreadCheckout("missing", "/tmp/x", "", ""); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing row error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+// The branch rename applies only while the row still names the branch the
+// caller renamed from.
+func TestRenameThreadBranchRequiresTheBranchItRenames(t *testing.T) {
+	s := newTestStore(t)
+	thr := makeThread("thread-rename-branch", "claude")
+	thr.Branch = "ao-temp"
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	if _, changed, err := s.RenameThreadBranch(thr.ID, "ao-other", "ao-named"); err != nil || changed {
+		t.Fatalf("rename from a branch the row does not name = changed %v, %v", changed, err)
+	}
+	row, changed, err := s.RenameThreadBranch(thr.ID, "ao-temp", "ao-named")
+	if err != nil || !changed || row.Branch != "ao-named" {
+		t.Fatalf("rename = %+v changed %v, %v", row, changed, err)
+	}
+	if _, _, err := s.RenameThreadBranch("missing", "a", "b"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing row error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestUpdateReasoningEffortPersists(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-effort", "/tmp/effort")
