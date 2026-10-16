@@ -173,6 +173,62 @@ test('lists sessions from both providers and narrows by provider filter and sear
   await expect(page.getByTestId(fx.codex.rowTestId)).toBeVisible();
 });
 
+/**
+ * The left edge of each column, per row. Rows are separate virtualized
+ * elements, so nothing but a shared track template keeps them aligned; a
+ * chip, a long title or a missing branch must not move any column.
+ */
+async function columnEdges(page: Page, rowTestIds: string[]): Promise<Map<string, number[]>> {
+  const edges = new Map<string, number[]>();
+  for (const testId of rowTestIds) {
+    const row = page.getByTestId(testId);
+    for (const col of ['title', 'project', 'branch', 'time']) {
+      const cell = row.locator(`[data-col="${col}"]`);
+      const box = (await cell.count()) > 0 && (await cell.isVisible()) ? await cell.boundingBox() : null;
+      if (!box) continue;
+      edges.set(col, [...(edges.get(col) ?? []), Math.round(box.x)]);
+    }
+  }
+  return edges;
+}
+
+test('every import list column lines up across rows, wide and narrow', async ({ harness, page }) => {
+  const fx = await seedImportFixtures(harness, {
+    withDelegatedCodexSession: true,
+    withLongTitleCodexRow: true,
+  });
+  const rows = [fx.claudeLinear, fx.claudeBranched, fx.codex, fx.codexDelegated!, fx.codexLongTitle!];
+  const rowIds = rows.map((row) => row.rowTestId);
+
+  for (const viewport of [
+    { width: 1400, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await harness.open(page);
+    await openImportModal(page);
+    // The branched Claude row carries the "1 subagents" chip; the long
+    // title fills its track.
+    await expect(page.getByTestId(fx.claudeBranched.rowTestId)).toContainText('1 subagents');
+    for (const row of rows) await expect(page.getByTestId(row.rowTestId)).toBeVisible();
+
+    const edges = await columnEdges(page, rowIds);
+    for (const col of ['title', 'project', 'time']) {
+      const xs = edges.get(col) ?? [];
+      expect(xs, `${col} column at ${viewport.width}px`).toHaveLength(rows.length);
+      expect(new Set(xs).size, `${col} column edges at ${viewport.width}px: ${xs}`).toBe(1);
+    }
+    const branches = edges.get('branch') ?? [];
+    expect(new Set(branches).size, `branch column edges at ${viewport.width}px: ${branches}`).toBeLessThanOrEqual(1);
+
+    // The title keeps real room even at phone width.
+    const title = page.getByTestId(fx.codexLongTitle!.rowTestId).locator('[data-col="title"]');
+    expect((await title.boundingBox())?.width ?? 0).toBeGreaterThan(80);
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('session-import-body')).toHaveCount(0);
+  }
+});
+
 test('the project dropdown paints above the modal and applies its filter', async ({
   harness,
   page,

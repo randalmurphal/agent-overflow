@@ -1,9 +1,16 @@
 <script lang="ts">
   // One catalogue row. Fixed 44px, strictly single-line: VirtualList sizes
   // every row from a constant, so anything that could wrap would desync the
-  // spacer from real geometry. Title and project label are the only two
-  // flexible cells; everything else is `shrink-0` and either always narrow
-  // (chips, stamps) or omitted.
+  // spacer from real geometry.
+  //
+  // Rows are separate virtualized elements, so the columns line up only
+  // because every row lays out on the same grid tracks (ROW_GRID). Every
+  // cell is always present, empty when it has nothing to say; optional
+  // chips sit inside the title or project cell they describe instead of
+  // taking a track of their own, so a chip shortens its own row's title
+  // and never moves a column. Title and project are the only flexible
+  // tracks. Below the `import` container's 3xl width (SessionImportList) the
+  // branch and size tracks drop and the outcome keeps only its glyph.
   //
   // The row is a listbox `option`, not a `<label>` wrapping a checkbox: the
   // list drives a roving `aria-activedescendant` cursor, and an option that
@@ -35,6 +42,11 @@
 
   const CHIP_CLASS =
     'shrink-0 rounded-[3px] px-1 py-px text-[0.625rem] leading-4 text-fg-muted bg-surface-2/70';
+
+  const ROW_GRID = [
+    'grid grid-cols-[0.875rem_1rem_minmax(0,3fr)_minmax(0,2fr)_9rem_4.5rem_5.5rem_10rem]',
+    '@max-3xl/import:grid-cols-[0.875rem_1rem_minmax(0,3fr)_minmax(0,2fr)_5.5rem_1rem]',
+  ].join(' ');
 
   let provider = $derived(getProviderDefinition(row.provider));
   let warnings = $derived(row.warnings ?? []);
@@ -107,7 +119,8 @@
   title={alreadyRanTitle}
   onclick={handleClick}
   class={[
-    'flex h-full min-w-0 items-center gap-2 border-b border-border-subtle/50 px-3',
+    ROW_GRID,
+    'h-full min-w-0 items-center gap-2 border-b border-border-subtle/50 px-3',
     'text-[0.75rem] select-none',
     disabled ? 'cursor-default' : 'cursor-pointer hover:bg-surface-2/40',
     selected ? 'bg-accent/10' : '',
@@ -136,57 +149,59 @@
     {provider?.shortLabel ?? '?'}
   </span>
 
-  <span class="min-w-0 flex-[3] truncate text-fg" title={row.title}>{row.title}</span>
+  <span data-col="title" class="flex min-w-0 items-center gap-2">
+    <span class="min-w-0 truncate text-fg" title={row.title}>{row.title}</span>
 
-  <span class="min-w-0 flex-[2] truncate text-fg-muted" title={row.projectPath}>
-    {row.projectLabel}
+    {#if subagentLabel}
+      <span class={CHIP_CLASS}>{subagentLabel}</span>
+    {/if}
+
+    {#if importedFromLabel}
+      <span
+        class={[
+          'max-w-[12rem] shrink-0 truncate rounded-[3px] px-1 py-px text-[0.625rem] leading-4',
+          importedFrom?.duplicateOfThreadId
+            ? 'bg-warning/10 text-warning'
+            : 'bg-surface-2/70 text-fg-muted',
+        ].join(' ')}
+        data-testid={`session-import-origin-${row.id}`}
+        title={importedFromTitle}
+      >
+        {importedFromLabel}
+      </span>
+    {/if}
+
+    {#if warnings.length > 0}
+      <span class="shrink-0 text-warning" title={warnings.join('\n')}>
+        <Icon icon={CircleAlert} size={12} />
+      </span>
+    {/if}
   </span>
 
-  {#if row.gitBranch}
-    <span class="max-w-[9rem] shrink-0 truncate text-fg-hint" title={row.gitBranch}>
-      {row.gitBranch}
-    </span>
-  {/if}
+  <span data-col="project" class="flex min-w-0 items-center gap-2">
+    <span class="min-w-0 truncate text-fg-muted" title={row.projectPath}>{row.projectLabel}</span>
 
-  {#if subagentLabel}
-    <span class={CHIP_CLASS}>{subagentLabel}</span>
-  {/if}
+    {#if !row.knownProject}
+      <span
+        class="shrink-0 rounded-[3px] bg-accent/10 px-1 py-px text-[0.625rem] leading-4 text-accent"
+        title="Agent Overflow has no project here yet — importing creates one"
+      >
+        new project
+      </span>
+    {/if}
+  </span>
 
-  {#if importedFromLabel}
-    <span
-      class={[
-        'max-w-[12rem] shrink-0 truncate rounded-[3px] px-1 py-px text-[0.625rem] leading-4',
-        importedFrom?.duplicateOfThreadId
-          ? 'bg-warning/10 text-warning'
-          : 'bg-surface-2/70 text-fg-muted',
-      ].join(' ')}
-      data-testid={`session-import-origin-${row.id}`}
-      title={importedFromTitle}
-    >
-      {importedFromLabel}
-    </span>
-  {/if}
+  <span
+    data-col="branch"
+    class="min-w-0 truncate text-fg-hint @max-3xl/import:hidden"
+    title={row.gitBranch || undefined}
+  >
+    {row.gitBranch}
+  </span>
 
-  {#if !row.knownProject}
-    <span
-      class="shrink-0 rounded-[3px] bg-accent/10 px-1 py-px text-[0.625rem] leading-4 text-accent"
-      title="Agent Overflow has no project here yet — importing creates one"
-    >
-      new project
-    </span>
-  {/if}
+  <span class="text-right tabular-nums text-fg-hint @max-3xl/import:hidden">{sizeLabel}</span>
 
-  {#if warnings.length > 0}
-    <span class="shrink-0 text-warning" title={warnings.join('\n')}>
-      <Icon icon={CircleAlert} size={12} />
-    </span>
-  {/if}
-
-  {#if sizeLabel}
-    <span class="w-[4.5rem] shrink-0 text-right tabular-nums text-fg-hint">{sizeLabel}</span>
-  {/if}
-
-  <span class="w-[5.5rem] shrink-0 text-right tabular-nums text-fg-hint">
+  <span data-col="time" class="text-right tabular-nums text-fg-hint">
     <!-- The listing is `selected`-routed, so the stamp was minted by the
          machine the person is looking at, not necessarily by home. -->
     {relativeTime(row.lastActivityAt, 'locale', getSessionImportBackend())}
@@ -197,20 +212,20 @@
        gone"), and it is information, not a failure — so it reads in the
        muted palette rather than the error one. -->
   <span
-    class="flex w-[10rem] shrink-0 items-center justify-end gap-1"
+    class="flex min-w-0 items-center justify-end gap-1"
     data-testid={result ? `session-import-outcome-${row.id}` : undefined}
   >
     {#if result?.status === 'imported'}
       <span class="text-success" title="Imported">✓</span>
     {:else if result?.status === 'skipped'}
-      <span class="shrink-0 text-fg-hint" title="Skipped">–</span>
+      <span class="shrink-0 text-fg-hint" title={result.error || 'Skipped'}>–</span>
       {#if result.error}
-        <span class="min-w-0 truncate text-fg-hint" title={result.error}>{result.error}</span>
+        <span class="min-w-0 truncate text-fg-hint @max-3xl/import:hidden" title={result.error}>{result.error}</span>
       {/if}
     {:else if result?.status === 'failed'}
-      <span class="shrink-0 text-error">✗</span>
+      <span class="shrink-0 text-error" title={result.error || 'Failed'}>✗</span>
       {#if result.error}
-        <span class="min-w-0 truncate text-error" title={result.error}>{result.error}</span>
+        <span class="min-w-0 truncate text-error @max-3xl/import:hidden" title={result.error}>{result.error}</span>
       {/if}
     {/if}
   </span>

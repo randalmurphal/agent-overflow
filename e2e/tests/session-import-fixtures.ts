@@ -33,6 +33,7 @@ const CLAUDE_BROKEN_SESSION = 'dddddddd-4444-4444-8444-dddddddddddd';
 const CLAUDE_FORK_SESSION = 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee';
 const CODEX_THREAD = 'cccccccc-3333-4333-8333-cccccccccccc';
 const CODEX_DELEGATED_THREAD = 'ffffffff-6666-4666-8666-ffffffffffff';
+const CODEX_LONG_TITLE_THREAD = 'abababab-7777-4777-8777-abababababab';
 
 /** A fixed wall time in the past, so a row restamped with now() is off by
  *  years rather than milliseconds. */
@@ -88,6 +89,8 @@ export interface ImportFixtures {
   codex: FixtureSession;
   /** Present only when `seedImportFixtures` was asked for it. */
   codexDelegated?: FixtureSession;
+  /** Present only when `seedImportFixtures` was asked for it. */
+  codexLongTitle?: FixtureSession;
 }
 
 export interface SeedImportOptions {
@@ -107,6 +110,9 @@ export interface SeedImportOptions {
    * (`create_thread`): no user message, a `preview` only, and one MCP result
    * Codex truncated when it persisted the rollout. */
   withDelegatedCodexSession?: boolean;
+  /** Also list a Codex row with a very long title and branch name. It
+   * shares the plain Codex session's rollout, so it is for the list only. */
+  withLongTitleCodexRow?: boolean;
 }
 
 function session(provider: 'claude' | 'codex', id: string, title: string): FixtureSession {
@@ -174,6 +180,10 @@ export async function seedImportFixtures(
   if (opts.withDelegatedCodexSession) {
     await writeDelegatedCodexSession(codexHome, workspace);
     fixtures.codexDelegated = session('codex', CODEX_DELEGATED_THREAD, DELEGATED_PROMPT);
+  }
+  if (opts.withLongTitleCodexRow) {
+    writeLongTitleCodexRow(codexHome, workspace);
+    fixtures.codexLongTitle = session('codex', CODEX_LONG_TITLE_THREAD, LONG_TITLE);
   }
 
   return fixtures;
@@ -742,6 +752,28 @@ async function writeDelegatedCodexSession(codexHome: string, workspace: string):
       BASE_MILLIS,
       BASE_MILLIS + 10_000,
     );
+  } finally {
+    db.close();
+  }
+}
+
+// ------------------------------------------------- Codex, long title row
+
+export const LONG_TITLE =
+  'Investigate why the nightly import of very large Codex sessions stalls on the third pass and write up every finding';
+
+function writeLongTitleCodexRow(codexHome: string, workspace: string): void {
+  const db = new DatabaseSync(path.join(codexHome, 'state_5.sqlite'));
+  try {
+    db.prepare(
+      `INSERT INTO threads (id, rollout_path, created_at, updated_at, source, cwd, title,
+                            first_user_message, archived, thread_source, preview, recency_at_ms,
+                            created_at_ms, updated_at_ms, git_branch, model, reasoning_effort, tokens_used)
+       SELECT ?, rollout_path, created_at, updated_at, '{}', ?, ?, ?, 0, NULL, 'preview', recency_at_ms - 1,
+              created_at_ms, updated_at_ms, 'feature/an-unusually-long-branch-name-for-the-list', model,
+              reasoning_effort, 42
+         FROM threads WHERE id = ?`,
+    ).run(CODEX_LONG_TITLE_THREAD, workspace, LONG_TITLE, LONG_TITLE, CODEX_THREAD);
   } finally {
     db.close();
   }
