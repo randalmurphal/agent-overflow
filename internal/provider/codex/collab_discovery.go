@@ -116,6 +116,7 @@ func (s *Session) recoverChildOwnership(ctx context.Context, childID string, see
 			if !s.registerHistoricalChildOwnership(parentID, childID, activity.AgentPath, activity.ItemID) {
 				return fmt.Errorf("conflicting recovered ownership for %s", childID)
 			}
+			s.rememberSubAgentActivityProfile(activity)
 			params, err := json.Marshal(map[string]any{"threadId": parentID, "turnId": entry.TurnID, "item": entry.Item})
 			if err != nil {
 				return err

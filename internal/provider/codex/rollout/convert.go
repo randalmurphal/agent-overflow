@@ -103,6 +103,9 @@ type converter struct {
 	toolRefs       map[string]toolReference
 	agentParents   map[string]toolReference
 	subagentStarts map[string]subagentOwnership
+	// subagentProfiles holds the child profile a started activity recorded,
+	// for a spawn call that opens after its activity.
+	subagentProfiles map[string]subagentProfile
 }
 
 func newConverter(opts ParseOptions, pre preScanResult) *converter {
@@ -123,6 +126,7 @@ func newConverter(opts ParseOptions, pre preScanResult) *converter {
 		toolRefs:           map[string]toolReference{},
 		agentParents:       map[string]toolReference{},
 		subagentStarts:     map[string]subagentOwnership{},
+		subagentProfiles:   map[string]subagentProfile{},
 	}
 	// Seed the clock from the session header, so an event read off a line
 	// whose own timestamp is unparseable still carries one. Every imported

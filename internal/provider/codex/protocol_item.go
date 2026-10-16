@@ -463,6 +463,11 @@ type subAgentActivity struct {
 	Kind          string
 	AgentThreadID string
 	AgentPath     string
+	// Model and ReasoningEffort are the child's resolved profile at
+	// creation (codex 0.162+), set on kind "started" only and absent from
+	// older records. Effort can be absent for a model without one.
+	Model           string
+	ReasoningEffort string
 }
 
 // userMessageClientIDMetaKey is where a `userMessage` echo's `clientId`
@@ -488,6 +493,10 @@ func decodeSubAgentActivityItem(item map[string]json.RawMessage) (subAgentActivi
 		AgentThreadID: strings.TrimSpace(readRawString(item, "agentThreadId")),
 		AgentPath:     strings.TrimSpace(readRawString(item, "agentPath")),
 	}
+	if activity.Kind == "started" {
+		activity.Model = strings.TrimSpace(readRawString(item, "model"))
+		activity.ReasoningEffort = strings.TrimSpace(readRawString(item, "reasoningEffort"))
+	}
 	if activity.ItemID == "" || activity.AgentThreadID == "" {
 		return subAgentActivity{}, false
 	}
@@ -502,9 +511,9 @@ func decodeSubAgentActivityItem(item map[string]json.RawMessage) (subAgentActivi
 // deliberately dropped in classifyItemNotification because this function is
 // the one that expands kind "started" into the begin/end pair the background
 // projector already understands. The typed activity supplies the authoritative
-// child thread and task path; raw function-call metadata can enrich safe
-// fields such as role/model/effort, but V2's encrypted prompt is unavailable
-// to clients.
+// child thread and task path, and on codex 0.162+ the child's resolved model
+// and reasoning effort; raw function-call metadata can enrich safe fields such
+// as role, but V2's encrypted prompt is unavailable to clients.
 func classifySubAgentActivityCompleted(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
 	activity, ok := decodeSubAgentActivity("item/completed", params)
 	if !ok {
@@ -595,6 +604,12 @@ func subAgentActivityCollabMeta(params json.RawMessage, activity subAgentActivit
 		item["agentsStates"] = map[string]any{
 			activity.AgentThreadID: map[string]string{"status": "running"},
 		}
+	}
+	if activity.Model != "" {
+		item["model"] = activity.Model
+	}
+	if activity.ReasoningEffort != "" {
+		item["reasoningEffort"] = activity.ReasoningEffort
 	}
 	encoded, err := json.Marshal(item)
 	if err != nil {

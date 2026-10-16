@@ -553,3 +553,29 @@ func TestNestedMailboxImportUsesRecipientUserRow(t *testing.T) {
 		t.Fatalf("received messages=%+v", rows)
 	}
 }
+
+// A codex 0.162+ started activity records the child's resolved model and
+// reasoning effort; the imported spawn row carries them whichever of the
+// call and the activity the file holds first.
+func TestConvertSpawnTakesTheStartedActivityProfile(t *testing.T) {
+	spawn := `{"timestamp":"2026-08-07T19:07:52.000Z","type":"response_item","payload":{"type":"function_call","id":"fc1","name":"spawn_agent","arguments":"{\"task\":\"review\"}","call_id":"call_S"}}`
+	activity := `{"timestamp":"2026-08-07T19:07:52.100Z","type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"call_S","agent_thread_id":"child-1","agent_path":"/root/review_perf","kind":"started","model":"gpt-5.6-sol","reasoning_effort":"xhigh"}}`
+	for name, lines := range map[string][]string{
+		"call first":     {spawn, activity},
+		"activity first": {activity, spawn},
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := parseFixture(t, writeRollout(t, testSessionID,
+				append(append([]string{metaLine, taskStartedLine}, lines...), taskCompleteLn)...))
+			starts := eventsOfKind(res.Events, provider.EventToolStart)
+			if len(starts) == 0 {
+				t.Fatal("no spawn start")
+			}
+			last := starts[len(starts)-1]
+			if !strings.Contains(string(last.Meta), `"model":"gpt-5.6-sol"`) ||
+				!strings.Contains(string(last.Meta), `"reasoningEffort":"xhigh"`) {
+				t.Fatalf("spawn meta = %s, want the activity's profile", last.Meta)
+			}
+		})
+	}
+}

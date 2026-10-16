@@ -374,6 +374,10 @@ type subAgentActivityPayload struct {
 	AgentThreadID string `json:"agent_thread_id"`
 	AgentPath     string `json:"agent_path"`
 	Kind          string `json:"kind"`
+	// Model and ReasoningEffort are the child's resolved profile at
+	// creation, on a `started` record from codex 0.162 on.
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
 }
 
 type threadGoalPayload struct {
