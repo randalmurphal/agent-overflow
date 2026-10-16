@@ -1179,11 +1179,16 @@ closes up their spacing so the row holds at a phone width.
 - **Reads.** A listing is a constant number of statements whatever the
   tree's size: the tree's shape with each row's depth in one recursive
   read, the listed rows in one, the targets' titles and providers in one,
-  their last messages in one. A thread two spawns reach is walked once,
-  under the first in tree order; the rows the later spawn would have
-  nested take no place in the row limit. A read of named rows walks the
-  same tree, so each row has the listing's place, and reads the rows and
-  their targets for those rows alone. A row
+  their last messages in one. Each thread's rows are read by caller in
+  four arms, open, settled inside the window, local spawns kept for open
+  work and remote spawns with open work, each through its own index, so
+  the cost follows the listed rows and not the threads' settled history.
+  A thread two spawns reach is walked once, under the first in tree
+  order; the rows the later spawn would have nested take no place in the
+  row limit. Only spawns move that walk, so a read of named rows walks the
+  tree's spawns and the named rows alone: each row has the listing's
+  place, wherever it falls against the row limit, and the rows and their
+  targets are read for those rows alone. A row
   carries the head of its answer (what the row shows), never the whole
   answer or the late reply, and names its wake item from the request
   (`thread_requests.wake_item_id`, `late_wake_item_id`, recorded when the

@@ -1897,10 +1897,11 @@ export function GetThread(id: string): $CancellablePromise<store$0.Thread> {
 
 /**
  * GetThreadAgentRows reads rows of threadID's Agents listing by their
- * tokens, in the order asked, each as the listing places it. A row stands
- * on its own: what nests under it, and a spawn on a paired computer's rows,
- * are the listing's. The read is as many statements as the listing's, and
- * reads the requests, names and last messages of the named rows alone.
+ * tokens, in the order asked, each as the listing places it, wherever it
+ * falls against the listing's row limit. A row stands on its own: what
+ * nests under it, and a spawn on a paired computer's rows, are the
+ * listing's. The read is as many statements as the listing's, and walks the
+ * tree's spawns and the named rows alone, not every listed row.
  */
 export function GetThreadAgentRows(threadID: string, tokens: string[]): $CancellablePromise<app$0.ThreadAgentRowRead[]> {
     return $Call.ByID(2599465033, threadID, tokens).then(($result: any) => {

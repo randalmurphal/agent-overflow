@@ -119,10 +119,20 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 		seedAgentRequest(t, s, "c-g", "child", ThreadRequestSpawn, "grand", false, 110)
 		assertWalkProbesTheQueuedKey(t, s, "threadAgentTreeSQL", walkPlan{
 			step: []string{
-				"SEARCH r USING INDEX idx_thread_requests_caller (caller_thread_id=?)",
+				"SEARCH r USING INDEX idx_thread_requests_caller_settled (caller_thread_id=? AND settled_at=?)",
+				"SEARCH r USING INDEX idx_thread_requests_caller_settled (caller_thread_id=? AND settled_at>?)",
+				"SEARCH r USING INDEX idx_thread_requests_spawn_caller (caller_thread_id=? AND target_thread_id=?)",
+				"SEARCH r USING INDEX idx_thread_requests_nested_caller (caller_thread_id=?)",
 				"SEARCH r USING INDEX idx_thread_requests_spawn_target (target_thread_id=?)",
 			},
 		}, threadAgentTreeSQL, "lead", "[]", int64(0), 4, 4)
+		assertWalkProbesTheQueuedKey(t, s, "threadAgentNamedTreeSQL", walkPlan{
+			step: []string{
+				"SEARCH r USING INDEX idx_thread_requests_spawn_caller (caller_thread_id=?)",
+				"SEARCH r USING INDEX sqlite_autoindex_thread_requests_1 (token=?)",
+				"SEARCH r USING INDEX idx_thread_requests_spawn_target (target_thread_id=?)",
+			},
+		}, threadAgentNamedTreeSQL, "lead", "[]", int64(0), 4, 4, `["c-g"]`)
 	})
 
 	t.Run("background tray", func(t *testing.T) {

@@ -10,9 +10,9 @@ import (
 
 // The Agents segment's reads of the request ledger
 // (docs/specs/standing-agents.md, "Agents segment"). Each is a number of
-// statements that does not grow with the tree: the listing or named rows of
-// it (two), the tool rows' states and the callers a change frame names
-// (one each).
+// statements that does not grow with the tree or the history: the listing
+// or named rows of it (two), the tool rows' states and the callers a change
+// frame names (one each).
 
 // ThreadAgentRequest is a request as the Agents segment lists it. Its
 // ThreadRequest carries neither the answer nor the late reply, which a row
@@ -53,7 +53,7 @@ type ThreadAgentTreeRead struct {
 	// AnswerHead is how many bytes of the answer each row carries.
 	AnswerHead int
 	// Tokens, when set, keeps only those of the listing's rows, each
-	// where the listing places it.
+	// where the listing places it, wherever it falls against Limit.
 	Tokens []string
 }
 
@@ -74,7 +74,9 @@ type ThreadAgentTreeRead struct {
 // Which thread a row enters depends on the rows kept before it, which no
 // filter over the rows can express: one statement reads the tree's shape
 // in order, agentTreeWalk keeps the rows the walk lists up to the limit,
-// and a second statement reads those rows.
+// and a second statement reads those rows. Both cost what the listed rows
+// cost, not the threads' history (agentRowArms); a read of named rows
+// costs what the tree's spawns cost (agentTreeShapeSQL).
 func (s *Store) ListThreadAgentTree(read ThreadAgentTreeRead) (_ []ThreadAgentRequest, more bool, err error) {
 	action := "store: list the agents of " + read.Root
 	if read.Limit < 1 || read.Depth < 1 || read.OpenDepth < 1 || read.AnswerHead < 0 {
@@ -118,9 +120,19 @@ type agentTreeRow struct {
 }
 
 // walkThreadAgentTree reads the tree's shape and keeps, in order, the first
-// Limit rows the walk lists, and whether it lists more.
+// Limit rows the walk lists, and whether it lists more; for named rows,
+// every row the walk lists, the named among them and the spawns that place
+// them.
 func (s *Store) walkThreadAgentTree(read ThreadAgentTreeRead, waiting string) (_ []agentTreeRow, more bool, err error) {
-	rows, err := s.reader().Query(threadAgentTreeSQL, read.Root, waiting, read.SettledSince, read.Depth, read.OpenDepth)
+	query, args := threadAgentTreeSQL, []any{read.Root, waiting, read.SettledSince, read.Depth, read.OpenDepth}
+	if read.Tokens != nil {
+		named, err := json.Marshal(read.Tokens)
+		if err != nil {
+			return nil, false, fmt.Errorf("encode tokens: %w", err)
+		}
+		query, args = threadAgentNamedTreeSQL, append(args, string(named))
+	}
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -137,7 +149,7 @@ func (s *Store) walkThreadAgentTree(read ThreadAgentTreeRead, waiting string) (_
 		if !walk.keep(&row) {
 			continue
 		}
-		if len(out) == read.Limit {
+		if len(out) == read.Limit && read.Tokens == nil {
 			return out, true, nil
 		}
 		out = append(out, row)
@@ -222,30 +234,86 @@ func (w *agentTreeWalk) keep(row *agentTreeRow) bool {
 	return true
 }
 
-// threadAgentTreeSQL is the tree's shape for ListThreadAgentTree. ?1 is the
-// root, ?2 the waiting tokens, ?3 the settled window, ?4 the depth and ?5
-// the open depth.
+// threadAgentTreeSQL and threadAgentNamedTreeSQL are the tree's shape for
+// ListThreadAgentTree, the listing's and a read of named rows. ?1 is the
+// root, ?2 the waiting tokens, ?3 the settled window, ?4 the depth, ?5 the
+// open depth and ?6 the named tokens.
+var (
+	threadAgentTreeSQL      = agentTreeShapeSQL(false)
+	threadAgentNamedTreeSQL = agentTreeShapeSQL(true)
+)
+
+// agentTreeShapeSQL reads the tree's shape in order. `sub` walks the
+// root's local spawns as deep as any listed row's open work can sit;
+// `busy` is each thread there with work open in it; `hot` walks up from
+// those, one step per spawn, the open depth less one: a settled local
+// spawn whose thread is in it is kept. `tree` walks the listed rows, its
+// sort key each level's creation time and token, carrying the threads
+// above each row so a cycle ends. A local spawn at the bound says whether
+// its thread has rows of its own.
 //
-// `sub` walks the root's local spawns as deep as any listed row's open work
-// can sit; `busy` is each thread there with work open in it; `hot` walks up
-// from those, one step per spawn, the open depth less one: a settled local
-// spawn whose thread is in it is kept. `tree` walks the listed rows in
-// order, its sort key each level's creation time and token, carrying the
-// threads above each row so a cycle ends. A local spawn at the bound says
-// whether its thread has rows of its own.
-var threadAgentTreeSQL = `WITH RECURSIVE
+// Each read of a thread's rows is a union of arms searched by the caller
+// (agentRowArms), so the cost follows the listed rows, not the thread's
+// history. Only local spawns move the walk, so a read of named rows takes
+// those and the named rows alone: the walk places each where the listing
+// does, at the cost of the tree's spawns.
+func agentTreeShapeSQL(named bool) string {
+	arms := func(alias, caller string) []string {
+		if !named {
+			return agentRowArms(alias, caller)
+		}
+		a := alias + "."
+		return []string{
+			a + `caller_thread_id = ` + caller + ` AND ` + a + `kind = 'spawn' AND ` + a + `target_computer_id = ''
+         AND ` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ?3
+           OR ` + a + `target_thread_id IN (SELECT thread_id FROM hot))`,
+			a + `token = json_each.value AND ` + a + `caller_thread_id = ` + caller + `
+         AND NOT (` + a + `kind = 'spawn' AND ` + a + `target_computer_id = '') AND ` + agentRowListedSQL(alias),
+		}
+	}
+	from := func(arm int, step bool) string {
+		named := named && arm == 1
+		switch {
+		case step && named:
+			return `tree CROSS JOIN json_each(?6) CROSS JOIN thread_requests r`
+		case step:
+			return `tree CROSS JOIN thread_requests r`
+		case named:
+			return `json_each(?6) CROSS JOIN thread_requests r`
+		}
+		return `thread_requests r`
+	}
+	var seeds, steps []string
+	for i, arm := range arms("r", "?1") {
+		seeds = append(seeds, `SELECT r.token, 0, printf('%020d', r.created_at) || r.token || char(1), json_array(r.caller_thread_id),
+           r.kind, r.target_computer_id, r.target_thread_id
+      FROM `+from(i, false)+`
+     WHERE `+arm+` AND `+agentRowKindSQL("r"))
+	}
+	for i, arm := range arms("r", "tree.t_target") {
+		steps = append(steps, `SELECT r.token, tree.t_depth + 1, tree.t_sort || printf('%020d', r.created_at) || r.token || char(1),
+           json_insert(tree.t_path, '$[#]', tree.t_target), r.kind, r.target_computer_id, r.target_thread_id
+      FROM `+from(i, true)+`
+     WHERE tree.t_kind = 'spawn' AND tree.t_computer = '' AND tree.t_target <> '' AND tree.t_depth + 1 < ?4
+       AND NOT EXISTS (SELECT 1 FROM json_each(tree.t_path) WHERE json_each.value = tree.t_target)
+       AND `+arm+` AND `+agentRowKindSQL("r"))
+	}
+	var nested []string
+	for _, arm := range agentRowArms("c", "tree.t_target") {
+		nested = append(nested, `EXISTS (SELECT 1 FROM thread_requests c WHERE `+arm+` AND `+agentRowKindSQL("c")+`)`)
+	}
+	return `WITH RECURSIVE
   sub(thread_id, depth) AS (
     SELECT ?1, 0
     UNION
     SELECT r.target_thread_id, sub.depth + 1
       FROM sub CROSS JOIN thread_requests r
      WHERE r.caller_thread_id = sub.thread_id AND r.kind = 'spawn' AND r.target_computer_id = ''
-       AND r.target_thread_id <> '' AND r.lineage_only = 0 AND sub.depth < ?4 + ?5),
+       AND r.lineage_only = 0 AND r.target_thread_id <> '' AND sub.depth < ?4 + ?5),
   busy(thread_id) AS (
     SELECT DISTINCT sub.thread_id FROM sub
-     WHERE EXISTS (SELECT 1 FROM thread_requests c
-                    WHERE c.caller_thread_id = sub.thread_id AND (` + openAgentRequestSQL("c") + `
-                      OR (c.kind = 'spawn' AND c.target_computer_id <> '' AND c.lineage_only = 0 AND c.nested_open = 1)))),
+     WHERE EXISTS (SELECT 1 FROM thread_requests c WHERE c.caller_thread_id = sub.thread_id AND ` + openAgentRequestSQL("c") + `)
+        OR EXISTS (SELECT 1 FROM thread_requests c WHERE c.caller_thread_id = sub.thread_id AND ` + nestedRemoteSpawnSQL("c") + `)),
   hot(thread_id, dist) AS (
     SELECT thread_id, 0 FROM busy
     UNION
@@ -254,25 +322,22 @@ var threadAgentTreeSQL = `WITH RECURSIVE
      WHERE r.target_thread_id = hot.thread_id AND r.kind = 'spawn' AND r.target_computer_id = ''
        AND r.lineage_only = 0 AND hot.dist + 1 < ?5),
   tree(t_token, t_depth, t_sort, t_path, t_kind, t_computer, t_target) AS (
-    SELECT r.token, 0, printf('%020d', r.created_at) || r.token || char(1), json_array(r.caller_thread_id),
-           r.kind, r.target_computer_id, r.target_thread_id
-      FROM thread_requests r
-     WHERE r.caller_thread_id = ?1 AND ` + listedAgentRequestSQL("r") + `
+    ` + strings.Join(seeds, `
     UNION ALL
-    SELECT r.token, tree.t_depth + 1, tree.t_sort || printf('%020d', r.created_at) || r.token || char(1),
-           json_insert(tree.t_path, '$[#]', tree.t_target), r.kind, r.target_computer_id, r.target_thread_id
-      FROM tree CROSS JOIN thread_requests r
-     WHERE tree.t_kind = 'spawn' AND tree.t_computer = '' AND tree.t_target <> '' AND tree.t_depth + 1 < ?4
-       AND NOT EXISTS (SELECT 1 FROM json_each(tree.t_path) WHERE json_each.value = tree.t_target)
-       AND r.caller_thread_id = tree.t_target AND ` + listedAgentRequestSQL("r") + `)
+    `) + `
+    UNION ALL
+    ` + strings.Join(steps, `
+    UNION ALL
+    `) + `)
 SELECT tree.t_token, tree.t_depth, tree.t_sort, tree.t_kind, tree.t_computer, tree.t_target,
        CASE WHEN tree.t_depth = ?4 - 1 AND tree.t_kind = 'spawn' AND tree.t_computer = '' AND tree.t_target <> ''
                  AND NOT EXISTS (SELECT 1 FROM json_each(tree.t_path) WHERE json_each.value = tree.t_target)
-            THEN EXISTS (SELECT 1 FROM thread_requests c
-                          WHERE c.caller_thread_id = tree.t_target AND ` + listedAgentRequestSQL("c") + `)
+            THEN ` + strings.Join(nested, `
+              OR `) + `
             ELSE 0 END
   FROM tree
  ORDER BY tree.t_sort`
+}
 
 // threadAgentRequestsSQL reads the requests ?2 names as the listing shows
 // them, in that order, with ?1 bytes of each answer.
@@ -281,13 +346,41 @@ const threadAgentRequestsSQL = `SELECT ` + threadAgentRequestColumns + `
  WHERE r.token = json_each.value
  ORDER BY json_each.key`
 
-// listedAgentRequestSQL matches a request of the listing (see
-// ListThreadAgentTree), reading ?2, ?3 and the `hot` walk.
-func listedAgentRequestSQL(alias string) string {
+// agentRowKindSQL matches a request kind the listing shows: every spawn,
+// and a send or ask whose wake is armed or that a call is parked on (?2).
+func agentRowKindSQL(alias string) string {
 	a := alias + "."
-	return `(` + a + `lineage_only = 0 AND ` + a + `kind IN ('spawn','send','ask')
-       AND (` + a + `kind = 'spawn' OR ` + a + `notify = 1 OR ` + a + `token IN (SELECT value FROM json_each(?2)))
-       AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ?3
+	return a + `kind IN ('spawn','send','ask')
+       AND (` + a + `kind = 'spawn' OR ` + a + `notify = 1 OR ` + a + `token IN (SELECT value FROM json_each(?2)))`
+}
+
+// agentRowArms are the requests of caller the listing keeps (see
+// ListThreadAgentTree) as four disjoint arms, each the predicate of the
+// index that searches it by caller: open, and settled inside the window
+// (idx_thread_requests_caller_settled); a local spawn settled before it
+// with open work under it, read from `hot`
+// (idx_thread_requests_spawn_caller); a spawn on another computer that
+// last reported open work (idx_thread_requests_nested_caller). None reads
+// the caller's settled history: the last two keep apart from the first two
+// by a settled_at term no index may use (`+`), which would otherwise send
+// them down the caller's settled history on idx_thread_requests_caller_settled.
+func agentRowArms(alias, caller string) []string {
+	a := alias + "."
+	by := a + `caller_thread_id = ` + caller + ` AND `
+	return []string{
+		by + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL`,
+		by + a + `lineage_only = 0 AND ` + a + `settled_at >= ?3`,
+		by + a + `kind = 'spawn' AND ` + a + `target_computer_id = '' AND ` + a + `lineage_only = 0
+         AND +` + a + `settled_at < ?3 AND ` + a + `target_thread_id IN (SELECT thread_id FROM hot)`,
+		by + nestedRemoteSpawnSQL(alias) + ` AND +` + a + `settled_at < ?3`,
+	}
+}
+
+// agentRowListedSQL is agentRowArms as one predicate, for a row already
+// found by its key.
+func agentRowListedSQL(alias string) string {
+	a := alias + "."
+	return `(` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ?3
          OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id = '' AND ` + a + `target_thread_id IN (SELECT thread_id FROM hot))
          OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)))`
 }
