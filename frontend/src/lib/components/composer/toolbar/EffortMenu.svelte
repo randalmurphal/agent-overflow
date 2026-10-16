@@ -18,7 +18,7 @@
   import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import { formatTokens } from '../../../utils/format';
-  import { effortLabel, FALLBACK_EFFORTS } from '../../../utils/effortLabels';
+  import { effortLabel, FALLBACK_EFFORTS, joinLabelParts } from '../../../utils/effortLabels';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Gauge from '@lucide/svelte/icons/gauge';
   import Popover from '../../primitives/Popover.svelte';
@@ -159,7 +159,7 @@
           : contextLabel(currentContextWindow),
       );
     }
-    return labelParts.join(' · ');
+    return joinLabelParts(...labelParts);
   });
   let triggerTitle = $derived(triggerLabel || 'Model options');
   // Append the provider's contradiction to the trigger tooltip so the

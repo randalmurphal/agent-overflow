@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelInfo } from '../types/settings';
 import { effortLabel } from './effortLabels';
-import { findClaudeCatalogModel, modelEffortAffix, subagentEffortLabel } from './subagentEffort';
+import { findClaudeCatalogModel, subagentEffortLabel } from './subagentEffort';
+import { joinLabelParts } from './effortLabels';
 
 const opus: ModelInfo = {
   slug: 'claude-opus-4-7',
@@ -88,10 +89,11 @@ describe('subagentEffortLabel', () => {
   });
 });
 
-describe('modelEffortAffix', () => {
-  it('joins the model and effort labels, either alone', () => {
-    expect(modelEffortAffix('Opus 4.7', 'xHigh')).toBe('Opus 4.7 xHigh');
-    expect(modelEffortAffix('Opus 4.7', '')).toBe('Opus 4.7');
-    expect(modelEffortAffix('', 'High')).toBe('High');
+describe('joinLabelParts', () => {
+  it('joins with the composer separator, skipping empty parts', () => {
+    expect(joinLabelParts('Opus 4.7', 'xHigh')).toBe('Opus 4.7 · xHigh');
+    expect(joinLabelParts('default', 'GPT 5.6 Sol', 'xHigh')).toBe('default · GPT 5.6 Sol · xHigh');
+    expect(joinLabelParts('Opus 4.7', '')).toBe('Opus 4.7');
+    expect(joinLabelParts('', 'High')).toBe('High');
   });
 });

@@ -1,5 +1,5 @@
 // The reasoning effort a subagent runs at, as its row, card and pane show
-// it next to the model ("Opus 4.7 xHigh").
+// it next to the model ("Opus 4.7 · xHigh").
 //
 // Codex reports the child's resolved effort with its model, so its value
 // is shown as is. Claude reports none: the launch records what it asked
@@ -54,9 +54,4 @@ export function subagentEffortLabel(
   const runs = tiers.find((option) => option.slug === slug)
     ?? (slug === 'xhigh' || slug === 'max' ? tiers.find((option) => option.slug === 'high') : undefined);
   return runs ? effortLabel(runs.slug, runs.label) : '';
-}
-
-/** "Opus 4.7 xHigh": the model label and the effort label, either alone. */
-export function modelEffortAffix(modelLabel: string, effort: string): string {
-  return [modelLabel, effort].filter(Boolean).join(' ');
 }

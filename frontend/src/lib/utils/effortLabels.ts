@@ -1,6 +1,7 @@
 // The reasoning-effort vocabulary as the effort picker shows it. Every
 // surface that names an effort (the picker, its trigger, a subagent's
-// model affix) reads its label here so one tier never renders two ways.
+// model affix) reads its label here so one tier never renders two ways,
+// and joins it to its neighbours with joinLabelParts.
 
 import type { ReasoningEffortOption } from '../types/settings';
 
@@ -24,4 +25,13 @@ export function effortLabel(slug: string, label = ''): string {
   if (slug === 'minimal') return 'Minimal';
   if (slug === '') return '';
   return slug[0].toUpperCase() + slug.slice(1);
+}
+
+/**
+ * The composer's model-options label parts ("xHigh · 1m") and a
+ * subagent's affix ("Opus 4.7 · xHigh", "default · GPT 5.6 Sol · xHigh"),
+ * empty parts skipped.
+ */
+export function joinLabelParts(...parts: readonly string[]): string {
+  return parts.filter(Boolean).join(' · ');
 }

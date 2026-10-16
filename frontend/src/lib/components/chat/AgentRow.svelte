@@ -59,9 +59,9 @@
   } from '../../utils/claudeSubagentLabel';
   import {
     claudeSubagentCatalogModel,
-    modelEffortAffix,
     subagentEffortLabel,
   } from '../../utils/subagentEffort';
+  import { joinLabelParts } from '../../utils/effortLabels';
   import {
     agentScopeRootId,
     claudeResumeCarrierIdentity,
@@ -156,8 +156,8 @@
       ? carrierIdentity.effort
       : deriveClaudeSubagentEffort(agentInputObject, displayMeta, agentToolName),
   );
-  // "Opus 4.7 xHigh": the model and the effort it runs at, in one affix.
-  let modelLabel = $derived(modelEffortAffix(
+  // "Opus 4.7 · xHigh": the model and the effort it runs at, in one affix.
+  let modelLabel = $derived(joinLabelParts(
     model ? displayModelLabel('claude', model) : '',
     subagentEffortLabel(
       'claude',

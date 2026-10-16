@@ -55,9 +55,9 @@
   } from '../../utils/claudeSubagentLabel';
   import {
     claudeSubagentCatalogModel,
-    modelEffortAffix,
     subagentEffortLabel,
   } from '../../utils/subagentEffort';
+  import { joinLabelParts } from '../../utils/effortLabels';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     decoratedSubagentAggregates,
@@ -223,13 +223,13 @@
   let launchInfo = $derived(subagentLaunchInfo(identityItem, launchCtx));
   let kindLabel = $derived(launchInfo?.kind ?? 'agent');
   let agentTitle = $derived(launchInfo?.name ?? (parentToolName || 'Agent'));
-  // The model and the effort it runs at ("Opus 4.7 xHigh"). Codex reports
+  // The model and the effort it runs at ("Opus 4.7 · xHigh"). Codex reports
   // the child's own; a Claude launch names them, or the child inherits the
   // session's.
   let modelLabel = $derived.by(() => {
     if (launchInfo?.provider === 'codex') {
       if (!launchInfo.model) return '';
-      return modelEffortAffix(
+      return joinLabelParts(
         displayModelLabel('codex', launchInfo.model),
         subagentEffortLabel('codex', launchInfo.reasoningEffort ?? '', undefined),
       );
@@ -241,7 +241,7 @@
     const effort = isClaudeResumeCarrierItem(parent)
       ? claudeResumeCarrierIdentity(parent).effort
       : deriveClaudeSubagentEffort(inputObject, parentMeta, parentToolName);
-    return modelEffortAffix(
+    return joinLabelParts(
       displayModelLabel('claude', model),
       subagentEffortLabel('claude', effort, claudeSubagentCatalogModel(parent.threadId, pane?.thread?.projectId, model)),
     );

@@ -38,7 +38,7 @@ async function shoot(page: Page, testInfo: TestInfo, region: import('@playwright
   for (const theme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme: theme });
     await expect(page.locator('html')).toHaveClass(theme === 'dark' ? /dark/ : /^(?!.*\bdark\b).*$/);
-    await region.screenshot({ path: testInfo.outputPath(`effort-${name}-${theme}.png`) });
+    await region.screenshot({ path: testInfo.outputPath(`effort-${name}-v2-${theme}.png`) });
   }
   await page.emulateMedia({ colorScheme: 'light' });
 }
@@ -123,7 +123,7 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
   const deepCard = cards.filter({ hasText: 'deep review' });
   // Before the subagent reports its model, the card shows the requested
   // one, and an awaited launch reads as starting.
-  await expect(deepCard.getByTestId('subagent-group-label')).toHaveText('Reviewer(Sonnet Medium)');
+  await expect(deepCard.getByTestId('subagent-group-label')).toHaveText('Reviewer(Sonnet · Medium)');
   await expect(deepCard.getByTestId('subagent-group-preview')).toHaveText('Initializing...');
   const done = harness.waitForEvent('provider:turn_completed');
   await advance(harness, mockId, 'deep-runs');
@@ -131,12 +131,12 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
 
   const scoutCard = cards.filter({ hasText: 'quick scout' });
   const sweepCard = cards.filter({ hasText: 'Sweep' }).first();
-  await expect(deepCard.getByTestId('subagent-group-label')).toHaveText('Reviewer(Mock 1 Medium)');
+  await expect(deepCard.getByTestId('subagent-group-label')).toHaveText('Reviewer(Mock 1 · Medium)');
   await expect(scoutCard.getByTestId('subagent-group-label')).toHaveText('Scout(Haiku 4.5)');
-  await expect(sweepCard.getByTestId('subagent-group-label')).toHaveText('Sweeper(Mock 1 xHigh)');
+  await expect(sweepCard.getByTestId('subagent-group-label')).toHaveText('Sweeper(Mock 1 · xHigh)');
   // The background launch row is the same agent, read off its own launch.
   const bgRow = timeline.locator('[data-item-id="tu-bg"]');
-  await expect(bgRow.getByTestId('agent-row-preview')).toContainText('Sweeper(Mock 1 xHigh)');
+  await expect(bgRow.getByTestId('agent-row-preview')).toContainText('Sweeper(Mock 1 · xHigh)');
 
   await shoot(page, testInfo, timeline, 'claude-rows');
 
@@ -260,7 +260,7 @@ test('a Codex child shows the effort its spawn activity reports, without a profi
 
   const timeline = page.getByTestId('chat-timeline-surface').getByTestId('message-timeline-scroll');
   const spawnRow = timeline.locator(`[data-item-id="${SPAWN_CALL}"]`);
-  await expect(spawnRow.getByTestId('collab-tool-row')).toContainText('(default - GPT 5.6 Sol - xHigh)');
+  await expect(spawnRow.getByTestId('collab-tool-row')).toContainText('(default · GPT 5.6 Sol · xHigh)');
 
   await spawnRow.hover();
   await spawnRow.getByTestId('collab-tool-row-open-pane').click();
@@ -273,9 +273,9 @@ test('a Codex child shows the effort its spawn activity reports, without a profi
   await advance(harness, mockId, 'answer');
   await harness.waitForEvent('provider:turn_completed');
   const card = timeline.getByTestId('subagent-group').first();
-  await expect(card.getByTestId('subagent-group-label')).toContainText('(GPT 5.6 Sol xHigh)');
+  await expect(card.getByTestId('subagent-group-label')).toContainText('(GPT 5.6 Sol · xHigh)');
   await expect(timeline).not.toContainText('GPT 5.2 Codex');
-  await expect(spawnRow.getByTestId('collab-tool-row')).toContainText('(default - GPT 5.6 Sol - xHigh)');
+  await expect(spawnRow.getByTestId('collab-tool-row')).toContainText('(default · GPT 5.6 Sol · xHigh)');
   await pane.getByTestId('agent-pane-close').click();
   await expect(pane).toHaveCount(0);
   await shoot(page, testInfo, timeline, 'codex-rows');

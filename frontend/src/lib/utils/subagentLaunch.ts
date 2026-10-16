@@ -43,7 +43,7 @@
 import type { Item } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
 import { displayModelLabel } from './modelLabels';
-import { effortLabel } from './effortLabels';
+import { effortLabel, joinLabelParts } from './effortLabels';
 import { extractClaudeTaskID } from './claudeTaskMeta';
 import {
   deriveClaudeSubagentLabel,
@@ -142,12 +142,12 @@ export function codexSubagentDisplayLabel(label: string, role: string, fallback:
 
 export function codexModelEffortAffix(model: string, reasoningEffort: string): string {
   const modelLabel = model ? displayModelLabel('codex', model) : '';
-  return [modelLabel, effortLabel(reasoningEffort.trim())].filter(Boolean).join(' ');
+  return joinLabelParts(modelLabel, effortLabel(reasoningEffort.trim()));
 }
 
 export function codexAgentMetadataAffix(role: string, model: string, reasoningEffort: string): string {
   const modelLabel = model ? displayModelLabel('codex', model) : '';
-  return [role.trim() || 'default', modelLabel, effortLabel(reasoningEffort.trim())].filter(Boolean).join(' - ');
+  return joinLabelParts(role.trim() || 'default', modelLabel, effortLabel(reasoningEffort.trim()));
 }
 
 /**

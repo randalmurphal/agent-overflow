@@ -473,7 +473,7 @@ describe('subagentLaunchInfo — Codex spawn_agent', () => {
     expect(info.agentLabel).toBe('Heisenberg [migration_bridge]');
     expect(info.title).toBe('Spawned Heisenberg [migration_bridge]');
     // The effort reads as the effort picker labels it.
-    expect(info.modelAffix).toBe('default - GPT 5.6 Sol - High');
+    expect(info.modelAffix).toBe('default · GPT 5.6 Sol · High');
     expect(codexSubagentTaskDescription(info)).toBe('');
     expect(subagentLaunchInfo(identified, NO_CHILDREN)).toEqual({
       kind: 'agent',
