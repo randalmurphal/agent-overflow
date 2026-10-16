@@ -120,7 +120,7 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 		for _, one := range []bool{false, true} {
 			args := []any{"lead", "[]", int64(0), 4, 4, 64}
 			if one {
-				args = append(args, "l-c")
+				args = append(args, `["l-c"]`)
 			}
 			assertWalkProbesTheQueuedKey(t, s, "threadAgentTreeSQL", walkPlan{
 				step: []string{
@@ -129,6 +129,12 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 				},
 			}, threadAgentTreeSQL(one, 129), args...)
 		}
+		assertWalkProbesTheQueuedKey(t, s, "threadAgentRowPlacesSQL", walkPlan{
+			step: []string{
+				"SEARCH t USING COVERING INDEX sqlite_autoindex_threads_1 (id=?)",
+				"SEARCH sp USING INDEX idx_thread_requests_spawn_target (target_thread_id=?)",
+			},
+		}, threadAgentRowPlacesSQL, `["c-g"]`, "lead", 4)
 	})
 
 	t.Run("background tray", func(t *testing.T) {

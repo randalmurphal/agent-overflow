@@ -1,6 +1,8 @@
 package store
 
 import (
+	"fmt"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -90,7 +92,7 @@ func TestListThreadAgentTreeReadsTheAnswerHead(t *testing.T) {
 		t.Fatalf("late row %+v", got)
 	}
 	one := agentTreeRead("lead", 1)
-	one.Token = "late"
+	one.Tokens = []string{"late"}
 	if rows, _, err := s.ListThreadAgentTree(one); err != nil || len(rows) != 1 || rows[0].Token != "late" {
 		t.Fatalf("the read of one token = %+v, %v", rows, err)
 	}
@@ -209,5 +211,120 @@ func TestThreadAgentRowCallersNameTokensAndTargets(t *testing.T) {
 	slices.SortFunc(got, func(a, b ThreadAgentRowCaller) int { return strings.Compare(a.Token, b.Token) })
 	if want := []ThreadAgentRowCaller{{"direct", "lead"}, {"running", "peer"}}; !slices.Equal(got, want) {
 		t.Fatalf("callers %+v; want %+v", got, want)
+	}
+}
+
+// referenceAgentTree is the walk the listing replaced, one thread's own
+// rows at a time: each row, then, for a local spawn whose thread no
+// earlier row reached, that thread's rows one level down; a spawn at the
+// depth bound says whether its thread has rows.
+func referenceAgentTree(t *testing.T, s *Store, root string, depth int) []string {
+	t.Helper()
+	own := func(caller string) []ThreadAgentRequest {
+		rows, _, err := s.ListThreadAgentTree(ThreadAgentTreeRead{Root: caller, SettledSince: 10_000, Depth: 1, OpenDepth: 4, Limit: 1000, AnswerHead: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	visited := map[string]bool{root: true}
+	var out []string
+	var walk func(caller string, level int)
+	walk = func(caller string, level int) {
+		for _, row := range own(caller) {
+			index := len(out)
+			out = append(out, fmt.Sprintf("%s@%d", row.Token, level))
+			child := row.TargetThreadID
+			if row.Kind != ThreadRequestSpawn || child == "" || row.TargetComputerID != "" || visited[child] {
+				continue
+			}
+			visited[child] = true
+			if level+1 >= depth {
+				if len(own(child)) > 0 {
+					out[index] += "+hidden"
+				}
+				continue
+			}
+			walk(child, level+1)
+		}
+	}
+	walk(root, 0)
+	return out
+}
+
+// The listing matches the walk it replaced on random graphs of spawns and
+// sends, a thread reached by several spawns, cycles and settled rows
+// included, and lists every request once.
+func TestListThreadAgentTreeMatchesTheWalkOnRandomGraphs(t *testing.T) {
+	t.Parallel()
+	random := rand.New(rand.NewPCG(7, 155))
+	for graph := range 150 {
+		s := newTestStore(t)
+		threads := make([]string, 3+random.IntN(6))
+		for i := range threads {
+			threads[i] = fmt.Sprintf("g%d-t%d", graph, i)
+			mustCreateThread(t, s, threads[i])
+		}
+		edges := 2 + random.IntN(3*len(threads))
+		for e := range edges {
+			token := fmt.Sprintf("g%d-r%02d", graph, e)
+			caller, target := threads[random.IntN(len(threads))], threads[random.IntN(len(threads))]
+			kind := ThreadRequestSpawn
+			if random.IntN(3) == 0 {
+				kind = ThreadRequestSend
+			}
+			seedAgentRequest(t, s, token, caller, kind, target, random.IntN(2) == 0, int64(100+random.IntN(50)))
+			if random.IntN(3) == 0 {
+				settleAgentRequest(t, s, token, int64(5_000+random.IntN(10_000)))
+			}
+		}
+		for _, depth := range []int{1, 2, 4} {
+			want := referenceAgentTree(t, s, threads[0], depth)
+			rows, more, err := s.ListThreadAgentTree(ThreadAgentTreeRead{Root: threads[0], SettledSince: 10_000, Depth: depth, OpenDepth: 4, Limit: 1000, AnswerHead: 1})
+			if err != nil || more {
+				t.Fatalf("graph %d depth %d: more=%v err=%v", graph, depth, more, err)
+			}
+			var got []string
+			seen := map[string]bool{}
+			for _, row := range rows {
+				entry := fmt.Sprintf("%s@%d", row.Token, row.Depth)
+				if row.NestedHidden {
+					entry += "+hidden"
+				}
+				got = append(got, entry)
+				if seen[row.Token] {
+					t.Fatalf("graph %d depth %d lists %s twice: %v", graph, depth, row.Token, got)
+				}
+				seen[row.Token] = true
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("graph %d depth %d:\n got %v\nwant %v", graph, depth, got, want)
+			}
+		}
+	}
+}
+
+// A thread two spawns reach is walked once, under the first.
+func TestListThreadAgentTreeWalksADiamondOnce(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "a", "b", "shared"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "l-a", "lead", ThreadRequestSpawn, "a", false, 100)
+	seedAgentRequest(t, s, "l-b", "lead", ThreadRequestSpawn, "b", false, 101)
+	seedAgentRequest(t, s, "a-s", "a", ThreadRequestSpawn, "shared", false, 110)
+	seedAgentRequest(t, s, "b-s", "b", ThreadRequestSpawn, "shared", false, 111)
+	seedAgentRequest(t, s, "s-work", "shared", ThreadRequestSend, "lead", true, 120)
+	rows, _, err := s.ListThreadAgentTree(agentTreeRead("lead", 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, row := range rows {
+		got = append(got, fmt.Sprintf("%s@%d", row.Token, row.Depth))
+	}
+	if want := []string{"l-a@0", "a-s@1", "s-work@2", "l-b@0", "b-s@1"}; !slices.Equal(got, want) {
+		t.Fatalf("diamond lists %v; want %v", got, want)
 	}
 }
