@@ -178,7 +178,7 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 	if next <= now.UnixMilli() {
 		next = now.UnixMilli() + row.IntervalSeconds*1000
 	}
-	claimed, err := a.store.ClaimAgentWake(row.ID, now.UnixMilli(), next, fire.missed)
+	claimedRow, claimed, err := a.store.ClaimAgentWake(row.ID, now.UnixMilli(), next, fire.missed)
 	if err != nil {
 		logThreadRequestSweep("claim "+row.Kind+" "+row.ID, err)
 		return false
@@ -186,8 +186,8 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 	if !claimed {
 		return false
 	}
-	a.emitAgentWakeChanged(row.ThreadID, row.ID)
-	row.State, row.LastRunAt, row.NextAt, row.Missed = store.AgentWakeRunning, now.UnixMilli(), next, fire.missed
+	a.emitAgentWakeRow(row.ThreadID, claimedRow)
+	row = claimedRow
 	ctx, run, ok := a.beginAgentWakeRun(row)
 	if !ok {
 		// Shutting down. The row stays `running`, and the next boot records
@@ -225,9 +225,11 @@ func (a *App) currentAgentWake(row store.AgentWake) store.AgentWake {
 // runAgentWakeFire runs one claimed fire to its outcome.
 func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store.AgentWake, fire agentWakeFire) {
 	var body string
+	var current store.AgentWake
 	switch row.Kind {
 	case store.AgentWakeLoop:
 		body = renderAgentLoopWake(row, fire)
+		current = a.currentAgentWake(row)
 	case store.AgentWakeWatch:
 		result := a.runAgentWatchScript(ctx, row)
 		if ctx.Err() != nil {
@@ -241,12 +243,13 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 			a.finishAgentWakeFire(run, row, outcome, "", fire.missed, store.AgentWakeNoWake)
 			return
 		}
-		body = renderAgentWatchWake(a.currentAgentWake(row), fire, result.stdout, result.stderr)
+		current = a.currentAgentWake(row)
+		body = renderAgentWatchWake(current, fire, result.stdout, result.stderr)
 	default:
 		a.finishAgentWakeFire(run, row, "error: unknown kind "+row.Kind, "", fire.missed, store.AgentWakeNoWake)
 		return
 	}
-	a.settleAgentWakeDelivery(run, row, fire, body, a.deliverAgentWake(ctx, row, fire.at, body))
+	a.settleAgentWakeDelivery(run, row, fire, body, a.deliverAgentWake(ctx, current, fire.at, body))
 }
 
 // settleAgentWakeDelivery records on its row what delivering one fire's wake
@@ -282,8 +285,10 @@ func (a *App) finishAgentWakeFire(
 	if run.wasStopped() {
 		return
 	}
-	if _, err := a.store.FinishAgentWake(row.ID, outcome, output, missed, carry); err != nil {
+	if finished, applied, err := a.store.FinishAgentWake(row.ID, outcome, output, missed, carry); err != nil {
 		logThreadRequestSweep("finish "+row.Kind+" "+row.ID, err)
+	} else if applied {
+		a.emitAgentWakeRow(row.ThreadID, finished)
 	} else {
 		a.emitAgentWakeChanged(row.ThreadID, row.ID)
 	}
@@ -529,15 +534,16 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 
 	batch := newHeadOutput(agentWakeOutputCap)
 	var flush <-chan time.Time
-	render := func(stderrPart cappedOutput) string {
-		return renderAgentWatchWake(a.currentAgentWake(row), agentWakeFire{}, batch.peek(), stderrPart)
+	render := func(current store.AgentWake, stderrPart cappedOutput) string {
+		return renderAgentWatchWake(current, agentWakeFire{}, batch.peek(), stderrPart)
 	}
 	deliver := func() bool {
 		// The stderr taken with a batch goes back if the batch has to wait,
 		// so a held wake still carries what the script said beside it.
 		taken := stderr.take()
-		body := render(taken)
-		err := a.deliverAgentWake(ctx, row, time.Now().UnixMilli(), body)
+		current := a.currentAgentWake(row)
+		body := render(current, taken)
+		err := a.deliverAgentWake(ctx, current, time.Now().UnixMilli(), body)
 		switch {
 		case err == nil:
 			batch.take()
@@ -563,7 +569,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 				// Output that never reached the queue is not replayed; the
 				// script's own cursor decides whether its next run repeats
 				// it. The row keeps it for the agent to read.
-				a.noteAgentWakeUndelivered(row.ThreadID, row.ID, agentWakeOutcomeNotDelivered, render(stderr.take()))
+				a.noteAgentWakeUndelivered(row.ThreadID, row.ID, agentWakeOutcomeNotDelivered, render(a.currentAgentWake(row), stderr.take()))
 			}
 			if lines != nil {
 				// The reader may be blocked handing over a line; let it reach

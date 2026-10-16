@@ -1263,9 +1263,9 @@ func TestAPeerCancelOfASettledRequestLeavesItsTurnRunning(t *testing.T) {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
 	f.app.bindRequestDelivery(token, h.thread.ID, h.thread.ID+":u0", 0, true)
-	if _, err := f.app.store.SettleThreadRequestReceipt(token, []string{store.ThreadReceiptRunning}, store.ThreadRequestSettlement{
+	if _, err := f.app.store.SettleLocalThreadRequest(token, []string{store.ThreadReceiptRunning}, store.ThreadRequestSettlement{
 		State: store.ThreadReceiptReplied, Answer: []byte("The stall is in the watchdog."), AnswerKind: store.ThreadAnswerReply,
-	}); err != nil {
+	}, store.ThreadRequestReplied); err != nil {
 		t.Fatalf("settle replied: %v", err)
 	}
 

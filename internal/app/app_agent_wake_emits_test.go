@@ -41,7 +41,7 @@ func TestBootRecoveryTellsTheTray(t *testing.T) {
 	// A quiet watch: the rerun the boot pass starts wakes nothing.
 	watch := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "quiet", Command: "true", IntervalSeconds: 3600, TimeoutSeconds: 60, NextAt: next})
 	t.Cleanup(func() { a.stopAgentWakeRunsForThread(thread.ID) })
-	if claimed, err := a.store.ClaimAgentWake(watch.ID, time.Now().UnixMilli(), next, 0); err != nil || !claimed {
+	if _, claimed, err := a.store.ClaimAgentWake(watch.ID, time.Now().UnixMilli(), next, 0); err != nil || !claimed {
 		t.Fatalf("claim: %v %v", claimed, err)
 	}
 
@@ -96,7 +96,7 @@ func TestAWakeLostToShutdownTellsTheTray(t *testing.T) {
 	thread := noticeTestThread(t, a, "emits-release")
 	now := time.Now()
 	loop := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "n", IntervalSeconds: 3600, NextAt: now.Add(time.Hour).UnixMilli()})
-	if claimed, err := a.store.ClaimAgentWake(loop.ID, now.UnixMilli(), now.Add(time.Hour).UnixMilli(), 0); err != nil || !claimed {
+	if _, claimed, err := a.store.ClaimAgentWake(loop.ID, now.UnixMilli(), now.Add(time.Hour).UnixMilli(), 0); err != nil || !claimed {
 		t.Fatalf("claim: %v %v", claimed, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -159,7 +159,7 @@ func TestAWakeTheSessionNeverTookInTellsTheTray(t *testing.T) {
 	thread := noticeTestThread(t, a, "emits-undelivered")
 	now := time.Now()
 	loop := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "n", IntervalSeconds: 3600, NextAt: now.Add(time.Hour).UnixMilli()})
-	if _, err := a.store.FinishAgentWake(loop.ID, agentWakeOutcomeDelivered, "", 0, store.AgentWakeCarried); err != nil {
+	if _, _, err := a.store.FinishAgentWake(loop.ID, agentWakeOutcomeDelivered, "", 0, store.AgentWakeCarried); err != nil {
 		t.Fatal(err)
 	}
 	before := len(wakeChanges(rec, thread.ID))

@@ -105,14 +105,26 @@ func (a *App) emitThreadWakeChange(change ThreadWakeChange) {
 
 // emitAgentWakeChanged sends a loop or watch row as it stands after a write.
 func (a *App) emitAgentWakeChanged(threadID, id string) {
-	change := ThreadWakeChange{ThreadID: threadID, ID: id}
 	row, found, err := a.store.GetAgentWake(id)
 	switch {
 	case err != nil:
 		log.Printf("agent wakes: read %s for its change event: %v", id, err)
-	case !found || row.ThreadID != threadID || row.State == store.AgentWakeCancelled:
-		change.Removed = true
+		a.emitThreadWakeChange(ThreadWakeChange{ThreadID: threadID, ID: id})
+	case !found:
+		a.emitThreadWakeChange(ThreadWakeChange{ThreadID: threadID, ID: id, Removed: true})
 	default:
+		a.emitAgentWakeRow(threadID, row)
+	}
+}
+
+// emitAgentWakeRow sends a loop or watch row a write returned, as that write
+// left it, for the tray of threadID: removed there when the row is
+// cancelled or a handoff moved it to another thread.
+func (a *App) emitAgentWakeRow(threadID string, row store.AgentWake) {
+	change := ThreadWakeChange{ThreadID: threadID, ID: row.ID}
+	if row.ThreadID != threadID || row.State == store.AgentWakeCancelled {
+		change.Removed = true
+	} else {
 		current := threadWakeRowOf(row)
 		change.Row = &current
 	}

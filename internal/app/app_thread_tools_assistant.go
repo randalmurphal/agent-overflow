@@ -48,22 +48,23 @@ func (t threadToolsApp) NewAssistant(ctx context.Context, caller threadtools.Cal
 		return threadtools.NewAssistantAck{}, publicAssistantNameError(err)
 	}
 	prompt := agenthome.CreatedOpeningMessage(thread.Title, agent.Home, creatorThread.Title, caller.ThreadID, call.Role)
-	ack, err := t.startLocalRequest(ctx, caller, store.ThreadRequest{
-		Kind:   store.ThreadRequestSpawn,
-		Notify: true,
-	}, 0, func(token string) (string, error) {
-		target, fresh, err := t.acceptRequest(origin, token, store.ThreadRequestSpawn, thread.ID, nil)
-		if err != nil {
-			return "", t.failRequest(token, err)
-		}
-		if !fresh {
-			return target, nil
-		}
-		if err := t.dispatchRequest(ctx, origin, token, store.ThreadRequestSpawn, target, prompt, true); err != nil {
-			return "", t.failRequest(token, err)
-		}
-		return target, nil
-	})
+	// The thread exists, so the request is written accepted and naming it.
+	token := newThreadRequestToken()
+	_, _, err = t.acceptRequest(origin, store.ThreadRequest{
+		Token:          token,
+		Kind:           store.ThreadRequestSpawn,
+		TargetThreadID: thread.ID,
+		Notify:         true,
+	}, nil)
+	if err == nil {
+		err = t.dispatchRequest(ctx, origin, token, store.ThreadRequestSpawn, thread.ID, prompt, true)
+	}
+	var ack threadtools.RequestAck
+	if err != nil {
+		err = t.failRequest(token, err)
+	} else {
+		ack, err = t.ackRequest(ctx, caller, token, 0)
+	}
 	if err != nil {
 		// The assistant exists with no opening message; the user sees its
 		// row and the error, and can delete it or start the discussion.

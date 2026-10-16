@@ -83,25 +83,15 @@ func agentWakeFromSendID(sendID string) (wakeID string, fireAt int64, ok bool) {
 // queued; a session it needs starts afterwards, except when the previous
 // wake waits on a start that failed, which this fire tries again first
 // (retryAgentWakeStart). ctx is the run's: a run stopped or shut down queues
-// nothing.
+// nothing. row is the row as it stands now, read by the caller after any
+// work of its own (currentAgentWake): a handoff moves a row while a run of
+// it is in flight, and the wake is the thread's that holds the row now.
 func (a *App) deliverAgentWake(ctx context.Context, row store.AgentWake, fireAt int64, body string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// A handoff moves a row while a run of it is in flight: the wake is the
-	// thread's that holds the row now.
-	if current, found, err := a.store.GetAgentWake(row.ID); err == nil && found {
-		row.ThreadID = current.ThreadID
-	}
-	thread, err := a.store.GetThread(row.ThreadID)
-	if err != nil {
-		return fmt.Errorf("read the thread: %w", err)
-	}
-	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
-		return err
-	}
 	notice, abandoned := a.agentWakeNotice(row, agentWakeSendID(row.ID, fireAt), body)
-	err = a.queueAgentNotice(notice)
+	err := a.queueAgentNotice(notice)
 	if errors.Is(err, store.ErrAgentWakeStillQueued) {
 		err = a.retryAgentWakeStart(row, notice)
 	}
@@ -116,7 +106,9 @@ func (a *App) deliverAgentWake(ctx context.Context, row store.AgentWake, fireAt 
 func (a *App) agentWakeNotice(row store.AgentWake, sendID, body string) (agentNotice, *error) {
 	abandoned := new(error)
 	// An archive or a cancel that landed while this run worked has the last
-	// word, here and again when a session is started for the wake.
+	// word, here and again when a session is started for the wake. The queue
+	// write refuses a thread this computer cannot run work in, under the
+	// mutation lock (threadapp.LockMutable).
 	refusal := func() (string, error) {
 		current, err := a.store.GetThread(row.ThreadID)
 		if err != nil {

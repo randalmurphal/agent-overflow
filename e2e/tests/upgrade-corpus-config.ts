@@ -50,6 +50,8 @@ export const migrationExceptions: MigrationException[] = [
   { version: 145, table: 'automation_cursors', dropped: true, reason: "v145 drops the scheduler's per-source cursors with its automations" },
   { version: 145, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v145 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
   { version: 154, table: 'standing_agents', dropped: true, reason: 'v154 moves every standing agent to an agents record whose id is its thread id, and drops the table' },
+  { version: 155, table: 'agent_wakes', columns: ['last_output', 'last_stderr'], rowsMayShrink: true, reason: 'v155 clears what a cancelled loop or watch carried and keeps each thread its 16 newest cancelled rows' },
+  { version: 155, table: 'remote_watches', rowsMayShrink: true, reason: 'v155 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
 ];
 
 /**

@@ -3,6 +3,7 @@ package app
 import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -287,9 +288,36 @@ func TestRemoteWatchPairedCompletionStartsIdleAgentAndRespectsThreadOwnership(t 
 					t.Fatal(err)
 				}
 			case "deleted":
+				// The watch goes with its thread: the watcher's due list no
+				// longer holds it, and a pass over the row read before the
+				// delete delivers nothing.
+				stale, err := source.store.GetRemoteWatch(peer.ID, id)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if err := source.store.DeleteThread(thread.ID); err != nil {
 					t.Fatal(err)
 				}
+				if _, err := source.store.GetRemoteWatch(peer.ID, id); !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("the watch outlived its thread: %v", err)
+				}
+				due, err := source.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 256)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, w := range due {
+					if w.RequestID == id {
+						t.Fatalf("the deleted thread's watch is still due: %+v", w)
+					}
+				}
+				source.checkRemoteWatch(stale)
+				if rows := durableQueueRows(t, source, thread.ID); len(rows) != 0 {
+					t.Fatalf("deleted thread received notification: %+v", rows)
+				}
+				if _, live := source.sessionManager().get(thread.ID); live {
+					t.Fatal("deleted thread restarted")
+				}
+				return
 			case "finished-phase", "finished-run", "orphan-phase":
 				thread.Mode = threadmode.ModeWorkflow
 				if err := source.store.UpdateThread(thread); err != nil {
@@ -425,8 +453,8 @@ func TestRemoteOnlyWorkRemainsVisibleUntilLifecycleCancelsIt(t *testing.T) {
 	if _, err := a.store.GetThread(deleted.ID); err == nil {
 		t.Fatalf("thread %s survived deletion", deleted.ID)
 	}
-	if saved, err := a.store.GetRemoteWatch(deletedWatch.ComputerID, deletedWatch.RequestID); err != nil || saved.Notification != "dismissed" {
-		t.Fatalf("delete left the watch pending: %+v %v", saved, err)
+	if saved, err := a.store.GetRemoteWatch(deletedWatch.ComputerID, deletedWatch.RequestID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("delete left the watch: %+v %v", saved, err)
 	}
 	// A finished job whose completion has not reached the conversation still
 	// blocks a copy until the ordinary queue owns the message.

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/threadmode"
 )
 
 // v144 over a populated database: the rows it finds survive and every
@@ -279,16 +281,16 @@ func TestAgentWakeRunsAreConditional(t *testing.T) {
 	if due, err := s.DueAgentWakes(100, 8); err != nil || len(due) != 1 {
 		t.Fatalf("due at its time: %v %v", due, err)
 	}
-	if finished, err := s.FinishAgentWake(row.ID, "early", "", 0, AgentWakeNoWake); err != nil || finished {
+	if _, finished, err := s.FinishAgentWake(row.ID, "early", "", 0, AgentWakeNoWake); err != nil || finished {
 		t.Fatalf("finish before claim: %v %v", finished, err)
 	}
-	if claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || !claimed {
+	if _, claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || !claimed {
 		t.Fatalf("claim: %v %v", claimed, err)
 	}
-	if claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || claimed {
+	if _, claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || claimed {
 		t.Fatalf("second claim: %v %v", claimed, err)
 	}
-	if finished, err := s.FinishAgentWake(row.ID, "delivered", "", 0, AgentWakeCarried); err != nil || !finished {
+	if _, finished, err := s.FinishAgentWake(row.ID, "delivered", "", 0, AgentWakeCarried); err != nil || !finished {
 		t.Fatalf("finish: %v %v", finished, err)
 	}
 	if next, err := s.NextAgentWakeDue(); err != nil || !next.Set || next.At != 160 {
@@ -297,7 +299,7 @@ func TestAgentWakeRunsAreConditional(t *testing.T) {
 	if ids, err := s.CancelAgentWakesForThread("t", "", "archived"); err != nil || len(ids) != 1 {
 		t.Fatalf("cancel thread: %v %v", ids, err)
 	}
-	if claimed, err := s.ClaimAgentWake(row.ID, 200, 260, 0); err != nil || claimed {
+	if _, claimed, err := s.ClaimAgentWake(row.ID, 200, 260, 0); err != nil || claimed {
 		t.Fatalf("claim of a cancelled row: %v %v", claimed, err)
 	}
 	if next, err := s.NextAgentWakeDue(); err != nil || next.Set {
@@ -340,7 +342,8 @@ func TestQueueAgentWakeRefusesMoreThanAheadQueuedWakes(t *testing.T) {
 }
 
 // A move retires its thread when it commits, and the agent row goes in the
-// same write; a copy, and a move cancelled before it commits, keep the row.
+// same write, reported with its home after the commit; a copy, and a move
+// cancelled before it commits, keep the row.
 func TestCommittedMoveDropsTheStandingAgent(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -348,6 +351,8 @@ func TestCommittedMoveDropsTheStandingAgent(t *testing.T) {
 		mustCreateThread(t, s, id)
 		mustCreateAssistant(t, s, id, "/home/"+id)
 	}
+	var deleted []string
+	s.OnAgentRecordDeleted(func(home string) { deleted = append(deleted, home) })
 	isAgent := func(id string) bool {
 		t.Helper()
 		_, found, err := s.GetStandingAgent(id)
@@ -383,6 +388,38 @@ func TestCommittedMoveDropsTheStandingAgent(t *testing.T) {
 	transfer("cancelled", "move", "prepared", "canceled")
 	if !isAgent("copied") || !isAgent("cancelled") {
 		t.Fatalf("copy kept the agent: %v, cancelled move kept it: %v", isAgent("copied"), isAgent("cancelled"))
+	}
+	if !slices.Equal(deleted, []string{"/home/moved"}) {
+		t.Fatalf("reported deleted records %v, want the moved assistant's home alone", deleted)
+	}
+}
+
+// A thread delete reports the home of the assistant record it deletes,
+// whether the thread goes or is retired to a holder its forks read; a
+// thread that is no assistant's reports nothing.
+func TestDeletingAThreadReportsItsAssistantRecord(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"agent", "plain"} {
+		mustCreateThread(t, s, id)
+	}
+	mustCreateAssistant(t, s, "agent", "/home/agent")
+	// An assistant thread a pointer fork reads, which its delete retires.
+	seedLinearSource(t, s, "held", 2)
+	mustCreateAssistant(t, s, "held", "/home/held")
+	mustPointerFork(t, s, "held", "reader", ForkCut{})
+	var deleted []string
+	s.OnAgentRecordDeleted(func(home string) { deleted = append(deleted, home) })
+	for _, id := range []string{"plain", "agent", "held"} {
+		if err := s.DeleteThread(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !slices.Equal(deleted, []string{"/home/agent", "/home/held"}) {
+		t.Fatalf("reported deleted records %v, want the two assistants' homes", deleted)
+	}
+	if held, err := s.GetThread("held"); err != nil || held.Mode != threadmode.ModeHolder {
+		t.Fatalf("the read thread = %+v, %v; want it retired to a holder", held, err)
 	}
 }
 
@@ -469,11 +506,11 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 	at := int64(100)
 	finish := func(outcome, output string, missed int64, carry AgentWakeCarry) AgentWake {
 		t.Helper()
-		if claimed, err := s.ClaimAgentWake("w", at, at+60_000, missed); err != nil || !claimed {
+		if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, missed); err != nil || !claimed {
 			t.Fatalf("claim at %d: %v %v", at, claimed, err)
 		}
 		at += 60_000
-		if finished, err := s.FinishAgentWake("w", outcome, output, missed, carry); err != nil || !finished {
+		if _, finished, err := s.FinishAgentWake("w", outcome, output, missed, carry); err != nil || !finished {
 			t.Fatalf("finish %q: %v %v", outcome, finished, err)
 		}
 		return read()
@@ -494,7 +531,7 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 	if _, err := s.NoteAgentWakeOutcome("w", "exited; restarting in 1s", AgentWakeNoWake); err != nil {
 		t.Fatal(err)
 	}
-	if claimed, err := s.ClaimAgentWake("w", at, at+60_000, 1); err != nil || !claimed {
+	if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, 1); err != nil || !claimed {
 		t.Fatalf("claim before the quit: %v %v", claimed, err)
 	}
 	if _, err := s.RecoverAgentWake("w", "cancelled-by-quit"); err != nil {
@@ -513,16 +550,16 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 		write func(outcome string) error
 	}{
 		{"finish", func(outcome string) error {
-			if claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
+			if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
 				return fmt.Errorf("claim: %v %v", claimed, err)
 			}
 			at += 60_000
-			_, err := s.FinishAgentWake("w", outcome, "", 0, AgentWakeLost)
+			_, _, err := s.FinishAgentWake("w", outcome, "", 0, AgentWakeLost)
 			return err
 		}},
 		{"session end", func(outcome string) error { _, err := s.NoteAgentWakeUndelivered("w", outcome, ""); return err }},
 		{"shutdown", func(outcome string) error {
-			if claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
+			if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
 				return fmt.Errorf("claim: %v %v", claimed, err)
 			}
 			_, err := s.ReleaseUndeliveredAgentWake("w", outcome, "", at)

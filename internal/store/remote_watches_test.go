@@ -68,7 +68,9 @@ func TestRemoteWatchQueueHandoffIsAtomicAndSurvivesRestore(t *testing.T) {
 
 func TestRemoteWatchObservationCannotRegressAcceptedCompletion(t *testing.T) {
 	s := newTestStore(t)
-	w := RemoteWatch{ComputerID: uuid.NewString(), RequestID: uuid.NewString(), ThreadID: uuid.NewString(), Fingerprint: strings.Repeat("a", 64)}
+	threadID := uuid.NewString()
+	mustCreateThread(t, s, threadID)
+	w := RemoteWatch{ComputerID: uuid.NewString(), RequestID: uuid.NewString(), ThreadID: threadID, Fingerprint: strings.Repeat("a", 64)}
 	if fresh, err := s.RegisterRemoteWatch(w); err != nil || !fresh {
 		t.Fatalf("registration: %v %v", fresh, err)
 	}

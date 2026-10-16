@@ -59,6 +59,9 @@ type Store struct {
 	// writes counts the row writes the writer connection has run; see
 	// WriteCount.
 	writes *atomic.Uint64
+	// committed counts the transactions the writer connection has
+	// committed; see CommitCount.
+	committed *atomic.Uint64
 	// historyReads bounds the read pool connections history reads and
 	// background checkpoints hold; see historyReadSnapshot.
 	historyReads readSlots
@@ -89,6 +92,8 @@ type Store struct {
 	// threadRequestChanged is the function OnThreadRequestChanged set, or
 	// nil.
 	threadRequestChanged atomic.Pointer[func(ThreadRequestChange)]
+	// agentRecordDeleted is the function OnAgentRecordDeleted set, or nil.
+	agentRecordDeleted atomic.Pointer[func(home string)]
 }
 
 // Options configures NewWithOptions.
@@ -131,11 +136,12 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 	gate := &connGate{}
 	commits := newCommitSignal()
 	writes := new(atomic.Uint64)
+	committed := new(atomic.Uint64)
 	pragmas := writerConnPragmas
 	if opts.scratch {
 		pragmas = scratchWriterConnPragmas
 	}
-	db, err := openPool(dbPath, pragmas, gate, commits, writes)
+	db, err := openPool(dbPath, pragmas, gate, commits, writes, committed)
 	if err != nil {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
@@ -160,7 +166,7 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 		return nil, err
 	}
 
-	s := &Store{db: db, path: dbPath, gate: gate, writes: writes}
+	s := &Store{db: db, path: dbPath, gate: gate, writes: writes, committed: committed}
 
 	// Reclaim the WAL file before anything can read from it. Every other
 	// checkpoint the app runs is PASSIVE, which recycles WAL pages for
@@ -218,7 +224,7 @@ func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 	// _pragma values apply per connection (verified against
 	// modernc.org/sqlite v1.56.0). journal_mode is a property of the
 	// database file, so read connections inherit WAL.
-	read, err := openPool(dbPath, readerConnPragmas, gate, nil, nil)
+	read, err := openPool(dbPath, readerConnPragmas, gate, nil, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: open read pool: %w", err)
 	}
@@ -272,6 +278,13 @@ func (s *Store) ReadCount() uint64 { return s.reads.Load() }
 // statements. It counts statements, not rows, so a single statement that
 // writes many rows counts once. Nothing in production reads it.
 func (s *Store) WriteCount() uint64 { return s.writes.Load() }
+
+// CommitCount is how many transactions the writer connection has
+// committed since the store opened, an autocommit statement's included:
+// each is a turn holding the one writer. It is WriteCount's counterpart
+// for the tests that pin how many writer transactions a path takes.
+// Nothing in production reads it.
+func (s *Store) CommitCount() uint64 { return s.committed.Load() }
 
 // quiesceReads routes new reads to the writer pool, waits for in-flight
 // read-pool queries to drain, runs fn, then restores read-pool routing.

@@ -778,8 +778,9 @@ func threadReceiptSettledState(state string) bool {
 
 // expireThreadRequests is the retention pass: answers nobody collected are
 // dropped a day after they were written, rows are deleted at the floor (a
-// spawn's lineage is kept with its payload cleared), and answer files
-// nobody read go with them.
+// spawn's lineage is kept with its payload cleared), remote job watches with
+// nothing left to deliver go at the same floor, and answer files nobody
+// read go with them.
 func (a *App) expireThreadRequests(now time.Time) {
 	if dropped, err := a.store.ExpireThreadRequestAnswers(now.UnixMilli()); err != nil {
 		logThreadRequestSweep("expire answers", err)
@@ -791,6 +792,11 @@ func (a *App) expireThreadRequests(now time.Time) {
 		logThreadRequestSweep("delete requests past retention", err)
 	} else if swept > 0 {
 		log.Printf("thread tools: deleted or cleared %d request row(s) past the %d-day floor", swept, store.ThreadRequestRetentionDays)
+	}
+	if swept, err := a.store.DeleteRemoteWatchesBefore(floor); err != nil {
+		logThreadRequestSweep("delete remote job watches past retention", err)
+	} else if swept > 0 {
+		log.Printf("thread tools: deleted %d finished remote job watch(es) past the %d-day floor", swept, store.ThreadRequestRetentionDays)
 	}
 	a.sweepThreadExports(now)
 }

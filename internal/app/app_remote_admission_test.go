@@ -346,7 +346,12 @@ func TestConversationLifecycleCancelsItsRemoteCommands(t *testing.T) {
 				time.Sleep(time.Millisecond)
 			}
 			watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
-			if err != nil || watch.Notification != "dismissed" {
+			if action == "delete" {
+				// The watch goes with its thread.
+				if !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("watch after delete: %+v %v", watch, err)
+				}
+			} else if err != nil || watch.Notification != "dismissed" {
 				t.Fatalf("watch after %s: %+v %v", action, watch, err)
 			}
 			if pending, err := source.store.HasUnfinishedRemoteWatches(threadID); err != nil || pending {

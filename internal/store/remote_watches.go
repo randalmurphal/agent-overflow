@@ -47,6 +47,8 @@ type RemoteWatch struct {
 	WakeIssue    string `json:"wakeIssue,omitempty"`
 }
 
+// remoteWatchesV91SQL is the table as v91 made it. v155 rebuilt it with
+// thread_id cascading from its thread (migration_v155_ledger_indexes.go).
 const remoteWatchesV91SQL = `CREATE TABLE remote_watches (
  computer_id TEXT NOT NULL, request_id TEXT NOT NULL, thread_id TEXT NOT NULL,
  fingerprint TEXT NOT NULL, label TEXT NOT NULL, receipt TEXT NOT NULL DEFAULT '{}',
@@ -394,6 +396,36 @@ func (s *Store) DismissArchivedRemoteCompletions(computerID string) ([]string, e
 		}
 	}
 	return threads, errors.Join(rows.Err(), rows.Close())
+}
+
+// remoteWatchDoneSQL matches a watch with nothing left to deliver: dismissed,
+// or its completion queued and confirmed by the provider's echo. It is the
+// predicate of idx_remote_watches_done.
+const remoteWatchDoneSQL = `(notification = 'dismissed' OR (notification = 'queued' AND confirmed_at IS NOT NULL))`
+
+// DeleteRemoteWatchesBefore deletes the watches with nothing left to
+// deliver that were made before cutoff, and reports how many. A pending
+// watch, or a queued completion the provider has not confirmed, is still
+// owed and stays whatever its age. It reads first, on the read pool, and
+// takes the writer only when a watch is past the floor.
+func (s *Store) DeleteRemoteWatchesBefore(cutoff int64) (int64, error) {
+	var due bool
+	if err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 FROM remote_watches WHERE `+remoteWatchDoneSQL+` AND created_at < ?)`,
+		cutoff).Scan(&due); err != nil {
+		return 0, fmt.Errorf("store: read whether remote watches are past %d: %w", cutoff, err)
+	}
+	if !due {
+		return 0, nil
+	}
+	result, err := s.db.Exec(`DELETE FROM remote_watches WHERE `+remoteWatchDoneSQL+` AND created_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("store: delete remote watches before %d: %w", cutoff, err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: count deleted remote watches: %w", err)
+	}
+	return deleted, nil
 }
 
 func (s *Store) HasUnfinishedRemoteWatches(threadID string) (bool, error) {

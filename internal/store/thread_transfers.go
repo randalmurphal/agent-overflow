@@ -278,8 +278,9 @@ func (s *Store) AdvanceThreadTransfer(id, phase, manifestHash string) (ThreadTra
 	// retired row here is no assistant's either. Moving an assistant's
 	// current thread deletes the assistant, and a past thread stops being
 	// one. Its loops and watches were cancelled when the move began.
+	var deletedHome string
 	if phase == "committed" && row.Kind == "move" {
-		if _, err := tx.Exec(`DELETE FROM agents WHERE thread_id = ?`, row.ThreadID); err != nil {
+		if deletedHome, err = deleteAgentRecordTx(tx, row.ThreadID); err != nil {
 			return ThreadTransfer{}, err
 		}
 		if _, err := tx.Exec(`DELETE FROM agent_past_threads WHERE thread_id = ?`, row.ThreadID); err != nil {
@@ -295,6 +296,7 @@ func (s *Store) AdvanceThreadTransfer(id, phase, manifestHash string) (ThreadTra
 	if err := tx.Commit(); err != nil {
 		return ThreadTransfer{}, err
 	}
+	s.noteAgentRecordDeleted(deletedHome)
 	return row, nil
 }
 

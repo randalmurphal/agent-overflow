@@ -666,31 +666,36 @@ func TestThreadToolsWritesNeedAutonomyForAnAutonomousThread(t *testing.T) {
 
 // A receipt accepted whose thread was never created is settled here, not
 // left for the next boot: the retry that finds it reads a refusal, the
-// receipt reads interrupted, and no second thread is created for it.
+// receipt reads interrupted, and no second thread is created for it. Only a
+// paired computer's request is retried with its token; a local one mints a
+// fresh token each call.
 func TestThreadSpawnSettlesAReceiptWhoseThreadWasNeverCreated(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	adapter := f.adapter()
+	const peerDevice = "peer-device"
 	origin, err := adapter.localOrigin(f.callerIdentity())
 	if err != nil {
 		t.Fatalf("localOrigin: %v", err)
 	}
+	origin.caller = threadtools.Caller{ThreadID: "peer-caller", ComputerID: "peer"}
+	origin.foreign, origin.ownerDevice = true, peerDevice
 
 	// The state a crash between the two writes leaves behind: an accepted
 	// receipt with no target thread.
 	const token = "half-created-token"
 	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
 		Token:            token,
-		OwnerDeviceID:    threadReceiptLocalOwner,
-		SourceComputerID: "local-computer",
-		SourceThreadID:   f.caller.ID,
+		OwnerDeviceID:    peerDevice,
+		SourceComputerID: "peer",
+		SourceThreadID:   "peer-caller",
 		Kind:             store.ThreadRequestSpawn,
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
 	before := threadIDsInStore(t, f.app)
 
-	_, err = adapter.acceptSpawn(t.Context(), origin, token, threadtools.SpawnCall{Prompt: "try again"})
+	_, err = adapter.acceptSpawn(t.Context(), origin, token, threadtools.SpawnCall{Prompt: "try again", ProjectID: f.caller.ProjectID})
 	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
 		t.Fatalf("retry of a half-created request: code = %q, err = %v", code, err)
 	}
@@ -1303,12 +1308,12 @@ func TestThreadLateReplyIsRefusedOnceTheHoldHasRunOut(t *testing.T) {
 
 	// Age the receipt: its hold ended a minute ago.
 	receipt := f.receipt(t, ack.Token)
-	aged, err := f.app.store.SettleThreadRequestReceipt(ack.Token, []string{store.ThreadReceiptFinished}, store.ThreadRequestSettlement{
+	result, err := f.app.store.SettleLocalThreadRequest(ack.Token, []string{store.ThreadReceiptFinished}, store.ThreadRequestSettlement{
 		State: store.ThreadReceiptFinished, Answer: receipt.Answer, AnswerKind: receipt.AnswerKind,
 		SettledAt: receipt.SettledAt, ExpiresAt: time.Now().Add(-time.Minute).UnixMilli(),
-	})
-	if err != nil || !aged {
-		t.Fatalf("age receipt: aged=%v err=%v", aged, err)
+	}, store.ThreadRequestFinished)
+	if err != nil || !result.Settled {
+		t.Fatalf("age receipt: aged=%v err=%v", result.Settled, err)
 	}
 
 	_, err = f.adapter().Reply(t.Context(), f.targetIdentity(t, ack.ThreadID), threadtools.ReplyCall{
@@ -3523,5 +3528,40 @@ func TestASpawnPastTheFloorIsUnknownButKeepsItsLineage(t *testing.T) {
 
 	if spawned, err := f.app.store.GetThread(child); err != nil || spawned.SpawnedByThreadID != f.caller.ID {
 		t.Errorf("spawned thread after the sweep = spawnedBy %q, %v; want %s", spawned.SpawnedByThreadID, err, f.caller.ID)
+	}
+}
+
+// A caller deleted while its spawn's thread is being created takes its
+// source row with it. The spawn still names its thread on the receipt and
+// runs, as it did when the source row was named apart: the thread exists,
+// and a refusal now would leave it in the sidebar with no prompt.
+func TestASpawnWhoseCallerIsDeletedMidCreateStillRuns(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	adapter := f.adapter()
+	origin, err := adapter.localOrigin(f.callerIdentity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	made, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := newThreadRequestToken()
+	target, fresh, err := adapter.acceptRequest(origin, store.ThreadRequest{Token: token, Kind: store.ThreadRequestSpawn},
+		func() (store.Thread, error) {
+			if err := f.app.store.DeleteThread(f.caller.ID); err != nil {
+				t.Fatal(err)
+			}
+			return made, nil
+		})
+	if err != nil || target != made.ID || !fresh {
+		t.Fatalf("accept = %q %v, %v; want the created thread", target, fresh, err)
+	}
+	if _, found, err := f.app.store.GetThreadRequest(token); err != nil || found {
+		t.Fatalf("source row after its caller's delete: found=%v err=%v", found, err)
+	}
+	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptAccepted || receipt.TargetThreadID != made.ID {
+		t.Fatalf("receipt = %+v, want it accepted and naming the thread", receipt)
 	}
 }

@@ -36,6 +36,11 @@ const (
 // bound as well as a row bound.
 const MaxAgentWakesPerThread = 64
 
+// MaxCancelledAgentWakesPerThread bounds the cancelled rows one thread
+// keeps. A cancelled row is kept only so a label registered again revives
+// it with its id; v155 pruned every thread to this many.
+const MaxCancelledAgentWakesPerThread = 16
+
 // MaxAgentWakeOutputBytes bounds the data one wake carries and the
 // undelivered output a row keeps in `last_output`.
 const MaxAgentWakeOutputBytes = 64 << 10
@@ -149,9 +154,10 @@ func nullableMillis(value int64) any {
 }
 
 // RegisterAgentWake arms one loop or watch, replacing the row the thread
-// already keeps under the same label. A label is one row for the life of the
-// thread: a cancelled row is revived rather than joined by a second one, so
-// the rows stay bounded by the labels a thread ever used. A registration
+// already keeps under the same label. A label is one row while the thread
+// keeps it: a cancelled row is revived rather than joined by a second one,
+// and a cancel keeps only a thread's newest cancelled rows
+// (pruneCancelledAgentWakesTx). A registration
 // clears the undelivered output and the stderr tail the row kept: they
 // belonged to the watch the registration replaces.
 //
@@ -212,15 +218,6 @@ func (s *Store) RegisterAgentWake(w AgentWake) (_ AgentWake, err error) {
 	} else {
 		if w.CreatedAt == 0 {
 			w.CreatedAt = nowMillis()
-		}
-		// A label is revived rather than duplicated, but a thread can keep
-		// choosing new ones. The newest cancelled rows stay for the record and
-		// the rest go, so the rows of one thread stay bounded.
-		if _, err := tx.Exec(`DELETE FROM agent_wakes WHERE thread_id = ? AND state = 'cancelled'
-			AND id NOT IN (SELECT id FROM agent_wakes WHERE thread_id = ? AND state = 'cancelled'
-			               ORDER BY created_at DESC LIMIT `+strconv.Itoa(MaxAgentWakesPerThread)+`)`,
-			w.ThreadID, w.ThreadID); err != nil {
-			return AgentWake{}, fmt.Errorf("%s: prune cancelled rows: %w", action, err)
 		}
 		if _, err := tx.Exec(`INSERT INTO agent_wakes
 			(id, thread_id, kind, label, note, command, cwd, interval_seconds, timeout_seconds, long_running,
@@ -325,10 +322,11 @@ func (s *Store) NextAgentWakeDue() (ScheduledMoment, error) {
 }
 
 // ClaimAgentWake starts one interval run: armed to running, with the next fire
-// and the fires this one stands in for written in the same update. Claimed
-// false is a lost race: cancelled, re-registered or claimed elsewhere.
-func (s *Store) ClaimAgentWake(id string, now, nextAt, missed int64) (bool, error) {
-	return s.changeAgentWake(fmt.Sprintf("store: claim agent wake %s", id),
+// and the fires this one stands in for written in the same update. It
+// returns the row as the claim left it. Claimed false is a lost race:
+// cancelled, re-registered or claimed elsewhere.
+func (s *Store) ClaimAgentWake(id string, now, nextAt, missed int64) (AgentWake, bool, error) {
+	return s.changeAgentWakeRow(fmt.Sprintf("store: claim agent wake %s", id),
 		`UPDATE agent_wakes SET state = 'running', last_run_at = ?, next_at = ?, missed = ?
 		  WHERE id = ? AND state = 'armed'`, now, nullableMillis(nextAt), missed, id)
 }
@@ -353,13 +351,14 @@ const (
 // wake. A watch run whose wake did not reach the agent passes its body, which
 // the row keeps (see NoteAgentWakeUndelivered); any other run passes none. A
 // row re-registered as a long-running watch while the run was in flight
-// belongs to its process, and the finish is a lost race.
-func (s *Store) FinishAgentWake(id, outcome, output string, missed int64, carry AgentWakeCarry) (bool, error) {
+// belongs to its process, and the finish is a lost race. It returns the row
+// as the finish left it.
+func (s *Store) FinishAgentWake(id, outcome, output string, missed int64, carry AgentWakeCarry) (AgentWake, bool, error) {
 	action := fmt.Sprintf("store: finish agent wake %s", id)
 	if err := checkAgentWakeOutput(output); err != nil {
-		return false, fmt.Errorf("%s: %w", action, err)
+		return AgentWake{}, false, fmt.Errorf("%s: %w", action, err)
 	}
-	return s.changeAgentWake(action,
+	return s.changeAgentWakeRow(action,
 		`UPDATE agent_wakes SET state = 'armed', last_outcome = ?, missed = ?,
 		        last_output = CASE WHEN kind = 'watch' AND ? <> '' THEN ? ELSE last_output END,
 		        undelivered = `+undeliveredAfter+`
@@ -482,9 +481,13 @@ func (s *Store) CancelAgentWake(threadID, label, kind, outcome string) (_ AgentW
 	if !found || row.State == AgentWakeCancelled || kind != "" && row.Kind != kind {
 		return row, false, nil
 	}
-	if _, err := tx.Exec(`UPDATE agent_wakes SET state = 'cancelled', next_at = NULL, last_outcome = ?
+	if _, err := tx.Exec(`UPDATE agent_wakes SET state = 'cancelled', next_at = NULL, last_outcome = ?,
+		    last_output = '', last_stderr = ''
 		WHERE id = ?`, outcome, row.ID); err != nil {
 		return AgentWake{}, false, fmt.Errorf("%s: update: %w", action, err)
+	}
+	if err := pruneCancelledAgentWakesTx(tx, threadID); err != nil {
+		return AgentWake{}, false, fmt.Errorf("%s: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return AgentWake{}, false, fmt.Errorf("%s: commit: %w", action, err)
@@ -497,25 +500,70 @@ func (s *Store) CancelAgentWake(threadID, label, kind, outcome string) (_ AgentW
 // the caller can stop their processes.
 func (s *Store) CancelAgentWakesForThread(threadID, kind, outcome string) (_ []string, err error) {
 	action := fmt.Sprintf("store: cancel agent wakes for %s", threadID)
-	rows, err := s.db.Query(`UPDATE agent_wakes SET state = 'cancelled', next_at = NULL, last_outcome = ?
-		WHERE thread_id = ? AND state <> 'cancelled' AND (? = '' OR kind = ?) RETURNING id`,
-		outcome, threadID, kind, kind)
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer rollbackAgentWakeTx(tx, action, &err)
+	ids, err := func() (_ []string, err error) {
+		rows, err := tx.Query(`UPDATE agent_wakes SET state = 'cancelled', next_at = NULL, last_outcome = ?,
+			    last_output = '', last_stderr = ''
+			WHERE thread_id = ? AND state IN ('armed','running') AND (? = '' OR kind = ?) RETURNING id`,
+			outcome, threadID, kind, kind)
+		if err != nil {
+			return nil, err
+		}
+		defer closeAgentWakeRows(rows, action, &err)
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return nil, fmt.Errorf("scan: %w", err)
+			}
+			ids = append(ids, id)
+		}
+		return ids, rows.Err()
+	}()
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
-	defer closeAgentWakeRows(rows, action, &err)
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("%s: scan: %w", action, err)
-		}
-		ids = append(ids, id)
+	if len(ids) == 0 {
+		return nil, nil
 	}
-	if err := rows.Err(); err != nil {
+	if err := pruneCancelledAgentWakesTx(tx, threadID); err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("%s: commit: %w", action, err)
+	}
 	return ids, nil
+}
+
+// pruneCancelledAgentWakesTx keeps a thread's
+// MaxCancelledAgentWakesPerThread newest cancelled rows and deletes the
+// rest: a cancel adds one, and a thread can keep choosing new labels.
+func pruneCancelledAgentWakesTx(tx *sql.Tx, threadID string) error {
+	if _, err := tx.Exec(`DELETE FROM agent_wakes WHERE thread_id = ? AND state = 'cancelled'
+		AND id NOT IN (SELECT id FROM agent_wakes WHERE thread_id = ? AND state = 'cancelled'
+		               ORDER BY created_at DESC, id DESC LIMIT `+strconv.Itoa(MaxCancelledAgentWakesPerThread)+`)`,
+		threadID, threadID); err != nil {
+		return fmt.Errorf("prune cancelled rows: %w", err)
+	}
+	return nil
+}
+
+// changeAgentWakeRow is changeAgentWake for a write whose caller needs the
+// row it left: the update returns it, so no second read can see a later
+// write instead.
+func (s *Store) changeAgentWakeRow(action, query string, args ...any) (AgentWake, bool, error) {
+	row, err := scanAgentWake(s.db.QueryRow(query+` RETURNING `+agentWakeColumns, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		return AgentWake{}, false, nil
+	}
+	if err != nil {
+		return AgentWake{}, false, fmt.Errorf("%s: %w", action, err)
+	}
+	return row, true, nil
 }
 
 func (s *Store) changeAgentWake(action, query string, args ...any) (bool, error) {

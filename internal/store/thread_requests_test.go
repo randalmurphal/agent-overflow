@@ -120,10 +120,10 @@ func TestThreadRequestRecordsTheAnsweringAgent(t *testing.T) {
 		if row := receipt(token); row.AnswerAgent != nil {
 			t.Errorf("open receipt %s records agent %+v", token, row.AnswerAgent)
 		}
-		if settled, err := s.SettleThreadRequestReceipt(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		if result, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
 			State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, Agent: agent,
-		}); err != nil || !settled {
-			t.Fatalf("settle receipt %s: settled=%v err=%v", token, settled, err)
+		}, ThreadRequestFinished); err != nil || !result.Settled {
+			t.Fatalf("settle receipt %s: settled=%v err=%v", token, result.Settled, err)
 		}
 		got := receipt(token).AnswerAgent
 		if (got == nil) != (agent == nil) || (got != nil && got.Role != agent.Role) {
@@ -452,9 +452,9 @@ func TestThreadRequestReceiptSurvivesTheThreadItRanIn(t *testing.T) {
 			t.Fatalf("accept %s: %v", token, err)
 		}
 	}
-	if _, err := s.SettleThreadRequestReceipt("tok-answered", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+	if _, err := s.SettleLocalThreadRequest("tok-answered", ThreadReceiptOpenStates(), ThreadRequestSettlement{
 		State: ThreadReceiptFinished, Answer: []byte("the answer"), AnswerKind: ThreadAnswerFinal,
-	}); err != nil {
+	}, ThreadRequestFinished); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 
@@ -553,11 +553,11 @@ func TestThreadRequestReceiptAcceptanceIsIdempotent(t *testing.T) {
 		t.Fatalf("open receipts = %+v", open)
 	}
 
-	settled, err := s.SettleThreadRequestReceipt("tok-r", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
+	result, err := s.SettleLocalThreadRequest("tok-r", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
 		State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 500,
-	})
-	if err != nil || !settled {
-		t.Fatalf("settle receipt: settled=%v err=%v", settled, err)
+	}, ThreadRequestFinished)
+	if err != nil || !result.Settled {
+		t.Fatalf("settle receipt: settled=%v err=%v", result.Settled, err)
 	}
 	row, found, err := s.GetThreadRequestReceipt("tok-r")
 	if err != nil || !found {
@@ -603,9 +603,9 @@ func TestADeliveryBindsAReceiptAheadOfItsDispatchMark(t *testing.T) {
 	if row, _, _ := s.GetThreadRequestReceipt("tok-early"); row.State != ThreadReceiptRunning || row.TurnID != "turn-e" || row.OwnTurn {
 		t.Fatalf("receipt = %+v, want it running on the delivered turn", row)
 	}
-	if _, err := s.SettleThreadRequestReceipt("tok-early", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
+	if _, err := s.SettleLocalThreadRequest("tok-early", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
 		State: ThreadReceiptCancelled, Answer: []byte("x"), AnswerKind: ThreadAnswerError,
-	}); err != nil {
+	}, ThreadRequestCancelled); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 	if bound, err := s.BindThreadReceiptTurn("tok-early", "item-e", "turn-later", true); err != nil || bound {
@@ -663,9 +663,9 @@ func TestARebindMovesOnlyFromAnEmptyBoundTurn(t *testing.T) {
 	if row, _, _ := s.GetThreadRequestReceipt("tok-a"); row.TurnID != "t-target#2" || row.MessageItemID != "item-b" || !row.OwnTurn {
 		t.Fatalf("receipt = %+v, want it on turn 2 under the survivor's row", row)
 	}
-	if _, err := s.SettleThreadRequestReceipt("tok-a", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
+	if _, err := s.SettleLocalThreadRequest("tok-a", []string{ThreadReceiptRunning}, ThreadRequestSettlement{
 		State: ThreadReceiptFinished, Answer: []byte("x"), AnswerKind: ThreadAnswerFinal,
-	}); err != nil {
+	}, ThreadRequestFinished); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 	if moved, err := s.RebindThreadReceiptTurn("tok-a", "item-c", "t-target", 2, "t-target#2", "t-target#3", true); err != nil || moved {
@@ -688,10 +688,10 @@ func TestExpireThreadRequestAnswersOnlyDropsUncollected(t *testing.T) {
 		}
 	}
 	for _, token := range []string{"tok-collected", "tok-uncollected"} {
-		if _, err := s.SettleThreadRequestReceipt(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		if _, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
 			State: ThreadReceiptFinished, Answer: []byte("answer"), AnswerKind: ThreadAnswerFinal,
 			SettledAt: 1000, ExpiresAt: 2000,
-		}); err != nil {
+		}, ThreadRequestFinished); err != nil {
 			t.Fatalf("settle %s: %v", token, err)
 		}
 	}
@@ -771,9 +771,9 @@ func TestStoreThreadReceiptLateReplyRefusesPastTheHold(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	if _, err := s.SettleThreadRequestReceipt("tok-stale", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+	if _, err := s.SettleLocalThreadRequest("tok-stale", ThreadReceiptOpenStates(), ThreadRequestSettlement{
 		State: ThreadReceiptFinished, AnswerKind: ThreadAnswerNote, SettledAt: 1000, ExpiresAt: 2000,
-	}); err != nil {
+	}, ThreadRequestFinished); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 	for _, at := range []int64{2000, 2001} {
@@ -889,11 +889,11 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 		}
 	}
 	for token, at := range map[string]int64{"tok-receipt-settled-old": 200, "tok-receipt-settled-recent": 5000} {
-		applied, err := s.SettleThreadRequestReceipt(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		result, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
 			State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: at,
-		})
-		if err != nil || !applied {
-			t.Fatalf("settle receipt %s: applied=%v err=%v", token, applied, err)
+		}, ThreadRequestFinished)
+		if err != nil || !result.Settled {
+			t.Fatalf("settle receipt %s: applied=%v err=%v", token, result.Settled, err)
 		}
 	}
 
@@ -1125,11 +1125,11 @@ func TestThreadReceiptTargetIsNamedAfterAcceptance(t *testing.T) {
 	if len(open) != 2 {
 		t.Fatalf("open receipts = %+v, want both untargeted rows", open)
 	}
-	settled, err := s.SettleThreadRequestReceipt("tok-ask", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+	result, err := s.SettleLocalThreadRequest("tok-ask", ThreadReceiptOpenStates(), ThreadRequestSettlement{
 		State: ThreadReceiptInterrupted, AnswerKind: ThreadAnswerNote, SettledAt: 200,
-	})
-	if err != nil || !settled {
-		t.Fatalf("settle untargeted receipt: settled=%v err=%v", settled, err)
+	}, ThreadRequestInterrupted)
+	if err != nil || !result.Settled {
+		t.Fatalf("settle untargeted receipt: settled=%v err=%v", result.Settled, err)
 	}
 
 	// An untargeted receipt belongs to no thread's list.
