@@ -5,9 +5,9 @@
 // content_block_stop and a message_stop carrying `abandoned_blocks`
 // (docs/references/claude-wire.md §abandoned_blocks): the blocks from that
 // index on were streamed but are not in the transcript. The rows those
-// blocks streamed into must stay exactly as the user saw them, muted and
-// tagged, with the record row after them, and what Claude wrote next must
-// render below. Nothing disappears and nothing re-streams in place
+// blocks streamed into must stay exactly as the user saw them, muted (a
+// text row also tagged), with the record row after them, and what Claude
+// wrote next must render below. Nothing disappears and nothing re-streams in place
 // (docs/decisions.md §Streaming and reveal). The server serves a named row
 // marked (`discardedBy`), so the marking holds across a reload; the edge
 // where the record is outside the loaded window is
@@ -197,13 +197,26 @@ const EXPECTED: Record<Case, Expected> = {
 
 type Theme = 'light' | 'dark';
 
-/** The computed dimming: the theme's `--fade-subtle` on a text row and
- * `--fade-muted` on reasoning, which its rail has already faded
- * (app.css `.discarded-row`, theme-system.md §9.13). */
+/** The computed dimming, `--fade-discarded*` in app.css: per mode and row
+ * kind, the least that keeps the dimmed text at the 4.5:1 body floor. */
 const OPACITY: Record<Theme, { text: string; reasoning: string }> = {
-  dark: { text: '0.55', reasoning: '0.8' },
-  light: { text: '0.67', reasoning: '0.87' },
+  dark: { text: '0.61', reasoning: '0.87' },
+  light: { text: '0.7', reasoning: '1' },
 };
+
+/** A text row's tag sits beside its time; a reasoning row's label is for
+ * screen readers only, since a visible tag would narrow the text beside it. */
+async function expectDiscardedLabel(row: Locator, kind: Case): Promise<void> {
+  if (kind === 'thinking') {
+    const label = row.getByTestId('thinking-discarded');
+    await expect(label).toHaveText('Discarded by Claude after the response stalled');
+    await expect(label).toHaveCSS('position', 'absolute');
+    await expect(label).toHaveCSS('width', '1px');
+    return;
+  }
+  await expect(row.getByTestId('assistant-message-discarded')).toHaveText('Discarded');
+  await expect(row.getByTestId('assistant-message-discarded')).toBeVisible();
+}
 
 /** The thinking row lives in an activity run; open it so the row renders. */
 async function expandThinkingRun(timeline: Locator): Promise<void> {
@@ -283,7 +296,7 @@ async function expectMarked(timeline: Locator, kind: Case, theme: Theme): Promis
   await expect(discarded).toHaveAttribute('data-item-kind', kind === 'thinking' ? 'thinking' : 'assistant_text');
   await expect(discarded).toHaveAttribute('data-item-status', 'completed');
   await expect(discarded).toContainText(want.discardedText);
-  await expect(discarded.getByTestId(kind === 'thinking' ? 'thinking-discarded' : 'assistant-message-discarded')).toHaveText('Discarded');
+  await expectDiscardedLabel(discarded, kind);
   const dimmed = discarded.locator(kind === 'thinking' ? '.discarded-reasoning' : '.discarded-row');
   await expect(dimmed).toHaveCSS('opacity', OPACITY[theme][kind === 'thinking' ? 'reasoning' : 'text']);
 
@@ -372,7 +385,7 @@ for (const theme of ['light', 'dark'] as const) {
       const marked = timeline.locator(`[data-item-id="${itemId}"]`);
       await expect(marked).toHaveAttribute('data-discarded', 'true');
       await expect(timeline.getByTestId('abandoned-blocks-notification')).toBeVisible();
-      await expect(marked.getByTestId(kind === 'thinking' ? 'thinking-discarded' : 'assistant-message-discarded')).toBeVisible();
+      await expectDiscardedLabel(marked, kind);
       await expect(marked.locator(kind === 'thinking' ? '.discarded-reasoning' : '.discarded-row'))
         .toHaveCSS('opacity', OPACITY[theme][kind === 'thinking' ? 'reasoning' : 'text']);
       const after = await settledGeometry(page, itemId, kind);

@@ -168,11 +168,11 @@
   {/snippet}
   {#snippet actions()}
     {#if discarded}
-      <span
-        class="shrink-0 rounded-full border border-border px-1.5 py-px text-[0.5625rem] uppercase tracking-wide text-fg-hint"
-        data-testid={`${idPrefix}-discarded`}
-        title="Claude discarded this after the response stalled"
-      >Discarded</span>
+      <!-- Screen readers only: a visible tag here would take its width from
+           the body beside it and rewrap the text the moment the mark lands.
+           The abandonment record directly below says it for sighted
+           readers. -->
+      <span class="sr-only" data-testid={`${idPrefix}-discarded`}>Discarded by Claude after the response stalled</span>
     {/if}
     <time class="shrink-0 pt-[2px] text-[0.625rem] tabular-nums text-fg-hint" datetime={isoTime}>{time}</time>
   {/snippet}

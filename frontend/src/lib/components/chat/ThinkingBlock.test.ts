@@ -54,13 +54,16 @@ describe('<ThinkingBlock>', () => {
   });
 
   // Reasoning Claude discarded after a stalled response stays readable and
-  // expandable; the header is dimmed in place and tagged before its
-  // time (utils/discardedItems.ts). An unmarked row carries neither.
-  it('dims and tags a discarded row and leaves an unmarked row alone', () => {
+  // expandable; the header is dimmed in place and labelled for screen
+  // readers only, since a visible tag would narrow the text beside it
+  // (utils/discardedItems.ts). An unmarked row carries neither.
+  it('dims and labels a discarded row and leaves an unmarked row alone', () => {
     const discarded = render(ThinkingBlock, {
       props: { item: makeItem({ kind: 'thinking', summary: 'Let me think about ' }), discarded: true },
     });
-    expect(discarded.getByTestId('thinking-discarded').textContent).toBe('Discarded');
+    const label = discarded.getByTestId('thinking-discarded');
+    expect(label.textContent).toBe('Discarded by Claude after the response stalled');
+    expect(label.className).toBe('sr-only');
     expect(discarded.getByTestId('thinking-header').className).toContain('discarded-reasoning');
     expect(discarded.getByTestId('thinking-body').textContent).toBe('Let me think about');
     discarded.unmount();
