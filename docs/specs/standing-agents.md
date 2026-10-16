@@ -926,7 +926,7 @@ call's own stamp, so the settled row reads the same on any later day.
   reads the thread again, as it does after a lost frame or a reconnect.
   The tray reads the same store as the sidebar
   (`stores/threadWakes.svelte.ts`), which applies each frame in the
-  listing's order (loops and watches by label, reminders by due time) and
+  listing's order (loops and watches by label, reminders by due time, then token) and
   replays frames that land during a read over its answer. It reads the
   thread again, through the rate-bounded refresh scheduler, only where a
   frame cannot settle the listing: a reminder change that may bring in or

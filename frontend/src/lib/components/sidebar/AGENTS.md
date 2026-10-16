@@ -15,7 +15,7 @@ entity stores. `Sidebar.svelte` owns the top-level render boundary;
 - A standing agent row is `ThreadRow`'s agent variant, not a component of its
   own: it uses the group row's geometry, folds the threads it spawned on its
   chevron (`sidebar:collapsedAgents`), and offers no pin or group item. Its
-  state line reads `stores/agentWakes.svelte.ts`; its `N done` footer
+  state line reads `stores/threadWakes.svelte.ts`; its `N done` footer
   (`AgentDoneFooter.svelte`) reads `stores/agentArchivedChildren.svelte.ts`.
   Rules: [standing agents](../../../../../docs/specs/standing-agents.md#sidebar).
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this

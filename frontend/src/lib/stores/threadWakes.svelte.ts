@@ -164,8 +164,19 @@ function sameRow(a: ThreadWakeRow, b: ThreadWakeRow): boolean {
  */
 function setLoops(threadId: string, backend: BackendKey, rows: readonly ThreadWakeRow[]): void {
   const current = untrack(() => loops.get(threadId));
-  if (current && current.backend === backend && current.rows.length === rows.length && rows.every((row, i) => sameRow(row, current.rows[i]))) return;
+  if (current && current.backend === backend && sameRows(current.rows, rows)) return;
   loops.set(threadId, { backend, rows: rows.length === 0 ? NO_ROWS : rows });
+}
+
+function sameRows(a: readonly ThreadWakeRow[], b: readonly ThreadWakeRow[]): boolean {
+  return a.length === b.length && a.every((row, i) => sameRow(row, b[i]));
+}
+
+/** Writes a tray's reminders unless they are what it holds, as setLoops does. */
+function setReminders(threadId: string, rows: readonly ThreadWakeRow[], more: number): void {
+  const current = untrack(() => reminders.get(threadId));
+  if (current && current.more === more && sameRows(current.rows, rows)) return;
+  reminders.set(threadId, { rows, more });
 }
 
 /** Drops the thread's loops unless the sidebar or a tray still shows them. */
@@ -179,7 +190,7 @@ function applyListing(threadId: string, backend: BackendKey, wakes: ThreadWakes 
   const rows = wakes?.rows ?? [];
   setLoops(threadId, backend, rows.filter(isLoop));
   if (!retained.has(threadId)) return;
-  reminders.set(threadId, { rows: rows.filter((row) => row.kind === 'reminder'), more: wakes?.moreReminders ?? 0 });
+  setReminders(threadId, rows.filter((row) => row.kind === 'reminder'), wakes?.moreReminders ?? 0);
 }
 
 /** Boot-time / resync wholesale load. Errors surface to the console only: the line is decoration. */
@@ -323,8 +334,10 @@ function readAgain(threadId: string): void {
     retention.refresh.request();
     return;
   }
-  if (!agents.has(threadId) && !pending.has(threadId)) return;
-  forgetAgentWakes(threadId);
+  if (!agents.has(threadId)) return;
+  // The row keeps its rows until the answer replaces them; a read already
+  // out replays this frame over its answer, which asks again.
+  agents.delete(threadId);
   ensureAgentWakes(threadId);
 }
 
@@ -368,7 +381,7 @@ function applyReminderChange(threadId: string, id: string, row: ThreadWakeRow | 
     if (row && at >= 0 && listed.rows[at].nextAt === row.nextAt) {
       const rows = [...listed.rows];
       rows[at] = row;
-      reminders.set(threadId, { rows, more: listed.more });
+      setReminders(threadId, rows, listed.more);
       return;
     }
     readAgain(threadId);
@@ -382,7 +395,7 @@ function applyReminderChange(threadId: string, id: string, row: ThreadWakeRow | 
     rows.sort(compareReminders);
   }
   const more = rows.length > REMINDER_LIMIT ? rows.length - REMINDER_LIMIT : 0;
-  reminders.set(threadId, { rows: more > 0 ? rows.slice(0, REMINDER_LIMIT) : rows, more });
+  setReminders(threadId, more > 0 ? rows.slice(0, REMINDER_LIMIT) : rows, more);
 }
 
 /** A frame for any thread of `backend` may have been lost: read every thread of it again. */
@@ -416,6 +429,9 @@ onStandingAgentEnded(forgetAgentWakes);
 
 onBackendDetached(({ threadIds }) => {
   for (const threadId of threadIds) {
+    // A read queued or out for the thread would refill what the detach
+    // removes. The tray keeps its retention until it lets go.
+    retained.get(threadId)?.refresh.reset();
     agents.delete(threadId);
     pending.delete(threadId);
     reminders.delete(threadId);

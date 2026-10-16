@@ -13,7 +13,8 @@ import {
 import { applyThreadWakesChanged, applyThreadWakesGap } from './eventsThreadWakes';
 import { replaceAllThreads } from './threads.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { takePinnedBackend } from '../transport/backends';
+import { detachBackend, takePinnedBackend } from '../transport/backends';
+import { noteThread } from '../transport/entityIndex';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import type { Thread } from '../types/models';
 import type { ThreadWakeRow, ThreadWakes } from './bindings';
@@ -197,6 +198,21 @@ describe('thread wakes store', () => {
     unmount();
   });
 
+  it('keeps an agent\'s rows while it reads an unreadable row again', async () => {
+    setBindingMock('ListThreadWakes', async () => ({ rows: [row('l1')], moreReminders: 0 }));
+    ensureAgentWakes('agent');
+    await flush();
+    let answer: (wakes: ThreadWakes) => void = () => {};
+    const list = setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answer = resolve; }));
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l1' }, HOME_BACKEND);
+    await flush();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
+    answer({ rows: [row('l2')], moreReminders: 0 });
+    await flush();
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l2']);
+  });
+
   describe('a retained listing', () => {
     afterEach(() => {
       vi.useRealTimers();
@@ -246,6 +262,47 @@ describe('thread wakes store', () => {
       const listing = getThreadWakeListing('plain')!;
       expect(listing.loops.map((r) => [r.id, r.state])).toEqual([['l1', 'running']]);
       expect(listing.reminders).toEqual([]);
+      release();
+    });
+
+    it('reruns no reader of a listing a read finds unchanged', async () => {
+      noteThread('plain', HOME_BACKEND);
+      setBindingMock('ListStandingAgentWakes', async () => []);
+      const wakes = { rows: [row('l1'), reminder('r1', 5), reminder('r2', 6)], moreReminders: 3 };
+      const { read, release } = await retain('plain', wakes);
+      let runs = 0;
+      const unmount = $effect.root(() => {
+        $effect(() => {
+          runs += 1;
+          getThreadWakeListing('plain');
+        });
+      });
+      flushSync();
+      // An unreadable row and a lost frame both read the same listing again.
+      applyThreadWakesChanged({ threadId: 'plain', id: 'l1' }, HOME_BACKEND);
+      await vi.advanceTimersByTimeAsync(500);
+      applyThreadWakesGap(HOME_BACKEND);
+      await vi.advanceTimersByTimeAsync(500);
+      flushSync();
+      expect(read.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(runs).toBe(1);
+      unmount();
+      release();
+    });
+
+    it('drops a read queued for a thread of a computer that detaches', async () => {
+      stageBackend({ id: 'gpu' });
+      noteThread('remote', 'gpu', 2);
+      const { read, release } = await retain('remote', { rows: [row('l1'), reminder('r1', 5)], moreReminders: 0 });
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(getThreadWakeListing('remote')?.loops.map((r) => r.id)).toEqual(['l1']);
+      // An unreadable row queues a read for the scheduler's delay.
+      applyThreadWakesChanged({ threadId: 'remote', id: 'l1' }, 'gpu');
+      detachBackend('gpu');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(getThreadWakeListing('remote')).toBeNull();
+      expect(getAgentWakeRows('remote')).toEqual([]);
       release();
     });
 
