@@ -872,6 +872,43 @@ describe('deferred scroll pass', () => {
       expect(h.state.escaped).toBe(true);
     });
 
+    describe('navigation keys typed into an editable inside the scroller', () => {
+      it.each(['End', 'PageDown', 'ArrowDown'])('%s arms no landing, so a later scroll with no input to the end stays escaped', async (k) => {
+        const h = build();
+        h.state.escaped = true;
+        h.state.distanceFromBottom = 100;
+        h.scrollEl.scrollTop = 400;
+        h.scrollEl.dispatchEvent(new Event('scroll'));
+        const field = document.createElement('textarea');
+        h.child.append(field);
+        key(field, k);
+        await pastWindow();
+        // A find-in-page or caret scroll reaches the end.
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+    });
+
+    it('a fractional wheel delta leaves no sub-pixel travel for a later no-input move onto the end', async () => {
+      const h = build();
+      h.state.escaped = true;
+      h.state.distanceFromBottom = 600;
+      h.scrollEl.scrollTop = 200;
+      h.scrollEl.dispatchEvent(new Event('scroll'));
+      wheel(h.scrollEl, { deltaY: 100 });
+      // The browser moved 99.33 px (DPR 1.5 rounding), far short of the end.
+      landAt(h, 500.67, 299.33);
+      await settleDeferredPass();
+      await pastWindow();
+      // With no input, something moves the view 3 px onto the end.
+      landAt(h, 0, 302.33);
+      await settleDeferredPass();
+
+      expect(h.state.escaped).toBe(true);
+    });
+
     describe('a smooth-scrolled wheel that lands over several events', () => {
       it('re-sticks when the first late event is mid-animation and the next reaches the end', async () => {
         const h = wheeledDownWhileEscaped();

@@ -730,7 +730,10 @@ scroll behavior on it.
 Bottom geometry and user intent are separate. The viewport can be near
 the bottom while the user has escaped bottom-follow. Upward wheel, key,
 touch, middle-button autoscroll, or scrollbar-gutter pointer intent
-escapes synchronously when it targets the timeline or a descendant.
+escapes synchronously when it targets the timeline or a descendant. A
+navigation key whose target takes text input (an input, textarea, select
+or anything inside a contenteditable) moves a caret, not the scroller,
+and is neither escape nor down intent.
 
 Down input (wheel, key, touch) is the only consent path for re-sticking
 after escape. A down gesture made while escaped stays pending until its
@@ -738,7 +741,8 @@ scroll lands, with no clock. A gesture with a known travel carries it,
 because a smooth scroll lands over several events: a wheel its `deltaY` in
 pixels (line and page modes converted by `wheelDeltaPx`; a second wheel
 adds to it), PageDown the scroller's `clientHeight`, End no limit. Each
-untagged scroll event spends what it moved; one that lands at the bottom
+untagged scroll event spends what it moved (under a pixel left counts as
+spent: a fractional delta's rounding); one that lands at the bottom
 (within `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) while travel remains re-sticks
 however late a loaded host delivers it, even inside a resize-correlated
 cascade. Spending the travel, an upward event, a native clamp, or an

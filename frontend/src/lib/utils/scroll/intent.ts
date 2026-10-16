@@ -91,6 +91,14 @@ export function resetScrollIntentModuleStateForTest(): void {
   primaryButtonHeld = false;
 }
 
+/** The target takes text input, so its navigation keys move a caret. */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target.closest('input, textarea, select')) return true;
+  return (target instanceof HTMLElement && target.isContentEditable)
+    || target.closest('[contenteditable]:not([contenteditable="false"])') !== null;
+}
+
 export function isSelectingInside(scrollEl: HTMLElement): boolean {
   if (!primaryButtonHeld) return false;
   if (typeof window === 'undefined') return false;
@@ -321,7 +329,8 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       return false;
     }
     downLandingTravelPx -= moved;
-    if (downLandingOneEvent || !(downLandingTravelPx > 0)) endDownLanding();
+    // Under a pixel left is a fractional delta's rounding, not travel.
+    if (downLandingOneEvent || !(downLandingTravelPx >= 1)) endDownLanding();
     return true;
   }
 
@@ -800,6 +809,9 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   // Keydown / touch handlers (intent signals).
   function handleKeydown(e: KeyboardEvent): void {
+    // A navigation key typed into an editor inside the scroller (a message
+    // being edited, a plan-review comment) moves the caret, not the scroller.
+    if (isEditableTarget(e.target)) return;
     if (UP_KEYS.has(e.key)) escapeFromUserInput('key');
     if (e.key === 'End') recordRecentDownIntent('key', Number.POSITIVE_INFINITY, false);
     else if (e.key === 'PageDown') recordRecentDownIntent('key', deps.getScrollEl()?.clientHeight ?? 0, false);

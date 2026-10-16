@@ -618,6 +618,24 @@ describe('createUseStickToBottomController', () => {
       fireKey(scrollEl, key);
       expect(controller.escapedFromLock).toBe(false);
     });
+
+    it.each([
+      ['a textarea', () => document.createElement('textarea')],
+      ['an input', () => document.createElement('input')],
+      ['a select', () => document.createElement('select')],
+      ['inside a contenteditable', () => {
+        const editor = document.createElement('div');
+        editor.setAttribute('contenteditable', 'true');
+        const line = document.createElement('p');
+        editor.append(line);
+        return line;
+      }],
+    ])('%s: ArrowUp moves the caret and keeps follow', (_name, make) => {
+      const field = make();
+      contentEl.append(field.closest('[contenteditable]') ?? field);
+      fireKey(field, 'ArrowUp');
+      expect(controller.escapedFromLock).toBe(false);
+    });
   });
 
   describe('touch handler', () => {
