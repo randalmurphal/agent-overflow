@@ -369,8 +369,9 @@ message before the session is handed to a caller. The message states
 that it replaces the earlier developer instructions and carries the
 whole new text. The digest is written when the injection succeeds; a
 failed injection is a non-fatal error on the thread, like a failed
-`config/read` today, and the next start tries again. A fresh `thread/start` writes the digest of what it sent,
-since a new thread shows its start value. An existing thread has no
+`config/read` today, and the next start tries again. A fresh
+`thread/start` writes the digest of what it sent, since a new thread shows
+its start value. An existing thread has no
 digest, which counts as different: it gets one injection at its next
 start. A fork child has no digest and always gets one injection at its
 first start: a fork at `lastTurnId` cuts history, so the child can lack an
