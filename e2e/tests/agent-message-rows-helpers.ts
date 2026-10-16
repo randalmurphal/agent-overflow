@@ -186,14 +186,15 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
       // The reply wakes the lead. On Codex it can land while the lead's
       // turn that sent the request is still running, and is then steered
       // into it rather than starting a turn of its own: either way the
-      // lead is done once its row is there and no turn runs. A turn's text
-      // row is stored before the turn ends, so a row alone is not rest.
-      const idle = async (thread: string) =>
-        !(await harness.rpc<{ activeTurn?: unknown }>('GetThreadLiveState', thread)).activeTurn;
+      // lead is done once its row is there, no turn runs and nothing waits
+      // to be sent. A turn's text row is stored before the turn ends, so a
+      // row alone is not rest.
       const rested = async (thread: string) => {
-        if (!(await idle(thread))) return false;
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
-        return await idle(thread);
+        const live = await harness.rpc<{ activeTurn?: unknown; queueItems?: unknown[]; flushedItems?: unknown[]; deferredItems?: unknown[] }>(
+          'GetThreadLiveState',
+          thread,
+        );
+        return !live.activeTurn && !live.queueItems?.length && !live.flushedItems?.length && !live.deferredItems?.length;
       };
       await expect
         .poll(
