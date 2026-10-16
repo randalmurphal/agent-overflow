@@ -279,6 +279,8 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// priced even if the init envelope lands late. The init handler still
 	// overrides this when Claude echoes a different model (auto-reroute).
 	s.parser.SetModel(cfg.Model)
+	s.parser.SetSessionEffort(cfg.ReasoningEffort)
+	s.parser.SetModelAliases(s.modelAliases)
 	// ParseLine feeds the leaf tracker from its own decoded map so
 	// assistant/user/result lines aren't unmarshaled twice per line.
 	s.parser.leafTracker = s.leafTracker

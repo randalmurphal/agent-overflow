@@ -710,6 +710,15 @@ export class Settings {
     "claudeTodoRemindersDisabled"?: boolean;
 
     /**
+     * ClaudeMaxCommandTimeoutHours is the longest a Bash or PowerShell
+     * command may run in a Claude session (headless and claude-tui) when
+     * Claude asks for a long timeout, background commands included.
+     * Exported as BASH_MAX_TIMEOUT_MS; bounds and the reason AO always
+     * sends it live in claudesession.go. Spawn-only, like the tool lists.
+     */
+    "claudeMaxCommandTimeoutHours": number;
+
+    /**
      * The Claude-only spawn-time axes delivered through the CLI's
      * `--settings` flagSettings block. None has a CLI flag; the settings
      * key is the delivery mechanism. Shapes, allowed values, validators
@@ -1275,6 +1284,9 @@ export class Settings {
         if (!("claudeTuiEnabled" in $$source)) {
             this["claudeTuiEnabled"] = false;
         }
+        if (!("claudeMaxCommandTimeoutHours" in $$source)) {
+            this["claudeMaxCommandTimeoutHours"] = 0;
+        }
         if (!("claudeCrossSession" in $$source)) {
             this["claudeCrossSession"] = (new ClaudeCrossSession());
         }
@@ -1433,16 +1445,16 @@ export class Settings {
         const $$createField29_0 = $$createType5;
         const $$createField30_0 = $$createType0;
         const $$createField31_0 = $$createType0;
-        const $$createField34_0 = $$createType6;
-        const $$createField35_0 = $$createType7;
-        const $$createField37_0 = $$createType8;
-        const $$createField55_0 = $$createType9;
-        const $$createField56_0 = $$createType10;
-        const $$createField57_0 = $$createType11;
-        const $$createField59_0 = $$createType0;
-        const $$createField64_0 = $$createType0;
-        const $$createField66_0 = $$createType0;
-        const $$createField87_0 = $$createType12;
+        const $$createField35_0 = $$createType6;
+        const $$createField36_0 = $$createType7;
+        const $$createField38_0 = $$createType8;
+        const $$createField56_0 = $$createType9;
+        const $$createField57_0 = $$createType10;
+        const $$createField58_0 = $$createType11;
+        const $$createField60_0 = $$createType0;
+        const $$createField65_0 = $$createType0;
+        const $$createField67_0 = $$createType0;
+        const $$createField88_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1472,34 +1484,34 @@ export class Settings {
             $$parsedSource["codexDisabledTools"] = $$createField31_0($$parsedSource["codexDisabledTools"]);
         }
         if ("claudeCrossSession" in $$parsedSource) {
-            $$parsedSource["claudeCrossSession"] = $$createField34_0($$parsedSource["claudeCrossSession"]);
+            $$parsedSource["claudeCrossSession"] = $$createField35_0($$parsedSource["claudeCrossSession"]);
         }
         if ("claudeSubagentLimits" in $$parsedSource) {
-            $$parsedSource["claudeSubagentLimits"] = $$createField35_0($$parsedSource["claudeSubagentLimits"]);
+            $$parsedSource["claudeSubagentLimits"] = $$createField36_0($$parsedSource["claudeSubagentLimits"]);
         }
         if ("claudeThinking" in $$parsedSource) {
-            $$parsedSource["claudeThinking"] = $$createField37_0($$parsedSource["claudeThinking"]);
+            $$parsedSource["claudeThinking"] = $$createField38_0($$parsedSource["claudeThinking"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField55_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField56_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField56_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField57_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField57_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField58_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField59_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField60_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("spinnerCustomVerbs" in $$parsedSource) {
-            $$parsedSource["spinnerCustomVerbs"] = $$createField64_0($$parsedSource["spinnerCustomVerbs"]);
+            $$parsedSource["spinnerCustomVerbs"] = $$createField65_0($$parsedSource["spinnerCustomVerbs"]);
         }
         if ("spinnerDisabledAnimations" in $$parsedSource) {
-            $$parsedSource["spinnerDisabledAnimations"] = $$createField66_0($$parsedSource["spinnerDisabledAnimations"]);
+            $$parsedSource["spinnerDisabledAnimations"] = $$createField67_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField87_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField88_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

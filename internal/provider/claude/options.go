@@ -215,6 +215,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		PermissionFlags:      claudePermissionFlags(opts.RuntimeMode),
 		DisallowedTools:      mergeDisallowedTools(claudeDisallowedTools(opts.RuntimeMode), opts.DisabledTools),
 		DisableTodoReminders: opts.DisableTodoReminders,
+		CommandTimeoutHours:  opts.ClaudeMaxCommandTimeoutHours,
 		BasePermissionMode:   claudeBasePermissionMode(opts.RuntimeMode),
 		InteractionMode:      opts.Mode,
 		AutoCompactPercent:   autoCompactPercent,

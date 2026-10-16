@@ -77,3 +77,16 @@ func TestClaudeSessionConfigReportsThePromptFilesAndSnapshotFlag(t *testing.T) {
 		t.Errorf("an unreadable prompt file must fail an assertion loudly, got %q", missing.AppendSystemPrompt)
 	}
 }
+
+// The command timeout ceiling reaches Claude through the environment, so the
+// report reads it from there; absent stays "" so a spec can assert absence.
+func TestClaudeSessionConfigReportsTheCommandTimeoutEnv(t *testing.T) {
+	t.Setenv("BASH_MAX_TIMEOUT_MS", "18000000")
+	if got := claudeSessionConfig(nil).BashMaxTimeoutMs; got != "18000000" {
+		t.Fatalf("BashMaxTimeoutMs = %q, want 18000000", got)
+	}
+	t.Setenv("BASH_MAX_TIMEOUT_MS", "")
+	if got := claudeSessionConfig(nil).BashMaxTimeoutMs; got != "" {
+		t.Fatalf("BashMaxTimeoutMs = %q with the variable empty, want empty", got)
+	}
+}

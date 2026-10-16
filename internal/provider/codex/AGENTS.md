@@ -55,8 +55,9 @@ was missed; never replay unrelated transcript items or use a send as a spawn.
 Only an owned child's execution signals may settle current launch runtime.
 
 Use typed wire fields for background and collaboration ownership. Requested
-child model and effort values are not the effective profile; obtain it from the
-child's metadata-only resume response. Stop a child through its owned
+child model and effort values are not the effective profile; take it from a
+`started` activity that carries it (codex 0.162.1+), otherwise from the child's
+metadata-only resume response. Stop a child through its owned
 `turn/interrupt`.
 
 Read `session_rollout_notifications.go` before changing resumed-session or

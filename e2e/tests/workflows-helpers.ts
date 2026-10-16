@@ -548,6 +548,7 @@ export interface MockSessionConfig {
   appendSystemPrompt?: string;
   systemPromptSnapshot?: string;
   developerInstructions?: string;
+  bashMaxTimeoutMs?: string;
 }
 
 export interface MockInfo {

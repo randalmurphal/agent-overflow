@@ -128,7 +128,7 @@ func (c *converter) startToolCall(env envelope) {
 	ref := toolReference{itemID: tool.itemID, itemType: tool.itemType, turnID: tool.turnID, turnIndex: tool.turnIndex}
 	c.toolRefs[callID] = ref
 	if ownership, ok := c.subagentStarts[callID]; ok {
-		c.applySubagentOwnership(tool, ownership)
+		c.applySubagentOwnership(tool, ownership, c.subagentProfiles[callID])
 		c.agentParents[ownership.agentPath] = ref
 	}
 

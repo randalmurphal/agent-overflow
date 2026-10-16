@@ -221,6 +221,13 @@ type Settings struct {
 	// DefaultSettings by construction.
 	ClaudeTodoRemindersDisabled bool `json:"claudeTodoRemindersDisabled,omitempty"`
 
+	// ClaudeMaxCommandTimeoutHours is the longest a Bash or PowerShell
+	// command may run in a Claude session (headless and claude-tui) when
+	// Claude asks for a long timeout, background commands included.
+	// Exported as BASH_MAX_TIMEOUT_MS; bounds and the reason AO always
+	// sends it live in claudesession.go. Spawn-only, like the tool lists.
+	ClaudeMaxCommandTimeoutHours int `json:"claudeMaxCommandTimeoutHours"`
+
 	// The Claude-only spawn-time axes delivered through the CLI's
 	// `--settings` flagSettings block. None has a CLI flag; the settings
 	// key is the delivery mechanism. Shapes, allowed values, validators
@@ -648,6 +655,9 @@ var DefaultSettings = Settings{
 	// user opens them (default flipped 2026-08-30).
 	ActivityRunDefault:    "collapsed",
 	ActivityRunWindowRows: DefaultActivityRunWindowRows,
+	// Not zero-valued: AO always exports a ceiling (claudesession.go), so
+	// an absent key has to read as the default rather than as "none".
+	ClaudeMaxCommandTimeoutHours: DefaultClaudeMaxCommandTimeoutHours,
 	// Text-generation defaults: Codex is cheap + fast for short JSON
 	// responses, so it's the sensible default. The model stays empty
 	// so the call site picks the per-provider default; if the user

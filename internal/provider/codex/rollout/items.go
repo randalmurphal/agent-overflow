@@ -530,7 +530,8 @@ func (c *converter) applySubAgentActivityItem(item turnItem) {
 	kind := strings.TrimSpace(item.Kind)
 	parent := c.toolItemIDs[eventID]
 	if kind == "started" {
-		parent = c.recordSubagentStart(eventID, agentPath, agentThreadID)
+		profile := subagentProfile{model: strings.TrimSpace(item.Model), reasoningEffort: strings.TrimSpace(item.ReasoningEffort)}
+		parent = c.recordSubagentStart(eventID, agentPath, agentThreadID, profile)
 	}
 	if kind == "interacted" {
 		c.emitCollabInteraction(eventID, agentPath, agentThreadID)

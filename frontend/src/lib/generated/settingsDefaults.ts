@@ -36,6 +36,7 @@ export const SETTINGS_DEFAULTS = {
   codexHiddenModels: [],
   claudeCustomEnv: [],
   codexCustomEnv: [],
+  claudeMaxCommandTimeoutHours: 5,
   defaultThreadEnvMode: "local",
   worktreeBranchPrefix: "ao-",
   paneDensity: "compact",
@@ -204,4 +205,5 @@ export const FRONTEND_SETTING_PATTERNS: Partial<Record<keyof Settings, string>> 
 export const FRONTEND_SETTING_RANGES: Partial<Record<keyof Settings, readonly [number, number]>> = {
   fontSize: [10, 20],
   activityRunWindowRows: [10, 200],
+  claudeMaxCommandTimeoutHours: [2, 168],
 };

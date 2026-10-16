@@ -92,6 +92,16 @@ type Config struct {
 	// without passing it the session runs at the model's default tier (xhigh on
 	// opus-4-8) regardless of the AO selection.
 	ReasoningEffort string
+	// ModelAliases is the CLI's own alias map (claude.ModelAliases over the
+	// probe's model rows), which resolves an Agent launch's `model` alias.
+	// Spawn-stamped by the app like claude.Config.ModelAliases; nil when no
+	// probe has reported.
+	ModelAliases map[string]string
+	// AgentLaunchByTask is claude.Config.AgentLaunchByTask: the thread
+	// history's record of an agent launch an earlier process ran, which a
+	// §E6 resume of it needs. Spawn-stamped by the app; nil reads as not
+	// found.
+	AgentLaunchByTask func(taskID string) (claude.AgentLaunchRecord, bool, error)
 	// Env is the base environment for the spawned claude. Empty means inherit
 	// the current process environment.
 	Env []string

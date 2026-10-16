@@ -90,7 +90,7 @@ export function deriveClaudeSubagentLabel(
 }
 
 /**
- * Subagent model affix string for an Agent tool call. Resolution order:
+ * Subagent model id for an Agent tool call. Resolution order:
  *   1. parentMeta.subagent_model — stamped by the Claude parser on the
  *      first subagent assistant envelope (most authoritative).
  *   2. input.model — user-supplied alias on the tool input (surfaces
@@ -101,22 +101,84 @@ export function deriveClaudeSubagentLabel(
  * Non-Agent tool names return '' so a row with `isSubagent` false in
  * the classifier never renders a stray "()" affix.
  */
-export function deriveClaudeSubagentModelLabel(
+export function deriveClaudeSubagentModel(
   input: Record<string, unknown> | null,
   parentMeta: Record<string, unknown> | null,
   toolName: string,
 ): string {
   // `Task` is the older name for the same tool (see subagentLaunchInfo);
-  // both carry the same input shape, so both resolve a model label.
+  // both carry the same input shape, so both resolve a model.
   if (toolName !== 'Agent' && toolName !== 'Task') return '';
-  const stamped =
-    parentMeta && typeof parentMeta.subagent_model === 'string'
-      ? parentMeta.subagent_model.trim()
-      : '';
-  if (stamped) return displayModelLabel('claude', stamped);
-  const requested = readStringField(input, 'model');
-  if (requested) return displayModelLabel('claude', requested);
-  return '';
+  const stamped = readStringField(parentMeta, 'subagent_model');
+  if (stamped) return stamped;
+  // The model the launch's alias resolved to when it launched.
+  const requested = readStringField(parentMeta, 'requested_model');
+  if (requested) return requested;
+  // A fork runs on its launcher's model whatever its input names.
+  if (readStringField(input, 'subagent_type') === 'fork') return '';
+  return readStringField(input, 'model');
+}
+
+/** `deriveClaudeSubagentModel` as the display label ('' when unknown). */
+export function deriveClaudeSubagentModelLabel(
+  input: Record<string, unknown> | null,
+  parentMeta: Record<string, unknown> | null,
+  toolName: string,
+): string {
+  const model = deriveClaudeSubagentModel(input, parentMeta, toolName);
+  return model ? displayModelLabel('claude', model) : '';
+}
+
+/**
+ * The effort slug an Agent tool call asked its subagent to run at:
+ * `input.effort` (Claude Code 2.1.292+), else `meta.inherited_effort`, the
+ * effort of the agent that launched it, which the parser stamped at launch
+ * (internal/provider/claude/subagent_effort.go). A fork ignores its input
+ * effort and runs at its launcher's. '' when neither is known.
+ */
+export function deriveClaudeSubagentEffort(
+  input: Record<string, unknown> | null,
+  parentMeta: Record<string, unknown> | null,
+  toolName: string,
+): string {
+  if (toolName !== 'Agent' && toolName !== 'Task') return '';
+  const inherited = readStringField(parentMeta, 'inherited_effort');
+  if (readStringField(input, 'subagent_type') === 'fork') return inherited;
+  return knownEffort(readStringField(input, 'effort')) ?? inherited;
+}
+
+/**
+ * The higher tiers the launcher may have run at instead of the inherited
+ * effort deriveClaudeSubagentEffort returns (`inherited_effort_alternatives`,
+ * claude-tui). Empty when the launch named its own effort.
+ */
+export function deriveClaudeSubagentEffortAlternatives(
+  input: Record<string, unknown> | null,
+  parentMeta: Record<string, unknown> | null,
+  toolName: string,
+): string[] {
+  if (toolName !== 'Agent' && toolName !== 'Task') return [];
+  const fork = readStringField(input, 'subagent_type') === 'fork';
+  if (!fork && readStringField(input, 'effort')) return [];
+  return readEffortAlternatives(parentMeta);
+}
+
+/** `inherited_effort_alternatives` off a launch or carrier row's meta. */
+export function readEffortAlternatives(meta: Record<string, unknown> | null): string[] {
+  const value = meta?.inherited_effort_alternatives;
+  if (!Array.isArray(value)) return [];
+  return value.filter((slug): slug is string => typeof slug === 'string' && slug.trim() !== '');
+}
+
+/**
+ * An effort the subagent runs at as named, or '' for none. The
+ * experiment-gated relative efforts ("lower", "higher") are either dropped
+ * or applied as a step AO cannot reproduce, so they read as unknown.
+ * '' for the empty input as well; callers fall back only on undefined.
+ */
+export function knownEffort(effort: string): string | undefined {
+  if (effort === '') return undefined;
+  return effort === 'lower' || effort === 'higher' ? '' : effort;
 }
 
 /**

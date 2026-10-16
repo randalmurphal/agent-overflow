@@ -639,6 +639,7 @@ func (p *Parser) observeProjectedToolCalls(threadID string, events []provider.Pr
 			if event.ItemID == "" {
 				break
 			}
+			p.stampProjectedAgentLaunchEffort(&event)
 			p.rememberToolUseName(event.ItemID, event.ItemType)
 			if event.ParentToolUseID != "" {
 				p.rememberToolUseParent(event.ItemID, event.ParentToolUseID)

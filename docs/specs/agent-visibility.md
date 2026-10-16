@@ -44,7 +44,8 @@ liveness index by trigger; and a Codex spawn row takes the child's identity
 (`newAgentNickname`, `newAgentRole`, effective `model` and
 `reasoningEffort`, `agentPath`) when Codex reports it after the spawn
 activity, because the V2 spawn item carries only the task path and the
-profile arrives on the child's `thread/started` and a metadata-only
+profile arrives on the child's `thread/started` and, when the started
+activity did not carry it (before codex 0.162.1), a metadata-only
 `thread/resume` read (`internal/triage/codex_spawn_identity.go`). Codex
 spawns never take the first, and the runtime state riding on the same
 update stays on the live projection.

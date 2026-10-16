@@ -76,6 +76,11 @@ type Config struct {
 	// env value; a change lands on the next session, and PlanLiveUpdate's
 	// trailing DeepEqual reports it as a restart.
 	DisableTodoReminders bool
+	// CommandTimeoutHours exports BASH_MAX_TIMEOUT_MS (hours in ms) as the
+	// ceiling on a Bash/PowerShell command's timeout, background commands
+	// included (see claudeBashMaxTimeoutEnvVar). Zero exports nothing.
+	// Spawn-time only, like DisableTodoReminders.
+	CommandTimeoutHours int
 	// TaskListID keys the CLI's Task* list (`~/.claude/tasks/<id>/`) and is
 	// exported as CLAUDE_CODE_TASK_LIST_ID (claudeTaskListIDEnvVar). Always
 	// the AO thread id via ConfigFromOptions; empty only for a Config built
@@ -200,12 +205,13 @@ type Config struct {
 	//   for stdio servers. The map provided here is wrapped under
 	//   "mcpServers" before serialization.
 	MCPServers map[string]any
-	// AgentLaunchByTask returns the tool_use id of the agent launch the
-	// thread's persisted history holds for a local_agent task id. The
-	// parser asks only for a §E6 resume whose launch it never saw (an
-	// earlier process ran it), so the resumed rows return to their root.
-	// Nil reads as "not found".
-	AgentLaunchByTask func(taskID string) (launchToolUseID string, found bool, err error)
+	// AgentLaunchByTask returns the agent launch the thread's persisted
+	// history holds for a local_agent task id: its tool_use id, the effort
+	// it named and its model. The parser asks only for a §E6 resume whose
+	// launch it never saw (an earlier process ran it), so the resumed rows
+	// return to their root and the resumed round runs at the launch's
+	// effort. Nil reads as "not found".
+	AgentLaunchByTask func(taskID string) (launch AgentLaunchRecord, found bool, err error)
 }
 
 // claudeSpawnEnv and claudeSpawnUnsetEnv are the two halves of a Claude
@@ -217,6 +223,7 @@ type Config struct {
 // setting's back (see CrossSessionUnsetEnv).
 func claudeSpawnEnv(cfg Config) map[string]string {
 	env := withClaudeTaskListEnv(withClaudeCrossSessionEnv(cfg.Env, cfg), cfg.TaskListID)
+	env = WithCommandTimeoutEnv(env, cfg.CommandTimeoutHours)
 	return withClaudeSessionEnvDefaults(env, cfg.DisableTodoReminders)
 }
 
@@ -291,6 +298,38 @@ const claudeTodoReminderModeEnvVar = "CLAUDE_CODE_TODO_REMINDER_MODE"
 // variable ahead of its team-name and session-id fallbacks (2.1.257
 // binary analysis; honored end to end since the 2.1.233 spike).
 const claudeTaskListIDEnvVar = "CLAUDE_CODE_TASK_LIST_ID"
+
+// BashMaxTimeoutEnv is the CLI's ceiling on a Bash/PowerShell command's
+// timeout in ms (2.1.300). Unset, a foreground command may ask for at most
+// 10 min, and a headless session (2.1.285+) stops a background command at
+// its timeout: 30 min by default, at most 2 h. Set, the foreground ceiling
+// becomes the value and the background ceiling max(2 h, value), clamped at
+// 2147483647 ms, and the Bash tool description tells the model the new
+// maximum. claude-tui is interactive, so there it is the foreground ceiling
+// only.
+//
+// A default, not a pin, like CLAUDE_CODE_TODO_REMINDER_MODE: a user value in
+// the provider's custom environment wins over the setting.
+const BashMaxTimeoutEnv = "BASH_MAX_TIMEOUT_MS"
+
+// WithCommandTimeoutEnv returns env with BASH_MAX_TIMEOUT_MS set to hours
+// in ms, unless env already names it or hours is not positive. env is the
+// override map (the custom environment plus AO's own values), so the
+// setting outranks an inherited host value and a custom value outranks the
+// setting. Exported for the claude-tui spawn, whose Config carries a whole
+// environment rather than an override map.
+func WithCommandTimeoutEnv(env map[string]string, hours int) map[string]string {
+	if hours <= 0 {
+		return env
+	}
+	if _, ok := env[BashMaxTimeoutEnv]; ok {
+		return env
+	}
+	merged := make(map[string]string, len(env)+1)
+	maps.Copy(merged, env)
+	merged[BashMaxTimeoutEnv] = strconv.FormatInt(int64(hours)*3_600_000, 10)
+	return merged
+}
 
 // withClaudeSessionEnvDefaults returns a copy of env with AO's
 // session-environment defaults applied — each only when the caller did

@@ -100,11 +100,14 @@ var toolMetaRules = map[string]ToolMetaRule{
 	"WebFetch": {
 		KeepInput: []string{"url", "prompt"},
 	},
+	// `model` and `effort` are the subagent's requested model and effort
+	// (the row's model affix and a resume carrier's identity read them);
+	// `run_in_background: false` confirms an awaited launch.
 	"Task": {
-		KeepInput: []string{"description", "prompt", "subagent_type"},
+		KeepInput: []string{"description", "prompt", "subagent_type", "model", "effort", "run_in_background"},
 	},
 	"Agent": {
-		KeepInput: []string{"description", "prompt", "subagent_type"},
+		KeepInput: []string{"description", "prompt", "subagent_type", "model", "effort", "run_in_background"},
 	},
 }
 

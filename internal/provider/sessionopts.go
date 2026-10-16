@@ -193,6 +193,13 @@ type SessionOptions struct {
 	// session's launch value (reconcileSettingsOwnedAxes).
 	DisableTodoReminders bool
 
+	// ClaudeMaxCommandTimeoutHours is the settings-owned ceiling on a
+	// Bash/PowerShell command's timeout, exported as BASH_MAX_TIMEOUT_MS
+	// (as a default a user's custom env can still override). Zero exports
+	// nothing. Claude-family only; spawn-only and stamped/pinned exactly
+	// like DisableTodoReminders.
+	ClaudeMaxCommandTimeoutHours int
+
 	// ClaudeThinking is the settings-owned extended-thinking preference.
 	// Claude-family only; Codex ignores it (its reasoning axis is
 	// ReasoningEffort).

@@ -255,5 +255,7 @@ func emitFrontendConstraints(b *strings.Builder) {
 	b.WriteString("\nexport const FRONTEND_SETTING_RANGES: Partial<Record<keyof Settings, readonly [number, number]>> = {\n")
 	fmt.Fprintf(b, "  fontSize: [%d, %d],\n", MinFontSize, MaxFontSize)
 	fmt.Fprintf(b, "  activityRunWindowRows: [%d, %d],\n", MinActivityRunWindowRows, MaxActivityRunWindowRows)
+	fmt.Fprintf(b, "  claudeMaxCommandTimeoutHours: [%d, %d],\n",
+		MinClaudeMaxCommandTimeoutHours, MaxClaudeMaxCommandTimeoutHours)
 	b.WriteString("};\n")
 }
