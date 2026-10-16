@@ -635,8 +635,11 @@ const delegationEnvelope = (source: string, input: string): string =>
  * truncate_mcp_tool_result (codex-rs/utils/output-truncation/src/lib.rs)
  * sizes it. The text is ASCII, so bytes and chars agree.
  */
-function codexPersistedMcpResult(text: string, maxBytes = 64 * 1024): Record<string, unknown> {
-  const serialized = JSON.stringify({ content: [{ type: 'text', text }], isError: false });
+function codexPersistedMcpResult(texts: string[], maxBytes = 64 * 1024): Record<string, unknown> {
+  const serialized = JSON.stringify({
+    content: texts.map((text) => ({ type: 'text', text })),
+    isError: false,
+  });
   let budget = maxBytes;
   for (;;) {
     const left = Math.floor(budget / 2);
@@ -657,7 +660,11 @@ async function writeDelegatedCodexSession(codexHome: string, workspace: string):
     `rollout-2026-10-07T15-07-44-${CODEX_DELEGATED_THREAD}.jsonl`,
   );
   const envelope = delegationEnvelope(CODEX_THREAD, DELEGATED_PROMPT);
-  const guide = `${MCP_TEXT_HEAD}\n${'Every "open" thread needs an owner.\n'.repeat(4000)}${MCP_TEXT_TAIL}`;
+  // A long guide block, then a short one the tail holds whole.
+  const guide = [
+    `${MCP_TEXT_HEAD}\n${'Every "open" thread needs an owner.\n'.repeat(4000)}`,
+    MCP_TEXT_TAIL,
+  ];
   const itemCompleted = (offset: number, item: Record<string, unknown>) =>
     codexLine(offset, 'event_msg', {
       type: 'item_completed',

@@ -274,8 +274,11 @@ reader:
   MCP result becomes one text block holding the serialized CallToolResult cut
   in the middle with `…N chars truncated…`; an oversized command output is cut
   with `... command output truncated for persistence ...`
-  (`rollout/src/policy.rs`). AO rebuilds the MCP result's text around a note
-  (`rollout/mcp_truncation.go`) and shows command output as written.
+  (`rollout/src/policy.rs`). The two cut points can fall in different
+  blocks, so the halves cannot be rejoined. AO scans the head forward and the
+  tail backward, keeps only text it can attribute to a text block, puts a
+  note at the cut (`rollout/mcp_truncation.go`), and shows command output as
+  written.
 
 ### `history_base`
 
