@@ -251,34 +251,20 @@ type ThreadAgentRowRead struct {
 const maxThreadAgentRowReads = 32
 
 // GetThreadAgentRows reads rows of threadID's Agents listing by their
-// tokens, in the order asked: each a request of threadID or of a thread
-// its spawns made here, within the listing's depth. A row stands on its
-// own: what nests under it, and a spawn on a paired computer's rows, are
-// the listing's. The read is as many statements as the listing's, over the
-// named rows alone: their places in the lineage, the rows, and their
-// targets' names and last messages.
+// tokens, in the order asked, each as the listing places it. A row stands
+// on its own: what nests under it, and a spawn on a paired computer's rows,
+// are the listing's. The read is as many statements as the listing's, and
+// reads the requests, names and last messages of the named rows alone.
 //
 //ao:scope threads:read
 func (a *App) GetThreadAgentRows(threadID string, tokens []string) ([]ThreadAgentRowRead, error) {
 	if len(tokens) == 0 || len(tokens) > maxThreadAgentRowReads {
 		return nil, fmt.Errorf("read agent rows: %d tokens, 1 to %d", len(tokens), maxThreadAgentRowReads)
 	}
-	places, err := a.store.ThreadAgentRowPlaces(threadID, tokens, threadAgentRowDepth)
+	view := newThreadAgentView(a)
+	requests, _, err := view.tree(threadID, threadAgentRowDepth, tokens, threadAgentRowLimit)
 	if err != nil {
 		return nil, fmt.Errorf("read agent rows: %w", err)
-	}
-	depths := make(map[string]int, len(places))
-	placed := make([]string, 0, len(places))
-	for _, place := range places {
-		depths[place.Token] = place.Depth
-		placed = append(placed, place.Token)
-	}
-	view := newThreadAgentView(a)
-	var requests []store.ThreadAgentRequest
-	if len(placed) > 0 {
-		if requests, _, err = view.tree(threadID, 1, placed, len(placed)); err != nil {
-			return nil, fmt.Errorf("read agent rows: %w", err)
-		}
 	}
 	rows, err := view.rows(requests)
 	if err != nil {
@@ -286,7 +272,6 @@ func (a *App) GetThreadAgentRows(threadID string, tokens []string) ([]ThreadAgen
 	}
 	found := make(map[string]ThreadAgentRow, len(rows))
 	for _, row := range rows {
-		row.Depth, row.NestedHidden = depths[row.Token], false
 		found[row.Token] = row
 	}
 	out := make([]ThreadAgentRowRead, 0, len(tokens))
@@ -492,8 +477,8 @@ func newThreadAgentView(a *App) threadAgentView {
 	}
 }
 
-// tree reads root's requests nested at most depth levels, or only its own
-// request token when one is named.
+// tree reads root's requests nested at most depth levels, or only those
+// of them tokens names.
 func (v threadAgentView) tree(root string, depth int, tokens []string, limit int) ([]store.ThreadAgentRequest, bool, error) {
 	return v.app.store.ListThreadAgentTree(store.ThreadAgentTreeRead{
 		Root: root, Waiting: v.waiting, SettledSince: v.since, Depth: depth, OpenDepth: threadAgentRowDepth,

@@ -1177,11 +1177,13 @@ closes up their spacing so the row holds at a phone width.
   listed, the pane reads the list. Reads go through the rate-bounded
   refresh scheduler, so a burst of frames is one read.
 - **Reads.** A listing is a constant number of statements whatever the
-  tree's size: the tree with each row's depth in one recursive read, the
-  targets' titles and providers in one, their last messages in one. A
-  thread two spawns reach is walked once, under the first. A read of
-  named rows is as many statements (their places in the lineage, the
-  rows, their targets) over those rows alone. A row
+  tree's size: the tree's shape with each row's depth in one recursive
+  read, the listed rows in one, the targets' titles and providers in one,
+  their last messages in one. A thread two spawns reach is walked once,
+  under the first in tree order; the rows the later spawn would have
+  nested take no place in the row limit. A read of named rows walks the
+  same tree, so each row has the listing's place, and reads the rows and
+  their targets for those rows alone. A row
   carries the head of its answer (what the row shows), never the whole
   answer or the late reply, and names its wake item from the request
   (`thread_requests.wake_item_id`, `late_wake_item_id`, recorded when the

@@ -300,7 +300,95 @@ func TestListThreadAgentTreeMatchesTheWalkOnRandomGraphs(t *testing.T) {
 			if !slices.Equal(got, want) {
 				t.Fatalf("graph %d depth %d:\n got %v\nwant %v", graph, depth, got, want)
 			}
+			// Bounded, the listing is the walk's first rows; named, the
+			// walk's rows among those named, each where the walk put it.
+			limited := agentTreeRead(threads[0], depth)
+			limited.Limit = 1 + random.IntN(len(want)+1)
+			rows, more, err = s.ListThreadAgentTree(limited)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, wantRows := agentTreeEntries(rows), want[:min(len(want), limited.Limit)]; !slices.Equal(got, wantRows) || more != (len(want) > limited.Limit) {
+				t.Fatalf("graph %d depth %d limit %d:\n got %v more %v\nwant %v more %v", graph, depth, limited.Limit, got, more, wantRows, len(want) > limited.Limit)
+			}
+			named := agentTreeRead(threads[0], depth)
+			named.Limit, named.Tokens = 1000, []string{}
+			var wantNamed []string
+			for e := range edges {
+				if random.IntN(2) == 0 {
+					named.Tokens = append(named.Tokens, fmt.Sprintf("g%d-r%02d", graph, e))
+				}
+			}
+			for _, entry := range want {
+				if slices.Contains(named.Tokens, strings.SplitN(entry, "@", 2)[0]) {
+					wantNamed = append(wantNamed, entry)
+				}
+			}
+			if rows, _, err = s.ListThreadAgentTree(named); err != nil {
+				t.Fatal(err)
+			}
+			if got := agentTreeEntries(rows); !slices.Equal(got, wantNamed) {
+				t.Fatalf("graph %d depth %d named %v:\n got %v\nwant %v", graph, depth, named.Tokens, got, wantNamed)
+			}
 		}
+	}
+}
+
+// agentTreeEntries is rows as referenceAgentTree writes them.
+func agentTreeEntries(rows []ThreadAgentRequest) []string {
+	out := []string{}
+	for _, row := range rows {
+		entry := fmt.Sprintf("%s@%d", row.Token, row.Depth)
+		if row.NestedHidden {
+			entry += "+hidden"
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// A thread first reached at the depth bound nests under no later spawn,
+// and the rows such a spawn would have nested count against no limit: a
+// bounded listing still fills it.
+func TestListThreadAgentTreeFillsItsLimitPastAThreadReachedTwice(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "a", "shared"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "l-a", "lead", ThreadRequestSpawn, "a", false, 100)
+	seedAgentRequest(t, s, "l-s", "lead", ThreadRequestSpawn, "shared", false, 101)
+	seedAgentRequest(t, s, "l-x", "lead", ThreadRequestSend, "a", true, 102)
+	seedAgentRequest(t, s, "l-y", "lead", ThreadRequestSend, "a", true, 103)
+	seedAgentRequest(t, s, "a-s", "a", ThreadRequestSpawn, "shared", false, 110)
+	for i := range 3 {
+		seedAgentRequest(t, s, fmt.Sprintf("s-w%d", i), "shared", ThreadRequestSend, "a", true, int64(120+i))
+	}
+	all := []string{"l-a@0", "a-s@1+hidden", "l-s@0", "l-x@0", "l-y@0"}
+	if want := referenceAgentTree(t, s, "lead", 2); !slices.Equal(want, all) {
+		t.Fatalf("the walk lists %v; the test expects %v", want, all)
+	}
+	for limit := 1; limit <= len(all)+1; limit++ {
+		read := agentTreeRead("lead", 2)
+		read.Limit = limit
+		rows, more, err := s.ListThreadAgentTree(read)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := agentTreeEntries(rows), all[:min(limit, len(all))]; !slices.Equal(got, want) || more != (limit < len(all)) {
+			t.Fatalf("limit %d lists %v more %v; want %v more %v", limit, got, more, want, limit < len(all))
+		}
+	}
+	// Named, a row lists where the walk put it, and one the walk left out
+	// is not listed.
+	named := agentTreeRead("lead", 2)
+	named.Tokens = []string{"s-w0", "l-y", "a-s"}
+	rows, _, err := s.ListThreadAgentTree(named)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := agentTreeEntries(rows), []string{"a-s@1+hidden", "l-y@0"}; !slices.Equal(got, want) {
+		t.Fatalf("named rows %v; want %v", got, want)
 	}
 }
 

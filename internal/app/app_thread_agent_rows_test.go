@@ -201,7 +201,9 @@ func TestThreadAgentRowsBoundTheirDepthAndCycles(t *testing.T) {
 
 // A row reads as the listing shows it, at its depth under the thread that
 // reads it: within the listing's depth, made here by that thread or a
-// thread its spawns made, and still listed. Any other reads as not listed.
+// thread its spawns made, and still listed, placed under the first spawn
+// that reaches its thread when a later one reaches it too. Any other reads
+// as not listed.
 func TestThreadAgentRowReadsOneListedRow(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -215,7 +217,19 @@ func TestThreadAgentRowReadsOneListedRow(t *testing.T) {
 	peer := f.plainThread(t)
 	f.seedAgentRow(t, "quiet", f.caller.ID, store.ThreadRequestSend, peer.ID, false)
 	f.seedAgentRow(t, "owed", chain[1], store.ThreadRequestSend, peer.ID, true)
+	// A later spawn reaches the chain's third thread one level up from
+	// where the chain does: its rows stay under the chain's.
+	side := f.plainThread(t)
+	f.seedAgentRow(t, "to-side", f.caller.ID, store.ThreadRequestSpawn, side.ID, false)
+	f.seedAgentRow(t, "side-again", side.ID, store.ThreadRequestSpawn, chain[3], false)
 	listing := f.agentRows(t, f.caller.ID).Rows
+	depths := map[string]int{}
+	for _, row := range listing {
+		depths[row.Token] = row.Depth
+	}
+	if depths["chain-d"] != 3 || depths["side-again"] != 1 {
+		t.Fatalf("the listing places chain-d at %d and side-again at %d; want 3 and 1", depths["chain-d"], depths["side-again"])
+	}
 	read := func(threadID, token string) ThreadAgentRowRead {
 		t.Helper()
 		got, err := f.app.GetThreadAgentRows(threadID, []string{token})
@@ -229,7 +243,6 @@ func TestThreadAgentRowReadsOneListedRow(t *testing.T) {
 		if !got.Listed || got.Row == nil {
 			t.Fatalf("%s reads as not listed", want.Token)
 		}
-		want.NestedHidden = false
 		if *got.Row != want {
 			t.Fatalf("%s reads\n %+v\nwant the listing's\n %+v", want.Token, *got.Row, want)
 		}

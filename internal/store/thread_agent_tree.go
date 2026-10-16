@@ -4,14 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
+	"slices"
 	"strings"
 )
 
 // The Agents segment's reads of the request ledger
-// (docs/specs/standing-agents.md, "Agents segment"). Each is one statement
-// whatever the size of the tree: the listing, one row of it, the tool rows'
-// states and the callers a change frame names.
+// (docs/specs/standing-agents.md, "Agents segment"). Each is a number of
+// statements that does not grow with the tree: the listing or named rows of
+// it (two), the tool rows' states and the callers a change frame names
+// (one each).
 
 // ThreadAgentRequest is a request as the Agents segment lists it. Its
 // ThreadRequest carries neither the answer nor the late reply, which a row
@@ -51,8 +52,8 @@ type ThreadAgentTreeRead struct {
 	Limit int
 	// AnswerHead is how many bytes of the answer each row carries.
 	AnswerHead int
-	// Tokens, when set, reads only those requests, each as its own
-	// caller's row, in place of Root's.
+	// Tokens, when set, keeps only those of the listing's rows, each
+	// where the listing places it.
 	Tokens []string
 }
 
@@ -69,6 +70,11 @@ type ThreadAgentTreeRead struct {
 // walked once, under the first row in that order that reaches it, so a
 // request is listed once; a later row that reaches it, or one at the depth
 // bound, nests nothing. At most Limit rows, and whether there were more.
+//
+// Which thread a row enters depends on the rows kept before it, which no
+// filter over the rows can express: one statement reads the tree's shape
+// in order, agentTreeWalk keeps the rows the walk lists up to the limit,
+// and a second statement reads those rows.
 func (s *Store) ListThreadAgentTree(read ThreadAgentTreeRead) (_ []ThreadAgentRequest, more bool, err error) {
 	action := "store: list the agents of " + read.Root
 	if read.Limit < 1 || read.Depth < 1 || read.OpenDepth < 1 || read.AnswerHead < 0 {
@@ -83,51 +89,109 @@ func (s *Store) ListThreadAgentTree(read ThreadAgentTreeRead) (_ []ThreadAgentRe
 	if err != nil {
 		return nil, false, fmt.Errorf("%s: encode waiting tokens: %w", action, err)
 	}
-	query := threadAgentTreeSQL(false, read.Limit+1)
-	args := []any{read.Root, string(tokens), read.SettledSince, read.Depth, read.OpenDepth, read.AnswerHead}
-	if read.Tokens != nil {
-		named, err := json.Marshal(read.Tokens)
-		if err != nil {
-			return nil, false, fmt.Errorf("%s: encode tokens: %w", action, err)
-		}
-		query = threadAgentTreeSQL(true, read.Limit+1)
-		args = append(args, string(named))
-	}
-	rows, err := s.reader().Query(query, args...)
+	listed, more, err := s.walkThreadAgentTree(read, string(tokens))
 	if err != nil {
 		return nil, false, fmt.Errorf("%s: %w", action, err)
 	}
+	if read.Tokens != nil {
+		named := make(map[string]bool, len(read.Tokens))
+		for _, token := range read.Tokens {
+			named[token] = true
+		}
+		listed = slices.DeleteFunc(listed, func(row agentTreeRow) bool { return !named[row.token] })
+	}
+	out, err := s.threadAgentRequests(listed, read.AnswerHead)
+	if err != nil {
+		return nil, false, fmt.Errorf("%s: %w", action, err)
+	}
+	return out, more, nil
+}
+
+// agentTreeRow is a row of the tree's shape: where it sits and what it
+// reaches.
+type agentTreeRow struct {
+	token, sort    string
+	depth          int
+	kind, computer string
+	target         string
+	hidden         bool
+}
+
+// walkThreadAgentTree reads the tree's shape and keeps, in order, the first
+// Limit rows the walk lists, and whether it lists more.
+func (s *Store) walkThreadAgentTree(read ThreadAgentTreeRead, waiting string) (_ []agentTreeRow, more bool, err error) {
+	rows, err := s.reader().Query(threadAgentTreeSQL, read.Root, waiting, read.SettledSince, read.Depth, read.OpenDepth)
+	if err != nil {
+		return nil, false, err
+	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 	walk := agentTreeWalk{depth: read.Depth, visited: map[string]bool{read.Root: true}, entered: map[string]bool{}}
-	out := []ThreadAgentRequest{}
-	scanned := 0
+	out := []agentTreeRow{}
 	for rows.Next() {
-		var row ThreadAgentRequest
-		var late, hidden int
-		var sort string
-		row.ThreadRequest, err = scanThreadRequestWith(rows, &row.AnswerHead, &late, &row.WakeItemID, &row.Depth, &hidden, &sort)
-		if err != nil {
-			return nil, false, fmt.Errorf("%s: scan: %w", action, err)
+		var row agentTreeRow
+		var hidden int
+		if err := rows.Scan(&row.token, &row.depth, &row.sort, &row.kind, &row.computer, &row.target, &hidden); err != nil {
+			return nil, false, fmt.Errorf("scan: %w", err)
 		}
-		scanned++
-		row.HasLateReply, row.NestedHidden = late != 0, hidden != 0
-		if walk.keep(&row, sort) {
-			out = append(out, row)
+		row.hidden = hidden != 0
+		if !walk.keep(&row) {
+			continue
 		}
+		if len(out) == read.Limit {
+			return out, true, nil
+		}
+		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("%s: iterate: %w", action, err)
-	}
-	if scanned > read.Limit {
-		return out[:min(len(out), read.Limit)], true, nil
+		return nil, false, fmt.Errorf("iterate: %w", err)
 	}
 	return out, false, nil
 }
 
+// threadAgentRequests reads the requests of listed, in its order, each at
+// the place the walk gave it. One the ledger no longer holds is left out.
+func (s *Store) threadAgentRequests(listed []agentTreeRow, answerHead int) (_ []ThreadAgentRequest, err error) {
+	out := []ThreadAgentRequest{}
+	if len(listed) == 0 {
+		return out, nil
+	}
+	tokens := make([]string, len(listed))
+	for i, row := range listed {
+		tokens[i] = row.token
+	}
+	encoded, err := json.Marshal(tokens)
+	if err != nil {
+		return nil, fmt.Errorf("encode listed tokens: %w", err)
+	}
+	rows, err := s.reader().Query(threadAgentRequestsSQL, answerHead, string(encoded))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	at := 0
+	for rows.Next() {
+		var row ThreadAgentRequest
+		var late int
+		row.ThreadRequest, err = scanThreadRequestWith(rows, &row.AnswerHead, &late, &row.WakeItemID)
+		if err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		for listed[at].token != row.Token {
+			at++
+		}
+		row.HasLateReply, row.Depth, row.NestedHidden = late != 0, listed[at].depth, listed[at].hidden
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate: %w", err)
+	}
+	return out, nil
+}
+
 // agentTreeWalk keeps, in tree order, the rows of the threads it enters:
 // a thread is entered by the first local spawn row that reaches it, unless
-// that row sits at the depth bound. The read lists each request once
-// already; this drops the rows of a thread a later spawn row reached again.
+// that row sits at the depth bound. It drops the rows of a thread a later
+// spawn row reaches again, and that row's mark of a thread at the bound.
 type agentTreeWalk struct {
 	depth   int
 	visited map[string]bool
@@ -136,52 +200,42 @@ type agentTreeWalk struct {
 	entered map[string]bool
 }
 
-func (w *agentTreeWalk) keep(row *ThreadAgentRequest, sort string) bool {
-	if row.Depth > 0 {
-		parent := strings.TrimSuffix(sort, "\x01")
+func (w *agentTreeWalk) keep(row *agentTreeRow) bool {
+	if row.depth > 0 {
+		parent := strings.TrimSuffix(row.sort, "\x01")
 		cut := strings.LastIndexByte(parent, 1)
 		if cut < 0 || !w.entered[parent[:cut+1]] {
 			return false
 		}
 	}
-	if row.Kind != ThreadRequestSpawn || row.TargetComputerID != "" || row.TargetThreadID == "" {
+	if row.kind != ThreadRequestSpawn || row.computer != "" || row.target == "" {
 		return true
 	}
-	if w.visited[row.TargetThreadID] {
-		row.NestedHidden = false
+	if w.visited[row.target] {
+		row.hidden = false
 		return true
 	}
-	w.visited[row.TargetThreadID] = true
-	if row.Depth+1 < w.depth {
-		w.entered[sort] = true
+	w.visited[row.target] = true
+	if row.depth+1 < w.depth {
+		w.entered[row.sort] = true
 	}
 	return true
 }
 
-// threadAgentTreeSQL is ListThreadAgentTree's read. ?1 is the root, ?2 the
-// waiting tokens, ?3 the settled window, ?4 the depth, ?5 the open depth, ?6
-// the answer head and ?7, for named rows, their tokens, whose callers are
-// the roots in place of ?1.
+// threadAgentTreeSQL is the tree's shape for ListThreadAgentTree. ?1 is the
+// root, ?2 the waiting tokens, ?3 the settled window, ?4 the depth and ?5
+// the open depth.
 //
 // `sub` walks the root's local spawns as deep as any listed row's open work
 // can sit; `busy` is each thread there with work open in it; `hot` walks up
 // from those, one step per spawn, the open depth less one: a settled local
 // spawn whose thread is in it is kept. `tree` walks the listed rows in
 // order, its sort key each level's creation time and token, carrying the
-// threads above each row so a cycle ends. A request reached along several
-// paths is kept at its first (`once`); agentTreeWalk then drops the rows
-// of a thread entered again. Only the rows inside the limit are projected:
-// a row's answer head is read for those alone.
-func threadAgentTreeSQL(named bool, limit int) string {
-	roots := `SELECT ?1, 0`
-	seed := `r.caller_thread_id = ?1`
-	if named {
-		roots = `SELECT DISTINCT r.caller_thread_id, 0 FROM json_each(?7) CROSS JOIN thread_requests r WHERE r.token = json_each.value`
-		seed = `r.token IN (SELECT value FROM json_each(?7))`
-	}
-	return `WITH RECURSIVE
+// threads above each row so a cycle ends. A local spawn at the bound says
+// whether its thread has rows of its own.
+var threadAgentTreeSQL = `WITH RECURSIVE
   sub(thread_id, depth) AS (
-    ` + roots + `
+    SELECT ?1, 0
     UNION
     SELECT r.target_thread_id, sub.depth + 1
       FROM sub CROSS JOIN thread_requests r
@@ -203,25 +257,29 @@ func threadAgentTreeSQL(named bool, limit int) string {
     SELECT r.token, 0, printf('%020d', r.created_at) || r.token || char(1), json_array(r.caller_thread_id),
            r.kind, r.target_computer_id, r.target_thread_id
       FROM thread_requests r
-     WHERE ` + seed + ` AND ` + listedAgentRequestSQL("r") + `
+     WHERE r.caller_thread_id = ?1 AND ` + listedAgentRequestSQL("r") + `
     UNION ALL
     SELECT r.token, tree.t_depth + 1, tree.t_sort || printf('%020d', r.created_at) || r.token || char(1),
            json_insert(tree.t_path, '$[#]', tree.t_target), r.kind, r.target_computer_id, r.target_thread_id
       FROM tree CROSS JOIN thread_requests r
      WHERE tree.t_kind = 'spawn' AND tree.t_computer = '' AND tree.t_target <> '' AND tree.t_depth + 1 < ?4
        AND NOT EXISTS (SELECT 1 FROM json_each(tree.t_path) WHERE json_each.value = tree.t_target)
-       AND r.caller_thread_id = tree.t_target AND ` + listedAgentRequestSQL("r") + `),
-  once AS (SELECT * FROM (SELECT tree.*, row_number() OVER (PARTITION BY t_token ORDER BY t_sort) AS t_nth FROM tree) WHERE t_nth = 1)
-SELECT ` + threadAgentRequestColumns + `, tree.t_depth,
+       AND r.caller_thread_id = tree.t_target AND ` + listedAgentRequestSQL("r") + `)
+SELECT tree.t_token, tree.t_depth, tree.t_sort, tree.t_kind, tree.t_computer, tree.t_target,
        CASE WHEN tree.t_depth = ?4 - 1 AND tree.t_kind = 'spawn' AND tree.t_computer = '' AND tree.t_target <> ''
                  AND NOT EXISTS (SELECT 1 FROM json_each(tree.t_path) WHERE json_each.value = tree.t_target)
             THEN EXISTS (SELECT 1 FROM thread_requests c
                           WHERE c.caller_thread_id = tree.t_target AND ` + listedAgentRequestSQL("c") + `)
-            ELSE 0 END, tree.t_sort
-  FROM (SELECT * FROM once ORDER BY t_sort LIMIT ` + strconv.Itoa(limit) + `) tree CROSS JOIN thread_requests r
- WHERE r.token = tree.t_token
+            ELSE 0 END
+  FROM tree
  ORDER BY tree.t_sort`
-}
+
+// threadAgentRequestsSQL reads the requests ?2 names as the listing shows
+// them, in that order, with ?1 bytes of each answer.
+const threadAgentRequestsSQL = `SELECT ` + threadAgentRequestColumns + `
+  FROM json_each(?2) CROSS JOIN thread_requests r
+ WHERE r.token = json_each.value
+ ORDER BY json_each.key`
 
 // listedAgentRequestSQL matches a request of the listing (see
 // ListThreadAgentTree), reading ?2, ?3 and the `hot` walk.
@@ -235,11 +293,11 @@ func listedAgentRequestSQL(alias string) string {
 }
 
 // threadAgentRequestColumns is threadRequestColumns for alias r, with the
-// first ?6 bytes of the newer answer in place of the answer, whether a late
+// first ?1 bytes of the newer answer in place of the answer, whether a late
 // reply arrived in place of it, and the wake row after them.
 const threadAgentRequestColumns = `r.token, r.caller_thread_id, r.kind, COALESCE(r.due_at, 0),
     r.target_computer_id, r.target_thread_id, r.target_thread_title, r.origin_thread_id, r.notify, r.state,
-    substr(COALESCE(r.late_reply, r.answer), 1, ?6), r.answer_kind, r.late_reply IS NOT NULL, COALESCE(r.late_reply_at, 0), r.revision,
+    substr(COALESCE(r.late_reply, r.answer), 1, ?1), r.answer_kind, r.late_reply IS NOT NULL, COALESCE(r.late_reply_at, 0), r.revision,
     COALESCE(r.settled_at, 0), COALESCE(r.delivered_at, 0), r.delivered_how,
     COALESCE(r.late_delivered_at, 0), COALESCE(r.expires_at, 0),
     r.polling, r.next_check, r.attempts, r.issue,
@@ -354,57 +412,3 @@ func (s *Store) ThreadAgentRowCallers(tokens, targets []string, owner string) (_
 	}
 	return out, nil
 }
-
-// ThreadAgentRowPlace is a request of a thread's Agents listing and how
-// many spawns down from that thread its caller is.
-type ThreadAgentRowPlace struct {
-	Token string
-	Depth int
-}
-
-// ThreadAgentRowPlaces names, among tokens, the requests whose caller is
-// threadID or a thread spawned under it here within depth levels, walking
-// up each caller's newest local spawn as the sidebar's lineage does, with
-// each one's depth. Reminders and requests past the retention floor are
-// left out.
-func (s *Store) ThreadAgentRowPlaces(threadID string, tokens []string, depth int) (_ []ThreadAgentRowPlace, err error) {
-	action := "store: place agent rows under " + threadID
-	encoded, err := json.Marshal(tokens)
-	if err != nil {
-		return nil, fmt.Errorf("%s: encode tokens: %w", action, err)
-	}
-	rows, err := s.reader().Query(threadAgentRowPlacesSQL, string(encoded), threadID, depth)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
-	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
-	out := []ThreadAgentRowPlace{}
-	for rows.Next() {
-		var place ThreadAgentRowPlace
-		if err := rows.Scan(&place.Token, &place.Depth); err != nil {
-			return nil, fmt.Errorf("%s: scan: %w", action, err)
-		}
-		out = append(out, place)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: iterate: %w", action, err)
-	}
-	return out, nil
-}
-
-// threadAgentRowPlacesSQL walks up from each named request's caller, one
-// newest local spawn per step (spawnLineageSQL's rule, through
-// idx_thread_requests_spawn_target), while the thread it reaches exists
-// and is not ?2, at most ?3 - 1 steps.
-const threadAgentRowPlacesSQL = `WITH RECURSIVE
-  up(token, at, depth) AS (
-    SELECT r.token, r.caller_thread_id, 0
-      FROM json_each(?1) CROSS JOIN thread_requests r
-     WHERE r.token = json_each.value AND r.lineage_only = 0 AND r.kind <> 'remind'
-    UNION ALL
-    SELECT up.token, (SELECT sp.caller_thread_id FROM thread_requests sp
-                       WHERE sp.target_thread_id = up.at AND sp.kind = 'spawn' AND sp.target_computer_id = ''
-                       ORDER BY sp.created_at DESC LIMIT 1), up.depth + 1
-      FROM up CROSS JOIN threads t
-     WHERE t.id = up.at AND up.at <> ?2 AND up.depth + 1 < ?3)
-SELECT up.token, up.depth FROM up WHERE up.at = ?2`

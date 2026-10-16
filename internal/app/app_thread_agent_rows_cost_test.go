@@ -139,9 +139,10 @@ func measureAgentTree(a *App, runs int, call func()) agentTreeCost {
 
 // TestAgentTreeReadCost pins the Agents segment's reads over the tree above
 // to a number of statements that does not grow with it: the listing (the
-// thread, the tree, its targets' names and last messages), a pane's read of
-// up to 32 rows at two levels (as many statements as the listing, so a pane
-// reads named rows up to that bound and the list past it), a tool rows'
+// thread, the tree's shape, its rows, their targets' names and last
+// messages), a pane's read of up to 32 rows at two levels (the listing's
+// statements over the named rows, so a pane reads named rows up to that
+// bound and the list past it), a tool rows'
 // state read of 256 settled tokens, the change frames of the 200 open sends,
 // and an assistant's session check on a Claude resume. Run it alone for its
 // timings.
@@ -230,7 +231,7 @@ func TestAgentTreeReadCost(t *testing.T) {
 		name        string
 		reads, most float64
 	}{
-		{"the listing", list.reads, 4}, {"the tree", tree.reads, 1}, {"the request states", states.reads, 1},
+		{"the listing", list.reads, 5}, {"the tree", tree.reads, 2}, {"the request states", states.reads, 1},
 		{"a drain of frames", frames.reads, 1}, {"the session check", resume.reads, 0},
 		{"a row read of 1", rowReads[1].reads, 4}, {"a row read of 8", rowReads[8].reads, 4},
 		{"a row read of 32", rowReads[maxThreadAgentRowReads].reads, 4},
