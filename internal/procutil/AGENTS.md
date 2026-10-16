@@ -22,7 +22,8 @@ This package owns four utilities:
   given linger; on Windows a pipe still open after linger is an error.
   Pass the context the command was created with: exec stops watching it at
   exit, so on Unix RunDrained watches it while draining and returns its
-  error.
+  error. On both, a run whose process the context killed returns its error,
+  which exec's Wait replaces with the exit status.
 
 Call `ConfigureGroup` before starting the command and pass the same command to
 `KillConfiguredGroup`. These APIs do not verify process identity or establish

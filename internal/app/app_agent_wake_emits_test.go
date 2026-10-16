@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -133,6 +134,7 @@ func TestARemindToolCallTellsTheTray(t *testing.T) {
 func TestAHandOffTellsTheTray(t *testing.T) {
 	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
+	started := stubNoticeStarts(a)
 	thread := noticeTestThread(t, a, "emits-handoff")
 	testAssistant(t, a, thread.ID)
 	watch := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "poll", Command: "true", IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})
@@ -143,6 +145,9 @@ func TestAHandOffTellsTheTray(t *testing.T) {
 	}
 	awaitWakeChange(t, rec, thread.ID, watch.ID, func(c ThreadWakeChange) bool { return c.Removed && c.Row == nil })
 	awaitWakeChange(t, rec, successor.ID, watch.ID, func(c ThreadWakeChange) bool { return c.Row != nil && c.Row.Label == "poll" })
+	if got := started(); !slices.Equal(got, []string{successor.ID}) {
+		t.Errorf("the handoff started sessions on %v, want its successor %s", got, successor.ID)
+	}
 }
 
 // A wake that was queued, and recorded delivered, but that the session
