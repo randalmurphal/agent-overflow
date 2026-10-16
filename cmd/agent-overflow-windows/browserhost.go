@@ -127,8 +127,11 @@ func (a *launcherApp) ensureBrowserHost(bs *wsllauncher.Bootstrap) (*webview2hos
 			return uintptr(window.NativeWindow())
 		},
 		UserDataDir: userDataDir,
-		Logf:        log.Printf,
-		Report:      a.reportBrowserHost,
+		// The display preferences the app window launched with
+		// (displayBrowserArgs), so one restart changes both environments.
+		ExtraBrowserArgs: displayBrowserArgs(a.disableGPUVsync),
+		Logf:             log.Printf,
+		Report:           a.reportBrowserHost,
 		// WebView2 requires every COM and window call on the thread owning
 		// the host window, which is the thread Wails runs its message pump
 		// on.

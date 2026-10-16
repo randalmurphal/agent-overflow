@@ -35,6 +35,7 @@ import { SCOPES } from '../../transport/scopes';
 import DevicesSection from './DevicesSection.svelte';
 import NetworkSection from './NetworkSection.svelte';
 import WSLSection, { resetWSLSectionCache } from './WSLSection.svelte';
+import WebviewGPUVsyncField from './WebviewGPUVsyncField.svelte';
 import NotificationsSection from './NotificationsSection.svelte';
 import SystemsSection from './SystemsSection.svelte';
 import { __resetSystemsForTest } from '../../stores/systems.svelte';
@@ -91,6 +92,7 @@ function stubBindings() {
     isWSL: setBindingMock('IsWSL', async () => true),
     distros: setBindingMock('ListWSLDistros', async () => [{ name: 'Ubuntu', default: true }]),
     distroPref: setBindingMock('GetWSLDistroPreference', async () => 'Ubuntu'),
+    gpuVsync: setBindingMock('GetWebviewGPUVsyncDisabled', async () => false),
     systems: setBindingMock('ListBackends', async () => []),
     // The phone-push block reads and writes with `access:admin` (the writes
     // step-up gated on top). Both are stubbed so the sweep can assert that
@@ -241,6 +243,21 @@ describe('settings sections issue no passive RPC they were not granted', () => {
       // screen the person is on, and every screen has them.
       expect(getByTestId('settings-notifications-section')).toBeTruthy();
       expect(queryByTestId('settings-phone-push')).toBeNull();
+    });
+  });
+
+  describe('WebviewGPUVsyncField — the launcher flag it writes is a fact about the machine', () => {
+    it('detects and reads on the owner’s own screen', async () => {
+      render(WebviewGPUVsyncField);
+      await waitFor(() => expect(bindings.gpuVsync).toHaveBeenCalled());
+    });
+
+    it('asks nothing at all from a device paired with FULL access', async () => {
+      await pairFullAccess();
+      render(WebviewGPUVsyncField);
+      await settle();
+      expect(bindings.isWSL).not.toHaveBeenCalled();
+      expect(bindings.gpuVsync).not.toHaveBeenCalled();
     });
   });
 

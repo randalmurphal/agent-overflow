@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/webview2host"
 	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
 )
@@ -255,9 +256,9 @@ func TestOpenLogSoakProfileWritesItsOwnFile(t *testing.T) {
 //     Wails' list. Feature toggles go through browserDisabledFeatures,
 //     which Wails merges into its single switch.
 func TestBrowserArgs(t *testing.T) {
-	prod := browserArgs("prod", true)
+	prod := browserArgs("prod", true, false)
 	for _, mode := range []string{appidentity.ModeDev, appidentity.ModeHarness, appidentity.ModeSoak, appidentity.ModePerf} {
-		modeArgs := browserArgs(mode, true)
+		modeArgs := browserArgs(mode, true, false)
 		modeSet := make(map[string]struct{}, len(modeArgs))
 		for _, arg := range modeArgs {
 			modeSet[arg] = struct{}{}
@@ -276,17 +277,17 @@ func TestBrowserArgs(t *testing.T) {
 	}
 	// A launcher applying an update runs beside the launch that owns the
 	// mode's port.
-	if !slices.Contains(browserArgs(appidentity.ModeDev, true), fmt.Sprintf("--remote-debugging-port=%d", appidentity.DevToolsPort(appidentity.ModeDev))) {
+	if !slices.Contains(browserArgs(appidentity.ModeDev, true, false), fmt.Sprintf("--remote-debugging-port=%d", appidentity.DevToolsPort(appidentity.ModeDev))) {
 		t.Error("dev lacks its DevTools port")
 	}
-	for _, a := range browserArgs(appidentity.ModeDev, false) {
+	for _, a := range browserArgs(appidentity.ModeDev, false, false) {
 		if strings.HasPrefix(a, "--remote-debugging-") {
 			t.Errorf("a window without DevTools includes %q", a)
 		}
 	}
 
 	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeHarness, appidentity.ModeSoak, appidentity.ModePerf} {
-		for _, arg := range browserArgs(mode, true) {
+		for _, arg := range browserArgs(mode, true, false) {
 			if strings.HasPrefix(arg, "--disable-features") || strings.HasPrefix(arg, "--enable-features") {
 				t.Errorf("%s raw feature switch %q would clobber Wails' merged feature configuration", mode, arg)
 			}
@@ -336,7 +337,7 @@ func TestBrowserFeatures(t *testing.T) {
 
 func TestWebviewBrowserOptionsLeaveTextAndScrollerCompositingAtChromiumDefaults(t *testing.T) {
 	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeHarness, appidentity.ModeSoak, appidentity.ModePerf} {
-		opts := webviewBrowserOptions(mode, "profile", "diagnostics", true)
+		opts := webviewBrowserOptions(mode, "profile", "diagnostics", true, false)
 		if len(opts.EnabledFeatures) != 0 {
 			t.Errorf("%s EnabledFeatures = %v, want none", mode, opts.EnabledFeatures)
 		}
@@ -744,15 +745,15 @@ func TestBrowserArgsWebviewLogGate(t *testing.T) {
 	}
 
 	t.Setenv(webviewLogEnv, "")
-	if hasLogging(browserArgs("dev", true)) || hasLogging(browserArgs("prod", true)) {
+	if hasLogging(browserArgs("dev", true, false)) || hasLogging(browserArgs("prod", true, false)) {
 		t.Error("logging flags present without opt-in")
 	}
 
 	t.Setenv(webviewLogEnv, "1")
-	if !hasLogging(browserArgs("dev", true)) {
+	if !hasLogging(browserArgs("dev", true, false)) {
 		t.Error("dev: logging flags missing despite opt-in")
 	}
-	if !hasLogging(browserArgs("prod", true)) {
+	if !hasLogging(browserArgs("prod", true, false)) {
 		t.Error("prod: logging flags missing despite opt-in")
 	}
 }
@@ -772,15 +773,15 @@ func TestBrowserArgsWebviewSoftwareGate(t *testing.T) {
 	}
 
 	t.Setenv(webviewSoftwareEnv, "")
-	if hasDisableGpu(browserArgs("dev", true)) || hasDisableGpu(browserArgs("prod", true)) {
+	if hasDisableGpu(browserArgs("dev", true, false)) || hasDisableGpu(browserArgs("prod", true, false)) {
 		t.Error("--disable-gpu present without opt-in")
 	}
 
 	t.Setenv(webviewSoftwareEnv, "1")
-	if !hasDisableGpu(browserArgs("dev", true)) {
+	if !hasDisableGpu(browserArgs("dev", true, false)) {
 		t.Error("dev: --disable-gpu missing despite opt-in")
 	}
-	if !hasDisableGpu(browserArgs("prod", true)) {
+	if !hasDisableGpu(browserArgs("prod", true, false)) {
 		t.Error("prod: --disable-gpu missing despite opt-in")
 	}
 }
@@ -791,10 +792,10 @@ func TestBrowserArgsWebviewSoftwareGate(t *testing.T) {
 // keeps the final occurrence), and an unset/blank var adds nothing.
 func TestBrowserArgsExtraArgsGate(t *testing.T) {
 	t.Setenv(webviewExtraArgsEnv, "")
-	base := browserArgs("dev", true)
+	base := browserArgs("dev", true, false)
 
 	t.Setenv(webviewExtraArgsEnv, "  --force-gpu-mem-available-mb=256   --disk-cache-size=4096 ")
-	got := browserArgs("dev", true)
+	got := browserArgs("dev", true, false)
 	if len(got) != len(base)+2 {
 		t.Fatalf("expected %d args, got %d: %v", len(base)+2, len(got), got)
 	}
@@ -931,5 +932,36 @@ func TestTransientLaunchRecordsPayloadWithoutChangingDefaultDistro(t *testing.T)
 	}
 	if *isolated != *cfg {
 		t.Fatalf("isolated launch overwrote ordinary install record: %+v", isolated)
+	}
+}
+
+// TestBrowserArgsGPUVsyncPreference covers the Settings > Performance
+// display preference: --disable-gpu-vsync is absent by default in every
+// mode, present in every mode when the wsl.json preference is on, and the
+// browser pane's environment gets the same switch list, so one restart
+// changes both environments together.
+func TestBrowserArgsGPUVsyncPreference(t *testing.T) {
+	has := func(args []string) bool { return slices.Contains(args, disableGPUVsyncArg) }
+	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeHarness, appidentity.ModeSoak, appidentity.ModePerf} {
+		if has(browserArgs(mode, true, false)) {
+			t.Errorf("%s: %s present with the preference off", mode, disableGPUVsyncArg)
+		}
+		if !has(browserArgs(mode, true, true)) {
+			t.Errorf("%s: %s missing with the preference on", mode, disableGPUVsyncArg)
+		}
+		if !has(webviewBrowserOptions(mode, "profile", "diagnostics", true, true).AdditionalBrowserArgs) {
+			t.Errorf("%s: window options drop the preference", mode)
+		}
+	}
+	if got := displayBrowserArgs(false); len(got) != 0 {
+		t.Errorf("pane extras with the preference off = %v, want none", got)
+	}
+	if got := displayBrowserArgs(true); !slices.Equal(got, []string{disableGPUVsyncArg}) {
+		t.Errorf("pane extras with the preference on = %v", got)
+	}
+	// The pane host owns the debugging endpoint; the shared switch list
+	// must pass its validation or the pane would fail to build.
+	if err := webview2host.ValidateExtraBrowserArgs(displayBrowserArgs(true)); err != nil {
+		t.Errorf("display switches rejected by the pane host: %v", err)
 	}
 }

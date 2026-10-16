@@ -210,6 +210,7 @@ func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 		"SetThreadMcpServerEnabled":     "MCP config write",
 		"SetWorkspaceMcpServerEnabled":  "MCP config write",
 		"SetWSLDistroPreference":        "WSL distro preference",
+		"SetWebviewGPUVsyncDisabled":    "launcher WebView2 flag write: changes how the next launch renders",
 		"SetProjectWorktreeSetup":       "worktree-setup recipe write: stores argv that runs unattended on every worktree cut",
 		"BeginPasskeyRegistration":      "registering a credential that admits a future caller, on the same argument as minting a pairing link",
 		"RequestServiceUpdate": "replacing the code this machine runs: §7's remote update trigger, " +
