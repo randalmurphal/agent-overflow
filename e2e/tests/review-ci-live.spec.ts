@@ -114,11 +114,12 @@ async function distanceFromBottom(scroll: Locator): Promise<number> {
   return scroll.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
 }
 
-// A reader moves to the log's end. One wheel lands at the end the list has
-// laid out; tail rows that mount there can measure taller than their
-// estimate and move the end past it before the scroll event reports, which
-// leaves the reader short and still escaped. A reader keeps wheeling, so
-// this does too until the view reaches the end.
+// A reader moves to the log's end. Workaround for a scroll controller gap:
+// one jump to the end (a wheel, End) lands at the end the list has laid
+// out, tail rows that mount there measure taller than their estimate, and
+// the re-stick rule leaves the reader short of the new end and escaped.
+// Until the controller re-sticks on that landing, this wheels again until
+// the view reaches the end.
 async function wheelToEnd(page: Page, scroll: Locator): Promise<void> {
   await scroll.hover();
   await expect.poll(async () => {
