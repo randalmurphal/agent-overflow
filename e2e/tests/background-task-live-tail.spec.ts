@@ -175,6 +175,20 @@ test('an expanded running command shows its live tail, follows the bottom, and y
   // Sixty more lines overflow the clip; a follower sits at its bottom.
   await expect.poll(() => scroll.evaluate((el: HTMLElement) => el.scrollHeight > el.clientHeight + 40)).toBe(true);
   await expect.poll(() => scroll.evaluate((el: HTMLElement) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(4);
+  // The clip is ten lines of the output tall, measured from the output's
+  // own line height, plus the box's padding.
+  const clip = await scroll.evaluate((el: HTMLElement) => {
+    const box = getComputedStyle(el);
+    const output = el.querySelector('.ansi-body');
+    return {
+      height: el.clientHeight,
+      line: output ? parseFloat(getComputedStyle(output).lineHeight) : NaN,
+      padding: parseFloat(box.paddingTop) + parseFloat(box.paddingBottom),
+    };
+  });
+  expect(clip.line).toBeGreaterThan(0);
+  expect(clip.height).toBeLessThanOrEqual(10 * clip.line + clip.padding + 1);
+  expect(clip.height).toBeGreaterThan(9 * clip.line + clip.padding);
   await shoot(page, testInfo, 'expanded');
   // The list grew around the open body: the row's header and the whole
   // clip are in view without the list itself scrolling.
