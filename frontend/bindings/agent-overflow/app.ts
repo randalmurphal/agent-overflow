@@ -5541,8 +5541,9 @@ export function UnsubscribePRUpdates(subscriptionID: string): $CancellablePromis
 
 /**
  * UnwatchBackgroundTaskOutput releases a watch WatchBackgroundTaskOutput
- * answered with. Idempotent: the connection cleanup and the task's end
- * may both have released it already.
+ * answered this connection with. Idempotent: the connection cleanup and
+ * the task's end may both have released it already. A watch another
+ * connection holds, or one on another thread, is left alone.
  */
 export function UnwatchBackgroundTaskOutput(threadID: string, watchID: string): $CancellablePromise<void> {
     return $Call.ByID(1941806085, threadID, watchID);
@@ -5869,7 +5870,8 @@ export function Version(): $CancellablePromise<string> {
  * It rides threads:read, which also serves the tray (ListLiveBackgroundTasks)
  * and the completion payload the same bytes land in. Refused for an agent
  * launch, whose file is a transcript, and for anything but a running
- * background command.
+ * background command. The watch belongs to the calling connection: only
+ * that connection's UnwatchBackgroundTaskOutput releases it.
  */
 export function WatchBackgroundTaskOutput(threadID: string, launchItemID: string): $CancellablePromise<tasktail$0.Snapshot> {
     return $Call.ByID(2263729048, threadID, launchItemID).then(($result: any) => {
