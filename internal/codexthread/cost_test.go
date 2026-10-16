@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 const costTestProjectID = "codexthread-cost-test"
@@ -20,7 +21,7 @@ type costTestHarness struct {
 	sessions map[string]LiveSession
 }
 
-func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
+func TestMain(m *testing.M) { os.Exit(providerpath.Guard(func() int { return storetest.Run(m) })) }
 
 func newCostTestHarness(t *testing.T) *costTestHarness {
 	t.Helper()

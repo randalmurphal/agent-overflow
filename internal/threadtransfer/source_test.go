@@ -19,12 +19,13 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil/providerpath"
 	"agent-overflow/internal/transferclient"
 	"agent-overflow/internal/transferfiles"
 	"agent-overflow/internal/transferwire"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
+func TestMain(m *testing.M) { os.Exit(providerpath.Guard(func() int { return storetest.Run(m) })) }
 
 type sourceTestPeer struct {
 	storePath                                                 string

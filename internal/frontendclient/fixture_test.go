@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/network"
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 func TestMain(m *testing.M) {
@@ -27,7 +28,7 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	os.Exit(providerpath.Run(m))
 }
 
 func runFrontendFixture() error {

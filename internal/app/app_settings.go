@@ -25,6 +25,9 @@ func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 	// Identity before the probe, for the reason recordProbedProviderVersion
 	// states. A binary that does not resolve is reported by the statuses and
 	// recorded by nobody.
+	// A status read reports what is installed now, not what the last tick
+	// saw: the settings page reads it after the user installs or moves codex.
+	a.invalidateDefaultCodexBinary()
 	identities := make(map[string]providerBinaryIdentity, 2)
 	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
 		if identity, ok := a.resolveProviderBinaryIdentity(providerName); ok {
@@ -32,9 +35,12 @@ func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 		}
 	}
 	statuses := a.providerDiscoveryService().ProviderStatuses()
-	for _, status := range statuses {
+	for i, status := range statuses {
 		if identity, ok := identities[status.Provider]; ok {
 			a.recordProbedProviderVersion(status.Provider, identity, status)
+		}
+		if status.Provider == string(provider.Codex) && status.Installed {
+			statuses[i].WrapperPath = a.codexWrapperFor(status.BinaryPath)
 		}
 	}
 	return statuses, nil
@@ -204,6 +210,7 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 		editor.RefreshEditors()
 	}
 	if _, ok := patch["codexBinaryPath"]; ok {
+		a.invalidateDefaultCodexBinary()
 		a.refreshCodexModelCatalog()
 	}
 	if _, ok := patch["gitlabSelfHostedHosts"]; ok {
@@ -333,10 +340,7 @@ func (a *App) providerBinaryPath(providerName string) string {
 		}
 		return settings.DefaultSettings.ClaudeBinaryPath
 	case string(provider.Codex):
-		if path := strings.TrimSpace(cfg.CodexBinaryPath); path != "" {
-			return path
-		}
-		return settings.DefaultSettings.CodexBinaryPath
+		return a.codexBinary().Path
 	default:
 		return ""
 	}

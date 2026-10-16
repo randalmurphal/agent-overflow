@@ -10,6 +10,13 @@ packages. Test-specific setup stays beside the test that owns it.
   wrapper, so macOS assesses a single file instead of each written script. It
   imports only the standard library, so packages that `testutil` imports can
   use it too.
+- `providerpath/` puts poisoned `claude` and `codex` first on PATH from
+  TestMain, so a bare provider name never reaches an installed CLI, and fails
+  the run naming the tests that tried. It also points SHELL at a stand-in
+  that skips login startup files, so a shell sync cannot reorder PATH. Every
+  test package that links a provider spawn package installs it;
+  `TestEveryTestBinaryThatCanStartAProviderInstallsThePoison` fails one that
+  does not. Standard library only, like `mockexec/`.
 - `git.go` creates local repositories and local bare origins. No helper here
   reaches a network.
 - `store.go` inserts the project row required by thread foreign keys.

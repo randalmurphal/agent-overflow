@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/testutil/mockexec"
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 // forgeFakeHelperEnv turns this test binary into a fake forge CLI: it
@@ -41,7 +42,7 @@ func TestMain(m *testing.M) {
 		})
 		os.Exit(0)
 	}
-	code := m.Run()
+	code := providerpath.Run(m)
 	if err := removeRepoTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "remove template repository: %v\n", err)
 		code = 1

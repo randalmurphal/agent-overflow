@@ -215,6 +215,18 @@
           class="{INPUT_CLASS} max-w-[16rem]"
         />
       </SettingsField>
+      {#if status?.wrapperPath}
+        <!-- Auto-detect found the npm wrapper; the backend runs the native
+             binary it would spawn (internal/app/app_codex_binary.go). -->
+        <p
+          class="text-[0.71875rem] leading-snug text-fg-muted"
+          data-testid="settings-provider-binary-resolved"
+        >
+          Runs <span class="font-mono break-all text-fg">{status.binaryPath}</span>, the native
+          binary the npm wrapper <span class="font-mono break-all">{status.wrapperPath}</span> starts,
+          so threads skip its Node process.
+        </p>
+      {/if}
 
       <SettingsField
         id={providerFieldId(provider, 'models')}

@@ -10,6 +10,9 @@ import (
 // providerBinaryIdentity is "the bytes we last looked at", cheap enough to
 // re-derive on demand. Path is included because a version manager switch
 // can repoint the symlink at an equally-old file with an equally-old mtime.
+// The file id (device and inode, where the platform has them) catches a
+// package manager replacing the file at the same path with one of the same
+// size and timestamp.
 // Comparable by ==, which is the whole point of the upgrade tick; mtime is
 // carried as unix nanos rather than a time.Time so that comparison is a plain
 // value compare and not time.Time's wall/monotonic/location equality.
@@ -22,6 +25,7 @@ type providerBinaryIdentity struct {
 	path        string
 	size        int64
 	modUnixNano int64
+	fileID      providerBinaryFileID
 }
 
 // resolveProviderBinaryIdentity stats the binary a provider would spawn.
@@ -55,5 +59,6 @@ func (a *App) resolveProviderBinaryIdentity(providerName string) (providerBinary
 		path:        resolved,
 		size:        info.Size(),
 		modUnixNano: info.ModTime().UnixNano(),
+		fileID:      binaryFileID(info),
 	}, true
 }

@@ -110,6 +110,9 @@ func (a *App) sweepProviderBinaries() {
 	if a.shuttingDown.Load() || a.settings == nil {
 		return
 	}
+	// The tick is when an install, upgrade or removal of the default codex
+	// becomes visible to everything that reads the binary.
+	a.invalidateDefaultCodexBinary()
 	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
 		a.refreshInstalledProviderVersion(providerName)
 	}
