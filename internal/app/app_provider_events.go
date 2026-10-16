@@ -77,6 +77,11 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		if evt.Kind == provider.EventWorkspaceChanged {
 			a.followProviderWorkspaceChange(threadID, sessionToken, evt)
 		}
+		// The CLI changed its permission mode on its own (it leaves auto
+		// on a model without it); the thread's runtime mode follows.
+		if evt.Kind == provider.EventPermissionModeChanged && providerType == string(provider.Claude) {
+			a.followClaudePermissionMode(threadID, sessionToken)
+		}
 
 		// A successful turn start is the wire-level proof that the new
 		// session is alive and serving. Reset the per-thread auto-

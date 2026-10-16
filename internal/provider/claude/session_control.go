@@ -101,6 +101,10 @@ func (s *Session) setPermissionMode(ctx context.Context, mode string) error {
 		return nil
 	}
 	opName := "set permission mode " + mode
+	// The CLI reports the change on `system/status` before it acks, so the
+	// request is marked in flight first (permission_mode.go).
+	s.notePermissionModeRequested(mode)
+	defer s.notePermissionModeSettled(mode)
 	res, err := s.sendControlRequest(ctx, opName, map[string]any{
 		"subtype": "set_permission_mode",
 		"mode":    mode,

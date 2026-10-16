@@ -152,6 +152,10 @@ func (s *Session) readLoop() {
 					s.replaceAdvertisedCommands(names)
 				}
 			}
+			if evt.Kind == provider.EventPermissionModeChanged && !s.filterPermissionModeEvent(evt) {
+				s.noteReadLoopProgress()
+				continue
+			}
 			if evt.Kind == provider.EventApprovalRequest && evt.ItemID != "" {
 				s.trackPendingApproval(evt.ItemID, provider.EventApprovalResolved)
 			}

@@ -70,6 +70,12 @@ test('the thinking picker has no off, and a stored off loads as the default', as
     await expect(page.getByTestId('settings-claude-thinking-display')).toHaveValue('');
     await expect(page.getByTestId('settings-claude-thinking-budget')).toHaveCount(0);
 
+    for (const scheme of ['dark', 'light'] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.getByTestId('settings-claude-thinking-mode').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: test.info().outputPath(`claude-thinking-settings-${scheme}.png`) });
+    }
+
     // The stored row does not block a later write, and the picker keeps working.
     await page.getByTestId('settings-claude-thinking-mode').selectOption('budget');
     await expect(page.getByTestId('settings-claude-thinking-budget')).toBeVisible();

@@ -490,6 +490,42 @@ the inactive close (carrying the error string); `requesting` and
 unknown statuses are dropped. Triage projects the window onto
 `provider:compacting` (see `internal/triage/compaction_status.go`).
 
+### Permission mode reports (2.1.300 bundle, not live-captured)
+
+A third family reports every change of the session's permission mode,
+whoever made it:
+
+```json
+{"type":"system","subtype":"status","status":null,
+ "permissionMode":"default","uuid":"...","session_id":"..."}
+```
+
+The headless loop installs the reporter on the session state's
+`onPermissionModeChanged`, which the app-state subscriber calls whenever
+`toolPermissionContext.mode` changes. A `set_permission_mode` from the
+client produces one too, written around its ack (the state update and the
+ack share one updater, so the report can follow the ack). `system/init`
+also carries `permissionMode`, but restates the startup resolution, which
+for a spawn without `--permission-mode` includes the user's
+`permissions.defaultMode`; AO does not read it as a change.
+
+Since 2.1.299 the CLI changes mode on its own in one case AO must follow:
+`set_model` to a model without auto mode, on a session running `auto`,
+moves the session to `default` (logged `auto mode disabled: model X does
+not support auto mode`) and reports it before the `set_model` ack. The
+support check (`iD`) refuses auto for the 4.6 generation and older and for
+every Haiku but 5.5. A later `set_permission_mode` `auto` on such a model
+is refused with `auto mode unavailable for this model`.
+
+The parser emits `EventPermissionModeChanged` for every report. The
+session (`internal/provider/claude/permission_mode.go`) drops a report that
+matches a `set_permission_mode` in flight or the mode it already runs,
+never adopts `plan` (AO's per-turn interaction mode), and adopts anything
+else as both its current and base mode before forwarding it. The app
+(`internal/app/app_claude_permission_mode.go`) moves the thread's runtime
+mode to the mode the CLI runs, without a restart, and posts a warning
+notice naming the model.
+
 ## `system` model-fallback family
 
 Four subtypes, one shape, one meaning each: the model the user asked for

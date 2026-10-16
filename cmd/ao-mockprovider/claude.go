@@ -199,6 +199,10 @@ type claudeAdapter struct {
 	// drainHeldInput / releaseHeldInput).
 	heldMu sync.Mutex
 	held   [][]byte
+
+	// permission follows the permission mode and model the process runs
+	// (claude_permission_mode.go).
+	permission *claudePermissionMode
 }
 
 func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
@@ -209,6 +213,7 @@ func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
 		mcpServers:    claudeMCPServerSpecs(flagValue(args, "--mcp-config")),
 		sessionMirror: slices.Contains(args, "--session-mirror"),
 		tasks:         newClaudeTaskLedger(),
+		permission:    newClaudePermissionMode(args),
 	}
 	w.onLine(a.noteEnvelope)
 	return a
@@ -382,7 +387,22 @@ func (a *claudeAdapter) handleLine(line []byte) {
 			}
 			return
 		}
+		var beforeAck, afterAck []string
+		var refusal string
+		if required, known := claudeControlRequestKeys[subtype]; known && missingControlRequestKeys(env.Request, required) == "" {
+			beforeAck, afterAck, refusal = a.permission.frames(subtype, env.Request)
+		}
+		if refusal != "" {
+			writeClaudeControlError(a.w, env.RequestID, refusal)
+			return
+		}
+		for _, frame := range beforeAck {
+			a.w.writeLine(frame, 0, 0)
+		}
 		writeClaudeControlAck(a.w, env.RequestID, subtype, env.Request)
+		for _, frame := range afterAck {
+			a.w.writeLine(frame, 0, 0)
+		}
 		if subtype == "interrupt" {
 			for _, frame := range a.tasks.stopForegroundCommands(time.Now()) {
 				a.w.writeLine(frame, 0, 0)
@@ -590,6 +610,7 @@ func (a *claudeAdapter) writeInit(vars scenario.Vars) {
 		"model":               "claude-opus-4-7",
 		"cwd":                 vars["CWD"],
 		"tools":               []string{"Task", "Bash", "Read", "Write", "Edit"},
+		"permissionMode":      a.permission.current(),
 		"claude_code_version": a.e.providerVersion(),
 	}), 0, 0)
 }
