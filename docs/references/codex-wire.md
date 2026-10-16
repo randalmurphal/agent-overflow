@@ -1268,8 +1268,9 @@ Fixture: `fixtures/codex/thread_unload_cold_resume_20261016.ndjson`.
 - A loaded thread with no subscriber and not active unloads after
   `thread_unload_delay_secs` (config; measured 60.0 s at the default and
   3.0 s at `3`; with `-c thread_unload_delay_secs=0` on the spawn,
-  `thread/closed` followed the unsubscribe response within 15 ms, and
-  `-c` and `config.toml` behave the same). The clock starts at the later
+  `thread/closed` followed the unsubscribe response within 15 ms, in
+  [the per-thread channels fixture](#developer-instructions-across-a-restart-and-per-thread-channels-verified-01621)).
+  The clock starts at the later
   of the last unsubscribe and the last activity. The app-server then writes
   `thread/closed {threadId}`, drops it from `thread/loaded/list` and kills
   its MCP children. The notification reaches the unsubscribed connection.
