@@ -1218,6 +1218,71 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
   expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
 });
 
+test('a nested row on the other computer names the wake row its answer reached there', async () => {
+  test.setTimeout(240_000);
+  const caller = await seed(home, 'agents-wake-caller', ['Agents wake caller']);
+  const child = await seed(remote, 'agents-wake-child', []);
+  const grand = await seed(remote, 'agents-wake-grand', []);
+  for (const projectId of [child.projectId, grand.projectId]) {
+    await remote.rpc('UpdateNewThreadDefaults', {
+      projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
+    });
+  }
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'agents-wake-caller-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Build it over there.', title: 'Remote child', computer_id: remoteID, project_id: child.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { text: 'Noted.' },
+    ],
+  }));
+  await setScenario(remote, child.path, threadToolsScenario({
+    name: 'agents-wake-child-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: { tool: 'thread_spawn', args: { prompt: 'Package it.', title: 'Remote grandchild', project_id: grand.projectId, notify: true } } }],
+        text: 'Packaging started.' },
+      { text: 'Packaged, noted.' },
+    ],
+  }));
+  await setScenario(remote, grand.path, plainScenario({
+    name: 'agents-wake-grand-script', provider: 'claude', texts: ['Packaged.'],
+  }));
+
+  // The grandchild's answer wakes the child there.
+  const woken = remote.waitForEvent<HarnessMockEventData>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'user_input' && ev.cwd === child.path && (ev.report.input ?? '').includes('Packaged.'),
+    180_000,
+  );
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer build it', null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const nested = await awaitToolAnswer<{ token: string }>(remote, { tool: 'thread_spawn', cwd: child.path, timeoutMs: 120_000 });
+  expect(nested.isError, nested.text).toBe(false);
+  expect((await woken).report.input).toContain(nested.value!.token);
+
+  // The child's computer records the row that carried the wake once the
+  // echo confirms it, and the caller's listing nests that row unchanged.
+  type Listing = { rows: { token: string; ownerComputerId?: string; wakeItemId?: string }[] };
+  let wakeItemId = '';
+  await expect.poll(async () => {
+    const there = await remote.rpc<Listing>('ListThreadAgentRows', spawn.value!.thread_id);
+    wakeItemId = there.rows.find((row) => row.token === nested.value!.token)?.wakeItemId ?? '';
+    return wakeItemId;
+  }, { timeout: 60_000 }).not.toBe('');
+  const items = await remote.rpc<{ id: string; kind: string }[]>('ListItems', spawn.value!.thread_id, true);
+  expect(items.find((item) => item.id === wakeItemId)?.kind, 'the wake link names a row of the child').toBe('user_text');
+  await expect.poll(async () => {
+    const here = await home.rpc<Listing>('ListThreadAgentRows', caller.threadIds[0]);
+    const row = here.rows.find((candidate) => candidate.token === nested.value!.token);
+    return row && { owner: row.ownerComputerId, wake: row.wakeItemId };
+  }, { timeout: 60_000 }).toEqual({ owner: remoteID, wake: wakeItemId });
+});
+
 test('a thread moved to the other computer resolves there by its bare id', async () => {
   test.setTimeout(180_000);
   const caller = await seed(home, 'remote-moved-caller', ['Moved caller']);
