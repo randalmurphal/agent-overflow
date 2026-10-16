@@ -114,7 +114,9 @@ func waitAgentEmitsIdle(t *testing.T, a *App) {
 	})
 }
 
-// agentTreeCost is what one leg costs per call: read statements and time.
+// agentTreeCost is what one leg costs per call: the fewest read statements
+// any run issued, so a background read landing in one run cannot count
+// against the leg, and the mean time.
 type agentTreeCost struct {
 	reads float64
 	per   time.Duration
@@ -122,14 +124,15 @@ type agentTreeCost struct {
 
 func measureAgentTree(a *App, runs int, call func()) agentTreeCost {
 	call()
-	start, reads := time.Now(), a.store.ReadCount()
+	var spent time.Duration
+	fewest := uint64(1 << 62)
 	for range runs {
+		start, reads := time.Now(), a.store.ReadCount()
 		call()
+		spent += time.Since(start)
+		fewest = min(fewest, a.store.ReadCount()-reads)
 	}
-	return agentTreeCost{
-		reads: float64(a.store.ReadCount()-reads) / float64(runs),
-		per:   time.Since(start) / time.Duration(runs),
-	}
+	return agentTreeCost{reads: float64(fewest), per: spent / time.Duration(runs)}
 }
 
 // TestAgentTreeReadCost pins the Agents segment's reads over the tree above
