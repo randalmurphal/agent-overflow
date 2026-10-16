@@ -125,6 +125,7 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`cursor-provider.md`](specs/cursor-provider.md) | Cursor as a third provider over ACP, signed off 2026-08-31. Living gap table + spike backlog; not implemented yet. |
 | [`standing-agents.md`](specs/standing-agents.md) | Assistants the user creates: the record, its home and current thread, New Thread, Same Assistant, wake supervisor (remind, loop, watch), agent sidebar row, skills library settings, discussions removed, workflows to MCP. Signed off 2026-10-10; built in slices. |
 | [`plan-mode.md`](specs/plan-mode.md) | Plan mode as AO's own intent-to-merge-ready protocol: provider plan modes removed, per-thread plan files, the plan pane with anchored comments, project contract and personal settings, `PostCompact` re-injection. Signed off 2026-09-27; not implemented. |
+| [`codex-app-server-sharing.md`](specs/codex-app-server-sharing.md) | Many Codex threads on one app-server: the provider connection/session split, pool key and drain, End Session, crash, identity, and the resumed-thread developer-instructions fix. Design, not scheduled. |
 
 ## References
 
