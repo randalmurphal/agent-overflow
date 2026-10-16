@@ -324,3 +324,41 @@ func TestDefaultCodexBinaryDropsARemovedNativeBinary(t *testing.T) {
 		t.Fatalf("%d PATH walks, want the removal to force one more", walks)
 	}
 }
+
+// A lookup during which PATH changes is not cached under the PATH read
+// before it: that key would then answer with the other PATH's binary.
+func TestDefaultCodexBinaryDoesNotCacheALookupThatRacedAPathChange(t *testing.T) {
+	app := newTestAppWithStore(t)
+	f := newCodexNpmFixture(t, t.TempDir())
+	writeProviderBinaryFile(t, f.wrapper, "exit 0")
+	writeProviderBinaryFile(t, f.native, "exit 0")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": "codex"}); err != nil {
+		t.Fatalf("restore default codex setting: %v", err)
+	}
+	// Serial: the lookup moves PATH the way a concurrent change would.
+	before := t.TempDir()
+	t.Setenv("PATH", before)
+	walks := 0
+	app.codexLookPathFn = func(string) (string, error) {
+		walks++
+		if walks == 1 {
+			if err := os.Setenv("PATH", f.bin); err != nil {
+				t.Fatal(err)
+			}
+			return f.command, nil
+		}
+		return "", exec.ErrNotFound
+	}
+	app.invalidateDefaultCodexBinary()
+
+	if got := app.providerBinaryPath(string(provider.Codex)); got != nativePath(t, f) {
+		t.Fatalf("racing lookup = %q, want its own answer %q", got, nativePath(t, f))
+	}
+	t.Setenv("PATH", before)
+	if got := app.providerBinaryPath(string(provider.Codex)); got != "codex" {
+		t.Fatalf("providerBinaryPath(codex) under the earlier PATH = %q, want a fresh lookup's bare default", got)
+	}
+	if walks != 2 {
+		t.Fatalf("%d PATH walks, want the racing answer left uncached", walks)
+	}
+}

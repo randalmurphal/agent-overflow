@@ -49,8 +49,15 @@ func Guard(run func() int) int {
 	return code
 }
 
+// shellName is the stand-in Install points SHELL at.
+const shellName = "login-shell"
+
 // Install prepends a directory of poisoned provider executables to PATH for
-// the rest of the process. The returned check, called after m.Run, reports
+// the rest of the process, and points SHELL at a stand-in that runs /bin/sh
+// without the login and interactive flags. A login shell's startup files can
+// put an installed CLI ahead of the poison, and the boot's shell sync puts
+// the login shell's PATH first; the stand-in reports the process's own PATH,
+// so the sync cannot reorder it. The returned check, called after m.Run, reports
 // every attempt to run one and removes the directory. On Windows, where the
 // poison cannot be a shell script, Install changes nothing.
 func Install() (check func() error, err error) {
@@ -66,6 +73,13 @@ func Install() (check func() error, err error) {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(poisonScript(record)), 0o755); err != nil {
 			return nil, errors.Join(fmt.Errorf("write poisoned %s: %w", name, err), os.RemoveAll(dir))
 		}
+	}
+	shell := filepath.Join(dir, shellName)
+	if err := os.WriteFile(shell, []byte(standInShell), 0o755); err != nil {
+		return nil, errors.Join(fmt.Errorf("write stand-in shell: %w", err), os.RemoveAll(dir))
+	}
+	if err := os.Setenv("SHELL", shell); err != nil {
+		return nil, errors.Join(fmt.Errorf("set SHELL: %w", err), os.RemoveAll(dir))
 	}
 	path := dir
 	if existing := os.Getenv("PATH"); existing != "" {
@@ -98,6 +112,27 @@ func poisonScript(record string) string {
 		"echo \"agent-overflow tests: refused to run the installed ${0##*/} found on PATH; give the test a mock binary\" >&2\n" +
 		"exit 127\n"
 }
+
+// standInShell drops the login and interactive flags from the options
+// before the first operand, keeps -c, and runs /bin/sh with the rest. With
+// no arguments it is an interactive /bin/sh, as a terminal opens it.
+const standInShell = `#!/bin/sh
+options=1
+first=1
+for arg do
+  if [ "$first" = 1 ]; then set --; first=0; fi
+  if [ "$options" = 1 ]; then
+    case "$arg" in
+      --login|-l|-i|-il|-li) continue ;;
+      -c|-ilc|-lic|-icl|-cil|-lci|-cli|-lc|-cl|-ic|-ci) set -- "$@" -c; options=0; continue ;;
+      -*) ;;
+      *) options=0 ;;
+    esac
+  fi
+  set -- "$@" "$arg"
+done
+exec /bin/sh "$@"
+`
 
 // testNamePattern matches the test name t.TempDir puts in its path.
 var testNamePattern = regexp.MustCompile(`Test[A-Za-z0-9_]+`)

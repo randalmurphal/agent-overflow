@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 // TestMain removes the system fallback shells, so no test runs the
@@ -341,5 +343,47 @@ func TestProbe_DescendantHoldingStdoutDoesNotBlock(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > probeTimeout {
 		t.Fatalf("probe took %s, past its %s cap", elapsed, probeTimeout)
+	}
+}
+
+// The provider-path poison points SHELL at a stand-in, so a test that
+// reaches the boot's shell sync cannot have a login shell's startup files
+// put an installed CLI ahead of the poison.
+func TestSyncKeepsTheProviderPathPoisonFirst(t *testing.T) {
+	home := t.TempDir()
+	installed := t.TempDir()
+	if err := os.WriteFile(filepath.Join(installed, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profile := filepath.Join(home, ".profile")
+	if err := os.WriteFile(profile, []byte("PATH=\""+installed+":$PATH\"; export PATH\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A real login shell reads ~/.profile, an interactive sh reads $ENV.
+	t.Setenv("HOME", home)
+	t.Setenv("ENV", profile)
+	// The user's shell, which reads both. Install replaces it and PATH for
+	// the process; t.Setenv restores them.
+	t.Setenv("SHELL", "/bin/sh")
+	t.Setenv("PATH", os.Getenv("PATH"))
+	check, err := providerpath.Install()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := check(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	if err := Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	got, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatalf("LookPath(codex): %v", err)
+	}
+	if filepath.Dir(got) == installed || !strings.Contains(got, "agent-overflow-provider-path-") {
+		t.Fatalf("after Sync, codex resolves to %q; want the poison ahead of the login shell's entries", got)
 	}
 }

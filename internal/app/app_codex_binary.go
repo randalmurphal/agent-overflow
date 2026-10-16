@@ -47,17 +47,22 @@ type defaultCodexBinaryCache struct {
 // an npm uninstall or a Node version switch removes it, and spawning the
 // missing file would fail where the wrapper or a fresh lookup could serve.
 func (a *App) defaultCodexBinary() codex.NativeBinary {
-	pathEnv := os.Getenv("PATH")
 	cache := &a.defaultCodexBinaryCache
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
+	pathEnv := os.Getenv("PATH")
 	if cache.valid && cache.pathEnv == pathEnv && (cache.binary.Wrapper == "" || codex.IsExecutableFile(cache.binary.Path)) {
 		return cache.binary
 	}
-	cache.binary = a.resolveDefaultCodexBinary()
-	cache.pathEnv = pathEnv
-	cache.valid = true
-	return cache.binary
+	binary := a.resolveDefaultCodexBinary()
+	// The lookup reads PATH again. An answer made while PATH changed belongs
+	// to neither value, so it is returned and not kept.
+	if os.Getenv("PATH") != pathEnv {
+		cache.valid = false
+		return binary
+	}
+	cache.binary, cache.pathEnv, cache.valid = binary, pathEnv, true
+	return binary
 }
 
 func (a *App) resolveDefaultCodexBinary() codex.NativeBinary {
