@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
@@ -137,7 +139,9 @@ func (c *sessionLossCarries) finish(threadID string) []store.Item {
 // it (which holds the thread's action lock), once per thread at a time. The
 // new thread's opening block says why. A handoff that fails, or never starts
 // because the app is stopping, puts every message a send left for it back in
-// the old thread's composer.
+// the old thread's composer. It puts them back before it ends the handoff, so
+// a send that finds the session gone meanwhile joins them rather than
+// starting a handoff that could move the composer before they land in it.
 func (a *App) recoverAssistantSessionLoss(threadID string) {
 	if !a.assistantSessionLoss.begin(threadID) {
 		return
@@ -150,11 +154,12 @@ func (a *App) recoverAssistantSessionLoss(threadID string) {
 		if err != nil {
 			log.Printf("assistants: %s lost its provider session and could not move to a new thread: %v", threadID, err)
 			a.emitErrorToThread(threadID, "The provider cleaned up this assistant's session, and moving it to a new thread failed: "+err.Error()+". Use New Thread, Same Assistant to try again.")
+			a.returnSessionLossCarries(threadID, a.assistantSessionLoss.take(threadID))
 			a.returnSessionLossCarries(threadID, a.assistantSessionLoss.finish(threadID))
 			return
 		}
-		// The handoff took every message under the old thread's action
-		// lock, the only lock a send that finds the session gone holds.
+		// A send that found the session gone after the handoff took the
+		// carried messages added its own; it goes to the successor too.
 		if left := a.assistantSessionLoss.finish(threadID); len(left) > 0 {
 			a.carrySessionLossItems(threadID, successor.ID, left)
 		}
@@ -165,19 +170,126 @@ func (a *App) recoverAssistantSessionLoss(threadID string) {
 	}
 }
 
-// carryAcrossSessionLoss puts the messages of the person's sends that found
-// the session gone in the successor's composer, oldest first, and returns
-// how many there were. The sends kept them under the old thread's action
-// lock, which the handoff has taken since.
-func (a *App) carryAcrossSessionLoss(oldThreadID, successorID string) int {
-	items := a.assistantSessionLoss.take(oldThreadID)
-	if len(items) == 0 {
-		return 0
+// moveComposerAcrossHandOff moves what waits in the old thread's composer
+// to the successor's, so the pane that follows the handoff shows it: the
+// messages of sends that found the session gone (a session loss only), then
+// the unsent draft, each with its attachments copied over, its terminal
+// snippets and plan link kept. The old draft is cleared. It holds the old
+// thread's mutation lock, which every draft save takes, so no save lands
+// between the read and the clear. A move that fails leaves the draft and
+// puts the carried messages back in the old composer, and tells the
+// successor where they are. It returns how many carried messages moved.
+func (a *App) moveComposerAcrossHandOff(oldThreadID, successorID string, sessionLost bool) int {
+	var items []store.Item
+	if sessionLost {
+		items = a.assistantSessionLoss.take(oldThreadID)
 	}
-	if !a.carrySessionLossItems(oldThreadID, successorID, items) {
-		return 0
+	err := a.moveComposerLocked(oldThreadID, successorID, items)
+	if err == nil {
+		return len(items)
 	}
-	return len(items)
+	log.Printf("assistants: move the composer of %s into %s: %v", oldThreadID, successorID, err)
+	a.returnSessionLossCarries(oldThreadID, items)
+	a.emitErrorToThread(successorID, "Unsent text in the previous thread's composer could not be moved here, and is still there: "+err.Error())
+	return 0
+}
+
+func (a *App) moveComposerLocked(oldThreadID, successorID string, items []store.Item) error {
+	unlock := a.threadApplication().LockMutations(oldThreadID)
+	defer unlock()
+	old, found, err := a.store.GetThreadDraft(oldThreadID)
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 && (!found || draftIsEmpty(old)) {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	parts := make([]composerdraft.Part, 0, len(items)+1)
+	for _, item := range items {
+		part, err := a.draftPartWithClonedAttachments(successorID, item, now)
+		if err != nil {
+			return err
+		}
+		parts = append(parts, part)
+	}
+	var oldIDs []string
+	if found && strings.TrimSpace(old.Attachments) != "" {
+		if err := json.Unmarshal([]byte(old.Attachments), &oldIDs); err != nil {
+			return fmt.Errorf("read the draft's attachments: %w", err)
+		}
+	}
+	cloned := make([]string, 0, len(oldIDs))
+	for _, id := range oldIDs {
+		if a.attachments == nil {
+			return errors.New("attachment storage is unavailable")
+		}
+		copied, err := a.attachments.CopyToThread(oldThreadID, successorID, id, now)
+		if err != nil {
+			return fmt.Errorf("copy draft attachment %s: %w", id, err)
+		}
+		cloned = append(cloned, copied.ID)
+	}
+	parts = append(parts, composerdraft.Part{Content: old.Content, AttachmentIDs: cloned})
+	current, _, err := a.store.GetThreadDraft(successorID)
+	if err != nil {
+		return err
+	}
+	merged, err := composerdraft.MergeParts(successorID, current, parts, now)
+	if err != nil {
+		return err
+	}
+	if merged.TerminalChips, err = joinTerminalChips(merged.TerminalChips, old.TerminalChips); err != nil {
+		return err
+	}
+	if merged.PendingPlanImplementation == "" && old.PendingPlanImplementation != "" {
+		// A link with no thread names a plan in the draft's own thread,
+		// which is now the old one.
+		var ref store.ProposedPlanSourceRef
+		if err := json.Unmarshal([]byte(old.PendingPlanImplementation), &ref); err != nil {
+			return fmt.Errorf("read the draft's plan link: %w", err)
+		}
+		if ref.ThreadID == "" {
+			ref.ThreadID = oldThreadID
+		}
+		if merged.PendingPlanImplementation, err = usermessage.EncodeDraftSource(&ref); err != nil {
+			return err
+		}
+	}
+	if err := a.writeThreadDraft(transport.ClientIdentity{}, merged); err != nil {
+		return err
+	}
+	if found {
+		if err := a.removeThreadDraft(transport.ClientIdentity{}, oldThreadID, nil); err != nil {
+			return fmt.Errorf("clear the previous thread's composer: %w", err)
+		}
+	}
+	return nil
+}
+
+func draftIsEmpty(d store.ThreadDraft) bool {
+	empty := func(list string) bool { s := strings.TrimSpace(list); return s == "" || s == "[]" }
+	return strings.TrimSpace(d.Content) == "" && empty(d.Attachments) && empty(d.TerminalChips) && d.PendingPlanImplementation == ""
+}
+
+// joinTerminalChips appends the chips of b to those of a, each a JSON array.
+func joinTerminalChips(a, b string) (string, error) {
+	var all []json.RawMessage
+	for _, list := range []string{a, b} {
+		if strings.TrimSpace(list) == "" {
+			continue
+		}
+		var chips []json.RawMessage
+		if err := json.Unmarshal([]byte(list), &chips); err != nil {
+			return "", fmt.Errorf("read terminal snippets: %w", err)
+		}
+		all = append(all, chips...)
+	}
+	if len(all) == 0 {
+		return "[]", nil
+	}
+	out, err := json.Marshal(all)
+	return string(out), err
 }
 
 // carrySessionLossItems merges the messages into the successor's composer,
@@ -211,6 +323,9 @@ func (a *App) returnSessionLossCarries(threadID string, items []store.Item) {
 	if len(items) == 0 {
 		return
 	}
+	// The draft saves and a handoff's composer move hold this lock.
+	unlock := a.threadApplication().LockMutations(threadID)
+	defer unlock()
 	parts := make([]composerdraft.Part, 0, len(items))
 	var err error
 	for _, item := range items {
@@ -296,10 +411,7 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 	a.broadcastThreadRow(triage.ThreadActionListed, successor)
 	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionUnlisted, Thread: &handOff.Old, HandOffTo: successor.ID})
 	a.broadcastSpawnedThreadRows(successor.ID)
-	carried := 0
-	if sessionLost {
-		carried = a.carryAcrossSessionLoss(threadID, successor.ID)
-	}
+	carried := a.moveComposerAcrossHandOff(threadID, successor.ID, sessionLost)
 	body := agenthome.HandOffMessage(agenthome.HandOff{
 		Name:             successor.Title,
 		PreviousThreadID: threadID,

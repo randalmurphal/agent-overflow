@@ -12,7 +12,11 @@ package store
 // thread leaves the assistant alone and deleting the assistant leaves its
 // past threads as ordinary threads. `thread_requests.made_in_thread_id` is
 // the thread that made a request a handoff moved to its assistant's next
-// thread, empty when the caller made it.
+// thread, empty when the caller made it. `remote_watches` gains its twin,
+// `launched_in_thread_id`: the thread that launched the job, which the
+// destination's receipt names, while `thread_id` is the thread that owns
+// the watch and receives the completion; every existing watch was launched
+// by its own thread.
 //
 // Every standing_agents row becomes an assistant whose id is its thread's
 // id, so the home `<config>/agents/<thread-id>` the promotion made is the
@@ -38,4 +42,6 @@ INSERT INTO agents (id, thread_id, home, notify_on_tick, creator_agent_id, creat
     SELECT thread_id, thread_id, home, notify_on_tick, '', promoted_at FROM standing_agents;
 DROP TABLE standing_agents;
 ALTER TABLE thread_requests ADD COLUMN made_in_thread_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE remote_watches ADD COLUMN launched_in_thread_id TEXT NOT NULL DEFAULT '';
+UPDATE remote_watches SET launched_in_thread_id = thread_id;
 `

@@ -8,8 +8,9 @@ import (
 
 // v154 over a populated database: every standing_agents row becomes an
 // assistant whose id is its thread's, with its home and tick setting kept;
-// standing_agents is gone; every request reads as made by its caller; and
-// the new tables cascade as the spec says.
+// standing_agents is gone; every request reads as made by its caller; every
+// remote watch reads as launched by the thread that owns it; and the new
+// tables cascade as the spec says.
 func TestMigrationV154AgentRecords(t *testing.T) {
 	path := fileDBThrough(t, agentRecordsMigrationVersion-1)
 	db, err := sql.Open("sqlite", poolDSN(path, writerConnPragmas))
@@ -28,6 +29,8 @@ func TestMigrationV154AgentRecords(t *testing.T) {
 		('lead', '/config/agents/lead', 1, 10), ('quiet', '/config/agents/quiet', 0, 20)`)
 	mustExec(t, db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, created_at, updated_at) VALUES
 		('spawn', 'lead', 'spawn', 'worker', 'accepted', 5, 5)`)
+	mustExec(t, db, `INSERT INTO remote_watches (computer_id, request_id, thread_id, fingerprint, label, notification, created_at) VALUES
+		('c', 'r1', 'lead', 'f', 'l', 'pending', 1), ('c', 'r2', 'worker', 'f', 'l', 'queued', 1)`)
 	const requestBefore = `token || '|' || caller_thread_id || '|' || kind || '|' || target_thread_id || '|' || state`
 	requestsWant, err := queryIDs(db, `SELECT `+requestBefore+` FROM thread_requests ORDER BY token`)
 	if err != nil {
@@ -55,6 +58,9 @@ func TestMigrationV154AgentRecords(t *testing.T) {
 	}
 	if got, err := queryIDs(db, `SELECT token || '|' || made_in_thread_id FROM thread_requests`); err != nil || !slices.Equal(got, []string{"spawn|"}) {
 		t.Errorf("made_in_thread_id = %q %v, want empty", got, err)
+	}
+	if got, err := queryIDs(db, `SELECT request_id || '|' || thread_id || '|' || launched_in_thread_id FROM remote_watches ORDER BY request_id`); err != nil || !slices.Equal(got, []string{"r1|lead|lead", "r2|worker|worker"}) {
+		t.Errorf("remote_watches launched_in_thread_id = %q %v, want each watch's own thread", got, err)
 	}
 	if got, err := queryIDs(db, `SELECT name FROM pragma_index_info('idx_agent_past_threads_agent') ORDER BY seqno`); err != nil || !slices.Equal(got, []string{"agent_id", "superseded_at"}) {
 		t.Errorf("idx_agent_past_threads_agent = %q %v", got, err)

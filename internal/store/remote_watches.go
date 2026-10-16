@@ -18,9 +18,15 @@ import (
 // destination receipt remains authoritative for execution. Queued means the
 // ordinary message queue owns delivery/recovery, not that the agent read it.
 type RemoteWatch struct {
-	ComputerID  string `json:"computerId"`
-	RequestID   string `json:"requestId"`
-	ThreadID    string `json:"threadId"`
+	ComputerID string `json:"computerId"`
+	RequestID  string `json:"requestId"`
+	ThreadID   string `json:"threadId"`
+	// LaunchedIn is the thread that launched the job, which the
+	// destination's receipt names as its source. It differs from ThreadID,
+	// the thread that owns the watch and receives the completion, once
+	// New Thread, Same Assistant moved the watch to the assistant's next
+	// thread.
+	LaunchedIn  string `json:"-"`
 	Fingerprint string `json:"-"`
 	Label       string `json:"label"`
 	// Command is the display text of what runs: quoted argv, or the
@@ -54,12 +60,12 @@ CREATE INDEX idx_remote_watches_thread ON remote_watches(thread_id,created_at DE
 
 const remoteWatchesCommandV98SQL = `ALTER TABLE remote_watches ADD COLUMN command TEXT NOT NULL DEFAULT '';`
 
-const remoteWatchColumns = `computer_id,request_id,thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at,coalesce(confirmed_at,0),wake_attempts,wake_issue`
+const remoteWatchColumns = `computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at,coalesce(confirmed_at,0),wake_attempts,wake_issue`
 
 func scanRemoteWatch(row rowScanner) (RemoteWatch, error) {
 	var w RemoteWatch
 	var raw string
-	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt, &w.ConfirmedAt, &w.WakeAttempts, &w.WakeIssue)
+	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.LaunchedIn, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt, &w.ConfirmedAt, &w.WakeAttempts, &w.WakeIssue)
 	if err == nil {
 		err = json.Unmarshal([]byte(raw), &w.Receipt)
 	}
@@ -86,7 +92,7 @@ func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
 	defer tx.Rollback()
 	old, err := scanRemoteWatch(tx.QueryRow(`SELECT `+remoteWatchColumns+` FROM remote_watches WHERE computer_id=? AND request_id=?`, w.ComputerID, w.RequestID))
 	if err == nil {
-		if old.ThreadID != w.ThreadID || old.Fingerprint != w.Fingerprint {
+		if old.LaunchedIn != w.ThreadID || old.Fingerprint != w.Fingerprint {
 			return false, errorsx.Public("remote_request_conflict", "This request_id already belongs to another command or conversation. Retry only the original project, workspace, argv/script and timeout.", nil)
 		}
 		if old.Notification != "dismissed" || old.Receipt.ID != "" {
@@ -114,7 +120,7 @@ func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
 		}
 		return true, tx.Commit()
 	}
-	_, err = tx.Exec(`INSERT INTO remote_watches(computer_id,request_id,thread_id,fingerprint,label,command,next_check,created_at) VALUES(?,?,?,?,?,?,?,?)`, w.ComputerID, w.RequestID, w.ThreadID, w.Fingerprint, w.Label, w.Command, time.Now().Add(25*time.Second).UnixMilli(), time.Now().UnixMilli())
+	_, err = tx.Exec(`INSERT INTO remote_watches(computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,next_check,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, w.ComputerID, w.RequestID, w.ThreadID, w.ThreadID, w.Fingerprint, w.Label, w.Command, time.Now().Add(25*time.Second).UnixMilli(), time.Now().UnixMilli())
 	if err != nil {
 		return false, err
 	}
