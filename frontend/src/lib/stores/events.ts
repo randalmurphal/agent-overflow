@@ -162,8 +162,9 @@ import {
   type CompactingStatePayload,
 } from './compactingState.svelte';
 import { applySubagentProgress, clearSubagentProgressForThread } from './subagentProgress.svelte';
-import type { BackgroundTrayEvent, SubagentProgressEvent } from '../types/events';
+import type { BackgroundTaskOutputEvent, BackgroundTrayEvent, SubagentProgressEvent } from '../types/events';
 import { applyBackgroundTrayEvent } from './eventsBackgroundTray';
+import { applyBackgroundTaskOutputEvent } from './eventsBackgroundTaskOutput';
 import {
   applyProviderCommands,
   type ProviderCommandsPayload,
@@ -563,6 +564,14 @@ export function setupEventListeners(): () => void {
     applyBackgroundTrayEvent,
   );
 
+  // provider:background_task_output: the live tail of a running background
+  // command's output, for the launches this client watches. Only a watched
+  // thread's frames arrive; the watch registry applies them.
+  const cancelBackgroundTaskOutput = wailsEventOn<BackgroundTaskOutputEvent>(
+    'provider:background_task_output',
+    (evt, origin) => applyBackgroundTaskOutputEvent(evt, origin),
+  );
+
   // provider:commands — the CLI's own list of slash commands it will execute
   // without an API call. Restated wholesale on every session init and every
   // `commands_changed` push, so the newest frame REPLACES the previous one;
@@ -849,6 +858,7 @@ export function setupEventListeners(): () => void {
     cancelCompactingState();
     cancelSubagentProgress();
     cancelBackgroundTray();
+    cancelBackgroundTaskOutput();
     cancelCodexAgentsReset();
     cancelProviderCommands();
     cancelUserMessageReverted();

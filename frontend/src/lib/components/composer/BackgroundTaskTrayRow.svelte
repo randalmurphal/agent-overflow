@@ -19,6 +19,8 @@
   import { formatTokens } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { TRAY_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
+  import { extractClaudeTaskOutputFile } from '../../utils/claudeTaskMeta';
+  import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
   import type { Item } from '../../types/models';
   import type { ProviderID } from '../../providers/catalog';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -161,6 +163,21 @@
   let hasStopAction = $derived(
     stopTarget !== null || opensAgentPane,
   );
+  // A running Claude command whose launch names its output file gets a
+  // live tail in its open body (CommandOutput `liveTail`). Kept through the
+  // completion's brief stay in the tray, so a tail a reader is following is
+  // handed to the loaded payload rather than a loading line; a row that
+  // completed before it was ever listed here never attaches one.
+  let liveTailWhileRunning = $derived.by(() => {
+    if (provider !== PROVIDER_DEFINITIONS.claude.id || presentation.kind !== 'command') return null;
+    const launch = task.launch;
+    if (!launch || !launch.isBackground || task.status !== 'running') return null;
+    return extractClaudeTaskOutputFile(launch) ? { threadId: launch.threadId, launchId: launch.id } : null;
+  });
+  let liveTail = $state<{ threadId: string; launchId: string } | null>(null);
+  $effect(() => {
+    if (liveTailWhileRunning !== null) liveTail = liveTailWhileRunning;
+  });
 </script>
 
 <div
@@ -244,6 +261,7 @@
         {durationLabel}
         showTimestamp={false}
         bodyRequiresPayload
+        {liveTail}
         hostActions={hasStopAction ? stopAction : undefined}
       />
     {:else if presentation.kind === 'agent'}

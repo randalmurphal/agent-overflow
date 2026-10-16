@@ -703,6 +703,17 @@ func CommandFromLaunch(launch store.Item) string {
 	return summary
 }
 
+// ResolveClaudeTaskOutputPath is the containment guard every read of a
+// task's output file passes: the completion read here and the tray's live
+// tail (internal/tasktail). It returns the canonical path of a regular
+// file under the roots the CLI writes task output to, and otherwise an
+// error; a file not yet written answers one that satisfies
+// errors.Is(err, fs.ErrNotExist).
+func ResolveClaudeTaskOutputPath(path string) (string, error) {
+	resolved, _, err := resolveClaudeTaskOutputPath(path)
+	return resolved, err
+}
+
 // resolveClaudeTaskOutputPath canonicalises an `output_file` path and
 // enforces the containment guard, returning the resolved path and its
 // stat.

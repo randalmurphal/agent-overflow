@@ -730,6 +730,21 @@ var channelPolicies = []ChannelPolicy{
 			"Keyed per thread.",
 	},
 	{
+		Channel:        eventchan.ProviderBackgroundTaskOutput,
+		Audience:       AudienceAny,
+		Retention:      RetentionDefault,
+		Scope:          ScopeThreadsRead,
+		EntityFiltered: true,
+		Why: "The live tail of a running background command's output file, " +
+			"for the tray row a client expanded: appends against the tail " +
+			"WatchBackgroundTaskOutput answered with. Scope threads:read " +
+			"because that call, the pull half, carries it and the same " +
+			"output lands in the completion payload the thread's rows serve. " +
+			"EntityFiltered because its one consumer is the tray of a thread " +
+			"a pane shows. Appends are deltas with a per-watch seq, so a " +
+			"client that misses one re-watches: never latest-only.",
+	},
+	{
 		Channel:        eventchan.ProviderBackgroundTray,
 		Audience:       AudienceAny,
 		Retention:      RetentionDefault,

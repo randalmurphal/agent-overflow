@@ -469,6 +469,9 @@ type App struct {
 	// prompt would differ at their next session start
 	// (app_prompt_stale.go).
 	promptStale appPromptStaleState
+	// taskOutput follows the output files of running background commands
+	// for the tray rows clients expanded (app_background_task_output.go).
+	taskOutput appBackgroundTaskOutputState
 	// claudeApp owns application-facing reads and controls for live Claude
 	// sessions. Account and process lifecycle stay with their own services.
 	claudeAppOnce sync.Once

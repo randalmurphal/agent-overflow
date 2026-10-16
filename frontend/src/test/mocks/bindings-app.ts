@@ -222,6 +222,8 @@ export const StopCodexSubagent = dispatch('StopCodexSubagent');
 export const CleanCodexBackgroundTerminals = dispatch('CleanCodexBackgroundTerminals');
 export const StopBackgroundTasks = dispatch('StopBackgroundTasks');
 export const BackgroundClaudeTask = dispatch('BackgroundClaudeTask');
+export const WatchBackgroundTaskOutput = dispatch('WatchBackgroundTaskOutput');
+export const UnwatchBackgroundTaskOutput = dispatch('UnwatchBackgroundTaskOutput');
 
 // Live-session context breakdown (Claude's canonical /context read).
 export const GetThreadContextUsage = dispatch('GetThreadContextUsage');

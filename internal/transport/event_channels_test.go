@@ -163,6 +163,7 @@ var (
 	frozenEntityFilteredChannels = []string{
 		"highlight:diff_seed",
 		"highlight:live",
+		"provider:background_task_output",
 		"provider:background_tray",
 		"provider:item_event",
 		"provider:subagent_progress",
