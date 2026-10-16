@@ -45,6 +45,7 @@ import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { hasRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { resyncSettings } from './settings.svelte';
 import { resyncWorkflowRunMapAfterGap } from './workflowRunMap.svelte';
+import { resourceBackgroundTaskOutput } from './backgroundTaskOutput.svelte';
 import {
   applyWorkflowDefinitionsChanged,
   refreshWorkflowRunsSoon,
@@ -177,6 +178,11 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
   switch (gap.channel) {
     case 'provider:async_questions_changed':
       refreshAsyncQuestions(undefined, backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
+    case 'provider:background_task_output':
+      // A dropped append leaves an open tail stale until the command
+      // prints again; the re-watch reads the whole tail back.
+      resourceBackgroundTaskOutput(gap.threads, backendKeyForOrigin(origin?.backendId ?? ''));
       return;
     case 'backend:attach':
     case 'backend:set-changed':

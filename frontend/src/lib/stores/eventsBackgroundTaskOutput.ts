@@ -29,5 +29,5 @@ export function applyBackgroundTaskOutputEvent(
   if (!evt || typeof evt.threadId !== 'string' || !evt.threadId) return;
   if (typeof evt.launchId !== 'string' || !evt.launchId) return;
   const backend = backendKeyForOrigin(origin?.backendId ?? '');
-  for (const handler of [...subscribers]) handler(evt, backend);
+  for (const handler of subscribers) handler(evt, backend);
 }

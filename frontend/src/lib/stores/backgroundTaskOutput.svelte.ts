@@ -10,9 +10,12 @@
 // cut at a line boundary, so a run that prints for an hour costs the page
 // one block of text and the morph of its newest lines. A frame whose seq
 // does not continue the held tail's is a missed one, and the key is
-// re-sourced: the watch reply carries the whole tail again.
+// re-sourced: the watch reply carries the whole tail again. A frame that
+// lands while the watch reply is still in flight is held and replayed
+// over the reply, so an append the backend sent between its seed read
+// and the reply's arrival is not lost; a transport gap on the channel
+// re-sources every held tail (eventsTransportGap.ts).
 
-import { untrack } from 'svelte';
 import type { BackgroundTaskOutputEvent } from '../types/events';
 import {
   UnwatchBackgroundTaskOutput,
@@ -65,6 +68,8 @@ export function boundTail(text: string, limit: number): { text: string; cut: boo
   let cut = text.length - limit;
   const nl = text.indexOf('\n', cut);
   if (nl >= 0 && nl + 1 < text.length) cut = nl + 1;
+  // A cut on the low half of a surrogate pair would split the character.
+  else if ((text.charCodeAt(cut) & 0xfc00) === 0xdc00) cut += 1;
   return { text: text.slice(cut), cut: true };
 }
 
@@ -79,6 +84,12 @@ interface LiveWatch {
   owner: symbol;
 }
 const liveWatches = new Map<string, LiveWatch>();
+
+// Frames that arrived for a key whose watch reply is still in flight,
+// replayed over the reply in seq order. Bounded: past the bound the
+// oldest frame goes, and the seq skip that leaves re-sources the key.
+const PENDING_FRAMES_MAX = 512;
+const pendingFrames = new Map<string, Array<{ evt: BackgroundTaskOutputEvent; origin: BackendKey | undefined }>>();
 
 function tailFromSnapshot(snapshot: BackgroundTaskOutputSnapshot): BackgroundTaskOutputTail {
   const bounded = boundTail(snapshot.data ?? '', TAIL_BYTES);
@@ -102,34 +113,76 @@ const store = createEntityStore<BackgroundTaskOutputTail, void>({
     const backend = threadBackend(threadId);
     const owner = Symbol(key);
     const issue = () => WatchBackgroundTaskOutput(threadId, launchId);
-    const snapshot = (await (backend === undefined ? issue() : withBackendTarget(backend, issue))) as BackgroundTaskOutputSnapshot;
+    pendingFrames.set(key, []);
+    let snapshot: BackgroundTaskOutputSnapshot;
+    try {
+      snapshot = (await (backend === undefined ? issue() : withBackendTarget(backend, issue))) as BackgroundTaskOutputSnapshot;
+    } catch (err) {
+      pendingFrames.delete(key);
+      throw err;
+    }
     const watchId = snapshot.watchId ?? '';
     // A thread the index has not attributed yet routed by the default
     // thread route, which is the home computer's.
     const minted = backend ?? HOME_BACKEND;
-    if (!signal.aborted && watchId) {
-      liveWatches.set(key, { watchId, backend: minted, owner });
+    const held = pendingFrames.get(key) ?? [];
+    pendingFrames.delete(key);
+    if (signal.aborted) {
+      return async () => {
+        if (watchId) await releaseWatch(minted, threadId, watchId);
+      };
     }
+    if (watchId) liveWatches.set(key, { watchId, backend: minted, owner });
     apply(tailFromSnapshot(snapshot));
+    // Frames the backend sent after its seed read and before this reply
+    // landed continue the snapshot's seq; the rest it already carried.
+    held.sort((a, b) => a.evt.seq - b.evt.seq);
+    for (const { evt, origin } of held) {
+      if (origin !== undefined && origin !== minted) continue;
+      const current = store.snapshot(key);
+      if (current === null || current.ended || evt.seq !== current.seq + 1) continue;
+      store.apply(key, appendFrame(current, evt));
+    }
     return async () => {
       const live = liveWatches.get(key);
       if (live?.owner === owner) liveWatches.delete(key);
-      // An ended task's watch is already gone on the backend; the release
-      // is for a watch the user left before the task did.
-      if (!watchId || untrack(() => store.snapshot(key))?.ended) return;
-      try {
-        await withBackendTarget(minted, () => UnwatchBackgroundTaskOutput(threadId, watchId));
-      } catch (err) {
-        // A dead wire releases every watch its connection held; anything
-        // else is a real failure to release and must be seen.
-        if (!isTransportClassError(err)) throw err;
-      }
+      // Every watch the reply named is released, an ended one included:
+      // the backend answers an id it no longer holds with nothing, and
+      // the id must not stay counted against the cap.
+      if (!watchId) return;
+      await releaseWatch(minted, threadId, watchId);
     };
   },
   onDrop: (key) => {
     liveWatches.delete(key);
+    pendingFrames.delete(key);
   },
 });
+
+async function releaseWatch(backend: BackendKey, threadId: string, watchId: string): Promise<void> {
+  try {
+    await withBackendTarget(backend, () => UnwatchBackgroundTaskOutput(threadId, watchId));
+  } catch (err) {
+    // A dead wire releases every watch its connection held; anything
+    // else is a real failure to release and must be seen.
+    if (!isTransportClassError(err)) throw err;
+  }
+}
+
+function appendFrame(current: BackgroundTaskOutputTail, evt: BackgroundTaskOutputEvent): BackgroundTaskOutputTail {
+  const append = evt.append ?? '';
+  const joined = evt.reset ? append : current.text + append;
+  const bounded = boundTail(joined, TAIL_BYTES);
+  return {
+    text: bounded.text,
+    truncated: Boolean(evt.truncated) || bounded.cut || (!evt.reset && current.truncated),
+    size: evt.size ?? current.size,
+    seq: evt.seq,
+    ended: Boolean(evt.ended),
+    error: evt.error ? evt.error : null,
+    lastAppendAt: append ? performance.now() : current.lastAppendAt,
+  };
+}
 
 /**
  * Applies one frame to the tail it names. A frame from another computer's
@@ -143,25 +196,39 @@ export function applyBackgroundTaskOutputFrame(
 ): void {
   const key = backgroundTaskOutputKey(evt.threadId, evt.launchId);
   const live = liveWatches.get(key);
-  if (!live || (origin !== undefined && origin !== live.backend)) return;
+  if (!live) {
+    const held = pendingFrames.get(key);
+    if (held) {
+      held.push({ evt, origin });
+      if (held.length > PENDING_FRAMES_MAX) held.shift();
+    }
+    return;
+  }
+  if (origin !== undefined && origin !== live.backend) return;
   const current = store.snapshot(key);
   if (current === null || current.ended) return;
   if (evt.seq !== current.seq + 1) {
     if (evt.seq > current.seq + 1) store.invalidate(key);
     return;
   }
-  const append = evt.append ?? '';
-  const joined = evt.reset ? append : current.text + append;
-  const bounded = boundTail(joined, TAIL_BYTES);
-  store.apply(key, {
-    text: bounded.text,
-    truncated: Boolean(evt.truncated) || bounded.cut || (!evt.reset && current.truncated),
-    size: evt.size ?? current.size,
-    seq: evt.seq,
-    ended: Boolean(evt.ended),
-    error: evt.error ? evt.error : null,
-    lastAppendAt: append ? performance.now() : current.lastAppendAt,
-  });
+  store.apply(key, appendFrame(current, evt));
+}
+
+/**
+ * Re-sources every held tail of the threads named (every thread when none
+ * is), on the backend named: a transport gap on the channel may have
+ * dropped an append, and a tail whose command then goes quiet would show
+ * a stale end until the next frame. The held text survives the re-watch.
+ */
+export function resourceBackgroundTaskOutput(threads: readonly string[] | undefined, backend: BackendKey): void {
+  const wanted = threads === undefined ? null : new Set(threads);
+  for (const key of store.keys()) {
+    const { threadId } = splitBackgroundTaskOutputKey(key);
+    if (wanted !== null && !wanted.has(threadId)) continue;
+    const live = liveWatches.get(key);
+    if (live !== undefined && live.backend !== backend) continue;
+    store.invalidate(key);
+  }
 }
 
 onBackgroundTaskOutputEvent((evt, origin) => {
@@ -189,4 +256,5 @@ export function __resetBackgroundTaskOutputForTest(): void {
   store.suspend();
   store.resetAll();
   liveWatches.clear();
+  pendingFrames.clear();
 }

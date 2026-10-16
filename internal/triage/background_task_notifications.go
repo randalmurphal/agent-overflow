@@ -205,11 +205,6 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	// card exists, but a watch task's notifications ARE its event
 	// history and the completion only means the stream ended.
 	watchTask := launchIsWatchTask(launch)
-	if watchTask {
-		if err := r.stampWatchTaskOutputFile(launch, meta.OutputFile, now); err != nil {
-			return fmt.Errorf("stamp watch task output file on %s: %w", launch.ID, err)
-		}
-	}
 
 	// Q11 (docs/specs/agent-visibility.md): notifications fire for
 	// TOP-LEVEL nodes only; a nested completion updates its card
@@ -515,6 +510,14 @@ func (r *Router) findTaskNotificationItem(threadID, taskID string) (store.Item, 
 // struct rather than ToolCompleteMeta so a launch carrying a large
 // `input` echo isn't re-scanned on every notification.
 func launchIsWatchTask(launch store.Item) bool {
+	return LaunchIsWatchTask(launch)
+}
+
+// LaunchIsWatchTask reports whether a persisted launch row is Claude's
+// Monitor. Its launch ack names no output file; the app's live tail reads
+// the file off the task's newest notification row instead
+// (FindNotificationItemByTaskID), since the launch row is history.
+func LaunchIsWatchTask(launch store.Item) bool {
 	if launch.Meta == "" {
 		return false
 	}
@@ -555,20 +558,6 @@ func outputFileMetaPatch(path string) json.RawMessage {
 		return nil
 	}
 	return patch
-}
-
-// stampWatchTaskOutputFile copies a watch task's output file from its
-// notification onto its launch row, where the tray reads it. A Monitor's
-// launch ack names no file (claude-wire.md §E7), so the first notification
-// is where the row learns it; later ones find it stamped and write
-// nothing.
-func (r *Router) stampWatchTaskOutputFile(launch store.Item, outputFile string, now int64) error {
-	if outputFile == "" || BackgroundTaskOutputFile(launch) != "" {
-		return nil
-	}
-	launch.Meta = mergeItemMetaJSON(launch.Meta, outputFileMetaPatch(outputFile))
-	launch.UpdatedAt = now
-	return r.persistItem(launch, nil)
 }
 
 // captionForSiblingWrite decides whether THIS write of the completion

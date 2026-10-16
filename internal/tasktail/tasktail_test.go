@@ -5,10 +5,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type recorder struct {
@@ -57,7 +59,7 @@ func TestWatchSeedsTailAndStreamsAppends(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "task.output")
 	appendFile(t, path, "line 1\n")
 
-	snap, err := tailer.Watch("t1", "launch-1", path)
+	snap, err := tailer.Watch("t1", "launch-1", path, "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +87,7 @@ func TestWatchSeedsTailAndStreamsAppends(t *testing.T) {
 
 	// A second watch on the same launch shares the follow and sees the
 	// whole tail; its seq is the follow's.
-	second, err := tailer.Watch("t1", "launch-1", path)
+	second, err := tailer.Watch("t1", "launch-1", path, "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,14 +100,14 @@ func TestWatchSeedsTailAndStreamsAppends(t *testing.T) {
 
 	// Releasing one watch keeps the follow; releasing the last drops it,
 	// and a later release of either is a no-op.
-	tailer.Release(snap.WatchID)
+	tailer.Release("t1", snap.WatchID, "c1")
 	appendFile(t, path, "line 3\n")
 	tailer.Poll()
 	if events := rec.all(); len(events) != 2 || events[1].Append != "line 3\n" {
 		t.Fatalf("the surviving watch keeps the follow: %+v", events)
 	}
-	tailer.Release(second.WatchID)
-	tailer.Release(second.WatchID)
+	tailer.Release("t1", second.WatchID, "c1")
+	tailer.Release("t1", second.WatchID, "c1")
 	appendFile(t, path, "line 4\n")
 	tailer.Poll()
 	if events := rec.all(); len(events) != 2 {
@@ -126,7 +128,7 @@ func TestSeedOfLargeFileKeepsTailFromLineBoundary(t *testing.T) {
 	}
 	appendFile(t, path, sb.String())
 
-	snap, err := tailer.Watch("t1", "launch-1", path)
+	snap, err := tailer.Watch("t1", "launch-1", path, "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +147,7 @@ func TestAppendPastBoundDropsHeadAtLineBoundary(t *testing.T) {
 	tailer := newTailer(t, rec, 40)
 	path := filepath.Join(t.TempDir(), "task.output")
 	appendFile(t, path, "first line\n")
-	if _, err := tailer.Watch("t1", "launch-1", path); err != nil {
+	if _, err := tailer.Watch("t1", "launch-1", path, "c1"); err != nil {
 		t.Fatal(err)
 	}
 	appendFile(t, path, "second line here\n")
@@ -160,7 +162,7 @@ func TestAppendPastBoundDropsHeadAtLineBoundary(t *testing.T) {
 	if events[0].Append != "second line here\nthird line here\n" || !events[0].Truncated {
 		t.Fatalf("append frame: %+v", events[0])
 	}
-	snap, err := tailer.Watch("t1", "launch-1", path)
+	snap, err := tailer.Watch("t1", "launch-1", path, "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +176,7 @@ func TestGrowthPastBoundBetweenPollsResetsTail(t *testing.T) {
 	tailer := newTailer(t, rec, 32)
 	path := filepath.Join(t.TempDir(), "task.output")
 	appendFile(t, path, "start\n")
-	if _, err := tailer.Watch("t1", "launch-1", path); err != nil {
+	if _, err := tailer.Watch("t1", "launch-1", path, "c1"); err != nil {
 		t.Fatal(err)
 	}
 	appendFile(t, path, strings.Repeat("x", 100)+"\nlast line\n")
@@ -197,7 +199,7 @@ func TestShrunkFileIsReadAgainFromItsStart(t *testing.T) {
 	tailer := newTailer(t, rec, DefaultTailBytes)
 	path := filepath.Join(t.TempDir(), "task.output")
 	appendFile(t, path, "one\ntwo\n")
-	if _, err := tailer.Watch("t1", "launch-1", path); err != nil {
+	if _, err := tailer.Watch("t1", "launch-1", path, "c1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("new\n"), 0o644); err != nil {
@@ -215,7 +217,7 @@ func TestSplitMultiByteCharacterWaitsForItsBytes(t *testing.T) {
 	tailer := newTailer(t, rec, DefaultTailBytes)
 	path := filepath.Join(t.TempDir(), "task.output")
 	appendFile(t, path, "ok\n")
-	if _, err := tailer.Watch("t1", "launch-1", path); err != nil {
+	if _, err := tailer.Watch("t1", "launch-1", path, "c1"); err != nil {
 		t.Fatal(err)
 	}
 	snowman := []byte("☃") // three bytes
@@ -233,7 +235,7 @@ func TestFileNotYetWrittenIsPickedUpWhenItAppears(t *testing.T) {
 	rec := &recorder{}
 	tailer := newTailer(t, rec, DefaultTailBytes)
 	path := filepath.Join(t.TempDir(), "task.output")
-	snap, err := tailer.Watch("t1", "launch-1", path)
+	snap, err := tailer.Watch("t1", "launch-1", path, "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +264,7 @@ func TestResolveRefusalEndsTheWatchWithAnError(t *testing.T) {
 		},
 	})
 	t.Cleanup(tailer.Close)
-	snap, err := tailer.Watch("t1", "launch-1", "/elsewhere/task.output")
+	snap, err := tailer.Watch("t1", "launch-1", "/elsewhere/task.output", "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +286,7 @@ func TestResolveNotExistKeepsWaiting(t *testing.T) {
 		},
 	})
 	t.Cleanup(tailer.Close)
-	snap, err := tailer.Watch("t1", "launch-1", "/tmp/not-yet.output")
+	snap, err := tailer.Watch("t1", "launch-1", "/tmp/not-yet.output", "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +300,7 @@ func TestEndLaunchReadsTheLastBytesThenEnds(t *testing.T) {
 	tailer := newTailer(t, rec, DefaultTailBytes)
 	path := filepath.Join(t.TempDir(), "task.output")
 	appendFile(t, path, "one\n")
-	snap, err := tailer.Watch("t1", "launch-1", path)
+	snap, err := tailer.Watch("t1", "launch-1", path, "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +320,7 @@ func TestEndLaunchReadsTheLastBytesThenEnds(t *testing.T) {
 		t.Fatalf("an ended launch keeps no watches, got %d", tailer.Watching())
 	}
 	// The watch id is gone; releasing it is a no-op, and another end is too.
-	tailer.Release(snap.WatchID)
+	tailer.Release("t1", snap.WatchID, "c1")
 	tailer.EndLaunch("t1", "launch-1")
 	appendFile(t, path, "three\n")
 	tailer.Poll()
@@ -326,7 +328,7 @@ func TestEndLaunchReadsTheLastBytesThenEnds(t *testing.T) {
 		t.Fatalf("nothing follows the end: %+v", rec.all())
 	}
 	// A new watch after the end starts a fresh follow of the file.
-	fresh, err := tailer.Watch("t1", "launch-1", path)
+	fresh, err := tailer.Watch("t1", "launch-1", path, "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,18 +342,18 @@ func TestWatchCapAndClose(t *testing.T) {
 	tailer := New(Config{Emit: rec.emit, Interval: time.Hour, MaxWatches: 2})
 	path := filepath.Join(t.TempDir(), "task.output")
 	appendFile(t, path, "x\n")
-	if _, err := tailer.Watch("t1", "a", path); err != nil {
+	if _, err := tailer.Watch("t1", "a", path, "c1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tailer.Watch("t1", "b", path); err != nil {
+	if _, err := tailer.Watch("t1", "b", path, "c1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tailer.Watch("t1", "c", path); !errors.Is(err, ErrTooManyWatches) {
+	if _, err := tailer.Watch("t1", "c", path, "c1"); !errors.Is(err, ErrTooManyWatches) {
 		t.Fatalf("third watch: %v, want ErrTooManyWatches", err)
 	}
 	tailer.Close()
 	tailer.Close()
-	if _, err := tailer.Watch("t1", "a", path); !errors.Is(err, ErrClosed) {
+	if _, err := tailer.Watch("t1", "a", path, "c1"); !errors.Is(err, ErrClosed) {
 		t.Fatalf("watch after close: %v, want ErrClosed", err)
 	}
 	if tailer.Watching() != 0 {
@@ -366,7 +368,7 @@ func TestPollCostIdleAndBusy(t *testing.T) {
 	tailer := newTailer(t, rec, DefaultTailBytes)
 	path := filepath.Join(t.TempDir(), "task.output")
 	appendFile(t, path, "seed\n")
-	if _, err := tailer.Watch("t1", "launch-1", path); err != nil {
+	if _, err := tailer.Watch("t1", "launch-1", path, "c1"); err != nil {
 		t.Fatal(err)
 	}
 	base := tailer.Stats()
@@ -396,4 +398,187 @@ func TestPollCostIdleAndBusy(t *testing.T) {
 		t.Fatalf("busy polls read the new bytes only: %d, want %d", got, 100*len(line))
 	}
 	t.Logf("idle: %d fstat, 0 reads per poll; busy: 1 fstat, 1 pread of %d bytes per poll", 1, len(line))
+}
+
+// A watch joining a follow others hold reads what the file gained since
+// their last poll; that read is their frame, not a silent skip.
+func TestSecondWatchDeliversTheGapToExistingWatchers(t *testing.T) {
+	rec := &recorder{}
+	tailer := newTailer(t, rec, DefaultTailBytes)
+	path := filepath.Join(t.TempDir(), "task.output")
+	appendFile(t, path, "line 1\n")
+	first, err := tailer.Watch("t1", "launch-1", path, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendFile(t, path, "line 2\n")
+	second, err := tailer.Watch("t1", "launch-1", path, "c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := rec.all()
+	if len(events) != 1 || events[0].Append != "line 2\n" || events[0].Seq != 1 {
+		t.Fatalf("the first watcher's frame for the bytes the second's seed read: %+v", events)
+	}
+	if second.Seq != 1 || second.Data != "line 1\nline 2\n" {
+		t.Fatalf("second snapshot carries the same bytes at the frame's seq: %+v", second)
+	}
+	appendFile(t, path, "line 3\n")
+	tailer.Poll()
+	if events := rec.all(); len(events) != 2 || events[1].Seq != 2 || events[1].Append != "line 3\n" {
+		t.Fatalf("later growth continues the seq: %+v", events)
+	}
+	tailer.Release("t1", first.WatchID, "c1")
+	tailer.Release("t1", second.WatchID, "c2")
+}
+
+// A poll that captured a follow before its last watch was released
+// reads nothing: the file it closed stays closed.
+func TestReleaseMarksTheFollowSoAQueuedPollReadsNothing(t *testing.T) {
+	rec := &recorder{}
+	tailer := newTailer(t, rec, DefaultTailBytes)
+	path := filepath.Join(t.TempDir(), "task.output")
+	appendFile(t, path, "line 1\n")
+	snap, err := tailer.Watch("t1", "launch-1", path, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tailer.mu.Lock()
+	f := tailer.follows[followKey{thread: "t1", launch: "launch-1"}]
+	tailer.mu.Unlock()
+	tailer.Release("t1", snap.WatchID, "c1")
+	appendFile(t, path, "line 2\n")
+	before := tailer.Stats()
+	f.mu.Lock()
+	tailer.pollLocked(f, true)
+	opened := f.file != nil
+	f.mu.Unlock()
+	if opened || tailer.Stats() != before || len(rec.all()) != 0 {
+		t.Fatalf("a released follow must not reopen its file: opened=%v stats %+v -> %+v events %+v", opened, before, tailer.Stats(), rec.all())
+	}
+}
+
+// A read that fails ends the follow and drops its watches, so the ids
+// stop counting against the cap whether or not their clients release
+// them.
+func TestFailedReadDropsItsWatches(t *testing.T) {
+	rec := &recorder{}
+	tailer := New(Config{
+		Emit: rec.emit, Interval: time.Hour, MaxWatches: 2,
+		Resolve: func(path string) (string, error) {
+			if strings.HasSuffix(path, "refused") {
+				return "", errors.New("outside the allowed roots")
+			}
+			return path, nil
+		},
+	})
+	t.Cleanup(tailer.Close)
+	dir := t.TempDir()
+	good := filepath.Join(dir, "task.output")
+	appendFile(t, good, "x\n")
+
+	// A seed that fails answers Ended and holds nothing.
+	snap, err := tailer.Watch("t1", "a", filepath.Join(dir, "refused"), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Ended || snap.Error == "" || snap.WatchID != "" || tailer.Watching() != 0 {
+		t.Fatalf("failed seed: %+v watching %d", snap, tailer.Watching())
+	}
+
+	// A follow that fails later drops its watches on that poll.
+	first, err := tailer.Watch("t1", "b", good, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tailer.Watch("t1", "b", good, "c2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(good); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(good, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tailer.mu.Lock()
+	f := tailer.follows[followKey{thread: "t1", launch: "b"}]
+	tailer.mu.Unlock()
+	f.mu.Lock()
+	f.closeFileLocked()
+	f.mu.Unlock()
+	tailer.Poll()
+	events := rec.all()
+	if len(events) != 1 || !events[0].Ended || events[0].Error == "" {
+		t.Fatalf("the failure frame: %+v", events)
+	}
+	if tailer.Watching() != 0 {
+		t.Fatalf("a failed follow keeps no watches, got %d", tailer.Watching())
+	}
+	tailer.Release("t1", first.WatchID, "c1")
+	if _, err := tailer.Watch("t1", "c", filepath.Join(dir, "other.output"), "c1"); err != nil {
+		t.Fatalf("the cap has room again: %v", err)
+	}
+}
+
+// Only the owner that opened a watch, naming its thread, releases it; the
+// ids are not a sequence another client can walk.
+func TestReleaseNeedsTheOwnerAndThread(t *testing.T) {
+	rec := &recorder{}
+	tailer := newTailer(t, rec, DefaultTailBytes)
+	path := filepath.Join(t.TempDir(), "task.output")
+	appendFile(t, path, "x\n")
+	mine, err := tailer.Watch("t1", "launch-1", path, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := tailer.Watch("t1", "launch-1", path, "c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{mine.WatchID, other.WatchID} {
+		if len(id) < 20 {
+			t.Fatalf("watch id %q is guessable", id)
+		}
+		if _, err := strconv.ParseUint(id, 10, 64); err == nil {
+			t.Fatalf("watch id %q is a counter", id)
+		}
+	}
+	tailer.Release("t1", other.WatchID, "c1")
+	tailer.Release("t2", mine.WatchID, "c1")
+	if tailer.Watching() != 2 {
+		t.Fatalf("another owner's id, or the wrong thread, releases nothing; watching %d", tailer.Watching())
+	}
+	tailer.Release("t1", mine.WatchID, "c1")
+	if tailer.Watching() != 1 {
+		t.Fatalf("the owner's release lands; watching %d", tailer.Watching())
+	}
+	tailer.Release("t1", other.WatchID, "c2")
+}
+
+// Every byte cut lands on a character boundary: the tail bound inside a
+// line, and the start of a burst read from inside the file.
+func TestCutsLandOnCharacterBoundaries(t *testing.T) {
+	// "é" is two bytes; a bound of 5 inside "ééé" (6 bytes, no newline)
+	// lands between the bytes of the second character.
+	if got := string(boundTail([]byte("ééé"), 5)); got != "éé" {
+		t.Fatalf("boundTail inside a character: %q", got)
+	}
+	if got := string(afterFirstNewline([]byte("\xa9éx"))); got != "éx" {
+		t.Fatalf("afterFirstNewline from a continuation byte: %q", got)
+	}
+	rec := &recorder{}
+	tailer := newTailer(t, rec, 7)
+	path := filepath.Join(t.TempDir(), "task.output")
+	appendFile(t, path, "ab\n")
+	if _, err := tailer.Watch("t1", "launch-1", path, "c1"); err != nil {
+		t.Fatal(err)
+	}
+	// 20 bytes of two-byte characters with no newline arrive at once:
+	// the read starts 7 bytes before the end, inside a character.
+	appendFile(t, path, strings.Repeat("é", 10))
+	tailer.Poll()
+	events := rec.all()
+	if len(events) != 1 || !events[0].Reset || !utf8.ValidString(events[0].Append) || events[0].Append != strings.Repeat("é", 3) {
+		t.Fatalf("burst frame: %+v", events)
+	}
 }

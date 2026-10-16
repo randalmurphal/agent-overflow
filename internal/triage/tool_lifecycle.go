@@ -514,13 +514,18 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent, launch st
 			}
 		}
 		// The ack's output file, for the tray's live tail of a running
-		// command (BackgroundTaskOutputFile). First non-empty wins.
+		// command (BackgroundTaskOutputFile). First non-empty wins. A
+		// fact the ack adds to the row, not a change of it: alone it
+		// leaves the row's timestamp where the launch put it.
+		stamped := false
 		if meta.OutputFile != "" && BackgroundTaskOutputFile(launch) == "" {
 			launch.Meta = mergeItemMetaJSON(launch.Meta, outputFileMetaPatch(meta.OutputFile))
-			changed = true
+			stamped = true
 		}
-		if changed {
-			launch.UpdatedAt = now
+		if changed || stamped {
+			if changed {
+				launch.UpdatedAt = now
+			}
 			if err := r.persistItem(launch, nil); err != nil {
 				return err
 			}

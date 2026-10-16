@@ -25,12 +25,13 @@ package tasktail
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -106,15 +107,22 @@ type Stats struct {
 
 type followKey struct{ thread, launch string }
 
+// watchRef is a live watch: the follow it holds and the owner that may
+// release it. The owner is the connection that opened the watch, so a
+// watch id in another connection's hands releases nothing.
+type watchRef struct {
+	key   followKey
+	owner string
+}
+
 // Tailer owns the follows and the goroutine that polls them.
 type Tailer struct {
 	cfg Config
 
-	mu        sync.Mutex
-	follows   map[followKey]*follow
-	watches   map[string]followKey
-	nextWatch uint64
-	closed    bool
+	mu      sync.Mutex
+	follows map[followKey]*follow
+	watches map[string]watchRef
+	closed  bool
 
 	stop chan struct{}
 	done chan struct{}
@@ -138,6 +146,10 @@ type follow struct {
 	watchers  map[string]struct{}
 	ended     bool
 	err       string
+	// dropped says the follow left the tailer's maps (its last watch
+	// released, its launch ended, or its read failed); a poll that still
+	// holds it reads nothing more.
+	dropped bool
 }
 
 // New starts a Tailer. Close it to stop polling.
@@ -160,7 +172,7 @@ func New(cfg Config) *Tailer {
 	t := &Tailer{
 		cfg:     cfg,
 		follows: make(map[followKey]*follow),
-		watches: make(map[string]followKey),
+		watches: make(map[string]watchRef),
 		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
 	}
@@ -168,12 +180,17 @@ func New(cfg Config) *Tailer {
 	return t
 }
 
-// Watch adds a watch on launchID's output file at path and answers with
-// the tail as it stands. The watch lives until Release, EndLaunch or
-// Close. A file not yet written answers an empty tail and is picked up
-// when it appears.
-func (t *Tailer) Watch(threadID, launchID, path string) (Snapshot, error) {
+// Watch adds a watch on launchID's output file at path for owner and
+// answers with the tail as it stands. The watch lives until Release by
+// the same owner, EndLaunch or Close. A file not yet written answers an
+// empty tail and is picked up when it appears. A seed read that fails
+// answers Ended with the error and holds no watch.
+func (t *Tailer) Watch(threadID, launchID, path, owner string) (Snapshot, error) {
 	key := followKey{thread: threadID, launch: launchID}
+	watchID, err := newWatchID()
+	if err != nil {
+		return Snapshot{}, err
+	}
 	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
@@ -184,23 +201,25 @@ func (t *Tailer) Watch(threadID, launchID, path string) (Snapshot, error) {
 		return Snapshot{}, ErrTooManyWatches
 	}
 	f := t.follows[key]
+	shared := f != nil
 	if f == nil {
 		f = &follow{key: key, path: path, watchers: make(map[string]struct{})}
 		t.follows[key] = f
 	}
-	t.nextWatch++
-	watchID := strconv.FormatUint(t.nextWatch, 10)
-	t.watches[watchID] = key
+	t.watches[watchID] = watchRef{key: key, owner: owner}
 	f.mu.Lock()
 	f.watchers[watchID] = struct{}{}
 	f.mu.Unlock()
 	t.mu.Unlock()
 
 	// Seed the follow before answering, so the snapshot carries the tail
-	// as it stands rather than waiting a poll for it; the seed emits
-	// nothing, the snapshot is its frame.
+	// as it stands rather than waiting a poll for it. On a fresh follow
+	// the seed emits nothing, the snapshot is its frame; on a follow
+	// others already hold, what the file gained since their last poll is
+	// their frame, which this snapshot also carries (its seq is the
+	// frame's, so the new watcher drops it as already seen).
 	f.mu.Lock()
-	t.pollLocked(f, false)
+	t.pollLocked(f, shared)
 	snapshot := Snapshot{
 		WatchID:   watchID,
 		Seq:       f.seq,
@@ -210,31 +229,52 @@ func (t *Tailer) Watch(threadID, launchID, path string) (Snapshot, error) {
 		Ended:     f.ended,
 		Error:     f.err,
 	}
+	ended := f.ended
 	f.mu.Unlock()
+	if ended {
+		t.dropEnded(f)
+		snapshot.WatchID = ""
+	}
 	return snapshot, nil
 }
 
-// Release ends one watch. The follow ends with its last watch. Unknown
-// ids are no-ops: the connection cleanup and the client's own release
-// may both name the same watch.
-func (t *Tailer) Release(watchID string) {
+// newWatchID mints an id a client cannot guess: the id is the only handle
+// a release names, and a counter would let one connection release
+// another's watch.
+func newWatchID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("tasktail: watch id: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// Release ends one watch, if owner is the one that opened it and the
+// watch is on threadID. The follow ends with its last watch. Unknown ids
+// and another owner's ids are no-ops: the connection cleanup and the
+// client's own release may both name the same watch, and a guessed id
+// must change nothing.
+func (t *Tailer) Release(threadID, watchID, owner string) {
 	t.mu.Lock()
-	key, ok := t.watches[watchID]
-	if !ok {
+	ref, ok := t.watches[watchID]
+	if !ok || ref.owner != owner || ref.key.thread != threadID {
 		t.mu.Unlock()
 		return
 	}
 	delete(t.watches, watchID)
-	f := t.follows[key]
+	f := t.follows[ref.key]
 	var drop bool
 	if f != nil {
 		f.mu.Lock()
 		delete(f.watchers, watchID)
 		drop = len(f.watchers) == 0
-		f.mu.Unlock()
 		if drop {
-			delete(t.follows, key)
+			// Marked before the maps let go of it: a poll that already
+			// holds the follow must not reopen the file it is closing.
+			f.dropped = true
+			delete(t.follows, ref.key)
 		}
+		f.mu.Unlock()
 	}
 	t.mu.Unlock()
 	if drop {
@@ -242,6 +282,28 @@ func (t *Tailer) Release(watchID string) {
 		f.closeFileLocked()
 		f.mu.Unlock()
 	}
+}
+
+// dropEnded removes a follow whose read failed, with every watch on it,
+// so the ids do not count against the cap until their clients release
+// them. Called with no lock held.
+func (t *Tailer) dropEnded(f *follow) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.follows[f.key] != f {
+		return
+	}
+	f.mu.Lock()
+	if !f.ended {
+		f.mu.Unlock()
+		return
+	}
+	for watchID := range f.watchers {
+		delete(t.watches, watchID)
+	}
+	f.dropped = true
+	f.mu.Unlock()
+	delete(t.follows, f.key)
 }
 
 // EndLaunch ends the follow of launchID: a last read of the file, then
@@ -265,9 +327,10 @@ func (t *Tailer) EndLaunch(threadID, launchID string) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.ended {
+	if !f.ended && !f.dropped {
 		t.pollLocked(f, true)
 	}
+	f.dropped = true
 	if !f.ended {
 		f.ended = true
 		f.seq++
@@ -297,11 +360,12 @@ func (t *Tailer) Close() {
 		follows = append(follows, f)
 	}
 	t.follows = make(map[followKey]*follow)
-	t.watches = make(map[string]followKey)
+	t.watches = make(map[string]watchRef)
 	t.mu.Unlock()
 	<-t.done
 	for _, f := range follows {
 		f.mu.Lock()
+		f.dropped = true
 		f.closeFileLocked()
 		f.mu.Unlock()
 	}
@@ -345,17 +409,24 @@ func (t *Tailer) pollAll() {
 		follows = append(follows, f)
 	}
 	t.mu.Unlock()
+	var failed []*follow
 	for _, f := range follows {
 		f.mu.Lock()
 		t.pollLocked(f, true)
+		if f.ended {
+			failed = append(failed, f)
+		}
 		f.mu.Unlock()
+	}
+	for _, f := range failed {
+		t.dropEnded(f)
 	}
 }
 
 // pollLocked reads what the file gained since the last poll. With emit
 // false (the seed read) the frame is left to the caller's snapshot.
 func (t *Tailer) pollLocked(f *follow, emit bool) {
-	if f.ended {
+	if f.ended || f.dropped {
 		return
 	}
 	if f.file == nil {
@@ -486,12 +557,14 @@ func (f *follow) closeFileLocked() {
 }
 
 // boundTail keeps the last limit bytes of tail, from the line after the
-// cut when the cut lands inside a line, in a fresh slice so the dropped
-// head is released.
+// cut when the cut lands inside a line (else from the character the cut
+// lands in), in a fresh slice so the dropped head is released.
 func boundTail(tail []byte, limit int) []byte {
 	cut := len(tail) - limit
 	if nl := bytes.IndexByte(tail[cut:], '\n'); nl >= 0 && cut+nl+1 < len(tail) {
 		cut += nl + 1
+	} else {
+		cut = runeStart(tail, cut)
 	}
 	out := make([]byte, len(tail)-cut)
 	copy(out, tail[cut:])
@@ -499,12 +572,22 @@ func boundTail(tail []byte, limit int) []byte {
 }
 
 // afterFirstNewline drops a partial first line from a chunk read from
-// inside the file; a chunk without a newline is kept whole.
+// inside the file; a chunk without a newline is kept from its first
+// whole character.
 func afterFirstNewline(chunk []byte) []byte {
 	if nl := bytes.IndexByte(chunk, '\n'); nl >= 0 && nl+1 < len(chunk) {
 		return chunk[nl+1:]
 	}
-	return chunk
+	return chunk[runeStart(chunk, 0):]
+}
+
+// runeStart is the first index at or after i that begins a UTF-8
+// sequence, so a byte cut never lands inside a character.
+func runeStart(b []byte, i int) int {
+	for i < len(b) && !utf8.RuneStart(b[i]) {
+		i++
+	}
+	return i
 }
 
 // incompleteRuneTail reports how many trailing bytes of b begin a UTF-8

@@ -404,8 +404,10 @@ or a lost frame, and otherwise applies the rows of the launches that changed
 from `provider:background_tray` deltas, which are filtered by thread. An
 open running command row additionally holds one `WatchBackgroundTaskOutput`
 watch per connection and applies `provider:background_task_output` frames,
-filtered by thread; the watch is released on collapse and with the
-connection, and ends with the task.
+filtered by thread; the watch belongs to the connection that opened it
+(only that connection's release lands), is released on collapse and with
+the connection, and ends with the task. A gap on the channel re-watches
+every held tail.
 `provider:background_tasks_changed` is a payload-free, wildcard refetch nudge
 for readers that must hear about threads no pane shows.
 

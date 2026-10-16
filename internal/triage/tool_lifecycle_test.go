@@ -3674,18 +3674,21 @@ func TestToolCompleteOnBackgroundedStampsOutputFile(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if got := BackgroundTaskOutputFile(findItemsByKind(t, st, "t1", itemKindToolCall)[0]); got != "" {
+	before := findItemsByKind(t, st, "t1", itemKindToolCall)[0]
+	if got := BackgroundTaskOutputFile(before); got != "" {
 		t.Fatalf("launch must carry no output file before its ack, got %q", got)
 	}
 
+	// The ack adds the file and nothing else the row did not already
+	// say (the launch was flagged from its input): the row's timestamp
+	// stays the launch's.
 	completeMeta, _ := json.Marshal(map[string]any{
 		"is_background": true,
-		"task_id":       "task-bg",
 		"output_file":   "/tmp/tasks/task-bg.output",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-tool",
-		Meta: completeMeta, Content: "Command running in background with ID: task-bg.", Timestamp: time.Now(),
+		Meta: completeMeta, Content: "Command running in background with ID: task-bg.", Timestamp: time.Now().Add(time.Minute),
 	}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
@@ -3695,6 +3698,9 @@ func TestToolCompleteOnBackgroundedStampsOutputFile(t *testing.T) {
 	}
 	if got := BackgroundTaskOutputFile(launch); got != "/tmp/tasks/task-bg.output" {
 		t.Fatalf("output_file on launch meta: got %q, want /tmp/tasks/task-bg.output", got)
+	}
+	if launch.UpdatedAt != before.UpdatedAt || launch.CreatedAt != before.CreatedAt {
+		t.Fatalf("the stamp alone moves no timestamp: %d/%d -> %d/%d", before.CreatedAt, before.UpdatedAt, launch.CreatedAt, launch.UpdatedAt)
 	}
 
 	// A repeated ack naming another path changes nothing.
@@ -3714,9 +3720,10 @@ func TestToolCompleteOnBackgroundedStampsOutputFile(t *testing.T) {
 	}
 }
 
-// A Monitor's launch ack names no file; its first notification does, and
-// that notification stamps the launch row so the tray can tail the watch.
-func TestWatchTaskNotificationStampsOutputFileOnLaunch(t *testing.T) {
+// A Monitor's launch ack names no file and its notifications never write
+// the launch row: the row is history, and the app reads the file off the
+// notification itself (app.WatchBackgroundTaskOutput).
+func TestWatchTaskNotificationLeavesTheLaunchRowAlone(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -3741,7 +3748,8 @@ func TestWatchTaskNotificationStampsOutputFileOnLaunch(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
-	if got := BackgroundTaskOutputFile(findItemsByKind(t, st, "t1", itemKindToolCall)[0]); got != "" {
+	before := findItemsByKind(t, st, "t1", itemKindToolCall)[0]
+	if got := BackgroundTaskOutputFile(before); got != "" {
 		t.Fatalf("the Monitor ack names no file; got %q", got)
 	}
 
@@ -3754,15 +3762,22 @@ func TestWatchTaskNotificationStampsOutputFileOnLaunch(t *testing.T) {
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: "watch-tool",
-		Content: "matched: build done", Meta: notificationMeta, Timestamp: time.Now(),
+		Content: "matched: build done", Meta: notificationMeta, Timestamp: time.Now().Add(time.Minute),
 	}); err != nil {
 		t.Fatalf("notification: %v", err)
 	}
-	launch := findItemsByKind(t, st, "t1", itemKindToolCall)[0]
-	if launch.Status != statusRunning {
-		t.Fatalf("a watch task's notification ends nothing; status %q", launch.Status)
+	after := findItemsByKind(t, st, "t1", itemKindToolCall)[0]
+	if after.Status != statusRunning {
+		t.Fatalf("a watch task's notification ends nothing; status %q", after.Status)
 	}
-	if got := BackgroundTaskOutputFile(launch); got != "/tmp/tasks/task-watch.output" {
-		t.Fatalf("output_file on the watch launch: got %q, want /tmp/tasks/task-watch.output", got)
+	if after.Meta != before.Meta || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("the launch row is history: %+v -> %+v", before, after)
+	}
+	note, found, err := st.FindNotificationItemByTaskID("t1", "task-watch")
+	if err != nil || !found {
+		t.Fatalf("notification row: found=%v err=%v", found, err)
+	}
+	if got := BackgroundTaskOutputFile(note); got != "/tmp/tasks/task-watch.output" {
+		t.Fatalf("the notification carries the file: got %q", got)
 	}
 }

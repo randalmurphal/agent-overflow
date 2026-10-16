@@ -87,7 +87,8 @@ func (a *App) closeBackgroundTaskTailer() {
 // It rides threads:read, which also serves the tray (ListLiveBackgroundTasks)
 // and the completion payload the same bytes land in. Refused for an agent
 // launch, whose file is a transcript, and for anything but a running
-// background command.
+// background command. The watch belongs to the calling connection: only
+// that connection's UnwatchBackgroundTaskOutput releases it.
 //
 //ao:scope threads:read
 func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchItemID string) (tasktail.Snapshot, error) {
@@ -119,6 +120,18 @@ func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchIte
 		return tasktail.Snapshot{}, ErrBackgroundTaskOutputNotRunning
 	}
 	path := triage.BackgroundTaskOutputFile(launch)
+	if path == "" && triage.LaunchIsWatchTask(launch) {
+		// A Monitor's launch ack names no file (claude-wire.md §E7); its
+		// notifications do, and the launch row is history that no later
+		// event rewrites, so the file is read off the newest one here.
+		note, found, err := a.store.FindNotificationItemByTaskID(threadID, triage.TaskIDFromItemMeta(launch.Meta))
+		if err != nil {
+			return tasktail.Snapshot{}, fmt.Errorf("background task output: %w", err)
+		}
+		if found {
+			path = triage.BackgroundTaskOutputFile(note)
+		}
+	}
 	if path == "" {
 		return tasktail.Snapshot{}, ErrBackgroundTaskOutputNoFile
 	}
@@ -130,20 +143,22 @@ func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchIte
 		return tasktail.Snapshot{Ended: true}, nil
 	}
 
-	snapshot, err := a.backgroundTaskTailer().Watch(threadID, launchItemID, path)
+	state := transport.ConnStateFromContext(ctx)
+	owner := backgroundTaskOutputOwner(state)
+	snapshot, err := a.backgroundTaskTailer().Watch(threadID, launchItemID, path, owner)
 	if err != nil {
 		if errors.Is(err, tasktail.ErrTooManyWatches) {
 			return tasktail.Snapshot{}, ErrTooManyBackgroundTaskWatches
 		}
 		return tasktail.Snapshot{}, err
 	}
-	if state := transport.ConnStateFromContext(ctx); state != nil {
+	if state != nil && snapshot.WatchID != "" {
 		// A false return means the connection is already tearing down:
 		// the safety net it would have provided is gone, so release now.
 		if !state.BindCleanup(backgroundTaskOutputCleanupKey(snapshot.WatchID), func() {
-			a.backgroundTaskTailer().Release(snapshot.WatchID)
+			a.backgroundTaskTailer().Release(threadID, snapshot.WatchID, owner)
 		}) {
-			a.backgroundTaskTailer().Release(snapshot.WatchID)
+			a.backgroundTaskTailer().Release(threadID, snapshot.WatchID, owner)
 			return tasktail.Snapshot{}, fmt.Errorf("background task output: connection closing")
 		}
 	}
@@ -151,8 +166,9 @@ func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchIte
 }
 
 // UnwatchBackgroundTaskOutput releases a watch WatchBackgroundTaskOutput
-// answered with. Idempotent: the connection cleanup and the task's end
-// may both have released it already.
+// answered this connection with. Idempotent: the connection cleanup and
+// the task's end may both have released it already. A watch another
+// connection holds, or one on another thread, is left alone.
 //
 //ao:scope threads:read
 func (a *App) UnwatchBackgroundTaskOutput(ctx context.Context, threadID, watchID string) error {
@@ -160,13 +176,24 @@ func (a *App) UnwatchBackgroundTaskOutput(ctx context.Context, threadID, watchID
 	if watchID == "" {
 		return nil
 	}
-	transport.ConnStateFromContext(ctx).UnbindCleanup(backgroundTaskOutputCleanupKey(watchID))
-	a.backgroundTaskTailer().Release(watchID)
+	state := transport.ConnStateFromContext(ctx)
+	state.UnbindCleanup(backgroundTaskOutputCleanupKey(watchID))
+	a.backgroundTaskTailer().Release(threadID, watchID, backgroundTaskOutputOwner(state))
 	return nil
 }
 
 func backgroundTaskOutputCleanupKey(watchID string) string {
 	return "background-task-output:" + watchID
+}
+
+// backgroundTaskOutputOwner names the connection a watch belongs to. The
+// connection state is server-owned, so its identity cannot be declared by
+// a peer; an in-process caller has none and shares the empty owner.
+func backgroundTaskOutputOwner(state *transport.ConnState) string {
+	if state == nil {
+		return ""
+	}
+	return fmt.Sprintf("conn:%p", state)
 }
 
 // noteBackgroundTrayForTail reads a tray delta for the launches it says

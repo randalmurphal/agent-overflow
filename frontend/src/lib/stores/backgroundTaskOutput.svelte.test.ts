@@ -9,6 +9,7 @@ import {
   TAIL_BYTES,
 } from './backgroundTaskOutput.svelte';
 import { applyBackgroundTaskOutputEvent } from './eventsBackgroundTaskOutput';
+import { applyTransportGap } from './eventsTransportGap';
 import { __setTransportStatusForTest } from './transportStatus.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { __resetEntityIndexForTest, noteThread } from '../transport/entityIndex';
@@ -54,6 +55,11 @@ describe('boundTail', () => {
   });
   it('keeps a cut inside the last line at the bound', () => {
     expect(boundTail('abcdefghij', 4)).toEqual({ text: 'ghij', cut: true });
+  });
+  it('never splits a surrogate pair at the bound', () => {
+    // The bound lands on the low half of the emoji: the cut moves past it.
+    expect(boundTail('a\u{1F600}cd', 3)).toEqual({ text: 'cd', cut: true });
+    expect(boundTail('a\u{1F600}cd', 4)).toEqual({ text: '\u{1F600}cd', cut: true });
   });
 });
 
@@ -126,7 +132,7 @@ describe('backgroundTaskOutput store', () => {
     expect(unwatch).toHaveBeenCalledTimes(1);
   });
 
-  it('ends with the ended frame and sends no release for an ended watch', async () => {
+  it('ends with the ended frame and still releases the watch it was given', async () => {
     setBindingMock('WatchBackgroundTaskOutput', async () => snapshot());
     const unwatch = setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
     const attachment = attachBackgroundTaskOutput(THREAD, LAUNCH);
@@ -139,7 +145,73 @@ describe('backgroundTaskOutput store', () => {
     expect(attachment.current?.text).toBe('line 1\ndone\n');
     attachment.release();
     await flush();
-    expect(unwatch).not.toHaveBeenCalled();
+    // The id the reply named is released whether or not the task ended,
+    // so a failed or ended watch never stays counted on the backend.
+    expect(unwatch).toHaveBeenCalledWith(THREAD, 'w-1');
+  });
+
+  it('releases the watch of a tail whose read failed after it was acquired', async () => {
+    setBindingMock('WatchBackgroundTaskOutput', async () => snapshot());
+    const unwatch = setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
+    const attachment = attachBackgroundTaskOutput(THREAD, LAUNCH);
+    await flush();
+    applyBackgroundTaskOutputEvent(frame({ seq: 1, ended: true, error: 'read task output: gone' }), { backendId: '' });
+    expect(attachment.current?.error).toBe('read task output: gone');
+    attachment.release();
+    await flush();
+    expect(unwatch).toHaveBeenCalledWith(THREAD, 'w-1');
+  });
+
+  it('replays an append that landed while the watch reply was in flight', async () => {
+    let resolveWatch: (value: unknown) => void = () => {};
+    const watch = setBindingMock('WatchBackgroundTaskOutput', () => new Promise((resolve) => { resolveWatch = resolve; }));
+    setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
+    const attachment = attachBackgroundTaskOutput(THREAD, LAUNCH);
+    await flush();
+    expect(watch).toHaveBeenCalledTimes(1);
+    // The backend's seed read saw seq 0; its next poll sent seq 1 before
+    // the reply reached this page, and a stale seq 0 frame came too.
+    applyBackgroundTaskOutputEvent(frame({ seq: 0, append: 'stale\n' }), { backendId: '' });
+    applyBackgroundTaskOutputEvent(frame({ seq: 1, append: 'early\n', size: 13 }), { backendId: '' });
+    resolveWatch(snapshot());
+    await flush();
+    expect(attachment.current?.text).toBe('line 1\nearly\n');
+    expect(attachment.current?.seq).toBe(1);
+    // The stream continues without a re-watch.
+    applyBackgroundTaskOutputEvent(frame({ seq: 2, append: 'next\n' }), { backendId: '' });
+    expect(attachment.current?.text).toBe('line 1\nearly\nnext\n');
+    await flush();
+    expect(watch).toHaveBeenCalledTimes(1);
+    attachment.release();
+    await flush();
+  });
+
+  it('re-watches every held tail of a thread after a transport gap on the channel', async () => {
+    let calls = 0;
+    const watch = setBindingMock('WatchBackgroundTaskOutput', async () => {
+      calls += 1;
+      return snapshot({ watchId: `w-${calls}`, seq: 4, data: 'a\nb\n' });
+    });
+    const unwatch = setBindingMock('UnwatchBackgroundTaskOutput', async () => {});
+    const attachment = attachBackgroundTaskOutput(THREAD, LAUNCH);
+    const other = attachBackgroundTaskOutput('thread-2', LAUNCH);
+    await flush();
+    expect(watch).toHaveBeenCalledTimes(2);
+
+    applyTransportGap({ channel: 'provider:background_task_output', seq: 9, threads: [THREAD] }, { backendId: '' });
+    await flush();
+    expect(unwatch).toHaveBeenCalledTimes(1);
+    expect(unwatch).toHaveBeenCalledWith(THREAD, 'w-1');
+    expect(watch).toHaveBeenCalledTimes(3);
+    expect(attachment.current?.text).toBe('a\nb\n');
+
+    // A gap naming no thread re-watches every held tail.
+    applyTransportGap({ channel: 'provider:background_task_output', seq: 10 }, { backendId: '' });
+    await flush();
+    expect(watch).toHaveBeenCalledTimes(5);
+    attachment.release();
+    other.release();
+    await flush();
   });
 
   it('carries a read error from the frame and from the snapshot', async () => {
