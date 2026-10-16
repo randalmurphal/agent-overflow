@@ -189,6 +189,70 @@ func TestParseRecoversTheHeadWhenTheCutEndsOutsideTheText(t *testing.T) {
 	}
 }
 
+// A long text block followed by a non-text block: the head cut lands in the
+// text and the tail cut in the other block's string. Rejoined, the text's
+// string runs on into that block's tail and its remaining keys close the
+// text block, which still parses. Only a pure text block may carry the
+// note, so this falls back to the head. Blocks are in the server's key
+// order, which the codex binary keeps (serde_json preserve_order); the
+// shapes are the MCP content types Codex 0.162.1 documents
+// (code-mode-protocol/src/description.rs).
+func TestParseDoesNotRunATextBlockIntoTheBlockAfterIt(t *testing.T) {
+	head := "TEXT HEAD\n" + strings.Repeat("plain line of text\n", 3000)
+	for _, tc := range []struct {
+		name  string
+		block string
+		leak  string
+	}{
+		{
+			name:  "image",
+			block: `{"type":"image","data":"` + strings.Repeat("QUJD", 25000) + `","mimeType":"image/png"}`,
+			leak:  "QUJD",
+		},
+		{
+			name: "audio",
+			block: `{"type":"audio","data":"` + strings.Repeat("UklG", 25000) +
+				`","mimeType":"audio/wav","annotations":{"priority":0.5}}`,
+			leak: "UklG",
+		},
+		{
+			name: "resource link",
+			block: `{"type":"resource_link","name":"guide","uri":"file:///guide.md","description":"` +
+				strings.Repeat("DESC ", 20000) + `","mimeType":"text/markdown"}`,
+			leak: "DESC",
+		},
+		{
+			name: "embedded resource",
+			block: `{"type":"resource","resource":{"uri":"file:///guide.md","mimeType":"text/markdown","text":"` +
+				strings.Repeat("RES ", 25000) + `"}}`,
+			leak: "RES ",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := map[string]any{
+				"content": []any{
+					map[string]any{"type": "text", "text": head},
+					json.RawMessage(tc.block),
+				},
+				"isError": false,
+			}
+			persisted := codexTruncateMCPResult(t, original, []string{"content", "isError"}, 64*1024)
+
+			got := mcpOutput(t, mcpItemLine(t, persisted))
+
+			if !strings.HasPrefix(got, "TEXT HEAD\nplain line of text\n") {
+				t.Errorf("output starts %q, want the text block's head", got[:30])
+			}
+			if !strings.HasSuffix(got, "[Codex truncated this MCP result when it saved the session: the rest is missing.]") {
+				t.Errorf("output ends %q, want the head-only note", got[len(got)-120:])
+			}
+			if strings.Contains(got, tc.leak) {
+				t.Errorf("output carries the %s block's content as text", tc.name)
+			}
+		})
+	}
+}
+
 // When nothing parses (the cut is outside every text block) the saved
 // preview is still shown, under the note.
 func TestParseShowsTheSavedPreviewWhenNoTextCanBeRebuilt(t *testing.T) {

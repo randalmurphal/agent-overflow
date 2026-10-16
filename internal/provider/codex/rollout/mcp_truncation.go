@@ -35,6 +35,11 @@ const persistedMCPPrefix = `{"content":`
 //  2. the head alone, closed after a note, which parses when the head ends
 //     inside a top-level text block;
 //  3. the saved preview as Codex wrote it, after a note.
+//
+// A rebuild counts only when the block holding the note is a pure text
+// block. A head cut inside a text block and a tail cut inside a later
+// image's `data` also parse: the text's string runs on into the base64 and
+// the image's remaining keys close the block.
 func recoverPersistedMCPText(content json.RawMessage) (string, bool) {
 	var blocks []struct {
 		Type string `json:"type"`
@@ -57,24 +62,50 @@ func recoverPersistedMCPText(content json.RawMessage) (string, bool) {
 
 	middle := "\n\n[Codex truncated this MCP result when it saved the session: " +
 		removed + " characters are missing here.]\n\n"
-	if text, ok := persistedResultText(head + jsonStringBody(middle) + tail); ok {
+	if text, ok := persistedResultText(head+jsonStringBody(middle)+tail, middle); ok {
 		return text, true
 	}
 	end := "\n\n[Codex truncated this MCP result when it saved the session: the rest is missing.]"
-	if text, ok := persistedResultText(head + jsonStringBody(end) + `"}]}`); ok {
+	if text, ok := persistedResultText(head+jsonStringBody(end)+`"}]}`, end); ok {
 		return text, true
 	}
 	return "[Codex truncated this MCP result when it saved the session. The saved preview follows.]\n\n" +
 		preview, true
 }
 
-// persistedResultText reads the text blocks out of a rebuilt CallToolResult.
-func persistedResultText(candidate string) (string, bool) {
+// textBlockKeys are the keys an MCP TextContent block may carry (Codex
+// 0.162.1 code-mode-protocol/src/description.rs, after the MCP schema). The
+// other content types each add a key a text block never has: `data` and
+// `mimeType` (image, audio), `resource`, `uri` and `name` (resource,
+// resource_link).
+var textBlockKeys = map[string]bool{"type": true, "text": true, "annotations": true, "_meta": true}
+
+// persistedResultText reads the text blocks out of a rebuilt CallToolResult,
+// refusing a rebuild whose note landed in anything but a pure text block.
+func persistedResultText(candidate, note string) (string, bool) {
 	var result struct {
 		Content json.RawMessage `json:"content"`
 	}
 	if json.Unmarshal([]byte(candidate), &result) != nil {
 		return "", false
+	}
+	var blocks []map[string]json.RawMessage
+	if json.Unmarshal(result.Content, &blocks) != nil {
+		return "", false
+	}
+	for _, block := range blocks {
+		text, _ := rawString(block, "text")
+		if !strings.Contains(text, note) {
+			continue
+		}
+		if kind, _ := rawString(block, "type"); kind != "text" {
+			return "", false
+		}
+		for key := range block {
+			if !textBlockKeys[key] {
+				return "", false
+			}
+		}
 	}
 	text, present := contentText(result.Content)
 	if !present || strings.TrimSpace(text) == "" {
