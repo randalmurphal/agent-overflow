@@ -31,8 +31,11 @@ to keep it deterministic.
 
 ⚠ Overrides (config map, baseInstructions, permissions…) are **silently
 dropped** when resuming a thread still resident in the app-server process
-(`request_processors/thread_processor.rs:39-153`, `:3546-3588`). AO's
-one-app-server-per-session model dodges this; a shared app-server would not.
+while a connection subscribes to it or it is active
+(`request_processors/thread_processor.rs:39-153`, `:3546-3588`). A resident
+idle thread with no subscriber is shut down and cold-resumed instead
+([codex-wire.md](codex-wire.md#thread-unload-and-cold-resume-verified-01621)).
+AO's one-app-server-per-session model dodges this; a shared app-server would not.
 
 ### What the default actually is
 
@@ -132,7 +135,9 @@ The current source in `app-server-protocol/src/protocol/v2/thread.rs` exposes
 `developer_instructions` on start/resume/fork; `v2/config.rs` exposes it in
 config/read. `core/src/session/mod.rs` resolves developer instructions from
 config on cold start/resume, whereas base instructions explicitly consult
-conversation history. AO therefore reads cwd-scoped config before appending
+conversation history. On a resume the resolved value does not reach the model
+until the context is rebuilt by compaction
+([codex-wire.md](codex-wire.md#thread-unload-and-cold-resume-verified-01621)). AO therefore reads cwd-scoped config before appending
 its own text: the app guide, then the guides of the browser and thread tools
 servers when those are on
 ([prompt-tool-overrides.md §App guide](../specs/prompt-tool-overrides.md#app-guide)).
