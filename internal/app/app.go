@@ -433,7 +433,11 @@ type App struct {
 	// per-thread config reconciler (app_session_config.go); see
 	// App.configApplyLocks for the lock-order rules.
 	sessionConfigApplyLocksOnce sync.Once
-	sessionConfigApplyLocks     *keyedlock.Registry
+	// threadRowAnnouncer builds every thread:updated row frame
+	// (app_thread_broadcast.go).
+	threadAnnouncerOnce     sync.Once
+	threadRowAnnouncer      *triage.ThreadAnnouncer
+	sessionConfigApplyLocks *keyedlock.Registry
 	// flushDispatch is the queued-message flush concern
 	// (`app_flush_queue*.go`), including both of its mutexes.
 	flushDispatch appFlushDispatchState

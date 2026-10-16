@@ -747,8 +747,8 @@ func (s *Service) worktreeSetupRunState(run *worktreeSetupRun) RunState {
 
 // --- Durable state ---
 
-// setThreadWorktreeSetupState persists the durable state and broadcasts the
-// refreshed row when the value actually moved, so the sidebar pill follows
+// setThreadWorktreeSetupState persists the durable state and has the host
+// announce the row when the value actually moved, so the sidebar pill follows
 // without a refetch.
 //
 // A persistence failure is logged, not propagated: the column is a
@@ -775,10 +775,8 @@ func (s *Service) setThreadWorktreeSetupState(threadID, state string) store.Thre
 		log.Printf("thread %s: persist worktree setup state %q: %v", threadID, state, err)
 		return store.Thread{}
 	}
-	previous := current
-	current.WorktreeSetupState = state
-	s.emitThreadUpdated(current)
-	return previous
+	s.emitThreadUpdated(threadID)
+	return current
 }
 
 // threadOccupiesWorktree reports whether the thread is still working in the

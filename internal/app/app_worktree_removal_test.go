@@ -20,7 +20,6 @@ import (
 	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
-	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/engine"
 )
 
@@ -142,74 +141,6 @@ func TestWorktreeRemovalMovesTheRowBeforeTheSessionStops(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Clients keep the last thread row they receive. A read stamp broadcasts
-// its row under the thread's mutation lock, and the removal moves the row
-// under the same lock, so a stamp written before the move cannot reach
-// clients after it with the worktree the thread left.
-func TestWorktreeRemovalRowIsNotOvertakenByAReadStamp(t *testing.T) {
-	t.Parallel()
-	f := newRemovalFixture(t, "feature-read-stamp")
-	raceReadStamp(t, f.app, f.occupant, f.rows, func() error {
-		_, err := f.app.RemoveOtherWorktree(WorkspaceRef{ProjectID: f.project.ID, WorkspacePath: f.repo}, f.worktree, true)
-		return err
-	})
-}
-
-// raceReadStamp writes a read stamp for threadID and holds the mutation lock
-// until move has had to wait on it, then broadcasts the stamp's row, as
-// MarkThreadRead does, and releases. It fails unless the last row clients
-// received has the workspace the store holds once move returns.
-func raceReadStamp(t *testing.T, app *App, threadID string, rows *threadRowRecorder, move func() error) {
-	t.Helper()
-	completedAt := time.Now().UnixMilli() + 60_000
-	insertCompletedTurnForAppTest(t, app, threadID, "turn-read-stamp", completedAt-1000, completedAt)
-	unlock := app.threadApplication().LockMutations(threadID)
-	stamped, changed, err := app.store.MarkThreadReadNow(context.Background(), threadID)
-	if err != nil || !changed {
-		unlock()
-		t.Fatalf("MarkThreadReadNow: changed=%v err=%v", changed, err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- move() }()
-	finished, moveErr := awaitMutationWaiter(app, threadID, done)
-	app.broadcastThreadRowIfChanged(triage.ThreadActionFull, stamped, changed)
-	unlock()
-	if !finished {
-		moveErr = <-done
-	}
-	if moveErr != nil {
-		t.Fatalf("move: %v", moveErr)
-	}
-	stored, err := app.store.GetThread(threadID)
-	if err != nil {
-		t.Fatalf("GetThread: %v", err)
-	}
-	if samePath(stored.WorkspacePath, stamped.WorkspacePath) {
-		t.Fatalf("the move left the workspace at %q", stored.WorkspacePath)
-	}
-	var workspaces []string
-	for _, row := range rows.fullRowsFor(threadID) {
-		workspaces = append(workspaces, row.WorkspacePath)
-	}
-	if len(workspaces) == 0 || !samePath(workspaces[len(workspaces)-1], stored.WorkspacePath) {
-		t.Fatalf("thread:updated workspaces = %q, want the last one %q", workspaces, stored.WorkspacePath)
-	}
-}
-
-// awaitMutationWaiter returns once a second holder waits on threadID's
-// mutation lock, or with true and its error once done delivers first.
-func awaitMutationWaiter(app *App, threadID string, done <-chan error) (bool, error) {
-	deadline := time.Now().Add(15 * time.Second)
-	for app.threadApplication().MutationRefs(threadID) < 2 && time.Now().Before(deadline) {
-		select {
-		case err := <-done:
-			return true, err
-		case <-time.After(time.Millisecond):
-		}
-	}
-	return false, nil
 }
 
 // GitRemoveWorktree returns its own thread's row and every sibling's.

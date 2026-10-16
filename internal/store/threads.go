@@ -1655,6 +1655,36 @@ func listThreadsByIDTx(tx *sql.Tx, ids []string) ([]Thread, error) {
 	return threads, rows.Err()
 }
 
+// UpdateThreadCheckout moves a thread to another checkout: it writes the
+// workspace, worktree and branch and no other column, so a write to any other
+// column that lands between the caller's read and this one survives. Returns
+// the row and whether the triple moved.
+func (s *Store) UpdateThreadCheckout(threadID, workspacePath, worktreePath, branch string) (Thread, bool, error) {
+	args := []any{workspacePath, nilIfEmpty(worktreePath), nilIfEmpty(branch)}
+	return s.applyThreadRowWrite(rowWrite{
+		Action:     fmt.Sprintf("store: update checkout for %s", threadID),
+		ID:         threadID,
+		Set:        "workspace_path = ?, worktree_path = ?, branch = ?",
+		SetArgs:    args,
+		Change:     "(workspace_path IS NOT ? OR worktree_path IS NOT ? OR branch IS NOT ?)",
+		ChangeArgs: args,
+	})
+}
+
+// RenameThreadBranch sets the thread's branch to `to` while it is still
+// `from`, and writes no other column. A thread that moved to another branch
+// since the caller read it is left alone and reports no change.
+func (s *Store) RenameThreadBranch(threadID, from, to string) (Thread, bool, error) {
+	return s.applyThreadRowWrite(rowWrite{
+		Action:     fmt.Sprintf("store: rename branch for %s", threadID),
+		ID:         threadID,
+		Set:        "branch = ?",
+		SetArgs:    []any{nilIfEmpty(to)},
+		Change:     "branch IS ? AND branch IS NOT ?",
+		ChangeArgs: []any{nilIfEmpty(from), nilIfEmpty(to)},
+	})
+}
+
 // UpdateWorkspacePath overwrites workspace_path. Used by the env/worktree
 // picker when a thread switches between the project root and a worktree.
 func (s *Store) UpdateWorkspacePath(threadID, path string) error {

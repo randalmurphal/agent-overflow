@@ -644,7 +644,7 @@ func (a *App) sendMessageLocked(
 		// send the user did not make from this screen (an agent's spawn, a
 		// queued dispatch, a workflow) would otherwise keep the draft icon in
 		// every sidebar, or never reach one that had not listed the draft.
-		a.broadcastThreadRowByIDAs(triage.ThreadActionListed, threadID)
+		a.announceThread(triage.ThreadActionListed, threadID)
 	}
 	if !opts.PreserveDraft {
 		// Attributed to the screen that sent: it has already cleared its
@@ -1147,7 +1147,7 @@ func (a *App) resolveSourceProposedPlan(threadID string, source *SourceProposedP
 	// A first-ensure creates the proposed_plans row that makes
 	// hasActionableProposedPlan true; a repeat ensure re-states a row and
 	// the `full` broadcast is idempotent on the receiving side.
-	a.broadcastThreadRowByID(sourceThreadID)
+	a.announceThread(triage.ThreadActionFull, sourceThreadID)
 	resolved := &SourceProposedPlan{
 		ThreadID:  sourceThreadID,
 		ItemID:    item.ID,
@@ -1245,7 +1245,7 @@ func (a *App) applyProposedPlanAcceptance(threadID string, userItem store.Item, 
 			// The plan stopped being actionable, which is a derived
 			// column of the thread row. Off-pane sidebars read the pill
 			// from there, not from the item upsert above.
-			a.broadcastThreadRowByID(sp.ThreadID)
+			a.announceThread(triage.ThreadActionFull, sp.ThreadID)
 		case errors.Is(err, store.ErrProposedPlanAlreadyImplemented):
 			// Re-click on an already-implemented plan: keep the
 			// existing attribution and skip the emit (nothing changed).

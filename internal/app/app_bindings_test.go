@@ -522,40 +522,6 @@ func TestSwitchThreadMarksThreadReadAsync(t *testing.T) {
 	}
 }
 
-// The focus read stamp holds the thread's mutation lock from its write to
-// its broadcast, as MarkThreadRead does, so its row cannot reach clients
-// after a later write's row (TestWorktreeRemovalRowIsNotOvertakenByAReadStamp).
-func TestSwitchThreadReadStampWaitsForTheMutationLock(t *testing.T) {
-	t.Parallel()
-	app := newTestAppWithStore(t)
-	thread := testThread("thread-switch-read-lock")
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	completedAt := time.Now().UnixMilli() + 60_000
-	insertCompletedTurnForAppTest(t, app, thread.ID, "turn-switch-read-lock", completedAt-1000, completedAt)
-	unlock := app.threadApplication().LockMutations(thread.ID)
-	if _, err := app.SwitchThread(thread.ID); err != nil {
-		unlock()
-		t.Fatalf("SwitchThread() error = %v", err)
-	}
-	stamped := make(chan error, 1)
-	go func() {
-		app.waitMarkThreadReads()
-		stamped <- nil
-	}()
-	finished, _ := awaitMutationWaiter(app, thread.ID, stamped)
-	stored, err := app.store.GetThread(thread.ID)
-	unlock()
-	if finished || err != nil || (stored.LastReadAt != nil && *stored.LastReadAt >= completedAt) {
-		t.Fatalf("read stamp landed while the mutation lock was held: finished=%v err=%v", finished, err)
-	}
-	<-stamped
-	if stored, err := app.store.GetThread(thread.ID); err != nil || stored.LastReadAt == nil || *stored.LastReadAt < completedAt {
-		t.Fatalf("stored LastReadAt = %v (%v), want the stamp once the lock is free", stored.LastReadAt, err)
-	}
-}
-
 // TestSwitchThreadAnswersWhileTheWriterIsHeld is the regression guard for
 // the ordering defect: SwitchThread used to mark the thread read BEFORE
 // loading it, so the read the UI blocks on queued behind the store's

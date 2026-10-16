@@ -47,6 +47,9 @@ type TurnMetrics struct {
 type Router struct {
 	store *store.Store
 	emit  func(channel eventchan.Channel, data any) // wraps app.Event.Emit
+	// announcer builds the router's thread:updated row frames; the App
+	// replaces it with the process's shared one (SetThreadAnnouncer).
+	announcer *ThreadAnnouncer
 	// usageWorkItemResolver attributes phase-thread usage rows to a
 	// workflow run at append time; the app installs it once the
 	// workflow engine is wired (SetUsageWorkItemResolver).
@@ -301,7 +304,7 @@ func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 	te, _ := noopMeter.Int64Counter("turns.errored")
 	ip, _ := noopMeter.Int64Counter("items.persisted")
 	pp, _ := noopMeter.Int64Counter("payloads.persisted")
-	return &Router{
+	r := &Router{
 		store:  st,
 		emit:   emit,
 		tracer: tracenoop.NewTracerProvider().Tracer("triage/router"),
@@ -326,6 +329,15 @@ func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 			usageEmit:            usageEmitMinInterval,
 		},
 	}
+	r.announcer = NewThreadAnnouncer(func(threadID string) (store.Thread, error) { return r.store.GetThread(threadID) })
+	return r
+}
+
+// SetThreadAnnouncer replaces the router's own announcer with the one the
+// rest of the process announces through, so its frames are ordered with
+// theirs (see ThreadAnnouncer).
+func (r *Router) SetThreadAnnouncer(announcer *ThreadAnnouncer) {
+	r.announcer = announcer
 }
 
 // routerDelays are the intervals of the router's timers: the deferred
@@ -1282,10 +1294,8 @@ func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
 	r.emit(eventchan.ThreadUpdated, patch)
 }
 
-// emitThreadRow re-reads the thread through the standard projection and
-// broadcasts it as a `full` row — the triage-side twin of
-// App.broadcastThreadRow, so the two halves of the app announce a changed
-// row the same way.
+// emitThreadRow announces the thread's row as a `full` frame, through the
+// process's one ThreadAnnouncer.
 //
 // It exists because `threadColumns` computes derived sidebar state
 // (hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn) that a turn can change
@@ -1295,19 +1305,12 @@ func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
 //
 // The projection's subqueries make this heavier than emitThreadPatch's
 // field patch, which is why it is reserved for settle-frequency moments (a
-// plan landing) and never called per streaming chunk. Log-and-continue on a
-// read failure: the write that prompted the broadcast already succeeded and
-// the sidebar converges on the next ListThreads.
+// plan landing) and never called per streaming chunk.
 func (r *Router) emitThreadRow(threadID string) {
 	if r.store == nil || threadID == "" {
 		return
 	}
-	row, err := r.store.GetThread(threadID)
-	if err != nil {
-		log.Printf("triage: read thread row for %s: %v", threadID, err)
-		return
-	}
-	r.emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: ThreadActionFull, Thread: &row})
+	r.announcer.Announce(r.emit, ThreadActionFull, threadID)
 }
 
 // ThreadErrorNoticeEvent announces that a row of kind `error` was

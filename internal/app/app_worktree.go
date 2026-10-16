@@ -774,23 +774,29 @@ func (a *App) reattachThreadsFromRemovedWorktree(removal *worktreeRemoval, mutab
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s not refreshed: %w", id, err))
 			continue
 		}
+		previousWorkspace := t.WorkspacePath
 		if !moveOff(&t) {
 			continue
 		}
 		// The row moves and is announced before the process stops, so no
 		// surface reads the deleted path while the CLI takes its time to exit.
 		stop := a.detachSessionForRemovedWorkspace(id)
-		t, previousWorkspace, rowMoved, updateErr := a.moveThreadRowLocked(id, moveOff)
+		// Only the triple, so a write to another column since the read above
+		// survives.
+		row, changed, updateErr := a.store.UpdateThreadCheckout(id, t.WorkspacePath, t.WorktreePath, t.Branch)
+		if updateErr == nil {
+			if changed {
+				t = row
+			}
+			a.announceThread(triage.ThreadActionFull, id)
+		}
 		if stop != nil {
 			if err := stop(); err != nil {
 				sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session stop failed: %w", id, err))
 			}
 		}
 		if updateErr != nil {
-			sweepErrs = append(sweepErrs, updateErr)
-			continue
-		}
-		if !rowMoved {
+			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s update failed: %w", id, updateErr))
 			continue
 		}
 		if !gitops.SameFilesystemPath(previousWorkspace, t.WorkspacePath) && !a.hasActiveSession(id) {
@@ -825,31 +831,6 @@ func (a *App) reattachThreadsFromRemovedWorktree(removal *worktreeRemoval, mutab
 		return reattached, fmt.Errorf("%d threads need attention: %w", len(sweepErrs), errors.Join(sweepErrs...))
 	}
 	return reattached, nil
-}
-
-// moveThreadRowLocked re-reads a thread's row, applies move to it, and
-// writes and broadcasts the result under the thread's mutation lock.
-// Clients keep the last row they receive, and MarkThreadRead and the focus
-// read stamp hold that lock from their write to their broadcast, so their
-// row cannot reach clients after this one with the workspace from before
-// the move. Re-reading under the lock also keeps this whole-row write from
-// reverting a column another writer changed since the caller's first read.
-// moved is false when move changed nothing, and nothing is written.
-func (a *App) moveThreadRowLocked(id string, move func(*store.Thread) bool) (t store.Thread, previousWorkspace string, moved bool, err error) {
-	defer a.threadApplication().LockMutations(id)()
-	t, err = a.store.GetThread(id)
-	if err != nil {
-		return store.Thread{}, "", false, fmt.Errorf("thread %s not refreshed: %w", id, err)
-	}
-	previousWorkspace = t.WorkspacePath
-	if !move(&t) {
-		return t, previousWorkspace, false, nil
-	}
-	if err := a.store.UpdateThread(t); err != nil {
-		return t, previousWorkspace, false, fmt.Errorf("thread %s update failed: %w", id, err)
-	}
-	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &t})
-	return t, previousWorkspace, true, nil
 }
 
 // claudeSessionRefs returns a Claude thread's deduped, non-empty session refs
@@ -1168,7 +1149,7 @@ func checkoutMoveFrom(thread store.Thread, label string) threadCheckoutMove {
 }
 
 // commitThreadCheckout persists a thread whose workspace / worktree / branch
-// the caller has just rewritten, and BROADCASTS the row it moved.
+// the caller has just rewritten, and ANNOUNCES the row it moved.
 //
 // It is the chokepoint for the three USER-driven paths that move a thread's
 // checkout (cutting a new worktree, attaching an existing branch's, and
@@ -1210,7 +1191,9 @@ func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove)
 		}
 		purge = moved
 	}
-	if err := a.store.UpdateThread(thread); err != nil {
+	// Only the triple: the row was read before the git work above, and a
+	// write to another column since then must survive.
+	if _, _, err := a.store.UpdateThreadCheckout(threadID, thread.WorkspacePath, thread.WorktreePath, thread.Branch); err != nil {
 		rollback()
 		return store.Thread{}, err
 	}
@@ -1229,15 +1212,10 @@ func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove)
 	// new checkout. `store.UpdateThread` rewrites the whole row, so the
 	// no-change test is the three fields a move owns — re-selecting the
 	// workspace the thread already sits in moves nothing and says nothing.
-	// The restart can take the mutation lock, so only the broadcast holds
-	// it, which still orders a read stamp's row from before the move ahead
-	// of this one (moveThreadRowLocked).
-	unlockMutations := a.threadApplication().LockMutations(threadID)
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed,
+	a.announceThreadIfChanged(triage.ThreadActionFull, threadID,
 		move.previousWorkspace != thread.WorkspacePath ||
 			move.previousWorktree != thread.WorktreePath ||
 			move.previousBranch != thread.Branch)
-	unlockMutations()
 	return refreshed, nil
 }
 

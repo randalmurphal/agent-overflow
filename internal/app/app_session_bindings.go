@@ -11,7 +11,7 @@ import (
 )
 
 // markThreadReadTimeout bounds a read-state stamp's wait for the single
-// writer connection. It matches the busy_timeout PRAGMA on purpose: past
+// writer connection and then for its turn to announce the row. It matches the busy_timeout PRAGMA on purpose: past
 // five seconds the writer isn't contended, it's wedged, and waiting
 // longer only parks a goroutine that shutdown then has to join.
 const markThreadReadTimeout = 5 * time.Second
@@ -195,10 +195,6 @@ func (a *App) markThreadFocused(threadID string) {
 		defer a.markThreadRead.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 		defer cancel()
-		// The mutation lock spans the write and its broadcast, as in
-		// MarkThreadRead, so this row cannot reach clients after a later
-		// write's row (moveThreadRowLocked).
-		defer a.threadApplication().LockMutations(threadID)()
 		row, changed, err := a.store.MarkThreadReadNow(ctx, threadID)
 		if err != nil {
 			// Nobody is waiting on this write, so a failure would
@@ -212,7 +208,7 @@ func (a *App) markThreadFocused(threadID string) {
 		// on one device clears the Completed pill on the others. A focus
 		// that found the marker already current changes nothing and stays
 		// off the wire, which is the common case.
-		a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+		a.announceThreadWithin(ctx, triage.ThreadActionFull, row.ID, changed)
 	}()
 }
 

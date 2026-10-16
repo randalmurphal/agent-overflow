@@ -416,7 +416,7 @@ func (b *importedRowBroadcast) announce(a *App, frame sessionimport.ProgressEven
 		if i < len(frame.ThreadIDs) {
 			action = triage.ThreadActionListed
 		}
-		a.broadcastThreadRow(action, thread)
+		a.announceThread(action, thread.ID)
 	}
 }
 
