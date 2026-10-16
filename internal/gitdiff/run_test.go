@@ -43,13 +43,15 @@ func TestGitSucceedsWhenAChildHoldsAPipe(t *testing.T) {
 // TestGitReportsCancellationDespiteAllowedExit: a run the context ended is
 // an error even for a caller that accepts nonzero exits, and the error
 // carries the context's. A descendant that keeps writing holds the run
-// open until the deadline. A plain nonzero exit is still excused.
+// open until the deadline: the linger outlasts the descendant, so a pause
+// in its writes cannot end the run first. A plain nonzero exit is still
+// excused.
 func TestGitReportsCancellationDespiteAllowedExit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell alias is unix-only")
 	}
 	original := gitPipeWaitDelay
-	gitPipeWaitDelay = 100 * time.Millisecond
+	gitPipeWaitDelay = time.Minute
 	t.Cleanup(func() { gitPipeWaitDelay = original })
 	noisy := "(i=0; while [ $i -lt 100 ]; do echo tick; sleep 0.02; i=$((i+1)); done) & "
 	run := map[string]func(ctx context.Context, args ...string) (int, error){

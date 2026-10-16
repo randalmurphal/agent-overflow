@@ -35,7 +35,8 @@ import (
 // process exits, so RunDrained watches it while draining: a descendant that
 // keeps writing would otherwise hold the run open. On cancellation it calls
 // cmd.Cancel (the group kill ConfigureGroup installs, or exec's default),
-// stops reading and returns ctx's error.
+// stops reading and returns ctx's error. So does a run whose process exec
+// killed for ctx before it exited, however the drain then ends.
 func RunDrained(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer, linger time.Duration) error {
 	if cmd.Stdout != nil || cmd.Stderr != nil {
 		return errors.New("procutil: RunDrained owns the command's stdout and stderr")
@@ -52,6 +53,7 @@ func RunDrained(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer, li
 	if cmd.WaitDelay == 0 {
 		cmd.WaitDelay = linger
 	}
+	interrupted := recordInterrupt(cmd)
 	startErr := cmd.Start()
 	// The child has its own copies; these would keep EOF from arriving.
 	closeErr := errors.Join(outW.Close(), errW.Close())
@@ -101,6 +103,9 @@ func RunDrained(ctx context.Context, cmd *exec.Cmd, stdout, stderr io.Writer, li
 				}
 			}
 		}
+	}
+	if ctxErr == nil && interrupted.Load() {
+		ctxErr = ctx.Err()
 	}
 	return errors.Join(ctxErr, waitErr, copyErr, closeErr, outR.Close(), errR.Close())
 }
