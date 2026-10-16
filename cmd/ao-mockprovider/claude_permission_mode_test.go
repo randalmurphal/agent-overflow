@@ -46,7 +46,9 @@ func TestClaudeReportsPermissionModeChanges(t *testing.T) {
 	}
 
 	p.send(`{"type":"control_request","request_id":"pm-0","request":{"subtype":"set_permission_mode","mode":"auto"}}`)
-	if got := p.expectLine(testTimeout); !strings.Contains(got, `"subtype":"error"`) || !strings.Contains(got, "auto mode unavailable for this model") ||
+	// The application routes control responses by their leading type.
+	if got := p.expectLine(testTimeout); !strings.HasPrefix(got, `{"type":"control_response"`) ||
+		!strings.Contains(got, `"subtype":"error"`) || !strings.Contains(got, "auto mode unavailable for this model") ||
 		!strings.Contains(got, `"error_code":"auto_mode_model"`) {
 		t.Fatalf("set_permission_mode auto on a model without it = %q, want the refusal and its code", got)
 	}
@@ -100,7 +102,8 @@ func TestClaudeModelSwitchInPlanKeepsAutoForLater(t *testing.T) {
 	}
 
 	p.send(`{"type":"control_request","request_id":"pm-auto","request":{"subtype":"set_permission_mode","mode":"auto"}}`)
-	if got := p.expectLine(testTimeout); !strings.Contains(got, `"request_id":"pm-auto"`) || !strings.Contains(got, `"error_code":"auto_mode_model"`) {
+	if got := p.expectLine(testTimeout); !strings.HasPrefix(got, `{"type":"control_response"`) ||
+		!strings.Contains(got, `"request_id":"pm-auto"`) || !strings.Contains(got, `"error_code":"auto_mode_model"`) {
 		t.Fatalf("leaving plan for auto = %q, want the refusal with its code", got)
 	}
 	p.closeStdinAndExpectExit(0, testTimeout)

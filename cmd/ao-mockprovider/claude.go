@@ -986,13 +986,17 @@ func writeClaudeControlError(w *lineWriter, requestID, message string) {
 
 // writeClaudeControlErrorCode adds the `error_code` the CLI names beside
 // some refusals (set_permission_mode's "auto_mode_model"); empty omits it.
+// The line leads with `"type":"control_response"` as the CLI's does: AO
+// routes control responses by that prefix.
 func writeClaudeControlErrorCode(w *lineWriter, requestID, message, code string) {
 	log.Printf("claude: refusing control_request: %s", message)
-	response := map[string]any{"subtype": "error", "request_id": requestID, "error": message}
+	var errorCode string
 	if code != "" {
-		response["error_code"] = code
+		errorCode = `,"error_code":` + mustJSON(code)
 	}
-	w.writeLine(mustJSON(map[string]any{"type": "control_response", "response": response}), 0, 0)
+	w.writeLine(fmt.Sprintf(
+		`{"type":"control_response","response":{"subtype":"error","request_id":%s,"error":%s%s}}`,
+		mustJSON(requestID), mustJSON(message), errorCode), 0, 0)
 }
 
 // sendApproval emits a CanUseTool control_request and registers a

@@ -106,11 +106,14 @@ func (a *App) applyClaudePermissionMode(threadID, sessionToken string) {
 	}
 }
 
-// noticeClaudeAutoRestored posts the notice for a Claude model switch that
+// noticeClaudeAutoRestored owns the notice for a Claude model switch that
 // moved the thread back to Auto from another mode: the new model's
-// remembered settings carry Auto. updated is the row after the live
-// reconcile; a running session that did not keep auto (the CLI refused it
-// for this model, which posts its own notice) gets none.
+// remembered settings carry Auto. It posts at the switch, when the row and
+// the composer's chip turn Auto, whichever way the session takes the new
+// config: live, by the restart deferred until the thread is quiet, or at
+// the next start. updated is the row after the live reconcile. The one
+// exception is a session that took the switch live and did not keep auto:
+// the CLI refused it for this model, and that drop posts its own notice.
 func (a *App) noticeClaudeAutoRestored(update threadapp.ModelUpdate, updated store.Thread) {
 	if updated.Provider != string(provider.Claude) || update.Previous.Model == updated.Model {
 		return
@@ -119,7 +122,9 @@ func (a *App) noticeClaudeAutoRestored(update threadapp.ModelUpdate, updated sto
 		provider.NormalizeRuntimeMode(updated.RuntimeMode) != provider.RuntimeAuto {
 		return
 	}
-	if sess, ok := a.sessionManager().get(updated.ID); ok && sess.Claude != nil && sess.Claude.BasePermissionMode() != "auto" {
+	if sess, ok := a.sessionManager().get(updated.ID); ok && sess.Claude != nil &&
+		provider.NormalizeRuntimeMode(string(sess.LaunchOptions.RuntimeMode)) == provider.RuntimeAuto &&
+		sess.Claude.BasePermissionMode() != "auto" {
 		return
 	}
 	notice := fmt.Sprintf("Auto is back on for %s. This thread's access is %s again.",
