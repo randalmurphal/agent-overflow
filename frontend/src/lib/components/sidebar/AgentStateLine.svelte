@@ -3,7 +3,7 @@
   // from the wakes store (docs/specs/standing-agents.md, "Sidebar"). The
   // dot above keeps the live status; this line never repeats it. Nothing
   // renders while the agent has no live loop or watch.
-  import { ensureAgentWakes, getAgentWakeRows } from '../../stores/agentWakes.svelte';
+  import { ensureAgentWakes, getAgentWakeRows } from '../../stores/threadWakes.svelte';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { agentStateLine } from '../../utils/agentStateLine';
 

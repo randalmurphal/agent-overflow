@@ -11,7 +11,7 @@ import type { Thread } from '../types/models';
 import { closePanesShowingThread, findPaneShowingThread, iterPanes, moveAssistantPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
-import { refreshAgentWakes } from './agentWakes.svelte';
+import { refreshAgentWakes } from './threadWakes.svelte';
 import { followAssistantHandOffInStash } from './companionStash';
 import { addErrorToast, addToast } from './toast.svelte';
 import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';

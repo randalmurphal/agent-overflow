@@ -28,8 +28,8 @@ import {
 import {
   ensureAgentWakes,
   getAgentWakeRows,
-  resetAgentWakesForTest,
-} from './agentWakes.svelte';
+  resetThreadWakesForTest,
+} from './threadWakes.svelte';
 import { applyThreadUpdated } from './eventsThreadRows';
 import { threadRowFrameMark } from './threadRowFrames';
 
@@ -217,7 +217,7 @@ describe('standing agent state on removal', () => {
   async function primeAgentState(): Promise<void> {
     resetSidebarForTest();
     resetArchivedChildrenForTest();
-    resetAgentWakesForTest();
+    resetThreadWakesForTest();
     setBindingMock('ListArchivedSpawnedThreads', async () => [makeThread('done', { archived: true, spawnedByThreadId: 'agent' })]);
     setBindingMock('ListThreadWakes', async () => ({
       rows: [{ id: 'l1', kind: 'loop', label: 'beat', state: 'armed' }], moreReminders: false,

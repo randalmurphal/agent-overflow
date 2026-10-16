@@ -13,7 +13,7 @@
   import { OPEN_GIT_DIALOG_EVENT, type OpenGitDialogDetail } from './lib/stores/eventNames';
   import { getThreads, loadThreads } from './lib/stores/threads.svelte';
   import { refreshThreadGroups } from './lib/stores/threadGroups.svelte';
-  import { refreshAgentWakes } from './lib/stores/agentWakes.svelte';
+  import { refreshAgentWakes } from './lib/stores/threadWakes.svelte';
   import { markNotificationHydrated } from './lib/stores/eventsNotification';
   import {
     installPaneLayoutPersistence,
