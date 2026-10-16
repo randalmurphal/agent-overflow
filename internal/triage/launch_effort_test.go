@@ -45,18 +45,25 @@ func TestRedeliveredAgentLaunchKeepsItsLaunchTimeInheritedEffort(t *testing.T) {
 	}
 }
 
-func TestAgentLaunchMetaKeepsTheEffortInput(t *testing.T) {
+func TestAgentLaunchMetaKeepsTheRunInputs(t *testing.T) {
+	want := map[string]string{"model": `"haiku"`, "effort": `"medium"`, "run_in_background": `false`}
 	for _, tool := range []string{"Agent", "Task"} {
 		raw, _ := json.Marshal(map[string]any{
 			"toolName": tool,
-			"input":    map[string]any{"description": "look", "prompt": "p", "effort": "medium"},
+			"input": map[string]any{
+				"description": "look", "prompt": "p",
+				"model": "haiku", "effort": "medium", "run_in_background": false,
+			},
 		})
 		trimmed, _, err := applyToolMetaRule(tool, raw, 0)
 		if err != nil {
 			t.Fatalf("%s: applyToolMetaRule: %v", tool, err)
 		}
-		if got := string(readNestedInput(t, trimmed)["effort"]); got != `"medium"` {
-			t.Fatalf("%s: persisted input effort = %s, want \"medium\"", tool, got)
+		input := readNestedInput(t, trimmed)
+		for key, value := range want {
+			if got := string(input[key]); got != value {
+				t.Errorf("%s: persisted input %s = %s, want %s", tool, key, got, value)
+			}
 		}
 	}
 }

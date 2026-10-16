@@ -4,7 +4,8 @@
 // effort; without one the launch runs at the effort the parser stamped on
 // it at launch (`inherited_effort`, the session's `--effort`: the seeded
 // Opus 4.7 thread's default xhigh). A subagent on a model with no effort
-// tiers (Haiku) runs without one, so no effort shows.
+// tiers (Haiku) runs without one, so no effort shows. Until the subagent
+// reports its model, the launch's requested `model` is shown.
 //
 // Codex: a 0.162+ `subAgentActivity` started item carries the child's
 // resolved `model` and `reasoningEffort`; the spawn row shows them without
@@ -57,14 +58,20 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
     scenario: claudeScenario('claude-effort', [
       emit([
         ...textLines('msg-lead', 'Delegating three ways.'),
-        // Named effort.
+        // Named model and effort, awaited.
         toolUseLine('msg-deep', 'tu-deep', 'Agent', {
           description: 'deep review',
           subagent_type: 'reviewer',
           prompt: 'review the parser',
+          model: 'sonnet',
           effort: 'medium',
+          run_in_background: false,
         }),
         taskStartedLine('task-deep', 'tu-deep', 'deep review'),
+      ]),
+      { waitSignal: { name: 'deep-runs' } },
+      emit([
+        // The subagent's own envelope reports the model it runs on.
         ...textLines('msg-deep-text', 'Reviewing closely.', 'tu-deep'),
         taskUpdatedLine('task-deep', { status: 'completed', end_time: 1787415964724 }),
         toolResultLine('tu-deep', 'Review done.'),
@@ -106,13 +113,22 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
   const threadId = await seedAgentThread(harness, 'effort-app', 'Claude effort');
   await harness.open(page);
   await page.getByText('Claude effort').click();
-  await startMock(harness, threadId);
+  const mockId = await startMock(harness, threadId);
+  const gate = waitForGate(harness, 'deep-runs');
   await harness.rpc('SendMessage', threadId, 'delegate', null);
-  await harness.waitForEvent('provider:turn_completed');
+  await gate;
 
   const timeline = page.getByTestId('chat-timeline-surface').getByTestId('message-timeline-scroll');
   const cards = timeline.getByTestId('subagent-group');
   const deepCard = cards.filter({ hasText: 'deep review' });
+  // Before the subagent reports its model, the card shows the requested
+  // one, and an awaited launch reads as starting.
+  await expect(deepCard.getByTestId('subagent-group-label')).toHaveText('Reviewer(Sonnet Medium)');
+  await expect(deepCard.getByTestId('subagent-group-preview')).toHaveText('Initializing...');
+  const done = harness.waitForEvent('provider:turn_completed');
+  await advance(harness, mockId, 'deep-runs');
+  await done;
+
   const scoutCard = cards.filter({ hasText: 'quick scout' });
   const sweepCard = cards.filter({ hasText: 'Sweep' }).first();
   await expect(deepCard.getByTestId('subagent-group-label')).toHaveText('Reviewer(Mock 1 Medium)');
