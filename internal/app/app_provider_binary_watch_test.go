@@ -238,11 +238,10 @@ func TestProviderBinaryUpgradeDropsLearnedClaudeModels(t *testing.T) {
 	if slices.ContainsFunc(models.Models, func(m provider.ModelInfo) bool { return m.Slug == "claude-newthing-1" }) {
 		t.Fatal("the old binary's learned model survived the upgrade")
 	}
-	// The recheck is itself a probe of the NEW binary, so the answer is
-	// authoritative again the moment it lands — it just carries nothing the
-	// shipped catalog does not already have.
-	if models.Provenance != provider.CatalogProbed {
-		t.Fatalf("provenance after upgrade = %q, want probed", models.Provenance)
+	// The recheck probes the NEW binary, which reports no models, so no
+	// answer backs the catalog: it is the shipped list again.
+	if models.Provenance != provider.CatalogShipped {
+		t.Fatalf("provenance after upgrade = %q, want shipped", models.Provenance)
 	}
 }
 

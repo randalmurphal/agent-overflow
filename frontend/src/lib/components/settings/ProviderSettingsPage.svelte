@@ -28,6 +28,7 @@
     refreshProviderModels,
   } from '../../stores/providerModels.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
+  import ClaudeCommandTimeoutField from './ClaudeCommandTimeoutField.svelte';
   import ClaudeCrossSessionEditor from './ClaudeCrossSessionEditor.svelte';
   import ClaudeDisabledToolsEditor from './ClaudeDisabledToolsEditor.svelte';
   import ClaudeSessionAxesEditor from './ClaudeSessionAxesEditor.svelte';
@@ -45,6 +46,7 @@
     type SettingsProvider,
   } from './fields';
   import { INPUT_CLASS } from './styles';
+  import { offeredModels } from '../../utils/hiddenModels';
 
   let { provider }: { provider: SettingsProvider } = $props();
 
@@ -63,7 +65,7 @@
   let hostWritable = $derived(hostTierWritable());
   let hostReason = $derived(hostWritable ? undefined : HOST_TIER_REASON);
   let settings = $derived(getSettings());
-  let models = $derived(getProviderModels(provider, backend));
+  let models = $derived(offeredModels(getProviderModels(provider, backend)));
   let dependents = $derived(dependentProviders(provider));
   let status = $state<ProviderStatus | undefined>(undefined);
   let loadGeneration = 0;
@@ -144,7 +146,7 @@
             class="h-1.5 w-1.5 rounded-full {statusDotColor(status?.status ?? 'unknown')}"
             aria-hidden="true"
           ></span>
-          {status?.status ?? 'checking'}
+          <span class="whitespace-nowrap">{status?.status ?? 'checking'}</span>
           {#if status?.version}
             <span class="text-fg-hint">·</span>
             <span class="font-mono text-[0.65625rem] text-fg-muted">{status.version}</span>
@@ -251,6 +253,8 @@
       <CodexDisabledToolsEditor provider={definition} />
     {:else}
       <ClaudeDisabledToolsEditor provider={definition} />
+      <!-- Both Claude transports read it: one binary, one variable. -->
+      <ClaudeCommandTimeoutField />
     {/if}
   </section>
 

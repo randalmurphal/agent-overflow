@@ -64,6 +64,10 @@ func (p threadModelPolicy) DraftDefaults(providerName, model, effort string, fas
 	return p.app.draftModelDefaults(providerName, model, effort, fastMode)
 }
 
+func (p threadModelPolicy) DefaultModel(providerName string) string {
+	return p.app.defaultModelForProvider(providerName)
+}
+
 func (p threadModelPolicy) ValidateModel(providerName, model string) error {
 	return p.app.validateModelChoice(providerName, model)
 }

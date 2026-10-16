@@ -14,6 +14,11 @@
     "https://developers.openai.com/api/docs/models/gpt-5"
   ],
   "aliases": {
+    "gpt-5.5-cyber-preview": [
+      {
+        "model": "gpt-5.5"
+      }
+    ],
     "gpt-daybreak-blue-latest": [
       {
         "model": "gpt-5.6-sol"
@@ -128,6 +133,13 @@
         "output": 10,
         "cacheRead": 0.2,
         "cacheWrite": 4
+      },
+      {
+        "from": "2026-10-07",
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.1,
+        "cacheWrite": 4
       }
     ],
     "claude-sonnet-5": [
@@ -162,6 +174,14 @@
         "cacheWrite": 6
       }
     ],
+    "claude-haiku-5-5": [
+      {
+        "input": 0.1,
+        "output": 0.5,
+        "cacheRead": 0.01,
+        "cacheWrite": 0.2
+      }
+    ],
     "claude-haiku-4-5": [
       {
         "input": 1,
@@ -184,6 +204,14 @@
         "output": 50,
         "cacheRead": 1,
         "cacheWrite": 12.5
+      }
+    ],
+    "gpt-6.1-sol": [
+      {
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.1,
+        "cacheWrite": 2.5
       }
     ],
     "gpt-6-sol": [

@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -133,7 +134,7 @@ func TestConfigFromOptionsOneMillionContextUsesModelSuffix(t *testing.T) {
 // the registry's Default context-window flag reaches the wire: an unset
 // SessionOptions.ContextWindow resolves through
 // provider.ResolveContextWindowForModel, so the large models spawn on the 1M
-// tier (`[1m]` model suffix) while Sonnet keeps 1M opt-in.
+// tier (`[1m]` model suffix) on every model that offers it.
 func TestConfigFromOptionsUnsetContextWindowUsesModelDefault(t *testing.T) {
 	cases := []struct {
 		model     string
@@ -143,8 +144,9 @@ func TestConfigFromOptionsUnsetContextWindowUsesModelDefault(t *testing.T) {
 		{"claude-fable-5", "claude-fable-5[1m]", provider.ClaudeExtendedContextWindow},
 		{"claude-opus-5", "claude-opus-5[1m]", provider.ClaudeExtendedContextWindow},
 		{"claude-opus-4-7", "claude-opus-4-7[1m]", provider.ClaudeExtendedContextWindow},
-		{"claude-sonnet-5", "claude-sonnet-5", provider.ClaudeStandardContextWindow},
-		{"claude-sonnet-4-6", "claude-sonnet-4-6", provider.ClaudeStandardContextWindow},
+		{"claude-sonnet-5", "claude-sonnet-5[1m]", provider.ClaudeExtendedContextWindow},
+		{"claude-sonnet-4-6", "claude-sonnet-4-6[1m]", provider.ClaudeExtendedContextWindow},
+		{"claude-haiku-5-5", "claude-haiku-5-5[1m]", provider.ClaudeExtendedContextWindow},
 		{"claude-haiku-4-5", "claude-haiku-4-5", provider.ClaudeStandardContextWindow},
 	}
 	for _, tc := range cases {
@@ -913,5 +915,27 @@ func TestBuildArgsRendersAllowedTools(t *testing.T) {
 	}
 	if !slices.Equal(allowed, []string{"mcp__ao-thread-tools__*"}) {
 		t.Errorf("allowed tools reaching argv = %v, want only the wildcard entry", allowed)
+	}
+}
+
+// The child environment raises Claude's MCP description cap so the
+// thread-tools guide reaches the model whole, and the value is a default:
+// a user's custom environment can set its own. The guide-length bound
+// against the same constant lives in threadtools' instructions test.
+func TestSpawnEnvRaisesTheMCPDescriptionCap(t *testing.T) {
+	want := strconv.Itoa(provider.ClaudeMCPDescriptionLengthLimit)
+	if want != "16384" {
+		t.Fatalf("ClaudeMCPDescriptionLengthLimit = %s, want the CLI's own tool-search cap 16384", want)
+	}
+	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", ThreadID: "thread-1", Model: "claude-opus-4-7"})
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	if value, found := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv); !found || value != want {
+		t.Fatalf("%s = %q (present=%v), want %s", provider.ClaudeMCPDescriptionLengthEnv, value, found, want)
+	}
+
+	cfg.Env = map[string]string{provider.ClaudeMCPDescriptionLengthEnv: "8192"}
+	env = provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	if value, _ := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv); value != "8192" {
+		t.Fatalf("%s = %q, want the user's 8192 to outrank AO's default", provider.ClaudeMCPDescriptionLengthEnv, value)
 	}
 }

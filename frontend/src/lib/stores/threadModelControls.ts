@@ -17,7 +17,8 @@ import {
   UpdateThreadModelSelection,
   UpdateThreadReasoningEffort,
 } from './bindings';
-import { syncThread } from './panes.svelte';
+import { syncThreadReply } from './panes.svelte';
+import { threadRowFrameMark } from './threadRowFrames';
 import { updatePlaceholderDefaults } from './newThreadDefaults';
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
@@ -62,8 +63,9 @@ export async function applyThreadModelSelection(
     }
     const threadId = pane.threadId;
     if (!threadId) return { ok: false, error: 'Start the thread first' };
+    const mark = threadRowFrameMark();
     const updated = (await UpdateThreadModelSelection(threadId, provider, slug)) as Thread;
-    syncThread(updated);
+    syncThreadReply(updated, mark);
     return OK;
   } catch (err) {
     return failure('Failed to switch model', err);
@@ -83,8 +85,9 @@ export async function applyThreadReasoningEffort(
     }
     const threadId = pane.threadId;
     if (!threadId) return { ok: false, error: 'Start the thread first' };
+    const mark = threadRowFrameMark();
     const updated = (await UpdateThreadReasoningEffort(threadId, effort)) as Thread;
-    syncThread(updated);
+    syncThreadReply(updated, mark);
     return OK;
   } catch (err) {
     return failure('Failed to set effort', err);
@@ -104,8 +107,9 @@ export async function applyThreadFastMode(
     }
     const threadId = pane.threadId;
     if (!threadId) return { ok: false, error: 'Start the thread first' };
+    const mark = threadRowFrameMark();
     const updated = (await UpdateThreadFastMode(threadId, on)) as Thread;
-    syncThread(updated);
+    syncThreadReply(updated, mark);
     return OK;
   } catch (err) {
     return failure('Failed to set fast mode', err);
@@ -125,8 +129,9 @@ export async function applyThreadContextWindow(
     }
     const threadId = pane.threadId;
     if (!threadId) return { ok: false, error: 'Start the thread first' };
+    const mark = threadRowFrameMark();
     const updated = (await UpdateThreadContextWindow(threadId, tokens)) as Thread;
-    syncThread(updated);
+    syncThreadReply(updated, mark);
     return OK;
   } catch (err) {
     return failure('Failed to set context window', err);

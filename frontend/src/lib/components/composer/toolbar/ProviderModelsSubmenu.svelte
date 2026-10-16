@@ -10,6 +10,8 @@
   import type { ProviderID } from '../../../types/providers';
   import { getSettings } from '../../../stores/settings.svelte';
   import { pickerVisibleModels } from '../../../utils/hiddenModels';
+  import { providerModelsPending } from '../../../stores/providerModels.svelte';
+  import { threadMachine } from '../../../stores/attachedBackends.svelte';
   import { displayModelLabel } from '../../../utils/modelLabels';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import Icon from '../../primitives/Icon.svelte';
@@ -41,6 +43,7 @@
   }: Props = $props();
 
   let loading = $state(false);
+  let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
 
   // Fire a single `ensureModels` on mount if the cache is cold. We keep
   // the guard narrow — once the cache is populated, the submenu just
@@ -68,7 +71,7 @@
   );
 </script>
 
-{#if loading && models.length === 0}
+{#if (loading || providerModelsPending(provider, backend)) && models.length === 0}
   <div
     class="px-3 py-2 text-xs text-text-secondary/60"
     role="presentation"

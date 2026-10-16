@@ -517,6 +517,19 @@ export class ModelInfo {
     "name": string;
     "provider": string;
     "isCustom"?: boolean;
+
+    /**
+     * Unlisted marks a catalog row the provider did not offer in its latest
+     * model list. The row still resolves capabilities for threads already on
+     * the model; pickers leave it out. A catalog no provider answer backs
+     * marks nothing.
+     */
+    "unlisted"?: boolean;
+
+    /**
+     * IsDefault marks the model the provider names as its own default.
+     */
+    "isDefault"?: boolean;
     "capabilities"?: string[];
     "fastModeTier"?: FastModeTier | null;
 
@@ -552,22 +565,22 @@ export class ModelInfo {
      * Creates a new ModelInfo instance from a string or object.
      */
     static createFrom($$source: any = {}): ModelInfo {
-        const $$createField4_0 = $$createType10;
-        const $$createField5_0 = $$createType14;
-        const $$createField7_0 = $$createType16;
-        const $$createField8_0 = $$createType18;
+        const $$createField6_0 = $$createType10;
+        const $$createField7_0 = $$createType14;
+        const $$createField9_0 = $$createType16;
+        const $$createField10_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("capabilities" in $$parsedSource) {
-            $$parsedSource["capabilities"] = $$createField4_0($$parsedSource["capabilities"]);
+            $$parsedSource["capabilities"] = $$createField6_0($$parsedSource["capabilities"]);
         }
         if ("fastModeTier" in $$parsedSource) {
-            $$parsedSource["fastModeTier"] = $$createField5_0($$parsedSource["fastModeTier"]);
+            $$parsedSource["fastModeTier"] = $$createField7_0($$parsedSource["fastModeTier"]);
         }
         if ("contextWindows" in $$parsedSource) {
-            $$parsedSource["contextWindows"] = $$createField7_0($$parsedSource["contextWindows"]);
+            $$parsedSource["contextWindows"] = $$createField9_0($$parsedSource["contextWindows"]);
         }
         if ("reasoningEfforts" in $$parsedSource) {
-            $$parsedSource["reasoningEfforts"] = $$createField8_0($$parsedSource["reasoningEfforts"]);
+            $$parsedSource["reasoningEfforts"] = $$createField10_0($$parsedSource["reasoningEfforts"]);
         }
         return new ModelInfo($$parsedSource as Partial<ModelInfo>);
     }

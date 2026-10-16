@@ -510,6 +510,14 @@ func (r *Router) findTaskNotificationItem(threadID, taskID string) (store.Item, 
 // struct rather than ToolCompleteMeta so a launch carrying a large
 // `input` echo isn't re-scanned on every notification.
 func launchIsWatchTask(launch store.Item) bool {
+	return LaunchIsWatchTask(launch)
+}
+
+// LaunchIsWatchTask reports whether a persisted launch row is Claude's
+// Monitor. Its launch ack names no output file; the app's live tail reads
+// the file off the task's newest notification row instead
+// (FindNotificationItemByTaskID), since the launch row is history.
+func LaunchIsWatchTask(launch store.Item) bool {
 	if launch.Meta == "" {
 		return false
 	}
@@ -520,6 +528,36 @@ func launchIsWatchTask(launch store.Item) bool {
 		return false
 	}
 	return m.WatchTask
+}
+
+// BackgroundTaskOutputFile is the file the CLI writes a running background
+// command's output to, as stamped on its launch row: from the Bash ack's
+// text at launch (the keep-running flip), or for a Monitor from its first
+// notification, which is the first envelope to name a watch task's file.
+// Empty when the wire never named one. An agent's launch never carries
+// it: its file is a transcript (store.IsAgentTranscriptLaunch), and the
+// callers that read this field refuse those launches.
+func BackgroundTaskOutputFile(launch store.Item) string {
+	if launch.Meta == "" {
+		return ""
+	}
+	var m struct {
+		OutputFile string `json:"output_file"`
+	}
+	if json.Unmarshal([]byte(launch.Meta), &m) != nil {
+		return ""
+	}
+	return strings.TrimSpace(m.OutputFile)
+}
+
+// outputFileMetaPatch is the one-key merge that stamps output_file on a
+// launch row.
+func outputFileMetaPatch(path string) json.RawMessage {
+	patch, err := json.Marshal(map[string]string{"output_file": path})
+	if err != nil {
+		return nil
+	}
+	return patch
 }
 
 // captionForSiblingWrite decides whether THIS write of the completion
@@ -652,6 +690,17 @@ func CommandFromLaunch(launch store.Item) string {
 		return strings.TrimSpace(strings.TrimPrefix(summary, prefix))
 	}
 	return summary
+}
+
+// ResolveClaudeTaskOutputPath is the containment guard every read of a
+// task's output file passes: the completion read here and the tray's live
+// tail (internal/tasktail). It returns the canonical path of a regular
+// file under the roots the CLI writes task output to, and otherwise an
+// error; a file not yet written answers one that satisfies
+// errors.Is(err, fs.ErrNotExist).
+func ResolveClaudeTaskOutputPath(path string) (string, error) {
+	resolved, _, err := resolveClaudeTaskOutputPath(path)
+	return resolved, err
 }
 
 // resolveClaudeTaskOutputPath canonicalises an `output_file` path and

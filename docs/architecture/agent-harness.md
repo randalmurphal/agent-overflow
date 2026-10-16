@@ -387,7 +387,8 @@ as one `Store.InsertThreadHistory` batch, so size is a seed's shape and not
 its cost. Two fields describe fixtures too large to spell: a turn's `repeat`
 seeds that turn that many times in a row, each at its own turn index and
 minute, and a payload's `padBefore` / `padAfter` wrap its `data` in that many
-bytes of generated filler lines. A 38k-item thread with a multi-megabyte tool
+bytes of generated filler lines. An item's `id` is minted unless the spec
+sets it, for a row another row's meta must name. A 38k-item thread with a multi-megabyte tool
 output in it is a few lines of spec. Workflow items are different: the
 seeder writes definitions/profile files to the production project config layout
 and calls `WorkflowStartRun`, the one start path every producer uses; the run

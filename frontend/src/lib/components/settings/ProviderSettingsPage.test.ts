@@ -284,7 +284,6 @@ describe("provider page — provider accounts", () => {
       provider: "codex",
       email: "second@example.com",
       addedAt: 1,
-      lastUsedAt: 2,
       active: false,
     }]);
     const { findByRole, findByTestId } = render(CodexSettings);
@@ -317,7 +316,6 @@ describe("provider page — provider accounts", () => {
       email: "second@example.com",
       subscriptionType: "pro",
       addedAt: 1,
-      lastUsedAt: 2,
       active: true,
       rateLimits: {
         provider: "codex",
@@ -349,7 +347,6 @@ describe("provider page — provider accounts", () => {
       provider: "claude",
       email: "second@example.com",
       addedAt: 1,
-      lastUsedAt: 2,
       active: false,
     }]);
     setBindingMock("SwitchProviderAccount", async () => {
@@ -372,7 +369,6 @@ describe("provider page — provider accounts", () => {
         provider: "claude",
         email: "active@example.com",
         addedAt: 2,
-        lastUsedAt: 2,
         active: true,
       },
       {
@@ -380,7 +376,6 @@ describe("provider page — provider accounts", () => {
         provider: "claude",
         email: "next@example.com",
         addedAt: 1,
-        lastUsedAt: 1,
         active: false,
       },
     ];
@@ -410,7 +405,6 @@ describe("provider page — provider accounts", () => {
       provider: "codex",
       email: "only@example.com",
       addedAt: 1,
-      lastUsedAt: 1,
       active: true,
     }];
     setBindingMock("ListProviderAccounts", async () => accounts);

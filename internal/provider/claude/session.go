@@ -97,15 +97,20 @@ type Session struct {
 	capabilities       map[string]struct{}
 	capabilitiesLogged bool
 	// basePermissionMode is the runtime/access mode restored after a plan
-	// turn. currentPermissionMode mirrors the last successful
-	// set_permission_mode request so we avoid redundant control round-trips.
-	// Both are guarded by permissionModeMu: basePermissionMode is mutable
-	// post-construction via setBasePermissionMode (live runtime-mode
-	// changes).
-	permissionModeMu      sync.RWMutex
-	basePermissionMode    string
-	currentPermissionMode string
-	interactionMode       provider.InteractionMode
+	// turn. currentPermissionMode mirrors the mode the CLI runs: the last
+	// successful set_permission_mode request, or a mode the CLI reported
+	// changing to on its own (permission_mode.go), so redundant control
+	// round-trips are skipped. requestedPermissionModes counts the
+	// set_permission_mode requests in flight per mode, which is how the
+	// read loop tells the CLI's echo of AO's request from a change the CLI
+	// made by itself. All three are guarded by permissionModeMu:
+	// basePermissionMode is mutable post-construction via
+	// setBasePermissionMode (live runtime-mode changes).
+	permissionModeMu         sync.RWMutex
+	basePermissionMode       string
+	currentPermissionMode    string
+	requestedPermissionModes map[string]int
+	interactionMode          provider.InteractionMode
 	// parser holds per-session NDJSON parse state so tool_use / tool_result
 	// pairs can share metadata (e.g. the `is_background` flag) across the
 	// two messages that carry them.
@@ -279,6 +284,8 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// priced even if the init envelope lands late. The init handler still
 	// overrides this when Claude echoes a different model (auto-reroute).
 	s.parser.SetModel(cfg.Model)
+	s.parser.SetSessionEffort(cfg.ReasoningEffort)
+	s.parser.SetModelAliases(s.modelAliases)
 	// ParseLine feeds the leaf tracker from its own decoded map so
 	// assistant/user/result lines aren't unmarshaled twice per line.
 	s.parser.leafTracker = s.leafTracker

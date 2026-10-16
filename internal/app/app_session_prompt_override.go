@@ -33,7 +33,7 @@ import (
 // change applies only at the thread's next session start (docs/decisions.md
 // 2026-10-14). The THINKING axis is the opposite: it is re-read on both
 // paths and costs nothing to resolve (a struct copy), because
-// `set_max_thinking_tokens` lands a budget or an off switch on a running
+// `set_max_thinking_tokens` lands a budget or a display on a running
 // session. Only its return to "Claude Code decides" has no wire form, and
 // that one direction falls through to the deferred restart.
 //
@@ -90,6 +90,7 @@ func (a *App) applySettingsOwnedAxes(t store.Thread, opts *provider.SessionOptio
 	// projected from the thread row — same reasoning as FastModeTierID.
 	opts.DisabledTools = snapshot.DisabledToolsForProvider(t.Provider)
 	opts.DisableTodoReminders = snapshot.TodoRemindersDisabledForProvider(t.Provider)
+	opts.ClaudeMaxCommandTimeoutHours = snapshot.MaxCommandTimeoutHoursForProvider(t.Provider)
 	opts.ClaudeThinking = claudeThinkingOption(snapshot.ClaudeThinkingForProvider(t.Provider))
 	opts.ClaudeCrossSession = claudeCrossSessionOption(snapshot.ClaudeCrossSessionForProvider(t.Provider))
 	// Derived even when the inbox is off, and harmlessly so: the name only
@@ -124,15 +125,17 @@ func (a *App) applySettingsOwnedAxes(t store.Thread, opts *provider.SessionOptio
 // session onto a freshly built options bundle, so the config reconciler
 // diffs only what may legitimately have changed.
 //
-// RECONCILE PATH ONLY. The tool lists, the todo-reminder switch and the
-// settings-level system prompt are pinned to what the session launched
-// with on every provider. A prompt change never applies to a running
-// session (docs/decisions.md 2026-10-14): it applies at the thread's next
+// RECONCILE PATH ONLY. The tool lists, the todo-reminder switch, the
+// command timeout ceiling and the settings-level system prompt are
+// pinned to what the session launched with on every provider. A prompt
+// change never applies to a running session (docs/decisions.md
+// 2026-10-14): it applies at the thread's next
 // session start, and reconcileStalePromptSessions tells the user which
 // live threads differ. Nothing here matches or renders an override.
 func (a *App) reconcileSettingsOwnedAxes(t store.Thread, opts *provider.SessionOptions, launch provider.SessionOptions) {
 	opts.DisabledTools = launch.DisabledTools
 	opts.DisableTodoReminders = launch.DisableTodoReminders
+	opts.ClaudeMaxCommandTimeoutHours = launch.ClaudeMaxCommandTimeoutHours
 	// PINNED, and not for the usual reason: ConfigFromOptions never reads
 	// this field, so a fresh value could not queue a restart even if it
 	// wanted to. It is carried forward so launchOpts keeps describing the

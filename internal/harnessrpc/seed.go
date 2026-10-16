@@ -109,6 +109,10 @@ type HarnessSeedTurn struct {
 // (assistant_text, thinking, tool_call, command, command_output, error,
 // compaction). Unset fields get the same defaults the store applies.
 type HarnessSeedItem struct {
+	// ID names the row; empty mints one. A fixture sets it when another
+	// row's meta must name this one (an abandonment record's `item_ids`)
+	// or when the id itself is the contract (store.AbandonedBlocksRecordID).
+	ID       string          `json:"id,omitempty"`
 	Kind     string          `json:"kind"`
 	Role     string          `json:"role,omitempty"`   // default "assistant"
 	Status   string          `json:"status,omitempty"` // default "completed"
@@ -511,8 +515,12 @@ func seedItemRow(threadID string, turnIndex, itemIndex int, at int64, spec Harne
 	if role == "" {
 		role = "assistant"
 	}
+	id := spec.ID
+	if id == "" {
+		id = seedID()
+	}
 	item := store.Item{
-		ID:        seedID(),
+		ID:        id,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
 		ItemIndex: itemIndex,

@@ -5,6 +5,7 @@ import NewAssistantDialog from './NewAssistantDialog.svelte';
 import { closeNewAssistantDialog, openNewAssistantDialog } from '../../stores/newAssistant.svelte';
 import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
 import { getThreads } from '../../stores/threads.svelte';
+import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeThread } from '../../../test/helpers/chat';
@@ -53,6 +54,21 @@ describe('<NewAssistantDialog>', () => {
     }));
     await waitFor(() => expect(view.queryByTestId('new-assistant-dialog')).toBeNull());
     expect(getThreads().some((thread) => thread.id === 'assistant-thread')).toBe(true);
+  });
+
+  it('keeps the row a frame brought during the creation over the older reply', async () => {
+    const created = makeThread({ id: 'assistant-raced', title: 'Ops', projectId: 'p1', agentId: 'agent-1' });
+    setBindingMock('CreateAssistant', async () => {
+      applyThreadUpdated({ action: 'listed', thread: { ...created, title: 'Ops renamed meanwhile' } });
+      return created;
+    });
+    const view = render(NewAssistantDialog);
+    openNewAssistantDialog({ projectId: 'p1' });
+    await tick();
+    await fireEvent.input(view.getByTestId('new-assistant-name'), { target: { value: 'Ops' } });
+    await fireEvent.click(view.getByTestId('new-assistant-create'));
+    await waitFor(() => expect(view.queryByTestId('new-assistant-dialog')).toBeNull());
+    expect(getThreads().find((thread) => thread.id === 'assistant-raced')?.title).toBe('Ops renamed meanwhile');
   });
 
   it('asks for a new worktree by its branch name', async () => {

@@ -200,6 +200,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetUIState", ID: 3380106838, Scope: "session", Route: "home"},                                                     // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533, Scope: "threads:read", Route: "all"},                                              // main.App.GetUsageStats
 	{Name: "GetWSLDistroPreference", ID: 294719565, Scope: "host", Route: "home"},                                             // main.App.GetWSLDistroPreference
+	{Name: "GetWebviewGPUVsyncDisabled", ID: 1563269625, Scope: "host", Route: "home"},                                        // main.App.GetWebviewGPUVsyncDisabled
 	{Name: "GetWorkspaceActivity", ID: 673985705, Scope: "git:operate", Route: "selected"},                                    // main.App.GetWorkspaceActivity
 	{Name: "GitCheckout", ID: 1598126927, Scope: "git:operate", Route: "workspace"},                                           // main.App.GitCheckout
 	{Name: "GitCommit", ID: 1971060042, Scope: "git:operate", Route: "workspace"},                                             // main.App.GitCommit
@@ -357,6 +358,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RenameThread", ID: 727416435, Scope: "threads:operate", Route: "thread"},                                          // main.App.RenameThread
 	{Name: "RenameThreadGroup", ID: 723690026, Scope: "threads:operate", Route: "home"},                                       // main.App.RenameThreadGroup
 	{Name: "RenewCanonicalDomainCert", ID: 95139518, Scope: "host", Route: "home", Remote: true},                              // main.App.RenewCanonicalDomainCert
+	{Name: "ReorderProviderAccounts", ID: 2861245989, Scope: "access:admin", Route: "home"},                                   // main.App.ReorderProviderAccounts
 	{Name: "RepairBackendAddress", ID: 1188796788, Scope: "host", Route: "home", Remote: true},                                // main.App.RepairBackendAddress
 	{Name: "ReplyToPRThread", ID: 446243420, Scope: "git:operate", Route: "selected"},                                         // main.App.ReplyToPRThread
 	{Name: "ReportFrontendErrorBatch", ID: 2174329377, Scope: "host", Route: "home"},                                          // main.App.ReportFrontendErrorBatch
@@ -411,6 +413,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", Route: "thread", StepUp: true},               // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate", Route: "thread"},                                    // main.App.SetThreadPinGroup
 	{Name: "SetWSLDistroPreference", ID: 3978807241, Scope: "host", Route: "home", StepUp: true},                              // main.App.SetWSLDistroPreference
+	{Name: "SetWebviewGPUVsyncDisabled", ID: 4062584181, Scope: "host", Route: "home", StepUp: true},                          // main.App.SetWebviewGPUVsyncDisabled
 	{Name: "SetWindowBackgroundColor", ID: 3648660014, Scope: "host", Route: "home"},                                          // main.App.SetWindowBackgroundColor
 	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220, Scope: "settings:write", Route: "selected", StepUp: true},          // main.App.SetWorkspaceMcpServerEnabled
 	{Name: "ShutdownBackend", ID: 2115861089, Scope: "host", Route: "home"},                                                   // main.App.ShutdownBackend
@@ -451,6 +454,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UnpinThread", ID: 3175043037, Scope: "threads:operate", Route: "thread"},                                          // main.App.UnpinThread
 	{Name: "UnregisterPushToken", ID: 3065043012, Scope: "session", Route: "home"},                                            // main.App.UnregisterPushToken
 	{Name: "UnsubscribePRUpdates", ID: 2888550814, Scope: "git:operate", Route: "home"},                                       // main.App.UnsubscribePRUpdates
+	{Name: "UnwatchBackgroundTaskOutput", ID: 1941806085, Scope: "threads:read", Route: "thread"},                             // main.App.UnwatchBackgroundTaskOutput
 	{Name: "UpdateClientDeviceName", ID: 3406073706, Scope: "session", Route: "home"},                                         // main.App.UpdateClientDeviceName
 	{Name: "UpdateContextSettingsProfile", ID: 1472386383, Scope: "settings:write", Route: "home"},                            // main.App.UpdateContextSettingsProfile
 	{Name: "UpdateDiffReviewComment", ID: 2452201652, Scope: "threads:operate", Route: "thread"},                              // main.App.UpdateDiffReviewComment
@@ -475,6 +479,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "VerifyEditDiffs", ID: 3907724148, Scope: "files:read", Route: "thread"},                                           // main.App.VerifyEditDiffs
 	{Name: "Version", ID: 2431199839, Scope: "threads:read", Route: "home"},                                                   // main.App.Version
 	{Name: "WakeThreadWakeNow", ID: 777755931, Scope: "threads:operate", Route: "thread"},                                     // main.App.WakeThreadWakeNow
+	{Name: "WatchBackgroundTaskOutput", ID: 2263729048, Scope: "threads:read", Route: "thread"},                               // main.App.WatchBackgroundTaskOutput
 	{Name: "WorkflowAnswerQuestion", ID: 4150249282, Scope: "threads:autonomy", Route: "home"},                                // main.App.WorkflowAnswerQuestion
 	{Name: "WorkflowBindThread", ID: 1931806823, Scope: "threads:autonomy", Route: "home"},                                    // main.App.WorkflowBindThread
 	{Name: "WorkflowCancelItem", ID: 4158962817, Scope: "threads:autonomy", Route: "home"},                                    // main.App.WorkflowCancelItem

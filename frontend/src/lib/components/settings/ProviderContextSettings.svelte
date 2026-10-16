@@ -61,8 +61,8 @@
   data-settings-field={providerFieldId(provider, 'auto-compact')}
   data-settings-label="Auto-compact"
 >
-  <div class="flex items-baseline gap-2">
-    <span class="text-[0.65625rem] font-medium uppercase tracking-[0.16em] text-fg-hint">
+  <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+    <span class="whitespace-nowrap text-[0.65625rem] font-medium uppercase tracking-[0.16em] text-fg-hint">
       Auto-compact
     </span>
     <span class="text-[0.71875rem] text-fg-muted">

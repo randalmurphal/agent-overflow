@@ -31,11 +31,7 @@ func (a *App) threadTitleApplication() *threadtitleapp.Service {
 			Attachments: a.attachments,
 			Generate:    generator,
 			Applied: func(applied threadtitleapp.Applied) {
-				a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
-					Action: triage.ThreadActionPatch,
-					ID:     applied.ThreadID,
-					Title:  &applied.Title,
-				})
+				a.announceThreadPatch(applied.ThreadID, triage.ThreadUpdateEvent{Title: &applied.Title})
 				// A live Claude session with the peer inbox open advertises
 				// itself under the thread's title. No-op for other threads.
 				a.syncPeerSessionNameAsync(applied.ThreadID)

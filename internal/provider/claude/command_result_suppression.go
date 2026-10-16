@@ -341,3 +341,20 @@ func (s *Session) commandResultRowSuppressed(commandUUID, text string) bool {
 func (s *Session) releaseSuppressedCommandResult(commandUUID string) {
 	s.suppressedCommands.release(commandUUID)
 }
+
+// EffortSetReplyTier extracts the tier from the CLI's `/effort` success
+// reply ("Set effort level to xhigh (this session only): …"). It accepts
+// only IsLiveEffortTier values: "ultracode" and "auto" are real CLI tiers
+// with no thread-config representation, so ok is false for them and for
+// every other reply.
+func EffortSetReplyTier(text string) (string, bool) {
+	rest, ok := strings.CutPrefix(text, effortSetReplyPrefix)
+	if !ok {
+		return "", false
+	}
+	fields := strings.Fields(rest)
+	if len(fields) == 0 || !IsLiveEffortTier(fields[0]) {
+		return "", false
+	}
+	return fields[0], true
+}

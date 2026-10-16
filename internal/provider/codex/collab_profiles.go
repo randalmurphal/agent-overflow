@@ -14,8 +14,10 @@ import (
 )
 
 // scheduleCollabProfileRead resolves the effective profile from the child
-// thread itself. MultiAgentV2 activity items identify the child but omit its
-// model and reasoning effort. The spawn arguments are only requested values:
+// thread itself, for a child whose profile no started activity carried:
+// MultiAgentV2 activity items before codex 0.162 identify the child but omit
+// its model and reasoning effort, and a resumed session repairs children it
+// recovered without one. The spawn arguments are only requested values:
 // Codex can change them through defaults and role configuration before it
 // creates the child.
 func (s *Session) scheduleCollabProfileRead(providerThreadID, parentToolUseID string, launchMeta collabLaunchMeta) {

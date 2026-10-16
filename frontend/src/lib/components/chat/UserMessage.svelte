@@ -85,6 +85,11 @@
           testid: 'user-message-scheduled-origin',
           label: 'Scheduled',
         };
+      case 'codex-delegation':
+        return {
+          testid: 'user-message-codex-delegation-origin',
+          label: 'From another Codex thread',
+        };
       case 'agent-thread': {
         const origin = userMessageOriginThread(userMeta);
         if (!origin) return null;

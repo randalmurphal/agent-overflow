@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Item } from '../../types/models';
+  import AbandonedBlocksNotification from './AbandonedBlocksNotification.svelte';
   import APIErrorRow from './APIErrorRow.svelte';
   import APIRetryRow from './APIRetryRow.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
@@ -20,6 +21,7 @@
   import { agentMessageFromItem } from '../../utils/agentMessage';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { generatedImageRow } from '../../utils/generatedImageMeta';
+  import { ABANDONED_BLOCKS_NOTIFICATION_KIND, discardedItemIds } from '../../utils/discardedItems';
   import type { UserMessageActions } from './userMessageActions';
 
   let {
@@ -61,6 +63,16 @@
   // A user_text another agent wrote is not the person speaking: it renders
   // as an agent-message row (utils/agentMessage.ts), keyed on its origin.
   const agentMessage = $derived(agentMessageFromItem(displayItem));
+
+  // A streamed row Claude discarded after a stalled response. The server
+  // marks the row when it serves it (`discardedBy`), so the mark holds
+  // through reload, paging and window trimming whether or not the record
+  // row is loaded; a row still in the live window before the wire refresh
+  // re-pushes it is marked from the record (utils/discardedItems.ts).
+  const discarded = $derived(
+    (displayItem.kind === 'assistant_text' || displayItem.kind === 'thinking')
+      && (Boolean(displayItem.discardedBy) || discardedItemIds(pane.items).has(displayItem.id)),
+  );
 </script>
 
 <!-- kind / role / status ride the row root beside the id because the
@@ -71,12 +83,16 @@
      read straight off the resolved item so the DOM cannot disagree with
      what the pane thinks it rendered. Three attributes, no state, no
      cost: keep it that way rather than growing a per-renderer vocabulary
-     here. -->
+     here. `data-discarded` is the one derived fact beside them: it is not
+     on the item (the row is immutable history) but on the record row that
+     follows it, so a reader of the DOM can tell a discarded row without
+     reading two rows. -->
 <div
   data-item-id={displayItem.id}
   data-item-kind={displayItem.kind}
   data-item-role={displayItem.role}
   data-item-status={displayItem.status}
+  data-discarded={discarded ? 'true' : undefined}
 >
   {#if orphan}
     <div
@@ -106,7 +122,7 @@
   {:else if displayItem.kind === 'tool_call' || displayItem.kind === 'tool_completion'}
     <ToolCallCard {pane} item={displayItem} {codexSubagentReceiverLabels} />
   {:else if displayItem.kind === 'thinking'}
-    <ThinkingBlock {pane} item={displayItem} />
+    <ThinkingBlock {pane} item={displayItem} {discarded} />
   {:else if displayItem.kind === 'compaction_reasoning'}
     <CompactionReasoning {pane} item={displayItem} />
   {:else if displayItem.kind === 'command_result'}
@@ -119,6 +135,8 @@
   {:else if displayItem.kind === 'notification'}
     {#if notificationKind === 'session_died'}
       <SessionDiedNotification item={displayItem} />
+    {:else if notificationKind === ABANDONED_BLOCKS_NOTIFICATION_KIND}
+      <AbandonedBlocksNotification {pane} item={displayItem} />
     {:else}
       <NotificationRow item={displayItem} />
     {/if}
@@ -137,6 +155,6 @@
   {:else if displayItem.kind === 'assistant_text' && Array.isArray(parseJsonObject(displayItem.meta)?.questions)}
     <RenderBoundary label="Agent questions" testId="async-question-card-error"><AsyncQuestionCard item={displayItem} workspacePath={pane.thread?.worktreePath || pane.thread?.workspacePath || ''} /></RenderBoundary>
   {:else}
-    <AssistantMessage {pane} item={displayItem} />
+    <AssistantMessage {pane} item={displayItem} {discarded} />
   {/if}
 </div>

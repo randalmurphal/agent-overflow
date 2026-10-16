@@ -192,3 +192,47 @@ func TestRefreshTokenExpired(t *testing.T) {
 		})
 	}
 }
+
+// A login keeps working past its refresh deadline for as long as the last
+// access token issued before it lasts: only the renewal that follows fails.
+// The CLI renews five minutes before the access token expires.
+func TestLoginExpiresAt(t *testing.T) {
+	deadline := time.UnixMilli(1_800_000_000_000)
+	credential := func(accessExpiresAt time.Time) []byte {
+		return []byte(fmt.Sprintf(
+			`{"claudeAiOauth":{"expiresAt":%d,"refreshTokenExpiresAt":%d}}`,
+			accessExpiresAt.UnixMilli(), deadline.UnixMilli(),
+		))
+	}
+
+	// Renewed at 04:58 with a deadline of 08:00: works until 12:53.
+	lateToken := credential(deadline.Add(4*time.Hour + 58*time.Minute))
+	got, ok := LoginExpiresAt(lateToken)
+	if want := deadline.Add(4*time.Hour + 53*time.Minute); !ok || !got.Equal(want) {
+		t.Fatalf("LoginExpiresAt(late token) = %v, %v; want %v", got, ok, want)
+	}
+	if LoginExpired(lateToken, deadline.Add(time.Hour)) {
+		t.Fatal("a login with a live access token read as expired past its refresh deadline")
+	}
+	if !LoginExpired(lateToken, deadline.Add(4*time.Hour+53*time.Minute)) {
+		t.Fatal("a login inside the CLI's renewal margin past its deadline read as working")
+	}
+
+	// An access token that expires before the deadline leaves the deadline.
+	early := credential(deadline.Add(-time.Hour))
+	if got, ok := LoginExpiresAt(early); !ok || !got.Equal(deadline) {
+		t.Fatalf("LoginExpiresAt(early token) = %v, %v; want the deadline %v", got, ok, deadline)
+	}
+	if !LoginExpired(early, deadline) {
+		t.Fatal("the deadline itself belongs to the expired side")
+	}
+
+	// No recorded deadline is unknown, not expired.
+	unknown := []byte(fmt.Sprintf(`{"claudeAiOauth":{"expiresAt":%d}}`, deadline.UnixMilli()))
+	if _, ok := LoginExpiresAt(unknown); ok {
+		t.Fatal("LoginExpiresAt reported a deadline for bytes that name none")
+	}
+	if LoginExpired(unknown, deadline.Add(24*time.Hour)) {
+		t.Fatal("an unknown deadline read as expired")
+	}
+}

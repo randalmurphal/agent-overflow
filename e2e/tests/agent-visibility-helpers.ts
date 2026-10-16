@@ -182,14 +182,16 @@ export function taskStartedLine(
   taskId: string,
   toolUseId: string,
   description: string,
-  opts: { taskType?: string; ownedBySubagent?: boolean; prompt?: string } = {},
+  opts: { taskType?: string; ownedBySubagent?: boolean; prompt?: string; subagentType?: string } = {},
 ): string {
+  // The CLI names the agent's own type on every task_started of it, the
+  // launch's and each resume's.
   const envelope: Json = {
     type: 'system',
     subtype: 'task_started',
     task_id: taskId,
     description,
-    subagent_type: 'general-purpose',
+    subagent_type: opts.subagentType ?? 'general-purpose',
     task_type: opts.taskType ?? 'local_agent',
   };
   // A typed forked command's task names no tool_use (claude-wire.md §E9).
@@ -211,11 +213,12 @@ export function agentResumeLines(
   taskId: string,
   description: string,
   message: string,
+  subagentType?: string,
 ): string[] {
   const ack = `Agent "${taskId}" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes.`;
   return [
     toolUseLine(messageId, carrierToolUseId, 'SendMessage', { to: taskId, summary: 'follow up', message }),
-    taskStartedLine(taskId, carrierToolUseId, description, { prompt: message }),
+    taskStartedLine(taskId, carrierToolUseId, description, { prompt: message, subagentType }),
     toolResultLine(carrierToolUseId, [{ type: 'text', text: JSON.stringify({ success: true, message: ack, resumedAgentId: taskId }) }], {
       toolUseResult: { success: true, message: ack, resumedAgentId: taskId },
     }),
@@ -544,6 +547,7 @@ export interface Item {
   isBackground?: boolean;
   completionOf?: string;
   meta?: string;
+  payloadKind?: string;
   payloadMeta?: string;
 }
 

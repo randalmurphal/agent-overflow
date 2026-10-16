@@ -58,16 +58,19 @@ func claudeModelForContextWindow(model string, contextWindow int) string {
 }
 
 // ThinkingMode is the extended-thinking axis of a Claude launch config.
-// Three states, and their asymmetry is the whole reason the axis needs its
+// Two states, and their asymmetry is the whole reason the axis needs its
 // own type rather than a bare int:
 //
 //   - ThinkingDefault says nothing. The spawn passes no `--thinking` /
 //     `--max-thinking-tokens` and the CLI picks per model (adaptive where
 //     supported, its own budget otherwise).
-//   - ThinkingOff spawns `--thinking disabled` and lives as
-//     `set_max_thinking_tokens {max_thinking_tokens: 0}`.
 //   - ThinkingBudget spawns `--max-thinking-tokens N` and lives as
 //     `set_max_thinking_tokens {max_thinking_tokens: N}`.
+//
+// AO never disables thinking: every current Claude model is marked
+// `rejects_disabled_thinking` and the CLI swaps `--thinking disabled` for
+// adaptive thinking on them (2.1.300 catalog), so a mode for it would claim
+// a state no session runs.
 //
 // There is NO live form for the return to ThinkingDefault:
 // `max_thinking_tokens: null` is accepted and does nothing (spike-verified
@@ -77,7 +80,6 @@ type ThinkingMode string
 
 const (
 	ThinkingDefault ThinkingMode = ""
-	ThinkingOff     ThinkingMode = "off"
 	ThinkingBudget  ThinkingMode = "budget"
 )
 
@@ -93,18 +95,14 @@ const (
 // ThinkingConfig is the NORMALIZED thinking axis of a Config. Normalized
 // is load-bearing on two counts:
 //
-//   - Display is resolved for every mode but ThinkingOff, where it is
-//     blanked. Agent Overflow has always spawned
+//   - Display is always resolved. Agent Overflow has always spawned
 //     `--thinking-display summarized` so newer models' `omitted` default
 //     cannot silence the thinking pane, and that default has to be the
 //     same value on the spawn path and the live path or a live apply would
 //     "change" the display to something the process was already running.
-//     A DISABLED session has no display at all — the CLI drops the flag —
-//     so carrying one there would make two identical sessions compare
-//     unequal and buy a control request that changes nothing.
-//   - BudgetTokens is zero unless Mode is ThinkingBudget, for the same
-//     reason. PlanLiveUpdate diffs this struct by value, so anything that
-//     does not reach the process must not reach the struct either.
+//   - BudgetTokens is zero unless Mode is ThinkingBudget. PlanLiveUpdate
+//     diffs this struct by value, so anything that does not reach the
+//     process must not reach the struct either.
 //
 // Comparable by construction (two strings and an int) — LiveUpdate's
 // emptiness check depends on it.
@@ -118,19 +116,14 @@ type ThinkingConfig struct {
 // into the Config axis. A budget mode without a positive budget degrades to
 // ThinkingDefault rather than spawning `--max-thinking-tokens 0`, which the
 // CLI reads as DISABLED — the opposite of what an unfinished budget means.
-// (Settings validation refuses that shape first; this is the second wall,
+// Any other mode, including the retired "off", is ThinkingDefault.
+// (Settings validation refuses those shapes first; this is the second wall,
 // for any caller that builds SessionOptions directly.)
 func claudeThinkingFromOptions(thinking provider.ClaudeThinking) ThinkingConfig {
 	cfg := ThinkingConfig{Display: normalizeThinkingDisplay(thinking.Display)}
-	switch ThinkingMode(strings.TrimSpace(thinking.Mode)) {
-	case ThinkingOff:
-		cfg.Mode = ThinkingOff
-		cfg.Display = ""
-	case ThinkingBudget:
-		if thinking.BudgetTokens > 0 {
-			cfg.Mode = ThinkingBudget
-			cfg.BudgetTokens = thinking.BudgetTokens
-		}
+	if ThinkingMode(strings.TrimSpace(thinking.Mode)) == ThinkingBudget && thinking.BudgetTokens > 0 {
+		cfg.Mode = ThinkingBudget
+		cfg.BudgetTokens = thinking.BudgetTokens
 	}
 	return cfg
 }
@@ -147,29 +140,23 @@ func normalizeThinkingDisplay(display string) string {
 
 // thinkingArgs renders the spawn form of the thinking axis.
 //
-// The three flags are read on the CLI's ordinary startup path (verified by
+// The flags are read on the CLI's ordinary startup path (verified by
 // inspection of the 2.1.237 bundle: `--thinking`/`MAX_THINKING_TOKENS`/
 // `--max-thinking-tokens` resolve into the session's `thinkingConfig`
 // before any print-vs-interactive branch), so they apply to the stream-json
 // spawn exactly as they would to `claude -p`.
 //
-// Two CLI rules the shape below encodes:
+// `--thinking enabled` means ADAPTIVE, not "use my budget": a fixed budget
+// has exactly one flag, `--max-thinking-tokens`, deprecation notice in its
+// help text notwithstanding, and `--thinking` would outrank it, so AO never
+// sends `--thinking`.
 //
-//   - `--thinking enabled` means ADAPTIVE, not "use my budget". A fixed
-//     budget has exactly one flag, `--max-thinking-tokens`, deprecation
-//     notice in its help text notwithstanding.
-//   - `--thinking` outranks `--max-thinking-tokens`, so the two are never
-//     sent together.
-//
-// `--thinking-display` is dropped for a disabled session because the CLI
-// ignores it there; every other case carries it, which is what keeps the
+// `--thinking-display` rides every spawn, which is what keeps the
 // pre-existing always-summarized spawn behavior intact for users who never
 // touch the setting.
 func thinkingArgs(thinking ThinkingConfig) []string {
 	display := normalizeThinkingDisplay(thinking.Display)
 	switch thinking.Mode {
-	case ThinkingOff:
-		return []string{"--thinking", "disabled"}
 	case ThinkingBudget:
 		return []string{
 			"--max-thinking-tokens", strconv.Itoa(thinking.BudgetTokens),
@@ -215,6 +202,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		PermissionFlags:      claudePermissionFlags(opts.RuntimeMode),
 		DisallowedTools:      mergeDisallowedTools(claudeDisallowedTools(opts.RuntimeMode), opts.DisabledTools),
 		DisableTodoReminders: opts.DisableTodoReminders,
+		CommandTimeoutHours:  opts.ClaudeMaxCommandTimeoutHours,
 		BasePermissionMode:   claudeBasePermissionMode(opts.RuntimeMode),
 		InteractionMode:      opts.Mode,
 		AutoCompactPercent:   autoCompactPercent,

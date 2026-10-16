@@ -107,12 +107,12 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 		)
 		return provider.RateLimitsSnapshot{}, nil, errClaudeCredentialSignedOut
 	}
-	// Checked before the request, because the request's own failure mode is
-	// what does the damage: a 401 here escalates to the canonical refresh
-	// below, and a refresh past the refresh token's expiry is the invalid_grant
-	// that blanks the credential. A login whose session has ended has no usage
-	// worth that risk.
-	if claude.RefreshTokenExpired(credential, time.Now()) {
+	// A login that has stopped working (claude.LoginExpired) declines without
+	// spending a request. One past its refresh deadline whose access token is
+	// still live is working, and is read like any other: the request needs only
+	// the access token, and only the refresh a 401 escalates to below can do
+	// damage.
+	if claude.LoginExpired(credential, time.Now()) {
 		m.audit(
 			"claude account %s not refreshed: its login expired at %s",
 			selection.AccountID,
@@ -127,6 +127,16 @@ func (m *Manager) probeSelectedClaudeRateLimits(
 	)
 	if !errors.Is(err, claude.ErrOAuthUnauthorized) {
 		return snapshot, nil, err
+	}
+	// Past the refresh deadline the refresh answers invalid_grant and the CLI
+	// blanks the credential, so a rejected bearer ends here.
+	if claude.RefreshTokenExpired(credential, time.Now()) {
+		m.audit(
+			"claude account %s not refreshed: its login expired at %s",
+			selection.AccountID,
+			describeLoginExpiry(string(provider.Claude), credential),
+		)
+		return provider.RateLimitsSnapshot{}, nil, errClaudeLoginExpired
 	}
 
 	// A zero-turn probe against the canonical home is Claude's own refresh
@@ -278,10 +288,10 @@ func (m *Manager) probeInactiveClaudeRateLimits(
 	if claude.CredentialsSignedOut(credential) {
 		return provider.RateLimitsSnapshot{}, errClaudeCredentialSignedOut
 	}
-	// A login whose session has ended reports that, not stale usage: it is a
+	// A login that has stopped working reports that, not stale usage: it is a
 	// different instruction to the user (sign this account in) and a different
 	// card state (needs login, with the date it ended).
-	if claude.RefreshTokenExpired(credential, time.Now()) {
+	if claude.LoginExpired(credential, time.Now()) {
 		return provider.RateLimitsSnapshot{}, errClaudeLoginExpired
 	}
 	// Checked before the request, not after: an expired bearer earns a 401
@@ -297,8 +307,11 @@ func (m *Manager) probeInactiveClaudeRateLimits(
 		credential,
 	)
 	if errors.Is(err, claude.ErrOAuthUnauthorized) {
-		// The server disagrees with the stored expiry — same outcome, and
-		// still not ours to heal.
+		// The server disagrees with the stored expiry; still not ours to heal.
+		// Past the refresh deadline nothing can heal it but a sign-in.
+		if claude.RefreshTokenExpired(credential, time.Now()) {
+			return provider.RateLimitsSnapshot{}, errClaudeLoginExpired
+		}
 		return provider.RateLimitsSnapshot{}, errClaudeUsageStale
 	}
 	return snapshot, err

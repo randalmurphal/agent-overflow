@@ -16,8 +16,9 @@ import (
 // persists the old per-family event records (`user_message`, `agent_message`,
 // `agent_reasoning`, `patch_apply_end`, `mcp_tool_call_end`, `web_search_end`,
 // `sub_agent_activity`, `entered_review_mode`, `exited_review_mode`,
-// `context_compacted`) and only two item variants — Plan and the `clock.sleep`
-// extension item. In `paginated` mode that is inverted: NONE of those legacy
+// `context_compacted`) and only a few item variants: Plan, the `clock.sleep`
+// extension item, FunctionCallOutput (delegated input, delegation.go) and a
+// completed SubAgentActivity. In `paginated` mode that is inverted: NONE of those legacy
 // events are written and EVERY turn item is, as one
 // `event_msg/item_completed` line (codex-rs/rollout/src/policy.rs
 // `should_persist_event_msg`). A reader that only knew the legacy set imported
@@ -121,6 +122,15 @@ func (c *converter) applyItemCompleted(env envelope) {
 	// comment). Recognised and dropped, never counted as unknown.
 	case "usermessage", "hookprompt", "agentmessage", "reasoning":
 		return
+	case "functioncalloutput":
+		// A delegated input's twin (delegation.go). Any other output
+		// submitted as input stays unknown below.
+		var out delegatedOutputItem
+		if json.Unmarshal(p.Item, &out) == nil &&
+			isDelegatedInput(strings.TrimSpace(out.Namespace), strings.TrimSpace(out.Name)) {
+			c.emitDelegatedInput(strings.TrimSpace(out.ID), out.Output)
+			return
+		}
 	}
 
 	var item turnItem
@@ -320,7 +330,11 @@ func (c *converter) applyMCPToolCallItem(p itemCompletedPayload, item turnItem) 
 			Content json.RawMessage `json:"content"`
 		}
 		if json.Unmarshal(item.Result, &result) == nil {
-			ev.enrich.output, _ = contentText(result.Content)
+			if recovered, ok := recoverPersistedMCPText(result.Content); ok {
+				ev.enrich.output = recovered
+			} else {
+				ev.enrich.output, _ = contentText(result.Content)
+			}
 		}
 	}
 	c.applyItemEndEvent(p, ev)
@@ -516,7 +530,8 @@ func (c *converter) applySubAgentActivityItem(item turnItem) {
 	kind := strings.TrimSpace(item.Kind)
 	parent := c.toolItemIDs[eventID]
 	if kind == "started" {
-		parent = c.recordSubagentStart(eventID, agentPath, agentThreadID)
+		profile := subagentProfile{model: strings.TrimSpace(item.Model), reasoningEffort: strings.TrimSpace(item.ReasoningEffort)}
+		parent = c.recordSubagentStart(eventID, agentPath, agentThreadID, profile)
 	}
 	if kind == "interacted" {
 		c.emitCollabInteraction(eventID, agentPath, agentThreadID)

@@ -35,6 +35,16 @@ workaround because it changes the sandbox boundary.
 Measurement methods and interpretation belong in
 [the performance reference](../.claude/skills/perf-investigation/REFERENCE.md).
 
+Chromium's vblank frame pacing stays the default on Windows. A machine
+driving monitors at different refresh rates can present every slow glide
+with a periodic hitch that no animation-frame trace shows; Settings >
+Performance > Disable GPU vsync opts that machine into timer pacing
+(`--disable-gpu-vsync` on the app window and the browser pane, applied on
+the next launch). It is an opt-in, not a default or an automatic detection,
+because vblank pacing is the better clock wherever it works. The scroll
+spring is not the lever for this symptom: a CSS animation with no JavaScript
+hitches the same way.
+
 ## Background maintenance
 
 Nothing the app does to maintain its own storage may be noticeable. No visible
@@ -112,6 +122,13 @@ Mechanism in
   anything outside the window is one page away and scrolling toward it
   always loads (an upward gesture pages older even at the very top and in
   a window too short for the scroll geometry to express direction).
+- Text Claude discards after a stalled response (`abandoned_blocks`,
+  [claude-wire.md §abandoned_blocks](references/claude-wire.md#abandoned_blocks-a-response-cut-short-21300)) stays in
+  the timeline as it streamed, muted, with a note after it; the reply
+  continues below. Nothing disappears and nothing re-streams in its place
+  (ruling 2026-10-16). The rows are not rewritten: the note is its own row
+  naming them, and a read of a row it names serves the row marked
+  (`Item.discardedBy`) whether or not the note is in the loaded window.
 
 ## Sidebar, threads, drafts
 
@@ -306,7 +323,9 @@ Mechanism in
   `summary`, written with the card; a later notification of the same stop
   can give an answerless card its report but never replaces or clears one
   (ruling 2026-09-25). A command's `output_file` is still read into the
-  bounded `command_output` payload.
+  bounded `command_output` payload, and followed live in the tray while
+  the command runs: the app tails the file itself, never through the
+  CLI's `TaskOutput`.
 - Monitor idle-wake: the CLI writes `<task-notification>` to the
   transcript only. A transcript-tail backfill was proposed and declined.
 - A Claude Stop kills every running or parked background agent, from any
@@ -392,11 +411,27 @@ Mechanism in
   (`internal/provideraccounts/AGENTS.md` has the case table).
 - A model that exists only as probe enrichment (`claude-fable-5-1`) is not
   added to the hand catalog; the point of enrichment is that a new model
-  needs no release (see `internal/claudemodels/AGENTS.md`).
+  needs no release (see `internal/claudemodels/AGENTS.md`). The exception is
+  a model whose context windows the nearest catalog family gets wrong, since
+  the CLI reports none (`claude-haiku-5-5`, 1M against Haiku 4.5's 200k).
+- Model pickers offer what the provider's latest model list offers, plus any
+  model a thread ran in the last week, and start new threads on the
+  provider's own default. Before the first answer they offer the shipped
+  list. Rows the list omits stay for capability lookup, so threads already on
+  them keep running; a model the provider truly withdrew fails in the
+  timeline (ruling 2026-10-15).
+- A new thread starts on 1M on every model that offers it, Claude and Codex,
+  including models where a long prompt costs more (Haiku 5.5 over 100k
+  tokens); 200k stays selectable (ruling 2026-10-15).
 - Model inputs are full model IDs. AO keeps no alias table: a Claude alias
   (`opus`, `sonnet`) is refused as input with the offered IDs, and a Codex
   slug is passed as written for Codex to judge. An alias the CLI reports back
   is read only through its own model list (`internal/provider/AGENTS.md`).
+- A sign-in in Agent Overflow never switches accounts: it renews the saved
+  account its login belongs to or adds a new one at the bottom. Only the
+  first account on a machine becomes active by signing in. Saved accounts
+  stay in the order the user drags them into; being active does not move a
+  card.
 - Claude usage meters read only `/api/oauth/usage`. The stdio
   `rate_limit_event` (including 2.1.257 `unifiedWindows`) is not a quota
   source: it names no account, and responses to requests sent before an
@@ -436,6 +471,14 @@ Mechanism in
   "system prompt changed" banner with Restart; a later change shows it again,
   and a restart or the session's death withdraws it. The stale-binary banner
   is dismissible the same way (2026-10-14; same spec §Reconcile semantics).
+- When Claude Code leaves auto on a model without auto mode, the thread's
+  runtime mode follows what the CLI runs, with a warning notice. No other
+  mode the CLI moves to on its own changes the thread's access. Switching
+  back to a model whose remembered settings carry Auto restores Auto with a
+  notice of its own (rulings 2026-10-15 and 2026-10-16; `claude-wire.md`
+  §system/status).
+- Claude offers no thinking-off setting: current models reject disabled
+  thinking and the CLI runs adaptive thinking instead (ruling 2026-10-15).
 - Cursor as a provider: `docs/specs/cursor-provider.md`.
 
 ## Workflows

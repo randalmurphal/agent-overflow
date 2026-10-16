@@ -240,7 +240,10 @@ export interface ContentObserver {
    * budget.
    */
   sampleResizeCorrelation(): boolean;
-  /** Raw resizeDifference read for trace data only. */
+  /**
+   * Raw resizeDifference: the content height delta of the latest resize,
+   * until its clear. Read by intent's arrival check and trace data.
+   */
   resizeDifferenceNow(): number;
   /**
    * Open the pinned-remeasure settle window: the controller just wrote a

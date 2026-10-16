@@ -807,6 +807,14 @@ export class Item {
      * CompletionLaunch is read-time presentation context, never an additional timeline row.
      */
     "completionLaunch"?: Item | null;
+
+    /**
+     * DiscardedBy is the id of the abandonment record naming this row as
+     * one Claude discarded after a stalled response (discarded_rows.go).
+     * Read-time, never stored: a page serves the row marked whether or not
+     * it holds the record.
+     */
+    "discardedBy"?: string;
     "id": string;
     "threadId": string;
     "turnIndex": number;

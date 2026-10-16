@@ -119,6 +119,11 @@ export {
   // tool_use_id (the launch ROW id), not the task id StopClaudeTask
   // takes — Codex has no equivalent.
   BackgroundClaudeTask,
+  // The live tail of a running Claude background command's output file,
+  // for the tray row a user expanded: one watch per launch per client,
+  // released on collapse (stores/backgroundTaskOutput.svelte.ts owns both).
+  WatchBackgroundTaskOutput,
+  UnwatchBackgroundTaskOutput,
 
   // Codex thread operations the composer's `/compact` and `/review`
   // commands drive. Both are LOCAL-ONLY, both need a live session, and
@@ -193,6 +198,7 @@ export {
   CancelProviderLogin,
   SwitchProviderAccount,
   RemoveProviderAccount,
+  ReorderProviderAccounts,
   RefreshProviderAccountUsage,
 
   // Per-client UI view state (ui_state table) behind stores/appStorage.ts.
@@ -266,6 +272,10 @@ export {
   ListWSLDistros,
   GetWSLDistroPreference,
   SetWSLDistroPreference,
+  // Launcher GPU vsync preference (Settings → Performance), stored in the
+  // same wsl.json; the launcher reads it on its next start.
+  GetWebviewGPUVsyncDisabled,
+  SetWebviewGPUVsyncDisabled,
 
   // Host app launchers: editor, browser URL opener, catalog, persistence.
   OpenInEditor,
@@ -693,7 +703,8 @@ export {
   Settings as NetworkSettings,
 } from '../../../bindings/agent-overflow/internal/network/models.js';
 // One result per launch a Stop All named; read, never constructed.
-export type { BackgroundTaskStop } from '../../../bindings/agent-overflow/internal/app/models.js';// Dev-server rows are read-only views of one machine's scan, never
+export type { BackgroundTaskStop } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { Snapshot as BackgroundTaskOutputSnapshot } from '../../../bindings/agent-overflow/internal/tasktail/models.js';// Dev-server rows are read-only views of one machine's scan, never
 // constructed by a component.
 export type {
   DevServer,

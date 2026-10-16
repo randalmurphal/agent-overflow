@@ -128,6 +128,9 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	// probe would send it to the real API: on hosts without network
 	// isolation (macOS, Windows) that is an outbound call from a test run.
 	a.rateLimitProbeClientOverride = isolatedHTTPClient
+	// A sign-in or link opened from a loopback page would otherwise start the
+	// developer's own browser.
+	a.externalURLsIsolated = true
 	// Outside the test network namespace the LAN is the developer's: a LAN
 	// bind stays on loopback and no multicast is sent (network.Reach).
 	a.netReach = network.IsolatedReach()

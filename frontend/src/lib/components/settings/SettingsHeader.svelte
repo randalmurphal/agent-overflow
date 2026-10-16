@@ -37,10 +37,10 @@
 </script>
 
 <header class="mb-3 flex flex-col gap-0.5 last:mb-0">
-  <div class="flex items-baseline gap-2.5">
-    <h3 class="text-[0.9375rem] font-semibold tracking-tight text-fg">{title}</h3>
+  <div class="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+    <h3 class="shrink-0 text-[0.9375rem] font-semibold tracking-tight text-fg">{title}</h3>
     {#if badge}
-      <span class="ml-auto">{@render badge()}</span>
+      <span class="ml-auto min-w-0">{@render badge()}</span>
     {/if}
   </div>
   {#if description}

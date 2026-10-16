@@ -164,6 +164,31 @@ func mapProviderAccountLoginError(
 	return errProviderAccountNeedsLogin(providerName, account)
 }
 
+// ReorderProviderAccounts sets the order one provider's saved accounts are
+// listed in. accountIDs names every saved account exactly once; a list that
+// does not is a stale client and is refused with
+// provideraccounts.ErrAccountOrderStale. Order is presentation only, so the
+// selection and its generation are untouched.
+func (m *Manager) ReorderProviderAccounts(providerName string, accountIDs []string) error {
+	if m.shuttingDown() {
+		return m.shutdownError()
+	}
+	if err := ValidateProvider(providerName); err != nil {
+		return err
+	}
+	if m.store == nil {
+		return errors.New("provider account storage is unavailable")
+	}
+	m.mu.Lock()
+	err := m.store.Reorder(providerName, accountIDs)
+	m.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	m.emitProviderAccountsChanged()
+	return nil
+}
+
 func (m *Manager) SwitchProviderAccount(providerName, accountID string) (ManagedAccount, error) {
 	if m.shuttingDown() {
 		return ManagedAccount{}, m.shutdownError()
@@ -476,34 +501,34 @@ func (m *Manager) adoptCurrentProviderAccount(
 	providerName string,
 	info provider.AccountInfo,
 	credential *provideraccounts.CredentialSnapshot,
-) (provideraccounts.Account, bool, error) {
+) (provideraccounts.Account, SignIn, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.store == nil || m.credentials == nil {
-		return provideraccounts.Account{}, false, nil
+		return provideraccounts.Account{}, SignIn{}, nil
 	}
 	if credential == nil {
-		return provideraccounts.Account{}, false, nil
+		return provideraccounts.Account{}, SignIn{}, nil
 	}
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
 		credential.Data,
 	); err != nil {
-		return provideraccounts.Account{}, false, err
+		return provideraccounts.Account{}, SignIn{}, err
 	}
 	if _, hasActive := m.store.Active(providerName, time.Now()); !hasActive &&
 		strings.TrimSpace(info.Email) == "" {
 		accountID := uuid.NewString()
 		saved, err := m.credentials.CaptureAccountCredential(providerName, accountID)
 		if err != nil {
-			return provideraccounts.Account{}, false, err
+			return provideraccounts.Account{}, SignIn{}, err
 		}
 		if err := m.credentials.WriteAccountCredential(
 			providerName,
 			accountID,
 			credential.Data,
 		); err != nil {
-			return provideraccounts.Account{}, false, fmt.Errorf(
+			return provideraccounts.Account{}, SignIn{}, fmt.Errorf(
 				"save existing %s credentials: %w",
 				providerName,
 				err,
@@ -514,27 +539,27 @@ func (m *Manager) adoptCurrentProviderAccount(
 		)
 		if err != nil {
 			cleanupErr := m.credentials.RestoreAccountCredential(saved)
-			return provideraccounts.Account{}, false, errors.Join(err, cleanupErr)
+			return provideraccounts.Account{}, SignIn{}, errors.Join(err, cleanupErr)
 		}
 		account = m.withRecordedLoginExpiry(account, credential.Data)
 		m.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
-		return account, true, nil
+		return account, SignIn{Provider: providerName, Account: account, Added: true, Active: true}, nil
 	}
-	account, changed, err := m.reconcileObservedAccountLocked(
+	account, signIn, _, err := m.reconcileObservedAccountLocked(
 		providerName,
 		info,
 		*credential,
 	)
 	if err != nil {
-		return provideraccounts.Account{}, false, err
+		return provideraccounts.Account{}, SignIn{}, err
 	}
 	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
-	return account, changed, nil
+	return account, signIn, nil
 }
 
-func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary string) error {
+func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary string) (SignIn, error) {
 	if _, ok := m.store.Active(providerName, time.Now()); ok {
-		return nil
+		return SignIn{}, nil
 	}
 	// Identifying an expired login costs it: the probe is a CLI start, the CLI
 	// starts by refreshing, and that refresh answers invalid_grant and blanks
@@ -545,29 +570,29 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	// refusing here would lock the user out of the very sign-in that repairs
 	// it.
 	if expired, err := m.canonicalLoginExpired(providerName); err != nil {
-		return err
+		return SignIn{}, err
 	} else if expired {
 		m.audit(
 			"skipped adopting the canonical %s login: its login has expired and probing it would sign it out",
 			providerName,
 		)
-		return nil
+		return SignIn{}, nil
 	}
 	info, credential, err := m.runStableAccountProbe(
 		providerName,
 		m.canonicalProviderAccountProbe(providerName, binary),
 	)
 	if err != nil {
-		return err
+		return SignIn{}, err
 	}
 	if credential == nil {
-		return nil
+		return SignIn{}, nil
 	}
 	if err := m.verifyCanonicalProviderCredentialLocked(
 		providerName,
 		credential.Data,
 	); err != nil {
-		return err
+		return SignIn{}, err
 	}
 	// Resolve the account ID before writing the credential. A canonical
 	// login we are adopting may already be saved under this identity from
@@ -578,7 +603,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	m.backfillCodexOrgIDs(providerName, info.Email)
 	existing, found, err := m.findAccountByObservedIdentity(providerName, info)
 	if err != nil {
-		return fmt.Errorf(
+		return SignIn{}, fmt.Errorf(
 			"resolve current %s login %s against saved accounts: %w",
 			providerName,
 			DescribeObservedAccount(info),
@@ -590,7 +615,7 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 	}
 	saved, err := m.credentials.CaptureAccountCredential(providerName, accountID)
 	if err != nil {
-		return err
+		return SignIn{}, err
 	}
 	restore := func() {
 		if cleanupErr := m.credentials.RestoreAccountCredential(saved); cleanupErr != nil {
@@ -603,15 +628,16 @@ func (m *Manager) adoptCanonicalProviderAccountLocked(providerName, binary strin
 		credential.Data,
 	); err != nil {
 		restore()
-		return err
+		return SignIn{}, err
 	}
-	if _, err := m.store.UpsertAndActivate(AccountFromInfo(accountID, providerName, info)); err != nil {
+	account, err := m.store.UpsertAndActivate(AccountFromInfo(accountID, providerName, info))
+	if err != nil {
 		restore()
-		return err
+		return SignIn{}, err
 	}
-	m.recordLoginExpiry(providerName, accountID, credential.Data)
+	account = m.withRecordedLoginExpiry(account, credential.Data)
 	m.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
-	return nil
+	return SignIn{Provider: providerName, Account: account, Added: !found, Active: true}, nil
 }
 
 // rollbackProviderAccountActivation reinstates currentID's credential as

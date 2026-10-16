@@ -37,7 +37,11 @@ const (
 	// pick the cheapest/fastest tier — textgen runs are short structured
 	// outputs (titles, commit messages), not reasoning work.
 	DefaultCodexModel  = "gpt-6-luna"
-	DefaultClaudeModel = "claude-haiku-4-5"
+	DefaultClaudeModel = "claude-haiku-5-5"
+	// FallbackClaudeModel replaces DefaultClaudeModel when the installed
+	// Claude CLI has not listed it: a CLI older than the model cannot
+	// shape its thinking request.
+	FallbackClaudeModel = "claude-haiku-4-5"
 )
 
 // PickAvailableProvider returns the preferred provider's name when its

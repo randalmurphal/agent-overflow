@@ -44,13 +44,13 @@ func (m *Manager) beginLogin(providerName string) (*loginAttempt, error) {
 	reconcileMu := m.reconcileMutex(providerName)
 	reconcileMu.Lock()
 	m.mu.Lock()
-	if err := m.adoptCanonicalProviderAccountLocked(providerName, binary); err != nil {
-		m.mu.Unlock()
-		reconcileMu.Unlock()
-		return nil, fmt.Errorf("preserve current %s account: %w", providerName, err)
-	}
+	adopted, err := m.adoptCanonicalProviderAccountLocked(providerName, binary)
 	m.mu.Unlock()
 	reconcileMu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("preserve current %s account: %w", providerName, err)
+	}
+	m.emitReconciledSignIn(adopted)
 
 	home, err := m.credentials.NewEphemeralHome(providerName)
 	if err != nil {
@@ -73,8 +73,11 @@ func (a *loginAttempt) cleanup() error {
 }
 
 // adoptLogin verifies what the provider's sign-in wrote into the temporary
-// home, retains only the resulting native credential, atomically activates it,
-// and registers non-secret metadata.
+// home, retains only the resulting native credential, and registers
+// non-secret metadata. The login's identity decides where it lands: a saved
+// account is renewed in place and a new one is appended. Only a login for the
+// selected account, or the first login when nothing is selected, replaces
+// the canonical credential; a sign-in never switches accounts.
 func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr error) {
 	providerName := attempt.provider
 	binary := attempt.binary
@@ -145,6 +148,34 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	if found {
 		targetID = existing.ID
 	}
+	current, hasCurrent := m.store.Active(providerName, time.Now())
+	currentID := ""
+	if hasCurrent {
+		currentID = current.ID
+	}
+	if hasCurrent && currentID != targetID {
+		account, err := m.saveLoginBesideActiveLocked(
+			providerName,
+			targetID,
+			found,
+			info,
+			loginCredential.Data,
+		)
+		if err != nil {
+			return ManagedAccount{}, err
+		}
+		generation := m.store.Generation(providerName)
+		m.mu.Unlock()
+		accountLocked = false
+		reconcileMu.Unlock()
+		reconcileLocked = false
+		m.emitProviderAccountsChanged()
+		m.emitSignIn(SignIn{Provider: providerName, Account: account, Added: !found, Renewed: found})
+		if err := m.RefreshProviderAccountUsage(providerName, account.ID); err != nil {
+			m.publishUsageError(providerName, account.ID, err)
+		}
+		return ManagedAccount{Account: account, Generation: generation}, nil
+	}
 	// Capture before the write so a failure downstream restores exactly
 	// what was here — including the case where re-logging into a saved
 	// account finds its slot momentarily unreadable. Rolling that back by
@@ -164,11 +195,6 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 		return m.credentials.RestoreAccountCredential(savedTarget)
 	}
 
-	current, hasCurrent := m.store.Active(providerName, time.Now())
-	currentID := ""
-	if hasCurrent {
-		currentID = current.ID
-	}
 	preserveID, currentCredential, err := m.reconciledActiveCredentialLocked(
 		providerName,
 		currentID,
@@ -245,10 +271,52 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	// A sign-in adds a card, which no per-account frame can express.
 	m.emitProviderAccountsChanged()
 	m.applySelection(providerName, generation, account.ID)
+	m.emitSignIn(SignIn{
+		Provider: providerName, Account: account, Added: !found, Renewed: found, Active: true,
+	})
 	if err := m.RefreshProviderAccountUsage(providerName, account.ID); err != nil {
 		// Login and activation succeeded. Quota refresh is independently
 		// retryable from Settings and must not roll the account back.
 		m.publishUsageError(providerName, account.ID, err)
 	}
 	return ManagedAccount{Account: account, Active: true, Generation: generation}, nil
+}
+
+// saveLoginBesideActiveLocked lands a login for an account other than the
+// selected one in that account's slot, renewing a saved account or appending
+// a new one. The canonical credential, the selection and its generation are
+// untouched, so nothing running on the selected account notices. The caller
+// holds mu.
+func (m *Manager) saveLoginBesideActiveLocked(
+	providerName string,
+	accountID string,
+	saved bool,
+	info provider.AccountInfo,
+	credential []byte,
+) (provideraccounts.Account, error) {
+	previous, err := m.credentials.CaptureAccountCredential(providerName, accountID)
+	if err != nil {
+		return provideraccounts.Account{}, err
+	}
+	if err := m.credentials.WriteAccountCredential(providerName, accountID, credential); err != nil {
+		return provideraccounts.Account{}, fmt.Errorf("save %s login credentials: %w", providerName, err)
+	}
+	metadata := AccountFromInfo(accountID, providerName, info)
+	var account provideraccounts.Account
+	if saved {
+		account, err = m.store.UpdateMetadata(metadata)
+	} else {
+		account, err = m.store.Add(metadata)
+	}
+	if err != nil {
+		if restoreErr := m.credentials.RestoreAccountCredential(previous); restoreErr != nil {
+			return provideraccounts.Account{}, fmt.Errorf(
+				"%w (saved credential rollback also failed: %v)",
+				err,
+				restoreErr,
+			)
+		}
+		return provideraccounts.Account{}, err
+	}
+	return m.withRecordedLoginExpiry(account, credential), nil
 }

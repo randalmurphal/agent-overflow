@@ -152,6 +152,14 @@ func (s *Session) readLoop() {
 					s.replaceAdvertisedCommands(names)
 				}
 			}
+			if evt.Kind == provider.EventPermissionModeChanged && !s.filterPermissionModeEvent(evt) {
+				s.noteReadLoopProgress()
+				continue
+			}
+			var initDrop *provider.ProviderEvent
+			if evt.Kind == provider.EventInit {
+				initDrop = s.initPermissionModeDrop(evt)
+			}
 			if evt.Kind == provider.EventApprovalRequest && evt.ItemID != "" {
 				s.trackPendingApproval(evt.ItemID, provider.EventApprovalResolved)
 			}
@@ -161,6 +169,9 @@ func (s *Session) readLoop() {
 				s.trackPendingApprovalWithQuestions(evt.ItemID, provider.EventUserInputResolved, request.Questions)
 			}
 			s.onEvent(evt)
+			if initDrop != nil {
+				s.onEvent(*initDrop)
+			}
 			s.noteReadLoopProgress()
 		}
 	}

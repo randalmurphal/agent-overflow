@@ -209,7 +209,12 @@ func (a *App) markThreadFocused(threadID string) {
 		// on one device clears the Completed pill on the others. A focus
 		// that found the marker already current changes nothing and stays
 		// off the wire, which is the common case.
-		a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+		// The frame waits on the life context, not the stamp's deadline: a
+		// slow announcement still reaches clients, and only shutdown, which
+		// cancels the life context before joining the stamps, drops it.
+		if changed {
+			a.threadAnnouncer().AnnounceWithin(a.lifeCtx(), a.emitEvent, triage.ThreadActionFull, row.ID)
+		}
 	}()
 }
 

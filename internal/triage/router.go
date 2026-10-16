@@ -47,6 +47,9 @@ type TurnMetrics struct {
 type Router struct {
 	store *store.Store
 	emit  func(channel eventchan.Channel, data any) // wraps app.Event.Emit
+	// announcer builds the router's thread:updated row frames; the App
+	// replaces it with the process's shared one (SetThreadAnnouncer).
+	announcer *ThreadAnnouncer
 	// usageWorkItemResolver attributes phase-thread usage rows to a
 	// workflow run at append time; the app installs it once the
 	// workflow engine is wired (SetUsageWorkItemResolver).
@@ -336,7 +339,7 @@ func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 	te, _ := noopMeter.Int64Counter("turns.errored")
 	ip, _ := noopMeter.Int64Counter("items.persisted")
 	pp, _ := noopMeter.Int64Counter("payloads.persisted")
-	return &Router{
+	r := &Router{
 		store:  st,
 		emit:   emit,
 		tracer: tracenoop.NewTracerProvider().Tracer("triage/router"),
@@ -361,6 +364,15 @@ func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 			usageEmit:            usageEmitMinInterval,
 		},
 	}
+	r.announcer = NewThreadAnnouncer(func(threadID string) (store.Thread, error) { return r.store.GetThread(threadID) })
+	return r
+}
+
+// SetThreadAnnouncer replaces the router's own announcer with the one the
+// rest of the process announces through, so its frames are ordered with
+// theirs (see ThreadAnnouncer).
+func (r *Router) SetThreadAnnouncer(announcer *ThreadAnnouncer) {
+	r.announcer = announcer
 }
 
 // routerDelays are the intervals of the router's timers: the deferred
@@ -519,6 +531,8 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 			return r.settleCompactionReasoning(evt)
 		}
 		return r.handleContentBlockStop(evt)
+	case provider.EventBlocksAbandoned:
+		return r.handleBlocksAbandoned(evt)
 	case provider.EventSessionStatus:
 		return r.handleSessionStatus(evt)
 	case provider.EventRateLimits:
@@ -605,6 +619,11 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		// timeline record; the thread's workspace columns are owned by the
 		// app's worktree transactions (app_worktree_follow.go), which the
 		// session event handler dispatches to. Nothing to persist here.
+		return nil
+	case provider.EventPermissionModeChanged:
+		// The thread's runtime mode is a thread-row column the app owns
+		// (app_claude_permission_mode.go), and the app posts the notice
+		// row. Nothing to persist here.
 		return nil
 	default:
 		// No-op: the event has no routing decision. Return the sentinel so
@@ -1341,16 +1360,14 @@ const (
 	ThreadActionDeleted  = "deleted"
 )
 
+// emitThreadPatch announces fields of a write already committed, through
+// the process's one ThreadAnnouncer so it is ordered with every row frame.
 func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
-	patch.Action = ThreadActionPatch
-	patch.ID = threadID
-	r.emit(eventchan.ThreadUpdated, patch)
+	r.announcer.AnnouncePatch(r.emit, threadID, patch)
 }
 
-// emitThreadRow re-reads the thread through the standard projection and
-// broadcasts it as a `full` row — the triage-side twin of
-// App.broadcastThreadRow, so the two halves of the app announce a changed
-// row the same way.
+// emitThreadRow announces the thread's row as a `full` frame, through the
+// process's one ThreadAnnouncer.
 //
 // It exists because `threadColumns` computes derived sidebar state
 // (hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn) that a turn can change
@@ -1360,19 +1377,12 @@ func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
 //
 // The projection's subqueries make this heavier than emitThreadPatch's
 // field patch, which is why it is reserved for settle-frequency moments (a
-// plan landing) and never called per streaming chunk. Log-and-continue on a
-// read failure: the write that prompted the broadcast already succeeded and
-// the sidebar converges on the next ListThreads.
+// plan landing) and never called per streaming chunk.
 func (r *Router) emitThreadRow(threadID string) {
 	if r.store == nil || threadID == "" {
 		return
 	}
-	row, err := r.store.GetThread(threadID)
-	if err != nil {
-		log.Printf("triage: read thread row for %s: %v", threadID, err)
-		return
-	}
-	r.emit(eventchan.ThreadUpdated, ThreadUpdateEvent{Action: ThreadActionFull, Thread: &row})
+	r.announcer.Announce(r.emit, ThreadActionFull, threadID)
 }
 
 // ThreadErrorNoticeEvent announces that a row of kind `error` was

@@ -61,7 +61,7 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 			Summary:   evt.Content,
 			PayloadID: payloadID,
 			ParentID:  eventParentID(evt),
-			Meta:      withProviderItemMeta(validJSONObjectString(evt.Meta), evt.ItemID),
+			Meta:      r.withStreamBlockMeta(withProviderItemMeta(validJSONObjectString(evt.Meta), evt.ItemID), evt.ThreadID, turnIndex, scope, itemID),
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
@@ -146,7 +146,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 			Summary:   ThinkingSummaryPreview(evt.Content),
 			PayloadID: payloadID,
 			ParentID:  eventParentID(evt),
-			Meta:      withProviderItemMeta(validJSONObjectString(evt.Meta), evt.ItemID),
+			Meta:      r.withStreamBlockMeta(withProviderItemMeta(validJSONObjectString(evt.Meta), evt.ItemID), evt.ThreadID, turnIndex, scope, itemID),
 			CreatedAt: now,
 			UpdatedAt: now,
 		}

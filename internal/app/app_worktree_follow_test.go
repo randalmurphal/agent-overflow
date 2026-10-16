@@ -49,6 +49,13 @@ func (r *threadRowRecorder) hook(name string, data any) {
 	r.mu.Unlock()
 }
 
+// snapshot returns every thread:updated frame recorded, in emit order.
+func (r *threadRowRecorder) snapshot() []triage.ThreadUpdateEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]triage.ThreadUpdateEvent(nil), r.events...)
+}
+
 func (r *threadRowRecorder) fullRowsFor(threadID string) []store.Thread {
 	r.mu.Lock()
 	defer r.mu.Unlock()

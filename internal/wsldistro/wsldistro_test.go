@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -225,5 +226,32 @@ func TestConfigRoundTripsInstalledBinPath(t *testing.T) {
 	}
 	if got == nil || got.InstalledBinPath != want.InstalledBinPath {
 		t.Fatalf("InstalledBinPath = %+v, want %q", got, want.InstalledBinPath)
+	}
+}
+
+func TestConfigRoundTripsDisableGPUVsync(t *testing.T) {
+	dir := t.TempDir()
+	if err := Save(dir, &Config{Distro: "Ubuntu", InstalledSHA256: "abc", DisableGPUVsync: true}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got == nil || !got.DisableGPUVsync || got.Distro != "Ubuntu" || got.InstalledSHA256 != "abc" {
+		t.Fatalf("Load = %+v, want DisableGPUVsync=true with the other fields intact", got)
+	}
+	// Off is the default and is omitted on disk, so a file written before
+	// the field existed reads as off.
+	got.DisableGPUVsync = false
+	if err := Save(dir, got); err != nil {
+		t.Fatalf("save off: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "disable_gpu_vsync") {
+		t.Fatalf("off value should be omitted, got %s", raw)
 	}
 }

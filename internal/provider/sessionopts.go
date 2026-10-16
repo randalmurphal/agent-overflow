@@ -81,7 +81,7 @@ func NormalizeInteractionMode(mode string) InteractionMode {
 // not import this package (see internal/settings/AGENTS.md §Anti-patterns);
 // the app layer converts between them at its single stamping site.
 //
-// Mode is "" (leave it to the CLI), "off", or "budget"; BudgetTokens is
+// Mode is "" (leave it to the CLI) or "budget"; BudgetTokens is
 // meaningful only with "budget"; Display is "", "summarized" or "omitted".
 // Validation lives in internal/settings — this is a transport shape, and
 // internal/provider/claude re-normalizes what it renders anyway.
@@ -188,6 +188,13 @@ type SessionOptions struct {
 	// applySettingsOwnedAxes and the reconcile path pins it to the live
 	// session's launch value (reconcileSettingsOwnedAxes).
 	DisableTodoReminders bool
+
+	// ClaudeMaxCommandTimeoutHours is the settings-owned ceiling on a
+	// Bash/PowerShell command's timeout, exported as BASH_MAX_TIMEOUT_MS
+	// (as a default a user's custom env can still override). Zero exports
+	// nothing. Claude-family only; spawn-only and stamped/pinned exactly
+	// like DisableTodoReminders.
+	ClaudeMaxCommandTimeoutHours int
 
 	// ClaudeThinking is the settings-owned extended-thinking preference.
 	// Claude-family only; Codex ignores it (its reasoning axis is

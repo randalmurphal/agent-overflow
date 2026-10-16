@@ -635,6 +635,19 @@ var channelPolicies = []ChannelPolicy{
 			"newest is what tells a client that reconnected to re-read.",
 	},
 	{
+		Channel:   eventchan.ProviderAccountSignIn,
+		Audience:  AudienceAny,
+		Retention: RetentionEphemeral,
+		Scope:     ScopeAccessAdmin,
+		Why: "Names the account a login landed on and whether it was " +
+			"added, renewed or switched to, for the toast every admin " +
+			"client shows. Same grant and audience as " +
+			"provider:accounts_changed, whose listing it describes. " +
+			"Ephemeral because it is a moment, not a state: a replayed " +
+			"frame toasts a sign-in that happened before the gap, and the " +
+			"listing a reconnecting client re-reads already holds the result.",
+	},
+	{
 		Channel:   eventchan.ProviderApproval,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
@@ -677,6 +690,21 @@ var channelPolicies = []ChannelPolicy{
 			"wildcard; the frame is the same few bytes however many tasks the " +
 			"thread runs. The tray reads provider:background_tray instead. " +
 			"Keyed per thread.",
+	},
+	{
+		Channel:        eventchan.ProviderBackgroundTaskOutput,
+		Audience:       AudienceAny,
+		Retention:      RetentionDefault,
+		Scope:          ScopeThreadsRead,
+		EntityFiltered: true,
+		Why: "The live tail of a running background command's output file, " +
+			"for the tray row a client expanded: appends against the tail " +
+			"WatchBackgroundTaskOutput answered with. Scope threads:read " +
+			"because that call, the pull half, carries it and the same " +
+			"output lands in the completion payload the thread's rows serve. " +
+			"EntityFiltered because its one consumer is the tray of a thread " +
+			"a pane shows. Appends are deltas with a per-watch seq, so a " +
+			"client that misses one re-watches: never latest-only.",
 	},
 	{
 		Channel:        eventchan.ProviderBackgroundTray,

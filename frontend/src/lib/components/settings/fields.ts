@@ -332,6 +332,15 @@ const STATIC_FIELDS = [
     keywords: ['gpu', 'battery', 'lag', 'slow machine', 'reduce motion'],
   },
   {
+    id: 'performance.disable-gpu-vsync',
+    section: 'performance',
+    label: 'Disable GPU vsync',
+    hint: "Pace frames from a timer instead of the display's vblank signal. Fixes a periodic hitch in scrolling and streaming text on Windows when monitors run at different refresh rates. Applies on next launch.",
+    keywords: ['stutter', 'jitter', 'hitch', 'choppy', 'smooth', 'frame pacing', 'vblank', 'windows', 'launcher'],
+    // Rendered only on a WSL backend started by the Windows launcher.
+    conditional: true,
+  },
+  {
     id: 'performance.keep-awake-screen',
     section: 'performance',
     label: 'Keep-awake includes screen',
@@ -361,6 +370,14 @@ const STATIC_FIELDS = [
     heading: 'Tools',
     label: 'Todo tools',
     keywords: ['task list', 'nudges', 'reminders', 'todo'],
+  },
+  {
+    id: 'claude.command-timeout',
+    section: 'claude',
+    heading: 'Tools',
+    label: 'Command timeout',
+    hint: 'The longest a command may run when Claude asks for a long timeout, including background commands, which otherwise stop after 30 minutes.',
+    keywords: ['bash', 'background', 'BASH_MAX_TIMEOUT_MS', 'hours', 'long running', 'killed'],
   },
   {
     id: 'claude.output-style',

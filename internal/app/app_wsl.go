@@ -122,3 +122,60 @@ func (a *App) SetWSLDistroPreference(name string) (string, error) {
 	}
 	return name, nil
 }
+
+// GetWebviewGPUVsyncDisabled reports whether the Windows launcher starts
+// its WebView2 environments with --disable-gpu-vsync (Settings >
+// Performance). False when the preference isn't readable: not running
+// under WSL, no launcher-injected AGENT_OVERFLOW_WIN_APPDATA, or no
+// wsl.json yet.
+//
+//ao:scope host
+//ao:route home
+func (a *App) GetWebviewGPUVsyncDisabled() (bool, error) {
+	if !wslIsWSL() {
+		return false, nil
+	}
+	dir, ok := wslConfigDir()
+	if !ok {
+		return false, nil
+	}
+	cfg, err := wslLoadConfig(dir)
+	if err != nil {
+		return false, fmt.Errorf("read launcher config: %w", err)
+	}
+	if cfg == nil {
+		return false, nil
+	}
+	return cfg.DisableGPUVsync, nil
+}
+
+// SetWebviewGPUVsyncDisabled persists the GPU vsync preference to the
+// launcher's wsl.json. The launcher reads it once at start, so the change
+// applies on the next Windows-side launch; this session's WebView2
+// environments keep their current flags. Distro and install metadata are
+// preserved by load-mutate-save.
+//
+//ao:scope host
+//ao:route home
+//ao:stepup
+func (a *App) SetWebviewGPUVsyncDisabled(disabled bool) (bool, error) {
+	if !wslIsWSL() {
+		return false, fmt.Errorf("the GPU vsync preference is only writable from a WSL backend")
+	}
+	dir, ok := wslConfigDir()
+	if !ok {
+		return false, fmt.Errorf("launcher config directory unavailable; was this backend started via the Windows launcher?")
+	}
+	cfg, err := wslLoadConfig(dir)
+	if err != nil {
+		return false, fmt.Errorf("read launcher config: %w", err)
+	}
+	if cfg == nil {
+		cfg = &wsldistro.Config{}
+	}
+	cfg.DisableGPUVsync = disabled
+	if err := wslSaveConfig(dir, cfg); err != nil {
+		return false, fmt.Errorf("write launcher config: %w", err)
+	}
+	return disabled, nil
+}

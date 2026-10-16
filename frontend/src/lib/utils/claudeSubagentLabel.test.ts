@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   deriveClaudeSubagentDescription,
+  deriveClaudeSubagentEffort,
+  deriveClaudeSubagentEffortAlternatives,
   deriveClaudeSubagentLabel,
   deriveClaudeSubagentModelLabel,
   readClaudeSubagentInput,
@@ -135,6 +137,16 @@ describe('deriveClaudeSubagentModelLabel', () => {
     expect(deriveClaudeSubagentModelLabel({ model: 'opus' }, null, 'Agent')).toBe('Opus');
   });
 
+  it('reads the model the alias resolved to at launch before the alias itself', () => {
+    expect(
+      deriveClaudeSubagentModelLabel({ model: 'haiku' }, { requested_model: 'claude-haiku-4-5' }, 'Agent'),
+    ).toBe('Haiku 4.5');
+  });
+
+  it('ignores the model a fork names: a fork runs on its launcher\'s model', () => {
+    expect(deriveClaudeSubagentModelLabel({ model: 'haiku', subagent_type: 'fork' }, {}, 'Agent')).toBe('');
+  });
+
   it('returns "" when neither source carries a model', () => {
     expect(deriveClaudeSubagentModelLabel(null, null, 'Agent')).toBe('');
     expect(deriveClaudeSubagentModelLabel({}, {}, 'Agent')).toBe('');
@@ -148,6 +160,52 @@ describe('deriveClaudeSubagentModelLabel', () => {
         'Agent',
       ),
     ).toBe('Opus');
+  });
+});
+
+describe('deriveClaudeSubagentEffort', () => {
+  it('reads the effort the launch input names', () => {
+    expect(deriveClaudeSubagentEffort({ effort: 'max' }, { inherited_effort: 'low' }, 'Agent')).toBe('max');
+    expect(deriveClaudeSubagentEffort({ effort: 'high' }, null, 'Task')).toBe('high');
+  });
+
+  it('falls back to the effort the launch inherited when its input names none', () => {
+    expect(deriveClaudeSubagentEffort({}, { inherited_effort: 'xhigh' }, 'Agent')).toBe('xhigh');
+    expect(deriveClaudeSubagentEffort({ effort: '  ' }, { inherited_effort: 'xhigh' }, 'Agent')).toBe('xhigh');
+  });
+
+  it('ignores the input effort of a fork, which runs at its launcher\'s effort', () => {
+    expect(
+      deriveClaudeSubagentEffort({ subagent_type: 'fork', effort: 'low' }, { inherited_effort: 'xhigh' }, 'Agent'),
+    ).toBe('xhigh');
+    expect(deriveClaudeSubagentEffort({ subagent_type: 'fork', effort: 'low' }, {}, 'Agent')).toBe('');
+  });
+
+  it('shows no effort for a relative one, which AO cannot resolve', () => {
+    expect(deriveClaudeSubagentEffort({ effort: 'higher' }, { inherited_effort: 'low' }, 'Agent')).toBe('');
+    expect(deriveClaudeSubagentEffort({ effort: 'lower' }, { inherited_effort: 'low' }, 'Agent')).toBe('');
+  });
+
+  it('returns "" for other tools and when nothing is known', () => {
+    expect(deriveClaudeSubagentEffort({ effort: 'max' }, { inherited_effort: 'low' }, 'Skill')).toBe('');
+    expect(deriveClaudeSubagentEffort(null, null, 'Agent')).toBe('');
+  });
+});
+
+describe('deriveClaudeSubagentEffortAlternatives', () => {
+  const stamped = { inherited_effort: 'high', inherited_effort_alternatives: ['xhigh', 7, ''] };
+
+  it('reads the tiers an inherited effort may stand for', () => {
+    expect(deriveClaudeSubagentEffortAlternatives({}, stamped, 'Agent')).toEqual(['xhigh']);
+    expect(deriveClaudeSubagentEffortAlternatives({ subagent_type: 'fork', effort: 'low' }, stamped, 'Task')).toEqual([
+      'xhigh',
+    ]);
+  });
+
+  it('has none for a named effort, another tool or no stamp', () => {
+    expect(deriveClaudeSubagentEffortAlternatives({ effort: 'low' }, stamped, 'Agent')).toEqual([]);
+    expect(deriveClaudeSubagentEffortAlternatives({}, stamped, 'Skill')).toEqual([]);
+    expect(deriveClaudeSubagentEffortAlternatives({}, { inherited_effort: 'high' }, 'Agent')).toEqual([]);
   });
 });
 

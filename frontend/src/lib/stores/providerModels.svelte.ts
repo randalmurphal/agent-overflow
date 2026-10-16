@@ -26,6 +26,38 @@ const refreshAfter = new Map<string, number>();
 // withdrew relative to the previous authoritative one.
 const authoritative = new Map<string, ModelInfo[]>();
 const EMPTY: ModelInfo[] = [];
+// A provider with no list yet keeps asking: a failed load schedules the next
+// attempt until one answers, so the picker shows Loading rather than an empty
+// list. `retrying` is the reactive half pickers read.
+const retrying = createKeyedSignalRegistry<boolean>(false);
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const retryAttempts = new Map<string, number>();
+const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
+
+/** Whether the provider has no list yet and a load is in flight or scheduled. */
+export function providerModelsPending(provider: ProviderID, backend: BackendKey = HOME_BACKEND): boolean {
+  return retrying.get(compositeKey(backend, provider));
+}
+
+function cancelRetry(key: string): void {
+  const timer = retryTimers.get(key);
+  if (timer !== undefined) clearTimeout(timer);
+  retryTimers.delete(key);
+  retryAttempts.delete(key);
+  retrying.drop(key);
+}
+
+function scheduleRetry(provider: ProviderID, backend: BackendKey, key: string): void {
+  if (models.get(key) || retryTimers.has(key) || !hasScope('threads:operate', backend)) return;
+  const attempt = retryAttempts.get(key) ?? 0;
+  retryAttempts.set(key, attempt + 1);
+  retrying.set(key, true);
+  retryTimers.set(key, setTimeout(() => {
+    retryTimers.delete(key);
+    if (models.get(key)) return;
+    void (inFlight.get(key) ?? loadProviderModels(provider, backend)).catch(() => {});
+  }, RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)]));
+}
 
 export function getProviderModels(provider: ProviderID, backend: BackendKey = HOME_BACKEND): ModelInfo[] {
   return models.get(compositeKey(backend, provider)) ?? EMPTY;
@@ -70,6 +102,7 @@ function loadProviderModels(provider: ProviderID, backend: BackendKey): Promise<
     const catalog = result as ModelCatalog;
     const list = Array.isArray(catalog?.models) ? catalog.models : [];
     models.set(key, list);
+    cancelRetry(key);
     if (catalog?.provenance === 'probed' || catalog?.provenance === 'live') {
       const previous = authoritative.get(key);
       authoritative.set(key, list);
@@ -84,7 +117,10 @@ function loadProviderModels(provider: ProviderID, backend: BackendKey): Promise<
       refreshAfter.set(key, Date.now() + delay);
     }
   };
-  void request.then(() => clear(5 * 60_000), () => clear(15_000));
+  void request.then(() => clear(5 * 60_000), () => {
+    clear(15_000);
+    if ((generations.get(key) ?? 0) === generation) scheduleRetry(provider, backend, key);
+  });
   return request;
 }
 
@@ -124,6 +160,7 @@ export function invalidateProviderModels(
     models.drop(key);
     inFlight.delete(key);
     refreshAfter.delete(key);
+    cancelRetry(key);
   }
 }
 
@@ -135,6 +172,9 @@ export function resetProviderModelsForTest(): void {
   inFlight.clear();
   refreshAfter.clear();
   authoritative.clear();
+  for (const key of retryTimers.keys()) cancelRetry(key);
+  retrying.reset();
+  retryAttempts.clear();
 }
 
 onBackendDetached(({ backendId }) => {

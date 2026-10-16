@@ -201,9 +201,10 @@ export interface ClaudeSubagentLimits {
 /**
  * How much Claude thinks before it answers. `''` is Claude Code's own
  * per-model choice (adaptive where the model supports it, its built-in
- * budget otherwise) — not "off".
+ * budget otherwise). There is no off: current Claude models reject disabled
+ * thinking.
  */
-export type ClaudeThinkingMode = 'off' | 'budget';
+export type ClaudeThinkingMode = 'budget';
 
 /**
  * Whether thinking text reaches the wire. `''` is Agent Overflow's default,
@@ -462,6 +463,14 @@ export interface Settings {
    */
   claudeTodoRemindersDisabled?: boolean;
   /**
+   * The longest a Bash or PowerShell command may run in a Claude session
+   * (headless and claude-tui) when Claude asks for a long timeout,
+   * background commands included. Exported at spawn as BASH_MAX_TIMEOUT_MS
+   * unless the custom environment names it. Range in
+   * FRONTEND_SETTING_RANGES; spawn-only.
+   */
+  claudeMaxCommandTimeoutHours: number;
+  /**
    * Claude-only session axes delivered through the CLI's `--settings`
    * block. None of them has a CLI flag — the settings key IS the delivery
    * mechanism — and all three are read at spawn, so edits reach new
@@ -507,7 +516,7 @@ export interface Settings {
   textGenerationProvider: ProviderID;
   /**
    * Text generation model id. Empty string = "use the per-provider
-   * default" (codex → gpt-6-luna, claude → claude-haiku-4-5).
+   * default" (codex → gpt-6-luna, claude → claude-haiku-5-5).
    */
   textGenerationModel: string;
   /** Text generation reasoning-effort tier. Defaults to "low" — these
@@ -686,6 +695,11 @@ export interface ModelInfo {
   name: string;
   provider: string;
   isCustom?: boolean;
+  // Mirrors provider.ModelInfo.Unlisted: the provider's latest list does not
+  // offer this model. The row stays for threads already on it; pickers drop it.
+  unlisted?: boolean;
+  // Mirrors provider.ModelInfo.IsDefault: the provider's own default model.
+  isDefault?: boolean;
   capabilities?: string[];
   fastModeTier?: FastModeTier;
   contextWindows?: ContextWindowOption[];

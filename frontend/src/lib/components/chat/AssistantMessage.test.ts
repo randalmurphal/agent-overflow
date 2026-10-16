@@ -39,6 +39,28 @@ describe('<AssistantMessage>', () => {
     expect(plain.queryByTestId('assistant-message-interim')).toBeNull();
   });
 
+  // A row Claude discarded after a stalled response keeps its text and is
+  // marked by the leaf (utils/discardedItems.ts): dimmed behind a rule and
+  // tagged beside the time. An unmarked row renders exactly as before.
+  it('dims and tags a discarded row and leaves an unmarked row alone', async () => {
+    const discarded = render(AssistantMessage, {
+      props: { item: makeItem({ summary: 'The quick brown fox stops right ' }), discarded: true },
+    });
+    await waitFor(() => {
+      expect(discarded.getByTestId('assistant-message-discarded').textContent).toContain('Discarded');
+    });
+    expect(discarded.getByTestId('assistant-message-body').textContent).toContain('The quick brown fox stops right');
+    expect(discarded.container.querySelector('.discarded-row')).not.toBeNull();
+    discarded.unmount();
+
+    const plain = render(AssistantMessage, { props: { item: makeItem({ summary: 'the answer' }) } });
+    await waitFor(() => {
+      expect(plain.getByTestId('assistant-message-meta')).toBeTruthy();
+    });
+    expect(plain.queryByTestId('assistant-message-discarded')).toBeNull();
+    expect(plain.container.querySelector('.discarded-row')).toBeNull();
+  });
+
   it('renders an unterminated inline marker as literal text during stream', async () => {
     // The renderer in `lib/markdown/` strips its
     // inline-emphasis plugins from `IncompleteMarkdownParser.createDefaultPlugins`,

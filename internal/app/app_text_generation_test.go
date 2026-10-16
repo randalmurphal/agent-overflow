@@ -35,7 +35,7 @@ func fakeLookPath(available ...string) func(string) error {
 // TestResolveTextGenerationConfig_Layer1FallbackCodexMissing covers the
 // canonical bug: default settings prefer Codex, but the user has only
 // Claude installed. The resolver must substitute Claude with its own
-// default model (claude-haiku-4-5) rather than handing the call site a
+// default model rather than handing the call site a
 // Codex config that will fail on every exec.LookPath retry.
 func TestResolveTextGenerationConfig_Layer1FallbackCodexMissing(t *testing.T) {
 	t.Parallel()
@@ -47,8 +47,8 @@ func TestResolveTextGenerationConfig_Layer1FallbackCodexMissing(t *testing.T) {
 	if cfg.Provider != string(provider.Claude) {
 		t.Fatalf("provider = %q, want %q (fallback when codex missing)", cfg.Provider, provider.Claude)
 	}
-	if cfg.Model != textgen.DefaultClaudeModel {
-		t.Fatalf("model = %q, want %q (claude default after substitution)", cfg.Model, textgen.DefaultClaudeModel)
+	if cfg.Model != textgen.FallbackClaudeModel {
+		t.Fatalf("model = %q, want %q (claude default after substitution)", cfg.Model, textgen.FallbackClaudeModel)
 	}
 	if cfg.Binary != "claude" {
 		t.Fatalf("binary = %q, want claude", cfg.Binary)
@@ -122,8 +122,8 @@ func TestResolveTextGenerationConfig_DoesNotCarryModelAcrossProviders(t *testing
 	if cfg.Model == "gpt-5.4-pro" {
 		t.Fatalf("Codex model %q must NOT carry across to Claude", cfg.Model)
 	}
-	if cfg.Model != textgen.DefaultClaudeModel {
-		t.Fatalf("model = %q, want %q (claude default)", cfg.Model, textgen.DefaultClaudeModel)
+	if cfg.Model != textgen.FallbackClaudeModel {
+		t.Fatalf("model = %q, want %q (claude default)", cfg.Model, textgen.FallbackClaudeModel)
 	}
 }
 
@@ -209,8 +209,8 @@ func TestResolveTextGenerationConfigFor_ReturnsFalseWhenBinaryMissing(t *testing
 	if !ok {
 		t.Fatalf("resolveTextGenerationConfigFor(claude) ok = false; expected true (binary present)")
 	}
-	if cfg.Model != textgen.DefaultClaudeModel {
-		t.Fatalf("model = %q, want %q (always default for alternate)", cfg.Model, textgen.DefaultClaudeModel)
+	if cfg.Model != textgen.FallbackClaudeModel {
+		t.Fatalf("model = %q, want %q (always default for alternate)", cfg.Model, textgen.FallbackClaudeModel)
 	}
 }
 

@@ -1041,6 +1041,16 @@ func (a *App) emitThreadAgentRow(view threadAgentView, token string) {
 // tapThreadAgentRows is the emit tap: a running target's turn, prompt,
 // pending send or title changed, or it did something new.
 func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
+	// A thread row frame is told by its payload, so this reader names no
+	// thread:updated channel: only the announcer emits on it.
+	if event, ok := data.(triage.ThreadUpdateEvent); ok {
+		if event.Thread != nil {
+			a.noteThreadAgentTarget(event.Thread.ID)
+		} else if event.Title != nil {
+			a.noteThreadAgentTarget(event.ID)
+		}
+		return
+	}
 	switch name {
 	case eventchan.ProviderTurnStarted:
 		if event, ok := data.(triage.TurnStartedEvent); ok {
@@ -1075,12 +1085,6 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 		if event, ok := data.(triage.SessionDiedEvent); ok {
 			a.forgetThreadAgentActivity(event.ThreadID)
 			a.noteThreadAgentTarget(event.ThreadID)
-		}
-	case eventchan.ThreadUpdated:
-		if event, ok := data.(triage.ThreadUpdateEvent); ok && event.Thread != nil {
-			a.noteThreadAgentTarget(event.Thread.ID)
-		} else if ok && event.Title != nil {
-			a.noteThreadAgentTarget(event.ID)
 		}
 	case eventchan.ProviderItemEvent:
 		if event, ok := data.(triage.ItemStreamEvent); ok && event.Item != nil && event.Item.ParentID == "" {

@@ -15,7 +15,8 @@
   import {
     ForkThreadFromMessage,
   } from '../../stores/bindings';
-  import { markThreadRead, prependThread, updateThreadReadState } from '../../stores/threads.svelte';
+  import { markThreadRead, prependThreadReply, updateThreadReadState } from '../../stores/threads.svelte';
+  import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import { getFocusedThreadPaneId, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
@@ -399,10 +400,11 @@
     if (!thread || forkingMessageItemId) return;
     forkingMessageItemId = item.id;
     try {
+      const mark = threadRowFrameMark();
       const created = await withForkProgress(thread, async () => (await ForkThreadFromMessage(thread.id, item.id)) as Thread);
-      const forked = await autoPinNewThread(created);
+      const pinned = await autoPinNewThread(created);
       if (pane.thread?.id !== thread.id) return;
-      prependThread(forked);
+      const forked = prependThreadReply(pinned, mark);
       if (forked.projectId) expandProject(forked.projectId);
       await openThreadInPane(forked, pane);
       addToast('info', 'Forked from this message into a new thread.');

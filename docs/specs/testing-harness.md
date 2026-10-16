@@ -298,7 +298,9 @@ that namespace (`netisolate.Contained`). Everywhere else, macOS and
 pairing addresses and computer routes name 127.0.0.1. It sends no
 multicast: discovery answers `nearby.ErrIsolated` and pairing windows
 report it as their discovery error. It also starts no Tailscale node, LAN
-preview listener, Windows launcher relay, ACME order or real push sender.
+preview listener, Windows launcher relay, ACME order or real push sender,
+and opens no system browser: a link answers `externalurl.ErrNoOpener` and a
+provider sign-in falls back to its remote link and code paste.
 Paired instances therefore reach each other over loopback, and specs that
 need an off-host peer (`nonLoopbackIPv4` in `e2e/tests/offhost-helpers.ts`)
 skip outside the namespace.

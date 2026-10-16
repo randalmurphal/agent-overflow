@@ -633,12 +633,29 @@ func (s *Session) rememberSubAgentActivityOwnership(sourceThreadID string, activ
 	if !s.registerChildOwnership(sourceThreadID, activity.AgentThreadID, activity.AgentPath, activity.ItemID) {
 		return nil
 	}
+	s.rememberSubAgentActivityProfile(activity)
 	launchMeta := collabLaunchMeta{
 		AgentPath:         activity.AgentPath,
 		ReceiverThreadIDs: []string{activity.AgentThreadID},
 	}
 	s.scheduleCollabProfileRead(activity.AgentThreadID, activity.ItemID, launchMeta)
 	return []string{activity.AgentThreadID}
+}
+
+// rememberSubAgentActivityProfile records the child profile a started
+// activity carries (codex 0.162+), which the spawn row already shows; a
+// known profile makes scheduleCollabProfileRead skip the child's
+// thread/resume read. An older record carries none.
+func (s *Session) rememberSubAgentActivityProfile(activity subAgentActivity) {
+	if activity.Kind != "started" || activity.Model == "" {
+		return
+	}
+	s.rememberCollabReceiverMeta(collabReceiverMeta{
+		ThreadID:        activity.AgentThreadID,
+		Model:           activity.Model,
+		ReasoningEffort: activity.ReasoningEffort,
+		ProfileKnown:    true,
+	})
 }
 
 func (s *Session) observeSubAgentActivityOwnership(method string, params json.RawMessage) []string {

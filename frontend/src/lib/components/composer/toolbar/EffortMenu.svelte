@@ -18,6 +18,7 @@
   import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import { formatTokens } from '../../../utils/format';
+  import { effortLabel, FALLBACK_EFFORTS, joinLabelParts } from '../../../utils/effortLabels';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Gauge from '@lucide/svelte/icons/gauge';
   import Popover from '../../primitives/Popover.svelte';
@@ -69,13 +70,6 @@
 
   type Effort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
-  const FALLBACK_EFFORTS: Array<ReasoningEffortOption> = [
-    { slug: 'low', label: 'Low' },
-    { slug: 'medium', label: 'Medium' },
-    { slug: 'high', label: 'High' },
-    { slug: 'xhigh', label: 'xHigh' },
-  ];
-
   let currentEffort = $derived<Effort>(
     (pane.thread?.reasoningEffort as Effort | undefined) ?? 'medium',
   );
@@ -125,19 +119,11 @@
   // catalog loads. The second is knowledge: Claude's own model list reports
   // Haiku with no effort support, and offering tiers the model does not have
   // is the lie this distinction removes.
-  let availableEfforts = $derived(activeModelInfo ? reasoningOptions : FALLBACK_EFFORTS);
+  let availableEfforts = $derived<readonly ReasoningEffortOption[]>(activeModelInfo ? reasoningOptions : FALLBACK_EFFORTS);
   let showEffortSelection = $derived(availableEfforts.length > 0);
   let currentEffortOption = $derived(
     availableEfforts.find((option) => option.slug === currentEffort),
   );
-
-  function effortLabel(slug: Effort, label = ''): string {
-    if (slug === 'xhigh') return 'xHigh';
-    if (label.trim() !== '') return label;
-    if (slug === 'none') return 'None';
-    if (slug === 'minimal') return 'Minimal';
-    return slug[0].toUpperCase() + slug.slice(1);
-  }
 
   function contextLabel(tokens: number): string {
     if (tokens === 1_050_000 || tokens === 1_000_000) return '1M';
@@ -173,7 +159,7 @@
           : contextLabel(currentContextWindow),
       );
     }
-    return labelParts.join(' · ');
+    return joinLabelParts(...labelParts);
   });
   let triggerTitle = $derived(triggerLabel || 'Model options');
   // Append the provider's contradiction to the trigger tooltip so the

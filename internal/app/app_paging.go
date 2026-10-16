@@ -212,6 +212,9 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 		return nil, err
 	}
 	items = append(items, remoteItems...)
+	if a.triage != nil {
+		items = a.triage.DecorateBackgroundTrayRows(threadID, items)
+	}
 	// Running launches, so no completed diff previews to weigh: the
 	// projection is here to keep the "no item reaches a client
 	// unprojected" rule total, not for the bytes.

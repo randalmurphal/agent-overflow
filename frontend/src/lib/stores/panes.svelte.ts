@@ -12,6 +12,7 @@ import {
   type PaneLayoutItem,
 } from './paneLayout.svelte';
 import { getThreadById, replaceThread as replaceThreadInRegistry } from './threads.svelte';
+import { threadReplyRow } from './threadRowFrames';
 import { setGitStatusPaneBridge } from './gitStatusStore.svelte';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
 import {
@@ -855,6 +856,20 @@ export function syncThread(thread: Thread): void {
   }
 }
 
+/**
+ * `syncThread` for a row an RPC returned, from a call started at `mark`
+ * (threadRowFrameMark). A thread:updated frame that arrived after the call
+ * started is kept over the reply (threadRowFrames.ts). Returns the row the
+ * client now holds for the thread.
+ */
+export function syncThreadReply(reply: Thread, mark: number): Thread {
+  const current = getThreadById(reply.id) ?? findPaneShowingThread(reply.id)?.thread;
+  const row = threadReplyRow(reply, mark, current);
+  if (!row) return current ?? reply;
+  syncThread(row);
+  return row;
+}
+
 // Arm the git-status store's pane bridge at module init. The import goes one
 // way — panes → gitStatusStore — because the reverse closed a cycle
 // (gitStatusStore → panes → thread → gitStatusStore) whose init order
@@ -889,7 +904,7 @@ onBackendDetached(({ threadIds, projectIds }) => {
 });
 
 setGitStatusPaneBridge({
-  syncThread,
+  syncThreadReply,
   reportWorkspaceError(workspaceKey, message, err) {
     // Only the panes still in that workspace — same backend AND same path,
     // since the key carries both. A pane that has moved on is not shown an

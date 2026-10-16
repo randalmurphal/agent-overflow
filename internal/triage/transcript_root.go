@@ -58,27 +58,46 @@ func (r *Router) TranscriptRootID(threadID string, launch store.Item) (string, e
 	return root.ID, nil
 }
 
-// AgentLaunchByTask is the transcript root of a Claude local_agent task
-// from the thread's history: the oldest agent launch row carrying the
+// AgentLaunch is a Claude agent launch as the thread's history holds it.
+type AgentLaunch struct {
+	// ID is the launch row's id, the agent's transcript root.
+	ID string
+	// NamedEffort is the effort the launch's input named (launchNamedEffort).
+	NamedEffort string
+	// Model is the model the agent ran on: its subagent_model stamp, else
+	// the model its alias resolved to at launch.
+	Model string
+}
+
+// AgentLaunchByTask is the transcript root launch of a Claude local_agent
+// task from the thread's history: the oldest agent launch row carrying the
 // task id, resolved through any carrier. A carrier whose root row is gone
 // is not a root, so it answers not found. The Claude parser asks this for
 // a §E6 resume whose launch an earlier process ran (claude.Config).
-func (r *Router) AgentLaunchByTask(threadID, taskID string) (string, bool, error) {
+func (r *Router) AgentLaunchByTask(threadID, taskID string) (AgentLaunch, bool, error) {
 	launch, found, err := r.store.FindOriginalAgentLaunchByTaskID(threadID, taskID, "")
 	if err != nil {
-		return "", false, fmt.Errorf("triage: agent launch by task id %s/%s: %w", threadID, taskID, err)
+		return AgentLaunch{}, false, fmt.Errorf("triage: agent launch by task id %s/%s: %w", threadID, taskID, err)
 	}
 	if !found || !store.IsAgentTranscriptLaunch(launch) {
-		return "", false, nil
+		return AgentLaunch{}, false, nil
 	}
-	if !isResumeCarrierMeta(DecodeToolStartMeta([]byte(launch.Meta))) {
-		return launch.ID, true, nil
+	if isResumeCarrierMeta(DecodeToolStartMeta([]byte(launch.Meta))) {
+		root, found, err := r.transcriptRoot(threadID, launch)
+		if err != nil || !found {
+			return AgentLaunch{}, false, err
+		}
+		launch = root
 	}
-	root, found, err := r.transcriptRoot(threadID, launch)
-	if err != nil || !found {
-		return "", false, err
+	model := DecodeToolStartMeta([]byte(launch.Meta)).SubagentModel
+	if model == "" {
+		model = launchRequestedModel(launch.Meta)
 	}
-	return root.ID, true, nil
+	return AgentLaunch{
+		ID:          launch.ID,
+		NamedEffort: launchNamedEffort(launchInputIdentity(launch.Meta)),
+		Model:       model,
+	}, true, nil
 }
 
 // transcriptRootOrSelf resolves the row whose scope an agent's rows

@@ -59,13 +59,17 @@ our own code.
   server's `refresh_token_expires_in`, defaulting to 30 days when the
   response omits it, and a token refresh does NOT extend it. Observed
   lifetime is about 30 days from sign-in.
-- **Past that date the account is already signed out.** The next
-  refresh answers `invalid_grant` and the CLI overwrites the credential
-  with a sign-out husk: the object stays, `accessToken` and
-  `refreshToken` go blank. The CLI itself warns "Your login expires in
-  N days · run /login to renew" inside the last 3 days. AO reads the
-  field through `claude.RefreshTokenExpiresAt` and refuses to spawn a
-  probe that would produce the husk.
+- **Past that date no refresh succeeds, but the login still works.**
+  The access token issued by the last refresh before the deadline keeps
+  working until it expires, up to 8h later (observed 2026-10-15: deadline
+  08:00, last refresh 04:58, token valid to 12:58). The CLI renews a
+  token once `now + 5 min` reaches `expiresAt` (2.1.284); that renewal
+  answers `invalid_grant` and the CLI overwrites the credential with a
+  sign-out husk: the object stays, `accessToken` and `refreshToken` go
+  blank. The CLI itself warns "Your login expires in N days · run /login
+  to renew" inside the last 3 days. AO treats the login as ending at
+  `claude.LoginExpiresAt`, the later of the deadline and that renewal,
+  and refuses to spawn a probe or refresh past it.
 - **Three locks guard the credential file**, all `proper-lockfile`
   style: a lock IS a directory created with `mkdir`, staleness is
   judged by its mtime, and an abandoned one is reclaimed by removing
@@ -149,3 +153,22 @@ our own code.
   so AO learns task state only from live `TaskCreate` / `TaskUpdate` or
   its own `threads.live_todo`. `--resume-session-at` (the crash-repair
   path) is untested.
+- **Background commands stop at their timeout in headless sessions
+  (≥2.1.285)**: a non-interactive session (not the desktop or VS Code
+  entrypoint; `claude mcp serve` opts out; server flag
+  `tengu_cosmic_shore`, default on) stops a `run_in_background`
+  Bash/PowerShell command when its timeout expires. Background timeout
+  = `min(requested || max(30 min, BASH_DEFAULT_TIMEOUT_MS), ceiling)`,
+  ceiling = `min(max(2 h, BASH_MAX_TIMEOUT_MS), 2147483647 ms)`; unset,
+  `BASH_MAX_TIMEOUT_MS` reads as 10 min, which is also the foreground
+  ceiling. The Bash tool description states the default and maximum, so
+  the model can ask for up to the ceiling. AO exports
+  `BASH_MAX_TIMEOUT_MS` from the Command timeout setting (Tools section
+  of the Claude Code settings page, default 5 h) on both spawn paths,
+  same user-overridable-default posture as the todo opt-in; it never
+  sets `BASH_DEFAULT_TIMEOUT_MS`, which would also move the 2 min
+  foreground default. The 30 min background default holds for AO's
+  streaming sessions; a single-shot `-p` session uses 10 min instead. A
+  value in Claude's own `settings.json` `env` block is applied over the
+  spawned environment unless the CLI judges the launch host-orchestrated
+  (not exercised). Verified on 2.1.300 binary analysis.

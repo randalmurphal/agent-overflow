@@ -37,31 +37,39 @@ export function hiddenModelSlugs(
   return new Set(key ? (settings[key] ?? []) : []);
 }
 
+/** The catalog rows the provider currently offers (no `unlisted` rows). */
+export function offeredModels<T extends { unlisted?: boolean }>(models: readonly T[]): T[] {
+  return models.filter((model) => !model.unlisted);
+}
+
 /**
- * The models a picker for `provider` offers: the catalog minus the hidden
- * slugs, except `keepSlug` (a thread already riding a hidden model keeps its
- * checkmark row, so the picker never shows "nothing selected").
+ * The models a picker for `provider` offers: the catalog minus rows the
+ * provider no longer lists (`unlisted`, kept in the catalog only so threads
+ * already on them resolve capabilities) and minus the hidden slugs, except
+ * `keepSlug` (a thread already riding such a model keeps its checkmark row,
+ * so the picker never shows "nothing selected").
  *
  * The settings UI refuses to hide the last visible model, but a hand-edited
  * settings.json — or a second connected client — can still hide everything;
- * that falls back to the full catalog rather than presenting an empty picker,
- * the same backstop as the Go seed path's firstVisibleModel.
+ * that falls back to every listed model rather than presenting an empty
+ * picker, the same backstop as the Go seed path's defaultModelForProvider.
  *
  * Shared by the model submenu and the composer's `/model <arg>` resolver so
  * the two cannot disagree about which models exist.
  */
-export function pickerVisibleModels<T extends { slug: string }>(
+export function pickerVisibleModels<T extends { slug: string; unlisted?: boolean }>(
   settings: Settings,
   provider: string,
   models: readonly T[],
   keepSlug?: string,
 ): T[] {
+  const offered = models.filter((model) => !model.unlisted || model.slug === keepSlug);
   const hidden = hiddenModelSlugs(settings, provider);
-  if (hidden.size === 0) return [...models];
-  const visible = models.filter(
+  if (hidden.size === 0) return offered;
+  const visible = offered.filter(
     (model) => !hidden.has(model.slug) || (keepSlug !== undefined && model.slug === keepSlug),
   );
-  return visible.length === 0 ? [...models] : visible;
+  return visible.length === 0 ? offered : visible;
 }
 
 /** Whether the user hid the model from pickers in settings. */

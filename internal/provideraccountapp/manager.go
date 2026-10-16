@@ -48,6 +48,9 @@ type AccountSink interface {
 	PublishAccountsChanged()
 	PublishUsageError(providerName, accountID string, err error)
 	PublishLogin(state LoginState)
+	// PublishSignIn names the account a login landed on and what it did to
+	// the saved set: added it, renewed it, or switched to it.
+	PublishSignIn(signIn SignIn)
 }
 
 // Deps are the narrow process/lifecycle ports used by Manager.

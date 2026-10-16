@@ -10,9 +10,9 @@ const (
 	CodexLiveModelCatalog ModelCatalogSource = "codex_live"
 	// ClaudeProbeEnrichedCatalog — the shipped list is merged with the models
 	// the zero-token account probe's `initialize` response reports. The wire
-	// list is a picker shortlist that omits older-but-usable models, so it
-	// ENRICHES (capability flags) and EXTENDS (models we don't ship yet) but
-	// never subtracts. See internal/claudemodels.
+	// ENRICHES (capability flags) and EXTENDS (models we don't ship yet) the
+	// lookup list and decides which rows pickers offer; rows it omits stay for
+	// capability lookup, marked Unlisted. See internal/claudemodels.
 	ClaudeProbeEnrichedCatalog ModelCatalogSource = "claude_probe"
 )
 

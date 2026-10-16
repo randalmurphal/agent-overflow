@@ -247,6 +247,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// The project identity refresh writes project rows. appCtx is already
 	// cancelled, which kills its git read and stops the pass unrecorded.
 	a.projectIdentityWG.Wait()
+	// The startup probe's retry loop adopts accounts and writes the catalog
+	// record; appCtx is cancelled, so it is waking to exit or finishing one
+	// bounded probe.
+	a.startupProbeWG.Wait()
+	// A permission-mode follow writes the thread row; appCtx is cancelled,
+	// so it is returning or finishing one bounded write.
+	a.permissionModeFollowWG.Wait()
 	a.stopIdleSessionReaper()
 	record("stop idle session reaper", nil)
 
@@ -314,9 +321,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	// Step 3g: join the background thread read-state stamps. Each one is a
 	// SQLite write, so it has to land before Step 9 closes the store.
-	// Bounded without a timeout here: every stamp carries its own
-	// markThreadReadTimeout, so the join cannot outlast the longest one
-	// already in flight.
+	// Bounded without a timeout here: every stamp's write carries its own
+	// markThreadReadTimeout, and its wait to announce the row ends with the
+	// app context Step 1b cancelled, so the join cannot outlast the longest
+	// write already in flight.
 	a.stopMarkThreadReads()
 	record("stop thread read stamps", nil)
 
@@ -370,6 +378,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	a.closePRUpdatePumps()
 	record("close PR update subscriptions", nil)
+	a.closeBackgroundTaskTailer()
+	record("close background task output tails", nil)
 
 	// The forge API transport outlives every caller above: the PR pumps
 	// and gitwatch are joined. Close zeroes its tokens and idle

@@ -11,6 +11,8 @@ import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeThread } from '../../test/helpers/chat';
 import { resetPanesForTest } from './panes.svelte';
+import { threadRowFrameMark } from './threadRowFrames';
+import { applyThreadUpdated } from './eventsThreadRows';
 import { resetToLocalPage } from '../../test/helpers/scopes';
 
 vi.mock('../utils/frontendErrorCapture', async (importOriginal) => ({
@@ -102,11 +104,35 @@ describe('syncRemovedWorktreeThreads', () => {
     syncRemovedWorktreeThreads({
       workspace: { workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' },
       reattached: [{ ...onWorktree, workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' }],
-    });
+    }, threadRowFrameMark());
     expect(pane.thread?.workspacePath).toBe('/tmp/workspace');
     expect(pane.thread?.worktreePath).toBe('');
     expect(pane.thread?.branch).toBe('main');
-    syncRemovedWorktreeThreads({ workspace: { workspacePath: '', worktreePath: '', branch: '' }, reattached: null });
-    syncRemovedWorktreeThreads(undefined);
+    syncRemovedWorktreeThreads({ workspace: { workspacePath: '', worktreePath: '', branch: '' }, reattached: null }, threadRowFrameMark());
+    syncRemovedWorktreeThreads(undefined, threadRowFrameMark());
+  });
+
+  // The removal's reply was read before its own frame left, and other
+  // writers' frames can land between the call and the reply.
+  it('keeps a frame that arrived after the removal started over the reply', async () => {
+    const onWorktree = makeThread({ id: 'thread-raced', workspacePath: '/wt/b', worktreePath: '/wt/b', branch: 'feat' });
+    const pane = await buildPane(onWorktree);
+    const mark = threadRowFrameMark();
+    const moved = { ...onWorktree, workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' };
+    applyThreadUpdated({ action: 'full', thread: { ...moved, title: 'Renamed meanwhile', lastReadAt: 7 } });
+    syncRemovedWorktreeThreads({ workspace: { workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' }, reattached: [moved] }, mark);
+    expect(pane.thread?.title).toBe('Renamed meanwhile');
+    expect(pane.thread?.lastReadAt).toBe(7);
+  });
+
+  it('keeps a field a patch set after the removal started over the reply', async () => {
+    const onWorktree = makeThread({ id: 'thread-patched', workspacePath: '/wt/c', worktreePath: '/wt/c', branch: 'feat' });
+    const pane = await buildPane(onWorktree);
+    const mark = threadRowFrameMark();
+    applyThreadUpdated({ action: 'patch', id: onWorktree.id, title: 'Patched meanwhile' });
+    const moved = { ...onWorktree, workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' };
+    syncRemovedWorktreeThreads({ workspace: { workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' }, reattached: [moved] }, mark);
+    expect(pane.thread?.title).toBe('Patched meanwhile');
+    expect(pane.thread?.workspacePath).toBe('/tmp/workspace');
   });
 });

@@ -126,7 +126,11 @@ import "strings"
 // into a mandate. CLAUDE_CODE_TODO_REMINDER_MODE follows the same rule:
 // both spawn paths export "off" when the Settings nudge toggle asks for
 // it (Config.DisableTodoReminders), and a user value in the custom
-// environment outranks the setting.
+// environment outranks the setting. BASH_MAX_TIMEOUT_MS follows it too:
+// both spawn paths export the Settings command timeout ceiling
+// (claude.WithCommandTimeoutEnv) unless the custom environment names it.
+// ClaudeMCPDescriptionLengthEnv follows it as well, on the headless spawn
+// only (see its declaration).
 //
 // ANTHROPIC_BASE_URL is the one variable Agent Overflow pins WITHOUT reserving
 // it. claudetui's buildEnv (claudetui/launch.go) owns the child's copy because
@@ -165,3 +169,21 @@ func ReservedEnvNames(providerName string) []string {
 		return shared
 	}
 }
+
+// ClaudeMCPDescriptionLengthEnv caps, in characters, both an MCP server's
+// instructions and each MCP tool description Claude Code shows the model;
+// longer text is cut and marked truncated. Unset, the CLI caps instructions
+// and up-front tool descriptions at 4096 and descriptions loaded through
+// tool search at 16384 (2048 for instructions before 2.1.296); a value
+// replaces both caps (2.1.300 bundle). The thread-tools guide is longer than
+// 4096, so claude.NewSession defaults the variable to
+// ClaudeMCPDescriptionLengthLimit. It is a default, not a pin: a user value
+// in the custom environment wins.
+const ClaudeMCPDescriptionLengthEnv = "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH"
+
+// ClaudeMCPDescriptionLengthLimit is the value AO sets for
+// ClaudeMCPDescriptionLengthEnv: the CLI's own tool-search cap, so deferred
+// tool descriptions keep their limit and instructions and up-front
+// descriptions rise to it. The app's MCP server instructions must fit under
+// it; threadtools' instructions test enforces that.
+const ClaudeMCPDescriptionLengthLimit = 16384

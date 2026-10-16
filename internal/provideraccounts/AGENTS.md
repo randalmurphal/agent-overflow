@@ -50,12 +50,17 @@ inside a CLI refresh makes that CLI adopt the disk value and drop the rotation
 it just performed. `ErrCredentialLockBusy` is the answer when the CLI still
 holds them after the wait.
 
-`Account.RefreshTokenExpiresAt` is metadata, not a credential: the login
-deadline the Claude CLI records at sign-in and never extends. Record it
-wherever credential bytes are captured; `NoteRefreshTokenExpiry` is the only
-writer. Past that deadline the account is signed out in effect, so activation,
-probes and usage refreshes decline it and ask for a sign-in rather than
-spawning a CLI whose refusal would blank the credential.
+`Account.RefreshTokenExpiresAt` is metadata, not a credential: when the
+login stops working (`claude.LoginExpiresAt`), the later of the refresh
+deadline the CLI records at sign-in and the renewal of the last access token
+issued before it. Record it wherever credential bytes are captured;
+`NoteRefreshTokenExpiry` is the only writer. Past it the account is signed out
+in effect, so activation, probes and usage refreshes decline it and ask for a
+sign-in rather than spawning a CLI whose refusal would blank the credential.
+
+`List` returns accounts in the order the user keeps them. `Add` appends without
+selecting and `Reorder` is the only call that moves a row; selection never
+reorders.
 
 Credential write APIs reject signed-out husks. Preserve a newer canonical
 rotation into the outgoing slot during activation failures. Rollback removes

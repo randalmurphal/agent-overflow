@@ -27,9 +27,8 @@ import {
   UnpinThread,
 } from '../../stores/bindings';
 import {
-  getThreadById,
   markThreadUnread,
-  prependThread,
+  prependThreadReply,
   removeThread,
   updateThreadPinState,
   updateThreadTitle,
@@ -40,6 +39,7 @@ import {
   syncRemovedWorktreeThreads,
   type WorktreeRemovalResult,
 } from '../../stores/worktreeRemoval.svelte';
+import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import { expandProject } from '../../stores/sidebar.svelte';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
@@ -118,8 +118,8 @@ export async function nextAssistantThreadAction(ctx: ThreadActionCtx): Promise<v
   const release = holdComposerForHandOff(ctx.thread.id);
   try {
     await saveComposerForHandOff(ctx.thread.id);
-    const successor = (await StartNextAssistantThread(ctx.thread.id)) as Thread;
-    if (!getThreadById(successor.id)) prependThread(successor);
+    const mark = threadRowFrameMark();
+    const successor = prependThreadReply((await StartNextAssistantThread(ctx.thread.id)) as Thread, mark);
     if (ctx.isActive) await ctx.switchPane(successor);
   } catch (err) {
     console.error('Failed to start the assistant\'s new thread:', err);
@@ -222,9 +222,9 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
  */
 export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    const mark = threadRowFrameMark();
     const created = await withForkProgress(ctx.thread, async () => (await ForkThread(ctx.thread.id, null)) as Thread);
-    const forked = await autoPinNewThread(created);
-    prependThread(forked);
+    const forked = prependThreadReply(await autoPinNewThread(created), mark);
     if (forked.projectId) expandProject(forked.projectId);
     await ctx.switchPane(forked);
     addToast('info', `Forked "${ctx.thread.title}" into a new thread.`);
@@ -240,7 +240,8 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
       console.error('Failed to stop session before delete:', err);
     });
     if (ctx.thread.worktreePath) {
-      syncRemovedWorktreeThreads((await GitRemoveWorktree(ctx.thread.id)) as WorktreeRemovalResult);
+      const mark = threadRowFrameMark();
+      syncRemovedWorktreeThreads((await GitRemoveWorktree(ctx.thread.id)) as WorktreeRemovalResult, mark);
     }
     await DeleteThread(ctx.thread.id);
     removeThread(ctx.thread.id);
@@ -276,8 +277,9 @@ export async function copyThreadIdAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    const mark = threadRowFrameMark();
     const updated = await PinThread(ctx.thread.id);
-    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
+    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined, mark);
   } catch (err) {
     console.error('Failed to pin thread:', err);
     addErrorToast(userFacingError(err), err);
@@ -286,8 +288,9 @@ export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function unpinThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    const mark = threadRowFrameMark();
     const updated = await UnpinThread(ctx.thread.id);
-    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
+    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined, mark);
   } catch (err) {
     console.error('Failed to unpin thread:', err);
     addErrorToast(userFacingError(err), err);
@@ -299,8 +302,9 @@ export async function setThreadPinGroupAction(
   group: typeof PIN_GROUP_FRONT | typeof PIN_GROUP_BACK,
 ): Promise<void> {
   try {
+    const mark = threadRowFrameMark();
     const updated = await SetThreadPinGroup(ctx.thread.id, group);
-    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
+    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined, mark);
   } catch (err) {
     console.error('Failed to move pinned thread:', err);
     addErrorToast(userFacingError(err), err);

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/claudecatalog"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/textgen"
 )
@@ -151,14 +153,74 @@ func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
 	if !argsContain(gotSpec.Args, "--dangerously-skip-permissions") {
 		t.Errorf("claude args missing '--dangerously-skip-permissions'; got %v", gotSpec.Args)
 	}
-	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.DefaultClaudeModel {
-		t.Errorf("claude model arg = %q, want %q", modelArg, textgen.DefaultClaudeModel)
+	// No probe has listed DefaultClaudeModel, so the fallback runs. It is
+	// Haiku 4.5, which the CLI's own model list says has no reasoning tiers,
+	// so the flag is omitted rather than coerced up to the provider default.
+	// See provider.ModelDeclaresNoReasoningEffort.
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.FallbackClaudeModel {
+		t.Errorf("claude model arg = %q, want %q", modelArg, textgen.FallbackClaudeModel)
 	}
-	// DefaultClaudeModel is Haiku, which the CLI's own model list says has no
-	// reasoning tiers — so the flag is omitted rather than coerced up to the
-	// provider default. See provider.ModelDeclaresNoReasoningEffort.
 	if argsContain(gotSpec.Args, "--effort") {
 		t.Errorf("claude args must omit --effort for a model without reasoning tiers; got %v", gotSpec.Args)
+	}
+}
+
+// The Claude default is Haiku 5.5 only once the installed CLI has listed it;
+// a CLI that predates it lists Haiku 4.5 instead and keeps the fallback. Not
+// parallel: the probe catalog is process-wide.
+func TestGenerateCommitMessage_ClaudeDefaultFollowsTheCLIModelList(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		wire       []claude.WireModel
+		wantModel  string
+		wantEffort string
+	}{
+		{
+			name: "cli lists haiku 5.5",
+			wire: []claude.WireModel{
+				{Value: "haiku", ResolvedModel: "claude-haiku-5-5"},
+				{Value: "claude-haiku-4-5-20251001", ResolvedModel: "claude-haiku-4-5-20251001"},
+			},
+			wantModel:  textgen.DefaultClaudeModel,
+			wantEffort: settings.DefaultSettings.TextGenerationReasoningEffort,
+		},
+		{
+			name:      "cli predates haiku 5.5",
+			wire:      []claude.WireModel{{Value: "haiku", ResolvedModel: "claude-haiku-4-5-20251001"}},
+			wantModel: textgen.FallbackClaudeModel,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newCommitMsgTestApp(t)
+			if _, err := app.settings.Update(map[string]any{"textGenerationProvider": "claude"}); err != nil {
+				t.Fatalf("set provider: %v", err)
+			}
+			app.lookPathFn = fakeLookPath("claude")
+			claudecatalog.Reset()
+			t.Cleanup(claudecatalog.Reset)
+			capture := claudecatalog.ModelCapture{}
+			capture.Capture(tc.wire, nil)
+			capture.Store(app.claudeProbeModelKey())
+
+			workspace := initCommitMsgRepo(t)
+			if err := os.WriteFile(filepath.Join(workspace, "README"), []byte("x\n"), 0o644); err != nil {
+				t.Fatalf("dirty: %v", err)
+			}
+			var gotSpec textgen.CLISpec
+			app.textGenerationExecutor = func(_ context.Context, spec textgen.CLISpec) (textgen.CLIResult, error) {
+				gotSpec = spec
+				return textgen.CLIResult{Stdout: `{"structured_output":{"subject":"ok","body":""}}`}, nil
+			}
+			if _, err := app.GenerateCommitMessage(testWorkspaceRef(t, app, workspace)); err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			if got := nextArgAfter(gotSpec.Args, "--model"); got != tc.wantModel {
+				t.Errorf("model = %q, want %q", got, tc.wantModel)
+			}
+			if got := nextArgAfter(gotSpec.Args, "--effort"); got != tc.wantEffort {
+				t.Errorf("effort = %q, want %q; args %v", got, tc.wantEffort, gotSpec.Args)
+			}
+		})
 	}
 }
 

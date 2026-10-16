@@ -78,6 +78,7 @@ export async function seedSettingsPages(): Promise<void> {
   setBindingMock('IsWSL', async () => false);
   setBindingMock('ListWSLDistros', async () => []);
   setBindingMock('GetWSLDistroPreference', async () => '');
+  setBindingMock('GetWebviewGPUVsyncDisabled', async () => false);
   setBindingMock('ListBackends', async () => []);
   resetKeybindingsStore();
   await loadSettings();

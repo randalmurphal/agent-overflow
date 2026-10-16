@@ -57,7 +57,7 @@ describe("<CommitMessageSettings>", () => {
     await seed({ textGenerationProvider: "claude" });
     const { getByTestId } = render(CommitMessageSettings);
     const input = getByTestId("settings-textgen-model") as HTMLInputElement;
-    expect(input.placeholder).toContain("claude-haiku-4-5");
+    expect(input.placeholder).toContain("claude-haiku-5-5");
   });
 
   it("dispatches textGenerationProvider patch on change", async () => {

@@ -388,12 +388,61 @@ function pulseOf(card: Locator): Promise<Pulse> {
   });
 }
 
-/** The pulse is on the card: one animation, an accent ring painted. */
-async function expectPulsing(card: Locator): Promise<Pulse> {
-  await expect.poll(async () => (await pulseOf(card)).running, { timeout: 3_000 }).toBe(1);
-  const pulse = await pulseOf(card);
-  expect(pulse.boxShadow).not.toBe('none');
-  return pulse;
+/** One animation an element started: when, on the page clock, and its box-shadow keyframes. */
+interface PulseStart {
+  at: number;
+  frames: string[];
+  /**
+   * How and when it first ended. A restart cancels a running pulse; left
+   * alone it finishes, and the owner forgetting the jump cancels it.
+   */
+  ended?: { how: 'finish' | 'cancel'; at: number };
+}
+
+/**
+ * Records every animation the page starts on the element it runs on. A
+ * pulse lasts 1.6 s and a finished animation leaves getAnimations(), so a
+ * read that lands after it on a loaded host would see no pulse at all; the
+ * record keeps it.
+ */
+async function recordPulses(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (this: Element, ...args: Parameters<Element['animate']>) {
+      const at = performance.now();
+      const animation = animate.apply(this, args);
+      const keyframes = Array.isArray(args[0]) ? args[0] : [];
+      const record = this as Element & { e2ePulses?: PulseStart[] };
+      const pulse: PulseStart = { at, frames: keyframes.map((frame) => String((frame as Keyframe).boxShadow)) };
+      (record.e2ePulses ??= []).push(pulse);
+      animation.addEventListener('finish', () => { pulse.ended ??= { how: 'finish', at: performance.now() }; });
+      animation.addEventListener('cancel', () => { pulse.ended ??= { how: 'cancel', at: performance.now() }; });
+      return animation;
+    };
+  });
+}
+
+/** The page clock the pulse records use. */
+function pageNow(page: Page): Promise<number> {
+  return page.evaluate(() => performance.now());
+}
+
+/** The card's pulse started after `since`, once, with an accent ring in its keyframes. */
+async function expectPulsed(card: Locator, since: number): Promise<PulseStart> {
+  let started: PulseStart[] = [];
+  await expect.poll(async () => {
+    started = await card.evaluate((el, after) => ((el as Element & { e2ePulses?: PulseStart[] }).e2ePulses ?? [])
+      .filter((pulse) => pulse.at > after), since);
+    return started.length;
+  }, { timeout: 3_000 }).toBe(1);
+  expect(started[0].frames[0], `pulse keyframes ${started[0].frames.join(' | ')}`).toMatch(/^0 0 0 2px (?!transparent)/);
+  return started[0];
+}
+
+/** How the card's pulse that started at `at` ended, if it has. */
+function pulseEnd(card: Locator, at: number): Promise<PulseStart['ended']> {
+  return card.evaluate((el, start) => ((el as Element & { e2ePulses?: PulseStart[] }).e2ePulses ?? [])
+    .find((pulse) => pulse.at === start)?.ended, at);
 }
 
 /** The pulse has ended on its own: no animation, no ring. */
@@ -424,6 +473,7 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
     await seedPullRequest(harness);
     await harness.open(page);
     const review = await openReview(page, compact);
+    await recordPulses(page);
     const press = (target: Locator) => (compact ? target.tap() : target.click());
     const shot = (name: string) => page.screenshot({ path: testInfo.outputPath(`${name}.png`) });
     const headerShot = async (name: string) => {
@@ -452,10 +502,11 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
 
     // The chip's stepper lands on the newest open thread's card, which
     // pulses once and settles without moving.
+    let since = await pageNow(page);
     await press(chip.getByRole('button', { name: 'Next unresolved thread' }));
     const nullCard = card(THREADS.nullToken.id);
     await expect(nullCard).toBeInViewport();
-    await expectPulsing(nullCard);
+    await expectPulsed(nullCard, since);
     const during = (await nullCard.boundingBox())!;
     await shot(`${testInfo.project.name}-pulse-mid`);
     await expectPulseGone(nullCard);
@@ -464,24 +515,11 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
 
     // Reduced motion: the ring holds, unchanged, then clears.
     await page.emulateMedia({ reducedMotion: 'reduce' });
+    since = await pageNow(page);
     await press(chip.getByRole('button', { name: 'Next unresolved thread' }));
     const retryCard = card(THREADS.retry.id);
     await expect(retryCard).toBeInViewport();
-    // Read from the running animation itself: a wall-clock wait can outlast
-    // the pulse on a loaded host.
-    let held = { ring: 'none', frames: [] as string[] };
-    await expect
-      .poll(async () => {
-        held = await retryCard.evaluate((el) => ({
-          ring: getComputedStyle(el).boxShadow,
-          frames: ((el.getAnimations()[0]?.effect as KeyframeEffect | null)?.getKeyframes() ?? []).map((frame) =>
-            String(frame.boxShadow),
-          ),
-        }));
-        return held.frames.length;
-      }, { timeout: 3_000 })
-      .toBeGreaterThan(1);
-    expect(held.ring).not.toBe('none');
+    const held = await expectPulsed(retryCard, since);
     expect(new Set(held.frames).size, `reduced-motion keyframes ${held.frames.join(' | ')}`).toBe(1);
     await expectPulseGone(retryCard);
     await page.emulateMedia({ reducedMotion: 'no-preference' });
@@ -489,24 +527,41 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
     // A card's location jumps to its diff row; the same jump again, mid
     // pulse, starts the pulse over.
     const nullRow = row(THREADS.nullToken.text);
-    await press(card(THREADS.nullToken.id).getByTestId('review-conversation-jump-diff'));
-    await expect(nullRow).toBeInViewport();
-    const first = await expectPulsing(cardOf(nullRow));
-    await page.waitForTimeout(500);
-    const elapsed = (await pulseOf(cardOf(nullRow))).time ?? 0;
-    expect(elapsed).toBeGreaterThan(first.time ?? 0);
-    // Back to the card through the list, not through the tap's own
-    // scroll-into-view: that centers the target in every scrollable
-    // ancestor, the compact pane strip included.
-    await review.getByTestId('review-scroll').evaluate((el) => { el.scrollTop = 0; });
-    await expect(card(THREADS.nullToken.id).getByTestId('review-conversation-jump-diff')).toBeInViewport();
-    await press(card(THREADS.nullToken.id).getByTestId('review-conversation-jump-diff'));
-    await expect(nullRow).toBeInViewport();
-    await expect.poll(async () => {
-      const pulse = await pulseOf(cardOf(nullRow));
-      return pulse.running === 1 && pulse.time !== null && pulse.time < elapsed;
-    }).toBe(true);
-    await expectPulseGone(cardOf(nullRow));
+    const jumpToRow = card(THREADS.nullToken.id).getByTestId('review-conversation-jump-diff');
+    // The owner holds a jump for the pulse's 1.6 s; a repeat press a loaded
+    // host delivers after that is a new jump, not a restart, so the pair is
+    // tried until the repeat lands inside a running pulse.
+    let restarted = false;
+    const backToCard = async () => {
+      // Through the list, not through the tap's own scroll-into-view: that
+      // centers the target in every scrollable ancestor, the compact pane
+      // strip included.
+      await review.getByTestId('review-scroll').evaluate((el) => { el.scrollTop = 0; });
+      await expect(jumpToRow).toBeInViewport();
+    };
+    for (let attempt = 0; attempt < 5 && !restarted; attempt += 1) {
+      if (attempt > 0) await backToCard();
+      since = await pageNow(page);
+      await press(jumpToRow);
+      await expect(nullRow).toBeInViewport();
+      const first = await expectPulsed(cardOf(nullRow), since);
+      await backToCard();
+      if ((await pulseOf(cardOf(nullRow))).running !== 1) {
+        await expectPulseGone(cardOf(nullRow));
+        continue;
+      }
+      const repeated = await pageNow(page);
+      await press(jumpToRow);
+      await expect(nullRow).toBeInViewport();
+      // A pulse started over is an animation started after the first one,
+      // which the repeat cancelled while it still ran.
+      await expectPulsed(cardOf(nullRow), first.at);
+      let end: PulseStart['ended'];
+      await expect.poll(async () => (end = await pulseEnd(cardOf(nullRow), first.at))).toBeDefined();
+      restarted = end?.how === 'cancel' && end.at > repeated;
+      await expectPulseGone(cardOf(nullRow));
+    }
+    expect(restarted, 'no repeat jump landed inside a running pulse in 5 tries').toBe(true);
 
     // The title bar's Conversation peek joins the count and the stepper
     // into one control.
@@ -522,26 +577,29 @@ export function unresolvedStepperFlow({ compact }: StepperSurface): void {
     expectSegmented(barRest, height);
 
     // From the title bar, a thread on the diff pulses its row's card ...
+    since = await pageNow(page);
     await press(bar.getByRole('button', { name: 'Next unresolved thread' }));
     const clockRow = row(THREADS.clock.text);
     await expect(clockRow).toBeInViewport();
-    await expectPulsing(cardOf(clockRow));
+    await expectPulsed(cardOf(clockRow), since);
     await shot(`${testInfo.project.name}-row-pulse-mid`);
     await expectPulseGone(cardOf(clockRow));
+    since = await pageNow(page);
     await press(bar.getByRole('button', { name: 'Next unresolved thread' }));
     const sessionRow = row(THREADS.session.text);
     await expect(sessionRow).toBeInViewport();
-    await expectPulsing(cardOf(sessionRow));
+    await expectPulsed(cardOf(sessionRow), since);
 
     // ... and a thread the diff cannot show brings the overview back with
     // its card pulsing, then settled.
     // The overview row is unmounted this deep in the diff, so the jump
     // scrolls a feed that mounts with it.
     await expect(review.getByTestId('review-overview')).toHaveCount(0);
+    since = await pageNow(page);
     await press(bar.getByRole('button', { name: 'Next unresolved thread' }));
     const legacyCard = card(THREADS.legacy.id);
     await expect(legacyCard).toBeInViewport();
-    await expectPulsing(legacyCard);
+    await expectPulsed(legacyCard, since);
     await expectPulseGone(legacyCard);
     await shot(`${testInfo.project.name}-card-settled`);
 

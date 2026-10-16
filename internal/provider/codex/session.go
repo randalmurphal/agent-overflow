@@ -312,6 +312,10 @@ type Session struct {
 	// appended guide. Guarded by mu; read by ForkAt, which has to carry
 	// it onto the child thread. Empty means no override was sent.
 	developerInstructions string
+	// rehydrateParams holds the thread-scoped params this session loaded
+	// its thread with that turn/start does not repeat (see
+	// threadRehydrateParams). Guarded by mu; read by Resume.
+	rehydrateParams map[string]any
 	// codexThreadID is the Codex app-server's thread ID for this session's
 	// root thread, learned from the thread/start (or thread/resume) response.
 	// Read it with rootThreadID(); write it with setRootThreadID().

@@ -18,8 +18,8 @@ func thinkingOptions(mode, display string, budget int) provider.SessionOptions {
 
 // TestPlanLiveUpdateThinkingTransitions covers the TRANSITIONS, not the
 // states. Like the system-prompt axis this one is ASYMMETRIC, and the
-// asymmetry is the whole risk: `set_max_thinking_tokens` can disable
-// thinking or pin a budget, but `max_thinking_tokens: null` is accepted and
+// asymmetry is the whole risk: `set_max_thinking_tokens` can pin a budget,
+// but `max_thinking_tokens: null` is accepted and
 // does NOTHING (spike-verified 2.1.237), so there is no request that
 // restores the CLI's own choice.
 //
@@ -44,15 +44,8 @@ func TestPlanLiveUpdateThinkingTransitions(t *testing.T) {
 			},
 		},
 		{
-			name:       "budget to off: zero disables, and display is dropped with it",
-			prev:       thinkingOptions("budget", "", 2048),
-			next:       thinkingOptions("off", "", 0),
-			wantOK:     true,
-			wantUpdate: ThinkingUpdate{Apply: true, SendBudget: true, Budget: 0},
-		},
-		{
-			name:   "off to budget: display is re-asserted, not diffed",
-			prev:   thinkingOptions("off", "", 0),
+			name:   "budget with a display change: display is re-asserted, not diffed",
+			prev:   thinkingOptions("budget", "", 2048),
 			next:   thinkingOptions("budget", "omitted", 8000),
 			wantOK: true,
 			wantUpdate: ThinkingUpdate{
@@ -75,12 +68,6 @@ func TestPlanLiveUpdateThinkingTransitions(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:   "off to default: same hole",
-			prev:   thinkingOptions("off", "", 0),
-			next:   thinkingOptions("", "", 0),
-			wantOK: false,
-		},
-		{
 			name:       "display only: thinking_display alone is an accepted request",
 			prev:       thinkingOptions("", "summarized", 0),
 			next:       thinkingOptions("", "omitted", 0),
@@ -94,12 +81,13 @@ func TestPlanLiveUpdateThinkingTransitions(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			// A disabled session has no display, so the two configs are
-			// the same session and must not buy a control request.
-			name:   "display change while off is inert",
-			prev:   thinkingOptions("off", "summarized", 0),
-			next:   thinkingOptions("off", "omitted", 0),
-			wantOK: true,
+			// The retired "off" mode is the default: a caller holding it
+			// from an earlier version must never plan a disabling request.
+			name:       "a retired off mode plans as the default",
+			prev:       thinkingOptions("", "summarized", 0),
+			next:       thinkingOptions("off", "omitted", 0),
+			wantOK:     true,
+			wantUpdate: ThinkingUpdate{Apply: true, Display: ThinkingDisplayOmitted},
 		},
 		{
 			// "summarized" IS the default AO spawns, so naming it
@@ -175,8 +163,7 @@ func capturedThinkingRequest(t *testing.T, line string) (subtype string, raw map
 }
 
 // The wire shape per mode. The OMISSIONS are the contract: `null` is a
-// no-op, so "leave the budget alone" has to be the absent key, and a
-// disabling request must not carry a display the CLI would drop.
+// no-op, so "leave the budget alone" has to be the absent key.
 func TestApplyLiveUpdateThinkingWireShape(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -190,13 +177,6 @@ func TestApplyLiveUpdateThinkingWireShape(t *testing.T) {
 			update:      ThinkingUpdate{Apply: true, SendBudget: true, Budget: 2048, Display: ThinkingDisplayOmitted},
 			wantSubtype: "set_max_thinking_tokens",
 			wantKeys:    map[string]string{"max_thinking_tokens": "2048", "thinking_display": `"omitted"`},
-		},
-		{
-			name:        "off sends a bare zero",
-			update:      ThinkingUpdate{Apply: true, SendBudget: true, Budget: 0},
-			wantSubtype: "set_max_thinking_tokens",
-			wantKeys:    map[string]string{"max_thinking_tokens": "0"},
-			absentKeys:  []string{"thinking_display"},
 		},
 		{
 			name:        "display only omits the budget key entirely",
@@ -275,6 +255,8 @@ func TestApplyLiveUpdateThinkingRejectsMalformedAxis(t *testing.T) {
 		update ThinkingUpdate
 	}{
 		{"negative budget", ThinkingUpdate{Apply: true, SendBudget: true, Budget: -1}},
+		// Zero disables thinking on the wire; AO never asks for that.
+		{"zero budget", ThinkingUpdate{Apply: true, SendBudget: true, Budget: 0}},
 		{"unknown display", ThinkingUpdate{Apply: true, Display: "hidden"}},
 		{"apply with nothing to send", ThinkingUpdate{Apply: true}},
 	}
@@ -309,9 +291,9 @@ func TestBuildArgsThinkingSpawnForm(t *testing.T) {
 			want: []string{"--thinking-display", "summarized"},
 		},
 		{
-			name:     "off disables and carries no display",
+			name:     "a retired off mode spawns as the default and never disables",
 			thinking: provider.ClaudeThinking{Mode: "off", Display: "omitted"},
-			want:     []string{"--thinking", "disabled"},
+			want:     []string{"--thinking-display", "omitted"},
 		},
 		{
 			name:     "budget uses --max-thinking-tokens, never --thinking",
@@ -333,11 +315,8 @@ func TestBuildArgsThinkingSpawnForm(t *testing.T) {
 			if !hasArgSequence(args, tc.want) {
 				t.Fatalf("args %v missing sequence %v", args, tc.want)
 			}
-			if tc.thinking.Mode == "budget" && hasArg(args, "--thinking") {
-				t.Fatalf("args %v carry --thinking beside a fixed budget", args)
-			}
-			if tc.thinking.Mode == "off" && hasArg(args, "--thinking-display") {
-				t.Fatalf("args %v carry --thinking-display on a disabled session", args)
+			if hasArg(args, "--thinking") {
+				t.Fatalf("args %v carry --thinking; AO never sends it", args)
 			}
 		})
 	}

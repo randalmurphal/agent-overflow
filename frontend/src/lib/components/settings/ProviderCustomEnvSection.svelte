@@ -150,7 +150,7 @@
     align="start"
     stacked
   >
-    <div class="flex flex-col gap-3">
+    <div class="@container/env flex flex-col gap-3">
       {#if vars.length === 0}
         <p class="text-[0.71875rem] text-fg-hint" data-testid="settings-provider-env-empty">
           No environment variables set.
@@ -159,10 +159,10 @@
         <ul class="flex flex-col gap-1" data-testid="settings-provider-env-list">
           {#each vars as entry (entry.name)}
             <li
-              class="flex items-center gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/30 px-3 py-1.5"
+              class="flex flex-wrap items-center gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/30 px-3 py-1.5"
               data-testid="settings-provider-env-row-{entry.name}"
             >
-              <span class="w-[13rem] shrink-0 truncate font-mono text-[0.75rem] text-fg">
+              <span class="w-[13rem] shrink-0 truncate font-mono text-[0.75rem] text-fg @max-lg/env:w-full">
                 {entry.name}
               </span>
               {#if entry.sensitive}
@@ -177,7 +177,7 @@
                   disabled={busy}
                   aria-label={`Replace value for ${entry.name}`}
                   onchange={(e) => void setValue(entry, (e.target as HTMLInputElement).value)}
-                  class="{INPUT_CLASS} font-mono"
+                  class="{INPUT_CLASS} min-w-[8rem] flex-1 basis-0 font-mono"
                 />
               {:else}
                 <input
@@ -189,7 +189,7 @@
                   disabled={busy}
                   aria-label={`Value for ${entry.name}`}
                   onchange={(e) => void setValue(entry, (e.target as HTMLInputElement).value)}
-                  class="{INPUT_CLASS} font-mono"
+                  class="{INPUT_CLASS} min-w-[8rem] flex-1 basis-0 font-mono"
                 />
                 <button
                   type="button"
@@ -217,13 +217,14 @@
         </ul>
       {/if}
 
-      <div class="flex items-start gap-2">
+      <div class="flex flex-wrap items-start gap-2">
         <!-- The width lives on a wrapper because INPUT_CLASS carries w-full:
              stacking w-[13rem] onto it is a Tailwind class conflict whose
              winner depends on stylesheet order, and when w-full wins the
              shrink-0 name field swallows the row and crushes the value input
-             to a sliver. -->
-        <div class="w-[13rem] shrink-0">
+             to a sliver. A narrow section gives the name its own line, and
+             the row wraps before the value input drops below its minimum. -->
+        <div class="w-[13rem] shrink-0 @max-lg/env:w-full">
           <input
             type="text"
             data-testid="settings-provider-env-name-input"
@@ -251,7 +252,7 @@
           aria-label="New variable value"
           oninput={(e) => (draftValue = (e.target as HTMLInputElement).value)}
           onkeydown={handleDraftKeydown}
-          class="{INPUT_CLASS} min-w-0 font-mono"
+          class="{INPUT_CLASS} min-w-[8rem] flex-1 basis-0 font-mono"
         />
         <label class="flex shrink-0 items-center gap-1.5 py-1.5 text-[0.71875rem] text-fg-muted">
           <input

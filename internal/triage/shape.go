@@ -92,7 +92,12 @@ type ToolCompleteMeta struct {
 	// still count it as live background work. Copied onto the launch
 	// row's meta by the keep-running flip below so the store predicate
 	// can filter on it.
-	WatchTask  bool            `json:"watch_task"`
+	WatchTask bool `json:"watch_task"`
+	// OutputFile is the file the CLI writes a backgrounded command's
+	// output to, as the Bash ack's text names it (claude-wire.md §E2).
+	// The keep-running flip copies it onto the launch row's meta so the
+	// tray can tail the file while the command runs.
+	OutputFile string          `json:"output_file,omitempty"`
 	IsError    bool            `json:"is_error"`
 	ExitCode   *int            `json:"exit_code,omitempty"`
 	ItemStatus string          `json:"item_status,omitempty"`
@@ -162,6 +167,7 @@ func DecodeToolCompleteMetaObject(obj map[string]json.RawMessage) ToolCompleteMe
 	var m ToolCompleteMeta
 	decodeRawField(obj, "is_background", &m.IsBackground)
 	decodeRawField(obj, "watch_task", &m.WatchTask)
+	decodeRawField(obj, "output_file", &m.OutputFile)
 	decodeRawField(obj, "is_error", &m.IsError)
 	decodeRawField(obj, "exit_code", &m.ExitCode)
 	decodeRawField(obj, "item_status", &m.ItemStatus)

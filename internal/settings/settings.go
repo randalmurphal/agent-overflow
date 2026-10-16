@@ -221,6 +221,13 @@ type Settings struct {
 	// DefaultSettings by construction.
 	ClaudeTodoRemindersDisabled bool `json:"claudeTodoRemindersDisabled,omitempty"`
 
+	// ClaudeMaxCommandTimeoutHours is the longest a Bash or PowerShell
+	// command may run in a Claude session (headless and claude-tui) when
+	// Claude asks for a long timeout, background commands included.
+	// Exported as BASH_MAX_TIMEOUT_MS; bounds and the reason AO always
+	// sends it live in claudesession.go. Spawn-only, like the tool lists.
+	ClaudeMaxCommandTimeoutHours int `json:"claudeMaxCommandTimeoutHours"`
+
 	// The Claude-only spawn-time axes delivered through the CLI's
 	// `--settings` flagSettings block. None has a CLI flag; the settings
 	// key is the delivery mechanism. Shapes, allowed values, validators
@@ -265,8 +272,8 @@ type Settings struct {
 	ClaudeToolMemoryLimit string `json:"claudeToolMemoryLimit,omitempty"`
 
 	// ClaudeThinking is the extended-thinking preference for headless
-	// Claude sessions: leave it to Claude Code, turn thinking off, or pin
-	// a fixed token budget — plus whether thinking text reaches the wire.
+	// Claude sessions: leave it to Claude Code or pin a fixed token budget
+	// — plus whether thinking text reaches the wire.
 	//
 	// It sits beside the four axes above but is NOT one of them: those
 	// ride the `--settings` block and are spawn-only, while this one has
@@ -315,7 +322,7 @@ type Settings struct {
 
 	// TextGenerationModel is the model id the text-generation CLI uses.
 	// Empty string means "use the per-provider default" (codex ->
-	// gpt-6-luna, claude -> claude-haiku-4-5). We avoid forcing a
+	// gpt-6-luna, claude -> claude-haiku-5-5). We avoid forcing a
 	// concrete default on the field itself because the right model
 	// depends on which provider is selected, and a cross-provider
 	// default would be wrong half the time.
@@ -648,6 +655,9 @@ var DefaultSettings = Settings{
 	// user opens them (default flipped 2026-08-30).
 	ActivityRunDefault:    "collapsed",
 	ActivityRunWindowRows: DefaultActivityRunWindowRows,
+	// Not zero-valued: AO always exports a ceiling (claudesession.go), so
+	// an absent key has to read as the default rather than as "none".
+	ClaudeMaxCommandTimeoutHours: DefaultClaudeMaxCommandTimeoutHours,
 	// Text-generation defaults: Codex is cheap + fast for short JSON
 	// responses, so it's the sensible default. The model stays empty
 	// so the call site picks the per-provider default; if the user

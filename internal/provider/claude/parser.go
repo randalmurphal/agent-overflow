@@ -138,7 +138,7 @@ type Parser struct {
 	// tool_use from the thread's persisted history, for a resume whose
 	// launch this parser never saw. Nil on a bare Parser. Set by
 	// NewSession from Config.AgentLaunchByTask.
-	agentLaunchLookup func(taskID string) (string, bool, error)
+	agentLaunchLookup func(taskID string) (AgentLaunchRecord, bool, error)
 	// taskTranscriptRoots records, per local_agent task_id, the tool_use
 	// id that is that agent's TRANSCRIPT ROOT: the FIRST tool_use the
 	// task bound to, which is the original `Agent` launch. A §E6 resume
@@ -182,10 +182,29 @@ type Parser struct {
 	// once per parent rather than on every assistant envelope inside
 	// the subagent's lifetime.
 	subagentModelStamped map[string]bool
+	// sessionEffort and agentLaunchEfforts back the `inherited_effort`
+	// stamp on Agent launches (subagent_effort.go).
+	sessionEffort string
+	// sessionEffortAlternatives are the higher tiers the session may be at
+	// instead of sessionEffort (observeRequestEffort).
+	sessionEffortAlternatives []string
+	agentLaunchEfforts        recentMap[agentLaunchEffort]
+	// modelAliases is the CLI's alias map, which resolves an Agent
+	// launch's `model` alias (SetModelAliases).
+	modelAliases map[string]string
 	// streamBlockTypes tracks partial-message content block types by
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.
 	streamBlockTypes map[string]string
+	// streamMessageIDs is the API id (`msg_...`) of the response currently
+	// streaming per parent_tool_use_id, taken from its `message_start`.
+	// It is the fallback for the envelope's own `api_message_id`, which
+	// Claude Code 2.1.300+ stamps on every stream_event of a response and
+	// older CLIs omit. Block lifecycle events carry it as
+	// provider.MetaAPIMessageIDKey so triage can tie a row to the response
+	// an `abandoned_blocks` message_stop later names. One entry per scope,
+	// released at that scope's message_stop and at the turn boundary.
+	streamMessageIDs map[string]string
 	// streamedMessageIDs records every `message.id` seen on a
 	// stream_event.message_start this turn. It is the discriminator the
 	// coalesced `assistant` snapshot uses to decide whether a text/thinking
@@ -415,6 +434,13 @@ func (p *Parser) SetModel(model string) {
 	p.model = strings.TrimSpace(model)
 }
 
+// SetAgentLaunchLookup gives the parser the thread history's record of an
+// agent launch an earlier process ran (Config.AgentLaunchByTask), for a
+// parser a session other than this package's owns (claude-tui).
+func (p *Parser) SetAgentLaunchLookup(lookup func(taskID string) (AgentLaunchRecord, bool, error)) {
+	p.agentLaunchLookup = lookup
+}
+
 // SetReplaysAreOwnSends declares that every replay echo this parser reads
 // is this app's own send (claude-tui). See parseUserReplay's ownSend.
 func (p *Parser) SetReplaysAreOwnSends() {
@@ -464,7 +490,9 @@ func (p *Parser) Close() {
 	p.liveAgentTaskToolUses = nil
 	p.ownedBackgroundTasks = nil
 	p.subagentModelStamped = nil
+	p.agentLaunchEfforts = recentMap[agentLaunchEffort]{}
 	p.streamBlockTypes = nil
+	p.streamMessageIDs = nil
 	p.streamedMessageIDs = nil
 	p.recoveredBlockSeq = nil
 	p.subagentRecoveredBlocks = nil
@@ -534,6 +562,10 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		case "assistant", "user":
 			p.leafTracker.ingestRaw(msgType, raw)
 		}
+	}
+
+	if (msgType == "assistant" || msgType == "user") && p.mirrorProjectsStdoutRow(raw) {
+		return nil, nil
 	}
 
 	now := time.Now()
@@ -1069,16 +1101,17 @@ func (p *Parser) resolveTaskTranscriptRoot(taskID string) string {
 	if root := p.taskTranscriptRoot(taskID); root != "" || p.agentLaunchLookup == nil {
 		return root
 	}
-	root, found, err := p.agentLaunchLookup(taskID)
+	record, found, err := p.agentLaunchLookup(taskID)
 	if err != nil {
 		log.Printf("claude: resolve the launch of resumed task %s: %v", taskID, err)
 		return ""
 	}
-	if !found {
+	if !found || record.ToolUseID == "" {
 		return ""
 	}
-	p.rememberTaskTranscriptRoot(taskID, root)
-	return root
+	p.rememberTaskTranscriptRoot(taskID, record.ToolUseID)
+	p.rememberHistoricalLaunch(record)
+	return record.ToolUseID
 }
 
 // setLastAssistantMessageID remembers the id of the most recent
@@ -1145,6 +1178,44 @@ func (p *Parser) takeStreamBlock(parentToolUseID string, index int) string {
 
 func streamBlockKey(parentToolUseID string, index int) string {
 	return fmt.Sprintf("%s:%d", parentToolUseID, index)
+}
+
+// rememberStreamMessageID records the API id of the response that just
+// opened on a scope's stream; see the streamMessageIDs field doc.
+func (p *Parser) rememberStreamMessageID(parentToolUseID, id string) {
+	if p == nil || id == "" {
+		return
+	}
+	if p.streamMessageIDs == nil {
+		p.streamMessageIDs = make(map[string]string)
+	}
+	if len(p.streamMessageIDs) >= parserStreamBlockCap {
+		p.streamMessageIDs = make(map[string]string)
+	}
+	p.streamMessageIDs[parentToolUseID] = id
+}
+
+// streamAPIMessageID is the API id of the response a stream_event belongs
+// to: the envelope's `api_message_id` when the CLI stamped one, else the
+// id remembered from the scope's `message_start`. Empty when neither is
+// known (an older CLI mid-response, a plugin-rewritten event).
+func (p *Parser) streamAPIMessageID(raw map[string]json.RawMessage, parentToolUseID string) string {
+	if id := readRawString(raw["api_message_id"]); id != "" {
+		return id
+	}
+	if p == nil || p.streamMessageIDs == nil {
+		return ""
+	}
+	return p.streamMessageIDs[parentToolUseID]
+}
+
+// forgetStreamMessageID releases a scope's remembered response id at its
+// message_stop.
+func (p *Parser) forgetStreamMessageID(parentToolUseID string) {
+	if p == nil || p.streamMessageIDs == nil {
+		return
+	}
+	delete(p.streamMessageIDs, parentToolUseID)
 }
 
 // rememberStreamedMessageID records a message id observed on a
@@ -1252,6 +1323,7 @@ func (p *Parser) clearSnapshotRecoveryState() {
 		return
 	}
 	p.streamedMessageIDs = nil
+	p.streamMessageIDs = nil
 	p.recoveredBlockSeq = nil
 }
 

@@ -104,6 +104,9 @@ import * as sshsetup$0 from "./internal/sshsetup/models.js";
 import * as store$0 from "./internal/store/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as tasktail$0 from "./internal/tasktail/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as terminal$0 from "./internal/terminal/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -2153,6 +2156,17 @@ export function GetUsageStats(query: store$0.UsageQuery): $CancellablePromise<st
  */
 export function GetWSLDistroPreference(): $CancellablePromise<string> {
     return $Call.ByID(294719565);
+}
+
+/**
+ * GetWebviewGPUVsyncDisabled reports whether the Windows launcher starts
+ * its WebView2 environments with --disable-gpu-vsync (Settings >
+ * Performance). False when the preference isn't readable: not running
+ * under WSL, no launcher-injected AGENT_OVERFLOW_WIN_APPDATA, or no
+ * wsl.json yet.
+ */
+export function GetWebviewGPUVsyncDisabled(): $CancellablePromise<boolean> {
+    return $Call.ByID(1563269625);
 }
 
 /**
@@ -4236,6 +4250,14 @@ export function RenewCanonicalDomainCert(): $CancellablePromise<network$0.Settin
 }
 
 /**
+ * ReorderProviderAccounts sets the order one provider's saved accounts are
+ * listed in. accountIDs must name every saved account exactly once.
+ */
+export function ReorderProviderAccounts(providerName: string, accountIDs: string[]): $CancellablePromise<void> {
+    return $Call.ByID(2861245989, providerName, accountIDs);
+}
+
+/**
  * RepairBackendAddress verifies a new address using an existing pairing's
  * certificate trust. It never enrolls another device or replaces its session.
  */
@@ -5005,6 +5027,17 @@ export function SetWSLDistroPreference(name: string): $CancellablePromise<string
 }
 
 /**
+ * SetWebviewGPUVsyncDisabled persists the GPU vsync preference to the
+ * launcher's wsl.json. The launcher reads it once at start, so the change
+ * applies on the next Windows-side launch; this session's WebView2
+ * environments keep their current flags. Distro and install metadata are
+ * preserved by load-mutate-save.
+ */
+export function SetWebviewGPUVsyncDisabled(disabled: boolean): $CancellablePromise<boolean> {
+    return $Call.ByID(4062584181, disabled);
+}
+
+/**
  * SetWindowBackgroundColor paints the native window chrome — the color
  * visible while a resize outruns the webview's paint — to match the
  * resolved theme.
@@ -5607,6 +5640,16 @@ export function UnsubscribePRUpdates(subscriptionID: string): $CancellablePromis
 }
 
 /**
+ * UnwatchBackgroundTaskOutput releases a watch WatchBackgroundTaskOutput
+ * answered this connection with. Idempotent: the connection cleanup and
+ * the task's end may both have released it already. A watch another
+ * connection holds, or one on another thread, is left alone.
+ */
+export function UnwatchBackgroundTaskOutput(threadID: string, watchID: string): $CancellablePromise<void> {
+    return $Call.ByID(1941806085, threadID, watchID);
+}
+
+/**
  * UpdateClientDeviceName publishes the name of the paired installation making
  * this call. It cannot rename another device or change its access.
  */
@@ -5926,6 +5969,29 @@ export function WakeThreadWakeNow(threadID: string, kind: string, id: string): $
 }
 
 /**
+ * WatchBackgroundTaskOutput follows the output file of a running Claude
+ * background command launched by launchItemID and answers with its tail
+ * as it stands. Later growth arrives as provider:background_task_output
+ * frames whose seq continues the snapshot's; a seq the client did not
+ * expect means a missed frame, and the client watches again. The watch
+ * ends with UnwatchBackgroundTaskOutput, the connection, or the task: the
+ * last frame of a task that ended carries ended:true. A task that already
+ * ended answers ended:true with no watch; its output is on its completion
+ * row.
+ * 
+ * It rides threads:read, which also serves the tray (ListLiveBackgroundTasks)
+ * and the completion payload the same bytes land in. Refused for an agent
+ * launch, whose file is a transcript, and for anything but a running
+ * background command. The watch belongs to the calling connection: only
+ * that connection's UnwatchBackgroundTaskOutput releases it.
+ */
+export function WatchBackgroundTaskOutput(threadID: string, launchItemID: string): $CancellablePromise<tasktail$0.Snapshot> {
+    return $Call.ByID(2263729048, threadID, launchItemID).then(($result: any) => {
+        return $$createType205($result);
+    });
+}
+
+/**
  * WorkflowAnswerQuestion and WorkflowResolveGate settle the two parks a
  * workflow author routed to a person. Both are reachable from the CLI as well
  * as the overlay, and both carry the `resolve` grant rather than `start-run`:
@@ -5949,7 +6015,7 @@ export function WorkflowAnswerQuestion(itemID: string, answer: string): $Cancell
  */
 export function WorkflowBindThread(itemID: string, threadID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(1931806823, itemID, threadID).then(($result: any) => {
-        return $$createType205($result);
+        return $$createType206($result);
     });
 }
 
@@ -5971,7 +6037,7 @@ export function WorkflowCompleteTakeover(itemID: string): $CancellablePromise<vo
  */
 export function WorkflowCreateItemPR(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(1792283305, itemID).then(($result: any) => {
-        return $$createType206($result);
+        return $$createType207($result);
     });
 }
 
@@ -5981,7 +6047,7 @@ export function WorkflowCreateItemPR(itemID: string): $CancellablePromise<app$0.
  */
 export function WorkflowDiscardItem(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(2163033761, itemID).then(($result: any) => {
-        return $$createType206($result);
+        return $$createType207($result);
     });
 }
 
@@ -5994,7 +6060,7 @@ export function WorkflowDiscardItem(itemID: string): $CancellablePromise<app$0.W
  */
 export function WorkflowDiscardPreview(itemID: string): $CancellablePromise<app$0.WorkflowDiscardPreview> {
     return $Call.ByID(2659721862, itemID).then(($result: any) => {
-        return $$createType207($result);
+        return $$createType208($result);
     });
 }
 
@@ -6025,7 +6091,7 @@ export function WorkflowDropUnit(itemID: string, unitID: string, note: string): 
  */
 export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromise<app$0.WorkflowPRReviewComments> {
     return $Call.ByID(819019128, itemID).then(($result: any) => {
-        return $$createType208($result);
+        return $$createType209($result);
     });
 }
 
@@ -6035,13 +6101,13 @@ export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromi
  */
 export function WorkflowGetEngineState(): $CancellablePromise<engine$0.EngineState> {
     return $Call.ByID(2130001947).then(($result: any) => {
-        return $$createType209($result);
+        return $$createType210($result);
     });
 }
 
 export function WorkflowGetItem(itemID: string): $CancellablePromise<app$0.WorkflowItemDetailView> {
     return $Call.ByID(70120675, itemID).then(($result: any) => {
-        return $$createType210($result);
+        return $$createType211($result);
     });
 }
 
@@ -6058,7 +6124,7 @@ export function WorkflowGetItem(itemID: string): $CancellablePromise<app$0.Workf
  */
 export function WorkflowGetRunMap(itemID: string): $CancellablePromise<app$0.WorkflowRunMapView> {
     return $Call.ByID(4156752389, itemID).then(($result: any) => {
-        return $$createType211($result);
+        return $$createType212($result);
     });
 }
 
@@ -6068,7 +6134,7 @@ export function WorkflowGetRunMap(itemID: string): $CancellablePromise<app$0.Wor
  */
 export function WorkflowListDefinitions(projectID: string): $CancellablePromise<app$0.WorkflowDefinitionCatalog> {
     return $Call.ByID(2064216126, projectID).then(($result: any) => {
-        return $$createType212($result);
+        return $$createType213($result);
     });
 }
 
@@ -6091,13 +6157,13 @@ export function WorkflowListDefinitions(projectID: string): $CancellablePromise<
  */
 export function WorkflowListItemCosts(projectID: string): $CancellablePromise<{ [_ in string]?: number }> {
     return $Call.ByID(1544440599, projectID).then(($result: any) => {
-        return $$createType213($result);
+        return $$createType214($result);
     });
 }
 
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
-        return $$createType214($result);
+        return $$createType215($result);
     });
 }
 
@@ -6108,7 +6174,7 @@ export function WorkflowListItems(projectID: string): $CancellablePromise<store$
  */
 export function WorkflowListUnresolvedItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3613211765, projectID).then(($result: any) => {
-        return $$createType214($result);
+        return $$createType215($result);
     });
 }
 
@@ -6118,7 +6184,7 @@ export function WorkflowListUnresolvedItems(projectID: string): $CancellableProm
  */
 export function WorkflowMergeItem(itemID: string): $CancellablePromise<app$0.WorkflowDispositionReceipt> {
     return $Call.ByID(3006532931, itemID).then(($result: any) => {
-        return $$createType206($result);
+        return $$createType207($result);
     });
 }
 
@@ -6271,7 +6337,7 @@ export function WorkflowSetGlobalPause(paused: boolean): $CancellablePromise<voi
  */
 export function WorkflowStartRun(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, baseBranch: string, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(1009082601, projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode).then(($result: any) => {
-        return $$createType205($result);
+        return $$createType206($result);
     });
 }
 
@@ -6293,7 +6359,7 @@ export function WorkflowTakeOverUnit(itemID: string, unitID: string): $Cancellab
  */
 export function WorkflowUnbindThread(itemID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(2006703348, itemID).then(($result: any) => {
-        return $$createType205($result);
+        return $$createType206($result);
     });
 }
 
@@ -6525,13 +6591,14 @@ const $$createType201 = app$0.ThreadPeerPollReply.createFrom;
 const $$createType202 = threadtools$0.Resolution.createFrom;
 const $$createType203 = app$0.MCPAuthInitResult.createFrom;
 const $$createType204 = app$0.VerifyEditDiffsResult.createFrom;
-const $$createType205 = store$0.WorkItem.createFrom;
-const $$createType206 = app$0.WorkflowDispositionReceipt.createFrom;
-const $$createType207 = app$0.WorkflowDiscardPreview.createFrom;
-const $$createType208 = app$0.WorkflowPRReviewComments.createFrom;
-const $$createType209 = engine$0.EngineState.createFrom;
-const $$createType210 = app$0.WorkflowItemDetailView.createFrom;
-const $$createType211 = app$0.WorkflowRunMapView.createFrom;
-const $$createType212 = app$0.WorkflowDefinitionCatalog.createFrom;
-const $$createType213 = $Create.Map($Create.Any, $Create.Any);
-const $$createType214 = $Create.Array($$createType205);
+const $$createType205 = tasktail$0.Snapshot.createFrom;
+const $$createType206 = store$0.WorkItem.createFrom;
+const $$createType207 = app$0.WorkflowDispositionReceipt.createFrom;
+const $$createType208 = app$0.WorkflowDiscardPreview.createFrom;
+const $$createType209 = app$0.WorkflowPRReviewComments.createFrom;
+const $$createType210 = engine$0.EngineState.createFrom;
+const $$createType211 = app$0.WorkflowItemDetailView.createFrom;
+const $$createType212 = app$0.WorkflowRunMapView.createFrom;
+const $$createType213 = app$0.WorkflowDefinitionCatalog.createFrom;
+const $$createType214 = $Create.Map($Create.Any, $Create.Any);
+const $$createType215 = $Create.Array($$createType206);

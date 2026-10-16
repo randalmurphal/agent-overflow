@@ -136,7 +136,7 @@ describe('<AccountSwitcher> — selection', () => {
   it('shows the login countdown only for accounts near their deadline', async () => {
     const day = 24 * 60 * 60 * 1000;
     setBindingMock('ListProviderAccounts', async () => [
-      account({ id: 'claude-a', displayName: 'Work', active: true, refreshTokenExpiresAt: Date.now() + 2 * day }),
+      account({ id: 'claude-a', displayName: 'Work', active: true, refreshTokenExpiresAt: Date.now() + 2 * day + 30_000 }),
       account({ id: 'claude-b', displayName: 'Personal', refreshTokenExpiresAt: Date.now() + 20 * day }),
       account({ id: 'codex-a', provider: 'codex', displayName: 'Codex Team' }),
     ]);
@@ -146,7 +146,7 @@ describe('<AccountSwitcher> — selection', () => {
     });
 
     const expiring = await findByTestId('account-switcher-login-expiry-claude-a');
-    expect(expiring.textContent?.trim()).toBe('Login expires in 2 days');
+    expect(expiring.textContent?.trim()).toBe('Login expires in 2d');
     expect(expiring.className).toContain('text-warning');
     // Three weeks out is not news, and a countdown on every row would teach
     // people to ignore the one that matters.
@@ -209,6 +209,37 @@ describe('<AccountSwitcher> — selection', () => {
     await fireEvent.click(await findByTestId('account-switcher-refresh-claude-b'));
 
     await waitFor(() => expect(refreshMock).toHaveBeenCalledWith('claude', 'claude-b'));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('<AccountSwitcher> — sign in again', () => {
+  it('offers a sign-in in a login\'s last week and after it, without switching', async () => {
+    const now = Date.now();
+    setBindingMock('ListProviderAccounts', async () => [
+      account({ id: 'claude-a', displayName: 'Work', active: true, needsLogin: true, refreshTokenExpiresAt: now - 60_000 }),
+      account({ id: 'claude-b', displayName: 'Personal', refreshTokenExpiresAt: now + 2 * 86_400_000 }),
+      account({ id: 'claude-c', displayName: 'Spare', refreshTokenExpiresAt: now + 20 * 86_400_000 }),
+    ]);
+    const loginMock = setBindingMock('StartProviderLogin', async () => ({
+      provider: 'claude',
+      phase: 'awaiting_code',
+      method: 'remote',
+      authorizeUrl: 'https://claude.ai/oauth/authorize?state=renew',
+    }));
+    const switchMock = setBindingMock('SwitchProviderAccount', async () => undefined);
+    const onClose = vi.fn();
+    const { findByTestId, queryByTestId, getByTestId } = render(AccountSwitcher, { open: true, onClose });
+
+    await findByTestId('account-switcher-sign-in-claude-b');
+    expect(queryByTestId('account-switcher-sign-in-claude-a')).not.toBeNull();
+    expect(queryByTestId('account-switcher-sign-in-claude-c')).toBeNull();
+    // The selected account keeps its Active tag while it needs a sign-in.
+    expect(getByTestId('account-switcher-row-claude-a').textContent).toContain('Active');
+
+    await fireEvent.click(getByTestId('account-switcher-sign-in-claude-b'));
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('claude', expect.any(String)));
+    expect(switchMock).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });
 });

@@ -19,6 +19,7 @@
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { copyToClipboard } from '../../utils/clipboard';
+  import { offeredModels } from '../../utils/hiddenModels';
   import {
     ensureProviderModels,
     getProviderModels,
@@ -61,7 +62,7 @@
       shadowed: shadowedModels(entries, index),
     })),
   );
-  let models = $derived(getProviderModels(provider.id, backend));
+  let models = $derived(offeredModels(getProviderModels(provider.id, backend)));
   let catalogError = $state<string | null>(null);
   // The instructions name the files, so there is nothing to copy until an
   // entry has been saved and has one.
