@@ -53,6 +53,7 @@
   import {
     deriveClaudeSubagentDescription,
     deriveClaudeSubagentEffort,
+    deriveClaudeSubagentEffortAlternatives,
     deriveClaudeSubagentLabel,
     deriveClaudeSubagentModel,
     readClaudeSubagentInput,
@@ -155,10 +156,15 @@
       ? carrierIdentity.effort
       : deriveClaudeSubagentEffort(agentInputObject, displayMeta, agentToolName),
   );
+  let effortAlternatives = $derived(
+    carrierIdentity
+      ? carrierIdentity.effortAlternatives
+      : deriveClaudeSubagentEffortAlternatives(agentInputObject, displayMeta, agentToolName),
+  );
   // "Opus 4.7 · xHigh": the model and the effort it runs at, in one affix.
   let modelLabel = $derived(joinLabelParts(
     model ? displayModelLabel('claude', model) : '',
-    claudeThreadSubagentEffortLabel(effectiveDisplayItem.threadId, pane?.thread?.projectId, model, effort),
+    claudeThreadSubagentEffortLabel(effectiveDisplayItem.threadId, pane?.thread?.projectId, model, effort, effortAlternatives),
   ));
   let description = $derived(
     carrierIdentity ? carrierIdentity.description : deriveClaudeSubagentDescription(agentInputObject),

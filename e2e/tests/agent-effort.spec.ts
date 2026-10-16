@@ -8,7 +8,12 @@
 // reports its model, the launch's requested `model` is shown, and an alias
 // the app cannot resolve (`haiku`: Haiku 4.5 drops efforts, Haiku 5.5 runs
 // them) shows no effort. A resumed agent that named no effort runs at the
-// session's effort when it resumes, which its resume row shows.
+// session's effort when it resumes, which its resume row shows; after a
+// restart, agents nested in a resumed run inherit the effort its launch
+// named, from the thread's history. claude-tui reads the session's effort
+// off main-loop requests the CLI clamped to the main model: a high on a
+// model without xhigh may be xhigh, so an Opus child shows no effort and a
+// Sonnet child shows High.
 //
 // Codex: a 0.162+ `subAgentActivity` started item carries the child's
 // resolved `model` and `reasoningEffort`; the spawn row shows them without
@@ -25,8 +30,11 @@ import {
   agentResumeLines,
   asyncAgentAckLine,
   backgroundTasksChangedLine,
+  claudeScenario,
   claudeTurnsScenario,
   emit,
+  itemMeta,
+  listItems,
   seedAgentThread,
   startMock,
   taskNotificationLine,
@@ -197,6 +205,133 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
   // The first run keeps the effort it ran at.
   await expect(sweepCard.getByTestId('subagent-group-label')).toHaveText('Sweeper(Mock 1 · xHigh)');
   await shoot(page, testInfo, timeline, 'claude-resume');
+});
+
+/**
+ * A main-loop launch as claude-tui reconstructs it: stamped with its
+ * request's `output_config.effort` (`ao_request_effort`), which the CLI
+ * clamped to the request's model.
+ */
+function requestLaunchLine(messageId: string, toolUseId: string, input: Record<string, unknown>, effort: string, model: string): string {
+  const envelope = JSON.parse(toolUseLine(messageId, toolUseId, 'Agent', input));
+  envelope.ao_request_effort = effort;
+  envelope.message.model = model;
+  return JSON.stringify(envelope);
+}
+
+test('a child inherits an unknown effort when the main model clamped its tier away', async ({ harness, page }, testInfo) => {
+  // An xHigh session on Sonnet 4.6, which lacks xhigh, sends high: an Opus
+  // child may run at xHigh or High, a Sonnet child runs at High either way.
+  const kid = (id: string, description: string): string =>
+    requestLaunchLine(`msg-${id}`, `tu-${id}`, { description, subagent_type: 'checker', prompt: description }, 'high', 'claude-sonnet-4-6');
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('claude-effort-clamped', [
+      emit([
+        kid('opus-kid', 'opus check'),
+        taskStartedLine('task-opus-kid', 'tu-opus-kid', 'opus check', { subagentType: 'checker' }),
+        kid('sonnet-kid', 'sonnet check'),
+        taskStartedLine('task-sonnet-kid', 'tu-sonnet-kid', 'sonnet check', { subagentType: 'checker' }),
+        childTextLine('msg-opus-kid-text', 'Checking on Opus.', 'claude-opus-4-7', 'tu-opus-kid'),
+        taskUpdatedLine('task-opus-kid', { status: 'completed', end_time: 1787415964724 }),
+        toolResultLine('tu-opus-kid', 'Opus done.'),
+        childTextLine('msg-sonnet-kid-text', 'Checking on Sonnet.', 'claude-sonnet-4-6', 'tu-sonnet-kid'),
+        taskUpdatedLine('task-sonnet-kid', { status: 'completed', end_time: 1787415964726 }),
+        toolResultLine('tu-sonnet-kid', 'Sonnet done.'),
+        RESULT_LINE,
+      ]),
+    ]),
+  });
+  const threadId = await seedAgentThread(harness, 'effort-clamped-app', 'Clamped effort');
+  await harness.open(page);
+  await page.getByText('Clamped effort').click();
+  await startMock(harness, threadId);
+  const done = harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('SendMessage', threadId, 'check', null);
+  await done;
+
+  const launch = (await listItems(harness, threadId)).find((item) => item.id === 'tu-opus-kid');
+  expect(itemMeta(launch)).toMatchObject({ inherited_effort: 'high', inherited_effort_alternatives: ['xhigh'] });
+
+  const timeline = page.getByTestId('chat-timeline-surface').getByTestId('message-timeline-scroll');
+  const cards = timeline.getByTestId('subagent-group');
+  const opusCard = cards.filter({ hasText: 'opus check' });
+  await expect(opusCard.getByTestId('subagent-group-label')).toHaveText('Checker(Opus 4.7)');
+  await expect(cards.filter({ hasText: 'sonnet check' }).getByTestId('subagent-group-label')).toHaveText(
+    'Checker(Sonnet 4.6 · High)',
+  );
+  await shoot(page, testInfo, timeline, 'claude-clamped');
+
+  await opusCard.getByTestId('subagent-group-open-pane').first().click();
+  const pane = page.getByTestId('companion-pane-agent-body');
+  await expect(pane.getByTestId('agent-pane-model')).toContainText('Opus 4.7');
+  await expect(pane.getByTestId('agent-pane-effort')).toHaveCount(0);
+});
+
+test('after a restart, agents nested in a resumed run inherit the effort its launch named', async ({ harness, page }, testInfo) => {
+  const LOW_TASK = { task_id: 'task-low', task_type: 'local_agent', description: 'low sweep' };
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('claude-effort-before-restart', [
+      emit([
+        toolUseLine('msg-low', 'tu-low', 'Agent', {
+          description: 'low sweep',
+          subagent_type: 'sweeper',
+          prompt: 'sweep lightly',
+          effort: 'low',
+          run_in_background: true,
+        }),
+        taskStartedLine('task-low', 'tu-low', 'low sweep', { subagentType: 'sweeper' }),
+        asyncAgentAckLine('tu-low', 'task-low', 'low sweep'),
+        backgroundTasksChangedLine([LOW_TASK]),
+        RESULT_LINE,
+        taskUpdatedLine('task-low', { status: 'completed', end_time: 1787415964999 }),
+        taskNotificationLine('task-low', 'tu-low', 'Low sweep finished.'),
+        backgroundTasksChangedLine([]),
+      ]),
+    ]),
+  });
+  const threadId = await seedAgentThread(harness, 'effort-restart-app', 'Effort restart');
+  await harness.open(page);
+  await page.getByText('Effort restart').click();
+  await startMock(harness, threadId);
+  await harness.rpc('SendMessage', threadId, 'sweep', null);
+  await harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('StopSession', threadId);
+
+  // The new process knows the session's effort (max), not the agent's.
+  await harness.rpc('HarnessSetScenario', {
+    scenario: claudeScenario('claude-effort-after-restart', [
+      emit([
+        effortReplyLine('msg-effort-max', 'Set effort level to max (this session only): Deepest'),
+        ...agentResumeLines('msg-resume-low', 'tu-resume-low', 'task-low', 'low sweep', 'Check once more.', 'sweeper'),
+        backgroundTasksChangedLine([LOW_TASK]),
+        RESULT_LINE,
+        // The resumed round launches an agent of its own, parented to the
+        // original launch like every row of the agent.
+        toolUseLine('msg-inner', 'tu-inner', 'Agent', { description: 'inner check', subagent_type: 'checker', prompt: 'look' }, 'tu-low'),
+        ...textLines('msg-inner-text', 'Inner checking.', 'tu-inner'),
+        toolResultLine('tu-inner', 'Inner done.', { parentToolUseId: 'tu-low' }),
+        taskUpdatedLine('task-low', { status: 'completed', end_time: 1787415969999 }),
+        taskNotificationLine('task-low', 'tu-resume-low', 'Second low sweep finished.'),
+        backgroundTasksChangedLine([]),
+      ]),
+    ]),
+  });
+  await startMock(harness, threadId);
+  const resumed = harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('SendMessage', threadId, 'sweep again', null);
+  await resumed;
+
+  await expect
+    .poll(async () => itemMeta((await listItems(harness, threadId)).find((item) => item.id === 'tu-inner')).inherited_effort)
+    .toBe('low');
+  const timeline = page.getByTestId('chat-timeline-surface').getByTestId('message-timeline-scroll');
+  const resumedCard = timeline.getByTestId('subagent-group').filter({ hasText: 'Second low sweep finished' });
+  await expect(resumedCard.getByTestId('subagent-group-label')).toHaveText('Sweeper(Opus 4.7 · Low)');
+  await resumedCard.getByTestId('subagent-group-open-pane').first().click();
+  const pane = page.getByTestId('companion-pane-agent-body');
+  const innerCard = pane.getByTestId('agent-pane-timeline').getByTestId('subagent-group').filter({ hasText: 'inner check' });
+  await expect(innerCard.getByTestId('subagent-group-label')).toHaveText('Checker(Mock 1 · Low)');
+  await shoot(page, testInfo, pane, 'claude-restart-nested');
 });
 
 const CHILD_THREAD = 'child-effort';

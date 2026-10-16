@@ -39,17 +39,23 @@ export function claudeSubagentEffortLabel(
   models: readonly ModelInfo[],
   model: string,
   effort: string,
+  alternatives: readonly string[] = [],
 ): string {
+  // The launcher's effort may be one of `alternatives` instead (claude-tui
+  // reads it off a request the CLI clamped to the main model): show it only
+  // when every candidate runs the same on this model.
+  const efforts = [effort, ...alternatives];
   const id = model.trim();
   const entry = findClaudeCatalogModel(models, id);
+  let entries: (ModelInfo | undefined)[];
   if (entry || !id || id.toLowerCase().startsWith('claude-')) {
-    return subagentEffortLabel('claude', effort, entry);
+    entries = [entry];
+  } else {
+    const family = id.toLowerCase();
+    entries = models.filter((candidate) => candidate.slug.toLowerCase().includes(family));
   }
-  const family = id.toLowerCase();
   const labels = new Set(
-    models
-      .filter((candidate) => candidate.slug.toLowerCase().includes(family))
-      .map((candidate) => subagentEffortLabel('claude', effort, candidate)),
+    entries.flatMap((candidate) => efforts.map((slug) => subagentEffortLabel('claude', slug, candidate))),
   );
   return labels.size === 1 ? [...labels][0] : '';
 }
@@ -60,8 +66,9 @@ export function claudeThreadSubagentEffortLabel(
   projectId: string | null | undefined,
   model: string,
   effort: string,
+  alternatives: readonly string[] = [],
 ): string {
-  return claudeSubagentEffortLabel(getProviderModels('claude', threadMachine(threadId, projectId)), model, effort);
+  return claudeSubagentEffortLabel(getProviderModels('claude', threadMachine(threadId, projectId)), model, effort, alternatives);
 }
 
 /**

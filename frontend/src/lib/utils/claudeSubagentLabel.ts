@@ -148,6 +148,29 @@ export function deriveClaudeSubagentEffort(
 }
 
 /**
+ * The higher tiers the launcher may have run at instead of the inherited
+ * effort deriveClaudeSubagentEffort returns (`inherited_effort_alternatives`,
+ * claude-tui). Empty when the launch named its own effort.
+ */
+export function deriveClaudeSubagentEffortAlternatives(
+  input: Record<string, unknown> | null,
+  parentMeta: Record<string, unknown> | null,
+  toolName: string,
+): string[] {
+  if (toolName !== 'Agent' && toolName !== 'Task') return [];
+  const fork = readStringField(input, 'subagent_type') === 'fork';
+  if (!fork && readStringField(input, 'effort')) return [];
+  return readEffortAlternatives(parentMeta);
+}
+
+/** `inherited_effort_alternatives` off a launch or carrier row's meta. */
+export function readEffortAlternatives(meta: Record<string, unknown> | null): string[] {
+  const value = meta?.inherited_effort_alternatives;
+  if (!Array.isArray(value)) return [];
+  return value.filter((slug): slug is string => typeof slug === 'string' && slug.trim() !== '');
+}
+
+/**
  * An effort the subagent runs at as named, or '' for none. The
  * experiment-gated relative efforts ("lower", "higher") are either dropped
  * or applied as a step AO cannot reproduce, so they read as unknown.

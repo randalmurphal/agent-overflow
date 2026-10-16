@@ -310,3 +310,82 @@ func TestRelativeEffortLeavesTheAgentsEffortUnknown(t *testing.T) {
 		t.Fatalf("launch nested under a relative effort inherited %q, want none", effort)
 	}
 }
+
+// The CLI sends a session effort the request's model lacks as high, so a
+// high request on a model without xhigh or max leaves the session's effort
+// ambiguous: launches record the tiers it may be instead, which a child on
+// a model that offers them may run at.
+func TestHighRequestOnAModelWithoutHigherTiersRecordsThemAsAlternatives(t *testing.T) {
+	for _, tc := range []struct {
+		model, effort string
+		want          any
+	}{
+		{"claude-sonnet-4-6", "high", []any{"xhigh"}},
+		{"claude-opus-4-7", "high", nil},
+		{"claude-sonnet-4-6", "medium", nil},
+		{"claude-unknown-9", "high", []any{"xhigh", "max"}},
+	} {
+		parser := NewParser()
+		mustParse(t, parser, []byte(`{"type":"assistant","ao_request_effort":"`+tc.effort+`","message":{"id":"m1","model":"`+tc.model+`","role":"assistant","content":[{"type":"text","text":"x"}]}}`))
+		meta := launchMeta(t, parser, agentLaunchLine("toolu-a", "", `{"prompt":"p"}`))
+		if meta[inheritedEffortMetaKey] != tc.effort {
+			t.Errorf("%s %s: inherited_effort = %v", tc.model, tc.effort, meta[inheritedEffortMetaKey])
+		}
+		if got := meta[inheritedEffortAlternativesMetaKey]; fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Errorf("%s %s: alternatives = %v, want %v", tc.model, tc.effort, got, tc.want)
+		}
+		// What nests under an agent that named no effort inherits the same
+		// ambiguity; under one that named its effort, none.
+		nested := launchMeta(t, parser, agentLaunchLine("toolu-a-inner", "toolu-a", `{"prompt":"p"}`))
+		if got := nested[inheritedEffortAlternativesMetaKey]; fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Errorf("%s %s: nested alternatives = %v, want %v", tc.model, tc.effort, got, tc.want)
+		}
+		launchMeta(t, parser, agentLaunchLine("toolu-b", "", `{"prompt":"p","effort":"high"}`))
+		if got, ok := launchMeta(t, parser, agentLaunchLine("toolu-b-inner", "toolu-b", `{"prompt":"p"}`))[inheritedEffortAlternativesMetaKey]; ok {
+			t.Errorf("%s %s: alternatives %v under a named effort", tc.model, tc.effort, got)
+		}
+	}
+}
+
+// An effort the session states outright (a /effort reply) is not clamped.
+func TestEffortReplyClearsTheRequestAlternatives(t *testing.T) {
+	parser := NewParser()
+	mustParse(t, parser, []byte(`{"type":"assistant","ao_request_effort":"high","message":{"id":"m1","model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"text","text":"x"}]}}`))
+	mustParse(t, parser, effortReplyLine("syn-1", "Set effort level to high (this session only): Deep"))
+	if got, ok := launchMeta(t, parser, agentLaunchLine("toolu-a", "", `{"prompt":"p"}`))[inheritedEffortAlternativesMetaKey]; ok {
+		t.Fatalf("alternatives %v after /effort high", got)
+	}
+}
+
+// A resume whose launch an earlier process ran restores the launch's named
+// effort from the thread's history, so launches nested in the resumed round
+// inherit it rather than the session's effort now.
+func TestResumeOfAHistoricalLaunchRestoresItsEffort(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		record AgentLaunchRecord
+		want   string
+	}{
+		{"named", AgentLaunchRecord{ToolUseID: "launch-1", Effort: "low", Model: "claude-opus-4-7"}, "low"},
+		{"unnamed", AgentLaunchRecord{ToolUseID: "launch-1"}, "max"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := NewParser()
+			parser.SetSessionEffort("max")
+			parser.agentLaunchLookup = func(taskID string) (AgentLaunchRecord, bool, error) {
+				if taskID != "agent-1" {
+					return AgentLaunchRecord{}, false, nil
+				}
+				return tc.record, true, nil
+			}
+			mustParse(t, parser, []byte(sendMessageToolUse("carrier-2")))
+			events := mustParse(t, parser, []byte(`{"type":"system","subtype":"task_started","task_id":"agent-1","tool_use_id":"carrier-2","task_type":"local_agent","prompt":"keep going"}`))
+			if meta := findRebindStart(t, events, "carrier-2"); meta["transcript_root_id"] != "launch-1" {
+				t.Fatalf("carrier transcript root %v, want launch-1", meta["transcript_root_id"])
+			}
+			if effort, _ := launchInheritedEffort(t, parser, agentLaunchLine("nested", "launch-1", `{"prompt":"p"}`)); effort != tc.want {
+				t.Fatalf("nested launch in the resumed round inherited %q, want %s", effort, tc.want)
+			}
+		})
+	}
+}

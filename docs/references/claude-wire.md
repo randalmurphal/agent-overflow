@@ -2246,7 +2246,8 @@ agent (not `Agent`, `Task` or `Skill`) is still a resume: a fresh
 launch's call is one of those, and `local_agent` tasks die with their
 CLI process, so no pre-restart agent re-announces itself. The parser
 asks the thread's history for the launch (`claude.Config.AgentLaunchByTask`,
-the oldest agent launch row carrying the task id) and stamps it as
+the oldest agent launch row carrying the task id, with the effort it named and
+its model; see [§Agent effort](#agent-effort)) and stamps it as
 `resumes_tool_use_id` and `transcript_root_id`; when the history has
 none, both are omitted and triage resolves the launch through the
 persisted `items.meta.task_id`. Task bindings and roots rotate
@@ -3065,19 +3066,29 @@ AO records what was true when the agent started running
   `/effort` replies above. claude-tui never sees the terminal's `/effort`, so
   its reconstructor stamps each main-loop assistant envelope with the
   request's `output_config.effort` (`ao_request_effort`, `""` when absent),
-  which the parser takes as the session's effort. That is the main model's
-  clamped effort; a subagent on a model with more tiers may run higher.
+  which the parser takes as the session's effort. The CLI clamps it to the
+  main model, so a `high` request on a model without `xhigh` or `max` may
+  stand for one of them: launches under it also get
+  `meta.inherited_effort_alternatives`, the tiers that model lacks (both
+  when the catalog does not know it). A `/effort` reply clears them.
+- A resume of an agent an earlier process launched restores the effort the
+  launch named and its model from the thread's history
+  (`claude.Config.AgentLaunchByTask`), so launches nested in the resumed
+  round inherit it.
 - A relative `"lower"`/`"higher"` names no effort AO can reproduce, so the
   row shows none and launches nested inside it inherit none.
 - A row's stamps are written once: triage keeps an existing row's stamp state
   when its tool start is delivered again, and never adds a stamp to a row
-  stored without one (`internal/triage/launch_effort.go`).
+  stored without one (`internal/triage/launch_effort.go`). An effort and its
+  alternatives settle as one stamp.
 
 The row shows `input.effort`, else the stamp; a resume carrier shows the
 launch's named effort, else its own stamp. The effort is clamped against the
 catalog entry of the subagent's model, else its requested model; an alias the
 parser could not resolve shows an effort only when every catalog model of its
-family agrees on it (`frontend/src/lib/utils/subagentEffort.ts`).
+family agrees on it (`frontend/src/lib/utils/subagentEffort.ts`). With
+alternatives, it shows one only when the effort and every alternative clamp to
+the same tier on that model.
 Frontmatter effort, the environment override and the experiments are not
 visible to AO, so a row can show the inherited effort where the CLI used
 another.

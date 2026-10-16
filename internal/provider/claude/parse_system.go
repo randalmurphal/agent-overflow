@@ -1014,8 +1014,11 @@ func (p *Parser) beginTaskResume(threadID, carrier, resumesToolUseID string, sta
 	}
 	// The resumed round runs at its launch's named effort, else at its
 	// sender's effort now (claude-wire.md §Agent effort).
-	if effort := p.resumeInheritedEffort(p.toolUseParent(carrier), root); effort != "" {
+	if effort, alternatives := p.resumeInheritedEffort(p.toolUseParent(carrier), root); effort != "" {
 		fields[inheritedEffortMetaKey] = effort
+		if len(alternatives) > 0 {
+			fields[inheritedEffortAlternativesMetaKey] = alternatives
+		}
 	}
 	return fields, resumePromptEvent(threadID, carrier, root, start.prompt, now), closed
 }

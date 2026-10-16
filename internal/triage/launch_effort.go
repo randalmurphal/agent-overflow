@@ -8,10 +8,14 @@ import (
 // launchStampKeys are the facts the Claude parser stamps on an Agent launch
 // (and `inherited_effort` on a §E6 resume carrier) about the moment it
 // happened (internal/provider/claude/subagent_effort.go): the effort the
-// launcher ran at and the model the launch's alias resolved to. A later
-// delivery of the same row would stamp a later moment, so a row's first
-// state wins.
-var launchStampKeys = []string{"inherited_effort", "requested_model"}
+// launcher ran at, the higher tiers it may have run at instead (claude-tui)
+// and the model the launch's alias resolved to. A later delivery of the same
+// row would stamp a later moment, so a row's first state wins. An effort and
+// its alternatives are one stamp: they settle together.
+var launchStampGroups = [][]string{
+	{"inherited_effort", "inherited_effort_alternatives"},
+	{"requested_model"},
+}
 
 // keepLaunchStamps settles the launch stamps of a row whose tool start is
 // delivered again (a later process, a mirror re-projection): the existing
@@ -40,16 +44,27 @@ func settleLaunchStamps(existing, merged string, mayAdd bool) string {
 		return merged
 	}
 	changed := false
-	for _, key := range launchStampKeys {
-		value, had := prior[key]
-		current, has := next[key]
-		switch {
-		case had && string(current) != string(value):
-			next[key] = value
-			changed = true
-		case !had && has && !mayAdd:
-			delete(next, key)
-			changed = true
+	for _, group := range launchStampGroups {
+		had, has := false, false
+		for _, key := range group {
+			_, inPrior := prior[key]
+			_, inNext := next[key]
+			had, has = had || inPrior, has || inNext
+		}
+		if !had && (mayAdd || !has) {
+			continue
+		}
+		for _, key := range group {
+			value, inPrior := prior[key]
+			current, inNext := next[key]
+			switch {
+			case inPrior && string(current) != string(value):
+				next[key] = value
+				changed = true
+			case !inPrior && inNext:
+				delete(next, key)
+				changed = true
+			}
 		}
 	}
 	if !changed {
@@ -63,9 +78,11 @@ func settleLaunchStamps(existing, merged string, mayAdd bool) string {
 }
 
 func mentionsLaunchStamp(meta string) bool {
-	for _, key := range launchStampKeys {
-		if strings.Contains(meta, `"`+key+`"`) {
-			return true
+	for _, group := range launchStampGroups {
+		for _, key := range group {
+			if strings.Contains(meta, `"`+key+`"`) {
+				return true
+			}
 		}
 	}
 	return false

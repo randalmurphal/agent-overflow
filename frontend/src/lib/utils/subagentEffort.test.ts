@@ -120,6 +120,17 @@ describe('claudeSubagentEffortLabel', () => {
     expect(claudeSubagentEffortLabel(catalog, 'claude-opus-9', 'max')).toBe('Max');
     expect(claudeSubagentEffortLabel(catalog, '', 'high')).toBe('High');
   });
+
+  // claude-tui read high off a request the CLI clamped to a main model
+  // without xhigh: the session may be at xhigh instead.
+  it('shows an inherited effort with alternatives only when every candidate runs the same', () => {
+    expect(claudeSubagentEffortLabel(catalog, 'claude-opus-4-7', 'high', ['xhigh'])).toBe('');
+    expect(claudeSubagentEffortLabel(catalog, 'claude-sonnet-4-6', 'high', ['xhigh'])).toBe('High');
+    expect(claudeSubagentEffortLabel(catalog, 'opus', 'high', ['xhigh'])).toBe('');
+    expect(claudeSubagentEffortLabel(catalog, 'claude-opus-9', 'high', ['xhigh'])).toBe('');
+    expect(claudeSubagentEffortLabel(catalog, '', 'high', ['xhigh'])).toBe('');
+    expect(claudeSubagentEffortLabel(catalog, 'claude-opus-4-7', 'high', [])).toBe('High');
+  });
 });
 
 describe('joinLabelParts', () => {

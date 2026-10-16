@@ -290,6 +290,7 @@ describe('subagentLaunchInfo — SendMessage resume carrier (claude-wire.md §E6
       agentType: 'general-purpose',
       model: 'claude-opus-4-7',
       effort: 'xhigh',
+      effortAlternatives: [],
       description: 'Frontend transitive suppression fix',
     });
   });
@@ -306,6 +307,18 @@ describe('subagentLaunchInfo — SendMessage resume carrier (claude-wire.md §E6
     expect(claudeResumeCarrierIdentity(carrier({ inherited_effort: 'low' })).effort).toBe('low');
     expect(claudeResumeCarrierIdentity(carrier({ subagent_effort: 'higher', inherited_effort: 'low' })).effort).toBe('');
     expect(claudeResumeCarrierIdentity(carrier({})).effort).toBe('');
+    // The tiers the carrier's inherited effort may stand for go with it,
+    // and not with an effort the launch named.
+    const alternatives = ['xhigh'];
+    expect(
+      claudeResumeCarrierIdentity(carrier({ inherited_effort: 'high', inherited_effort_alternatives: alternatives }))
+        .effortAlternatives,
+    ).toEqual(['xhigh']);
+    expect(
+      claudeResumeCarrierIdentity(
+        carrier({ subagent_effort: 'low', inherited_effort: 'high', inherited_effort_alternatives: alternatives }),
+      ).effortAlternatives,
+    ).toEqual([]);
   });
 
   it('suppresses the description line when it already is the name', () => {

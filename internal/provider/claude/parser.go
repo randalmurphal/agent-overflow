@@ -125,7 +125,7 @@ type Parser struct {
 	// tool_use from the thread's persisted history, for a resume whose
 	// launch this parser never saw. Nil on a bare Parser. Set by
 	// NewSession from Config.AgentLaunchByTask.
-	agentLaunchLookup func(taskID string) (string, bool, error)
+	agentLaunchLookup func(taskID string) (AgentLaunchRecord, bool, error)
 	// taskTranscriptRoots records, per local_agent task_id, the tool_use
 	// id that is that agent's TRANSCRIPT ROOT: the FIRST tool_use the
 	// task bound to, which is the original `Agent` launch. A §E6 resume
@@ -171,8 +171,11 @@ type Parser struct {
 	subagentModelStamped map[string]bool
 	// sessionEffort and agentLaunchEfforts back the `inherited_effort`
 	// stamp on Agent launches (subagent_effort.go).
-	sessionEffort      string
-	agentLaunchEfforts recentMap[agentLaunchEffort]
+	sessionEffort string
+	// sessionEffortAlternatives are the higher tiers the session may be at
+	// instead of sessionEffort (observeRequestEffort).
+	sessionEffortAlternatives []string
+	agentLaunchEfforts        recentMap[agentLaunchEffort]
 	// modelAliases is the CLI's alias map, which resolves an Agent
 	// launch's `model` alias (SetModelAliases).
 	modelAliases map[string]string
@@ -407,6 +410,13 @@ func (p *Parser) SetModel(model string) {
 		return
 	}
 	p.model = strings.TrimSpace(model)
+}
+
+// SetAgentLaunchLookup gives the parser the thread history's record of an
+// agent launch an earlier process ran (Config.AgentLaunchByTask), for a
+// parser a session other than this package's owns (claude-tui).
+func (p *Parser) SetAgentLaunchLookup(lookup func(taskID string) (AgentLaunchRecord, bool, error)) {
+	p.agentLaunchLookup = lookup
 }
 
 // SetReplaysAreOwnSends declares that every replay echo this parser reads
@@ -1058,16 +1068,17 @@ func (p *Parser) resolveTaskTranscriptRoot(taskID string) string {
 	if root := p.taskTranscriptRoot(taskID); root != "" || p.agentLaunchLookup == nil {
 		return root
 	}
-	root, found, err := p.agentLaunchLookup(taskID)
+	record, found, err := p.agentLaunchLookup(taskID)
 	if err != nil {
 		log.Printf("claude: resolve the launch of resumed task %s: %v", taskID, err)
 		return ""
 	}
-	if !found {
+	if !found || record.ToolUseID == "" {
 		return ""
 	}
-	p.rememberTaskTranscriptRoot(taskID, root)
-	return root
+	p.rememberTaskTranscriptRoot(taskID, record.ToolUseID)
+	p.rememberHistoricalLaunch(record)
+	return record.ToolUseID
 }
 
 // setLastAssistantMessageID remembers the id of the most recent

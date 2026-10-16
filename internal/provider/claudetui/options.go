@@ -97,6 +97,11 @@ type Config struct {
 	// Spawn-stamped by the app like claude.Config.ModelAliases; nil when no
 	// probe has reported.
 	ModelAliases map[string]string
+	// AgentLaunchByTask is claude.Config.AgentLaunchByTask: the thread
+	// history's record of an agent launch an earlier process ran, which a
+	// §E6 resume of it needs. Spawn-stamped by the app; nil reads as not
+	// found.
+	AgentLaunchByTask func(taskID string) (claude.AgentLaunchRecord, bool, error)
 	// Env is the base environment for the spawned claude. Empty means inherit
 	// the current process environment.
 	Env []string

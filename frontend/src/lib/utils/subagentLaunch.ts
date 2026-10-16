@@ -48,6 +48,7 @@ import { extractClaudeTaskID } from './claudeTaskMeta';
 import {
   deriveClaudeSubagentLabel,
   knownEffort,
+  readEffortAlternatives,
   readClaudeSubagentInputFromStrings,
   titleCaseClaudeSubagentToken,
 } from './claudeSubagentLabel';
@@ -429,6 +430,8 @@ export interface ClaudeResumeCarrierIdentity {
    * effort at resume time ('' when unknown).
    */
   effort: string;
+  /** Higher tiers the sender may have been at instead of `effort`. */
+  effortAlternatives: string[];
   /**
    * The one-line task beside the name — the original launch description.
    * Empty when the description already IS the name (no `subagent_type`
@@ -461,6 +464,7 @@ export function claudeResumeCarrierIdentity(item: Item): ClaudeResumeCarrierIden
   const inheritedEffort =
     typeof meta?.inherited_effort === 'string' ? meta.inherited_effort.trim() : '';
   const effort = knownEffort(namedEffort) ?? inheritedEffort;
+  const effortAlternatives = namedEffort ? [] : readEffortAlternatives(meta);
   let description =
     typeof meta?.description === 'string' ? meta.description.trim() : '';
   if (!description) {
@@ -472,7 +476,7 @@ export function claudeResumeCarrierIdentity(item: Item): ClaudeResumeCarrierIden
   const name = agentType
     ? titleCaseClaudeSubagentToken(agentType)
     : description || 'Agent';
-  return { name, agentType, model, effort, description: agentType ? description : '' };
+  return { name, agentType, model, effort, effortAlternatives, description: agentType ? description : '' };
 }
 
 /**

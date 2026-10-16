@@ -108,7 +108,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// the EventError path, and re-emitting it as content duplicates the
 	// api_error row (see TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent).
 	errorEnum := assistantErrorEnum(raw, msg)
-	p.observeRequestEffort(raw, parentToolUseID)
+	p.observeRequestEffort(raw, parentToolUseID, msg.Model)
 
 	// CLI-generated local command output. The CLI runs `/usage`, `/context`,
 	// a skill, a plugin command etc. itself — no API call, num_turns 0 — and
@@ -931,6 +931,9 @@ func marshalToolMeta(toolName string, input json.RawMessage, isBackground, isAge
 	}
 	if stamps.requestedModel != "" {
 		fields[requestedModelMetaKey] = stamps.requestedModel
+	}
+	if stamps.inheritedEffort != "" && len(stamps.inheritedEffortAlternatives) > 0 {
+		fields[inheritedEffortAlternativesMetaKey] = stamps.inheritedEffortAlternatives
 	}
 	out, _ := json.Marshal(fields)
 	return out

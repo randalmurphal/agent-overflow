@@ -50,6 +50,7 @@
   import {
     deriveClaudeSubagentDescription,
     deriveClaudeSubagentEffort,
+    deriveClaudeSubagentEffortAlternatives,
     deriveClaudeSubagentModel,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
@@ -238,12 +239,16 @@
       || deriveClaudeSubagentModel(inputObject, parentMeta, parentToolName)
       || (launchInfo?.provider === 'claude' ? pane?.effectiveModel || pane?.thread?.model || '' : '');
     if (!model) return '';
-    const effort = isClaudeResumeCarrierItem(parent)
-      ? claudeResumeCarrierIdentity(parent).effort
+    const carrier = isClaudeResumeCarrierItem(parent) ? claudeResumeCarrierIdentity(parent) : null;
+    const effort = carrier
+      ? carrier.effort
       : deriveClaudeSubagentEffort(inputObject, parentMeta, parentToolName);
+    const alternatives = carrier
+      ? carrier.effortAlternatives
+      : deriveClaudeSubagentEffortAlternatives(inputObject, parentMeta, parentToolName);
     return joinLabelParts(
       displayModelLabel('claude', model),
-      claudeThreadSubagentEffortLabel(parent.threadId, pane?.thread?.projectId, model, effort),
+      claudeThreadSubagentEffortLabel(parent.threadId, pane?.thread?.projectId, model, effort, alternatives),
     );
   });
   // The one-line task beside the title. Codex spawns read their OWN

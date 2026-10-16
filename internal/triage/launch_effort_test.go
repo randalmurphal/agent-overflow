@@ -161,6 +161,45 @@ func TestSettleLaunchStampsLeavesUnchangedMergesAlone(t *testing.T) {
 	}
 }
 
+// An effort and the higher tiers it may stand for are one launch-time fact:
+// a later delivery neither drops the alternatives from a stamped row nor
+// pairs the row's effort with alternatives of another moment.
+func TestEffortAlternativesSettleWithTheirEffort(t *testing.T) {
+	stamped := `{"toolName":"Agent","inherited_effort":"high","inherited_effort_alternatives":["xhigh","max"]}`
+	for name, tc := range map[string]struct {
+		settle           func(existing, merged string) string
+		existing, merged string
+		want             string
+	}{
+		"redelivery keeps them": {
+			keepLaunchStamps, stamped, `{"toolName":"Agent","inherited_effort":"high"}`,
+			`["xhigh","max"]`,
+		},
+		"redelivery does not add them": {
+			keepLaunchStamps, `{"toolName":"Agent","inherited_effort":"high"}`, stamped,
+			"",
+		},
+		"a meta-only restamp does not add them to a first stamp": {
+			keepFirstLaunchStamps, `{"toolName":"SendMessage","inherited_effort":"high"}`,
+			`{"toolName":"SendMessage","inherited_effort":"high","inherited_effort_alternatives":["max"]}`,
+			"",
+		},
+		"a first meta-only stamp carries them": {
+			keepFirstLaunchStamps, `{"toolName":"SendMessage"}`,
+			`{"toolName":"SendMessage","inherited_effort":"high","inherited_effort_alternatives":["max"]}`,
+			`["max"]`,
+		},
+	} {
+		var meta map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(tc.settle(tc.existing, tc.merged)), &meta); err != nil {
+			t.Fatalf("%s: decode: %v", name, err)
+		}
+		if got := string(meta["inherited_effort_alternatives"]); got != tc.want {
+			t.Errorf("%s: alternatives = %s, want %s", name, got, tc.want)
+		}
+	}
+}
+
 func TestLaunchNamedEffort(t *testing.T) {
 	cases := []struct {
 		name  string

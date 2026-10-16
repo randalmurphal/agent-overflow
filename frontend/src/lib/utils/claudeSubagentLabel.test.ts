@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   deriveClaudeSubagentDescription,
   deriveClaudeSubagentEffort,
+  deriveClaudeSubagentEffortAlternatives,
   deriveClaudeSubagentLabel,
   deriveClaudeSubagentModelLabel,
   readClaudeSubagentInput,
@@ -188,6 +189,23 @@ describe('deriveClaudeSubagentEffort', () => {
   it('returns "" for other tools and when nothing is known', () => {
     expect(deriveClaudeSubagentEffort({ effort: 'max' }, { inherited_effort: 'low' }, 'Skill')).toBe('');
     expect(deriveClaudeSubagentEffort(null, null, 'Agent')).toBe('');
+  });
+});
+
+describe('deriveClaudeSubagentEffortAlternatives', () => {
+  const stamped = { inherited_effort: 'high', inherited_effort_alternatives: ['xhigh', 7, ''] };
+
+  it('reads the tiers an inherited effort may stand for', () => {
+    expect(deriveClaudeSubagentEffortAlternatives({}, stamped, 'Agent')).toEqual(['xhigh']);
+    expect(deriveClaudeSubagentEffortAlternatives({ subagent_type: 'fork', effort: 'low' }, stamped, 'Task')).toEqual([
+      'xhigh',
+    ]);
+  });
+
+  it('has none for a named effort, another tool or no stamp', () => {
+    expect(deriveClaudeSubagentEffortAlternatives({ effort: 'low' }, stamped, 'Agent')).toEqual([]);
+    expect(deriveClaudeSubagentEffortAlternatives({}, stamped, 'Skill')).toEqual([]);
+    expect(deriveClaudeSubagentEffortAlternatives({}, { inherited_effort: 'high' }, 'Agent')).toEqual([]);
   });
 });
 

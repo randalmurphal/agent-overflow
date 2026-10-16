@@ -30,6 +30,7 @@
   import { resolveSubagentProgress } from '../../utils/subagentProgress';
   import {
     deriveClaudeSubagentEffort,
+    deriveClaudeSubagentEffortAlternatives,
     deriveClaudeSubagentModel,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
@@ -135,8 +136,11 @@
     const effort = carrierIdentity
       ? carrierIdentity.effort
       : deriveClaudeSubagentEffort(inputObject, parentMeta, identity?.toolName ?? '');
+    const alternatives = carrierIdentity
+      ? carrierIdentity.effortAlternatives
+      : deriveClaudeSubagentEffortAlternatives(inputObject, parentMeta, identity?.toolName ?? '');
     const threadId = identity?.threadId ?? lifecycle?.threadId ?? '';
-    return claudeThreadSubagentEffortLabel(threadId, pane?.thread?.projectId, model, effort);
+    return claudeThreadSubagentEffortLabel(threadId, pane?.thread?.projectId, model, effort, alternatives);
   });
 
   // The chip's elapsed timer runs from the LIFECYCLE row — the launch, or

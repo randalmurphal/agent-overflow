@@ -2,6 +2,7 @@ package claudetui
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -57,5 +58,35 @@ func TestSubagentRequestEffortLeavesTheSessionEffort(t *testing.T) {
 		agentLaunchSSE("toolu_B", "again"))
 	if effort, _ := inheritedEffortOf(t, h, "toolu_B"); effort != "high" {
 		t.Fatalf("launch after a subagent request inherited %q, want high", effort)
+	}
+}
+
+// The CLI clamps the session's effort to the main model: an xhigh session
+// on Sonnet 4.6, which lacks xhigh, sends high. The launch records xhigh as
+// the tier its high may stand for, which an Opus child would run at.
+func TestClampedRequestEffortRecordsItsAlternatives(t *testing.T) {
+	h := newParserHarness(t)
+	// The API answers with the model the request named.
+	launchOn := func(model, toolUseID, prompt string) []string {
+		sse := agentLaunchSSE(toolUseID, prompt)
+		sse[0] = strings.Replace(sse[0], `"model":"claude-haiku"`, `"model":"`+model+`"`, 1)
+		return sse
+	}
+	h.runMain(t, `{"model":"claude-sonnet-4-6","max_tokens":32000,"tools":[{"name":"Agent"}],"output_config":{"effort":"high"}}`,
+		launchOn("claude-sonnet-4-6", "toolu_SONNET", "first"))
+	h.runMain(t, `{"model":"claude-opus-4-7","max_tokens":32000,"tools":[{"name":"Agent"}],"output_config":{"effort":"high"}}`,
+		launchOn("claude-opus-4-7", "toolu_OPUS", "second"))
+	for id, want := range map[string]string{"toolu_SONNET": `["xhigh"]`, "toolu_OPUS": ""} {
+		start := toolStartFor(*h.events, id)
+		if start == nil {
+			t.Fatalf("no tool start for %s", id)
+		}
+		var meta map[string]json.RawMessage
+		if err := json.Unmarshal(start.Meta, &meta); err != nil {
+			t.Fatalf("decode meta: %v", err)
+		}
+		if got := string(meta["inherited_effort_alternatives"]); got != want {
+			t.Errorf("%s: inherited_effort_alternatives = %s, want %s", id, got, want)
+		}
 	}
 }
