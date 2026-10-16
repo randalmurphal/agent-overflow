@@ -327,6 +327,11 @@ export function itemsRenderEqual(a: Item, b: Item): boolean {
     // Not rendered, but where the next delta lands: an equal row at
     // another stream end is a different read of the stream.
     && a.streamEnd === b.streamEnd
+    // Served, never stored: the wire refresh that follows an abandonment
+    // record re-pushes the rows it names with this set and nothing else
+    // changed. Dropping that push as equal would keep the unmarked copy,
+    // and the mark would go with the record once a cut drops it.
+    && a.discardedBy === b.discardedBy
     // `payloadPreviewSpans` is deliberately absent. `UpdatePayloadSpans`
     // on the server bumps only the thread stamp, never the row: spans are
     // a derived highlight cache the client version-checks

@@ -11,6 +11,7 @@ import {
   compareItemsByTimelinePosition,
   cursorIsValid,
   itemsForThread,
+  itemsRenderEqual,
   mergeItemsById,
   mergeMissingItemsById,
   reconcileItemWindow,
@@ -865,6 +866,36 @@ describe('revision carry on absorbed rows', () => {
 
     expect(next[0]).toBe(incoming);
     expect(held.rev).toBe(4);
+  });
+
+  // The refresh after an abandonment record re-pushes the rows it names
+  // with `discardedBy` set and every rendered field unchanged. The push
+  // must replace the held copy on every merge path, or the mark lives only
+  // in the record and leaves the window with it.
+  it('replaces the held row when a refresh adds discardedBy', () => {
+    const held = makeItem({ id: 'a', threadId: 'thread-1', summary: 'same', rev: 4 });
+    const incoming = makeItem({ id: 'a', threadId: 'thread-1', summary: 'same', rev: 9, discardedBy: 'notification:0:abandoned:msg_1' });
+
+    expect(itemsRenderEqual(held, incoming)).toBe(false);
+
+    const upserted = applyWindowUpserts({
+      current: [held],
+      incoming: [incoming],
+      itemIndexById: new Map([['a', 0]]),
+      currentThreadId: 'thread-1',
+    });
+    expect(upserted?.rowWrites[0]?.item).toBe(incoming);
+
+    expect(reconcileItemWindow([incoming], [held])[0]).toBe(incoming);
+    expect(mergeItemsById([incoming], [held])[0]).toBe(incoming);
+    expect(held.rev).toBe(4);
+  });
+
+  it('keeps the held row when both copies carry the same discardedBy', () => {
+    const held = makeItem({ id: 'a', summary: 'same', rev: 4, discardedBy: 'notification:0:abandoned:msg_1' });
+    const current = [held];
+    expect(reconcileItemWindow([makeItem({ id: 'a', summary: 'same', rev: 9, discardedBy: 'notification:0:abandoned:msg_1' })], current)).toBe(current);
+    expect(held.rev).toBe(9);
   });
 });
 
