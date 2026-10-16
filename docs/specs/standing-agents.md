@@ -643,7 +643,8 @@ Mechanics, as built:
   those rows and the drag payload marks them `agentBound`, so no group
   target accepts them.
 - `ListStandingAgentWakes` (route all) and `thread:wakes_changed` feed
-  `stores/agentWakes.svelte.ts`; the state line
+  `stores/threadWakes.svelte.ts`, one key per thread, so a frame reruns
+  only the row of the thread it names; the state line
   (`utils/agentStateLine.ts`) shows the running row, else the soonest
   loop or watch, with `+N more`. A row the bulk read missed asks
   `ListThreadWakes` once on mount.
@@ -923,9 +924,14 @@ call's own stamp, so the settled row reads the same on any later day.
   row id, and the row as it stands or `removed` when it left the listing.
   A frame with neither means the row could not be read, and a reader
   reads the thread again, as it does after a lost frame or a reconnect.
-  The tray reads its list again through the rate-bounded refresh
-  scheduler, since the order and the reminder bound are the backend's.
-  Nothing polls.
+  The tray reads the same store as the sidebar
+  (`stores/threadWakes.svelte.ts`), which applies each frame in the
+  listing's order (loops and watches by label, reminders by due time) and
+  replays frames that land during a read over its answer. It reads the
+  thread again, through the rate-bounded refresh scheduler, only where a
+  frame cannot settle the listing: a reminder change that may bring in or
+  push out a reminder past the bound. The store keeps a thread's
+  reminders while its tray shows it. Nothing polls.
 - **Outcome.** A wake that did not reach the thread is shown as a warning,
   with its missed fires, until a later wake does. An `error` outcome is
   shown as an error.

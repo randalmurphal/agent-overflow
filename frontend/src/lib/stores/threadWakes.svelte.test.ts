@@ -1,19 +1,22 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { flushSync } from 'svelte';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import {
   ensureAgentWakes,
   forgetAgentWakes,
   getAgentWakeRows,
+  getThreadWakeListing,
   refreshAgentWakes,
-  resetAgentWakesForTest,
-} from './agentWakes.svelte';
+  resetThreadWakesForTest,
+  retainThreadWakes,
+} from './threadWakes.svelte';
 import { applyThreadWakesChanged, applyThreadWakesGap } from './eventsThreadWakes';
 import { replaceAllThreads } from './threads.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { takePinnedBackend } from '../transport/backends';
 import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import type { Thread } from '../types/models';
-import type { ThreadWakeRow } from './bindings';
+import type { ThreadWakeRow, ThreadWakes } from './bindings';
 
 function row(id: string, overrides: Partial<ThreadWakeRow> = {}): ThreadWakeRow {
   return { id, kind: 'loop', label: id, state: 'armed', ...overrides } as ThreadWakeRow;
@@ -30,11 +33,11 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 4; i++) await Promise.resolve();
 }
 
-describe('agentWakes store', () => {
+describe('thread wakes store', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetStagedBackends();
-    resetAgentWakesForTest();
+    resetThreadWakesForTest();
     replaceAllThreads([thread('agent', { agentId: 'agent' }), thread('plain')]);
   });
 
@@ -145,5 +148,114 @@ describe('agentWakes store', () => {
     applyThreadWakesChanged({ threadId: 'agent', id: 'l1', removed: true }, HOME_BACKEND);
     expect(getAgentWakeRows('agent')).toEqual([]);
     expect(getAgentWakeRows('agent')).toBe(getAgentWakeRows('plain'));
+  });
+
+  it('reruns only the rows of the thread a frame names', async () => {
+    const busy = Array.from({ length: 200 }, (_, i) => `busy-${i}`);
+    const idle = Array.from({ length: 100 }, (_, i) => `idle-${i}`);
+    replaceAllThreads([...busy, ...idle].map((id) => thread(id, { agentId: id })));
+    setBindingMock('ListStandingAgentWakes', async () => busy.map((threadId) => ({ threadId, rows: [row(`l-${threadId}`)] })));
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
+    await refreshAgentWakes();
+    // Idle agents are absent from the bulk read; each row reads its own.
+    for (const id of idle) ensureAgentWakes(id);
+    await flush();
+
+    // One effect per mounted agent row, as AgentStateLine derives its line.
+    const runs = new Map<string, number>();
+    const unmount = $effect.root(() => {
+      for (const id of [...busy, ...idle]) {
+        $effect(() => {
+          runs.set(id, (runs.get(id) ?? 0) + 1);
+          getAgentWakeRows(id);
+        });
+      }
+    });
+    flushSync();
+    const reran = (frame: () => void) => {
+      const before = new Map(runs);
+      frame();
+      flushSync();
+      return [...runs].filter(([id, n]) => n !== before.get(id)).map(([id]) => id);
+    };
+
+    // A changed row, an idle agent's first loop, and a busy agent's last.
+    expect(reran(() => applyThreadWakesChanged({ threadId: 'busy-7', id: 'l-busy-7', row: row('l-busy-7', { state: 'running' }) }, HOME_BACKEND))).toEqual(['busy-7']);
+    expect(reran(() => applyThreadWakesChanged({ threadId: 'idle-3', id: 'l1', row: row('l1') }, HOME_BACKEND))).toEqual(['idle-3']);
+    expect(reran(() => applyThreadWakesChanged({ threadId: 'busy-8', id: 'l-busy-8', removed: true }, HOME_BACKEND))).toEqual(['busy-8']);
+    // A reminder is not the sidebar's: no row reruns.
+    expect(reran(() => applyThreadWakesChanged({ threadId: 'busy-9', id: 'r1', row: row('r1', { kind: 'reminder' }) }, HOME_BACKEND))).toEqual([]);
+    unmount();
+  });
+
+  describe('a retained listing', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function reminder(id: string, nextAt: number): ThreadWakeRow {
+      return row(id, { kind: 'reminder', nextAt });
+    }
+
+    async function retain(threadId: string, wakes: ThreadWakes) {
+      vi.useFakeTimers();
+      const read = setBindingMock('ListThreadWakes', async () => wakes);
+      const release = retainThreadWakes(threadId);
+      await vi.advanceTimersByTimeAsync(0);
+      return { read, release };
+    }
+
+    it('settles a reminder at the bound from the frame while it holds every reminder', async () => {
+      const listed = Array.from({ length: 64 }, (_, i) => reminder(`r${String(i).padStart(2, '0')}`, 1000 + i));
+      const { read, release } = await retain('plain', { rows: listed, moreReminders: 0 });
+      applyThreadWakesChanged({ threadId: 'plain', id: 'early', row: reminder('early', 1) }, HOME_BACKEND);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenCalledTimes(1);
+      const listing = getThreadWakeListing('plain')!;
+      expect(listing.reminders.map((r) => r.id)).toEqual(['early', ...listed.slice(0, 63).map((r) => r.id)]);
+      expect(listing.moreReminders).toBe(1);
+
+      // One unlisted reminder exists now: removing a listed one brings it in,
+      // which only the backend knows.
+      applyThreadWakesChanged({ threadId: 'plain', id: 'early', removed: true }, HOME_BACKEND);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenCalledTimes(2);
+      release();
+    });
+
+    it('applies a frame that lands while its read is out over the answer', async () => {
+      vi.useFakeTimers();
+      let answer: (wakes: ThreadWakes) => void = () => {};
+      setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answer = resolve; }));
+      const release = retainThreadWakes('plain');
+      await vi.advanceTimersByTimeAsync(0);
+      applyThreadWakesChanged({ threadId: 'plain', id: 'l1', row: row('l1', { state: 'running' }) }, HOME_BACKEND);
+      applyThreadWakesChanged({ threadId: 'plain', id: 'r1', removed: true }, HOME_BACKEND);
+      // The answer was read before both writes.
+      answer({ rows: [row('l1'), reminder('r1', 5)], moreReminders: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      const listing = getThreadWakeListing('plain')!;
+      expect(listing.loops.map((r) => [r.id, r.state])).toEqual([['l1', 'running']]);
+      expect(listing.reminders).toEqual([]);
+      release();
+    });
+
+    it('lets go of a thread the sidebar does not show, and of an agent\'s reminders alone', async () => {
+      const plain = await retain('plain', { rows: [row('l1'), reminder('r1', 5)], moreReminders: 0 });
+      expect(getAgentWakeRows('plain').map((r) => r.id)).toEqual(['l1']);
+      plain.release();
+      plain.release();
+      expect(getThreadWakeListing('plain')).toBeNull();
+      expect(getAgentWakeRows('plain')).toEqual([]);
+
+      ensureAgentWakes('agent');
+      const agent = await retain('agent', { rows: [row('l2'), reminder('r2', 5)], moreReminders: 0 });
+      agent.release();
+      expect(getThreadWakeListing('agent')).toBeNull();
+      expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l2']);
+      // A frame for a thread no surface shows is not kept.
+      applyThreadWakesChanged({ threadId: 'plain', id: 'l3', row: row('l3') }, HOME_BACKEND);
+      expect(getAgentWakeRows('plain')).toEqual([]);
+    });
   });
 });

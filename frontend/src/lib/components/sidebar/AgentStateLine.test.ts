@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
 import AgentStateLine from './AgentStateLine.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { resetAgentWakesForTest } from '../../stores/agentWakes.svelte';
+import { resetThreadWakesForTest } from '../../stores/threadWakes.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import type { Thread } from '../../types/models';
 import type { ThreadWakeRow } from '../../stores/bindings';
@@ -23,7 +23,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 describe('<AgentStateLine>', () => {
   beforeEach(() => {
     resetBindingMocks();
-    resetAgentWakesForTest();
+    resetThreadWakesForTest();
     replaceAllThreads([thread('agent-0'), thread('agent-1')]);
   });
 
