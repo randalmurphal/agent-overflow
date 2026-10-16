@@ -226,9 +226,10 @@ type App struct {
 	agentWakes agentWakeState
 	// agentNoticeWork joins what notices run after they are accepted.
 	agentNoticeWork appAgentNoticeWorkState
-	// assistantSessionLoss holds the threads whose session-loss handoff is
-	// running and the messages it carries (recoverAssistantSessionLoss).
-	assistantSessionLoss sessionLossCarries
+	// assistantHandOffs holds each assistant's running handoff and the
+	// messages it carries (StartNextAssistantThread,
+	// recoverAssistantSessionLoss).
+	assistantHandOffs assistantHandOffState
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
@@ -588,6 +589,10 @@ type App struct {
 	// begins, before it reads anything (recoverAssistantSessionLoss), so a
 	// test can send again or make the handoff fail at that moment.
 	sessionLossHandOffForTest func(threadID string)
+	// handOffCommittedForTest, when set, runs in a handoff after its store
+	// transaction committed and before the handoff ends
+	// (nextAssistantThread), so a test can act while it still runs.
+	handOffCommittedForTest func(oldThreadID, successorID string)
 	// remoteReplySettledForTest, when set, runs in a parked remote call's
 	// after-response work between the dismissal and the end of its wait.
 	remoteReplySettledForTest func()

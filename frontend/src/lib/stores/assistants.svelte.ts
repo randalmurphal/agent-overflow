@@ -48,6 +48,14 @@ export function isAssistantSessionGone(err: unknown): err is TransportError {
 }
 
 /**
+ * A send from an assistant's past thread whose draft the handoff moved: the
+ * text waits in the assistant's current thread's composer.
+ */
+export function isAssistantDraftMoved(err: unknown): err is TransportError {
+  return err instanceof TransportError && err.code === 'assistant_draft_moved';
+}
+
+/**
  * Two assistant names are the same name, as the store compares them:
  * trimmed, under Unicode simple case folding (strings.EqualFold). Each code
  * point is upper- then lowercased on its own, keeping only one-code-point

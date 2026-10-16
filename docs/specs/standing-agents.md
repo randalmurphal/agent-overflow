@@ -317,7 +317,11 @@ start. A past thread's sessions carry none of it.
 
 New Thread, Same Assistant (`StartNextAssistantThread`) replaces an
 assistant's current thread. It is refused for a thread that is not an
-assistant's current thread on this computer, and for an archived one.
+assistant's current thread on this computer, for an archived one, and
+while the assistant's previous handoff still runs
+(`assistant_handoff_running`): an assistant runs one handoff at a time,
+the one a session loss starts included. A client ignores a second click
+while its own handoff of the assistant runs.
 
 1. The successor is created with the current thread's project,
    workspace, provider, model, effort, fast mode, context window and
@@ -335,7 +339,24 @@ assistant's current thread on this computer, and for an archived one.
    old thread unless an earlier handoff already set it, and points every
    receipt addressed to it that its session has not taken in (state
    `accepted`) at the successor, with a local request's own target.
-3. The old session is torn down as an archive tears down. What was queued
+3. Before the old session ends, holding the old thread's action and
+   mutation locks, which a send holds from its check of the draft to its
+   consume, the old thread's composer draft moves to the successor's,
+   after any texts a session loss carried, one blank line between them, with its attachments copied into the successor and its
+   terminal chips and plan link kept. The attachments are copied first;
+   then one store transaction writes the successor's draft and clears
+   the old one (`HandOffThreadDraft`), so the text is in one composer
+   whatever fails. A move that fails deletes the copies, leaves the
+   draft in the old thread and says so in the successor. A client
+   showing the old thread saves what was typed there and holds its
+   composer until the handoff ends, so text typed just before the click
+   moves too. A send from the old thread that consumes the draft the
+   move took is refused (`assistant_draft_moved`, "Your unsent text
+   moved to <name>; send it from there."), and the client shows that as
+   a notice without restoring the text. A send that consumed the draft
+   before the move is sent and nothing moves; any other send to a past
+   thread goes through.
+4. The old session is torn down as an archive tears down. What was queued
    for it goes on: an answer, reminder or remote completion to its owner,
    which delivers it to the successor; a request not taken in to the
    successor's queue; a worker's prompt to the successor, since its
@@ -346,18 +367,10 @@ assistant's current thread on this computer, and for an archived one.
    new thread before it answered. Its previous thread is <id>; read it
    with thread_show to see what was done, or ask the assistant again by
    name." Running watch processes restart under the successor.
-4. The old thread's composer draft moves to the successor's, after any
-   texts a session loss carried, one blank line between them, with its
-   attachments copied into the successor and its terminal chips and
-   plan link kept; the old draft is cleared. A client showing the old
-   thread saves what was typed there and holds its composer until the
-   handoff ends, so text typed just before the click moves too. A move
-   that fails leaves the draft in the old thread and says so in the
-   successor.
-4. The successor is opened with an app-written block (wake kind
+5. The successor is opened with an app-written block (wake kind
    `handoff`): its name and that the user replaced its previous thread
    <id> with this one, what moved, the tokens and senders of the requests
-   step 3 interrupted, and to read the previous thread with `thread_show`
+   step 4 interrupted, and to read the previous thread with `thread_show`
    before acting on what it was doing, then tell the user in one short
    paragraph what it picked up. The old thread's unlisted frame names the
    successor (`handOffTo`); only that marker moves the panes that showed
@@ -407,7 +420,8 @@ session files on its own settings.
 own (Claude's transcript cleanup, Codex's rollouts). When the current
 thread's session start finds it gone, the start fails with
 `errAssistantSessionGone` and the app runs New Thread, Same Assistant
-itself (`recoverAssistantSessionLoss`, once per thread at a time): a
+itself (`recoverAssistantSessionLoss`, unless a handoff of the assistant
+already runs, which takes the sends below the same way): a
 Claude or Claude TUI resume checks the transcript before anything is
 torn down (`requireAssistantClaudeSession`, `sessionfork.LocateSessionFile`,
 the check the workflow runner's resume makes), and a Codex start's

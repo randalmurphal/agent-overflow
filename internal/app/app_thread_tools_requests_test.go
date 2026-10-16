@@ -21,6 +21,7 @@ import (
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadmode"
@@ -43,6 +44,8 @@ type requestFixture struct {
 	app    *App
 	bus    *capturedEventBus
 	caller store.Thread
+	// dbPath is the App's database file, for a test that opens it raw.
+	dbPath string
 }
 
 func newRequestFixture(t *testing.T) *requestFixture {
@@ -54,7 +57,8 @@ func newRequestFixture(t *testing.T) *requestFixture {
 // what a test asserting project or worktree behavior needs.
 func newRequestFixtureIn(t *testing.T, workspace string) *requestFixture {
 	t.Helper()
-	app, bus := setupE2EApp(t)
+	dbPath := storetest.ClonePath(t)
+	app, bus := setupE2EAppOn(t, dbPath, t.TempDir())
 	// Exports and answer files land under the data directory; a fixture
 	// without one would write into the repository working directory.
 	app.configDir = t.TempDir()
@@ -63,7 +67,7 @@ func newRequestFixtureIn(t *testing.T, workspace string) *requestFixture {
 		t.Fatalf("create caller thread: %v", err)
 	}
 	app.installThreadRequestObserver()
-	return &requestFixture{app: app, bus: bus, caller: caller}
+	return &requestFixture{app: app, bus: bus, caller: caller, dbPath: dbPath}
 }
 
 // mockClaude installs a provider that answers each user message with one

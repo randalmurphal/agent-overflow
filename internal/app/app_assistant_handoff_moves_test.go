@@ -248,7 +248,8 @@ func TestASessionLossHandOffMovesCarriesThenTheDraft(t *testing.T) {
 func TestASendBetweenTheCarryAndTheEndOfTheHandOffLandsOnce(t *testing.T) {
 	t.Parallel()
 	f, threadID, _ := lostSessionAssistant(t)
-	if !f.app.assistantSessionLoss.begin(threadID) {
+	agentID := assistantIDOf(t, f.app, threadID)
+	if !f.app.assistantHandOffs.begin(agentID, threadID) {
 		t.Fatal("begin")
 	}
 	successor, err := f.app.nextAssistantThread(t.Context(), threadID, true)
@@ -256,7 +257,7 @@ func TestASendBetweenTheCarryAndTheEndOfTheHandOffLandsOnce(t *testing.T) {
 		t.Fatalf("handoff: %v", err)
 	}
 	_, sendErr := f.app.SendMessageWithOptions(t.Context(), threadID, "late message", SendMessageOptions{SendID: uuid.NewString()})
-	if left := f.app.assistantSessionLoss.finish(threadID); len(left) > 0 {
+	if left := f.app.assistantHandOffs.finish(agentID); len(left) > 0 {
 		f.app.carrySessionLossItems(threadID, successor.ID, left)
 	}
 	f.app.waitAgentNoticeWork()
@@ -273,7 +274,8 @@ func TestSendsDuringAFailedReturnEndInTheNextSuccessor(t *testing.T) {
 	t.Parallel()
 	for run := range 5 {
 		f, threadID, _ := lostSessionAssistant(t)
-		if !f.app.assistantSessionLoss.begin(threadID) {
+		agentID := assistantIDOf(t, f.app, threadID)
+		if !f.app.assistantHandOffs.begin(agentID, threadID) {
 			t.Fatal("begin")
 		}
 		sendFindingTheSessionGone(t, f.app, threadID, "first message")
@@ -282,12 +284,12 @@ func TestSendsDuringAFailedReturnEndInTheNextSuccessor(t *testing.T) {
 		// third send.
 		var wg sync.WaitGroup
 		wg.Go(func() {
-			f.app.returnSessionLossCarries(threadID, f.app.assistantSessionLoss.take(threadID))
+			f.app.returnSessionLossCarries(threadID, f.app.assistantHandOffs.take(threadID))
 		})
 		// The client sends what its composer held, and consumes only that.
 		_, third := f.app.SendMessageWithOptions(t.Context(), threadID, "third message", SendMessageOptions{SendID: uuid.NewString(), ConsumeDraft: &DraftSnapshot{Content: "third message"}})
 		wg.Wait()
-		f.app.returnSessionLossCarries(threadID, f.app.assistantSessionLoss.finish(threadID))
+		f.app.returnSessionLossCarries(threadID, f.app.assistantHandOffs.finish(agentID))
 		texts := []string{"first message", "second message"}
 		if code, _, _ := errorsx.PublicDetails(third); code == transport.ErrCodeAssistantSessionGone {
 			texts = append(texts, "third message")
@@ -325,14 +327,12 @@ func TestSendsDuringAFailedReturnEndInTheNextSuccessor(t *testing.T) {
 func TestAFailedSessionLossHandOffReturnsTheTextsBeforeItEnds(t *testing.T) {
 	t.Parallel()
 	f, threadID, _ := lostSessionAssistant(t)
+	agentID := assistantIDOf(t, f.app, threadID)
 	var mu sync.Mutex
 	runningAtReturn := []bool{}
 	f.app.testEmitHook = func(name string, data any) {
 		if evt, ok := data.(DraftUpdatedEvent); ok && name == "draft:updated" && evt.ThreadID == threadID {
-			c := &f.app.assistantSessionLoss
-			c.mu.Lock()
-			running := c.running[threadID]
-			c.mu.Unlock()
+			running := handOffRunning(f.app, agentID)
 			mu.Lock()
 			runningAtReturn = append(runningAtReturn, running)
 			mu.Unlock()

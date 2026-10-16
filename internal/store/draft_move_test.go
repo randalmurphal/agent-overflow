@@ -146,3 +146,52 @@ func TestTransferStatusDoesNotDependOnRecentListOrExposePrivateState(t *testing.
 		t.Fatalf("private status data: %+v", got)
 	}
 }
+
+// A handoff's draft move writes the next thread's draft and clears the
+// previous thread's together, and refuses, changing neither, when the
+// previous draft is not the one the move read.
+func TestHandOffThreadDraftMovesWholeOrNotAtAll(t *testing.T) {
+	s := newTestStore(t)
+	a := createDraftCleanupThread(t, s, "previous", "chat")
+	b := createDraftCleanupThread(t, s, "next", "chat")
+	read := ThreadDraft{ThreadID: a.ID, Content: "typed note"}
+	if _, err := s.UpsertThreadDraft(ThreadDraft{ThreadID: a.ID, Content: "typed note, then more"}); err != nil {
+		t.Fatal(err)
+	}
+	moved := ThreadDraft{ThreadID: b.ID, Content: "typed note"}
+	if err := s.HandOffThreadDraft(a.ID, &read, moved); err == nil {
+		t.Fatal("moved a draft that changed after the move read it")
+	}
+	if got, _, _ := s.GetThreadDraft(a.ID); got.Content != "typed note, then more" {
+		t.Fatalf("previous draft = %q, want it untouched", got.Content)
+	}
+	if _, found, _ := s.GetThreadDraft(b.ID); found {
+		t.Fatal("the refused move wrote the next thread's draft")
+	}
+
+	if _, err := s.UpsertThreadDraft(read); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HandOffThreadDraft(a.ID, &read, moved); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := s.GetThreadDraft(a.ID); found {
+		t.Fatal("previous draft kept")
+	}
+	if got, _, _ := s.GetThreadDraft(b.ID); got.Content != "typed note" {
+		t.Fatalf("next draft = %q", got.Content)
+	}
+	if err := s.HandOffThreadDraft(a.ID, nil, ThreadDraft{ThreadID: b.ID, Content: "carried"}); err != nil {
+		t.Fatalf("a move with no previous draft: %v", err)
+	}
+}
+
+func TestSameDraftComparesAsTheConsumingDeleteDoes(t *testing.T) {
+	stored := ThreadDraft{ThreadID: "t", Content: "x", Attachments: "[]", TerminalChips: "[]", UpdatedAt: 5}
+	if !SameDraft(stored, ThreadDraft{Content: "x"}) {
+		t.Fatal("empty lists and timestamps differ")
+	}
+	if SameDraft(stored, ThreadDraft{Content: "x", PendingPlanImplementation: `{"itemId":"i"}`}) || SameDraft(stored, ThreadDraft{Content: "y"}) {
+		t.Fatal("different drafts compared equal")
+	}
+}

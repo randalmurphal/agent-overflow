@@ -11,7 +11,7 @@ import { SendMessageWithOptions } from '../../stores/bindings';
 import type { Attachment } from '../../types/attachment';
 import type { TerminalChip } from '../../types/draft';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
-import { isAssistantSessionGone } from '../../stores/assistants.svelte';
+import { isAssistantDraftMoved, isAssistantSessionGone } from '../../stores/assistants.svelte';
 import { isUndeliveredSendError } from '../../stores/transportStatus.svelte';
 import { confirmUnsentMessageRestore } from '../../stores/unsentMessageConfirmation.svelte';
 import { userFacingError } from '../../utils/userFacingError';
@@ -90,9 +90,10 @@ export async function dispatchSend(opts: SendOptions): Promise<boolean> {
       opts.reportError(`Send interrupted during preparation: ${userFacingError(err)}`, err);
       return false;
     }
-    // The backend put the text in the assistant's new thread's composer;
-    // restoring it here as well would leave it in two.
-    if (isAssistantSessionGone(err)) {
+    // The text is in the assistant's new thread's composer, put there by the
+    // session-loss handoff or moved by a handoff; restoring it here as well
+    // would leave it in two.
+    if (isAssistantSessionGone(err) || isAssistantDraftMoved(err)) {
       if (sendStarted) projectSendResolved(opts.threadId);
       addToast('info', err.message);
       return false;

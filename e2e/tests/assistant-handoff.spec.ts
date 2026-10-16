@@ -6,12 +6,15 @@
 // what moved, and reaches the provider; it shows as an agent row from
 // Agent Overflow; the agent row is the successor and the previous thread
 // sits archived in its done footer; the loop the old thread registered is
-// the successor's; the sidebar row's button does the same from the list.
+// the successor's; the sidebar row's button does the same from the list; a
+// second click on the row's button while the first handoff runs, with no
+// pane showing the thread, makes no second thread and no error.
 import type { Page } from '@playwright/test';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { captureAgentMessage, trayRow } from './wake-rows-helpers.js';
+import { methodIdByName } from './offhost-helpers.js';
 import {
   awaitToolAnswer,
   awaitTurnCompleted,
@@ -123,5 +126,42 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(next).not.toBe(first);
     await expect(page.locator(`[data-sidebar-agent][data-sidebar-thread-id="${next}"]`)).toBeVisible();
     await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('2 done');
+  });
+
+  test(`${provider}: a second click on the row's New Thread, Same Assistant while the first runs makes one thread`, async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [{ name: `assistant-handoff-twice-${provider}`, repo: {}, threads: [{ title: 'Ops', provider, assistant: true }] }],
+    });
+    const { path: cwd, threadIds: [first] } = seed.projects[0];
+    await setScenario(harness, cwd, plainScenario({ name: `assistant-handoff-twice-${provider}`, provider, texts: ['Picked up.'], afterTurns: 'repeatLast', echoUserMessage: true }));
+    const turn = awaitTurnCompleted(harness, first);
+    await harness.rpc('SendMessage', first, 'hello', null);
+    await turn;
+    // The calls the page makes, read off its socket: the second click's
+    // would be refused, and its error toast fades, so the wire is the
+    // record that it never went.
+    const startNext = methodIdByName('StartNextAssistantThread');
+    let calls = 0;
+    page.on('websocket', (ws) => {
+      ws.on('framesent', (frame) => {
+        const sent = JSON.parse(String(frame.payload)) as { type?: string; methodId?: number };
+        if (sent.type === 'rpc' && sent.methodId === startNext) calls++;
+      });
+    });
+    await harness.open(page);
+    // Both clicks in one task, so the second lands while the first call is
+    // in flight.
+    await row(page, first).hover();
+    await row(page, first).getByTestId('thread-row-next-thread').evaluate((button: HTMLElement) => {
+      button.click();
+      button.click();
+    });
+    const second = await currentThread(harness, 'Ops', first);
+    await expect(page.locator(`[data-sidebar-agent][data-sidebar-thread-id="${second}"]`)).toBeVisible();
+    await expect(page.getByTestId('thread-row-agent-done').getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
+    expect((await threadRows(harness)).filter((r) => r.title === 'Ops').map((r) => r.id)).toEqual([second]);
+    expect(calls).toBe(1);
+    expect(await page.getByTestId('toast').count()).toBe(0);
   });
 }

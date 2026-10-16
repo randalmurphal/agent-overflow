@@ -1209,6 +1209,11 @@ func (a *App) registerQueueItem(
 	if err != nil {
 		return QueuedItem{}, fmt.Errorf("register queue item: %w", err)
 	}
+	if !injected.preserveDraft {
+		if err := a.refuseSendOfMovedDraft(threadID, opts.ConsumeDraft); err != nil {
+			return QueuedItem{}, err
+		}
+	}
 	// Both archive doors flip the row under this lock, so a held message
 	// lands wholly before the flip, where the archive takes it back, or is
 	// refused here.

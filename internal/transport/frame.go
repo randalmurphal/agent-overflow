@@ -622,6 +622,15 @@ const (
 	// a new thread and the message waits in that thread's composer, so a
 	// client does not put it back in this one's.
 	ErrCodeAssistantSessionGone = "assistant_session_gone"
+	// ErrCodeAssistantHandOffRunning refuses New Thread, Same Assistant
+	// while the assistant's previous handoff still runs: an assistant moves
+	// to one new thread at a time.
+	ErrCodeAssistantHandOffRunning = "assistant_handoff_running"
+	// ErrCodeAssistantDraftMoved refuses a send from an assistant's past
+	// thread that consumes a draft a handoff moved to the assistant's
+	// current thread: the text waits in that thread's composer, so a client
+	// does not put it back in this one's.
+	ErrCodeAssistantDraftMoved = "assistant_draft_moved"
 	// ErrCodeClientOverloaded refuses an RPC this connection has no slot
 	// for: it already holds Config.MaxConcurrentRPCs in flight. The call
 	// was never started, so a client may reissue it once one of its own

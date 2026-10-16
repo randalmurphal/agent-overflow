@@ -136,6 +136,21 @@ describe('dispatchSend', () => {
     expect(getToasts()).toEqual([expect.objectContaining({ type: 'info', message })]);
   });
 
+  it('leaves the text to the assistant\'s current thread when a handoff moved the draft it sends', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    resetToastsForTest();
+    const message = 'Your unsent text moved to Ops; send it from there.';
+    setBindingMock('SendMessageWithOptions', async () => {
+      throw new TransportError('assistant_draft_moved', message);
+    });
+    const opts = sendOptions();
+
+    expect(await dispatchSend(opts)).toBe(false);
+    expect(opts.restoreDraft).not.toHaveBeenCalled();
+    expect(opts.reportError).not.toHaveBeenCalled();
+    expect(getToasts()).toEqual([expect.objectContaining({ type: 'info', message })]);
+  });
+
   it('restores without an ambiguous-send prompt when draft preparation loses its connection', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const send = setBindingMock('SendMessageWithOptions', async () => makeThread());

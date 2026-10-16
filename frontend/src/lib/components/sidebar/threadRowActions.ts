@@ -108,10 +108,14 @@ export async function renameThreadAction(
  * The backend lists the new thread before it unlists the old one, and every
  * client moves the panes that showed the old thread on that frame; the
  * pane that asked is switched here too, so it does not wait on the frame.
+ * One runs per assistant at a time: a click while it runs, on the old
+ * thread or on the successor a frame already showed, does nothing.
  */
 export async function nextAssistantThreadAction(ctx: ThreadActionCtx): Promise<void> {
+  const assistant = ctx.thread.agentId || ctx.thread.id;
+  if (handOffsRunning.has(assistant)) return;
+  handOffsRunning.add(assistant);
   const release = holdComposerForHandOff(ctx.thread.id);
-  if (!release) return;
   try {
     await saveComposerForHandOff(ctx.thread.id);
     const successor = (await StartNextAssistantThread(ctx.thread.id)) as Thread;
@@ -122,8 +126,11 @@ export async function nextAssistantThreadAction(ctx: ThreadActionCtx): Promise<v
     ctx.reportError(userFacingError(err), err);
   } finally {
     release();
+    handOffsRunning.delete(assistant);
   }
 }
+
+const handOffsRunning = new Set<string>();
 
 function handOffComposer(threadId: string) {
   for (const pane of panesShowingThread(threadId)) {
@@ -136,12 +143,11 @@ function handOffComposer(threadId: string) {
 /**
  * The handoff moves the old thread's saved draft, so the composer showing
  * it is held inert until the handoff ends: nothing typed during it is left
- * behind. Null when a handoff already holds it.
+ * behind.
  */
-function holdComposerForHandOff(threadId: string): (() => void) | null {
+function holdComposerForHandOff(threadId: string): () => void {
   const draft = handOffComposer(threadId);
-  if (!draft) return () => {};
-  if (draft.moving) return null;
+  if (!draft || draft.moving) return () => {};
   return draft.beginMove();
 }
 

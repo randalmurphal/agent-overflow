@@ -26,6 +26,27 @@ type ThreadDraft struct {
 	UpdatedAt                 int64  `json:"updatedAt"`
 }
 
+// stored is the draft as UpsertThreadDraft writes it: an empty attachment or
+// chip list is "[]".
+func (d ThreadDraft) stored() ThreadDraft {
+	if d.Attachments == "" {
+		d.Attachments = "[]"
+	}
+	if d.TerminalChips == "" {
+		d.TerminalChips = "[]"
+	}
+	return d
+}
+
+// SameDraft reports whether two drafts hold the same text, attachments,
+// terminal snippets and plan link, the comparison a consuming delete makes
+// (DeleteThreadDraft). A draft no row holds is the zero ThreadDraft.
+func SameDraft(a, b ThreadDraft) bool {
+	a, b = a.stored(), b.stored()
+	return a.Content == b.Content && a.Attachments == b.Attachments &&
+		a.TerminalChips == b.TerminalChips && a.PendingPlanImplementation == b.PendingPlanImplementation
+}
+
 // GetThreadDraft returns the draft for a thread, or (empty, false, nil) if no
 // draft row exists yet.
 func (s *Store) GetThreadDraft(threadID string) (ThreadDraft, bool, error) {
@@ -132,20 +153,13 @@ func (s *Store) DeleteThreadDraft(threadID string, expected *ThreadDraft) (bool,
 	query := `DELETE FROM thread_drafts WHERE thread_id = ?`
 	args := []any{threadID}
 	if expected != nil {
-		// Match the same nullable/empty-array representation as UpsertThreadDraft.
-		attachments, chips := expected.Attachments, expected.TerminalChips
-		if attachments == "" {
-			attachments = "[]"
-		}
-		if chips == "" {
-			chips = "[]"
-		}
+		e := expected.stored()
 		var plan any
-		if expected.PendingPlanImplementation != "" {
-			plan = expected.PendingPlanImplementation
+		if e.PendingPlanImplementation != "" {
+			plan = e.PendingPlanImplementation
 		}
 		query += ` AND content = ? AND attachments = ? AND terminal_chips = ? AND pending_plan_implementation IS ?`
-		args = append(args, expected.Content, attachments, chips, plan)
+		args = append(args, e.Content, e.Attachments, e.TerminalChips, plan)
 	}
 
 	var deleted string

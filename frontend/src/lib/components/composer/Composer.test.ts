@@ -55,6 +55,8 @@ import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptSt
 import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import { applySessionLive } from '../../stores/threadSessionLive.svelte';
+import { TransportError } from '../../transport/wsClient';
+import { getToasts } from '../../stores/toast.svelte';
 
 /**
  * Send options as they reach the wire. Every send carries a freshly minted
@@ -2839,6 +2841,24 @@ describe('<Composer>', () => {
     // The send quiesces in-flight draft saves before RegisterQueueItem, so
     // the restore lands a few microtasks after Enter, not on the next tick.
     await waitFor(() => expect(draft.content).toBe('restored after session death'));
+  });
+
+  it('leaves a queued text a handoff moved to the assistant\'s new thread out of this composer', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const message = 'Your unsent text moved to Ops; send it from there.';
+    setBindingMock('RegisterQueueItem', async () => { throw new TransportError('assistant_draft_moved', message); });
+    const save = setBindingMock('SaveDraft', async () => {});
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'typed note' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+
+    await waitFor(() => expect(getToasts().some((toast) => toast.message === message)).toBe(true));
+    expect(draft.content).toBe('');
+    expect(pane.generalError).toBeFalsy();
   });
 
   it('enqueues mid-turn when the Send button is clicked', async () => {

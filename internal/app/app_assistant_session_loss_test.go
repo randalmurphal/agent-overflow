@@ -43,6 +43,31 @@ func sendFindingTheSessionGone(t *testing.T, a *App, threadID, text string) {
 	}
 }
 
+// assistantIDOf is the id of the assistant whose current thread threadID is.
+func assistantIDOf(t *testing.T, a *App, threadID string) string {
+	t.Helper()
+	agent, found, err := a.store.GetStandingAgent(threadID)
+	if err != nil || !found {
+		t.Fatalf("assistant of %s: %+v %v %v", threadID, agent, found, err)
+	}
+	return agent.ID
+}
+
+func handOffRunning(a *App, agentID string) bool {
+	c := &a.assistantHandOffs
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, running := c.leaving[agentID]
+	return running
+}
+
+func carriesOf(a *App, threadID string) []store.Item {
+	c := &a.assistantHandOffs
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.items[threadID]
+}
+
 func draftContent(t *testing.T, a *App, threadID string) string {
 	t.Helper()
 	draft, _, err := a.store.GetThreadDraft(threadID)
@@ -173,10 +198,7 @@ func TestAFailedSessionLossHandOffReturnsEveryText(t *testing.T) {
 	if agent, found, err := f.app.store.GetStandingAgent(threadID); err != nil || !found || agent.ThreadID != threadID {
 		t.Fatalf("assistant = %+v %v %v, want it still on its thread", agent, found, err)
 	}
-	c := &f.app.assistantSessionLoss
-	c.mu.Lock()
-	running, left := c.running[threadID], c.items[threadID]
-	c.mu.Unlock()
+	running, left := handOffRunning(f.app, assistantIDOf(t, f.app, threadID)), carriesOf(f.app, threadID)
 	if running || len(left) != 0 {
 		t.Fatalf("handoff running %v with carries %+v, want neither", running, left)
 	}
@@ -197,10 +219,7 @@ func TestASessionLossWhileStoppingCarriesNothing(t *testing.T) {
 	if code, _, _ := errorsx.PublicDetails(err); code == transport.ErrCodeAssistantSessionGone {
 		t.Fatalf("send = %v, told the client its text was carried with no handoff to carry it", err)
 	}
-	c := &f.app.assistantSessionLoss
-	c.mu.Lock()
-	running, left := c.running[threadID], c.items[threadID]
-	c.mu.Unlock()
+	running, left := handOffRunning(f.app, assistantIDOf(t, f.app, threadID)), carriesOf(f.app, threadID)
 	if running || len(left) != 0 {
 		t.Fatalf("handoff running %v with carries %+v, want neither", running, left)
 	}

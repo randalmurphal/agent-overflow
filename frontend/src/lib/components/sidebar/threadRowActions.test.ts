@@ -147,6 +147,11 @@ describe('deleteThreadAction', () => {
   });
 });
 
+/** Lets an action that was not refused reach its RPC. */
+function settle(): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, 20); });
+}
+
 describe('standing agent actions', () => {
   beforeEach(() => {
     resetBindingMocks();
@@ -189,18 +194,19 @@ describe('standing agent actions', () => {
     try {
       await draft.setThread('thread-1');
       draft.setContent('half-typed note');
-      let finish!: () => void;
+      const waiting: (() => void)[] = [];
       const next = setBindingMock('StartNextAssistantThread', async () => {
         order.push(`hand off, composer held ${draft.moving}`);
-        await new Promise<void>((resolve) => { finish = resolve; });
+        await new Promise<void>((resolve) => { waiting.push(resolve); });
         return makeBaseThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
       });
       const first = nextAssistantThreadAction(ctx);
       await vi.waitFor(() => expect(next).toHaveBeenCalledTimes(1));
-      await nextAssistantThreadAction(ctx);
+      const second = nextAssistantThreadAction(ctx);
+      await settle();
       expect(next).toHaveBeenCalledTimes(1);
-      finish();
-      await first;
+      for (const resolve of waiting.splice(0)) resolve();
+      await Promise.all([first, second]);
       expect(order).toEqual(['save thread-1 half-typed note', 'hand off, composer held true']);
       expect(draft.moving).toBe(false);
       expect(draft.hasPendingSave).toBe(false);
@@ -212,6 +218,62 @@ describe('standing agent actions', () => {
       expect(next).toHaveBeenCalledTimes(1);
       expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]).toBe('Disk full.');
       expect(draft.moving).toBe(false);
+    } finally {
+      dispose();
+      await draft.setThread(null);
+    }
+  });
+
+  it('starts one handoff when a row with no pane showing it is clicked twice', async () => {
+    const waiting: (() => void)[] = [];
+    const next = setBindingMock('StartNextAssistantThread', async () => {
+      await new Promise<void>((resolve) => { waiting.push(resolve); });
+      return makeBaseThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+    });
+    const ctx = makeCtx({ agentId: 'agent-1' });
+    const first = nextAssistantThreadAction(ctx);
+    await vi.waitFor(() => expect(next).toHaveBeenCalledTimes(1));
+    const second = nextAssistantThreadAction(makeCtx({ agentId: 'agent-1' }));
+    await settle();
+    expect(next).toHaveBeenCalledTimes(1);
+    for (const resolve of waiting.splice(0)) resolve();
+    await Promise.all([first, second]);
+    expect(ctx.reportError).not.toHaveBeenCalled();
+  });
+
+  it('starts one handoff when the successor\'s header is clicked after the frame moved the pane and before the call returned', async () => {
+    resetComposerDraftSnapshotsForTest();
+    setBindingMock('GetDraft', async (id: string) => ({ threadId: id, content: '', attachmentIds: [], terminalChips: [], sourceProposedPlan: null, updatedAt: 0 }));
+    setBindingMock('ListAttachments', async () => []);
+    setBindingMock('SaveDraft', async () => {});
+    const ctx = { ...makeCtx({ agentId: 'agent-1' }), isActive: true };
+    const successor = makeBaseThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+    const pane = createThreadPane({ paneId: 'handoff-frame' });
+    pane.replaceThread(ctx.thread);
+    registerPaneForTest(pane.paneId, pane);
+    const draft = createComposerDraftStore({ debounceMs: 60_000 });
+    const dispose = registerComposerDraft(pane.paneId, draft);
+    try {
+      await draft.setThread('thread-1');
+      draft.setContent('half-typed note');
+      const waiting: (() => void)[] = [];
+      const next = setBindingMock('StartNextAssistantThread', async () => {
+        await new Promise<void>((resolve) => { waiting.push(resolve); });
+        return successor;
+      });
+      const first = nextAssistantThreadAction(ctx);
+      await vi.waitFor(() => expect(next).toHaveBeenCalledTimes(1));
+      // The unlisted frame naming the successor moves the pane
+      // (moveAssistantPanes) before the call returns, which ends the
+      // composer's hold.
+      pane.replaceThread(successor);
+      await draft.setThread('thread-2');
+      expect(draft.moving).toBe(false);
+      const second = nextAssistantThreadAction({ ...makeCtx({ id: 'thread-2', agentId: 'agent-1' }), isActive: true });
+      await settle();
+      expect(next).toHaveBeenCalledTimes(1);
+      for (const resolve of waiting.splice(0)) resolve();
+      await Promise.all([first, second]);
     } finally {
       dispose();
       await draft.setThread(null);

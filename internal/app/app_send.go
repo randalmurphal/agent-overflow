@@ -451,6 +451,11 @@ func (a *App) sendMessageLocked(
 	if err := validateUserMessageInput(content, opts.AttachmentIDs, opts.RevisionSourceCommentIDs, opts.RevisionSourceDiffCommentIDs); err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
+	if !opts.PreserveDraft {
+		if err := a.refuseSendOfMovedDraft(threadID, opts.ConsumeDraft); err != nil {
+			return store.Item{}, err
+		}
+	}
 
 	intent := messageDirect
 	if opts.QueueIfActive {
@@ -694,7 +699,7 @@ func (a *App) sendMessageLocked(
 			// new thread's composer, so the client keeps it out of this
 			// one's. With no handoff running to take it, the send fails as
 			// any start failure does and the client keeps the text.
-			if errors.Is(startErr, errAssistantSessionGone) && opts.Origin == "" && a.assistantSessionLoss.add(threadID, userItem) {
+			if errors.Is(startErr, errAssistantSessionGone) && opts.Origin == "" && a.assistantHandOffs.add(threadID, userItem) {
 				return store.Item{}, errorsx.Public(transport.ErrCodeAssistantSessionGone, assistantSessionGoneMessage, err)
 			}
 			return store.Item{}, fmt.Errorf("send message: %w", err)
