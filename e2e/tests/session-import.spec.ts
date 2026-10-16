@@ -146,7 +146,10 @@ test('lists sessions from both providers and narrows by provider filter and sear
   await expect(page.getByTestId(fx.codex.rowTestId)).toContainText(fx.codex.title);
   // The Task launch in the branched transcript has one subagent transcript
   // beside it, counted from `<session>/subagents/agent-*.jsonl` at list time.
-  await expect(page.getByTestId(fx.claudeBranched.rowTestId)).toContainText('1 subagents');
+  await expect(page.getByTestId(`session-import-subagents-${fx.claudeBranched.rowId}`)).toHaveText(
+    '1 subagent',
+    { useInnerText: true },
+  );
   await expect(page.getByTestId('session-import-confirm')).toHaveText('Import all (3)');
 
   await page.getByRole('radio', { name: 'Codex' }).click();
@@ -207,9 +210,10 @@ test('every import list column lines up across rows, wide and narrow', async ({ 
     await page.setViewportSize(viewport);
     await harness.open(page);
     await openImportModal(page);
-    // The branched Claude row carries the "1 subagents" chip; the long
-    // title fills its track.
-    await expect(page.getByTestId(fx.claudeBranched.rowTestId)).toContainText('1 subagents');
+    // The branched Claude row carries the subagent chip; the long title
+    // fills its track.
+    const chip = page.getByTestId(`session-import-subagents-${fx.claudeBranched.rowId}`);
+    await expect(chip).toHaveAttribute('aria-label', '1 subagent');
     for (const row of rows) await expect(page.getByTestId(row.rowTestId)).toBeVisible();
 
     const edges = await columnEdges(page, rowIds);
@@ -221,9 +225,42 @@ test('every import list column lines up across rows, wide and narrow', async ({ 
     const branches = edges.get('branch') ?? [];
     expect(new Set(branches).size, `branch column edges at ${viewport.width}px: ${branches}`).toBeLessThanOrEqual(1);
 
-    // The title keeps real room even at phone width.
+    // The title is the flexible track: it keeps real room at phone width,
+    // and the row leaves no idle width while a title is cut short.
     const title = page.getByTestId(fx.codexLongTitle!.rowTestId).locator('[data-col="title"]');
     expect((await title.boundingBox())?.width ?? 0).toBeGreaterThan(80);
+    const delegatedTitle = page
+      .getByTestId(fx.codexDelegated!.rowTestId)
+      .locator('[data-col="title"] > span')
+      .first();
+    const chipTitle = page
+      .getByTestId(fx.claudeBranched.rowTestId)
+      .locator('[data-col="title"] > span')
+      .first();
+    if (viewport.width >= 1000) {
+      expect(
+        await delegatedTitle.evaluate((el) => el.scrollWidth <= el.clientWidth),
+        'the delegated title fits in full at 1400px',
+      ).toBe(true);
+      expect(
+        await chipTitle.evaluate((el) => el.scrollWidth <= el.clientWidth),
+        'a title beside its chip fits in full at 1400px',
+      ).toBe(true);
+      await expect(chip).toHaveText('1 subagent', { useInnerText: true });
+      // The outcome track is one glyph wide: the age column ends at the row's
+      // right padding, not in front of idle width.
+      const row = await page.getByTestId(fx.codex.rowTestId).boundingBox();
+      const time = await page.getByTestId(fx.codex.rowTestId).locator('[data-col="time"]').boundingBox();
+      expect(row!.x + row!.width - (time!.x + time!.width)).toBeLessThan(48);
+    } else {
+      // Narrow: the chip collapses to its icon and count, so a short title
+      // beside it still shows in full.
+      await expect(chip).toHaveText('1', { useInnerText: true });
+      expect(
+        await chipTitle.evaluate((el) => el.scrollWidth <= el.clientWidth),
+        'a short title beside its chip fits at 390px',
+      ).toBe(true);
+    }
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('session-import-body')).toHaveCount(0);
   }

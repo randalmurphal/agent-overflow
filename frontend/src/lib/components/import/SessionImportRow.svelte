@@ -6,22 +6,28 @@
   // Rows are separate virtualized elements, so the columns line up only
   // because every row lays out on the same grid tracks (ROW_GRID). Every
   // cell is always present, empty when it has nothing to say; optional
-  // chips sit inside the title or project cell they describe instead of
-  // taking a track of their own, so a chip shortens its own row's title
-  // and never moves a column. Title and project are the only flexible
-  // tracks. Below the `import` container's 3xl width (SessionImportList) the
-  // branch and size tracks drop and the outcome keeps only its glyph.
+  // chips and a run's outcome reason sit inside the title or project cell
+  // they describe instead of taking a track of their own, so they shorten
+  // their own row's title and never move a column. The title is the one
+  // flexible track; every other track is sized to what it shows, and the
+  // outcome track is one glyph wide whether or not a run has reported, so
+  // an outcome arriving moves nothing. Below the `import` container's 3xl
+  // width (SessionImportList) the branch and size tracks drop, the chips
+  // collapse to icon forms and the reason moves to the glyph's tooltip.
   //
   // The row is a listbox `option`, not a `<label>` wrapping a checkbox: the
   // list drives a roving `aria-activedescendant` cursor, and an option that
   // owns an interactive input is invalid ARIA. The check box here is a
   // decorative glyph — the whole row is the hit target.
 
+  import Bot from '@lucide/svelte/icons/bot';
   import CircleAlert from '@lucide/svelte/icons/circle-alert';
+  import FolderPlus from '@lucide/svelte/icons/folder-plus';
+  import Import from '@lucide/svelte/icons/import';
   import Icon from '../primitives/Icon.svelte';
   import { getProviderDefinition } from '../../providers/catalog';
   import type { ImportRowResult, ImportableSession } from '../../types/sessionImport';
-  import { relativeTime } from '../../utils/format';
+  import { countNoun, relativeTime } from '../../utils/format';
   import { getSessionImportBackend } from '../../stores/sessionImport.svelte';
   import { formatPayloadSize } from '../../utils/payloadExpansion.svelte';
 
@@ -41,11 +47,14 @@
   let { row, domId, selected, active, result, disabled, onToggle }: Props = $props();
 
   const CHIP_CLASS =
-    'shrink-0 rounded-[3px] px-1 py-px text-[0.625rem] leading-4 text-fg-muted bg-surface-2/70';
+    'inline-flex shrink-0 items-center gap-0.5 rounded-[3px] px-1 py-px text-[0.625rem] leading-4 tabular-nums';
+  // The full label in the wide layout; the icon form in the narrow one.
+  const WIDE_ONLY = '@max-3xl/import:hidden';
+  const NARROW_ONLY = 'hidden @max-3xl/import:inline-flex items-center gap-0.5';
 
   const ROW_GRID = [
-    'grid grid-cols-[0.875rem_1rem_minmax(0,3fr)_minmax(0,2fr)_9rem_4.5rem_5.5rem_10rem]',
-    '@max-3xl/import:grid-cols-[0.875rem_1rem_minmax(0,3fr)_minmax(0,2fr)_5.5rem_1rem]',
+    'grid grid-cols-[0.875rem_1rem_minmax(0,1fr)_minmax(0,12rem)_9rem_4.5rem_5.5rem_1rem]',
+    '@max-3xl/import:grid-cols-[0.875rem_1rem_minmax(0,1fr)_minmax(0,6rem)_4rem_1rem]',
   ].join(' ');
 
   let provider = $derived(getProviderDefinition(row.provider));
@@ -55,7 +64,7 @@
   //
   // Every other chip and stamp reads from the row/result, so derive the
   // labels here rather than branching inside the template.
-  let subagentLabel = $derived(row.subagentCount > 0 ? `${row.subagentCount} subagents` : '');
+  let subagentLabel = $derived(row.subagentCount > 0 ? countNoun(row.subagentCount, 'subagent') : '');
   let sizeLabel = $derived(row.sizeBytes > 0 ? formatPayloadSize(row.sizeBytes) : '');
   // These rows are hidden by default and look like any other when shown, so
   // the answer to "why is this one here?" is a hover away rather than a chip
@@ -95,6 +104,11 @@
     }
     return lines.join('\n');
   });
+  // What the outcome glyph stands for, for its tooltip and for the reason
+  // the title cell shows beside the title.
+  let outcomeReason = $derived(
+    result && result.status !== 'imported' ? (result.error ?? '') : '',
+  );
 
   function handleClick(): void {
     if (disabled) return;
@@ -153,27 +167,56 @@
     <span class="min-w-0 truncate text-fg" title={row.title}>{row.title}</span>
 
     {#if subagentLabel}
-      <span class={CHIP_CLASS}>{subagentLabel}</span>
+      <span
+        class="{CHIP_CLASS} bg-surface-2/70 text-fg-muted"
+        title={subagentLabel}
+        aria-label={subagentLabel}
+        data-testid={`session-import-subagents-${row.id}`}
+      >
+        <span class={WIDE_ONLY}>{subagentLabel}</span>
+        <span class={NARROW_ONLY} aria-hidden="true">
+          <Icon icon={Bot} size={10} />{row.subagentCount}
+        </span>
+      </span>
     {/if}
 
     {#if importedFromLabel}
       <span
         class={[
-          'max-w-[12rem] shrink-0 truncate rounded-[3px] px-1 py-px text-[0.625rem] leading-4',
+          CHIP_CLASS,
+          'max-w-[12rem] truncate',
           importedFrom?.duplicateOfThreadId
             ? 'bg-warning/10 text-warning'
             : 'bg-surface-2/70 text-fg-muted',
         ].join(' ')}
         data-testid={`session-import-origin-${row.id}`}
         title={importedFromTitle}
+        aria-label={importedFromLabel}
       >
-        {importedFromLabel}
+        <span class="{WIDE_ONLY} truncate">{importedFromLabel}</span>
+        <span class={NARROW_ONLY} aria-hidden="true"><Icon icon={Import} size={10} /></span>
       </span>
     {/if}
 
     {#if warnings.length > 0}
       <span class="shrink-0 text-warning" title={warnings.join('\n')}>
         <Icon icon={CircleAlert} size={12} />
+      </span>
+    {/if}
+
+    <!-- A run's reason for a skipped or failed row. A skip is information,
+         not a failure, so it reads in the muted palette. -->
+    {#if outcomeReason}
+      <span
+        class={[
+          'min-w-0 max-w-[50%] truncate',
+          WIDE_ONLY,
+          result?.status === 'failed' ? 'text-error' : 'text-fg-hint',
+        ].join(' ')}
+        title={outcomeReason}
+        data-testid={`session-import-outcome-reason-${row.id}`}
+      >
+        {outcomeReason}
       </span>
     {/if}
   </span>
@@ -183,10 +226,12 @@
 
     {#if !row.knownProject}
       <span
-        class="shrink-0 rounded-[3px] bg-accent/10 px-1 py-px text-[0.625rem] leading-4 text-accent"
+        class="{CHIP_CLASS} bg-accent/10 text-accent"
         title="Agent Overflow has no project here yet — importing creates one"
+        aria-label="new project"
       >
-        new project
+        <span class={WIDE_ONLY}>new project</span>
+        <span class={NARROW_ONLY} aria-hidden="true"><Icon icon={FolderPlus} size={10} /></span>
       </span>
     {/if}
   </span>
@@ -207,26 +252,19 @@
     {relativeTime(row.lastActivityAt, 'locale', getSessionImportBackend())}
   </span>
 
-  <!-- Outcome stamp. Present only once a run has reported on this row.
-       A skipped row carries prose too ("already imported / the file is
-       gone"), and it is information, not a failure — so it reads in the
-       muted palette rather than the error one. -->
+  <!-- Outcome glyph. Present only once a run has reported on this row; its
+       reason is beside the title (wide) and in its tooltip (always). -->
   <span
-    class="flex min-w-0 items-center justify-end gap-1"
+    data-col="outcome"
+    class="flex justify-end"
     data-testid={result ? `session-import-outcome-${row.id}` : undefined}
   >
     {#if result?.status === 'imported'}
       <span class="text-success" title="Imported">✓</span>
     {:else if result?.status === 'skipped'}
-      <span class="shrink-0 text-fg-hint" title={result.error || 'Skipped'}>–</span>
-      {#if result.error}
-        <span class="min-w-0 truncate text-fg-hint @max-3xl/import:hidden" title={result.error}>{result.error}</span>
-      {/if}
+      <span class="text-fg-hint" title={outcomeReason || 'Skipped'}>–</span>
     {:else if result?.status === 'failed'}
-      <span class="shrink-0 text-error" title={result.error || 'Failed'}>✗</span>
-      {#if result.error}
-        <span class="min-w-0 truncate text-error @max-3xl/import:hidden" title={result.error}>{result.error}</span>
-      {/if}
+      <span class="text-error" title={outcomeReason || 'Failed'}>✗</span>
     {/if}
   </span>
 </div>
