@@ -134,7 +134,7 @@ func (t threadToolsApp) senderAgent(threadID string) (*threadtools.SenderAgent, 
 	}
 	agent := &threadtools.SenderAgent{}
 	if row.Home != "" {
-		role, err := agenthome.RoleLine(row.Home)
+		role, err := t.app.agentRoles.Role(row.Home)
 		if err != nil {
 			log.Printf("thread tools: read the role line of standing agent %s from %s: %v", threadID, row.Home, err)
 		}
@@ -323,17 +323,28 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 	if err := t.refuseSelf(caller, call.ThreadID, "send to"); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	return t.startLocalRequest(ctx, caller, store.ThreadRequest{
+	// The target is a thread here that already exists, so the request and
+	// its acceptance are one write: the source row, already accepted, and
+	// the receipt. A paired computer's send is accepted by acceptSend.
+	token := newThreadRequestToken()
+	if _, err := t.app.store.AcceptLocalThreadRequest(store.ThreadRequest{
+		Token:          token,
+		CallerThreadID: caller.ThreadID,
 		Kind:           store.ThreadRequestSend,
 		TargetThreadID: target.ID,
 		Notify:         call.Notify,
-	}, call.WaitSeconds, func(token string) (string, error) {
-		return t.acceptSend(ctx, origin, token, call)
-	})
+		State:          store.ThreadRequestAccepted,
+	}, threadReceiptFor(origin, token, store.ThreadRequestSend, target.ID)); err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	if err := t.dispatchRequest(ctx, origin, token, store.ThreadRequestSend, target.ID, call.Message, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
+		return threadtools.RequestAck{}, t.failRequest(token, err)
+	}
+	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
 }
 
-// acceptSend is the destination half of a send: accept the receipt against
-// the named thread and queue the message there.
+// acceptSend is the destination half of a send a paired computer forwarded:
+// accept the receipt against the named thread and queue the message there.
 func (t threadToolsApp) acceptSend(ctx context.Context, origin threadRequestOrigin, token string, call threadtools.SendCall) (string, error) {
 	target, err := t.sendTarget(call.ThreadID)
 	if err != nil {
@@ -470,17 +481,7 @@ func (t threadToolsApp) acceptRequest(
 	origin threadRequestOrigin, token, kind, targetThreadID string,
 	create func() (store.Thread, error),
 ) (target string, fresh bool, err error) {
-	caller := origin.caller
-	receipt, created, err := t.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
-		Token:              token,
-		OwnerDeviceID:      origin.ownerDevice,
-		SourceComputerID:   caller.ComputerID,
-		SourceComputerName: caller.ComputerName,
-		SourceThreadID:     caller.ThreadID,
-		SourceThreadTitle:  caller.Title,
-		Kind:               kind,
-		TargetThreadID:     targetThreadID,
-	})
+	receipt, created, err := t.app.store.AcceptThreadRequestReceipt(threadReceiptFor(origin, token, kind, targetThreadID))
 	if err != nil {
 		return "", false, err
 	}
@@ -536,6 +537,23 @@ func (t threadToolsApp) acceptRequest(
 		t.app.refreshThreadToolsAdmission(target)
 	}
 	return target, created, nil
+}
+
+// threadReceiptFor is the receipt origin's request token is accepted
+// under: owned by the device that sent it, and naming its source for the
+// footer and the sender an agent row names.
+func threadReceiptFor(origin threadRequestOrigin, token, kind, targetThreadID string) store.ThreadRequestReceipt {
+	caller := origin.caller
+	return store.ThreadRequestReceipt{
+		Token:              token,
+		OwnerDeviceID:      origin.ownerDevice,
+		SourceComputerID:   caller.ComputerID,
+		SourceComputerName: caller.ComputerName,
+		SourceThreadID:     caller.ThreadID,
+		SourceThreadTitle:  caller.Title,
+		Kind:               kind,
+		TargetThreadID:     targetThreadID,
+	}
 }
 
 // threadReceiptNeverStarted is what a receipt accepted without its thread
@@ -782,12 +800,9 @@ func (t threadToolsApp) markRequestDispatched(token, targetThreadID, messageItem
 	unlock := t.app.threadRequestSettleLock(token)
 	defer unlock()
 	t.app.noteReceiptRunning(targetThreadID, token)
+	// The store moves a source row here to `running` in the same write.
 	if _, err := t.app.store.MarkThreadReceiptDispatched(token, messageItemID); err != nil {
 		log.Printf("thread tools: mark receipt %s dispatched: %v", token, err)
-		return
-	}
-	if _, err := t.app.store.AdvanceThreadRequestState(token, store.ThreadRequestAccepted, store.ThreadRequestRunning); err != nil {
-		log.Printf("thread tools: advance request %s to running: %v", token, err)
 	}
 }
 
@@ -859,13 +874,12 @@ func (a *App) bindRequestDelivery(token, targetThreadID, messageItemID string, t
 		// between the two still reaches this token. The gate only says
 		// "look"; the store row says whether there is anything to settle.
 		a.noteReceiptRunning(targetThreadID, token)
+		// The store moves a source row here to `running` in the same write,
+		// bound or not.
 		bound, err := a.store.BindThreadReceiptTurn(token, messageItemID, threadRequestTurnKey(targetThreadID, turnIndex), ownTurn)
 		if err != nil {
 			log.Printf("thread tools: bind receipt %s to its turn: %v", token, err)
 			return
-		}
-		if _, err := a.store.AdvanceThreadRequestState(token, store.ThreadRequestAccepted, store.ThreadRequestRunning); err != nil {
-			log.Printf("thread tools: advance request %s to running: %v", token, err)
 		}
 		if !bound {
 			// Bound by an earlier delivery, or cancelled or settled while the

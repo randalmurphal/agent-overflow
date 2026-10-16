@@ -281,6 +281,15 @@ func collectThreadRequests(rows *sql.Rows, action string) ([]ThreadRequest, erro
 // The token is the caller-minted idempotency key, so a duplicate insert is an
 // error rather than a silent overwrite: a retry re-reads the existing row.
 func (s *Store) InsertThreadRequest(r ThreadRequest) error {
+	if err := insertThreadRequestTx(s.db, r); err != nil {
+		return err
+	}
+	s.noteThreadRequestChanged(ThreadRequestChange{Token: r.Token, CallerThreadID: r.CallerThreadID})
+	return nil
+}
+
+// insertThreadRequestTx validates and writes one source row on ex.
+func insertThreadRequestTx(ex sqlExecutor, r ThreadRequest) error {
 	action := fmt.Sprintf("store: insert thread request %s", r.Token)
 	if r.Token == "" || r.CallerThreadID == "" {
 		return fmt.Errorf("%s: token and caller thread id are required", action)
@@ -300,7 +309,7 @@ func (s *Store) InsertThreadRequest(r ThreadRequest) error {
 	if r.UpdatedAt == 0 {
 		r.UpdatedAt = r.CreatedAt
 	}
-	if _, err := s.db.Exec(
+	if _, err := ex.Exec(
 		`INSERT INTO thread_requests (
 		    token, caller_thread_id, kind, due_at, target_computer_id, target_thread_id,
 		    origin_thread_id, notify, state, answer, answer_kind, revision,
@@ -312,7 +321,6 @@ func (s *Store) InsertThreadRequest(r ThreadRequest) error {
 	); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
 	}
-	s.noteThreadRequestChanged(ThreadRequestChange{Token: r.Token, CallerThreadID: r.CallerThreadID})
 	return nil
 }
 
@@ -736,15 +744,14 @@ func (s *Store) GetThreadRequests(tokens []string) ([]ThreadRequest, error) {
 	if len(tokens) == 0 {
 		return []ThreadRequest{}, nil
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(tokens)), ",")
-	args := make([]any, len(tokens))
-	for i, token := range tokens {
-		args[i] = token
+	list, err := json.Marshal(tokens)
+	if err != nil {
+		return nil, fmt.Errorf("store: get thread requests: encode tokens: %w", err)
 	}
 	rows, err := s.reader().Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
-		  WHERE token IN (`+placeholders+`) AND lineage_only = 0
-		  ORDER BY created_at DESC, token ASC`, args...)
+		  WHERE token IN (SELECT value FROM json_each(?)) AND lineage_only = 0
+		  ORDER BY created_at DESC, token ASC`, string(list))
 	if err != nil {
 		return nil, fmt.Errorf("store: get thread requests: %w", err)
 	}
@@ -816,9 +823,14 @@ func (s *Store) ListThreadAgentRequests(callerThreadID string, waiting []string,
 
 // threadAgentRequestsSQL is ListThreadAgentRequests' read, its LIMIT
 // appended. `sub` walks the caller's local spawns down to ?4 levels, each
-// step probing the queued thread's requests by caller and carrying the
-// path of threads above it; the threads on the path of one with work open
-// in it are the ones a settled spawn into is kept for.
+// step probing the queued thread's spawns (idx_thread_requests_spawn_caller)
+// and carrying the path of threads above it; the threads on the path of one
+// with work open in it are the ones a settled spawn into is kept for. The
+// rows listed are the union of four arms, each read through the index whose
+// predicate it states, so no arm reads the caller's settled history: open
+// and recently settled (idx_thread_requests_caller_settled), local spawns
+// into a thread with open work (idx_thread_requests_spawn_caller), and
+// remote spawns with open work (idx_thread_requests_nested_caller).
 var threadAgentRequestsSQL = `WITH RECURSIVE
   sub(thread_id, path, depth) AS (
     SELECT ?1, json_array(?1), 0
@@ -826,23 +838,39 @@ var threadAgentRequestsSQL = `WITH RECURSIVE
     SELECT r.target_thread_id, json_insert(sub.path, '$[#]', r.target_thread_id), sub.depth + 1
       FROM sub CROSS JOIN thread_requests r
      WHERE r.caller_thread_id = sub.thread_id AND r.kind = 'spawn' AND r.target_computer_id = ''
-       AND r.target_thread_id <> '' AND r.lineage_only = 0 AND sub.depth < ?4),
+       AND r.lineage_only = 0 AND r.target_thread_id <> '' AND sub.depth < ?4),
   hot(thread_id) AS (
     SELECT json_each.value FROM sub, json_each(sub.path)
      WHERE EXISTS (SELECT 1 FROM thread_requests c
-                    WHERE c.caller_thread_id = sub.thread_id AND (` + openAgentRequestSQL("c") + `
-                      OR (c.kind = 'spawn' AND c.target_computer_id <> '' AND c.lineage_only = 0 AND c.nested_open = 1))))
+                    WHERE c.caller_thread_id = sub.thread_id AND ` + openAgentRequestSQL("c") + `)
+        OR EXISTS (SELECT 1 FROM thread_requests c
+                    WHERE c.caller_thread_id = sub.thread_id AND ` + nestedRemoteSpawnSQL("c") + `))
 SELECT ` + threadRequestColumns + ` FROM thread_requests r
- WHERE r.caller_thread_id = ?1 AND r.lineage_only = 0
+ WHERE r.token IN (
+     SELECT token FROM thread_requests WHERE caller_thread_id = ?1 AND lineage_only = 0 AND settled_at IS NULL
+     UNION ALL
+     SELECT token FROM thread_requests WHERE caller_thread_id = ?1 AND lineage_only = 0 AND settled_at >= ?3
+     UNION ALL
+     SELECT token FROM thread_requests
+      WHERE caller_thread_id = ?1 AND kind = 'spawn' AND target_computer_id = '' AND lineage_only = 0
+        AND target_thread_id IN (SELECT thread_id FROM hot)
+     UNION ALL
+     SELECT token FROM thread_requests t WHERE t.caller_thread_id = ?1 AND ` + nestedRemoteSpawnSQL("t") + `)
    AND r.kind IN ('spawn','send','ask')
    AND (r.kind = 'spawn' OR r.notify = 1 OR r.token IN (SELECT value FROM json_each(?2)))
-   AND (r.settled_at IS NULL OR r.settled_at >= ?3
-     OR (r.kind = 'spawn' AND r.target_computer_id = '' AND r.target_thread_id IN (SELECT thread_id FROM hot))
-     OR (r.kind = 'spawn' AND r.target_computer_id <> '' AND r.nested_open = 1))
  ORDER BY r.created_at ASC, r.token ASC LIMIT `
 
+// nestedRemoteSpawnSQL matches a spawn on another computer whose last
+// agent_rows answer listed open work, the predicate of
+// idx_thread_requests_nested_caller.
+func nestedRemoteSpawnSQL(alias string) string {
+	return alias + `.nested_open = 1 AND ` + alias + `.kind = 'spawn' AND ` + alias + `.target_computer_id <> '' AND ` +
+		alias + `.lineage_only = 0`
+}
+
 // openAgentRequestSQL matches an open request the activity rail lists as an
-// agent: a spawn, or a send or ask whose wake is armed.
+// agent: a spawn, or a send or ask whose wake is armed. Its first terms are
+// the idx_thread_requests_caller_settled probe for an open row.
 func openAgentRequestSQL(alias string) string {
 	return alias + `.lineage_only = 0 AND ` + alias + `.settled_at IS NULL AND (` + alias + `.kind = 'spawn' OR (` +
 		alias + `.kind IN ('send','ask') AND ` + alias + `.notify = 1))`
@@ -1024,9 +1052,11 @@ func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 // request. The copy refusal and the forget-computer refusal read it.
 func (s *Store) HasOpenThreadRequests(callerThreadID string) (bool, error) {
 	var open bool
+	// A lineage-only row is settled, so the term changes nothing but the
+	// index: the probe reads the caller's open rows, not its history.
 	if err := s.reader().QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM thread_requests
-		   WHERE caller_thread_id = ? AND settled_at IS NULL)`, callerThreadID,
+		   WHERE caller_thread_id = ? AND lineage_only = 0 AND settled_at IS NULL)`, callerThreadID,
 	).Scan(&open); err != nil {
 		return false, fmt.Errorf("store: probe open thread requests for %s: %w", callerThreadID, err)
 	}
@@ -1051,10 +1081,10 @@ func (s *Store) DeleteThreadRequest(token string) (bool, error) {
 // finished children through it, so its lineage lives as long as the thread
 // it made. Past the retention floor the sweep keeps only that lineage
 // (clearLineagePayloadSQL). ON DELETE CASCADE on the caller takes it when
-// the spawner goes, and a thread deleted on its own leaves a row nothing
-// reads, which the sweep deletes once it is past the floor.
+// the spawner goes, and a thread deleted on its own leaves a lineage row
+// nothing reads, which the sweep deletes (orphanLineageSQL).
 const spawnLineageSQL = `kind = 'spawn' AND target_computer_id = ''
-			AND target_thread_id IN (SELECT id FROM threads)`
+			AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)`
 
 // clearLineagePayloadSQL marks a lineage row lineage_only, empties
 // everything it answered and disarms its wake, so past the floor the row
@@ -1069,6 +1099,20 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 	    answer_agent = 0, answer_agent_role = '', notify = 0, issue = '', wake_issue = '', expires_at = NULL,
 	    nested_open = 0, target_provider = ''
 	WHERE lineage_only = 0`
+
+// The retention floor's three sets, each stated as the partial predicate of
+// the index that reads it: a source row past the floor
+// (idx_thread_requests_age), a receipt past it
+// (idx_thread_request_receipts_age), and a lineage row whose spawned thread
+// is gone (idx_thread_requests_lineage). An open row is in neither age
+// index: it is still work, and waits for its own settlement.
+const (
+	requestPastFloorSQL = `lineage_only = 0 AND state NOT IN ('unconfirmed','accepted','running')
+	    AND COALESCE(settled_at, due_at, created_at) < ?`
+	receiptPastFloorSQL = `state NOT IN ('accepted','running') AND COALESCE(settled_at, created_at) < ?`
+	orphanLineageSQL    = `lineage_only = 1
+	    AND NOT EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)`
+)
 
 // DeleteThreadRequestsBefore removes both sides of every request that has
 // been settled longer than the retention floor, and reports how many rows
@@ -1085,56 +1129,45 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 // for a day. A local spawn request whose thread exists keeps its lineage
 // past the floor, marked lineage_only with its payload cleared
 // (spawnLineageSQL).
+//
+// The sweep runs every few minutes and almost never finds anything, so it
+// asks first, on the read pool, through the indexes the three sets have,
+// and takes the writer only when something is past the floor.
 func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (int64, error) {
+	var due bool
+	if err := s.reader().QueryRow(`SELECT
+	    EXISTS (SELECT 1 FROM thread_requests WHERE `+requestPastFloorSQL+`)
+	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+receiptPastFloorSQL+`)
+	    OR EXISTS (SELECT 1 FROM thread_requests WHERE `+orphanLineageSQL+`)`,
+		cutoff, cutoff).Scan(&due); err != nil {
+		return 0, fmt.Errorf("store: read whether thread requests are past %d: %w", cutoff, err)
+	}
+	if !due {
+		return 0, nil
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("store: begin thread request retention sweep: %w", err)
 	}
 	defer tx.Rollback()
-	sweeps := []struct {
-		table string
-		open  []string
-		// age is the terminal moment the floor is measured against,
-		// falling back through what the row has.
-		age string
-		// keep names rows the floor never deletes, however old, and clear
-		// is the update applied to them instead.
-		keep, clear string
+	steps := []struct {
+		what, query string
+		args        []any
 	}{
-		{"thread_requests", threadRequestOpenStates, "COALESCE(settled_at, due_at, created_at)", spawnLineageSQL, clearLineagePayloadSQL},
-		{"thread_request_receipts", threadReceiptOpenStates, "COALESCE(settled_at, created_at)", "0", ""},
+		{"clear kept thread_requests", clearLineagePayloadSQL + ` AND ` + requestPastFloorSQL + ` AND ` + spawnLineageSQL, []any{cutoff}},
+		{"sweep thread_requests", `DELETE FROM thread_requests WHERE ` + requestPastFloorSQL + ` AND NOT (` + spawnLineageSQL + `)`, []any{cutoff}},
+		{"sweep lineage thread_requests", `DELETE FROM thread_requests WHERE ` + orphanLineageSQL, nil},
+		{"sweep thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + receiptPastFloorSQL, []any{cutoff}},
 	}
 	var total int64
-	for _, sweep := range sweeps {
-		legal := threadRequestStates
-		if sweep.table == "thread_request_receipts" {
-			legal = threadReceiptStates
-		}
-		openClause, openArgs, err := stateInClause("store: sweep "+sweep.table, sweep.open, legal)
+	for _, step := range steps {
+		result, err := tx.Exec(step.query, step.args...)
 		if err != nil {
-			return 0, err
-		}
-		args := append([]any{}, openArgs...)
-		args = append(args, cutoff)
-		pastFloor := `NOT ` + openClause + ` AND ` + sweep.age + ` < ?`
-		if sweep.clear != "" {
-			result, err := tx.Exec(sweep.clear+` AND `+pastFloor+` AND (`+sweep.keep+`)`, args...)
-			if err != nil {
-				return 0, fmt.Errorf("store: clear kept %s before %d: %w", sweep.table, cutoff, err)
-			}
-			affected, err := result.RowsAffected()
-			if err != nil {
-				return 0, fmt.Errorf("store: count cleared %s rows: %w", sweep.table, err)
-			}
-			total += affected
-		}
-		result, err := tx.Exec(`DELETE FROM `+sweep.table+` WHERE `+pastFloor+` AND NOT (`+sweep.keep+`)`, args...)
-		if err != nil {
-			return 0, fmt.Errorf("store: sweep %s before %d: %w", sweep.table, cutoff, err)
+			return 0, fmt.Errorf("store: %s before %d: %w", step.what, cutoff, err)
 		}
 		affected, err := result.RowsAffected()
 		if err != nil {
-			return 0, fmt.Errorf("store: count swept %s rows: %w", sweep.table, err)
+			return 0, fmt.Errorf("store: count %s rows: %w", step.what, err)
 		}
 		total += affected
 	}

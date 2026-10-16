@@ -1748,6 +1748,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV152SQL, Check: refusePreSyncReceiptOwnTurn},
 	{Version: lateDeliveryRouteMigrationVersion, Name: "late_delivery_route", SQL: lateDeliveryRouteV153SQL},
 	{Version: agentRecordsMigrationVersion, Name: "agent_records", SQL: agentRecordsV154SQL},
+	{Version: ledgerIndexesMigrationVersion, Name: "ledger_indexes", SQL: ledgerIndexesV155SQL, Rebuild: true},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/errorsx"
 	gitops "agent-overflow/internal/git"
@@ -120,7 +119,7 @@ func (p *threadProjector) assistant(thread store.Thread) *threadtools.Assistant 
 		}
 		return out
 	}
-	role, err := agenthome.RoleLine(agent.Home)
+	role, err := p.app.agentRoles.Role(agent.Home)
 	if err != nil {
 		log.Printf("thread tools: read the role line of assistant %s from %s: %v", agent.ID, agent.Home, err)
 	}

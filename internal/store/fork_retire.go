@@ -48,6 +48,7 @@ var holderClearedRows = []struct{ table, column string }{
 	{"proposed_plan_comments", "thread_id"},
 	{"proposed_plans", "thread_id"},
 	{"provider_thread_cost", "thread_id"},
+	{"remote_watches", "thread_id"},
 	{"scratch_threads", "thread_id"},
 	{"session_start_failures", "thread_id"},
 	{"subagent_aggregate_backfill", "thread_id"},

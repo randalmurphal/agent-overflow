@@ -95,6 +95,9 @@ type gatedConnector struct {
 	// writes, when set, counts the row writes on the connections this
 	// connector opens: the writer's, for Store.WriteCount.
 	writes *atomic.Uint64
+	// committed, when set with commits, counts those commits, for
+	// Store.CommitCount.
+	committed *atomic.Uint64
 }
 
 // commitHooker is the modernc.org/sqlite connection's commit hook surface.
@@ -122,7 +125,14 @@ func (c gatedConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		if !ok {
 			return nil, errors.Join(fmt.Errorf("store: driver connection %T has no commit hook", conn), cached.Close())
 		}
-		hooked.RegisterCommitHook(c.commits.hook)
+		hook := c.commits.hook
+		if committed := c.committed; committed != nil {
+			hook = func() int32 {
+				committed.Add(1)
+				return c.commits.hook()
+			}
+		}
+		hooked.RegisterCommitHook(hook)
 		// The driver keeps each registered hook in a process-wide map
 		// until it is unregistered, so a closed connection would
 		// otherwise leave its entry behind.
@@ -133,17 +143,17 @@ func (c gatedConnector) Connect(ctx context.Context) (driver.Conn, error) {
 
 // openPool opens one pool against dbPath with the given connection
 // pragmas, routed through gate. A non-nil commits is signalled by every
-// commit on the pool's connections, and a non-nil writes counts their
-// row writes.
+// commit on the pool's connections, a non-nil writes counts their row
+// writes, and a non-nil committed counts their commits.
 //
 // sql.OpenDB rather than sql.Open: the gate has to sit in front of the
 // physical open, and interposing on Connect is the supported way to do
 // that (modernc.org/sqlite documents NewConnector for exactly this).
 // The DSN is unchanged, so the pragmas still ride every connection.
-func openPool(dbPath string, pragmas []connPragma, gate *connGate, commits commitSignal, writes *atomic.Uint64) (*sql.DB, error) {
+func openPool(dbPath string, pragmas []connPragma, gate *connGate, commits commitSignal, writes, committed *atomic.Uint64) (*sql.DB, error) {
 	base, err := sqlite.NewConnector(poolDSN(dbPath, pragmas))
 	if err != nil {
 		return nil, fmt.Errorf("store: connector for %s: %w", dbPath, err)
 	}
-	return sql.OpenDB(gatedConnector{Connector: base, gate: gate, commits: commits, writes: writes}), nil
+	return sql.OpenDB(gatedConnector{Connector: base, gate: gate, commits: commits, writes: writes, committed: committed}), nil
 }

@@ -118,7 +118,7 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 		seedAgentRequest(t, s, "l-c", "lead", ThreadRequestSpawn, "child", false, 100)
 		seedAgentRequest(t, s, "c-g", "child", ThreadRequestSpawn, "grand", false, 110)
 		assertWalkProbesTheQueuedKey(t, s, "threadAgentRequestsSQL", walkPlan{
-			step: []string{"SEARCH r USING INDEX idx_thread_requests_caller (caller_thread_id=?)"},
+			step: []string{"SEARCH r USING INDEX idx_thread_requests_spawn_caller (caller_thread_id=?)"},
 		}, threadAgentRequestsSQL+"65", "lead", "[]", int64(0), 4)
 	})
 

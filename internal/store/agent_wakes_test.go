@@ -279,16 +279,16 @@ func TestAgentWakeRunsAreConditional(t *testing.T) {
 	if due, err := s.DueAgentWakes(100, 8); err != nil || len(due) != 1 {
 		t.Fatalf("due at its time: %v %v", due, err)
 	}
-	if finished, err := s.FinishAgentWake(row.ID, "early", "", 0, AgentWakeNoWake); err != nil || finished {
+	if _, finished, err := s.FinishAgentWake(row.ID, "early", "", 0, AgentWakeNoWake); err != nil || finished {
 		t.Fatalf("finish before claim: %v %v", finished, err)
 	}
-	if claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || !claimed {
+	if _, claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || !claimed {
 		t.Fatalf("claim: %v %v", claimed, err)
 	}
-	if claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || claimed {
+	if _, claimed, err := s.ClaimAgentWake(row.ID, 100, 160, 0); err != nil || claimed {
 		t.Fatalf("second claim: %v %v", claimed, err)
 	}
-	if finished, err := s.FinishAgentWake(row.ID, "delivered", "", 0, AgentWakeCarried); err != nil || !finished {
+	if _, finished, err := s.FinishAgentWake(row.ID, "delivered", "", 0, AgentWakeCarried); err != nil || !finished {
 		t.Fatalf("finish: %v %v", finished, err)
 	}
 	if next, err := s.NextAgentWakeDue(); err != nil || !next.Set || next.At != 160 {
@@ -297,7 +297,7 @@ func TestAgentWakeRunsAreConditional(t *testing.T) {
 	if ids, err := s.CancelAgentWakesForThread("t", "", "archived"); err != nil || len(ids) != 1 {
 		t.Fatalf("cancel thread: %v %v", ids, err)
 	}
-	if claimed, err := s.ClaimAgentWake(row.ID, 200, 260, 0); err != nil || claimed {
+	if _, claimed, err := s.ClaimAgentWake(row.ID, 200, 260, 0); err != nil || claimed {
 		t.Fatalf("claim of a cancelled row: %v %v", claimed, err)
 	}
 	if next, err := s.NextAgentWakeDue(); err != nil || next.Set {
@@ -469,11 +469,11 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 	at := int64(100)
 	finish := func(outcome, output string, missed int64, carry AgentWakeCarry) AgentWake {
 		t.Helper()
-		if claimed, err := s.ClaimAgentWake("w", at, at+60_000, missed); err != nil || !claimed {
+		if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, missed); err != nil || !claimed {
 			t.Fatalf("claim at %d: %v %v", at, claimed, err)
 		}
 		at += 60_000
-		if finished, err := s.FinishAgentWake("w", outcome, output, missed, carry); err != nil || !finished {
+		if _, finished, err := s.FinishAgentWake("w", outcome, output, missed, carry); err != nil || !finished {
 			t.Fatalf("finish %q: %v %v", outcome, finished, err)
 		}
 		return read()
@@ -494,7 +494,7 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 	if _, err := s.NoteAgentWakeOutcome("w", "exited; restarting in 1s", AgentWakeNoWake); err != nil {
 		t.Fatal(err)
 	}
-	if claimed, err := s.ClaimAgentWake("w", at, at+60_000, 1); err != nil || !claimed {
+	if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, 1); err != nil || !claimed {
 		t.Fatalf("claim before the quit: %v %v", claimed, err)
 	}
 	if _, err := s.RecoverAgentWake("w", "cancelled-by-quit"); err != nil {
@@ -513,16 +513,16 @@ func TestAgentWakeUndeliveredStaysUntilAWakeCarriesIt(t *testing.T) {
 		write func(outcome string) error
 	}{
 		{"finish", func(outcome string) error {
-			if claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
+			if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
 				return fmt.Errorf("claim: %v %v", claimed, err)
 			}
 			at += 60_000
-			_, err := s.FinishAgentWake("w", outcome, "", 0, AgentWakeLost)
+			_, _, err := s.FinishAgentWake("w", outcome, "", 0, AgentWakeLost)
 			return err
 		}},
 		{"session end", func(outcome string) error { _, err := s.NoteAgentWakeUndelivered("w", outcome, ""); return err }},
 		{"shutdown", func(outcome string) error {
-			if claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
+			if _, claimed, err := s.ClaimAgentWake("w", at, at+60_000, 0); err != nil || !claimed {
 				return fmt.Errorf("claim: %v %v", claimed, err)
 			}
 			_, err := s.ReleaseUndeliveredAgentWake("w", outcome, "", at)

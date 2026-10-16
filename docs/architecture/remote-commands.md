@@ -165,7 +165,10 @@ is spent the watch is dismissed with a `wakeIssue` and keeps the result
 ([standing agents](../specs/standing-agents.md#wake-supervisor)).
 Finished workflow phases are not reopened.
 The conversation that called `remote_run` owns the job. Deleting or moving it
-cancels the commands it still owns and drops their pending notifications.
+cancels the commands it still owns and drops their pending notifications; a
+watch is deleted with the conversation that receives its completion, and one
+with nothing left to deliver is deleted by the request retention sweep 30 days
+after it was made.
 Archiving cancels only the jobs that have not finished and keeps the result of
 every finished one: a finish the cancel's reply reports is recorded on the
 watch, and a completion still queued, behind a failed start, goes back to its

@@ -135,7 +135,7 @@ func TestWakeNowRefusesWhatCannotFire(t *testing.T) {
 		}
 	}
 
-	if claimed, err := a.store.ClaimAgentWake(loop.ID, time.Now().UnixMilli(), next, 0); err != nil || !claimed {
+	if _, claimed, err := a.store.ClaimAgentWake(loop.ID, time.Now().UnixMilli(), next, 0); err != nil || !claimed {
 		t.Fatalf("claim: %v %v", claimed, err)
 	}
 	if err := a.WakeThreadWakeNow(ctx, thread.ID, store.AgentWakeLoop, loop.ID); err == nil || !strings.Contains(err.Error(), `the loop "board" is already running`) {

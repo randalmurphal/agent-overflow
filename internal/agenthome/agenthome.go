@@ -20,6 +20,9 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -229,6 +232,76 @@ func RoleLine(home string) (_ string, err error) {
 		return "", err
 	}
 	return BoundRole(text), nil
+}
+
+// RoleCache keeps the role line of each home it read, keyed by its
+// instructions file's modification time and size, so the sends, spawns and
+// settlements that name a standing agent stat the file rather than read it.
+// A file that changed is read again; one that is gone, or that cannot be
+// read, is answered as RoleLine answers it and leaves nothing cached, so no
+// stale role is served for it. The zero value is ready to use.
+type RoleCache struct {
+	mu      sync.Mutex
+	entries map[string]cachedRole
+	// reads counts the files Role read through RoleLine.
+	reads atomic.Int64
+}
+
+type cachedRole struct {
+	modTime time.Time
+	size    int64
+	role    string
+}
+
+// Role is RoleLine(home), read again only when the file changed.
+func (c *RoleCache) Role(home string) (string, error) {
+	info, err := instructionsInfo(home)
+	if errors.Is(err, fs.ErrNotExist) {
+		c.forget(home)
+		return "", nil
+	}
+	if err != nil {
+		c.forget(home)
+		return "", err
+	}
+	c.mu.Lock()
+	cached, ok := c.entries[home]
+	c.mu.Unlock()
+	if ok && cached.modTime.Equal(info.ModTime()) && cached.size == info.Size() {
+		return cached.role, nil
+	}
+	c.reads.Add(1)
+	role, err := RoleLine(home)
+	if err != nil {
+		c.forget(home)
+		return "", err
+	}
+	c.mu.Lock()
+	if c.entries == nil {
+		c.entries = map[string]cachedRole{}
+	}
+	// Keyed by what was stat'ed before the read: a write after it changes
+	// the key, and the next call reads again.
+	c.entries[home] = cachedRole{modTime: info.ModTime(), size: info.Size(), role: role}
+	c.mu.Unlock()
+	return role, nil
+}
+
+func (c *RoleCache) forget(home string) {
+	c.mu.Lock()
+	delete(c.entries, home)
+	c.mu.Unlock()
+}
+
+// instructionsInfo stats a home's instructions file through the home's
+// root, as RoleLine opens it.
+func instructionsInfo(home string) (_ fs.FileInfo, err error) {
+	root, err := os.OpenRoot(home)
+	if err != nil {
+		return nil, err
+	}
+	defer closeInto(root, &err)
+	return root.Stat(InstructionsFile)
 }
 
 // BoundRole makes a role line of text: its first non-blank line after a
