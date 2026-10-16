@@ -190,7 +190,8 @@ type Config struct {
 	// override at startup. NewSession fills in AO's defaults for names
 	// the caller left unset (withClaudeSessionEnvDefaults: the
 	// CLAUDE_CODE_ENTRYPOINT marker, the CLAUDE_CODE_ENABLE_TODO_TOOLS
-	// opt-in, and — only when DisableTodoReminders is set —
+	// opt-in, the MCP description cap (provider.ClaudeMCPDescriptionLengthEnv)
+	// and — only when DisableTodoReminders is set —
 	// CLAUDE_CODE_TODO_REMINDER_MODE=off) and pins the names it owns
 	// (withClaudeTaskListEnv). Anything Claude exposes via `settings.env`
 	// should go through AutoCompactPercent's inline settings path instead.
@@ -339,6 +340,7 @@ func withClaudeSessionEnvDefaults(env map[string]string, disableTodoReminders bo
 	defaults := []struct{ name, value string }{
 		{claudeCodeEntrypointEnvVar, provider.ClaudeEntrypointOrigin},
 		{claudeTodoToolsEnvVar, "true"},
+		{provider.ClaudeMCPDescriptionLengthEnv, strconv.Itoa(provider.ClaudeMCPDescriptionLengthLimit)},
 	}
 	if disableTodoReminders {
 		defaults = append(defaults, struct{ name, value string }{claudeTodoReminderModeEnvVar, "off"})

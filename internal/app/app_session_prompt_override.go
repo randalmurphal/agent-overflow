@@ -33,7 +33,7 @@ import (
 // change applies only at the thread's next session start (docs/decisions.md
 // 2026-10-14). The THINKING axis is the opposite: it is re-read on both
 // paths and costs nothing to resolve (a struct copy), because
-// `set_max_thinking_tokens` lands a budget or an off switch on a running
+// `set_max_thinking_tokens` lands a budget or a display on a running
 // session. Only its return to "Claude Code decides" has no wire form, and
 // that one direction falls through to the deferred restart.
 //

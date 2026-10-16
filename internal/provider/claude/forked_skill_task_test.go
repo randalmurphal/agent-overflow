@@ -16,6 +16,12 @@ const (
 	fixtureForkedSkillDirectCommand = "../../../docs/references/fixtures/claude/forked_skill_direct_command_20261014.ndjson"
 	fixtureTypedForkStopTask        = "../../../docs/references/fixtures/claude/forked_skill_direct_command_stop_task_20261014.ndjson"
 	fixtureTypedForkInterrupt       = "../../../docs/references/fixtures/claude/forked_skill_direct_command_interrupt_20261014.ndjson"
+	// Live 2.1.300 capture: after the typed fork's task_notification the
+	// CLI replays the fork's turns, and its Agent's, on stdout.
+	fixtureTypedForkStdoutReplay = "../../../docs/references/fixtures/claude/forked_skill_direct_command_stdout_replay_20261016.ndjson"
+	// Live 2.1.300 capture: a fork the Skill tool launched streams its
+	// rows on stdout, now with agent_id.
+	fixtureSkillToolForkAgentID = "../../../docs/references/fixtures/claude/forked_skill_tool_agent_id_20261016.ndjson"
 )
 
 // resumePrompts are the §E6 resume prompt rows a replay emitted. A launch
@@ -191,6 +197,76 @@ func TestReplay_TypedForkSettlesByItsTaskTerminal(t *testing.T) {
 				t.Fatalf("command row completion is_error = %v, want %v: %+v", failed, tc.failed, completions[0])
 			}
 		})
+	}
+}
+
+// Claude 2.1.300 replays a typed fork's turns on stdout after the fork's
+// task_notification, each row naming its agent in agent_id; the fork's own
+// rows name "forked-command-<skill>" as their parent, which no item has.
+// The session mirror already projected every one of them under the
+// command row, so the replay emits nothing: no event names that parent,
+// the fork's answer is one text item, and the child's tool call starts
+// once.
+func TestReplay_TypedForkStdoutReplayEmitsNothing(t *testing.T) {
+	const (
+		commandUUID = "88888888-2222-4333-8444-555555555555"
+		launchID    = "claude-command:" + commandUUID
+		childBash   = "toolu_01X375JJbyhGDV4HGxVWPJvq"
+	)
+	session := &Session{}
+	session.directCommands.note(commandUUID, "/forkagent", provider.SendOptions{})
+	parser := NewParser()
+	parser.peerTurns = session
+	events := replayParser(t, parser, fixtureTypedForkStdoutReplay)
+
+	answers := map[string]struct{}{}
+	bashStarts := 0
+	for _, evt := range events {
+		if strings.HasPrefix(evt.ItemID, "forked-command-") || strings.HasPrefix(evt.ParentToolUseID, "forked-command-") {
+			t.Errorf("%s %s parent %q: the stdout replay reached the event stream", evt.Kind, evt.ItemID, evt.ParentToolUseID)
+		}
+		if evt.Kind == provider.EventTextDelta && evt.Content == "done" {
+			answers[evt.ParentToolUseID+" "+evt.ItemID] = struct{}{}
+		}
+		if evt.Kind == provider.EventToolStart && evt.ItemID == childBash && evt.ItemType != "" {
+			bashStarts++
+		}
+	}
+	if len(answers) != 1 {
+		t.Fatalf("fork answer text items = %v, want one under %s", answers, launchID)
+	}
+	for key := range answers {
+		if !strings.HasPrefix(key, launchID+" ") {
+			t.Fatalf("fork answer %q is not under the command row %s", key, launchID)
+		}
+	}
+	if bashStarts != 1 {
+		t.Fatalf("the child's Bash call started %d times, want once", bashStarts)
+	}
+}
+
+// A fork the Skill tool launched streams its rows on stdout, and on
+// 2.1.300 they carry agent_id too. The mirror does not project that fork,
+// so stdout is its only surface and every row is kept.
+func TestReplay_SkillToolForkStdoutRowsWithAgentIDAreKept(t *testing.T) {
+	const (
+		skillCall = "toolu_01FebFRbLUJ4sZfbqEpGciUZ"
+		forkBash  = "toolu_01VcvDcdJ6LC4cqLPZ4ykn7o"
+	)
+	events := replayParser(t, NewParser(), fixtureSkillToolForkAgentID)
+	var bashStarted, bashCompleted, answered bool
+	for _, evt := range events {
+		switch {
+		case evt.Kind == provider.EventToolStart && evt.ItemID == forkBash:
+			bashStarted = evt.ParentToolUseID == skillCall
+		case evt.Kind == provider.EventToolComplete && evt.ItemID == forkBash:
+			bashCompleted = true
+		case evt.Kind == provider.EventContentBlockStop && evt.ParentToolUseID == skillCall && evt.Content == "done":
+			answered = true
+		}
+	}
+	if !bashStarted || !bashCompleted || !answered {
+		t.Fatalf("fork rows on stdout: Bash started under the Skill call %v, completed %v, answer %v; want all", bashStarted, bashCompleted, answered)
 	}
 }
 

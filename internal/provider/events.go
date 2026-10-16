@@ -227,6 +227,15 @@ const (
 	// follows it onto the thread row (app_worktree_follow.go) without
 	// restarting the session, since the process already lives at Cwd.
 	EventWorkspaceChanged EventKind = "workspace_changed"
+
+	// EventPermissionModeChanged reports that the provider changed its own
+	// permission mode without being asked: Claude leaves auto mode when the
+	// session switches to a model without it, and reports the mode it now
+	// runs on `system/status` (claude-wire.md §system/status). The session
+	// has already filtered out the echoes of AO's own requests and adopted
+	// the mode as its base. Meta is PermissionModeChangeMeta. The app
+	// follows it onto the thread's runtime mode (app_claude_permission_mode.go).
+	EventPermissionModeChanged EventKind = "permission_mode_changed"
 )
 
 // AllEventKinds is the canonical list of EventKind values. Triage and the
@@ -283,6 +292,7 @@ var AllEventKinds = []EventKind{
 	EventThinking,
 	EventProposedPlan,
 	EventWorkspaceChanged,
+	EventPermissionModeChanged,
 }
 
 // ProviderEvent is the normalized event emitted by both provider protocols.
@@ -531,6 +541,13 @@ func (*TruncatedTurnCompleteMeta) isTurnCompleteMeta() {}
 // (the `{stop:true}` ack reports `scheduledFor: 0, stopped: true`).
 type SessionWakeupMeta struct {
 	ScheduledForUnixMs int64 `json:"scheduledForUnixMs"`
+}
+
+// PermissionModeChangeMeta is the typed payload for
+// EventPermissionModeChanged. Mode is the provider's own permission-mode
+// name ("default", "acceptEdits", …), not an AO runtime mode.
+type PermissionModeChangeMeta struct {
+	Mode string `json:"mode"`
 }
 
 // WorkspaceChangeMeta is the typed payload for EventWorkspaceChanged.

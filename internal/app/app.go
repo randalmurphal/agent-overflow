@@ -216,6 +216,9 @@ type App struct {
 	// startupProbeWG joins the startup account probes and the Claude probe's
 	// retry loop (probeStartupAccountInfo).
 	startupProbeWG sync.WaitGroup
+	// permissionModeFollowWG joins the goroutines that move a thread onto
+	// the permission mode Claude moved to (followClaudePermissionMode).
+	permissionModeFollowWG sync.WaitGroup
 	// threadSearchIndex is the boot-time search index build.
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.

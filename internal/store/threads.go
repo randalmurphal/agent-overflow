@@ -1681,6 +1681,30 @@ func (s *Store) UpdateRuntimeMode(threadID, mode string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update runtime mode for %s", threadID))
 }
 
+// SwapRuntimeMode sets the thread's runtime mode to next only while it is
+// still from, and reports whether it did. A writer that follows the provider
+// uses it so a mode the user picked meanwhile is never overwritten. A missing
+// thread is an error; a row holding another mode is (false, nil).
+func (s *Store) SwapRuntimeMode(threadID, from, next string) (bool, error) {
+	from, next = normalizeRuntimeMode(from), normalizeRuntimeMode(next)
+	result, err := s.db.Exec(`UPDATE threads SET runtime_mode = ?1 WHERE id = ?2 AND runtime_mode = ?3 AND runtime_mode IS NOT ?1`,
+		next, threadID, from)
+	if err != nil {
+		return false, fmt.Errorf("store: swap runtime mode for %s: %w", threadID, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: swap runtime mode for %s: %w", threadID, err)
+	}
+	if changed > 0 {
+		return true, nil
+	}
+	if _, err := s.GetThread(threadID); err != nil {
+		return false, fmt.Errorf("store: swap runtime mode for %s: %w", threadID, err)
+	}
+	return false, nil
+}
+
 // normalizeMode coerces empty strings to the schema default "chat" and
 // returns anything else verbatim. Callers that need strict validation
 // run the threadmode.IsLegal check separately.
