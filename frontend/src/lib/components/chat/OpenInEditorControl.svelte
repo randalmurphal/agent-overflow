@@ -91,7 +91,7 @@
       class="{SPLIT_BTN_BASE} gap-1 px-2 {hasChoice ? 'rounded-l' : 'rounded'}"
     >
       <EditorIcon editorId={resolved?.id ?? null} size={12} class="opacity-90" />
-      Open
+      <span class="@max-[36rem]/chat-header:hidden">Open</span>
     </button>
     {#if hasChoice}
       <button

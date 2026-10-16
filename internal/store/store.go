@@ -551,24 +551,29 @@ type Thread struct {
 	// was created. Write-once for the same reason and by the same mechanism
 	// as the two fields above.
 	Origin ThreadOrigin `json:"origin"`
-	// AgentPromotedAt is the standing agent row's promotion time, nil for a
-	// thread the user has not promoted (docs/specs/standing-agents.md). It
-	// is derived from standing_agents, not a persisted threads column.
-	AgentPromotedAt *int64 `json:"agentPromotedAt,omitempty"`
+	// AgentID names the assistant whose current thread this is, "" for
+	// any other thread (docs/specs/standing-agents.md, "Standing agent").
+	// PastAgentID names the assistant a handoff superseded this thread for,
+	// and AgentSupersededAt is when. All three are derived from agents and
+	// agent_past_threads, not persisted threads columns.
+	AgentID           string `json:"agentId,omitempty"`
+	PastAgentID       string `json:"pastAgentId,omitempty"`
+	AgentSupersededAt *int64 `json:"agentSupersededAt,omitempty"`
 	// SpawnedByThreadID names the local thread whose thread_spawn made this
 	// one, read from the newest spawn request that targets it, or "" when
 	// the user started it. Derived, like the two below: the spawn request
 	// row is the record, and it outlives the retention floor while this
 	// thread exists (spawnLineageSQL).
 	SpawnedByThreadID string `json:"spawnedByThreadId,omitempty"`
-	// SpawnedByAgent is true when SpawnedByThreadID names a standing agent,
+	// SpawnedByAgent is true when SpawnedByThreadID names an assistant's current thread,
 	// archived or not. The agent's row may be absent from a client's list
 	// (archived, another project) while the group refusal still holds, so
 	// the row says it is bound rather than leaving the client to look up
 	// the spawner.
 	SpawnedByAgent bool `json:"spawnedByAgent,omitempty"`
 	// ArchivedChildCount is how many threads this one spawned that are now
-	// archived. Only a standing agent's row carries it (zero elsewhere);
+	// archived, with its assistant's archived past threads. Only an
+	// assistant's current thread carries it (zero elsewhere);
 	// the sidebar's agent row shows the count and lists them on demand.
 	ArchivedChildCount int `json:"archivedChildCount,omitempty"`
 	// HasActionableProposedPlan is derived for sidebar boot state. It is

@@ -1993,6 +1993,51 @@ describe('setupEventListeners', () => {
       expect(getThreads()).toEqual([]);
     });
 
+    it("moves a pane showing an assistant's old thread to the one its handoff listed", async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' })]);
+      await refreshThreads();
+      const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Ops', agentId: 'agent-1' }));
+      const successor = makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' });
+      setBindingMock('GetThread', async () => successor);
+
+      emitWailsEvent('thread:updated', { action: 'listed', thread: successor });
+      emitWailsEvent('thread:updated', {
+        action: 'unlisted',
+        thread: makeThread({ id: 'thread-1', title: 'Ops', archived: true, pastAgentId: 'agent-1' }),
+        handOffTo: 'thread-2',
+      });
+
+      await vi.waitFor(() => expect(pane.threadId).toBe('thread-2'));
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-2']);
+    });
+
+    it("closes the pane of an assistant's past thread archived again, which no handoff names", async () => {
+      setBindingMock('ListThreads', async () => [
+        makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }),
+        makeThread({ id: 'thread-2', title: 'Ops', agentId: 'agent-1' }),
+      ]);
+      await refreshThreads();
+      await buildPane(makeThread({ id: 'thread-1', title: 'Ops', pastAgentId: 'agent-1' }));
+
+      emitWailsEvent('thread:updated', {
+        action: 'unlisted',
+        thread: makeThread({ id: 'thread-1', title: 'Ops', archived: true, pastAgentId: 'agent-1' }),
+      });
+
+      expect(findPaneShowingThread('thread-1')).toBeNull();
+      expect(findPaneShowingThread('thread-2')).toBeNull();
+    });
+
+    it('closes the pane of an archived thread that no handoff replaced', async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1', agentId: 'agent-1' })]);
+      await refreshThreads();
+      await buildPane(makeThread({ id: 'thread-1', agentId: 'agent-1' }));
+
+      emitWailsEvent('thread:updated', { action: 'unlisted', thread: makeThread({ id: 'thread-1', archived: true, agentId: 'agent-1' }) });
+
+      expect(findPaneShowingThread('thread-1')).toBeNull();
+    });
+
     it('closes a pane whose thread was deleted elsewhere', async () => {
       const pane = await buildPane(makeThread({ id: 'thread-1' }));
       expect(pane.threadId).toBe('thread-1');

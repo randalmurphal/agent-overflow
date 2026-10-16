@@ -47,7 +47,9 @@ export async function resolveWorkflowRun(
       // Pause and stop park the run rather than resolving it: the park's own
       // digest is the receipt a human reads, so the sweep must not skip past
       // it and no session receipt is recorded.
-      addToast('info', request.kind === 'pause'
+      addToast('info', request.kind === 'pause' && request.endSessions
+        ? 'Paused and sessions ended, the worktree is kept'
+        : request.kind === 'pause'
         ? 'Paused — the in-flight turn was stopped, the worktree is kept'
         : 'Stopping — locks released, worktree kept');
       return true;

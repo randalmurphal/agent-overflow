@@ -224,13 +224,31 @@ Mechanism in
   were: order, widths, an agent pane's scope, a side chat's conversation.
   Closing a companion forgets it; deleting or archiving the thread forgets
   all of them and deletes a hidden side chat. Plan, review and agent survive
-  a restart like the layout; take-control and side chats last the session.
+  a restart like the layout; take-control, side chats and agent-thread
+  companions last the session. An agent-thread companion shows a real
+  thread an Agents row opened; closing it never deletes the thread.
   Nothing is shared across clients. The browser pane follows its backend
   state instead (`frontend/src/lib/stores/companionStash.ts`).
 - Thread groups, pins, and auto-pin rulings: `docs/specs/sidebar-thread-groups.md`
   and `internal/store/AGENTS.md`. Re-pin-to-bump is deliberately dead.
+- Assistants (standing agents) are records with a name, a home and one
+  current thread, created by New Assistant or an assistant's
+  `thread_new_assistant` and never promoted; promotion and demotion are
+  gone. New Thread, Same Assistant carries loops, watches, reminders,
+  requests and workers to the successor. The name is the current
+  thread's title, unique per computer case-insensitively; a clash
+  across paired computers shows `<name>-<computer>`, display only.
+  Deleting the current thread deletes the assistant and its home, after
+  one confirm naming the folder; a home outside
+  `<config>/agents/<agent-id>` refuses the delete. Deleting a past thread
+  touches neither. The retention sweep never removes an assistant's
+  current or past threads. A session the provider cleaned up moves the
+  assistant to a new thread on its own, its opening block naming the
+  previous thread (ruling 2026-10-15,
+  [standing agents](specs/standing-agents.md) rulings 22 to 29,
+  "Retention" and "Session loss").
 - Multi-agent discussions are removed. A thread nests under another only
-  as a standing agent's spawned child, by spawn lineage; every other
+  as an assistant's spawned child or past thread; every other
   thread renders flat under its project or group
   ([standing agents](specs/standing-agents.md) ruling 15 and "Sidebar").
 - Thread content search matches title and workspace path only. Searching
@@ -339,6 +357,11 @@ Mechanism in
   reaches the sender as the person's Stop, never as a restart (ruling
   2026-10-14). Mechanism:
   [how agent messages appear](specs/agent-thread-tools.md#how-agent-messages-appear).
+- In an assistant's thread, Stop is two actions: Interrupt (stop the
+  turn, keep the session) and End Session (end the process and its
+  background items); a workflow run's Pause keeps its members' sessions
+  and Pause and End Sessions ends them (ruling 2026-10-15,
+  [interrupt and end session](specs/standing-agents.md#interrupt-and-end-session)).
 - Requests to other threads and agent messages queued for a thread list
   in the activity rail's Agents segment, apart from Background, with a
   user Stop that keeps the caller's wake armed and cascades into what a

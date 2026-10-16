@@ -190,18 +190,22 @@ type ThreadLiveActivity struct {
 	PromptRoutes          map[string]provider.PromptRoute `json:"promptRoutes,omitempty"`
 	CompactingSinceUnixMs int64                           `json:"compactingSinceUnixMs,omitempty"`
 	SendsPending          bool                            `json:"sendsPending,omitempty"`
+	// SessionLive says the thread has a provider session live or
+	// starting (provider:session_live).
+	SessionLive bool `json:"sessionLive,omitempty"`
 }
 
 // ListThreadLiveActivity returns every thread on this computer with live
 // activity: an open wire round, pending approvals or questions, an open
-// compacting window, or sends pending. Idle threads are omitted, so the
+// compacting window, sends pending, or a provider session. Idle threads are omitted, so the
 // answer is authoritative for the whole computer: a client reconciles every
 // thread it attributes to this computer against it and clears the ones not
 // named.
 //
 // This is the snapshot leg of the threads:read push channels
 // (provider:turn_started / turn_completed, provider:approval,
-// provider:user_input, provider:compacting, provider:sends_pending). A
+// provider:user_input, provider:compacting, provider:sends_pending,
+// provider:session_live). A
 // client that connects, reloads, or drops frames mid-turn has no other way
 // to learn that a thread it has no pane on is running or blocked on the
 // user; GetThreadLiveState is per thread and rides threads:operate because
@@ -215,6 +219,7 @@ func (a *App) ListThreadLiveActivity() ([]ThreadLiveActivity, error) {
 		return rows, nil
 	}
 	sendsPending := a.sendsPendingThreads()
+	sessionLive := a.sessionLiveThreads()
 	for _, live := range a.triage.LiveActivitySnapshot() {
 		row := ThreadLiveActivity{
 			ThreadID:              live.ThreadID,
@@ -227,6 +232,10 @@ func (a *App) ListThreadLiveActivity() ([]ThreadLiveActivity, error) {
 			row.SendsPending = true
 			delete(sendsPending, live.ThreadID)
 		}
+		if _, session := sessionLive[live.ThreadID]; session {
+			row.SessionLive = true
+			delete(sessionLive, live.ThreadID)
+		}
 		if live.ActiveTurn != nil {
 			row.ActiveTurn = &LiveStateActiveTurn{
 				ThreadID:  live.ActiveTurn.ThreadID,
@@ -237,12 +246,20 @@ func (a *App) ListThreadLiveActivity() ([]ThreadLiveActivity, error) {
 		}
 		rows = append(rows, row)
 	}
-	for _, threadID := range slices.Sorted(maps.Keys(sendsPending)) {
+	rest := maps.Clone(sendsPending)
+	if rest == nil {
+		rest = map[string]struct{}{}
+	}
+	maps.Copy(rest, sessionLive)
+	for _, threadID := range slices.Sorted(maps.Keys(rest)) {
+		_, pending := sendsPending[threadID]
+		_, session := sessionLive[threadID]
 		rows = append(rows, ThreadLiveActivity{
 			ThreadID:            threadID,
 			ApprovalRequestIDs:  []string{},
 			UserInputRequestIDs: []string{},
-			SendsPending:        true,
+			SendsPending:        pending,
+			SessionLive:         session,
 		})
 	}
 	return rows, nil

@@ -32,6 +32,13 @@ describe('<StorageSettings> — Retention', () => {
     expect(input.value).toBe('30');
   });
 
+  it('says assistants are never cleaned up and that provider session files are the CLIs\' own', async () => {
+    const { getByTestId } = render(StorageSettings);
+    const text = getByTestId('settings-retention').textContent ?? '';
+    expect(text).toContain('Assistants and their past threads are never cleaned up.');
+    expect(text).toContain("This cleans up only Agent Overflow's own data; Claude and Codex clean up their session files under their own settings.");
+  });
+
   it('renders the retention input inert, saying why, off the host without a passkey', async () => {
     // `retention` is host tier (internal/settings/tier.go): the backend takes
     // the write only under a step-up proof, which a networked page with no

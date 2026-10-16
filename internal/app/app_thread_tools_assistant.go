@@ -1,0 +1,92 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+
+	"agent-overflow/internal/agenthome"
+	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
+)
+
+// NewAssistant is thread_new_assistant: an assistant creates another one
+// (docs/specs/agent-thread-tools.md#thread_new_assistant). The new
+// assistant is created as the user's New Assistant creates one, in the
+// caller's project and workspace with the settings a spawn inherits, and is
+// started as the caller's spawn whose prompt is its opening block, so it
+// answers its creator and its questions and approvals route there.
+func (t threadToolsApp) NewAssistant(ctx context.Context, caller threadtools.Caller, call threadtools.NewAssistantCall) (threadtools.NewAssistantAck, error) {
+	if threadtools.Forwarded(ctx) {
+		return threadtools.NewAssistantAck{}, errorsx.Public(threadtools.CodeInvalidRequest,
+			"thread_new_assistant creates an assistant on the caller's own computer and is never forwarded.", nil)
+	}
+	creator, found, err := t.app.store.GetStandingAgent(caller.ThreadID)
+	if err != nil {
+		return threadtools.NewAssistantAck{}, err
+	}
+	if !found {
+		return threadtools.NewAssistantAck{}, errorsx.Public(threadtools.CodeInvalidRequest,
+			"Only an assistant's current thread may create an assistant, and this thread is not one. Ask the user to create one with New Assistant.", nil)
+	}
+	origin, err := t.localOrigin(caller)
+	if err != nil {
+		return threadtools.NewAssistantAck{}, err
+	}
+	creatorThread, err := t.localThread(caller.ThreadID)
+	if err != nil {
+		return threadtools.NewAssistantAck{}, err
+	}
+	create, err := t.spawnThreadOptions(ctx, origin, threadtools.SpawnCall{Prompt: call.Role, Title: call.Name})
+	if err != nil {
+		return threadtools.NewAssistantAck{}, err
+	}
+	thread, agent, err := t.app.createAssistant(ctx, assistantSpec{name: call.Name, thread: create, creatorAgentID: creator.ID})
+	if err != nil {
+		return threadtools.NewAssistantAck{}, publicAssistantNameError(err)
+	}
+	prompt := agenthome.CreatedOpeningMessage(thread.Title, agent.Home, creatorThread.Title, caller.ThreadID, call.Role)
+	ack, err := t.startLocalRequest(ctx, caller, store.ThreadRequest{
+		Kind:   store.ThreadRequestSpawn,
+		Notify: true,
+	}, 0, func(token string) (string, error) {
+		target, fresh, err := t.acceptRequest(origin, token, store.ThreadRequestSpawn, thread.ID, nil)
+		if err != nil {
+			return "", t.failRequest(token, err)
+		}
+		if !fresh {
+			return target, nil
+		}
+		if err := t.dispatchRequest(ctx, origin, token, store.ThreadRequestSpawn, target, prompt, true); err != nil {
+			return "", t.failRequest(token, err)
+		}
+		return target, nil
+	})
+	if err != nil {
+		// The assistant exists with no opening message; the user sees its
+		// row and the error, and can delete it or start the discussion.
+		log.Printf("thread tools: assistant %s was created, but its opening request failed: %v", agent.ID, err)
+		why := "it could not be sent"
+		if _, public, ok := errorsx.PublicDetails(err); ok {
+			why = public
+		}
+		return threadtools.NewAssistantAck{}, errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("The assistant %q (thread %s) was created, but its opening message failed: %s Send it its role with thread_send, or ask the user to delete it.", thread.Title, thread.ID, why), err)
+	}
+	return threadtools.NewAssistantAck{RequestAck: ack, AssistantID: agent.ID, Name: thread.Title, Home: agent.Home}, nil
+}
+
+// publicAssistantNameError is a name refusal the model can read.
+func publicAssistantNameError(err error) error {
+	var taken *store.AssistantNameTakenError
+	switch {
+	case errors.As(err, &taken):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("The assistant %q (thread %s) already has that name; names are unique on this computer, ignoring case. Choose another name.", taken.Name, taken.ThreadID), err)
+	case errors.Is(err, store.ErrAssistantNameEmpty):
+		return errorsx.Public(threadtools.CodeInvalidRequest, "name is required and cannot be blank.", err)
+	}
+	return err
+}

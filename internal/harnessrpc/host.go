@@ -50,6 +50,9 @@ type Host interface {
 	CreateProject(path string) (store.Project, error)
 	CreateThread(ThreadOptions) (store.Thread, error)
 	ArchiveThread(threadID string) error
+	// MakeAssistant makes a thread an assistant's current thread, with its
+	// record and home, as New Assistant does, without the opening message.
+	MakeAssistant(threadID string) (store.StandingAgent, error)
 	// BroadcastThreadRow re-reads one thread and emits it to connected
 	// clients as a full row. The seeder writes history behind the store,
 	// which changes derived row columns (IsDraft) no store write announces.

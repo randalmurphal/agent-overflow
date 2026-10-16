@@ -148,11 +148,12 @@ export function userMessageOriginTokens(meta: UserMessageMeta): string[] {
  * What wrote an `agent-wake` row: `loop` or `watch` with its label, `send`
  * for a script's outside message, or `question` or `approval` for a worker's
  * prompt put to the standing agent that spawned it, labelled with the
- * worker's title. A row without a known kind is not attribution and is
- * refused.
+ * worker's title. An `assistant` or `handoff` wake is the app's opening
+ * block of an assistant's thread, labelled with the assistant's name. A row
+ * without a known kind is not attribution and is refused.
  */
 export interface UserMessageOriginWake {
-  kind: 'loop' | 'watch' | 'send' | 'question' | 'approval' | 'completion' | 'workflow';
+  kind: 'loop' | 'watch' | 'send' | 'question' | 'approval' | 'completion' | 'workflow' | 'assistant' | 'handoff';
   /** The loop, watch or worker; a `completion`'s job; a `workflow`'s id. */
   label: string;
   /** The worker of a `question` or `approval` wake; empty otherwise. */
@@ -161,7 +162,7 @@ export interface UserMessageOriginWake {
   computer: string;
 }
 
-const WAKE_KINDS: ReadonlySet<string> = new Set(['loop', 'watch', 'send', 'question', 'approval', 'completion', 'workflow']);
+const WAKE_KINDS: ReadonlySet<string> = new Set(['loop', 'watch', 'send', 'question', 'approval', 'completion', 'workflow', 'assistant', 'handoff']);
 const WAKE_KIND_LABELS: Record<Exclude<UserMessageOriginWake['kind'], 'send'>, string> = {
   loop: 'Loop',
   watch: 'Watch',
@@ -169,6 +170,8 @@ const WAKE_KIND_LABELS: Record<Exclude<UserMessageOriginWake['kind'], 'send'>, s
   approval: 'Approval',
   completion: 'Remote job',
   workflow: 'Workflow',
+  assistant: 'Opening',
+  handoff: 'New thread',
 };
 
 export function userMessageOriginWake(meta: UserMessageMeta): UserMessageOriginWake | null {

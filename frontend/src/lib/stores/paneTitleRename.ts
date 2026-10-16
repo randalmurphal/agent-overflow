@@ -10,6 +10,7 @@
 // Registry shape mirrors composerPickerRegistry: a plain Map keyed by paneId,
 // no `$state`, because callers invoke it imperatively and never subscribe.
 
+import { isAssistantNameTaken } from './assistants.svelte';
 import { GetThread, RenameThread } from './bindings';
 import { syncThread } from './panes.svelte';
 import type { Thread } from '../types/models';
@@ -47,6 +48,8 @@ export interface RenameResult {
   error?: string;
   /** The error behind `error`, for its details and copy actions. */
   cause?: unknown;
+  /** The name is another assistant's: `error` names it, shown where it was typed. */
+  nameTaken?: boolean;
 }
 
 /**
@@ -71,6 +74,7 @@ export async function renameThreadTitle(
     syncThread(updated);
     return { ok: true };
   } catch (err) {
+    if (isAssistantNameTaken(err)) return { ok: false, error: err.message, cause: err, nameTaken: true };
     console.error('Rename thread failed:', err);
     return { ok: false, error: `Failed to rename thread: ${errString(err)}`, cause: err };
   }

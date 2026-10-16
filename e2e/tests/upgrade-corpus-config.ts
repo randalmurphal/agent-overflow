@@ -49,6 +49,7 @@ export const migrationExceptions: MigrationException[] = [
   { version: 145, table: 'automations', dropped: true, reason: 'v145 removes the workflow scheduler and drops its automations' },
   { version: 145, table: 'automation_cursors', dropped: true, reason: "v145 drops the scheduler's per-source cursors with its automations" },
   { version: 145, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v145 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
+  { version: 154, table: 'standing_agents', dropped: true, reason: 'v154 moves every standing agent to an agents record whose id is its thread id, and drops the table' },
 ];
 
 /**
@@ -177,6 +178,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'thread_requests', reason: "an agent's thread_send or thread_ask request" },
   { table: 'thread_request_receipts', reason: "an agent's thread_send or thread_ask request" },
   { table: 'async_questions', reason: "an agent's thread_ask question" },
+  { table: 'agents', columns: ['creator_agent_id'], reason: "an assistant another assistant made with thread_new_assistant, which is an agent's thread request" },
   {
     table: 'agent_wakes',
     columns: ['last_output', 'undelivered', 'missed'],

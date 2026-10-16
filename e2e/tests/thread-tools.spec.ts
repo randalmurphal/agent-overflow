@@ -56,6 +56,7 @@ const TOOL_NAMES = [
   'thread_remind',
   'thread_loop',
   'thread_watch',
+  'thread_new_assistant',
 ];
 
 const APP_GUIDE_OPENING = 'You are running inside Agent Overflow';
@@ -66,7 +67,7 @@ interface McpRow {
   disabled: boolean;
 }
 
-test('both providers get the fifteen tools and the guide, in every runtime mode', async ({
+test('both providers get the sixteen tools and the guide, in every runtime mode', async ({
   harness,
 }) => {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {

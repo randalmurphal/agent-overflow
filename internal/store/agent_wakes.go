@@ -91,14 +91,6 @@ type AgentWake struct {
 	CreatedAt  int64  `json:"createdAt"`
 }
 
-// StandingAgent is one row of standing_agents.
-type StandingAgent struct {
-	ThreadID     string `json:"threadId"`
-	Home         string `json:"home"`
-	NotifyOnTick bool   `json:"notifyOnTick"`
-	PromotedAt   int64  `json:"promotedAt"`
-}
-
 const agentWakeColumns = `id, thread_id, kind, label, note, command, cwd, interval_seconds,
 	timeout_seconds, long_running, next_at, last_run_at, last_outcome, last_output, undelivered, missed, state, created_at, last_stderr`
 
@@ -288,7 +280,7 @@ func (s *Store) ListAgentWakes(threadID string) ([]AgentWake, error) {
 // MaxAgentWakesPerThread live rows.
 func (s *Store) ListStandingAgentWakes() ([]AgentWake, error) {
 	rows, err := s.reader().Query(`SELECT ` + agentWakeColumns + ` FROM agent_wakes
-		WHERE state IN ('armed','running') AND thread_id IN (SELECT thread_id FROM standing_agents)
+		WHERE state IN ('armed','running') AND thread_id IN (SELECT thread_id FROM agents)
 		ORDER BY thread_id, label`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list standing agent wakes: %w", err)
@@ -572,71 +564,6 @@ func (s *Store) QueueAgentWake(item FlushQueueItem, sendIDPrefix string, ahead i
 		return fmt.Errorf("%s: commit: %w", action, err)
 	}
 	return nil
-}
-
-// SetStandingAgentNotifyOnTick turns tick notifications on or off for one
-// standing agent. Changed is false when the row already said so; found is
-// false when the thread is not a standing agent.
-func (s *Store) SetStandingAgentNotifyOnTick(threadID string, on bool) (_ StandingAgent, changed, found bool, _ error) {
-	notify := 0
-	if on {
-		notify = 1
-	}
-	changed, err := s.changeAgentWake(fmt.Sprintf("store: set notify_on_tick of %s", threadID),
-		`UPDATE standing_agents SET notify_on_tick = ? WHERE thread_id = ? AND notify_on_tick IS NOT ?`,
-		notify, threadID, notify)
-	if err != nil {
-		return StandingAgent{}, false, false, err
-	}
-	row, found, err := s.GetStandingAgent(threadID)
-	if err != nil || !found {
-		return StandingAgent{}, false, false, err
-	}
-	return row, changed, true, nil
-}
-
-// DemoteStandingAgent removes the row and reports whether there was one.
-func (s *Store) DemoteStandingAgent(threadID string) (bool, error) {
-	return s.changeAgentWake(fmt.Sprintf("store: demote %s", threadID),
-		`DELETE FROM standing_agents WHERE thread_id = ?`, threadID)
-}
-
-// GetStandingAgent reads one thread's agent row.
-func (s *Store) GetStandingAgent(threadID string) (StandingAgent, bool, error) {
-	var row StandingAgent
-	var notify int
-	err := s.reader().QueryRow(`SELECT thread_id, home, notify_on_tick, promoted_at FROM standing_agents
-		WHERE thread_id = ?`, threadID).Scan(&row.ThreadID, &row.Home, &notify, &row.PromotedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return StandingAgent{}, false, nil
-	}
-	if err != nil {
-		return StandingAgent{}, false, fmt.Errorf("store: get standing agent %s: %w", threadID, err)
-	}
-	row.NotifyOnTick = notify == 1
-	return row, true, nil
-}
-
-// StandingAgentSpawnerOf names the standing agent that spawned a thread on
-// this computer: the caller of a local `spawn` request whose target is the
-// thread, while that caller is promoted and not archived. Found is false for
-// every other thread. A worker past the request ledger's retention still
-// names its agent: the sweep keeps its spawn row as lineage
-// (spawnLineageSQL), so its prompts keep routing there.
-func (s *Store) StandingAgentSpawnerOf(threadID string) (agentID, title string, found bool, err error) {
-	err = s.reader().QueryRow(`SELECT t.id, t.title FROM standing_agents a
-		JOIN thread_requests r ON r.caller_thread_id = a.thread_id
-		JOIN threads t ON t.id = a.thread_id
-		WHERE r.kind = '`+ThreadRequestSpawn+`' AND r.target_computer_id = '' AND r.target_thread_id = ?
-		  AND t.archived = 0
-		ORDER BY r.created_at DESC LIMIT 1`, threadID).Scan(&agentID, &title)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", false, nil
-	}
-	if err != nil {
-		return "", "", false, fmt.Errorf("store: read the standing agent that spawned %s: %w", threadID, err)
-	}
-	return agentID, title, true, nil
 }
 
 // ThreadHasLiveWorkflowRun reports whether a workflow run that has not ended

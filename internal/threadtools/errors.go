@@ -53,9 +53,13 @@ func publicf(code, format string, args ...any) error {
 // notFound names the reference and says how to find the right one, since a
 // model that guessed an id has to be sent back to a result it can trust.
 func notFound(ref string, searched []Computer) error {
-	message := fmt.Sprintf("No thread matches %q on this computer.", ref)
+	where := "this computer"
 	if len(searched) > 0 {
-		message = fmt.Sprintf("No thread matches %q on this computer or on %s.", ref, computerList(searched))
+		where = "this computer or on " + computerList(searched)
+	}
+	message := fmt.Sprintf("No thread or assistant matches %q on %s.", ref, where)
+	if len(ref) < MinPrefixLen {
+		message = fmt.Sprintf("No assistant is named %q on %s, and a thread id prefix needs at least %d characters.", ref, where, MinPrefixLen)
 	}
 	return errorsx.Public(CodeNotFound, message+" Find the thread with thread_search and use the thread_id from the result; never guess an id.", nil)
 }
@@ -69,15 +73,22 @@ func ambiguous(ref string, candidates []Candidate, paired bool) error {
 		if paired && candidate.Computer != "" {
 			part += " on " + candidate.Computer
 		}
+		if candidate.Assistant != "" {
+			name := candidate.Assistant
+			if paired && candidate.Computer != "" {
+				name += "-" + candidate.Computer
+			}
+			part += fmt.Sprintf(", the assistant %q", name)
+		}
 		parts = append(parts, part)
 	}
-	return errorsx.Public(CodeAmbiguous, fmt.Sprintf("%q matches %d threads: %s. Call again with one full thread_id.", ref, len(candidates), strings.Join(parts, "; ")), nil)
+	return errorsx.Public(CodeAmbiguous, fmt.Sprintf("%q matches %d threads: %s. Call again with one full thread_id, or an assistant as <name>-<computer>.", ref, len(candidates), strings.Join(parts, "; ")), nil)
 }
 
 // resolutionIncomplete is what a fan-out returns instead of a confident
 // not found when a computer did not answer.
 func resolutionIncomplete(ref string, silent []Computer) error {
-	return errorsx.Public(CodeResolutionIncomplete, fmt.Sprintf("No thread matches %q on the computers that answered, and %s did not answer in time. The thread may be there. Try again, or name the computer with computer_id.", ref, computerList(silent)), nil)
+	return errorsx.Public(CodeResolutionIncomplete, fmt.Sprintf("No thread or assistant matches %q on the computers that answered, and %s did not answer in time. It may be there. Try again, or name the computer with computer_id.", ref, computerList(silent)), nil)
 }
 
 func computerList(computers []Computer) string {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -324,6 +325,9 @@ func (a *App) startSession(ctx context.Context, threadID string) error {
 			start = a.startSessionFn
 		}
 		if err := start(threadID); err != nil {
+			if errors.Is(err, errAssistantSessionGone) {
+				a.recoverAssistantSessionLoss(threadID)
+			}
 			return err
 		}
 		a.noteSessionStarted(threadID)

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -164,13 +166,15 @@ const mergeForgeToken = "merge-cleanup-token"
 
 // mergeCase is a thread in a linked worktree whose tracked PR #5 merged a
 // minute ago, an App with triage (so notices land) whose git core reads a
-// fake forge, and that forge, which counts its GraphQL requests and runs
-// an armed hook before answering the next one: a change landing while the
-// cleanup waits on the forge.
+// fake forge, and that forge, which counts its GraphQL requests and the
+// requests it is reading or answering, and runs an armed hook before
+// answering the next one: a change landing while the cleanup waits on the
+// forge.
 type mergeCase struct {
 	app      *App
 	engine   *forgefake.Engine
 	requests atomic.Int32
+	inFlight atomic.Int32
 	hook     atomic.Pointer[func()]
 	repo     string
 	thread   store.Thread
@@ -189,7 +193,7 @@ func newMergeCase(t *testing.T, branch string) *mergeCase {
 	m := &mergeCase{app: app, repo: repo, thread: thread, path: path}
 	m.engine = forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
 	m.seed(t, "merged")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/github/graphql" {
 			m.requests.Add(1)
 			if hook := m.hook.Swap(nil); hook != nil {
@@ -198,6 +202,23 @@ func newMergeCase(t *testing.T, branch string) *mergeCase {
 		}
 		m.engine.ServeHTTP(w, r)
 	}))
+	// A connection is active from the first byte of a request until its
+	// response is written.
+	var connStates sync.Map
+	srv.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+		prev, _ := connStates.Load(conn)
+		if prev == http.StateActive && state != http.StateActive {
+			m.inFlight.Add(-1)
+		} else if state == http.StateActive && prev != http.StateActive {
+			m.inFlight.Add(1)
+		}
+		if state == http.StateClosed || state == http.StateHijacked {
+			connStates.Delete(conn)
+		} else {
+			connStates.Store(conn, state)
+		}
+	}
+	srv.Start()
 	t.Cleanup(srv.Close)
 	svc, err := forgeapi.New(forgeapi.Options{Version: "test", Isolated: &forgeapi.Isolated{BaseURL: srv.URL, Token: mergeForgeToken}})
 	if err != nil {
@@ -215,6 +236,18 @@ func newMergeCase(t *testing.T, branch string) *mergeCase {
 		t.Fatal(err)
 	}
 	return m
+}
+
+// awaitForgeQuiet waits until the forge is reading or answering no request.
+func (m *mergeCase) awaitForgeQuiet(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for m.inFlight.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d forge requests still in flight after 2s", m.inFlight.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // seed puts PR #5 on the forge in state.
@@ -728,6 +761,9 @@ func TestMergedPRCleanupPauseJoinsAndResumesFromNothing(t *testing.T) {
 		}
 	}
 	m.seed(t, "merged")
+	// A request the pause cancelled can still be in the forge after the
+	// poll returned; let it finish before counting.
+	m.awaitForgeQuiet(t)
 	before := m.requests.Load()
 	// A lookup backoff left from before the pause; nothing else prunes one
 	// for a repository nobody tracks.

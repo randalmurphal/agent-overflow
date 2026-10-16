@@ -147,6 +147,7 @@ const (
 	ProviderSendsPending           Channel = "provider:sends_pending"
 	ProviderSessionAccount         Channel = "provider:session_account"
 	ProviderSessionDied            Channel = "provider:session_died"
+	ProviderSessionLive            Channel = "provider:session_live"
 	ProviderStatus                 Channel = "provider:status"
 	ProviderSubagentProgress       Channel = "provider:subagent_progress"
 	ProviderTerminalOutput         Channel = "provider:terminal_output"

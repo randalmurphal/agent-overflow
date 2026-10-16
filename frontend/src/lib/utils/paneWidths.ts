@@ -15,6 +15,13 @@ export const PANE_DENSITY_MIN_WIDTHS: Record<PaneDensityMode, number> = {
   spacious: 1400,
 };
 
+// A side chat or agent thread companion may sit below the density minimum,
+// so it fits beside its source pane on a 1280px screen (1000px beside the
+// sidebar) instead of pushing the strip into scroll: two panes at the
+// compact minimum need 1120px. At this width its header still gives the
+// title its 5rem floor (ChatHeader).
+export const THREAD_COMPANION_MIN_WIDTH_PX = 440;
+
 export const MAX_PANE_WIDTH_PX = 10_000;
 // The compact density minimum: a garbage width degrades to the
 // smallest legitimate pane rather than something invisible or enormous.
@@ -46,7 +53,8 @@ export interface PaneBoundaryDrag {
    * plus any scroll the drag itself caused). Positive = rightward.
    */
   deltaPx: number;
-  minPaneWidth: number;
+  /** Each pane's minimum width, in layout order. */
+  minWidths: readonly number[];
   /** Horizontal overflow (scrollWidth - clientWidth) at drag start. */
   overflowPx: number;
   /** Alt-drag: trade space with the neighbor, keeping the total width. */
@@ -82,7 +90,8 @@ function clamp(value: number, min: number, max: number): number {
  * compares against its CURRENT state to decide whether to write.
  */
 export function resolvePaneBoundaryDrag(drag: PaneBoundaryDrag): number[] | null {
-  const { widths, leftIndex, hasRightPane, deltaPx, minPaneWidth } = drag;
+  const { widths, leftIndex, hasRightPane, deltaPx, minWidths } = drag;
+  if (minWidths.length !== widths.length) return null;
   if (leftIndex < 0 || leftIndex >= widths.length) return null;
   if (hasRightPane && leftIndex + 1 >= widths.length) return null;
   if (widths.some((width) => !Number.isFinite(width) || width <= 0)) return null;
@@ -94,13 +103,13 @@ export function resolvePaneBoundaryDrag(drag: PaneBoundaryDrag): number[] | null
     const neighborIndex = hasRightPane ? leftIndex + 1 : leftIndex - 1;
     if (neighborIndex < 0) return null;
     const combined = left + widths[neighborIndex];
-    if (combined < minPaneWidth * 2) return null;
+    if (combined < minWidths[leftIndex] + minWidths[neighborIndex]) return null;
     // Lower bound also keeps the NEIGHBOR under MAX so the trade stays
     // total-preserving even when both panes sit near the cap.
     const newLeft = clamp(
       left + deltaPx,
-      Math.max(minPaneWidth, combined - MAX_PANE_WIDTH_PX),
-      Math.min(combined - minPaneWidth, MAX_PANE_WIDTH_PX),
+      Math.max(minWidths[leftIndex], combined - MAX_PANE_WIDTH_PX),
+      Math.min(combined - minWidths[neighborIndex], MAX_PANE_WIDTH_PX),
     );
     next[leftIndex] = newLeft;
     next[neighborIndex] = combined - newLeft;
@@ -111,12 +120,12 @@ export function resolvePaneBoundaryDrag(drag: PaneBoundaryDrag): number[] | null
     next[leftIndex] = Math.min(left + deltaPx, MAX_PANE_WIDTH_PX);
     if (hasRightPane && drag.overflowPx <= OVERFLOW_EPSILON_PX) {
       const rightIndex = leftIndex + 1;
-      next[rightIndex] = Math.max(minPaneWidth, widths[rightIndex] - deltaPx);
+      next[rightIndex] = Math.max(minWidths[rightIndex], widths[rightIndex] - deltaPx);
     }
     return next;
   }
 
-  const newLeft = Math.max(minPaneWidth, left + deltaPx);
+  const newLeft = Math.max(minWidths[leftIndex], left + deltaPx);
   next[leftIndex] = newLeft;
   const shrunkBy = left - newLeft;
   const beyondOverflow = Math.max(0, shrunkBy - Math.max(0, drag.overflowPx));
@@ -133,8 +142,8 @@ export function resolvePaneBoundaryDrag(drag: PaneBoundaryDrag): number[] | null
 }
 
 /**
- * Canonicalize fit-mode widths by scaling them down so the smallest
- * pane sits exactly at the minimum. While the strip fits the window,
+ * Canonicalize fit-mode widths by scaling them down until one pane sits
+ * exactly at its minimum. While the strip fits the window,
  * rendering only depends on the widths' proportions (the flex row
  * stretches them to fill), so this is visually a no-op — but it keeps
  * headroom: opening another pane squeezes the existing ones toward
@@ -146,11 +155,15 @@ export function resolvePaneBoundaryDrag(drag: PaneBoundaryDrag): number[] | null
  */
 export function minAnchorPaneWidths(
   widths: readonly number[],
-  minPaneWidth: number,
+  minWidths: readonly number[],
 ): number[] | null {
-  if (widths.length === 0) return null;
-  const smallest = Math.min(...widths);
-  if (!Number.isFinite(smallest) || smallest <= minPaneWidth) return null;
-  const scale = minPaneWidth / smallest;
-  return widths.map((width) => Math.max(minPaneWidth, width * scale));
+  if (widths.length === 0 || minWidths.length !== widths.length) return null;
+  if (widths.some((width, index) => !Number.isFinite(width) || width <= minWidths[index])) return null;
+  const scale = Math.max(...widths.map((width, index) => minWidths[index] / width));
+  return widths.map((width, index) => Math.max(minWidths[index], width * scale));
+}
+
+/** A pane's minimum width: the density minimum, lower for a thread companion. */
+export function paneMinWidthPx(threadCompanion: boolean, densityMinPx: number): number {
+  return threadCompanion ? Math.min(densityMinPx, THREAD_COMPANION_MIN_WIDTH_PX) : densityMinPx;
 }

@@ -155,4 +155,65 @@ describe('<SendButton>', () => {
     expect(getByTestId('composer-send')).toHaveTextContent('Send comments 3');
     expect(getByText('3')).toBeInTheDocument();
   });
+
+  it('offers Interrupt and End Session beside Stop on an assistant thread', async () => {
+    const onInterrupt = vi.fn();
+    const onEndSession = vi.fn();
+    const view = render(SendButton, {
+      props: { canSend: false, isTurnActive: true, onSend: vi.fn(), onInterrupt, onEndSession },
+    });
+    expect(view.getByTestId('composer-interrupt')).toBeInTheDocument();
+
+    await fireEvent.click(view.getByTestId('composer-session-menu'));
+    await fireEvent.click(await view.findByRole('menuitem', { name: 'Interrupt' }));
+    expect(onInterrupt).toHaveBeenCalledOnce();
+    expect(onEndSession).not.toHaveBeenCalled();
+
+    await fireEvent.click(view.getByTestId('composer-session-menu'));
+    await fireEvent.click(await view.findByRole('menuitem', { name: 'End Session' }));
+    expect(onEndSession).toHaveBeenCalledOnce();
+    expect(onInterrupt).toHaveBeenCalledOnce();
+  });
+
+  it('keeps End Session, with Interrupt disabled, while no turn runs', async () => {
+    const onInterrupt = vi.fn();
+    const onEndSession = vi.fn();
+    const view = render(SendButton, {
+      props: { canSend: true, isTurnActive: false, onSend: vi.fn(), onInterrupt, onEndSession },
+    });
+    expect(view.getByTestId('composer-send')).toBeInTheDocument();
+
+    await fireEvent.click(view.getByTestId('composer-session-menu'));
+    expect(await view.findByRole('menuitem', { name: 'Interrupt' })).toHaveAttribute('aria-disabled', 'true');
+    await fireEvent.click(view.getByRole('menuitem', { name: 'End Session' }));
+    expect(onEndSession).toHaveBeenCalledOnce();
+    expect(onInterrupt).not.toHaveBeenCalled();
+  });
+
+  it('disables End Session, saying why, when the thread has no session', async () => {
+    const onEndSession = vi.fn();
+    const view = render(SendButton, {
+      props: { canSend: true, isTurnActive: false, onSend: vi.fn(), onInterrupt: vi.fn(), onEndSession, sessionLive: false },
+    });
+    await fireEvent.click(view.getByTestId('composer-session-menu'));
+    const end = await view.findByRole('menuitem', { name: 'End Session' });
+    expect(end).toHaveAttribute('aria-disabled', 'true');
+    expect(end).toHaveAttribute('title', 'No session is running');
+    await fireEvent.click(end);
+    expect(onEndSession).not.toHaveBeenCalled();
+
+    await view.rerender({ canSend: true, isTurnActive: false, onSend: vi.fn(), onInterrupt: vi.fn(), onEndSession, sessionLive: true });
+    const live = view.getByRole('menuitem', { name: 'End Session' });
+    expect(live).not.toHaveAttribute('aria-disabled', 'true');
+    expect(live).not.toHaveAttribute('title');
+    await fireEvent.click(live);
+    expect(onEndSession).toHaveBeenCalledOnce();
+  });
+
+  it('has no session menu on an ordinary thread', () => {
+    const view = render(SendButton, {
+      props: { canSend: false, isTurnActive: true, onSend: vi.fn(), onInterrupt: vi.fn() },
+    });
+    expect(view.queryByTestId('composer-session-menu')).toBeNull();
+  });
 });

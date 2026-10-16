@@ -81,3 +81,31 @@ func TestThreadIDsOlderThan(t *testing.T) {
 		t.Fatalf("post-archive cutoff=1000: got %v, want %v (archived rows must still match)", got, want)
 	}
 }
+
+// An assistant's current and superseded threads are never retention's,
+// however old; an ordinary archived thread of the same age is.
+func TestThreadIDsOlderThanSkipsAssistants(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"current", "past", "plain"} {
+		thr := makeThread(id, "claude")
+		thr.UpdatedAt, thr.CreatedAt = 100, 100
+		if err := s.CreateThread(thr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustCreateAssistant(t, s, "past", "/h/past")
+	if _, err := s.HandOffAssistant("past", "current", 150); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ArchiveThread("plain"); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s.db, `UPDATE threads SET updated_at = 100`)
+	got, err := s.ThreadIDsOlderThan(1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"plain"}; !slices.Equal(got, want) {
+		t.Fatalf("eligible = %v, want %v", got, want)
+	}
+}

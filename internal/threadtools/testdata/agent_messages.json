@@ -64,7 +64,7 @@
   },
   {
     "name": "request from a standing agent that spawned the receiver",
-    "text": "Do the task.\n\n---\nAgent request from thread \"Planner\" (t-plan).\nThe sender is a standing agent, a thread the user promoted. Its role, in its own words: \"Keeps the \\\"plan\\\" honest.\" It spawned this thread, so your questions and approval requests go to it, not to the user.\nIt is waiting for your answer. When you are done, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. The sender sees only your reply text, so make it self-contained. To read the sender's thread, use thread_show with its id.",
+    "text": "Do the task.\n\n---\nAgent request from thread \"Planner\" (t-plan).\nThe sender is a standing agent. Its role, in its own words: \"Keeps the \\\"plan\\\" honest.\" It spawned this thread, so your questions and approval requests go to it, not to the user.\nIt is waiting for your answer. When you are done, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. The sender sees only your reply text, so make it self-contained. To read the sender's thread, use thread_show with its id.",
     "parts": [
       {
         "body": "Do the task.",
@@ -85,7 +85,7 @@
   },
   {
     "name": "request from a standing agent with no role",
-    "text": "Hello.\n\n---\nAgent request from thread \"Planner\" (t-plan).\nThe sender is a standing agent, a thread the user promoted.\nIt is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. To answer it, use thread_send with its id.",
+    "text": "Hello.\n\n---\nAgent request from thread \"Planner\" (t-plan).\nThe sender is a standing agent.\nIt is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, once. To answer it, use thread_send with its id.",
     "parts": [
       {
         "body": "Hello.",
@@ -169,7 +169,7 @@
   },
   {
     "name": "late reply with age, computer and a standing agent",
-    "text": "Reply from \"Worker\" (t-work, on desk, answered 5m ago) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]:\nThat thread is a standing agent, a thread the user promoted. Its role, in its own words: \"Runs the builds.\"\nDone.",
+    "text": "Reply from \"Worker\" (t-work, on desk, answered 5m ago) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]:\nThat thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\nDone.",
     "parts": [
       {
         "body": "Done.",
@@ -211,7 +211,7 @@
   },
   {
     "name": "errored, agent, multi-line error",
-    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] errored: boom\nThat thread is a standing agent, a thread the user promoted.\nstack",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d] errored: boom\nThat thread is a standing agent.\nstack",
     "parts": [
       {
         "body": "boom\nstack",
@@ -358,7 +358,7 @@
   },
   {
     "name": "interrupted by its session ending during the turn, with what it wrote",
-    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread's session ended during the turn that read the request. What it had written by then:\nThat thread is a standing agent, a thread the user promoted. Its role, in its own words: \"Runs the builds.\"\n\nHalf done.\nSecond line.",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The thread's session ended during the turn that read the request. What it had written by then:\nThat thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\n\nHalf done.\nSecond line.",
     "parts": [
       {
         "body": "Half done.\nSecond line.",
@@ -483,6 +483,27 @@
     ]
   },
   {
+    "name": "interrupted by a handoff",
+    "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The assistant moved to a new thread before it answered. Its previous thread is t-old; read it with thread_show to see what was done, or ask the assistant again by name.",
+    "parts": [
+      {
+        "body": "Its previous thread is t-old; read it with thread_show to see what was done, or ask the assistant again by name.",
+        "footer": null,
+        "wake": {
+          "kind": "interrupted",
+          "title": "Worker",
+          "threadId": "t-work",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "agentRole": null,
+          "stoppedBy": "the assistant moving to a new thread",
+          "clipped": false
+        }
+      }
+    ]
+  },
+  {
     "name": "interrupted by something other than a person",
     "text": "\"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The turn was interrupted before it answered.",
     "parts": [
@@ -568,7 +589,7 @@
   },
   {
     "name": "stopped by the person before it said anything, standing agent",
-    "text": "\"Worker\" (t-work, on desk) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The person stopped this turn before it answered.\nThat thread is a standing agent, a thread the user promoted. Its role, in its own words: \"Runs the builds.\"",
+    "text": "\"Worker\" (t-work, on desk) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]: The person stopped this turn before it answered.\nThat thread is a standing agent. Its role, in its own words: \"Runs the builds.\"",
     "parts": [
       {
         "body": "",

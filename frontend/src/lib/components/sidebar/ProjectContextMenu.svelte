@@ -7,6 +7,7 @@
   // here too — Rename is the only action the parent still drives.
 
   import type { ProjectWithCounts } from '../../types/models';
+  import { projectAssistantsNote, withAssistantNote } from '../../stores/assistants.svelte';
   import type { ProjectDeletionPreview } from '../../types/workflow';
   import {
     ArchiveProject,
@@ -44,10 +45,12 @@
     /** Compact only: the header's hover-revealed create controls, which the
      *  phone cannot reveal, so the menu carries them there. */
     onNewThread?: () => void;
+    onNewAssistant?: () => void;
     onNewTerminal?: () => void;
   }
 
-  let { project, labelText, anchor, open, onClose, onRename, onNewThread, onNewTerminal }: Props = $props();
+  let { project, labelText, anchor, open, onClose, onRename, onNewThread, onNewAssistant, onNewTerminal }: Props = $props();
+  let newAssistantUngranted = $derived(!projectHasScope('threads:autonomy', project.project.id));
   let compact = $derived(isCompactLayout());
   // The same gates the header's own controls use: visible, inert, and saying why.
   // Rename, New Group, Archive and Delete all ride `threads:operate`; Delete
@@ -64,6 +67,8 @@
   // Set only when the project owns workflow work — that is the case with more
   // to say than the one-line confirm can carry.
   let deletionPreview = $state<ProjectDeletionPreview | null>(null);
+  // The assistants the plain confirm's delete removes, named with their homes.
+  let deleteAssistantsNote = $state('');
   let deleting = $state(false);
 
   async function doNewGroup(): Promise<void> {
@@ -103,6 +108,7 @@
       if (preview.hasWork) {
         deletionPreview = preview;
       } else {
+        deleteAssistantsNote = projectAssistantsNote(preview.assistants);
         showDeleteConfirm = true;
       }
     } catch (err) {
@@ -172,8 +178,17 @@
               onNewTerminal?.();
             }}
           />
-          <MenuDivider />
         {/if}
+        <MenuItem
+          label="New Assistant…"
+          disabled={newAssistantUngranted}
+          title={newAssistantUngranted ? 'Not granted to this device' : undefined}
+          onSelect={() => {
+            onClose();
+            onNewAssistant?.();
+          }}
+        />
+        <MenuDivider />
         <MenuItem
           label="Rename Project"
           disabled={operateUngranted}
@@ -243,7 +258,7 @@
 <ConfirmDialog
   open={showDeleteConfirm}
   title="Delete Project"
-  description={`Permanently delete "${labelText}" and all ${project.threadCount} thread${project.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`}
+  description={withAssistantNote(`Permanently delete "${labelText}" and all ${project.threadCount} thread${project.threadCount === 1 ? '' : 's'} it contains. This cannot be undone.`, deleteAssistantsNote)}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={() => {

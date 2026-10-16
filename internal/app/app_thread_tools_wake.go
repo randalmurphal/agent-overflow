@@ -58,13 +58,34 @@ func (a *App) withdrawHeldThreadWakes(threadID string) error {
 		if !ok {
 			continue
 		}
-		if _, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
+		removal, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
 			return a.store.WithdrawThreadWake(token, late, row.ID, store.WithdrawQueued)
-		}); err != nil {
+		})
+		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))
+			continue
+		}
+		if removal == queueRemovalRemoved {
+			a.redeliverHandedOffWake(threadID, token, late)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// redeliverHandedOffWake sends an answer or reminder a thread New Thread,
+// Same Assistant superseded gave back on to the assistant's current thread,
+// which the handoff made its request's caller: armed again, since nothing
+// about the answer changed but where it goes. Any other thread's give-back
+// stays disarmed.
+func (a *App) redeliverHandedOffWake(threadID, token string, late bool) {
+	if _, ok := a.assistantCurrentThread(threadID); !ok {
+		return
+	}
+	if _, err := a.store.SetThreadRequestNotify(token, true); err != nil {
+		logThreadRequestSweep("arm the handed-off wake of "+token, err)
+		return
+	}
+	a.goThreadRequestSettling(func() { a.deliverThreadWake(token, late) })
 }
 
 // deliverThreadWake puts the answer in the caller's message queue, as the
@@ -99,7 +120,14 @@ func (a *App) deliverClaimedThreadWake(token string, late bool) {
 	if !late && row.DeliveredAt != 0 {
 		return
 	}
-	thread, err := a.store.GetThread(row.CallerThreadID)
+	callerID := row.CallerThreadID
+	if current, ok := a.assistantCurrentThread(callerID); ok {
+		// A handoff that raced this read moved the request; the answer is
+		// the assistant's current thread's, and its old thread stays
+		// archived.
+		callerID = current
+	}
+	thread, err := a.store.GetThread(callerID)
 	if errors.Is(err, sql.ErrNoRows) {
 		// The thread is gone. The request row is cascading away with it;
 		// marking it keeps a concurrent reader from waiting on a wake that
@@ -390,6 +418,14 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 	}
 	if row.SettledAt > 0 {
 		wake.Age = time.Duration(time.Now().UnixMilli()-row.SettledAt) * time.Millisecond
+	}
+	// A handoff made the assistant's current thread the caller and kept the
+	// thread that asked; the wake says which one that was.
+	if madeIn := row.MadeIn(); madeIn != row.CallerThreadID {
+		wake.MadeIn, wake.Now = madeIn, row.CallerThreadID
+		if current, ok := a.assistantCurrentThread(row.CallerThreadID); ok {
+			wake.Now = current
+		}
 	}
 	// A standing agent that answered is named as one, from what the
 	// settlement recorded, so a thread on either computer reads the same.

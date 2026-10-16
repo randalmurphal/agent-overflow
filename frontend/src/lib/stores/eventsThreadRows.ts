@@ -8,10 +8,11 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // setupEventListeners.
 import type { TurnCompletedEvent } from '../types/events';
 import type { Thread } from '../types/models';
-import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
+import { closePanesShowingThread, findPaneShowingThread, iterPanes, moveAssistantPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { refreshAgentWakes } from './agentWakes.svelte';
+import { followAssistantHandOffInStash } from './companionStash';
 import { addErrorToast, addToast } from './toast.svelte';
 import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
@@ -374,6 +375,8 @@ export interface ThreadUpdateEvent {
   title?: string;
   model?: string;
   sessionRef?: string;
+  /** On the `unlisted` frame of an assistant's old thread: its successor. */
+  handOffTo?: string;
   /**
    * A sidebar-activity bump from an activity-counting user_text persist,
    * and nothing else — turn completions and approval requests announce
@@ -452,8 +455,14 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       const id = evt.thread?.id ?? evt.id;
       if (!id) return;
       if (evt.thread) syncThreadRow(evt.thread);
+      // A handoff lists the assistant's new thread first and names it here:
+      // the panes and hidden companions that showed the old one move to it.
+      // Archiving a past thread is not a handoff and closes its panes.
+      const successor = evt.handOffTo ? getThreadById(evt.handOffTo) : undefined;
+      if (successor) followAssistantHandOffInStash(id, successor);
       removeThread(id);
-      closePanesShowingThread(id);
+      if (successor) moveAssistantPanes(id, successor);
+      else closePanesShowingThread(id);
       return;
     }
     case 'listed': {

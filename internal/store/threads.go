@@ -112,13 +112,15 @@ var threadColumns = `id, COALESCE(project_id, ''),
     NOT EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id),
     (SELECT COALESCE(MAX(ownership_epoch),0) FROM thread_transfers
       WHERE thread_id = threads.id AND direction = 'incoming' AND phase = 'complete'),
-    (SELECT promoted_at FROM standing_agents WHERE standing_agents.thread_id = threads.id),
+    COALESCE((SELECT id FROM agents WHERE agents.thread_id = threads.id), ''),
+    COALESCE((SELECT agent_id FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id), ''),
+    (SELECT superseded_at FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id),
     COALESCE((
       SELECT caller_thread_id FROM thread_requests
        WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
        ORDER BY created_at DESC LIMIT 1
     ), ''),
-    EXISTS (SELECT 1 FROM standing_agents WHERE standing_agents.thread_id = (
+    EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = (
       SELECT caller_thread_id FROM thread_requests
        WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
        ORDER BY created_at DESC LIMIT 1
@@ -128,7 +130,12 @@ var threadColumns = `id, COALESCE(project_id, ''),
       WHERE thread_requests.caller_thread_id = threads.id
         AND thread_requests.kind = 'spawn' AND thread_requests.target_computer_id = ''
         AND child.archived = 1
-        AND EXISTS (SELECT 1 FROM standing_agents WHERE standing_agents.thread_id = threads.id))`
+        AND NOT EXISTS (SELECT 1 FROM agents AS created WHERE created.thread_id = child.id)
+        AND EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = threads.id))
+    + (SELECT COUNT(*) FROM agent_past_threads
+       JOIN agents ON agents.id = agent_past_threads.agent_id
+       JOIN owned_threads AS past ON past.id = agent_past_threads.thread_id
+      WHERE agents.thread_id = threads.id AND past.archived = 1)`
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -227,7 +234,7 @@ func validAutoCompactPercent(percent int) bool {
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, hasFailedTurn, isDraft, spawnedByAgent int
-	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentPromotedAt sql.NullInt64
+	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup, agentSupersededAt sql.NullInt64
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch,
@@ -241,7 +248,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
-		&agentPromotedAt, &t.SpawnedByThreadID, &spawnedByAgent, &t.ArchivedChildCount,
+		&t.AgentID, &t.PastAgentID, &agentSupersededAt, &t.SpawnedByThreadID, &spawnedByAgent, &t.ArchivedChildCount,
 	); err != nil {
 		return Thread{}, err
 	}
@@ -268,9 +275,9 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		v := int(pinGroup.Int64)
 		t.PinGroup = &v
 	}
-	if agentPromotedAt.Valid {
-		v := agentPromotedAt.Int64
-		t.AgentPromotedAt = &v
+	if agentSupersededAt.Valid {
+		v := agentSupersededAt.Int64
+		t.AgentSupersededAt = &v
 	}
 	return t, nil
 }
@@ -1257,6 +1264,11 @@ func (s *Store) UpdateTitle(threadID, title string) error {
 // updateTitleTx writes the display name and its search index entry inside
 // the caller's transaction. The two always move together.
 func updateTitleTx(tx *sql.Tx, threadID, title string) error {
+	// An assistant's current thread's title is its name (docs/specs/
+	// standing-agents.md, "Standing agent"), unique on this computer.
+	if err := checkAssistantTitleTx(tx, threadID, title); err != nil {
+		return err
+	}
 	result, err := tx.Exec(`UPDATE threads SET title = ? WHERE id = ?`,
 		title, threadID)
 	if err != nil {
@@ -1266,6 +1278,30 @@ func updateTitleTx(tx *sql.Tx, threadID, title string) error {
 		return err
 	}
 	return indexThreadTitleTx(tx, threadID, title)
+}
+
+// UpdateProviderTitle writes a title a provider reported for its thread,
+// and reports whether it did: a provider never renames an assistant.
+func (s *Store) UpdateProviderTitle(threadID, title string) (_ bool, err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("store: begin provider title for %s: %w", threadID, err)
+	}
+	defer rollbackAgentWakeTx(tx, "store: provider title for "+threadID, &err)
+	var assistant bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE thread_id = ?)`, threadID).Scan(&assistant); err != nil {
+		return false, fmt.Errorf("store: read the assistant of %s: %w", threadID, err)
+	}
+	if assistant {
+		return false, nil
+	}
+	if err := updateTitleTx(tx, threadID, title); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("store: commit provider title for %s: %w", threadID, err)
+	}
+	return true, nil
 }
 
 func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (bool, error) {
@@ -1282,7 +1318,9 @@ func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (b
 		return false, err
 	}
 	result, err := tx.Exec(
-		`UPDATE threads SET title = ? WHERE id = ? AND title = ?`,
+		// A generated title never renames an assistant.
+		`UPDATE threads SET title = ? WHERE id = ? AND title = ?
+		   AND NOT EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = threads.id)`,
 		newTitle, threadID, currentTitle,
 	)
 	if err != nil {

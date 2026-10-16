@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/errorsx"
 	gitops "agent-overflow/internal/git"
@@ -104,6 +105,29 @@ func (p *threadProjector) projectName(projectID string) string {
 	return name
 }
 
+// assistant names the assistant whose current thread this is, with its
+// role line read now. A record or role that cannot be read is logged and
+// left out of the row rather than failing the read.
+func (p *threadProjector) assistant(thread store.Thread) *threadtools.Assistant {
+	if thread.AgentID == "" {
+		return nil
+	}
+	out := &threadtools.Assistant{ID: thread.AgentID, Name: thread.Title}
+	agent, found, err := p.app.store.GetAgent(thread.AgentID)
+	if err != nil || !found {
+		if err != nil {
+			log.Printf("thread tools: read assistant %s: %v", thread.AgentID, err)
+		}
+		return out
+	}
+	role, err := agenthome.RoleLine(agent.Home)
+	if err != nil {
+		log.Printf("thread tools: read the role line of assistant %s from %s: %v", agent.ID, agent.Home, err)
+	}
+	out.Role = role
+	return out
+}
+
 func (p *threadProjector) groupName(groupID string) string {
 	if name, ok := p.groups[groupID]; ok {
 		return name
@@ -134,7 +158,7 @@ func (p *threadProjector) thread(thread store.Thread) threadtools.Thread {
 		Archived:      thread.Archived,
 		Unread:        threadUnread(thread),
 		LastActivity:  threadLastActivity(thread),
-		StandingAgent: thread.AgentPromotedAt != nil,
+		Assistant:     p.assistant(thread),
 		SpawnedBy:     thread.SpawnedByThreadID,
 
 		HasIncompleteTurn:         thread.HasIncompleteTurn,
@@ -203,8 +227,9 @@ func threadToolsLiveState(snapshot triage.LiveStateSnapshot) threadtools.LiveSta
 	}
 }
 
-// ResolveThreadRef matches a full id or a prefix against this computer's
-// threads, as the thread that called the tools may see them.
+// ResolveThreadRef matches a full id, an assistant's name or a prefix
+// against this computer's threads, as the thread that called the tools may
+// see them.
 func (t threadToolsApp) ResolveThreadRef(ctx context.Context, ref string) (threadtools.Resolution, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -233,11 +258,43 @@ func (t threadToolsApp) ResolveThreadRef(ctx context.Context, ref string) (threa
 		}
 		return threadtools.Resolution{}, nil
 	}
-	candidates, err := t.prefixCandidates(ref, caller.ThreadID)
+	candidates, err := t.assistantCandidates(ref)
 	if err != nil {
 		return threadtools.Resolution{}, err
 	}
+	if len(ref) < threadtools.MinPrefixLen {
+		return threadtools.Resolution{Matches: candidates}, nil
+	}
+	prefixed, err := t.prefixCandidates(ref, caller.ThreadID)
+	if err != nil {
+		return threadtools.Resolution{}, err
+	}
+	for _, candidate := range prefixed {
+		if len(candidates) == threadtools.MaxResolutionCandidates {
+			break
+		}
+		if !slices.ContainsFunc(candidates, func(named threadtools.Candidate) bool { return named.ThreadID == candidate.ThreadID }) {
+			candidates = append(candidates, candidate)
+		}
+	}
 	return threadtools.Resolution{Matches: candidates}, nil
+}
+
+// assistantCandidates are this computer's assistants whose name ref is,
+// each as its current thread. Names are unique per computer, so there is
+// at most one unless a rename raced the check.
+func (t threadToolsApp) assistantCandidates(ref string) ([]threadtools.Candidate, error) {
+	assistants, err := t.app.store.ListAssistants()
+	if err != nil {
+		return nil, err
+	}
+	var out []threadtools.Candidate
+	for _, assistant := range assistants {
+		if store.SameAssistantName(assistant.Name, ref) {
+			out = append(out, threadtools.Candidate{ThreadID: assistant.Agent.ThreadID, Title: assistant.Name, Assistant: assistant.Name})
+		}
+	}
+	return out, nil
 }
 
 // prefixCandidates asks the store for the threads whose id starts with
@@ -590,6 +647,7 @@ func (t threadToolsApp) threadToolsFilter(ctx context.Context, q threadtools.Sea
 		Archived:         q.Archived,
 		SinceUnixMs:      q.SinceUnixMs,
 		SpawnedBy:        q.SpawnedBy,
+		Agents:           q.Agents,
 		ScratchThreadIDs: scratch,
 	}
 	if q.ThreadID != "" {

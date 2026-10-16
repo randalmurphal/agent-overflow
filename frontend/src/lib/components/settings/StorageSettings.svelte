@@ -25,7 +25,7 @@
         label="Retention (days)"
         hint={settings.retention.days === 0
           ? 'Automatic cleanup is disabled. Nothing will be removed automatically.'
-          : 'Threads (with their attachments and replay logs), provider-event logs, and bug-report bookmarks older than this are cleaned up automatically. Set to 0 to disable.'}
+          : 'Threads (with their attachments and replay logs), provider-event logs, and bug-report bookmarks older than this are cleaned up automatically. Set to 0 to disable. Assistants and their past threads are never cleaned up. This cleans up only Agent Overflow\'s own data; Claude and Codex clean up their session files under their own settings.'}
         htmlFor="retention-days"
       >
         <input

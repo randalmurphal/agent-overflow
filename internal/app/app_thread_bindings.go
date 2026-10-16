@@ -123,6 +123,18 @@ func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememb
 		return store.Thread{}, admitErr
 	}
 	defer endWork()
+	thread, err := a.createThreadRow(ctx, opts, rememberDefaults)
+	if thread.ID != "" {
+		a.broadcastThreadRow(triage.ThreadActionListed, thread)
+	}
+	return thread, err
+}
+
+// createThreadRow is createThread without the broadcast, for a caller that
+// writes more of the row's derived state (an assistant's record) before the
+// sidebar first sees it. The caller holds a work admission from before it
+// until after that broadcast, so no host handoff starts between them.
+func (a *App) createThreadRow(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, error) {
 	settingsBucket, settingsClass := a.callerSettingsScreen(ctx)
 	thread, err := a.threadApplication().Create(threadapp.CreateOptions{
 		ProjectID:                  opts.ProjectID,
@@ -159,7 +171,6 @@ func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememb
 	if rememberDefaults {
 		profileErr = a.rememberCreatedThreadProfile(thread, opts)
 	}
-	a.broadcastThreadRow(triage.ThreadActionListed, thread)
 	return thread, profileErr
 }
 
@@ -280,7 +291,7 @@ func (a *App) RenameThread(id string, title string) error {
 	}
 	defer unlock()
 	if err := a.threadApplication().Rename(id, title); err != nil {
-		return err
+		return refuseTakenAssistantName(err)
 	}
 	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
 		Action: triage.ThreadActionPatch, ID: id, Title: &title,

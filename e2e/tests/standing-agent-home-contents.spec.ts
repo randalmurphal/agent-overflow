@@ -9,8 +9,8 @@
 // ran in; a worker spawned with home_files whose first message opens with
 // the attached verification file and whose footer names the agent, its
 // role and the route of its questions; the role line on a message from the
-// agent to an ordinary thread and none on one back; nothing injected after
-// demotion. Then the timeline: the injected block is system prompt and
+// agent to an ordinary thread and none on one back; each file past its cap
+// cut at its head. Then the timeline: the injected block is system prompt and
 // never a message, the worker's first message is an agent row whose body
 // shows the attached file and whose facts name the agent's role and the
 // route of its questions, and the hygiene wake is an agent row followed by

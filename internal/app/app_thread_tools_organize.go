@@ -291,7 +291,12 @@ func threadToolsOrganizeError(threadID string, err error) error {
 		return err
 	}
 	var moved *store.ThreadTransferError
+	var taken *store.AssistantNameTakenError
 	switch {
+	case errors.As(err, &taken):
+		return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+			"That thread is an assistant's, and its title is its name: the assistant %q (thread %s) already has that name. Names are unique on this computer, ignoring case.",
+			taken.Name, taken.ThreadID), err)
 	case errors.Is(err, threadapp.ErrEmptyThreadTitle):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
 			"A title is trimmed, and an empty title is refused. Omit title to leave it alone.", err)
@@ -305,10 +310,10 @@ func threadToolsOrganizeError(threadID string, err error) error {
 		return errorsx.Public(threadtools.CodeInvalidRequest, "A group name is trimmed, and a blank one is refused.", err)
 	case errors.Is(err, store.ErrStandingAgentGrouped):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
-			"That thread is a standing agent, and a standing agent is not grouped: its own sidebar row holds the threads it spawned.", err)
+			"That thread is an assistant's, and an assistant is not grouped: its own sidebar row holds the threads it spawned.", err)
 	case errors.Is(err, store.ErrSpawnedChildGrouped):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
-			"A standing agent spawned that thread, so it nests under the agent's sidebar row rather than in a group.", err)
+			"An assistant spawned that thread, so it nests under the assistant's sidebar row rather than in a group.", err)
 	case errors.Is(err, store.ErrThreadGone), errors.Is(err, sql.ErrNoRows), errors.As(err, &moved):
 		return threadToolsNotFound(threadID)
 	}

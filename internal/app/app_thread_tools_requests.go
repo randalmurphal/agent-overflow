@@ -800,6 +800,14 @@ func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtoo
 	if err != nil {
 		return threadtools.CancelReport{}, fmt.Errorf("thread tools: encode cancel for %s: %w", call.ComputerID, err)
 	}
+	// The destination checks lineage against the thread that made the
+	// request, which a handoff may have replaced with this caller.
+	source := caller
+	if madeIn, err := t.app.store.RemoteRequestSource(caller.ThreadID, call.ComputerID, call.ThreadID); err != nil {
+		return threadtools.CancelReport{}, err
+	} else if madeIn != "" && madeIn != caller.ThreadID {
+		source = t.app.threadAgentCaller(madeIn)
+	}
 	rpc, cancel := context.WithTimeout(ctx, threadCancelTimeout)
 	defer cancel()
 	var reply ThreadPeerReply
@@ -807,7 +815,7 @@ func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtoo
 		Tool:   "thread_cancel",
 		Args:   args,
 		Token:  newThreadRequestToken(),
-		Source: caller,
+		Source: source,
 	})
 	if err != nil {
 		return threadtools.CancelReport{}, t.app.threadOperationError("cancel", call.ComputerID, call.ThreadID, err)

@@ -121,7 +121,7 @@ func readThreadWake(text string) (title, body string, reminder, ok bool) {
 		return "", "", false, false
 	}
 	_, rest := cutWakeToken(naming[len(quoted)+close+1:])
-	if line, next, _ := strings.Cut(after, "\n"); strings.HasPrefix(line, "That thread is a standing agent, a thread the user promoted.") {
+	if line, next, _ := strings.Cut(after, "\n"); strings.HasPrefix(line, "That thread "+threadtools.AgentSentence) || strings.HasPrefix(line, "That thread "+threadtools.PromotedAgentSentence) {
 		after = next
 	}
 	switch {
@@ -179,6 +179,10 @@ func agentWakeHead(text string, origin *usermessage.OriginWake) (sender, head st
 		if sender == "" {
 			sender = "A remote job"
 		}
+	case assistantWakeKindOpening, assistantWakeKindHandOff:
+		// The app writes an assistant's opening and handoff blocks; they
+		// are prose, not quoted data.
+		return "Agent Overflow", firstLineOf(text)
 	default:
 		sender = firstNonEmpty(label, agentWakeKindTitles[kind])
 	}

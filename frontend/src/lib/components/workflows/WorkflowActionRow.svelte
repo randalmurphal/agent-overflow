@@ -151,6 +151,7 @@
       case 'create-pr': void act({ kind: 'create-pr' }); return;
       case 'open-phase-thread': void openWorkflowThreadById(latestThreadId); return;
       case 'pause': void act({ kind: 'pause' }); return;
+      case 'pause-end-sessions': void act({ kind: 'pause', endSessions: true }); return;
       case 'soft-stop': void act({ kind: 'soft-stop', armed: true }); return;
       case 'clear-soft-stop': void act({ kind: 'soft-stop', armed: false }); return;
       case 'cancel': void act({ kind: 'cancel' }); return;

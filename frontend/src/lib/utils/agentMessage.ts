@@ -98,6 +98,8 @@ export type AgentMessageKind =
   | 'worker-approval'
   | 'job'
   | 'workflow'
+  | 'opening'
+  | 'handoff'
   | 'message'
   | 'task'
   | 'final-answer';
@@ -124,7 +126,9 @@ export interface AgentMessage {
 
 const FOOTER_MARKER = 'Agent request from thread ';
 const JOIN_SEPARATOR = '\n\n---\n\n';
-const AGENT_SENTENCE = 'is a standing agent, a thread the user promoted.';
+const AGENT_SENTENCE = 'is a standing agent.';
+// Messages written before assistants replaced promotion say this instead.
+const PROMOTED_AGENT_SENTENCE = 'is a standing agent, a thread the user promoted.';
 const ROLE_PREFIX = ' Its role, in its own words: ';
 const ROUTES_SENTENCE = ' It spawned this thread, so your questions and approval requests go to it, not to the user.';
 const WAITING_PREFIX = 'It is waiting for your answer. When you are done, call thread_reply with token ';
@@ -203,8 +207,10 @@ function readThreadNaming(text: string): { title: string; threadId: string; comp
 
 /** The standing-agent sentence after `who`, or null when the line is not one. */
 function readAgentSentence(line: string, who: string): { role: string; rest: string } | null {
-  const opening = `${who} ${AGENT_SENTENCE}`;
-  if (!line.startsWith(opening)) return null;
+  const opening = [AGENT_SENTENCE, PROMOTED_AGENT_SENTENCE]
+    .map((sentence) => `${who} ${sentence}`)
+    .find((candidate) => line.startsWith(candidate));
+  if (!opening) return null;
   let rest = line.slice(opening.length);
   let role = '';
   if (rest.startsWith(ROLE_PREFIX)) {
@@ -293,6 +299,9 @@ export function parseRequestText(text: string): AgentMessagePart[] | null {
   return parts;
 }
 
+/** threadtools InterruptHandedOffSentence: New Thread, Same Assistant replaced the thread. */
+const HANDED_OFF = 'The assistant moved to a new thread before it answered.';
+
 /** A person's Stop, in place of the restart line; its last message may follow. */
 const PERSON_STOPPED = ': The person stopped this turn before it answered.';
 const PERSON_STOPPED_ANSWER = ' Its last message:';
@@ -337,7 +346,12 @@ function interruptReason(sentence: string, after: string): { stoppedBy: string; 
   if (sentence === 'The turn was interrupted before it answered.') return { stoppedBy: 'an interrupt', body: '' };
   if (sentence === 'That request was accepted but its thread was never created.') return { stoppedBy: '', body: sentence };
   const moved = /^The thread was moved to (.+) before it answered\.$/.exec(sentence);
-  return moved ? { stoppedBy: `a move to ${moved[1]}`, body: '' } : null;
+  if (moved) return { stoppedBy: `a move to ${moved[1]}`, body: '' };
+  // threadtools InterruptHandedOff: the rest names the previous thread.
+  if (sentence.startsWith(`${HANDED_OFF} `)) {
+    return { stoppedBy: 'the assistant moving to a new thread', body: sentence.slice(HANDED_OFF.length + 1) };
+  }
+  return null;
 }
 
 const WAKE_TAILS: ReadonlyArray<{ kind: WakeKind; opening: string; body: 'line' | 'next' | 'none' }> = [
@@ -477,6 +491,8 @@ const KIND_LABELS: Record<Exclude<AgentMessageKind, WakeKind>, { label: string; 
   'worker-approval': { label: 'Allow', title: "Worker's approval request" },
   job: { label: 'Job', title: 'Remote job finished' },
   workflow: { label: 'Run', title: 'Workflow wake' },
+  opening: { label: 'Start', title: "Assistant's opening message" },
+  handoff: { label: 'Moved', title: 'New thread, same assistant' },
   message: { label: 'Msg', title: 'Message' },
   task: { label: 'Task', title: 'Task' },
   'final-answer': { label: 'Final', title: 'Final answer' },
@@ -540,6 +556,8 @@ const WAKE_ORIGIN_KINDS: Record<string, AgentMessageKind> = {
   approval: 'worker-approval',
   completion: 'job',
   workflow: 'workflow',
+  assistant: 'opening',
+  handoff: 'handoff',
 };
 
 /**
@@ -621,6 +639,16 @@ function fromWake(text: string, meta: UserMessageMeta): AgentMessage {
   const wake = decoded ?? { kind: 'send', label: '', threadId: '', computer: '' };
   const kind = WAKE_ORIGIN_KINDS[wake.kind];
   const { label, title } = labels(kind);
+  if (kind === 'opening' || kind === 'handoff') {
+    // An assistant's opening and handoff blocks: the app's own prose, not
+    // quoted data (docs/specs/standing-agents.md, "Standing agent").
+    return {
+      kind, kindLabel: label, kindTitle: title,
+      sender: 'Agent Overflow', senderThread: null, senderRole: '',
+      firstLine: firstLineOf(text),
+      parts: [{ body: text, footer: null, wake: null }],
+    };
+  }
   const worker = wake.threadId !== '';
   return {
     kind,

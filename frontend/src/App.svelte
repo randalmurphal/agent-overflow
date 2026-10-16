@@ -82,6 +82,7 @@
   import MessageSearch from './lib/components/palette/MessageSearch.svelte';
   import UnifiedThreadPicker from './lib/components/palette/UnifiedThreadPicker.svelte';
   import ThreadActionConfirmationHost from './lib/components/palette/ThreadActionConfirmationHost.svelte';
+  import NewAssistantDialog from './lib/components/sidebar/NewAssistantDialog.svelte';
   import ConversationTransferHost from './lib/components/transfers/ConversationTransferHost.svelte';
   import { initConversationTransfers } from './lib/stores/conversationTransfers.svelte';
   import UnsentMessageConfirmationHost from './lib/components/composer/UnsentMessageConfirmationHost.svelte';
@@ -670,6 +671,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 </main>
 <CommandPalette context={paletteContext} contextForPane={makeCommandContextForPaneId} />
 <ThreadActionConfirmationHost />
+<NewAssistantDialog />
 <ConversationTransferHost />
 
 <UnsentMessageConfirmationHost />

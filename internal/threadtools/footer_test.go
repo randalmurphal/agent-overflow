@@ -93,6 +93,11 @@ func TestWakeTemplates(t *testing.T) {
 			want: "Reply from \"Parser\" (7f3a, on Studio, answered 3h ago) [token tok]:\ndone",
 		},
 		{
+			name: "a request made in an assistant's past thread names it",
+			wake: Wake{Kind: WakeReply, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "done", MadeIn: "old1", Now: "new2"},
+			want: "Reply from \"Parser\" (7f3a) [token tok]:\nMade in thread old1, before New Thread, Same Assistant; now new2.\ndone",
+		},
+		{
 			name: "fresh local reply states no computer and no age",
 			wake: Wake{Kind: WakeReply, Title: "Parser", ThreadID: "7f3a", Token: "tok", Age: 2 * time.Second, Text: "done"},
 			want: "Reply from \"Parser\" (7f3a) [token tok]:\ndone",
@@ -268,14 +273,14 @@ func TestStandingAgentFooter(t *testing.T) {
 	want := strings.Join([]string{
 		"---",
 		`Agent request from thread "Release lead" (a1).`,
-		`The sender is a standing agent, a thread the user promoted. Its role, in its own words: "Release lead for the app." It spawned this thread, so your questions and approval requests go to it, not to the user.`,
+		`The sender is a standing agent. Its role, in its own words: "Release lead for the app." It spawned this thread, so your questions and approval requests go to it, not to the user.`,
 		"It is waiting for your answer. When you are done, call thread_reply with token tok, once. The sender sees only your reply text, so make it self-contained. To read the sender's thread, use thread_show with its id.",
 	}, "\n")
 	if got != want {
 		t.Fatalf("footer:\n%s\nwant:\n%s", got, want)
 	}
 	noRole := Footer{Title: "L", ThreadID: "a1", Token: "t", Agent: &SenderAgent{}}.String()
-	if !strings.Contains(noRole, "\nThe sender is a standing agent, a thread the user promoted.\n") || strings.Contains(noRole, "spawned this thread") {
+	if !strings.Contains(noRole, "\nThe sender is a standing agent.\n") || strings.Contains(noRole, "spawned this thread") {
 		t.Fatalf("footer without a role:\n%s", noRole)
 	}
 	// A role that tries to break out of its line stays one quoted line.
@@ -293,12 +298,12 @@ func TestStandingAgentFooter(t *testing.T) {
 func TestWakeFromAStandingAgent(t *testing.T) {
 	agent := &SenderAgent{Role: "Reviewer of the parser."}
 	got := Wake{Kind: WakeReply, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "done", Agent: agent}.String()
-	want := "Reply from \"Parser\" (7f3a) [token tok]:\nThat thread is a standing agent, a thread the user promoted. Its role, in its own words: \"Reviewer of the parser.\"\ndone"
+	want := "Reply from \"Parser\" (7f3a) [token tok]:\nThat thread is a standing agent. Its role, in its own words: \"Reviewer of the parser.\"\ndone"
 	if got != want {
 		t.Fatalf("wake:\n%s\nwant:\n%s", got, want)
 	}
 	cancelled := Wake{Kind: WakeCancelled, Title: "Parser", ThreadID: "7f3a", Token: "tok", Agent: agent}.String()
-	if cancelled != "\"Parser\" (7f3a) [token tok] was cancelled.\nThat thread is a standing agent, a thread the user promoted. Its role, in its own words: \"Reviewer of the parser.\"" {
+	if cancelled != "\"Parser\" (7f3a) [token tok] was cancelled.\nThat thread is a standing agent. Its role, in its own words: \"Reviewer of the parser.\"" {
 		t.Fatalf("cancelled wake:\n%s", cancelled)
 	}
 	if reminder := (Wake{Kind: WakeReminder, Token: "tok", Text: "x", Agent: agent}).String(); strings.Contains(reminder, "standing agent") {

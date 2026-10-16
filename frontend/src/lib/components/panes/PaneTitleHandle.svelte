@@ -19,6 +19,7 @@
   } from '../../stores/paneTitleRename';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { assistantDisplayName } from '../../stores/assistants.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -47,6 +48,9 @@
   let draftTitle = $state('');
   let inputEl: HTMLInputElement | undefined = $state(undefined);
   let renamePending = $state(false);
+  // A refused rename (an assistant's name in use) stays open with the
+  // refusal beside it, naming the assistant that holds the name.
+  let renameError: string | null = $state(null);
 
   // When the thread id changes, bail out of any in-flight rename — otherwise a
   // switch-thread-mid-edit would silently rename the wrong thread on Enter.
@@ -61,6 +65,7 @@
     editing = false;
     draftTitle = '';
     renamePending = false;
+    renameError = null;
   });
 
   // Published so the composer's bare `/rename` opens THIS editor rather than
@@ -83,6 +88,7 @@
   function cancelRename(): void {
     editing = false;
     draftTitle = '';
+    renameError = null;
   }
 
   async function commitRename(): Promise<void> {
@@ -92,13 +98,26 @@
     const threadId = pane.threadId;
     const currentTitle = pane.thread.title;
     renamePending = true;
+    let refused = false;
     try {
       const result = await renameThreadTitle(threadId, draftTitle, currentTitle);
-      if (!result.ok && result.error) pane.setGeneralError(result.error, result.cause);
+      if (!result.ok && result.error) {
+        if (result.nameTaken) {
+          refused = true;
+          renameError = result.error;
+        } else {
+          pane.setGeneralError(result.error, result.cause);
+        }
+      }
     } finally {
       renamePending = false;
-      editing = false;
-      draftTitle = '';
+      if (refused) {
+        void tick().then(() => inputEl?.focus({ preventScroll: true }));
+      } else {
+        editing = false;
+        draftTitle = '';
+        renameError = null;
+      }
     }
   }
 
@@ -106,16 +125,18 @@
   // scroll position: a fade appears only on an edge with text beyond it,
   // so a title that fits shows none and a swiped-to-the-end title fades
   // on the left alone. Measured on scroll, on resize and on a title change.
-  const FADE_PX = 24;
+  // The fade spans about two characters at the title's own size, so the
+  // last visible letters dim rather than reading as cut.
+  const FADE = '2em';
   let scrollerEl: HTMLElement | undefined = $state(undefined);
-  const titleText = $derived(pane.thread?.title ?? '');
+  const titleText = $derived(pane.thread ? assistantDisplayName(pane.thread) : '');
 
   function updateFade(): void {
     const el = scrollerEl;
     if (!el) return;
     const beyondRight = el.scrollWidth - el.clientWidth - el.scrollLeft;
-    el.style.setProperty('--fade-left', el.scrollLeft > 1 ? `${FADE_PX}px` : '0px');
-    el.style.setProperty('--fade-right', beyondRight > 1 ? `${FADE_PX}px` : '0px');
+    el.style.setProperty('--fade-left', el.scrollLeft > 1 ? FADE : '0px');
+    el.style.setProperty('--fade-right', beyondRight > 1 ? FADE : '0px');
   }
 
   $effect(() => {
@@ -157,8 +178,13 @@
       disabled={renamePending}
       data-testid={inputTestId}
       aria-label="Rename Thread"
+      aria-invalid={renameError !== null}
+      oninput={() => { renameError = null; }}
       class="text-sm compact:text-base font-medium text-fg bg-surface-2/60 rounded-[var(--radius-field)] px-1.5 py-0.5 min-w-0 flex-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-60"
     />
+    {#if renameError}
+      <span role="alert" class="min-w-0 shrink truncate text-[0.6875rem] text-error" title={renameError} data-testid="pane-title-rename-error">{renameError}</span>
+    {/if}
   {:else}
     <!-- Title is the pane drag-handle. Right-click renames; mousedown + drag
          reorders the pane. Left-click is reserved for the drag gesture so a
@@ -172,10 +198,12 @@
       draggable={onPaneDragStart != null && !isCompactLayout()}
       ondragstart={(event) => onPaneDragStart?.(event)}
       data-testid={titleTestId}
-      title={`${pane.thread.title} (right-click to rename)`}
+      title={`${titleText} (right-click to rename)`}
       class={[
         'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 compact:py-1.5 compact:select-none rounded-[var(--radius-field)] text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-        fade ? 'flex-1 overflow-hidden' : 'truncate',
+        // In a narrow chat header the title gives way first, down to an
+        // 8rem floor; past that the action cluster wraps (ChatHeader).
+        fade ? 'flex-1 overflow-hidden' : 'truncate @max-[36rem]/chat-header:min-w-[8rem] @max-[36rem]/chat-header:shrink-[100]',
         onPaneDragStart ? 'cursor-grab active:cursor-grabbing' : 'cursor-default',
       ].join(' ')}
     >
@@ -185,9 +213,9 @@
           onscroll={updateFade}
           class="pane-title-fade block overflow-x-auto overflow-y-hidden whitespace-nowrap"
           data-testid="{titleTestId}-scroller"
-        >{pane.thread.title}</span>
+        >{titleText}</span>
       {:else}
-        {pane.thread.title}
+        {titleText}
       {/if}
     </button>
   {/if}

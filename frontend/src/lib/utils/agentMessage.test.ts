@@ -113,6 +113,27 @@ describe('agentMessageFromItem', () => {
     expect(message.parts[0].footer?.routesPrompts).toBe(true);
   });
 
+  it("still reads the role from a footer written before assistants were records", () => {
+    const legacy = request.text.replace('The sender is a standing agent.', 'The sender is a standing agent, a thread the user promoted.');
+    expect(legacy).not.toBe(request.text);
+    const message = agentMessageFromItem(row(legacy, {
+      origin: 'agent-thread',
+      originThread: { threadId: 't-plan', title: 'Planner', token: 'k', kind: 'spawn' },
+      sendId: 'thread-request:k',
+    }))!;
+    expect(message.senderRole).toBe('Keeps the "plan" honest.');
+  });
+
+  it("reads an assistant's opening and handoff blocks as the app's own", () => {
+    for (const [kind, expected] of [['assistant', 'opening'], ['handoff', 'handoff']] as const) {
+      const message = agentMessageFromItem(row('You are "Ops", a standing agent.\n\nMore.', {
+        origin: 'agent-wake', originWake: { kind, label: 'Ops' }, sendId: `assistant:${kind}:a1`,
+      }))!;
+      expect(message).toMatchObject({ kind: expected, sender: 'Agent Overflow', firstLine: 'You are "Ops", a standing agent.' });
+      expect(message.parts).toEqual([{ body: 'You are "Ops", a standing agent.\n\nMore.', footer: null, wake: null }]);
+    }
+  });
+
   it('reads send and ask kinds, and an unstamped request by its send id', () => {
     const meta = (kind: string) => ({ origin: 'agent-thread', originThread: { threadId: 't', title: 'T', kind }, sendId: 'thread-request:k' });
     expect(agentMessageFromItem(row(request.text, meta('send')))?.kind).toBe('request');

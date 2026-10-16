@@ -10,7 +10,6 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 )
@@ -47,98 +46,6 @@ func fullFrameFor(frames []triage.ThreadUpdateEvent, threadID string) *store.Thr
 	return found
 }
 
-func TestPromoteStandingAgentUngroupsItAndItsSpawnedThreads(t *testing.T) {
-	t.Parallel()
-	f := newOrganizeFixture(t)
-	agent := f.thread(t, "agent")
-	childA := f.thread(t, "child-a")
-	childB := f.thread(t, "child-b")
-	stranger := f.thread(t, "stranger")
-	recordSpawn(t, f.app, "tok-a", agent.ID, childA.ID)
-	recordSpawn(t, f.app, "tok-b", agent.ID, childB.ID)
-	groupA, err := f.app.store.CreateThreadGroup(f.project.ID, "Shared")
-	if err != nil {
-		t.Fatal(err)
-	}
-	groupB, err := f.app.store.CreateThreadGroup(f.project.ID, "Only children")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.app.store.SetThreadGroup([]string{agent.ID, childA.ID, stranger.ID}, groupA.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.app.store.SetThreadGroup([]string{childB.ID}, groupB.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := f.app.store.PinThread(childA.ID); err != nil {
-		t.Fatal(err)
-	}
-	f.events.reset()
-
-	row, err := f.app.PromoteStandingAgent(agent.ID)
-	if err != nil {
-		t.Fatalf("PromoteStandingAgent: %v", err)
-	}
-	if row.ThreadID != agent.ID {
-		t.Fatalf("promoted row = %+v", row)
-	}
-	for _, id := range []string{agent.ID, childA.ID, childB.ID} {
-		if got := f.reload(t, id); got.GroupID != "" || got.PinnedAt != nil {
-			t.Errorf("%s after the promotion = group %q pinned %v, want ungrouped and unpinned", id, got.GroupID, got.PinnedAt)
-		}
-	}
-	if got := f.reload(t, stranger.ID); got.GroupID != groupA.ID {
-		t.Errorf("the stranger left its group: %+v", got)
-	}
-	if got := f.reload(t, agent.ID); got.AgentPromotedAt == nil {
-		t.Errorf("the agent row carries no promotion time: %+v", got)
-	}
-	if _, err := f.app.store.GetThreadGroup(groupB.ID); err == nil {
-		t.Errorf("the group the promotion emptied still exists")
-	}
-	if _, err := f.app.store.GetThreadGroup(groupA.ID); err != nil {
-		t.Errorf("the group with a stranger left was deleted: %v", err)
-	}
-
-	frames := f.threadFrames(t)
-	if got := fullFrameFor(frames, agent.ID); got == nil || got.AgentPromotedAt == nil || got.GroupID != "" {
-		t.Errorf("agent frame = %+v, want a full frame of the promoted, ungrouped row", got)
-	}
-	for _, id := range []string{childA.ID, childB.ID} {
-		if got := fullFrameFor(frames, id); got == nil || got.GroupID != "" || got.SpawnedByThreadID != agent.ID {
-			t.Errorf("%s frame = %+v, want the ungrouped row naming its spawner", id, got)
-		}
-	}
-	if got := fullFrameFor(frames, stranger.ID); got != nil {
-		t.Errorf("the stranger was broadcast: %+v", got)
-	}
-	if groups := f.groupFrames(t); len(groups) != 1 || groups[0].Action != "delete" || groups[0].Group.ID != groupB.ID {
-		t.Errorf("group frames = %+v, want one delete of the emptied group", groups)
-	}
-
-	// A second promotion changes nothing and says nothing.
-	f.events.reset()
-	if again, err := f.app.PromoteStandingAgent(agent.ID); err != nil || again.PromotedAt != row.PromotedAt {
-		t.Fatalf("second promotion = %+v, %v", again, err)
-	}
-	if frames := f.threadFrames(t); len(frames) != 0 {
-		t.Errorf("a repeated promotion broadcast %+v", frames)
-	}
-}
-
-func TestPromoteStandingAgentRefusesAThreadThatIsNotChatOrPlan(t *testing.T) {
-	t.Parallel()
-	f := newOrganizeFixture(t)
-	terminal := f.thread(t, "terminal", func(thread *store.Thread) { thread.Mode = threadmode.ModeTerminal })
-	if _, err := f.app.PromoteStandingAgent(terminal.ID); err == nil || !errors.Is(err, errNotAStandingAgentThread) || !strings.Contains(err.Error(), "chat or plan") {
-		t.Fatalf("promote a terminal thread: %v", err)
-	}
-	plan := f.thread(t, "plan", func(thread *store.Thread) { thread.Mode = threadmode.ModePlan })
-	if _, err := f.app.PromoteStandingAgent(plan.ID); err != nil {
-		t.Fatalf("promote a plan thread: %v", err)
-	}
-}
-
 func TestGroupMovesRefuseAStandingAgentAndItsSpawnedThreads(t *testing.T) {
 	t.Parallel()
 	f := newOrganizeFixture(t)
@@ -146,9 +53,7 @@ func TestGroupMovesRefuseAStandingAgentAndItsSpawnedThreads(t *testing.T) {
 	child := f.thread(t, "child")
 	plain := f.thread(t, "plain")
 	recordSpawn(t, f.app, "tok-child", agent.ID, child.ID)
-	if _, err := f.app.PromoteStandingAgent(agent.ID); err != nil {
-		t.Fatal(err)
-	}
+	testAssistant(t, f.app, agent.ID)
 	group, err := f.app.store.CreateThreadGroup(f.project.ID, "Release")
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +80,7 @@ func TestGroupMovesRefuseAStandingAgentAndItsSpawnedThreads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateThreads: %v", err)
 	}
-	if row := updateResultFor(t, report, child.ID); row.Updated || !strings.Contains(row.Error, "nests under the agent") {
+	if row := updateResultFor(t, report, child.ID); row.Updated || !strings.Contains(row.Error, "nests under the assistant") {
 		t.Errorf("tool group move of a spawned thread = %+v, want the refusal", row)
 	}
 	if got := f.reload(t, child.ID); got.GroupID != "" {
@@ -192,9 +97,7 @@ func TestASpawnedThreadsArchiveMovesItsAgentsRow(t *testing.T) {
 	plainChild := f.thread(t, "plain-child")
 	recordSpawn(t, f.app, "tok-child", agent.ID, child.ID)
 	recordSpawn(t, f.app, "tok-plain", plainSpawner.ID, plainChild.ID)
-	if _, err := f.app.PromoteStandingAgent(agent.ID); err != nil {
-		t.Fatal(err)
-	}
+	testAssistant(t, f.app, agent.ID)
 	agentCount := func(step string, want int) {
 		t.Helper()
 		got := fullFrameFor(f.threadFrames(t), agent.ID)
@@ -250,9 +153,10 @@ func TestASpawnedThreadsArchiveMovesItsAgentsRow(t *testing.T) {
 	}
 }
 
-// A spawned thread's row says whether its spawner is a standing agent, so
-// every change of that fact re-emits the row: promotion, demotion, a
-// committed move and the agent's delete (which takes the spawn rows too).
+// A spawned thread's row says whether its spawner is an assistant's current
+// thread, so every change of that fact re-emits the row: a handoff, a
+// committed move and the assistant's delete (which takes the spawn rows
+// too).
 func TestASpawnedThreadsBondFollowsItsAgentsRow(t *testing.T) {
 	t.Parallel()
 	f := newOrganizeFixture(t)
@@ -264,12 +168,15 @@ func TestASpawnedThreadsBondFollowsItsAgentsRow(t *testing.T) {
 	if err := f.app.ArchiveThread(archived.ID); err != nil {
 		t.Fatal(err)
 	}
-	childFrame := func(step string, wantBond bool) {
+	testAssistant(t, f.app, agent.ID)
+	// The handoff starts the successor's session for its opening block.
+	installMockClaudeReplies(t, f.app, "ready")
+	childFrame := func(step, spawner string, wantBond bool) {
 		t.Helper()
 		frames := f.threadFrames(t)
 		got := fullFrameFor(frames, child.ID)
-		if got == nil || got.SpawnedByAgent != wantBond || got.SpawnedByThreadID != agent.ID {
-			t.Errorf("%s: child frame = %+v, want spawnedByAgent %v spawnedBy %q", step, got, wantBond, agent.ID)
+		if got == nil || got.SpawnedByAgent != wantBond || got.SpawnedByThreadID != spawner {
+			t.Errorf("%s: child frame = %+v, want spawnedByAgent %v spawnedBy %q", step, got, wantBond, spawner)
 		}
 		// An archived child is in no client's list: no frame for it.
 		if fullFrameFor(frames, archived.ID) != nil {
@@ -278,22 +185,14 @@ func TestASpawnedThreadsBondFollowsItsAgentsRow(t *testing.T) {
 	}
 
 	f.events.reset()
-	if _, err := f.app.PromoteStandingAgent(agent.ID); err != nil {
+	successor, err := f.app.StartNextAssistantThread(t.Context(), agent.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	childFrame("promote", true)
+	childFrame("handoff", successor.ID, true)
 
-	f.events.reset()
-	if err := f.app.DemoteStandingAgent(agent.ID); err != nil {
-		t.Fatal(err)
-	}
-	childFrame("demote", false)
-
-	if _, err := f.app.PromoteStandingAgent(agent.ID); err != nil {
-		t.Fatal(err)
-	}
 	transfer, err := f.app.store.CreateThreadTransfer(store.ThreadTransfer{
-		ID: uuid.NewString(), ThreadID: agent.ID, PeerBackendID: uuid.NewString(), Kind: "move", Direction: "outgoing",
+		ID: uuid.NewString(), ThreadID: successor.ID, PeerBackendID: uuid.NewString(), Kind: "move", Direction: "outgoing",
 		ActivationHash: strings.Repeat("a", 64), PrivateState: []byte(`{}`),
 	})
 	if err != nil {
@@ -306,15 +205,13 @@ func TestASpawnedThreadsBondFollowsItsAgentsRow(t *testing.T) {
 	}
 	f.events.reset()
 	f.app.threadTransferChanged(transfer)
-	childFrame("move committed", false)
+	childFrame("move committed", successor.ID, false)
 
-	// Deleting an agent takes its spawn rows: the child is nobody's.
+	// Deleting an assistant takes its spawn rows: the child is nobody's.
 	other := f.thread(t, "other-agent")
 	plain := f.thread(t, "plain-child")
 	recordSpawn(t, f.app, "tok-plain", other.ID, plain.ID)
-	if _, err := f.app.PromoteStandingAgent(other.ID); err != nil {
-		t.Fatal(err)
-	}
+	testAssistant(t, f.app, other.ID)
 	f.events.reset()
 	if err := f.app.DeleteThread(other.ID); err != nil {
 		t.Fatal(err)
@@ -359,9 +256,7 @@ func TestASpawnBroadcastsItsThreadNamingTheSpawner(t *testing.T) {
 
 	// A standing agent's spawned threads nest under its row, so a group
 	// in its spawn is refused before any thread exists.
-	if _, err := f.app.PromoteStandingAgent(f.caller.ID); err != nil {
-		t.Fatal(err)
-	}
+	testAssistant(t, f.app, f.caller.ID)
 	before, err := f.app.store.ListThreads()
 	if err != nil {
 		t.Fatal(err)
@@ -378,9 +273,11 @@ func TestASpawnBroadcastsItsThreadNamingTheSpawner(t *testing.T) {
 	}
 }
 
-// A demotion re-emits the agent's own row: its agentPromotedAt and
-// archivedChildCount came from the agent row it no longer has.
-func TestDemoteStandingAgentBroadcastsItsOwnRow(t *testing.T) {
+// A handoff takes the old row out of the list and lists the successor as
+// the assistant's row, counting the old thread among its archived children.
+// The successor is listed first, and the old row's frame names it: a client
+// moves the panes that showed the old thread to it when the old row leaves.
+func TestAHandOffBroadcastsBothRows(t *testing.T) {
 	t.Parallel()
 	f := newOrganizeFixture(t)
 	agent := f.thread(t, "agent")
@@ -389,19 +286,32 @@ func TestDemoteStandingAgentBroadcastsItsOwnRow(t *testing.T) {
 	if err := f.app.ArchiveThread(archived.ID); err != nil {
 		t.Fatal(err)
 	}
+	testAssistant(t, f.app, agent.ID)
 	f.events.reset()
-	if _, err := f.app.PromoteStandingAgent(agent.ID); err != nil {
+	successor, err := f.app.StartNextAssistantThread(t.Context(), agent.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fullFrameFor(f.threadFrames(t), agent.ID); got == nil || got.AgentPromotedAt == nil || got.ArchivedChildCount != 1 {
-		t.Fatalf("promote: agent frame = %+v, want a promoted row counting one archived child", got)
+	var unlisted, listed *store.Thread
+	for _, frame := range f.threadFrames(t) {
+		switch {
+		case frame.Thread == nil:
+		case frame.Action == triage.ThreadActionUnlisted && frame.Thread.ID == agent.ID:
+			if listed == nil {
+				t.Error("the old row was unlisted before the successor was listed")
+			}
+			if frame.HandOffTo != successor.ID {
+				t.Errorf("the old row's frame names %q as its successor, want %s", frame.HandOffTo, successor.ID)
+			}
+			unlisted = frame.Thread
+		case frame.Action == triage.ThreadActionListed && frame.Thread.ID == successor.ID:
+			listed = frame.Thread
+		}
 	}
-
-	f.events.reset()
-	if err := f.app.DemoteStandingAgent(agent.ID); err != nil {
-		t.Fatal(err)
+	if unlisted == nil || !unlisted.Archived || unlisted.PastAgentID != agent.ID || unlisted.AgentID != "" {
+		t.Errorf("old row frame = %+v, want it unlisted as the assistant's past thread", unlisted)
 	}
-	if got := fullFrameFor(f.threadFrames(t), agent.ID); got == nil || got.AgentPromotedAt != nil || got.ArchivedChildCount != 0 {
-		t.Errorf("demote: agent frame = %+v, want a plain row with no promotion and no archived count", got)
+	if listed == nil || listed.AgentID != agent.ID || listed.ArchivedChildCount != 2 || listed.Title != agent.Title {
+		t.Errorf("successor frame = %+v, want the assistant's row counting the archived child and the past thread", listed)
 	}
 }

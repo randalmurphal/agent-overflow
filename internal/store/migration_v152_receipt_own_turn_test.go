@@ -61,12 +61,9 @@ func preSyncPersonalAssistantDB(t *testing.T) string {
 	}
 	db.SetMaxOpenConns(1)
 	for _, m := range migrations {
-		if m.Version <= threadPullRequestsMigrationVersion {
+		// Later migrations postdate the sync; no pre-sync build has them.
+		if m.Version <= threadPullRequestsMigrationVersion || m.Version > receiptOwnTurnMigrationVersion {
 			continue
-		}
-		if m.Version > receiptOwnTurnMigrationVersion {
-			// That build stopped at its own last migration.
-			break
 		}
 		m.Version--
 		apply := applyMigration

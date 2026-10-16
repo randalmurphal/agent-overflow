@@ -16,26 +16,26 @@ import { withForkProgress } from '../../stores/forkPreparation.svelte';
 import {
   ArchiveThread,
   DeleteThread,
-  DemoteStandingAgent,
-  DemoteStandingAgentAndDeleteHome,
-  PromoteStandingAgent,
   ForkThread,
   GitRemoveWorktree,
   PinThread,
   RenameThread,
   SetThreadPinGroup,
+  StartNextAssistantThread,
   StopSession,
   UnarchiveThread,
   UnpinThread,
 } from '../../stores/bindings';
 import {
+  getThreadById,
   markThreadUnread,
   prependThread,
   removeThread,
   updateThreadPinState,
   updateThreadTitle,
 } from '../../stores/threads.svelte';
-import { closePanesShowingThread } from '../../stores/panes.svelte';
+import { closePanesShowingThread, panesShowingThread } from '../../stores/panes.svelte';
+import { getComposerDraftForPane } from '../../stores/composerDraftRegistry.svelte';
 import {
   syncRemovedWorktreeThreads,
   type WorktreeRemovalResult,
@@ -44,6 +44,7 @@ import { expandProject } from '../../stores/sidebar.svelte';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
+import { isAssistantNameTaken } from '../../stores/assistants.svelte';
 import type { Thread } from '../../types/models';
 import { autoPinNewThread } from '../../stores/threadAutoPin';
 import { openConversationTransfer } from '../../stores/conversationTransfers.svelte';
@@ -71,12 +72,17 @@ export interface ThreadActionCtx {
   replacePaneThread?: (thread: Thread) => void;
 }
 
+/**
+ * Rename the thread. A name another assistant holds is refused with a
+ * sentence naming it, returned for the row's inline editor to show; any
+ * other failure goes to the pane as before.
+ */
 export async function renameThreadAction(
   ctx: ThreadActionCtx,
   newTitle: string,
-): Promise<void> {
+): Promise<string | null> {
   const trimmed = newTitle.trim();
-  if (!trimmed || trimmed === ctx.thread.title) return;
+  if (!trimmed || trimmed === ctx.thread.title) return null;
   try {
     await RenameThread(ctx.thread.id, trimmed);
     updateThreadTitle(ctx.thread.id, trimmed);
@@ -88,39 +94,69 @@ export async function renameThreadAction(
     if (ctx.isActive && ctx.replacePaneThread) {
       ctx.replacePaneThread({ ...ctx.thread, title: trimmed });
     }
+    return null;
   } catch (err) {
+    if (isAssistantNameTaken(err)) return err.message;
     console.error('Failed to rename thread:', err);
     ctx.reportError(userFacingError(err), err);
+    return null;
   }
 }
 
 /**
- * Promote the thread to a standing agent. The backend broadcasts every row
- * the promotion moved (the thread, the threads it spawned, an emptied
- * group), so nothing is patched here: the sidebar re-nests on the frames.
+ * New Thread, Same Assistant (docs/specs/standing-agents.md, "Next thread").
+ * The backend lists the new thread before it unlists the old one, and every
+ * client moves the panes that showed the old thread on that frame; the
+ * pane that asked is switched here too, so it does not wait on the frame.
+ * One runs per assistant at a time: a click while it runs, on the old
+ * thread or on the successor a frame already showed, does nothing.
  */
-export async function promoteThreadAction(ctx: ThreadActionCtx): Promise<void> {
+export async function nextAssistantThreadAction(ctx: ThreadActionCtx): Promise<void> {
+  const assistant = ctx.thread.agentId || ctx.thread.id;
+  if (handOffsRunning.has(assistant)) return;
+  handOffsRunning.add(assistant);
+  const release = holdComposerForHandOff(ctx.thread.id);
   try {
-    await PromoteStandingAgent(ctx.thread.id);
+    await saveComposerForHandOff(ctx.thread.id);
+    const successor = (await StartNextAssistantThread(ctx.thread.id)) as Thread;
+    if (!getThreadById(successor.id)) prependThread(successor);
+    if (ctx.isActive) await ctx.switchPane(successor);
   } catch (err) {
-    console.error('Failed to promote thread:', err);
+    console.error('Failed to start the assistant\'s new thread:', err);
     ctx.reportError(userFacingError(err), err);
+  } finally {
+    release();
+    handOffsRunning.delete(assistant);
   }
 }
 
-/**
- * Demote the agent. With `deleteHome` its home directory goes too; the
- * backend demotes first, so a deletion that fails is reported with the
- * path while the demotion stands.
- */
-export async function demoteThreadAction(ctx: ThreadActionCtx, opts: { deleteHome?: boolean } = {}): Promise<void> {
-  try {
-    if (opts.deleteHome) await DemoteStandingAgentAndDeleteHome(ctx.thread.id);
-    else await DemoteStandingAgent(ctx.thread.id);
-  } catch (err) {
-    console.error('Failed to demote thread:', err);
-    ctx.reportError(userFacingError(err), err);
+const handOffsRunning = new Set<string>();
+
+function handOffComposer(threadId: string) {
+  for (const pane of panesShowingThread(threadId)) {
+    const draft = getComposerDraftForPane(pane.paneId);
+    if (draft?.persists && draft.threadId === threadId) return draft;
   }
+  return undefined;
+}
+
+/**
+ * The handoff moves the old thread's saved draft, so the composer showing
+ * it is held inert until the handoff ends: nothing typed during it is left
+ * behind.
+ */
+function holdComposerForHandOff(threadId: string): () => void {
+  const draft = handOffComposer(threadId);
+  if (!draft || draft.moving) return () => {};
+  return draft.beginMove();
+}
+
+/** Text typed just before the click may not have reached its debounced save. */
+async function saveComposerForHandOff(threadId: string): Promise<void> {
+  const draft = handOffComposer(threadId);
+  if (!draft) return;
+  await draft.settleUploads();
+  await draft.prepareForSend();
 }
 
 /**

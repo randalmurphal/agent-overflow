@@ -961,8 +961,13 @@ func (r *Router) handleThreadRename(evt provider.ProviderEvent) error {
 	if evt.Content == "" {
 		return nil
 	}
-	if err := r.store.UpdateTitle(evt.ThreadID, evt.Content); err != nil {
+	// An assistant's title is its name, which only the user renames.
+	renamed, err := r.store.UpdateProviderTitle(evt.ThreadID, evt.Content)
+	if err != nil {
 		return fmt.Errorf("update thread title: %w", err)
+	}
+	if !renamed {
+		return nil
 	}
 	r.emitThreadPatch(evt.ThreadID, ThreadUpdateEvent{Title: &evt.Content})
 	return nil
@@ -1320,6 +1325,10 @@ type ThreadUpdateEvent struct {
 	// cached row: the bump lands in the per-thread live-activity box, not
 	// in the row array (see eventsThreadRows.syncThreadActivity).
 	UpdatedAt *int64 `json:"updatedAt,omitempty"`
+	// HandOffTo, on the `unlisted` frame of an assistant's old thread, names
+	// the thread New Thread, Same Assistant replaced it with: a client moves
+	// what showed the old thread there. Any other unlisting closes it.
+	HandOffTo string `json:"handOffTo,omitempty"`
 }
 
 // The Action vocabulary, spelled once so an emit site cannot invent a value

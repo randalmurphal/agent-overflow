@@ -244,6 +244,20 @@ func (h *harnessHost) ArchiveThread(threadID string) error {
 	return h.app.ArchiveThread(threadID)
 }
 
+func (h *harnessHost) MakeAssistant(threadID string) (store.StandingAgent, error) {
+	thread, err := h.app.store.GetThread(threadID)
+	if err != nil {
+		return store.StandingAgent{}, err
+	}
+	agent, err := h.app.makeAssistantRecord(thread, "")
+	if err != nil {
+		return store.StandingAgent{}, err
+	}
+	// The threads it spawned are agent-bound now.
+	h.app.broadcastSpawnedThreadRows(threadID)
+	return agent, nil
+}
+
 func (h *harnessHost) BroadcastThreadRow(threadID string) {
 	h.app.broadcastThreadRowByID(threadID)
 }

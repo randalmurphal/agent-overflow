@@ -8,6 +8,7 @@
     flushPaneLayoutPersistence,
     getPaneLayoutItems,
     minAnchorPaneLayoutWidths,
+    paneItemMinWidthPx,
   } from '../../stores/paneLayout.svelte';
   import { getPane } from '../../stores/panes.svelte';
   import { MAX_PANE_WIDTH_PX } from '../../utils/paneWidths';
@@ -35,6 +36,10 @@
   }
 
   let { leftPaneId, rightPaneId, leftPaneWidthPx, getHostEl, onDragEnd }: Props = $props();
+  let leftPaneMinWidthPx = $derived.by(() => {
+    const item = getPaneLayoutItems().find((candidate) => candidate.paneId === leftPaneId);
+    return item ? paneItemMinWidthPx(item, getMinPaneWidth()) : getMinPaneWidth();
+  });
 
   // A double-click that was really two fine-tune drags must not nuke
   // the layout the user just built.
@@ -206,7 +211,7 @@
   aria-orientation="vertical"
   aria-label={rightPaneId ? 'Resize Panes' : 'Resize Last Pane'}
   aria-valuenow={Math.round(leftPaneWidthPx)}
-  aria-valuemin={getMinPaneWidth()}
+  aria-valuemin={leftPaneMinWidthPx}
   aria-valuemax={MAX_PANE_WIDTH_PX}
   class="group relative z-20 w-0 shrink-0 cursor-col-resize select-none"
   onpointerdown={onPointerDown}

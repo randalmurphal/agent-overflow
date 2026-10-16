@@ -619,7 +619,7 @@ async function replaceThreadInPane(
   if (!requested) {
     throw new Error(`Target pane "${targetPane}" is not registered.`);
   }
-  const target = threadHostPane(requested);
+  const target = mountOptions.inPlace ? requested : threadHostPane(requested);
   reportDuplicateMount(thread.id, target.paneId);
   if (!panes.has(target.paneId)) {
     registerPane(target.paneId, target, activation);
@@ -687,6 +687,12 @@ export interface MountThreadOptions {
    * look at.
    */
   background?: boolean;
+  /**
+   * Mount into the target pane even when it is a companion already holding
+   * a thread, which otherwise sends the open to its source pane
+   * (`threadHostPane`). The agent thread companion's swap to another row.
+   */
+  inPlace?: boolean;
 }
 
 /**
@@ -724,6 +730,26 @@ export async function openThreadFromNavigation(
   targetPane?: string | ThreadPane | null,
 ): Promise<ThreadPane> {
   return mountThreadInPane(thread, targetPane, 'preview');
+}
+
+/**
+ * Move every pane showing an assistant's superseded thread to its current
+ * thread: a handoff from this client or another, or the app's own after the
+ * provider cleaned up the session (docs/specs/standing-agents.md, "Next
+ * thread"). A pane closes instead when the current thread is already shown,
+ * since a thread is in one pane at a time. Focus stays where it is.
+ */
+export function moveAssistantPanes(oldThreadId: string, current: Thread): void {
+  for (const pane of panesShowingThread(oldThreadId)) {
+    if (findPaneShowingThread(current.id)) {
+      destroyPane(pane.paneId);
+      continue;
+    }
+    void replaceThreadInPane(current, pane, getPaneActivation(pane.paneId), { background: true, inPlace: true }).catch((err: unknown) => {
+      console.error('Failed to move a pane to the assistant\'s new thread:', err);
+      pane.setGeneralError('This assistant moved to a new thread, which could not be opened here.', err);
+    });
+  }
 }
 
 export async function openThreadInNewPane(thread: Thread, insertIndex?: number): Promise<ThreadPane> {

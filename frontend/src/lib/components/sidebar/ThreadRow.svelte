@@ -5,7 +5,8 @@
     jumpLabelForThread,
   } from '../../stores/keyboardModifiers.svelte';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
-  import { isStandingAgent, sidebarPinGroup } from '../../utils/sidebarTree';
+  import { assistantKey, isStandingAgent, sidebarPinGroup } from '../../utils/sidebarTree';
+  import { assistantDisplayName } from '../../stores/assistants.svelte';
   import { getShowProviderIcons, setAgentExpanded, toggleAgent } from '../../stores/sidebar.svelte';
   import { asProviderID, providerLabel } from '../../providers/catalog';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
@@ -31,6 +32,7 @@
   import FileText from '@lucide/svelte/icons/file-text';
   import Terminal from '@lucide/svelte/icons/terminal';
   import UserRound from '@lucide/svelte/icons/user-round';
+  import SquarePen from '@lucide/svelte/icons/square-pen';
   import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import AgentStateLine from './AgentStateLine.svelte';
@@ -44,6 +46,7 @@
   import {
     archiveThreadAction,
     deleteThreadAction,
+    nextAssistantThreadAction,
     PIN_GROUP_BACK,
     PIN_GROUP_FRONT,
     pinThreadAction,
@@ -174,6 +177,7 @@
   // title span in place — same pattern as ProjectItem).
   let editing = $state(false);
   let editValue = $state('');
+  let renameError: string | null = $state(null);
   let inputEl: HTMLInputElement | undefined = $state(undefined);
   let saving = $state(false);
 
@@ -224,16 +228,21 @@
   async function saveRename() {
     if (saving) return;
     saving = true;
+    let refused: string | null = null;
     try {
-      await renameThreadAction(ctx(), editValue);
+      refused = await renameThreadAction(ctx(), editValue);
     } finally {
       saving = false;
-      editing = false;
+      // A refusal keeps the editor open with the reason under it.
+      renameError = refused;
+      if (refused) requestAnimationFrame(() => inputEl?.focus());
+      else editing = false;
     }
   }
 
   function cancelRename() {
     editing = false;
+    renameError = null;
   }
 
   function handleRenameKeydown(e: KeyboardEvent) {
@@ -272,11 +281,16 @@
   // holds, so no row of it offers a pin, the collapsed project's preview
   // of it included.
   let isAgent = $derived(isStandingAgent(thread));
+  // An assistant's name carries its computer while another attached
+  // computer has an assistant of the same name.
+  let rowTitle = $derived((isAgent ? assistantDisplayName(thread) : thread.title) || 'Untitled');
   let isPinned = $derived(!isAgent && thread.pinnedAt != null);
   // The pin, archive and delete controls write the row; inert with a reason
   // when the session lacks the grant, the same treatment the context menu
   // gives its rows.
   let operateUngranted = $derived(!threadHasScope('threads:operate', thread.id, thread.projectId));
+  // StartNextAssistantThread rides threads:autonomy.
+  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', thread.id, thread.projectId));
   let isJumpTarget = $derived(
     !inGroup && !isAgent && sidebarPinGroup(thread) === 'front',
   );
@@ -289,7 +303,7 @@
   function handleAgentChevronClick(e: MouseEvent): void {
     e.stopPropagation();
     if (editing) return;
-    toggleAgent(thread.id);
+    toggleAgent(assistantKey(thread));
   }
 
   function handleRowKeydown(e: KeyboardEvent): void {
@@ -307,7 +321,7 @@
     if (agent === null || e.target !== e.currentTarget) return;
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
       e.preventDefault();
-      setAgentExpanded(thread.id, e.key === 'ArrowRight');
+      setAgentExpanded(assistantKey(thread), e.key === 'ArrowRight');
     }
   }
 
@@ -335,7 +349,11 @@
     // (transport/backendClock.ts); a row whose owner is not known yet
     // reads as home, which is what every row meant before a second
     // machine could be attached.
-    return sidebarTimeLabel(getThreadLiveActivityAt(thread), threadBackend(thread.id) ?? HOME_BACKEND);
+    const backend = threadBackend(thread.id) ?? HOME_BACKEND;
+    // An assistant's past thread in its done list says when a handoff
+    // replaced it (docs/specs/standing-agents.md, "Sidebar").
+    if (archivedChild && thread.agentSupersededAt) return `superseded ${sidebarTimeLabel(thread.agentSupersededAt, backend)}`;
+    return sidebarTimeLabel(getThreadLiveActivityAt(thread), backend);
   });
 
   function handleContextMenu(e: MouseEvent) {
@@ -547,6 +565,8 @@
       onblur={saveRename}
       disabled={saving}
       aria-label="Rename Thread"
+      aria-invalid={renameError !== null}
+      oninput={() => { renameError = null; }}
       class="text-xs compact:text-base flex-1 min-w-0 bg-surface-0 border border-accent/50 rounded-[var(--radius-field)] px-1 py-0.5 text-fg focus:outline-none"
       onclick={(e) => e.stopPropagation()}
     />
@@ -586,9 +606,9 @@
     <span
       data-testid="thread-row-title"
       class="text-xs truncate flex-1 min-w-0 {unread ? 'font-semibold text-fg' : agent !== null ? 'font-medium' : ''}"
-      title={thread.title || 'Untitled'}
+      title={rowTitle}
     >
-      {thread.title || 'Untitled'}
+      {rowTitle}
     </span>
     {#if agent !== null && !agent.expanded && agent.childCount > 0}
       <span
@@ -600,6 +620,21 @@
     {/if}
 
     <div class="flex items-center gap-1 shrink-0 -ml-0.5" data-testid="thread-row-trailing">
+      {#if agent !== null}
+        <!-- New Thread, Same Assistant: on hover, and at rest under the
+             compact layout, which has no hover. -->
+        <button
+          type="button"
+          onclick={(e) => { e.stopPropagation(); void nextAssistantThreadAction(ctx()); }}
+          disabled={nextThreadUngranted}
+          aria-label="New Thread, Same Assistant"
+          title={nextThreadUngranted ? 'Not granted to this device' : 'New Thread, Same Assistant'}
+          data-testid="thread-row-next-thread"
+          class="flex items-center justify-center h-5 w-5 compact:h-9 compact:w-9 rounded-[var(--radius-field)] shrink-0 cursor-pointer text-fg-subtle hover:text-fg hover:bg-surface-2/40 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto compact:opacity-100 compact:pointer-events-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+        >
+          <Icon icon={SquarePen} size={12} strokeWidth={2} class="opacity-90" />
+        </button>
+      {/if}
       {#if thread.forkedFromThreadId}
         <ThreadRowForkAffordance {forkParent} onJumpToParent={handleJumpToParent} />
       {/if}
@@ -665,7 +700,9 @@
   {/if}
   </div>
 
-  {#if agent !== null}
+  {#if editing && renameError}
+    <p role="alert" class="px-2 pb-1 text-[0.625rem] text-error" style="padding-left: {worktreeIndentPx}px" data-testid="thread-row-rename-error">{renameError}</p>
+  {:else if agent !== null}
     <AgentStateLine threadId={thread.id} indentPx={GROUP_GLYPH_LEFT_PX} />
   {:else if !editing}
     <ThreadRowSublabel {thread} indentPx={worktreeIndentPx} />

@@ -130,6 +130,10 @@ func wakePart(wake Wake) (string, fixturePart) {
 			part.Wake.StoppedBy = "an interrupt"
 		case isMoved:
 			part.Wake.StoppedBy = "a move to " + strings.TrimSuffix(moved, " before it answered.")
+		case strings.HasPrefix(wake.Text, InterruptHandedOffSentence+" "):
+			// The rest names the previous thread, for the sender to read.
+			part.Wake.StoppedBy = "the assistant moving to a new thread"
+			part.Body = strings.TrimPrefix(wake.Text, InterruptHandedOffSentence+" ")
 		default:
 			part.Body = wake.Text
 		}
@@ -216,6 +220,7 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("interrupted by the thread not taking it in, its message back in that thread's composer", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptNotTakenInToComposer})),
 		one("interrupted by a move", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptMoved("Desk (Linux)")})),
 		one("interrupted by a move to an unknown computer", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptMoved("")})),
+		one("interrupted by a handoff", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptHandedOff("t-old")})),
 		one("interrupted by something other than a person", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptTurn})),
 		one("interrupted with no reason recorded", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token})),
 		one("interrupted before its thread existed", wake(Wake{Kind: WakeInterrupted, Title: "Worker", ThreadID: "t-work", Token: token, Text: InterruptNeverStarted})),

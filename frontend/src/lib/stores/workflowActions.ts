@@ -15,6 +15,7 @@ import {
   WorkflowDropUnit,
   WorkflowMergeItem,
   WorkflowPauseItem,
+  WorkflowPauseItemAndEndSessions,
   WorkflowResolveGate,
   WorkflowResumeItem,
   WorkflowRequestSoftStop,
@@ -36,7 +37,7 @@ export type WorkflowActionRequest =
   | { kind: 'merge' }
   | { kind: 'create-pr' }
   | { kind: 'discard' }
-  | { kind: 'pause' }
+  | { kind: 'pause'; endSessions?: boolean }
   | { kind: 'soft-stop'; armed: boolean }
   | { kind: 'cancel' };
 
@@ -49,6 +50,8 @@ export interface WorkflowActionBindings {
   dropUnit: (itemId: string, unitId: string, note: string) => Promise<void>;
   mergeItem: (itemId: string) => Promise<{ base?: string; mode?: string; sha?: string; cleanupFailed?: boolean }>;
   pauseItem: (itemId: string) => Promise<void>;
+  /** Pause, then end the provider session of every member it paused. */
+  pauseItemAndEndSessions: (itemId: string) => Promise<void>;
   resolveGate: (itemId: string, decision: string, note: string) => Promise<void>;
   requestSoftStop: (itemId: string, armed: boolean) => Promise<void>;
   resumeItem: (itemId: string, targetPhase: string, refreshDefinition: boolean) => Promise<void>;
@@ -66,6 +69,7 @@ const liveBindings: WorkflowActionBindings = {
   dropUnit: WorkflowDropUnit,
   mergeItem: WorkflowMergeItem,
   pauseItem: WorkflowPauseItem,
+  pauseItemAndEndSessions: WorkflowPauseItemAndEndSessions,
   resolveGate: WorkflowResolveGate,
   requestSoftStop: WorkflowRequestSoftStop,
   resumeItem: WorkflowResumeItem,
@@ -162,7 +166,8 @@ export async function dispatchWorkflowAction(
       };
     }
     case 'pause':
-      await bindings.pauseItem(item.id);
+      if (action.endSessions) await bindings.pauseItemAndEndSessions(item.id);
+      else await bindings.pauseItem(item.id);
       // Pause parks the run; the park's own digest is the receipt a human
       // reads, so the sweep must not treat this as resolved and skip past it.
       return null;

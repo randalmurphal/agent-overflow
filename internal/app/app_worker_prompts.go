@@ -204,8 +204,23 @@ func (a *App) settleWorkerPrompt(workerID, requestID string) {
 	}
 }
 
-// handBackWorkerPrompt gives a prompt its agent could not take to the user.
+// handBackWorkerPrompt gives a prompt its agent could not take to the user,
+// unless the agent's thread is one New Thread, Same Assistant superseded:
+// then the prompt goes on to the assistant's current thread.
 func (a *App) handBackWorkerPrompt(prompt *workerPrompt) {
+	if current, ok := a.assistantCurrentThread(prompt.agentID); ok {
+		if _, settled := a.workerPrompts.settle(prompt.workerID, prompt.requestID); !settled {
+			return
+		}
+		route := provider.PromptRoute{ThreadID: current}
+		if thread, err := a.store.GetThread(current); err == nil {
+			route.Title = thread.Title
+		}
+		a.workerPrompts.queue.Go(func() {
+			a.deliverWorkerPrompt(route, prompt.workerID, prompt.requestID, prompt.approval, prompt.question)
+		})
+		return
+	}
 	if _, settled := a.workerPrompts.settle(prompt.workerID, prompt.requestID); !settled {
 		return
 	}

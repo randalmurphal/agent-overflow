@@ -48,6 +48,13 @@ export class Caller {
 export class Candidate {
     "thread_id": string;
     "title"?: string;
+
+    /**
+     * Assistant is the name of the assistant whose current thread this is,
+     * set when the reference matched that name. A computer that predates
+     * assistants never sets it.
+     */
+    "assistant"?: string;
     "computer_id"?: string;
     "computer"?: string;
 

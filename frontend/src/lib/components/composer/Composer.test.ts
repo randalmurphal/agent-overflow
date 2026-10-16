@@ -53,6 +53,10 @@ import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { UsageBucket } from '../../stores/bindings';
 import { resetThreadInterruptStateForTest } from '../../stores/threadInterruptState.svelte';
 import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRevert';
+import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
+import { applySessionLive } from '../../stores/threadSessionLive.svelte';
+import { TransportError } from '../../transport/wsClient';
+import { getToasts } from '../../stores/toast.svelte';
 
 /**
  * Send options as they reach the wire. Every send carries a freshly minted
@@ -423,6 +427,46 @@ describe('<Composer>', () => {
     await waitFor(() => {
       expect(save).toHaveBeenCalledWith(created.id, '[Image #1]', ['dropped'], [], null);
     });
+  });
+
+  it('ends an assistant thread\'s session from the session menu, and offers none on an ordinary thread', async () => {
+    const stop = setBindingMock('StopSession', vi.fn(async () => {}));
+    const pane = await buildPane(makeTestThread({ agentId: 'agent-1' }));
+    const draft = await buildDraft();
+    const view = render(Composer, { props: { pane, draft } });
+
+    await fireEvent.click(view.getByTestId('composer-session-menu'));
+    await fireEvent.click(await view.findByRole('menuitem', { name: 'End Session' }));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith('thread-1'));
+    view.unmount();
+
+    const plain = await buildPane(makeTestThread({}));
+    const plainView = render(Composer, { props: { pane: plain, draft: await buildDraft() } });
+    expect(plainView.queryByTestId('composer-session-menu')).toBeNull();
+  });
+
+  it("follows the computer's session answer: End Session is disabled until a session starts", async () => {
+    __setTransportHelloForTest({
+      protocolVersion: 1, capabilities: ['session-live.v1'], backendId: '', backendName: '',
+      serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0,
+    });
+    try {
+      const stop = setBindingMock('StopSession', vi.fn(async () => {}));
+      const pane = await buildPane(makeTestThread({ agentId: 'agent-1' }));
+      const view = render(Composer, { props: { pane, draft: await buildDraft() } });
+      await fireEvent.click(view.getByTestId('composer-session-menu'));
+      const end = await view.findByRole('menuitem', { name: 'End Session' });
+      expect(end).toHaveAttribute('aria-disabled', 'true');
+      await fireEvent.click(end);
+      expect(stop).not.toHaveBeenCalled();
+
+      applySessionLive({ threadId: 'thread-1', live: true });
+      await waitFor(() => expect(view.getByRole('menuitem', { name: 'End Session' })).not.toHaveAttribute('aria-disabled', 'true'));
+      await fireEvent.click(view.getByRole('menuitem', { name: 'End Session' }));
+      await waitFor(() => expect(stop).toHaveBeenCalledWith('thread-1'));
+    } finally {
+      __setTransportHelloForTest(null);
+    }
   });
 
   it('uploads a pasted image on a claude thread (control for the claude-tui gate)', async () => {
@@ -2797,6 +2841,23 @@ describe('<Composer>', () => {
     // The send quiesces in-flight draft saves before RegisterQueueItem, so
     // the restore lands a few microtasks after Enter, not on the next tick.
     await waitFor(() => expect(draft.content).toBe('restored after session death'));
+  });
+
+  it('leaves a queued text a handoff moved to the assistant\'s new thread out of this composer', async () => {
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+    const message = 'Your unsent text moved to Ops; send it from there.';
+    setBindingMock('RegisterQueueItem', async () => { throw new TransportError('assistant_draft_moved', message); });
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'typed note' } });
+    await fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false });
+
+    await waitFor(() => expect(getToasts().some((toast) => toast.message === message)).toBe(true));
+    expect(draft.content).toBe('');
+    expect(pane.generalError).toBeFalsy();
   });
 
   it('enqueues mid-turn when the Send button is clicked', async () => {

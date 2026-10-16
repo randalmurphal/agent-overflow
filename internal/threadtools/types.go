@@ -72,11 +72,11 @@ type Thread struct {
 	// LastActivity is the newest completed turn in Unix milliseconds, or
 	// the thread's update time when it has never completed a turn.
 	LastActivity int64 `json:"last_activity,omitempty"`
-	// StandingAgent is true for a thread the user promoted, and SpawnedBy
+	// Assistant is set on an assistant's current thread, and SpawnedBy
 	// names the thread that spawned this one on its computer, so a reader
 	// can tell a lead from its workers without another call.
-	StandingAgent bool   `json:"standing_agent,omitempty"`
-	SpawnedBy     string `json:"spawned_by,omitempty"`
+	Assistant *Assistant `json:"assistant,omitempty"`
+	SpawnedBy string     `json:"spawned_by,omitempty"`
 
 	// The four derived columns State reads, named as the frontend's
 	// reference implementation names them.
@@ -84,6 +84,17 @@ type Thread struct {
 	HasFailedTurn             bool   `json:"-"`
 	HasActionableProposedPlan bool   `json:"-"`
 	WorktreeSetupState        string `json:"-"`
+}
+
+// Assistant names the assistant whose current thread a row is.
+type Assistant struct {
+	ID string `json:"id"`
+	// Name is the thread's title. A search answer covering several
+	// computers suffixes it `-<computer>` where two assistants share it;
+	// the suffix is never written to the title.
+	Name string `json:"name"`
+	// Role is its role line (agenthome.BoundRole), its own text, or empty.
+	Role string `json:"role,omitempty"`
 }
 
 // Pin tiers. The app's front and back burner are the two pin tiers; the
@@ -142,8 +153,12 @@ type Resolution struct {
 
 // Candidate is one thread a reference could mean.
 type Candidate struct {
-	ThreadID   string `json:"thread_id"`
-	Title      string `json:"title,omitempty"`
+	ThreadID string `json:"thread_id"`
+	Title    string `json:"title,omitempty"`
+	// Assistant is the name of the assistant whose current thread this is,
+	// set when the reference matched that name. A computer that predates
+	// assistants never sets it.
+	Assistant  string `json:"assistant,omitempty"`
 	ComputerID string `json:"computer_id,omitempty"`
 	Computer   string `json:"computer,omitempty"`
 }
@@ -368,6 +383,8 @@ type SearchQuery struct {
 	// Group is a sidebar group's id or name. A name matches every group
 	// of that name on the computer, case-insensitively.
 	Group string
+	// Agents restricts to assistants' current threads.
+	Agents bool
 	// SinceUnixMs bounds last activity.
 	SinceUnixMs int64
 	Limit       int

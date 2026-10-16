@@ -226,6 +226,10 @@ type App struct {
 	agentWakes agentWakeState
 	// agentNoticeWork joins what notices run after they are accepted.
 	agentNoticeWork appAgentNoticeWorkState
+	// assistantHandOffs holds each assistant's running handoff and the
+	// messages it carries (StartNextAssistantThread,
+	// recoverAssistantSessionLoss).
+	assistantHandOffs assistantHandOffState
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
@@ -453,6 +457,9 @@ type App struct {
 	// sendsPending publishes provider:sends_pending
 	// (`app_sends_pending.go`).
 	sendsPending appSendsPendingState
+	// sessionLive publishes provider:session_live
+	// (`app_session_live.go`).
+	sessionLive appSessionLiveState
 	// prUpdates is the PR-scope review-pane polling concern
 	// (`app_pr_updates.go`).
 	prUpdates appPRUpdateState
@@ -574,6 +581,18 @@ type App struct {
 	// delete of the durable queue (dropDurableFlushQueue), so a test can
 	// queue a message before the in-memory queue is cleared.
 	queueDroppedForTest func(threadID string)
+	// remoteCompletionReadForTest, when set, runs in a watcher pass between
+	// its read of the watch and the queueing of the completion
+	// (checkRemoteWatch), so a test can hand the thread off at that moment.
+	remoteCompletionReadForTest func(w store.RemoteWatch)
+	// sessionLossHandOffForTest, when set, runs as a session-loss handoff
+	// begins, before it reads anything (recoverAssistantSessionLoss), so a
+	// test can send again or make the handoff fail at that moment.
+	sessionLossHandOffForTest func(threadID string)
+	// handOffCommittedForTest, when set, runs in a handoff after its store
+	// transaction committed and before the handoff ends
+	// (nextAssistantThread), so a test can act while it still runs.
+	handOffCommittedForTest func(oldThreadID, successorID string)
 	// remoteReplySettledForTest, when set, runs in a parked remote call's
 	// after-response work between the dismissal and the end of its wait.
 	remoteReplySettledForTest func()

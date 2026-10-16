@@ -78,8 +78,12 @@ export interface Thread {
    */
   latestTurnCompletedAt?: number;
   archived: boolean;
-  /** Unix ms when the user promoted this thread to a standing agent; absent otherwise. */
-  agentPromotedAt?: number;
+  /** The assistant whose current thread this is; absent for any other thread. */
+  agentId?: string;
+  /** The assistant a handoff superseded this thread for; absent otherwise. */
+  pastAgentId?: string;
+  /** Unix ms when that handoff superseded it. */
+  agentSupersededAt?: number | null;
   /** The local thread whose thread_spawn made this one; absent when the user started it. */
   spawnedByThreadId?: string;
   /**

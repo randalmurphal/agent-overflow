@@ -84,6 +84,45 @@ func (s *Store) MoveThreadDraft(expected, destination ThreadDraft) error {
 	return tx.Commit()
 }
 
+// HandOffThreadDraft writes an assistant's next thread's draft and deletes
+// its previous thread's draft in one transaction, so a handoff moves the
+// unsent text whole or not at all, and records the text and attachment ids
+// it took on the previous thread's agent_past_threads row (MovedDraftOf).
+// expected is the previous thread's draft as the move read it, nil when it
+// had none; a draft that changed since refuses the move.
+func (s *Store) HandOffThreadDraft(sourceThreadID string, expected *ThreadDraft, destination ThreadDraft) error {
+	if sourceThreadID == "" || destination.ThreadID == "" || sourceThreadID == destination.ThreadID {
+		return errors.New("draft handoff requires two different threads")
+	}
+	tx, release, err := s.beginDurableTx(context.Background())
+	if err != nil {
+		return err
+	}
+	defer release()
+	defer func() { _ = tx.Rollback() }()
+	current, found, err := getThreadDraft(tx, sourceThreadID)
+	if err != nil {
+		return err
+	}
+	if found != (expected != nil) || (found && !SameDraft(current, *expected)) {
+		return errors.New("the previous thread's draft changed during the handoff")
+	}
+	if _, err = upsertThreadDraft(tx, destination); err != nil {
+		return err
+	}
+	if found {
+		if _, err = tx.Exec(`DELETE FROM thread_drafts WHERE thread_id = ?`, sourceThreadID); err != nil {
+			return fmt.Errorf("clear the previous thread's draft: %w", err)
+		}
+		moved := current.stored()
+		if _, err = tx.Exec(`UPDATE agent_past_threads SET moved_draft = ?, moved_draft_attachments = ? WHERE thread_id = ?`,
+			moved.Content, moved.Attachments, sourceThreadID); err != nil {
+			return fmt.Errorf("record the draft the handoff moved: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 // CheckUnsentDraft rejects history, accepted sends, and provider sessions, even
 // when the current timeline window happens to be empty.
 func (s *Store) CheckUnsentDraft(threadID string) error {

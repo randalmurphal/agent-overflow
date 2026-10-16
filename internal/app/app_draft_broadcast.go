@@ -109,6 +109,20 @@ func (a *App) writeMovedThreadDraft(who transport.ClientIdentity, source, destin
 	return nil
 }
 
+// writeHandedOffThreadDraft writes an assistant's next thread's draft and
+// clears its previous thread's in one transaction (store.HandOffThreadDraft),
+// and announces both.
+func (a *App) writeHandedOffThreadDraft(sourceThreadID string, expected *store.ThreadDraft, destination store.ThreadDraft) error {
+	if err := a.store.HandOffThreadDraft(sourceThreadID, expected, destination); err != nil {
+		return err
+	}
+	a.broadcastDraft(transport.ClientIdentity{}, DraftUpdatedEvent{ThreadID: destination.ThreadID, UpdatedAt: destination.UpdatedAt})
+	if expected != nil {
+		a.broadcastDraft(transport.ClientIdentity{}, DraftUpdatedEvent{ThreadID: sourceThreadID, UpdatedAt: destination.UpdatedAt})
+	}
+	return nil
+}
+
 // removeThreadDraft deletes and announces only the consumed snapshot. A nil
 // snapshot preserves unconditional deletion for explicit clears and legacy sends.
 func (a *App) removeThreadDraft(who transport.ClientIdentity, threadID string, snapshot *DraftSnapshot) error {

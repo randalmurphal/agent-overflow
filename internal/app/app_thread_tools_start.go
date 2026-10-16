@@ -177,7 +177,7 @@ func (t threadToolsApp) attachHomeFiles(caller threadtools.Caller, files []strin
 	}
 	if !found || row.Home == "" {
 		return "", errorsx.Public(threadtools.CodeInvalidRequest,
-			"home_files is only for a standing agent, a thread the user promoted, and this thread is not one. Put what the receiver needs in the message itself.", nil)
+			"home_files is only for an assistant's current thread, and this thread is not one. Put what the receiver needs in the message itself.", nil)
 	}
 	attached, err := agenthome.ReadAttached(row.Home, files)
 	if err != nil {
@@ -225,7 +225,7 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 			return threadtools.RequestAck{}, err
 		} else if standing {
 			return threadtools.RequestAck{}, errorsx.Public(threadtools.CodeInvalidRequest,
-				"This thread is a standing agent, and the threads it spawns nest under its own sidebar row rather than in a group. Omit group.", nil)
+				"This thread is an assistant's, and the threads it spawns nest under its own sidebar row rather than in a group. Omit group.", nil)
 		}
 	}
 	return t.startLocalRequest(ctx, caller, store.ThreadRequest{
@@ -310,14 +310,17 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	// Rechecked here and not only in the tools layer: resolution and this
-	// call are separate moments, and a thread that became the caller's own
-	// in between would queue a message only its own turn could answer.
-	if err := t.refuseSelf(caller, call.ThreadID, "send to"); err != nil {
-		return threadtools.RequestAck{}, err
-	}
 	target, err := t.sendTarget(call.ThreadID)
 	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	// Rechecked here and not only in the tools layer: resolution and this
+	// call are separate moments, and a thread that became the caller's own
+	// in between would queue a message only its own turn could answer. A
+	// send to an assistant's past thread goes to its current one, which may
+	// be the caller.
+	call.ThreadID = target.ID
+	if err := t.refuseSelf(caller, call.ThreadID, "send to"); err != nil {
 		return threadtools.RequestAck{}, err
 	}
 	return t.startLocalRequest(ctx, caller, store.ThreadRequest{
@@ -357,8 +360,13 @@ func (t threadToolsApp) acceptSend(ctx context.Context, origin threadRequestOrig
 }
 
 // sendTarget reads the thread a send addresses and proves this computer can
-// run work in it, before anything durable is written for the request.
+// run work in it, before anything durable is written for the request. A
+// thread New Thread, Same Assistant superseded is addressed through its
+// assistant's current thread.
 func (t threadToolsApp) sendTarget(threadID string) (store.Thread, error) {
+	if current, ok := t.app.assistantCurrentThread(threadID); ok {
+		threadID = current
+	}
 	target, err := t.localThread(threadID)
 	if err != nil {
 		return store.Thread{}, err
@@ -720,8 +728,19 @@ func (t threadToolsApp) returnRequestLocked(token string) bool {
 // back on its target's queue, attributed as dispatchRequest attributed it. It
 // is held: the Stop or session end that gave it back does not start a turn
 // for it, and the thread's next turn boundary or session start sends it. An
-// archived thread refuses it.
+// archived thread refuses it, except one New Thread, Same Assistant
+// superseded: its request moves to the assistant's current thread, receipt
+// and all, and is queued there.
 func (t threadToolsApp) requeueRequest(token, targetThreadID, body string) error {
+	if current, ok := t.app.assistantCurrentThread(targetThreadID); ok {
+		moved, err := t.app.store.RetargetThreadReceipt(token, targetThreadID, current)
+		if err != nil {
+			return fmt.Errorf("requeue request %s on the assistant's current thread: %w", token, err)
+		}
+		if moved {
+			targetThreadID = current
+		}
+	}
 	receipt, found, err := t.app.store.GetThreadRequestReceipt(token)
 	if err != nil {
 		return fmt.Errorf("requeue request %s: %w", token, err)

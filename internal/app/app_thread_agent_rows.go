@@ -372,7 +372,7 @@ func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemote
 			i := ask[n]
 			call, cancel := context.WithTimeout(ctx, threadAgentPeerServeTimeout)
 			defer cancel()
-			listing, err := a.peerThreadAgentRows(call, remote[i].spawn.TargetComputerID, remote[i].spawn.CallerThreadID,
+			listing, err := a.peerThreadAgentRows(call, remote[i].spawn.TargetComputerID, remote[i].spawn.MadeIn(),
 				remote[i].spawn.TargetThreadID, maxDepth-remote[i].depth)
 			a.notePeerAgentRows(remote[i].spawn, listing, err)
 			answers[i] = threadAgentPeerAnswer{listing: listing, err: err}
@@ -699,7 +699,7 @@ func (a *App) stopThreadAgentRowIn(ctx context.Context, threadID, token string) 
 			return ThreadAgentStop{}, err
 		}
 		if mine {
-			stop, err := a.peerThreadAgentStop(ctx, spawn.TargetComputerID, spawn.CallerThreadID, spawn.TargetThreadID, token)
+			stop, err := a.peerThreadAgentStop(ctx, spawn.TargetComputerID, spawn.MadeIn(), spawn.TargetThreadID, token)
 			if err != nil {
 				return ThreadAgentStop{Token: token, Outcome: threadAgentFailed, Failures: []string{err.Error()}}, nil
 			}
@@ -833,7 +833,9 @@ func (a *App) stopThreadAgentRequest(ctx context.Context, row store.ThreadReques
 // spawn the cascade there through agent_stop.
 func (a *App) stopRemoteAgentRequest(ctx context.Context, current store.ThreadRequest, settled, spawned bool, result *ThreadAgentStop) {
 	tools := a.threadTools()
-	caller := a.threadAgentCaller(current.CallerThreadID)
+	// The destination's receipts name the thread that made the request,
+	// which New Thread, Same Assistant may since have replaced.
+	caller := a.threadAgentCaller(current.MadeIn())
 	if !settled {
 		report, err := tools.cancelRemoteRequest(ctx, caller, current, true)
 		if err != nil {
@@ -855,7 +857,7 @@ func (a *App) stopRemoteAgentRequest(ctx context.Context, current store.ThreadRe
 			result.Interrupted = true
 		}
 	}
-	remote, err := a.peerThreadAgentStop(ctx, current.TargetComputerID, current.CallerThreadID, current.TargetThreadID, "")
+	remote, err := a.peerThreadAgentStop(ctx, current.TargetComputerID, current.MadeIn(), current.TargetThreadID, "")
 	if err != nil {
 		result.Failures = append(result.Failures, "stop its work: "+err.Error())
 		return

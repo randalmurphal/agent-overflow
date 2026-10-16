@@ -117,9 +117,9 @@ func (t threadToolsApp) Loop(_ context.Context, caller threadtools.Caller, call 
 	return agentWakeToolState(row), nil
 }
 
-// Watch registers or replaces one watch of the caller's thread. Only a
-// standing agent may: a watch runs a script with the agent's home, and a
-// thread the user has not promoted has none.
+// Watch registers or replaces one watch of the caller's thread. Only an
+// assistant's current thread may: a watch runs a script with the
+// assistant's home, and no other thread has one.
 func (t threadToolsApp) Watch(_ context.Context, caller threadtools.Caller, call threadtools.WatchCall) (threadtools.WakeState, error) {
 	if _, err := t.localThread(caller.ThreadID); err != nil {
 		return threadtools.WakeState{}, err
@@ -128,7 +128,7 @@ func (t threadToolsApp) Watch(_ context.Context, caller threadtools.Caller, call
 		return threadtools.WakeState{}, err
 	} else if !standing {
 		return threadtools.WakeState{}, errorsx.Public(threadtools.CodeInvalidRequest,
-			"thread_watch is for standing agents, and this thread is not one: a watch runs a script with the agent's own home directory, which only a thread the user promoted to a standing agent has. Use thread_loop, which any thread may register, or ask the user to promote this thread.", nil)
+			"thread_watch is for assistants, and this thread is not an assistant's current thread: a watch runs a script with the assistant's own home directory. Use thread_loop, which any thread may register, or ask the user to create an assistant for this work.", nil)
 	}
 	row := store.AgentWake{
 		ThreadID: caller.ThreadID, Kind: store.AgentWakeWatch, Label: call.Label,

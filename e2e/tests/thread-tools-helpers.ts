@@ -224,10 +224,13 @@ export function plainScenario(opts: {
   provider: ProviderName;
   texts: string[];
   afterTurns?: 'repeatLast' | 'silent' | 'exit';
+  /** Echo each user message, as a real CLI does; Codex needs it for an app-written message to show. */
+  echoUserMessage?: boolean;
 }): Record<string, unknown> {
   return threadToolsScenario({
     name: opts.name,
     provider: opts.provider,
+    echoUserMessage: opts.echoUserMessage,
     turns: opts.texts.map((text) => ({ text })),
     afterTurns: opts.afterTurns,
   });

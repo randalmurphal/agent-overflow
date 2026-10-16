@@ -27,12 +27,14 @@
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { displayModelLabel } from '../../utils/modelLabels';
   import type { Thread } from '../../types/models';
+  import { AssistantDeleteNote, withAssistantNote } from '../../stores/assistants.svelte';
 
   let archivedThreads: Thread[] = $state([]);
   let loading = $state(true);
   let loadError: string | null = $state(null);
   let deleteTarget: Thread | null = $state(null);
   const deleteTerminalsNote = new TerminalsClosingNote();
+  const deleteAssistantNote = new AssistantDeleteNote();
 
   $effect(() => {
     loading = true;
@@ -83,11 +85,13 @@
   function confirmDelete(thread: Thread): void {
     deleteTarget = thread;
     deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete([thread]));
+    deleteAssistantNote.load([thread]);
   }
 
   function cancelDelete(): void {
     deleteTarget = null;
     deleteTerminalsNote.clear();
+    deleteAssistantNote.clear();
   }
 
   function executeDelete(): void {
@@ -95,6 +99,7 @@
     const target = deleteTarget;
     deleteTarget = null;
     deleteTerminalsNote.clear();
+    deleteAssistantNote.clear();
     void handleDelete(target);
   }
 
@@ -166,11 +171,11 @@
 
 <ConfirmDialog
   open={deleteTarget !== null}
-  title="Delete Archived Thread"
-  description={withTerminalsNote(
+  title={deleteTarget?.agentId ? 'Delete Archived Assistant' : 'Delete Archived Thread'}
+  description={withAssistantNote(withTerminalsNote(
     'This will permanently delete this thread and all its messages. This action cannot be undone.',
     deleteTerminalsNote.note,
-  )}
+  ), deleteAssistantNote.note)}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={executeDelete}

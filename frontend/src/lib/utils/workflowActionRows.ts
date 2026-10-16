@@ -36,6 +36,7 @@ export type WorkflowActionId =
   | 'create-pr'
   | 'open-phase-thread'
   | 'pause'
+  | 'pause-end-sessions'
   | 'soft-stop'
   | 'clear-soft-stop'
   | 'cancel'
@@ -276,7 +277,13 @@ export function workflowActionRow(input: WorkflowActionRowInput): WorkflowAction
       // stop") with different costs — one interrupts a turn, the other waits for
       // the wave to finish — and the armed label is the only place a human sees
       // that the second one is pending.
-      const row: WorkflowActionButton[] = [{ id: 'pause', label: 'Pause', variant: 'secondary' }];
+      // Pause interrupts the members' turns and keeps their sessions; Pause
+      // and End Sessions also ends those sessions (docs/specs/standing-agents.md,
+      // "Interrupt and end session").
+      const row: WorkflowActionButton[] = [
+        { id: 'pause', label: 'Pause', variant: 'secondary' },
+        { id: 'pause-end-sessions', label: 'Pause and End Sessions', variant: 'secondary' },
+      ];
       if (input.softStop) {
         row.push(input.softStop.armed
           ? { id: 'clear-soft-stop', label: 'Stopping after this wave — undo', variant: 'primary' }

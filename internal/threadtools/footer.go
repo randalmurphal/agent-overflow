@@ -66,13 +66,21 @@ type SenderAgent struct {
 	Role string
 }
 
+// AgentSentence follows the sender or the answering thread on a footer or a
+// wake when it is an assistant's thread. Messages written before assistants
+// replaced promotion say PromotedAgentSentence.
+const (
+	AgentSentence         = "is a standing agent."
+	PromotedAgentSentence = "is a standing agent, a thread the user promoted."
+)
+
 // sentence says the sender or the answering thread is a standing agent and
 // quotes its role line.
 func (a *SenderAgent) sentence(who string) string {
 	if a.Role == "" {
-		return who + " is a standing agent, a thread the user promoted."
+		return who + " " + AgentSentence
 	}
-	return fmt.Sprintf("%s is a standing agent, a thread the user promoted. Its role, in its own words: %q", who, a.Role)
+	return fmt.Sprintf("%s %s Its role, in its own words: %q", who, AgentSentence, a.Role)
 }
 
 // FooterMarker opens every footer. The receiver is told the last `---`
@@ -182,21 +190,38 @@ type Wake struct {
 	Text string
 	// Agent is set when the answering thread is a standing agent.
 	Agent *SenderAgent
+	// MadeIn is the assistant's past thread the request was made in, set
+	// when the wake goes to a later thread of the same assistant, Now.
+	MadeIn string
+	Now    string
 }
 
 // String renders one wake, status line first. A wake from a standing agent
-// says so on the line after the status line.
+// says so on the line after the status line, and a request made in an
+// assistant's past thread names it on the line after that.
 func (w Wake) String() string {
+	var lines []string
+	if w.Agent != nil && w.Kind != WakeReminder {
+		lines = append(lines, w.Agent.sentence("That thread"))
+	}
+	if w.MadeIn != "" {
+		lines = append(lines, WakeMadeIn(w.MadeIn, w.Now))
+	}
 	status := w.status()
-	if w.Agent == nil || w.Kind == WakeReminder {
+	if len(lines) == 0 {
 		return status
 	}
 	head, body, found := strings.Cut(status, "\n")
-	line := w.Agent.sentence("That thread")
 	if !found {
-		return head + "\n" + line
+		return head + "\n" + strings.Join(lines, "\n")
 	}
-	return head + "\n" + line + "\n" + body
+	return head + "\n" + strings.Join(lines, "\n") + "\n" + body
+}
+
+// WakeMadeIn names the past thread a request was made in, for a wake that
+// reaches the assistant's current thread after New Thread, Same Assistant.
+func WakeMadeIn(madeIn, now string) string {
+	return fmt.Sprintf("Made in thread %s, before New Thread, Same Assistant; now %s.", madeIn, now)
 }
 
 func (w Wake) status() string {
@@ -293,6 +318,19 @@ const SessionEndedWrittenSoFar = " What it had written by then:\n\n"
 var InterruptSessionEndedReasons = []string{
 	InterruptSessionEndedUnread, InterruptSessionEndedUnanswered, InterruptSessionEndedMidTurn,
 }
+
+// InterruptHandedOff is the reason of a request whose thread, an
+// assistant's, was replaced by New Thread, Same Assistant after it read the
+// request and before it answered. It names the old thread, so the sender
+// can read what was done.
+func InterruptHandedOff(previousThreadID string) string {
+	return InterruptHandedOffSentence + " Its previous thread is " + previousThreadID +
+		"; read it with thread_show to see what was done, or ask the assistant again by name."
+}
+
+// InterruptHandedOffSentence opens InterruptHandedOff; the frontend reads
+// the stopper from it and shows the rest.
+const InterruptHandedOffSentence = "The assistant moved to a new thread before it answered."
 
 // InterruptMoved is the reason of a request whose thread was moved to
 // destination, another computer, before it answered.

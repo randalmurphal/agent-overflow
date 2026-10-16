@@ -15,6 +15,9 @@
   import Globe from '@lucide/svelte/icons/globe';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import SquarePen from '@lucide/svelte/icons/square-pen';
+  import { nextAssistantThreadAction } from '../sidebar/threadRowActions';
+  import { openThreadFromNavigation } from '../../stores/panes.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getProject, getProjectLabelText } from '../../stores/projects.svelte';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
@@ -55,6 +58,23 @@
   } from '../../stores/browserCompanion.svelte';
 
   let { pane }: { pane: ThreadPane } = $props();
+
+  // New Thread, Same Assistant (docs/specs/standing-agents.md, "Next
+  // thread"): on an assistant's current thread, desktop and compact.
+  let isAssistant = $derived(Boolean(pane.thread?.agentId) && !pane.thread?.archived);
+  // StartNextAssistantThread rides threads:autonomy.
+  let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', pane.threadId, pane.thread?.projectId));
+  function startNextAssistantThread(): void {
+    const thread = pane.thread;
+    if (!thread) return;
+    void nextAssistantThreadAction({
+      thread,
+      isActive: true,
+      clearPane: () => pane.clear(),
+      switchPane: async (next) => { await openThreadFromNavigation(next, pane); },
+      reportError: (message, err) => pane.setGeneralError(message, err),
+    });
+  }
   let compact = $derived(isCompactLayout());
   // Under compact the title's regenerate glyph has no row to sit on, so
   // the action is a row of the menu instead (same state, same run).
@@ -249,10 +269,30 @@
      "no thread at all" panes, and the subcomponents self-gate on
      `pane.workspace` (git and review) or `pane.threadId` (the pieces whose
      subject genuinely is a persisted row). -->
+{#snippet nextThreadButton()}
+  <Button
+    variant="secondary"
+    size="xs"
+    disabled={nextThreadUngranted}
+    ariaLabel="New Thread, Same Assistant"
+    title={nextThreadUngranted ? 'Not granted to this device' : 'New Thread, Same Assistant'}
+    onclick={startNextAssistantThread}
+    testId="chat-header-next-thread"
+    class="shrink-0 w-6 compact:w-9 px-0"
+  >
+    {#snippet children()}
+      <Icon icon={SquarePen} size={12} strokeWidth={2} class="opacity-90" />
+    {/snippet}
+  </Button>
+{/snippet}
+
 {#if compact}
   <div class="ml-auto flex items-center gap-2 shrink-0">
     {#if hasWorkspace}
       <WorkspaceDiffBadge status={pane.gitStatus.status} pressed={pane.showReviewPane} chord={null} onActivate={toggleWorkspaceReview} />
+    {/if}
+    {#if isAssistant}
+      {@render nextThreadButton()}
     {/if}
     <div bind:this={moreTriggerEl}>
     <Button
@@ -341,7 +381,7 @@
   </Popover>
   <GitActionsControl {pane} trigger={false} menuAnchor={moreTriggerEl} bind:this={gitControl} />
 {:else}
-<div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+<div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end @max-[36rem]/chat-header:shrink @max-[36rem]/chat-header:min-w-0">
   <PrBadge status={pane.gitStatus.status} onOpenReview={openPrReview} />
   {#if hasWorkspace}
     <WorkspaceDiffBadge
@@ -357,6 +397,10 @@
   {/if}
 
   <GitActionsControl {pane} />
+
+  {#if isAssistant}
+    {@render nextThreadButton()}
+  {/if}
 
   {#if isClaudeTui}
     <!-- Take-control: opens a paired terminal pane to the right that mirrors

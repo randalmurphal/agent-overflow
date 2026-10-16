@@ -1,6 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { agentThreadOriginChip } from './agentThreadOrigin';
+import { agentThreadOriginChip, openAgentThreadOrigin } from './agentThreadOrigin';
+import { REVEAL_PANE_EVENT } from '../../stores/eventNames';
+import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import {
+  createPane,
+  getFocusedPaneId,
+  openThreadInNewPane,
+  openThreadInPane,
+  resetPanesForTest,
+} from '../../stores/panes.svelte';
+import { replaceAllThreads } from '../../stores/threads.svelte';
+import { installPaneMocks, makeThread } from '../../../test/helpers/chat';
 import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
 import { HOME_BACKEND } from '../../transport/backendKey';
 import type { UserMessageOriginThread } from '../../utils/userMessageMeta';
@@ -79,5 +90,40 @@ describe('agentThreadOriginChip', () => {
     const chip = agentThreadOriginChip(origin({ computerId: 'studio', computerName: 'Studio' }), 'studio');
     expect(chip.label).toBe('from Auth rewrite');
     expect(chip.open).not.toBeNull();
+  });
+});
+
+describe('openAgentThreadOrigin', () => {
+  beforeEach(() => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    installPaneMocks();
+    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 600 }]);
+    createPane('main');
+  });
+  afterEach(() => {
+    resetPanesForTest();
+    resetPaneLayoutForTest();
+    replaceAllThreads([]);
+  });
+
+  it('reveals the pane already showing the thread, so a compact strip moves to it', async () => {
+    const shown = makeThread({ id: 'thread-9', title: 'Auth rewrite' });
+    const here = makeThread({ id: 'thread-1', title: 'Here' });
+    replaceAllThreads([shown, here]);
+    const pane = await openThreadInNewPane(shown);
+    await openThreadInPane(here, 'main');
+    const revealed: string[] = [];
+    const onReveal = ((event: CustomEvent<{ paneId: string }>) => {
+      revealed.push(event.detail.paneId);
+    }) as EventListener;
+    window.addEventListener(REVEAL_PANE_EVENT, onReveal);
+    try {
+      await openAgentThreadOrigin(origin(), HOME_BACKEND);
+    } finally {
+      window.removeEventListener(REVEAL_PANE_EVENT, onReveal);
+    }
+    expect(getFocusedPaneId()).toBe(pane.paneId);
+    expect(revealed).toEqual([pane.paneId]);
   });
 });

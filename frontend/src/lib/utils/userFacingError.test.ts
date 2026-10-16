@@ -97,16 +97,17 @@ describe('userFacingError', () => {
     expect(userFacingError(err)).toBe('Stored provider uuid is missing from session /home/u/s.jsonl: refusing a slice.');
   });
 
-  it('shows a refused home deletion without the paths its outer layer names', () => {
+  it("names the folder of a refused assistant delete, keeping the id that is a path segment", () => {
     const id = '550e8400-e29b-41d4-a716-446655440000';
-    const inner = "the thread was demoted, but its home folder was not deleted: it is not this agent's folder in the app's agents folder";
-    const outer = `delete the agent's home "/tmp/other/${id}" (expected /home/u/.config/agent-overflow/agents/${id})`;
+    const inner = `this assistant was not deleted: its home /tmp/other/${id} is not its own folder in the app's agents folder`;
+    const outer = `delete the assistant's home "/tmp/other/${id}" (expected /home/u/.config/agent-overflow/agents/${id})`;
     const err = new TransportError('method_error', `${outer}: ${inner}`, {
-      detail: { ref: 'r3', method: 'DemoteStandingAgentAndDeleteHome', at: 1, chain: [outer, inner] },
+      detail: { ref: 'r3', method: 'DeleteThread', at: 1, chain: [outer, inner] },
     });
     expect(userFacingError(err)).toBe(
-      "The thread was demoted, but its home folder was not deleted: it is not this agent's folder in the app's agents folder.",
+      `This assistant was not deleted: its home /tmp/other/${id} is not its own folder in the app's agents folder.`,
     );
+    expect(userFacingError(new Error(`no session for thread ${id}`))).toBe('No session for thread.');
   });
 
   it('shows a reviewed backend message whole', () => {

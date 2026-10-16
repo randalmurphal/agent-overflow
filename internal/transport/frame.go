@@ -88,6 +88,11 @@ const CapabilityTimelineDigests = "timeline.digests.v1"
 // its own send-queue mirror.
 const CapabilitySendsPending = "sends-pending.v1"
 
+// CapabilitySessionLive publishes provider:session_live and the
+// sessionLive field of ListThreadLiveActivity. A client reading a backend
+// without it does not know whether a thread has a session.
+const CapabilitySessionLive = "session-live.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -102,6 +107,7 @@ var serverCapabilities = []string{
 	CapabilityTimelineScopes,
 	CapabilityTimelineDigests,
 	CapabilitySendsPending,
+	CapabilitySessionLive,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose
@@ -606,6 +612,25 @@ const (
 	ErrCodeShuttingDown            = "shutting_down"
 	ErrCodeAuthFailed              = "auth_failed"
 	ErrCodeBackgroundAgentsRunning = "background_agents_running"
+	// ErrCodeAssistantNameTaken refuses a title another assistant on the
+	// computer holds as its name (docs/specs/standing-agents.md, "Standing
+	// agent"); the message names that assistant, and a client shows it
+	// where the name was typed.
+	ErrCodeAssistantNameTaken = "assistant_name_taken"
+	// ErrCodeAssistantSessionGone refuses a send to an assistant's thread
+	// whose provider session the provider cleaned up: the assistant moves to
+	// a new thread and the message waits in that thread's composer, so a
+	// client does not put it back in this one's.
+	ErrCodeAssistantSessionGone = "assistant_session_gone"
+	// ErrCodeAssistantHandOffRunning refuses New Thread, Same Assistant
+	// while the assistant's previous handoff still runs: an assistant moves
+	// to one new thread at a time.
+	ErrCodeAssistantHandOffRunning = "assistant_handoff_running"
+	// ErrCodeAssistantDraftMoved refuses a send from an assistant's past
+	// thread that consumes a draft a handoff moved to the assistant's
+	// current thread: the text waits in that thread's composer, so a client
+	// does not put it back in this one's.
+	ErrCodeAssistantDraftMoved = "assistant_draft_moved"
 	// ErrCodeClientOverloaded refuses an RPC this connection has no slot
 	// for: it already holds Config.MaxConcurrentRPCs in flight. The call
 	// was never started, so a client may reissue it once one of its own

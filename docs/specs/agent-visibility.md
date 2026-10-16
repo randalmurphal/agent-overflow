@@ -200,6 +200,11 @@ own stop (`agentStopScope`, `internal/triage/agent_stops.go`;
   launch appears as a normal agent row without its descendants.
   Opening a child from inside swaps the scope and pushes a breadcrumb
   (`main › code-review › Angle B`); no stacking (Q4, Q4b).
+- A standing agent's Agents rows open a real thread, not a scoped view,
+  in the sibling companion kind `agent-thread`: an ordinary thread pane
+  with its own composer and Stop, swapped in place by the next row and
+  never deleting its thread on close
+  ([standing agents](standing-agents.md#agent-thread-companion)).
 - Pane keeps the composer shell with a read-only input; its live
   controls are Stop (= kill where the wire can) and the rail's Background
   segment (see the tray decision above); background button and

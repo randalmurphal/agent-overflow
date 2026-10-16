@@ -11,7 +11,7 @@
 
 import { getAttachedBackends, attachedBackendEntry, backendDisplayName, backendReachable } from '../../stores/attachedBackends.svelte';
 import { getThreadById } from '../../stores/threads.svelte';
-import { openThreadInPane, findPaneShowingThread, focusPane } from '../../stores/panes.svelte';
+import { openThreadInPane, findPaneShowingThread, focusPane, revealPane } from '../../stores/panes.svelte';
 import { GetThread } from '../../stores/bindings';
 import { withBackendTarget } from '../../transport/backends';
 import type { BackendKey } from '../../transport/backendKey';
@@ -54,9 +54,10 @@ function originBackend(computerId: string) {
 export function agentThreadOriginChip(
   origin: UserMessageOriginThread,
   viewer: BackendKey,
+  place?: (thread: Thread) => Promise<unknown>,
 ): AgentThreadOriginChip {
   const title = origin.title || 'another thread';
-  const { computer, open } = agentThreadOpener(origin, viewer);
+  const { computer, open } = agentThreadOpener(origin, viewer, place);
   return { label: computer ? `from ${title} on ${computer}` : `from ${title}`, open };
 }
 
@@ -70,31 +71,39 @@ export interface AgentThreadOpener {
 /**
  * How a row shown by `viewer` reaches a thread another agent named: the
  * computer to name beside it, and the open action when that computer is
- * attached and up. Shared by the origin chip and the AO tool rows' links.
+ * attached and up. Shared by the origin chip, the AO tool rows' links and
+ * the Agents tray, which passes `place` to open it in its companion pane.
  */
-export function agentThreadOpener(origin: UserMessageOriginThread, viewer: BackendKey): AgentThreadOpener {
+export function agentThreadOpener(
+  origin: UserMessageOriginThread,
+  viewer: BackendKey,
+  place?: (thread: Thread) => Promise<unknown>,
+): AgentThreadOpener {
   const entry = originBackend(origin.computerId);
   const elsewhere = origin.computerId !== '' && entry?.id !== viewer;
   const computer = elsewhere ? (entry ? backendDisplayName(entry) : origin.computerName) : '';
   if (!entry && origin.computerId !== '') return { computer, open: null };
   const backend = entry?.id ?? viewer;
   if (!backendReachable(backend)) return { computer, open: null };
-  return { computer, open: () => { void openAgentThreadOrigin(origin, backend); } };
+  return { computer, open: () => { void openAgentThreadOrigin(origin, backend, place); } };
 }
 
 /**
- * Open the source thread in a pane. The row is read from its own computer
+ * Open the source thread in a pane, by default the focused one, otherwise
+ * where `place` puts it. The row is read from its own computer
  * when this client does not already hold it, and the read teaches the RPC
  * router which computer owns the id, so the pane's own calls route there.
  */
 export async function openAgentThreadOrigin(
   origin: UserMessageOriginThread,
   backend: BackendKey,
+  place: (thread: Thread) => Promise<unknown> = openThreadInPane,
 ): Promise<void> {
   try {
     const open = findPaneShowingThread(origin.threadId);
     if (open) {
       focusPane(open.paneId);
+      revealPane(open.paneId);
       return;
     }
     let thread = getThreadById(origin.threadId);
@@ -104,7 +113,7 @@ export async function openAgentThreadOrigin(
       noteThread(row.id, backend, row.ownershipEpoch ?? 0);
       thread = row;
     }
-    await openThreadInPane(thread);
+    await place(thread);
   } catch (err) {
     addErrorToast(`Could not open ${origin.title || 'that thread'}: ${errString(err)}`, err);
   }

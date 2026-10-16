@@ -56,8 +56,9 @@ type appSendsPendingState struct {
 	pending   map[string]struct{}
 }
 
-// markSendsPendingDirty records that threadID's answer may have changed
-// and starts the worker when none is running. Never blocks on anything
+// markSendsPendingDirty records that threadID's answer, and whether it has
+// a session (publishSessionLive), may have changed and starts the worker
+// when none is running. Never blocks on anything
 // but the leaf lock.
 func (a *App) markSendsPendingDirty(threadID string) {
 	if threadID == "" {
@@ -99,6 +100,7 @@ func (a *App) runSendsPendingWorker() {
 		s.mu.Unlock()
 		for _, threadID := range batch {
 			a.publishSendsPending(threadID)
+			a.publishSessionLive(threadID)
 		}
 	}
 }

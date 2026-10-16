@@ -51,6 +51,7 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   3348479803: 'workflowItem', // WorkflowResolveGate
   3393508470: 'workflowItem', // WorkflowCompleteTakeover
   3764767257: 'workflowItem', // WorkflowPauseItem
+  124764894: 'workflowItem', // WorkflowPauseItemAndEndSessions
   4150249282: 'workflowItem', // WorkflowAnswerQuestion
   4156752389: 'workflowItem', // WorkflowGetRunMap
   4158962817: 'workflowItem', // WorkflowCancelItem

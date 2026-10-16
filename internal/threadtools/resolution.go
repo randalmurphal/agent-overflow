@@ -5,16 +5,20 @@ import (
 	"strings"
 
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/errorsx"
 )
 
 // Id resolution. A thread id is a complete address: ids are canonical v4
 // UUIDs, unique across computers, and a Move keeps the id, so the only
-// question a reference raises is which computer holds it.
+// question a reference raises is which computer holds it. An assistant's
+// name addresses its current thread the same way.
 //
 // Rules, in order:
 //
-//   - A reference shorter than MinPrefixLen is refused. A guess that
-//     matched would be worse than a refusal.
+//   - A reference shorter than MinPrefixLen matches assistant names only.
+//     A guess at an id prefix that matched would be worse than a refusal.
+//   - A reference that matches nothing and ends `-<computer>` for a
+//     computer this one reaches names the assistant on that computer.
 //   - computer_id skips resolution entirely and asks that computer alone,
 //     which also turns an unreachable computer into an immediate error
 //     rather than an incomplete answer.
@@ -34,9 +38,6 @@ func (c *session) resolve(ctx context.Context, ref, hint string) (Target, error)
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return Target{}, invalidf("A thread id is required. Take it from a thread_search row or another result; never guess one.")
-	}
-	if len(ref) < MinPrefixLen {
-		return Target{}, invalidf("%q is too short to name a thread. Use the full id, or a prefix of at least %d characters.", ref, MinPrefixLen)
 	}
 	if hint != "" {
 		return c.resolveOn(ctx, ref, hint, true)
@@ -61,21 +62,70 @@ func (c *session) resolve(ctx context.Context, ref, hint string) (Target, error)
 			return Target{}, notFound(ref, nil)
 		}
 	}
-	return c.fanOutResolve(ctx, ref)
+	target, err := c.fanOutResolve(ctx, ref)
+	if code, _, public := errorsx.PublicDetails(err); public && code == CodeNotFound {
+		if named, ok := c.resolveSuffixedName(ctx, ref); ok {
+			return named, nil
+		}
+	}
+	return target, err
+}
+
+// resolveSuffixedName reads ref as `<name>-<computer>`, the form a clash of
+// assistant names across computers is shown in, and resolves the name on
+// that computer alone. Only an assistant matches it.
+func (c *session) resolveSuffixedName(ctx context.Context, ref string) (Target, bool) {
+	if !c.paired() {
+		return Target{}, false
+	}
+	for _, computer := range append([]Computer{c.self()}, c.computers...) {
+		suffix := "-" + NameOfComputer(computer)
+		if len(ref) <= len(suffix) || !strings.EqualFold(ref[len(ref)-len(suffix):], suffix) {
+			continue
+		}
+		name := strings.TrimSpace(ref[:len(ref)-len(suffix)])
+		answer := c.askComputer(ctx, computer, name)
+		if answer.err != nil {
+			continue
+		}
+		var named []Candidate
+		for _, match := range answer.res.Matches {
+			if match.Assistant != "" {
+				named = append(named, match)
+			}
+		}
+		if len(named) == 1 {
+			answer.res.Matches = named
+			return c.target(answer, nil), true
+		}
+	}
+	return Target{}, false
+}
+
+// addressable keeps the matches a reference may name: below MinPrefixLen
+// only an assistant the computer matched by name, whatever a computer that
+// predates names answered from its ids.
+func addressable(ref string, res Resolution) Resolution {
+	if len(ref) >= MinPrefixLen {
+		return res
+	}
+	kept := res.Matches[:0:0]
+	for _, match := range res.Matches {
+		if match.Assistant != "" {
+			kept = append(kept, match)
+		}
+	}
+	res.Matches = kept
+	return res
 }
 
 // resolveOn asks one named computer and nothing else.
 func (c *session) resolveOn(ctx context.Context, ref, id string, followMoves bool) (Target, error) {
-	computer, local, ok := c.computerByID(id)
+	computer, _, ok := c.computerByID(id)
 	if !ok {
 		return Target{}, publicf(CodeInvalidRequest, "There is no computer %q. thread_options lists the computers you can reach: %s.", id, computerList(c.computers))
 	}
-	var answer resolveAnswer
-	if local {
-		answer = c.askLocal(ctx, ref)
-	} else {
-		answer = c.askPeer(ctx, computer, ref)
-	}
+	answer := c.askComputer(ctx, computer, ref)
 	if answer.err != nil {
 		return Target{}, answer.err
 	}
@@ -89,7 +139,10 @@ func (c *session) resolveOn(ctx context.Context, ref, id string, followMoves boo
 			return target, err
 		}
 	}
-	return Target{}, publicf(CodeNotFound, "No thread matches %q on %s.", ref, NameOfComputer(computer))
+	if len(ref) < MinPrefixLen {
+		return Target{}, publicf(CodeNotFound, "No assistant is named %q on %s, and a thread id prefix needs at least %d characters.", ref, NameOfComputer(computer), MinPrefixLen)
+	}
+	return Target{}, publicf(CodeNotFound, "No thread or assistant matches %q on %s.", ref, NameOfComputer(computer))
 }
 
 // follow chases one recorded move. It never chases a second one: a chain
@@ -162,7 +215,7 @@ type resolveAnswer struct {
 
 func (c *session) askLocal(ctx context.Context, ref string) resolveAnswer {
 	res, err := c.app.ResolveThreadRef(ctx, ref)
-	return resolveAnswer{computer: c.self(), local: true, res: res, err: err}
+	return resolveAnswer{computer: c.self(), local: true, res: addressable(ref, res), err: err}
 }
 
 func (c *session) askPeer(ctx context.Context, computer Computer, ref string) resolveAnswer {
@@ -171,7 +224,15 @@ func (c *session) askPeer(ctx context.Context, computer Computer, ref string) re
 		return resolveAnswer{computer: computer, err: err}
 	}
 	res, err := peer.Resolve(ctx, ref)
-	return resolveAnswer{computer: computer, res: res, err: err}
+	return resolveAnswer{computer: computer, res: addressable(ref, res), err: err}
+}
+
+// askComputer asks one computer, this one or a peer.
+func (c *session) askComputer(ctx context.Context, computer Computer, ref string) resolveAnswer {
+	if _, local, _ := c.computerByID(computer.ID); local {
+		return c.askLocal(ctx, ref)
+	}
+	return c.askPeer(ctx, computer, ref)
 }
 
 // askEveryone runs the local lookup and every peer lookup concurrently
@@ -180,10 +241,7 @@ func (c *session) askPeer(ctx context.Context, computer Computer, ref string) re
 func (c *session) askEveryone(ctx context.Context, ref string) []resolveAnswer {
 	everyone := append([]Computer{c.self()}, c.computers...)
 	return eachComputer(ctx, ResolutionTimeout, everyone, func(ctx context.Context, computer Computer) resolveAnswer {
-		if _, local, _ := c.computerByID(computer.ID); local {
-			return c.askLocal(ctx, ref)
-		}
-		return c.askPeer(ctx, computer, ref)
+		return c.askComputer(ctx, computer, ref)
 	})
 }
 

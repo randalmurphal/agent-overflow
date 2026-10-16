@@ -44,19 +44,23 @@ type fakeApp struct {
 	groupRes  GroupReport
 	export    ExportFile
 
-	spawns  []SpawnCall
-	sends   []SendCall
-	asks    []AskCall
-	replies []ReplyCall
-	states  []StatusCall
-	lists   []ListCall
-	cancels []CancelCall
-	rem     []RemindCall
-	loops   []LoopCall
-	watches []WatchCall
-	wakes   []WakeState
-	updates []UpdateCall
-	gcalls  []GroupCall
+	// prefixOnly answers resolution as a computer that predates
+	// assistant names: id prefixes of any length.
+	prefixOnly bool
+	spawns     []SpawnCall
+	assistants []NewAssistantCall
+	sends      []SendCall
+	asks       []AskCall
+	replies    []ReplyCall
+	states     []StatusCall
+	lists      []ListCall
+	cancels    []CancelCall
+	rem        []RemindCall
+	loops      []LoopCall
+	watches    []WatchCall
+	wakes      []WakeState
+	updates    []UpdateCall
+	gcalls     []GroupCall
 
 	searches []SearchQuery
 	catalogs []CatalogQuery
@@ -129,7 +133,14 @@ func (f *fakeApp) ResolveThreadRef(_ context.Context, ref string) (Resolution, e
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		if strings.HasPrefix(id, ref) {
+		// The app matches an assistant's name as well as an id prefix, and
+		// only the name below MinPrefixLen; a computer that predates names
+		// (prefixOnly) matches any prefix.
+		if assistant := f.threads[id].Assistant; assistant != nil && !f.prefixOnly && strings.EqualFold(assistant.Name, ref) {
+			matches = append(matches, Candidate{ThreadID: id, Title: f.threads[id].Title, Assistant: assistant.Name})
+			continue
+		}
+		if (f.prefixOnly || len(ref) >= MinPrefixLen) && strings.HasPrefix(id, ref) {
 			matches = append(matches, Candidate{ThreadID: id, Title: f.threads[id].Title})
 		}
 		if len(matches) == MaxResolutionCandidates {
@@ -319,6 +330,11 @@ func (f *fakeApp) Catalog(_ context.Context, q CatalogQuery) (Catalog, error) {
 func (f *fakeApp) Spawn(_ context.Context, _ Caller, call SpawnCall) (RequestAck, error) {
 	f.spawns = append(f.spawns, call)
 	return f.acked(call.Notify), nil
+}
+
+func (f *fakeApp) NewAssistant(_ context.Context, _ Caller, call NewAssistantCall) (NewAssistantAck, error) {
+	f.assistants = append(f.assistants, call)
+	return NewAssistantAck{RequestAck: f.acked(true), AssistantID: "agent-1", Name: call.Name, Home: "/home/agents/agent-1"}, nil
 }
 
 func (f *fakeApp) Send(_ context.Context, _ Caller, call SendCall) (RequestAck, error) {

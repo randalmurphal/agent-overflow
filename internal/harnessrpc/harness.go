@@ -349,6 +349,19 @@ func (h *Harness) HarnessSessionEnv(threadID string) (map[string]string, error) 
 	return env, nil
 }
 
+// HarnessMakeAssistant makes an existing thread an assistant's current
+// thread, with the record and home New Assistant makes and no opening
+// message, and announces its row: the fixture form of a seeded
+// `assistant: true` for a thread a spec created itself.
+func (h *Harness) HarnessMakeAssistant(threadID string) (store.StandingAgent, error) {
+	agent, err := h.config.Host.MakeAssistant(threadID)
+	if err != nil {
+		return store.StandingAgent{}, err
+	}
+	h.config.Host.BroadcastThreadRow(threadID)
+	return agent, nil
+}
+
 // HarnessListThreadRows returns every non-archived thread ROW, drafts
 // included — the read `App.ListThreads` deliberately cannot serve.
 //

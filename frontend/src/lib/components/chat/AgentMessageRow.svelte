@@ -26,6 +26,8 @@
   import Reply from '@lucide/svelte/icons/reply';
   import Terminal from '@lucide/svelte/icons/terminal';
   import Workflow from '@lucide/svelte/icons/workflow';
+  import UserRound from '@lucide/svelte/icons/user-round';
+  import SquarePen from '@lucide/svelte/icons/square-pen';
   import type { Item } from '../../types/models';
   import type { PaneSession, RowUiRegistry, ScrollHost } from '../../stores/threadPaneRoles';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
@@ -63,6 +65,8 @@
     loop: Repeat,
     watch: Eye,
     script: Terminal,
+    opening: UserRound,
+    handoff: SquarePen,
     'worker-question': CircleQuestionMark,
     'worker-approval': CircleQuestionMark,
     job: Monitor,

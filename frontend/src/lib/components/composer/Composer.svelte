@@ -41,6 +41,8 @@
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
   import { runInterruptOrRevert } from '../../stores/revertOnInterrupt.svelte';
+  import { endThreadSession, isAssistantDraftMoved } from '../../stores/assistants.svelte';
+  import { threadSessionLive } from '../../stores/threadSessionLive.svelte';
   import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
   import {
     DeleteEmptyDraftThread,
@@ -654,6 +656,12 @@
         // admission too. Release typing admission once preparation succeeds.
         await registerQueueItem(midTurnThreadId, message, sendOptions, draftReady.then(release));
       } catch (err) {
+        // A handoff moved this text to the assistant's new thread's
+        // composer; restoring it here as well would leave it in two.
+        if (isAssistantDraftMoved(err)) {
+          addToast('info', err.message);
+          return;
+        }
         pane.setGeneralError(`Failed to queue message: ${String(err)}`, err);
         // Putting the message back is a second, independent operation: if
         // it fails too, the banner has to say so rather than let the queue
@@ -782,6 +790,11 @@
         if (pane.threadId === restoredThreadId) surface?.focusInputAtEnd();
       });
     }
+  }
+
+  function endSession() {
+    const thread = pane.thread;
+    if (thread) void endThreadSession(thread);
   }
 
   function resetTextareaHeight() {
@@ -1105,6 +1118,8 @@
       onSendWithoutPlanComments={(hasDraftPlanComments || hasDraftDiffReviewComments) && hasDraftContent ? () => send(false) : undefined}
       onSendInNewThread={hasPlanImplementAction ? sendPlanToNewThread : undefined}
       onInterrupt={interrupt}
+      onEndSession={pane.thread?.agentId ? endSession : undefined}
+      sessionLive={threadSessionLive(pane.threadId)}
     />
     <ComposerWorkspaceStrip {pane} />
   </div>

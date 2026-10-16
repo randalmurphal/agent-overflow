@@ -60,9 +60,9 @@ export interface HomeContentsRun {
 }
 
 /** The block a home holding these files injects, spelled out. */
-export function homeBlock(thread: string, home: string, index: string): string {
+export function homeBlock(name: string, agentId: string, thread: string, home: string, index: string): string {
   return (
-    `You are a standing agent: the user promoted this thread (id ${thread}). Your home is ${home}. ` +
+    `You are the standing agent ${JSON.stringify(name)} (assistant id ${agentId}; this thread is ${thread}). Your home is ${home}. ` +
     `You own that directory and keep your durable state there. ${LOAD_SKILL}` +
     `\n\n## Your standing instructions (instructions.md in your home)\n\n${ROLE}\n\nGrants: none.` +
     `\n\n## Your memory index (MEMORY.md in your home, without its archive)\n\n${index}`
@@ -120,8 +120,7 @@ function agentScenario(provider: ProviderName, name: string, turns: ScriptedTurn
  * start, the same bytes on the next, a hygiene wake through thread_loop whose
  * rewrite reaches the start after it, a worker spawned with home_files, the
  * footer's role line both ways between the agent and an ordinary thread, each
- * file capped with the byte it stopped at, and nothing injected after
- * demotion.
+ * file capped with the byte it stopped at.
  */
 export async function runHomeContents(harness: HarnessApp, provider: ProviderName, tag: string): Promise<HomeContentsRun> {
   const names = [`${tag}-lead-${provider}`, `${tag}-workers-${provider}`, `${tag}-ordinary-${provider}`];
@@ -146,13 +145,13 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   await setScenario(harness, workers.path, plainScenario({ name: `${tag}-workers-${provider}`, provider, texts: ['Reviewing it.'] }));
   await harness.rpc('GetProviderStatuses');
 
-  const promoted = await harness.rpc<{ home: string }>('PromoteStandingAgent', agent);
-  const home = promoted.home;
+  const record = await harness.rpc<{ id: string; home: string }>('HarnessMakeAssistant', agent);
+  const home = record.home;
   writeFileSync(join(home, 'instructions.md'), INSTRUCTIONS);
   writeFileSync(join(home, 'MEMORY.md'), `${INDEX_BEFORE}${ARCHIVE}`);
   writeFileSync(join(home, 'verification.md'), `${VERIFICATION}\n`);
-  const before = homeBlock(agent, home, INDEX_BEFORE);
-  const after = homeBlock(agent, home, INDEX_AFTER);
+  const before = homeBlock('Release lead', record.id, agent, home, INDEX_BEFORE);
+  const after = homeBlock('Release lead', record.id, agent, home, INDEX_AFTER);
 
   // ---- First start: the agent registers its hygiene loop.
   await setScenario(
@@ -276,7 +275,7 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   const workerFirstMessage = await workerInput;
   expect(workerFirstMessage.startsWith(`${ATTACHED_OPENING}\n\n### verification.md\n\n${VERIFICATION}\n\n${ATTACHED_CLOSING}\n\nReview the parser change on this branch.\n\n---\n`), workerFirstMessage).toBe(true);
   expect(workerFirstMessage).toContain(
-    `The sender is a standing agent, a thread the user promoted. Its role, in its own words: "${ROLE}" It spawned this thread, so your questions and approval requests go to it, not to the user.`,
+    `The sender is a standing agent. Its role, in its own words: "${ROLE}" It spawned this thread, so your questions and approval requests go to it, not to the user.`,
   );
   await awaitTurnCompleted(harness, agent);
   const work = (await configsIn(harness, lead.path, 4))[3];
@@ -318,21 +317,11 @@ export async function runHomeContents(harness: HarnessApp, provider: ProviderNam
   expect(capped).not.toContain('INDEX TAIL');
   await harness.rpc('StopSession', agent);
 
-  // ---- Demoted: the next start carries nothing of the home.
-  await harness.rpc('DemoteStandingAgent', agent);
-  await setScenario(harness, lead.path, agentScenario(provider, `${tag}-demoted-${provider}`, [{ text: 'Plain again.' }]));
-  await harness.rpc('SendMessage', agent, 'Still there?', null);
-  await awaitTurnCompleted(harness, agent);
-  const demoted = (await configsIn(harness, lead.path, 6))[5];
-  expect(appended(provider, demoted)).not.toContain(home);
-  expect(appended(provider, demoted)).not.toContain(ROLE);
-  await harness.rpc('StopSession', agent);
-
   return { agent, home, worker, ordinary, workerFirstMessage };
 }
 
 /** The footer sentence a worker's first message names its agent with. */
-export const AGENT_SENTENCE = 'The sender is a standing agent, a thread the user promoted.';
+export const AGENT_SENTENCE = 'The sender is a standing agent.';
 
 /**
  * Scroll the timeline to its top, polling: a windowed timeline mounts its

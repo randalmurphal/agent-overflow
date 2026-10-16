@@ -187,11 +187,11 @@ describe('threads store', () => {
   });
 });
 
-// A thread that stops being a standing agent in the list takes its
-// agent-only sidebar state with it, whichever way it left: the next
-// promotion starts unfolded, footer shut, lists read afresh.
+// A thread that stops being an assistant's current thread in the list takes
+// its own lists with it, whichever way it left; the assistant's fold and
+// footer, keyed by the assistant, go only when no thread of it is left.
 describe('standing agent state on removal', () => {
-  const agent = (promoted: boolean) => makeThread('agent', promoted ? { agentPromotedAt: 1, archivedChildCount: 1 } : {});
+  const agent = (promoted: boolean) => makeThread('agent', promoted ? { agentId: 'agent', archivedChildCount: 1 } : {});
 
   async function settle(): Promise<void> {
     for (let i = 0; i < 6; i += 1) await Promise.resolve();
@@ -237,7 +237,34 @@ describe('standing agent state on removal', () => {
     expectCleared();
   });
 
-  it('is cleared when the row comes back demoted', async () => {
+  it("keeps the assistant's fold and footer across a handoff, and drops the old thread's lists", async () => {
+    await primeAgentState();
+    prependThread(makeThread('agent-next', { agentId: 'agent', archivedChildCount: 2 }));
+    replaceThread(makeThread('agent', { pastAgentId: 'agent', archived: true }));
+    removeThread('agent');
+    expect(isAgentExpanded('agent')).toBe(false);
+    expect(isAgentDoneExpanded('agent')).toBe(true);
+    expect(getArchivedChildren('agent', 1)).toBeNull();
+    expect(getAgentWakeRows('agent')).toEqual([]);
+  });
+
+  it('holds one current thread per assistant while a handoff lists the new thread before the old one leaves', async () => {
+    await primeAgentState();
+    prependThread(makeThread('agent-next', { agentId: 'agent', createdAt: 5 }));
+    const current = getThreads().filter((t) => t.agentId === 'agent');
+    expect(current.map((t) => t.id)).toEqual(['agent-next']);
+    expect(getThreads().find((t) => t.id === 'agent')).toMatchObject({ agentId: undefined, pastAgentId: 'agent' });
+    expect(isAgentDoneExpanded('agent')).toBe(true);
+    // Two new rows of one assistant in one write: the newest is current.
+    setBindingMock('ListThreads', async () => [
+      makeThread('a', { agentId: 'other', createdAt: 1 }),
+      makeThread('b', { agentId: 'other', createdAt: 2 }),
+    ]);
+    await refreshThreads();
+    expect(getThreads().filter((t) => t.agentId === 'other').map((t) => t.id)).toEqual(['b']);
+  });
+
+  it('is cleared when the row comes back without the mark', async () => {
     await primeAgentState();
     replaceThread(agent(false));
     expectCleared();

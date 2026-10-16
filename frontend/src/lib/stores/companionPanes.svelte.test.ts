@@ -28,6 +28,8 @@ import {
   toggleCompanion,
 } from './companionPanes.svelte';
 import { getThreads, replaceAllThreads } from './threads.svelte';
+import { resetLayoutMetricsForTest, setPaneHostWidth } from './layoutMetrics.svelte';
+import { equalizePaneWidths } from './paneLayout.svelte';
 import { getToasts } from './toast.svelte';
 import { makeThread } from '../../test/helpers/chat';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
@@ -58,6 +60,47 @@ afterEach(() => {
 });
 
 describe('companionPanes store', () => {
+  describe('a thread companion beside its source', () => {
+    afterEach(() => resetLayoutMetricsForTest());
+
+    it('opens into the room left on the strip, so a 1280 screen does not scroll', () => {
+      // A 1280 window less the sidebar.
+      setPaneHostWidth(1000);
+      setPaneLayoutItemsForTest([threadItem('main')]);
+      openCompanion('main', 'side-chat');
+      expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([560, 440]);
+    });
+
+    it('opens at the source width when there is more room, and when there is too little', () => {
+      setPaneHostWidth(1640);
+      setPaneLayoutItemsForTest([threadItem('main')]);
+      openCompanion('main', 'side-chat');
+      expect(getPaneLayoutItems()[1].widthPx).toBe(560);
+
+      resetCompanionPanesForTest();
+      // The strip already scrolls: no room to fit, so the old width stands.
+      setPaneHostWidth(1000);
+      setPaneLayoutItemsForTest([threadItem('main'), threadItem('right')]);
+      openCompanion('main', 'side-chat');
+      expect(getPaneLayoutItems()[1].widthPx).toBe(560);
+    });
+
+    it('leaves panel companions at the source width', () => {
+      setPaneHostWidth(1000);
+      setPaneLayoutItemsForTest([threadItem('main')]);
+      openCompanion('main', 'review');
+      expect(getPaneLayoutItems()[1].widthPx).toBe(560);
+    });
+
+    it('resets each pane to its own minimum on a double-click', () => {
+      setPaneHostWidth(1000);
+      setPaneLayoutItemsForTest([threadItem('main', 900), threadItem('right', 700)]);
+      openCompanion('main', 'side-chat', { widthPx: 700 });
+      equalizePaneWidths(560);
+      expect(getPaneLayoutItems().map((item) => [item.kind, item.widthPx])).toEqual([['thread', 560], ['side-chat', 440], ['thread', 560]]);
+    });
+  });
+
   it('opens a companion after existing companions for the same source', () => {
     setPaneLayoutItemsForTest([threadItem('main', 900), threadItem('right')]);
 

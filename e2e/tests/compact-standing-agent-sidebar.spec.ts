@@ -32,7 +32,7 @@ test('an agent row folds, previews and lists its done children on a phone', asyn
   });
   const { path: cwd, threadIds } = seed.projects[0];
   const [agent, workerA, workerB, finished] = threadIds;
-  await harness.rpc('PromoteStandingAgent', agent);
+  await harness.rpc('HarnessMakeAssistant', agent);
   await harness.rpc('ArchiveThread', finished);
   // The agent registers a loop so the row carries a state line.
   await setScenario(

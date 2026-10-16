@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -143,6 +144,10 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("a workflow wake", text, meta)
 	text, meta = appWake(wake.DataNotice+"\n"+`"\u003cb\u003e \\ \" \t \u200b \x41 caf\u00e9"`, &usermessage.OriginWake{Kind: "workflow", Label: "release"})
 	add("a workflow wake whose data holds escapes", text, meta)
+	text, meta = appWake(agenthome.OpeningMessage("Ops", "/config/agents/a1"), &usermessage.OriginWake{Kind: assistantWakeKindOpening, Label: "Ops"})
+	add("an assistant's opening message", text, meta)
+	text, meta = appWake(agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old", MovedWakes: 1}), &usermessage.OriginWake{Kind: assistantWakeKindHandOff, Label: "Ops"})
+	add("an assistant's handoff block", text, meta)
 
 	for i := range cases {
 		decoded, err := usermessage.FromItem(store.Item{Meta: cases[i].Meta})

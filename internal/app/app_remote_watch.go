@@ -34,18 +34,9 @@ func (a *App) remoteStartLocks() *keyedlock.Registry {
 // The watcher still owns durable completion delivery; returning a tool result
 // is not an acknowledgement that the provider received it.
 func (a *App) observeRemoteCommand(computerID, requestID, threadID string, receipt RemoteCommand) error {
-	if receipt.ID != requestID || receipt.SourceThreadID != threadID {
-		return errorsx.Public("remote_wrong_conversation", "The destination returned a command receipt for another request or conversation. Use the original request ID from the conversation that submitted it.", nil)
-	}
-	w, err := a.store.GetRemoteWatch(computerID, requestID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil // Receipts from work predating source watches remain readable.
-	}
-	if err != nil {
-		return err
-	}
-	if w.ThreadID != threadID {
-		return errorsx.Public("remote_wrong_conversation", "This command belongs to another conversation. Read or cancel it from the conversation that submitted it.", nil)
+	w, watched, err := a.remoteReceiptOwnedBy(computerID, requestID, threadID, receipt)
+	if err != nil || !watched {
+		return err // Receipts from work predating source watches remain readable.
 	}
 	receipt.Output = ""
 	terminal := w.Receipt.ID != "" && w.Receipt.State != "running"
@@ -61,6 +52,30 @@ func (a *App) observeRemoteCommand(computerID, requestID, threadID string, recei
 	}
 	a.emitBackgroundChanged(threadID)
 	return nil
+}
+
+// remoteReceiptOwnedBy checks that receipt is job requestID and that
+// threadID owns it: the thread its watch names, the receipt naming the
+// thread that launched the job (New Thread, Same Assistant moves the watch
+// to the assistant's next thread while the destination keeps naming the
+// launcher). Without a watch the receipt must name threadID itself.
+func (a *App) remoteReceiptOwnedBy(computerID, requestID, threadID string, receipt RemoteCommand) (store.RemoteWatch, bool, error) {
+	w, err := a.store.GetRemoteWatch(computerID, requestID)
+	watched := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return w, false, err
+	}
+	if watched && w.ThreadID != threadID {
+		return w, true, errorsx.Public("remote_wrong_conversation", "This command belongs to another conversation. Read or cancel it from the conversation that submitted it.", nil)
+	}
+	launcher := threadID
+	if watched {
+		launcher = w.LaunchedIn
+	}
+	if receipt.ID != requestID || receipt.SourceThreadID != launcher {
+		return w, watched, errorsx.Public("remote_wrong_conversation", "The destination returned a command receipt for another request or conversation. Use the original request ID from the conversation that submitted it.", nil)
+	}
+	return w, watched, nil
 }
 
 // Only a definite refusal of a still-unaccepted attempt releases a watch; the
@@ -271,7 +286,7 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	if err != nil {
 		issue = remoteIssueText("status", err)
 		receipt = w.Receipt
-	} else if receipt.ID != w.RequestID || receipt.SourceThreadID != w.ThreadID {
+	} else if receipt.ID != w.RequestID || receipt.SourceThreadID != w.LaunchedIn {
 		issue = "The destination returned a receipt for a different conversation. Completion delivery is paused."
 		receipt = w.Receipt
 	}
@@ -291,6 +306,9 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	}
 	w.Receipt = receipt
 	output := a.remoteCompletionExcerpt(ctx, w.ComputerID, w.RequestID, receipt)
+	if a.remoteCompletionReadForTest != nil {
+		a.remoteCompletionReadForTest(w)
+	}
 	if err = a.deliverRemoteCompletion(w, output); err != nil {
 		_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, receipt, "Completion could not enter the message queue: "+remoteErrorText(err), next)
 	}
@@ -608,7 +626,7 @@ func (a *App) cancelThreadRemoteCommands(ctx context.Context, threadID string, k
 			cancel()
 			if err != nil {
 				log.Printf("remote command %s on %s: cancel for conversation %s not delivered; the destination stops it after the owner grace: %v", w.RequestID, w.ComputerID, threadID, err)
-			} else if keepFinished && receipt.ID == w.RequestID && receipt.SourceThreadID == threadID && receipt.State != "running" {
+			} else if keepFinished && receipt.ID == w.RequestID && receipt.SourceThreadID == w.LaunchedIn && receipt.State != "running" {
 				// The destination snapshots the receipt under the lock that
 				// signals the cancel, so a finished one ended on its own.
 				if err := a.observeRemoteCommand(w.ComputerID, w.RequestID, threadID, receipt); err != nil {

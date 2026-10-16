@@ -299,6 +299,7 @@ function takeOwned(map: Map<string, BackendKey>, backendId: BackendKey): string[
 // Project result, including producers added later.
 const SINGLE_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = {
   2367642633: 'thread', // AttachThreadWorktree
+  3231487239: 'thread', // CreateAssistant
   969543070: 'project', // CreateProject
   617214578: 'project', // CreateProjectCheckout
   2745242207: 'project', // RefreshProjectIdentity
@@ -315,6 +316,7 @@ const SINGLE_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = 
   3632185196: 'thread', // SendMessageWithOptions
   1407159655: 'thread', // SendPlanRevisionComments
   3112222989: 'thread', // SetThreadPinGroup
+  4173453878: 'thread', // StartNextAssistantThread
   3009548683: 'thread', // StartTerminal
   1698485705: 'thread', // SteerMessageWithOptions
   3897387725: 'thread', // SwitchThread

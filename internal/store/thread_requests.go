@@ -149,6 +149,38 @@ type ThreadRequest struct {
 	// AnswerAgentUnrecorded is true on a row written before v150, which
 	// recorded nothing about the thread that answered.
 	AnswerAgentUnrecorded bool `json:"-"`
+	// MadeInThreadID is the assistant's past thread that made this request
+	// when New Thread, Same Assistant moved it to CallerThreadID; empty
+	// when the caller made it.
+	MadeInThreadID string `json:"-"`
+}
+
+// RemoteRequestSource is the thread a destination's receipts name for the
+// requests callerThreadID holds to one thread on another computer: the
+// caller when it made one itself, else the past thread that made the newest
+// one before New Thread, Same Assistant moved it. Empty when it holds none.
+func (s *Store) RemoteRequestSource(callerThreadID, computerID, targetThreadID string) (string, error) {
+	var source string
+	err := s.reader().QueryRow(`SELECT CASE WHEN made_in_thread_id = '' THEN caller_thread_id ELSE made_in_thread_id END
+		FROM thread_requests
+		WHERE caller_thread_id = ? AND target_computer_id = ? AND target_thread_id = ?
+		ORDER BY made_in_thread_id = '' DESC, created_at DESC LIMIT 1`, callerThreadID, computerID, targetThreadID).Scan(&source)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: read the source of %s's requests to %s: %w", callerThreadID, targetThreadID, err)
+	}
+	return source, nil
+}
+
+// MadeIn is the thread that made the request: the one a destination's
+// receipt names as its source.
+func (r ThreadRequest) MadeIn() string {
+	if r.MadeInThreadID != "" {
+		return r.MadeInThreadID
+	}
+	return r.CallerThreadID
 }
 
 // DeliveryRoute is how the first answer (late false) or the late reply
@@ -202,7 +234,7 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     polling, next_check, attempts, issue,
     wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at,
     COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
-    target_provider, nested_open, late_delivered_how`
+    target_provider, nested_open, late_delivered_how, made_in_thread_id`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	var r ThreadRequest
@@ -218,7 +250,7 @@ func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 		&polling, &r.NextCheck, &r.Attempts, &r.Issue,
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
-		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow,
+		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
 	)
 	r.NestedOpen = nestedOpen != 0
 	r.AnswerAgent = answerAgentOf(answerAgent.Int64, answerAgentRole)

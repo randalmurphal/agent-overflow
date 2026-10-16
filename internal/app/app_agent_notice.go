@@ -26,6 +26,9 @@ import (
 // watch whose wake is held by such a failure tries the start again on each
 // later fire (retryAgentWakeStart).
 //
+// A thread a handoff superseded hands its notices to its assistant's
+// current thread.
+//
 // An archived thread takes no notice and starts no session for one. A
 // notice that reaches the queue after an archive is refused, and its caller
 // keeps it (errThreadArchived); one queued before the archive waits without
@@ -86,6 +89,14 @@ type agentNotice struct {
 func (a *App) queueAgentNotice(notice agentNotice) error {
 	if notice.prepare == nil || notice.startFailed == nil {
 		return fmt.Errorf("agent notice %s for %s names no body or no start failure message", notice.sendID, notice.threadID)
+	}
+	// A thread New Thread, Same Assistant superseded takes nothing more: its
+	// assistant's current thread does (docs/specs/standing-agents.md, "Next
+	// thread"). The person's own answers stay where they typed them.
+	if !notice.fromPerson {
+		if current, ok := a.assistantCurrentThread(notice.threadID); ok {
+			notice.threadID = current
+		}
 	}
 	body, proceed, err := notice.prepare()
 	if err != nil || !proceed {

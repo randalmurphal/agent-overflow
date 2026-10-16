@@ -126,8 +126,8 @@ worker's queue.
 
 Loops and watches run on the same sweep: registration and lifecycle in
 `app_agent_wakes.go`, runs and boot recovery in `app_agent_wake_runs.go`,
-rendering and queueing in `app_agent_wake_delivery.go`, promotion in
-`app_standing_agents.go`, and the background tray's reads, Wake now and
+rendering and queueing in `app_agent_wake_delivery.go`, assistant records,
+creation and handoff in `app_standing_agents.go`, and the background tray's reads, Wake now and
 Cancel in `app_agent_wake_rows.go`. Every write to a loop, watch or
 reminder row emits `thread:wakes_changed` with that row as it stands
 (`emitAgentWakeChanged`, `emitThreadReminderChanged`); Wake now goes through

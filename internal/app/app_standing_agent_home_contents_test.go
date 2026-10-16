@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,8 +28,8 @@ const homeContentsRole = "Release lead for the test project."
 
 // homeContentsWant is the block a home holding the fixture files injects,
 // spelled out rather than built by the code under test.
-func homeContentsWant(row store.StandingAgent, index string) string {
-	return "You are a standing agent: the user promoted this thread (id " + row.ThreadID + "). Your home is " + row.Home +
+func homeContentsWant(name string, row store.StandingAgent, index string) string {
+	return "You are the standing agent " + strconv.Quote(name) + " (assistant id " + row.ID + "; this thread is " + row.ThreadID + "). Your home is " + row.Home +
 		". You own that directory and keep your durable state there. Load the agent-home skill before any work. If it is not installed, tell the user to install the skills library from Settings, Agents, Skills, and keep your home files by hand until it is." +
 		"\n\n## Your standing instructions (instructions.md in your home)\n\n" + homeContentsRole + "\n\nGrants: none." +
 		"\n\n## Your memory index (MEMORY.md in your home, without its archive)\n\n" + index
@@ -161,10 +162,7 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 			if _, err := app.settings.Update(settings); err != nil {
 				t.Fatalf("settings: %v", err)
 			}
-			row, err := app.PromoteStandingAgent(thread.ID)
-			if err != nil {
-				t.Fatalf("PromoteStandingAgent: %v", err)
-			}
+			row := testAssistant(t, app, thread.ID)
 			// What the developer instructions carry after the block (the
 			// thread tools' guide on Codex) is not this test's.
 			blockOf := func(got, want string) string {
@@ -177,7 +175,7 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 			// ---- Both files, the archive left out.
 			writeHomeFile(t, row.Home, agenthome.InstructionsFile, homeContentsRole+"\n\nGrants: none.\n")
 			writeHomeFile(t, row.Home, agenthome.MemoryIndexFile, "# Memory\n- [A](memory/a.md): first\n"+agenthome.ArchiveMarker+"\n- [Old](memory/old.md): archived\n")
-			want := homeContentsWant(row, "# Memory\n- [A](memory/a.md): first")
+			want := homeContentsWant(thread.Title, row, "# Memory\n- [A](memory/a.md): first")
 			first := start(t)
 			if got := blockOf(first, want); got != want {
 				t.Fatalf("first start injected:\n%s\nwant:\n%s", got, want)
@@ -190,7 +188,7 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 
 			// ---- The hygiene loop's rewrite reaches the next start.
 			writeHomeFile(t, row.Home, agenthome.MemoryIndexFile, "# Memory\n- [B](memory/b.md): rewritten\n")
-			want = homeContentsWant(row, "# Memory\n- [B](memory/b.md): rewritten")
+			want = homeContentsWant(thread.Title, row, "# Memory\n- [B](memory/b.md): rewritten")
 			if got := blockOf(start(t), want); got != want {
 				t.Fatalf("after the rewrite:\n%s\nwant:\n%s", got, want)
 			}
@@ -212,13 +210,6 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 				t.Fatal("a capped start carries a file's tail")
 			}
 
-			// ---- Demoted: nothing of the home.
-			if err := app.DemoteStandingAgent(thread.ID); err != nil {
-				t.Fatalf("DemoteStandingAgent: %v", err)
-			}
-			if got := start(t); strings.Contains(got, row.Home) || strings.Contains(got, homeContentsRole) {
-				t.Fatalf("a demoted thread's session carries its home:\n%s", got)
-			}
 		})
 	}
 }
@@ -300,10 +291,7 @@ func unreadableHomeFixture(t *testing.T) (*App, store.Thread, string, string) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeArgvRecordingClaude(t, argvPath), "agentGuideEnabled": false}); err != nil {
 		t.Fatalf("settings: %v", err)
 	}
-	row, err := app.PromoteStandingAgent(thread.ID)
-	if err != nil {
-		t.Fatalf("PromoteStandingAgent: %v", err)
-	}
+	row := testAssistant(t, app, thread.ID)
 	writeHomeFile(t, row.Home, agenthome.MemoryIndexFile, "index line\n")
 	return app, thread, row.Home, argvPath
 }

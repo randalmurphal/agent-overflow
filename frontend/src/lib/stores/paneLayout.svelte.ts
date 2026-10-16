@@ -4,6 +4,7 @@ import {
   OVERFLOW_EPSILON_PX,
   minAnchorPaneWidths,
   normalizePaneWidthPx,
+  paneMinWidthPx,
   resolvePaneBoundaryDrag,
   type PaneBoundaryDrag,
 } from '../utils/paneWidths';
@@ -13,14 +14,15 @@ import type { AgentPaneScopeSnapshot } from '../types/settings';
 // 'thread' panes host a ChatView for a ThreadPane (the registry in
 // panes.svelte.ts). Companion panes are paired to a source thread pane via
 // `sourcePaneId`. Most host a surface of their own rather than a thread.
-// 'side-chat' is the exception: it hosts an ordinary ChatView over its own
-// scratch thread, and is a companion because it belongs to the source pane's
-// thread. Being a thread pane, a side chat can have companions of its own.
-// take-control, browser and side-chat are
+// 'side-chat' and 'agent-thread' are the exceptions: each hosts an ordinary
+// ChatView, over the side chat's scratch thread or over the thread an Agents
+// row went to, and is a companion because it belongs to the source pane's
+// thread. Being thread panes, they can have companions of their own.
+// take-control, browser, side-chat and agent-thread are
 // live/ephemeral; plan, review, and agent companions are persisted by layout
 // persistence and restored through companionPanes.svelte.ts.
-export type PaneLayoutKind = 'thread' | 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat';
-export type CompanionPaneKind = 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat';
+export type PaneLayoutKind = 'thread' | 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat' | 'agent-thread';
+export type CompanionPaneKind = 'take-control' | 'browser' | 'plan' | 'review' | 'agent' | 'side-chat' | 'agent-thread';
 
 export function isCompanionKind(kind: PaneLayoutKind): kind is CompanionPaneKind {
   return kind === 'take-control' ||
@@ -28,7 +30,18 @@ export function isCompanionKind(kind: PaneLayoutKind): kind is CompanionPaneKind
     kind === 'plan' ||
     kind === 'review' ||
     kind === 'agent' ||
-    kind === 'side-chat';
+    kind === 'side-chat' ||
+    kind === 'agent-thread';
+}
+
+/** A side chat or agent thread companion: a companion that hosts a ChatView. */
+export function isThreadHostingPaneKind(kind: PaneLayoutKind): kind is 'side-chat' | 'agent-thread' {
+  return kind === 'side-chat' || kind === 'agent-thread';
+}
+
+/** The pane's minimum width under the density minimum `densityMinPx`. */
+export function paneItemMinWidthPx(item: Pick<PaneLayoutItem, 'kind'>, densityMinPx: number): number {
+  return paneMinWidthPx(isThreadHostingPaneKind(item.kind), densityMinPx);
 }
 
 export interface PaneLayoutItem {
@@ -332,7 +345,9 @@ function resnapCompanionItems(items: PaneLayoutItem[]): PaneLayoutItem[] {
 }
 
 export interface PaneBoundaryDragArgs
-  extends Omit<PaneBoundaryDrag, 'widths' | 'leftIndex' | 'hasRightPane'> {
+  extends Omit<PaneBoundaryDrag, 'widths' | 'leftIndex' | 'hasRightPane' | 'minWidths'> {
+  /** The density minimum; each pane's own follows from its kind. */
+  minPaneWidth: number;
   /** Pane immediately left of the grabbed boundary. */
   leftPaneId: string;
   /** Adjacent right pane, or null for the end handle at the strip's right edge. */
@@ -360,7 +375,7 @@ export function applyPaneBoundaryDrag(args: PaneBoundaryDragArgs): void {
     leftIndex,
     hasRightPane: args.rightPaneId !== null,
     deltaPx: args.deltaPx,
-    minPaneWidth: args.minPaneWidth,
+    minWidths: layoutItems.map((item) => paneItemMinWidthPx(item, args.minPaneWidth)),
     overflowPx: args.overflowPx,
     zeroSum: args.zeroSum,
   });
@@ -373,11 +388,11 @@ export function applyPaneBoundaryDrag(args: PaneBoundaryDragArgs): void {
   requestLayoutPersistence(true);
 }
 
-/** Double-click reset: every pane back to the density minimum (equal fit). */
+/** Double-click reset: every pane back to its minimum under the density minimum. */
 export function equalizePaneWidths(minPaneWidth: number): void {
-  const width = normalizePaneWidthPx(minPaneWidth);
-  if (layoutItems.every((item) => item.widthPx === width)) return;
-  layoutItems = layoutItems.map((item) => ({ ...item, widthPx: width }));
+  const widths = layoutItems.map((item) => normalizePaneWidthPx(paneItemMinWidthPx(item, minPaneWidth)));
+  if (layoutItems.every((item, index) => item.widthPx === widths[index])) return;
+  layoutItems = layoutItems.map((item, index) => ({ ...item, widthPx: widths[index] }));
   requestLayoutPersistence();
 }
 
@@ -400,7 +415,7 @@ export function minAnchorPaneLayoutWidths(minPaneWidth: number): void {
   if (total > hostWidth + OVERFLOW_EPSILON_PX) return;
   const anchored = minAnchorPaneWidths(
     layoutItems.map((item) => item.widthPx),
-    minPaneWidth,
+    layoutItems.map((item) => paneItemMinWidthPx(item, minPaneWidth)),
   );
   if (!anchored) return;
   layoutItems = layoutItems.map((item, index) => ({
