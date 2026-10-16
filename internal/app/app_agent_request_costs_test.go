@@ -37,7 +37,17 @@ func TestALocalSendAndItsSettlementTakeOneTransactionEach(t *testing.T) {
 	h := newHeldRequestTarget(t, f)
 
 	// A turn end with no request on it, for the settlement's measure.
+	// Each measured turn end starts with its text written: the stream
+	// buffers flush on a timer, and a flush inside one window and not the
+	// other would count as the settlement's.
+	flushText := func() {
+		t.Helper()
+		if err := f.app.triage.FlushThread(h.thread.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	h.text(t, "a-plain", "warming up")
+	flushText()
 	before := storeCostOf(f.app.store)
 	h.turnComplete(t)
 	plainEnd := storeCostOf(f.app.store).since(before)
@@ -72,6 +82,7 @@ func TestALocalSendAndItsSettlementTakeOneTransactionEach(t *testing.T) {
 		t.Fatalf("request after its delivery = %q, want running", row.State)
 	}
 	h.text(t, "a-answer", "The changelog lists the fix.")
+	flushText()
 	before = storeCostOf(f.app.store)
 	h.turnComplete(t)
 	settled := storeCostOf(f.app.store).since(before)
