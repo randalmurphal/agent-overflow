@@ -181,7 +181,7 @@ func (s *Store) AcceptLocalThreadRequest(request ThreadRequest, receipt ThreadRe
 	if err != nil {
 		return ThreadRequestReceipt{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := insertThreadRequestTx(tx, request); err != nil {
 		return ThreadRequestReceipt{}, err
 	}
@@ -345,7 +345,7 @@ func (s *Store) writeReceiptAndRunSource(action, token, query string, args ...an
 	if err != nil {
 		return false, fmt.Errorf("%s: begin: %w", action, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	result, err := tx.Exec(query, args...)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
@@ -501,7 +501,7 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 	if err != nil {
 		return LocalSettlement{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	receipt, settled, err := settleThreadReceiptRow(tx, token, from, settlement)
 	if err != nil || !settled {
 		return LocalSettlement{}, err
