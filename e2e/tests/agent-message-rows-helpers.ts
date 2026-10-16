@@ -186,15 +186,20 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
       // The reply wakes the lead. On Codex it can land while the lead's
       // turn that sent the request is still running, and is then steered
       // into it rather than starting a turn of its own: either way the
-      // lead is done once its row is there and no turn runs.
-      const idle = async () => !(await harness.rpc<{ activeTurn?: unknown }>('GetThreadLiveState', lead)).activeTurn;
+      // lead is done once its row is there and no turn runs. A turn's text
+      // row is stored before the turn ends, so a row alone is not rest.
+      const idle = async (thread: string) =>
+        !(await harness.rpc<{ activeTurn?: unknown }>('GetThreadLiveState', thread)).activeTurn;
+      const rested = async (thread: string) => {
+        if (!(await idle(thread))) return false;
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        return await idle(thread);
+      };
       await expect
         .poll(
           async () => {
-            if (await has(lead, 'Read the answer.')) return true;
-            if (!(await has(lead, REPLY)) || !(await idle())) return false;
-            await new Promise((resolve) => setTimeout(resolve, 1_000));
-            return await idle();
+            if (!(await has(lead, 'Read the answer.')) && !(await has(lead, REPLY))) return false;
+            return await rested(lead);
           },
           { timeout: 60_000, message: 'the reply woke the lead and its turn ended' },
         )
@@ -205,7 +210,8 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
           const rows = (await items(lead)).map((item: TimelineItem) => `${item.kind}: ${(item.summary ?? '').slice(0, 80)}`);
           throw new Error(`${String(error)}\nlead items: ${JSON.stringify(rows)}\nlead live: ${JSON.stringify({ activeTurn: live.activeTurn, queueItems: live.queueItems, flushedItems: live.flushedItems })}`);
         });
-      await expect.poll(() => has(busy, REQUEST), { timeout: 30_000 }).toBe(true);
+      // The busy thread's reply turn ends after its thread_reply answers.
+      await expect.poll(async () => (await has(busy, REQUEST)) && (await rested(busy)), { timeout: 30_000 }).toBe(true);
     },
     followUp: async () => {
       for (const thread of [lead, busy]) {
