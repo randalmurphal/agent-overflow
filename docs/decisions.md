@@ -397,10 +397,12 @@ Mechanism in
   "system prompt changed" banner with Restart; a later change shows it again,
   and a restart or the session's death withdraws it. The stale-binary banner
   is dismissible the same way (2026-10-14; same spec §Reconcile semantics).
-- When Claude Code changes its permission mode on its own (it leaves auto on
-  a model without auto mode), the thread's runtime mode follows what the CLI
-  runs, with a warning notice; switching back to a model with auto does not
-  restore Auto (ruling 2026-10-15; `claude-wire.md` §system/status).
+- When Claude Code leaves auto on a model without auto mode, the thread's
+  runtime mode follows what the CLI runs, with a warning notice. No other
+  mode the CLI moves to on its own changes the thread's access. Switching
+  back to a model whose remembered settings carry Auto restores Auto with a
+  notice of its own (rulings 2026-10-15 and 2026-10-16; `claude-wire.md`
+  §system/status).
 - Claude offers no thinking-off setting: current models reject disabled
   thinking and the CLI runs adaptive thinking instead (ruling 2026-10-15).
 - Cursor as a provider: `docs/specs/cursor-provider.md`.

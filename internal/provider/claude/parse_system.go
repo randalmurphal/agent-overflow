@@ -36,10 +36,11 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 			p.model = strings.TrimSpace(info.Model)
 		}
 		meta, _ := json.Marshal(info)
-		// init's `permissionMode` is deliberately not read as a change: it
-		// restates the startup resolution, which for a supervised spawn (no
+		// init's `permissionMode` is not a change report: it restates the
+		// startup resolution, which for a supervised spawn (no
 		// --permission-mode flag) includes the user's own defaultMode
-		// setting. Changes arrive on system/status (permission_mode.go).
+		// setting. Changes arrive on system/status; the session reads init
+		// only for the auto drop (permission_mode.go).
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventInit,
 			ThreadID:  threadID,

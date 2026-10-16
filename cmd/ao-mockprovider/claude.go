@@ -388,12 +388,12 @@ func (a *claudeAdapter) handleLine(line []byte) {
 			return
 		}
 		var beforeAck, afterAck []string
-		var refusal string
+		var refusal, refusalCode string
 		if required, known := claudeControlRequestKeys[subtype]; known && missingControlRequestKeys(env.Request, required) == "" {
-			beforeAck, afterAck, refusal = a.permission.frames(subtype, env.Request)
+			beforeAck, afterAck, refusal, refusalCode = a.permission.frames(subtype, env.Request)
 		}
 		if refusal != "" {
-			writeClaudeControlError(a.w, env.RequestID, refusal)
+			writeClaudeControlErrorCode(a.w, env.RequestID, refusal, refusalCode)
 			return
 		}
 		for _, frame := range beforeAck {
@@ -981,10 +981,18 @@ func writeClaudeControlSuccess(w *lineWriter, requestID, payload string) {
 // shape — `subtype:"error"` plus `error` — which is what
 // session_control.go's reader turns into the caller's error message.
 func writeClaudeControlError(w *lineWriter, requestID, message string) {
+	writeClaudeControlErrorCode(w, requestID, message, "")
+}
+
+// writeClaudeControlErrorCode adds the `error_code` the CLI names beside
+// some refusals (set_permission_mode's "auto_mode_model"); empty omits it.
+func writeClaudeControlErrorCode(w *lineWriter, requestID, message, code string) {
 	log.Printf("claude: refusing control_request: %s", message)
-	w.writeLine(fmt.Sprintf(
-		`{"type":"control_response","response":{"subtype":"error","request_id":%s,"error":%s}}`,
-		mustJSON(requestID), mustJSON(message)), 0, 0)
+	response := map[string]any{"subtype": "error", "request_id": requestID, "error": message}
+	if code != "" {
+		response["error_code"] = code
+	}
+	w.writeLine(mustJSON(map[string]any{"type": "control_response", "response": response}), 0, 0)
 }
 
 // sendApproval emits a CanUseTool control_request and registers a

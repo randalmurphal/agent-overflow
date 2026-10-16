@@ -42,9 +42,12 @@ const DefaultControlRequestCeiling = 60 * time.Second
 // arrived. payload carries the inner `response.response` object — set for
 // subtype=success when the request shape returns structured data (e.g.
 // mcp_authenticate's {authUrl, requiresUserAction}); empty otherwise.
+// errCode is the error's `error_code` when the CLI names one
+// (set_permission_mode's "auto_mode_model", 2.1.300 bundle).
 type controlResponseResult struct {
 	ok      bool
 	errMsg  string
+	errCode string
 	payload json.RawMessage
 }
 
@@ -113,6 +116,9 @@ func (s *Session) setPermissionMode(ctx context.Context, mode string) error {
 		return err
 	}
 	if err := interpretControlResponse(res, opName); err != nil {
+		if mode == "auto" && res.errCode == autoModeUnavailableForModel && s.dropAutoBaseRefusedByModel() {
+			return s.setPermissionMode(ctx, "default")
+		}
 		return err
 	}
 	s.setCurrentPermissionMode(mode)
@@ -359,6 +365,7 @@ func (s *Session) handleControlResponseLine(line []byte) {
 			Subtype   string          `json:"subtype"`
 			RequestID string          `json:"request_id"`
 			Error     string          `json:"error"`
+			ErrorCode string          `json:"error_code"`
 			Response  json.RawMessage `json:"response"`
 		} `json:"response"`
 	}
@@ -386,6 +393,7 @@ func (s *Session) handleControlResponseLine(line []byte) {
 		res.payload = raw.Response.Response
 	case "error":
 		res.errMsg = raw.Response.Error
+		res.errCode = raw.Response.ErrorCode
 	default:
 		// The CLI only emits success / error per the wire reference;
 		// unknown subtypes get recorded as errors so the waiting caller

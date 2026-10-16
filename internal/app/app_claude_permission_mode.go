@@ -6,6 +6,8 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadapp"
 )
 
 // Claude can change its permission mode without being asked: since 2.1.299
@@ -16,9 +18,9 @@ import (
 // access picker shows what the session runs and the reconciler does not
 // plan a set_permission_mode the CLI would refuse.
 //
-// The thread's runtime mode follows rather than being restored. Switching
-// back to a model with auto support leaves the thread on the mode the CLI
-// moved to; the user picks Auto again, as in the CLI itself.
+// Switching back to a model with auto support brings the model's remembered
+// Auto back (its chat model profile), never silently: the switch posts the
+// matching notice (noticeClaudeAutoRestored).
 
 // runtimeModeLabels names each runtime mode the way the composer's access
 // picker does (AccessToggle.svelte), for the notice text.
@@ -33,17 +35,32 @@ var runtimeModeLabels = map[provider.RuntimeMode]string{
 // followClaudePermissionMode runs off the provider event worker: it waits
 // for the per-thread config-apply lock, which a reconcile holds while its
 // set_model waits for an ack the read loop delivers behind this event.
+// Shutdown joins it (permissionModeFollowWG).
 func (a *App) followClaudePermissionMode(threadID, sessionToken string) {
-	go a.applyClaudePermissionMode(threadID, sessionToken)
+	a.permissionModeFollowWG.Go(func() { a.applyClaudePermissionMode(threadID, sessionToken) })
 }
 
 // applyClaudePermissionMode converges the session's launch options and the
 // thread row onto the session's current base permission mode. It reads the
 // mode from the session rather than the event, so reports applied out of
 // order still settle on the newest.
+//
+// It takes the thread's mutation lock first, as the model switch that
+// caused the change does. The switch broadcasts the row it read before this
+// change landed; holding the same lock puts this change after that
+// broadcast, so a client's access picker ends on the mode the session runs.
 func (a *App) applyClaudePermissionMode(threadID, sessionToken string) {
+	unlockThread, err := a.threadApplication().LockMutable(a.lifeCtx(), threadID)
+	if err != nil {
+		log.Printf("thread %s: follow claude permission mode: %v", threadID, err)
+		return
+	}
+	defer unlockThread()
 	unlock := a.configApplyLocks().Lock(threadID)
 	defer unlock()
+	if a.lifeCtx().Err() != nil {
+		return
+	}
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok || sess.Token != sessionToken || sess.Claude == nil {
 		return
@@ -86,5 +103,28 @@ func (a *App) applyClaudePermissionMode(threadID, sessionToken string) {
 		runtimeModeLabels[prev], provider.TrimContextMarker(opts.Model), runtimeModeLabels[next])
 	if err := a.emitNoticeToThread(threadID, noticeKindWarning, notice); err != nil {
 		log.Printf("thread %s: %v", threadID, err)
+	}
+}
+
+// noticeClaudeAutoRestored posts the notice for a Claude model switch that
+// moved the thread back to Auto from another mode: the new model's
+// remembered settings carry Auto. updated is the row after the live
+// reconcile; a running session that did not keep auto (the CLI refused it
+// for this model, which posts its own notice) gets none.
+func (a *App) noticeClaudeAutoRestored(update threadapp.ModelUpdate, updated store.Thread) {
+	if updated.Provider != string(provider.Claude) || update.Previous.Model == updated.Model {
+		return
+	}
+	if provider.NormalizeRuntimeMode(update.Previous.RuntimeMode) == provider.RuntimeAuto ||
+		provider.NormalizeRuntimeMode(updated.RuntimeMode) != provider.RuntimeAuto {
+		return
+	}
+	if sess, ok := a.sessionManager().get(updated.ID); ok && sess.Claude != nil && sess.Claude.BasePermissionMode() != "auto" {
+		return
+	}
+	notice := fmt.Sprintf("Auto is back on for %s. This thread's access is %s again.",
+		provider.TrimContextMarker(updated.Model), runtimeModeLabels[provider.RuntimeAuto])
+	if err := a.emitNoticeToThread(updated.ID, noticeKindWarning, notice); err != nil {
+		log.Printf("thread %s: %v", updated.ID, err)
 	}
 }

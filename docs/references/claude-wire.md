@@ -507,7 +507,8 @@ client produces one too, written around its ack (the state update and the
 ack share one updater, so the report can follow the ack). `system/init`
 also carries `permissionMode`, but restates the startup resolution, which
 for a spawn without `--permission-mode` includes the user's
-`permissions.defaultMode`; AO does not read it as a change.
+`permissions.defaultMode`. Leaving plan (ExitPlanMode) can likewise land on
+that `defaultMode`.
 
 Since 2.1.299 the CLI changes mode on its own in one case AO must follow:
 `set_model` to a model without auto mode, on a session running `auto`,
@@ -515,16 +516,26 @@ moves the session to `default` (logged `auto mode disabled: model X does
 not support auto mode`) and reports it before the `set_model` ack. The
 support check (`iD`) refuses auto for the 4.6 generation and older and for
 every Haiku but 5.5. A later `set_permission_mode` `auto` on such a model
-is refused with `auto mode unavailable for this model`.
+is refused with `auto mode unavailable for this model` and
+`error_code:"auto_mode_model"`. In plan the switch changes nothing and
+reports nothing: plan keeps auto as the mode to return to, so the refusal
+is what leaving plan for auto meets. A process started with
+`--permission-mode auto` on such a model goes through the startup gate,
+and the bundle suggests it starts on `default`; only its `system/init`
+would say so.
 
-The parser emits `EventPermissionModeChanged` for every report. The
+The parser emits `EventPermissionModeChanged` for every status report. The
 session (`internal/provider/claude/permission_mode.go`) drops a report that
-matches a `set_permission_mode` in flight or the mode it already runs,
-never adopts `plan` (AO's per-turn interaction mode), and adopts anything
-else as both its current and base mode before forwarding it. The app
+matches a `set_permission_mode` in flight or the mode it already runs, and
+adopts only `default` while its base is `auto`, as both its current and
+base mode, forwarding it. Any other report only updates the mode the
+session believes the CLI runs, so the next turn restores the base. The
+same drop is taken from a refused `auto` (`auto_mode_model`) and from an
+init that says `default` while the session runs auto. The app
 (`internal/app/app_claude_permission_mode.go`) moves the thread's runtime
-mode to the mode the CLI runs, without a restart, and posts a warning
-notice naming the model.
+mode to `approval-required` without a restart and posts a warning notice
+naming the model. A later switch to a model whose remembered settings carry
+Auto restores it with a notice of its own.
 
 ## `system` model-fallback family
 

@@ -46,8 +46,9 @@ func TestClaudeReportsPermissionModeChanges(t *testing.T) {
 	}
 
 	p.send(`{"type":"control_request","request_id":"pm-0","request":{"subtype":"set_permission_mode","mode":"auto"}}`)
-	if got := p.expectLine(testTimeout); !strings.Contains(got, `"subtype":"error"`) || !strings.Contains(got, "auto mode unavailable for this model") {
-		t.Fatalf("set_permission_mode auto on a model without it = %q, want the refusal", got)
+	if got := p.expectLine(testTimeout); !strings.Contains(got, `"subtype":"error"`) || !strings.Contains(got, "auto mode unavailable for this model") ||
+		!strings.Contains(got, `"error_code":"auto_mode_model"`) {
+		t.Fatalf("set_permission_mode auto on a model without it = %q, want the refusal and its code", got)
 	}
 
 	p.send(`{"type":"control_request","request_id":"pm-1","request":{"subtype":"set_permission_mode","mode":"acceptEdits"}}`)
@@ -73,6 +74,49 @@ func TestClaudeReportsPermissionModeChanges(t *testing.T) {
 		if _, err := parser.ParseLine("thread-mode", []byte(line)); err != nil {
 			t.Fatalf("the application's parser rejected %q: %v", line, err)
 		}
+	}
+}
+
+// In plan the CLI keeps auto as the mode to return to: a set_model to a
+// model without auto mode changes and reports nothing, and leaving plan for
+// auto is refused with its code.
+func TestClaudeModelSwitchInPlanKeepsAutoForLater(t *testing.T) {
+	sc := &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "claude-permission-mode-plan",
+		Provider: scenario.ProviderClaude,
+		Turns:    []scenario.Turn{{Steps: []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{`{"type":"system","subtype":"status","status":"requesting"}`}}}}}},
+	}
+	args := append(slices.Clone(claudeSessionArgs), "--permission-mode", "auto", "--model", "claude-opus-5-5")
+	p := startMock(t, args, writeScenarioFile(t, sc, ""), t.TempDir())
+
+	p.send(`{"type":"control_request","request_id":"pm-plan","request":{"subtype":"set_permission_mode","mode":"plan"}}`)
+	p.expectLineContaining(`"request_id":"pm-plan"`, testTimeout)
+	p.expectLineContaining(`"permissionMode":"plan"`, testTimeout)
+
+	p.send(`{"type":"control_request","request_id":"m-1","request":{"subtype":"set_model","model":"claude-sonnet-4-6"}}`)
+	if got := p.expectLine(testTimeout); !strings.Contains(got, `"request_id":"m-1"`) || !strings.Contains(got, `"subtype":"success"`) {
+		t.Fatalf("set_model in plan wrote %q, want only its ack", got)
+	}
+
+	p.send(`{"type":"control_request","request_id":"pm-auto","request":{"subtype":"set_permission_mode","mode":"auto"}}`)
+	if got := p.expectLine(testTimeout); !strings.Contains(got, `"request_id":"pm-auto"`) || !strings.Contains(got, `"error_code":"auto_mode_model"`) {
+		t.Fatalf("leaving plan for auto = %q, want the refusal with its code", got)
+	}
+	p.closeStdinAndExpectExit(0, testTimeout)
+}
+
+// A process started on auto for a model without it runs default and says so
+// only in system/init.
+func TestClaudeStartedOnAutoForAModelWithoutItRunsDefault(t *testing.T) {
+	if got := newClaudePermissionMode([]string{"--permission-mode", "auto", "--model", "claude-sonnet-4-6[1m]"}).current(); got != "default" {
+		t.Fatalf("auto on claude-sonnet-4-6 starts on %q, want default", got)
+	}
+	if got := newClaudePermissionMode([]string{"--permission-mode", "auto", "--model", "claude-opus-5-5"}).current(); got != "auto" {
+		t.Fatalf("auto on claude-opus-5-5 starts on %q, want auto", got)
+	}
+	if got := newClaudePermissionMode([]string{"--permission-mode", "auto"}).current(); got != "auto" {
+		t.Fatalf("auto with no --model starts on %q, want auto", got)
 	}
 }
 
