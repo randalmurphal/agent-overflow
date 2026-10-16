@@ -372,6 +372,14 @@ const STATIC_FIELDS = [
     keywords: ['task list', 'nudges', 'reminders', 'todo'],
   },
   {
+    id: 'claude.command-timeout',
+    section: 'claude',
+    heading: 'Tools',
+    label: 'Command timeout',
+    hint: 'The longest a command may run when Claude asks for a long timeout, including background commands, which otherwise stop after 30 minutes.',
+    keywords: ['bash', 'background', 'BASH_MAX_TIMEOUT_MS', 'hours', 'long running', 'killed'],
+  },
+  {
     id: 'claude.output-style',
     section: 'claude',
     heading: 'Session',

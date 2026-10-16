@@ -28,6 +28,7 @@
     refreshProviderModels,
   } from '../../stores/providerModels.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
+  import ClaudeCommandTimeoutField from './ClaudeCommandTimeoutField.svelte';
   import ClaudeCrossSessionEditor from './ClaudeCrossSessionEditor.svelte';
   import ClaudeDisabledToolsEditor from './ClaudeDisabledToolsEditor.svelte';
   import ClaudeSessionAxesEditor from './ClaudeSessionAxesEditor.svelte';
@@ -252,6 +253,8 @@
       <CodexDisabledToolsEditor provider={definition} />
     {:else}
       <ClaudeDisabledToolsEditor provider={definition} />
+      <!-- Both Claude transports read it: one binary, one variable. -->
+      <ClaudeCommandTimeoutField />
     {/if}
   </section>
 

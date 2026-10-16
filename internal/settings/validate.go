@@ -316,6 +316,9 @@ func validateSettings(current Settings) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	if err := validateClaudeMaxCommandTimeoutHours("claudeMaxCommandTimeoutHours", current.ClaudeMaxCommandTimeoutHours); err != nil {
+		return Settings{}, err
+	}
 	current.ClaudeThinking, err = validateClaudeThinking("claudeThinking", current.ClaudeThinking)
 	if err != nil {
 		return Settings{}, err
@@ -489,6 +492,10 @@ func sanitizeLoadedSettings(current Settings) Settings {
 	current.ClaudeCrossSession = sanitizeClaudeCrossSession("claudeCrossSession", current.ClaudeCrossSession)
 	current.ClaudeSubagentLimits = sanitizeClaudeSubagentLimits("claudeSubagentLimits", current.ClaudeSubagentLimits)
 	current.ClaudeToolMemoryLimit = sanitizeClaudeToolMemoryLimit("claudeToolMemoryLimit", current.ClaudeToolMemoryLimit)
+	current.ClaudeMaxCommandTimeoutHours = sanitizeClaudeMaxCommandTimeoutHours(
+		"claudeMaxCommandTimeoutHours",
+		current.ClaudeMaxCommandTimeoutHours,
+	)
 	current.ClaudeThinking = sanitizeClaudeThinking("claudeThinking", current.ClaudeThinking)
 	current.SpinnerCustomVerbs = sanitizeSpinnerCustomVerbs("spinnerCustomVerbs", current.SpinnerCustomVerbs)
 	current.SpinnerDisabledAnimations = sanitizeSpinnerDisabledAnimations(

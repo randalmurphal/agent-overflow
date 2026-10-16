@@ -153,3 +153,19 @@ our own code.
   so AO learns task state only from live `TaskCreate` / `TaskUpdate` or
   its own `threads.live_todo`. `--resume-session-at` (the crash-repair
   path) is untested.
+- **Background commands stop at their timeout in headless sessions
+  (≥2.1.285)**: a non-interactive session (not the desktop or VS Code
+  entrypoint; `claude mcp serve` opts out; server flag
+  `tengu_cosmic_shore`, default on) stops a `run_in_background`
+  Bash/PowerShell command when its timeout expires. Background timeout
+  = `min(requested || max(30 min, BASH_DEFAULT_TIMEOUT_MS), ceiling)`,
+  ceiling = `min(max(2 h, BASH_MAX_TIMEOUT_MS), 2147483647 ms)`; unset,
+  `BASH_MAX_TIMEOUT_MS` reads as 10 min, which is also the foreground
+  ceiling. The Bash tool description states the default and maximum, so
+  the model can ask for up to the ceiling. AO exports
+  `BASH_MAX_TIMEOUT_MS` from the Command timeout setting (Tools section
+  of the Claude Code settings page, default 5 h) on both spawn paths,
+  same user-overridable-default posture as the todo opt-in; it never
+  sets `BASH_DEFAULT_TIMEOUT_MS`, which would also move the 2 min
+  foreground default. A value in Claude's own `settings.json` `env`
+  block still outranks both. Verified on 2.1.300 binary analysis.

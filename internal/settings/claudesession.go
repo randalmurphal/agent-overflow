@@ -210,6 +210,74 @@ func (s Settings) ClaudeSessionAxesForProvider(providerName string) ClaudeSessio
 	}
 }
 
+// -- Command timeout ceiling -------------------------------------------
+//
+// Claude Code reads BASH_MAX_TIMEOUT_MS as the ceiling on a Bash or
+// PowerShell command's timeout (2.1.300). A headless session stops a
+// background command when its timeout expires (2.1.285+), and the
+// background ceiling is max(2 h, BASH_MAX_TIMEOUT_MS) capped at
+// 2147483647 ms; without the variable a background command stops at its
+// 30 min default and can ask for at most 2 h, and a foreground command
+// can ask for at most 10 min. The Bash tool description states the
+// ceiling, so the model can ask for up to it.
+//
+// Unlike the axes above, AO always sends a value: the CLI's own ceiling
+// is what this setting exists to raise. It deliberately does NOT set
+// BASH_DEFAULT_TIMEOUT_MS, which would also change the 2 min foreground
+// default.
+//
+// Bounds:
+//   - 2 h is the floor because the CLI's background ceiling is already
+//     max(7200000, value); anything lower changes nothing for background
+//     commands.
+//   - 168 h (one week) is the ceiling: it covers a multi-day build, soak
+//     or data job, and a command still running after a week is hung
+//     rather than working. It stays well under the CLI's own clamp of
+//     2147483647 ms (about 596 h), so the stored value is always the
+//     effective one.
+const (
+	MinClaudeMaxCommandTimeoutHours     = 2
+	MaxClaudeMaxCommandTimeoutHours     = 168
+	DefaultClaudeMaxCommandTimeoutHours = 5
+)
+
+func validateClaudeMaxCommandTimeoutHours(field string, value int) error {
+	if value < MinClaudeMaxCommandTimeoutHours || value > MaxClaudeMaxCommandTimeoutHours {
+		return fmt.Errorf("%s must be between %d and %d hours",
+			field, MinClaudeMaxCommandTimeoutHours, MaxClaudeMaxCommandTimeoutHours)
+	}
+	return nil
+}
+
+// sanitizeClaudeMaxCommandTimeoutHours clamps: an out-of-range value still
+// says the user wanted a shorter or longer ceiling, and the nearest legal
+// value honors that (same rule as sanitizeActivityRunWindowRows).
+func sanitizeClaudeMaxCommandTimeoutHours(field string, value int) int {
+	if value < MinClaudeMaxCommandTimeoutHours {
+		log.Printf("settings: %s %d below %d, clamping", field, value, MinClaudeMaxCommandTimeoutHours)
+		return MinClaudeMaxCommandTimeoutHours
+	}
+	if value > MaxClaudeMaxCommandTimeoutHours {
+		log.Printf("settings: %s %d exceeds %d, clamping", field, value, MaxClaudeMaxCommandTimeoutHours)
+		return MaxClaudeMaxCommandTimeoutHours
+	}
+	return value
+}
+
+// MaxCommandTimeoutHoursForProvider returns the command timeout ceiling
+// for a provider's sessions, or 0 for a provider that has no such
+// variable. claude-tui shares the Claude answer: one binary, and the
+// variable means the same there (the foreground ceiling; its background
+// commands are not stopped by the headless deadline).
+func (s Settings) MaxCommandTimeoutHoursForProvider(providerName string) int {
+	switch strings.TrimSpace(providerName) {
+	case "claude", "claude-tui":
+		return s.ClaudeMaxCommandTimeoutHours
+	default:
+		return 0
+	}
+}
+
 // -- Extended thinking -------------------------------------------------
 //
 // The ONE axis in this file that is not spawn-only. Claude Code carries

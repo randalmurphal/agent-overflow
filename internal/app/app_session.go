@@ -730,9 +730,15 @@ func (a *App) spawnProviderSession(
 		// provider on the same backend as the headless one — dropping it here
 		// would silently run take-control sessions against api.anthropic.com
 		// while every other Claude surface used the user's endpoint.
-		cfg.Env = provider.BuildEnvironment(
+		//
+		// The command timeout ceiling is applied to the override map here,
+		// before the host environment is merged under it, so its precedence
+		// matches the headless spawn: custom env over the setting over an
+		// inherited value.
+		cfg.Env = provider.BuildEnvironment(claude.WithCommandTimeoutEnv(
 			a.sessionProcessEnv(string(provider.ClaudeTUI), nil, credential),
-		)
+			opts.ClaudeMaxCommandTimeoutHours,
+		))
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
 		cfg.Upstream = a.claudetuiUpstream()
 		cfg.EventLogger = a.logger

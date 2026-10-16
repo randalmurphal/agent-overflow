@@ -121,6 +121,7 @@ CodexPromptOverrides  []PromptOverride `json:"codexPromptOverrides,omitempty"`
 ClaudeDisabledTools   []string         `json:"claudeDisabledTools,omitempty"`
 CodexDisabledTools    []string         `json:"codexDisabledTools,omitempty"`
 ClaudeTodoRemindersDisabled bool       `json:"claudeTodoRemindersDisabled,omitempty"`
+ClaudeMaxCommandTimeoutHours int       `json:"claudeMaxCommandTimeoutHours"` // default 5, range 2-168
 AgentGuideEnabled     bool             `json:"agentGuideEnabled"` // default true
 ```
 
@@ -318,6 +319,18 @@ only matters while ≥1 group tool is exposed. The UI disables it when
 the whole group is off, and turning the group off needs no reminder
 write at all.
 
+`ClaudeMaxCommandTimeoutHours` is the Command timeout row in the same
+section: exported as `BASH_MAX_TIMEOUT_MS` (hours in ms) into every
+Claude spawn, headless (`claude.WithCommandTimeoutEnv` in
+`claudeSpawnEnv`) and claude-tui (the same helper on the override map
+before `BuildEnvironment`), as a DEFAULT a custom-env value outranks; the
+row names an overriding custom-env entry. Precedence on both paths:
+Claude's own `settings.json` `env` block, then the custom environment,
+then the setting, then an inherited host value. It rides
+`SessionOptions.ClaudeMaxCommandTimeoutHours`, stamped and pinned like
+`DisableTodoReminders`. The CLI behavior it controls is in
+`docs/references/claude.md` (background commands stop at their timeout).
+
 **Codex:** curated toggles, each mapping to per-thread `config` map
 entries (all verified per-conversation-settable):
 
@@ -352,6 +365,7 @@ axes:
 |---|---|
 | `DisabledTools` | **Pinned** to `sess.launchOpts`. Spawn-only on every provider, so a diff could only queue a restart nobody asked for. |
 | `DisableTodoReminders` | **Pinned**, same reason (an env var, fixed at spawn). |
+| `ClaudeMaxCommandTimeoutHours` | **Pinned**, same reason. |
 | `SystemPrompt`, settings override, every provider | **Pinned; per-thread `prompt_stale` banner.** A prompt change never applies to a running session (decision 2026-10-14): no `set_model.system_prompt` swap, no deferred restart. Nothing is matched or rendered on the reconcile path. It applies at the thread's next session start; until then the thread shows the banner described below. |
 | `SystemPrompt`, feature-owned | **Untouched.** A non-empty `opts.SystemPrompt` after `buildSessionOptions` means a discussion owns it; it converges by deferred restart, since `claude.PlanLiveUpdate` carries no prompt and any prompt diff falls through to its spawn-only comparison. |
 | `ClaudeThinking`, headless Claude on CLI ≥ 2.1.214 | **Converges live** for every explicit value. `claude.PlanLiveUpdate` carries it as `LiveUpdate.Thinking` and `ApplyLiveUpdate` sends one `set_max_thinking_tokens` control request (`max_thinking_tokens` for off/budget, `thinking_display` for the display axis). Returning to Claude's own choice is a **deferred restart**: `max_thinking_tokens: null` is accepted and does nothing, so only a respawn without the flag resets it. Below the version floor, or with the version unknown, the change is a deferred restart. |

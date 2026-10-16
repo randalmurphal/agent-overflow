@@ -462,6 +462,14 @@ export interface Settings {
    */
   claudeTodoRemindersDisabled?: boolean;
   /**
+   * The longest a Bash or PowerShell command may run in a Claude session
+   * (headless and claude-tui) when Claude asks for a long timeout,
+   * background commands included. Exported at spawn as BASH_MAX_TIMEOUT_MS
+   * unless the custom environment names it. Range in
+   * FRONTEND_SETTING_RANGES; spawn-only.
+   */
+  claudeMaxCommandTimeoutHours: number;
+  /**
    * Claude-only session axes delivered through the CLI's `--settings`
    * block. None of them has a CLI flag — the settings key IS the delivery
    * mechanism — and all three are read at spawn, so edits reach new
