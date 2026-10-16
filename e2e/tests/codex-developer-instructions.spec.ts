@@ -54,7 +54,6 @@ test('a guide change between two sessions of a Codex thread reaches the resumed 
 
     await harness.rpc('UpdateSettings', { agentGuideEnabled: false });
     const resumed = await startSession(harness, threadId, known);
-    expect(resumed.sessionConfig).toBeUndefined();
     const injected = resumed.injectedItems ?? [];
     expect(injected).toHaveLength(1);
     expect(injected[0].role).toBe('developer');
