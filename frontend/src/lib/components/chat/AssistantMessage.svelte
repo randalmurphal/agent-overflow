@@ -199,17 +199,15 @@
   const parserSourceAppend = $derived(
     pane?.assistantMarkdownSourceAppend?.(item.id, parserSource),
   );
-  const markdownSource = $derived(
-    jsonFence.render(parserSource, streaming, parserSourceAppend),
-  );
-  const markdownSourceAppend = $derived.by(() => {
-    markdownSource;
-    return jsonFence.outputAppend;
+  // One formatter read per source: `render` settles the append and the
+  // raw-JSON fact its getters report, so both are taken beside its result.
+  const rendered = $derived.by(() => {
+    const source = jsonFence.render(parserSource, streaming, parserSourceAppend);
+    return { source, append: jsonFence.outputAppend, rawJson: jsonFence.sourceIsRawJson };
   });
-  const directSourceIsRawJson = $derived.by(() => {
-    markdownSource;
-    return jsonFence.sourceIsRawJson;
-  });
+  const markdownSource = $derived(rendered.source);
+  const markdownSourceAppend = $derived(rendered.append);
+  const directSourceIsRawJson = $derived(rendered.rawJson);
   const pathCompletionGuard = new AllowlistedPathCompletionGuard();
   let bodyRoot: HTMLElement;
   const directRevealSink = createStreamingAssistantLiteralOwner({
