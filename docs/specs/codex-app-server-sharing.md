@@ -427,8 +427,8 @@ multi-thread app-server:
 
 What must pass unchanged, at both stages:
 
-- every Playwright spec that runs a Codex thread (68 at the base of this
-  change: `grep -lE "provider: ?'codex'|'codex'" e2e/tests/*.spec.ts`),
+- every Playwright spec that mentions Codex (68 at the base of this
+  change: `grep -li codex e2e/tests/*.spec.ts`),
   with particular weight on `codex-steer`, `codex-collab`, `codex-revert`,
   `codex-terminal-polls`, `agent-visibility-codex`, `fork-midturn`,
   `session-replace-midturn`, `stale-session-frames`,
