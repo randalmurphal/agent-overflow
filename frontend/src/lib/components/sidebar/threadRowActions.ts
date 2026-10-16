@@ -170,8 +170,9 @@ export async function copyThreadIdAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    const mark = threadRowFrameMark();
     const updated = await PinThread(ctx.thread.id);
-    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
+    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined, mark);
   } catch (err) {
     console.error('Failed to pin thread:', err);
     addErrorToast(userFacingError(err), err);
@@ -180,8 +181,9 @@ export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function unpinThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    const mark = threadRowFrameMark();
     const updated = await UnpinThread(ctx.thread.id);
-    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
+    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined, mark);
   } catch (err) {
     console.error('Failed to unpin thread:', err);
     addErrorToast(userFacingError(err), err);
@@ -193,8 +195,9 @@ export async function setThreadPinGroupAction(
   group: typeof PIN_GROUP_FRONT | typeof PIN_GROUP_BACK,
 ): Promise<void> {
   try {
+    const mark = threadRowFrameMark();
     const updated = await SetThreadPinGroup(ctx.thread.id, group);
-    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
+    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined, mark);
   } catch (err) {
     console.error('Failed to move pinned thread:', err);
     addErrorToast(userFacingError(err), err);

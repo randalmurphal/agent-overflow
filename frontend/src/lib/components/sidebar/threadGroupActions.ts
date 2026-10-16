@@ -34,6 +34,7 @@ import { openDraftThreadForProject } from '../../stores/threadCreation.svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { expandProject } from '../../stores/sidebar.svelte';
 import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
+import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { threadBackend } from '../../transport/entityIndex';
 import type { BackendKey } from '../../transport/backendKey';
@@ -218,8 +219,9 @@ async function setThreadGroupMembership(
     return false;
   }
   try {
+    const mark = threadRowFrameMark();
     const rows = await SetThreadGroup([...threadIds], groupId) as Thread[];
-    updateThreadGroupState(rows);
+    updateThreadGroupState(rows, mark);
     return true;
   } catch (err) {
     reportGroupFailure(what, err);

@@ -67,8 +67,11 @@ func (an *ThreadAnnouncer) AnnounceWithin(ctx context.Context, emit func(eventch
 // AnnouncePatch emits the named fields of a write the caller has committed,
 // as a `patch` frame. Call it after the commit: a row frame read before the
 // commit then leaves before the patch, and one read after it carries the
-// patched fields already. patch carries no row; its Action and ID are set
-// here.
+// patched fields already. The Title, Model and SessionRef it names carry
+// the stored values, read under the lock, not the caller's: two writers of
+// one field can announce in the opposite order to their commits, and the
+// last frame must carry the last write. patch carries no row; its Action
+// and ID are set here.
 func (an *ThreadAnnouncer) AnnouncePatch(emit func(eventchan.Channel, any), threadID string, patch ThreadUpdateEvent) {
 	if threadID == "" {
 		return
@@ -77,6 +80,22 @@ func (an *ThreadAnnouncer) AnnouncePatch(emit func(eventchan.Channel, any), thre
 	patch.ID = threadID
 	patch.Thread = nil
 	defer an.locks.Lock(threadID)()
+	if patch.Title != nil || patch.Model != nil || patch.SessionRef != nil {
+		row, err := an.read(threadID)
+		if err != nil {
+			log.Printf("announce thread %s patch: %v", threadID, err)
+			return
+		}
+		if patch.Title != nil {
+			patch.Title = &row.Title
+		}
+		if patch.Model != nil {
+			patch.Model = &row.Model
+		}
+		if patch.SessionRef != nil {
+			patch.SessionRef = &row.SessionRef
+		}
+	}
 	emit(eventchan.ThreadUpdated, patch)
 }
 

@@ -39,11 +39,23 @@ var threadUpdatedNamers = []string{
 	"cmd/ao-harness/channels.go",
 }
 
+// channelForwarders may pass a channel that is not a constant. Each one's
+// channels come from where the name check still sees them, or forging
+// frames is its purpose.
+var channelForwarders = map[string]string{
+	"internal/appupdate/desktop.go":  "updater channels resolved from updaterEventBridge's constants",
+	"internal/appupdate/manager.go":  "updater channels resolved from updaterEventBridge's constants",
+	"internal/appupdate/wsl.go":      "updater channels resolved from updaterEventBridge's constants",
+	"internal/harnessrpc/harness.go": "the harness's frame-forging escape hatch (--harness/--soak only)",
+	"internal/harnessrpc/replay.go":  "the harness's recorded-log replay (--harness/--soak only)",
+}
+
 // TestThreadUpdatedFramesComeFromTheAnnouncer type-checks every production
 // package and rejects a thread:updated frame that does not leave through
 // triage.ThreadAnnouncer: a reference to eventchan.ThreadUpdated (or a
 // constant equal to its value) outside threadUpdatedNamers, and a write to
-// ThreadUpdateEvent.Thread outside threadFrameEmitter, through any alias. A
+// ThreadUpdateEvent.Thread outside threadFrameEmitter, through any alias, and
+// a channel argument that is not a constant outside channelForwarders. A
 // frame emitted on its own escapes the announce lock and can leave after a
 // frame describing a later state, which undoes that state on every client.
 func TestThreadUpdatedFramesComeFromTheAnnouncer(t *testing.T) {
@@ -138,6 +150,7 @@ func threadFrameViolations(root string, pkgs []listedPackage) ([]string, error) 
 		info := &types.Info{
 			Types: map[ast.Expr]types.TypeAndValue{},
 			Uses:  map[*ast.Ident]types.Object{},
+			Defs:  map[*ast.Ident]types.Object{},
 		}
 		conf := types.Config{Importer: imp, Sizes: types.SizesFor("gc", runtime.GOARCH)}
 		if _, err := conf.Check(pkg.ImportPath, fset, files, info); err != nil {
@@ -179,6 +192,7 @@ func typedThreadFrameViolations(fset *token.FileSet, file *ast.File, info *types
 		found = append(found, fmt.Sprintf("%s: %s", fset.Position(node.Pos()), what))
 	}
 	writes := threadFieldWriteSites(file)
+	params := parameterObjects(file, info)
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.Ident:
@@ -200,6 +214,11 @@ func typedThreadFrameViolations(fset *token.FileSet, file *ast.File, info *types
 				path != threadFrameEmitter && isThreadUpdateEventType(tv.Type) &&
 				!isThreadUpdateEventType(info.Types[node.Args[0]].Type) {
 				report(node, "converts a value to ThreadUpdateEvent")
+			}
+			if _, forwards := channelForwarders[path]; !forwards && !slices.Contains(threadUpdatedNamers, path) {
+				for _, arg := range nonConstantChannelArgs(node, info, params) {
+					report(arg, "passes a channel that is not a constant")
+				}
 			}
 		}
 		if sel, ok := node.(*ast.SelectorExpr); ok && isEventchanThreadUpdated(info.Uses[sel.Sel]) {
@@ -270,6 +289,67 @@ func identUse(info *types.Info, expr ast.Expr) types.Object {
 	return nil
 }
 
+// nonConstantChannelArgs returns the arguments a call passes to an
+// eventchan.Channel parameter that are neither constants nor a parameter of
+// the enclosing function. A forwarder (an emit wrapper) passes its own
+// parameter on; its callers are checked in turn. Anything else could build
+// the thread:updated channel at run time.
+func nonConstantChannelArgs(call *ast.CallExpr, info *types.Info, params map[types.Object]bool) []ast.Expr {
+	tv, ok := info.Types[call.Fun]
+	if !ok || tv.IsType() {
+		return nil
+	}
+	sig, ok := tv.Type.Underlying().(*types.Signature)
+	if !ok {
+		return nil
+	}
+	var found []ast.Expr
+	for i, arg := range call.Args {
+		if i >= sig.Params().Len() || (sig.Variadic() && i >= sig.Params().Len()-1) {
+			break
+		}
+		if !isEventchanChannel(sig.Params().At(i).Type()) || info.Types[arg].Value != nil {
+			continue
+		}
+		if id, ok := ast.Unparen(arg).(*ast.Ident); ok && params[info.Uses[id]] {
+			continue
+		}
+		found = append(found, arg)
+	}
+	return found
+}
+
+// parameterObjects collects every function and method parameter declared in
+// file.
+func parameterObjects(file *ast.File, info *types.Info) map[types.Object]bool {
+	params := map[types.Object]bool{}
+	add := func(fields *ast.FieldList) {
+		if fields == nil {
+			return
+		}
+		for _, field := range fields.List {
+			for _, name := range field.Names {
+				if obj := info.Defs[name]; obj != nil {
+					params[obj] = true
+				}
+			}
+		}
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.FuncType:
+			add(node.Params)
+		}
+		return true
+	})
+	return params
+}
+
+func isEventchanChannel(typ types.Type) bool {
+	named, ok := types.Unalias(typ).(*types.Named)
+	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == eventchanPkgPath && named.Obj().Name() == "Channel"
+}
+
 func isEventchanThreadUpdated(obj types.Object) bool {
 	c, ok := obj.(*types.Const)
 	return ok && c.Pkg() != nil && c.Pkg().Path() == eventchanPkgPath && c.Name() == "ThreadUpdated"
@@ -329,6 +409,15 @@ func syntacticThreadFrameViolations(fset *token.FileSet, file *ast.File, path st
 		case *ast.SelectorExpr:
 			if node.Sel.Name == "ThreadUpdated" && !slices.Contains(threadUpdatedNamers, path) {
 				report(node, "names ThreadUpdated")
+			}
+		case *ast.CallExpr:
+			// A channel built at run time: Channel(x) with x not a literal.
+			if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Channel" && len(node.Args) == 1 {
+				if _, forwards := channelForwarders[path]; !forwards && !slices.Contains(threadUpdatedNamers, path) {
+					if _, literal := node.Args[0].(*ast.BasicLit); !literal {
+						report(node, "builds a channel at run time")
+					}
+				}
 			}
 		case *ast.BasicLit:
 			if node.Kind == token.STRING {

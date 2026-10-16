@@ -34,3 +34,30 @@ func TestAnnounceWithinGivesUpWhenItsContextEnds(t *testing.T) {
 		t.Fatalf("emitted %d frames after the context ended, want 0", emitted)
 	}
 }
+
+// A patch carries the stored value of each field it names, whatever its
+// caller wrote, and leaves the fields it does not name unset.
+func TestAnnouncePatchCarriesTheStoredFields(t *testing.T) {
+	stored := store.Thread{ID: "t1", Title: "stored title", Model: "stored-model", SessionRef: "stored-ref"}
+	announcer := NewThreadAnnouncer(func(string) (store.Thread, error) { return stored, nil })
+	var got ThreadUpdateEvent
+	emit := func(_ eventchan.Channel, payload any) { got = payload.(ThreadUpdateEvent) }
+	title, model, ref := "caller title", "caller-model", "caller-ref"
+	announcer.AnnouncePatch(emit, "t1", ThreadUpdateEvent{Title: &title, Model: &model, SessionRef: &ref})
+	if got.Action != ThreadActionPatch || got.ID != "t1" || *got.Title != stored.Title || *got.Model != stored.Model || *got.SessionRef != stored.SessionRef {
+		t.Fatalf("patch = %+v, want the stored fields", got)
+	}
+	announcer.AnnouncePatch(emit, "t1", ThreadUpdateEvent{Model: &model})
+	if got.Title != nil || got.SessionRef != nil || *got.Model != stored.Model {
+		t.Fatalf("model-only patch = %+v, want only the stored model", got)
+	}
+	at := int64(7)
+	announcer = NewThreadAnnouncer(func(string) (store.Thread, error) {
+		t.Fatal("an activity-only patch read the row")
+		return store.Thread{}, nil
+	})
+	announcer.AnnouncePatch(emit, "t1", ThreadUpdateEvent{UpdatedAt: &at})
+	if got.UpdatedAt == nil || *got.UpdatedAt != at {
+		t.Fatalf("activity patch = %+v", got)
+	}
+}

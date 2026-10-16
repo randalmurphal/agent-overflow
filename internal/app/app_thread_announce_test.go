@@ -333,6 +333,34 @@ func TestRenamePatchDoesNotLeaveBeforeARowReadEarlier(t *testing.T) {
 	}
 }
 
+// The verifier's probe: two writers of one title announcing in the opposite
+// order to their commits. The router's provider rename commits, pauses
+// before its announce while RenameThread runs whole, then announces (the
+// router's emitThreadPatch is this AnnouncePatch on the shared announcer).
+// The last frame must carry the stored title, not the router's.
+func TestPatchFramesCarryTheStoredValueNotTheCallers(t *testing.T) {
+	t.Parallel()
+	f := newFollowFixture(t, "thread-patch-stored-value")
+	const providerTitle = "Title the provider chose"
+	const userTitle = "Title the user typed"
+	if err := f.app.store.UpdateTitle(f.thread.ID, providerTitle); err != nil {
+		t.Fatalf("router commit: %v", err)
+	}
+	if err := f.app.RenameThread(f.thread.ID, userTitle); err != nil {
+		t.Fatalf("RenameThread: %v", err)
+	}
+	routerTitle := providerTitle
+	f.app.threadAnnouncer().AnnouncePatch(f.app.emitEvent, f.thread.ID, triage.ThreadUpdateEvent{Title: &routerTitle})
+	stored, err := f.app.store.GetThread(f.thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	row, _ := replayedThread(f.rows.snapshot(), f.thread.ID, true)
+	if stored.Title != userTitle || row.Title != userTitle {
+		t.Fatalf("client title %q, store title %q, want both %q", row.Title, stored.Title, userTitle)
+	}
+}
+
 // A row frame read before a delete must not leave after the deleted frame:
 // the client would hold a row for a thread that no longer exists. The focus
 // stamp announces holding no thread lock, so a delete can land while its

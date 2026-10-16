@@ -53,6 +53,14 @@ export function forgetThreadRowFrames(threadId: string): void {
 }
 
 /**
+ * Whether a frame carrying the thread's whole row arrived after `mark`, so a
+ * reply from a call started at `mark` is older than the row the client holds.
+ */
+export function threadRowFramedSince(threadId: string, mark: number): boolean {
+  return (framesByThread.get(threadId)?.row ?? 0) > mark;
+}
+
+/**
  * The row to apply for `reply`, an RPC answer for a call started at `mark`:
  * null when a whole-row frame arrived since, otherwise `reply` with each
  * field a later patch named taken from `current`, the row the client holds.
