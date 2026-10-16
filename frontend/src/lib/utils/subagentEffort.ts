@@ -7,8 +7,11 @@
 // subagent's model decides what that becomes. Claude Code drops the
 // effort for a model with no effort tiers and steps an xhigh or max the
 // model does not offer down to high (2.1.300 effort resolution), so the
-// model's catalog entry is applied here. A model the catalog does not
-// list keeps the requested effort: silence is not a denial.
+// model's catalog entry is applied here. A model alias the launch could
+// not resolve (`haiku`) is applied through every catalog model of that
+// family, and shows an effort only when they all agree on it. A full
+// model id the catalog does not list keeps the requested effort: silence
+// is not a denial.
 
 import { getProviderModels } from '../stores/providerModels.svelte';
 import { threadMachine } from '../stores/attachedBackends.svelte';
@@ -28,14 +31,37 @@ export function findClaudeCatalogModel(models: readonly ModelInfo[], model: stri
   return models.find((candidate) => candidates.includes(candidate.slug));
 }
 
-/** The catalog entry for a Claude subagent's model on its thread's computer. */
-export function claudeSubagentCatalogModel(
+/**
+ * Display label for the effort a Claude subagent on `model` runs at, given
+ * the effort its launch asked for and the Claude catalog.
+ */
+export function claudeSubagentEffortLabel(
+  models: readonly ModelInfo[],
+  model: string,
+  effort: string,
+): string {
+  const id = model.trim();
+  const entry = findClaudeCatalogModel(models, id);
+  if (entry || !id || id.toLowerCase().startsWith('claude-')) {
+    return subagentEffortLabel('claude', effort, entry);
+  }
+  const family = id.toLowerCase();
+  const labels = new Set(
+    models
+      .filter((candidate) => candidate.slug.toLowerCase().includes(family))
+      .map((candidate) => subagentEffortLabel('claude', effort, candidate)),
+  );
+  return labels.size === 1 ? [...labels][0] : '';
+}
+
+/** claudeSubagentEffortLabel against the catalog of the thread's computer. */
+export function claudeThreadSubagentEffortLabel(
   threadId: string,
   projectId: string | null | undefined,
   model: string,
-): ModelInfo | undefined {
-  if (!model.trim()) return undefined;
-  return findClaudeCatalogModel(getProviderModels('claude', threadMachine(threadId, projectId)), model);
+  effort: string,
+): string {
+  return claudeSubagentEffortLabel(getProviderModels('claude', threadMachine(threadId, projectId)), model, effort);
 }
 
 /**

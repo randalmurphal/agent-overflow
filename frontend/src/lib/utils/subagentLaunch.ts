@@ -47,6 +47,7 @@ import { effortLabel, joinLabelParts } from './effortLabels';
 import { extractClaudeTaskID } from './claudeTaskMeta';
 import {
   deriveClaudeSubagentLabel,
+  knownEffort,
   readClaudeSubagentInputFromStrings,
   titleCaseClaudeSubagentToken,
 } from './claudeSubagentLabel';
@@ -422,7 +423,11 @@ export interface ClaudeResumeCarrierIdentity {
   agentType: string;
   /** The ORIGINAL agent's model ('' when unstamped). */
   model: string;
-  /** The effort slug the ORIGINAL agent ran at ('' when unstamped). */
+  /**
+   * The effort slug this resumed round runs at: the effort the original
+   * launch named, else the carrier's own `inherited_effort`, its sender's
+   * effort at resume time ('' when unknown).
+   */
   effort: string;
   /**
    * The one-line task beside the name — the original launch description.
@@ -436,8 +441,9 @@ export interface ClaudeResumeCarrierIdentity {
  * Identity for a §E6 resume carrier. The resuming tool is a
  * `SendMessage`, so its own input says nothing about the agent; the
  * parser stamps the ORIGINAL agent's `subagent_type` + `description` off
- * the rebind `task_started`, triage copies `subagent_model` and
- * `subagent_effort` from the original launch row in the keep-running flip,
+ * the rebind `task_started` with its own `inherited_effort`, triage copies
+ * `subagent_model` and the launch's named `subagent_effort` from the
+ * original launch row in the keep-running flip,
  * and the row Summary is
  * rewritten to `Agent: <description>`. Read the stamps first, fall back
  * to un-prefixing the summary, and never render the bare tool name.
@@ -450,8 +456,11 @@ export function claudeResumeCarrierIdentity(item: Item): ClaudeResumeCarrierIden
     typeof meta?.subagent_type === 'string' ? meta.subagent_type.trim() : '';
   const model =
     typeof meta?.subagent_model === 'string' ? meta.subagent_model.trim() : '';
-  const effort =
+  const namedEffort =
     typeof meta?.subagent_effort === 'string' ? meta.subagent_effort.trim() : '';
+  const inheritedEffort =
+    typeof meta?.inherited_effort === 'string' ? meta.inherited_effort.trim() : '';
+  const effort = knownEffort(namedEffort) ?? inheritedEffort;
   let description =
     typeof meta?.description === 'string' ? meta.description.trim() : '';
   if (!description) {

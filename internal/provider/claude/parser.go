@@ -173,6 +173,9 @@ type Parser struct {
 	// stamp on Agent launches (subagent_effort.go).
 	sessionEffort      string
 	agentLaunchEfforts recentMap[agentLaunchEffort]
+	// modelAliases is the CLI's alias map, which resolves an Agent
+	// launch's `model` alias (SetModelAliases).
+	modelAliases map[string]string
 	// streamBlockTypes tracks partial-message content block types by
 	// (parent_tool_use_id,index) so a later content_block_stop can identify
 	// which streaming block closed.

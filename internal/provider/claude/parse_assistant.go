@@ -108,6 +108,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// the EventError path, and re-emitting it as content duplicates the
 	// api_error row (see TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent).
 	errorEnum := assistantErrorEnum(raw, msg)
+	p.observeRequestEffort(raw, parentToolUseID)
 
 	// CLI-generated local command output. The CLI runs `/usage`, `/context`,
 	// a skill, a plugin command etc. itself — no API call, num_turns 0 — and
@@ -519,8 +520,8 @@ func (p *Parser) appendToolUseEvent(
 		p.markAckTool(block.ID, block.Name)
 	}
 
-	inheritedEffort := p.agentLaunchInheritedEffort(block.Name, block.ID, parentToolUseID, block.Input)
-	meta := marshalToolMeta(block.Name, block.Input, isBackground, isAgentLaunchToolName(block.Name), assistantMessageID, inheritedEffort)
+	stamps := p.agentLaunchStamps(block.Name, block.ID, parentToolUseID, block.Input)
+	meta := marshalToolMeta(block.Name, block.Input, isBackground, isAgentLaunchToolName(block.Name), assistantMessageID, stamps)
 	return append(events, provider.ProviderEvent{
 		Kind:            provider.EventToolStart,
 		ThreadID:        threadID,
@@ -901,7 +902,7 @@ func hasRunInBackground(input json.RawMessage) bool {
 // `{server, tool}` pair onto `meta.mcp` so the renderer can synthesize
 // the body as `server.tool(args)` from a single source on both
 // providers.
-func marshalToolMeta(toolName string, input json.RawMessage, isBackground, isAgentLaunch bool, assistantMessageID, inheritedEffort string) json.RawMessage {
+func marshalToolMeta(toolName string, input json.RawMessage, isBackground, isAgentLaunch bool, assistantMessageID string, stamps agentLaunchStamps) json.RawMessage {
 	normalizedToolName := toolName
 	var mcp map[string]string
 	if server, tool, ok := parseClaudeMCPToolName(toolName); ok {
@@ -925,8 +926,11 @@ func marshalToolMeta(toolName string, input json.RawMessage, isBackground, isAge
 	if assistantMessageID != "" {
 		fields["assistant_message_id"] = assistantMessageID
 	}
-	if inheritedEffort != "" {
-		fields[inheritedEffortMetaKey] = inheritedEffort
+	if stamps.inheritedEffort != "" {
+		fields[inheritedEffortMetaKey] = stamps.inheritedEffort
+	}
+	if stamps.requestedModel != "" {
+		fields[requestedModelMetaKey] = stamps.requestedModel
 	}
 	out, _ := json.Marshal(fields)
 	return out

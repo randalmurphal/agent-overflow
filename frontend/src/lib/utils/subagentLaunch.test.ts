@@ -294,6 +294,20 @@ describe('subagentLaunchInfo — SendMessage resume carrier (claude-wire.md §E6
     });
   });
 
+  it('reads the resumed round\'s effort: the launch\'s named one, else the carrier\'s own', () => {
+    const carrier = (fields: Record<string, unknown>) => mkItem({
+      id: 'toolu_resume',
+      toolName: 'SendMessage',
+      isBackground: true,
+      summary: 'Agent: x',
+      meta: meta({ task_id: 'a1', resumes_tool_use_id: 'toolu_original', ...fields }),
+    });
+    expect(claudeResumeCarrierIdentity(carrier({ subagent_effort: 'max', inherited_effort: 'low' })).effort).toBe('max');
+    expect(claudeResumeCarrierIdentity(carrier({ inherited_effort: 'low' })).effort).toBe('low');
+    expect(claudeResumeCarrierIdentity(carrier({ subagent_effort: 'higher', inherited_effort: 'low' })).effort).toBe('');
+    expect(claudeResumeCarrierIdentity(carrier({})).effort).toBe('');
+  });
+
   it('suppresses the description line when it already is the name', () => {
     // No subagent_type stamp: the description doubles as the name, so
     // the identity's description is empty and no surface renders the

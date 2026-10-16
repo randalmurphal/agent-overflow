@@ -5,22 +5,27 @@
 // it at launch (`inherited_effort`, the session's `--effort`: the seeded
 // Opus 4.7 thread's default xhigh). A subagent on a model with no effort
 // tiers (Haiku) runs without one, so no effort shows. Until the subagent
-// reports its model, the launch's requested `model` is shown.
+// reports its model, the launch's requested `model` is shown, and an alias
+// the app cannot resolve (`haiku`: Haiku 4.5 drops efforts, Haiku 5.5 runs
+// them) shows no effort. A resumed agent that named no effort runs at the
+// session's effort when it resumes, which its resume row shows.
 //
 // Codex: a 0.162+ `subAgentActivity` started item carries the child's
 // resolved `model` and `reasoningEffort`; the spawn row shows them without
 // the child `thread/resume` read (the scenario's resume answers another
 // profile, which a read would put on the row).
 //
-// Labels are the effort picker's ("xHigh", "Medium").
+// Labels are the effort picker's ("xHigh", "Medium"), joined to the model
+// with the composer's separator.
 import { test, expect } from './fixtures.js';
 import type { Page, TestInfo } from '@playwright/test';
 import {
   RESULT_LINE,
   advance,
+  agentResumeLines,
   asyncAgentAckLine,
   backgroundTasksChangedLine,
-  claudeScenario,
+  claudeTurnsScenario,
   emit,
   seedAgentThread,
   startMock,
@@ -38,7 +43,7 @@ async function shoot(page: Page, testInfo: TestInfo, region: import('@playwright
   for (const theme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme: theme });
     await expect(page.locator('html')).toHaveClass(theme === 'dark' ? /dark/ : /^(?!.*\bdark\b).*$/);
-    await region.screenshot({ path: testInfo.outputPath(`effort-${name}-v2-${theme}.png`) });
+    await region.screenshot({ path: testInfo.outputPath(`effort-${name}-v3-${theme}.png`) });
   }
   await page.emulateMedia({ colorScheme: 'light' });
 }
@@ -52,85 +57,113 @@ function childTextLine(messageId: string, text: string, model: string, parentToo
   });
 }
 
+/** The CLI's `/effort` success reply: CLI-generated output on its `<synthetic>` model. */
+function effortReplyLine(messageId: string, text: string): string {
+  return JSON.stringify({
+    type: 'assistant',
+    message: { id: messageId, role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text }] },
+  });
+}
+
+const SWEEP_TASK = { task_id: 'task-bg', task_type: 'local_agent', description: 'background sweep' };
+
 test('a Claude subagent shows the effort it runs at next to its model', async ({ harness, page }, testInfo) => {
   await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
   await harness.rpc('HarnessSetScenario', {
-    scenario: claudeScenario('claude-effort', [
-      emit([
-        ...textLines('msg-lead', 'Delegating three ways.'),
-        // Named model and effort, awaited.
-        toolUseLine('msg-deep', 'tu-deep', 'Agent', {
-          description: 'deep review',
-          subagent_type: 'reviewer',
-          prompt: 'review the parser',
-          model: 'sonnet',
-          effort: 'medium',
-          run_in_background: false,
-        }),
-        taskStartedLine('task-deep', 'tu-deep', 'deep review'),
-      ]),
-      { waitSignal: { name: 'deep-runs' } },
-      emit([
-        // The subagent's own envelope reports the model it runs on.
-        ...textLines('msg-deep-text', 'Reviewing closely.', 'tu-deep'),
-        taskUpdatedLine('task-deep', { status: 'completed', end_time: 1787415964724 }),
-        toolResultLine('tu-deep', 'Review done.'),
+    scenario: claudeTurnsScenario('claude-effort', [
+      [
+        emit([
+          ...textLines('msg-lead', 'Delegating three ways.'),
+          // Named model and effort, awaited.
+          toolUseLine('msg-deep', 'tu-deep', 'Agent', {
+            description: 'deep review',
+            subagent_type: 'reviewer',
+            prompt: 'review the parser',
+            model: 'sonnet',
+            effort: 'medium',
+            run_in_background: false,
+          }),
+          taskStartedLine('task-deep', 'tu-deep', 'deep review'),
+          // An alias whose family disagrees on effort; the subagent turns
+          // out to run on Haiku 4.5, which drops the requested max.
+          toolUseLine('msg-scout', 'tu-scout', 'Agent', {
+            description: 'quick scout',
+            subagent_type: 'scout',
+            prompt: 'list the files',
+            model: 'haiku',
+            effort: 'max',
+          }),
+          taskStartedLine('task-scout', 'tu-scout', 'quick scout'),
+        ]),
+        { waitSignal: { name: 'agents-run' } },
+        emit([
+          // The subagents' own envelopes report the model each runs on.
+          ...textLines('msg-deep-text', 'Reviewing closely.', 'tu-deep'),
+          taskUpdatedLine('task-deep', { status: 'completed', end_time: 1787415964724 }),
+          toolResultLine('tu-deep', 'Review done.'),
+          childTextLine('msg-scout-text', 'Listing.', 'claude-haiku-4-5-20251001', 'tu-scout'),
+          taskUpdatedLine('task-scout', { status: 'completed', end_time: 1787415964726 }),
+          toolResultLine('tu-scout', 'Scout done.'),
 
-        // No effort named, in the background: the session's xhigh.
-        toolUseLine('msg-bg', 'tu-bg', 'Agent', {
-          description: 'background sweep',
-          subagent_type: 'sweeper',
-          prompt: 'sweep the repo',
-          run_in_background: true,
-        }),
-        taskStartedLine('task-bg', 'tu-bg', 'background sweep'),
-        asyncAgentAckLine('tu-bg', 'task-bg', 'background sweep'),
-        backgroundTasksChangedLine([{ task_id: 'task-bg', task_type: 'local_agent', description: 'background sweep' }]),
-        ...textLines('msg-bg-text', 'Sweeping.', 'tu-bg'),
+          // No effort named, in the background: the session's xhigh.
+          toolUseLine('msg-bg', 'tu-bg', 'Agent', {
+            description: 'background sweep',
+            subagent_type: 'sweeper',
+            prompt: 'sweep the repo',
+            run_in_background: true,
+          }),
+          taskStartedLine('task-bg', 'tu-bg', 'background sweep'),
+          asyncAgentAckLine('tu-bg', 'task-bg', 'background sweep'),
+          backgroundTasksChangedLine([SWEEP_TASK]),
+          ...textLines('msg-bg-text', 'Sweeping.', 'tu-bg'),
+          RESULT_LINE,
 
-        // Haiku has no effort tiers: the CLI drops the requested max.
-        toolUseLine('msg-scout', 'tu-scout', 'Agent', {
-          description: 'quick scout',
-          subagent_type: 'scout',
-          prompt: 'list the files',
-          model: 'haiku',
-          effort: 'max',
-        }),
-        taskStartedLine('task-scout', 'tu-scout', 'quick scout'),
-        childTextLine('msg-scout-text', 'Listing.', 'claude-haiku-4-5-20251001', 'tu-scout'),
-        taskUpdatedLine('task-scout', { status: 'completed', end_time: 1787415964726 }),
-        toolResultLine('tu-scout', 'Scout done.'),
-        RESULT_LINE,
-
-        taskUpdatedLine('task-bg', { status: 'completed', end_time: 1787415964999 }),
-        taskNotificationLine('task-bg', 'tu-bg', 'Sweep finished.', {
-          usage: { total_tokens: 1200, tool_uses: 1, duration_ms: 900 },
-        }),
-        backgroundTasksChangedLine([]),
-      ]),
+          taskUpdatedLine('task-bg', { status: 'completed', end_time: 1787415964999 }),
+          taskNotificationLine('task-bg', 'tu-bg', 'Sweep finished.', {
+            usage: { total_tokens: 1200, tool_uses: 1, duration_ms: 900 },
+          }),
+          backgroundTasksChangedLine([]),
+        ]),
+      ],
+      [
+        emit([
+          // The session's effort moves before the sweeper is resumed.
+          effortReplyLine('msg-effort', 'Set effort level to low (this session only): Quick'),
+          ...textLines('msg-lead-2', 'Asking the sweeper once more.'),
+          ...agentResumeLines('msg-resume', 'tu-resume', 'task-bg', 'background sweep', 'Sweep the docs too.'),
+          backgroundTasksChangedLine([SWEEP_TASK]),
+          RESULT_LINE,
+          taskUpdatedLine('task-bg', { status: 'completed', end_time: 1787415969999 }),
+          taskNotificationLine('task-bg', 'tu-resume', 'Second sweep finished.', {
+            usage: { total_tokens: 800, tool_uses: 1, duration_ms: 700 },
+          }),
+          backgroundTasksChangedLine([]),
+        ]),
+      ],
     ]),
   });
   const threadId = await seedAgentThread(harness, 'effort-app', 'Claude effort');
   await harness.open(page);
   await page.getByText('Claude effort').click();
   const mockId = await startMock(harness, threadId);
-  const gate = waitForGate(harness, 'deep-runs');
+  const gate = waitForGate(harness, 'agents-run');
   await harness.rpc('SendMessage', threadId, 'delegate', null);
   await gate;
 
   const timeline = page.getByTestId('chat-timeline-surface').getByTestId('message-timeline-scroll');
   const cards = timeline.getByTestId('subagent-group');
   const deepCard = cards.filter({ hasText: 'deep review' });
-  // Before the subagent reports its model, the card shows the requested
-  // one, and an awaited launch reads as starting.
+  const scoutCard = cards.filter({ hasText: 'quick scout' });
+  // Before the subagents report their models, each card shows the requested
+  // one; an awaited launch reads as starting.
   await expect(deepCard.getByTestId('subagent-group-label')).toHaveText('Reviewer(Sonnet · Medium)');
   await expect(deepCard.getByTestId('subagent-group-preview')).toHaveText('Initializing...');
+  await expect(scoutCard.getByTestId('subagent-group-label')).toHaveText('Scout(Haiku)');
   const done = harness.waitForEvent('provider:turn_completed');
-  await advance(harness, mockId, 'deep-runs');
+  await advance(harness, mockId, 'agents-run');
   await done;
 
-  const scoutCard = cards.filter({ hasText: 'quick scout' });
-  const sweepCard = cards.filter({ hasText: 'Sweep' }).first();
+  const sweepCard = cards.filter({ hasText: 'Sweep finished', hasNotText: 'Second sweep' });
   await expect(deepCard.getByTestId('subagent-group-label')).toHaveText('Reviewer(Mock 1 · Medium)');
   await expect(scoutCard.getByTestId('subagent-group-label')).toHaveText('Scout(Haiku 4.5)');
   await expect(sweepCard.getByTestId('subagent-group-label')).toHaveText('Sweeper(Mock 1 · xHigh)');
@@ -151,6 +184,20 @@ test('a Claude subagent shows the effort it runs at next to its model', async ({
   await scoutCard.getByTestId('subagent-group-open-pane').first().click();
   await expect(pane.getByTestId('agent-pane-model')).toContainText('Haiku 4.5');
   await expect(pane.getByTestId('agent-pane-effort')).toHaveCount(0);
+  await pane.getByTestId('agent-pane-close').click();
+
+  // --- A resumed run shows the effort it resumed at -----------------
+  const resumed = harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('SendMessage', threadId, 'sweep again', null);
+  await resumed;
+  const resumeRow = timeline.locator('[data-item-id="tu-resume"]');
+  // (The resume's name comes from the rebind's wire `subagent_type`.)
+  await expect(resumeRow.getByTestId('agent-row-preview')).toContainText('(Mock 1 · Low)');
+  const resumedCard = cards.filter({ hasText: 'Second sweep finished' });
+  await expect(resumedCard.getByTestId('subagent-group-label')).toContainText('(Mock 1 · Low)');
+  // The first run keeps the effort it ran at.
+  await expect(sweepCard.getByTestId('subagent-group-label')).toHaveText('Sweeper(Mock 1 · xHigh)');
+  await shoot(page, testInfo, timeline, 'claude-resume');
 });
 
 const CHILD_THREAD = 'child-effort';

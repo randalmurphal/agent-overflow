@@ -111,6 +111,11 @@ export function deriveClaudeSubagentModel(
   if (toolName !== 'Agent' && toolName !== 'Task') return '';
   const stamped = readStringField(parentMeta, 'subagent_model');
   if (stamped) return stamped;
+  // The model the launch's alias resolved to when it launched.
+  const requested = readStringField(parentMeta, 'requested_model');
+  if (requested) return requested;
+  // A fork runs on its launcher's model whatever its input names.
+  if (readStringField(input, 'subagent_type') === 'fork') return '';
   return readStringField(input, 'model');
 }
 
@@ -139,7 +144,18 @@ export function deriveClaudeSubagentEffort(
   if (toolName !== 'Agent' && toolName !== 'Task') return '';
   const inherited = readStringField(parentMeta, 'inherited_effort');
   if (readStringField(input, 'subagent_type') === 'fork') return inherited;
-  return readStringField(input, 'effort') || inherited;
+  return knownEffort(readStringField(input, 'effort')) ?? inherited;
+}
+
+/**
+ * An effort the subagent runs at as named, or '' for none. The
+ * experiment-gated relative efforts ("lower", "higher") are either dropped
+ * or applied as a step AO cannot reproduce, so they read as unknown.
+ * '' for the empty input as well; callers fall back only on undefined.
+ */
+export function knownEffort(effort: string): string | undefined {
+  if (effort === '') return undefined;
+  return effort === 'lower' || effort === 'higher' ? '' : effort;
 }
 
 /**

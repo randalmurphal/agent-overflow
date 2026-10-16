@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelInfo } from '../types/settings';
 import { effortLabel } from './effortLabels';
-import { findClaudeCatalogModel, subagentEffortLabel } from './subagentEffort';
+import { claudeSubagentEffortLabel, findClaudeCatalogModel, subagentEffortLabel } from './subagentEffort';
 import { joinLabelParts } from './effortLabels';
 
 const opus: ModelInfo = {
@@ -86,6 +86,39 @@ describe('subagentEffortLabel', () => {
   it('shows nothing when no effort is known', () => {
     expect(subagentEffortLabel('claude', '', opus)).toBe('');
     expect(subagentEffortLabel('codex', '  ', undefined)).toBe('');
+  });
+});
+
+describe('claudeSubagentEffortLabel', () => {
+  const haiku55: ModelInfo = {
+    slug: 'claude-haiku-5-5',
+    name: 'Claude Haiku 5.5',
+    provider: 'claude',
+    reasoningEfforts: [
+      { slug: 'low', label: 'Low' },
+      { slug: 'medium', label: 'Medium' },
+      { slug: 'high', label: 'High' },
+      { slug: 'xhigh', label: 'xHigh' },
+      { slug: 'max', label: 'Max' },
+    ],
+  } as ModelInfo;
+
+  it('applies the catalog entry of a full model id', () => {
+    expect(claudeSubagentEffortLabel(catalog, 'claude-haiku-4-5-20251001', 'max')).toBe('');
+    expect(claudeSubagentEffortLabel(catalog, 'claude-sonnet-4-6', 'max')).toBe('High');
+  });
+
+  it('resolves an unresolved alias through its family, when every model of it agrees', () => {
+    expect(claudeSubagentEffortLabel(catalog, 'haiku', 'max')).toBe('');
+    expect(claudeSubagentEffortLabel(catalog, 'opus', 'max')).toBe('Max');
+    // Haiku 4.5 drops it, Haiku 5.5 runs it: the alias alone cannot say.
+    expect(claudeSubagentEffortLabel([...catalog, haiku55], 'haiku', 'max')).toBe('');
+    expect(claudeSubagentEffortLabel(catalog, 'fable', 'max')).toBe('');
+  });
+
+  it('keeps the effort for a full model id the catalog does not list', () => {
+    expect(claudeSubagentEffortLabel(catalog, 'claude-opus-9', 'max')).toBe('Max');
+    expect(claudeSubagentEffortLabel(catalog, '', 'high')).toBe('High');
   });
 });
 

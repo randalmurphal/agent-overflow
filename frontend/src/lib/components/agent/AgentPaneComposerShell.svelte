@@ -33,7 +33,7 @@
     deriveClaudeSubagentModel,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
-  import { claudeSubagentCatalogModel, subagentEffortLabel } from '../../utils/subagentEffort';
+  import { claudeThreadSubagentEffortLabel, subagentEffortLabel } from '../../utils/subagentEffort';
   import {
     claudeResumeCarrierIdentity,
     codexSubagentLaunchInfo,
@@ -127,15 +127,16 @@
     if (model) return displayModelLabel(provider, model);
     return provider === 'codex' ? 'Codex · Model unavailable' : providerLabel(provider);
   });
-  // The effort it runs at, labelled as the effort picker labels it. The
-  // Claude launch's own record wins over a resume carrier's copy, the
-  // same order the model takes.
+  // The effort it runs at, labelled as the effort picker labels it. A
+  // resumed round runs at its own carrier's effort, which can differ from
+  // the launch's when the session's effort moved before the resume.
   let effortLabel = $derived.by(() => {
     if (codexInfo) return subagentEffortLabel('codex', codexInfo.reasoningEffort, undefined);
-    const effort = deriveClaudeSubagentEffort(inputObject, parentMeta, identity?.toolName ?? '')
-      || (carrierIdentity?.effort ?? '');
+    const effort = carrierIdentity
+      ? carrierIdentity.effort
+      : deriveClaudeSubagentEffort(inputObject, parentMeta, identity?.toolName ?? '');
     const threadId = identity?.threadId ?? lifecycle?.threadId ?? '';
-    return subagentEffortLabel('claude', effort, claudeSubagentCatalogModel(threadId, pane?.thread?.projectId, model));
+    return claudeThreadSubagentEffortLabel(threadId, pane?.thread?.projectId, model, effort);
   });
 
   // The chip's elapsed timer runs from the LIFECYCLE row — the launch, or

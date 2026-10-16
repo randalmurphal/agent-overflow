@@ -136,6 +136,16 @@ describe('deriveClaudeSubagentModelLabel', () => {
     expect(deriveClaudeSubagentModelLabel({ model: 'opus' }, null, 'Agent')).toBe('Opus');
   });
 
+  it('reads the model the alias resolved to at launch before the alias itself', () => {
+    expect(
+      deriveClaudeSubagentModelLabel({ model: 'haiku' }, { requested_model: 'claude-haiku-4-5' }, 'Agent'),
+    ).toBe('Haiku 4.5');
+  });
+
+  it('ignores the model a fork names: a fork runs on its launcher\'s model', () => {
+    expect(deriveClaudeSubagentModelLabel({ model: 'haiku', subagent_type: 'fork' }, {}, 'Agent')).toBe('');
+  });
+
   it('returns "" when neither source carries a model', () => {
     expect(deriveClaudeSubagentModelLabel(null, null, 'Agent')).toBe('');
     expect(deriveClaudeSubagentModelLabel({}, {}, 'Agent')).toBe('');
@@ -168,6 +178,11 @@ describe('deriveClaudeSubagentEffort', () => {
       deriveClaudeSubagentEffort({ subagent_type: 'fork', effort: 'low' }, { inherited_effort: 'xhigh' }, 'Agent'),
     ).toBe('xhigh');
     expect(deriveClaudeSubagentEffort({ subagent_type: 'fork', effort: 'low' }, {}, 'Agent')).toBe('');
+  });
+
+  it('shows no effort for a relative one, which AO cannot resolve', () => {
+    expect(deriveClaudeSubagentEffort({ effort: 'higher' }, { inherited_effort: 'low' }, 'Agent')).toBe('');
+    expect(deriveClaudeSubagentEffort({ effort: 'lower' }, { inherited_effort: 'low' }, 'Agent')).toBe('');
   });
 
   it('returns "" for other tools and when nothing is known', () => {

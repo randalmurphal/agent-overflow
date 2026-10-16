@@ -54,7 +54,7 @@
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
   import {
-    claudeSubagentCatalogModel,
+    claudeThreadSubagentEffortLabel,
     subagentEffortLabel,
   } from '../../utils/subagentEffort';
   import { joinLabelParts } from '../../utils/effortLabels';
@@ -243,7 +243,7 @@
       : deriveClaudeSubagentEffort(inputObject, parentMeta, parentToolName);
     return joinLabelParts(
       displayModelLabel('claude', model),
-      subagentEffortLabel('claude', effort, claudeSubagentCatalogModel(parent.threadId, pane?.thread?.projectId, model)),
+      claudeThreadSubagentEffortLabel(parent.threadId, pane?.thread?.projectId, model, effort),
     );
   });
   // The one-line task beside the title. Codex spawns read their OWN

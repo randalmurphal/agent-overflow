@@ -2163,10 +2163,11 @@ It rewrites the carrier's Summary to the
 original launch's own Summary (or `"Agent: " + description` as a
 fallback), so the carrier reads "Agent: Frontend transitive
 suppression fix" instead of "SendMessage: …", and copies the
-original's `subagent_model` (the Subn stamp, else the launch
-`input.model` alias) plus any missing `subagent_type`/`description`,
-and the effort the original ran at as `subagent_effort`
-([§Agent effort](#agent-effort)), onto the carrier meta — which is
+original's `subagent_model` (the Subn stamp, else the launch's resolved
+`requested_model`, else its `input.model` alias) plus any missing `subagent_type`/`description`,
+and the effort the original launch named as `subagent_effort` (without
+one the round runs at the carrier's own `inherited_effort`,
+[§Agent effort](#agent-effort)), onto the carrier meta — which is
 what lets the frontend render the
 carrier row, tray entry and completion card with the resumed agent's
 own type, model and effort (`claudeResumeCarrierIdentity`,
@@ -3020,7 +3021,7 @@ CLI machinery and are not prompts.
 Source-read from the 2.1.300 bundle. The `Agent` tool takes an optional
 `effort` input. A subagent runs at the first of:
 
-1. the `CLAUDE_CODE_EFFORT` environment override;
+1. the `CLAUDE_CODE_EFFORT_LEVEL` environment override;
 2. the launch's `input.effort` (ignored for `subagent_type: "fork"`);
 3. the agent definition's frontmatter `effort`;
 4. the effort of the agent that launched it: the enclosing subagent's for a
@@ -3028,24 +3029,58 @@ Source-read from the 2.1.300 bundle. The `Agent` tool takes an optional
 
 The result is clamped to the subagent's model: `xhigh` or `max` the model
 does not offer becomes `high`, and a model with no effort tiers runs with
-none. With no explicit effort, an experiment may lower it.
+none. With no explicit effort, an experiment may lower it. Behind another
+experiment the input also takes `"lower"` or `"higher"`, a one-tier step from
+the inherited effort; with the experiment off the CLI drops it.
+
+The `model` input is an alias (`sonnet`, `opus`, `haiku`, `fable`). An alias
+naming the launcher's own model family keeps the launcher's model; any other
+takes the alias's target, the `resolvedModel` of its `initialize` models row.
+A fork ignores it.
+
+A §E6 resume runs at the effort the launch named, which the agent's
+`.meta.json` records (only an explicit `effort` is recorded), else through
+the same chain with the session's effort at resume time. `SendMessage` takes
+no effort.
+
+`/effort` replies that move the session's effort: `Set effort level to
+<tier>…`; `Effort '<x>' exceeds the cap for <model> set by your settings or
+organization; set to '<y>' instead…` (sets `<y>`); and `Effort level set to
+auto…`, `Effort set to auto for this session, but CLAUDE_CODE_EFFORT_LEVEL=…`
+and `Cleared effort from settings, but CLAUDE_CODE_EFFORT_LEVEL=…`, after
+which the session runs at an effort AO cannot name.
 
 No stream field reports the subagent's effective effort. Session-mirror
 assistant rows carry the request's `effort`, unverified as a source for
-effort-capable subagents. The agent's `.meta.json` records only an explicit
-`effort`.
+effort-capable subagents.
 
-AO records what was true at launch. The parser stamps the launching agent's
-effort on each Agent/Task launch as `meta.inherited_effort`: the session's
-resolved `--effort`, moved by `/effort` success replies ("Set effort level
-to <tier>", cleared for a tier AO cannot represent), or the enclosing
-launch's own effort for a nested one. A re-delivered launch keeps its first
-stamp (`internal/provider/claude/subagent_effort.go`,
-`internal/triage/launch_effort.go`). The row shows `input.effort`, else the
-stamp, clamped against the subagent model's catalog entry
-(`frontend/src/lib/utils/subagentEffort.ts`). Frontmatter effort, the
-environment override and the experiment are not visible to AO, so a row
-can show the inherited effort where the CLI used another.
+AO records what was true when the agent started running
+(`internal/provider/claude/subagent_effort.go`):
+
+- Each Agent/Task launch gets `meta.inherited_effort`, the launching agent's
+  effort, and `meta.requested_model`, the model its alias resolves to through
+  the CLI's alias map. A §E6 resume carrier gets `meta.inherited_effort`, its
+  sender's effort at resume time.
+- The session's effort starts at the resolved `--effort` and follows the
+  `/effort` replies above. claude-tui never sees the terminal's `/effort`, so
+  its reconstructor stamps each main-loop assistant envelope with the
+  request's `output_config.effort` (`ao_request_effort`, `""` when absent),
+  which the parser takes as the session's effort. That is the main model's
+  clamped effort; a subagent on a model with more tiers may run higher.
+- A relative `"lower"`/`"higher"` names no effort AO can reproduce, so the
+  row shows none and launches nested inside it inherit none.
+- A row's stamps are written once: triage keeps an existing row's stamp state
+  when its tool start is delivered again, and never adds a stamp to a row
+  stored without one (`internal/triage/launch_effort.go`).
+
+The row shows `input.effort`, else the stamp; a resume carrier shows the
+launch's named effort, else its own stamp. The effort is clamped against the
+catalog entry of the subagent's model, else its requested model; an alias the
+parser could not resolve shows an effort only when every catalog model of its
+family agrees on it (`frontend/src/lib/utils/subagentEffort.ts`).
+Frontmatter effort, the environment override and the experiments are not
+visible to AO, so a row can show the inherited effort where the CLI used
+another.
 
 ---
 

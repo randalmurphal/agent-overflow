@@ -68,32 +68,113 @@ func TestAgentLaunchMetaKeepsTheRunInputs(t *testing.T) {
 	}
 }
 
-func TestKeepLaunchInheritedEffortLeavesUnstampedRowsAlone(t *testing.T) {
-	merged := `{"toolName":"Agent","inherited_effort":"max"}`
-	if got := keepLaunchInheritedEffort(`{"toolName":"Agent"}`, merged); got != merged {
-		t.Fatalf("unstamped existing row rewrote the merge: %s", got)
+// A launch row stored without a stamp (before stamps existed, or with
+// the effort unknown at launch) must not gain one when its tool start is
+// delivered again: the replay would stamp the effort of the later moment.
+func TestReplayedStartDoesNotStampAnUnstampedLaunch(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	start := func(fields map[string]any) {
+		t.Helper()
+		meta := map[string]any{
+			"toolName": "Agent",
+			"input":    map[string]any{"description": "look", "prompt": "p", "model": "haiku"},
+		}
+		for key, value := range fields {
+			meta[key] = value
+		}
+		encoded, _ := json.Marshal(meta)
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "agent-1",
+			ItemType: "Agent", Meta: encoded, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("tool start: %v", err)
+		}
 	}
-	if got := keepLaunchInheritedEffort(`{"inherited_effort":"max"}`, merged); got != merged {
-		t.Fatalf("unchanged stamp re-encoded the merge: %s", got)
+	start(nil)
+	start(map[string]any{"inherited_effort": "xhigh", "requested_model": "claude-haiku-4-5"})
+
+	row, found, err := st.GetThreadItem("t1", "agent-1")
+	if err != nil || !found {
+		t.Fatalf("launch row: found=%v err=%v", found, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(row.Meta), &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	for _, key := range []string{"inherited_effort", "requested_model"} {
+		if v, ok := meta[key]; ok {
+			t.Fatalf("replay stamped %s = %v on a row stored without it", key, v)
+		}
 	}
 }
 
-func TestLaunchRunEffort(t *testing.T) {
-	stamped := `{"inherited_effort":"medium"}`
+// A resume carrier gets its stamp on a meta-only update, after its row
+// exists: the first one lands, a later one does not replace it.
+func TestCarrierKeepsItsFirstResumeStamp(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{"toolName": "SendMessage", "input": map[string]any{"to": "a1"}})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "carrier-1",
+		ItemType: "SendMessage", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("carrier start: %v", err)
+	}
+	for _, effort := range []string{"low", "max"} {
+		rebind, _ := json.Marshal(map[string]any{"task_id": "a1", "resumes_tool_use_id": "agent-1", "inherited_effort": effort})
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "carrier-1",
+			Meta: rebind, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("rebind %s: %v", effort, err)
+		}
+	}
+	row, found, err := st.GetThreadItem("t1", "carrier-1")
+	if err != nil || !found {
+		t.Fatalf("carrier row: found=%v err=%v", found, err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(row.Meta), &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	if meta["inherited_effort"] != "low" {
+		t.Fatalf("carrier inherited_effort = %v, want its first stamp low", meta["inherited_effort"])
+	}
+}
+
+func TestSettleLaunchStampsLeavesUnchangedMergesAlone(t *testing.T) {
+	merged := `{"toolName":"Agent","inherited_effort":"max"}`
+	if got := keepLaunchStamps(`{"inherited_effort":"max"}`, merged); got != merged {
+		t.Fatalf("unchanged stamp re-encoded the merge: %s", got)
+	}
+	plain := `{"toolName":"Agent"}`
+	if got := keepLaunchStamps(plain, plain); got != plain {
+		t.Fatalf("unstamped merge re-encoded: %s", got)
+	}
+	if got := keepFirstLaunchStamps(plain, merged); got != merged {
+		t.Fatalf("a meta-only first stamp was refused: %s", got)
+	}
+}
+
+func TestLaunchNamedEffort(t *testing.T) {
 	cases := []struct {
 		name  string
-		meta  string
 		input launchIdentity
 		want  string
 	}{
-		{"input effort", stamped, launchIdentity{Effort: "max"}, "max"},
-		{"inherited when the input names none", stamped, launchIdentity{}, "medium"},
-		{"a fork ignores its input effort", stamped, launchIdentity{Effort: "max", SubagentType: "fork"}, "medium"},
-		{"unknown", `{}`, launchIdentity{}, ""},
+		{"named", launchIdentity{Effort: "max"}, "max"},
+		{"none named", launchIdentity{}, ""},
+		{"a fork ignores its input effort", launchIdentity{Effort: "max", SubagentType: "fork"}, ""},
+		{"relative passes through", launchIdentity{Effort: "higher"}, "higher"},
 	}
 	for _, tc := range cases {
-		if got := launchRunEffort(tc.meta, tc.input); got != tc.want {
-			t.Errorf("%s: launchRunEffort = %q, want %q", tc.name, got, tc.want)
+		if got := launchNamedEffort(tc.input); got != tc.want {
+			t.Errorf("%s: launchNamedEffort = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

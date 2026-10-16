@@ -717,6 +717,7 @@ func (a *App) spawnProviderSession(
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
 		cfg.AppendSystemPrompt = appGuide
 		cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
+		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
 		// claudetui's Config carries a whole environment rather than an
 		// override map, so the shared rule is applied here instead of inside
 		// the provider package. Skipping this branch would leave one provider

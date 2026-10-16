@@ -5,35 +5,56 @@ import (
 	"strings"
 )
 
-// launchInheritedEffortKey is the effort a Claude Agent launch runs at
-// when its input names none, stamped by the parser at launch
-// (internal/provider/claude/subagent_effort.go). It records what was true
-// when the launch happened.
-const launchInheritedEffortKey = "inherited_effort"
+// launchStampKeys are the facts the Claude parser stamps on an Agent launch
+// (and `inherited_effort` on a §E6 resume carrier) about the moment it
+// happened (internal/provider/claude/subagent_effort.go): the effort the
+// launcher ran at and the model the launch's alias resolved to. A later
+// delivery of the same row would stamp a later moment, so a row's first
+// state wins.
+var launchStampKeys = []string{"inherited_effort", "requested_model"}
 
-// keepLaunchInheritedEffort keeps a launch row's first `inherited_effort`
-// when its tool start is delivered again: a later process, or a mirror
-// re-projection, would stamp the session's effort at that later moment.
-func keepLaunchInheritedEffort(existing, merged string) string {
-	if !strings.Contains(existing, `"`+launchInheritedEffortKey+`"`) {
+// keepLaunchStamps settles the launch stamps of a row whose tool start is
+// delivered again (a later process, a mirror re-projection): the existing
+// row's state wins in both directions, so a row stored without a stamp never
+// gains one from a replay.
+func keepLaunchStamps(existing, merged string) string {
+	return settleLaunchStamps(existing, merged, false)
+}
+
+// keepFirstLaunchStamps is keepLaunchStamps for a meta-only update, which
+// is how a resume carrier receives its stamp: a row without one may gain it,
+// and a row with one keeps it.
+func keepFirstLaunchStamps(existing, merged string) string {
+	return settleLaunchStamps(existing, merged, true)
+}
+
+func settleLaunchStamps(existing, merged string, mayAdd bool) string {
+	if !mentionsLaunchStamp(existing) && (mayAdd || !mentionsLaunchStamp(merged)) {
 		return merged
 	}
-	var prior map[string]json.RawMessage
+	var prior, next map[string]json.RawMessage
 	if json.Unmarshal([]byte(existing), &prior) != nil {
 		return merged
 	}
-	value, ok := prior[launchInheritedEffortKey]
-	if !ok {
-		return merged
-	}
-	var next map[string]json.RawMessage
 	if json.Unmarshal([]byte(merged), &next) != nil || next == nil {
 		return merged
 	}
-	if string(next[launchInheritedEffortKey]) == string(value) {
+	changed := false
+	for _, key := range launchStampKeys {
+		value, had := prior[key]
+		current, has := next[key]
+		switch {
+		case had && string(current) != string(value):
+			next[key] = value
+			changed = true
+		case !had && has && !mayAdd:
+			delete(next, key)
+			changed = true
+		}
+	}
+	if !changed {
 		return merged
 	}
-	next[launchInheritedEffortKey] = value
 	encoded, err := json.Marshal(next)
 	if err != nil {
 		return merged
@@ -41,21 +62,36 @@ func keepLaunchInheritedEffort(existing, merged string) string {
 	return string(encoded)
 }
 
-// launchRunEffort is the effort an original Agent launch ran at, copied
-// onto its §E6 resume carrier with the rest of the agent's identity: its
-// `effort` input, which the CLI ignores for a fork, else the effort it
-// inherited at launch. Empty when neither is known.
-func launchRunEffort(launchMeta string, input launchIdentity) string {
-	if effort := strings.TrimSpace(input.Effort); effort != "" && strings.TrimSpace(input.SubagentType) != "fork" {
-		return effort
+func mentionsLaunchStamp(meta string) bool {
+	for _, key := range launchStampKeys {
+		if strings.Contains(meta, `"`+key+`"`) {
+			return true
+		}
 	}
-	var stamp map[string]json.RawMessage
-	if json.Unmarshal([]byte(launchMeta), &stamp) != nil {
+	return false
+}
+
+// launchRequestedModel is the model a launch's `model` alias resolved to at
+// launch (`requested_model`), "" when the parser could not resolve it.
+func launchRequestedModel(launchMeta string) string {
+	var stamps struct {
+		RequestedModel string `json:"requested_model"`
+	}
+	if json.Unmarshal([]byte(launchMeta), &stamps) != nil {
 		return ""
 	}
-	var inherited string
-	if raw, ok := stamp[launchInheritedEffortKey]; ok && json.Unmarshal(raw, &inherited) == nil {
-		return strings.TrimSpace(inherited)
+	return strings.TrimSpace(stamps.RequestedModel)
+}
+
+// launchNamedEffort is the effort an original Agent launch named, copied
+// onto its §E6 resume carrier with the rest of the agent's identity: the CLI
+// records it with the agent and a resume runs at it. A fork's is ignored by
+// the CLI and so is not named here. A relative effort ("lower", "higher") is
+// returned as is: the frontend shows none for it. Empty when the launch
+// named none, and the carrier's own `inherited_effort` applies.
+func launchNamedEffort(input launchIdentity) string {
+	if strings.TrimSpace(input.SubagentType) == "fork" {
+		return ""
 	}
-	return ""
+	return strings.TrimSpace(input.Effort)
 }

@@ -58,8 +58,7 @@
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
   import {
-    claudeSubagentCatalogModel,
-    subagentEffortLabel,
+    claudeThreadSubagentEffortLabel,
   } from '../../utils/subagentEffort';
   import { joinLabelParts } from '../../utils/effortLabels';
   import {
@@ -159,11 +158,7 @@
   // "Opus 4.7 · xHigh": the model and the effort it runs at, in one affix.
   let modelLabel = $derived(joinLabelParts(
     model ? displayModelLabel('claude', model) : '',
-    subagentEffortLabel(
-      'claude',
-      effort,
-      claudeSubagentCatalogModel(effectiveDisplayItem.threadId, pane?.thread?.projectId, model),
-    ),
+    claudeThreadSubagentEffortLabel(effectiveDisplayItem.threadId, pane?.thread?.projectId, model, effort),
   ));
   let description = $derived(
     carrierIdentity ? carrierIdentity.description : deriveClaudeSubagentDescription(agentInputObject),
