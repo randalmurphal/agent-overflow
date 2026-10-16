@@ -305,4 +305,7 @@ type SessionConfig struct {
 	// posts only when no thread/start came first. Claude reports argv, so
 	// its resume is an ordinary report of a process started with --resume.
 	Resumed bool `json:"resumed,omitempty"`
+	// BashMaxTimeoutMs is the BASH_MAX_TIMEOUT_MS a Claude mock was spawned
+	// with ("" when the variable was absent).
+	BashMaxTimeoutMs string `json:"bashMaxTimeoutMs,omitempty"`
 }

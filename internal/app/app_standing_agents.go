@@ -147,7 +147,7 @@ func (a *App) createAssistant(ctx context.Context, spec assistantSpec) (store.Th
 	if err != nil {
 		return store.Thread{}, store.StandingAgent{}, fmt.Errorf("read the new assistant's thread: %w", err)
 	}
-	a.broadcastThreadRow(triage.ThreadActionListed, created)
+	a.announceThread(triage.ThreadActionListed, created.ID)
 	return created, agent, nil
 }
 
@@ -294,7 +294,7 @@ func (a *App) ListArchivedSpawnedThreads(threadID string) ([]store.Thread, error
 // current thread, so creation, a handoff or a move of it changes what their
 // menus and drags allow. A delete passes the ids itself
 // (broadcastThreadRowsByID), since the cascade has already dropped the
-// spawn rows this reads. Log-and-continue, as broadcastThreadRowByID.
+// spawn rows this reads. Log-and-continue, as announceThread.
 func (a *App) broadcastSpawnedThreadRows(spawnerID string) {
 	ids, err := a.store.ListSpawnedThreadIDs(spawnerID)
 	if err != nil {
@@ -306,16 +306,16 @@ func (a *App) broadcastSpawnedThreadRows(spawnerID string) {
 
 func (a *App) broadcastThreadRowsByID(ids []string) {
 	for _, id := range ids {
-		a.broadcastThreadRowByID(id)
+		a.announceThread(triage.ThreadActionFull, id)
 	}
 }
 
 // broadcastSpawnerRow re-emits the assistant that spawned child, or whose
 // past thread child is: the agent row's archivedChildCount moves when such
 // a thread is archived, unarchived or deleted. Any other spawner carries no
-// count, so nothing is said for it. Log-and-continue, as
-// broadcastThreadRowByID: the child's change is already durable and the
-// sidebar converges on the next ListThreads.
+// count, so nothing is said for it. Log-and-continue, as announceThread:
+// the child's change is already durable and the sidebar converges on the
+// next ListThreads.
 func (a *App) broadcastSpawnerRow(child store.Thread) {
 	parentID := child.SpawnedByThreadID
 	if child.PastAgentID != "" {
@@ -339,7 +339,7 @@ func (a *App) broadcastSpawnerRow(child store.Thread) {
 	if parent.AgentID == "" {
 		return
 	}
-	a.broadcastThreadRow(triage.ThreadActionFull, parent)
+	a.announceThread(triage.ThreadActionFull, parent.ID)
 }
 
 // SetStandingAgentNotifyOnTick turns an assistant's tick notifications on or

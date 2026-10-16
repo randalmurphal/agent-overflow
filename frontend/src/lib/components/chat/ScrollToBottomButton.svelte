@@ -23,7 +23,7 @@
       onclick={onClick}
       testId="scroll-to-bottom"
       size="sm"
-      class="rounded-full! whitespace-nowrap"
+      class="rounded-full!"
     >
       Jump to bottom
       {#snippet trailing()}

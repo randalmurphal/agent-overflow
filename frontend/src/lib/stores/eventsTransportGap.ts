@@ -36,7 +36,8 @@ import { resyncWorktreeSetups } from './eventsWorktreeSetup';
 import { revalidateDraftWorktrees } from './eventsWorktreeRemoved';
 import { markImportConnectionLost } from './sessionImport.svelte';
 import { releaseThreadTitleGenerationPending } from './threadTitleGeneration.svelte';
-import { getThreads } from './threads.svelte';
+import { getThreadById, getThreads } from './threads.svelte';
+import { threadReplyRow, threadRowFrameMark } from './threadRowFrames';
 import { threadHasScope } from '../transport/entityScopes';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
@@ -46,6 +47,7 @@ import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { hasRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { resyncSettings } from './settings.svelte';
 import { resyncWorkflowRunMapAfterGap } from './workflowRunMap.svelte';
+import { resourceBackgroundTaskOutput } from './backgroundTaskOutput.svelte';
 import {
   applyWorkflowDefinitionsChanged,
   refreshWorkflowRunsSoon,
@@ -187,6 +189,11 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       // The same for the Agents rows: any pane's list may have missed it.
       applyThreadAgentRowsGap(backendKeyForOrigin(origin?.backendId ?? ''));
       return;
+    case 'provider:background_task_output':
+      // A dropped append leaves an open tail stale until the command
+      // prints again; the re-watch reads the whole tail back.
+      resourceBackgroundTaskOutput(gap.threads, backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
     case 'backend:attach':
     case 'backend:set-changed':
       // A missing membership event cannot be repaired by reading thread
@@ -274,8 +281,14 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
         const threadId = pane.threadId;
         if (!threadHasScope('threads:operate', threadId)) continue;
         seen.add(threadId);
+        const mark = threadRowFrameMark();
         void GetThread(threadId).then((thread) => {
-          const t = thread as Thread | null;
+          const read = thread as Thread | null;
+          if (!read) return;
+          // A thread:updated frame that arrived during the read is newer;
+          // its row is re-seeded the same way.
+          const held = getThreadById(threadId) ?? (pane.thread?.id === threadId ? pane.thread : undefined);
+          const t = threadReplyRow(read, mark, held) ?? held;
           if (!t) return;
           // The re-fetched DB row is the authority after a gap. Drop
           // the live usage side cache BEFORE the pane replaceThread

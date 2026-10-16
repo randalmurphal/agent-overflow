@@ -99,7 +99,15 @@ func TestProviderBinaryPathHarnessOverrideWinsOverSettings(t *testing.T) {
 }
 
 func TestGetProviderStatusesFallsBackToDefaultsWithoutSettingsService(t *testing.T) {
-	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("mock shell scripts require unix")
+	}
+	// Serial: PATH holds the only claude and codex the defaults may resolve
+	// to, so the version probes run mocks and never an installed CLI.
+	bin := t.TempDir()
+	mockexec.Write(t, filepath.Join(bin, "claude"), "#!/bin/sh\necho 'claude-mock 1.2.3'\n")
+	mockexec.Write(t, filepath.Join(bin, "codex"), "#!/bin/sh\necho 'codex-cli 0.162.1'\n")
+	t.Setenv("PATH", bin)
 	app := &App{}
 
 	statuses, err := app.GetProviderStatuses()
@@ -113,20 +121,28 @@ func TestGetProviderStatusesFallsBackToDefaultsWithoutSettingsService(t *testing
 	if statuses[0].Provider != "claude" {
 		t.Fatalf("statuses[0].Provider = %q, want claude", statuses[0].Provider)
 	}
-	if statuses[0].BinaryPath == "" {
-		t.Fatal("statuses[0].BinaryPath is empty")
+	if statuses[0].BinaryPath != filepath.Join(bin, "claude") {
+		t.Fatalf("statuses[0].BinaryPath = %q, want the default resolved on PATH", statuses[0].BinaryPath)
 	}
 
 	if statuses[1].Provider != "codex" {
 		t.Fatalf("statuses[1].Provider = %q, want codex", statuses[1].Provider)
 	}
-	if statuses[1].BinaryPath == "" {
-		t.Fatal("statuses[1].BinaryPath is empty")
+	if statuses[1].BinaryPath != filepath.Join(bin, "codex") {
+		t.Fatalf("statuses[1].BinaryPath = %q, want the default resolved on PATH", statuses[1].BinaryPath)
 	}
 }
 
 func TestGetProviderStatusesDefaultsBlankConfiguredBinaryPaths(t *testing.T) {
-	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("mock shell scripts require unix")
+	}
+	// Serial: PATH holds the only claude and codex the defaults may resolve
+	// to, so the version probes run mocks and never an installed CLI.
+	bin := t.TempDir()
+	mockexec.Write(t, filepath.Join(bin, "claude"), "#!/bin/sh\necho 'claude-mock 1.2.3'\n")
+	mockexec.Write(t, filepath.Join(bin, "codex"), "#!/bin/sh\necho 'codex-cli 0.162.1'\n")
+	t.Setenv("PATH", bin)
 	app := &App{
 		settings: settings.NewService(t.TempDir()),
 	}
@@ -154,6 +170,9 @@ func TestGetProviderStatusesDefaultsBlankConfiguredBinaryPaths(t *testing.T) {
 	}
 	if statuses[1] != wantCodex {
 		t.Fatalf("codex status = %+v, want %+v", statuses[1], wantCodex)
+	}
+	if statuses[1].BinaryPath != filepath.Join(bin, "codex") || statuses[1].Status != "ready" {
+		t.Fatalf("codex status = %+v, want the PATH mock, ready", statuses[1])
 	}
 }
 

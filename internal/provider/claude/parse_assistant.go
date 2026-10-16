@@ -108,6 +108,7 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// the EventError path, and re-emitting it as content duplicates the
 	// api_error row (see TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent).
 	errorEnum := assistantErrorEnum(raw, msg)
+	p.observeRequestEffort(raw, parentToolUseID, msg.Model)
 
 	// CLI-generated local command output. The CLI runs `/usage`, `/context`,
 	// a skill, a plugin command etc. itself — no API call, num_turns 0 — and
@@ -312,7 +313,7 @@ func (p *Parser) appendRecoveredBlockEvent(
 		ItemID:          recoveredBlockItemID(messageID, index),
 		Content:         content,
 		ContentPresent:  true,
-		Meta:            blockMeta(index, blockType),
+		Meta:            blockMeta(index, blockType, messageID),
 		ParentToolUseID: parentToolUseID,
 		Timestamp:       now,
 	})
@@ -365,6 +366,7 @@ func (p *Parser) commandResultEvents(threadID string, msg assistantMessage, now 
 	if text == "" {
 		return nil
 	}
+	p.observeEffortReply(text)
 	var meta json.RawMessage
 	if p.activeCommandUUID != "" {
 		resultMeta := provider.CommandResultMeta{CommandUUID: p.activeCommandUUID}
@@ -524,7 +526,8 @@ func (p *Parser) appendToolUseEvent(
 		p.markAckTool(block.ID, block.Name)
 	}
 
-	meta := marshalToolMeta(block.Name, block.Input, isBackground, isAgentLaunchToolName(block.Name), assistantMessageID)
+	stamps := p.agentLaunchStamps(block.Name, block.ID, parentToolUseID, block.Input)
+	meta := marshalToolMeta(block.Name, block.Input, isBackground, isAgentLaunchToolName(block.Name), assistantMessageID, stamps)
 	return append(events, provider.ProviderEvent{
 		Kind:            provider.EventToolStart,
 		ThreadID:        threadID,
@@ -905,7 +908,7 @@ func hasRunInBackground(input json.RawMessage) bool {
 // `{server, tool}` pair onto `meta.mcp` so the renderer can synthesize
 // the body as `server.tool(args)` from a single source on both
 // providers.
-func marshalToolMeta(toolName string, input json.RawMessage, isBackground, isAgentLaunch bool, assistantMessageID string) json.RawMessage {
+func marshalToolMeta(toolName string, input json.RawMessage, isBackground, isAgentLaunch bool, assistantMessageID string, stamps agentLaunchStamps) json.RawMessage {
 	normalizedToolName := toolName
 	var mcp map[string]string
 	if server, tool, ok := parseClaudeMCPToolName(toolName); ok {
@@ -928,6 +931,15 @@ func marshalToolMeta(toolName string, input json.RawMessage, isBackground, isAge
 	}
 	if assistantMessageID != "" {
 		fields["assistant_message_id"] = assistantMessageID
+	}
+	if stamps.inheritedEffort != "" {
+		fields[inheritedEffortMetaKey] = stamps.inheritedEffort
+	}
+	if stamps.requestedModel != "" {
+		fields[requestedModelMetaKey] = stamps.requestedModel
+	}
+	if stamps.inheritedEffort != "" && len(stamps.inheritedEffortAlternatives) > 0 {
+		fields[inheritedEffortAlternativesMetaKey] = stamps.inheritedEffortAlternatives
 	}
 	out, _ := json.Marshal(fields)
 	return out

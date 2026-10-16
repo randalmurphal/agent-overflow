@@ -97,8 +97,38 @@ func (r *Router) emitBackgroundTrayRows(threadID string, ids []string) {
 	r.emit(eventchan.ProviderBackgroundTray, BackgroundTrayEvent{
 		ThreadID:  threadID,
 		LaunchIDs: ids,
-		Rows:      itemwire.ProjectItems(rows, true),
+		Rows:      itemwire.ProjectItems(r.DecorateBackgroundTrayRows(threadID, rows), true),
 	})
+}
+
+// TrayTailAvailableKey is the served-only meta key a tray row carries
+// when the app can tail its output although the launch row names no
+// file: a Monitor's, read off the task's newest notification at watch
+// time (app.WatchBackgroundTaskOutput). Never persisted; the launch row
+// is history.
+const TrayTailAvailableKey = "tail_available"
+
+// DecorateBackgroundTrayRows stamps TrayTailAvailableKey on the served
+// copy of each running Monitor launch whose newest notification names an
+// output file. Rows that name their own file, or are not watch tasks,
+// pass through unchanged.
+func (r *Router) DecorateBackgroundTrayRows(threadID string, rows []store.Item) []store.Item {
+	for i := range rows {
+		row := rows[i]
+		if row.Kind != itemKindToolCall || row.Status != statusRunning || !row.IsBackground || !LaunchIsWatchTask(row) || BackgroundTaskOutputFile(row) != "" {
+			continue
+		}
+		note, found, err := r.store.FindNotificationItemByTaskID(threadID, TaskIDFromItemMeta(row.Meta))
+		if err != nil {
+			log.Printf("triage: tray tail availability of %s on %s: %v", row.ID, threadID, err)
+			continue
+		}
+		if !found || BackgroundTaskOutputFile(note) == "" {
+			continue
+		}
+		rows[i].Meta = mergeItemMetaJSON(row.Meta, []byte(`{"`+TrayTailAvailableKey+`":true}`))
+	}
+	return rows
 }
 
 // emitBackgroundTrayRefresh asks the thread's tray to read its whole list:
@@ -124,6 +154,13 @@ func appendTrayLaunches(ids []string, threadID string, row store.Item, anchors b
 		return append(ids, row.CompletionOf)
 	case isWakePromptRow(row):
 		return append(ids, parent)
+	case row.Kind == itemKindNotification:
+		// A watch task's notification can be the first to name its
+		// output file; the launch's tray row then tails it
+		// (DecorateBackgroundTrayRows).
+		if launch := watchTaskNotificationLaunch(row); launch != "" {
+			return append(ids, launch)
+		}
 	case row.Kind != itemKindToolCall:
 	case row.IsBackground:
 		return append(ids, row.ID)
@@ -151,6 +188,23 @@ func (r *Router) announceTrayLaunches(threadID string, launchIDs []string) {
 	if !codex {
 		r.emitBackgroundTrayRows(threadID, ids)
 	}
+}
+
+// watchTaskNotificationLaunch is the launch a watch task's notification
+// row names (`tool_use_id`), or "" for any other row.
+func watchTaskNotificationLaunch(row store.Item) string {
+	if row.Meta == "" {
+		return ""
+	}
+	var m struct {
+		WatchTask  bool   `json:"watch_task"`
+		ToolUseID  string `json:"tool_use_id"`
+		OutputFile string `json:"output_file"`
+	}
+	if json.Unmarshal([]byte(row.Meta), &m) != nil || !m.WatchTask || m.OutputFile == "" {
+		return ""
+	}
+	return strings.TrimSpace(m.ToolUseID)
 }
 
 // isWakePromptRow reports whether a pushed row is an agent's wake

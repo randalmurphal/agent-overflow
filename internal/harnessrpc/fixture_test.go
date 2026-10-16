@@ -16,12 +16,13 @@ import (
 	replaylog "agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil/providerpath"
 	"agent-overflow/internal/transport"
 
 	"github.com/google/uuid"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
+func TestMain(m *testing.M) { os.Exit(providerpath.Guard(func() int { return storetest.Run(m) })) }
 
 type testHost struct {
 	store             *store.Store

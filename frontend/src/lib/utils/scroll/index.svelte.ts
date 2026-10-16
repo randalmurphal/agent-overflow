@@ -54,7 +54,7 @@
 // the content element. ChatView observes 'composer-geometry' from its
 // composer ResizeObserver when out-of-content height changes.
 
-import { tick } from 'svelte';
+import { tick, untrack } from 'svelte';
 import { motionReduced } from '../reducedMotion';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import { reportFrontendDiagnostic } from '../frontendErrorCapture';
@@ -583,6 +583,7 @@ export function createUseStickToBottomController(
     },
     lastExplainedScrollTop: () => chokepoint.lastExplainedScrollTop(),
     onScrollInput: () => { scrollInputRevision += 1; },
+    followBottom: notifyLiveContentMaybeGrew,
   });
 
   // Snapshot of the flags the pure delivery resolver decides over.
@@ -1111,7 +1112,16 @@ export function createUseStickToBottomController(
   }
 
   // ===== Lifecycle =====
+  // Consumers attach from an effect whose teardown detaches. Attaching
+  // reads the controller's own state (the near-bottom refresh), which
+  // would subscribe that effect: reaching the bottom would then re-run
+  // it, and the detach would drop the reader's down intent before the
+  // re-stick check it was waiting for.
   function attach(nextScrollEl: HTMLElement, nextContentEl: HTMLElement): void {
+    untrack(() => attachElements(nextScrollEl, nextContentEl));
+  }
+
+  function attachElements(nextScrollEl: HTMLElement, nextContentEl: HTMLElement): void {
     if (scrollEl === nextScrollEl && contentEl === nextContentEl) return;
     detach();
     scrollEl = nextScrollEl;

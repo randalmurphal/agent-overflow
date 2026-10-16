@@ -9,8 +9,9 @@ import {
   SaveDraft,
   SendMessageWithOptions,
 } from '../stores/bindings';
-import { mountThreadInPane, syncThread } from '../stores/panes.svelte';
-import { prependThread } from '../stores/threads.svelte';
+import { mountThreadInPane, syncThreadReply } from '../stores/panes.svelte';
+import { threadRowFrameMark } from '../stores/threadRowFrames';
+import { prependThreadReply } from '../stores/threads.svelte';
 import { expandProject } from '../stores/sidebar.svelte';
 import { projectSendResolved, projectSendStarted } from '../stores/threadStatuses.svelte';
 import { addErrorToast, addToast } from '../stores/toast.svelte';
@@ -65,11 +66,12 @@ export async function implementProposedPlan(
     // Through the shared builder like every other send vector, so this one
     // carries an idempotency id too: Implement is a button a person can hit
     // twice while the socket is deciding whether it is alive.
+    const mark = threadRowFrameMark();
     const updated = (await SendMessageWithOptions(pane.threadId, IMPLEMENT_PROMPT, buildSendOptions({
       attachmentIds: [],
       sourceProposedPlan: source,
     }))) as Thread;
-    syncThread(updated);
+    syncThreadReply(updated, mark);
     return true;
   } catch (err) {
     console.error(`${failureLabel}:`, err);
@@ -128,6 +130,7 @@ export async function implementProposedPlanInNewThread(
     const draftContent = buildPlanImplementationPrompt(planMarkdown);
     const sourceIntent = worktreeIntentForThread(sourceThread);
 
+    const mark = threadRowFrameMark();
     let created = (await withBackendTarget(backend, () => CreateThread({
       projectId,
       provider: sourceThread.provider,
@@ -181,8 +184,9 @@ export async function implementProposedPlanInNewThread(
       const cutForThread = !!created.worktreePath
         && !sameNormalizedPath(created.worktreePath, sourceThread.worktreePath ?? '');
       if (cutForThread) {
+        const removalMark = threadRowFrameMark();
         await GitRemoveWorktree(created.id)
-          .then((removal) => syncRemovedWorktreeThreads(removal as WorktreeRemovalResult))
+          .then((removal) => syncRemovedWorktreeThreads(removal as WorktreeRemovalResult, removalMark))
           .catch((cleanupErr) => {
             console.error('Failed to clean up orphan implementation worktree:', cleanupErr);
           });
@@ -203,7 +207,7 @@ export async function implementProposedPlanInNewThread(
       // out elsewhere.
       clearWorktreeIntent(sourceThread.id);
     }
-    prependThread(created);
+    created = prependThreadReply(created, mark);
     if (created.projectId) expandProject(created.projectId);
     await mountThreadInPane(created, pane);
     return true;

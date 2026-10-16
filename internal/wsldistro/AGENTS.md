@@ -2,7 +2,8 @@
 
 This package owns the cross-process schema and path resolution for the Windows
 launcher's wsl.json. The launcher records successful boots; the WSL-side
-Settings flow updates the saved distro while preserving payload fields.
+Settings flow updates the saved distro and the GPU vsync preference while
+preserving payload fields.
 
 InstalledBinPath, InstalledSHA256, and InstalledDistro form one payload record.
 Only the exact embedded-byte digest identifies an installation. Invalidate the

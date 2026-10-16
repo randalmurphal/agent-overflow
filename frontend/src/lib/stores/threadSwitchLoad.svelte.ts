@@ -66,6 +66,7 @@ import {
 } from '../replica';
 import { UNKNOWN_STAMP_VALUE, type ThreadHistoryStamp } from './threadHistoryStamps';
 import { heldWindowOf } from './threadWindowDigest';
+import { threadReplyRow, threadRowFrameMark } from './threadRowFrames';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import {
   getBackendIdentity,
@@ -1459,17 +1460,23 @@ export function createThreadSwitchLoad(
     if (!threadHasScope('threads:operate', newThread.id, newThread.projectId)) return;
     const switchPromise = (async () => {
       try {
+        const mark = threadRowFrameMark();
         const switched = (await withBackendTarget(backend, () => SwitchThread(newThread.id))) as
           | Thread
           | undefined;
         if (gen !== options.getSwitchGeneration()) return;
         if (switched?.id === newThread.id) {
+          const current = options.getThread();
+          const held = current?.id === switched.id ? current : undefined;
+          // A thread:updated frame that arrived during the call is newer.
+          const row = threadReplyRow(switched, mark, held);
+          const applied = row ?? held ?? switched;
           const currentContextWindow = options.getContextWindow();
-          options.setThread(switched);
+          if (row) options.setThread(row);
           options.setContextWindow(
             currentContextWindow
-              ? normalizeContextWindowForThread(currentContextWindow, switched)
-              : seedContextWindow(switched),
+              ? normalizeContextWindowForThread(currentContextWindow, applied)
+              : seedContextWindow(applied),
           );
         }
       } catch (err) {

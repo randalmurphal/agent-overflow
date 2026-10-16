@@ -86,7 +86,7 @@ func (a *App) DeleteThreadGroup(id string) error {
 		return err
 	}
 	for _, thread := range members {
-		a.broadcastThreadRow(triage.ThreadActionFull, thread)
+		a.announceThread(triage.ThreadActionFull, thread.ID)
 	}
 	a.emitThreadGroup("delete", group)
 	return nil
@@ -108,7 +108,7 @@ func (a *App) SetThreadGroup(threadIDs []string, groupID string) ([]store.Thread
 		return nil, err
 	}
 	for _, thread := range moved {
-		a.broadcastThreadRow(triage.ThreadActionFull, thread)
+		a.announceThread(triage.ThreadActionFull, thread.ID)
 	}
 	return moved, nil
 }

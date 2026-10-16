@@ -25,7 +25,7 @@ export function makeStubPanelContext(overrides: Partial<PanelContext> = {}): Pan
     getItemById: () => undefined,
     closeAgentPane() {},
     close() {},
-    replaceThread() {},
+    syncThreadReply: (reply) => reply,
     async switchThread() {},
     ...overrides,
   };

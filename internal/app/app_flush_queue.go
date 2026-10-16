@@ -111,6 +111,7 @@ func (a *App) configureTriageQueueCallbacks() {
 // a router built bare would silently drop the streaming observers.
 func (a *App) newTriageRouter(st *store.Store) *triage.Router {
 	r := triage.NewRouter(st, a.emitWithReplay())
+	r.SetThreadAnnouncer(a.threadAnnouncer())
 	r.SetAssistantTextObservers(a.highlightService().ObserveAssistantTextDelta, a.highlightService().EndAssistantText)
 	r.SetDiffPayloadObserver(a.observeDiffPayloadPersisted)
 	r.SetCommandSettledObserver(a.observeCommandSettled)

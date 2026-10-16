@@ -18,6 +18,7 @@ import {
 } from '../../stores/threadGroups.svelte';
 import { getThreadById, getThreads, prependThread, removeThread } from '../../stores/threads.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
+import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 import type { Thread, ThreadGroup } from '../../types/models';
 
@@ -62,8 +63,8 @@ describe('threadGroupActions', () => {
     resetBindingMocks();
     __resetEntityIndexForTest();
     resetThreadGroupsForTest();
-    for (const t of Array.from(getThreads())) removeThread(t.id);
-    for (const toast of Array.from(getToasts())) removeToast(toast.id);
+    for (const t of getThreads()) removeThread(t.id);
+    for (const toast of getToasts()) removeToast(toast.id);
   });
 
   describe('createThreadGroupAction', () => {
@@ -189,6 +190,21 @@ describe('threadGroupActions', () => {
       expect(getThreadById('root')?.groupId).toBe('g1');
       expect(getThreadById('root')?.pinnedAt).toBeUndefined();
       expect(getThreadById('root')?.pinGroup).toBeUndefined();
+    });
+
+    // The organize thread tool moves threads concurrently with the person:
+    // a whole-row frame that lands during the call is newer than its reply.
+    it('keeps a row a frame carried during the call, applies the others', async () => {
+      prependThread(mkThread('raced'));
+      prependThread(mkThread('quiet'));
+      setBindingMock('SetThreadGroup', async () => {
+        applyThreadUpdated({ action: 'full', thread: mkThread('raced', { groupId: 'g2', pinnedAt: 300 }) });
+        return [mkThread('raced', { groupId: 'g1' }), mkThread('quiet', { groupId: 'g1' })];
+      });
+      expect(await moveThreadsToGroupAction(['raced', 'quiet'], 'g1')).toBe(true);
+      expect(getThreadById('raced')?.groupId).toBe('g2');
+      expect(getThreadById('raced')?.pinnedAt).toBe(300);
+      expect(getThreadById('quiet')?.groupId).toBe('g1');
     });
 
     it('keeps read state a local write moved ahead of the backend snapshot', async () => {

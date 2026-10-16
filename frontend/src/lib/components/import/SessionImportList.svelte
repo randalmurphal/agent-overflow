@@ -85,7 +85,7 @@
   tabindex="0"
   data-testid="session-import-list"
   class={[
-    'min-h-0 focus-visible:outline-none',
+    '@container/import min-h-0 focus-visible:outline-none',
     disabled ? 'pointer-events-none opacity-60' : '',
   ].join(' ')}
 >

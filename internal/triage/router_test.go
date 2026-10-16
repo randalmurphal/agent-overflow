@@ -89,6 +89,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventThreadRenamed:              true,
 		provider.EventContentBlockStart:          true,
 		provider.EventContentBlockStop:           true,
+		provider.EventBlocksAbandoned:            true,
 		provider.EventBackgroundTaskTerminal:     true, // Wave 1 — new, Wave 2 wires triage
 		provider.EventBackgroundTaskNotification: true, // Claude task_notification is a notification, not a terminal lifecycle signal
 		provider.EventSessionWakeup:              true, // Claude ScheduleWakeup ack; records pending in-process wakeup for reaper protection
@@ -112,6 +113,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventThinking:                   true,
 		provider.EventProposedPlan:               true,
 		provider.EventWorkspaceChanged:           true, // Claude EnterWorktree/ExitWorktree; the app follows it onto the thread row
+		provider.EventPermissionModeChanged:      true, // Claude left a permission mode on its own; the app follows it onto the thread row
 	}
 
 	got := make(map[provider.EventKind]bool, len(provider.AllEventKinds))
@@ -2577,6 +2579,49 @@ func TestProposedPlanPersistBroadcastsTheThreadRow(t *testing.T) {
 				t.Fatal("thread row broadcast preceded the plan item upsert")
 			}
 		}
+	}
+}
+
+// The plan row frame goes through the announcer the router was given, so it
+// is ordered with the App's frames and carries the row as it is when it
+// leaves: a rename landing while the frame waits is in it.
+func TestProposedPlanRowFrameUsesTheSharedAnnouncer(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	shared := NewThreadAnnouncer(st.GetThread)
+	router.SetThreadAnnouncer(shared)
+
+	release := shared.Hold("t1")
+	done := make(chan error, 1)
+	go func() {
+		done <- router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventProposedPlan,
+			ThreadID:  "t1",
+			ItemID:    "plan-1",
+			Content:   "# Ship it\n\n- one",
+			Timestamp: time.Now(),
+		})
+	}()
+	finished := false
+	var handleErr error
+	for deadline := time.Now().Add(15 * time.Second); !finished && shared.Refs("t1") < 2 && time.Now().Before(deadline); {
+		select {
+		case handleErr = <-done:
+			finished = true
+		case <-time.After(time.Millisecond):
+		}
+	}
+	renameErr := st.UpdateTitle("t1", "Renamed while the frame waited")
+	release()
+	if !finished {
+		handleErr = <-done
+	}
+	if handleErr != nil || renameErr != nil {
+		t.Fatalf("handle plan: %v, rename: %v", handleErr, renameErr)
+	}
+	rows := threadRowEmissions(t, emissions.snapshot())
+	if len(rows) == 0 || rows[len(rows)-1].Title != "Renamed while the frame waited" {
+		t.Fatalf("thread row frames = %+v, want the last one renamed", rows)
 	}
 }
 

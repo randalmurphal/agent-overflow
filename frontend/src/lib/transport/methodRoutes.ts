@@ -166,6 +166,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3380106838: 'home', // GetUIState
 	3135466533: 'all', // GetUsageStats
 	294719565: 'home', // GetWSLDistroPreference
+	1563269625: 'home', // GetWebviewGPUVsyncDisabled
 	673985705: 'selected', // GetWorkspaceActivity
 	1598126927: 'workspace', // GitCheckout
 	1971060042: 'workspace', // GitCommit
@@ -323,6 +324,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	727416435: 'thread', // RenameThread
 	723690026: 'home', // RenameThreadGroup
 	95139518: 'home', // RenewCanonicalDomainCert
+	2861245989: 'home', // ReorderProviderAccounts
 	1188796788: 'home', // RepairBackendAddress
 	446243420: 'selected', // ReplyToPRThread
 	2174329377: 'home', // ReportFrontendErrorBatch
@@ -377,6 +379,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup
 	3978807241: 'home', // SetWSLDistroPreference
+	4062584181: 'home', // SetWebviewGPUVsyncDisabled
 	3648660014: 'home', // SetWindowBackgroundColor
 	2181574220: 'selected', // SetWorkspaceMcpServerEnabled
 	2115861089: 'home', // ShutdownBackend
@@ -417,6 +420,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3175043037: 'thread', // UnpinThread
 	3065043012: 'home', // UnregisterPushToken
 	2888550814: 'home', // UnsubscribePRUpdates
+	1941806085: 'thread', // UnwatchBackgroundTaskOutput
 	3406073706: 'home', // UpdateClientDeviceName
 	1472386383: 'home', // UpdateContextSettingsProfile
 	2452201652: 'thread', // UpdateDiffReviewComment
@@ -441,6 +445,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3907724148: 'thread', // VerifyEditDiffs
 	2431199839: 'home', // Version
 	777755931: 'thread', // WakeThreadWakeNow
+	2263729048: 'thread', // WatchBackgroundTaskOutput
 	4150249282: 'home', // WorkflowAnswerQuestion
 	1931806823: 'home', // WorkflowBindThread
 	4158962817: 'home', // WorkflowCancelItem

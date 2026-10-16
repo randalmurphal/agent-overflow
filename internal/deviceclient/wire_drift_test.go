@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil/providerpath"
 	"agent-overflow/internal/transport"
 )
 
@@ -28,9 +29,9 @@ import (
 func TestMain(m *testing.M) {
 	if os.Getenv(profileLockHelperDirEnv) != "" {
 		// The profile-lock helper child needs no store template.
-		os.Exit(m.Run())
+		os.Exit(providerpath.Run(m))
 	}
-	os.Exit(storetest.Run(m))
+	os.Exit(providerpath.Guard(func() int { return storetest.Run(m) }))
 }
 
 // TestWireConstantsMatchTheTransport pins every spelling this package

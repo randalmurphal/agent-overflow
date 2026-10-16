@@ -475,7 +475,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     const row = getByTestId("collab-tool-row");
 
     expect(row.textContent).toContain("Spawned Plato [default]");
-    expect(row.textContent).toContain("(GPT 5.5 low)");
+    expect(row.textContent).toContain("(GPT 5.5 · Low)");
     expect(row.textContent).toContain(
       "Run `sleep 20` and report the exit code",
     );
@@ -509,7 +509,7 @@ describe("<ToolCallCard> header dispatcher", () => {
     const row = getByTestId("collab-tool-row");
 
     expect(row.textContent).toContain("Spawned Socrates [review_security]");
-    expect(row.textContent).toContain("(default - GPT 5.6 Sol - high)");
+    expect(row.textContent).toContain("(default · GPT 5.6 Sol · High)");
     expect(row.textContent).not.toContain("review_security review_security");
     expect(row.textContent).not.toContain("gAAAA");
     expect(queryByText(/^└/)).toBeNull();

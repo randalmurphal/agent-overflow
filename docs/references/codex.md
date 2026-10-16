@@ -208,7 +208,7 @@ holds the conversation, and the two barely overlap
 |---|---|---|
 | `event_msg/user_message`, `agent_message`, `agent_reasoning` | written | **not written** |
 | `event_msg/patch_apply_end`, `mcp_tool_call_end`, `web_search_end`, `sub_agent_activity`, `entered_review_mode`, `exited_review_mode`, `context_compacted`, `image_generation_end` | written | **not written** |
-| `event_msg/item_completed` | Plan and `clock.sleep` only | **every turn item** |
+| `event_msg/item_completed` | Plan, `clock.sleep`, `FunctionCallOutput` and completed `SubAgentActivity` only | **every turn item** |
 | `response_item/*` | written | written |
 | `turn_context`, `compacted`, `task_started`/`task_complete`/`turn_aborted`, `token_count` | written | written |
 | `world_state`, `security_risk_score` | written | written, and recognised-and-dropped by AO |
@@ -275,6 +275,30 @@ reader:
   results, web searches, sub-agent activity and review markers have no mirror.
 - A tool call therefore appears twice in a paginated file, once as an item and
   once as a `response_item`, and a reader must emit one row for the pair.
+
+### Delegated input and persisted truncation (0.162)
+
+- **A thread another thread delegated to has no user message.** Codex's app
+  and TUI start or message a thread with the `create_thread` /
+  `send_message_to_thread` tools (`codex_app` / `codex_tui`). The receiving
+  thread gets the text as a `response_item/function_call_output` with `id`,
+  `name` and `namespace` but no `call_id`, followed by its
+  `TurnItem::FunctionCallOutput` twin, in both history modes
+  (`core/src/hook_runtime.rs`, `record_pending_input`). The text is a
+  `<codex_delegation>` envelope naming the source thread. The index row has
+  empty `title` and `first_user_message` and a `preview` holding the
+  unwrapped input (`state/src/delegated_preview.rs`). AO lists the thread
+  under `preview` and imports the input as a user row with
+  `meta.origin = "codex-delegation"` (`rollout/delegation.go`).
+- **Paginated rollouts cap persisted tool output at 64 KiB.** An oversized
+  MCP result becomes one text block holding the serialized CallToolResult cut
+  in the middle with `…N chars truncated…`; an oversized command output is cut
+  with `... command output truncated for persistence ...`
+  (`rollout/src/policy.rs`). The two cut points can fall in different
+  blocks, so the halves cannot be rejoined. AO scans the head forward and the
+  tail backward, keeps only text it can attribute to a text block, puts a
+  note at the cut (`rollout/mcp_truncation.go`), and shows command output as
+  written.
 
 ### `history_base`
 

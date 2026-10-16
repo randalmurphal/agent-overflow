@@ -18,8 +18,9 @@ import {
   getPane,
   mountThreadInPane,
   openThreadInNewPane,
-  syncThread,
+  syncThreadReply,
 } from './panes.svelte';
+import { threadRowFrameMark } from './threadRowFrames';
 import { deleteSideChatThread } from './sideChatThread';
 import { addErrorToast } from './toast.svelte';
 import type { ThreadPane } from './thread.svelte';
@@ -83,6 +84,7 @@ export async function keepSideChat(paneId: string): Promise<void> {
   const threadId = getPane(paneId)?.threadId;
   if (!threadId) return;
   let promoted: Thread;
+  const mark = threadRowFrameMark();
   try {
     promoted = (await PromoteScratchThread(threadId)) as Thread;
   } catch (err) {
@@ -98,6 +100,6 @@ export async function keepSideChat(paneId: string): Promise<void> {
   // drops the registration. Its close edge stashes the side chat's own
   // companions under the thread, so the new pane reopens them.
   destroyPane(paneId);
-  syncThread(promoted);
+  promoted = syncThreadReply(promoted, mark);
   await openThreadInNewPane(promoted, insertIndex < 0 ? undefined : insertIndex);
 }

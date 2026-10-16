@@ -61,6 +61,9 @@ Treat persisted row events as distributed convergence:
 - `thread:updated` and `project:updated` apply the complete row for `full` and
   `listed`; `unlisted` and `deleted` remove it. A thread `full` frame never adds
   unknown sidebar membership. A `patch` changes only its named fields.
+- A thread row an RPC returns is applied with `syncThreadReply` (or
+  `threadReplyRow`) and a `threadRowFrameMark` taken before the call, so a
+  frame that arrived during the call is not undone by the older reply.
 - Explicit unread is `lastReadAt === 0`, so numeric newest-wins is insufficient.
   Keep read and unread RPCs behind `threadReadWrites.ts`; its local claim spans
   both the RPC and local patch.

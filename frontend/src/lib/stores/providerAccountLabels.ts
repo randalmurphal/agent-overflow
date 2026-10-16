@@ -1,6 +1,7 @@
 import type { ProviderID } from '../types/providers';
 import type { ManagedProviderAccount } from './bindings';
 import { getProviderDefinition } from '../providers/catalog';
+import { formatCountdownSpan } from '../utils/format';
 
 
 /** Display name for a provider, as every account surface spells it. */
@@ -10,7 +11,9 @@ export function providerLabel(provider: ProviderID): string {
 
 
 /** The name a card, row, or confirm dialog shows for an account. */
-export function providerAccountName(account: ManagedProviderAccount): string {
+export function providerAccountName(
+  account: Pick<ManagedProviderAccount, 'displayName' | 'email' | 'subscriptionType'>,
+): string {
   return account.displayName || account.email || account.subscriptionType || 'Saved account';
 }
 
@@ -60,13 +63,15 @@ export interface ProviderAccountLoginExpiry {
 }
 
 /**
- * The account row's line about the end of its OAuth session.
+ * The account row's line about the end of its login.
  *
  * Claude issues a refresh token with a fixed life (~30 days) that refreshing
  * does NOT extend, so every login dies on a schedule its owner cannot see from
- * inside the app. `refreshTokenExpiresAt` is that date. Past it the account is
- * already signed out in every way that matters — the next refresh answers
- * invalid_grant — so the row says so plainly.
+ * inside the app. `refreshTokenExpiresAt` carries when the login stops working
+ * (claude.LoginExpiresAt): the later of that deadline and the renewal of the
+ * last access token issued before it. Past it the next renewal answers
+ * invalid_grant, so the row says so plainly. The remaining time is exact
+ * ("in 1d 5h", "in 4h 22m"): a rounded "in 2 days" for 29 hours misleads.
  *
  * Deliberately QUIET outside the last week: an account with three weeks left
  * needs nothing from the user, and a permanent countdown on every card is
@@ -81,13 +86,11 @@ export function providerAccountLoginExpiry(
   const expiresAt = account.refreshTokenExpiresAt ?? 0;
   if (expiresAt <= 0) return null;
   if (expiresAt <= now) return { text: 'Login expired', urgent: true, expired: true };
-  // Rounded UP, so the last partial day still reads "in 1 day" rather than
-  // "in 0 days" — the value is a deadline, not an elapsed count.
-  const days = Math.ceil((expiresAt - now) / DAY_MS);
-  if (days > EXPIRY_NOTICE_DAYS) return null;
+  const remaining = expiresAt - now;
+  if (remaining > EXPIRY_NOTICE_DAYS * DAY_MS) return null;
   return {
-    text: `Login expires in ${days} ${days === 1 ? 'day' : 'days'}`,
-    urgent: days <= EXPIRY_URGENT_DAYS,
+    text: `Login expires in ${formatCountdownSpan(expiresAt, now)}`,
+    urgent: remaining <= EXPIRY_URGENT_DAYS * DAY_MS,
     expired: false,
   };
 }

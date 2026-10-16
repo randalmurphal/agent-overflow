@@ -10,7 +10,8 @@ import (
 
 // Codex reports a spawned child's identity after the spawn activity: the
 // nickname and role on the child's thread/started, the effective model and
-// reasoning effort from the metadata-only thread/resume read. These
+// reasoning effort from the metadata-only thread/resume read when the
+// started activity did not carry them (before codex 0.162.1). These
 // describe the spawn itself, so they are the one late write a settled spawn
 // row accepts. Everything else on a metadata update (liveness, background
 // flags, execution state) stays on the live projection.

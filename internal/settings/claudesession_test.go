@@ -119,8 +119,6 @@ func TestClaudeSessionAxesAreSparse(t *testing.T) {
 func TestValidateClaudeThinking(t *testing.T) {
 	for _, ok := range []ClaudeThinking{
 		{},
-		{Mode: ClaudeThinkingModeOff},
-		{Mode: ClaudeThinkingModeOff, Display: ClaudeThinkingDisplayOmitted},
 		{Display: ClaudeThinkingDisplaySummarized},
 		{Mode: ClaudeThinkingModeBudget, BudgetTokens: MinClaudeThinkingBudgetTokens},
 		{Mode: ClaudeThinkingModeBudget, BudgetTokens: 2048, Display: ClaudeThinkingDisplayOmitted},
@@ -133,6 +131,9 @@ func TestValidateClaudeThinking(t *testing.T) {
 	for _, bad := range []ClaudeThinking{
 		{Mode: "disabled"},
 		{Mode: "adaptive"},
+		// "off" was a mode until every Claude model began rejecting
+		// disabled thinking; a write can no longer choose it.
+		{Mode: "off"},
 		{Mode: "Off"},
 		{Display: "hidden"},
 		{Display: "Summarized"},
@@ -153,7 +154,7 @@ func TestValidateClaudeThinking(t *testing.T) {
 // behave as nothing — `--max-thinking-tokens` is never rendered for those
 // modes. Dropping it keeps the persisted shape honest.
 func TestValidateClaudeThinkingDropsBudgetOutsideBudgetMode(t *testing.T) {
-	for _, mode := range []string{ClaudeThinkingModeDefault, ClaudeThinkingModeOff} {
+	for _, mode := range []string{ClaudeThinkingModeDefault} {
 		got, err := validateClaudeThinking("claudeThinking", ClaudeThinking{Mode: mode, BudgetTokens: 4096})
 		if err != nil {
 			t.Fatalf("validateClaudeThinking(mode %q) = %v", mode, err)
@@ -169,6 +170,9 @@ func TestValidateClaudeThinkingDropsBudgetOutsideBudgetMode(t *testing.T) {
 func TestSanitizeClaudeThinkingDropsUnusableValues(t *testing.T) {
 	for _, bad := range []ClaudeThinking{
 		{Mode: "adaptive"},
+		// An earlier version's "off" loads as the default, display and all.
+		{Mode: "off"},
+		{Mode: "off", Display: ClaudeThinkingDisplayOmitted},
 		{Mode: ClaudeThinkingModeBudget, BudgetTokens: 10},
 		{Display: "hidden"},
 	} {
@@ -179,6 +183,26 @@ func TestSanitizeClaudeThinkingDropsUnusableValues(t *testing.T) {
 	keep := ClaudeThinking{Mode: ClaudeThinkingModeBudget, BudgetTokens: 2048, Display: ClaudeThinkingDisplayOmitted}
 	if got := sanitizeClaudeThinking("claudeThinking", keep); got != keep {
 		t.Fatalf("sanitizeClaudeThinking(%+v) = %+v, want it kept", keep, got)
+	}
+}
+
+// An earlier version stored "off" in the user tier. The service loads it as
+// the default and later writes still succeed, so the retired value never
+// makes settings unloadable or unwritable.
+func TestStoredThinkingOffLoadsAsTheDefault(t *testing.T) {
+	svc := NewService(t.TempDir())
+	store := newFakeTierStore()
+	store.scopes[UserScope] = map[string]string{"claudeThinking": `{"mode":"off","display":"omitted"}`}
+	svc.AttachTierStore(store, testBackendBucket)
+
+	if got := svc.Get().ClaudeThinking; got != (ClaudeThinking{}) {
+		t.Fatalf("ClaudeThinking = %+v, want the default for a stored \"off\"", got)
+	}
+	if _, err := svc.Update(map[string]any{"confirmDelete": false}); err != nil {
+		t.Fatalf("an unrelated write failed beside a stored \"off\": %v", err)
+	}
+	if got := svc.Get().ClaudeThinking; got != (ClaudeThinking{}) {
+		t.Fatalf("ClaudeThinking = %+v after a write, want the default", got)
 	}
 }
 
@@ -207,7 +231,7 @@ func TestClaudeThinkingIsSparse(t *testing.T) {
 	if _, present := sparse["claudeThinking"]; present {
 		t.Fatal("claudeThinking present in a sparse write of zero settings")
 	}
-	sparse, err = buildSparseMap(Settings{ClaudeThinking: ClaudeThinking{Mode: ClaudeThinkingModeOff}})
+	sparse, err = buildSparseMap(Settings{ClaudeThinking: ClaudeThinking{Display: ClaudeThinkingDisplayOmitted}})
 	if err != nil {
 		t.Fatalf("buildSparseMap: %v", err)
 	}

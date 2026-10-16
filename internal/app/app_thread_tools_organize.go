@@ -158,7 +158,7 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 	if result.CreatedGroup != nil {
 		a.emitThreadGroup("create", *result.CreatedGroup)
 	}
-	a.broadcastThreadRowIfChanged(organizeThreadAction(result), result.Thread, result.Changed)
+	a.announceThreadIfChanged(organizeThreadAction(result), result.Thread.ID, result.Changed)
 	if result.ArchivedChanged {
 		a.broadcastSpawnerRow(result.Thread)
 	}

@@ -8,6 +8,7 @@
   import { backendReachable } from '../../stores/attachedBackends.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import SettingsField from './SettingsField.svelte';
+  import WebviewGPUVsyncField from './WebviewGPUVsyncField.svelte';
 
   let settings = $derived(getSettings());
   // keepAwakeScreen is host tier: it inhibits THIS machine's display sleep.
@@ -40,6 +41,8 @@
           onToggle={(value) => updateSetting('lowPowerMode', value)}
         />
       </SettingsField>
+
+      <WebviewGPUVsyncField />
 
       <SettingsField
         id="performance.keep-awake-screen"

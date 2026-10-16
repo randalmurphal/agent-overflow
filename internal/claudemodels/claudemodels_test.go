@@ -266,12 +266,12 @@ func TestMergeWireOnlyModelTakesExtendedTierFromTheMarker(t *testing.T) {
 	if extended.Tokens != provider.ClaudeExtendedContextWindow || extended.Tier != provider.ContextTierExtended {
 		t.Errorf("second tier = %+v, want the 1M extended tier", extended)
 	}
-	if extended.Default {
-		t.Error("the 1M tier must be opt-in: the wire proves it exists, not that it should be paid for")
+	if model.ContextWindows[0].Default || !extended.Default {
+		t.Error("a model that offers 1M must start new threads on it, with exactly one default")
 	}
 	if tokens, ok := provider.DefaultContextWindowForOptions(model.ContextWindows); !ok ||
-		tokens != provider.ClaudeStandardContextWindow {
-		t.Errorf("default = %d, want the standard tier", tokens)
+		tokens != provider.ClaudeExtendedContextWindow {
+		t.Errorf("default = %d, want the extended tier", tokens)
 	}
 }
 
@@ -582,6 +582,35 @@ func TestCatalogAliasesFollowTheServedAnswer(t *testing.T) {
 	other := provider.ProbeCacheKey{Binary: "/opt/claude", AccountID: "account-a", WorkDir: "/home/u"}
 	if got := catalog.AliasesFor(other); got != nil {
 		t.Fatalf("AliasesFor(other binary) = %v, want nil", got)
+	}
+}
+
+// TestCatalogReportsModelReadsTheServedWireRows pins that ReportsModel answers
+// from the wire rows behind the served answer, folds spellings onto the slug,
+// and does not count a shipped catalog model the CLI never listed.
+func TestCatalogReportsModelReadsTheServedWireRows(t *testing.T) {
+	catalog := NewCatalog()
+	if catalog.ReportsModel(testKey("account-a"), "claude-haiku-4-5") {
+		t.Fatal("ReportsModel before any probe = true")
+	}
+	catalog.Store(testKey("account-a"), []claude.WireModel{
+		{Value: "haiku", ResolvedModel: "claude-haiku-5-5"},
+		{Value: "claude-haiku-4-5-20251001", ResolvedModel: "claude-haiku-4-5-20251001"},
+	}, nil)
+	for _, slug := range []string{"claude-haiku-5-5", "claude-haiku-4-5"} {
+		if !catalog.ReportsModel(testKey("account-a"), slug) {
+			t.Errorf("ReportsModel(own, %s) = false", slug)
+		}
+		if !catalog.ReportsModel(testKey("account-b"), slug) {
+			t.Errorf("ReportsModel(unprobed, same binary, %s) = false", slug)
+		}
+	}
+	if catalog.ReportsModel(testKey("account-a"), "claude-opus-4-5") {
+		t.Error("a shipped model the CLI did not list was reported")
+	}
+	other := provider.ProbeCacheKey{Binary: "/opt/claude", AccountID: "account-a", WorkDir: "/home/u"}
+	if catalog.ReportsModel(other, "claude-haiku-5-5") {
+		t.Error("another binary's rows were used")
 	}
 }
 
@@ -1158,5 +1187,93 @@ func TestCatalogReportsEnrichmentProvenance(t *testing.T) {
 	}
 	if _, enriched := catalog.ModelsFor(key, string(provider.Codex)); enriched {
 		t.Error("a provider this catalog does not serve must not claim enrichment")
+	}
+}
+
+// The served list follows the CLI's latest answer: listed models in the CLI's
+// order with its default marked, every other catalog row kept after them as
+// Unlisted so threads already on it still resolve capabilities.
+func TestModelsForMarksWhatTheLatestAnswerLists(t *testing.T) {
+	catalog := NewCatalogWith([]provider.ModelInfo{
+		{Slug: "claude-opus-5", Name: "Opus 5", Provider: "claude"},
+		{Slug: "claude-opus-4-5", Name: "Opus 4.5", Provider: "claude"},
+		{Slug: "claude-haiku-4-5", Name: "Haiku 4.5", Provider: "claude"},
+	})
+	catalog.Store(testKey("a"), []claude.WireModel{
+		{Value: "default", ResolvedModel: "claude-opus-5-5[1m]"},
+		{Value: "opus", ResolvedModel: "claude-opus-5-5"},
+		{Value: "haiku", ResolvedModel: "claude-haiku-4-5-20251001"},
+		{Value: "claude-opus-5", ResolvedModel: "claude-opus-5"},
+	}, nil)
+
+	models, enriched := catalog.ModelsFor(testKey("a"), string(provider.Claude))
+	if !enriched {
+		t.Fatal("enriched = false for a probed identity")
+	}
+	want := []string{"claude-opus-5-5", "claude-haiku-4-5", "claude-opus-5", "claude-opus-4-5"}
+	if !slices.Equal(slugs(models), want) {
+		t.Fatalf("order = %v, want %v", slugs(models), want)
+	}
+	for _, m := range models {
+		if m.Unlisted != (m.Slug == "claude-opus-4-5") {
+			t.Errorf("%s Unlisted = %v", m.Slug, m.Unlisted)
+		}
+		if m.IsDefault != (m.Slug == "claude-opus-5-5") {
+			t.Errorf("%s IsDefault = %v", m.Slug, m.IsDefault)
+		}
+	}
+
+	// A later answer that drops opus-5 unlists it; nothing remembers it.
+	catalog.Store(testKey("a"), []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5-5"}}, nil)
+	models, _ = catalog.ModelsFor(testKey("a"), string(provider.Claude))
+	if m, _ := findModel(models, "claude-opus-5"); !m.Unlisted {
+		t.Error("a model the latest answer dropped stayed listed")
+	}
+	if m, ok := findModel(models, "claude-opus-5-5"); !ok || m.Unlisted || m.IsDefault {
+		t.Errorf("opus-5-5 = %+v, %v; want listed, not default (no default row)", m, ok)
+	}
+}
+
+// A CLI that answers without a model list (too old to report one) leaves the
+// shipped catalog in place, unmarked and not claimed as a probe answer.
+func TestModelsForTreatsAnAnswerWithoutModelsAsUnprobed(t *testing.T) {
+	catalog := NewCatalog()
+	catalog.Store(testKey("a"), nil, nil)
+	models, enriched := catalog.ModelsFor(testKey("a"), string(provider.Claude))
+	if enriched {
+		t.Fatal("enriched = true for an answer with no models")
+	}
+	if !slices.Equal(slugs(models), slugs(provider.ClaudeModels)) {
+		t.Fatalf("models = %v, want the shipped catalog", slugs(models))
+	}
+	for _, m := range models {
+		if m.Unlisted || m.IsDefault {
+			t.Fatalf("%s marked (Unlisted=%v IsDefault=%v) with no answer", m.Slug, m.Unlisted, m.IsDefault)
+		}
+	}
+}
+
+// Haiku 5.5 as CLI 2.1.300 reports it: the shipped entry supplies the 1M
+// tier the wire cannot report, and the wire's effort levels apply.
+func TestHaiku55TakesItsContextWindowsFromTheShippedEntry(t *testing.T) {
+	catalog := NewCatalog()
+	catalog.Store(testKey("a"), []claude.WireModel{{
+		Value: "haiku", ResolvedModel: "claude-haiku-5-5",
+		SupportsEffort: true, SupportedEffortLevels: []string{"low", "medium", "high", "xhigh", "max"},
+	}}, nil)
+	models, _ := catalog.ModelsFor(testKey("a"), string(provider.Claude))
+	haiku, ok := findModel(models, "claude-haiku-5-5")
+	if !ok || haiku.Unlisted {
+		t.Fatalf("haiku 5.5 = %+v, %v; want listed", haiku, ok)
+	}
+	var tokens []int
+	for _, w := range haiku.ContextWindows {
+		tokens = append(tokens, w.Tokens)
+	}
+	if !slices.Contains(tokens, provider.ClaudeExtendedContextWindow) {
+		t.Errorf("context windows = %v, want the 1M tier", tokens)
+	}
+	if got := effortSlugs(haiku.ReasoningEfforts); !slices.Equal(got, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Errorf("efforts = %v", got)
 	}
 }

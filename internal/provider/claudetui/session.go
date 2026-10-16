@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"strconv"
 	"sync"
 	"time"
@@ -167,6 +168,9 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// Seed the parser with the resolved model so result usage can be priced
 	// before the reconstructed init lands (mirrors the headless seed).
 	s.parser.SetModel(cfg.Model)
+	s.parser.SetSessionEffort(cfg.ReasoningEffort)
+	s.parser.SetModelAliases(maps.Clone(cfg.ModelAliases))
+	s.parser.SetAgentLaunchLookup(cfg.AgentLaunchByTask)
 	s.rec = newReconstructor(s.feedEnvelope)
 	// Debug-gated: record per-request routing/reconstruction decisions to the
 	// "decision" event stream only when the logger is live, so a production

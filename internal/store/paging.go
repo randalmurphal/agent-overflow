@@ -327,9 +327,10 @@ func (s *Store) querySelectedPagedItems(q sqlQueryer, threadID, selectedSQL stri
 	return s.decoratePagedItems(q, threadID, items)
 }
 
-// decoratePagedItems applies the read-time meta decorations every
-// frontend-bound window needs: proposed-plan state and subagent anchor
-// aggregates (descendant count + collapsed-card preview).
+// decoratePagedItems applies the read-time decorations every
+// frontend-bound window needs: proposed-plan state, subagent anchor
+// aggregates (descendant count + collapsed-card preview), a completion's
+// launch and the discarded mark of rows an abandonment record names.
 func (s *Store) decoratePagedItems(q sqlQueryer, threadID string, items []Item) ([]Item, error) {
 	decorated, err := s.decorateProposedPlanItems(q, threadID, items)
 	if err != nil {
@@ -339,7 +340,11 @@ func (s *Store) decoratePagedItems(q sqlQueryer, threadID string, items []Item) 
 	if err != nil {
 		return nil, fmt.Errorf("store: decorate paged subagent anchors for %s: %w", threadID, err)
 	}
-	return s.decorateCompletionLaunches(q, threadID, decorated)
+	decorated, err = s.decorateCompletionLaunches(q, threadID, decorated)
+	if err != nil {
+		return nil, err
+	}
+	return s.decorateDiscardedRows(q, threadID, decorated)
 }
 
 func emptyPagedItems() PagedItems {

@@ -726,12 +726,53 @@ scroll behavior on it.
 Bottom geometry and user intent are separate. The viewport can be near
 the bottom while the user has escaped bottom-follow. Upward wheel, key,
 touch, middle-button autoscroll, or scrollbar-gutter pointer intent
-escapes synchronously when it targets the timeline or a descendant.
+escapes synchronously when it targets the timeline or a descendant. A
+navigation key whose target consumes it (a writable, enabled textarea or
+text-type input, a select, or content whose `isContentEditable` is true)
+moves a caret, not the scroller, and is neither escape nor down intent. A
+readonly or disabled field, a checkbox, or a button in a non-editable
+island of an editor leaves the key to the scroller.
 
-A recent down-intent window is the only consent path for re-sticking after
-escape. Re-stick uses the distance from bottom captured at scroll-event
-time so streaming growth between the event and the deferred check cannot
-invalidate what the user actually saw.
+Down input (wheel, key, touch) is the only consent path for re-sticking
+after escape. A down gesture made while escaped stays pending until its
+scroll lands, with no clock. A gesture with a known travel carries it,
+because a smooth scroll lands over several events: a wheel its `deltaY` in
+pixels (line and page modes converted by `wheelDeltaPx`; a second wheel
+adds to it), PageDown the scroller's `clientHeight`, End no limit. Each
+untagged scroll event spends what it moved (under a pixel left counts as
+spent: a fractional delta's rounding); one that lands at the bottom
+(within `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) while travel remains re-sticks
+however late a loaded host delivers it, even inside a resize-correlated
+cascade. Spending the travel, an upward event, a native clamp, or an
+event that moves further than the travel left plus the epsilon ends the
+gesture, so a scroll with no input of its own (find-in-page, focus, an
+anchor) after it does not re-stick. An anchoring shift (a scroll the
+content resize accounts for whole) is layout, not the gesture: it spends
+nothing, ends nothing, and is never the landing. A controller write is
+tagged and spends nothing; it ends an End, whose travel never runs out.
+An arrow key or touch has no known travel: its first untagged scroll
+event is its landing, wherever it lands. An upward escape, a re-stick or
+a detach also ends the pending gesture. Motion that continues a gesture
+past its first scroll event re-sticks through the 250 ms recent
+down-intent window, which each further downward user scroll renews. Re-stick
+uses the distance from bottom captured at scroll-event time so streaming
+growth between the event and the deferred check cannot invalidate what
+the user actually saw. `attach` is untracked: consumers attach from an
+effect whose teardown detaches, and a subscription to the controller's
+near-bottom state would re-run that effect at the bottom and drop the
+pending gesture.
+
+A down input also records the bottom target it aims at
+(`downIntentShownEnd`). The browser clamps a gesture to the end that stood
+when it computed the gesture, so a wheel or an End key's smooth scroll lands
+on that end even when rows mounting at the tail measure taller and move the
+bottom first. Landing on it, within the epsilon and by the reader's own
+movement, re-sticks, and the view then follows to the moved bottom through
+the pinned-growth path (`notifyLiveContentMaybeGrew`). The aimed end lives
+as long as the recent window or a pending landing does, so a gesture's late
+landing on it re-sticks too. A scroll the content resize accounts for whole
+is an anchoring shift, not arrival; a later input re-aims; a position past
+the aimed end is not arrival.
 
 A selection drag pauses the spring in place and escapes on the scroll
 events it causes (`isSelectingInside`: the primary button is held AND the

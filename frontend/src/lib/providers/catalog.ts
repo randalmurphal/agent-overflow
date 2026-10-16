@@ -119,7 +119,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
     shortLabel: 'C',
     badgeClass: 'bg-accent/10 text-accent',
     installActionLabel: 'Install Claude CLI',
-    textGenerationDefaultModel: 'claude-haiku-4-5',
+    textGenerationDefaultModel: 'claude-haiku-5-5',
     textGenerationEffortOptions: [
       { value: 'low', label: 'Low' },
       { value: 'medium', label: 'Medium' },
@@ -195,7 +195,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
     dependsOnProvider: 'claude',
     enableHint:
       'Interactive terminal sessions driven through the real Claude TUI. Hidden from pickers when off.',
-    textGenerationDefaultModel: 'claude-haiku-4-5',
+    textGenerationDefaultModel: 'claude-haiku-5-5',
     textGenerationEffortOptions: [
       { value: 'low', label: 'Low' },
       { value: 'medium', label: 'Medium' },

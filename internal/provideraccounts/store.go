@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -51,7 +50,6 @@ type Account struct {
 	// NoteRefreshTokenExpiry for who keeps it current.
 	RefreshTokenExpiresAt int64                        `json:"refreshTokenExpiresAt,omitempty"`
 	AddedAt               int64                        `json:"addedAt"`
-	LastUsedAt            int64                        `json:"lastUsedAt"`
 	RateLimits            *provider.RateLimitsSnapshot `json:"rateLimits,omitempty"`
 }
 
@@ -151,6 +149,9 @@ func NewStore(configDir string) (*Store, error) {
 	return s, nil
 }
 
+// List returns one provider's accounts in the order the user keeps them: new
+// accounts are appended and only Reorder moves them, so neither a switch nor
+// a sign-in reshuffles the cards.
 func (s *Store) List(providerName string, now time.Time) []Account {
 	s.mu.RLock()
 	state := s.state.Providers[providerName]
@@ -159,15 +160,6 @@ func (s *Store) List(providerName string, now time.Time) []Account {
 	for i := range accounts {
 		accounts[i].RateLimits = resetExpiredLimits(accounts[i].RateLimits, now)
 	}
-	sort.SliceStable(accounts, func(i, j int) bool {
-		if accounts[i].ID == state.ActiveAccountID {
-			return true
-		}
-		if accounts[j].ID == state.ActiveAccountID {
-			return false
-		}
-		return accounts[i].LastUsedAt > accounts[j].LastUsedAt
-	})
 	return accounts
 }
 
@@ -279,7 +271,6 @@ func (s *Store) upsertAndActivate(
 			)
 		}
 	}
-	account.LastUsedAt = now
 	if index >= 0 {
 		state.Accounts[index] = cloneAccount(account)
 	} else {
@@ -297,6 +288,85 @@ func (s *Store) upsertAndActivate(
 	return cloneAccount(account), nil
 }
 
+// Add saves a new account after the provider's existing ones without
+// changing the selection. The caller has already written the account's
+// credential slot. An identity that is already saved is an error for the
+// reason UpsertAndActivate gives: the caller resolves existing accounts with
+// FindByIdentity first and updates them through UpdateMetadata.
+func (s *Store) Add(account Account) (Account, error) {
+	if err := validateAccount(account); err != nil {
+		return Account{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previous, existed := s.state.Providers[account.Provider]
+	state := cloneProviderState(previous)
+	if indexOfAccount(state.Accounts, account.ID) >= 0 {
+		return Account{}, fmt.Errorf(
+			"provideraccounts: account %q is already saved for %s",
+			account.ID,
+			account.Provider,
+		)
+	}
+	for i := range state.Accounts {
+		if conflictsWithSaved(account, state.Accounts[i]) {
+			return Account{}, fmt.Errorf(
+				"%w: %s account %q is saved as %q",
+				ErrAccountIDMismatch,
+				account.Provider,
+				account.ID,
+				state.Accounts[i].ID,
+			)
+		}
+	}
+	if account.AddedAt == 0 {
+		account.AddedAt = time.Now().UnixMilli()
+	}
+	state.Accounts = append(state.Accounts, cloneAccount(account))
+	s.state.Providers[account.Provider] = state
+	if err := s.saveLocked(); err != nil {
+		restoreProviderState(s.state.Providers, account.Provider, previous, existed)
+		return Account{}, err
+	}
+	return cloneAccount(account), nil
+}
+
+// ErrAccountOrderStale reports a reorder that does not name exactly the saved
+// accounts, which means the caller's listing is out of date.
+var ErrAccountOrderStale = errors.New("provideraccounts: the account list changed; reload and try again")
+
+// Reorder sets the order List returns. accountIDs must name every saved
+// account for the provider exactly once. The selection and generation are
+// untouched: order is presentation, not an account change.
+func (s *Store) Reorder(providerName string, accountIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previous, existed := s.state.Providers[providerName]
+	state := cloneProviderState(previous)
+	if len(accountIDs) != len(state.Accounts) {
+		return ErrAccountOrderStale
+	}
+	ordered := make([]Account, 0, len(accountIDs))
+	seen := make(map[string]bool, len(accountIDs))
+	for _, id := range accountIDs {
+		index := indexOfAccount(state.Accounts, id)
+		if index < 0 || seen[id] {
+			return ErrAccountOrderStale
+		}
+		seen[id] = true
+		ordered = append(ordered, state.Accounts[index])
+	}
+	state.Accounts = ordered
+	s.state.Providers[providerName] = state
+	if err := s.saveLocked(); err != nil {
+		restoreProviderState(s.state.Providers, providerName, previous, existed)
+		return err
+	}
+	return nil
+}
+
 func (s *Store) Activate(providerName, accountID string) (Account, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -310,7 +380,6 @@ func (s *Store) Activate(providerName, accountID string) (Account, error) {
 			state.Generation++
 		}
 		state.ActiveAccountID = accountID
-		state.Accounts[i].LastUsedAt = time.Now().UnixMilli()
 		s.state.Providers[providerName] = state
 		if err := s.saveLocked(); err != nil {
 			restoreProviderState(s.state.Providers, providerName, previous, existed)
@@ -401,9 +470,6 @@ func (s *Store) Remove(providerName, accountID, replacementAccountID string) err
 		}
 		state.ActiveAccountID = replacementAccountID
 		state.Generation++
-		if replacementIndex >= 0 {
-			state.Accounts[replacementIndex].LastUsedAt = time.Now().UnixMilli()
-		}
 	}
 
 	state.Accounts = append(state.Accounts[:index], state.Accounts[index+1:]...)
@@ -460,7 +526,6 @@ func (s *Store) UpdateMetadata(account Account) (Account, error) {
 		}
 	}
 	account.AddedAt = existing.AddedAt
-	account.LastUsedAt = existing.LastUsedAt
 	account.RateLimits = existing.RateLimits
 	account.RefreshTokenExpiresAt = mergeRefreshTokenExpiry(account, existing)
 	state.Accounts[index] = cloneAccount(account)

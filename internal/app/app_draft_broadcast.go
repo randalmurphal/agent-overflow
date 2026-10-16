@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtransfer"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 )
 
 // The transfer completion transaction consumes the source without a frontend.
@@ -23,7 +24,7 @@ func (a *App) announceTransferredDraft(row store.ThreadTransfer) error {
 	}
 	if source.DraftToConsume != nil {
 		a.broadcastDraft(transport.ClientIdentity{}, DraftUpdatedEvent{ThreadID: row.ThreadID, UpdatedAt: row.UpdatedAt})
-		a.broadcastThreadRowByID(row.ThreadID)
+		a.announceThread(triage.ThreadActionFull, row.ThreadID)
 	}
 	return nil
 }

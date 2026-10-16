@@ -28,11 +28,19 @@ const FileName = "wsl.json"
 
 // Config is the on-disk picker state. The schema is shared between
 // the launcher (which records installation fields after a successful boot)
-// and the WSL backend (which mutates only Distro for the Settings picker).
+// and the WSL backend (which mutates Distro and DisableGPUVsync from
+// Settings).
 type Config struct {
 	// Distro is the WSL distribution name the launcher should boot
 	// into on the next launch.
 	Distro string `json:"distro"`
+
+	// DisableGPUVsync makes the launcher start both WebView2 environments
+	// (the app window and the browser pane) with --disable-gpu-vsync, so
+	// Chromium paces frames from a timer instead of the GPU's vblank
+	// signal. Settings > Performance owns it; the launcher reads it once
+	// at start, so a change applies on the next launch.
+	DisableGPUVsync bool `json:"disable_gpu_vsync,omitempty"`
 
 	// InstalledVer is the payloadVersion stamped onto the launcher
 	// at build time, recorded after a successful install + boot. The

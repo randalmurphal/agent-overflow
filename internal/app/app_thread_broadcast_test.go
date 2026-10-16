@@ -314,11 +314,12 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		}
 		broadcasts.expectSilence("restating the context window a thread already carries")
 
-		if _, err := app.UpdateThreadContextWindow(thread.ID, 1000000); err != nil {
+		// The thread starts on its model's 1M default; 200k is the change.
+		if _, err := app.UpdateThreadContextWindow(thread.ID, 200000); err != nil {
 			t.Fatalf("UpdateThreadContextWindow: %v", err)
 		}
-		if row := broadcasts.expectRow(triage.ThreadActionFull, thread.ID); row.ContextWindow != 1000000 {
-			t.Fatalf("broadcast row ContextWindow = %d, want 1000000", row.ContextWindow)
+		if row := broadcasts.expectRow(triage.ThreadActionFull, thread.ID); row.ContextWindow != 200000 {
+			t.Fatalf("broadcast row ContextWindow = %d, want 200000", row.ContextWindow)
 		}
 	})
 

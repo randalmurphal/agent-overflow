@@ -490,6 +490,53 @@ the inactive close (carrying the error string); `requesting` and
 unknown statuses are dropped. Triage projects the window onto
 `provider:compacting` (see `internal/triage/compaction_status.go`).
 
+### Permission mode reports (2.1.300 bundle, not live-captured)
+
+A third family reports every change of the session's permission mode,
+whoever made it:
+
+```json
+{"type":"system","subtype":"status","status":null,
+ "permissionMode":"default","uuid":"...","session_id":"..."}
+```
+
+The headless loop installs the reporter on the session state's
+`onPermissionModeChanged`, which the app-state subscriber calls whenever
+`toolPermissionContext.mode` changes. A `set_permission_mode` from the
+client produces one too, written around its ack (the state update and the
+ack share one updater, so the report can follow the ack). `system/init`
+also carries `permissionMode`, but restates the startup resolution, which
+for a spawn without `--permission-mode` includes the user's
+`permissions.defaultMode`. Leaving plan (ExitPlanMode) can likewise land on
+that `defaultMode`.
+
+Since 2.1.299 the CLI changes mode on its own in one case AO must follow:
+`set_model` to a model without auto mode, on a session running `auto`,
+moves the session to `default` (logged `auto mode disabled: model X does
+not support auto mode`) and reports it before the `set_model` ack. The
+support check (`iD`) refuses auto for the 4.6 generation and older and for
+every Haiku but 5.5. A later `set_permission_mode` `auto` on such a model
+is refused with `auto mode unavailable for this model` and
+`error_code:"auto_mode_model"`. In plan the switch changes nothing and
+reports nothing: plan keeps auto as the mode to return to, so the refusal
+is what leaving plan for auto meets. A process started with
+`--permission-mode auto` on such a model goes through the startup gate,
+and the bundle suggests it starts on `default`; only its `system/init`
+would say so.
+
+The parser emits `EventPermissionModeChanged` for every status report. The
+session (`internal/provider/claude/permission_mode.go`) drops a report that
+matches a `set_permission_mode` in flight or the mode it already runs, and
+adopts only `default` while its base is `auto`, as both its current and
+base mode, forwarding it. Any other report only updates the mode the
+session believes the CLI runs, so the next turn restores the base. The
+same drop is taken from a refused `auto` (`auto_mode_model`) and from an
+init that says `default` while the session runs auto. The app
+(`internal/app/app_claude_permission_mode.go`) moves the thread's runtime
+mode to `approval-required` without a restart and posts a warning notice
+naming the model. A later switch to a model whose remembered settings carry
+Auto restores it with a notice of its own.
+
 ## `system` model-fallback family
 
 Four subtypes, one shape, one meaning each: the model the user asked for
@@ -1786,6 +1833,17 @@ Per agent-overflow spec, triage keeps the `tool_call` row at
 `tool_completion` row comes later via the task lifecycle. See
 [`turn-lifecycle.md`](../architecture/turn-lifecycle.md).
 
+The ack TEXT is the wire's one launch-time statement of the task's
+output file: every wording ends in `Output is being written to:
+<tasks dir>/<task_id>.output.` while the structured sibling carries only
+`backgroundTaskId`. The parser reads the path up to that basename
+(`sessionimport.BackgroundAckOutputFile`) into the completion's
+`output_file` meta, and triage stamps it on the launch row when it keeps
+the launch running, so the tray can follow the file before any
+`task_notification` names it. A Monitor launch names no file; the tail
+reads it off the task's newest notification row at watch time, and the
+launch row is never rewritten.
+
 
 **The launch flag is a hint, never a verdict.** A `run_in_background:
 true` launch can be REFUSED: a PreToolUse hook deny, or "Permission to
@@ -2243,11 +2301,14 @@ It rewrites the carrier's Summary to the
 original launch's own Summary (or `"Agent: " + description` as a
 fallback), so the carrier reads "Agent: Frontend transitive
 suppression fix" instead of "SendMessage: …", and copies the
-original's `subagent_model` (the Subn stamp, else the launch
-`input.model` alias) plus any missing `subagent_type`/`description`
-onto the carrier meta — which is what lets the frontend render the
+original's `subagent_model` (the Subn stamp, else the launch's resolved
+`requested_model`, else its `input.model` alias) plus any missing `subagent_type`/`description`,
+and the effort the original launch named as `subagent_effort` (without
+one the round runs at the carrier's own `inherited_effort`,
+[§Agent effort](#agent-effort)), onto the carrier meta — which is
+what lets the frontend render the
 carrier row, tray entry and completion card with the resumed agent's
-own type and model (`claudeResumeCarrierIdentity`,
+own type, model and effort (`claudeResumeCarrierIdentity`,
 frontend `utils/subagentLaunch.ts`) instead of the raw recipient id
 and the parent thread's model. Round 2's
 `task_updated`/`task_notification` then write a NEW
@@ -2323,7 +2384,8 @@ agent (not `Agent`, `Task` or `Skill`) is still a resume: a fresh
 launch's call is one of those, and `local_agent` tasks die with their
 CLI process, so no pre-restart agent re-announces itself. The parser
 asks the thread's history for the launch (`claude.Config.AgentLaunchByTask`,
-the oldest agent launch row carrying the task id) and stamps it as
+the oldest agent launch row carrying the task id, with the effort it named and
+its model; see [§Agent effort](#agent-effort)) and stamps it as
 `resumes_tool_use_id` and `transcript_root_id`; when the history has
 none, both are omitted and triage resolves the launch through the
 persisted `items.meta.task_id`. Task bindings and roots rotate
@@ -2332,7 +2394,8 @@ Bash tasks do not evict them, and the history covers what rotates out.
 
 **A resume the session mirror delivers**: a call inside a typed fork
 (§E9) reaches the parser only through the mirror, after its
-`task_started`. The parser binds the task and holds the classification
+`task_started` (2.1.300's stdout replay of the finished fork is
+dropped, §E9). The parser binds the task and holds the classification
 until the mirror projects the call; the call's name or the task's
 earlier binding then decides launch or resume, and the resume's meta
 and prompt row follow the call's row as they do on stdout (triage
@@ -2728,8 +2791,8 @@ shapes reach AO, and the parser handles both.
   that wakes the main agent when it finishes. A fork does not park.
 - **A directly entered forked command** (`/code-review high`) gets the
   same `task_started` with NO `tool_use_id`, and its terminal
-  notification names none either. Its rows arrive only through the
-  session mirror. AO records the task the running command announces
+  notification names none either. While it runs, its rows arrive only
+  through the session mirror. AO records the task the running command announces
   and stamps it on the row when the mirror proves the fork with that
   agentId (§transcript_mirror). The Agent the fork launches is
   announced by `task_started` before the mirror delivers its tool_use,
@@ -2738,6 +2801,17 @@ shapes reach AO, and the parser handles both.
   under it. Every projected agent's last message reaches the mirror
   after its task terminal, so a terminal keeps the agent's projection
   open (`forked_skill_direct_command_20261014.ndjson`).
+- **2.1.300 also replays a finished typed fork on stdout.** After the
+  fork's `task_notification` (and a repeated `system/init`), the CLI
+  writes every row of the fork and of the agents it launched as ordinary
+  `user`/`assistant` envelopes carrying `agent_id`. The fork's own rows
+  name `parent_tool_use_id: "forked-command-<skill>"`, which no tool_use
+  has; its agents' rows name their launch. The fork's last message
+  reaches stdout here before the mirror delivers it. The parser drops a
+  stdout row whose `agent_id` names an agent the mirror projects under a
+  direct command (`mirrorProjectsStdoutRow`); the projection already
+  carries it. 2.1.284 sends no such replay and no `agent_id`
+  (`forked_skill_direct_command_stdout_replay_20261016.ndjson`).
 - **A typed fork can be resumed** by `SendMessage` to its agentId. The
   resumed fork's `agent_metadata` again names no tool_use and its rows
   reach only the mirror; they project under the command row the fork
@@ -3203,6 +3277,84 @@ CLI machinery and are not prompts.
 
 ---
 
+## Agent effort
+
+Source-read from the 2.1.300 bundle. The `Agent` tool takes an optional
+`effort` input. A subagent runs at the first of:
+
+1. the `CLAUDE_CODE_EFFORT_LEVEL` environment override;
+2. the launch's `input.effort` (ignored for `subagent_type: "fork"`);
+3. the agent definition's frontmatter `effort`;
+4. the effort of the agent that launched it: the enclosing subagent's for a
+   nested launch, else the session's for that model.
+
+The result is clamped to the subagent's model: `xhigh` or `max` the model
+does not offer becomes `high`, and a model with no effort tiers runs with
+none. With no explicit effort, an experiment may lower it. Behind another
+experiment the input also takes `"lower"` or `"higher"`, a one-tier step from
+the inherited effort; with the experiment off the CLI drops it.
+
+The `model` input is an alias (`sonnet`, `opus`, `haiku`, `fable`). An alias
+naming the launcher's own model family keeps the launcher's model; any other
+takes the alias's target, the `resolvedModel` of its `initialize` models row.
+A fork ignores it.
+
+A §E6 resume runs at the effort the launch named, which the agent's
+`.meta.json` records (only an explicit `effort` is recorded), else through
+the same chain with the session's effort at resume time. `SendMessage` takes
+no effort.
+
+`/effort` replies that move the session's effort: `Set effort level to
+<tier>…`; `Effort '<x>' exceeds the cap for <model> set by your settings or
+organization; set to '<y>' instead…` (sets `<y>`); and `Effort level set to
+auto…`, `Effort set to auto for this session, but CLAUDE_CODE_EFFORT_LEVEL=…`
+and `Cleared effort from settings, but CLAUDE_CODE_EFFORT_LEVEL=…`, after
+which the session runs at an effort AO cannot name.
+
+No stream field reports the subagent's effective effort. Session-mirror
+assistant rows carry the request's `effort`, unverified as a source for
+effort-capable subagents.
+
+AO records what was true when the agent started running
+(`internal/provider/claude/subagent_effort.go`):
+
+- Each Agent/Task launch gets `meta.inherited_effort`, the launching agent's
+  effort, and `meta.requested_model`, the model its alias resolves to through
+  the CLI's alias map. A §E6 resume carrier gets `meta.inherited_effort`, its
+  sender's effort at resume time.
+- The session's effort starts at the resolved `--effort` and follows the
+  `/effort` replies above. claude-tui never sees the terminal's `/effort`, so
+  its reconstructor stamps each main-loop assistant envelope with the
+  request's `output_config.effort` (`ao_request_effort`, `""` when absent),
+  which the parser takes as the session's effort. The CLI clamps it to the
+  main model, so a `high` request on a model without `xhigh` or `max` may
+  stand for one of them: launches under it also get
+  `meta.inherited_effort_alternatives`, the tiers that model lacks (both
+  when the catalog does not know it). A `/effort` reply clears them.
+- A resume of an agent an earlier process launched restores the effort the
+  launch named and its model from the thread's history
+  (`claude.Config.AgentLaunchByTask`), so launches nested in the resumed
+  round inherit it.
+- A relative `"lower"`/`"higher"` names no effort AO can reproduce, so the
+  row shows none and launches nested inside it inherit none.
+- A row's stamps are written once: triage keeps an existing row's stamp state
+  when its tool start is delivered again, and never adds a stamp to a row
+  stored without one (`internal/triage/launch_effort.go`). An effort and its
+  alternatives settle as one stamp.
+
+The row shows `input.effort`, else the stamp; a resume carrier shows the
+launch's named effort, else its own stamp. The effort is clamped against the
+catalog entry of the subagent's model, else its requested model; an alias the
+parser could not resolve shows an effort only when every catalog model of its
+family agrees on it (`frontend/src/lib/utils/subagentEffort.ts`). With
+alternatives, it shows one only when the effort and every alternative clamp to
+the same tier on that model.
+Frontmatter effort, the environment override and the experiments are not
+visible to AO, so a row can show the inherited effort where the CLI used
+another.
+
+---
+
 ## Error envelope shapes
 
 API failures land on three loosely-coupled shapes. Both providers
@@ -3344,7 +3496,9 @@ verbatim.
 - `content_block_delta`: `{index, delta: {type: ..., ...}}`
 - `content_block_stop`: `{index}`
 - `message_delta`: mid-message `stop_reason` / `usage` updates
-- `message_stop`: closes an assistant message
+- `message_stop`: closes an assistant message; one the CLI produced itself
+  for a response it stopped reading carries `abandoned_blocks` on the
+  envelope (§`abandoned_blocks` below)
 
 ### Delta types
 - `text_delta: {text}`: ✅ handled
@@ -3362,6 +3516,48 @@ remains authoritative for the cumulative turn payload (token usage,
 cost, terminal_reason). But it is
 **not** the only signal that the round has ended; see soft-round-close
 below.
+
+### `abandoned_blocks`: a response cut short (2.1.300+)
+
+When the byte watchdog stops reading a response (no bytes for
+`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS`, default 180 s, clamped to 10 s
+through 30 min), the CLI closes it itself: a `content_block_stop` for any
+open block, then a `message_stop` whose ENVELOPE (not the inner event)
+carries `abandoned_blocks`:
+
+```json
+{"type": "stream_event", "event": {"type": "message_stop"},
+ "parent_tool_use_id": null, "api_message_id": "msg_01",
+ "abandoned_blocks": {"api_message_id": "msg_01", "from_block_index": 1}}
+```
+
+Every content block of that response at `from_block_index` and above was
+streamed but has no assistant message and never will: it is not in the
+transcript. `from_block_index` is the count of blocks whose assistant
+message was already emitted, so 0 means the whole response; it can exceed
+every index seen, in which case nothing visible was lost. What follows is
+unspecified by the key: in captures, a synthetic `isSynthetic:true` user
+nudge, then a continuation `message_start` when at least one block had
+finished, or a non-streamed retry (`assistant` under a new id, no
+`message_start`) when the stall was inside block 0. 2.1.284 does not send
+the key. The CLI's close events hardcode `parent_tool_use_id: null`, and
+subagent output never streams, so there is no scoped signal; a subagent's
+stall delivers its partial message whole and a retry under a new id.
+
+`api_message_id` (2.1.300+) sits on every stream_event envelope of a
+response, `message_start` through `message_stop`, and on the CLI's own
+close events; absent from older CLIs and from plugin-rewritten events.
+
+AO: the parser names each block's response on its `content_block_start` /
+`content_block_stop` meta (`apiMessageId`, from the envelope key or the
+scope's `message_start`) and turns the `message_stop` into
+`EventBlocksAbandoned`. Triage never rewrites the rows the blocks streamed
+into; it writes one `notification` row (`meta.kind: abandoned_blocks`,
+`meta.item_ids`) after them. The store serves each named row with the
+record's id (`Item.discardedBy`, `decorateDiscardedRows`) and stamps the
+rows when the record is written, so the muted marking holds whether or
+not the record is in the loaded window
+([decisions](../decisions.md#streaming-and-reveal)).
 
 ### Soft round close: `message_delta.stop_reason`
 
@@ -3692,7 +3888,11 @@ CLI binary; the subtypes we use or plan to use:
     `display` changes. (`CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1` is what
     makes the budget matter everywhere.)
   - **`max_thinking_tokens: 0` is DISABLE**, not "unset": the request
-    becomes `thinking: {"type":"disabled"}` and `display` is dropped.
+    becomes `thinking: {"type":"disabled"}` and `display` is dropped. AO
+    never sends it and offers no thinking-off setting: the 2.1.300 model
+    catalog marks every current model (Fable 5 and 5.1, Opus, Sonnet and
+    Haiku 5.5) `rejects_disabled_thinking`, and for those the CLI runs
+    adaptive thinking in place of `--thinking disabled`.
   - **`max_thinking_tokens: null` is a NO-OP.** It is accepted and
     changes nothing. There is no reset-to-default form, so returning a
     session to the CLI's own choice requires a respawn.
@@ -4108,7 +4308,9 @@ Four properties that decide how it can be used:
    `sonnet`, `haiku`. An alias space and an id space share one `value` field.
 2. **No context windows.** The array says nothing about 200k vs 1M.
 3. **Older models are absent.** opus-4.x and sonnet-4-6 do not appear on
-   2.1.219 and still run. Absence is not a denial.
+   2.1.219 and still run. Absence means the CLI does not offer the model, not
+   that it stopped running: AO leaves it out of pickers and keeps it for
+   threads already on it.
 4. **`[1m]` is baked into id strings, inconsistently.** `opus[1m]` resolves to
    `claude-opus-5[1m]` (marker kept) while `claude-fable-5[1m]` resolves to
    `claude-fable-5` (marker dropped). Consumers must strip it from both sides.
@@ -4179,7 +4381,8 @@ Two gaps make this surface necessary:
 - A directly entered forked command such as `/code-review high` produces only
   its outer `<synthetic>` command result on ordinary stdout. Its fork-root
   prompt, tool calls, results, and final assistant row arrive live in the
-  mirrored sidechain. The file starts with
+  mirrored sidechain (2.1.300 also replays them on stdout once the fork
+  ends; §E9 says how AO drops that replay). The file starts with
   `agent_metadata {agentType:"general-purpose"}` and no `toolUseId`; root
   assistant rows carry `isSidechain:true`, `attributionSkill`, and `agentId`.
   Those facts dynamically prove a Skill fork without a command-name list.
@@ -5028,6 +5231,20 @@ with `run_in_background`), `system/task_started` (backgrounded +
 foreground), `user` backgrounded placeholder (E2), `system/task_updated`
 terminal, `system/task_notification`, `user` inline tool_result (E1),
 `result` envelope.
+
+### `docs/references/fixtures/claude/stream_abandoned_{midblock,twoblock,afterblock}_20261016.ndjson`
+**Scenario**: Claude Code 2.1.300 against a fake API on loopback with
+`CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` at its 10 s floor and
+`--include-partial-messages`; the fake stalls inside block 0 (midblock:
+`from_block_index` 0, retry as a bare `assistant` snapshot under
+`msg_fake_02`), inside block 1 after block 0 finished (twoblock:
+`from_block_index` 1, continuation streamed under `msg_fake_02`), or
+between blocks (afterblock: `from_block_index` 1 with no block 1 seen).
+Paths rewritten to `/home/user/spike`; nothing else edited.
+
+**Shapes covered**: `stream_event` envelopes with `api_message_id`, the
+CLI's own `content_block_stop` + `message_stop` with `abandoned_blocks`,
+the `isSynthetic:true` user nudge, `transcript_mirror`.
 
 ### `docs/references/fixtures/claude/ndjson_task.log`
 **Scenario**: `Task` subagent with `run_in_background: true` + `TaskOutput`

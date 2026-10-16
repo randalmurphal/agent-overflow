@@ -90,6 +90,12 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		topLevelTurn := evt.Kind == provider.EventTurnComplete &&
 			strings.TrimSpace(evt.ParentToolUseID) == ""
 
+		// The CLI changed its permission mode on its own (it leaves auto
+		// on a model without it); the thread's runtime mode follows.
+		if evt.Kind == provider.EventPermissionModeChanged && providerType == string(provider.Claude) {
+			a.followClaudePermissionMode(threadID, sessionToken)
+		}
+
 		// Auto-reconnect makes one attempt per death and earns another only
 		// from wire-level proof that a session served: a turn start, or a
 		// top-level turn that completed without error. Codex reports both;

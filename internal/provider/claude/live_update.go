@@ -47,9 +47,10 @@ const (
 // carries rather than by a target state.
 //
 // It is shaped that way because the CLI's request has no total ordering
-// onto states. `max_thinking_tokens` may be sent (0 disables, N pins a
-// budget) or OMITTED — and omitted is the only way to say "leave the budget
-// alone", since `null` is accepted and does nothing. So SendBudget is not a
+// onto states. `max_thinking_tokens` may be sent (N pins a budget) or
+// OMITTED — and omitted is the only way to say "leave the budget alone",
+// since `null` is accepted and does nothing. AO never sends 0, which the CLI
+// reads as "disable thinking". So SendBudget is not a
 // nil-pointer workaround; it is the third value the wire actually has, and
 // keeping it a bool leaves LiveUpdate comparable for Empty().
 //
@@ -62,12 +63,11 @@ type ThinkingUpdate struct {
 	// SendBudget decides whether `max_thinking_tokens` appears in the
 	// request. False means the key is omitted (display-only change).
 	SendBudget bool
-	// Budget is the `max_thinking_tokens` value when SendBudget is true:
-	// 0 disables thinking, a positive number pins a fixed budget.
+	// Budget is the `max_thinking_tokens` value when SendBudget is true: a
+	// positive number that pins a fixed budget.
 	Budget int
 	// Display is the `thinking_display` value ("summarized" | "omitted"),
-	// or "" to omit the key. Omitted for a disabling update, because the
-	// CLI drops display on a disabled session.
+	// or "" to omit the key.
 	Display string
 }
 
@@ -97,8 +97,9 @@ type LiveUpdate struct {
 	// FastMode is the fast-mode state to apply via the /fast command.
 	FastMode FastModeChange
 	// Thinking is the extended-thinking change to apply via one
-	// `set_max_thinking_tokens` control_request. It is ASYMMETRIC: turning thinking off or pinning a budget is live, and the
-	// return to "whatever Claude Code decides" is not — `max_thinking_tokens:
+	// `set_max_thinking_tokens` control_request. It is ASYMMETRIC: pinning a
+	// budget or changing the display is live, and the return to "whatever
+	// Claude Code decides" is not — `max_thinking_tokens:
 	// null` is a documented no-op, so only a respawn without the flag
 	// restores the CLI's own choice. PlanLiveUpdate refuses that direction.
 	Thinking ThinkingUpdate
@@ -236,20 +237,15 @@ func PlanLiveUpdate(prev, next provider.SessionOptions) (LiveUpdate, bool) {
 // AO asserted. It has no wire form — `max_thinking_tokens: null` is
 // accepted and does nothing, and there is no "unset" value for the
 // display either — so the honest answer is the restart, where the spawn
-// rebuilds argv without `--thinking` / `--max-thinking-tokens`. Planning it
+// rebuilds argv without `--max-thinking-tokens`. Planning it
 // as live would leave the session running the old budget while launchOpts
 // claimed the CLI's default, which is silent by construction: the ack would
 // succeed and nothing on the wire would disagree.
 //
-// Display rides every non-disabling apply rather than only a display diff.
-// It is normalized (never empty), re-asserting it is idempotent, and it
-// closes the one gap a diff-only rule leaves: a session spawned
-// `--thinking disabled` never applied a display at all, so enabling
-// thinking live has to state one.
+// Display rides every apply rather than only a display diff. It is
+// normalized (never empty) and re-asserting it is idempotent.
 func planThinkingUpdate(prev, next ThinkingConfig) (ThinkingUpdate, bool) {
 	switch next.Mode {
-	case ThinkingOff:
-		return ThinkingUpdate{Apply: true, SendBudget: true, Budget: 0}, true
 	case ThinkingBudget:
 		return ThinkingUpdate{
 			Apply:      true,
@@ -323,7 +319,9 @@ func (s *Session) validateLiveUpdate(update LiveUpdate) error {
 		if !s.supportsLiveThinking() {
 			return ErrLiveUpdateRequiresRestart
 		}
-		if update.Thinking.SendBudget && update.Thinking.Budget < 0 {
+		if update.Thinking.SendBudget && update.Thinking.Budget <= 0 {
+			// Zero is a valid wire value that DISABLES thinking, which AO
+			// never asks for; reaching here with it is a planner bug.
 			return fmt.Errorf("claude: thinking budget %d is not a valid max_thinking_tokens", update.Thinking.Budget)
 		}
 		switch update.Thinking.Display {
@@ -584,9 +582,9 @@ func (s *Session) setModel(ctx context.Context, model string) error {
 // meaning, so this builds the map key by key rather than always sending both
 // (spike-verified against 2.1.237 with a local API sink):
 //
-//   - `max_thinking_tokens: 0` disables thinking outright, and the CLI then
-//     drops display entirely — so a disabling request carries no
-//     `thinking_display`.
+//   - `max_thinking_tokens: 0` disables thinking outright. AO never sends it
+//     (validateLiveUpdate refuses it): current models reject disabled
+//     thinking.
 //   - `max_thinking_tokens: N` sets a fixed budget. It applies only on
 //     models that take an explicit budget (sonnet-4-5 moved 31999 → 2048);
 //     on an adaptive-thinking model the budget is ignored and only display
@@ -607,11 +605,7 @@ func (s *Session) setMaxThinkingTokens(ctx context.Context, update ThinkingUpdat
 	opName := "set thinking"
 	if update.SendBudget {
 		request["max_thinking_tokens"] = update.Budget
-		if update.Budget == 0 {
-			opName = "disable thinking"
-		} else {
-			opName = "set thinking budget " + strconv.Itoa(update.Budget)
-		}
+		opName = "set thinking budget " + strconv.Itoa(update.Budget)
 	}
 	if update.Display != "" {
 		request["thinking_display"] = update.Display

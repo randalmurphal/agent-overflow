@@ -217,6 +217,10 @@ type agentRequest struct {
 	// on the same goroutine (the gateway drives onSSE to completion before end()).
 	errored bool
 	errMsg  string
+
+	// requestEffort is a main-loop request's effort, stamped on its
+	// assistant envelope (assistantEnvelope.RequestEffort). Nil otherwise.
+	requestEffort *string
 }
 
 // beginAgentRequest starts reconstruction for one classAgent request, emitting
@@ -250,7 +254,8 @@ func (r *reconstructor) beginAgentRequest(req *messagesRequest) *agentRequest {
 	// backgrounded command/agent that finished since the last request — the only
 	// place its completion crosses the wire is this body.
 	r.emitBackgroundCompletions(req.Messages)
-	return &agentRequest{r: r, asm: newMessageAssembler()}
+	effort := req.OutputConfig.Effort
+	return &agentRequest{r: r, asm: newMessageAssembler(), requestEffort: &effort}
 }
 
 // pushUserEcho records an AO Send so the next main request can confirm it with a
@@ -504,7 +509,7 @@ func (ar *agentRequest) end() {
 		// real turn) and NO usage folded into the main turn (subagent tokens are
 		// the model's private accounting). A subagent cannot itself spawn (Claude
 		// forbids recursive Agent), so it registers no launches.
-		ar.r.emit(ar.asm.assistantLine(ar.parent))
+		ar.r.emit(ar.asm.assistantLine(ar.parent, nil))
 		if ar.r.debug != nil {
 			ar.r.debug(decisionLog{Event: "subagent_end", Route: "subagent", Parent: ar.parent})
 		}
@@ -538,7 +543,7 @@ func (ar *agentRequest) end() {
 	// Successful (or user-aborted) main-loop request. Emit the assembled
 	// assistant envelope even when interrupted, so triage sees and force-closes
 	// any orphaned tool_use start — matching the headless interrupt path.
-	ar.r.emit(ar.asm.assistantLine(ar.parent))
+	ar.r.emit(ar.asm.assistantLine(ar.parent, ar.requestEffort))
 
 	// Capture any Agent/Task launches so a following subagent request can resolve
 	// its parent — done before the interrupt short-circuit since the launch

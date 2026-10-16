@@ -71,6 +71,16 @@ type threadState struct {
 	activeTextBlockRefs     map[string]activeStreamBlock
 	activeThinkingBlockRefs map[string]activeStreamBlock
 
+	// openStreamBlock is, per scope, the content block a
+	// content_block_start opened whose first delta has not yet created its
+	// row (abandoned_blocks.go). streamBlockRows maps each API response a
+	// turn streamed (streamBlockRowsKey) to the rows its blocks created, so
+	// an abandoned_blocks message_stop can name the rows it discards. Both
+	// are turn-scoped: dropped with the turn's streams
+	// (dropTurnStreamsLocked), agent-owned scopes excepted.
+	openStreamBlock map[string]streamBlockIdentity
+	streamBlockRows map[string]*streamBlockRowSet
+
 	// streamPersistBuffers decouple the live UI stream from durable
 	// history writes. Text/thinking deltas emit immediately on ordered
 	// provider:item_event deltas, then flush to SQLite by interval, byte

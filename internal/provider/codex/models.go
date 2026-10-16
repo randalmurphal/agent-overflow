@@ -46,6 +46,7 @@ type codexModel struct {
 	Model                     string                      `json:"model"`
 	DisplayName               string                      `json:"displayName"`
 	Hidden                    bool                        `json:"hidden"`
+	IsDefault                 bool                        `json:"isDefault"`
 	SupportedReasoningEfforts []codexReasoningEffortModel `json:"supportedReasoningEfforts"`
 	DefaultReasoningEffort    string                      `json:"defaultReasoningEffort"`
 	ServiceTiers              []codexModelServiceTier     `json:"serviceTiers"`
@@ -168,6 +169,7 @@ func mapCodexModel(model codexModel) provider.ModelInfo {
 		Slug:             slug,
 		Name:             displayNameForCodexModel(model),
 		Provider:         string(provider.Codex),
+		IsDefault:        model.IsDefault,
 		Capabilities:     capabilities,
 		FastModeTier:     fastTier,
 		ContextWindows:   provider.ContextWindowOptionsForModel(string(provider.Codex), slug),
@@ -323,6 +325,7 @@ func appendCustomModels(models []provider.ModelInfo, customModels []string) []pr
 		custom.Name = slug
 		custom.Provider = string(provider.Codex)
 		custom.IsCustom = true
+		custom.IsDefault = false
 		models = append(models, custom)
 	}
 	return models

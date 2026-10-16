@@ -61,6 +61,18 @@ const (
 	EventContentBlockStart EventKind = "content_block_start"
 	EventContentBlockStop  EventKind = "content_block_stop"
 
+	// EventBlocksAbandoned is Claude's statement that the content blocks of
+	// one API response from an index on were streamed but discarded: the
+	// CLI stopped reading the response (stalled or failed stream), so those
+	// blocks have no assistant message and are not in the provider
+	// transcript. It rides the `abandoned_blocks` key of a `message_stop`
+	// the CLI produced itself (claude-wire.md §abandoned_blocks). Triage
+	// keeps the rows it already wrote for those blocks untouched and
+	// records the abandonment as its own notification row referencing
+	// them; the UI derives the discarded marking from that row. Meta is
+	// BlocksAbandonedMeta.
+	EventBlocksAbandoned EventKind = "blocks_abandoned"
+
 	// EventBackgroundTaskTerminal is the additive Claude-only task-lifecycle
 	// terminal signal, emitted when `system/task_updated` lands with a
 	// terminal `patch.status` OR when a TaskOutput `tool_use_result.task`
@@ -237,6 +249,15 @@ const (
 	// follows it onto the thread row (app_worktree_follow.go) without
 	// restarting the session, since the process already lives at Cwd.
 	EventWorkspaceChanged EventKind = "workspace_changed"
+
+	// EventPermissionModeChanged reports that the provider changed its own
+	// permission mode without being asked: Claude leaves auto mode when the
+	// session switches to a model without it, and reports the mode it now
+	// runs on `system/status` (claude-wire.md §system/status). The session
+	// has already filtered out the echoes of AO's own requests and adopted
+	// the mode as its base. Meta is PermissionModeChangeMeta. The app
+	// follows it onto the thread's runtime mode (app_claude_permission_mode.go).
+	EventPermissionModeChanged EventKind = "permission_mode_changed"
 )
 
 // AllEventKinds is the canonical list of EventKind values. Triage and the
@@ -271,6 +292,7 @@ var AllEventKinds = []EventKind{
 	EventThreadRenamed,
 	EventContentBlockStart,
 	EventContentBlockStop,
+	EventBlocksAbandoned,
 	EventBackgroundTaskTerminal,
 	EventBackgroundTaskNotification,
 	EventSessionWakeup,
@@ -294,6 +316,7 @@ var AllEventKinds = []EventKind{
 	EventThinking,
 	EventProposedPlan,
 	EventWorkspaceChanged,
+	EventPermissionModeChanged,
 }
 
 // ProviderEvent is the normalized event emitted by both provider protocols.
@@ -567,6 +590,13 @@ type ScheduledJob struct {
 	FireByUnixMs int64  `json:"fireByUnixMs"`
 }
 
+// PermissionModeChangeMeta is the typed payload for
+// EventPermissionModeChanged. Mode is the provider's own permission-mode
+// name ("default", "acceptEdits", …), not an AO runtime mode.
+type PermissionModeChangeMeta struct {
+	Mode string `json:"mode"`
+}
+
 // WorkspaceChangeMeta is the typed payload for EventWorkspaceChanged.
 //
 // Cwd is the directory the provider process works in AFTER the change: the
@@ -795,6 +825,23 @@ type AgentWakeDroppedMeta struct {
 type BackgroundTaskStopAckedMeta struct {
 	TaskID string `json:"taskId"`
 }
+
+// BlocksAbandonedMeta is the typed payload for EventBlocksAbandoned: the
+// API id of the response that was cut short and the first content block
+// index the CLI discarded. Every block of that response at FromBlockIndex
+// and above is gone from the provider transcript; FromBlockIndex 0 means
+// the whole response. The index can exceed every block the stream
+// delivered, in which case nothing visible was discarded.
+type BlocksAbandonedMeta struct {
+	APIMessageID   string `json:"apiMessageId"`
+	FromBlockIndex int    `json:"fromBlockIndex"`
+}
+
+// MetaAPIMessageIDKey is the content-block lifecycle meta key carrying the
+// API id (`msg_...`) of the response a streamed block belongs to, beside
+// `index` and `blockType`. Triage stamps it onto the block's row so a later
+// EventBlocksAbandoned can name the rows it discards.
+const MetaAPIMessageIDKey = "apiMessageId"
 
 // MetaUserContentBlockDigestKey carries an `EventUserText` echo's content
 // blocks as a per-block fingerprint list, in wire order — the shape a provider

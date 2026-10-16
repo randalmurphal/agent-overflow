@@ -33,6 +33,7 @@ import type {
   ItemStreamEvent,
   ModelFallbackEvent,
   ProviderAccountEvent,
+  ProviderAccountSignInEvent,
   ProviderAccountUsageErrorEvent,
   ProviderSessionAccountEvent,
   SettingsUpdatedEvent,
@@ -129,6 +130,7 @@ import {
 } from './eventsProvider';
 import {
   applyProviderLogin,
+  applyProviderAccountSignIn,
   hydrateProviderLogins,
 } from './providerAccounts.svelte';
 import type { ProviderLoginState } from './bindings';
@@ -156,10 +158,11 @@ import {
 } from './compactingState.svelte';
 import { applySessionLive, type SessionLivePayload } from './threadSessionLive.svelte';
 import { applySubagentProgress, clearSubagentProgressForThread } from './subagentProgress.svelte';
-import type { BackgroundTrayEvent, SubagentProgressEvent } from '../types/events';
+import type { BackgroundTaskOutputEvent, BackgroundTrayEvent, SubagentProgressEvent } from '../types/events';
 import { applyBackgroundTrayEvent } from './eventsBackgroundTray';
 import { applyThreadWakesChanged, type ThreadWakeChange } from './eventsThreadWakes';
 import { applyThreadAgentRowsChanged, type ThreadAgentRowChange } from './eventsThreadAgentRows';
+import { applyBackgroundTaskOutputEvent } from './eventsBackgroundTaskOutput';
 import {
   applyProviderCommands,
   type ProviderCommandsPayload,
@@ -294,6 +297,12 @@ export function setupEventListeners(): () => void {
   if (attachedBackends().some((entry) => entry.home)) void hydrateProviderLogins().catch((error) => {
     console.warn('events: hydrate provider sign-in state failed', error);
   });
+  // provider:account_signin — where one login landed: added, renewed, or
+  // switched to. Ephemeral; the listing a reconnect re-reads holds the result.
+  const cancelProviderAccountSignIn = wailsEventOn<ProviderAccountSignInEvent>(
+    'provider:account_signin',
+    (evt, origin) => applyProviderAccountSignIn(evt, backendKeyForOrigin(origin.backendId)),
+  );
   const cancelProviderAccountUsageError = wailsEventOn<ProviderAccountUsageErrorEvent>(
     'provider:account_usage_error',
     (evt) => {
@@ -558,6 +567,14 @@ export function setupEventListeners(): () => void {
     (evt, origin) => applyThreadAgentRowsChanged(evt, backendKeyForOrigin(origin.backendId)),
   );
 
+  // provider:background_task_output: the live tail of a running background
+  // command's output, for the launches this client watches. Only a watched
+  // thread's frames arrive; the watch registry applies them.
+  const cancelBackgroundTaskOutput = wailsEventOn<BackgroundTaskOutputEvent>(
+    'provider:background_task_output',
+    (evt, origin) => applyBackgroundTaskOutputEvent(evt, origin),
+  );
+
   // provider:commands — the CLI's own list of slash commands it will execute
   // without an API call. Restated wholesale on every session init and every
   // `commands_changed` push, so the newest frame REPLACES the previous one;
@@ -801,6 +818,7 @@ export function setupEventListeners(): () => void {
     cancelProviderStatus();
     cancelProviderAccount();
     cancelProviderLoginState();
+    cancelProviderAccountSignIn();
     cancelProviderSessionAccount();
     cancelProviderAccountUsageError();
     cancelSystemStats();
@@ -832,6 +850,7 @@ export function setupEventListeners(): () => void {
     cancelBackgroundTray();
     cancelThreadWakes();
     cancelThreadAgentRows();
+    cancelBackgroundTaskOutput();
     cancelCodexAgentsReset();
     cancelProviderCommands();
     cancelUserMessageReverted();

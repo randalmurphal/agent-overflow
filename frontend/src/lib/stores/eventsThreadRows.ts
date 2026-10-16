@@ -18,6 +18,7 @@ import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prepen
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
+import { forgetThreadRowFrames, noteThreadPatchFrame, noteThreadRowFrame } from './threadRowFrames';
 import { deferEmptyDraftDeletion } from './emptyDraftCleanup';
 import { GetThread } from './bindings';
 import { withBackendTarget } from '../transport/backends';
@@ -362,10 +363,10 @@ function patchMatchesThread(
  * row, because sidebar membership is not derivable from the row alone.
  *
  * Every persisted thread-row mutation sends one, which is what makes a
- * second attached client converge without a refresh. The client that issued
- * the mutation may also have applied its RPC result optimistically; the
- * broadcast row IS that RPC's return value, so the echo lands on state the
- * optimistic apply already reached rather than moving it somewhere else.
+ * second attached client converge without a refresh. The issuing client
+ * also applies its RPC result, which was read before this frame left and
+ * can be older than it; threadRowFrames.ts keeps that reply from undoing a
+ * frame that arrived after the call started.
  */
 export interface ThreadUpdateEvent {
   /** 'full' | 'patch' | 'listed' | 'unlisted' | 'deleted' */
@@ -375,7 +376,11 @@ export interface ThreadUpdateEvent {
   title?: string;
   model?: string;
   sessionRef?: string;
-  /** On the `unlisted` frame of an assistant's old thread: its successor. */
+  /**
+   * On the frame of an assistant's old thread: its successor. The frame is
+   * `unlisted`, or `full` when the old thread was unarchived since the
+   * handoff; either way what showed the old thread moves to the successor.
+   */
   handOffTo?: string;
   /**
    * A sidebar-activity bump from an activity-counting user_text persist,
@@ -403,6 +408,7 @@ export function applyThreadErrorNotice(evt: ThreadErrorNoticeEvent): void {
 
 export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
   if (!evt) return;
+  noteThreadFrame(evt);
   switch (evt.action) {
     case 'patch': {
       if (!evt.id) return;
@@ -455,10 +461,8 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       const id = evt.thread?.id ?? evt.id;
       if (!id) return;
       if (evt.thread) syncThreadRow(evt.thread);
-      // A handoff lists the assistant's new thread first and names it here:
-      // the panes and hidden companions that showed the old one move to it.
       // Archiving a past thread is not a handoff and closes its panes.
-      const successor = evt.handOffTo ? getThreadById(evt.handOffTo) : undefined;
+      const successor = handOffSuccessor(evt);
       if (successor) followAssistantHandOffInStash(id, successor);
       removeThread(id);
       if (successor) moveAssistantPanes(id, successor);
@@ -480,9 +484,32 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       // 'full': the row's current state. Says nothing about membership,
       // so a row this client does not have is not invented here — the
       // authoritative ListThreads resync owns that.
-      if (evt.thread?.id) syncThreadRow(evt.thread);
+      if (!evt.thread?.id) return;
+      syncThreadRow(evt.thread);
+      // A handoff whose old thread was unarchived before it was announced:
+      // the row stays listed, and what showed it still moves.
+      const successor = handOffSuccessor(evt);
+      if (successor) {
+        followAssistantHandOffInStash(evt.thread.id, successor);
+        moveAssistantPanes(evt.thread.id, successor);
+      }
     }
   }
+}
+
+// A handoff lists the assistant's new thread first and names it on the old
+// thread's frame: the panes and hidden companions that showed the old one
+// move to it.
+function handOffSuccessor(evt: ThreadUpdateEvent): Thread | undefined {
+  return evt.handOffTo ? getThreadById(evt.handOffTo) : undefined;
+}
+
+function noteThreadFrame(evt: ThreadUpdateEvent): void {
+  const id = evt.thread?.id ?? evt.id;
+  if (!id) return;
+  if (evt.action === 'deleted') forgetThreadRowFrames(id);
+  else if (evt.action === 'patch') noteThreadPatchFrame(id, evt);
+  else if (evt.thread) noteThreadRowFrame(id);
 }
 
 export function applyModeChanged(payload: ModeChangedPayload): void {

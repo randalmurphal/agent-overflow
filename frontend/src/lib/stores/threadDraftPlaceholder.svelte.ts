@@ -22,7 +22,8 @@ import { asProviderID } from '../types/providers';
 import { CreateThread } from './bindings';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { projectBackend } from '../transport/entityIndex';
-import { prependThread, removeThread } from './threads.svelte';
+import { getThreadById, prependThread, removeThread } from './threads.svelte';
+import { threadReplyRow, threadRowFrameMark } from './threadRowFrames';
 import {
   clearWorktreeIntent,
   migrateWorktreeIntent,
@@ -296,6 +297,7 @@ export function createThreadDraftPlaceholder(
     const placeholderId = placeholder.id;
     materializingThreadPromise = (async () => {
       try {
+        const mark = threadRowFrameMark();
         let created = await materializeDraftPlaceholder();
         if (!created) return null;
         if (draftPlaceholder?.id !== placeholderId) return null;
@@ -320,6 +322,10 @@ export function createThreadDraftPlaceholder(
         // subject, which this transition does not change, so the
         // remounted review companion re-reads them without a refetch.
         adoptDiffSpanOwner(placeholderId, created.id);
+        // A thread:updated frame for the new row that arrived during
+        // creation (its `listed` echo, a later write) is newer.
+        const listed = getThreadById(created.id);
+        created = threadReplyRow(created, mark, listed) ?? listed ?? created;
         seedDefaultWorktreeIntentForDraft(created);
         prependThread(created);
         adoptMaterializedDraftThread(created);

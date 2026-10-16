@@ -229,6 +229,8 @@ export const StopCodexSubagent = dispatch('StopCodexSubagent');
 export const CleanCodexBackgroundTerminals = dispatch('CleanCodexBackgroundTerminals');
 export const StopBackgroundTasks = dispatch('StopBackgroundTasks');
 export const BackgroundClaudeTask = dispatch('BackgroundClaudeTask');
+export const WatchBackgroundTaskOutput = dispatch('WatchBackgroundTaskOutput');
+export const UnwatchBackgroundTaskOutput = dispatch('UnwatchBackgroundTaskOutput');
 
 // Live-session context breakdown (Claude's canonical /context read).
 export const GetThreadContextUsage = dispatch('GetThreadContextUsage');
@@ -264,6 +266,7 @@ export const SubmitProviderLoginCode = dispatch('SubmitProviderLoginCode');
 export const CancelProviderLogin = dispatch('CancelProviderLogin');
 export const SwitchProviderAccount = dispatch('SwitchProviderAccount');
 export const RemoveProviderAccount = dispatch('RemoveProviderAccount');
+export const ReorderProviderAccounts = dispatch('ReorderProviderAccounts');
 export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage');
 
 export const GetSettings = dispatch('GetSettings');
@@ -390,6 +393,9 @@ export const IsWSL = dispatch('IsWSL');
 export const ListWSLDistros = dispatch('ListWSLDistros');
 export const GetWSLDistroPreference = dispatch('GetWSLDistroPreference');
 export const SetWSLDistroPreference = dispatch('SetWSLDistroPreference');
+// Launcher GPU vsync preference (Settings → Performance), same wsl.json.
+export const GetWebviewGPUVsyncDisabled = dispatch('GetWebviewGPUVsyncDisabled');
+export const SetWebviewGPUVsyncDisabled = dispatch('SetWebviewGPUVsyncDisabled');
 // WSLDistro mirrors the generated Distro class from
 // internal/wsllauncher/models — tests pass plain object literals to
 // the mocks, but the class shape is needed so `import type { WSLDistro }`

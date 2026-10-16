@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtransfer"
 	"agent-overflow/internal/transferfiles"
+	"agent-overflow/internal/triage"
 	"github.com/google/uuid"
 )
 
@@ -249,7 +250,7 @@ func (installer appTransferInstaller) Install(ctx context.Context, row store.Thr
 		if plan.DraftMCP != nil {
 			a.applyDraftMCPPreferences(row.ThreadID, *plan.DraftMCP)
 		}
-		a.broadcastThreadRowByID(row.ThreadID)
+		a.announceThread(triage.ThreadActionFull, row.ThreadID)
 	}
 	return err
 }

@@ -224,4 +224,5 @@ func (r *Router) dropTurnStreamsLocked(threadID string, st *threadState, turnInd
 	}
 	drop(st.activeTextBlocks, st.activeTextBlockRefs)
 	drop(st.activeThinkingBlocks, st.activeThinkingBlockRefs)
+	dropStreamBlockRowsLocked(st, turnIndex, allTurns, agentScopes)
 }

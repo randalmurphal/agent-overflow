@@ -9,7 +9,8 @@ import {
   threadHostPane,
 } from './panes.svelte';
 import { expandProject } from './sidebar.svelte';
-import { prependThread } from './threads.svelte';
+import { prependThreadReply } from './threads.svelte';
+import { threadRowFrameMark } from './threadRowFrames';
 import { addErrorToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
@@ -270,6 +271,7 @@ export async function openTerminalThread(
 ): Promise<ThreadPane | null> {
   const { projectId, cwd } = options;
   let thread: Thread;
+  const mark = threadRowFrameMark();
   try {
     // A project names its computer. Without one, the terminal opens beside the
     // focused pane's thread, which is where StartTerminal's `selected` route goes.
@@ -285,7 +287,7 @@ export async function openTerminalThread(
   if (projectId) expandProject(projectId);
   // Surface the new terminal in the sidebar immediately (mirrors how draft
   // materialization prepends), instead of waiting for a thread-list refresh.
-  prependThread(thread);
+  thread = prependThreadReply(thread, mark);
   const pane = openEmptyPane();
   pane.requestTerminalFocus();
   await mountThreadInPane(thread, pane, 'committed');

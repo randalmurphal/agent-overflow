@@ -353,6 +353,8 @@ func sanitizedTimelineNotificationMeta(notificationKind, summary string, raw jso
 		addPermissionNoticeMeta(meta, raw)
 	case backgroundWakeNotificationKind:
 		addBackgroundWakeNotificationMeta(meta, raw)
+	case abandonedBlocksNotificationKind:
+		addAbandonedBlocksNotificationMeta(meta, raw)
 	}
 
 	encoded, err := json.Marshal(meta)

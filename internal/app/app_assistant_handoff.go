@@ -13,7 +13,6 @@ import (
 	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/errorsx"
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
@@ -519,8 +518,8 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 	// the list as an archive does, so a client moves the panes that showed
 	// the old thread to it instead of closing them; the workers now nest
 	// under it.
-	a.broadcastThreadRow(triage.ThreadActionListed, successor)
-	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionUnlisted, Thread: &handOff.Old, HandOffTo: successor.ID})
+	a.announceThread(triage.ThreadActionListed, successor.ID)
+	a.threadAnnouncer().AnnounceHandOff(a.emitEvent, threadID, successor.ID)
 	a.broadcastSpawnedThreadRows(successor.ID)
 	body := agenthome.HandOffMessage(agenthome.HandOff{
 		Name:             successor.Title,

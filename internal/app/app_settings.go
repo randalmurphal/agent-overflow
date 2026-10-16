@@ -3,7 +3,10 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
+	"slices"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/editor"
 	"agent-overflow/internal/provider"
@@ -22,6 +25,9 @@ func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 	// Identity before the probe, for the reason recordProbedProviderVersion
 	// states. A binary that does not resolve is reported by the statuses and
 	// recorded by nobody.
+	// A status read reports what is installed now, not what the last tick
+	// saw: the settings page reads it after the user installs or moves codex.
+	a.invalidateDefaultCodexBinary()
 	identities := make(map[string]providerBinaryIdentity, 2)
 	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
 		if identity, ok := a.resolveProviderBinaryIdentity(providerName); ok {
@@ -29,9 +35,12 @@ func (a *App) GetProviderStatuses() ([]provider.ProviderStatus, error) {
 		}
 	}
 	statuses := a.providerDiscoveryService().ProviderStatuses()
-	for _, status := range statuses {
+	for i, status := range statuses {
 		if identity, ok := identities[status.Provider]; ok {
 			a.recordProbedProviderVersion(status.Provider, identity, status)
+		}
+		if status.Provider == string(provider.Codex) && status.Installed {
+			statuses[i].WrapperPath = a.codexWrapperFor(status.BinaryPath)
 		}
 	}
 	return statuses, nil
@@ -201,6 +210,7 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 		editor.RefreshEditors()
 	}
 	if _, ok := patch["codexBinaryPath"]; ok {
+		a.invalidateDefaultCodexBinary()
 		a.refreshCodexModelCatalog()
 	}
 	if _, ok := patch["gitlabSelfHostedHosts"]; ok {
@@ -255,7 +265,50 @@ func patchTouchesLiveClaudeAxis(patch map[string]any) bool {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) GetModelsForProvider(providerName string) (provider.ModelCatalog, error) {
-	return a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
+	catalog, err := a.providerDiscoveryService().ModelsForProvider(context.Background(), providerName)
+	if err != nil {
+		return catalog, err
+	}
+	a.listRecentlyUsedModels(&catalog)
+	return catalog, nil
+}
+
+// recentModelUseWindow is how long a model that ran keeps its picker row after
+// the provider's list stops offering it. The provider's list is a
+// server-gated shortlist that can omit a working model from one answer; a model
+// that ran recently is assumed still available, and a turn on it that the
+// provider refuses reports the error in the timeline.
+const recentModelUseWindow = 7 * 24 * time.Hour
+
+// listRecentlyUsedModels clears Unlisted on catalog rows whose model recorded
+// usage within recentModelUseWindow. When the ledger cannot be read every row
+// is listed, so a store failure never hides a model the user can run.
+func (a *App) listRecentlyUsedModels(catalog *provider.ModelCatalog) {
+	if !slices.ContainsFunc(catalog.Models, func(m provider.ModelInfo) bool { return m.Unlisted }) {
+		return
+	}
+	// Only the Claude catalog carries Unlisted rows; the two Claude
+	// providers run the same models.
+	family := []string{string(provider.Claude), string(provider.ClaudeTUI)}
+	var recent []string
+	var err error
+	if a.store == nil {
+		err = fmt.Errorf("store unavailable")
+	} else {
+		recent, err = a.store.RecentUsageModels(family, time.Now().Add(-recentModelUseWindow).UnixMilli())
+	}
+	if err != nil {
+		log.Printf("model catalog: listing every model, recent usage unreadable: %v", err)
+	}
+	used := make(map[string]bool, len(recent))
+	for _, model := range recent {
+		used[provider.NormalizeModelSlug(family[0], model)] = true
+	}
+	for i := range catalog.Models {
+		if err != nil || used[catalog.Models[i].Slug] {
+			catalog.Models[i].Unlisted = false
+		}
+	}
 }
 
 func (a *App) refreshCodexModelCatalog() {
@@ -287,10 +340,7 @@ func (a *App) providerBinaryPath(providerName string) string {
 		}
 		return settings.DefaultSettings.ClaudeBinaryPath
 	case string(provider.Codex):
-		if path := strings.TrimSpace(cfg.CodexBinaryPath); path != "" {
-			return path
-		}
-		return settings.DefaultSettings.CodexBinaryPath
+		return a.codexBinary().Path
 	default:
 		return ""
 	}

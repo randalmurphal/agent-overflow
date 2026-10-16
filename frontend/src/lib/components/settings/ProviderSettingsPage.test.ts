@@ -284,7 +284,6 @@ describe("provider page — provider accounts", () => {
       provider: "codex",
       email: "second@example.com",
       addedAt: 1,
-      lastUsedAt: 2,
       active: false,
     }]);
     const { findByRole, findByTestId } = render(CodexSettings);
@@ -317,7 +316,6 @@ describe("provider page — provider accounts", () => {
       email: "second@example.com",
       subscriptionType: "pro",
       addedAt: 1,
-      lastUsedAt: 2,
       active: true,
       rateLimits: {
         provider: "codex",
@@ -349,7 +347,6 @@ describe("provider page — provider accounts", () => {
       provider: "claude",
       email: "second@example.com",
       addedAt: 1,
-      lastUsedAt: 2,
       active: false,
     }]);
     setBindingMock("SwitchProviderAccount", async () => {
@@ -372,7 +369,6 @@ describe("provider page — provider accounts", () => {
         provider: "claude",
         email: "active@example.com",
         addedAt: 2,
-        lastUsedAt: 2,
         active: true,
       },
       {
@@ -380,7 +376,6 @@ describe("provider page — provider accounts", () => {
         provider: "claude",
         email: "next@example.com",
         addedAt: 1,
-        lastUsedAt: 1,
         active: false,
       },
     ];
@@ -410,7 +405,6 @@ describe("provider page — provider accounts", () => {
       provider: "codex",
       email: "only@example.com",
       addedAt: 1,
-      lastUsedAt: 1,
       active: true,
     }];
     setBindingMock("ListProviderAccounts", async () => accounts);
@@ -429,5 +423,47 @@ describe("provider page — provider accounts", () => {
         "codex-only",
       ]);
     });
+  });
+});
+
+describe("provider page: resolved binary", () => {
+  it("names the native binary and the npm wrapper it was resolved from", async () => {
+    await seed();
+    setBindingMock("GetProviderStatuses", async () => [
+      {
+        provider: "codex",
+        installed: true,
+        version: "codex-cli 0.162.1",
+        binaryPath: "/opt/node/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+        wrapperPath: "/opt/node/lib/node_modules/@openai/codex/bin/codex.js",
+        status: "ready",
+        message: "",
+      },
+    ]);
+    const { findByTestId } = render(CodexSettings);
+
+    const note = await findByTestId("settings-provider-binary-resolved");
+    expect(note.textContent).toContain("/vendor/x86_64-unknown-linux-musl/bin/codex");
+    expect(note.textContent).toContain("/@openai/codex/bin/codex.js");
+  });
+
+  it("says nothing extra when the binary runs as configured", async () => {
+    await seed();
+    setBindingMock("GetProviderStatuses", async () => [
+      {
+        provider: "codex",
+        installed: true,
+        version: "codex-cli 0.162.1",
+        binaryPath: "/usr/local/bin/codex",
+        status: "ready",
+        message: "",
+      },
+    ]);
+    const { findByTestId, queryByTestId } = render(CodexSettings);
+
+    await waitFor(async () =>
+      expect((await findByTestId("settings-provider-status-pill")).getAttribute("data-status")).toBe("ready"),
+    );
+    expect(queryByTestId("settings-provider-binary-resolved")).toBeNull();
   });
 });

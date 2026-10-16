@@ -128,6 +128,7 @@
         const resolvedTarget = alignedPaneScrollLeft(targetPane, glideTargetAlignment);
         glideTargetLeft = clampStripScrollLeft(el, resolvedTarget);
         glideCurrentLeft = appliedScrollLeft;
+        glideLeftAsWritten = appliedScrollLeft;
         if (Math.abs(glideTargetLeft - glideCurrentLeft) < 0.75) cancelStripGlide();
       }
     }
@@ -300,6 +301,17 @@
   let glideCurrentLeft = 0;
   let glideLastTs: number | null = null;
   let glideFrame = 0;
+  // The strip's scrollLeft as the glide last left it, read back after each
+  // write (the browser rounds). A different value on the next frame means
+  // something else scrolled the strip: a scroll-into-view, a scrollbar
+  // drag, a keyboard scroll. The glide yields to it rather than writing
+  // its own position back over the move.
+  let glideLeftAsWritten = 0;
+
+  // Something other than the glide moved the strip since its last frame.
+  function stripMovedUnderGlide(el: HTMLElement): boolean {
+    return Math.abs(el.scrollLeft - glideLeftAsWritten) > 0.5;
+  }
 
   function cancelStripGlide(): void {
     if (glideFrame) cancelAnimationFrame(glideFrame);
@@ -316,6 +328,10 @@
       glideFrame = 0;
       return;
     }
+    if (stripMovedUnderGlide(el)) {
+      cancelStripGlide();
+      return;
+    }
     const dt = glideLastTs === null
       ? 16
       : Math.min(GLIDE_MAX_FRAME_MS, Math.max(0, ts - glideLastTs));
@@ -328,6 +344,7 @@
       return;
     }
     el.scrollLeft = glideCurrentLeft;
+    glideLeftAsWritten = el.scrollLeft;
     glideFrame = requestAnimationFrame(stepStripGlide);
   }
 
@@ -343,6 +360,7 @@
     glideTargetAlignment = alignment;
     if (glideFrame) return; // retargeted mid-flight — the running loop picks it up
     glideCurrentLeft = el.scrollLeft;
+    glideLeftAsWritten = el.scrollLeft;
     glideLastTs = null;
     glideFrame = requestAnimationFrame(stepStripGlide);
   }

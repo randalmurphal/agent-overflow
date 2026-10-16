@@ -233,6 +233,12 @@ type App struct {
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
+	// startupProbeWG joins the startup account probes and the Claude probe's
+	// retry loop (probeStartupAccountInfo).
+	startupProbeWG sync.WaitGroup
+	// permissionModeFollowWG joins the goroutines that move a thread onto
+	// the permission mode Claude moved to (followClaudePermissionMode).
+	permissionModeFollowWG sync.WaitGroup
 	// threadSearchIndex is the boot-time search index build.
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.
@@ -450,7 +456,11 @@ type App struct {
 	// per-thread config reconciler (app_session_config.go); see
 	// App.configApplyLocks for the lock-order rules.
 	sessionConfigApplyLocksOnce sync.Once
-	sessionConfigApplyLocks     *keyedlock.Registry
+	// threadRowAnnouncer builds every thread:updated row frame
+	// (app_thread_broadcast.go).
+	threadAnnouncerOnce     sync.Once
+	threadRowAnnouncer      *triage.ThreadAnnouncer
+	sessionConfigApplyLocks *keyedlock.Registry
 	// flushDispatch is the queued-message flush concern
 	// (`app_flush_queue*.go`), including both of its mutexes.
 	flushDispatch appFlushDispatchState
@@ -486,6 +496,9 @@ type App struct {
 	// prompt would differ at their next session start
 	// (app_prompt_stale.go).
 	promptStale appPromptStaleState
+	// taskOutput follows the output files of running background commands
+	// for the tray rows clients expanded (app_background_task_output.go).
+	taskOutput appBackgroundTaskOutputState
 	// claudeApp owns application-facing reads and controls for live Claude
 	// sessions. Account and process lifecycle stay with their own services.
 	claudeAppOnce sync.Once
@@ -542,6 +555,14 @@ type App struct {
 	// Tests install a fake so they can simulate "only claude installed"
 	// without touching $PATH.
 	lookPathFn func(string) error
+	// codexLookPathFn replaces exec.LookPath when the default `codex`
+	// setting is resolved to the binary it runs (defaultCodexBinary).
+	// Production leaves it nil; test fixtures install one so the default
+	// never resolves against the developer's PATH.
+	codexLookPathFn func(string) (string, error)
+	// defaultCodexBinaryCache is the default `codex` setting's resolution
+	// (app_codex_binary.go).
+	defaultCodexBinaryCache defaultCodexBinaryCache
 	// emitEventFn is a test-only override for a.emitEvent. It takes the
 	// channel in its WIRE spelling rather than as an eventchan.Channel —
 	// it is an observation seam, not an emit site, so it has nothing to
@@ -610,6 +631,10 @@ type App struct {
 	// tests assign a client pointing at a local httptest server. Nil uses
 	// the package-level singleton.
 	rateLimitProbeClientOverride *http.Client
+	// externalURLsIsolated makes every system-browser open answer
+	// externalurl.ErrNoOpener, as a host with no browser does. Only an
+	// isolated boot sets it: a test run must not open the developer's browser.
+	externalURLsIsolated bool
 	// netReach is where a LAN bind listens and which address it publishes.
 	// ConfigureIsolation confines an isolated boot to loopback unless it
 	// runs inside the test network namespace (network.IsolatedReach). The

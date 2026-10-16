@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 // defaultTestProjectID is seeded once in the migrated template so legacy
@@ -48,7 +50,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	code := m.Run()
+	code := providerpath.Run(m)
 	if report := recompilingReport(recompilingStatements()); report != "" {
 		fmt.Fprint(os.Stderr, report)
 		if code == 0 {

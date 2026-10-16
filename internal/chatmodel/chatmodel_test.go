@@ -438,11 +438,11 @@ func TestStoredContextWindowSurvivesLargeModelDefaultFlip(t *testing.T) {
 		}
 	})
 
-	// Sonnet keeps 1M opt-in, so a new Sonnet profile still starts at 200k.
-	t.Run("SonnetNewProfileStaysStandard", func(t *testing.T) {
+	// Sonnet offers 1M, so a new Sonnet profile starts there too.
+	t.Run("SonnetNewProfileTakesTheExtendedTier", func(t *testing.T) {
 		got := FallbackProfile(string(provider.Claude), "claude-sonnet-5")
-		if got.ContextWindow != provider.ClaudeStandardContextWindow {
-			t.Fatalf("new sonnet profile ContextWindow = %d, want the standard tier", got.ContextWindow)
+		if got.ContextWindow != provider.ClaudeExtendedContextWindow {
+			t.Fatalf("new sonnet profile ContextWindow = %d, want the extended tier", got.ContextWindow)
 		}
 	})
 }

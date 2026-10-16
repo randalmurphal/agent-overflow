@@ -192,7 +192,10 @@ export interface ThreadGroup {
  * - `terminal_interaction` is the Codex-only background-terminal wait or
  *   interaction marker persisted from typed `write_stdin` notifications.
  * - `notification` is a provider notification row that must not mutate
- *   tool/task lifecycle state.
+ *   tool/task lifecycle state. `meta.kind` discriminates renderers:
+ *   `session_died`, and `abandoned_blocks`, the record that Claude
+ *   discarded the streamed rows named in `meta.item_ids` after a stalled
+ *   response (`utils/discardedItems.ts` derives their muted marking).
  * - `command_result` is the output of a slash command the provider CLI ran
  *   itself (`/usage`, `/context`, a skill). Role `system`, written completed
  *   in one shot, never streams, and never model output — it must not render
@@ -234,6 +237,15 @@ export interface PathRef {
 export interface Item {
   /** Launch context carried by a completion; never a positional timeline row. */
   completionLaunch?: Item;
+  /**
+   * Id of the abandonment record naming this row as one Claude discarded
+   * after a stalled response. Attached by the server when it serves the
+   * row, so the mark holds whether or not the record is in the loaded
+   * window; a live row carries it from the wire refresh that follows the
+   * record, and until then the window derives it from the record itself
+   * (utils/discardedItems.ts).
+   */
+  discardedBy?: string;
   id: string;
   threadId: string;
   turnIndex: number;

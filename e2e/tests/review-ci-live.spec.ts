@@ -4,8 +4,10 @@
 // backend's index lists them, nothing expanded on its own and no line
 // read until a row opens; an expanded row holds its place, and a reader
 // who moves to the end follows its growth while one who scrolled up keeps
-// their place; the chips and an open job log follow a running GitLab job
-// without a click, and the polling stops once every job is terminal; the
+// their place, and End brings them back to the end though the rows
+// mounting there measure taller while it scrolls; the chips and an open
+// job log follow a running GitLab job without a click, and the polling
+// stops once every job is terminal; the
 // saved log and a section sent to chat carry no section markers; a
 // running GitHub job lists its steps live (read only while its log is
 // open), waits without an error while the forge answers 404 for its log,
@@ -209,9 +211,11 @@ test('a running GitLab job shows its sections, follows its trace into an open se
   await expect(log).toContainText('success');
   await expect(script).toHaveAttribute('data-status', 'done');
   await expect(script).toContainText('1m 6s');
-  // The escaped reader was left alone; wheeling back down re-sticks.
+  // The escaped reader was left alone; End takes them back to the end,
+  // which the tail rows mounting there move while End's scroll runs.
   expect(await scroll.evaluate((el) => el.scrollTop)).toBe(0);
-  await page.mouse.wheel(0, 100_000);
+  await scroll.focus();
+  await page.keyboard.press('End');
   await expect(scroll).toContainText('job finished');
   await expect.poll(() => distanceFromBottom(scroll)).toBeLessThanOrEqual(24);
   await expect(section(log, `output:section:step_script:${T0 + 4}`)).toContainText('Job succeeded');

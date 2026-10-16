@@ -28,8 +28,12 @@ type ProviderStatus struct {
 	Installed  bool   `json:"installed"`
 	Version    string `json:"version,omitempty"`
 	BinaryPath string `json:"binaryPath"`
-	Status     string `json:"status"`
-	Message    string `json:"message,omitempty"`
+	// WrapperPath is the launcher on PATH that BinaryPath was resolved
+	// from, when Agent Overflow runs the binary that launcher would spawn
+	// (the npm Codex wrapper's native binary). Empty otherwise.
+	WrapperPath string `json:"wrapperPath,omitempty"`
+	Status      string `json:"status"`
+	Message     string `json:"message,omitempty"`
 }
 
 // DetectProvider checks whether a provider binary exists on PATH (or at the

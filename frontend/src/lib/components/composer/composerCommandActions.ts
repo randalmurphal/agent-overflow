@@ -29,20 +29,13 @@ import {
 } from '../../stores/threadModelControls';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { asProviderID } from '../../types/providers';
-import type { ModelInfo, ReasoningEffortOption } from '../../types/settings';
+import type { ModelInfo } from '../../types/settings';
 import { pickerVisibleModels } from '../../utils/hiddenModels';
 import { displayModelLabel } from '../../utils/modelLabels';
+import { FALLBACK_EFFORTS } from '../../utils/effortLabels';
 import { errString } from '../../utils/errors';
 import { resolveArgCandidate, type ArgCandidate } from './composerCommandArgs';
 import type { InterceptedInvocation } from './composerCommandParse';
-
-/** Effort tiers a model with no catalog entry still offers, per EffortMenu. */
-const FALLBACK_EFFORTS: readonly ReasoningEffortOption[] = [
-  { slug: 'low', label: 'Low' },
-  { slug: 'medium', label: 'Medium' },
-  { slug: 'high', label: 'High' },
-  { slug: 'xhigh', label: 'xHigh' },
-];
 
 export interface CommandActionResult {
   /** User-facing failure text. Empty on success. */

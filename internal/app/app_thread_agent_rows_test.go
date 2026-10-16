@@ -658,6 +658,14 @@ func TestThreadAgentRowsChangesAreEmitted(t *testing.T) {
 		t.Fatalf("blocked row = %+v; want what it is blocked on", blocked.Row)
 	}
 
+	// A rename reaches the row through the target's thread:updated frame.
+	if err := f.app.RenameThread(ack.ThreadID, "Deploy rerun"); err != nil {
+		t.Fatalf("RenameThread: %v", err)
+	}
+	frame(func(c ThreadAgentRowChange) bool {
+		return c.ID == ack.Token && c.Row != nil && c.Row.Title == "Deploy rerun"
+	})
+
 	if _, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token); err != nil {
 		t.Fatalf("StopThreadAgentRow: %v", err)
 	}

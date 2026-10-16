@@ -73,6 +73,7 @@ const PR_REVIEW_CONFLICTS = 'lib/stores/prReviewConflicts.svelte.ts';
 const MCP_SERVERS_STORE = 'lib/stores/mcpServers.svelte.ts';
 const CHAT_BAR_FAVORITES_STORE = 'lib/stores/chatBarFavorites.svelte.ts';
 const WORKFLOW_RUN_MAP_STORE = 'lib/stores/workflowRunMap.svelte.ts';
+const BACKGROUND_TASK_OUTPUT_STORE = 'lib/stores/backgroundTaskOutput.svelte.ts';
 const APPEARANCE_STORE = 'lib/stores/appearance.svelte.ts';
 const SOUNDS_STORE = 'lib/stores/sounds.svelte.ts';
 const EDITORS_STORE = 'lib/stores/editors.svelte.ts';
@@ -124,6 +125,8 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   ),
   SetChatBarFavorite: owned(CHAT_BAR_FAVORITES_STORE, 'frontend-local setChatBarFavorite(); backend writes exist only for older clients'),
   WorkflowGetRunMap: owned(WORKFLOW_RUN_MAP_STORE, 'the run-map entity source'),
+  WatchBackgroundTaskOutput: owned(BACKGROUND_TASK_OUTPUT_STORE, 'attachBackgroundTaskOutput()'),
+  UnwatchBackgroundTaskOutput: owned(BACKGROUND_TASK_OUTPUT_STORE, 'the attachment release()'),
   // Appearance is one app-global value over one directory, so its store is a
   // plain module store rather than an entityStore — but the ownership rule is
   // the same one, and it has teeth here: a settings section that called

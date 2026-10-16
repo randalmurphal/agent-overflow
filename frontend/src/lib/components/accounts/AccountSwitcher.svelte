@@ -286,13 +286,7 @@
                             {loginExpiry.text}
                           </span>
                         {/if}
-                        {#if account.needsLogin}
-                          <span
-                            class="shrink-0 rounded-full bg-warning/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-warning"
-                          >
-                            Sign in again
-                          </span>
-                        {:else if account.active}
+                        {#if account.active}
                           <span
                             class="shrink-0 rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-accent"
                           >
@@ -301,6 +295,20 @@
                         {/if}
                       </span>
                     </button>
+                    <!-- Renews whichever saved account the login belongs to,
+                         without switching. -->
+                    {#if loginExpiry || account.needsLogin}
+                      <button
+                        type="button"
+                        class="shrink-0 cursor-pointer rounded-[var(--radius-field)] px-1.5 py-1 text-[0.6875rem] font-medium text-warning transition-colors hover:bg-surface-2/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 compact:py-2"
+                        disabled={credentialOpInFlight}
+                        aria-label={`Sign in again to ${providerAccountName(account)}`}
+                        data-testid="account-switcher-sign-in-{account.id}"
+                        onclick={() => void startProviderLogin(group.provider, backend)}
+                      >
+                        Sign in again
+                      </button>
+                    {/if}
                     <!-- IconButton owns its own chrome and takes no class
                          prop; the wrapper only holds it at its natural size
                          against the truncating name beside it. -->

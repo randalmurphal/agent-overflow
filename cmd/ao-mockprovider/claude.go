@@ -19,11 +19,51 @@ import (
 	"agent-overflow/internal/harness/scenario"
 )
 
-// claudeAccountJSON is the account object served on the probe's
-// system/init line and on initialize control_responses. Shape matches
-// internal/provider/claude/probe.go extractAccountInfoFromInitResponse
-// and internal/testutil/app.go WriteMockClaudeInit.
-const claudeAccountJSON = `{"email":"mock@agent-overflow.test","subscriptionType":"Claude Max","apiProvider":"firstParty","tokenSource":"claude.ai"}`
+// claudeAccount is the account object served on the probe's system/init
+// line and on initialize control_responses. Shape matches
+// internal/provider/claude/probe.go extractAccountInfoFromInitResponse and
+// internal/testutil/app.go WriteMockClaudeInit.
+type claudeAccount struct {
+	Email            string `json:"email"`
+	SubscriptionType string `json:"subscriptionType"`
+	APIProvider      string `json:"apiProvider"`
+	TokenSource      string `json:"tokenSource"`
+}
+
+func claudeAccountFor(email string) claudeAccount {
+	return claudeAccount{
+		Email: email, SubscriptionType: "Claude Max", APIProvider: "firstParty", TokenSource: "claude.ai",
+	}
+}
+
+// claudeAccountForHome is the account this process reports. The CLI reports
+// the account its config's `oauthAccount` record names: the `.claude.json` in
+// CLAUDE_CONFIG_DIR, or `~/.claude.json` without it. A harness test that needs
+// a second identity writes that record (the sign-in mock writes it for the
+// email its code names). Without one, mockLoginEmail.
+func claudeAccountForHome() claudeAccount {
+	path := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), ".claude.json")
+	if os.Getenv("CLAUDE_CONFIG_DIR") == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return claudeAccountFor(mockLoginEmail)
+		}
+		path = filepath.Join(home, ".claude.json")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return claudeAccountFor(mockLoginEmail)
+	}
+	var config struct {
+		OAuthAccount struct {
+			EmailAddress string `json:"emailAddress"`
+		} `json:"oauthAccount"`
+	}
+	if json.Unmarshal(data, &config) != nil || config.OAuthAccount.EmailAddress == "" {
+		return claudeAccountFor(mockLoginEmail)
+	}
+	return claudeAccountFor(config.OAuthAccount.EmailAddress)
+}
 
 // claudeModelsJSON is the `models` array the initialize control_response
 // carries. It is the ONLY input to internal/claudemodels' merge — the account
@@ -31,7 +71,7 @@ const claudeAccountJSON = `{"email":"mock@agent-overflow.test","subscriptionType
 // harness run exercises the un-enriched catalog and the merge policy never
 // runs at all.
 //
-// Two rows, modelled on the real 2.1.219 capture in
+// Three rows, modelled on the real 2.1.219 capture in
 // docs/references/fixtures/claude/initialize_models_20260802.json:
 //
 //   - The `default` POINTER row, whose displayName names the pointer rather
@@ -39,6 +79,10 @@ const claudeAccountJSON = `{"email":"mock@agent-overflow.test","subscriptionType
 //     Exercises CanonicalSlug's alias/marker normalization and
 //     IsDefaultPointer; its capabilities match the catalog's claude-opus-5
 //     exactly, so it contributes no drift.
+//   - A `claude-opus-4-7` row matching the catalog exactly. The harness seeds
+//     Claude threads on this model (internal/harnessrpc/seed.go), and pickers
+//     offer only what the CLI lists, so the mock lists it as a real CLI that
+//     runs it would. It contributes no drift.
 //   - A `claude-haiku-4-5` row claiming `supportsFastMode: true`, which the
 //     catalog does not. That single divergence is deliberate: it is what makes
 //     the merge OBSERVABLE under harness — Merge reports one DriftCapability
@@ -53,6 +97,10 @@ const claudeModelsJSON = `[` +
 	`"description":"Opus 5 with 1M context","supportsEffort":true,` +
 	`"supportedEffortLevels":["low","medium","high","xhigh","max"],` +
 	`"supportsAdaptiveThinking":true,"supportsFastMode":true,"supportsAutoMode":true},` +
+	`{"value":"claude-opus-4-7","resolvedModel":"claude-opus-4-7","displayName":"Opus 4.7",` +
+	`"description":"Opus 4.7","supportsEffort":true,` +
+	`"supportedEffortLevels":["low","medium","high","xhigh","max"],` +
+	`"supportsAdaptiveThinking":true,"supportsFastMode":true,"supportsAutoMode":true},` +
 	`{"value":"claude-haiku-4-5","resolvedModel":"claude-haiku-4-5","displayName":"Haiku",` +
 	`"description":"Haiku 4.5","supportsEffort":false,"supportedEffortLevels":[],` +
 	`"supportsAdaptiveThinking":false,"supportsFastMode":true,"supportsAutoMode":true}]`
@@ -60,8 +108,14 @@ const claudeModelsJSON = `[` +
 // claudeInitializeResponsePayload is the inner response payload for a
 // control_request{subtype:"initialize"} ack — the probe reads
 // `account` and `models` out of it.
-const claudeInitializeResponsePayload = `{"commands":[],"agents":[],"models":` + claudeModelsJSON +
-	`,"account":` + claudeAccountJSON + `}`
+func claudeInitializeResponsePayload() string {
+	return mustJSON(struct {
+		Commands []any           `json:"commands"`
+		Agents   []any           `json:"agents"`
+		Models   json.RawMessage `json:"models"`
+		Account  claudeAccount   `json:"account"`
+	}{Commands: []any{}, Agents: []any{}, Models: json.RawMessage(claudeModelsJSON), Account: claudeAccountForHome()})
+}
 
 // claudeContextUsageResponsePayload is the inner response payload for a
 // control_request{subtype:"get_context_usage"} ack. Static: the mock has no
@@ -145,6 +199,10 @@ type claudeAdapter struct {
 	// drainHeldInput / releaseHeldInput).
 	heldMu sync.Mutex
 	held   [][]byte
+
+	// permission follows the permission mode and model the process runs
+	// (claude_permission_mode.go).
+	permission *claudePermissionMode
 }
 
 func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
@@ -155,6 +213,7 @@ func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
 		mcpServers:    claudeMCPServerSpecs(flagValue(args, "--mcp-config")),
 		sessionMirror: slices.Contains(args, "--session-mirror"),
 		tasks:         newClaudeTaskLedger(),
+		permission:    newClaudePermissionMode(args),
 	}
 	w.onLine(a.noteEnvelope)
 	return a
@@ -328,7 +387,22 @@ func (a *claudeAdapter) handleLine(line []byte) {
 			}
 			return
 		}
+		var beforeAck, afterAck []string
+		var refusal, refusalCode string
+		if required, known := claudeControlRequestKeys[subtype]; known && missingControlRequestKeys(env.Request, required) == "" {
+			beforeAck, afterAck, refusal, refusalCode = a.permission.frames(subtype, env.Request)
+		}
+		if refusal != "" {
+			writeClaudeControlErrorCode(a.w, env.RequestID, refusal, refusalCode)
+			return
+		}
+		for _, frame := range beforeAck {
+			a.w.writeLine(frame, 0, 0)
+		}
 		writeClaudeControlAck(a.w, env.RequestID, subtype, env.Request)
+		for _, frame := range afterAck {
+			a.w.writeLine(frame, 0, 0)
+		}
 		if subtype == "interrupt" {
 			for _, frame := range a.tasks.stopForegroundCommands(time.Now()) {
 				a.w.writeLine(frame, 0, 0)
@@ -542,6 +616,7 @@ func (a *claudeAdapter) writeInit(vars scenario.Vars) {
 		"model":               "claude-opus-4-7",
 		"cwd":                 vars["CWD"],
 		"tools":               []string{"Task", "Bash", "Read", "Write", "Edit"},
+		"permissionMode":      a.permission.current(),
 		"claude_code_version": a.e.providerVersion(),
 	}), 0, 0)
 }
@@ -817,7 +892,6 @@ var claudeControlRequestKeys = map[string][]string{
 // (interrupt_receipt_v1, claude-wire.md); this mock queues none.
 var claudeControlAckPayloads = map[string]string{
 	"interrupt":         `{"still_queued":[]}`,
-	"initialize":        claudeInitializeResponsePayload,
 	"get_context_usage": claudeContextUsageResponsePayload,
 	"background_tasks":  claudeBackgroundTasksResponsePayload,
 	"mcp_status":        claudeMCPStatusResponsePayload,
@@ -854,7 +928,10 @@ func writeClaudeControlAck(w *lineWriter, requestID, subtype string, request jso
 		return
 	}
 	payload, ok := claudeControlAckPayloads[subtype]
-	if !ok {
+	switch {
+	case subtype == "initialize":
+		payload = claudeInitializeResponsePayload()
+	case !ok:
 		payload = "{}"
 	}
 	writeClaudeControlSuccess(w, requestID, payload)
@@ -910,10 +987,29 @@ func writeClaudeControlSuccess(w *lineWriter, requestID, payload string) {
 // shape — `subtype:"error"` plus `error` — which is what
 // session_control.go's reader turns into the caller's error message.
 func writeClaudeControlError(w *lineWriter, requestID, message string) {
+	writeClaudeControlErrorCode(w, requestID, message, "")
+}
+
+// writeClaudeControlErrorCode adds the `error_code` the CLI names beside
+// some refusals (set_permission_mode's "auto_mode_model"); empty omits it.
+// The line leads with `"type":"control_response"` as the CLI's does: AO
+// routes control responses by that prefix.
+func writeClaudeControlErrorCode(w *lineWriter, requestID, message, code string) {
 	log.Printf("claude: refusing control_request: %s", message)
-	w.writeLine(fmt.Sprintf(
-		`{"type":"control_response","response":{"subtype":"error","request_id":%s,"error":%s}}`,
-		mustJSON(requestID), mustJSON(message)), 0, 0)
+	// Struct fields marshal in declaration order, so "type" leads.
+	type controlError struct {
+		Subtype   string `json:"subtype"`
+		RequestID string `json:"request_id"`
+		Error     string `json:"error"`
+		ErrorCode string `json:"error_code,omitempty"`
+	}
+	w.writeLine(mustJSON(struct {
+		Type     string       `json:"type"`
+		Response controlError `json:"response"`
+	}{
+		Type:     "control_response",
+		Response: controlError{Subtype: "error", RequestID: requestID, Error: message, ErrorCode: code},
+	}), 0, 0)
 }
 
 // sendApproval emits a CanUseTool control_request and registers a

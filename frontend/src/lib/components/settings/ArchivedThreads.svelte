@@ -11,7 +11,7 @@
     StopSession,
     UnarchiveThread,
   } from '../../stores/bindings';
-  import { prependThread } from '../../stores/threads.svelte';
+  import { prependThreadReply } from '../../stores/threads.svelte';
   import { closePanesShowingThread } from '../../stores/panes.svelte';
   import {
     syncRemovedWorktreeThreads,
@@ -20,6 +20,7 @@
     withTerminalsNote,
     type WorktreeRemovalResult,
   } from '../../stores/worktreeRemoval.svelte';
+  import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
@@ -54,9 +55,10 @@
 
   async function handleUnarchive(thread: Thread): Promise<void> {
     try {
-      const restored = (await UnarchiveThread(thread.id)) as Thread;
+      const mark = threadRowFrameMark();
+      const reply = (await UnarchiveThread(thread.id)) as Thread;
       archivedThreads = archivedThreads.filter((t) => t.id !== thread.id);
-      prependThread(restored);
+      const restored = prependThreadReply(reply, mark);
       addToast('info', `Unarchived "${restored.title || 'thread'}".`);
     } catch (err) {
       console.error('Failed to unarchive thread:', err);
@@ -70,7 +72,8 @@
         console.error('Failed to stop session before delete:', err);
       });
       if (thread.worktreePath) {
-        syncRemovedWorktreeThreads((await GitRemoveWorktree(thread.id)) as WorktreeRemovalResult);
+        const mark = threadRowFrameMark();
+        syncRemovedWorktreeThreads((await GitRemoveWorktree(thread.id)) as WorktreeRemovalResult, mark);
       }
       await DeleteThread(thread.id);
       archivedThreads = archivedThreads.filter((t) => t.id !== thread.id);

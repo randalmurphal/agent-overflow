@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/harness/scenario"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 // mockBin is the ao-mockprovider binary built once per test run by
@@ -36,7 +37,25 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "build ao-mockprovider: %v\n%s", err, out)
 		os.Exit(1)
 	}
-	code := m.Run()
+	// After the build, which needs the real home's Go caches. The mock reads
+	// the account its config home names (claudeAccountForHome), so every
+	// process it starts gets an empty home rather than the developer's.
+	home := filepath.Join(tmp, "home")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "make test home: %v\n", err)
+		os.Exit(1)
+	}
+	for key, value := range map[string]string{"HOME": home, "USERPROFILE": home} {
+		if err := os.Setenv(key, value); err != nil {
+			fmt.Fprintf(os.Stderr, "set %s: %v\n", key, err)
+			os.Exit(1)
+		}
+	}
+	if err := os.Unsetenv("CLAUDE_CONFIG_DIR"); err != nil {
+		fmt.Fprintf(os.Stderr, "unset CLAUDE_CONFIG_DIR: %v\n", err)
+		os.Exit(1)
+	}
+	code := providerpath.Run(m)
 	_ = os.RemoveAll(tmp)
 	os.Exit(code)
 }

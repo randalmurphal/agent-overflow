@@ -595,9 +595,7 @@ func (a *App) spawnProviderSession(
 		// thread title lands. See app_claude_peer_name.go.
 		cfg.PeerSessionName = opts.ClaudePeerSessionName
 		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
-		cfg.AgentLaunchByTask = func(taskID string) (string, bool, error) {
-			return a.triage.AgentLaunchByTask(threadID, taskID)
-		}
+		cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)
 		cfg.SystemPromptDir, err = a.claudePromptFileDir()
 		if err != nil {
 			return session{}, err
@@ -757,6 +755,8 @@ func (a *App) spawnProviderSession(
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
 		cfg.AppendSystemPrompt = appGuide
 		cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
+		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
+		cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)
 		// claudetui's Config carries a whole environment rather than an
 		// override map, so the shared rule is applied here instead of inside
 		// the provider package. Skipping this branch would leave one provider
@@ -770,9 +770,15 @@ func (a *App) spawnProviderSession(
 		// provider on the same backend as the headless one — dropping it here
 		// would silently run take-control sessions against api.anthropic.com
 		// while every other Claude surface used the user's endpoint.
-		cfg.Env = provider.BuildEnvironment(
+		//
+		// The command timeout ceiling is applied to the override map here,
+		// before the host environment is merged under it, so its precedence
+		// matches the headless spawn: custom env over the setting over an
+		// inherited value.
+		cfg.Env = provider.BuildEnvironment(claude.WithCommandTimeoutEnv(
 			a.sessionProcessEnv(string(provider.ClaudeTUI), nil, credential),
-		)
+			opts.ClaudeMaxCommandTimeoutHours,
+		))
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
 		cfg.MCPServers, cfg.AllowedTools = claudeTUIMCPServers(mcpServers)
 		cfg.Upstream = a.claudetuiUpstream()
@@ -1438,4 +1444,17 @@ func applyClaudeSessionAxes(cfg *claude.Config, axes settings.ClaudeSessionAxes)
 	cfg.MaxSubagentSpawnDepth = axes.SubagentLimits.MaxSpawnDepth
 	cfg.MaxConcurrentSubagents = axes.SubagentLimits.MaxConcurrent
 	cfg.ToolMemoryLimit = axes.ToolMemoryLimit
+}
+
+// claudeAgentLaunchLookup answers the Claude parser's question about an
+// agent launch an earlier process ran: the thread's history record of it
+// (claude.Config.AgentLaunchByTask).
+func (a *App) claudeAgentLaunchLookup(threadID string) func(taskID string) (claude.AgentLaunchRecord, bool, error) {
+	return func(taskID string) (claude.AgentLaunchRecord, bool, error) {
+		launch, found, err := a.triage.AgentLaunchByTask(threadID, taskID)
+		if err != nil || !found {
+			return claude.AgentLaunchRecord{}, found, err
+		}
+		return claude.AgentLaunchRecord{ToolUseID: launch.ID, Effort: launch.NamedEffort, Model: launch.Model}, true, nil
+	}
 }

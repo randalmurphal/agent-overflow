@@ -7,6 +7,7 @@ package triage
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -376,5 +377,72 @@ func TestIsWakePromptRow(t *testing.T) {
 		if got := isWakePromptRow(tc.row); got != tc.want {
 			t.Errorf("%s: isWakePromptRow = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A Monitor's launch names no output file. The notification that first
+// names one announces the launch, and the tray row it carries is marked
+// tail-available (served, never persisted) so a client can expand it.
+func TestWatchTaskNotificationAnnouncesTheLaunchAsTailable(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Monitor",
+		"input":    map[string]any{"command": "tail -f build.log", "description": "watch build"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "watch-tool",
+		ItemType: "Monitor", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	completeMeta, _ := json.Marshal(map[string]any{
+		"is_background": true, "watch_task": true, "task_id": "task-watch",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "watch-tool",
+		Meta: completeMeta, Content: "Monitor started (task task-watch, persistent).", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	for _, frame := range trayFrames(emissions) {
+		if row, ok := trayRow(frame, "watch-tool"); ok && strings.Contains(row.Meta, TrayTailAvailableKey) {
+			t.Fatalf("before any notification the launch is not tailable: %+v", row)
+		}
+	}
+
+	emissions.reset()
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-watch", "tool_use_id": "watch-tool", "status": "completed",
+		"output_file": "/tmp/tasks/task-watch.output", "uuid": "event-1",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: "watch-tool",
+		Content: "matched: build done", Meta: notificationMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("notification: %v", err)
+	}
+	var announced *store.Item
+	for _, frame := range trayFrames(emissions) {
+		if row, ok := trayRow(frame, "watch-tool"); ok {
+			announced = &row
+		}
+	}
+	if announced == nil {
+		t.Fatal("the notification that names the file sent no tray frame for the launch")
+	}
+	var served struct {
+		TailAvailable bool `json:"tail_available"`
+	}
+	if err := json.Unmarshal([]byte(announced.Meta), &served); err != nil || !served.TailAvailable {
+		t.Fatalf("the served row carries %s: %s", TrayTailAvailableKey, announced.Meta)
+	}
+	persisted, _, err := st.GetThreadItem("t1", "watch-tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(persisted.Meta, TrayTailAvailableKey) || BackgroundTaskOutputFile(persisted) != "" {
+		t.Fatalf("the mark is served, never persisted: %s", persisted.Meta)
 	}
 }

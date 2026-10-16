@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -31,15 +32,16 @@ import (
 // mockClaudeLoginCode is the code the fake approval page "shows" the person.
 // A callback carrying anything else is what the real CLI answers with a 400 —
 // and, because one failure burns the flow, is how the fresh-link path is
-// driven from a test.
+// driven from a test. `mock-auth-code:<email>` signs in as that email instead
+// of mockLoginEmail, which is how a test signs a second account in.
 const mockClaudeLoginCode = "mock-auth-code"
 
-// mockLoginEmail is the identity every mock sign-in lands on. It matches the
-// account the probe reports (claudeAccountJSON) and the one the Codex
-// `account/read` answer carries, because adoption resolves the saved slot by
-// the identity the PROBE observed — a credential describing somebody else
-// would be adopted under the probe's name anyway, which is a fiction with no
-// test value.
+// mockLoginEmail is the identity a mock sign-in lands on unless its code names
+// another. It matches the account the probe reports (claudeAccountForHome) and
+// the one the Codex `account/read` answer carries, because adoption resolves
+// the saved slot by the identity the PROBE observed. A Claude sign-in writes
+// its email into the home's oauthAccount record, which is what the probe
+// reports from (claudeAccountForHome).
 const mockLoginEmail = "mock@agent-overflow.test"
 
 // isClaudeLoginInvocation matches claude.loginArgs(). `-p` plus
@@ -150,9 +152,13 @@ func (m *claudeLoginMock) callback(requestID string, request json.RawMessage) {
 		return
 	}
 
+	code, email := body.AuthorizationCode, mockLoginEmail
+	if named, ok := strings.CutPrefix(code, mockClaudeLoginCode+":"); ok && named != "" {
+		code, email = mockClaudeLoginCode, named
+	}
 	m.mu.Lock()
 	live := m.state
-	matched := live != "" && body.State == live && body.AuthorizationCode == mockClaudeLoginCode
+	matched := live != "" && body.State == live && code == mockClaudeLoginCode
 	// Spent either way: a good code completes the exchange and a bad one
 	// destroys it.
 	m.state = ""
@@ -169,11 +175,11 @@ func (m *claudeLoginMock) callback(requestID string, request json.RawMessage) {
 		writeClaudeControlError(m.w, requestID, "Request failed with status code 400")
 		return
 	}
-	if err := m.writeCredential(); err != nil {
+	if err := m.writeCredential(email); err != nil {
 		writeClaudeControlError(m.w, requestID, err.Error())
 		return
 	}
-	writeClaudeControlSuccess(m.w, requestID, `{"account":`+claudeAccountJSON+`}`)
+	writeClaudeControlSuccess(m.w, requestID, mustJSON(map[string]claudeAccount{"account": claudeAccountFor(email)}))
 }
 
 // writeCredential lands the two files adoption reads out of the login home:
@@ -184,7 +190,7 @@ func (m *claudeLoginMock) callback(requestID string, request json.RawMessage) {
 // An invocation with no CLAUDE_CONFIG_DIR writes nothing and says so. That is
 // not a degradation to tolerate — it is the guard that keeps this mock out of
 // a real provider home, since AO always names an isolated one.
-func (m *claudeLoginMock) writeCredential() error {
+func (m *claudeLoginMock) writeCredential(email string) error {
 	if m.configDir == "" {
 		return fmt.Errorf("this mock writes a credential only into CLAUDE_CONFIG_DIR, and none was set")
 	}
@@ -194,18 +200,27 @@ func (m *claudeLoginMock) writeCredential() error {
 	// A real access token is fixed-TTL (8h) and its expiry doubles as the
 	// rotation-chain position, so a credential that already looks expired
 	// would read as older than whatever it replaced.
+	// The refresh deadline is the fixed session life the CLI records at
+	// sign-in (docs/references/claude.md).
 	expiresAt := time.Now().Add(8 * time.Hour).UnixMilli()
+	refreshDeadline := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
 	credential := fmt.Sprintf(
 		`{"claudeAiOauth":{"accessToken":"mock-access-%d","refreshToken":"mock-refresh-%d",`+
-			`"expiresAt":%d,"scopes":["user:inference","user:profile"],"subscriptionType":"max"}}`,
-		expiresAt, expiresAt, expiresAt)
+			`"expiresAt":%d,"refreshTokenExpiresAt":%d,"scopes":["user:inference","user:profile"],"subscriptionType":"max"}}`,
+		expiresAt, expiresAt, expiresAt, refreshDeadline)
 	if err := writeMockLoginFile(filepath.Join(m.configDir, ".credentials.json"), credential); err != nil {
 		return err
 	}
-	identity := fmt.Sprintf(
-		`{"oauthAccount":{"accountUuid":"mock-account-uuid","emailAddress":%s,`+
-			`"organizationUuid":"mock-org-uuid","organizationName":"Mock Org"}}`,
-		mustJSON(mockLoginEmail))
+	type oauthAccount struct {
+		AccountUUID      string `json:"accountUuid"`
+		EmailAddress     string `json:"emailAddress"`
+		OrganizationUUID string `json:"organizationUuid"`
+		OrganizationName string `json:"organizationName"`
+	}
+	identity := mustJSON(map[string]oauthAccount{"oauthAccount": {
+		AccountUUID: "mock-account-uuid", EmailAddress: email,
+		OrganizationUUID: "mock-org-uuid", OrganizationName: "Mock Org",
+	}})
 	return writeMockLoginFile(filepath.Join(m.configDir, ".claude.json"), identity)
 }
 

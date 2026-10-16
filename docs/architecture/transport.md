@@ -401,7 +401,15 @@ cards read anchor metadata and `provider:subagent_progress`, which are not
 scope-filtered. The background tray, open or closed, names no scope: it
 reads `ListLiveBackgroundTasks` when its thread opens and after a reconnect
 or a lost frame, and otherwise applies the rows of the launches that changed
-from `provider:background_tray` deltas, which are filtered by thread.
+from `provider:background_tray` deltas, which are filtered by thread. An
+open running command row additionally holds one `WatchBackgroundTaskOutput`
+watch per connection and applies `provider:background_task_output` frames,
+filtered by thread; the watch belongs to the connection that opened it
+(only that connection's release lands), is released on collapse and with
+the connection, and ends with the task; the app keeps its own record of
+each bound watch so the cleanup is unbound by the task's end or the
+client's release even after the tailer has let the watch go. A gap on the
+channel re-watches every held tail.
 `provider:background_tasks_changed` is a payload-free, wildcard refetch nudge
 for readers that must hear about threads no pane shows. The tray's loop,
 watch and reminder rows read `ListThreadWakes` when the thread opens and

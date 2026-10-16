@@ -664,6 +664,11 @@ composed `developerInstructions` on `thread/start`, `thread/resume` and
 developer instructions the user configured, the app guide, and the
 browser guide
 ([prompt-tool-overrides.md §App guide](prompt-tool-overrides.md#app-guide)).
+Claude cuts server instructions at `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`
+characters (4096 unset, on 2.1.300), so headless Claude sessions spawn with
+it set to 16384 (`provider.ClaudeMCPDescriptionLengthLimit`, a default a
+custom environment can override) and a test keeps the guide under that.
+claude-tui does not register this server.
 The text, maintained beside the tool schemas in `internal/threadtools`:
 
 > These tools let you work with other Agent Overflow threads, on this
@@ -1532,7 +1537,10 @@ codex 0.153.4); outcomes recorded in the
       settles `cancelled`, and refuses an unrelated thread.
 - [x] `thread_options` lists both providers' models with efforts and
       the runtime modes, locally and for a paired computer, and a spawn
-      with a model the computer lacks is refused with that list.
+      with a model the computer lacks is refused with that list. The list
+      is what the provider currently offers, with its own default as
+      `default_model`; a spawn or fork naming a model the provider stopped
+      listing is still accepted, so a thread on it keeps working.
 - [x] `thread_spawn` with `from_thread` yields a visible fork that
       continues from the source's tail.
 - [x] A wait on a target that hits an approval returns `blocked` at

@@ -753,15 +753,7 @@ func (a *App) detachSessionForRemovedWorkspace(threadID string) func() error {
 func (a *App) reattachThreadsFromRemovedWorktree(removal *worktreeRemoval, mutable []string) ([]store.Thread, error) {
 	project, worktreePath := removal.project, removal.path
 	core := a.gitCore()
-	reattached := make([]store.Thread, 0, len(mutable))
-	var sweepErrs []error
-	for _, id := range mutable {
-		t, err := a.store.GetThread(id)
-		if err != nil {
-			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s not refreshed: %w", id, err))
-			continue
-		}
-		previousWorkspace := t.WorkspacePath
+	moveOff := func(t *store.Thread) bool {
 		mutated := false
 		if gitops.SameFilesystemPath(t.WorktreePath, worktreePath) {
 			t.WorktreePath = ""
@@ -772,15 +764,31 @@ func (a *App) reattachThreadsFromRemovedWorktree(removal *worktreeRemoval, mutab
 			t.Branch = removal.projectBranch(core)
 			mutated = true
 		}
-		if !mutated {
+		return mutated
+	}
+	reattached := make([]store.Thread, 0, len(mutable))
+	var sweepErrs []error
+	for _, id := range mutable {
+		t, err := a.store.GetThread(id)
+		if err != nil {
+			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s not refreshed: %w", id, err))
+			continue
+		}
+		previousWorkspace := t.WorkspacePath
+		if !moveOff(&t) {
 			continue
 		}
 		// The row moves and is announced before the process stops, so no
 		// surface reads the deleted path while the CLI takes its time to exit.
 		stop := a.detachSessionForRemovedWorkspace(id)
-		updateErr := a.store.UpdateThread(t)
+		// Only the triple, so a write to another column since the read above
+		// survives.
+		row, changed, updateErr := a.store.UpdateThreadCheckout(id, t.WorkspacePath, t.WorktreePath, t.Branch)
 		if updateErr == nil {
-			a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &t})
+			if changed {
+				t = row
+			}
+			a.announceThread(triage.ThreadActionFull, id)
 		}
 		if stop != nil {
 			if err := stop(); err != nil {
@@ -1141,7 +1149,7 @@ func checkoutMoveFrom(thread store.Thread, label string) threadCheckoutMove {
 }
 
 // commitThreadCheckout persists a thread whose workspace / worktree / branch
-// the caller has just rewritten, and BROADCASTS the row it moved.
+// the caller has just rewritten, and ANNOUNCES the row it moved.
 //
 // It is the chokepoint for the three USER-driven paths that move a thread's
 // checkout (cutting a new worktree, attaching an existing branch's, and
@@ -1183,7 +1191,9 @@ func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove)
 		}
 		purge = moved
 	}
-	if err := a.store.UpdateThread(thread); err != nil {
+	// Only the triple: the row was read before the git work above, and a
+	// write to another column since then must survive.
+	if _, _, err := a.store.UpdateThreadCheckout(threadID, thread.WorkspacePath, thread.WorktreePath, thread.Branch); err != nil {
 		rollback()
 		return store.Thread{}, err
 	}
@@ -1202,7 +1212,7 @@ func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove)
 	// new checkout. `store.UpdateThread` rewrites the whole row, so the
 	// no-change test is the three fields a move owns — re-selecting the
 	// workspace the thread already sits in moves nothing and says nothing.
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed,
+	a.announceThreadIfChanged(triage.ThreadActionFull, threadID,
 		move.previousWorkspace != thread.WorkspacePath ||
 			move.previousWorktree != thread.WorktreePath ||
 			move.previousBranch != thread.Branch)

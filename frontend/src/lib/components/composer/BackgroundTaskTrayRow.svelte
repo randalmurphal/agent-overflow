@@ -19,6 +19,8 @@
   import { formatTokens } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { TRAY_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
+  import { claudeTaskTailAvailable } from '../../utils/claudeTaskMeta';
+  import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
   import type { Item } from '../../types/models';
   import type { ProviderID } from '../../providers/catalog';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -161,6 +163,34 @@
   let hasStopAction = $derived(
     stopTarget !== null || opensAgentPane,
   );
+  // A running Claude command whose output the backend can tail (the ack
+  // named the file, or a Monitor's notification did) gets a live tail in
+  // its open body (CommandOutput `liveTail`). Kept through the
+  // completion's brief stay in the tray, so a tail a reader is following is
+  // handed to the loaded payload rather than a loading line; a row that
+  // completed before it was ever listed here never attaches one.
+  let liveTailWhileRunning = $derived.by(() => {
+    if (provider !== PROVIDER_DEFINITIONS.claude.id || presentation.kind !== 'command') return null;
+    const launch = task.launch;
+    if (!launch || !launch.isBackground || task.status !== 'running') return null;
+    return claudeTaskTailAvailable(launch) ? { threadId: launch.threadId, launchId: launch.id } : null;
+  });
+  // One object per launch: the task is rebuilt on every tray delta and
+  // elapsed tick, and a fresh but equal object would re-key the tail and
+  // its watch each time.
+  let liveTail = $state.raw<{ threadId: string; launchId: string } | null>(null);
+  $effect(() => {
+    const next = liveTailWhileRunning;
+    if (next === null) return;
+    if (liveTail?.threadId === next.threadId && liveTail.launchId === next.launchId) return;
+    liveTail = next;
+  });
+  // A command row's body is the command output's own; the host only learns
+  // whether it is open, so the list grows around an open tail as it does
+  // around an open digest.
+  function onCommandBodyExpanded(open: boolean): void {
+    if (open !== expanded) onToggleExpanded?.(task);
+  }
 </script>
 
 <div
@@ -244,6 +274,8 @@
         {durationLabel}
         showTimestamp={false}
         bodyRequiresPayload
+        {liveTail}
+        onExpandedChange={onToggleExpanded ? onCommandBodyExpanded : undefined}
         hostActions={hasStopAction ? stopAction : undefined}
       />
     {:else if presentation.kind === 'agent'}

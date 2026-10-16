@@ -3655,3 +3655,129 @@ func TestToolCompleteUnflaggedKeepsCodexLaunchFlag(t *testing.T) {
 		t.Fatalf("Codex launch flag is projector-owned; got background=%v status=%q", launches[0].IsBackground, launches[0].Status)
 	}
 }
+
+// The Bash ack's output file lands on the launch row at the keep-running
+// flip, where the tray reads it to tail the running command; the first
+// path stamped wins, and a launch whose ack named none carries none.
+func TestToolCompleteOnBackgroundedStampsOutputFile(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "make build", "run_in_background": true},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-tool",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	before := findItemsByKind(t, st, "t1", itemKindToolCall)[0]
+	if got := BackgroundTaskOutputFile(before); got != "" {
+		t.Fatalf("launch must carry no output file before its ack, got %q", got)
+	}
+
+	// The ack adds the file and nothing else the row did not already
+	// say (the launch was flagged from its input): the row's timestamp
+	// stays the launch's.
+	completeMeta, _ := json.Marshal(map[string]any{
+		"is_background": true,
+		"output_file":   "/tmp/tasks/task-bg.output",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-tool",
+		Meta: completeMeta, Content: "Command running in background with ID: task-bg.", Timestamp: time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	launch := findItemsByKind(t, st, "t1", itemKindToolCall)[0]
+	if launch.Status != statusRunning || !launch.IsBackground {
+		t.Fatalf("launch must stay a running background row, got %+v", launch)
+	}
+	if got := BackgroundTaskOutputFile(launch); got != "/tmp/tasks/task-bg.output" {
+		t.Fatalf("output_file on launch meta: got %q, want /tmp/tasks/task-bg.output", got)
+	}
+	if launch.UpdatedAt != before.UpdatedAt || launch.CreatedAt != before.CreatedAt {
+		t.Fatalf("the stamp alone moves no timestamp: %d/%d -> %d/%d", before.CreatedAt, before.UpdatedAt, launch.CreatedAt, launch.UpdatedAt)
+	}
+
+	// A repeated ack naming another path changes nothing.
+	repeatMeta, _ := json.Marshal(map[string]any{
+		"is_background": true,
+		"task_id":       "task-bg",
+		"output_file":   "/tmp/tasks/other.output",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-tool",
+		Meta: repeatMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("repeat complete: %v", err)
+	}
+	if got := BackgroundTaskOutputFile(findItemsByKind(t, st, "t1", itemKindToolCall)[0]); got != "/tmp/tasks/task-bg.output" {
+		t.Fatalf("first stamped path must win, got %q", got)
+	}
+}
+
+// A Monitor's launch ack names no file and its notifications never write
+// the launch row: the row is history, and the app reads the file off the
+// notification itself (app.WatchBackgroundTaskOutput).
+func TestWatchTaskNotificationLeavesTheLaunchRowAlone(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Monitor",
+		"input":    map[string]any{"command": "tail -f build.log", "description": "watch build"},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "watch-tool",
+		ItemType: "Monitor", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	completeMeta, _ := json.Marshal(map[string]any{
+		"is_background": true,
+		"watch_task":    true,
+		"task_id":       "task-watch",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "watch-tool",
+		Meta: completeMeta, Content: "Monitor started (task task-watch, persistent).", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	before := findItemsByKind(t, st, "t1", itemKindToolCall)[0]
+	if got := BackgroundTaskOutputFile(before); got != "" {
+		t.Fatalf("the Monitor ack names no file; got %q", got)
+	}
+
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-watch",
+		"tool_use_id": "watch-tool",
+		"status":      "completed",
+		"output_file": "/tmp/tasks/task-watch.output",
+		"uuid":        "event-1",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: "watch-tool",
+		Content: "matched: build done", Meta: notificationMeta, Timestamp: time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("notification: %v", err)
+	}
+	after := findItemsByKind(t, st, "t1", itemKindToolCall)[0]
+	if after.Status != statusRunning {
+		t.Fatalf("a watch task's notification ends nothing; status %q", after.Status)
+	}
+	if after.Meta != before.Meta || after.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("the launch row is history: %+v -> %+v", before, after)
+	}
+	note, found, err := st.FindNotificationItemByTaskID("t1", "task-watch")
+	if err != nil || !found {
+		t.Fatalf("notification row: found=%v err=%v", found, err)
+	}
+	if got := BackgroundTaskOutputFile(note); got != "/tmp/tasks/task-watch.output" {
+		t.Fatalf("the notification carries the file: got %q", got)
+	}
+}

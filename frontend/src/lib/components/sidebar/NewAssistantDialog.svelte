@@ -10,7 +10,8 @@
   import { CreateAssistant, GitListWorktrees, type WorktreeListItem } from '../../stores/bindings';
   import { closeNewAssistantDialog, getNewAssistantRequest } from '../../stores/newAssistant.svelte';
   import { getProjects } from '../../stores/projects.svelte';
-  import { prependThread } from '../../stores/threads.svelte';
+  import { prependThreadReply } from '../../stores/threads.svelte';
+  import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { openThreadInNewPane, openThreadInPane } from '../../stores/panes.svelte';
   import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
@@ -100,8 +101,9 @@
     };
     try {
       const backend = requireEntityBackend(projectBackend(projectId));
-      const thread = (await withBackendTarget(backend, () => CreateAssistant(options))) as Thread;
-      prependThread(thread);
+      const mark = threadRowFrameMark();
+      const reply = (await withBackendTarget(backend, () => CreateAssistant(options))) as Thread;
+      const thread = prependThreadReply(reply, mark);
       expandProject(projectId);
       closeNewAssistantDialog();
       if (current.openInNewPane) await openThreadInNewPane(thread);

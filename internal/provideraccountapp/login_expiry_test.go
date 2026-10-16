@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,17 +16,25 @@ import (
 	"agent-overflow/internal/provideraccounts"
 )
 
-// claudeLogin builds credential bytes whose OAuth session ends at sessionEnd.
-// The access-token expiry is always live, so nothing in these fixtures can
-// pass or fail for the wrong reason: the only thing under test is the
-// refresh token's own deadline.
+// claudeLogin builds credential bytes whose login ends at sessionEnd: a live
+// login carries a live eight-hour access token, an ended one an access token
+// that expired before its refresh deadline, so the deadline is when the login
+// stopped working.
 func claudeLogin(token string, sessionEnd time.Time) []byte {
+	accessExpiresAt := time.Now().Add(8 * time.Hour)
+	if !sessionEnd.After(time.Now()) {
+		accessExpiresAt = sessionEnd.Add(-time.Minute)
+	}
+	return claudeCredential(token, accessExpiresAt, sessionEnd)
+}
+
+func claudeCredential(token string, accessExpiresAt, refreshDeadline time.Time) []byte {
 	return []byte(fmt.Sprintf(
 		`{"claudeAiOauth":{"accessToken":%q,"refreshToken":"refresh-%s","expiresAt":%d,"refreshTokenExpiresAt":%d}}`,
 		token,
 		token,
-		time.Now().Add(8*time.Hour).UnixMilli(),
-		sessionEnd.UnixMilli(),
+		accessExpiresAt.UnixMilli(),
+		refreshDeadline.UnixMilli(),
 	))
 }
 
@@ -284,4 +296,66 @@ func TestUsageRefreshDeclinesAnExpiredLogin(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A login past its refresh deadline whose access token is still live is
+// working: the CLI's last renewal before the deadline issued an eight-hour
+// token. It lists as usable with the moment it really stops, and its usage is
+// read rather than declined.
+func TestALoginPastItsDeadlineWithALiveAccessTokenStillWorks(t *testing.T) {
+	manager, store, credentials := newTestManager(t)
+	claudeName := string(provider.Claude)
+	accessExpiresAt := time.Now().Add(4 * time.Hour).Truncate(time.Millisecond)
+	working := claudeCredential("working", accessExpiresAt, time.Now().Add(-2*time.Hour))
+	seedClaudeAccounts(t, manager, store, credentials, working, "other", claudeLogin("other", time.Now().Add(20*24*time.Hour)))
+
+	accounts, err := manager.ListProviderAccounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current *ManagedAccount
+	for i := range accounts {
+		if accounts[i].ID == "current" {
+			current = &accounts[i]
+		}
+	}
+	if current == nil {
+		t.Fatalf("listing = %+v, want the current account", accounts)
+	}
+	if current.NeedsLogin {
+		t.Fatal("a working login past its refresh deadline listed as needing sign-in")
+	}
+	if want := accessExpiresAt.Add(-5 * time.Minute).UnixMilli(); current.RefreshTokenExpiresAt != want {
+		t.Fatalf("listed expiry = %d, want the CLI's renewal of the live token %d", current.RefreshTokenExpiresAt, want)
+	}
+
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Header.Get("Authorization") != "Bearer working" {
+			t.Errorf("usage request bearer = %q, want the live access token", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"limits":[{"kind":"session","group":"session","percent":34,"resets_at":"2099-01-01T00:00:00Z"}]}`))
+	}))
+	defer srv.Close()
+	target, _ := url.Parse(srv.URL)
+	manager.deps.HTTPClient = func() *http.Client {
+		return &http.Client{Transport: rewriteTransport{target: target}}
+	}
+
+	if err := manager.RefreshProviderAccountUsage(claudeName, "current"); err != nil {
+		t.Fatalf("RefreshProviderAccountUsage(working past deadline) = %v, want the usage read", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("usage requests = %d, want 1", requests.Load())
+	}
+}
+
+type rewriteTransport struct{ target *url.URL }
+
+func (rt rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	clone.URL.Scheme = rt.target.Scheme
+	clone.URL.Host = rt.target.Host
+	return http.DefaultTransport.RoundTrip(clone)
 }

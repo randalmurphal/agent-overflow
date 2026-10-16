@@ -499,4 +499,18 @@ describe('resolveToolPresentation', () => {
     });
     expect(presentation.kind).not.toBe('advisor');
   });
+
+  it('presents a Claude Monitor as a command on the tray and as generic on the timeline', () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'running',
+      toolName: 'Monitor',
+      summary: 'Monitor: tail -f build.log',
+      meta: JSON.stringify({ input: { command: 'tail -f build.log', description: 'watch build' } }),
+    });
+    const tray = resolveToolPresentation({ item, provider: 'claude', surface: 'tray' });
+    expect(tray.kind).toBe('command');
+    if (tray.kind === 'command') expect(tray.meta.command).toBe('tail -f build.log');
+    expect(resolveToolPresentation({ item, provider: 'claude', surface: 'timeline' }).kind).toBe('generic');
+  });
 });

@@ -2250,11 +2250,10 @@ Prerequisite sweep, valuable standalone:
   presentation on every kind, orthogonal to the one-id route rule, and
   the SPA's activation parser carries it. The two legacy senders
   (workflow attention, WSL update notice) now ride typed kinds with
-  stable ids under the master switch only. Out-of-band `claude login`
-  does not clear the signed-out alert (the retraction rides
-  `provider:login` succeeded) — accepted for this wave; push senders,
-  the phone presenter, and remote-raised native notifications stay
-  open here.
+  stable ids under the master switch only. The signed-out alert is
+  retracted by a `provider:account_signin` whose account is now the
+  selected one, in-app or out-of-band; push senders, the phone
+  presenter, and remote-raised native notifications stay open here.
   **Sounds** are a second PRESENTATION of a decision already made, not
   a fourth kind of send. `publishNotificationSound` is called from one
   place, inside `notifyOS` after both gate halves pass and before

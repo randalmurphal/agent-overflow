@@ -56,7 +56,7 @@ func TestClaudeThinkingIsHeadlessClaudeOnlyOnBothPaths(t *testing.T) {
 			model = "claude-opus-5"
 		}
 		id, _ := seedPromptOverrideThread(t, app, "thread-thinking-"+providerName, providerName, model)
-		setClaudeThinking(t, app, map[string]any{"mode": "off"})
+		setClaudeThinking(t, app, map[string]any{"mode": "budget", "budgetTokens": 2048})
 
 		opts := promptOverrideOptions(t, app, id)
 		if opts.ClaudeThinking != (provider.ClaudeThinking{}) {
@@ -66,6 +66,19 @@ func TestClaudeThinkingIsHeadlessClaudeOnlyOnBothPaths(t *testing.T) {
 		if reconciled.ClaudeThinking != (provider.ClaudeThinking{}) {
 			t.Fatalf("%s reconcile ClaudeThinking = %+v, want zero", providerName, reconciled.ClaudeThinking)
 		}
+	}
+}
+
+// "off" is not a mode any more: a write naming it is refused and changes
+// nothing, so no session can be planned into a disabling request.
+func TestClaudeThinkingOffIsRefused(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	if _, err := app.settings.Update(map[string]any{"claudeThinking": map[string]any{"mode": "off"}}); err == nil {
+		t.Fatal(`Update(claudeThinking mode "off") = nil error, want a refusal`)
+	}
+	if got := app.settings.Get().ClaudeThinking; got != (settings.ClaudeThinking{}) {
+		t.Fatalf("ClaudeThinking = %+v after a refused write, want the default", got)
 	}
 }
 
@@ -90,15 +103,8 @@ func TestReconcileSettingsOwnedAxesConvergesClaudeThinking(t *testing.T) {
 			},
 		},
 		{
-			name:        "budget to off applies live",
-			launch:      map[string]any{"mode": "budget", "budgetTokens": 2048},
-			next:        map[string]any{"mode": "off"},
-			wantLive:    true,
-			wantRequest: claude.ThinkingUpdate{Apply: true, SendBudget: true, Budget: 0},
-		},
-		{
-			name:     "off to budget applies live",
-			launch:   map[string]any{"mode": "off"},
+			name:     "budget edit applies live",
+			launch:   map[string]any{"mode": "budget", "budgetTokens": 2048},
 			next:     map[string]any{"mode": "budget", "budgetTokens": 4096, "display": "omitted"},
 			wantLive: true,
 			wantRequest: claude.ThinkingUpdate{

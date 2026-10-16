@@ -20,6 +20,7 @@
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
+  import BackgroundTaskLiveTail from './BackgroundTaskLiveTail.svelte';
   import {
     commandErrorForItem,
     commandTextForItem,
@@ -54,6 +55,8 @@
     showTimestamp = true,
     hostActions,
     bodyRequiresPayload = false,
+    liveTail = null,
+    onExpandedChange,
   }: {
     pane?: PaneSession & RowUiRegistry & ScrollHost;
     item: Item;
@@ -71,10 +74,19 @@
     showTimestamp?: boolean;
     /** Optional actions rendered outside the disclosure button. */
     hostActions?: Snippet;
-    /** Tray rows: the chevron is live only once output (or an output-read state) exists.
-     * A running background command has no live output on either
-     * provider, so its chevron reads gray. */
+    /** Tray rows: the chevron is live only once output (or an output-read
+     * state) exists, or a live tail can be followed (`liveTail`). A running
+     * background command whose output file the row does not know (a Codex
+     * PTY, a Monitor before its first event) reads gray. */
     bodyRequiresPayload?: boolean;
+    /** A running Claude background command whose output file the launch
+     * row names: the open body shows the command and, under it, the live
+     * tail of that file (BackgroundTaskLiveTail) until the completion's
+     * payload is loaded. The tray row supplies it; timeline rows never do. */
+    liveTail?: { threadId: string; launchId: string } | null;
+    /** Reports the body opening and closing to a host that sizes itself
+     * around an open body (the tray list grows for an open tail). */
+    onExpandedChange?: (expanded: boolean) => void;
   } = $props();
   let effectiveDisplayItem = $derived(displayItem ?? item);
   let effectiveStatusItem = $derived(statusItem ?? item);
@@ -131,8 +143,16 @@
   let hasBody = $derived(
     (!bodyRequiresPayload && !!displayCommand)
       || hasPayload
+      || liveTail !== null
       || deferredOutputState === 'loading'
       || deferredOutputState === 'error',
+  );
+  // The live tail stays until the completion's payload is in hand, so the
+  // text a reader is following is not replaced by "Loading output…" for
+  // the payload round trip; a payload that failed to load shows its error
+  // and retry instead.
+  let showLiveTail = $derived(
+    liveTail !== null && (!hasPayload || (expansion.loading && !expansion.displayData)),
   );
   let isBackgroundedLaunch = $derived(
     effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
@@ -254,6 +274,10 @@
   });
 
   keepExpandedPayloadFresh(() => expansion, () => hasPayload);
+  $effect(() => {
+    const expanded = expansion.expanded;
+    untrack(() => onExpandedChange?.(expanded));
+  });
 </script>
 
 <div class="group/tool overflow-hidden" data-testid="command-output-row">
@@ -347,7 +371,14 @@
   {/if}
 
   <!-- Output content -->
-  {#if hasBody && expansion.expanded}
+  {#if showLiveTail && liveTail && expansion.expanded}
+    <div id={outputDomId} class="ml-5 border-l border-border-subtle bg-surface-0/35" data-testid="command-output-live-body">
+      {#if displayCommand}
+        <code class="mx-3 mt-2 block whitespace-pre-wrap break-words border-b border-border-subtle pb-2 font-mono text-[0.6875rem] leading-relaxed text-fg" data-testid="command-output-full-command">{displayCommand}</code>
+      {/if}
+      <BackgroundTaskLiveTail threadId={liveTail.threadId} launchId={liveTail.launchId} />
+    </div>
+  {:else if hasBody && expansion.expanded}
     <div id={outputDomId} class="ml-5 border-l border-border-subtle bg-surface-0/35">
       <div class="max-h-96 compact:max-h-none overflow-auto px-3 py-2" use:nestedScroll>
         {#if displayCommand}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"os"
 )
@@ -16,9 +15,19 @@ func runClaudeProbe(cwd string) {
 	log.Printf("claude account-probe invocation detected (--max-turns 0)")
 	w := newLineWriter(os.Stdout)
 
-	w.writeLine(fmt.Sprintf(
-		`{"type":"system","subtype":"init","session_id":"mock-probe","model":"claude-opus-4-7","cwd":%s,"tools":[],"claude_code_version":"2.99.0","account":%s}`,
-		mustJSON(cwd), claudeAccountJSON), 0, 0)
+	w.writeLine(mustJSON(struct {
+		Type              string        `json:"type"`
+		Subtype           string        `json:"subtype"`
+		SessionID         string        `json:"session_id"`
+		Model             string        `json:"model"`
+		Cwd               string        `json:"cwd"`
+		Tools             []string      `json:"tools"`
+		ClaudeCodeVersion string        `json:"claude_code_version"`
+		Account           claudeAccount `json:"account"`
+	}{
+		Type: "system", Subtype: "init", SessionID: "mock-probe", Model: "claude-opus-4-7",
+		Cwd: cwd, Tools: []string{}, ClaudeCodeVersion: "2.99.0", Account: claudeAccountForHome(),
+	}), 0, 0)
 
 	forEachStdinLine(func(line []byte) {
 		var env struct {

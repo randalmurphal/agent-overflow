@@ -550,6 +550,7 @@ export interface MockSessionConfig {
   developerInstructions?: string;
   /** Codex: the report came from thread/resume in a process that only resumed. */
   resumed?: boolean;
+  bashMaxTimeoutMs?: string;
 }
 
 export interface MockInfo {

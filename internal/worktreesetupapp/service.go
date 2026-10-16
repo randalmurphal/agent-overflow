@@ -18,10 +18,11 @@ type Store interface {
 	SweepRunningThreadWorktreeSetups() (int64, error)
 }
 
-// Events receives committed setup and thread-row projections.
+// Events receives committed setup projections, and the id of a thread whose
+// row a committed write changed, for the host to announce.
 type Events interface {
 	Setup(Event)
-	ThreadUpdated(store.Thread)
+	ThreadUpdated(threadID string)
 }
 
 type Config struct {
@@ -74,8 +75,8 @@ func (s *Service) emitSetup(event Event) {
 	}
 }
 
-func (s *Service) emitThreadUpdated(thread store.Thread) {
+func (s *Service) emitThreadUpdated(threadID string) {
 	if s.events != nil {
-		s.events.ThreadUpdated(thread)
+		s.events.ThreadUpdated(threadID)
 	}
 }

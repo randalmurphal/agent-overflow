@@ -290,6 +290,10 @@ type responseOutputPayload struct {
 	Output  json.RawMessage `json:"output"`
 	Tools   json.RawMessage `json:"tools"`
 	Success *bool           `json:"success"`
+	// Name and Namespace ride an output submitted as turn input, which has
+	// no call to answer (see delegation.go).
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
 }
 
 // reasoningPayload is a model reasoning item. `summary` (and, for
@@ -370,6 +374,10 @@ type subAgentActivityPayload struct {
 	AgentThreadID string `json:"agent_thread_id"`
 	AgentPath     string `json:"agent_path"`
 	Kind          string `json:"kind"`
+	// Model and ReasoningEffort are the child's resolved profile at
+	// creation, on a `started` record from codex 0.162 on.
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
 }
 
 type threadGoalPayload struct {

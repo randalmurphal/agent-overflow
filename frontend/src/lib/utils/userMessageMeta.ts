@@ -53,6 +53,10 @@ export interface UserMessageMeta {
    *   delivered to the thread, never the user speaking. `originWake` names
    *   the loop or watch. It renders as an agent-message row too.
    *   (`docs/specs/standing-agents.md`, Wake supervisor)
+   * - `codex-delegation` — another Codex thread started or messaged this one
+   *   through Codex's own `create_thread` / `send_message_to_thread` tools,
+   *   outside Agent Overflow. Only imported history carries it.
+   *   (`internal/provider/codex/rollout/delegation.go`)
    *
    * Absent means locally authored, which is the overwhelmingly common case.
    */

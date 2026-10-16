@@ -238,11 +238,10 @@ func TestProviderBinaryUpgradeDropsLearnedClaudeModels(t *testing.T) {
 	if slices.ContainsFunc(models.Models, func(m provider.ModelInfo) bool { return m.Slug == "claude-newthing-1" }) {
 		t.Fatal("the old binary's learned model survived the upgrade")
 	}
-	// The recheck is itself a probe of the NEW binary, so the answer is
-	// authoritative again the moment it lands — it just carries nothing the
-	// shipped catalog does not already have.
-	if models.Provenance != provider.CatalogProbed {
-		t.Fatalf("provenance after upgrade = %q, want probed", models.Provenance)
+	// The recheck probes the NEW binary, which reports no models, so no
+	// answer backs the catalog: it is the shipped list again.
+	if models.Provenance != provider.CatalogShipped {
+		t.Fatalf("provenance after upgrade = %q, want shipped", models.Provenance)
 	}
 }
 
@@ -557,5 +556,110 @@ func TestUnknownSessionVersionIsNeverStale(t *testing.T) {
 	defer mu.Unlock()
 	if emissions != 0 {
 		t.Fatalf("provider:status emissions = %d, want none for an unknown version", emissions)
+	}
+}
+
+// The watch follows the binary Codex runs. With the npm wrapper on PATH that
+// is the vendored native binary: a replacement of that file is an upgrade
+// even when size and timestamp match, an `npm i -g` that replaces the whole
+// package re-probes the new native binary, and an upgrade to a layout this
+// build does not recognize is still noticed through the wrapper it falls
+// back to.
+func TestProviderBinaryWatchFollowsTheNpmWrappersNativeBinary(t *testing.T) {
+	resetClaudeProbeCacheForTest(t)
+	app := newTestAppWithStore(t)
+	prefix := t.TempDir()
+	f := newCodexNpmFixture(t, prefix)
+	writeCodexProbeMockAt(t, f.native, "0.161.0")
+	writeCodexProbeMockAt(t, f.wrapper, "wrapper")
+	putCodexOnPath(t, app, f)
+
+	version := "0.161.0"
+	var probed []string
+	previous := providerBinaryDetectFn
+	providerBinaryDetectFn = func(providerName, binaryPath string) provider.ProviderStatus {
+		reported := "2.1.100"
+		if providerName == string(provider.Codex) {
+			probed = append(probed, binaryPath)
+			reported = version
+		}
+		return provider.ProviderStatus{Provider: providerName, Installed: true, BinaryPath: binaryPath, Status: "ready", Version: reported}
+	}
+	t.Cleanup(func() { providerBinaryDetectFn = previous })
+	installedCodex := func() providerBinaryVersion {
+		t.Helper()
+		installed, ok := app.providerBinaries.lookupInstalled(string(provider.Codex))
+		if !ok {
+			t.Fatal("no installed codex version recorded")
+		}
+		return installed
+	}
+
+	app.sweepProviderBinaries()
+	native := nativePath(t, f)
+	if len(probed) != 1 || probed[0] != native {
+		t.Fatalf("baseline probed %q, want the native binary %q once", probed, native)
+	}
+	if installed := installedCodex(); installed.identity.path != native || installed.version != "0.161.0" {
+		t.Fatalf("baseline = %+v, want the native binary at 0.161.0", installed)
+	}
+	app.sweepProviderBinaries()
+	if len(probed) != 1 {
+		t.Fatalf("quiet tick re-probed: %q", probed)
+	}
+
+	// A new file at the same path with the same size and mtime: only the
+	// file id tells it apart.
+	before, err := os.Stat(f.native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(f.native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := f.native + ".new"
+	if err := os.WriteFile(replacement, body, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(replacement, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, f.native); err != nil {
+		t.Fatal(err)
+	}
+	app.sweepProviderBinaries()
+	if len(probed) != 2 {
+		t.Fatalf("a replaced native binary was not re-probed: %q", probed)
+	}
+
+	// npm replaces the package directory wholesale on upgrade.
+	if err := os.RemoveAll(f.packageRoot); err != nil {
+		t.Fatal(err)
+	}
+	f = newCodexNpmFixture(t, prefix)
+	writeCodexProbeMockAt(t, f.native, "0.162.0")
+	writeCodexProbeMockAt(t, f.wrapper, "wrapper")
+	version = "0.162.0"
+	app.sweepProviderBinaries()
+	if len(probed) != 3 || probed[2] != native {
+		t.Fatalf("upgrade probed %q, want the new native binary %q", probed, native)
+	}
+	if installed := installedCodex(); installed.version != "0.162.0" {
+		t.Fatalf("installed version = %q after the upgrade, want 0.162.0", installed.version)
+	}
+
+	// An upgrade without the platform package this build looks for: Codex
+	// runs the wrapper, and the watch follows it there.
+	if err := os.RemoveAll(f.platformPackage); err != nil {
+		t.Fatal(err)
+	}
+	version = "0.163.0"
+	app.sweepProviderBinaries()
+	if len(probed) != 4 || probed[3] != "codex" {
+		t.Fatalf("unrecognized layout probed %q, want the bare default resolved on PATH", probed)
+	}
+	if installed := installedCodex(); installed.identity.path != realPath(t, f.wrapper) || installed.version != "0.163.0" {
+		t.Fatalf("installed = %+v, want the wrapper at 0.163.0", installed)
 	}
 }

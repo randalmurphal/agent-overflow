@@ -90,7 +90,8 @@ and every key is settable **per-conversation** via the `config` map on
 `thread/start`/`resume`/`fork`. Dotted keys expand into nested TOML
 (`config/src/overrides.rs:9-30`; request overrides merge into the CLI
 override layer, `app-server/src/config_manager.rs:236-244`). AO already
-uses that map for `mcp_servers` / `model_reasoning_effort`.
+uses that map for `mcp_servers`, `model_reasoning_effort` and the pinned
+`features.instant_interrupt = false` (codex-wire.md, `turn/steer`).
 
 | Tool(s) | Config key | Default |
 |---|---|---|

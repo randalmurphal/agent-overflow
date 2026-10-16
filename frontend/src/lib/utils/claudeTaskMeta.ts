@@ -13,6 +13,28 @@ export function extractClaudeTaskID(item: Item): string | null {
 }
 
 /**
+ * The file Claude writes a background command's output to, as triage
+ * stamped it on the launch row from the Bash ack (or a Monitor's first
+ * notification). Null when the wire never named one: the tray then has no
+ * live tail to follow for the row.
+ */
+export function extractClaudeTaskOutputFile(item: Item): string | null {
+  const path = parseJsonObject(item.meta)?.output_file;
+  return typeof path === 'string' && path.length > 0 ? path : null;
+}
+
+/**
+ * Whether the backend can tail a running launch's output: the launch row
+ * names its file, or the tray row carries the served `tail_available`
+ * mark a Monitor gets once a notification has named one
+ * (triage.TrayTailAvailableKey). The watch itself resolves the file.
+ */
+export function claudeTaskTailAvailable(item: Item): boolean {
+  if (extractClaudeTaskOutputFile(item) !== null) return true;
+  return parseJsonObject(item.meta)?.tail_available === true;
+}
+
+/**
  * Whether a `notification` row records an event of a WATCH task
  * (Claude's Monitor — claude-wire.md §E7) rather than the single
  * completion bell of an ordinary background task.

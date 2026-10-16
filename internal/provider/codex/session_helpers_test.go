@@ -641,20 +641,26 @@ func TestBuildThreadParamsUnknownSandbox(t *testing.T) {
 	}
 }
 
-// TestBuildThreadParamsMinimal pins the one key a zero Config still sends.
+// TestBuildThreadParamsMinimal pins the keys a zero Config still sends.
 // Every other param is omit-when-empty ("inherit whatever Codex defaults to"),
 // but a reviewer left unstated is not inherited from Codex — it is inherited
 // from whatever this THREAD was last started with, which on a resume is the
 // previous runtime mode's choice. Sending it unconditionally is what makes the
-// wire state a function of the thread row alone.
+// wire state a function of the thread row alone. The pinned features ride
+// every thread for the same reason: a user config.toml or a new Codex
+// default must not change how a steer lands.
 func TestBuildThreadParamsMinimal(t *testing.T) {
 	t.Parallel()
 	params := buildThreadParams(Config{}, "")
-	if len(params) != 1 {
-		t.Errorf("expected only the always-explicit reviewer for zero config, got %v", params)
+	if len(params) != 2 {
+		t.Errorf("expected only the reviewer and the pinned features for zero config, got %v", params)
 	}
 	if params["approvalsReviewer"] != approvalsReviewerUser {
 		t.Errorf("approvalsReviewer = %v, want %q (Codex's protocol default)", params["approvalsReviewer"], approvalsReviewerUser)
+	}
+	want := map[string]any{"features.instant_interrupt": false}
+	if got := params["config"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("config = %v, want %v", got, want)
 	}
 }
 

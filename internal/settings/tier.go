@@ -129,6 +129,9 @@ var tierByKey = map[string]Tier{
 	"claudePromptOverrides":       TierUser,
 	"codexPromptOverrides":        TierUser,
 	"agentGuideEnabled":           TierUser,
+	// The command timeout ceiling is the same kind of preference.
+	"claudeMaxCommandTimeoutHours": TierUser,
+
 	// Retiered from device 2026-08-31: both are read by BACKEND behaviour
 	// rather than rendered by a client, and one backend behaviour cannot
 	// be driven by a per-screen value.

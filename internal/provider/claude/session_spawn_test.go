@@ -292,8 +292,9 @@ func TestWithClaudeSessionEnvDefaults(t *testing.T) {
 
 	t.Run("returns the same map when every default is present", func(t *testing.T) {
 		input := map[string]string{
-			"CLAUDE_CODE_ENTRYPOINT":        "x",
-			"CLAUDE_CODE_ENABLE_TODO_TOOLS": "false",
+			"CLAUDE_CODE_ENTRYPOINT":                 "x",
+			"CLAUDE_CODE_ENABLE_TODO_TOOLS":          "false",
+			"CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH": "4096",
 		}
 		got := withClaudeSessionEnvDefaults(input, false)
 		// Maps are reference types: a write through the return proves it

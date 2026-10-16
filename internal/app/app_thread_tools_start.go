@@ -522,7 +522,7 @@ func (t threadToolsApp) acceptRequest(
 		if created && kind == store.ThreadRequestSpawn {
 			// The row went out at creation without a spawner; now the
 			// request names it, so the sidebar can nest the thread.
-			t.app.broadcastThreadRowByID(target)
+			t.app.announceThread(triage.ThreadActionFull, target)
 		}
 		// Conditional: a request that already settled during dispatch keeps
 		// its settled state, and a no-op means the other path won, not an

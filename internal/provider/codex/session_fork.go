@@ -132,6 +132,11 @@ func forkThreadWith(ctx context.Context, call rpcCaller, sourceThreadID, lastTur
 	params := map[string]any{
 		"threadId":     sourceThreadID,
 		"excludeTurns": true,
+		// The fork loads the child into this process. Its first live
+		// session resumes it in a fresh one with the full thread params;
+		// the features ride here too so no process ever holds the child
+		// loaded without them.
+		"config": threadFeatureOverrides(),
 	}
 	if lastTurnID != "" {
 		params["lastTurnId"] = lastTurnID

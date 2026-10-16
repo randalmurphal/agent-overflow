@@ -5,10 +5,11 @@ import (
 	"testing"
 
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/testutil/providerpath"
 )
 
 // This package's fixtures clone one migrated template instead of replaying the
 // 69-migration chain per test. Without it the ~670 store-backed tests here pay
 // for the whole chain each time, which is what pushed the -race run past its
 // gate timeout.
-func TestMain(m *testing.M) { os.Exit(storetest.Run(m)) }
+func TestMain(m *testing.M) { os.Exit(providerpath.Guard(func() int { return storetest.Run(m) })) }

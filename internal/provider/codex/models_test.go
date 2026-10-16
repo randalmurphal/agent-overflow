@@ -334,3 +334,24 @@ func contains(values []string, target string) bool {
 	}
 	return false
 }
+
+// The model Codex marks isDefault carries IsDefault; a custom slug cloned
+// from it must not inherit the mark.
+func TestListModelsCarriesTheCodexDefault(t *testing.T) {
+	t.Parallel()
+	binary := writeModelListFakeCodex(t, `[{"model":"gpt-6.1-sol","displayName":"GPT-6.1-Sol","hidden":false,"isDefault":true,"supportedReasoningEfforts":[],"defaultReasoningEffort":"medium","serviceTiers":[]},{"model":"gpt-6-luna","displayName":"GPT-6-Luna","hidden":false,"isDefault":false,"supportedReasoningEfforts":[],"defaultReasoningEffort":"low","serviceTiers":[]}]`)
+	models, err := ListModels(context.Background(), ModelListConfig{Binary: binary, CustomModels: []string{"custom-codex"}})
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	got := map[string]bool{}
+	for _, m := range models {
+		got[m.Slug] = m.IsDefault
+	}
+	want := map[string]bool{"gpt-6.1-sol": true, "gpt-6-luna": false, "custom-codex": false}
+	for slug, isDefault := range want {
+		if v, ok := got[slug]; !ok || v != isDefault {
+			t.Errorf("%s IsDefault = %v (present %v), want %v", slug, v, ok, isDefault)
+		}
+	}
+}

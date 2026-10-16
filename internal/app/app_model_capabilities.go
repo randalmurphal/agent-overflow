@@ -158,8 +158,16 @@ func (a *App) defaultContextWindowForModel(providerName, model string) int {
 
 // fallbackChatModelProfile is the no-stored-opinion profile with its window
 // resolved through the merged catalogs (see chatmodel.FallbackProfileWith).
+// An empty model starts on the provider's default (defaultModelForProvider).
 func (a *App) fallbackChatModelProfile(providerName, model string, availableProviders ...string) store.ChatModelProfile {
-	return chatmodel.FallbackProfileWith(a.contextWindowOptionsForModel, providerName, model, availableProviders...)
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		providerName = chatmodel.FallbackProvider(availableProviders...)
+	}
+	if strings.TrimSpace(model) == "" {
+		model = a.defaultModelForProvider(providerName)
+	}
+	return chatmodel.FallbackProfileWith(a.contextWindowOptionsForModel, providerName, model)
 }
 
 // validateModelChoice refuses a model input that is not a model ID, listing

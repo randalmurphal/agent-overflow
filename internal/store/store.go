@@ -652,18 +652,23 @@ type Project struct {
 // Item represents a persisted timeline entry.
 type Item struct {
 	// CompletionLaunch is read-time presentation context, never an additional timeline row.
-	CompletionLaunch *Item  `json:"completionLaunch,omitempty"`
-	ID               string `json:"id"`
-	ThreadID         string `json:"threadId"`
-	TurnIndex        int    `json:"turnIndex"`
-	ItemIndex        int    `json:"itemIndex"`
-	Kind             string `json:"kind"`
-	Role             string `json:"role"`
-	Status           string `json:"status"`
-	Summary          string `json:"summary"`
-	PayloadID        string `json:"payloadId,omitempty"`
-	PayloadKind      string `json:"payloadKind,omitempty"`
-	PayloadMeta      string `json:"payloadMeta,omitempty"`
+	CompletionLaunch *Item `json:"completionLaunch,omitempty"`
+	// DiscardedBy is the id of the abandonment record naming this row as
+	// one Claude discarded after a stalled response (discarded_rows.go).
+	// Read-time, never stored: a page serves the row marked whether or not
+	// it holds the record.
+	DiscardedBy string `json:"discardedBy,omitempty"`
+	ID          string `json:"id"`
+	ThreadID    string `json:"threadId"`
+	TurnIndex   int    `json:"turnIndex"`
+	ItemIndex   int    `json:"itemIndex"`
+	Kind        string `json:"kind"`
+	Role        string `json:"role"`
+	Status      string `json:"status"`
+	Summary     string `json:"summary"`
+	PayloadID   string `json:"payloadId,omitempty"`
+	PayloadKind string `json:"payloadKind,omitempty"`
+	PayloadMeta string `json:"payloadMeta,omitempty"`
 	// PayloadPreviewSpans is the linked payload's preview_spans column:
 	// a version-stamped highlight span blob (JSON, shape owned by the
 	// app layer) covering the inline-diff preview patches in

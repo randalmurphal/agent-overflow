@@ -51,11 +51,13 @@ func (a *App) maybeRenameTemporaryWorktreeBranch(threadID, message string) {
 		return
 	}
 
-	previousBranch := thread.Branch
-	thread.Branch = renamed
-	if err := a.store.UpdateThread(thread); err != nil {
+	// Only the branch, and only while the row still names the temporary
+	// one: the row was read before the rename, and a write since then (a
+	// followed worktree move, another column) must survive.
+	_, changed, err := a.store.RenameThreadBranch(threadID, thread.Branch, renamed)
+	if err != nil {
 		log.Printf("send message: persist renamed worktree branch: %v", err)
 		return
 	}
-	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, thread, thread.Branch != previousBranch)
+	a.announceThreadIfChanged(triage.ThreadActionFull, threadID, changed)
 }

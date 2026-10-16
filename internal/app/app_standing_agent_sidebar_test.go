@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -313,5 +314,61 @@ func TestAHandOffBroadcastsBothRows(t *testing.T) {
 	}
 	if listed == nil || listed.AgentID != agent.ID || listed.ArchivedChildCount != 2 || listed.Title != agent.Title {
 		t.Errorf("successor frame = %+v, want the assistant's row counting the archived child and the past thread", listed)
+	}
+}
+
+// An unarchive that lands between a handoff's commit and its announcement
+// leaves the old thread listed: the handoff's frame follows the row it
+// reads, `full` rather than `unlisted`, and still names the successor so a
+// client moves what showed the old thread.
+func TestAHandOffAnnouncedAfterAnUnarchiveKeepsTheOldThreadListed(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	f.mockClaude(t, "ok", "ok", "ok")
+	f.assistantCaller(t)
+	old := f.caller.ID
+	var mu sync.Mutex
+	var frames []triage.ThreadUpdateEvent
+	f.app.testEmitHook = func(name string, data any) {
+		if event, ok := data.(triage.ThreadUpdateEvent); ok && name == eventchan.ThreadUpdated.String() {
+			mu.Lock()
+			frames = append(frames, event)
+			mu.Unlock()
+		}
+	}
+	var unarchiveErr error
+	f.app.handOffCommittedForTest = func(string, string) {
+		_, unarchiveErr = f.app.UnarchiveThread(old)
+	}
+	successor, err := f.app.StartNextAssistantThread(t.Context(), old)
+	if err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if unarchiveErr != nil {
+		t.Fatalf("unarchive in the handoff window: %v", unarchiveErr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	listed := map[string]bool{old: true}
+	var last *triage.ThreadUpdateEvent
+	for i, frame := range frames {
+		if frame.Thread == nil {
+			continue
+		}
+		switch frame.Action {
+		case triage.ThreadActionListed:
+			listed[frame.Thread.ID] = true
+		case triage.ThreadActionUnlisted:
+			delete(listed, frame.Thread.ID)
+		}
+		if frame.Thread.ID == old {
+			last = &frames[i]
+		}
+	}
+	if !listed[old] || !listed[successor.ID] {
+		t.Fatalf("listed after the frames = %v, want the unarchived old thread and the successor", listed)
+	}
+	if last == nil || last.Action != triage.ThreadActionFull || last.Thread.Archived || last.HandOffTo != successor.ID {
+		t.Fatalf("old thread's last frame = %+v, want a full unarchived row naming %s", last, successor.ID)
 	}
 }

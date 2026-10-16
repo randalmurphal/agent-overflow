@@ -20,6 +20,9 @@
 //      restart, where the thread's history names the agent's launch.
 //   7. After a restart, a resumed typed fork's rows return to its command
 //      card, the root the thread's history names.
+//   8. Claude 2.1.300's stdout replay of a finished typed fork and its
+//      Agent adds no row: nothing sits under the fork's synthetic
+//      `forked-command-<skill>` parent and each message shows once.
 //
 // The mock writes the CLI's stop frames for an awaited agent
 // (cmd/ao-mockprovider/claude_tasks.go; forked_skill_stop_task,
@@ -45,6 +48,7 @@ import {
   transcriptMirrorLine,
   waitForGate,
 } from './agent-visibility-helpers.js';
+import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 
 const FORK_COMMAND = 'git diff HEAD~1 --stat';
@@ -288,49 +292,95 @@ test("Stop in a typed fork's pane stops the fork by its task id", async ({ harne
 
 const CHILD_TASK = 'task-typed-child';
 
-test("a typed fork's child agent and every last message reach the fork's card", async ({ harness, page }) => {
-  await harness.rpc('HarnessSetScenario', {
-    scenario: claudeScenario('typed-fork-child', [
-      emit([
-        taskStartedLine(TYPED_TASK, '', '/code-review'),
-        transcriptMirrorLine(TYPED_TASK, [{ text: 'Reviewing the change.' }], {
-          metadata: true,
-          attributionSkill: 'code-review',
-          uuidPrefix: 'fork-1',
-        }),
-        // The CLI announces the child before the mirror delivers the fork's
-        // Agent call, and the child's first rows can come first too
-        // (forked_skill_direct_command_20261014).
-        taskStartedLine(CHILD_TASK, 'tu-typed-child', 'check the diff'),
-        transcriptMirrorLine(CHILD_TASK, [{ user: 'Check the diff.' }], {
-          metadataToolUseId: 'tu-typed-child',
-          uuidPrefix: 'child-1',
-        }),
-        transcriptMirrorLine(
-          TYPED_TASK,
-          [{ toolUse: { id: 'tu-typed-child', name: 'Agent', input: { description: 'check the diff', prompt: 'Check the diff.' } } }],
-          { uuidPrefix: 'fork-2' },
-        ),
-        transcriptMirrorLine(CHILD_TASK, [{ tool: { id: 'tu-child-read', name: 'Read', result: '# fixture' } }], {
-          uuidPrefix: 'child-2',
-        }),
-        taskUpdatedLine(CHILD_TASK, { status: 'completed', end_time: 1792029207656 }),
-        taskNotificationLine(CHILD_TASK, 'tu-typed-child', 'check the diff'),
-        // Claude writes each agent's last message after its terminal.
-        transcriptMirrorLine(CHILD_TASK, [{ text: 'CHILD-LAST' }], { uuidPrefix: 'child-3' }),
-        transcriptMirrorLine(TYPED_TASK, [{ toolResult: { id: 'tu-typed-child', result: 'CHILD-LAST' } }], {
-          uuidPrefix: 'fork-3',
-        }),
-        taskNotificationLine(TYPED_TASK, '', '/code-review'),
-        transcriptMirrorLine(TYPED_TASK, [{ text: 'FORK-LAST' }], { uuidPrefix: 'fork-4' }),
-        RESULT_LINE,
-      ]),
-    ]),
-  });
+/** A typed fork that launches an Agent, through the fork's last message
+ * (forked_skill_direct_command_20261014). `stdoutReplay` goes where
+ * Claude 2.1.300 replays the fork on stdout: after the fork's
+ * notification, before its last mirrored message
+ * (forked_skill_direct_command_stdout_replay_20261016). */
+function typedForkChildLines(stdoutReplay: string[] = []): string[] {
+  return [
+    taskStartedLine(TYPED_TASK, '', '/code-review'),
+    transcriptMirrorLine(TYPED_TASK, [{ text: 'Reviewing the change.' }], {
+      metadata: true,
+      attributionSkill: 'code-review',
+      uuidPrefix: 'fork-1',
+    }),
+    // The CLI announces the child before the mirror delivers the fork's
+    // Agent call, and the child's first rows can come first too
+    // (forked_skill_direct_command_20261014).
+    taskStartedLine(CHILD_TASK, 'tu-typed-child', 'check the diff'),
+    transcriptMirrorLine(CHILD_TASK, [{ user: 'Check the diff.' }], {
+      metadataToolUseId: 'tu-typed-child',
+      uuidPrefix: 'child-1',
+    }),
+    transcriptMirrorLine(
+      TYPED_TASK,
+      [{ toolUse: { id: 'tu-typed-child', name: 'Agent', input: { description: 'check the diff', prompt: 'Check the diff.' } } }],
+      { uuidPrefix: 'fork-2' },
+    ),
+    transcriptMirrorLine(CHILD_TASK, [{ tool: { id: 'tu-child-read', name: 'Read', result: '# fixture' } }], {
+      uuidPrefix: 'child-2',
+    }),
+    taskUpdatedLine(CHILD_TASK, { status: 'completed', end_time: 1792029207656 }),
+    taskNotificationLine(CHILD_TASK, 'tu-typed-child', 'check the diff'),
+    // Claude writes each agent's last message after its terminal.
+    transcriptMirrorLine(CHILD_TASK, [{ text: 'CHILD-LAST' }], { uuidPrefix: 'child-3' }),
+    transcriptMirrorLine(TYPED_TASK, [{ toolResult: { id: 'tu-typed-child', result: 'CHILD-LAST' } }], {
+      uuidPrefix: 'fork-3',
+    }),
+    taskNotificationLine(TYPED_TASK, '', '/code-review'),
+    ...stdoutReplay,
+    transcriptMirrorLine(TYPED_TASK, [{ text: 'FORK-LAST' }], { uuidPrefix: 'fork-4' }),
+    RESULT_LINE,
+  ];
+}
 
-  const threadId = await seedAgentThread(harness, 'typed-fork-child-app', 'Typed fork child');
+/** One stdout row of Claude 2.1.300's replay of a typed fork: an agent's
+ * transcript row naming the agent in `agent_id`. The fork's own rows name
+ * `forked-command-<skill>` as their parent, which no item has. */
+function forkReplayRow(role: 'assistant' | 'user', agentId: string, parent: string, message: Record<string, unknown>): string {
+  return JSON.stringify({
+    type: role,
+    message: role === 'assistant' ? { role, model: 'claude-mock-1', ...message } : { role, ...message },
+    parent_tool_use_id: parent,
+    agent_id: agentId,
+  });
+}
+
+/** The replay of typedForkChildLines' fork and child, in Claude's order,
+ * with the message ids the mirror carried. */
+function typedForkStdoutReplay(): string[] {
+  const fork = 'forked-command-code-review';
+  const text = (id: string, value: string) => ({ id, content: [{ type: 'text', text: value }] });
+  return [
+    forkReplayRow('user', TYPED_TASK, fork, { content: [{ type: 'text', text: 'Base directory for this skill: /work/.claude/skills/code-review' }] }),
+    forkReplayRow('assistant', TYPED_TASK, fork, text('msg-fork-1-1', 'Reviewing the change.')),
+    forkReplayRow('assistant', TYPED_TASK, fork, {
+      id: 'msg-fork-2-tool-1',
+      content: [{ type: 'tool_use', id: 'tu-typed-child', name: 'Agent', input: { description: 'check the diff', prompt: 'Check the diff.' } }],
+    }),
+    forkReplayRow('user', CHILD_TASK, 'tu-typed-child', { content: [{ type: 'text', text: 'Check the diff.' }] }),
+    forkReplayRow('assistant', CHILD_TASK, 'tu-typed-child', {
+      id: 'msg-child-2-tool-1',
+      content: [{ type: 'tool_use', id: 'tu-child-read', name: 'Read', input: { file_path: 'README.md' } }],
+    }),
+    forkReplayRow('user', CHILD_TASK, 'tu-typed-child', {
+      content: [{ type: 'tool_result', tool_use_id: 'tu-child-read', content: '# fixture' }],
+    }),
+    forkReplayRow('assistant', CHILD_TASK, 'tu-typed-child', text('msg-child-3-1', 'CHILD-LAST')),
+    forkReplayRow('user', TYPED_TASK, fork, {
+      content: [{ type: 'tool_result', tool_use_id: 'tu-typed-child', content: 'CHILD-LAST' }],
+    }),
+    forkReplayRow('assistant', TYPED_TASK, fork, text('msg-fork-4-1', 'FORK-LAST')),
+  ];
+}
+
+async function runTypedForkChild(harness: HarnessApp, page: Page, name: string, lines: string[]): Promise<string> {
+  await harness.rpc('HarnessSetScenario', { scenario: claudeScenario(name, [emit(lines)]) });
+  const title = `Typed fork ${name}`;
+  const threadId = await seedAgentThread(harness, `typed-fork-${name}-app`, title);
   await harness.open(page);
-  await page.getByText('Typed fork child').click();
+  await page.getByText(title).click();
   await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, '/code-review high', null);
   await harness.waitForEvent('provider:turn_completed');
@@ -341,13 +391,24 @@ test("a typed fork's child agent and every last message reach the fork's card", 
       const items = await listItems(harness, threadId);
       const under = (parent: string | undefined) =>
         items.filter((i) => parent && i.parentId === parent).map((i) => i.toolName || i.summary);
-      return { status: row?.status, fork: under(row?.id), child: under('tu-typed-child') };
+      return {
+        status: row?.status,
+        fork: under(row?.id),
+        child: under('tu-typed-child'),
+        orphaned: items.filter((i) => i.parentId?.startsWith('forked-command-')).map((i) => i.summary),
+      };
     })
     .toEqual({
       status: 'completed',
       fork: ['Reviewing the change.', 'Agent', 'FORK-LAST'],
       child: ['Check the diff.', 'Read', 'CHILD-LAST'],
+      orphaned: [],
     });
+  return threadId;
+}
+
+test("a typed fork's child agent and every last message reach the fork's card", async ({ harness, page }) => {
+  await runTypedForkChild(harness, page, 'child', typedForkChildLines());
 
   const card = page.getByTestId('message-timeline-scroll').getByTestId('subagent-group');
   await expect(card).toHaveCount(1);
@@ -356,6 +417,24 @@ test("a typed fork's child agent and every last message reach the fork's card", 
   await expect(pane.getByText('FORK-LAST')).toBeVisible();
   await pane.getByRole('button', { name: 'Expand 1 activity row' }).click();
   await expect(pane.getByTestId('subagent-group')).toHaveAttribute('data-status', 'completed');
+});
+
+test("Claude 2.1.300's stdout replay of a typed fork adds nothing to the fork's card", async ({ harness, page }) => {
+  await runTypedForkChild(harness, page, 'replay', typedForkChildLines(typedForkStdoutReplay()));
+
+  const timeline = page.getByTestId('message-timeline-scroll');
+  await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
+  await expect(page.getByText('Orphan subagent entry', { exact: false })).toHaveCount(0);
+  await expect(timeline.getByText('Base directory for this skill', { exact: false })).toHaveCount(0);
+  await timeline.getByTestId('subagent-group-open-pane').first().click();
+  const pane = page.getByTestId('companion-pane-agent-body');
+  await expect(pane.getByText('FORK-LAST', { exact: true })).toHaveCount(1);
+  await expect(pane.getByText('Reviewing the change.', { exact: true })).toHaveCount(1);
+
+  for (const scheme of ['dark', 'light'] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.screenshot({ path: test.info().outputPath(`claude-typed-fork-replay-${scheme}.png`) });
+  }
 });
 
 const AGENT_TASK = 'task-resumed-agent';

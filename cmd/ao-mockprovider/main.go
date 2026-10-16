@@ -182,7 +182,8 @@ func flagValues(args []string, flag string) []string {
 }
 
 // claudeSessionConfig reads the permission configuration out of the argv the
-// app spawned this mock with. This is the harness's view of what AO asked the
+// app spawned this mock with, plus the one environment value the app
+// derives from a setting (BASH_MAX_TIMEOUT_MS). This is the harness's view of what AO asked the
 // Claude CLI for — the mapping under test in
 // internal/provider/claude/options.go.
 func claudeSessionConfig(args []string) *control.SessionConfig {
@@ -193,6 +194,7 @@ func claudeSessionConfig(args []string) *control.SessionConfig {
 		SystemPrompt:         promptFileContent(flagValue(args, "--system-prompt-file")),
 		AppendSystemPrompt:   promptFileContent(flagValue(args, "--append-system-prompt-file")),
 		SystemPromptSnapshot: flagValue(args, "--system-prompt-snapshot"),
+		BashMaxTimeoutMs:     os.Getenv("BASH_MAX_TIMEOUT_MS"),
 	}
 }
 

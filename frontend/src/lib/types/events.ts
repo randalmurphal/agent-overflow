@@ -330,6 +330,26 @@ export interface BackgroundTrayEvent {
 }
 
 /**
+ * `provider:background_task_output` payload (Go: tasktail.Event): one frame
+ * of a running background command's output tail, for the launch a client
+ * watches through WatchBackgroundTaskOutput. `append` is the text the tail
+ * gained; with `reset` it is the whole tail after it restarted. `seq`
+ * continues the watch snapshot's, one per frame. `ended` closes the watch:
+ * the task ended, or the file became unreadable (`error`).
+ */
+export interface BackgroundTaskOutputEvent {
+  threadId: string;
+  launchId: string;
+  seq: number;
+  append?: string;
+  reset?: boolean;
+  truncated?: boolean;
+  size: number;
+  ended?: boolean;
+  error?: string;
+}
+
+/**
  * Tray-state nudge fired when the host-side process state of a
  * Claude background task changes. Two states emitted today:
  *
@@ -461,6 +481,21 @@ export interface ProviderAccountEvent {
 export interface ProviderSessionAccountEvent extends ProviderAccountEvent {
   threadId: string;
   connected: boolean;
+}
+
+/** `provideraccountapp.SignIn`: where one login landed and what it did. */
+export interface ProviderAccountSignInEvent {
+  provider: ProviderID;
+  account: {
+    id: string;
+    email?: string;
+    displayName?: string;
+    subscriptionType?: string;
+  };
+  added: boolean;
+  renewed: boolean;
+  switched: boolean;
+  active: boolean;
 }
 
 export interface ProviderAccountUsageErrorEvent {

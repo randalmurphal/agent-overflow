@@ -18,7 +18,8 @@
   } from '../../../stores/providerModels.svelte';
   import { UpdateThreadRuntimeMode } from '../../../stores/bindings';
   import { updatePlaceholderDefaults } from '../../../stores/newThreadDefaults';
-  import { syncThread } from '../../../stores/panes.svelte';
+  import { syncThreadReply } from '../../../stores/panes.svelte';
+  import { threadRowFrameMark } from '../../../stores/threadRowFrames';
   import { addErrorToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import Icon from '../../primitives/Icon.svelte';
@@ -171,8 +172,9 @@
       } else {
         const threadId = pane.threadId;
         if (!threadId) return;
+        const mark = threadRowFrameMark();
         const updated = (await UpdateThreadRuntimeMode(threadId, mode)) as Thread;
-        syncThread(updated);
+        syncThreadReply(updated, mark);
       }
     } catch (err) {
       addErrorToast(`Failed to set access mode: ${errString(err)}`, err);

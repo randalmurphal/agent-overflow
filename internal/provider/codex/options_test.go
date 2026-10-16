@@ -378,8 +378,9 @@ func TestBuildThreadParamsThreadsContextOverrides(t *testing.T) {
 func TestBuildThreadParamsOmitsReasoningEffortWhenEmpty(t *testing.T) {
 	t.Parallel()
 	params := buildThreadParams(Config{}, "")
-	if _, ok := params["config"]; ok {
-		t.Errorf("empty effort should not emit a config override bag; got %+v", params)
+	cfg, _ := params["config"].(map[string]any)
+	if _, ok := cfg["model_reasoning_effort"]; ok {
+		t.Errorf("empty effort should not emit model_reasoning_effort; got %+v", params)
 	}
 }
 
