@@ -596,7 +596,7 @@ func TestProviderBinaryWatchFollowsTheNpmWrappersNativeBinary(t *testing.T) {
 	}
 
 	app.sweepProviderBinaries()
-	native := realPath(t, f.native)
+	native := nativePath(t, f)
 	if len(probed) != 1 || probed[0] != native {
 		t.Fatalf("baseline probed %q, want the native binary %q once", probed, native)
 	}

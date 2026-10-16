@@ -92,6 +92,14 @@ func realPath(t *testing.T, path string) string {
 	return resolved
 }
 
+// nativePath is where the resolver finds the fixture's native binary: under
+// the wrapper's real directories, with the file itself unresolved, because
+// a mock may be a link to the shared mockexec wrapper.
+func nativePath(t *testing.T, f codexNpmFixture) string {
+	t.Helper()
+	return filepath.Join(realPath(t, filepath.Dir(f.native)), filepath.Base(f.native))
+}
+
 // The default setting runs the native binary the npm wrapper would spawn,
 // so a Codex session is one process, and the spawn reaches the native
 // binary rather than the wrapper on PATH.
@@ -108,12 +116,13 @@ func TestDefaultCodexSettingSpawnsTheNpmWrappersNativeBinary(t *testing.T) {
 		t.Fatalf("read mock session script: %v", err)
 	}
 	mockexec.Write(t, f.native, string(script))
-	// The wrapper must never run: it refuses with a marker.
-	mockexec.Write(t, f.wrapper, "#!/bin/sh\necho 'wrapper ran' >&2\nexit 97\n")
+	// The wrapper must never run: it refuses with a marker. A regular file,
+	// as npm installs it, never a mockexec link.
+	writeProviderBinaryFile(t, f.wrapper, "echo 'wrapper ran' >&2\nexit 97")
 	putCodexOnPath(t, app, f)
 
-	if got := app.providerBinaryPath(string(provider.Codex)); got != realPath(t, f.native) {
-		t.Fatalf("providerBinaryPath(codex) = %q, want the native binary %q", got, realPath(t, f.native))
+	if got := app.providerBinaryPath(string(provider.Codex)); got != nativePath(t, f) {
+		t.Fatalf("providerBinaryPath(codex) = %q, want the native binary %q", got, nativePath(t, f))
 	}
 
 	thread, err := createTestThread(t, app, string(provider.Codex), t.TempDir(), "gpt-5", "chat")
@@ -196,7 +205,7 @@ func TestProviderStatusesNameTheNativeBinaryAndItsWrapper(t *testing.T) {
 	app := newTestAppWithStore(t)
 	f := newCodexNpmFixture(t, t.TempDir())
 	mockexec.Write(t, f.native, "#!/bin/sh\necho 'codex-cli 0.162.1'\n")
-	mockexec.Write(t, f.wrapper, "#!/bin/sh\necho 'codex-cli 0.150.0-wrapper'\n")
+	writeProviderBinaryFile(t, f.wrapper, "echo 'codex-cli 0.150.0-wrapper'")
 	claude := mockexec.Write(t, filepath.Join(t.TempDir(), "claude"), "#!/bin/sh\necho '2.1.100 (Claude Code)'\n")
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": claude}); err != nil {
 		t.Fatalf("set claude binary: %v", err)
@@ -219,9 +228,9 @@ func TestProviderStatusesNameTheNativeBinaryAndItsWrapper(t *testing.T) {
 	if codexStatus == nil {
 		t.Fatalf("no codex status in %+v", statuses)
 	}
-	if codexStatus.BinaryPath != realPath(t, f.native) || codexStatus.WrapperPath != realPath(t, f.wrapper) {
+	if codexStatus.BinaryPath != nativePath(t, f) || codexStatus.WrapperPath != realPath(t, f.wrapper) {
 		t.Fatalf("codex status binary/wrapper = %q / %q, want %q / %q",
-			codexStatus.BinaryPath, codexStatus.WrapperPath, realPath(t, f.native), realPath(t, f.wrapper))
+			codexStatus.BinaryPath, codexStatus.WrapperPath, nativePath(t, f), realPath(t, f.wrapper))
 	}
 	if !strings.Contains(codexStatus.Version, "0.162.1") {
 		t.Fatalf("codex version = %q, want the native binary's answer", codexStatus.Version)
