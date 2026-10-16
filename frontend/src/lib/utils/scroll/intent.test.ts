@@ -873,14 +873,47 @@ describe('deferred scroll pass', () => {
     });
 
     describe('navigation keys typed into an editable inside the scroller', () => {
-      it.each(['End', 'PageDown', 'ArrowDown'])('%s arms no landing, so a later scroll with no input to the end stays escaped', async (k) => {
+      function escapedWith(target: () => HTMLElement): { h: Harness; field: HTMLElement } {
         const h = build();
         h.state.escaped = true;
         h.state.distanceFromBottom = 100;
         h.scrollEl.scrollTop = 400;
         h.scrollEl.dispatchEvent(new Event('scroll'));
-        const field = document.createElement('textarea');
-        h.child.append(field);
+        const field = target();
+        h.child.append(field.closest('[contenteditable]') ?? field);
+        return { h, field };
+      }
+      function islandButton(): HTMLElement {
+        const editor = document.createElement('div');
+        editor.setAttribute('contenteditable', 'true');
+        const island = document.createElement('div');
+        island.setAttribute('contenteditable', 'false');
+        const button = document.createElement('button');
+        island.append(button);
+        editor.append(island);
+        return button;
+      }
+      function editableLine(): HTMLElement {
+        const editor = document.createElement('div');
+        editor.setAttribute('contenteditable', 'true');
+        const line = document.createElement('p');
+        editor.append(line);
+        return line;
+      }
+      const input = (type: string, attrs: Record<string, string> = {}) => () => {
+        const el = document.createElement('input');
+        el.type = type;
+        for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, value);
+        return el;
+      };
+      const textarea = (attrs: Record<string, string> = {}) => () => {
+        const el = document.createElement('textarea');
+        for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, value);
+        return el;
+      };
+
+      it.each(['End', 'PageDown', 'ArrowDown'])('%s in a textarea arms no landing, so a later scroll with no input to the end stays escaped', async (k) => {
+        const { h, field } = escapedWith(textarea());
         key(field, k);
         await pastWindow();
         // A find-in-page or caret scroll reaches the end.
@@ -888,6 +921,37 @@ describe('deferred scroll pass', () => {
         await settleDeferredPass();
 
         expect(h.state.escaped).toBe(true);
+      });
+
+      it.each([
+        ['a text input', input('text')],
+        ['a number input', input('number')],
+        ['a select', () => document.createElement('select')],
+        ['a line inside a contenteditable', editableLine],
+      ])('End in %s arms no landing', async (_name, make) => {
+        const { h, field } = escapedWith(make);
+        key(field, 'End');
+        await pastWindow();
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(true);
+      });
+
+      it.each([
+        ['a readonly textarea', textarea({ readonly: '' })],
+        ['a disabled textarea', textarea({ disabled: '' })],
+        ['a readonly text input', input('text', { readonly: '' })],
+        ['a checkbox', input('checkbox')],
+        ['a button in a non-editable island of an editor', islandButton],
+      ])('End in %s scrolls the log, so its late landing at the bottom re-sticks', async (_name, make) => {
+        const { h, field } = escapedWith(make);
+        key(field, 'End');
+        await pastWindow();
+        landAt(h, 0, 500);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
       });
     });
 

@@ -731,9 +731,11 @@ Bottom geometry and user intent are separate. The viewport can be near
 the bottom while the user has escaped bottom-follow. Upward wheel, key,
 touch, middle-button autoscroll, or scrollbar-gutter pointer intent
 escapes synchronously when it targets the timeline or a descendant. A
-navigation key whose target takes text input (an input, textarea, select
-or anything inside a contenteditable) moves a caret, not the scroller,
-and is neither escape nor down intent.
+navigation key whose target consumes it (a writable, enabled textarea or
+text-type input, a select, or content whose `isContentEditable` is true)
+moves a caret, not the scroller, and is neither escape nor down intent. A
+readonly or disabled field, a checkbox, or a button in a non-editable
+island of an editor leaves the key to the scroller.
 
 Down input (wheel, key, touch) is the only consent path for re-sticking
 after escape. A down gesture made while escaped stays pending until its

@@ -91,12 +91,22 @@ export function resetScrollIntentModuleStateForTest(): void {
   primaryButtonHeld = false;
 }
 
-/** The target takes text input, so its navigation keys move a caret. */
+// Input types whose navigation keys move a caret or change a value.
+const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set(['text', 'search', 'url', 'tel', 'email', 'password', 'number']);
+
+/**
+ * The target consumes navigation keys itself (a writable text field, a
+ * select, editable content), so they do not move the scroller. A readonly
+ * or disabled text field, a checkbox, or a button in a non-editable island
+ * of an editor leaves them to the scroller.
+ */
 function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false;
-  if (target.closest('input, textarea, select')) return true;
-  return (target instanceof HTMLElement && target.isContentEditable)
-    || target.closest('[contenteditable]:not([contenteditable="false"])') !== null;
+  if (target instanceof HTMLTextAreaElement) return !target.readOnly && !target.disabled;
+  if (target instanceof HTMLInputElement) {
+    return TEXT_INPUT_TYPES.has(target.type) && !target.readOnly && !target.disabled;
+  }
+  if (target instanceof HTMLSelectElement) return true;
+  return target instanceof HTMLElement && target.isContentEditable;
 }
 
 export function isSelectingInside(scrollEl: HTMLElement): boolean {
