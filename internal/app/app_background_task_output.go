@@ -57,8 +57,22 @@ type appBackgroundTaskOutputState struct {
 	// release from it; the binding is unbound from this record, by the
 	// caller's thread, and from the tailer's Dropped report, so a
 	// long-lived connection does not keep a cleanup per task it watched.
+	// The record is made, under the app's own id, before the tailer is
+	// asked for the watch, so a drop always finds it.
 	mu       sync.Mutex
 	bindings map[string]backgroundTaskOutputBinding
+
+	// afterAcquire, when set by a test, runs once the tailer holds the
+	// watch and before the method reads its record back.
+	afterAcquire func(watchID string)
+}
+
+// has reports whether watchID's record still stands.
+func (s *appBackgroundTaskOutputState) has(watchID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.bindings[watchID]
+	return ok
 }
 
 type backgroundTaskOutputBinding struct {
@@ -196,24 +210,48 @@ func (a *App) WatchBackgroundTaskOutput(ctx context.Context, threadID, launchIte
 
 	state := transport.ConnStateFromContext(ctx)
 	owner := backgroundTaskOutputOwner(state)
-	snapshot, err := a.backgroundTaskTailer().Watch(threadID, launchItemID, path, owner)
+	watchID, err := tasktail.NewWatchID()
 	if err != nil {
+		return tasktail.Snapshot{}, fmt.Errorf("background task output: %w", err)
+	}
+	tailer := a.backgroundTaskTailer()
+	if state != nil {
+		// The record and the cleanup come first, under an id the tailer
+		// does not know yet: a drop the tailer reports (the task ending
+		// under the seed read) then always finds the record to unbind. A
+		// false return means the connection is already tearing down.
+		if !state.BindCleanup(backgroundTaskOutputCleanupKey(watchID), func() {
+			a.taskOutput.unbindWatch(watchID, "", nil)
+			tailer.Release(threadID, watchID, owner)
+		}) {
+			return tasktail.Snapshot{}, fmt.Errorf("background task output: connection closing")
+		}
+		a.taskOutput.bindWatch(watchID, threadID, state)
+	}
+	snapshot, err := tailer.Watch(threadID, launchItemID, path, owner, watchID)
+	if err != nil {
+		a.taskOutput.unbindWatch(watchID, "", nil)
 		if errors.Is(err, tasktail.ErrTooManyWatches) {
 			return tasktail.Snapshot{}, ErrTooManyBackgroundTaskWatches
 		}
 		return tasktail.Snapshot{}, err
 	}
-	if state != nil && snapshot.WatchID != "" {
-		// A false return means the connection is already tearing down:
-		// the safety net it would have provided is gone, so release now.
-		if !state.BindCleanup(backgroundTaskOutputCleanupKey(snapshot.WatchID), func() {
-			a.taskOutput.unbindWatch(snapshot.WatchID, "", nil)
-			a.backgroundTaskTailer().Release(threadID, snapshot.WatchID, owner)
-		}) {
-			a.backgroundTaskTailer().Release(threadID, snapshot.WatchID, owner)
-			return tasktail.Snapshot{}, fmt.Errorf("background task output: connection closing")
-		}
-		a.taskOutput.bindWatch(snapshot.WatchID, threadID, state)
+	if hook := a.taskOutput.afterAcquire; hook != nil {
+		hook(watchID)
+	}
+	if snapshot.WatchID == "" {
+		// The seed read failed: the tailer holds nothing for the id.
+		a.taskOutput.unbindWatch(watchID, "", nil)
+		return snapshot, nil
+	}
+	if state != nil && !a.taskOutput.has(watchID) {
+		// The record went while the watch was being opened: the task
+		// ended (the tailer dropped the watch and said so) or the
+		// connection did (its cleanup ran). Either way nothing holds the
+		// watch now, and the tail answers as ended.
+		tailer.Release(threadID, watchID, owner)
+		snapshot.WatchID = ""
+		snapshot.Ended = true
 	}
 	return snapshot, nil
 }

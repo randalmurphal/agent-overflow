@@ -55,6 +55,9 @@ var ErrTooManyWatches = errors.New("tasktail: too many background task output wa
 // ErrClosed is returned by Watch after Close.
 var ErrClosed = errors.New("tasktail: closed")
 
+// ErrWatchExists is returned by Watch for a watch id already held.
+var ErrWatchExists = errors.New("tasktail: watch id already held")
+
 // Event is one frame of a follow (provider:background_task_output).
 // Append is the text the tail gained since the last frame, or with Reset
 // the whole tail after it restarted. Truncated says the tail holds less
@@ -197,11 +200,18 @@ func New(cfg Config) *Tailer {
 // the same owner, EndLaunch or Close. A file not yet written answers an
 // empty tail and is picked up when it appears. A seed read that fails
 // answers Ended with the error and holds no watch.
-func (t *Tailer) Watch(threadID, launchID, path, owner string) (Snapshot, error) {
+//
+// watchID names the watch; empty mints one (NewWatchID). A caller that
+// binds a release to the id passes one it minted itself, so its record
+// exists before the tailer can drop the watch and report it (Dropped).
+func (t *Tailer) Watch(threadID, launchID, path, owner, watchID string) (Snapshot, error) {
 	key := followKey{thread: threadID, launch: launchID}
-	watchID, err := newWatchID()
-	if err != nil {
-		return Snapshot{}, err
+	if watchID == "" {
+		minted, err := NewWatchID()
+		if err != nil {
+			return Snapshot{}, err
+		}
+		watchID = minted
 	}
 	t.mu.Lock()
 	if t.closed {
@@ -211,6 +221,10 @@ func (t *Tailer) Watch(threadID, launchID, path, owner string) (Snapshot, error)
 	if len(t.watches) >= t.cfg.MaxWatches {
 		t.mu.Unlock()
 		return Snapshot{}, ErrTooManyWatches
+	}
+	if _, held := t.watches[watchID]; held {
+		t.mu.Unlock()
+		return Snapshot{}, ErrWatchExists
 	}
 	f := t.follows[key]
 	if f == nil {
@@ -254,10 +268,10 @@ func (t *Tailer) Watch(threadID, launchID, path, owner string) (Snapshot, error)
 	return snapshot, nil
 }
 
-// newWatchID mints an id a client cannot guess: the id is the only handle
+// NewWatchID mints an id a client cannot guess: the id is the only handle
 // a release names, and a counter would let one connection release
 // another's watch.
-func newWatchID() (string, error) {
+func NewWatchID() (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("tasktail: watch id: %w", err)

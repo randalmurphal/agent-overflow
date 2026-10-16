@@ -217,3 +217,60 @@ func TestWatchBindingsGoWithTheTaskOrTheUnwatch(t *testing.T) {
 		t.Fatalf("no binding record outlives its watch; %d left", left)
 	}
 }
+
+// The task ends while the watch is being opened, after the tailer holds
+// it and before the method answers: nothing stays bound for a watch that
+// is already gone, and the client is told the tail ended.
+func TestWatchEndedWhileOpeningHoldsNoCleanup(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	path := writeTaskOutput(t, t.TempDir(), "task-r.output", "line 1\n")
+	seedTaskOutputThread(t, app, "thread-tail-race", "launch-r", `{"task_id":"task-r","output_file":"`+path+`"}`)
+	ctx, state := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	tailer := app.backgroundTaskTailer()
+	var acquired string
+	app.taskOutput.afterAcquire = func(watchID string) {
+		acquired = watchID
+		tailer.EndLaunch("thread-tail-race", "launch-r")
+	}
+	snap, err := app.WatchBackgroundTaskOutput(ctx, "thread-tail-race", "launch-r")
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	if acquired == "" {
+		t.Fatal("the hook did not run")
+	}
+	if state.HasCleanup(backgroundTaskOutputCleanupKey(acquired)) {
+		t.Fatal("a watch the task's end took must leave no connection cleanup")
+	}
+	if app.taskOutput.has(acquired) {
+		t.Fatal("no record outlives the watch")
+	}
+	if tailer.Watching() != 0 {
+		t.Fatalf("the tailer holds nothing; watching %d", tailer.Watching())
+	}
+	if snap.WatchID != "" || !snap.Ended || snap.Data != "line 1\n" {
+		t.Fatalf("the client learns the tail ended, with the tail: %+v", snap)
+	}
+}
+
+// A watch the tailer refuses leaves no record behind (the record's unbind
+// takes the connection cleanup with it): both were made before the tailer
+// was asked.
+func TestWatchRefusedByTheTailerBindsNothing(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	path := writeTaskOutput(t, t.TempDir(), "task-x.output", "line 1\n")
+	seedTaskOutputThread(t, app, "thread-tail-refused", "launch-x", `{"task_id":"task-x","output_file":"`+path+`"}`)
+	ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	app.backgroundTaskTailer().Close()
+	if _, err := app.WatchBackgroundTaskOutput(ctx, "thread-tail-refused", "launch-x"); err == nil {
+		t.Fatal("a closed tailer refuses the watch")
+	}
+	app.taskOutput.mu.Lock()
+	records := len(app.taskOutput.bindings)
+	app.taskOutput.mu.Unlock()
+	if records != 0 {
+		t.Fatalf("%d records for a refused watch", records)
+	}
+}
