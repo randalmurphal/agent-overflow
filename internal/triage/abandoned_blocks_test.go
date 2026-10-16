@@ -120,7 +120,7 @@ func TestBlocksAbandonedRecordsNotificationNamingTheRows(t *testing.T) {
 		t.Fatalf("abandoned notifications: %+v", notes)
 	}
 	note := notes[0]
-	if note.ID != AbandonedBlocksItemID(text.TurnIndex, "", "msg_01") {
+	if note.ID != store.AbandonedBlocksRecordID(text.TurnIndex, "", "msg_01") {
 		t.Errorf("id %q", note.ID)
 	}
 	if note.Status != statusCompleted || note.Role != "system" || note.Summary != abandonedBlocksSummary {
@@ -327,7 +327,7 @@ func TestBlocksAbandonedScopedToSubagent(t *testing.T) {
 	if notes[0].ParentID != "task_tool_abc" {
 		t.Errorf("notification scope %q", notes[0].ParentID)
 	}
-	if notes[0].ID != AbandonedBlocksItemID(subText.TurnIndex, "task_tool_abc", "msg_sub") {
+	if notes[0].ID != store.AbandonedBlocksRecordID(subText.TurnIndex, "task_tool_abc", "msg_sub") {
 		t.Errorf("id %q", notes[0].ID)
 	}
 	if got := metaStrings(t, notes[0].Meta, "item_ids"); !reflect.DeepEqual(got, []string{subText.ID}) {
@@ -348,4 +348,55 @@ func TestBlocksAbandonedWithoutResponseIDIsAnError(t *testing.T) {
 	if want := fmt.Sprintf("blocks abandoned: meta %q names no response", `{"fromBlockIndex":0}`); err.Error() != want {
 		t.Errorf("error %q", err)
 	}
+}
+
+// The rows the record names were pushed before it existed. The record's
+// write stamps them, and the wire refresh that follows pushes each as a
+// page now reads it, carrying the record's id, so a live window holds the
+// mark on the row itself once the record scrolls or trims out of it.
+func TestBlocksAbandonedRefreshPushesTheRowsMarked(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	streamBlock(t, router, "t1", "", "msg_01", 0, "text", "Kept block. ")
+	streamBlock(t, router, "t1", "", "msg_01", 1, "text", "Cut block ")
+	// Both rows settle, are pushed settled and have had their refresh
+	// before the record exists: the order a real stall produces, where the
+	// CLI closes the block and waits seconds before it gives up on the
+	// response, past the refresh's quiet period.
+	router.WaitForPendingSettles()
+	router.DrainWireItemRefresh()
+	abandonBlocks(t, router, "t1", "", "msg_01", 1)
+	notes := abandonedNotifications(t, st, "t1")
+	if len(notes) != 1 {
+		t.Fatalf("abandoned notifications: %+v", notes)
+	}
+	texts := itemsOfKind(mustListItems(t, st, "t1"), itemKindAssistantText)
+	if len(texts) != 2 {
+		t.Fatalf("assistant_text rows: %+v", texts)
+	}
+
+	emissions.reset()
+	router.DrainWireItemRefresh()
+	pushed := map[string]string{}
+	for _, e := range emissions.snapshot() {
+		if evt, ok := e.data.(ItemStreamEvent); ok && evt.Action == itemStreamActionUpsert && evt.Item != nil && evt.Item.Kind == itemKindAssistantText {
+			pushed[evt.Item.ID] = evt.Item.DiscardedBy
+		}
+	}
+	if got, ok := pushed[texts[1].ID]; !ok || got != notes[0].ID {
+		t.Errorf("cut block pushed as discardedBy=%q (pushed=%v), want %q", got, ok, notes[0].ID)
+	}
+	if got, ok := pushed[texts[0].ID]; ok && got != "" {
+		t.Errorf("kept block pushed marked: %q", got)
+	}
+}
+
+func mustListItems(t *testing.T, st *store.Store, threadID string) []store.Item {
+	t.Helper()
+	items, err := st.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	return items
 }

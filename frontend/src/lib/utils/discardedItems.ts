@@ -3,9 +3,12 @@
 // The backend never touches the discarded rows (completed history is
 // immutable); it records the abandonment as its own `notification` row of
 // kind `abandoned_blocks` right after them, whose `meta.item_ids` names the
-// rows (internal/triage/abandoned_blocks.go). The timeline derives the
-// muted marking from those rows, so the marking follows the loaded window
-// through reload and paging without any state of its own.
+// rows (internal/triage/abandoned_blocks.go). A served row carries its
+// record's id (`Item.discardedBy`, internal/store/discarded_rows.go), so a
+// page or window holds the mark on the row itself. This derivation covers
+// the live rows pushed before the record existed, until the wire refresh
+// that follows the record re-pushes them marked: it reads only the loaded
+// window and keeps no state of its own.
 //
 // Memoized on the items array's identity: `pane.items` is a `$state.raw`
 // array replaced wholesale on membership change and left alone by per-row

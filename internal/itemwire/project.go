@@ -328,5 +328,5 @@ func EncodedBytes(item store.Item) int {
 		len(item.Status) + len(item.Summary) + len(item.PayloadID) +
 		len(item.PayloadKind) + len(item.PayloadMeta) + len(item.PayloadPreviewSpans) +
 		len(item.InputPayloadID) + len(item.ParentID) + len(item.CompletionOf) +
-		len(item.ToolName) + len(item.Decision) + len(item.Meta)
+		len(item.ToolName) + len(item.Decision) + len(item.Meta) + len(item.DiscardedBy)
 }

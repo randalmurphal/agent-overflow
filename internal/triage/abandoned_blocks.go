@@ -177,20 +177,14 @@ func (r *Router) abandonedStreamRowIDs(threadID string, turnIndex int, scope str
 	return ids
 }
 
-// AbandonedBlocksItemID is the id of the notification row recording that
-// one API response's blocks were abandoned: one row per response, so a
-// repeated signal upserts in place.
-func AbandonedBlocksItemID(turnIndex int, scope, apiMessageID string) string {
-	if scope == "" {
-		return fmt.Sprintf("notification:%d:abandoned:%s", turnIndex, apiMessageID)
-	}
-	return fmt.Sprintf("notification:%d:%s:abandoned:%s", turnIndex, scope, apiMessageID)
-}
-
 // handleBlocksAbandoned records the abandonment when it names rows this
 // turn streamed. A from index above every block seen means nothing
 // visible was discarded (the stall fell between blocks) and writes
 // nothing.
+//
+// The record's write stamps the rows it names (store.Item.DiscardedBy is
+// read from it), and they were pushed before it existed, so each is noted
+// unstamped for the next wire refresh to push as a page now reads it.
 func (r *Router) handleBlocksAbandoned(evt provider.ProviderEvent) error {
 	var meta provider.BlocksAbandonedMeta
 	if len(evt.Meta) == 0 || json.Unmarshal(evt.Meta, &meta) != nil || meta.APIMessageID == "" {
@@ -214,8 +208,14 @@ func (r *Router) handleBlocksAbandoned(evt provider.ProviderEvent) error {
 		return fmt.Errorf("blocks abandoned meta: %w", err)
 	}
 	evt.Meta = rowMeta
-	_, err = r.persistTimelineNotificationWithID(evt, AbandonedBlocksItemID(turnIndex, scope, meta.APIMessageID), abandonedBlocksNotificationKind, abandonedBlocksSummary)
-	return err
+	recordID := store.AbandonedBlocksRecordID(turnIndex, scope, meta.APIMessageID)
+	if _, err := r.persistTimelineNotificationWithID(evt, recordID, abandonedBlocksNotificationKind, abandonedBlocksSummary); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		r.noteWireItemEmitted(evt.ThreadID, id, store.UnstampedItemRev)
+	}
+	return nil
 }
 
 // abandonedBlocksRowMeta is the notification row's record of the

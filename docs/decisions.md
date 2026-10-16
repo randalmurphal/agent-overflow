@@ -127,7 +127,8 @@ Mechanism in
   the timeline as it streamed, muted, with a note after it; the reply
   continues below. Nothing disappears and nothing re-streams in its place
   (ruling 2026-10-16). The rows are not rewritten: the note is its own row
-  naming them, and the marking is derived from it.
+  naming them, and a read of a row it names serves the row marked
+  (`Item.discardedBy`) whether or not the note is in the loaded window.
 
 ## Sidebar, threads, drafts
 

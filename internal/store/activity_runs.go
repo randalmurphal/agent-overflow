@@ -43,14 +43,6 @@ const (
 	toolCompletionKind = "tool_completion"
 )
 
-// AbandonedBlocksNotificationKind is the tool_name and `meta.kind` of the
-// notification row recording that Claude discarded the streamed rows before
-// it after a stalled response (internal/triage/abandoned_blocks.go). It is
-// about the prose it follows, not about activity, so a run never absorbs it:
-// it breaks the run like the prose it describes would, on both sides of the
-// paging contract (activityRunGrouping.ts mirrors this).
-const AbandonedBlocksNotificationKind = "abandoned_blocks"
-
 // isRailRow reports rail participation, the run-membership predicate for
 // every row except an absorbed notification.
 func (r activityScanRow) isRailRow() bool {
@@ -61,7 +53,7 @@ func (r activityScanRow) isRailRow() bool {
 }
 
 // isBell reports a notification an activity run can absorb: every
-// notification but the abandoned-blocks record.
+// notification but the abandoned-blocks record (discarded_rows.go).
 func (r activityScanRow) isBell() bool {
 	return r.Kind == notificationKind && r.ToolName != AbandonedBlocksNotificationKind
 }

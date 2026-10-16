@@ -3352,7 +3352,10 @@ AO: the parser names each block's response on its `content_block_start` /
 scope's `message_start`) and turns the `message_stop` into
 `EventBlocksAbandoned`. Triage never rewrites the rows the blocks streamed
 into; it writes one `notification` row (`meta.kind: abandoned_blocks`,
-`meta.item_ids`) after them, and the UI derives the muted marking from it
+`meta.item_ids`) after them. The store serves each named row with the
+record's id (`Item.discardedBy`, `decorateDiscardedRows`) and stamps the
+rows when the record is written, so the muted marking holds whether or
+not the record is in the loaded window
 ([decisions](../decisions.md#streaming-and-reveal)).
 
 ### Soft round close: `message_delta.stop_reason`

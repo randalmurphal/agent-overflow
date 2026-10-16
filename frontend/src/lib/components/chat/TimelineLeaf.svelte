@@ -58,13 +58,14 @@
   // through to AssistantMessage untouched.
   const isGeneratedImage = $derived(generatedImageRow(displayItem) !== null);
 
-  // A streamed row Claude discarded after a stalled response. The row
-  // itself is untouched history; the marking comes from the
-  // `abandoned_blocks` notification that follows it in the loaded window
-  // (utils/discardedItems.ts), so it holds through reload and paging.
+  // A streamed row Claude discarded after a stalled response. The server
+  // marks the row when it serves it (`discardedBy`), so the mark holds
+  // through reload, paging and window trimming whether or not the record
+  // row is loaded; a row still in the live window before the wire refresh
+  // re-pushes it is marked from the record (utils/discardedItems.ts).
   const discarded = $derived(
     (displayItem.kind === 'assistant_text' || displayItem.kind === 'thinking')
-      && discardedItemIds(pane.items).has(displayItem.id),
+      && (Boolean(displayItem.discardedBy) || discardedItemIds(pane.items).has(displayItem.id)),
   );
 </script>
 

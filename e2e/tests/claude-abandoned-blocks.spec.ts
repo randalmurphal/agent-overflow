@@ -8,8 +8,10 @@
 // blocks streamed into must stay exactly as the user saw them, muted and
 // tagged, with the record row after them, and what Claude wrote next must
 // render below. Nothing disappears and nothing re-streams in place
-// (docs/decisions.md §Streaming and reveal). The marking is derived from
-// the record row, so it must hold across a reload.
+// (docs/decisions.md §Streaming and reveal). The server serves a named row
+// marked (`discardedBy`), so the marking holds across a reload; the edge
+// where the record is outside the loaded window is
+// claude-abandoned-blocks-paging.spec.ts.
 //
 // Three shapes from the captures behind the fixtures, each in the light
 // and the dark theme: block 1 cut after block 0 finished (continuation
@@ -269,7 +271,7 @@ for (const theme of ['light', 'dark'] as const) {
       expect(items.filter((item) => item.kind === 'assistant_text' || item.kind === 'thinking').map((item) => item.summary))
         .toContain(EXPECTED[kind].nextText);
 
-      // The marking is derived from the record row, so a cold load shows it.
+      // A cold load serves the row marked.
       await page.reload();
       const reloaded = await openThread(page, title);
       await expectMarked(reloaded, kind);

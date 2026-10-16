@@ -226,6 +226,15 @@ export interface PathRef {
 export interface Item {
   /** Launch context carried by a completion; never a positional timeline row. */
   completionLaunch?: Item;
+  /**
+   * Id of the abandonment record naming this row as one Claude discarded
+   * after a stalled response. Attached by the server when it serves the
+   * row, so the mark holds whether or not the record is in the loaded
+   * window; a live row carries it from the wire refresh that follows the
+   * record, and until then the window derives it from the record itself
+   * (utils/discardedItems.ts).
+   */
+  discardedBy?: string;
   id: string;
   threadId: string;
   turnIndex: number;

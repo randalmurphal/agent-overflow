@@ -456,6 +456,7 @@ payload content it holds, so the window stays correct.
 | Recompute inside a write the card rules do not follow (`recomputeSubagentChainsTx`), bulk-load rebuild | none of its own: the transaction's item write already bumped (a bulk-loaded thread's loader writes the exact revision); the upsert's trigger stamps the anchor and completion siblings | rev, once per write |
 | `EnsureProposedPlanState(WithParent)`, `MarkProposedPlanImplemented`, `CreateProposedPlanComment`, `UpdateProposedPlanComment`, `DeleteOrResolveProposedPlanComment`, `MarkProposedPlanCommentsSent` | explicit, on the thread id the mutator already carries | rev on the PLAN's thread |
 | `RestoreFrom`'s row copy | triggers DROPped for the copy, recreated after | none during the copy: the restored counters are the snapshot's, verbatim |
+| Abandonment record write (`stampDiscardedRowsTx`, in the record's insert or update) | the record's own trigger, then a touch of each row `meta.item_ids` names | rev on the record and on each named row, which a read now serves with `discardedBy` (`decorateDiscardedRows`) |
 
 **Window-visible DECORATION sources bump too.** `decorateSubagentAnchors`
 is covered transitively because its inputs are item rows;
@@ -467,7 +468,10 @@ thread id they already carry. That is always the *plan's* thread, since
 both tables reference `threads(id)` directly and
 `MarkProposedPlanImplemented` is invoked cross-thread (the plan's thread
 in, the implementing thread as data). Idempotent replays that write
-nothing bump nothing. **Any future read-time projection of a non-`items`
+nothing bump nothing. `decorateDiscardedRows` reads an `items` row (the
+abandonment record) into OTHER rows' reads, which the triggers' stamped
+set does not cover, so the record's writer touches the rows it names
+(`stampDiscardedRowsTx`). **Any future read-time projection of a non-`items`
 table into a windowed row joins this class**: if a window read can render
 it, its writers bump. A projection whose writers do not is the one bug
 shape the contract cannot self-correct. The client is told its stale
