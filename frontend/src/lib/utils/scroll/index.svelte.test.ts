@@ -6053,6 +6053,33 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.isSticky).toBe(true);
     });
 
+    it('a landing re-stick follows content that grew before its deferred check', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      // The landing reveals rows whose measurement grows the content
+      // while the reader is still escaped.
+      fireWheel(scrollEl, 50, scrollEl);
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      geom.scrollHeight = 1300;
+      geom.contentHeight = 1100;
+      ro.fire(contentEl, 1100);
+      expect(geom.scrollTop).toBe(400);
+      await nextTimer();
+
+      expect(controller.isSticky).toBe(true);
+      for (let i = 0; i < 120 && geom.scrollTop < 700; i += 1) await nextFrame();
+      expect(geom.scrollTop).toBe(700);
+    });
+
     it('an old down intent does not consent to an unrelated later landing at the bottom', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
