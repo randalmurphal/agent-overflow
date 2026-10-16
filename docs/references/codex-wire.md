@@ -1162,10 +1162,13 @@ in the config requirements (`config_requirements.rs`) can forbid
 start running a reviewer the client did not ask for.
 
 **Resume is asymmetric, and it matters.** Resuming an already-loaded
-thread **ignores every override in the request**.
+thread that a connection still subscribes to, or that is not idle,
+**ignores every override in the request**.
 `collect_resume_override_mismatches` collects the divergences and
 `tracing::warn!`s them server-side, then rejoins the live config
-unchanged (`thread_processor.rs`). A cold resume applies them normally.
+unchanged (`thread_processor.rs`). A cold resume applies them normally;
+a loaded idle thread with no subscriber is shut down and cold-resumed by
+the same request ([Thread unload and cold resume](#thread-unload-and-cold-resume-verified-01621)).
 So a bare `thread/resume {threadId}` against a loaded thread cannot
 disturb the reviewer, while the same call against an evicted thread
 would reset every unspecified axis to the config default. AO's mid-life
@@ -1253,6 +1256,64 @@ parameter entirely when it has nothing to append or when the read failed; a
 failed read is reported to the thread as a non-fatal error.
 
 Verified against `rust-v0.153.4`.
+
+### Thread unload and cold resume (verified 0.162.1)
+
+Spike 2026-10-16, codex-cli 0.162.1, `gpt-6-luna`, one connection.
+Fixture: `fixtures/codex/thread_unload_cold_resume_20261016.ndjson`.
+
+- `thread/unsubscribe {threadId}` answers `{status}`: `unsubscribed`,
+  `notSubscribed`, or `notLoaded` once the thread is gone. It removes only
+  this connection's subscription; the thread stays in `thread/loaded/list`.
+- A loaded thread with no subscriber and not active unloads after
+  `thread_unload_delay_secs` (config; measured 60.0 s at the default and
+  3.0 s at `3`). The clock starts at the later of the last unsubscribe
+  and the last activity. The app-server then writes
+  `thread/closed {threadId}`, drops it from `thread/loaded/list` and kills
+  its MCP children. The notification reaches the unsubscribed connection.
+- `thread/resume` on a loaded, idle, unsubscribed thread with any override
+  present (`config`, `developerInstructions`, `baseInstructions`, or a
+  changed `model`, `sandbox`, `approvalPolicy`, ...) shuts it down and
+  cold-resumes it in the same request, with no wait: two
+  `thread/status/changed {notLoaded}`, the new MCP round, then `idle`.
+  A subscribed or active thread keeps its live config instead.
+- A cold resume applies the `config` bag: the old MCP servers are killed
+  and the new ones start, and tool toggles (`features.view_image`) take
+  effect in both directions. Axes the request omits fall back to config
+  defaults (a resume naming no `sandbox` came back `read-only`), except
+  the model, which is restored from the rollout unless the request names
+  one. A `config` bag carrying `model_reasoning_effort` counts as naming
+  one (`has_model_resume_override`), so such a resume without `model`
+  came back on the default model.
+- **`developerInstructions` on a cold resume does not reach the model.**
+  The full developer context is injected only while the session has no
+  reference context (`record_context_updates_and_set_reference_context_item`,
+  `core/src/session/mod.rs`); a resume restores the reference from the
+  rollout, and developer instructions are not a world-state section, so no
+  diff is emitted. The model kept following the original instructions
+  after both resume paths, and the new text was absent from the rollout.
+  It took effect after `thread/compact/start`, which rebuilds the context
+  (run on the immediate cold-resume path only).
+- The model's own account of its tools is unreliable after a resume: it
+  answered "missing" in the same turn that produced an `imageView` item.
+  Read the tool item, not the reply.
+
+### Per-thread shell environment and MCP processes (verified 0.162.1)
+
+Same spike. Several threads on one app-server:
+
+- `config.shell_environment_policy.set` on `thread/start`, as a nested
+  table or as the dotted key `shell_environment_policy.set.NAME`, reaches
+  the shell commands of that thread only; three concurrent threads each saw
+  their own value. The values were not written anywhere under
+  `CODEX_HOME` (rollouts and SQLite files grepped).
+- A stdio server in a thread's `config.mcp_servers` is one child process
+  of the native app-server per loaded thread, spawned at `thread/start`.
+  Two threads with an identical name and command run two processes; the
+  thread's unload kills its process.
+- `mcpServerStatus/list` spawns its own connections
+  ([`mcpServerStatus/list`](#mcpserverstatuslist)), so it is not a count of
+  running servers.
 
 ### `model/safetyBuffering/updated`
 

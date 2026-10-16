@@ -168,6 +168,26 @@ slice is message-granular); parity lands when `thread/fork` exposes a
 message-granular anchor. See the granularity note on
 `codex.Session.ForkAt`.
 
+## app-server process cost (measured 0.162.1)
+
+One `codex app-server` on Linux (WSL2), clean `CODEX_HOME`, no MCP servers
+configured, `gpt-6-luna`; `/proc` sampled at 1 s for 30 s per phase,
+2026-10-16. The npm `codex` entry is a Node wrapper that spawns the native
+musl binary; PSS equals RSS for the native process.
+
+| Phase | Native RSS (MiB) | Native CPU (mean / max) |
+|---|---|---|
+| Idle after `initialize` | 130 to 200 while startup work runs (about 18 s), then flat at 190 | 4.5% / 27.8%, then 0 |
+| One loaded thread, idle after one turn | 260 to 268 | 0.2% / 1% |
+| Active turn streaming (first 30 s of a 57 s turn of 6000 `item/agentMessage/delta` frames) | 254 to 257 | 1.9% / 4% |
+| Three loaded threads, idle after one turn each | 271 to 279 | 0.1% / 1% |
+
+The Node wrapper held 49 MiB RSS (15 to 30 MiB PSS) and 0% CPU throughout.
+The first thread costs about 75 MiB, which includes one-time work; each
+further thread costs about 5 MiB. A thread's stdio MCP servers are extra
+processes, one per thread
+([codex-wire.md](codex-wire.md#per-thread-shell-environment-and-mcp-processes-verified-01621)).
+
 ## Rollout files on disk
 
 The on-disk format Codex writes for its own sessions, which
