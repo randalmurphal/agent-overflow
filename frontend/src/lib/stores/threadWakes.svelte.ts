@@ -71,7 +71,8 @@ const reminders = new SvelteMap<string, ReminderEntry>();
  * mounted row's effect on any thread's change.
  */
 const agents = new Set<string>();
-const pending = new Set<string>();
+/** Each thread's read in flight, by a ticket only that read holds. */
+const pending = new Map<string, object>();
 
 interface Retention {
   count: number;
@@ -243,23 +244,25 @@ export async function refreshAgentWakes(): Promise<void> {
 export function ensureAgentWakes(threadId: string): void {
   if (agents.has(threadId) || pending.has(threadId)) return;
   const backend = threadBackend(threadId) ?? HOME_BACKEND;
-  pending.add(threadId);
+  const ticket = {};
+  pending.set(threadId, ticket);
   const log = openLog((id) => id === threadId);
   void withBackendTarget(backend, () => ListThreadWakes(threadId)).then((wakes) => {
     // Forgotten while the read was out (the thread stopped being an
     // agent): its answer is not state the sidebar shows.
-    if (!pending.has(threadId)) {
+    if (pending.get(threadId) !== ticket) {
       reads.delete(log);
       return;
     }
+    // Settled before the replay, which may ask for the next read.
+    pending.delete(threadId);
     agents.add(threadId);
     applyListing(threadId, backend, wakes);
     replay(log);
   }).catch((err: unknown) => {
     reads.delete(log);
+    if (pending.get(threadId) === ticket) pending.delete(threadId);
     if (!isPassiveConnectionFailure(err)) console.error(`Failed to load wakes of ${threadId}:`, err);
-  }).finally(() => {
-    pending.delete(threadId);
   });
 }
 

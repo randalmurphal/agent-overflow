@@ -213,6 +213,26 @@ describe('thread wakes store', () => {
     expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l2']);
   });
 
+  it('reads an agent again for an unreadable row that lands while its own read is out', async () => {
+    replaceAllThreads([thread('agent', { agentId: 'agent' })]);
+    const answers: Array<(wakes: ThreadWakes) => void> = [];
+    const list = setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answers.push(resolve); }));
+    ensureAgentWakes('agent');
+    await flush();
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l1' }, HOME_BACKEND);
+    answers[0]({ rows: [row('l1')], moreReminders: 0 });
+    await flush();
+    // The frame may postdate the answer: the agent is read again.
+    expect(list).toHaveBeenCalledTimes(2);
+    answers[1]({ rows: [row('l2')], moreReminders: 0 });
+    await flush();
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l2']);
+    // Still known: a later unreadable row reads it again too.
+    applyThreadWakesChanged({ threadId: 'agent', id: 'l2' }, HOME_BACKEND);
+    await flush();
+    expect(list).toHaveBeenCalledTimes(3);
+  });
+
   describe('a retained listing', () => {
     afterEach(() => {
       vi.useRealTimers();
