@@ -290,6 +290,10 @@ type responseOutputPayload struct {
 	Output  json.RawMessage `json:"output"`
 	Tools   json.RawMessage `json:"tools"`
 	Success *bool           `json:"success"`
+	// Name and Namespace ride an output submitted as turn input, which has
+	// no call to answer (see delegation.go).
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
 }
 
 // reasoningPayload is a model reasoning item. `summary` (and, for

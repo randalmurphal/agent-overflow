@@ -27,7 +27,7 @@ export interface UserMessageMeta {
   command?: unknown;
   /**
    * Who produced this message, when it was not the person in front of Agent
-   * Overflow. Two values today, and the difference matters to a reader:
+   * Overflow. The difference matters to a reader:
    *
    * - `external-queue` — Codex's own `thread/queue`
    *   (`codex queue --thread ...`), which injects a turn into a thread this
@@ -41,6 +41,10 @@ export interface UserMessageMeta {
    *   a spawn's first message, a `thread_send`, or the wake carrying an
    *   answer back. `originThread` names the source thread.
    *   (`docs/specs/agent-thread-tools.md`, Attribution)
+   * - `codex-delegation` — another Codex thread started or messaged this one
+   *   through Codex's own `create_thread` / `send_message_to_thread` tools,
+   *   outside Agent Overflow. Only imported history carries it.
+   *   (`internal/provider/codex/rollout/delegation.go`)
    *
    * Absent means locally authored, which is the overwhelmingly common case.
    */

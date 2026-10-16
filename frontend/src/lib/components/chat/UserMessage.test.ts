@@ -110,6 +110,24 @@ describe('<UserMessage>', () => {
     expect(local.queryByTestId('user-message-external-origin')).toBeNull();
   });
 
+  // An imported Codex thread that another Codex thread started opens with
+  // the delegated prompt; the reader did not type it.
+  it('marks a prompt another Codex thread delegated', () => {
+    const view = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'Inspect <main> & report findings.',
+          meta: JSON.stringify({ origin: 'codex-delegation', codex_source_thread_id: 'source' }),
+        }),
+      },
+    });
+    expect(view.getByTestId('user-message-codex-delegation-origin').textContent).toContain(
+      'From another Codex thread',
+    );
+  });
+
   // A row an agent in another thread wrote carries that thread through to
   // the reader: its title, the computer when that is a different one, and a
   // way in when this client can reach it.

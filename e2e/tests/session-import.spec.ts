@@ -31,10 +31,14 @@ import {
   BRANCH_B_THINKING_PREFIX,
   CODEX_ANSWER,
   CODEX_PROMPT,
+  DELEGATED_ANSWER,
+  DELEGATED_PROMPT,
   FORK_CHILD_ANSWER,
   FORK_CHILD_PROMPT,
   FORK_SHARED_ANSWER,
   growLinearClaudeSession,
+  MCP_TEXT_HEAD,
+  MCP_TEXT_TAIL,
   seedImportFixtures,
   type FixtureSession,
 } from './session-import-fixtures.js';
@@ -239,6 +243,52 @@ test('importing a selection creates the threads and renders their history', asyn
   await threadRow(page, fx.codex.title).click();
   await expect(page.getByText(CODEX_PROMPT).first()).toBeVisible();
   await expect(page.getByText(CODEX_ANSWER)).toBeVisible();
+});
+
+// Codex 0.162 shapes from a session started outside Agent Overflow: a thread
+// Codex's app opened from another thread (`create_thread`) has no user
+// message, only a `preview`, and its paginated rollout stores an MCP result
+// over 64 KiB as a cut copy of the serialized result.
+test('a Codex thread another Codex thread started lists by its prompt and opens with it', async ({
+  harness,
+  page,
+}) => {
+  const fx = await seedImportFixtures(harness, { withDelegatedCodexSession: true });
+  const delegated = fx.codexDelegated!;
+  await harness.open(page);
+  await openImportModal(page);
+
+  // The catalogue names it by the delegated prompt, Codex's `preview`.
+  await expect(page.getByTestId(delegated.rowTestId)).toContainText(DELEGATED_PROMPT);
+
+  const { rows } = await importRows(page, harness, [delegated]);
+  expect(rows.get(delegated.rowId)?.status).toBe('imported');
+  await expect(page.getByText('Imported 1 session (1 thread).')).toBeVisible();
+
+  await threadRow(page, DELEGATED_PROMPT).click();
+  const bubble = page.getByTestId('user-message-bubble');
+  await expect(bubble).toHaveCount(1);
+  await expect(bubble).toContainText(DELEGATED_PROMPT);
+  await expect(page.getByTestId('user-message-codex-delegation-origin')).toHaveText(
+    'From another Codex thread',
+  );
+  await expect(page.getByText(DELEGATED_ANSWER)).toBeVisible();
+
+  // The MCP result reads as the server's text with Codex's cut marked, not
+  // as clipped escaped JSON. Its call-less twins add no second card.
+  const card = page.getByTestId('tool-call-card');
+  await expect(card).toHaveCount(1);
+  await card.getByTestId('tool-call-card-toggle').click();
+  const output = card.getByTestId('tool-call-card-output');
+  await expect(output).toContainText(MCP_TEXT_HEAD);
+  const showFull = card.getByTestId('tool-call-card-show-full');
+  if (await showFull.isVisible()) await showFull.click();
+  await expect(output).toContainText(
+    'Codex truncated this MCP result when it saved the session:',
+  );
+  await expect(output).toContainText(MCP_TEXT_TAIL);
+  await expect(output).not.toContainText('{"content"');
+  await expect(output).not.toContainText('model-visible copy');
 });
 
 test('a multi-leaf Claude transcript imports one coherent active thread', async ({
