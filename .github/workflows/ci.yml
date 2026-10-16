@@ -227,6 +227,9 @@ jobs:
       - name: Installer download tests
         if: matrix.shard == 'rest'
         run: bin/ao-netns sh scripts/test-install-download.sh
+      - name: Change detection tests
+        if: matrix.shard == 'rest'
+        run: bin/ao-netns sh scripts/test-ci-change.sh
 
   vitest:
     name: Vitest (${{ matrix.project }})
