@@ -1685,11 +1685,15 @@ func TestHandleUserText_FlushSendConsumedHook(t *testing.T) {
 	seedOpenTurn(t, router, st, "t1", 3)
 
 	var consumed [][]string
-	router.SetFlushSendConsumedHook(func(threadID string, sendIDs []string) {
+	var rows []string
+	router.SetFlushSendConsumedHook(func(threadID string, sends []ConsumedSend) {
 		if threadID != "t1" {
 			t.Fatalf("hook threadID = %q, want t1", threadID)
 		}
-		consumed = append(consumed, sendIDs)
+		for _, send := range sends {
+			consumed = append(consumed, send.SendIDs)
+			rows = append(rows, send.ItemID)
+		}
 	})
 	echo := func(id, text string) {
 		t.Helper()
@@ -1744,6 +1748,9 @@ func TestHandleUserText_FlushSendConsumedHook(t *testing.T) {
 	if len(consumed) != 2 || !slices.Equal(consumed[1], []string{"person", "thread-wake:tok2", "remote-completion:c:r"}) {
 		t.Fatalf("a joined send's echo gave the hook %q, want all three ids", consumed)
 	}
+	if !slices.Equal(rows, []string{"user:3:flush:0", "user:3:flush:1"}) {
+		t.Fatalf("the hook named rows %q, want each send's own", rows)
+	}
 }
 
 // A consumed send whose ids cannot be read is reported in the log by the send
@@ -1751,8 +1758,10 @@ func TestHandleUserText_FlushSendConsumedHook(t *testing.T) {
 func TestAConsumedSendWithUnreadableIDsIsLoggedAndTheRestReported(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 	var consumed []string
-	router.SetFlushSendConsumedHook(func(_ string, sendIDs []string) {
-		consumed = append(consumed, sendIDs...)
+	router.SetFlushSendConsumedHook(func(_ string, sends []ConsumedSend) {
+		for _, send := range sends {
+			consumed = append(consumed, send.SendIDs...)
+		}
 	})
 	readable, err := usermessage.MarshalMeta(usermessage.Meta{SendID: "thread-wake:tok"})
 	if err != nil {

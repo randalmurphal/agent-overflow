@@ -162,9 +162,9 @@ func (a *App) startSessionNow(threadID string) error {
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	// Before anything is torn down: an assistant whose Claude transcript
-	// the provider cleaned up continues in a new thread instead.
-	if err := a.requireAssistantClaudeSession(t, opts); err != nil {
+	// Before anything is torn down: an assistant whose transcript the
+	// provider cleaned up continues in a new thread instead.
+	if err := a.requireAssistantSession(t, opts); err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
 	if err := a.stopExistingSessionLocked(threadID); err != nil {

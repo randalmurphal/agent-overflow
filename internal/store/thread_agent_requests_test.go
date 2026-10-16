@@ -15,6 +15,19 @@ func agentRequestTokens(rows []ThreadRequest) []string {
 	return out
 }
 
+// listAgentRequests reads one thread's own Agents rows, as the listing
+// reads the rows at its depth bound.
+func listAgentRequests(s *Store, caller string, waiting []string, since int64, openDepth, limit int) ([]ThreadRequest, bool, error) {
+	rows, more, err := s.ListThreadAgentTree(ThreadAgentTreeRead{
+		Root: caller, Waiting: waiting, SettledSince: since, Depth: 1, OpenDepth: openDepth, Limit: limit, AnswerHead: 64,
+	})
+	out := make([]ThreadRequest, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.ThreadRequest)
+	}
+	return out, more, err
+}
+
 func seedAgentRequest(t *testing.T, s *Store, token, caller, kind, target string, notify bool, createdAt int64) {
 	t.Helper()
 	if err := s.InsertThreadRequest(ThreadRequest{
@@ -38,7 +51,7 @@ func settleAgentRequest(t *testing.T, s *Store, token string, at int64) {
 // The rail lists every spawn, and a send or ask only while the thread is
 // owed its answer: a wake armed, or a call parked on it. Reminders are
 // wakes, not agents. A settled request stays only inside the window.
-func TestListThreadAgentRequestsInclusion(t *testing.T) {
+func TestListThreadAgentTreeOwnRowsInclusion(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	for _, id := range []string{"lead", "child", "peer", "idle"} {
@@ -55,7 +68,7 @@ func TestListThreadAgentRequestsInclusion(t *testing.T) {
 	seedThreadRequest(t, s, "remind", "lead", ThreadRequestRemind, 106)
 	seedAgentRequest(t, s, "other-caller", "peer", ThreadRequestSpawn, "child", false, 107)
 
-	rows, more, err := s.ListThreadAgentRequests("lead", []string{"ask-waiting"}, 4_000, 4, 64)
+	rows, more, err := listAgentRequests(s, "lead", []string{"ask-waiting"}, 4_000, 4, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +79,7 @@ func TestListThreadAgentRequestsInclusion(t *testing.T) {
 
 	// The lineage-only rows the retention sweep keeps are not requests.
 	mustExec(t, s.db, `UPDATE thread_requests SET lineage_only = 1 WHERE token = 'spawn-quiet'`)
-	rows, _, err = s.ListThreadAgentRequests("lead", nil, 4_000, 4, 64)
+	rows, _, err = listAgentRequests(s, "lead", nil, 4_000, 4, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +91,7 @@ func TestListThreadAgentRequestsInclusion(t *testing.T) {
 // A finished spawn whose thread, or a thread that thread spawned, still has
 // open agent work stays listed past the window: it is what that work nests
 // under. One whose descendants are all done does not.
-func TestListThreadAgentRequestsKeepsSpawnsWithOpenDescendants(t *testing.T) {
+func TestListThreadAgentTreeOwnRowsKeepsSpawnsWithOpenDescendants(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	for _, id := range []string{"lead", "child", "grandchild", "great", "done-child"} {
@@ -92,7 +105,7 @@ func TestListThreadAgentRequestsKeepsSpawnsWithOpenDescendants(t *testing.T) {
 	settleAgentRequest(t, s, "child-grand", 210)
 	seedAgentRequest(t, s, "grand-great", "grandchild", ThreadRequestSpawn, "great", false, 120)
 
-	rows, _, err := s.ListThreadAgentRequests("lead", nil, 10_000, 4, 64)
+	rows, _, err := listAgentRequests(s, "lead", nil, 10_000, 4, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +113,7 @@ func TestListThreadAgentRequestsKeepsSpawnsWithOpenDescendants(t *testing.T) {
 		t.Fatalf("with a grandchild's spawn open: %v; want [lead-child]", got)
 	}
 	settleAgentRequest(t, s, "grand-great", 300)
-	rows, _, err = s.ListThreadAgentRequests("lead", nil, 10_000, 4, 64)
+	rows, _, err = listAgentRequests(s, "lead", nil, 10_000, 4, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +125,7 @@ func TestListThreadAgentRequestsKeepsSpawnsWithOpenDescendants(t *testing.T) {
 // A settled spawn chain keeps its rows down to the depth bound while work
 // below it is open: open work three spawns down still lists the whole chain
 // at the root, and nothing past the bound keeps it.
-func TestListThreadAgentRequestsKeepsADeepSettledChain(t *testing.T) {
+func TestListThreadAgentTreeOwnRowsKeepsADeepSettledChain(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	for _, id := range []string{"lead", "child", "grand", "great", "ggreat"} {
@@ -126,7 +139,7 @@ func TestListThreadAgentRequestsKeepsADeepSettledChain(t *testing.T) {
 	settleAgentRequest(t, s, "g-gg", 220)
 	seedAgentRequest(t, s, "gg-open", "great", ThreadRequestSpawn, "ggreat", false, 130)
 	for caller, want := range map[string][]string{"lead": {"l-c"}, "child": {"c-g"}, "grand": {"g-gg"}, "great": {"gg-open"}} {
-		rows, _, err := s.ListThreadAgentRequests(caller, nil, 10_000, 4, 64)
+		rows, _, err := listAgentRequests(s, caller, nil, 10_000, 4, 64)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -136,11 +149,11 @@ func TestListThreadAgentRequestsKeepsADeepSettledChain(t *testing.T) {
 	}
 	// The open request sits three spawns below the lead: a bound of two
 	// levels does not reach it.
-	if rows, _, err := s.ListThreadAgentRequests("lead", nil, 10_000, 2, 64); err != nil || len(rows) != 0 {
+	if rows, _, err := listAgentRequests(s, "lead", nil, 10_000, 2, 64); err != nil || len(rows) != 0 {
 		t.Errorf("a two-level bound lists %v, %v; want nothing", agentRequestTokens(rows), err)
 	}
 	settleAgentRequest(t, s, "gg-open", 300)
-	if rows, _, err := s.ListThreadAgentRequests("lead", nil, 10_000, 4, 64); err != nil || len(rows) != 0 {
+	if rows, _, err := listAgentRequests(s, "lead", nil, 10_000, 4, 64); err != nil || len(rows) != 0 {
 		t.Errorf("with the chain done the lead lists %v, %v", agentRequestTokens(rows), err)
 	}
 }
@@ -148,7 +161,7 @@ func TestListThreadAgentRequestsKeepsADeepSettledChain(t *testing.T) {
 // A settled spawn on another computer stays listed past the settled window
 // while that computer last reported open work under it, and leaves once it
 // reports none; a local spawn above it is kept for it too.
-func TestListThreadAgentRequestsKeepsARemoteSpawnWithOpenWork(t *testing.T) {
+func TestListThreadAgentTreeOwnRowsKeepsARemoteSpawnWithOpenWork(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	for _, id := range []string{"lead", "child"} {
@@ -162,7 +175,7 @@ func TestListThreadAgentRequestsKeepsARemoteSpawnWithOpenWork(t *testing.T) {
 	}
 	settleAgentRequest(t, s, "remote", 210)
 	list := func(caller string) []string {
-		rows, _, err := s.ListThreadAgentRequests(caller, nil, 10_000, 4, 64)
+		rows, _, err := listAgentRequests(s, caller, nil, 10_000, 4, 64)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -202,14 +215,14 @@ func TestListThreadAgentRequestsKeepsARemoteSpawnWithOpenWork(t *testing.T) {
 }
 
 // The listing is bounded and says when it is.
-func TestListThreadAgentRequestsBound(t *testing.T) {
+func TestListThreadAgentTreeOwnRowsBound(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	mustCreateThread(t, s, "lead")
 	for i, token := range []string{"a", "b", "c"} {
 		seedAgentRequest(t, s, token, "lead", ThreadRequestSpawn, "", false, int64(100+i))
 	}
-	rows, more, err := s.ListThreadAgentRequests("lead", nil, 0, 4, 2)
+	rows, more, err := listAgentRequests(s, "lead", nil, 0, 4, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +347,7 @@ func TestListNestedOpenRemoteSpawnsPagesFromTheLastRow(t *testing.T) {
 }
 
 // A spawn cycle with nothing open ends the walk and lists nothing.
-func TestListThreadAgentRequestsEndsASpawnCycle(t *testing.T) {
+func TestListThreadAgentTreeOwnRowsEndsASpawnCycle(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	for _, id := range []string{"a", "b"} {
@@ -346,7 +359,7 @@ func TestListThreadAgentRequestsEndsASpawnCycle(t *testing.T) {
 	settleAgentRequest(t, s, "b-a", 210)
 	seedAgentRequest(t, s, "b-self", "b", ThreadRequestSpawn, "b", false, 111)
 	settleAgentRequest(t, s, "b-self", 211)
-	rows, _, err := s.ListThreadAgentRequests("a", nil, 10_000, 4, 64)
+	rows, _, err := listAgentRequests(s, "a", nil, 10_000, 4, 64)
 	if err != nil {
 		t.Fatal(err)
 	}

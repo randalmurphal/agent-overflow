@@ -2,10 +2,13 @@
 // "Agents segment"): the other threads it is waiting on, each spawn, send or
 // ask it made, with the threads its spawns made nested under them. It reads
 // ListThreadAgentRows when its thread opens, after its computer reconnects or
-// loses a `thread:agent_rows_changed` frame, and on every frame that names its
+// loses a `thread:agent_rows_changed` frame, and on a frame that names its
 // thread or a thread its list nests, which the backend sends after each
-// change to a request or to the thread it went to. Nothing polls. Reads go
-// through the rate-bounded refresh scheduler.
+// change to a request or to the thread it went to. A frame about a row it
+// lists that runs here reads that row alone (GetThreadAgentRow) and keeps
+// its place; any other frame, and a row the read says left the listing,
+// reads the list. Nothing polls. Reads go through one rate-bounded refresh
+// scheduler, so a row read never lands over a newer list.
 //
 // A settled row stays AGENT_ROW_SETTLED_LINGER_MS from when this pane first
 // saw it settled, then leaves; the thread's wake item is the durable record.
@@ -26,13 +29,13 @@
 
 import { untrack } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import { ListThreadAgentRows, type ThreadAgentRow } from '../../stores/bindings';
+import { GetThreadAgentRow, ListThreadAgentRows, type ThreadAgentRow } from '../../stores/bindings';
 import { getQueueForThread, type QueueItem } from '../../stores/sendQueue.svelte';
 import { userMessageOriginThread, userMessageOriginWake } from '../../utils/userMessageMeta';
 import { onThreadAgentRowsChanged } from '../../stores/eventsThreadAgentRows';
 import { getTransportStatusFor, onBackendStatusChange } from '../../stores/transportStatus.svelte';
 import { threadBackend } from '../../transport/entityIndex';
-import { createRefreshScheduler } from '../../utils/refreshScheduler';
+import { createRefreshScheduler, type RefreshToken } from '../../utils/refreshScheduler';
 import {
   agentRowCallers,
   createAgentRowMemo,
@@ -112,6 +115,9 @@ export function createAgentController(
   // The threads whose frames can change this list; read by the frame
   // filter, not rendered.
   let callers = new Set<string>();
+  // What the next read reads: the list, or the rows named by frames since.
+  let listDue = true;
+  const rowsDue = new Set<string>();
   // The other threads' settledSeen and dismissed, in least recently shown
   // order, and the thread the state above is for.
   const remembered = new Map<string, SettledMemory>();
@@ -150,6 +156,44 @@ export function createAgentController(
     callers = forThreadId ? agentRowCallers(forThreadId, next) : new Set();
   }
 
+  // A row runs here when this computer's ledger holds its request and its
+  // target: the row read answers for it. A paired computer's rows, and a
+  // spawn on one with what it nests, are the list's.
+  function patchable(token: string): boolean {
+    const found = listed.find((row) => row.token === token);
+    return !!found && !found.computerId && !found.ownerComputerId;
+  }
+
+  /**
+   * Reads the rows frames named and puts each in its place, keeping what the
+   * list says of its nesting. False when one left the listing, which only a
+   * read of the list can place.
+   */
+  async function readRows(id: string, tokens: string[], token: RefreshToken): Promise<boolean> {
+    let reads;
+    try {
+      reads = await Promise.all(tokens.map((one) => GetThreadAgentRow(id, one)));
+    } catch (err) {
+      if (token.isCurrent() && id === threadId) console.error('ActivityRail: GetThreadAgentRow failed:', err);
+      return false;
+    }
+    if (!token.isCurrent() || id !== threadId) return true;
+    const byToken = new Map<string, ThreadAgentRow>();
+    for (const read of reads) {
+      if (!read?.listed || !read.row) return false;
+      byToken.set(read.row.token, read.row);
+    }
+    if (![...byToken.keys()].every(patchable)) return false;
+    replace(id, listed.map((row) => {
+      const read = byToken.get(row.token);
+      return read ? {
+        ...read, depth: row.depth, nestedHidden: row.nestedHidden,
+        nestedUnavailable: row.nestedUnavailable, ownerComputerId: row.ownerComputerId,
+      } : row;
+    }), hidden);
+    return true;
+  }
+
   const refresh = createRefreshScheduler({
     name: 'activityRailAgents',
     delayMs: REFRESH_DELAY_MS,
@@ -162,6 +206,14 @@ export function createAgentController(
       }
       const owner = threadBackend(id);
       if (owner !== undefined && getTransportStatusFor(owner).status !== 'connected') return;
+      if (!listDue) {
+        const tokens = [...rowsDue];
+        rowsDue.clear();
+        if (tokens.length === 0 || await readRows(id, tokens, token)) return;
+        if (!token.isCurrent() || id !== threadId) return;
+      }
+      listDue = false;
+      rowsDue.clear();
       try {
         const agents = await ListThreadAgentRows(id);
         if (!token.isCurrent() || id !== threadId) return;
@@ -169,7 +221,9 @@ export function createAgentController(
       } catch (err) {
         if (!token.isCurrent() || id !== threadId) return;
         // A failed read says nothing about the requests. Keep the last list
-        // until a read succeeds or the thread changes.
+        // until a read succeeds or the thread changes; the next frame reads
+        // the list.
+        listDue = true;
         console.error('ActivityRail: ListThreadAgentRows failed:', err);
       }
     },
@@ -182,6 +236,8 @@ export function createAgentController(
       const kept = id ? remembered.get(id) : undefined;
       if (id) remembered.delete(id);
       shownFor = id;
+      listDue = true;
+      rowsDue.clear();
       settledSeen = kept?.seen ?? new Map();
       dismissed = kept?.dismissed ?? new Set();
       // Not replace(): an empty list would forget what kept holds.
@@ -227,16 +283,20 @@ export function createAgentController(
     },
 
     mount(): () => void {
-      // The list is read again rather than patched with the frame's row: a
-      // nested row's place and the settled window are the backend's.
+      // A frame about a row the list holds that runs here reads that row;
+      // any other reads the list: a new row's place and the settled window
+      // are the backend's.
       const cancelChanged = onThreadAgentRowsChanged((change, backend) => {
         if (!threadId) return;
         if (change === null ? threadBackend(threadId) !== backend : !callers.has(change.threadId)) return;
+        if (change?.id && !listDue && patchable(change.id)) rowsDue.add(change.id);
+        else listDue = true;
         refresh.request({ immediate: change === null });
       });
       const cancelStatus = onBackendStatusChange((backend, status) => {
         if (!threadId || threadBackend(threadId) !== backend) return;
         refresh.reset();
+        listDue = true;
         if (status.status === 'connected') refresh.request({ immediate: true });
       });
       return () => {

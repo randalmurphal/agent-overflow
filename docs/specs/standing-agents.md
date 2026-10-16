@@ -470,9 +470,10 @@ thread's session start finds it gone, the start fails with
 `errAssistantSessionGone` and the app runs New Thread, Same Assistant
 itself (`recoverAssistantSessionLoss`, unless a handoff of the assistant
 already runs, which takes the sends below the same way): a
-Claude or Claude TUI resume checks the transcript before anything is
-torn down (`requireAssistantClaudeSession`, `sessionfork.LocateSessionFile`,
-the check the workflow runner's resume makes), and a Codex start's
+provider whose capabilities name a transcript to check (Claude and Claude
+TUI, `provider.ClaudeProjectsTranscript`) has it checked before anything
+is torn down (`requireAssistantSession`, `sessionfork.ResumeTranscriptGone`,
+the lookup the workflow runner's resume makes), and a Codex start's
 `thread/resume` refusal (`codex.IsThreadNotFound`, the workflow runner's
 signal) marks it. The successor's opening block says the provider
 cleaned up the previous thread's session, names that thread's id, says
@@ -1081,9 +1082,9 @@ closes up their spacing so the row holds at a phone width.
   running target's latest activity is a second line; the chevron opens the
   row's digest: the activity, what it is blocked on in full, the last
   message in the thread (a request without the footer the app appended)
-  and the answer once it settled. State comes from
-  the thread tools' own derivation (`requestStateView`); reading never
-  delivers an answer.
+  and the answer once it settled. State comes from the thread tools' own
+  derivation (`requestStateFrom`, which `requestStateView` runs for
+  `thread_status`); reading never delivers an answer.
 - **Nesting.** A spawned thread's own rows nest under its row, as provider
   subagents nest under theirs, four levels deep; a row at the bound whose
   thread has agents of its own says so. A settled spawn stays listed while
@@ -1161,13 +1162,27 @@ closes up their spacing so the row holds at a phone width.
   that predates the calls has the request cancelled and the turn
   interrupted, and the row and the Stop's toast say its own work was not
   shown or stopped.
-- **Live updates.** `ListThreadAgentRows` is read when the thread opens,
-  after a reconnect or a lost frame, and on each
-  `thread:agent_rows_changed` frame naming the thread or a thread its list
-  nests. The backend sends one after every change to a request, to the
-  target a running request works in, and to a wait parked on one,
-  coalesced off the emit path. Reads go through the rate-bounded refresh
-  scheduler.
+- **Live updates.** The backend sends `thread:agent_rows_changed` after
+  every change to a request, to the target a running request works in,
+  and to a wait parked on one, coalesced off the emit path: one statement
+  names the callers of a batch. The frame names the caller and the
+  request and carries no row. `ListThreadAgentRows` is read when the
+  thread opens, after a reconnect or a lost frame, and on a frame naming
+  the thread or a thread its list nests that is not about a local row the
+  pane lists: a new row, a frame about every request of a caller, a row a
+  paired computer listed or a spawn on one. A frame about a local row the
+  pane lists reads that row alone (`GetThreadAgentRow`), and the pane
+  keeps the row's place, depth and nesting marks; a row the read says is
+  no longer listed reads the list again. Reads go through the
+  rate-bounded refresh scheduler.
+- **Reads.** A listing is a constant number of statements whatever the
+  tree's size: the tree with each row's depth in one recursive read, the
+  targets' titles and providers in one, their last messages in one. A row
+  carries the head of its answer (what the row shows), never the whole
+  answer or the late reply, and names its wake item from the request
+  (`thread_requests.wake_item_id`, `late_wake_item_id`, recorded when the
+  echo confirms the wake), not by a send-id lookup. A tool row's state
+  read (`GetThreadRequestStates`) is one statement for all its tokens.
 
 #### Agent thread companion
 

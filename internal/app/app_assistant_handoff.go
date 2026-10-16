@@ -66,25 +66,36 @@ var errAssistantSessionGone = errors.New("the provider no longer has this assist
 // gone is told.
 const assistantSessionGoneMessage = "The provider cleaned up this assistant's session. It continues in a new thread, and your message is waiting in that thread's composer."
 
-// requireAssistantClaudeSession refuses a Claude or Claude TUI resume of an
-// assistant's current thread whose transcript is gone, before the start
-// tears anything down. Codex has no file to look for; its thread/resume
-// refusal is the signal (startSessionNow).
-func (a *App) requireAssistantClaudeSession(t store.Thread, opts provider.SessionOptions) error {
-	if opts.Resume == "" || opts.ForkSession || (t.Provider != string(provider.Claude) && t.Provider != string(provider.ClaudeTUI)) {
+// requireAssistantSession refuses a resume of an assistant's current thread
+// whose transcript its provider says is gone, before the start tears
+// anything down. A provider with no transcript to look for
+// (provider.NoResumeTranscript) refuses the resume itself
+// (startSessionNow). A check that cannot tell lets the start go on, and the
+// provider's own refusal decides.
+func (a *App) requireAssistantSession(t store.Thread, opts provider.SessionOptions) error {
+	if opts.Resume == "" || opts.ForkSession || t.AgentID == "" {
 		return nil
 	}
-	if _, found, err := a.store.GetStandingAgent(t.ID); err != nil || !found {
-		return err
+	switch provider.CapabilitiesForProvider(t.Provider).ResumeTranscript {
+	case provider.NoResumeTranscript:
+		return nil
+	case provider.ClaudeProjectsTranscript:
+		projectsDir, err := a.claudeProjectsDir()
+		if err != nil {
+			return err
+		}
+		gone, err := sessionfork.ResumeTranscriptGone(projectsDir, opts.Resume, opts.WorkDir)
+		if err != nil {
+			log.Printf("assistants: check the transcript of %s: %v", t.ID, err)
+			return nil
+		}
+		if gone {
+			return errors.Join(errAssistantSessionGone, sessionfork.ErrSessionFileNotFound)
+		}
+		return nil
+	default:
+		return fmt.Errorf("check the session of %s: provider %s keeps its transcript where the app cannot look", t.ID, t.Provider)
 	}
-	projectsDir, err := a.claudeProjectsDir()
-	if err != nil {
-		return err
-	}
-	if _, err := sessionfork.LocateSessionFile(projectsDir, opts.Resume, opts.WorkDir); errors.Is(err, sessionfork.ErrSessionFileNotFound) {
-		return errors.Join(errAssistantSessionGone, err)
-	}
-	return nil
 }
 
 // assistantHandOffState holds, by assistant, the thread its running handoff

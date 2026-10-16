@@ -28,6 +28,18 @@ func ProjectsDirForHome(home string) string {
 	return filepath.Join(home, ".claude", "projects")
 }
 
+// ResumeTranscriptGone reports whether the transcript a resume of sessionID
+// from workspacePath reads is gone from projectsDir, which a start checks
+// before it stops the session it replaces. An error says the check could
+// not tell.
+func ResumeTranscriptGone(projectsDir, sessionID, workspacePath string) (bool, error) {
+	_, err := LocateSessionFile(projectsDir, sessionID, workspacePath)
+	if errors.Is(err, ErrSessionFileNotFound) {
+		return true, nil
+	}
+	return false, err
+}
+
 // LocateSessionFile resolves the on-disk path of a Claude session JSONL
 // under projectsDir (see ProjectsDirForHome).
 //

@@ -347,7 +347,7 @@ func TestASessionTheProviderCleanedUpMovesTheAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.requireAssistantClaudeSession(plain, provider.SessionOptions{Resume: uuid.NewString()}); err != nil {
+	if err := f.app.requireAssistantSession(plain, provider.SessionOptions{Resume: uuid.NewString()}); err != nil {
 		t.Fatalf("an ordinary thread was checked: %v", err)
 	}
 }

@@ -145,6 +145,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2329592604: 'home', // GetTerminalReplay
 	2000462111: 'home', // GetThemeFiles
 	1098302047: 'thread', // GetThread
+	1208623168: 'thread', // GetThreadAgentRow
 	3852033265: 'thread', // GetThreadContextUsage
 	3362481473: 'selected', // GetThreadDefaults
 	1969869112: 'thread', // GetThreadItem

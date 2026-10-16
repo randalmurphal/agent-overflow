@@ -37,26 +37,10 @@ func assertPlanSearches(t *testing.T, s *Store, what, table string, allowed []st
 	}
 }
 
-// Every read of the Agents segment's query is a SEARCH through an index
-// that leaves the caller's settled history out: the open and recently
-// settled rows, the local spawns and the nested remote spawns each have
-// their own. idx_thread_requests_caller, which orders a caller's whole
-// history, is not among them.
-func TestThreadAgentRequestsSearchTheirArms(t *testing.T) {
+// HasOpenThreadRequests reads the caller's open rows, not its history.
+func TestHasOpenThreadRequestsSearchesTheOpenRows(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	assertPlanSearches(t, s, "threadAgentRequestsSQL", "r", []string{
-		"idx_thread_requests_spawn_caller", "sqlite_autoindex_thread_requests_1",
-	}, threadAgentRequestsSQL+"65", "lead", "[]", int64(0), 4)
-	assertPlanSearches(t, s, "threadAgentRequestsSQL", "c", []string{
-		"idx_thread_requests_caller_settled", "idx_thread_requests_nested_caller",
-	}, threadAgentRequestsSQL+"65", "lead", "[]", int64(0), 4)
-	assertPlanSearches(t, s, "threadAgentRequestsSQL", "thread_requests", []string{
-		"idx_thread_requests_caller_settled", "idx_thread_requests_spawn_caller",
-	}, threadAgentRequestsSQL+"65", "lead", "[]", int64(0), 4)
-	assertPlanSearches(t, s, "threadAgentRequestsSQL", "t", []string{
-		"idx_thread_requests_nested_caller",
-	}, threadAgentRequestsSQL+"65", "lead", "[]", int64(0), 4)
 	assertPlanSearches(t, s, "HasOpenThreadRequests", "thread_requests", []string{"idx_thread_requests_caller_settled"},
 		hasOpenThreadRequestsSQL, "lead")
 }
@@ -91,12 +75,16 @@ func TestThreadAgentRequestsArmsAgainstAHistory(t *testing.T) {
 		seedAgentRequest(t, s, token, "lead", ThreadRequestSend, "peer", true, int64(1_000+i))
 		settleAgentRequest(t, s, token, int64(2_000+i))
 	}
-	rows, more, err := s.ListThreadAgentRequests("lead", nil, 4_000, 4, 64)
+	rows, more, err := s.ListThreadAgentTree(ThreadAgentTreeRead{Root: "lead", SettledSince: 4_000, Depth: 4, OpenDepth: 4, Limit: 64, AnswerHead: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"to-child", "remote-open", "recent", "open-send"}
-	if got := agentRequestTokens(rows); !slices.Equal(got, want) || more {
+	var got []string
+	for _, row := range rows {
+		got = append(got, row.Token)
+	}
+	want := []string{"to-child", "to-grand", "grand-open", "remote-open", "recent", "open-send"}
+	if !slices.Equal(got, want) || more {
 		t.Fatalf("listed %v more=%v; want %v", got, more, want)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/triage"
 )
 
 // agentTreeShape is a standing agent's tree at the size the Agents segment
@@ -95,7 +96,7 @@ func seedAgentTree(t *testing.T, f *requestFixture) agentTreeShape {
 		if ok, err := f.app.store.MarkThreadRequestDelivered(token, store.ThreadWakeQueued, now, false); err != nil || !ok {
 			t.Fatalf("mark %s delivered: %v %v", token, ok, err)
 		}
-		f.app.confirmOwnedDeliveries(chief, []string{threadWakeSendID(token)})
+		f.app.confirmOwnedDeliveries(chief, []triage.ConsumedSend{{ItemID: "wake-" + token, SendIDs: []string{threadWakeSendID(token)}}})
 		shape.settled = append(shape.settled, token)
 	}
 	waitAgentEmitsIdle(t, f.app)
@@ -131,10 +132,14 @@ func measureAgentTree(a *App, runs int, call func()) agentTreeCost {
 	}
 }
 
-// TestAgentTreeReadCost measures the Agents segment's reads over the tree
-// above: the listing, a tool rows' state read of 256 settled tokens, and
-// the change frames of the 200 open sends. Run it alone for its timings.
+// TestAgentTreeReadCost pins the Agents segment's reads over the tree above
+// to a number of statements that does not grow with it: the listing (the
+// thread, the tree, its targets' names and last messages), a tool rows'
+// state read of 256 settled tokens, the change frames of the 200 open sends,
+// and an assistant's session check on a Claude resume. Run it alone for its
+// timings.
 func TestAgentTreeReadCost(t *testing.T) {
+	t.Parallel()
 	f := newRequestFixture(t)
 	shape := seedAgentTree(t, f)
 	chief := f.caller.ID
@@ -150,6 +155,12 @@ func TestAgentTreeReadCost(t *testing.T) {
 			}
 		}
 	})
+	tree := measureAgentTree(f.app, 20, func() {
+		if _, _, err := newThreadAgentView(f.app).tree(chief, threadAgentRowDepth, "", threadAgentRowLimit); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Logf("tree read alone: %.1f reads, %v per call", tree.reads, tree.per)
 	states := measureAgentTree(f.app, 20, func() {
 		got, err := f.app.GetThreadRequestStates(chief, shape.settled[:maxThreadRequestStates])
 		if err != nil || len(got) != maxThreadRequestStates {
@@ -172,12 +183,23 @@ func TestAgentTreeReadCost(t *testing.T) {
 		f.app.drainThreadAgentEmits()
 	})
 	resume := measureAgentTree(f.app, 20, func() {
-		if err := f.app.requireAssistantClaudeSession(f.caller, provider.SessionOptions{Resume: "session-1", WorkDir: t.TempDir()}); err != nil {
-			t.Fatalf("requireAssistantClaudeSession: %v", err)
+		if err := f.app.requireAssistantSession(f.caller, provider.SessionOptions{Resume: "session-1", WorkDir: t.TempDir()}); err != nil {
+			t.Fatalf("requireAssistantSession: %v", err)
 		}
 	})
 	t.Logf("assistant session check on a Claude resume: %.1f reads, %v per start", resume.reads, resume.per)
 	t.Logf("listing: %.1f reads, %v per call", list.reads, list.per)
 	t.Logf("request states (256 tokens): %.1f reads, %v per call", states.reads, states.per)
 	t.Logf("frames (200 tokens): %.1f reads, %v per drain", frames.reads, frames.per)
+	for _, leg := range []struct {
+		name        string
+		reads, most float64
+	}{
+		{"the listing", list.reads, 4}, {"the tree", tree.reads, 1}, {"the request states", states.reads, 1},
+		{"a drain of frames", frames.reads, 1}, {"the session check", resume.reads, 0},
+	} {
+		if leg.reads > leg.most {
+			t.Errorf("%s ran %.1f reads; want at most %.0f", leg.name, leg.reads, leg.most)
+		}
+	}
 }

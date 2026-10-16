@@ -578,7 +578,7 @@ func TestAStopKeepsAnAnswerOrCompletionTheProviderConfirmed(t *testing.T) {
 	w := completedRemoteWatch(t, f.app, f.caller)
 	queueOwnedAndPersonMessages(t, f, token, false, w, "build passed")
 	dispatchUnconfirmed(t, f)
-	f.app.confirmOwnedDeliveries(f.caller.ID, []string{threadWakeSendID(token), remoteCompletionSendID(w)})
+	f.app.confirmOwnedDeliveries(f.caller.ID, []triage.ConsumedSend{{SendIDs: []string{threadWakeSendID(token), remoteCompletionSendID(w)}}})
 
 	if err := f.app.StopSession(f.caller.ID); err != nil {
 		t.Fatalf("StopSession: %v", err)

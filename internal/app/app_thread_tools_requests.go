@@ -442,11 +442,26 @@ func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadReques
 // calling agent (the activity rail) can show a settled answer without
 // taking the wake it owes.
 func (t threadToolsApp) requestStateView(row store.ThreadRequest) threadtools.RequestState {
+	// The newest revision is the answer: a late reply supersedes the final
+	// message the caller was already told about.
+	answer, late := row.Answer, len(row.LateReply) > 0
+	if late {
+		answer = row.LateReply
+	}
+	return requestStateFrom(row, answer, late, t.requestTitle(row), t.app.threadRequestBlocked(row))
+}
+
+// requestStateFrom is requestStateView's derivation from what it reads:
+// the newer answer and whether it is a late reply, the target's title and
+// whether the target waits on a person. The Agents listing reads those for
+// all its rows at once and derives each row here.
+func requestStateFrom(row store.ThreadRequest, answer []byte, lateReply bool, title string, blocked bool) threadtools.RequestState {
 	state := threadtools.RequestState{
 		Token:      row.Token,
 		Kind:       row.Kind,
 		ThreadID:   row.TargetThreadID,
 		ComputerID: row.TargetComputerID,
+		Title:      title,
 		State:      threadRequestStateWord(row.State),
 		AnswerKind: threadAnswerKindWord(row.AnswerKind),
 		Revision:   row.Revision,
@@ -454,35 +469,60 @@ func (t threadToolsApp) requestStateView(row store.ThreadRequest) threadtools.Re
 		Delivered:  row.DeliveryRoute(row.LateDeliveredAt != 0),
 		ExpiresAt:  row.ExpiresAt,
 		DueAt:      row.DueAt,
+		Answer:     string(answer),
 	}
-	// The newest revision is the answer: a late reply supersedes the final
-	// message the caller was already told about.
-	answer := row.Answer
-	if len(row.LateReply) > 0 {
-		answer = row.LateReply
+	if lateReply {
 		state.AnswerKind = threadtools.AnswerReply
 	}
-	state.Answer = string(answer)
-	if !threadRequestSettled(row) && t.app.threadRequestBlocked(row) {
+	if !threadRequestSettled(row) && blocked {
 		state.State = threadtools.RequestBlocked
 	}
-	if row.TargetThreadID != "" && row.TargetComputerID != "" {
-		// A thread on another computer has no row here. Its title is what
-		// that computer reported when the target was recorded.
-		state.Title = row.TargetThreadTitle
-	} else if row.TargetThreadID != "" {
-		if thread, err := t.app.store.GetThread(row.TargetThreadID); err == nil {
-			state.Title = thread.Title
-		} else if row.OriginThreadID != "" {
-			// An ask's scratch fork is deleted once it has answered. The
-			// thread it was forked from is what the caller asked about, and
-			// naming it is more useful than naming nothing.
-			if origin, err := t.app.store.GetThread(row.OriginThreadID); err == nil {
-				state.Title = origin.Title
-			}
+	return state
+}
+
+// requestTitle names a request's target thread.
+func (t threadToolsApp) requestTitle(row store.ThreadRequest) string {
+	if row.TargetThreadID == "" {
+		return ""
+	}
+	if row.TargetComputerID != "" {
+		return requestTitleFrom(row, nil)
+	}
+	ids := []string{row.TargetThreadID}
+	if row.OriginThreadID != "" {
+		ids = append(ids, row.OriginThreadID)
+	}
+	names := map[string]store.ThreadName{}
+	for _, id := range ids {
+		if thread, err := t.app.store.GetThread(id); err == nil {
+			names[id] = store.ThreadName{Title: thread.Title, Provider: thread.Provider}
+			break
 		}
 	}
-	return state
+	return requestTitleFrom(row, names)
+}
+
+// requestTitleFrom names a request's target from the names of the threads
+// it reads.
+func requestTitleFrom(row store.ThreadRequest, names map[string]store.ThreadName) string {
+	switch {
+	case row.TargetThreadID == "":
+		return ""
+	case row.TargetComputerID != "":
+		// A thread on another computer has no row here. Its title is what
+		// that computer reported when the target was recorded.
+		return row.TargetThreadTitle
+	}
+	if name, ok := names[row.TargetThreadID]; ok {
+		return name.Title
+	}
+	if row.OriginThreadID != "" {
+		// An ask's scratch fork is deleted once it has answered. The thread
+		// it was forked from is what the caller asked about, and naming it
+		// is more useful than naming nothing.
+		return names[row.OriginThreadID].Title
+	}
+	return ""
 }
 
 // inlineClaim is what a reply found when it went to deliver an answer.

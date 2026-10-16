@@ -275,29 +275,34 @@ func (r *Router) confirmConsumedSend(evt provider.ProviderEvent, pending pending
 }
 
 // reportSendsConsumed tells the app layer (flushSendConsumed) that the
-// provider consumed these sends, by the send ids they carry. A send whose ids
-// cannot be read leaves its owners unconfirmed, so the next boot gives its
-// message back; that is logged with the send it concerns. Caller holds the
-// thread's flush anchor lock and not r.mu.
+// provider consumed these sends, by the rows and send ids they carry. A send
+// whose ids cannot be read leaves its owners unconfirmed, so the next boot
+// gives its message back; that is logged with the send it concerns. Caller
+// holds the thread's flush anchor lock and not r.mu.
 func (r *Router) reportSendsConsumed(threadID string, sends []pendingSend) {
-	r.mu.Lock()
-	consumed := r.flushSendConsumed
-	r.mu.Unlock()
-	if consumed == nil {
-		return
-	}
-	var ids []string
+	consumed := make([]ConsumedSend, 0, len(sends))
 	for _, send := range sends {
 		sendIDs, err := send.sendIDs()
 		if err != nil {
 			log.Printf("triage: consumed send %s/%s (queue %s) leaves its owners unconfirmed: %v", threadID, send.AOItemID, send.QueueItemID, err)
 			continue
 		}
-		ids = append(ids, sendIDs...)
+		if len(sendIDs) > 0 {
+			consumed = append(consumed, ConsumedSend{ItemID: send.AOItemID, SendIDs: sendIDs})
+		}
 	}
-	if len(ids) > 0 {
-		consumed(threadID, ids)
+	r.reportConsumed(threadID, consumed)
+}
+
+// reportConsumed hands consumed sends to flushSendConsumed.
+func (r *Router) reportConsumed(threadID string, sends []ConsumedSend) {
+	r.mu.Lock()
+	consumed := r.flushSendConsumed
+	r.mu.Unlock()
+	if consumed == nil || len(sends) == 0 {
+		return
 	}
+	consumed(threadID, sends)
 }
 
 func (r *Router) persistDeferredUserText(pending *pendingSend, evt provider.ProviderEvent) error {

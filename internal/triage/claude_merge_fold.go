@@ -130,6 +130,14 @@ func (r *Router) foldMergedFlushRows(threadID, sessionToken string, survivor *pe
 		return fmt.Errorf("triage: fold merged flush rows on %s: %w", threadID, err)
 	}
 
+	// The survivor's row now carries every member's message, its owners'
+	// included: a member whose own echo confirmed it named its own row,
+	// which the fold deleted.
+	var carried []string
+	for _, member := range folded {
+		carried = append(carried, sendIDsOf(member.meta)...)
+	}
+	r.reportConsumed(threadID, []ConsumedSend{{ItemID: persisted.ID, SendIDs: carried}})
 	r.settleFoldedMergeState(threadID, sessionToken, survivor, digests)
 	r.settleFoldEmptiedTurns(threadID, sessionToken, survivor, persisted.ID, folded, now)
 
@@ -159,8 +167,8 @@ func (r *Router) foldMergedFlushRows(threadID, sessionToken string, survivor *pe
 // entry would let the late echo pop it and stamp a row this fold absorbed; and
 // dropping the entry without marking its uuid seen would route that echo to
 // the injected-context branch. Both are done together here. The consumption is
-// also a confirmation source: the app layer hears of the entry's send ids, as
-// it would from the entry's own echo, or its owners would stay unconfirmed.
+// also a confirmation source, which foldMergedFlushRows reports for every
+// member before this runs.
 func (r *Router) settleFoldedMergeState(threadID, sessionToken string, survivor *pendingSend, digests []flushSendDigest) {
 	var joinedDigest []string
 	dropped := make([]string, 0, len(digests))
@@ -195,7 +203,6 @@ func (r *Router) settleFoldedMergeState(threadID, sessionToken string, survivor 
 	for _, providerItemID := range consumedIDs {
 		r.markWireOnlyUserTextSeen(threadID, providerItemID)
 	}
-	r.reportSendsConsumed(threadID, consumedSends)
 	// The survivor's turn is the members' too: the CLI ran them as one
 	// message.
 	members := make([]*pendingSend, 0, len(consumedSends))

@@ -1167,21 +1167,24 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 }
 
 // confirmOwnedDeliveries records the provider's echo of the answers,
-// reminders and completions a consumed send carries (sendIDs): the second
-// phase of their owners' delivery mark, after which nothing gives them
-// back. It runs on the provider read loop under the flush anchor lock, so a
-// person's send costs nothing but the id check.
-func (a *App) confirmOwnedDeliveries(threadID string, sendIDs []string) {
+// reminders and completions consumed sends carry: the second phase of their
+// owners' delivery mark, after which nothing gives them back, with the row
+// that carried an answer, which its request names from then on. It runs on
+// the provider read loop under the flush anchor lock, so a person's send
+// costs nothing but the id check.
+func (a *App) confirmOwnedDeliveries(threadID string, sends []triage.ConsumedSend) {
 	now := time.Now().UnixMilli()
-	for _, id := range sendIDs {
-		if token, late, ok := threadWakeFromSendID(id); ok {
-			_, err := a.store.ConfirmThreadWake(token, late, now)
-			logThreadRequestSweep("confirm "+id+" in "+threadID, err)
-			continue
-		}
-		if computerID, requestID, ok := remoteCompletionFromSendID(id); ok {
-			_, err := a.store.ConfirmRemoteCompletion(computerID, requestID, now)
-			logThreadRequestSweep("confirm "+id+" in "+threadID, err)
+	for _, send := range sends {
+		for _, id := range send.SendIDs {
+			if token, late, ok := threadWakeFromSendID(id); ok {
+				_, err := a.store.ConfirmThreadWake(token, late, send.ItemID, now)
+				logThreadRequestSweep("confirm "+id+" in "+threadID, err)
+				continue
+			}
+			if computerID, requestID, ok := remoteCompletionFromSendID(id); ok {
+				_, err := a.store.ConfirmRemoteCompletion(computerID, requestID, now)
+				logThreadRequestSweep("confirm "+id+" in "+threadID, err)
+			}
 		}
 	}
 }

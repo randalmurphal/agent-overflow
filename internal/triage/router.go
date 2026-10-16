@@ -178,11 +178,12 @@ type Router struct {
 	// anchor is recorded at send time in app_send.go.
 	flushUserTextConfirmed func(threadID string, item store.Item)
 	// flushSendConsumed is the app-layer signal that the provider consumed
-	// a flush send, by the send ids it carries: every confirmation source
-	// (confirmConsumedSend), whether or not the row's write then succeeds,
-	// and a queue-boundary merge that consumes a member whose own echo had
-	// not arrived (settleFoldedMergeState), never an interrupt's anchoring.
-	flushSendConsumed func(threadID string, sendIDs []string)
+	// flush sends, by the row and the send ids each carries: every
+	// confirmation source (confirmConsumedSend), whether or not the row's
+	// write then succeeds, and a queue-boundary merge, for every member it
+	// folds into the survivor (foldMergedFlushRows), never an interrupt's
+	// anchoring.
+	flushSendConsumed func(threadID string, sends []ConsumedSend)
 	// sendDelivered is the app-layer signal naming the turn a queued send
 	// was delivered into (send_delivery.go).
 	sendDelivered func(threadID string, delivery SendDelivery)
