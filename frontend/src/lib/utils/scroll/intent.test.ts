@@ -795,7 +795,7 @@ describe('deferred scroll pass', () => {
     it('stays escaped when it lands outside the re-stick epsilon', async () => {
       const h = wheeledDownWhileEscaped();
       await pastWindow();
-      landAt(h, AUTO_FOLLOW_BOTTOM_EPSILON_PX + 1);
+      landAt(h, AUTO_FOLLOW_BOTTOM_EPSILON_PX + 1, 500 - AUTO_FOLLOW_BOTTOM_EPSILON_PX - 1);
       await settleDeferredPass();
 
       expect(h.state.escaped).toBe(true);
@@ -1033,6 +1033,18 @@ describe('deferred scroll pass', () => {
         landAt(h, 700, 700);
         landAt(h, 300, 1100);
         landAt(h, 0, 1400);
+        await settleDeferredPass();
+
+        expect(h.state.escaped).toBe(false);
+      });
+
+      it('a late End landing on the end it aimed at re-sticks though the bottom moved', async () => {
+        const h = keyedDownWhileEscaped('End', 1000);
+        await pastWindow();
+        landAt(h, 700, 700);
+        // Rows mounting at the tail moved the bottom 577 px below the end
+        // End's scroll was computed for.
+        landAt(h, 577, 1400);
         await settleDeferredPass();
 
         expect(h.state.escaped).toBe(false);

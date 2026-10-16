@@ -236,7 +236,8 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   // target it started with). Landing on it counts as reaching the bottom.
   // A position past it is not arrival: content inserted above shifts
   // every position, and a step computed after the bottom moved passed it
-  // without aiming there. -1 when no down input is live.
+  // without aiming there. -1 when no down input is live: neither the
+  // recent window nor a pending landing (below), which can arrive late.
   let downIntentShownEnd = -1;
   let recentDownIntentVersion = 0;
   let recentDownIntentClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -291,7 +292,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   function clearRecentDownIntent(opts: { bumpVersion?: boolean } = {}): void {
     recentDownIntentUntil = 0;
-    downIntentShownEnd = -1;
+    if (!downLandingPending) downIntentShownEnd = -1;
     if (opts.bumpVersion ?? true) recentDownIntentVersion += 1;
     if (recentDownIntentClearTimer) {
       clearTimeout(recentDownIntentClearTimer);
@@ -300,9 +301,14 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   }
 
   function clearDownLanding(): void {
-    downLandingPending = false;
+    endDownLanding();
     downLandingTravelPx = 0;
     downLandingVersion += 1;
+  }
+
+  function endDownLanding(): void {
+    downLandingPending = false;
+    if (!hasRecentDownIntent()) downIntentShownEnd = -1;
   }
 
   // Spends one untagged scroll event's movement from the pending gesture.
@@ -311,11 +317,11 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   function spendDownLanding(moved: number, unattributed: boolean, layoutShift: boolean): boolean {
     if (layoutShift || (moved === 0 && !unattributed)) return false;
     if (unattributed || moved < 0 || moved > downLandingTravelPx + AUTO_FOLLOW_BOTTOM_EPSILON_PX) {
-      downLandingPending = false;
+      endDownLanding();
       return false;
     }
     downLandingTravelPx -= moved;
-    if (downLandingOneEvent || !(downLandingTravelPx > 0)) downLandingPending = false;
+    if (downLandingOneEvent || !(downLandingTravelPx > 0)) endDownLanding();
     return true;
   }
 
@@ -646,7 +652,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     if (tagged) {
       // An End's travel never runs out; the controller moving the view
       // ends it as spending would.
-      if (downLandingTravelPx === Number.POSITIVE_INFINITY && !downLandingOneEvent) downLandingPending = false;
+      if (downLandingPending && downLandingTravelPx === Number.POSITIVE_INFINITY && !downLandingOneEvent) endDownLanding();
       return;
     }
     const distFromBottomAtEvent = deps.refreshIsNearBottom();
@@ -731,11 +737,17 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
         eventCameFromCurrentScrollbarDrag
         && scrolledDown;
       // A down gesture's own scroll landing at the bottom, however late.
+      // The gesture landed on the end its input aimed at, though the
+      // bottom has since moved below it (see downIntentShownEnd); an
+      // anchoring shift is not arrival.
+      const landedAtShownEnd = shownEndAtEvent >= 0
+        && !layoutShift
+        && Math.abs(scrollTopAtEvent - shownEndAtEvent) <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
       const landedFromDownGesture = downLandingAtEvent
         && downLandingVersion === downLandingVersionAtEvent
         && scrolledDown
         && !nativeClamp
-        && distFromBottomAtEvent <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+        && (distFromBottomAtEvent <= AUTO_FOLLOW_BOTTOM_EPSILON_PX || landedAtShownEnd);
       const hasLiveDownIntent = hasLiveRecentDownIntent || hasLiveScrollbarDragRestickIntent
         || landedFromDownGesture;
       if (resizeCorrelatedScroll && !hasLiveDownIntent) {
@@ -756,13 +768,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
         return;
       }
 
-      // The gesture landed on the end its input aimed at, though the
-      // bottom has since moved below it (see downIntentShownEnd); an
-      // anchoring shift is not arrival.
-      const reachedShownEnd = hasLiveRecentDownIntent
-        && shownEndAtEvent >= 0
-        && !layoutShift
-        && Math.abs(scrollTopAtEvent - shownEndAtEvent) <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+      const reachedShownEnd = (hasLiveRecentDownIntent || landedFromDownGesture) && landedAtShownEnd;
       const willRestick = hasLiveDownIntent
         && scrolledDown
         && deps.escaped()

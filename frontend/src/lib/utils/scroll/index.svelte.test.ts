@@ -2236,9 +2236,13 @@ describe('createUseStickToBottomController', () => {
       expect(geom.scrollTop).toBe(822);
     });
 
-    it('reaching an earlier aimed-at end after the down input expired stays escaped', async () => {
+    it('reaching an earlier aimed-at end after the down input was spent stays escaped', async () => {
       await escapeTo(100);
-      fireWheel(scrollEl, 100_000, scrollEl);
+      // One notch, spent by its own scroll short of the end it aimed at.
+      fireWheel(scrollEl, 100, scrollEl);
+      geom.scrollTop = 200;
+      fireScroll(scrollEl);
+      await nextTimer();
       mockNow += 300;
       await waitRealMs(300);
       growTail();
@@ -2248,6 +2252,21 @@ describe('createUseStickToBottomController', () => {
 
       expect(controller.escapedFromLock).toBe(true);
       expect(geom.scrollTop).toBe(400);
+    });
+
+    it('a wheel to the end whose scroll lands on the aimed-at end after the window re-sticks and follows', async () => {
+      await escapeTo(100);
+      fireWheel(scrollEl, 100_000, scrollEl);
+      mockNow += 300;
+      await waitRealMs(300);
+      growTail();
+      geom.scrollTop = 400;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      expect(controller.escapedFromLock).toBe(false);
+      for (let i = 0; i < 120 && geom.scrollTop < 977; i += 1) await nextFrame();
+      expect(geom.scrollTop).toBe(977);
     });
 
     it('pointer-tap on the scrollbar escapes immediately and does not safety-net repin', async () => {
