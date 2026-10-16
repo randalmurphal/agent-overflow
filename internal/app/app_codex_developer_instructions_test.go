@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -277,5 +278,121 @@ func TestCodexForkChildInjectsOnce(t *testing.T) {
 		if err := app.StopSession(forked.ID); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// writeCodexInjectOrderAppServer logs every request to requestLog and
+// answers thread/inject_items from a background subshell after a delay,
+// logging the marker MOCK/inject-answered just before the answer. It keeps
+// reading meanwhile, so a turn/start the app writes before the injection was
+// answered is logged ahead of the marker.
+func writeCodexInjectOrderAppServer(t *testing.T, requestLog string) string {
+	t.Helper()
+	script := fmt.Sprintf(`#!/bin/sh
+n=0
+while IFS= read -r line; do
+    /bin/echo "$line" >> '%s'
+    id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"config/read"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"config":{}}}\n' "$id"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then
+        thread=$(/bin/echo "$line" | /usr/bin/grep -o '"threadId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%%s"}}}\n' "$id" "$thread"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/inject_items"'; then
+        (
+            /bin/sleep 0.3
+            /bin/echo '{"method":"MOCK/inject-answered"}' >> '%s'
+            printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+        ) &
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/start"'; then
+        n=$((n+1))
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"turn":{"id":"turn-%%s","status":"inProgress","items":[]}}}\n' "$id" "$n"
+    elif /bin/echo "$line" | /usr/bin/grep -q '"method":"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+    fi
+done
+`, requestLog, requestLog)
+	path := filepath.Join(t.TempDir(), "codex-inject-order.sh")
+	mockexec.Write(t, path, script)
+	return path
+}
+
+// loggedCodexMethods lists the logged request methods and markers in order.
+func loggedCodexMethods(t *testing.T, requestLog string) []string {
+	t.Helper()
+	data, err := os.ReadFile(requestLog)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	var methods []string
+	for _, line := range strings.Split(string(data), "\n") {
+		var req struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal([]byte(line), &req) == nil && req.Method != "" {
+			methods = append(methods, req.Method)
+		}
+	}
+	return methods
+}
+
+// A send that races the session start of a resumed thread with no record
+// reaches the app-server only after the injection was answered: the inject
+// runs before NewSession returns, and a send joins that start.
+func TestCodexInjectPrecedesASendRacingTheResume(t *testing.T) {
+	t.Parallel()
+	app, _ := setupE2EApp(t)
+	requestLog := filepath.Join(t.TempDir(), "requests.jsonl")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": writeCodexInjectOrderAppServer(t, requestLog)}); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := createTestThread(t, app, string(provider.Codex), t.TempDir(), "gpt-5", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.store.UpdateSessionRef(thread.ID, "codex-existing"); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); errs <- app.StartSession(thread.ID) }()
+	go func() { defer wg.Done(); errs <- app.SendMessage(thread.ID, "hello", nil) }()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Logf("racing call: %v", err)
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		methods := loggedCodexMethods(t, requestLog)
+		inject, turn := -1, -1
+		for i, m := range methods {
+			if m == "MOCK/inject-answered" && inject < 0 {
+				inject = i
+			}
+			if m == "turn/start" && turn < 0 {
+				turn = i
+			}
+		}
+		if inject >= 0 && turn >= 0 {
+			if turn < inject {
+				t.Fatalf("turn/start (#%d) preceded the injection's answer (#%d): %v", turn, inject, methods)
+			}
+			t.Logf("order ok: %v", methods)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("methods = %v, want both an inject and a turn/start", methods)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

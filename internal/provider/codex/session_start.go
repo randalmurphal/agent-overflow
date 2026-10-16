@@ -177,6 +177,9 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 	developerInstructions := s.composeDeveloperInstructions(ctx, cfg.DeveloperInstructions)
 	cfg.DeveloperInstructions = developerInstructions.override
 	s.setDeveloperInstructions(cfg.DeveloperInstructions)
+	s.mu.Lock()
+	s.developerInstructionsComposed = developerInstructions
+	s.mu.Unlock()
 
 	// The version comes from the handshake recorded moments ago — the
 	// connected process's own statement of its build.

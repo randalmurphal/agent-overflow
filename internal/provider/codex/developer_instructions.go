@@ -122,6 +122,21 @@ func (s *Session) EnsureDeveloperInstructions(ctx context.Context, guide string)
 	return s.ensureDeveloperInstructions(ctx, s.composeDeveloperInstructions(ctx, guide))
 }
 
+// RestoreDeveloperInstructions gives the thread back the developer
+// instructions this session started with, after an in-place history cut.
+// Upstream reloads a reverted thread from its rollout, and the cut can drop
+// the message that delivered them; Revert has already forgotten what the
+// thread received, so this injects once and records. It is the session's
+// own text, not a new composition: a settings change made since still
+// applies at the next session start. A failure reaches the thread as a
+// non-fatal error, as at session start.
+func (s *Session) RestoreDeveloperInstructions(ctx context.Context) {
+	s.mu.Lock()
+	composed := s.developerInstructionsComposed
+	s.mu.Unlock()
+	s.reportDeveloperInstructionsFailure(s.ensureDeveloperInstructions(ctx, composed))
+}
+
 // ensureDeveloperInstructions injects composed's text as one developer
 // message when its digest differs from the one the thread last received,
 // then records the new digest. An untracked session and an unknown

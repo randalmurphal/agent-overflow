@@ -151,14 +151,17 @@ func (a *App) tryCodexThreadRevert(
 	}
 
 	// The cut can remove a developer-instructions message injected at an
-	// earlier resume, so the thread's next session start sends the current
-	// text again. Forgotten before the cut: a failure here changes nothing.
+	// earlier resume, and upstream reloads the thread from its rollout.
+	// Forgotten before the cut, so a failure here changes nothing; once the
+	// cut lands in place, a live session gives the thread back its own text
+	// (a throwaway session tracks nothing, and the next start injects).
 	if err := a.store.DeleteCodexDeveloperInstructionsDigest(threadID); err != nil {
 		return codexHistoryCut{}, false, err
 	}
 	reverted, err := session.Revert(context.Background(), firstDroppedTurnID)
 	switch {
 	case err == nil:
+		session.RestoreDeveloperInstructions(context.Background())
 		return codexHistoryCut{ThreadRef: reverted.ThreadID, Reverted: true}, false, nil
 	case errors.Is(err, codex.ErrThreadRevertUnsupported):
 		// Version skew between what the thread reported and what this
@@ -175,6 +178,7 @@ func (a *App) tryCodexThreadRevert(
 		log.Printf("app: codex rollback: thread %s left the in-place cut at turn %s unresolved (%v); verifying the provider boundary", threadID, firstDroppedTurnID, err)
 		if verified, applied := a.codexRevertBoundaryApplied(session, threadID, lastKeptTurnID, firstDroppedTurnID); applied {
 			log.Printf("app: codex rollback: thread %s is already cut at turn %s; converging in place", threadID, firstDroppedTurnID)
+			session.RestoreDeveloperInstructions(context.Background())
 			return codexHistoryCut{ThreadRef: verified.ThreadID, Reverted: true}, false, nil
 		}
 		return codexHistoryCut{}, true, nil

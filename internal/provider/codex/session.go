@@ -319,6 +319,10 @@ type Session struct {
 	// digest is guarded by mu; the callback is fixed at construction.
 	developerInstructionsReceived string
 	developerInstructionsRecord   func(codexThreadID, digest string) error
+	// developerInstructionsComposed is the composition this session
+	// started with, which RestoreDeveloperInstructions gives back to the
+	// thread after a history cut. Guarded by mu.
+	developerInstructionsComposed composedDeveloperInstructions
 	// rehydrateParams holds the thread-scoped params this session loaded
 	// its thread with that turn/start does not repeat (see
 	// threadRehydrateParams). Guarded by mu; read by Resume.

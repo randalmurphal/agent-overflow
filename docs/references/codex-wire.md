@@ -1269,10 +1269,12 @@ model keeps the text the thread was started with, in the same process or
 a new one, until a compaction rebuilds the context from the thread's
 configuration. `baseInstructions` is not affected
 ([codex-instructions-tools.md](codex-instructions-tools.md#base-instructions)).
-A spike on codex-cli 0.162.1 (2026-10-16) confirmed each step: a thread
-started with instructions naming one end token and resumed in a second
-process with another kept the first; after `thread/compact/start` it used
-the resumed one.
+A spike on codex-cli 0.162.1 (2026-10-16) confirmed it: a thread started
+with instructions naming one end token and resumed in a second process
+with another kept the first; after `thread/compact/start` it used the one
+the resume sent. Unverified: that a compaction installs the thread-level
+value when the resume left `developerInstructions` out; no capture shows
+that case.
 
 `thread/inject_items` delivers new text to one thread without a restart:
 
@@ -1283,11 +1285,16 @@ the resumed one.
                        "content": [{"type": "input_text", "text": "..."}]}]}}
 ```
 
-On a loaded, idle thread it answers `{}` and writes no notification. The
-item is appended to the model-visible history and the rollout as a
-`developer` message (`core/src/session/inject.rs`), so later resumes keep
-it, and the next turn follows it (same spike). A compaction drops it and
-installs the thread-level value. An unknown thread is refused with
+It answers `{}`. In the spike, notifications the resume set off
+(`thread/tokenUsage/updated`, `thread/goal/cleared`) arrived between the
+request and its answer; the injection itself wrote none that was seen. On
+an idle thread the item is appended to the model-visible history and the
+rollout as a `developer` message (`core/src/session/inject.rs`), so later
+resumes keep it, and the next turn follows it: in the spike, a thread
+resumed in a second process and given the injection before any turn
+answered with the injected token. With a turn active, the item instead
+becomes that turn's pending input (`inject_client_response_items`). A
+compaction drops it. An unknown thread is refused with
 `-32600` `thread not found: <id>`, and an item that is not a Responses API
 item with `-32600` `items[<n>] is not a valid response item: ...`
 (`app-server/src/request_processors/turn_processor.rs`
@@ -1310,11 +1317,20 @@ instructions given at the start of the conversation and any earlier
 update, and that permissions and environment context are unchanged; with
 nothing composed it states that the earlier instructions no longer apply.
 An in-place `thread/revert` forgets the record, because the cut can drop
-an injected message. A failed read of the configured value skips the
-check; a failed injection or record is a non-fatal error on the thread,
-and the next session start sends the text again. A session that only
-forks or reverts runs no check. See
+an injected message. A live session whose thread was cut in place gives
+the thread back the text it started with (`RestoreDeveloperInstructions`),
+since upstream reloads a reverted thread from its rollout. A failed read
+of the configured value skips the check; a failed injection or record is
+a non-fatal error on the thread, and the next session start sends the
+text again. A session that only forks or reverts runs no check. See
 `internal/provider/codex/developer_instructions.go`.
+
+A message queued in the provider by `codex queue --thread` is dispatched by
+the thread's idle hook (`on_thread_idle`) as soon as `thread/resume` loads
+the thread, so that turn can start before the injection; the injection then
+joins it as pending input rather than preceding it. Agent Overflow writes
+no such rows and retires only its own legacy ones before the resume
+(`BeforeResume`), so a row another client queued keeps this order.
 
 ### `model/safetyBuffering/updated`
 
