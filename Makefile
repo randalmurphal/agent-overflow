@@ -154,7 +154,7 @@ go-build:
 # Narrow a run with GO_TEST_PKGS and GO_TEST_FLAGS:
 #   make go-test GO_TEST_PKGS=./internal/shellenv GO_TEST_FLAGS='-run TestSync -count=1'
 NETNS := $(CURDIR)/bin/ao-netns
-go-prefetch = go list -deps -test $(1) tool > /dev/null
+go-prefetch = go list -e -deps -test $(1) tool > /dev/null
 GO_TEST_PKGS ?= $(GO_PACKAGE_ROOTS)
 GO_TEST_FLAGS ?=
 

@@ -82,17 +82,24 @@ type listedPackage struct {
 	ImportPath      string
 	Dir             string
 	Export          string
+	GoFiles         []string
+	CgoFiles        []string
 	CompiledGoFiles []string
 	IgnoredGoFiles  []string
 	Module          *struct{ Main bool }
 	Error           *struct{ Err string }
 }
 
+// modulePath is the root package's import path. It embeds frontend/dist,
+// which a checkout without a frontend build lacks; go list then reports the
+// embed and builds no export data, but its Go source type-checks the same.
+const modulePath = "agent-overflow"
+
 // listPackagesWithExports lists the module's packages and their
 // dependencies with compiled export data, so production packages can be
 // type-checked from source against their imports' export data.
 func listPackagesWithExports(root string) ([]listedPackage, error) {
-	cmd := exec.Command("go", "list", "-json", "-export", "-compiled", "-deps", ".", "./cmd/...", "./internal/...")
+	cmd := exec.Command("go", "list", "-e", "-json", "-export", "-compiled", "-deps", ".", "./cmd/...", "./internal/...")
 	cmd.Dir = root
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -108,11 +115,19 @@ func listPackagesWithExports(root string) ([]listedPackage, error) {
 		} else if err != nil {
 			return nil, fmt.Errorf("decode go list: %w", err)
 		}
-		if pkg.Error != nil {
+		if pkg.Error != nil && !missingFrontendBuild(pkg) {
 			return nil, fmt.Errorf("go list %s: %s", pkg.ImportPath, pkg.Error.Err)
 		}
 		pkgs = append(pkgs, pkg)
 	}
+}
+
+// missingFrontendBuild reports whether pkg's only problem is the root's
+// embed of a frontend build this checkout lacks. Its source is then
+// type-checked from GoFiles, which needs no cgo processing.
+func missingFrontendBuild(pkg listedPackage) bool {
+	return pkg.ImportPath == modulePath && pkg.Error != nil && len(pkg.CgoFiles) == 0 &&
+		strings.Contains(pkg.Error.Err, "frontend/dist")
 }
 
 // threadFrameViolations checks every main-module package in pkgs. Files the
@@ -137,7 +152,11 @@ func threadFrameViolations(root string, pkgs []listedPackage) ([]string, error) 
 			continue
 		}
 		var files []*ast.File
-		for _, name := range pkg.CompiledGoFiles {
+		sources := pkg.CompiledGoFiles
+		if missingFrontendBuild(pkg) {
+			sources = pkg.GoFiles
+		}
+		for _, name := range sources {
 			if !filepath.IsAbs(name) {
 				name = filepath.Join(pkg.Dir, name)
 			}
