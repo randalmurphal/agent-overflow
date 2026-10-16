@@ -126,7 +126,9 @@ import "strings"
 // into a mandate. CLAUDE_CODE_TODO_REMINDER_MODE follows the same rule:
 // both spawn paths export "off" when the Settings nudge toggle asks for
 // it (Config.DisableTodoReminders), and a user value in the custom
-// environment outranks the setting.
+// environment outranks the setting. BASH_MAX_TIMEOUT_MS follows it too:
+// both spawn paths export the Settings command timeout ceiling
+// (claude.WithCommandTimeoutEnv) unless the custom environment names it.
 //
 // ANTHROPIC_BASE_URL is the one variable Agent Overflow pins WITHOUT reserving
 // it. claudetui's buildEnv (claudetui/launch.go) owns the child's copy because

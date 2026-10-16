@@ -294,4 +294,7 @@ type SessionConfig struct {
 	// DeveloperInstructions is Codex's thread/start `developerInstructions`:
 	// the app guide and the on servers' guides, composed by the app.
 	DeveloperInstructions string `json:"developerInstructions,omitempty"`
+	// BashMaxTimeoutMs is the BASH_MAX_TIMEOUT_MS a Claude mock was spawned
+	// with ("" when the variable was absent).
+	BashMaxTimeoutMs string `json:"bashMaxTimeoutMs,omitempty"`
 }
