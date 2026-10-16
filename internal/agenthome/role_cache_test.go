@@ -23,7 +23,9 @@ func TestRoleCacheReadsOnlyAChangedFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var cache RoleCache
+	at := time.Unix(1_700_000_000, 0)
+	// The clock is well past every write, so no entry is racy.
+	cache := RoleCache{now: func() time.Time { return at.Add(time.Hour) }}
 	role := func(want string) {
 		t.Helper()
 		got, err := cache.Role(home)
@@ -31,7 +33,6 @@ func TestRoleCacheReadsOnlyAChangedFile(t *testing.T) {
 			t.Fatalf("Role = %q, %v; want %q", got, err, want)
 		}
 	}
-	at := time.Unix(1_700_000_000, 0)
 	write("Reviewer of the build\n", at)
 	for range 3 {
 		role("Reviewer of the build")
@@ -63,5 +64,66 @@ func TestRoleCacheReadsOnlyAChangedFile(t *testing.T) {
 	cache.mu.Unlock()
 	if kept {
 		t.Fatal("an unreadable file left its old role cached")
+	}
+}
+
+// A file written within roleRacyWindow of the read is read again on every
+// call: a second write of the same length in the same tick leaves the same
+// key. Once the clock is past the window, one read caches it.
+func TestRoleCacheRereadsARacilyCleanFile(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	file := filepath.Join(home, InstructionsFile)
+	at := time.Unix(1_700_000_000, 0)
+	clock := at
+	cache := RoleCache{now: func() time.Time { return clock }}
+	write := func(text string) {
+		t.Helper()
+		if err := os.WriteFile(file, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(file, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	role := func(want string) {
+		t.Helper()
+		got, err := cache.Role(home)
+		if err != nil || got != want {
+			t.Fatalf("Role = %q, %v; want %q", got, err, want)
+		}
+	}
+	write("Reviewer\n")
+	role("Reviewer")
+	// Same length, same time: only the racy rule tells them apart.
+	write("Releaser\n")
+	role("Releaser")
+	clock = at.Add(roleRacyWindow + time.Second)
+	role("Releaser")
+	before := cache.reads.Load()
+	role("Releaser")
+	role("Releaser")
+	if reads := cache.reads.Load() - before; reads != 0 {
+		t.Fatalf("read a file past the window %d more times, want it cached", reads)
+	}
+}
+
+// Forget drops a home's entry.
+func TestRoleCacheForgetsADeletedHome(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, InstructionsFile), []byte("Reviewer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var cache RoleCache
+	if _, err := cache.Role(home); err != nil {
+		t.Fatal(err)
+	}
+	cache.Forget(home)
+	cache.mu.Lock()
+	_, kept := cache.entries[home]
+	cache.mu.Unlock()
+	if kept {
+		t.Fatal("a forgotten home kept its entry")
 	}
 }

@@ -106,18 +106,13 @@ func (a *App) deliverAgentWake(ctx context.Context, row store.AgentWake, fireAt 
 func (a *App) agentWakeNotice(row store.AgentWake, sendID, body string) (agentNotice, *error) {
 	abandoned := new(error)
 	// An archive or a cancel that landed while this run worked has the last
-	// word, here and again when a session is started for the wake. Before
-	// the queue write the thread must also be one this computer can run
-	// work in (access).
-	refusal := func(access bool) (string, error) {
+	// word, here and again when a session is started for the wake. The queue
+	// write refuses a thread this computer cannot run work in, under the
+	// mutation lock (threadapp.LockMutable).
+	refusal := func() (string, error) {
 		current, err := a.store.GetThread(row.ThreadID)
 		if err != nil {
 			return "", fmt.Errorf("read the thread: %w", err)
-		}
-		if access {
-			if err := a.store.CheckThreadExecutionAccess(current); err != nil {
-				return "", err
-			}
 		}
 		if current.Archived {
 			return "the thread is archived", nil
@@ -137,7 +132,7 @@ func (a *App) agentWakeNotice(row store.AgentWake, sendID, body string) (agentNo
 		origin:     usermessage.OriginAgentWake,
 		originWake: &usermessage.OriginWake{Kind: row.Kind, Label: row.Label},
 		prepare: func() (string, bool, error) {
-			refused, err := refusal(true)
+			refused, err := refusal()
 			if err != nil || refused != "" {
 				if refused != "" {
 					*abandoned = errors.New(refused)
@@ -152,7 +147,7 @@ func (a *App) agentWakeNotice(row store.AgentWake, sendID, body string) (agentNo
 		// A wake taken back needs no word of its own: the archive or the
 		// cancel that refused it records its outcome on the row.
 		keep: func() (bool, error) {
-			refused, err := refusal(false)
+			refused, err := refusal()
 			return refused == "", err
 		},
 		startFailed: func(err error) string {

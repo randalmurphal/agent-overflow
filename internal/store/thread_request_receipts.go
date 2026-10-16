@@ -204,8 +204,10 @@ func (s *Store) AcceptLocalThreadRequest(request ThreadRequest, receipt ThreadRe
 // NameLocalThreadRequestTarget names the thread a local spawn or ask
 // created, on its receipt and its source row in one transaction, and
 // accepts the source row unless a settlement already moved it. The receipt
-// must still have no target and the source row must be this computer's
-// own: anything else is an error, and nothing is written.
+// must still have no target, or it is an error and nothing is written. A
+// source row that is gone, its caller deleted while the thread was being
+// created, is not an error: the thread exists and runs, and the receipt
+// names it.
 func (s *Store) NameLocalThreadRequestTarget(token, threadID string) error {
 	action := fmt.Sprintf("store: name local thread request %s target", token)
 	if threadID == "" {
@@ -233,16 +235,15 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string) error {
 		        state = CASE WHEN state = ? THEN ? ELSE state END
 		  WHERE token = ? AND target_computer_id = '' AND lineage_only = 0
 		  RETURNING caller_thread_id`,
-		threadID, now, ThreadRequestUnconfirmed, ThreadRequestAccepted, token).Scan(&caller); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%s: no local source row", action)
-		}
+		threadID, now, ThreadRequestUnconfirmed, ThreadRequestAccepted, token).Scan(&caller); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%s: source: %w", action, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("%s: commit: %w", action, err)
 	}
-	s.noteThreadRequestChanged(ThreadRequestChange{Token: token, CallerThreadID: caller})
+	if caller != "" {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token, CallerThreadID: caller})
+	}
 	return nil
 }
 

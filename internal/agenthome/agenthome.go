@@ -240,17 +240,31 @@ func RoleLine(home string) (_ string, err error) {
 // A file that changed is read again; one that is gone, or that cannot be
 // read, is answered as RoleLine answers it and leaves nothing cached, so no
 // stale role is served for it. The zero value is ready to use.
+//
+// Two writes of the same length inside one tick of the file system's
+// clock leave the same key, so an entry read while its file's time was
+// within roleRacyWindow of the clock is racily clean, as git calls it: it
+// is read again on every call until a read finds the file older than that.
 type RoleCache struct {
 	mu      sync.Mutex
 	entries map[string]cachedRole
 	// reads counts the files Role read through RoleLine.
 	reads atomic.Int64
+	// now is the clock the racy rule reads; nil is time.Now.
+	now func() time.Time
 }
+
+// roleRacyWindow covers the coarsest modification-time resolution a home
+// can sit on (FAT's two seconds).
+const roleRacyWindow = 2 * time.Second
 
 type cachedRole struct {
 	modTime time.Time
 	size    int64
 	role    string
+	// racy is set when the file's time was within roleRacyWindow of the
+	// clock at the stat the entry was read under.
+	racy bool
 }
 
 // Role is RoleLine(home), read again only when the file changed.
@@ -267,9 +281,14 @@ func (c *RoleCache) Role(home string) (string, error) {
 	c.mu.Lock()
 	cached, ok := c.entries[home]
 	c.mu.Unlock()
-	if ok && cached.modTime.Equal(info.ModTime()) && cached.size == info.Size() {
+	if ok && !cached.racy && cached.modTime.Equal(info.ModTime()) && cached.size == info.Size() {
 		return cached.role, nil
 	}
+	now := time.Now
+	if c.now != nil {
+		now = c.now
+	}
+	racy := !info.ModTime().Before(now().Add(-roleRacyWindow))
 	c.reads.Add(1)
 	role, err := RoleLine(home)
 	if err != nil {
@@ -282,10 +301,14 @@ func (c *RoleCache) Role(home string) (string, error) {
 	}
 	// Keyed by what was stat'ed before the read: a write after it changes
 	// the key, and the next call reads again.
-	c.entries[home] = cachedRole{modTime: info.ModTime(), size: info.Size(), role: role}
+	c.entries[home] = cachedRole{modTime: info.ModTime(), size: info.Size(), role: role, racy: racy}
 	c.mu.Unlock()
 	return role, nil
 }
+
+// Forget drops what the cache holds for home: the home of an assistant
+// that was deleted.
+func (c *RoleCache) Forget(home string) { c.forget(home) }
 
 func (c *RoleCache) forget(home string) {
 	c.mu.Lock()

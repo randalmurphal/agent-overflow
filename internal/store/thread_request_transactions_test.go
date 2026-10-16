@@ -216,8 +216,8 @@ func TestALocalSpawnIsAcceptedInTwoTransactions(t *testing.T) {
 }
 
 // A spawn settled before its thread is named keeps its settled state; a
-// spawn written accepted with no thread, or a receipt with no local source
-// row, is refused with nothing written.
+// spawn written accepted with no thread is refused with nothing written;
+// a receipt whose source row is gone is named alone.
 func TestNamingALocalSpawnKeepsItsSettlementAndRefusesTheRest(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -256,10 +256,10 @@ func TestNamingALocalSpawnKeepsItsSettlementAndRefusesTheRest(t *testing.T) {
 	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: "foreign", OwnerDeviceID: "peer", Kind: ThreadRequestSpawn}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.NameLocalThreadRequestTarget("foreign", "made"); err == nil {
-		t.Fatal("a receipt with no local source row was named")
+	if err := s.NameLocalThreadRequestTarget("foreign", "made"); err != nil {
+		t.Fatalf("a receipt with no source row: %v", err)
 	}
-	if got, _, _ := s.GetThreadRequestReceipt("foreign"); got.TargetThreadID != "" {
-		t.Fatalf("the refused naming wrote the receipt: %+v", got)
+	if got, _, _ := s.GetThreadRequestReceipt("foreign"); got.TargetThreadID != "made" {
+		t.Fatalf("a receipt with no source row was not named: %+v", got)
 	}
 }

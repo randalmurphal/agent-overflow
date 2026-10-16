@@ -265,6 +265,9 @@ func (a *App) assistantHomeForDelete(threadID string) (func() error, error) {
 			fmt.Errorf("this assistant was not deleted: %s", reason))
 	}
 	return func() error {
+		// The role it cached goes with the home, removed or not: a home
+		// made again at the path is read afresh.
+		defer a.agentRoles.Forget(agent.Home)
 		err := os.RemoveAll(want)
 		if err == nil {
 			return nil

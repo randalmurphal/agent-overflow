@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -205,7 +206,8 @@ func TestASessionEndReadsEachReceiptOnce(t *testing.T) {
 	}
 	app.noteReceiptTakenIn(thread.ID, "tok-taken-in")
 
-	// Before, the receipt was read again by the settlement: 7 and 5 reads.
+	// Before this branch they read 9 and 7 times; before the single read,
+	// with the receipt read again by the settlement, 7 and 5.
 	for token, want := range map[string]struct {
 		why   string
 		reads uint64
@@ -226,5 +228,42 @@ func TestASessionEndReadsEachReceiptOnce(t *testing.T) {
 		if reads > want.reads {
 			t.Errorf("%s: the session end read the store %d times, want at most %d", token, reads, want.reads)
 		}
+	}
+}
+
+// A wake is not queued into a thread this computer cannot run work in: the
+// queue write checks execution access under the thread's mutation lock.
+func TestAWakeIsNotQueuedWithoutExecutionAccess(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	// A fork still being prepared, which no work may run in.
+	thread := testThread("wake-no-access")
+	thread.WorkspacePath = t.TempDir()
+	thread.ForkPreparing = true
+	if err := a.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.CheckThreadExecutionAccess(thread); !errors.Is(err, store.ErrForkPreparing) {
+		t.Fatalf("access = %v, want the fork refused", err)
+	}
+	// A live session, so a queued wake would wait in the queue and nothing
+	// starts.
+	a.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "tok", Liveness: newSessionLiveness(time.Now())})
+	watch, err := a.store.RegisterAgentWake(store.AgentWake{ID: "w-news", ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "news",
+		Command: "echo news", IntervalSeconds: 3600, TimeoutSeconds: 60, NextAt: time.Now().Add(time.Hour).UnixMilli()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = a.deliverAgentWake(t.Context(), watch, time.Now().UnixMilli(), "the news")
+	if !errors.Is(err, store.ErrForkPreparing) {
+		t.Fatalf("deliver = %v, want the access refusal", err)
+	}
+	items, err := a.store.ListFlushQueueItems(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("queued %d items into a thread without execution access", len(items))
 	}
 }

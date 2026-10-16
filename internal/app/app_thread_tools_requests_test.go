@@ -3530,3 +3530,38 @@ func TestASpawnPastTheFloorIsUnknownButKeepsItsLineage(t *testing.T) {
 		t.Errorf("spawned thread after the sweep = spawnedBy %q, %v; want %s", spawned.SpawnedByThreadID, err, f.caller.ID)
 	}
 }
+
+// A caller deleted while its spawn's thread is being created takes its
+// source row with it. The spawn still names its thread on the receipt and
+// runs, as it did when the source row was named apart: the thread exists,
+// and a refusal now would leave it in the sidebar with no prompt.
+func TestASpawnWhoseCallerIsDeletedMidCreateStillRuns(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	adapter := f.adapter()
+	origin, err := adapter.localOrigin(f.callerIdentity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	made, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := newThreadRequestToken()
+	target, fresh, err := adapter.acceptRequest(origin, store.ThreadRequest{Token: token, Kind: store.ThreadRequestSpawn},
+		func() (store.Thread, error) {
+			if err := f.app.store.DeleteThread(f.caller.ID); err != nil {
+				t.Fatal(err)
+			}
+			return made, nil
+		})
+	if err != nil || target != made.ID || !fresh {
+		t.Fatalf("accept = %q %v, %v; want the created thread", target, fresh, err)
+	}
+	if _, found, err := f.app.store.GetThreadRequest(token); err != nil || found {
+		t.Fatalf("source row after its caller's delete: found=%v err=%v", found, err)
+	}
+	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptAccepted || receipt.TargetThreadID != made.ID {
+		t.Fatalf("receipt = %+v, want it accepted and naming the thread", receipt)
+	}
+}

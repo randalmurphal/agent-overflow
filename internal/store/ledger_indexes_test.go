@@ -58,7 +58,7 @@ func TestThreadAgentRequestsSearchTheirArms(t *testing.T) {
 		"idx_thread_requests_nested_caller",
 	}, threadAgentRequestsSQL+"65", "lead", "[]", int64(0), 4)
 	assertPlanSearches(t, s, "HasOpenThreadRequests", "thread_requests", []string{"idx_thread_requests_caller_settled"},
-		`SELECT EXISTS(SELECT 1 FROM thread_requests WHERE caller_thread_id = ? AND lineage_only = 0 AND settled_at IS NULL)`, "lead")
+		hasOpenThreadRequestsSQL, "lead")
 }
 
 // The four arms list what the one OR listed: an open row, one settled
@@ -285,6 +285,18 @@ func TestCancelledAgentWakesAreBoundedAndEmpty(t *testing.T) {
 		if _, cancelled, err := s.CancelAgentWake("t", label, "", "cancelled"); err != nil || !cancelled {
 			t.Fatalf("cancel %s: %v %v", label, cancelled, err)
 		}
+	}
+	cancelledRows := func() int {
+		t.Helper()
+		var n int
+		if err := s.db.QueryRow(`SELECT count(*) FROM agent_wakes WHERE thread_id = 't' AND state = 'cancelled'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// Each cancel by label prunes on its own.
+	if n := cancelledRows(); n != MaxCancelledAgentWakesPerThread {
+		t.Fatalf("after cancels by label the thread keeps %d cancelled rows, want %d", n, MaxCancelledAgentWakesPerThread)
 	}
 	for i := range 3 {
 		register(fmt.Sprintf("bulk%d", i), int64(100+i))

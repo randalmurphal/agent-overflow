@@ -1,7 +1,6 @@
 package app
 
 import (
-	"agent-overflow/internal/agenthome"
 	"context"
 	"errors"
 	"net/http"
@@ -9,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/assetwatch"
@@ -215,7 +215,8 @@ type App struct {
 	threadAgentPeers threadAgentPeerCache
 	// agentRoles keeps each standing agent's role line until its
 	// instructions file changes, for the sends, spawns, settlements and
-	// thread reads that name it. Zero value ready.
+	// thread reads that name it; a deleted assistant's home is forgotten
+	// (assistantHomeForDelete). Zero value ready.
 	agentRoles agenthome.RoleCache
 	// threadRequestsWG joins the request sweep goroutine at shutdown, the
 	// way remoteWatchWG joins the remote completion watcher.
