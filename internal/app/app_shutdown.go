@@ -382,6 +382,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 	a.closePRUpdatePumps()
 	record("close PR update subscriptions", nil)
+	a.closeBackgroundTaskTailer()
+	record("close background task output tails", nil)
 
 	// The forge API transport outlives every caller above: the PR pumps
 	// and gitwatch are joined. Close zeroes its tokens and idle

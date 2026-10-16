@@ -412,6 +412,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3175043037: 'thread', // UnpinThread
 	3065043012: 'home', // UnregisterPushToken
 	2888550814: 'home', // UnsubscribePRUpdates
+	1941806085: 'thread', // UnwatchBackgroundTaskOutput
 	3406073706: 'home', // UpdateClientDeviceName
 	1472386383: 'home', // UpdateContextSettingsProfile
 	2452201652: 'thread', // UpdateDiffReviewComment
@@ -435,6 +436,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2139261008: 'home', // VerifyBrowserUnlock
 	3907724148: 'thread', // VerifyEditDiffs
 	2431199839: 'home', // Version
+	2263729048: 'thread', // WatchBackgroundTaskOutput
 	4000394635: 'home', // WorkflowAgentAddMemory
 	4273669366: 'home', // WorkflowAgentAmendSeeds
 	864025136: 'home', // WorkflowAgentGetNotes

@@ -446,6 +446,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UnpinThread", ID: 3175043037, Scope: "threads:operate", Route: "thread"},                                          // main.App.UnpinThread
 	{Name: "UnregisterPushToken", ID: 3065043012, Scope: "session", Route: "home"},                                            // main.App.UnregisterPushToken
 	{Name: "UnsubscribePRUpdates", ID: 2888550814, Scope: "git:operate", Route: "home"},                                       // main.App.UnsubscribePRUpdates
+	{Name: "UnwatchBackgroundTaskOutput", ID: 1941806085, Scope: "threads:read", Route: "thread"},                             // main.App.UnwatchBackgroundTaskOutput
 	{Name: "UpdateClientDeviceName", ID: 3406073706, Scope: "session", Route: "home"},                                         // main.App.UpdateClientDeviceName
 	{Name: "UpdateContextSettingsProfile", ID: 1472386383, Scope: "settings:write", Route: "home"},                            // main.App.UpdateContextSettingsProfile
 	{Name: "UpdateDiffReviewComment", ID: 2452201652, Scope: "threads:operate", Route: "thread"},                              // main.App.UpdateDiffReviewComment
@@ -469,6 +470,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "VerifyBrowserUnlock", ID: 2139261008, Scope: "session", Route: "home"},                                            // main.App.VerifyBrowserUnlock
 	{Name: "VerifyEditDiffs", ID: 3907724148, Scope: "files:read", Route: "thread"},                                           // main.App.VerifyEditDiffs
 	{Name: "Version", ID: 2431199839, Scope: "threads:read", Route: "home"},                                                   // main.App.Version
+	{Name: "WatchBackgroundTaskOutput", ID: 2263729048, Scope: "threads:read", Route: "thread"},                               // main.App.WatchBackgroundTaskOutput
 	{Name: "WorkflowAgentAddMemory", ID: 4000394635, Scope: "threads:autonomy", Route: "home"},                                // main.App.WorkflowAgentAddMemory
 	{Name: "WorkflowAgentAmendSeeds", ID: 4273669366, Scope: "threads:autonomy", Route: "home"},                               // main.App.WorkflowAgentAmendSeeds
 	{Name: "WorkflowAgentGetNotes", ID: 864025136, Scope: "threads:autonomy", Route: "home"},                                  // main.App.WorkflowAgentGetNotes

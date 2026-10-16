@@ -547,6 +547,7 @@ export interface Item {
   isBackground?: boolean;
   completionOf?: string;
   meta?: string;
+  payloadKind?: string;
   payloadMeta?: string;
 }
 
