@@ -2292,7 +2292,8 @@ Bash tasks do not evict them, and the history covers what rotates out.
 
 **A resume the session mirror delivers**: a call inside a typed fork
 (§E9) reaches the parser only through the mirror, after its
-`task_started`. The parser binds the task and holds the classification
+`task_started` (2.1.300's stdout replay of the finished fork is
+dropped, §E9). The parser binds the task and holds the classification
 until the mirror projects the call; the call's name or the task's
 earlier binding then decides launch or resume, and the resume's meta
 and prompt row follow the call's row as they do on stdout (triage

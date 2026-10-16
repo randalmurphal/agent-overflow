@@ -121,10 +121,11 @@ behavior. These back parser replay tests and the reference docs in
     sonnet): `/forkagent` typed as the user message, whose fork runs an
     awaited Agent. After the fork's `task_notification` the CLI replays
     the fork's and the Agent's rows on stdout with `agent_id`, the fork's
-    under `parent_tool_use_id: "forked-command-forkagent"`. `system/init`,
-    `rate_limit_event` and mirrored `attachment` rows dropped (their
-    children re-chained to the dropped row's parent); host paths
-    synthetic. Backs `TestReplay_TypedForkStdoutReplayEmitsNothing`.
+    under `parent_tool_use_id: "forked-command-forkagent"`, after a
+    repeated `system/init` (kept, cut to its scalar fields and
+    capabilities). `rate_limit_event` and mirrored `attachment` rows
+    dropped (their children re-chained to the dropped row's parent); host
+    paths synthetic. Backs `TestReplay_TypedForkStdoutReplayEmitsNothing`.
   - `forked_skill_tool_agent_id_20261016.ndjson` (2.1.300, sonnet, same
     sanitizing): the Skill tool launches the fork; its rows stream on
     stdout under the Skill call and now carry `agent_id`. Backs
