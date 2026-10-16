@@ -9,7 +9,7 @@ import { registerPaneForTest } from '../../stores/panes.svelte';
 import { getCollapsedAgents, getCollapsedGroups, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { replaceAllThreads, touchThreadActivity } from '../../stores/threads.svelte';
-import { resetAgentWakesForTest } from '../../stores/agentWakes.svelte';
+import { resetThreadWakesForTest } from '../../stores/threadWakes.svelte';
 import { resetArchivedChildrenForTest } from '../../stores/agentArchivedChildren.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { THREAD_PREVIEW_LIMIT } from '../../utils/sidebarThreadLimits';
@@ -173,7 +173,7 @@ it('aligns the group chevron with top-level pins and member pins with the folder
 // group, a fold on the chevron, and a `N done` footer for the archived ones.
 describe('standing agent rows', () => {
   beforeEach(() => {
-    resetAgentWakesForTest();
+    resetThreadWakesForTest();
     resetArchivedChildrenForTest();
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
   });

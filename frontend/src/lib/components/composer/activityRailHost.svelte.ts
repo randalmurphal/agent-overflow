@@ -47,7 +47,7 @@ export interface ActivityRailHost {
    *  rail carries the usage chip; the chip renders from this same query. */
   readonly usage: UsageStats;
   readonly railVisible: boolean;
-  /** Subscribe the background, wake and agents controllers; returns a
+  /** Subscribe the background and agents controllers; returns a
    *  disposer. */
   mount(): () => void;
 }
@@ -110,11 +110,9 @@ export function createActivityRailHost(
     get railVisible() { return railVisible; },
     mount: () => {
       const disposeBg = bg.mount();
-      const disposeWakes = wakes.mount();
       const disposeAgents = agents.mount();
       return () => {
         disposeBg();
-        disposeWakes();
         disposeAgents();
       };
     },

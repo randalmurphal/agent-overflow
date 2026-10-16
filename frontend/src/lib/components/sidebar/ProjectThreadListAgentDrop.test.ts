@@ -10,7 +10,7 @@ import { createThreadPane } from '../../stores/thread.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { isAgentDoneExpanded, isAgentExpanded, resetSidebarForTest, setAgentExpanded, toggleAgentDone } from '../../stores/sidebar.svelte';
 import { resetArchivedChildrenForTest } from '../../stores/agentArchivedChildren.svelte';
-import { resetAgentWakesForTest } from '../../stores/agentWakes.svelte';
+import { resetThreadWakesForTest } from '../../stores/threadWakes.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { endThreadRowDrag, THREAD_ROW_DRAG_MIME, type ThreadDragPayload } from '../../utils/threadDragPayload';
 import { replaceAllThreads } from '../../stores/threads.svelte';
@@ -48,7 +48,7 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     resetPanesForTest();
     resetSidebarForTest();
     resetArchivedChildrenForTest();
-    resetAgentWakesForTest();
+    resetThreadWakesForTest();
     endThreadRowDrag();
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
     setBindingMock('ListArchivedSpawnedThreads', async () => [thread('done', { spawnedByThreadId: 'agent', archived: true })]);

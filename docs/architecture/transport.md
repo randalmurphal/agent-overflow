@@ -404,9 +404,10 @@ or a lost frame, and otherwise applies the rows of the launches that changed
 from `provider:background_tray` deltas, which are filtered by thread.
 `provider:background_tasks_changed` is a payload-free, wildcard refetch nudge
 for readers that must hear about threads no pane shows. The tray's loop,
-watch and reminder rows read `ListThreadWakes` the same way and read again
-on `thread:wakes_changed`, which carries one changed row with its thread
-and is not filtered by thread, so a reader without a pane can apply it.
+watch and reminder rows read `ListThreadWakes` when the thread opens and
+after a reconnect or a lost frame, and otherwise apply
+`thread:wakes_changed`, which carries one changed row with its thread and
+is not filtered by thread, so a reader without a pane can apply it.
 The Agents segment reads `ListThreadAgentRows` the same way and reads again
 on `thread:agent_rows_changed`, which names the caller thread whose rows
 changed (a nested caller included) and is not filtered by thread.
