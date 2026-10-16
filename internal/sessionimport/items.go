@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/importir"
 	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex/rollout"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/triage"
@@ -78,11 +79,14 @@ func (b *builder) prompt(evt importir.Event) error {
 	// triage stamps from the echo. An imported prompt has no composer
 	// blob, so the correlation keys are the whole meta — the event's own
 	// meta (dedup ids, command-echo flags) is CLI bookkeeping that never
-	// reaches a live row either.
+	// reaches a live row either. `origin` is the exception: it says who
+	// wrote a row the user did not type, and the row renders it.
 	meta, err := mergeMetaKeys("", map[string]string{
-		"provider_item_id":     stringsx.FirstNonEmptyTrimmed(metaString(evt.Meta, "provider_item_id"), evt.ItemID),
-		"provider_parent_uuid": metaString(evt.Meta, "parent_uuid"),
-		"command":              metaString(evt.Meta, "command"),
+		"provider_item_id":                    stringsx.FirstNonEmptyTrimmed(metaString(evt.Meta, "provider_item_id"), evt.ItemID),
+		"provider_parent_uuid":                metaString(evt.Meta, "parent_uuid"),
+		"command":                             metaString(evt.Meta, "command"),
+		"origin":                              metaString(evt.Meta, "origin"),
+		rollout.MetaDelegationSourceThreadKey: metaString(evt.Meta, rollout.MetaDelegationSourceThreadKey),
 	})
 	if err != nil {
 		return fmt.Errorf("user text meta %s: %w", itemID, err)

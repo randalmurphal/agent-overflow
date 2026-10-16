@@ -78,6 +78,7 @@ SELECT t.id,
        t.cwd,
        t.title,
        t.first_user_message,
+       t.preview,
        t.git_branch,
        t.created_at,
        t.updated_at,
@@ -198,6 +199,7 @@ func scanSessionRow(rows *sql.Rows) (SessionInfo, error) {
 	var (
 		info                     SessionInfo
 		cwd, title, firstMessage sql.NullString
+		preview                  sql.NullString
 		branch, rolloutPath      sql.NullString
 		model, reasoningEffort   sql.NullString
 		createdSec, updatedSec   sql.NullInt64
@@ -209,6 +211,7 @@ func scanSessionRow(rows *sql.Rows) (SessionInfo, error) {
 		&cwd,
 		&title,
 		&firstMessage,
+		&preview,
 		&branch,
 		&createdSec,
 		&updatedSec,
@@ -228,8 +231,16 @@ func scanSessionRow(rows *sql.Rows) (SessionInfo, error) {
 	info.LastActivityAt = millis(updatedMS, updatedSec)
 	info.Model = strings.TrimSpace(model.String)
 	info.ReasoningEffort = strings.TrimSpace(reasoningEffort.String)
-	if info.Title == "" {
-		info.Title = info.FirstUserMessage
+	// A thread another Codex thread delegated to (codex_app / codex_tui
+	// `create_thread`) opens with no user message, and a goal-only thread has
+	// none either; Codex fills `preview` from the delegated input or the goal
+	// objective instead (codex-rs/state/src/extract.rs), which is also what
+	// admits the row past the `preview <> ''` filter.
+	for _, candidate := range []string{info.FirstUserMessage, strings.TrimSpace(preview.String)} {
+		if info.Title != "" {
+			break
+		}
+		info.Title = candidate
 	}
 	return info, nil
 }

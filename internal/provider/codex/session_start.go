@@ -174,6 +174,9 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 	// The version comes from the handshake recorded moments ago — the
 	// connected process's own statement of its build.
 	threadParams := buildThreadParams(cfg, s.AppServerVersion())
+	s.mu.Lock()
+	s.rehydrateParams = threadRehydrateParams(threadParams)
+	s.mu.Unlock()
 
 	var method string
 	if cfg.ResumeThreadID != "" {

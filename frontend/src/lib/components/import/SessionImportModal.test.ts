@@ -684,9 +684,16 @@ describe('the progress strip', () => {
     await settle();
 
     expect(view.getByTestId('session-import-outcome-claude:a').textContent).toContain('✓');
-    expect(view.getByTestId('session-import-outcome-codex:b').textContent).toContain(
-      'unreadable rollout',
-    );
+    expect(view.queryByTestId('session-import-outcome-reason-claude:a')).toBeNull();
+    // The glyph keeps its own track; the reason reads beside the title and
+    // in the glyph's tooltip.
+    expect(view.getByTestId('session-import-outcome-codex:b').textContent).toContain('✗');
+    expect(
+      view.getByTestId('session-import-outcome-codex:b').querySelector('[title="unreadable rollout"]'),
+    ).not.toBeNull();
+    const reason = view.getByTestId('session-import-outcome-reason-codex:b');
+    expect(reason.textContent).toContain('unreadable rollout');
+    expect(reason.classList.contains('text-error')).toBe(true);
     expect(view.getByTestId('session-import-progress-detail').textContent).toContain('1 failed');
   });
 
@@ -699,8 +706,10 @@ describe('the progress strip', () => {
     await settle();
 
     const stamp = view.getByTestId('session-import-outcome-claude:a');
-    expect(stamp.textContent).toContain('already imported');
+    const reason = view.getByTestId('session-import-outcome-reason-claude:a');
+    expect(reason.textContent).toContain('already imported');
     expect(stamp.querySelector('.text-error')).toBeNull();
+    expect(reason.classList.contains('text-error')).toBe(false);
     expect(view.getByTestId('session-import-progress-detail').textContent).toContain('1 skipped');
   });
 

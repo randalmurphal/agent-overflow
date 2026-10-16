@@ -80,6 +80,11 @@
           testid: 'user-message-peer-origin',
           label: peerSessionOriginLabel(userMeta),
         };
+      case 'codex-delegation':
+        return {
+          testid: 'user-message-codex-delegation-origin',
+          label: 'From another Codex thread',
+        };
       case 'agent-thread': {
         // An agent in another thread wrote this row. The chip carries that
         // thread through: its title, the computer when that is a different

@@ -8,7 +8,7 @@ import { getToasts, removeToast } from '../../stores/toast.svelte';
 const FIELD = '[data-settings-field="performance.disable-gpu-vsync"]';
 
 function clearToasts(): void {
-  for (const toast of [...getToasts()]) removeToast(toast.id);
+  for (const toast of getToasts()) removeToast(toast.id);
 }
 
 async function settle(): Promise<void> {

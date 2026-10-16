@@ -293,6 +293,10 @@ func (c *converter) completeToolCall(env envelope) {
 		return
 	}
 	callID := strings.TrimSpace(p.CallID)
+	if callID == "" && isDelegatedInput(strings.TrimSpace(p.Namespace), strings.TrimSpace(p.Name)) {
+		c.emitDelegatedInput(strings.TrimSpace(p.ID), p.Output)
+		return
+	}
 	if callID == "" {
 		callID = strings.TrimSpace(p.ID)
 	}

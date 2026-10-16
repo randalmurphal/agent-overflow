@@ -81,11 +81,30 @@ func buildThreadParams(cfg Config, codexVersion string) map[string]any {
 	for key, value := range DisabledToolConfigOverrides(cfg.DisabledTools) {
 		configOverrides[key] = value
 	}
-	if len(configOverrides) > 0 {
-		params["config"] = configOverrides
+	for key, value := range threadFeatureOverrides() {
+		configOverrides[key] = value
 	}
+	params["config"] = configOverrides
 
 	return params
+}
+
+// threadFeatureOverrides are the Codex features every thread AO opens pins,
+// whatever the user's config.toml says.
+//
+// `instant_interrupt` defaults on from codex 0.162 (codex-rs/features/src/
+// lib.rs). With it on, a `turn/steer` cancels the model output in flight:
+// the cut agentMessage gets `item/started` and deltas but never
+// `item/completed`. AO's steer contract is that the model finishes its
+// current output and then reads the message, so the feature is off. A codex
+// that predates the key logs it as an unknown feature and carries on
+// (features/src/lib.rs, "unknown feature key in config").
+//
+// Every request that loads a thread into an app-server carries these:
+// thread/start, thread/resume and thread/fork. A loaded thread keeps the
+// config it was loaded with; a resume of a running thread ignores `config`.
+func threadFeatureOverrides() map[string]any {
+	return map[string]any{"features.instant_interrupt": false}
 }
 
 // threadApprovalsReviewer resolves the reviewer that actually reaches the
