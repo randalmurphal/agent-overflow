@@ -152,9 +152,12 @@ func TestAssistantHandOffKeepsARenameThatLandedAfterItsRead(t *testing.T) {
 	if _, err := app.store.CreateProject(project); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
+	// The successor's opening block starts a session.
+	installMockClaudeReplies(t, app, "ready")
 	old := testThread("thread-handoff-rename")
 	old.ProjectID = project.ID
 	old.WorkspacePath = project.Path
+	old.Provider, old.Model = string(provider.Claude), "claude-opus-4-7"
 	if err := app.store.CreateThread(old); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
