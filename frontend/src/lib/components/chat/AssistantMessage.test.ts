@@ -40,7 +40,7 @@ describe('<AssistantMessage>', () => {
   });
 
   // A row Claude discarded after a stalled response keeps its text and is
-  // marked by the leaf (utils/discardedItems.ts): dimmed behind a rule and
+  // marked by the leaf (utils/discardedItems.ts): dimmed in place and
   // tagged beside the time. An unmarked row renders exactly as before.
   it('dims and tags a discarded row and leaves an unmarked row alone', async () => {
     const discarded = render(AssistantMessage, {

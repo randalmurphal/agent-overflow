@@ -1421,30 +1421,23 @@ html.light .working-sprite {
 
 /*
  * A streamed row Claude discarded after a stalled response
- * (utils/discardedItems.ts). The row keeps its content and controls; it is
- * dimmed behind a hairline rule so it reads as the record of what was shown
- * rather than as part of the answer. Opacity rather than a color swap keeps
+ * (utils/discardedItems.ts). The row keeps its content, controls and
+ * geometry; it is dimmed so it reads as the record of what was shown rather
+ * than as part of the answer. The mark lands after the text has streamed, so
+ * it must not touch layout: no padding, border or indent, or the text
+ * rewraps and everything below moves. Opacity rather than a color swap keeps
  * code blocks, links and the markdown palette consistent with their
- * neighbours in both themes; the rule is the theme's strong border.
+ * neighbours; the strength is the theme's per-mode secondary-text fade
+ * (theme-system.md §9.13).
  */
 .discarded-row {
-  position: relative;
-  padding-left: 0.75rem;
-  opacity: 0.62;
+  opacity: var(--fade-subtle);
 }
-.discarded-row::before {
-  content: '';
-  position: absolute;
-  top: 0.25rem;
-  bottom: 0.25rem;
-  left: 0;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--color-border-strong);
-}
-/* A reasoning row sits on the activity rail, which is already its edge. */
+/* Reasoning text is already faded by its rail (TailClampedText), to about
+   the subtle tier; the subtle strength on top of that would put it at the
+   hint tier, so the reasoning row takes the gentler muted strength. */
 .discarded-reasoning {
-  opacity: 0.62;
+  opacity: var(--fade-muted);
 }
 
 /*

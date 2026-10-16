@@ -54,8 +54,8 @@ describe('<ThinkingBlock>', () => {
   });
 
   // Reasoning Claude discarded after a stalled response stays readable and
-  // expandable; the header is dimmed behind a rule and tagged after its
-  // label (utils/discardedItems.ts). An unmarked row carries neither.
+  // expandable; the header is dimmed in place and tagged before its
+  // time (utils/discardedItems.ts). An unmarked row carries neither.
   it('dims and tags a discarded row and leaves an unmarked row alone', () => {
     const discarded = render(ThinkingBlock, {
       props: { item: makeItem({ kind: 'thinking', summary: 'Let me think about ' }), discarded: true },

@@ -13,6 +13,11 @@
 // where the record is outside the loaded window is
 // claude-abandoned-blocks-paging.spec.ts.
 //
+// The mark lands on a row the user has already read, so it must not move
+// anything: the row's box, its text box and the line after its text are
+// measured settled before the record lands and again after it, and must
+// match. The dimming must resolve to the theme's fade strength.
+//
 // Three shapes from the captures behind the fixtures, each in the light
 // and the dark theme: block 1 cut after block 0 finished (continuation
 // streams under a new id), the stall inside block 0 (the whole response
@@ -22,15 +27,21 @@ import type { Locator, Page, TestInfo } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import {
   RESULT_LINE,
+  advance,
   claudeScenario,
   emit,
   itemMeta,
   listItems,
   seedAgentThread,
   startMock,
+  waitForGate,
+  type ScenarioStep,
 } from './agent-visibility-helpers.js';
 
 const j = (value: unknown): string => JSON.stringify(value);
+
+const GATE_RECORD = 'abandon-record';
+const GATE_REPLY = 'abandon-reply';
 
 /** A stream_event envelope the way 2.1.300 writes it: the inner event under
  * `event`, the response id beside it. */
@@ -46,10 +57,14 @@ function thinkingDeltas(apiMessageId: string, index: number, chunks: string[]): 
   return chunks.map((thinking) => stream(apiMessageId, { type: 'content_block_delta', index, delta: { type: 'thinking_delta', thinking } }));
 }
 
-/** The CLI's own close of a response it stopped reading. */
-function abandonLines(apiMessageId: string, openBlockIndex: number | null, fromBlockIndex: number): string[] {
+/** The CLI's own close of the block it stopped reading. */
+function closeOpenBlock(apiMessageId: string, openBlockIndex: number): string {
+  return stream(apiMessageId, { type: 'content_block_stop', index: openBlockIndex });
+}
+
+/** The CLI's record of the discard, after the open block's close. */
+function abandonLines(apiMessageId: string, fromBlockIndex: number): string[] {
   return [
-    ...(openBlockIndex === null ? [] : [stream(apiMessageId, { type: 'content_block_stop', index: openBlockIndex })]),
     stream(apiMessageId, { type: 'message_stop' }, { abandoned_blocks: { api_message_id: apiMessageId, from_block_index: fromBlockIndex } }),
     // The synthetic nudge the CLI sends itself; AO drops it.
     j({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Your response above was cut off mid-stream. Resume directly from where it stops.' }] }, parent_tool_use_id: null, isSynthetic: true }),
@@ -82,6 +97,14 @@ function scenario(kind: Case): unknown {
     stream(id, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 20 } }),
     stream(id, { type: 'message_stop' }),
   ];
+  // The discarded row settles, then the record lands, then the reply
+  // streams, each step held at a gate so the spec can measure the row
+  // between them.
+  const abandon = (id: string, fromBlockIndex: number): ScenarioStep[] => [
+    { waitSignal: { name: GATE_RECORD } },
+    emit(abandonLines(id, fromBlockIndex)),
+    { waitSignal: { name: GATE_REPLY } },
+  ];
 
   if (kind === 'continuation') {
     return claudeScenario('claude-abandoned-continuation', [
@@ -94,7 +117,10 @@ function scenario(kind: Case): unknown {
         blockStop(msg1, 0),
         blockStart(msg1, 1, 'text'),
         ...textDeltas(msg1, 1, chunk(PARTIAL)),
-        ...abandonLines(msg1, 1, 1),
+        closeOpenBlock(msg1, 1),
+      ]),
+      ...abandon(msg1, 1),
+      emit([
         start(msg2),
         blockStart(msg2, 0, 'text'),
         ...textDeltas(msg2, 0, chunk(CONTINUATION)),
@@ -111,7 +137,10 @@ function scenario(kind: Case): unknown {
         start(msg1),
         blockStart(msg1, 0, 'text'),
         ...textDeltas(msg1, 0, chunk(PARTIAL)),
-        ...abandonLines(msg1, 0, 0),
+        closeOpenBlock(msg1, 0),
+      ]),
+      ...abandon(msg1, 0),
+      emit([
         // The retry arrives whole, under a new id, with no message_start.
         snapshot(msg2, [{ type: 'text', text: RETRY }], 'end_turn'),
         RESULT_LINE,
@@ -123,7 +152,10 @@ function scenario(kind: Case): unknown {
       start(msg1),
       blockStart(msg1, 0, 'thinking'),
       ...thinkingDeltas(msg1, 0, chunk(THINKING)),
-      ...abandonLines(msg1, 0, 0),
+      closeOpenBlock(msg1, 0),
+    ]),
+    ...abandon(msg1, 0),
+    emit([
       snapshot(msg2, [{ type: 'text', text: RETRY }], 'end_turn'),
       RESULT_LINE,
     ]),
@@ -163,19 +195,88 @@ const EXPECTED: Record<Case, Expected> = {
   },
 };
 
-async function expectMarked(timeline: Locator, kind: Case): Promise<void> {
+type Theme = 'light' | 'dark';
+
+/** The computed dimming: the theme's `--fade-subtle` on a text row and
+ * `--fade-muted` on reasoning, which its rail has already faded
+ * (app.css `.discarded-row`, theme-system.md §9.13). */
+const OPACITY: Record<Theme, { text: string; reasoning: string }> = {
+  dark: { text: '0.55', reasoning: '0.8' },
+  light: { text: '0.67', reasoning: '0.87' },
+};
+
+/** The thinking row lives in an activity run; open it so the row renders. */
+async function expandThinkingRun(timeline: Locator): Promise<void> {
+  const runs = timeline.getByTestId('activity-run');
+  await expect(runs).toHaveCount(1);
+  if ((await runs.getAttribute('data-collapsed')) === 'true') {
+    await runs.getByTestId('activity-run-header').click();
+    await expect(runs).toHaveAttribute('data-collapsed', 'false');
+  }
+}
+
+interface Box { x: number; y: number; width: number; height: number }
+
+/** The discarded row's box, its text's box and the box of the line after
+ * its text (the time and tag footer of a text row, the time of a reasoning
+ * header), in the scroller's content coordinates so a scroll of the
+ * timeline does not read as a shift. */
+interface RowGeometry { row: Box; text: Box; after: Box }
+
+/**
+ * Reads the row's geometry once it has held still for a run of frames, so
+ * a reveal or a late paint still settling is not mistaken for the mark's
+ * effect.
+ */
+async function settledGeometry(page: Page, itemId: string, kind: Case): Promise<RowGeometry> {
+  const result = await page.evaluate(
+    async ({ itemId, textSelector, afterSelector }) => {
+      const scroller = document.querySelector<HTMLElement>('[data-testid="message-timeline-scroll"]');
+      const row = document.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(itemId)}"]`);
+      if (!scroller || !row) return { error: `missing ${scroller ? 'row' : 'scroller'}` };
+      const box = (el: Element | null): Box | null => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        const s = scroller.getBoundingClientRect();
+        return { x: r.left - s.left, y: r.top - s.top + scroller.scrollTop, width: r.width, height: r.height };
+      };
+      const read = (): RowGeometry | null => {
+        const text = box(row.querySelector(textSelector));
+        const after = box(row.querySelector(afterSelector));
+        return text && after ? { row: box(row)!, text, after } : null;
+      };
+      const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const stableFrames = 20;
+      let last: RowGeometry | null = null;
+      let same = 0;
+      for (let i = 0; i < 600; i++) {
+        await frame();
+        const next = read();
+        if (next && last && JSON.stringify(next) === JSON.stringify(last)) {
+          if (++same >= stableFrames) return { geometry: next };
+        } else {
+          same = 0;
+        }
+        last = next;
+      }
+      return { error: `row geometry did not settle: ${JSON.stringify(last)}` };
+    },
+    kind === 'thinking'
+      ? { itemId, textSelector: '[data-testid="thinking-body"]', afterSelector: '[data-testid="thinking-header"] time' }
+      : { itemId, textSelector: '[data-testid="assistant-message-body"]', afterSelector: '[data-testid="assistant-message-meta"]' },
+  );
+  if ('error' in result) throw new Error(result.error);
+  return result.geometry;
+}
+
+async function expectMarked(timeline: Locator, kind: Case, theme: Theme): Promise<void> {
   const want = EXPECTED[kind];
   if (kind === 'thinking') {
     // A thinking row is an activity run of its own, collapsed by default
     // after a reload; the record must stand outside it, so the run holds
     // the one row and expanding it shows the marked reasoning.
-    const runs = timeline.getByTestId('activity-run');
-    await expect(runs).toHaveCount(1);
-    await expect(runs.getByTestId('activity-run-header-counts')).toHaveText(/^1 thinking$/);
-    if ((await runs.getAttribute('data-collapsed')) === 'true') {
-      await runs.getByTestId('activity-run-header').click();
-      await expect(runs).toHaveAttribute('data-collapsed', 'false');
-    }
+    await expect(timeline.getByTestId('activity-run-header-counts')).toHaveText(/^1 thinking$/);
+    await expandThinkingRun(timeline);
   }
   const discarded = timeline.locator('[data-item-id][data-discarded="true"]');
   await expect(discarded).toHaveCount(1);
@@ -183,6 +284,8 @@ async function expectMarked(timeline: Locator, kind: Case): Promise<void> {
   await expect(discarded).toHaveAttribute('data-item-status', 'completed');
   await expect(discarded).toContainText(want.discardedText);
   await expect(discarded.getByTestId(kind === 'thinking' ? 'thinking-discarded' : 'assistant-message-discarded')).toHaveText('Discarded');
+  const dimmed = discarded.locator(kind === 'thinking' ? '.discarded-reasoning' : '.discarded-row');
+  await expect(dimmed).toHaveCSS('opacity', OPACITY[theme][kind === 'thinking' ? 'reasoning' : 'text']);
 
   const record = timeline.getByTestId('abandoned-blocks-notification');
   await expect(record).toHaveCount(1);
@@ -243,13 +346,45 @@ for (const theme of ['light', 'dark'] as const) {
       await page.setViewportSize({ width: 1280, height: 1000 });
       await harness.open(page);
       const timeline = await openThread(page, title);
-      await startMock(harness, threadId);
+      const mockId = await startMock(harness, threadId);
 
+      const atRecord = waitForGate(harness, GATE_RECORD);
       const completed = harness.waitForEvent('provider:turn_completed');
       await harness.rpc('SendMessage', threadId, 'say something long', null);
+      await atRecord;
+
+      // The row as the user read it: settled, all of it revealed, unmarked.
+      if (kind === 'thinking') await expandThinkingRun(timeline);
+      const row = timeline.locator(`[data-item-id][data-item-kind="${kind === 'thinking' ? 'thinking' : 'assistant_text'}"]`, {
+        hasText: EXPECTED[kind].discardedText,
+      });
+      await expect(row).toHaveCount(1);
+      await expect(row).toHaveAttribute('data-item-status', 'completed');
+      await expect(row).toContainText(kind === 'thinking' ? THINKING.trim().slice(-30) : 'if len(evt.Meta) == 0 {', { timeout: 20_000 });
+      await expect(row).not.toHaveAttribute('data-discarded', 'true');
+      const itemId = (await row.getAttribute('data-item-id'))!;
+      const before = await settledGeometry(page, itemId, kind);
+
+      // The record lands; the reply is still held.
+      const atReply = waitForGate(harness, GATE_REPLY);
+      await advance(harness, mockId, GATE_RECORD);
+      await atReply;
+      const marked = timeline.locator(`[data-item-id="${itemId}"]`);
+      await expect(marked).toHaveAttribute('data-discarded', 'true');
+      await expect(timeline.getByTestId('abandoned-blocks-notification')).toBeVisible();
+      await expect(marked.getByTestId(kind === 'thinking' ? 'thinking-discarded' : 'assistant-message-discarded')).toBeVisible();
+      await expect(marked.locator(kind === 'thinking' ? '.discarded-reasoning' : '.discarded-row'))
+        .toHaveCSS('opacity', OPACITY[theme][kind === 'thinking' ? 'reasoning' : 'text']);
+      const after = await settledGeometry(page, itemId, kind);
+      // Marking moves nothing: the row keeps its box, its text keeps its
+      // width and wrap, and the line after the text (where the tag lands
+      // beside the time) keeps its place and height.
+      expect(after, 'row geometry unchanged by the mark').toEqual(before);
+
+      await advance(harness, mockId, GATE_REPLY);
       await completed;
 
-      await expectMarked(timeline, kind);
+      await expectMarked(timeline, kind, theme);
       await screenshot(timeline, testInfo, `abandoned-${kind}-${theme}`);
 
       // The store: the discarded row is completed history with the text it
@@ -274,7 +409,7 @@ for (const theme of ['light', 'dark'] as const) {
       // A cold load serves the row marked.
       await page.reload();
       const reloaded = await openThread(page, title);
-      await expectMarked(reloaded, kind);
+      await expectMarked(reloaded, kind, theme);
     });
   }
 }
