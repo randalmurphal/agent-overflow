@@ -16,19 +16,26 @@ export async function expectStripFits(page: Page): Promise<void> {
 
 /**
  * Each pane's title is whole, or at least the floor wide and truncated with
- * an ellipsis, or a fade under compact; a header under 36rem leaves the
+ * an ellipsis, or under compact faded on the edge that has text past it; a header under 36rem leaves the
  * project crumb out; and no header overflows its pane.
  */
 export async function expectHeadersShareTheWidth(panes: Locator[]): Promise<void> {
   for (const pane of panes) {
     const title = pane.getByTestId('chat-header-title');
     const geometry = await title.evaluate((el) => {
-      // Under compact the text sits in a swipeable scroller that fades.
-      const text = el.querySelector<HTMLElement>('.pane-title-fade') ?? el;
+      // Under compact the text sits in a swipeable scroller whose mask
+      // fades the edge that has text past it.
+      const scroller = el.querySelector<HTMLElement>('.pane-title-fade');
+      const text = scroller ?? el;
+      const style = getComputedStyle(text);
+      const fadeRight = parseFloat(style.getPropertyValue('--fade-right')) || 0;
+      const mask = style.getPropertyValue('mask-image') || style.getPropertyValue('-webkit-mask-image');
       return {
         client: el.clientWidth,
         overflows: text.scrollWidth > text.clientWidth + 1,
-        cut: text === el ? getComputedStyle(el).textOverflow === 'ellipsis' : true,
+        cut: scroller
+          ? scroller.scrollLeft <= 1 && fadeRight > 0 && mask.includes('gradient')
+          : style.textOverflow === 'ellipsis' && style.overflowX === 'hidden',
       };
     });
     if (geometry.overflows) {
