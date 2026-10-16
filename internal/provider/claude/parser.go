@@ -538,6 +538,10 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		}
 	}
 
+	if (msgType == "assistant" || msgType == "user") && p.mirrorProjectsStdoutRow(raw) {
+		return nil, nil
+	}
+
 	now := time.Now()
 
 	switch msgType {

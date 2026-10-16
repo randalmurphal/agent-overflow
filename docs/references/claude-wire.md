@@ -2655,8 +2655,8 @@ shapes reach AO, and the parser handles both.
   that wakes the main agent when it finishes. A fork does not park.
 - **A directly entered forked command** (`/code-review high`) gets the
   same `task_started` with NO `tool_use_id`, and its terminal
-  notification names none either. Its rows arrive only through the
-  session mirror. AO records the task the running command announces
+  notification names none either. While it runs, its rows arrive only
+  through the session mirror. AO records the task the running command announces
   and stamps it on the row when the mirror proves the fork with that
   agentId (§transcript_mirror). The Agent the fork launches is
   announced by `task_started` before the mirror delivers its tool_use,
@@ -2665,6 +2665,17 @@ shapes reach AO, and the parser handles both.
   under it. Every projected agent's last message reaches the mirror
   after its task terminal, so a terminal keeps the agent's projection
   open (`forked_skill_direct_command_20261014.ndjson`).
+- **2.1.300 also replays a finished typed fork on stdout.** After the
+  fork's `task_notification` (and a repeated `system/init`), the CLI
+  writes every row of the fork and of the agents it launched as ordinary
+  `user`/`assistant` envelopes carrying `agent_id`. The fork's own rows
+  name `parent_tool_use_id: "forked-command-<skill>"`, which no tool_use
+  has; its agents' rows name their launch. The fork's last message
+  reaches stdout here before the mirror delivers it. The parser drops a
+  stdout row whose `agent_id` names an agent the mirror projects under a
+  direct command (`mirrorProjectsStdoutRow`); the projection already
+  carries it. 2.1.284 sends no such replay and no `agent_id`
+  (`forked_skill_direct_command_stdout_replay_20261016.ndjson`).
 - **A typed fork can be resumed** by `SendMessage` to its agentId. The
   resumed fork's `agent_metadata` again names no tool_use and its rows
   reach only the mirror; they project under the command row the fork
@@ -4113,7 +4124,8 @@ Two gaps make this surface necessary:
 - A directly entered forked command such as `/code-review high` produces only
   its outer `<synthetic>` command result on ordinary stdout. Its fork-root
   prompt, tool calls, results, and final assistant row arrive live in the
-  mirrored sidechain. The file starts with
+  mirrored sidechain (2.1.300 also replays them on stdout once the fork
+  ends; §E9 says how AO drops that replay). The file starts with
   `agent_metadata {agentType:"general-purpose"}` and no `toolUseId`; root
   assistant rows carry `isSidechain:true`, `attributionSkill`, and `agentId`.
   Those facts dynamically prove a Skill fork without a command-name list.
