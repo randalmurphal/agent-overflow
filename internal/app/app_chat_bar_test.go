@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
@@ -108,17 +109,25 @@ func TestSeedChatModelProfileKeepsVisibleLastUsedModel(t *testing.T) {
 	}
 }
 
-func TestFirstVisibleModelFallsBackWhenAllHidden(t *testing.T) {
-	t.Parallel()
-	hidden := make([]string, 0, len(provider.ClaudeModels))
+// Not parallel: it resets the process-wide Claude probe catalog so the
+// served list is the shipped one.
+func TestDefaultModelFallsBackWhenAllHidden(t *testing.T) {
+	claudecatalog.Reset()
+	t.Cleanup(claudecatalog.Reset)
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	hidden := make([]any, 0, len(provider.ClaudeModels))
 	for _, model := range provider.ClaudeModels {
 		hidden = append(hidden, model.Slug)
+	}
+	if _, err := app.settings.Update(map[string]any{"claudeHiddenModels": hidden}); err != nil {
+		t.Fatalf("hide models: %v", err)
 	}
 
 	// The settings UI prevents hiding everything; a hand-mangled file
 	// must still yield a usable model — the catalog head.
-	if got := firstVisibleModel("claude", hidden); got != provider.ClaudeModels[0].Slug {
-		t.Fatalf("firstVisibleModel(all hidden) = %q, want catalog head %q", got, provider.ClaudeModels[0].Slug)
+	if got := app.defaultModelForProvider("claude"); got != provider.ClaudeModels[0].Slug {
+		t.Fatalf("defaultModelForProvider(all hidden) = %q, want catalog head %q", got, provider.ClaudeModels[0].Slug)
 	}
 }
 

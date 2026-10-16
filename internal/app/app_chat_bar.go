@@ -144,33 +144,52 @@ func (a *App) seedChatModelProfile(ctx context.Context, providerName, model stri
 
 // visibleSeedProfile guards the "seed the composer from history" paths
 // against hidden models: when the remembered profile's model is hidden
-// from pickers, seed the provider's first visible catalog model with
-// fresh defaults instead. Explicitly requested models bypass this —
-// hiding is a picker-display preference, not a hard ban, and existing
-// threads keep whatever model they carry. Settings are snapshotted
-// once so the hidden check and the visible scan agree.
+// from pickers, seed the provider's default visible model with fresh
+// defaults instead. Explicitly requested models bypass this — hiding is a
+// picker-display preference, not a hard ban, and existing threads keep
+// whatever model they carry.
 func (a *App) visibleSeedProfile(profile store.ChatModelProfile) store.ChatModelProfile {
 	hidden := a.currentSettings().HiddenModelsForProvider(profile.Provider)
 	if !slices.Contains(hidden, profile.Model) {
 		return profile
 	}
-	return a.fallbackChatModelProfile(profile.Provider, firstVisibleModel(profile.Provider, hidden))
+	return a.fallbackChatModelProfile(profile.Provider, "")
 }
 
-// firstVisibleModel returns the first static-catalog model not in the
-// hidden list, falling back to the catalog head when everything is
-// hidden — the settings UI prevents that state, but a hand-mangled
-// file must not strand the composer without a model.
+// defaultModelForProvider is the model a provider's new thread starts on with
+// no remembered choice: the model the provider names as its default, else
+// the first model it lists, else the static catalog head, skipping models
+// hidden from pickers. When everything is hidden it still returns a model —
+// the settings UI prevents that state, but a hand-mangled file must not
+// strand the composer without one.
 //
-// Codex caveat, accepted: pickers and the hide-list operate on the
-// live app-server catalog, but this seed-path scan deliberately reads
-// the static registry — spawning the codex binary just to seed a
-// draft would be worse than occasionally seeding a slug the live
-// catalog has since dropped (the composer surfaces that immediately
-// and the user re-picks).
-func firstVisibleModel(providerName string, hidden []string) string {
+// Codex reads only an already-cached live catalog: spawning the codex
+// binary to seed a draft would be worse than seeding the static head until
+// the picker's own lookup fills the cache.
+func (a *App) defaultModelForProvider(providerName string) string {
+	var served []provider.ModelInfo
+	switch provider.CapabilitiesForProvider(providerName).ModelCatalog {
+	case provider.ClaudeProbeEnrichedCatalog:
+		served = a.claudeModelsForProvider(providerName)
+	case provider.CodexLiveModelCatalog:
+		if models, err, ok := a.cachedCodexModelsForBinary(a.providerBinaryPath(providerName)); ok && err == nil {
+			served = models
+		}
+	}
+	hidden := a.currentSettings().HiddenModelsForProvider(providerName)
+	visible := func(m provider.ModelInfo) bool { return !m.Unlisted && !slices.Contains(hidden, m.Slug) }
+	for _, model := range served {
+		if model.IsDefault && visible(model) {
+			return model.Slug
+		}
+	}
+	for _, model := range served {
+		if visible(model) {
+			return model.Slug
+		}
+	}
 	for _, model := range provider.ModelsForProvider(providerName) {
-		if !slices.Contains(hidden, model.Slug) {
+		if visible(model) {
 			return model.Slug
 		}
 	}

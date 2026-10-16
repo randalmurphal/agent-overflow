@@ -45,6 +45,7 @@
     type SettingsProvider,
   } from './fields';
   import { INPUT_CLASS } from './styles';
+  import { offeredModels } from '../../utils/hiddenModels';
 
   let { provider }: { provider: SettingsProvider } = $props();
 
@@ -63,7 +64,7 @@
   let hostWritable = $derived(hostTierWritable());
   let hostReason = $derived(hostWritable ? undefined : HOST_TIER_REASON);
   let settings = $derived(getSettings());
-  let models = $derived(getProviderModels(provider, backend));
+  let models = $derived(offeredModels(getProviderModels(provider, backend)));
   let dependents = $derived(dependentProviders(provider));
   let status = $state<ProviderStatus | undefined>(undefined);
   let loadGeneration = 0;

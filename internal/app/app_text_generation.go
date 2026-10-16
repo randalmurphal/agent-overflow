@@ -74,7 +74,7 @@ func (a *App) resolveTextGenerationConfig() textgen.Config {
 			cfg.Model = strings.TrimSpace(s.TextGenerationModel)
 		}
 		if cfg.Model == "" {
-			cfg.Model = textgen.DefaultClaudeModel
+			cfg.Model = a.defaultClaudeTextGenerationModel()
 		}
 	}
 
@@ -115,12 +115,22 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 		if cfg.Binary == "" || lookPath(cfg.Binary) != nil {
 			return textgen.Config{}, false
 		}
-		cfg.Model = textgen.DefaultClaudeModel
+		cfg.Model = a.defaultClaudeTextGenerationModel()
 	default:
 		return textgen.Config{}, false
 	}
 	coerceTextGenerationEffort(&cfg)
 	return cfg, true
+}
+
+// defaultClaudeTextGenerationModel is textgen.DefaultClaudeModel when the
+// installed Claude CLI lists it, else textgen.FallbackClaudeModel. Before the
+// first probe reports, the fallback runs: it works on every CLI.
+func (a *App) defaultClaudeTextGenerationModel() string {
+	if a.providerDiscoveryService().ClaudeReportsModel(textgen.DefaultClaudeModel) {
+		return textgen.DefaultClaudeModel
+	}
+	return textgen.FallbackClaudeModel
 }
 
 // coerceTextGenerationEffort resolves the effort a one-shot generation run

@@ -13,7 +13,7 @@ var today = time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 func TestPublishedStandardRates(t *testing.T) {
 	// One million tokens in each of the four billing classes.
 	for model, want := range map[string]float64{
-		"gpt-6-astra": 73.5, "gpt-6-sol": 14.7, "gpt-6-luna": 0.735,
+		"gpt-6-astra": 73.5, "gpt-6.1-sol": 14.6, "gpt-6-sol": 14.7, "gpt-6-luna": 0.735,
 		"gpt-5.6-sol": 29.4, "gpt-daybreak-blue-latest": 29.4,
 		"gpt-5.6-terra": 16.7, "gpt-5.6-luna": 1.67,
 		"gpt-5.6-cyber": 104.375, "gpt-daybreak-red-latest": 104.375,
@@ -21,7 +21,8 @@ func TestPublishedStandardRates(t *testing.T) {
 		"claude-mythos-5-1": 80.25, "claude-opus-4-1": 121.5,
 		"claude-opus-5-5": 32.2, "claude-sonnet-5-5": 16.2,
 		"claude-opus-4-6": 40.5, "claude-sonnet-5": 16.2,
-		"claude-sonnet-4-6": 24.3, "claude-haiku-4-5": 8.1,
+		"claude-sonnet-4-6": 24.3, "claude-haiku-5-5": 0.81,
+		"claude-haiku-4-5": 8.1,
 	} {
 		t.Run(model, func(t *testing.T) {
 			got, ok := Price(model, today, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
@@ -32,11 +33,27 @@ func TestPublishedStandardRates(t *testing.T) {
 	}
 }
 
+func TestPublishedRateChanges(t *testing.T) {
+	for _, c := range []struct {
+		model string
+		at    time.Time
+		want  float64
+	}{
+		{"claude-sonnet-5-5", time.Date(2026, 10, 6, 23, 59, 59, 0, time.UTC), 16.2},
+		{"claude-sonnet-5-5", time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC), 16.1},
+	} {
+		got, ok := Price(c.model, c.at, 1_000_000, 1_000_000, 1_000_000, 1_000_000)
+		if !ok || !almostEqual(got, c.want, 0.000001) {
+			t.Errorf("%s on %s: %v, %v; want %v", c.model, c.at.Format(dateLayout), got, ok, c.want)
+		}
+	}
+}
+
 func TestOlderModelsInputOutputAndCacheRead(t *testing.T) {
 	for model, want := range map[string]float64{
 		"gpt-5.3-codex": 15.925, "gpt-5.2-codex": 15.925,
 		"gpt-5.1-codex": 11.375, "gpt-5-codex": 11.375,
-		"gpt-5.5": 35.5, "gpt-5.4": 17.75, "gpt-5.4-mini": 5.325,
+		"gpt-5.5": 35.5, "gpt-5.5-cyber-preview": 35.5, "gpt-5.4": 17.75, "gpt-5.4-mini": 5.325,
 		"gpt-5": 11.375, "o3": 10.5, "o4-mini": 5.775,
 	} {
 		got, ok := Price(model, today, 1_000_000, 1_000_000, 1_000_000, 0)

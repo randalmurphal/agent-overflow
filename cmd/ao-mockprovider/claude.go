@@ -71,7 +71,7 @@ func claudeAccountForHome() claudeAccount {
 // harness run exercises the un-enriched catalog and the merge policy never
 // runs at all.
 //
-// Two rows, modelled on the real 2.1.219 capture in
+// Three rows, modelled on the real 2.1.219 capture in
 // docs/references/fixtures/claude/initialize_models_20260802.json:
 //
 //   - The `default` POINTER row, whose displayName names the pointer rather
@@ -79,6 +79,10 @@ func claudeAccountForHome() claudeAccount {
 //     Exercises CanonicalSlug's alias/marker normalization and
 //     IsDefaultPointer; its capabilities match the catalog's claude-opus-5
 //     exactly, so it contributes no drift.
+//   - A `claude-opus-4-7` row matching the catalog exactly. The harness seeds
+//     Claude threads on this model (internal/harnessrpc/seed.go), and pickers
+//     offer only what the CLI lists, so the mock lists it as a real CLI that
+//     runs it would. It contributes no drift.
 //   - A `claude-haiku-4-5` row claiming `supportsFastMode: true`, which the
 //     catalog does not. That single divergence is deliberate: it is what makes
 //     the merge OBSERVABLE under harness — Merge reports one DriftCapability
@@ -91,6 +95,10 @@ func claudeAccountForHome() claudeAccount {
 const claudeModelsJSON = `[` +
 	`{"value":"default","resolvedModel":"claude-opus-5[1m]","displayName":"Default (recommended)",` +
 	`"description":"Opus 5 with 1M context","supportsEffort":true,` +
+	`"supportedEffortLevels":["low","medium","high","xhigh","max"],` +
+	`"supportsAdaptiveThinking":true,"supportsFastMode":true,"supportsAutoMode":true},` +
+	`{"value":"claude-opus-4-7","resolvedModel":"claude-opus-4-7","displayName":"Opus 4.7",` +
+	`"description":"Opus 4.7","supportsEffort":true,` +
 	`"supportedEffortLevels":["low","medium","high","xhigh","max"],` +
 	`"supportsAdaptiveThinking":true,"supportsFastMode":true,"supportsAutoMode":true},` +
 	`{"value":"claude-haiku-4-5","resolvedModel":"claude-haiku-4-5","displayName":"Haiku",` +

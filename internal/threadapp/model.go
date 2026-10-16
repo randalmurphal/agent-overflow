@@ -156,7 +156,7 @@ func (s *Service) latestProviderProfile(providerName string) (store.ChatModelPro
 			return store.ChatModelProfile{}, fmt.Errorf("load latest chat model profile for provider %s: %w", providerName, err)
 		}
 	}
-	return models.Sanitize(chatmodel.FallbackProfileWith(models.ContextWindowOptions, providerName, "")), nil
+	return models.Sanitize(chatmodel.FallbackProfileWith(models.ContextWindowOptions, providerName, models.DefaultModel(providerName))), nil
 }
 
 func ThreadWithModelProfile(thread store.Thread, profile store.ChatModelProfile) store.Thread {

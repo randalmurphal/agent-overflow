@@ -764,8 +764,8 @@ func TestGeneratedThreadTitle_RoutesToClaudeWhenConfigured(t *testing.T) {
 	if argsContain(gotSpec.Args, "--dangerously-skip-permissions") {
 		t.Fatalf("claude title args must not bypass permissions: %v", gotSpec.Args)
 	}
-	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.DefaultClaudeModel {
-		t.Fatalf("claude model = %q, want %q", modelArg, textgen.DefaultClaudeModel)
+	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.FallbackClaudeModel {
+		t.Fatalf("claude model = %q, want %q", modelArg, textgen.FallbackClaudeModel)
 	}
 }
 
@@ -821,8 +821,8 @@ func TestGeneratedThreadTitle_Layer2PrimaryFailsAlternateSucceeds(t *testing.T) 
 		t.Fatalf("retry invocation binary = %q, want claude", specs[1].Binary)
 	}
 	// The retry must use Claude's default model, not whatever was set for Codex.
-	if model := nextArgAfter(specs[1].Args, "--model"); model != textgen.DefaultClaudeModel {
-		t.Fatalf("retry model = %q, want %q (always default for alternate)", model, textgen.DefaultClaudeModel)
+	if model := nextArgAfter(specs[1].Args, "--model"); model != textgen.FallbackClaudeModel {
+		t.Fatalf("retry model = %q, want %q (always default for alternate)", model, textgen.FallbackClaudeModel)
 	}
 }
 

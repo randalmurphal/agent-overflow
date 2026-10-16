@@ -378,11 +378,21 @@ func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery)
 }
 
 func (t threadToolsApp) providerOption(name string) (threadtools.ProviderOption, error) {
+	option, _, err := t.providerModelOptions(name)
+	return option, err
+}
+
+// providerModelOptions answers thread_options for one provider and also
+// returns every model this computer can resolve, listed or not. The option
+// offers what the provider lists; a spawn or fork naming an unlisted model a
+// thread already runs is still accepted against the full set.
+func (t threadToolsApp) providerModelOptions(name string) (threadtools.ProviderOption, []threadtools.ModelOption, error) {
 	models, err := t.app.GetModelsForProvider(name)
 	if err != nil {
-		return threadtools.ProviderOption{}, err
+		return threadtools.ProviderOption{}, nil, err
 	}
 	option := threadtools.ProviderOption{ID: name, Name: threadToolsProviderName(name), Models: []threadtools.ModelOption{}}
+	var all []threadtools.ModelOption
 	for _, model := range models.Models {
 		entry := threadtools.ModelOption{Slug: model.Slug, Name: model.Name, Source: string(models.Provenance)}
 		for _, effort := range model.ReasoningEfforts {
@@ -396,12 +406,23 @@ func (t threadToolsApp) providerOption(name string) (threadtools.ProviderOption,
 				entry.ContextWindow = window.Tokens
 			}
 		}
-		option.Models = append(option.Models, entry)
+		all = append(all, entry)
+		// An unlisted row only resolves capabilities for threads already on
+		// it; the provider does not offer it to a new one.
+		if !model.Unlisted {
+			option.Models = append(option.Models, entry)
+		}
 	}
-	if len(option.Models) > 0 {
+	for _, model := range models.Models {
+		if model.IsDefault && !model.Unlisted {
+			option.DefaultModel = model.Slug
+			break
+		}
+	}
+	if option.DefaultModel == "" && len(option.Models) > 0 {
 		option.DefaultModel = option.Models[0].Slug
 	}
-	return option, nil
+	return option, all, nil
 }
 
 func threadToolsProviderName(name string) string {

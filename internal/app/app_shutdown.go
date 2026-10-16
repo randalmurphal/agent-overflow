@@ -252,6 +252,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// The project identity refresh writes project rows. appCtx is already
 	// cancelled, which kills its git read and stops the pass unrecorded.
 	a.projectIdentityWG.Wait()
+	// The startup probe's retry loop adopts accounts and writes the catalog
+	// record; appCtx is cancelled, so it is waking to exit or finishing one
+	// bounded probe.
+	a.startupProbeWG.Wait()
 	a.stopIdleSessionReaper()
 	record("stop idle session reaper", nil)
 

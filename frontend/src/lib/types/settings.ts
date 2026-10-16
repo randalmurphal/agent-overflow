@@ -507,7 +507,7 @@ export interface Settings {
   textGenerationProvider: ProviderID;
   /**
    * Text generation model id. Empty string = "use the per-provider
-   * default" (codex → gpt-6-luna, claude → claude-haiku-4-5).
+   * default" (codex → gpt-6-luna, claude → claude-haiku-5-5).
    */
   textGenerationModel: string;
   /** Text generation reasoning-effort tier. Defaults to "low" — these
@@ -686,6 +686,11 @@ export interface ModelInfo {
   name: string;
   provider: string;
   isCustom?: boolean;
+  // Mirrors provider.ModelInfo.Unlisted: the provider's latest list does not
+  // offer this model. The row stays for threads already on it; pickers drop it.
+  unlisted?: boolean;
+  // Mirrors provider.ModelInfo.IsDefault: the provider's own default model.
+  isDefault?: boolean;
   capabilities?: string[];
   fastModeTier?: FastModeTier;
   contextWindows?: ContextWindowOption[];

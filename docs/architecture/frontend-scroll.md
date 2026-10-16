@@ -737,6 +737,16 @@ escape. Re-stick uses the distance from bottom captured at scroll-event
 time so streaming growth between the event and the deferred check cannot
 invalidate what the user actually saw.
 
+A down input also records the bottom target it aims at
+(`downIntentShownEnd`). The browser clamps a gesture to the end that stood
+when it computed the gesture, so a wheel or an End key's smooth scroll lands
+on that end even when rows mounting at the tail measure taller and move the
+bottom first. Landing on it, within the epsilon and by the reader's own
+movement, re-sticks, and the view then follows to the moved bottom through
+the pinned-growth path (`notifyLiveContentMaybeGrew`). A scroll the content
+resize accounts for whole is an anchoring shift, not arrival; a later input
+re-aims; a position past the aimed end is not arrival.
+
 A selection drag pauses the spring in place and escapes on the scroll
 events it causes (`isSelectingInside`: the primary button is held AND the
 selection's range shares ancestry with the scroller; a collapsed caret

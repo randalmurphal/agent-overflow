@@ -213,6 +213,9 @@ type App struct {
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
+	// startupProbeWG joins the startup account probes and the Claude probe's
+	// retry loop (probeStartupAccountInfo).
+	startupProbeWG sync.WaitGroup
 	// threadSearchIndex is the boot-time search index build.
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.

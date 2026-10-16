@@ -138,7 +138,11 @@ export interface ScrollIntentDeps {
    * budget). Returns the correlation flag and consumes one budget unit.
    */
   sampleResizeCorrelation(): boolean;
-  /** Raw resizeDifference read for trace data only. */
+  /**
+   * Raw resizeDifference: the content height delta a correlated scroll
+   * event moved with. Tells an anchoring shift from the reader's own
+   * movement on the arrival path, and feeds trace data.
+   */
   resizeDifferenceNow(): number;
   /**
    * A scroll event classified as USER-driven landed at `top`: untagged
@@ -156,6 +160,12 @@ export interface ScrollIntentDeps {
   lastExplainedScrollTop(): number | null;
   /** Accepted outer-scroll intent, before the browser moves. */
   onScrollInput?(): void;
+  /**
+   * A re-stick landed short of a bottom that moved after the gesture
+   * aimed at it: bring the view to the bottom the way growth under a
+   * pinned reader is followed.
+   */
+  followBottom(): void;
 }
 
 export interface ScrollIntent {
@@ -217,6 +227,16 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   let programmaticTokenCount = 0;
 
   let recentDownIntentUntil = 0;
+  // The bottom target when the latest down input arrived: the end that
+  // input aims at. The browser clamps a gesture to the end that stood when
+  // it computed the gesture, so the gesture lands there even when the
+  // bottom moves while it is in flight (rows mounting at the tail measure
+  // taller than their estimate; an End key's smooth scroll keeps the
+  // target it started with). Landing on it counts as reaching the bottom.
+  // A position past it is not arrival: content inserted above shifts
+  // every position, and a step computed after the bottom moved passed it
+  // without aiming there. -1 when no down input is live.
+  let downIntentShownEnd = -1;
   let recentDownIntentVersion = 0;
   let recentDownIntentClearTimer: ReturnType<typeof setTimeout> | null = null;
   let scrollbarDragSessionActive = false;
@@ -227,8 +247,9 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   let touchStartX: number | null = null;
   // Baseline so `scrolledDown` can be computed for the re-stick path.
   // Re-stick requires both recent down input and a real downward scroll
-  // event landing at the bottom; this baseline keeps layout clamps from
-  // masquerading as user-driven down motion.
+  // event landing at the bottom (or at the end that input aimed at); this
+  // baseline keeps layout clamps from masquerading as user-driven down
+  // motion.
   let lastObservedScrollTopForRestick = -1;
   let detachListeners: (() => void) | undefined;
 
@@ -251,6 +272,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   function clearRecentDownIntent(opts: { bumpVersion?: boolean } = {}): void {
     recentDownIntentUntil = 0;
+    downIntentShownEnd = -1;
     if (opts.bumpVersion ?? true) recentDownIntentVersion += 1;
     if (recentDownIntentClearTimer) {
       clearTimeout(recentDownIntentClearTimer);
@@ -330,21 +352,18 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     deps.setRestoreConsentArmed(false);
     recentDownIntentVersion += 1;
     extendRecentDownIntent();
-    if (isUiRenderTraceEnabled()) trace('scroll.intent.down', () => {
-      const el = deps.getScrollEl();
-      return {
-        source,
-        recentDownIntentUntil: Math.round(recentDownIntentUntil),
-        scrollTop: el ? Math.round(el.scrollTop) : null,
-        distFromBottom: el ? Math.round(deps.distanceFromBottom()) : null,
-        escapedFromLockState: deps.escaped(),
-      };
-    });
-    if (
-      deps.getScrollEl()
-      && deps.escaped()
-      && deps.distanceFromBottom() <= AUTO_FOLLOW_BOTTOM_EPSILON_PX
-    ) {
+    const el = deps.getScrollEl();
+    const distFromBottom = el ? deps.distanceFromBottom() : 0;
+    downIntentShownEnd = el ? el.scrollTop + distFromBottom : -1;
+    if (isUiRenderTraceEnabled()) trace('scroll.intent.down', () => ({
+      source,
+      recentDownIntentUntil: Math.round(recentDownIntentUntil),
+      scrollTop: el ? Math.round(el.scrollTop) : null,
+      distFromBottom: el ? Math.round(distFromBottom) : null,
+      shownEnd: Math.round(downIntentShownEnd),
+      escapedFromLockState: deps.escaped(),
+    }));
+    if (el && distFromBottom <= AUTO_FOLLOW_BOTTOM_EPSILON_PX) {
       restickFromUserInput(source);
     }
   }
@@ -596,6 +615,8 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     ) deps.noteUserScroll(scrollTopAtEvent);
     const previousObserved = lastObservedScrollTopForRestick;
     const downIntentVersionAtEvent = recentDownIntentVersion;
+    const shownEndAtEvent = downIntentShownEnd;
+    const resizeDifferenceAtEvent = deps.resizeDifferenceNow();
     const scrollbarDragSessionAtEvent = scrollbarDragSessionActive;
     const scrollbarDragSessionVersionAtEvent = scrollbarDragSessionVersion;
     const scrolledDown = previousObserved < 0
@@ -665,10 +686,21 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
         return;
       }
 
+      // The gesture landed on the end its input aimed at, though the
+      // bottom has since moved below it (see downIntentShownEnd). A move
+      // the content resize accounts for whole is an anchoring shift, not
+      // the reader's.
+      const layoutShift = resizeCorrelatedScroll
+        && previousObserved >= 0
+        && Math.abs(scrollTopAtEvent - previousObserved - resizeDifferenceAtEvent) <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+      const reachedShownEnd = hasLiveRecentDownIntent
+        && shownEndAtEvent >= 0
+        && !layoutShift
+        && Math.abs(scrollTopAtEvent - shownEndAtEvent) <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
       const willRestick = hasLiveDownIntent
         && scrolledDown
         && deps.escaped()
-        && distFromBottomAtEvent <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+        && (distFromBottomAtEvent <= AUTO_FOLLOW_BOTTOM_EPSILON_PX || reachedShownEnd);
       if (isUiRenderTraceEnabled()) trace('scroll.scrollEvent.deferred', () => ({
         scrollTop: Math.round(scrollTopAtEvent),
         previousObserved: Math.round(previousObserved),
@@ -678,12 +710,18 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
         hasLiveDownIntent,
         distFromBottomAtEvent: Math.round(distFromBottomAtEvent),
         distFromBottomNow: Math.round(deps.distanceFromBottom()),
+        shownEnd: Math.round(shownEndAtEvent),
+        layoutShift,
+        reachedShownEnd,
         willRestick,
         isAtBottomState: deps.isAtBottom(),
         escapedFromLockState: deps.escaped(),
       }));
       if (willRestick) {
         restickFromUserInput('scroll');
+        // The bottom moved after the gesture landed or aimed: the reader
+        // is pinned now, so the growth they were short of is followed.
+        if (deps.distanceFromBottom() > AUTO_FOLLOW_BOTTOM_EPSILON_PX) deps.followBottom();
       }
     }, RESIZE_CLEAR_PADDING_MS);
   }

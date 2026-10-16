@@ -140,8 +140,8 @@ func TestGetContextSettingsReturnsProviderModelOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetContextSettings(codex/gpt-5.4): %v", err)
 	}
-	if profile.ContextWindow != provider.CodexStandardContextWindow {
-		t.Fatalf("ContextWindow = %d, want default %d", profile.ContextWindow, provider.CodexStandardContextWindow)
+	if profile.ContextWindow != provider.CodexExtendedContextWindow {
+		t.Fatalf("ContextWindow = %d, want default %d", profile.ContextWindow, provider.CodexExtendedContextWindow)
 	}
 	if len(profile.ContextWindows) != 2 {
 		t.Fatalf("ContextWindows len = %d, want 2", len(profile.ContextWindows))
