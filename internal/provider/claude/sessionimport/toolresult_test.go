@@ -71,3 +71,36 @@ func TestMonitorAckTaskID(t *testing.T) {
 		}
 	}
 }
+
+// The ack names the task's output file after one marker, and the path
+// ends at the task's own basename; anything else after the marker is not
+// a path.
+func TestBackgroundAckOutputFile(t *testing.T) {
+	const path = "/tmp/claude-502/-tmp-spike-work/de4518bd/tasks/bdq6lce49.output"
+	for _, text := range []string{
+		"Command running in background with ID: bdq6lce49. Output is being written to: " + path + ". You will be notified when it completes. To check interim output, use TaskOutput.",
+		"Command running in background with ID: bdq6lce49. Output is being written to: " + path + ". If it exits while you are still working you will be notified.",
+		"Command did not complete within its 300s timeout and was moved to the background (ID: bdq6lce49). Output is being written to: " + path + ".",
+		"Command was manually backgrounded by user with ID: bdq6lce49. Output is being written to: " + path,
+		"Command running in background with ID: bdq6lce49. Output is being written to: " + path + "\nSecond line mentioning bdq6lce49.output",
+	} {
+		if got := BackgroundAckOutputFile(text, "bdq6lce49"); got != path {
+			t.Fatalf("%q: got %q, want %q", text, got, path)
+		}
+	}
+	for _, text := range []string{
+		"",
+		"Command running in background with ID: bdq6lce49.",
+		"Command running in background with ID: bdq6lce49. Output is being written to: ",
+		"Command running in background with ID: bdq6lce49. Output is being written to: tasks/bdq6lce49.output.",
+		"Command running in background with ID: bdq6lce49. Output is being written to: /tmp/tasks/other.output. See bdq6lce49.output later.",
+		"Command running in background with ID: bdq6lce49. Output is being written to: /tmp/tasks/bdq6lce49.log.",
+	} {
+		if got := BackgroundAckOutputFile(text, "bdq6lce49"); got != "" {
+			t.Fatalf("%q: got %q, want no path", text, got)
+		}
+	}
+	if got := BackgroundAckOutputFile("Output is being written to: "+path, ""); got != "" {
+		t.Fatalf("an empty task id must name no path (got %q)", got)
+	}
+}

@@ -220,6 +220,43 @@ func BackgroundAckTaskID(text string, requested bool) (taskID string, ok bool) {
 	return "", false
 }
 
+// backgroundAckOutputFileMarker precedes the task's output file in every
+// Bash backgrounding ack wording: "Output is being written to: <path>."
+const backgroundAckOutputFileMarker = "Output is being written to: "
+
+// BackgroundAckOutputFile recovers the output file a Bash backgrounding
+// ack names for taskID, the one statement of that path the wire makes at
+// launch (the structured sibling carries only `backgroundTaskId`;
+// claude-wire.md §E2). The CLI writes the task's output to
+// `<tasks dir>/<task_id>.output`, so the path is read up to that basename
+// and anything else after the marker yields "": the sentence that follows
+// the path ("You will be notified…", "If it exits…") is punctuated with a
+// period the path's own characters cannot be told from. A relative path
+// yields "" as well; the file is only ever read by its absolute path.
+func BackgroundAckOutputFile(text, taskID string) string {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return ""
+	}
+	_, rest, found := strings.Cut(text, backgroundAckOutputFileMarker)
+	if !found {
+		return ""
+	}
+	if idx := strings.IndexByte(rest, '\n'); idx >= 0 {
+		rest = rest[:idx]
+	}
+	base := taskID + ".output"
+	end := strings.Index(rest, base)
+	if end < 0 {
+		return ""
+	}
+	path := strings.TrimSpace(rest[:end+len(base)])
+	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, " \t") {
+		return ""
+	}
+	return path
+}
+
 // The Monitor launch ack's text (claude-wire.md §E7). Every observed
 // wording opens with the task id and differs only after it:
 //

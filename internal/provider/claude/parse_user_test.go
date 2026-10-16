@@ -105,6 +105,11 @@ func TestAppendToolResultBlock_PlaceholderEmitsCompleteWithBackgroundFlag(t *tes
 	if meta["is_background"] != true {
 		t.Fatalf("is_background: got %v, want true", meta["is_background"])
 	}
+	// The ack text is the wire's one launch-time statement of the file
+	// the command's output goes to; the tray tails it from the launch row.
+	if meta["output_file"] != "/tmp/task-bg.output" {
+		t.Fatalf("output_file: got %v, want /tmp/task-bg.output", meta["output_file"])
+	}
 }
 
 // TestAppendToolResultBlock_TimeoutAutoBackgroundSetsBackgroundFlag pins
@@ -1181,12 +1186,13 @@ func TestAppendToolResultBlock_FlaggedLaunchRefusedIsNotBackground(t *testing.T)
 // bound in the parser's task map.
 func TestAppendToolResultBlock_SidechainAckTextMarksBackgroundAndBindsTaskID(t *testing.T) {
 	cases := []struct {
-		name    string
-		content string
+		name       string
+		content    string
+		outputFile string
 	}{
-		{"explicit", "Command running in background with ID: bkulztq41. Output is being written to: /tmp/tasks/bkulztq41.output. You will be notified when it completes.\nSession cwd remains /home/x"},
-		{"assistant budget", "Command exceeded the assistant-mode blocking budget (30s) and was moved to the background with ID: bkulztq41. It is still running — you will be notified when it completes."},
-		{"manual", "Command was manually backgrounded by user with ID: bkulztq41. Output is being written to: /tmp/tasks/bkulztq41.output"},
+		{"explicit", "Command running in background with ID: bkulztq41. Output is being written to: /tmp/tasks/bkulztq41.output. You will be notified when it completes.\nSession cwd remains /home/x", "/tmp/tasks/bkulztq41.output"},
+		{"assistant budget", "Command exceeded the assistant-mode blocking budget (30s) and was moved to the background with ID: bkulztq41. It is still running — you will be notified when it completes.", ""},
+		{"manual", "Command was manually backgrounded by user with ID: bkulztq41. Output is being written to: /tmp/tasks/bkulztq41.output", "/tmp/tasks/bkulztq41.output"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1212,6 +1218,9 @@ func TestAppendToolResultBlock_SidechainAckTextMarksBackgroundAndBindsTaskID(t *
 			}
 			if meta["task_id"] != "bkulztq41" {
 				t.Fatalf("task_id: got %v, want bkulztq41", meta["task_id"])
+			}
+			if got, _ := meta["output_file"].(string); got != tc.outputFile {
+				t.Fatalf("output_file: got %q, want %q", got, tc.outputFile)
 			}
 			if ref := parser.taskToolUseRef("bkulztq41"); ref.ToolUseID != "tool-bg" || ref.ParentToolUseID != "tool-agent" {
 				t.Fatalf("task map must bind the ack's id to the launch (with its parent); got %+v", ref)
