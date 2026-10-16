@@ -2849,7 +2849,6 @@ describe('<Composer>', () => {
     const draft = await buildDraft();
     const message = 'Your unsent text moved to Ops; send it from there.';
     setBindingMock('RegisterQueueItem', async () => { throw new TransportError('assistant_draft_moved', message); });
-    const save = setBindingMock('SaveDraft', async () => {});
 
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;

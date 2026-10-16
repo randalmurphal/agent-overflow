@@ -5085,7 +5085,8 @@ export function StartCodexReview(threadID: string, target: app$0.CodexReviewTarg
 /**
  * StartNextAssistantThread replaces an assistant's current thread with a new
  * one and returns it. Refused for a thread that is not an assistant's
- * current thread on this computer, and for an archived one.
+ * current thread on this computer, for an archived one, and while the
+ * assistant's previous handoff is still running.
  */
 export function StartNextAssistantThread(threadID: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(4173453878, threadID).then(($result: any) => {

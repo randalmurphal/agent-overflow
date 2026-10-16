@@ -98,7 +98,7 @@ func (s *Store) HandOffThreadDraft(sourceThreadID string, expected *ThreadDraft,
 		return err
 	}
 	defer release()
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	current, found, err := getThreadDraft(tx, sourceThreadID)
 	if err != nil {
 		return err
