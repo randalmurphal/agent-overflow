@@ -1211,25 +1211,25 @@ export function createUseStickToBottomController(
 
   return {
     get isSticky() {
-      escapeRevision;
+      void escapeRevision;
       return isAtBottomState && !escapedFromLockState && pauseDepth === 0;
     },
     get isAtBottom() {
-      escapeRevision;
+      void escapeRevision;
       return !escapedFromLockState && (isAtBottomState || isNearBottomState);
     },
     get restorePending() {
-      restoreConsentRevision;
+      void restoreConsentRevision;
       return restoreConsentArmedState;
     },
     get escapedFromLock() {
-      escapeRevision;
+      void escapeRevision;
       return escapedFromLockState;
     },
     // Scroll-event ATTRIBUTION, not follow gating — see the interface doc
     // for why this must not fold in pauseDepth the way isSticky does.
     get positionOwnerDriven() {
-      escapeRevision;
+      void escapeRevision;
       return !escapedFromLockState;
     },
     get isWarm() {
