@@ -53,6 +53,9 @@ type fixtureThread struct {
 	preview      string
 	archived     int
 	recencyMS    int64
+	// noUserMessage writes the row a thread with no user message gets:
+	// empty title and first_user_message, so only preview names it.
+	noUserMessage bool
 }
 
 func writeStateDB(t *testing.T, home string, schema string, rows []fixtureThread, spawnChildren []string) {
@@ -66,12 +69,16 @@ func writeStateDB(t *testing.T, home string, schema string, rows []fixtureThread
 		t.Fatalf("create fixture schema: %v", err)
 	}
 	for _, row := range rows {
+		title, firstMessage := "Title "+row.id, "Prompt "+row.id
+		if row.noUserMessage {
+			title, firstMessage = "", ""
+		}
 		if _, err := db.Exec(`
 INSERT INTO threads (id, rollout_path, created_at, updated_at, source, cwd, title,
                      first_user_message, archived, thread_source, preview, recency_at_ms,
                      created_at_ms, updated_at_ms, git_branch, model, reasoning_effort, tokens_used)
 VALUES (?, ?, 1700, 1800, ?, '/repo', ?, ?, ?, ?, ?, ?, 1700000, 1800000, 'main', 'gpt-5.6-sol', 'high', 42)`,
-			row.id, row.rolloutPath, row.source, "Title "+row.id, "Prompt "+row.id,
+			row.id, row.rolloutPath, row.source, title, firstMessage,
 			row.archived, nullable(row.threadSource), row.preview, row.recencyMS,
 		); err != nil {
 			t.Fatalf("insert fixture thread %s: %v", row.id, err)
@@ -158,6 +165,34 @@ func TestListDoesNotFilterOnHasUserEvent(t *testing.T) {
 	}
 	if len(got) != 1 {
 		t.Fatalf("has_user_event=0 row was filtered out: %+v", got)
+	}
+}
+
+// Codex 0.162 fills `preview` for a thread another thread delegated to
+// (codex-rs/state/src/extract.rs, delegated_output_preview), so the row
+// passes the preview filter with no title and no first user message. The
+// preview is the only name it has.
+func TestListTitlesAThreadWithNoUserMessageFromItsPreview(t *testing.T) {
+	home := t.TempDir()
+	keep := touchRollout(t, home, "keep.jsonl")
+	writeStateDB(t, home, fixtureSchema, []fixtureThread{
+		{id: "delegated", rolloutPath: keep, source: "cli", preview: "Inspect <main> & report findings.", recencyMS: 900, noUserMessage: true},
+		{id: "typed", rolloutPath: keep, source: "cli", preview: "hello", recencyMS: 800},
+	}, nil)
+
+	got, _, err := List(context.Background(), ListOptions{CodexHome: home})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	titles := map[string]string{}
+	for _, info := range got {
+		titles[info.ThreadID] = info.Title
+	}
+	if titles["delegated"] != "Inspect <main> & report findings." {
+		t.Errorf("delegated title = %q, want the preview", titles["delegated"])
+	}
+	if titles["typed"] != "Title typed" {
+		t.Errorf("typed title = %q, want the index title over the preview", titles["typed"])
 	}
 }
 

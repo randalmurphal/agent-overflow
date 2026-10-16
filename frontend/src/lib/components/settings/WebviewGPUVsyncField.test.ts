@@ -3,9 +3,13 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import WebviewGPUVsyncField from './WebviewGPUVsyncField.svelte';
 import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { resetRunMode } from '../../../test/runMode';
-import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
+import { getToasts, removeToast } from '../../stores/toast.svelte';
 
 const FIELD = '[data-settings-field="performance.disable-gpu-vsync"]';
+
+function clearToasts(): void {
+  for (const toast of getToasts()) removeToast(toast.id);
+}
 
 async function settle(): Promise<void> {
   for (let i = 0; i < 5; i += 1) {
@@ -17,13 +21,13 @@ describe('<WebviewGPUVsyncField>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetRunMode();
-    resetToastsForTest();
+    clearToasts();
   });
 
   afterEach(() => {
     resetBindingMocks();
     resetRunMode();
-    resetToastsForTest();
+    clearToasts();
   });
 
   it('renders nothing off the Windows launcher and never reads the preference there', async () => {

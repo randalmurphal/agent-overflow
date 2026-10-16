@@ -102,14 +102,38 @@ func (s *Session) Resume(ctx context.Context) error {
 	if rootThreadID == "" {
 		return fmt.Errorf("codex: resume: session has no thread id")
 	}
-	_, err := s.sendRequest(ctx, "thread/resume", map[string]any{
-		"threadId":     rootThreadID,
-		"excludeTurns": true,
-	})
+	// The thread is not loaded, so this is a cold load: Codex builds the
+	// thread's config from this request alone (a running thread would
+	// ignore it). Without the session's overrides it would come back with
+	// none of AO's MCP servers, disabled tools or pinned features.
+	params := map[string]any{}
+	s.mu.Lock()
+	for key, value := range s.rehydrateParams {
+		params[key] = value
+	}
+	s.mu.Unlock()
+	params["threadId"] = rootThreadID
+	params["excludeTurns"] = true
+	_, err := s.sendRequest(ctx, "thread/resume", params)
 	if err != nil {
 		return fmt.Errorf("codex: thread/resume: %w", classifyThreadWriterConflict(err))
 	}
 	return nil
+}
+
+// threadRehydrateParams picks the thread-scoped values a cold reload must
+// repeat from the params a session loaded its thread with. Model, effort,
+// tier, approval policy, reviewer and sandbox are left out: turn/start sends
+// the current value of each on every turn, and the start-time value may be
+// stale after a live settings change.
+func threadRehydrateParams(threadParams map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, key := range []string{"cwd", "config", "baseInstructions", "developerInstructions"} {
+		if value, ok := threadParams[key]; ok {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 // decodeProbeResponse pulls `thread.status` out of the raw `thread/read`

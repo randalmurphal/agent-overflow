@@ -136,6 +136,9 @@ func TestSessionForkAtSendsLastTurnIdAndValidatesTail(t *testing.T) {
 	if !strings.Contains(request, `"excludeTurns":true`) {
 		t.Fatalf("fork request must exclude transcript turns: %s", request)
 	}
+	if !strings.Contains(request, `"config":{"features.instant_interrupt":false}`) {
+		t.Fatalf("fork request must pin instant_interrupt off: %s", request)
+	}
 	turnsRequest := readForkTurnsRequest(t, capture)
 	for _, want := range []string{
 		`"threadId":"mock-fork-1"`,
@@ -333,7 +336,7 @@ func TestForkThreadCutsOnAThreadlessAppServer(t *testing.T) {
 			fork = line
 		}
 	}
-	for _, want := range []string{`"threadId":"source-thread"`, `"lastTurnId":"turn-7"`, `"excludeTurns":true`} {
+	for _, want := range []string{`"threadId":"source-thread"`, `"lastTurnId":"turn-7"`, `"excludeTurns":true`, `"config":{"features.instant_interrupt":false}`} {
 		if !strings.Contains(fork, want) {
 			t.Fatalf("thread/fork params = %s, want %s", fork, want)
 		}

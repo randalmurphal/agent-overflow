@@ -3,6 +3,7 @@ package sessionimport
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"reflect"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"agent-overflow/internal/importir"
 	"agent-overflow/internal/provider"
 	claudesessions "agent-overflow/internal/provider/claude/sessionimport"
+	"agent-overflow/internal/provider/codex/rollout"
 	"agent-overflow/internal/store"
 )
 
@@ -98,6 +100,64 @@ func TestImportKeepsAnOrphanCodexToolOutputAsAPlaceholder(t *testing.T) {
 	}
 	if got := len(itemsByKind(items, "assistant_text")); got != 1 {
 		t.Errorf("assistant_text rows = %d, want 1: %s", got, itemKinds(items))
+	}
+}
+
+// A Codex thread another Codex thread started (codex_app `create_thread`)
+// opens with the delegated prompt as its first user row, marked with where
+// it came from, and with no placeholder tool row for the input record.
+func TestImportCodexDelegatedThreadOpensWithTheDelegatedPrompt(t *testing.T) {
+	st := newTestStore(t)
+	homes := newProviderHomes(t)
+	homes.writeCodexIndex(t, codexThreadA)
+	envelope := "<codex_delegation>\n  <source_thread_id>source-thread</source_thread_id>\n" +
+		"  <input>Inspect &lt;main&gt; &amp; report findings.</input>\n</codex_delegation>"
+	homes.writeCodexRollout(t, codexThreadA,
+		homes.codexMetaLine(codexThreadA, ""),
+		codexLine(50, "event_msg", map[string]any{"type": "task_started", "turn_id": "turn-1"}),
+		codexLine(100, "response_item", map[string]any{
+			"type": "function_call_output", "id": "fco_1", "name": "create_thread",
+			"namespace": "codex_app", "output": envelope,
+		}),
+		codexLine(110, "event_msg", map[string]any{
+			"type": "item_completed", "thread_id": codexThreadA, "turn_id": "turn-1",
+			"item": map[string]any{
+				"type": "FunctionCallOutput", "id": "fco_1", "name": "create_thread",
+				"namespace": "codex_app", "output": envelope,
+			},
+			"completed_at_ms": baseMillis + 110,
+		}),
+		codexLine(300, "event_msg", map[string]any{
+			"type": "agent_message", "message": "Found it.", "phase": "final_answer",
+		}),
+		codexLine(400, "event_msg", map[string]any{"type": "task_complete", "turn_id": "turn-1"}),
+	)
+	d := homes.deps(st)
+
+	outcome := importFixtureRow(t, d, scanOne(t, d, ProviderCodex))
+	if len(outcome.Threads) != 1 {
+		t.Fatalf("threads = %d, want 1", len(outcome.Threads))
+	}
+	items, err := st.ListItems(outcome.Threads[0].ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	users := itemsByKind(items, "user_text")
+	if len(users) != 1 {
+		t.Fatalf("user_text rows = %d, want the delegated prompt: %s", len(users), itemKinds(items))
+	}
+	if users[0].Summary != "Inspect <main> & report findings." {
+		t.Errorf("prompt = %q, want the unwrapped delegated input", users[0].Summary)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(users[0].Meta), &meta); err != nil {
+		t.Fatalf("decode user meta %q: %v", users[0].Meta, err)
+	}
+	if meta["origin"] != rollout.DelegatedInputOrigin || meta[rollout.MetaDelegationSourceThreadKey] != "source-thread" {
+		t.Errorf("user meta = %v, want the delegation origin and source", meta)
+	}
+	if got := len(itemsByKind(items, "tool_call")); got != 0 {
+		t.Errorf("tool_call rows = %d, want none: %s", got, itemKinds(items))
 	}
 }
 

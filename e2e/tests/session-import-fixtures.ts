@@ -32,6 +32,8 @@ const CLAUDE_BRANCHED_SESSION = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
 const CLAUDE_BROKEN_SESSION = 'dddddddd-4444-4444-8444-dddddddddddd';
 const CLAUDE_FORK_SESSION = 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee';
 const CODEX_THREAD = 'cccccccc-3333-4333-8333-cccccccccccc';
+const CODEX_DELEGATED_THREAD = 'ffffffff-6666-4666-8666-ffffffffffff';
+const CODEX_LONG_TITLE_THREAD = 'abababab-7777-4777-8777-abababababab';
 
 /** A fixed wall time in the past, so a row restamped with now() is off by
  *  years rather than milliseconds. */
@@ -85,6 +87,10 @@ export interface ImportFixtures {
   /** Present only when `seedImportFixtures` was asked for an explicit fork. */
   claudeFork?: FixtureSession;
   codex: FixtureSession;
+  /** Present only when `seedImportFixtures` was asked for it. */
+  codexDelegated?: FixtureSession;
+  /** Present only when `seedImportFixtures` was asked for it. */
+  codexLongTitle?: FixtureSession;
 }
 
 export interface SeedImportOptions {
@@ -100,6 +106,13 @@ export interface SeedImportOptions {
   /** Also write a second Claude provider session explicitly forked from the
    * linear session, including the shared prefix and its own continuation. */
   withForkedSession?: boolean;
+  /** Also write a paginated Codex 0.162 thread another Codex thread started
+   * (`create_thread`): no user message, a `preview` only, and one MCP result
+   * Codex truncated when it persisted the rollout. */
+  withDelegatedCodexSession?: boolean;
+  /** Also list a Codex row with a very long title and branch name. It
+   * shares the plain Codex session's rollout, so it is for the list only. */
+  withLongTitleCodexRow?: boolean;
 }
 
 function session(provider: 'claude' | 'codex', id: string, title: string): FixtureSession {
@@ -164,6 +177,14 @@ export async function seedImportFixtures(
     fixtures.claudeBroken = session('claude', CLAUDE_BROKEN_SESSION, 'Refuse to import');
   }
   await writeCodexSession(codexHome, workspace, fixtures.codex.title);
+  if (opts.withDelegatedCodexSession) {
+    await writeDelegatedCodexSession(codexHome, workspace);
+    fixtures.codexDelegated = session('codex', CODEX_DELEGATED_THREAD, DELEGATED_PROMPT);
+  }
+  if (opts.withLongTitleCodexRow) {
+    writeLongTitleCodexRow(codexHome, workspace);
+    fixtures.codexLongTitle = session('codex', CODEX_LONG_TITLE_THREAD, LONG_TITLE);
+  }
 
   return fixtures;
 }
@@ -587,6 +608,179 @@ async function writeCodexSession(
       BASE_MILLIS,
       BASE_MILLIS + 9_000,
     );
+  } finally {
+    db.close();
+  }
+}
+
+// ------------------------------------------------------ Codex, delegated
+
+export const DELEGATED_PROMPT = 'Inspect <main> & report the open review threads';
+export const DELEGATED_ANSWER = 'Two review threads are still open.';
+export const MCP_TEXT_HEAD = 'GUIDE START: the review policy';
+export const MCP_TEXT_TAIL = 'GUIDE END: escalate after two days';
+
+/** The `<codex_delegation>` envelope Codex's app writes for `create_thread`
+ *  (codex-rs/tui/src/dynamic_tools.rs builds the same text). */
+const delegationEnvelope = (source: string, input: string): string =>
+  `<codex_delegation>\n  <source_thread_id>${source}</source_thread_id>\n  <input>${input
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')}</input>\n</codex_delegation>`;
+
+/**
+ * What a paginated rollout persists for an MCP result over 64 KiB: one text
+ * block holding the serialized CallToolResult cut in the middle by
+ * truncate_middle_chars (codex-rs/utils/string/src/truncate.rs), sized as
+ * truncate_mcp_tool_result (codex-rs/utils/output-truncation/src/lib.rs)
+ * sizes it. The text is ASCII, so bytes and chars agree.
+ */
+function codexPersistedMcpResult(texts: string[], maxBytes = 64 * 1024): Record<string, unknown> {
+  const serialized = JSON.stringify({
+    content: texts.map((text) => ({ type: 'text', text })),
+    isError: false,
+  });
+  let budget = maxBytes;
+  for (;;) {
+    const left = Math.floor(budget / 2);
+    const right = budget - left;
+    const removed = serialized.length - left - right;
+    const preview = `${serialized.slice(0, left)}\u2026${removed} chars truncated\u2026${serialized.slice(serialized.length - right)}`;
+    const replacement = { content: [{ type: 'text', text: preview }], isError: false };
+    const size = Buffer.byteLength(JSON.stringify(replacement));
+    if (size <= maxBytes) return replacement;
+    budget = Math.min(Math.floor((budget * maxBytes) / size), budget - 1);
+  }
+}
+
+async function writeDelegatedCodexSession(codexHome: string, workspace: string): Promise<void> {
+  const rolloutPath = path.join(
+    codexHome,
+    'sessions',
+    `rollout-2026-10-07T15-07-44-${CODEX_DELEGATED_THREAD}.jsonl`,
+  );
+  const envelope = delegationEnvelope(CODEX_THREAD, DELEGATED_PROMPT);
+  // A long guide block, then a short one the tail holds whole.
+  const guide = [
+    `${MCP_TEXT_HEAD}\n${'Every "open" thread needs an owner.\n'.repeat(4000)}`,
+    MCP_TEXT_TAIL,
+  ];
+  const itemCompleted = (offset: number, item: Record<string, unknown>) =>
+    codexLine(offset, 'event_msg', {
+      type: 'item_completed',
+      thread_id: CODEX_DELEGATED_THREAD,
+      turn_id: 'turn-1',
+      item,
+      started_at_ms: BASE_MILLIS + offset,
+      completed_at_ms: BASE_MILLIS + offset,
+    });
+  await writeFile(
+    rolloutPath,
+    jsonl([
+      codexLine(0, 'session_meta', {
+        id: CODEX_DELEGATED_THREAD,
+        cwd: workspace,
+        originator: 'codex_app',
+        cli_version: '0.162.1',
+        history_mode: 'paginated',
+        git: { branch: 'main' },
+      }),
+      codexLine(100, 'turn_context', { turn_id: 'turn-1', model: 'gpt-5.6-sol', effort: 'high' }),
+      codexLine(110, 'event_msg', { type: 'task_started', turn_id: 'turn-1' }),
+      // record_pending_input (codex-rs/core/src/hook_runtime.rs): the input
+      // as a call-less function_call_output, then its TurnItem twin.
+      codexLine(120, 'response_item', {
+        type: 'function_call_output',
+        id: 'fco_delegated',
+        name: 'create_thread',
+        namespace: 'codex_app',
+        output: envelope,
+      }),
+      itemCompleted(121, {
+        type: 'FunctionCallOutput',
+        id: 'fco_delegated',
+        name: 'create_thread',
+        namespace: 'codex_app',
+        output: envelope,
+      }),
+      itemCompleted(130, {
+        type: 'McpToolCall',
+        id: 'call_mcp_guide',
+        server: 'docs',
+        tool: 'fetch_guide',
+        arguments: { page: 'review-policy' },
+        status: 'completed',
+        result: codexPersistedMcpResult(guide),
+      }),
+      codexLine(131, 'response_item', {
+        type: 'function_call',
+        id: 'fc_guide',
+        call_id: 'call_mcp_guide',
+        name: 'mcp__docs__fetch_guide',
+        arguments: '{"page":"review-policy"}',
+      }),
+      codexLine(132, 'response_item', {
+        type: 'function_call_output',
+        call_id: 'call_mcp_guide',
+        output: 'model-visible copy',
+      }),
+      codexLine(140, 'response_item', {
+        type: 'message',
+        id: 'msg_answer',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: DELEGATED_ANSWER }],
+      }),
+      codexLine(150, 'event_msg', {
+        type: 'task_complete',
+        turn_id: 'turn-1',
+        last_agent_message: DELEGATED_ANSWER,
+      }),
+    ]),
+  );
+
+  const db = new DatabaseSync(path.join(codexHome, 'state_5.sqlite'));
+  try {
+    // A delegated thread has no user message: Codex leaves `title` and
+    // `first_user_message` empty and fills only `preview`
+    // (codex-rs/state/src/extract.rs).
+    db.prepare(
+      `INSERT INTO threads (id, rollout_path, created_at, updated_at, source, cwd, title,
+                            first_user_message, archived, thread_source, preview, recency_at_ms,
+                            created_at_ms, updated_at_ms, git_branch, model, reasoning_effort, tokens_used)
+       VALUES (?, ?, ?, ?, '{}', ?, '', '', 0, NULL, ?, ?, ?, ?, 'main', 'gpt-5.6-sol', 'high', 42)`,
+    ).run(
+      CODEX_DELEGATED_THREAD,
+      rolloutPath,
+      Math.trunc(BASE_MILLIS / 1000),
+      Math.trunc((BASE_MILLIS + 10_000) / 1000),
+      workspace,
+      DELEGATED_PROMPT,
+      BASE_MILLIS + 10_000,
+      BASE_MILLIS,
+      BASE_MILLIS + 10_000,
+    );
+  } finally {
+    db.close();
+  }
+}
+
+// ------------------------------------------------- Codex, long title row
+
+export const LONG_TITLE =
+  'Investigate why the nightly import of very large Codex sessions stalls on the third pass and write up every finding';
+
+function writeLongTitleCodexRow(codexHome: string, workspace: string): void {
+  const db = new DatabaseSync(path.join(codexHome, 'state_5.sqlite'));
+  try {
+    db.prepare(
+      `INSERT INTO threads (id, rollout_path, created_at, updated_at, source, cwd, title,
+                            first_user_message, archived, thread_source, preview, recency_at_ms,
+                            created_at_ms, updated_at_ms, git_branch, model, reasoning_effort, tokens_used)
+       SELECT ?, rollout_path, created_at, updated_at, '{}', ?, ?, ?, 0, NULL, 'preview', recency_at_ms - 1,
+              created_at_ms, updated_at_ms, 'feature/an-unusually-long-branch-name-for-the-list', model,
+              reasoning_effort, 42
+         FROM threads WHERE id = ?`,
+    ).run(CODEX_LONG_TITLE_THREAD, workspace, LONG_TITLE, LONG_TITLE, CODEX_THREAD);
   } finally {
     db.close();
   }

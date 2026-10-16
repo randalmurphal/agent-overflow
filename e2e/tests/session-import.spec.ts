@@ -31,10 +31,14 @@ import {
   BRANCH_B_THINKING_PREFIX,
   CODEX_ANSWER,
   CODEX_PROMPT,
+  DELEGATED_ANSWER,
+  DELEGATED_PROMPT,
   FORK_CHILD_ANSWER,
   FORK_CHILD_PROMPT,
   FORK_SHARED_ANSWER,
   growLinearClaudeSession,
+  MCP_TEXT_HEAD,
+  MCP_TEXT_TAIL,
   seedImportFixtures,
   type FixtureSession,
 } from './session-import-fixtures.js';
@@ -142,7 +146,10 @@ test('lists sessions from both providers and narrows by provider filter and sear
   await expect(page.getByTestId(fx.codex.rowTestId)).toContainText(fx.codex.title);
   // The Task launch in the branched transcript has one subagent transcript
   // beside it, counted from `<session>/subagents/agent-*.jsonl` at list time.
-  await expect(page.getByTestId(fx.claudeBranched.rowTestId)).toContainText('1 subagents');
+  await expect(page.getByTestId(`session-import-subagents-${fx.claudeBranched.rowId}`)).toHaveText(
+    '1 subagent',
+    { useInnerText: true },
+  );
   await expect(page.getByTestId('session-import-confirm')).toHaveText('Import all (3)');
 
   await page.getByRole('radio', { name: 'Codex' }).click();
@@ -167,6 +174,96 @@ test('lists sessions from both providers and narrows by provider filter and sear
   await expect(page.getByTestId('session-import-no-matches')).toBeVisible();
   await page.getByTestId('session-import-clear-filters').click();
   await expect(page.getByTestId(fx.codex.rowTestId)).toBeVisible();
+});
+
+/**
+ * The left edge of each column, per row. Rows are separate virtualized
+ * elements, so nothing but a shared track template keeps them aligned; a
+ * chip, a long title or a missing branch must not move any column.
+ */
+async function columnEdges(page: Page, rowTestIds: string[]): Promise<Map<string, number[]>> {
+  const edges = new Map<string, number[]>();
+  for (const testId of rowTestIds) {
+    const row = page.getByTestId(testId);
+    for (const col of ['title', 'project', 'branch', 'time']) {
+      const cell = row.locator(`[data-col="${col}"]`);
+      const box = (await cell.count()) > 0 && (await cell.isVisible()) ? await cell.boundingBox() : null;
+      if (!box) continue;
+      edges.set(col, [...(edges.get(col) ?? []), Math.round(box.x)]);
+    }
+  }
+  return edges;
+}
+
+test('every import list column lines up across rows, wide and narrow', async ({ harness, page }) => {
+  const fx = await seedImportFixtures(harness, {
+    withDelegatedCodexSession: true,
+    withLongTitleCodexRow: true,
+  });
+  const rows = [fx.claudeLinear, fx.claudeBranched, fx.codex, fx.codexDelegated!, fx.codexLongTitle!];
+  const rowIds = rows.map((row) => row.rowTestId);
+
+  for (const viewport of [
+    { width: 1400, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await harness.open(page);
+    await openImportModal(page);
+    // The branched Claude row carries the subagent chip; the long title
+    // fills its track.
+    const chip = page.getByTestId(`session-import-subagents-${fx.claudeBranched.rowId}`);
+    await expect(chip).toHaveAttribute('aria-label', '1 subagent');
+    for (const row of rows) await expect(page.getByTestId(row.rowTestId)).toBeVisible();
+
+    const edges = await columnEdges(page, rowIds);
+    for (const col of ['title', 'project', 'time']) {
+      const xs = edges.get(col) ?? [];
+      expect(xs, `${col} column at ${viewport.width}px`).toHaveLength(rows.length);
+      expect(new Set(xs).size, `${col} column edges at ${viewport.width}px: ${xs}`).toBe(1);
+    }
+    const branches = edges.get('branch') ?? [];
+    expect(new Set(branches).size, `branch column edges at ${viewport.width}px: ${branches}`).toBeLessThanOrEqual(1);
+
+    // The title is the flexible track: it keeps real room at phone width,
+    // and the row leaves no idle width while a title is cut short.
+    const title = page.getByTestId(fx.codexLongTitle!.rowTestId).locator('[data-col="title"]');
+    expect((await title.boundingBox())?.width ?? 0).toBeGreaterThan(80);
+    const delegatedTitle = page
+      .getByTestId(fx.codexDelegated!.rowTestId)
+      .locator('[data-col="title"] > span')
+      .first();
+    const chipTitle = page
+      .getByTestId(fx.claudeBranched.rowTestId)
+      .locator('[data-col="title"] > span')
+      .first();
+    if (viewport.width >= 1000) {
+      expect(
+        await delegatedTitle.evaluate((el) => el.scrollWidth <= el.clientWidth),
+        'the delegated title fits in full at 1400px',
+      ).toBe(true);
+      expect(
+        await chipTitle.evaluate((el) => el.scrollWidth <= el.clientWidth),
+        'a title beside its chip fits in full at 1400px',
+      ).toBe(true);
+      await expect(chip).toHaveText('1 subagent', { useInnerText: true });
+      // The outcome track is one glyph wide: the age column ends at the row's
+      // right padding, not in front of idle width.
+      const row = await page.getByTestId(fx.codex.rowTestId).boundingBox();
+      const time = await page.getByTestId(fx.codex.rowTestId).locator('[data-col="time"]').boundingBox();
+      expect(row!.x + row!.width - (time!.x + time!.width)).toBeLessThan(48);
+    } else {
+      // Narrow: the chip collapses to its icon and count, so a short title
+      // beside it still shows in full.
+      await expect(chip).toHaveText('1', { useInnerText: true });
+      expect(
+        await chipTitle.evaluate((el) => el.scrollWidth <= el.clientWidth),
+        'a short title beside its chip fits at 390px',
+      ).toBe(true);
+    }
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('session-import-body')).toHaveCount(0);
+  }
 });
 
 test('the project dropdown paints above the modal and applies its filter', async ({
@@ -239,6 +336,52 @@ test('importing a selection creates the threads and renders their history', asyn
   await threadRow(page, fx.codex.title).click();
   await expect(page.getByText(CODEX_PROMPT).first()).toBeVisible();
   await expect(page.getByText(CODEX_ANSWER)).toBeVisible();
+});
+
+// Codex 0.162 shapes from a session started outside Agent Overflow: a thread
+// Codex's app opened from another thread (`create_thread`) has no user
+// message, only a `preview`, and its paginated rollout stores an MCP result
+// over 64 KiB as a cut copy of the serialized result.
+test('a Codex thread another Codex thread started lists by its prompt and opens with it', async ({
+  harness,
+  page,
+}) => {
+  const fx = await seedImportFixtures(harness, { withDelegatedCodexSession: true });
+  const delegated = fx.codexDelegated!;
+  await harness.open(page);
+  await openImportModal(page);
+
+  // The catalogue names it by the delegated prompt, Codex's `preview`.
+  await expect(page.getByTestId(delegated.rowTestId)).toContainText(DELEGATED_PROMPT);
+
+  const { rows } = await importRows(page, harness, [delegated]);
+  expect(rows.get(delegated.rowId)?.status).toBe('imported');
+  await expect(page.getByText('Imported 1 session (1 thread).')).toBeVisible();
+
+  await threadRow(page, DELEGATED_PROMPT).click();
+  const bubble = page.getByTestId('user-message-bubble');
+  await expect(bubble).toHaveCount(1);
+  await expect(bubble).toContainText(DELEGATED_PROMPT);
+  await expect(page.getByTestId('user-message-codex-delegation-origin')).toHaveText(
+    'From another Codex thread',
+  );
+  await expect(page.getByText(DELEGATED_ANSWER)).toBeVisible();
+
+  // The MCP result reads as the server's text with Codex's cut marked, not
+  // as clipped escaped JSON. Its call-less twins add no second card.
+  const card = page.getByTestId('tool-call-card');
+  await expect(card).toHaveCount(1);
+  await card.getByTestId('tool-call-card-toggle').click();
+  const output = card.getByTestId('tool-call-card-output');
+  await expect(output).toContainText(MCP_TEXT_HEAD);
+  const showFull = card.getByTestId('tool-call-card-show-full');
+  if (await showFull.isVisible()) await showFull.click();
+  await expect(output).toContainText(
+    'Codex truncated this MCP result when it saved the session:',
+  );
+  await expect(output).toContainText(MCP_TEXT_TAIL);
+  await expect(output).not.toContainText('{"content"');
+  await expect(output).not.toContainText('model-visible copy');
 });
 
 test('a multi-leaf Claude transcript imports one coherent active thread', async ({

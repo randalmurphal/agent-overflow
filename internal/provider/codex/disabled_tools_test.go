@@ -131,17 +131,7 @@ func TestPlanLiveUpdateRequiresRestartForOverrideAxes(t *testing.T) {
 // (mock-backed) session so a future split of that call site fails here.
 func TestThreadStartAndResumeBothCarryOverrideAxes(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	requestLog := filepath.Join(dir, "requests.jsonl")
-	script := "#!/bin/bash\n" +
-		"while IFS= read -r line; do\n" +
-		"  printf '%s\\n' \"$line\" >> '" + requestLog + "'\n" +
-		"  id=$(printf '%s' \"$line\" | grep -o '\"id\":[0-9]*' | head -1 | grep -o '[0-9]*')\n" +
-		"  if [ -z \"$id\" ]; then continue; fi\n" +
-		"  printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"thread\":{\"id\":\"mock-thread\"}}}\\n' \"$id\"\n" +
-		"done\n"
-	binary := filepath.Join(dir, "codex")
-	mockexec.Write(t, binary, script)
+	binary, requestLog := requestLoggingCodex(t)
 
 	cfg := Config{
 		Binary:        binary,
@@ -181,6 +171,11 @@ func TestThreadStartAndResumeBothCarryOverrideAxes(t *testing.T) {
 			if got := config["web_search"]; got != "disabled" {
 				t.Errorf("%s config[web_search] = %v, want disabled", tc.method, got)
 			}
+			// Codex 0.162 turned instant_interrupt on by default; with it
+			// on a steer cuts the model's output mid-message.
+			if got, present := config["features.instant_interrupt"]; !present || got != false {
+				t.Errorf("%s config[features.instant_interrupt] = %v (present=%v), want false", tc.method, got, present)
+			}
 			if tc.method == "thread/resume" {
 				if got := params["excludeTurns"]; got != true {
 					t.Errorf("thread/resume excludeTurns = %v, want true", got)
@@ -189,6 +184,66 @@ func TestThreadStartAndResumeBothCarryOverrideAxes(t *testing.T) {
 				t.Error("thread/start must not carry the resume-only excludeTurns field")
 			}
 		})
+	}
+}
+
+// The reconcile path re-loads a thread the app-server dropped. That is a cold
+// load, and Codex builds the thread's config from that request alone, so it
+// has to repeat the session's thread-scoped overrides or the thread comes
+// back with Codex defaults (instant_interrupt on, AO's tools re-enabled, no
+// MCP servers, no instructions).
+func TestSessionResumeRepeatsTheThreadScopedOverrides(t *testing.T) {
+	t.Parallel()
+	binary, requestLog := requestLoggingCodex(t)
+
+	sess, err := NewSession(context.Background(), "thread-1", Config{
+		Binary:        binary,
+		WorkDir:       filepath.Dir(binary),
+		Model:         "gpt-5.6-sol",
+		SystemPrompt:  "replacement instructions",
+		DisabledTools: []string{"web_search"},
+		MCPServers:    map[string]any{"browser": map[string]any{"url": "http://127.0.0.1:1/mcp"}},
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+
+	if err := sess.Resume(context.Background()); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	params := findRequestParams(t, requestLog, "thread/resume")
+	if got := params["threadId"]; got != "mock-thread" {
+		t.Errorf("thread/resume threadId = %v, want mock-thread", got)
+	}
+	if got := params["excludeTurns"]; got != true {
+		t.Errorf("thread/resume excludeTurns = %v, want true", got)
+	}
+	if got := params["cwd"]; got != filepath.Dir(binary) {
+		t.Errorf("thread/resume cwd = %v, want %s", got, filepath.Dir(binary))
+	}
+	if got := params["baseInstructions"]; got != "replacement instructions" {
+		t.Errorf("thread/resume baseInstructions = %v, want the override text", got)
+	}
+	config, ok := params["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("thread/resume params[config] = %T, want map", params["config"])
+	}
+	if got, present := config["features.instant_interrupt"]; !present || got != false {
+		t.Errorf("config[features.instant_interrupt] = %v (present=%v), want false", got, present)
+	}
+	if got := config["web_search"]; got != "disabled" {
+		t.Errorf("config[web_search] = %v, want disabled", got)
+	}
+	if config["mcp_servers"] == nil {
+		t.Error("config[mcp_servers] missing")
+	}
+	// Per-turn axes stay off the reload: turn/start sends their current
+	// values, and the start-time ones may be stale.
+	for _, key := range []string{"model", "approvalPolicy", "sandbox", "approvalsReviewer", "historyMode", "experimentalRawEvents"} {
+		if _, present := params[key]; present {
+			t.Errorf("thread/resume carried %s: %v", key, params)
+		}
 	}
 }
 
@@ -275,6 +330,24 @@ func exportedArrayLiterals(t *testing.T, source, path, name, pattern string) []s
 		values = append(values, match[1])
 	}
 	return values
+}
+
+// requestLoggingCodex writes a mock app-server that appends every request
+// line to the returned log and answers each with a thread named mock-thread.
+func requestLoggingCodex(t *testing.T) (binary, requestLog string) {
+	t.Helper()
+	dir := t.TempDir()
+	requestLog = filepath.Join(dir, "requests.jsonl")
+	script := "#!/bin/bash\n" +
+		"while IFS= read -r line; do\n" +
+		"  printf '%s\\n' \"$line\" >> '" + requestLog + "'\n" +
+		"  id=$(printf '%s' \"$line\" | grep -o '\"id\":[0-9]*' | head -1 | grep -o '[0-9]*')\n" +
+		"  if [ -z \"$id\" ]; then continue; fi\n" +
+		"  printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"thread\":{\"id\":\"mock-thread\"}}}\\n' \"$id\"\n" +
+		"done\n"
+	binary = filepath.Join(dir, "codex")
+	mockexec.Write(t, binary, script)
+	return binary, requestLog
 }
 
 func findRequestParams(t *testing.T, logPath, method string) map[string]any {
