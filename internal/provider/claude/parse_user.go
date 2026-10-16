@@ -430,9 +430,17 @@ func (p *Parser) appendToolResultBlock(
 	// an INLINE skill answers `{success, commandName}` with no status and
 	// is deliberately left unstamped.
 	forkedAgentID, forkedCommandName, skillForked := toolResultSkillFork(backgroundSignals)
+	// The Bash ack's text is the wire's one launch-time statement of the
+	// task's output file (§E2: the structured sibling carries only the
+	// task id). Triage stamps it onto the launch row so the tray can tail
+	// the file while the command runs.
+	ackOutputFile := ""
+	if (markedOnWire || bashAcked) && backgroundTaskID != "" {
+		ackOutputFile = sessionimport.BackgroundAckOutputFile(content, backgroundTaskID)
+	}
 	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,
-		isBackground, backgroundTaskID, monitorLaunched, skillForked, forkedAgentID, forkedCommandName,
+		isBackground, backgroundTaskID, ackOutputFile, monitorLaunched, skillForked, forkedAgentID, forkedCommandName,
 		block, content, toolUseResultRaw,
 	)
 	if skillForked {
@@ -602,6 +610,7 @@ func appendToolResultCompletion(
 	line []byte,
 	isBackground bool,
 	backgroundTaskID string,
+	backgroundOutputFile string,
 	watchTask bool,
 	skillForked bool,
 	skillForkAgentID string,
@@ -637,6 +646,11 @@ func appendToolResultCompletion(
 		// can resolve to it.
 		if backgroundTaskID != "" {
 			metaFields["task_id"] = backgroundTaskID
+		}
+		// The ack's output file, read from its text (§E2): where the
+		// CLI writes the command's output while it runs.
+		if backgroundOutputFile != "" {
+			metaFields["output_file"] = backgroundOutputFile
 		}
 	}
 	if watchTask {

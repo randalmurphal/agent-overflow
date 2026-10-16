@@ -83,6 +83,11 @@ func (a *App) emitKeyed(name eventchan.Channel, data any) string {
 	if name == eventchan.ProviderTurnCompleted {
 		a.wakeMergedPRCleanup()
 	}
+	// A tray delta that ends a launch ends the live tail of its output
+	// (app_background_task_output.go).
+	if name == eventchan.ProviderBackgroundTray {
+		a.noteBackgroundTrayForTail(data)
+	}
 	entityKey := ""
 	if entityFilteredChannels[string(name)] || (a.replay != nil && a.replay.Enabled()) {
 		entityKey = eventscope.ThreadIDFromEvent(data)

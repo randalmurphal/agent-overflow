@@ -65,6 +65,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ProviderAccountSignIn,
 		eventchan.ProviderApproval,
 		eventchan.ProviderAsyncQuestionsChanged,
+		eventchan.ProviderBackgroundTaskOutput,
 		eventchan.ProviderBackgroundTaskState,
 		eventchan.ProviderBackgroundTasksChanged,
 		eventchan.ProviderBackgroundTray,

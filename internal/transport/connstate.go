@@ -185,6 +185,18 @@ func (c *ConnState) UnbindCleanup(key string) {
 	c.mu.Unlock()
 }
 
+// HasCleanup reports whether a callback BindCleanup registered under key
+// is still bound. False without a connection or once the cleanup pass has
+// begun.
+func (c *ConnState) HasCleanup(key string) bool {
+	if c == nil || key == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.ContainsFunc(c.cleanups, func(cleanup connCleanup) bool { return cleanup.key == key })
+}
+
 func (c *ConnState) register(key string, fn func()) bool {
 	if fn == nil {
 		return false

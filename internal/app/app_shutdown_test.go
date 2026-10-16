@@ -214,6 +214,7 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		"stop orphan reaper",
 		"close gitwatch manager",
 		"close PR update subscriptions",
+		"close background task output tails",
 		"close terminal sessions",
 		"close remote MCP server",
 		// "stop thread search index" MUST appear before "close store" —
