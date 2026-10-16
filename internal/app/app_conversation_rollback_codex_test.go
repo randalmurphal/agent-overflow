@@ -496,6 +496,9 @@ type codexForkMock struct {
 	// injectLogPath captures every `thread/inject_items` request; the mock
 	// answers them, and `config/read`, only when it is set.
 	injectLogPath string
+	// turnsTail is the turn `thread/turns/list` reports as the thread's
+	// newest before any fork sets one.
+	turnsTail string
 }
 
 func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
@@ -565,6 +568,7 @@ func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
 `, mock.injectLogPath)
 	}
 	script := fmt.Sprintf(`#!/bin/sh
+tail='%s'
 while IFS= read -r line; do
     id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
     if [ -z "$id" ]; then
@@ -614,7 +618,7 @@ while IFS= read -r line; do
         continue
     fi
 done
-`, injectClauses, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
+`, mock.turnsTail, injectClauses, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
 		logRevertRequest, revertReply, logInterruptRequest, logForkRequest, tailExpr,
 		mock.forkedThreadID)
 
@@ -797,11 +801,31 @@ func TestConversationRollbackCodexLiveRevertForgetsToolCallLinks(t *testing.T) {
 // more after the cut, before the rollback returns, and records it.
 func TestConversationRollbackCodexLiveRevertRestoresDeveloperInstructions(t *testing.T) {
 	t.Parallel()
+	requireLiveRevertRestoresDeveloperInstructions(t, "codex-live-cut-instructions", codexForkMock{})
+}
+
+// The same restore on the revert's other success path: the cut is refused
+// because its anchor is already gone, and the provider confirms the thread
+// already sits on the boundary (a retry of a cut that landed), so the
+// rollback converges in place.
+func TestConversationRollbackCodexLiveRevertAlreadyAppliedRestoresDeveloperInstructions(t *testing.T) {
+	t.Parallel()
+	requireLiveRevertRestoresDeveloperInstructions(t, "codex-live-cut-applied", codexForkMock{
+		revertErrorMessage: "turn not found: turn-b",
+		turnsTail:          "turn-a",
+	})
+}
+
+// requireLiveRevertRestoresDeveloperInstructions drives a live in-place
+// revert of a two-turn thread over a mock built from base and asserts the
+// session's own text was injected again after the cut and recorded.
+func requireLiveRevertRestoresDeveloperInstructions(t *testing.T, name string, base codexForkMock) {
+	t.Helper()
 	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, app.emit)
 	workspace := t.TempDir()
-	thread := createAppTestThread(t, app, "codex-live-cut-instructions", "codex", workspace)
-	thread.SessionRef = "provider-codex-live-instructions"
+	thread := createAppTestThread(t, app, name, "codex", workspace)
+	thread.SessionRef = "provider-" + name
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
 	}
@@ -812,14 +836,14 @@ func TestConversationRollbackCodexLiveRevertRestoresDeveloperInstructions(t *tes
 	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
 
 	wireLog := filepath.Join(t.TempDir(), "wire.log")
-	binary := writeCodexForkAtBinary(t, codexForkMock{
-		resumedThreadID: thread.SessionRef,
-		forkedThreadID:  "unused-fork",
-		userAgent:       "codex_cli_rs/0.149.0 (Linux; x86_64)",
-		historyMode:     "paginated",
-		revertLogPath:   wireLog,
-		injectLogPath:   wireLog,
-	})
+	mock := base
+	mock.resumedThreadID = thread.SessionRef
+	mock.forkedThreadID = "unused-fork"
+	mock.userAgent = "codex_cli_rs/0.149.0 (Linux; x86_64)"
+	mock.historyMode = "paginated"
+	mock.revertLogPath = wireLog
+	mock.injectLogPath = wireLog
+	binary := writeCodexForkAtBinary(t, mock)
 	delivery, err := app.codexDeveloperInstructionsDelivery(thread.ID, thread.SessionRef)
 	if err != nil {
 		t.Fatal(err)
@@ -835,10 +859,14 @@ func TestConversationRollbackCodexLiveRevertRestoresDeveloperInstructions(t *tes
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer sess.Close()
+	t.Cleanup(func() {
+		if err := sess.Close(); err != nil {
+			t.Errorf("close session: %v", err)
+		}
+	})
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
-		Token:    "codex-live-cut-instructions-token",
+		Token:    name + "-token",
 		Codex:    sess,
 	})
 
@@ -848,6 +876,9 @@ func TestConversationRollbackCodexLiveRevertRestoresDeveloperInstructions(t *tes
 	}
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("revert: %v", err)
+	}
+	if active, ok := app.activeCodexSession(thread.ID); !ok || active != sess {
+		t.Fatal("the live session was replaced; the cut did not converge in place")
 	}
 	if got := wireMethods(t, wireLog); !slices.Equal(got, []string{"thread/inject_items", "thread/revert", "thread/inject_items"}) {
 		t.Fatalf("wire after the live revert = %v, want the session's text injected again after the cut", got)
