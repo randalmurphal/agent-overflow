@@ -1002,6 +1002,9 @@ func (f *requestFixture) settledAnswerOwingAWake(t *testing.T) string {
 		t.Fatalf("Spawn: %v", err)
 	}
 	f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	// The collection decides the wake from the row it re-reads after
+	// writing the settlement; arming before it ends would owe the wake.
+	f.app.threadRequestSettling.Wait()
 	if row := f.request(t, ack.Token); row.DeliveredAt != 0 {
 		t.Fatalf("the answer was delivered before its wake was armed: %q", row.DeliveredHow)
 	}
