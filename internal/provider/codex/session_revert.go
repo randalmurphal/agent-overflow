@@ -337,6 +337,9 @@ func (s *Session) Revert(ctx context.Context, beforeTurnID string) (RevertedThre
 	// reading as a foreign writer's cut.
 	forget := func() { s.pendingRevert.CompareAndSwap(expectation, nil) }
 
+	// A cut can remove an injected developer-instructions message, and from
+	// the write on its outcome may be unknown.
+	s.forgetDeveloperInstructions()
 	resp, err := s.sendRequest(ctx, threadRevertMethod, map[string]any{
 		"threadId":     threadID,
 		"beforeTurnId": beforeTurnID,

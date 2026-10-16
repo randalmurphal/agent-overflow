@@ -318,3 +318,29 @@ func TestMockInfoProjectsGateState(t *testing.T) {
 		t.Fatalf("after the turn boundary = %+v, want the backlog cleared", info)
 	}
 }
+
+// TestMockInfoLatchesInjectedItems: the messages a Codex mock received
+// through thread/inject_items accumulate on its row in arrival order, so a
+// spec can read them after the fact, and the row stays bounded.
+func TestMockInfoLatchesInjectedItems(t *testing.T) {
+	srv := bareServer(t)
+	conn := srv.addMock("mock-1", 1, 0)
+	apply := func(rep Report) {
+		srv.mu.Lock()
+		srv.applyReportLocked(conn, rep)
+		srv.mu.Unlock()
+	}
+
+	apply(Report{Kind: ReportInjectedItems, InjectedItems: []InjectedItem{{Role: "developer", Text: "first"}}})
+	apply(Report{Kind: ReportInjectedItems, InjectedItems: []InjectedItem{{Role: "developer", Text: "second"}}})
+	got := srv.Mocks()[0].InjectedItems
+	if len(got) != 2 || got[0].Text != "first" || got[1].Text != "second" {
+		t.Fatalf("InjectedItems = %+v, want both in arrival order", got)
+	}
+	for i := 0; i < maxTrackedInjectedItems; i++ {
+		apply(Report{Kind: ReportInjectedItems, InjectedItems: []InjectedItem{{Role: "developer", Text: "more"}}})
+	}
+	if got := srv.Mocks()[0].InjectedItems; len(got) != maxTrackedInjectedItems || got[0].Text != "first" {
+		t.Fatalf("InjectedItems holds %d, want the first %d kept", len(got), maxTrackedInjectedItems)
+	}
+}

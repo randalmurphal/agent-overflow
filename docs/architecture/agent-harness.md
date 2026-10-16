@@ -718,8 +718,8 @@ commands and posts progress reports (`registered`, `turn_started`,
 `user_input`, `step_started`, `step_completed`, `waiting_signal`,
 `advance_released`, `advance_buffered`, `approval_pending`,
 `approval_decided`, `turn_interrupted`, `history_cut`, `mcp_result`,
-`mcp_tools`, `fixture_error`, `session_config`, `scenario_done`,
-`exiting`),
+`mcp_tools`, `fixture_error`, `session_config`, `injected_items`,
+`scenario_done`, `exiting`),
 which the harness re-emits as `harness:mock` events
 (`{mockId, protocol, cwd, scenario, report}`). Tests await these
 instead of sleeping.
@@ -743,7 +743,10 @@ fixture file, rejected `writeFile`, a `capture` pattern that matched
 nothing). Without it such a turn is a silent
 provider with evidence only in the mock's stderr. `session_config`
 posts once per mock with the permission/sandbox configuration the app
-actually launched it with. `scenario_done` is per TURN: every turn that
+actually launched it with. `injected_items` carries the messages a Codex
+mock received through `thread/inject_items` (`report.injectedItems`, each
+`{role, text}`), posted before the answer; `HarnessListMocks` latches them
+on the mock's row as `injectedItems`. `scenario_done` is per TURN: every turn that
 runs its step list to completion reports it for its own 1-based turn
 number, repeated (`repeatLast`) turns included. Await it with the turn
 you drove, not just its first occurrence. `user_input` additionally carries `report.input` and

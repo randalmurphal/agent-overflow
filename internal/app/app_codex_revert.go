@@ -150,6 +150,12 @@ func (a *App) tryCodexThreadRevert(
 		return codexHistoryCut{}, true, nil
 	}
 
+	// The cut can remove a developer-instructions message injected at an
+	// earlier resume, so the thread's next session start sends the current
+	// text again. Forgotten before the cut: a failure here changes nothing.
+	if err := a.store.DeleteCodexDeveloperInstructionsDigest(threadID); err != nil {
+		return codexHistoryCut{}, false, err
+	}
 	reverted, err := session.Revert(context.Background(), firstDroppedTurnID)
 	switch {
 	case err == nil:

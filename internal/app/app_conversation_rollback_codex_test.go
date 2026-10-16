@@ -672,9 +672,17 @@ func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
 		historyMode:     "paginated",
 	}
 	thread := paginatedRevertThread(t, app, "codex-inplace-revert", mock)
+	if err := app.store.PutCodexDeveloperInstructionsDigest(thread.ID, "provider-inplace-revert", strings.Repeat("d", 64)); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("revert: %v", err)
+	}
+	// The cut can drop a developer-instructions message injected at an
+	// earlier resume, so the thread's next start must send the text again.
+	if _, ok, err := app.store.CodexDeveloperInstructionsDigest(thread.ID, "provider-inplace-revert"); err != nil || ok {
+		t.Fatalf("delivered-instructions record after an in-place revert = (%v, %v), want it forgotten", ok, err)
 	}
 
 	revertRequest := readCodexRevertRequest(t, mock.revertLogPath)

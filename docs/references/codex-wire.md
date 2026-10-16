@@ -1254,6 +1254,68 @@ failed read is reported to the thread as a non-fatal error.
 
 Verified against `rust-v0.153.4`.
 
+### Developer instructions on a resumed or forked thread (verified 0.162.1)
+
+A `developerInstructions` value sent on `thread/resume` or `thread/fork`
+is accepted into the thread's configuration but does not reach the model.
+Both loads restore the model's context from the rollout
+(`record_initial_history`: `InitialHistory::Resumed` and
+`InitialHistory::Forked` both run `apply_rollout_reconstruction`,
+`core/src/session/mod.rs`). The full developer context is injected only
+while the session has no reference context; the restored
+`TurnContextItem` carries no developer-instructions field, and developer
+instructions are not a world-state section, so no diff is emitted. The
+model keeps the text the thread was started with, in the same process or
+a new one, until a compaction rebuilds the context from the thread's
+configuration. `baseInstructions` is not affected
+([codex-instructions-tools.md](codex-instructions-tools.md#base-instructions)).
+A spike on codex-cli 0.162.1 (2026-10-16) confirmed each step: a thread
+started with instructions naming one end token and resumed in a second
+process with another kept the first; after `thread/compact/start` it used
+the resumed one.
+
+`thread/inject_items` delivers new text to one thread without a restart:
+
+```json
+{"method": "thread/inject_items",
+ "params": {"threadId": "...",
+            "items": [{"type": "message", "role": "developer",
+                       "content": [{"type": "input_text", "text": "..."}]}]}}
+```
+
+On a loaded, idle thread it answers `{}` and writes no notification. The
+item is appended to the model-visible history and the rollout as a
+`developer` message (`core/src/session/inject.rs`), so later resumes keep
+it, and the next turn follows it (same spike). A compaction drops it and
+installs the thread-level value. An unknown thread is refused with
+`-32600` `thread not found: <id>`, and an item that is not a Responses API
+item with `-32600` `items[<n>] is not a valid response item: ...`
+(`app-server/src/request_processors/turn_processor.rs`
+`thread_inject_items_response_inner`). The method exists throughout AO's
+supported range (0.143+) and is not experimental. The experimental
+`turn/start` `additionalContext` also reaches the model, but each value is
+middle-truncated to 1,000 tokens and is not re-emitted after a compaction
+while unchanged, so it cannot carry AO's guide.
+
+Agent Overflow records, per thread, the SHA-256 digest of the composed
+developer instructions (the cwd's configured value, then its guide) the
+thread's Codex thread last received (`codex_developer_instructions`, which
+names the Codex thread it describes). A fresh `thread/start` records the
+digest without injecting. A resume whose composed text has a different
+digest, or no record (a thread that predates the record, a fork child, a
+thread a rollback repointed at a forked Codex thread), injects one
+developer message before the session is handed to a caller, then records
+the new digest. The message states that it replaces the developer
+instructions given at the start of the conversation and any earlier
+update, and that permissions and environment context are unchanged; with
+nothing composed it states that the earlier instructions no longer apply.
+An in-place `thread/revert` forgets the record, because the cut can drop
+an injected message. A failed read of the configured value skips the
+check; a failed injection or record is a non-fatal error on the thread,
+and the next session start sends the text again. A session that only
+forks or reverts runs no check. See
+`internal/provider/codex/developer_instructions.go`.
+
 ### `model/safetyBuffering/updated`
 
 ```json

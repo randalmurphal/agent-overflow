@@ -95,6 +95,12 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		planBuffersByTurnID: make(map[string]*planBuffer),
 		ownsQueuedClient:    cfg.OwnsQueuedClientID,
 	}
+	if delivery := cfg.DeveloperInstructionsDelivery; delivery != nil {
+		s.developerInstructionsRecord = delivery.Record
+		if cfg.ResumeThreadID != "" {
+			s.developerInstructionsReceived = delivery.Received
+		}
+	}
 	// On resume the root provider id is already durable in AO. Seed it before
 	// the read loop starts so child notifications racing the thread/resume
 	// response are quarantined instead of being mistaken for root events. A
@@ -168,7 +174,8 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 	// Composed before the params so a failed config read omits the
 	// override rather than replacing the user's configured value.
-	cfg.DeveloperInstructions = s.resolveDeveloperInstructions(ctx, cfg.DeveloperInstructions)
+	developerInstructions := s.composeDeveloperInstructions(ctx, cfg.DeveloperInstructions)
+	cfg.DeveloperInstructions = developerInstructions.override
 	s.setDeveloperInstructions(cfg.DeveloperInstructions)
 
 	// The version comes from the handshake recorded moments ago — the
@@ -261,6 +268,12 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 			// cannot see as a raw event is exactly what it is about to miss.
 			s.armRolloutSubagentNotificationTail("resume with unresolved spawn children")
 		}
+		// Before the session is handed to a caller, so no turn runs on the
+		// earlier instructions. A failure leaves the session usable.
+		s.reportDeveloperInstructionsFailure(s.ensureDeveloperInstructions(ctx, developerInstructions))
+	} else if s.developerInstructionsRecord != nil && developerInstructions.known {
+		// A new thread reads the composed text in its initial context.
+		s.reportDeveloperInstructionsFailure(s.recordDeveloperInstructions(DeveloperInstructionsDigest(developerInstructions.text)))
 	}
 
 	return nil
