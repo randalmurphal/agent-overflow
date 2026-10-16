@@ -168,10 +168,11 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await awaitTurnCompleted(harness, successor.id, TURN_TIMEOUT_MS);
     threadIds.push(successor.id);
     // An assistant that set itself a loop and a watch through the thread
-    // tools, an hour out, and stopped a second loop. A short watch fires
-    // once, and the turn its wake starts cancels it before a second fire is
-    // due; a long-running watch is started and stopped. Nothing is left
-    // running for a later boot of the corpus to restart.
+    // tools, an hour out, and stopped a second loop. The hourly watch is run
+    // once now and keeps its stderr; a short watch fires once, and the turn
+    // its wake starts cancels it before a second fire is due; a long-running
+    // watch is started and stopped. Nothing is left running for a later
+    // boot of the corpus to restart.
     const agent = { id: await assistant(`Top-up v${version} ${nonce}: loop and watch`) };
     const record = await harness.rpc<{ home: string }>('GetStandingAgent', agent.id);
     const home = record.home;
@@ -184,7 +185,9 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
         turns: [{
           steps: [
             { call: { tool: 'thread_loop', args: { label: 'board', note: 'look at the board', every_seconds: 3600 } } },
-            { call: { tool: 'thread_watch', args: { label: 'inbox', command: 'true', cwd: home, every_seconds: 3600, timeout_seconds: 30 } } },
+            // A run prints nothing on stdout, so it wakes nobody, and the
+            // line on stderr is kept on the row (last_stderr).
+            { call: { tool: 'thread_watch', args: { label: 'inbox', command: 'echo "inbox: nothing new" >&2', cwd: home, every_seconds: 3600, timeout_seconds: 30 } } },
             { call: { tool: 'thread_loop', args: { label: 'retired', note: 'an old check', every_seconds: 3600 } } },
             { call: { tool: 'thread_loop', args: { label: 'retired', stop: true } } },
             {
@@ -192,7 +195,6 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
                 tool: 'thread_watch',
                 args: {
                   label: 'once',
-                  // The line on stderr is kept on the row (last_stderr).
                   command: 'echo "once: checked the inbox" >&2; [ -e once.done ] || { : > once.done; echo found; }',
                   cwd: home,
                   every_seconds: 10,
@@ -224,6 +226,20 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     const cancelled = await awaitToolAnswer(harness, { tool: 'thread_cancel', timeoutMs: TURN_TIMEOUT_MS });
     if (cancelled.isError) throw new Error(`top-up thread_cancel was refused: ${cancelled.text}`);
     await awaitTurnCompleted(harness, agent.id, TURN_TIMEOUT_MS);
+    // A cancel keeps nothing the row carried, so the hourly watch, run once
+    // now, is the row that keeps a stderr tail. It stays armed an hour out.
+    type WakeRow = { id: string; label: string; state: string; lastRunAt?: number };
+    const inbox = async () =>
+      (await harness.rpc<{ rows: WakeRow[] }>('ListThreadWakes', agent.id)).rows.find((row) => row.label === 'inbox');
+    const armed = await inbox();
+    if (!armed) throw new Error('top-up watch inbox is not listed');
+    await harness.rpc('WakeThreadWakeNow', agent.id, 'watch', armed.id);
+    await expect
+      .poll(async () => {
+        const row = await inbox();
+        return row?.state === 'armed' && (row.lastRunAt ?? 0) > 0;
+      }, { timeout: TURN_TIMEOUT_MS })
+      .toBe(true);
 
     // Threads at every chat-bar setting the schema enumerates, drafts only.
     for (const variant of THREAD_VARIANTS) {
