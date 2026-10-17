@@ -1181,12 +1181,15 @@ closes up their spacing so the row holds at a phone width.
   read, the listed rows in one, the targets' titles and providers in one,
   their last messages in one. Each thread's rows are read by caller in
   four arms, open, settled inside the window, local spawns kept for open
-  work and remote spawns with open work, each through its own index, so
-  the cost follows the listed rows and not the threads' settled history.
+  work and remote spawns with open work, each held to its own index, and
+  the spawns kept for open work are found by climbing from the threads
+  with open work, so the cost follows the listed rows and not the threads'
+  settled history, spawns included, whatever statistics the database
+  holds.
   A thread two spawns reach is walked once, under the first in tree
   order; the rows the later spawn would have nested take no place in the
   row limit. Only spawns move that walk, so a read of named rows walks the
-  tree's spawns and the named rows alone: each row has the listing's
+  listed spawns and the named rows alone: each row has the listing's
   place, wherever it falls against the row limit, and the rows and their
   targets are read for those rows alone. A row
   carries the head of its answer (what the row shows), never the whole

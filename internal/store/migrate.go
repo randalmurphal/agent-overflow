@@ -1750,6 +1750,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: agentRecordsMigrationVersion, Name: "agent_records", SQL: agentRecordsV154SQL},
 	{Version: ledgerIndexesMigrationVersion, Name: "ledger_indexes", SQL: ledgerIndexesV155SQL, Rebuild: true},
 	{Version: wakeItemsMigrationVersion, Name: "wake_items", SQL: wakeItemsV156SQL, Fix: recordConfirmedWakeItems},
+	{Version: agentTreeIndexesMigrationVersion, Name: "agent_tree_indexes", SQL: agentTreeIndexesV157SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

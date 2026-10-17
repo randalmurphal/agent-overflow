@@ -255,7 +255,7 @@ const maxThreadAgentRowReads = 32
 // falls against the listing's row limit. A row stands on its own: what
 // nests under it, and a spawn on a paired computer's rows, are the
 // listing's. The read is as many statements as the listing's, and walks the
-// tree's spawns and the named rows alone, not every listed row.
+// listed spawns and the named rows alone, not every listed row.
 //
 //ao:scope threads:read
 func (a *App) GetThreadAgentRows(threadID string, tokens []string) ([]ThreadAgentRowRead, error) {

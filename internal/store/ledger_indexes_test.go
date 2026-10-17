@@ -40,14 +40,15 @@ func assertPlanSearches(t *testing.T, s *Store, what, table string, allowed []st
 // Every read of the Agents segment's tree, the listing's and a read of
 // named rows, is a SEARCH through an index that leaves the caller's
 // settled history out, each arm through its own, before and after ANALYZE
-// has seen a history of 5,000 settled answers: with the statistics a
-// read the history could serve otherwise becomes a SCAN.
+// has seen a history of 5,000 settled answers and 2,000 settled spawns:
+// with the statistics a read the history could serve otherwise becomes a
+// SCAN. Every arm is held to its index, so the plans do not change.
 // idx_thread_requests_caller, which orders a caller's whole history, is not
 // among them.
 func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	chief, since := agentTreeHistory(t, s, 5_000, 200)
+	chief, since := agentTreeSpawnHistory(t, s, 5_000, 200, 2_000)
 	seedAgentRequest(t, s, "remote-open", chief, ThreadRequestSpawn, "", false, 1)
 	mustExec(t, s.db, `UPDATE thread_requests SET target_computer_id = 'pc', target_thread_id = 'far' WHERE token = 'remote-open'`)
 	settleAgentRequest(t, s, "remote-open", 1)
@@ -61,9 +62,16 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 		"SEARCH r USING INDEX idx_thread_requests_nested_caller (caller_thread_id=?)",
 	}
 	named := []string{
-		"SEARCH r USING INDEX idx_thread_requests_spawn_caller (caller_thread_id=?)",
 		"SEARCH r USING INDEX sqlite_autoindex_thread_requests_1 (token=?)",
+		"SEARCH r USING INDEX idx_thread_requests_spawn_settled (caller_thread_id=? AND settled_at=?)",
+		"SEARCH r USING INDEX idx_thread_requests_spawn_settled (caller_thread_id=? AND settled_at>?)",
+		"SEARCH r USING INDEX idx_thread_requests_spawn_caller (caller_thread_id=? AND target_thread_id=?)",
 	}
+	callers := []string{
+		"SEARCH c USING INDEX idx_thread_requests_open (caller_thread_id>?)",
+		"SEARCH c USING INDEX idx_thread_requests_nested_caller (caller_thread_id>?)",
+	}
+	arms, named = append(arms, callers...), append(named, callers...)
 	for _, analyzed := range []bool{false, true} {
 		if analyzed {
 			mustExec(t, s.db, `ANALYZE`)
@@ -79,11 +87,12 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 		} {
 			name := fmt.Sprintf("%s (analyzed %v)", read.name, analyzed)
 			assertPlanSearches(t, s, name, "r", []string{
-				"idx_thread_requests_caller_settled", "idx_thread_requests_spawn_caller",
+				"idx_thread_requests_caller_settled", "idx_thread_requests_spawn_caller", "idx_thread_requests_spawn_settled",
 				"idx_thread_requests_nested_caller", "idx_thread_requests_spawn_target", "sqlite_autoindex_thread_requests_1",
 			}, read.query, read.args...)
 			assertPlanSearches(t, s, name, "c", []string{
 				"idx_thread_requests_caller_settled", "idx_thread_requests_spawn_caller", "idx_thread_requests_nested_caller",
+				"idx_thread_requests_open",
 			}, read.query, read.args...)
 			text := planText(explainPlan(t, s, read.query, read.args...))
 			for _, line := range read.want {
