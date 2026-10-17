@@ -26,7 +26,7 @@
             <span><span class="text-fg-subtle">CPU</span> {Math.round(row.stats.cpuPercent)}%</span>
             <span><span class="text-fg-subtle">RAM</span> {formatGiB(row.stats.memUsedBytes)} / {formatGiB(row.stats.memTotalBytes)} GB</span>
           </div>
-        {:else}<span class="text-fg-subtle">{row.connected ? 'Waiting for system stats…' : 'Offline'}</span>{/if}
+        {:else}<span class="text-fg-subtle">{row.connected || row.starting ? 'Waiting for system stats…' : 'Offline'}</span>{/if}
       </div>
     {/each}
     {#if rows.length === 0}<span class="text-fg-subtle">Selected computer is unavailable.</span>{/if}

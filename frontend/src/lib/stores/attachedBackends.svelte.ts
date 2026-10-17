@@ -138,6 +138,14 @@ export function backendStarting(key: BackendKey): boolean {
 }
 
 /**
+ * Whether this page's first connect to the backend is still in flight.
+ * Nothing has failed yet, so the backend is not offline.
+ */
+export function backendConnecting(key: BackendKey): boolean {
+  return getTransportStatusFor(key).status === 'disconnected';
+}
+
+/**
  * The one word for a down socket, with when it was last up if anything
  * knows. `lastReachedMs` is what a saved profile recorded (the desktop's
  * `ListBackends`); the transport's own `lastConnectedAt` is this page's

@@ -82,3 +82,22 @@ it('usage footer collapses once the first reply has no usage', async () => {
   resolve([]);
   await waitFor(() => expect(view.queryByTestId('sidebar-usage-footer')).toBeNull());
 });
+
+it('both footers wait rather than report offline while the first connect is in flight', async () => {
+  __setTransportStatusForTest({ status: 'disconnected', nextAttemptAt: null });
+  const resolve = deferredUsage();
+  const stats = render(SystemStatsFooter);
+  const usage = render(UsageFooter);
+  const statsFooter = stats.getByTestId('sidebar-system-stats');
+  const usageFooter = usage.getByTestId('sidebar-usage-footer');
+  expect(statsFooter.textContent).toContain('Waiting for system stats');
+  expect(usage.getByTestId('usage-footer-empty').textContent).toContain('Loading usage');
+  const heights = [statsFooter.getBoundingClientRect().height, usageFooter.getBoundingClientRect().height];
+
+  __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+  setSystemStats({ isWsl: false, cpuPercent: 20, memUsedBytes: 4 * 1024 ** 3, memTotalBytes: 16 * 1024 ** 3 });
+  await waitFor(() => expect(statsFooter.textContent).toContain('CPU 20%'));
+  resolve([claudeBucket()]);
+  await waitFor(() => expect(usage.getAllByTestId('usage-footer-row')).toHaveLength(1));
+  expect([statsFooter.getBoundingClientRect().height, usageFooter.getBoundingClientRect().height]).toEqual(heights);
+});
