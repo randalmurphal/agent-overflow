@@ -48,6 +48,10 @@ const defaultReapGrace = 30 * time.Second
 // projection of it, and a runaway driver must not grow the registry.
 const maxTrackedPendingAdvances = 32
 
+// maxTrackedInjectedItems bounds MockInfo.InjectedItems. A session injects
+// at most once per start; anything near the bound is a runaway caller.
+const maxTrackedInjectedItems = 32
+
 // MockInfo is the backend-side view of a registered mock, exposed
 // through HarnessListMocks.
 type MockInfo struct {
@@ -68,6 +72,11 @@ type MockInfo struct {
 	// observed the app launch it with, latched from its ReportSessionConfig.
 	// nil until that report arrives (or for a mock that never posts one).
 	SessionConfig *SessionConfig `json:"sessionConfig,omitempty"`
+	// InjectedItems lists, in arrival order, the messages this mock
+	// received through `thread/inject_items`, latched from its
+	// ReportInjectedItems reports for the same reason as SessionConfig.
+	// Bounded by maxTrackedInjectedItems.
+	InjectedItems []InjectedItem `json:"injectedItems,omitempty"`
 	// OpenGate names the waitSignal gate this mock is currently blocked
 	// on ("stall" for an indefinite stall step), empty when it is not
 	// blocked. Projected from the mock's own waiting_signal /
@@ -276,6 +285,7 @@ func (s *Server) Mocks() []MockInfo {
 	for id, conn := range s.mocks {
 		info := conn.info
 		info.PendingAdvances = slices.Clone(conn.info.PendingAdvances)
+		info.InjectedItems = slices.Clone(conn.info.InjectedItems)
 		if info.PendingAdvances == nil {
 			info.PendingAdvances = []string{}
 		}
@@ -462,6 +472,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	s.applyReportLocked(conn, rep)
 	info := conn.info
 	info.PendingAdvances = slices.Clone(conn.info.PendingAdvances)
+	info.InjectedItems = slices.Clone(conn.info.InjectedItems)
 	s.mu.Unlock()
 	s.report(info, rep)
 	w.WriteHeader(http.StatusNoContent)
@@ -491,6 +502,9 @@ func (s *Server) applyReportLocked(conn *mockConn, rep Report) {
 			observed := *rep.SessionConfig
 			conn.info.SessionConfig = &observed
 		}
+	case ReportInjectedItems:
+		room := maxTrackedInjectedItems - len(conn.info.InjectedItems)
+		conn.info.InjectedItems = append(conn.info.InjectedItems, rep.InjectedItems[:min(room, len(rep.InjectedItems))]...)
 	case ReportWaitingSignal:
 		conn.info.OpenGate = rep.Detail
 	case ReportAdvanceReleased:

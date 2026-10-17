@@ -203,7 +203,7 @@ CREATE INDEX idx_payload_chunks_payload_start
 	{
 		Version: 12,
 		Name:    "channel_max_turns",
-		// v143 drops channels.
+		// v144 drops channels.
 		SQL: `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
 	},
 	{
@@ -404,7 +404,7 @@ DELETE FROM diff_review_comments WHERE scope IN ('turn', 'session');`,
 	{
 		Version: 26,
 		Name:    "workflow_persistence",
-		// v145 drops automations and automation_cursors.
+		// v146 drops automations and automation_cursors.
 		SQL: `CREATE TABLE work_items (
     id             TEXT    PRIMARY KEY,
     project_id     TEXT    NOT NULL,
@@ -640,7 +640,7 @@ CREATE INDEX idx_work_item_units_worktree
 		// else entirely (an agent proposal id, a call site) and none of them are
 		// ever queried this way.
 		//
-		// v145 drops automations and this index.
+		// v146 drops automations and this index.
 		SQL: `ALTER TABLE automations ADD COLUMN last_fired_at INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE automations ADD COLUMN last_run_item_id TEXT NOT NULL DEFAULT '';
@@ -1736,21 +1736,22 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: projectIdentityErrorMigrationVersion, Name: "project_identity_error", SQL: projectIdentityErrorV140SQL},
 	{Version: 141, Name: "repository_identity", SQL: repositoryIdentityV141SQL, Fix: scrubRepositoryCoordinates},
 	{Version: threadPullRequestsMigrationVersion, Name: "thread_pull_requests", SQL: threadPullRequestsV142SQL},
-	{Version: removeDiscussionsMigrationVersion, Name: "remove_discussions", SQL: removeDiscussionsV143SQL, Rebuild: true},
-	{Version: standingAgentsMigrationVersion, Name: "standing_agents", SQL: standingAgentsV144SQL},
-	{Version: removeAutomationsMigrationVersion, Name: "remove_automations", SQL: removeAutomationsV145SQL, Fix: mapAutomationRunsToManual},
-	{Version: workItemSourcesMigrationVersion, Name: "work_item_sources", SQL: workItemSourcesV146SQL, Rebuild: true},
-	{Version: agentWakeStderrMigrationVersion, Name: "agent_wake_stderr", SQL: agentWakeStderrV147SQL},
-	{Version: spawnLineageMigrationVersion, Name: "spawn_lineage", SQL: spawnLineageV148SQL},
-	{Version: deliveryConfirmationsMigrationVersion, Name: "delivery_confirmations", SQL: deliveryConfirmationsV149SQL},
-	{Version: answerAgentMigrationVersion, Name: "answer_agent", SQL: answerAgentV150SQL},
-	{Version: agentRowsRemoteMigrationVersion, Name: "agent_rows_remote", SQL: agentRowsRemoteV151SQL},
-	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV152SQL, Check: refusePreSyncReceiptOwnTurn},
-	{Version: lateDeliveryRouteMigrationVersion, Name: "late_delivery_route", SQL: lateDeliveryRouteV153SQL},
-	{Version: agentRecordsMigrationVersion, Name: "agent_records", SQL: agentRecordsV154SQL},
-	{Version: ledgerIndexesMigrationVersion, Name: "ledger_indexes", SQL: ledgerIndexesV155SQL, Rebuild: true},
-	{Version: wakeItemsMigrationVersion, Name: "wake_items", SQL: wakeItemsV156SQL, Fix: recordConfirmedWakeItems},
-	{Version: agentTreeMarksMigrationVersion, Name: "agent_tree_marks", SQL: agentTreeMarksV157SQL, Fix: fillAgentTreeMarks},
+	{Version: codexDeveloperInstructionsMigrationVersion, Name: "codex_developer_instructions", SQL: codexDeveloperInstructionsV143SQL},
+	{Version: removeDiscussionsMigrationVersion, Name: "remove_discussions", SQL: removeDiscussionsV144SQL, Rebuild: true},
+	{Version: standingAgentsMigrationVersion, Name: "standing_agents", SQL: standingAgentsV145SQL},
+	{Version: removeAutomationsMigrationVersion, Name: "remove_automations", SQL: removeAutomationsV146SQL, Fix: mapAutomationRunsToManual},
+	{Version: workItemSourcesMigrationVersion, Name: "work_item_sources", SQL: workItemSourcesV147SQL, Rebuild: true},
+	{Version: agentWakeStderrMigrationVersion, Name: "agent_wake_stderr", SQL: agentWakeStderrV148SQL},
+	{Version: spawnLineageMigrationVersion, Name: "spawn_lineage", SQL: spawnLineageV149SQL},
+	{Version: deliveryConfirmationsMigrationVersion, Name: "delivery_confirmations", SQL: deliveryConfirmationsV150SQL},
+	{Version: answerAgentMigrationVersion, Name: "answer_agent", SQL: answerAgentV151SQL},
+	{Version: agentRowsRemoteMigrationVersion, Name: "agent_rows_remote", SQL: agentRowsRemoteV152SQL, Check: refusePreSyncColumn("thread_requests", "nested_open", preSyncBeforeV142)},
+	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV153SQL, Check: refusePreSyncColumn("thread_request_receipts", "own_turn", preSyncBeforeV143)},
+	{Version: lateDeliveryRouteMigrationVersion, Name: "late_delivery_route", SQL: lateDeliveryRouteV154SQL},
+	{Version: agentRecordsMigrationVersion, Name: "agent_records", SQL: agentRecordsV155SQL},
+	{Version: ledgerIndexesMigrationVersion, Name: "ledger_indexes", SQL: ledgerIndexesV156SQL, Rebuild: true},
+	{Version: wakeItemsMigrationVersion, Name: "wake_items", SQL: wakeItemsV157SQL, Fix: recordConfirmedWakeItems},
+	{Version: agentTreeMarksMigrationVersion, Name: "agent_tree_marks", SQL: agentTreeMarksV158SQL, Fix: fillAgentTreeMarks, Check: refusePreSyncColumn("thread_requests", "open_below_0", preSyncBeforeV143)},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

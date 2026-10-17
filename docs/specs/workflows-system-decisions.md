@@ -2862,11 +2862,11 @@ each pinned by an incident-replay test:
   evaluate them (§4); only the automation condition that also used them is
   gone.
 
-  **Existing rows.** Migration v145 drops both tables and the partial index
+  **Existing rows.** Migration v146 drops both tables and the partial index
   `idx_work_items_automation_source_ref`, and rewrites every run an
   automation started as `source = 'manual'` with `source_ref` cleared,
   because the reference named a row that no longer exists; it logs how many
-  runs it mapped. v146 rebuilds `work_items` so its `source` CHECK admits
+  runs it mapped. v147 rebuilds `work_items` so its `source` CHECK admits
   only `manual`, `agent` and `call`. Keeping `automation` as a value nothing
   writes would leave the removed feature in the schema.
 

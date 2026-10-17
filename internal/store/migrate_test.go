@@ -1649,7 +1649,7 @@ func TestMigrationV33RemovesQueueFromWorkItems(t *testing.T) {
 
 // TestV12ChannelMaxTurnsColumn covers the plain ALTER TABLE ADD COLUMN
 // migration: a pre-existing channel row must backfill to 8, new rows can
-// set an explicit value, and the NOT NULL constraint is enforced. v143
+// set an explicit value, and the NOT NULL constraint is enforced. v144
 // drops the table.
 func TestV12ChannelMaxTurnsColumn(t *testing.T) {
 	db := migrateThrough(t, 11)

@@ -553,10 +553,17 @@ export interface MockSessionConfig {
   bashMaxTimeoutMs?: string;
 }
 
+/** One message a Codex mock received through `thread/inject_items`. */
+export interface MockInjectedItem {
+  role: string;
+  text: string;
+}
+
 export interface MockInfo {
   mockId: string;
   registration: { protocol: string; cwd: string; resumeRef?: string };
   sessionConfig?: MockSessionConfig;
+  injectedItems?: MockInjectedItem[];
 }
 
 // mockSessions returns every mock of one protocol that has reported a launch

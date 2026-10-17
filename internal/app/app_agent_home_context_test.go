@@ -502,17 +502,17 @@ func (f *answerAgentFixture) settle(t *testing.T, token string) {
 	}
 }
 
-// A row written before v150 recorded nothing about the thread that answered,
+// A row written before v151 recorded nothing about the thread that answered,
 // so its wake reads a thread on this computer when it renders. A row that
 // recorded no agent is not read again.
-func TestWakeOfARowWrittenBeforeV150ReadsTheAgentWhenItRenders(t *testing.T) {
+func TestWakeOfARowWrittenBeforeV151ReadsTheAgentWhenItRenders(t *testing.T) {
 	t.Parallel()
 	f := newAnswerAgentFixture(t)
 	for _, tc := range []struct {
 		name       string
 		unrecorded bool
 		wantAgent  bool
-	}{{"before v150", true, true}, {"no agent recorded", false, false}} {
+	}{{"before v151", true, true}, {"no agent recorded", false, false}} {
 		token := f.request(t)
 		if settled, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
 			State: store.ThreadRequestFinished, Answer: []byte("done here"), AnswerKind: store.ThreadAnswerFinal,

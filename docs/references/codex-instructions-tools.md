@@ -149,3 +149,10 @@ servers when those are on
 Native developer instructions remain first and unchanged, joined to AO's text
 by a blank line. AO omits the override when it has nothing to append, and when
 config/read fails, which it reports to the thread as a non-fatal error.
+
+A resumed or forked thread never shows a changed value to the model: Codex
+restores the model's context from the rollout, and the restored context has
+no developer-instructions field. AO therefore records the digest of the
+composed text each thread last received and injects a changed text once
+with `thread/inject_items` before the session's first turn
+([codex-wire.md §Developer instructions on a resumed or forked thread](codex-wire.md#developer-instructions-on-a-resumed-or-forked-thread-verified-01621)).

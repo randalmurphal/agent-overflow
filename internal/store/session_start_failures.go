@@ -2,7 +2,7 @@ package store
 
 import "fmt"
 
-// A thread's session start failure mark (migration v144): set when a session
+// A thread's session start failure mark (migration v145): set when a session
 // the app started for a message it queued fails and raises the start-failure
 // notification, and cleared by the first start that succeeds, which
 // withdraws that notification. It outlives a restart because the

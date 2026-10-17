@@ -27,13 +27,26 @@ commands for completion: the Go Make targets apply platform flags and
 
 ### A database from a pre-sync personal-assistant build
 
-main's `thread_pull_requests` is migration v142. main is trunk and its next
-release ships it, so personal-assistant's migrations from v142 on moved up
-one version. A database a personal-assistant build from before that sync
-migrated holds `receipt_own_turn` as v151 and has no `thread_pull_requests`.
-Opening it fails at v152 with "this database was migrated by a pre-sync
-personal-assistant build". Repair it with the app stopped, in
-`sqlite3 <data dir>/agent-overflow.db`:
+main is trunk and its next release ships its migrations, so when main takes
+a version personal-assistant's chain already used, the personal-assistant
+migrations from that version on move up one. A database a
+personal-assistant build migrated before that sync holds them under the old
+numbers and lacks main's table. Opening it fails with "this database was
+migrated by a pre-sync personal-assistant build" and names the section
+below that repairs it. Repair it with the app stopped, in
+`sqlite3 <data dir>/agent-overflow.db`. A database without
+`thread_pull_requests` takes [Before main's v142](#before-mains-v142) and
+then [Before main's v143](#before-mains-v143), in that order; one with
+`thread_pull_requests` takes only the second. The runner reads only the
+highest recorded version, so the names of rows below it may not match
+their numbers. `TestThePreSyncRepairsOpen` runs these blocks as written
+on databases each pre-sync build left and opens the results.
+
+#### Before main's v142
+
+main's `thread_pull_requests` is migration v142. A database from before
+that sync holds `receipt_own_turn` as v151 and has no
+`thread_pull_requests`. Opening it fails at v152.
 
 ```sql
 BEGIN;
@@ -59,8 +72,33 @@ COMMIT;
 ```
 
 The table is `threadPullRequestsV142SQL`
-(`internal/store/migration_v142_thread_pull_requests.go`);
-`TestThePreSyncRepairOpens` applies this repair and opens the result.
+(`internal/store/migration_v142_thread_pull_requests.go`). This leaves
+`receipt_own_turn` at v152, which the next section moves to v153; opening
+the database before that fails at v153.
+
+#### Before main's v143
+
+main's `codex_developer_instructions` is migration v143. A database from
+before that sync holds `agent_tree_marks` as v157 and has no
+`codex_developer_instructions`. Opening it fails at v158.
+
+```sql
+BEGIN;
+CREATE TABLE codex_developer_instructions (
+ thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+ session_ref TEXT NOT NULL CHECK(session_ref <> ''),
+ digest TEXT NOT NULL CHECK(length(digest) = 64)
+);
+UPDATE migration_versions SET version = -version WHERE version BETWEEN 143 AND 157;
+UPDATE migration_versions SET version = 1 - version WHERE version < 0;
+INSERT INTO migration_versions (version, name) VALUES (143, 'codex_developer_instructions');
+COMMIT;
+```
+
+The table is `codexDeveloperInstructionsV143SQL`
+(`internal/store/migration_v143_codex_developer_instructions.go`). The two
+updates move rows v143 to v157 up one; going through negative numbers
+keeps the primary key unique at every row.
 
 ## Generated artifacts
 

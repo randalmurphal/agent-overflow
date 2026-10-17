@@ -444,7 +444,7 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 			wake.Title = thread.Title
 		}
 		if row.AnswerAgentUnrecorded {
-			// A row written before v150 recorded nothing; a thread here is
+			// A row written before v151 recorded nothing; a thread here is
 			// read now.
 			agent, err := a.threadTools().senderAgent(row.TargetThreadID)
 			if err != nil {

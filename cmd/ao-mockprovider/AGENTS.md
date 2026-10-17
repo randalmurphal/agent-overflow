@@ -67,6 +67,8 @@ control channel aligned with verified provider behavior.
   scenario keeps running.
 - Echo Codex steer input and `clientUserMessageId`; pending-send reconciliation
   depends on that ID.
+- Answer Codex `thread/inject_items` for the loaded thread only, and report
+  its message items as `injected_items` before the answer.
 - Unknown JSON-RPC methods return `-32601`. Implement real minimal responses for
   methods used during ordinary startup; optional unsupported methods stay
   unsupported so fallback paths remain exercised.
