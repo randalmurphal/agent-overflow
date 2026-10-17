@@ -78,16 +78,15 @@ func (a *App) startThreadRequestSweeps() {
 	a.threadRequests.nudge = nudge
 	a.threadRequests.mu.Unlock()
 
-	a.threadRequestsWG.Add(1)
-	go func() {
-		defer a.threadRequestsWG.Done()
+	// Refused only once shutdown has joined the request work.
+	a.threadRequestsWG.Go(func() {
 		// Before the first pass, so a fire missed while the app was closed
 		// replays once with its count rather than as an ordinary due fire,
 		// and a row a quit left running is recorded before anything claims
 		// it.
 		a.recoverAgentWakesAtBoot()
 		a.runThreadRequestSweeps(nudge)
-	}()
+	})
 }
 
 // nudgeThreadRequestSweep asks for a pass now. A reminder due sooner than the
@@ -218,16 +217,18 @@ func (a *App) pollRemoteThreadRequests(now time.Time) {
 		a.endThreadRequestPoll()
 		return
 	}
-	if a.lifeCtx().Err() != nil {
-		a.endThreadRequestPoll()
-		return
-	}
-	a.threadRequestsWG.Add(1)
-	go func() {
-		defer a.threadRequestsWG.Done()
+	a.startThreadRequestPoll(rows)
+}
+
+// startThreadRequestPoll runs one pass over rows off the sweep, releasing
+// the poll slot when it ends or when shutdown refuses it.
+func (a *App) startThreadRequestPoll(rows []store.ThreadRequest) {
+	if a.lifeCtx().Err() != nil || !a.threadRequestsWG.Go(func() {
 		defer a.endThreadRequestPoll()
 		a.runThreadRequestPoll(rows)
-	}()
+	}) {
+		a.endThreadRequestPoll()
+	}
 }
 
 // beginThreadRequestPoll claims the single poll slot.
@@ -281,6 +282,12 @@ func (a *App) deliverClaimedThreadWakeDetached(token string, late bool) {
 }
 
 func (a *App) runThreadWakeDetached(deliver, dropped func()) {
+	// Checked before the slot: once shutdown has begun the select below
+	// could still pick a free slot over Done.
+	if a.lifeCtx().Err() != nil {
+		dropped()
+		return
+	}
 	slots := a.threadWakeDeliverySlots()
 	select {
 	case slots <- struct{}{}:

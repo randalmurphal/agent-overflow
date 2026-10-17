@@ -8,9 +8,9 @@ import "sync"
 // before the Wait it might race, and panics when one lands while a Wait is
 // returning; that work cannot promise it while shutdown, the harness or a
 // test waits. Wait returns at the first moment no member runs, and a member
-// that starts after that moment is not waited for. Close refuses every
-// later Go, so shutdown joins every member Go started. The zero value is
-// ready.
+// that starts after that moment is not waited for. Every member starts
+// through Go, which Close refuses, so shutdown joins every member that
+// started. The zero value is ready.
 type workGroup struct {
 	mu   sync.Mutex
 	idle sync.Cond
@@ -23,7 +23,11 @@ type workGroup struct {
 
 // Go runs fn on its own goroutine as a member and reports true, or runs
 // nothing and reports false once Close has begun.
-func (g *workGroup) Go(fn func()) bool {
+func (g *workGroup) Go(fn func()) bool { return g.GoCounted(nil, fn) }
+
+// GoCounted is Go that also counts the member in counted for its life, so
+// a Wait on counted waits for it too. counted is never closed.
+func (g *workGroup) GoCounted(counted *workGroup, fn func()) bool {
 	g.mu.Lock()
 	if g.closed {
 		g.mu.Unlock()
@@ -31,8 +35,14 @@ func (g *workGroup) Go(fn func()) bool {
 	}
 	g.n++
 	g.mu.Unlock()
+	if counted != nil {
+		counted.addMember(1)
+	}
 	go func() {
-		defer g.Done()
+		defer g.addMember(-1)
+		if counted != nil {
+			defer counted.addMember(-1)
+		}
 		fn()
 	}()
 	return true
@@ -46,7 +56,9 @@ func (g *workGroup) Close() {
 	g.Wait()
 }
 
-func (g *workGroup) Add(delta int) {
+// addMember moves the count. Only Go and its members' ends call it: a
+// member counted any other way would bypass Close.
+func (g *workGroup) addMember(delta int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.n += delta
@@ -59,8 +71,6 @@ func (g *workGroup) Add(delta int) {
 	}
 }
 
-func (g *workGroup) Done() { g.Add(-1) }
-
 func (g *workGroup) Wait() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -70,4 +80,11 @@ func (g *workGroup) Wait() {
 	for start := g.zeros; g.n > 0 && g.zeros == start; {
 		g.idle.Wait()
 	}
+}
+
+// members is how many members run, for tests.
+func (g *workGroup) members() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.n
 }

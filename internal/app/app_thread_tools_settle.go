@@ -524,15 +524,7 @@ func (a *App) goThreadRequestSettling(fn func()) bool {
 	if a.lifeCtx().Err() != nil {
 		return false
 	}
-	a.threadRequestSettling.Add(1)
-	started := a.threadRequestsWG.Go(func() {
-		defer a.threadRequestSettling.Done()
-		fn()
-	})
-	if !started {
-		a.threadRequestSettling.Done()
-	}
-	return started
+	return a.threadRequestsWG.GoCounted(&a.threadRequestSettling, fn)
 }
 
 // settleThreadReceipt writes one settlement on the destination row and hands
