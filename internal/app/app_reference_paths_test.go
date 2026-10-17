@@ -21,8 +21,10 @@ var localPathPatterns = []struct {
 	{regexp.MustCompile(`/(home|Users)/([^/\s"'\\]+)/`), 2},
 	// Claude encodes a cwd into a directory name with dashes.
 	{regexp.MustCompile(`-(home|Users)-([A-Za-z0-9_.]+)-`), 2},
-	// Claude's per-user temp root on a Linux developer machine.
-	{regexp.MustCompile(`claude-1000`), 0},
+	// Claude's per-user temp root, /tmp/claude-<uid>, also under
+	// /private/tmp, dash-encoded, or split across streamed JSON deltas.
+	// A version anchor or model name (claude-4-7) is not preceded by these.
+	{regexp.MustCompile(`(?:tmp[/-]|/)claude-[0-9]+\b`), 0},
 	// An asset-tag host name.
 	{regexp.MustCompile(`\b[A-Z]{2,6}-[0-9]{5,}\b`), 0},
 }
@@ -78,13 +80,16 @@ func TestScanLocalPathsFindsEachLeak(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("clean.ndjson", `{"cwd":"/home/user/repo","dir":"-home-user-repo","mac":"/Users/user/repo","tmp":"/tmp/ao-fixture/-work-repo"}`+"\n")
+	write("clean.ndjson", `{"cwd":"/home/user/repo","dir":"-home-user-repo","mac":"/Users/user/repo","tmp":"/tmp/ao-fixture/-work-repo",`+
+		`"doc":"whats-new-claude-4-7","anchor":"#flavors-claude-21202--21205"}`+"\n")
 	write("leaks.ndjson", strings.Join([]string{
 		`{"cwd":"/home/someone/repo"}`,
 		`{"dir":"/tmp/ao-fixture/-home-someone-repo"}`,
 		`{"mac":"/Users/someone/repo"}`,
 		`{"out":"/tmp/claude-1000/-work-repo/tasks/a.output"}`,
 		`{"host":"ABC-12345"}`,
+		`{"cwd":"/private/tmp/claude-502/-private-tmp-claude-502--Users-user-repo"}`,
+		`{"partial_json":"/claude-77/"}`,
 	}, "\n")+"\n")
 	found, files, err := scanLocalPaths(root)
 	if err != nil {
@@ -97,8 +102,11 @@ func TestScanLocalPathsFindsEachLeak(t *testing.T) {
 		"leaks.ndjson:1: /home/someone/",
 		"leaks.ndjson:2: -home-someone-",
 		"leaks.ndjson:3: /Users/someone/",
-		"leaks.ndjson:4: claude-1000",
+		"leaks.ndjson:4: tmp/claude-1000",
 		"leaks.ndjson:5: ABC-12345",
+		"leaks.ndjson:6: tmp/claude-502",
+		"leaks.ndjson:6: tmp-claude-502",
+		"leaks.ndjson:7: /claude-77",
 	}
 	if len(found) != len(want) {
 		t.Fatalf("found %q, want %q", found, want)
