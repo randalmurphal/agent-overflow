@@ -57,15 +57,16 @@ func (a *App) markAnsweredRead(receipt store.ThreadRequestReceipt) {
 	a.stampAnsweredRead(receipt.TargetThreadID, *turn.CompletedAt)
 }
 
-// stampAnsweredRead writes the mark through at unless the thread is pinned,
-// read at the stamp, and announces the row when it moved.
+// stampAnsweredRead writes the mark through at and announces the row when
+// it moved. A thread pinned, or already read through at, takes no writer
+// transaction; the write itself skips a thread pinned since the read.
 func (a *App) stampAnsweredRead(threadID string, at int64) {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		log.Printf("thread tools: read %s for its answer's read mark: %v", threadID, err)
 		return
 	}
-	if thread.PinnedAt != nil {
+	if thread.PinnedAt != nil || thread.LastReadAt == nil || *thread.LastReadAt >= at {
 		return
 	}
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), markThreadReadTimeout)

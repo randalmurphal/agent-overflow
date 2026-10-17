@@ -161,6 +161,22 @@ export function isStandingAgent(thread: Pick<Thread, 'agentId'>): boolean {
 }
 
 /**
+ * The thread id of the agent row that would nest this thread: its spawner,
+ * or, for an assistant's past thread, that assistant's current thread
+ * (currentThreadIdOf). Undefined for an agent's own row and for a thread
+ * no agent spawned. Whether that agent row is in the sidebar is the
+ * caller's to check.
+ */
+export function nestingAgentThreadId(
+  thread: Pick<Thread, 'agentId' | 'pastAgentId' | 'spawnedByThreadId'>,
+  currentThreadIdOf: (agentId: string) => string | undefined,
+): string | undefined {
+  if (thread.agentId) return undefined;
+  if (thread.pastAgentId) return currentThreadIdOf(thread.pastAgentId);
+  return thread.spawnedByThreadId || undefined;
+}
+
+/**
  * The key of an agent row's sidebar state (its fold, its done footer): the
  * assistant's id, so a handoff to a new thread keeps it.
  */

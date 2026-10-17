@@ -9,6 +9,7 @@ import type { Thread, ThreadGroup } from '../types/models';
 import { buildSidebarThreadTree, type SidebarAgentTreeNode, type SidebarGroupTreeNode } from './sidebarTree';
 import {
   agentDoneCount,
+  agentLiveChildCount,
   boundContainerMembers,
   flattenSidebarThreadTree,
   nextContainerRevealLimit,
@@ -175,6 +176,38 @@ describe('container bound', () => {
     });
     expect(sameSidebarVisibleNodes(build(THREAD_PREVIEW_LIMIT + 2), build(THREAD_PREVIEW_LIMIT + 2))).toBe(true);
     expect(sameSidebarVisibleNodes(build(THREAD_PREVIEW_LIMIT + 2), build(THREAD_PREVIEW_LIMIT + 3))).toBe(false);
+  });
+});
+
+describe('collapsed agent count', () => {
+  it('counts the live children, not the folded ones', () => {
+    const node = agentNode([agent, child('u1', unread), child('u2', unread), child('s1'), child('s2')]);
+    expect(agentLiveChildCount(node, undefined, null)).toBe(2);
+    // An open settled child is live while it is open.
+    expect(agentLiveChildCount(node, new Set(['s1']), null)).toBe(3);
+    expect(agentLiveChildCount(node, undefined, 's2')).toBe(3);
+  });
+});
+
+describe('row identity cutoff', () => {
+  it('tells a folded row from a live one, and a show-more row by its count and its dot', () => {
+    const group: ThreadGroup = { id: 'g', projectId: 'project-1', name: 'g', createdAt: 0, updatedAt: 0 };
+    const members = Array.from({ length: THREAD_PREVIEW_LIMIT + 2 }, (_, i) =>
+      mkThread(`m${i}`, { groupId: 'g', updatedAt: 1000 - i, ...unread }));
+    const rows = flattenSidebarThreadTree({ nodes: buildSidebarThreadTree({ threads: members, groups: [group] }) });
+    const at = rows.findIndex((row) => row.kind === 'thread');
+    const more = rows.length - 1;
+    const with_ = (i: number, patch: object) => rows.map((row, j) => (j === i ? { ...row, ...patch } : row)) as SidebarTreeVisibleNode[];
+    expect(sameSidebarVisibleNodes(rows, [...rows])).toBe(true);
+    expect(sameSidebarVisibleNodes(rows, with_(at, { folded: true }))).toBe(false);
+    const moreRow = rows[more];
+    if (moreRow.kind !== 'container-more' || moreRow.hiddenStatus === null) throw new Error('want a lit show-more row');
+    expect(sameSidebarVisibleNodes(rows, with_(more, { hiddenCount: moreRow.hiddenCount + 1 }))).toBe(false);
+    expect(sameSidebarVisibleNodes(rows, with_(more, { hiddenStatus: null }))).toBe(false);
+    expect(sameSidebarVisibleNodes(rows, with_(more, { hiddenStatus: { ...moreRow.hiddenStatus, liveStatus: 'running' } }))).toBe(false);
+    expect(sameSidebarVisibleNodes(rows, with_(more, {
+      hiddenStatus: { ...moreRow.hiddenStatus, pill: { ...moreRow.hiddenStatus.pill, label: 'Other' } },
+    }))).toBe(false);
   });
 });
 

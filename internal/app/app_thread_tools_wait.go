@@ -53,7 +53,7 @@ type threadRequestState struct {
 	personStops map[string][]personStop
 	// answeredReads maps a thread to the turns whose answer to its spawner
 	// settled while they ran (a thread_reply), so the turn's end stamps the
-	// read mark the answer earned (markAnsweredTurnRead). An entry goes at
+	// read mark the answer earned (holdAnsweredRead). An entry goes at
 	// that turn's end or the session's, so it holds at most the turns
 	// still running.
 	answeredReads map[string]map[int]bool

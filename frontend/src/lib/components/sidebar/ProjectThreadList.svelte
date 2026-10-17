@@ -60,6 +60,7 @@
   import { assistantKey, buildSidebarThreadTree } from '../../utils/sidebarTree';
   import {
     agentDoneCount,
+    agentLiveChildCount,
     flattenSidebarThreadTree,
     nextContainerRevealLimit,
     nextSidebarThreadRevealLimit,
@@ -540,7 +541,7 @@
               inGroup={node.ownerGroupId !== null || node.ownerAgentId !== null}
               agent={node.kind === 'agent' ? {
                 expanded: isAgentExpanded(assistantKey(node.thread)),
-                childCount: node.children.length,
+                childCount: agentLiveChildCount(node, openIds, pane?.threadId ?? null),
                 rolledUp: node.displayStatus === null ? null : { liveStatus: node.displayLiveStatus, pill: node.displayStatus },
               } : null}
               listProjectId={projectId}

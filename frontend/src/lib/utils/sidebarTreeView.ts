@@ -138,8 +138,7 @@ export function sidebarChildFolds(
   return openThreadIds?.has(child.thread.id) !== true;
 }
 
-/** An agent's done footer count: its settled idle children plus its archived ones. */
-export function agentDoneCount(
+function foldedChildCount(
   node: SidebarAgentTreeNode,
   openThreadIds: ReadonlySet<string> | undefined,
   activeThreadId: string | null | undefined,
@@ -148,7 +147,25 @@ export function agentDoneCount(
   for (const child of node.children) {
     if (sidebarChildFolds(child, openThreadIds, activeThreadId)) folded += 1;
   }
-  return folded + (node.thread.archivedChildCount ?? 0);
+  return folded;
+}
+
+/** An agent's done footer count: its settled idle children plus its archived ones. */
+export function agentDoneCount(
+  node: SidebarAgentTreeNode,
+  openThreadIds: ReadonlySet<string> | undefined,
+  activeThreadId: string | null | undefined,
+): number {
+  return foldedChildCount(node, openThreadIds, activeThreadId) + (node.thread.archivedChildCount ?? 0);
+}
+
+/** The count a collapsed agent row shows: its live children, not the done ones. */
+export function agentLiveChildCount(
+  node: SidebarAgentTreeNode,
+  openThreadIds: ReadonlySet<string> | undefined,
+  activeThreadId: string | null | undefined,
+): number {
+  return node.children.length - foldedChildCount(node, openThreadIds, activeThreadId);
 }
 
 export interface BoundContainerResult {

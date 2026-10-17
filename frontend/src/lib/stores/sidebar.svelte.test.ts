@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   collapseProject,
+  forgetAgentSidebarState,
+  getContainerVisibleLimit,
+  setContainerVisibleLimit,
   expandProject,
   collapseThreadList,
   getCollapsedGroups,
@@ -25,6 +28,7 @@ import { loadSettings, resetSettingsForTest } from './settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
+import { removeThreadGroup } from './threadGroups.svelte';
 
 const COLLAPSED_KEY = 'sidebar:collapsedProjects';
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
@@ -34,6 +38,17 @@ describe('sidebar store', () => {
     resetBindingMocks();
     resetAppStorageForTest();
     resetSidebarForTest();
+  });
+
+  it('forgets a group\'s and an agent row\'s paging when the container goes', () => {
+    setContainerVisibleLimit('group-1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+    setContainerVisibleLimit('agent-1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+    setContainerVisibleLimit('other', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
+    removeThreadGroup('group-1');
+    forgetAgentSidebarState('agent-1');
+    expect(getContainerVisibleLimit('group-1')).toBe(THREAD_PREVIEW_LIMIT);
+    expect(getContainerVisibleLimit('agent-1')).toBe(THREAD_PREVIEW_LIMIT);
+    expect(getContainerVisibleLimit('other')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
   });
 
   describe('expansion', () => {

@@ -2228,6 +2228,34 @@ describe('setupEventListeners', () => {
     expect(liveProjectActivity('project-stale')).toBe(100);
   });
 
+  it('bumps the agent\'s project for activity on a child it nests from another project', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'agent', projectId: 'project-agent', agentId: 'ops', updatedAt: 100 }),
+      makeThread({ id: 'child', projectId: 'project-child', spawnedByThreadId: 'agent', updatedAt: 100 }),
+      makeThread({ id: 'plain', projectId: 'project-child', updatedAt: 100 }),
+    ]);
+    setBindingMock('ListProjects', async () => [
+      projectWithCounts('project-agent', 100),
+      projectWithCounts('project-child', 100),
+    ]);
+    await refreshThreads();
+    await refreshProjects();
+
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'child', turnId: 'turn-1', turnIndex: 0, startedAt: 150,
+      completedAt: 5000, stopReason: 'end_turn', assistantMessageId: '', tokenUsage: '',
+    });
+    expect(liveProjectActivity('project-agent')).toBe(5000);
+    expect(liveProjectActivity('project-child')).toBe(100);
+
+    // A thread the agent did not spawn bumps its own project.
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'plain', turnId: 'turn-1', turnIndex: 0, startedAt: 150,
+      completedAt: 6000, stopReason: 'end_turn', assistantMessageId: '', tokenUsage: '',
+    });
+    expect(liveProjectActivity('project-child')).toBe(6000);
+  });
+
   it('does NOT bump cached project activity from item_event deltas', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({ id: 'thread-stale', projectId: 'project-stale', updatedAt: 100 }),

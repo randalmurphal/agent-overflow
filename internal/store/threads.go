@@ -1086,10 +1086,11 @@ func (s *Store) MarkThreadsReadNow(ctx context.Context, ids []string) (changed [
 // and never backward: the read mark a spawned thread gets when its turn
 // answers its spawner (docs/specs/standing-agents.md ruling 30). Unlike
 // MarkThreadReadNow it reads nothing later than at, so a turn the user
-// caused after the one that answered still shows as unread. A row whose
-// marker already covers at (NULL, "never tracked", included: that reads as
-// read) or that is gone changes nothing and hands back (zero row, false,
-// nil). The context bounds the wait for the writer connection, as
+// caused after the one that answered still shows as unread. A pinned
+// thread keeps its dot, so a pin that lands after the caller decided to
+// mark still wins. A row whose marker already covers at (NULL, "never
+// tracked", included: that reads as read), that is pinned or that is gone
+// changes nothing and hands back (zero row, false, nil). The context bounds the wait for the writer connection, as
 // MarkThreadReadNow's does.
 func (s *Store) MarkThreadReadThrough(ctx context.Context, id string, at int64) (Thread, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1098,7 +1099,7 @@ func (s *Store) MarkThreadReadThrough(ctx context.Context, id string, at int64) 
 	}
 	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx,
-		`UPDATE threads SET last_read_at = ? WHERE id = ? AND last_read_at IS NOT NULL AND last_read_at < ?`, at, id, at)
+		`UPDATE threads SET last_read_at = ? WHERE id = ? AND last_read_at IS NOT NULL AND last_read_at < ? AND pinned_at IS NULL`, at, id, at)
 	if err != nil {
 		return Thread{}, false, fmt.Errorf("store: mark thread read through %s: %w", id, err)
 	}

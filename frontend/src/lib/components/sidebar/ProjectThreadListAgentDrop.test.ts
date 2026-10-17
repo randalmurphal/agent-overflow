@@ -153,6 +153,29 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     expect(list).toHaveBeenCalledTimes(2);
   });
 
+  it('marks the agent and every child it nests that has something to read from the agent row\'s menu', async () => {
+    const unread = { latestTurnCompletedAt: 20, lastReadAt: 10 };
+    const threads = [
+      thread('agent', { agentId: 'agent', ...unread }),
+      thread('live-child', { spawnedByThreadId: 'agent', ...unread }),
+      thread('pinned-child', { spawnedByThreadId: 'agent', pinnedAt: 1, ...unread }),
+      thread('loose', unread),
+    ];
+    replaceAllThreads(threads);
+    const calls: string[][] = [];
+    setBindingMock('MarkThreadsRead', vi.fn(async (ids: string[]) => {
+      calls.push(ids);
+      return [];
+    }));
+    const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [], pane: createThreadPane() });
+    await flush();
+    await fireEvent.contextMenu(view.container.querySelector<HTMLElement>('[data-sidebar-thread-id="agent"]')!);
+    await flush();
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Mark All Read' }));
+    await flush();
+    expect(calls.map((ids) => [...ids].sort())).toEqual([['agent', 'live-child', 'pinned-child']]);
+  });
+
   it('comes back closed after its last archived child leaves', async () => {
     const view = renderList();
     await flush();
@@ -172,20 +195,29 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
       pane: createThreadPane(),
     });
     // A zero that passes (the agent row's count catching up with a child
-    // that just left) keeps the footer open.
-    await rerender(0);
-    await flush();
-    expect(view.container.querySelector('[data-testid="thread-row-agent-done-toggle"]')).toBeNull();
-    await rerender(1);
-    await flush();
-    await new Promise((resolve) => setTimeout(resolve, 900));
-    expect(isAgentDoneExpanded('agent')).toBe(true);
-    // A zero that stays closes it once it has settled.
-    await rerender(0);
-    await flush();
-    expect(isAgentDoneExpanded('agent')).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 900));
-    expect(isAgentDoneExpanded('agent')).toBe(false);
+    // that just left) keeps the footer open, however long after it the
+    // settle window ends.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await rerender(0);
+      await tick();
+      expect(view.container.querySelector('[data-testid="thread-row-agent-done-toggle"]')).toBeNull();
+      vi.advanceTimersByTime(700);
+      await rerender(1);
+      await tick();
+      vi.advanceTimersByTime(2000);
+      expect(isAgentDoneExpanded('agent')).toBe(true);
+      // A zero that stays closes it once the 750 ms window has passed, not
+      // before.
+      await rerender(0);
+      await tick();
+      vi.advanceTimersByTime(749);
+      expect(isAgentDoneExpanded('agent')).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(isAgentDoneExpanded('agent')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
     // Three children archive: the footer returns closed with its count.
     await rerender(3);
     await flush();

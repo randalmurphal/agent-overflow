@@ -67,8 +67,10 @@ user changes it.
    and every archived child. The footer lists the settled idle children
    first, then the archived ones, newest first within each. Archive
    stays the only persisted done state; settled idle is a fold state
-   derived from the row, so new activity, a pin, opening the child or
-   unarchiving it returns it to the live rows (ruling 2026-10-16,
+   derived from the row, so new activity or a pin returns the child to
+   the live rows, and opening it shows it live while it is focused.
+   Unarchiving a settled idle child moves it from the archived part of
+   the footer to the settled part: it is still done (ruling 2026-10-16,
    amending 2026-10-10).
 6. **Assistants are created, never promoted.** The user creates an
    assistant with New Assistant; a standing agent creates one with
@@ -212,9 +214,13 @@ Rulings of 2026-10-16 (sidebar hierarchy):
 30. **Agent-to-agent work raises no unread dot.** When a spawned
     thread's turn answers a request from the thread that spawned it, and
     the answer is handed to that caller, the spawned thread is marked
-    read through that turn's completion. A pinned child is exempt: the
-    pin says the user wants to look at it, so its dot stays. A later turn
-    the user caused still shows as unread.
+    read through that turn's completion. An errored or interrupted turn
+    whose answer reached the spawner counts the same: the spawner has
+    it, so the child is marked read and folds. A child whose session
+    never started has no turn that answered: it keeps its Failed pill
+    and stays live. A pinned child is exempt: the pin says the user
+    wants to look at it, so its dot stays. A later turn the user caused
+    still shows as unread.
 31. **Mark All Read.** The context menu of an agent row and of a group
     marks every member read in one call: the agent's own thread and its
     live children, or the group's members.
@@ -633,9 +639,12 @@ place under the successor. Differences from an ordinary thread row:
   the show-more footer. It expands to list the settled idle children
   first, then the archived ones, newest first within each, paged 8 then
   20 more per click. A past thread in the list carries the name and
-  `superseded <time>`. New activity, a pin, opening the child or
-  unarchiving it returns it to the live rows.
-- Collapsed: the row shows the state line and bubbles status for sort
+  `superseded <time>`. New activity or a pin returns the child to the
+  live rows, and opening it shows it live while it is focused.
+  Unarchiving a settled idle child moves it from the archived part of
+  the list to the settled part; the footer's count does not change.
+- Collapsed: the row shows the state line, a count of its live
+  children (the done ones are not counted), and bubbles status for sort
   exactly as a group does, and its dot is the bubbled status of its own
   thread and every child, so one unread child lights it and it goes
   dark once all are read (ruling 33). Expanded, the row shows its own

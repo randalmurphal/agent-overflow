@@ -2,6 +2,7 @@
 // ProjectsSection hands in the stores' rows and its filters, so the
 // bucketing is table-drivable from unit tests.
 import type { Thread, ThreadGroup } from '../../types/models';
+import { nestingAgentThreadId } from '../../utils/sidebarTree';
 import { threadGroupMatchesQuery, threadMatchesQuery } from './threadSearch';
 
 export interface SidebarBucketsInput {
@@ -68,11 +69,9 @@ export function bucketSidebarThreads(input: SidebarBucketsInput): SidebarBuckets
     if (!listed(thread)) continue;
     let key = thread.projectId ? input.entryOf(thread.projectId) : '';
     if (!key) continue;
-    if (!thread.agentId) {
-      const spawner = thread.pastAgentId ? currentThreadOf.get(thread.pastAgentId) : thread.spawnedByThreadId;
-      const agentEntry = spawner ? agentEntries.get(spawner) : undefined;
-      if (agentEntry) key = agentEntry;
-    }
+    const spawner = nestingAgentThreadId(thread, (agentId) => currentThreadOf.get(agentId));
+    const agentEntry = spawner ? agentEntries.get(spawner) : undefined;
+    if (agentEntry) key = agentEntry;
     const groupId = thread.groupId ?? '';
     // A name-matched group brings its whole membership back. The
     // empty-query call is the "is this row eligible at all" test: it still

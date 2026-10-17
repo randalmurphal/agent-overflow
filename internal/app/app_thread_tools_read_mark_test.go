@@ -187,9 +187,10 @@ func TestReplyMidTurnMarksTheWorkerReadWhenTheTurnEnds(t *testing.T) {
 	waitFor(t, "the hold released", func() bool { return !f.app.hasAnsweredReads(ack.ThreadID) })
 }
 
-// An assistant pins a thread it spawned with thread_update (ruling 7 of the
-// sidebar hierarchy: a pinned child stays above the fold), and the pin then
-// keeps the worker's dot through its next answer.
+// An assistant pins a thread it spawned with thread_update, and the pin then
+// keeps the worker's dot through its next answer
+// (docs/specs/standing-agents.md rulings 30 and 32: a pinned child keeps its
+// dot and stays above the bound).
 func TestAssistantPinsItsSpawnedThreadAndThePinKeepsTheDot(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)

@@ -13,7 +13,9 @@ import {
   markThreadUnread,
   markThreadsRead,
   replaceAllThreads,
+  replaceThread,
 } from './threads.svelte';
+import { noteThreadRowFrame } from './threadRowFrames';
 import type { Thread } from '../types/models';
 
 function mkThread(id: string, lastReadAt: number | undefined): Thread {
@@ -129,5 +131,22 @@ describe('threadReadWrites', () => {
     expect(getThreadById('t0')?.lastReadAt).toBe(0);
     expect(pendingLocalReadMarker('t0').held).toBe(false);
     expect(pendingLocalReadMarker(`t${MARK_THREADS_READ_LIMIT}`).held).toBe(false);
+  });
+  it('keeps a whole-row frame that landed during Mark All Read over the older reply', async () => {
+    replaceAllThreads([
+      { ...mkThread('framed', 0), latestTurnCompletedAt: 100 },
+      { ...mkThread('quiet', 0), latestTurnCompletedAt: 100 },
+    ]);
+    setBindingMock('MarkThreadsRead', async (ids: string[]) => {
+      // A frame for 'framed' arrives mid-call: marked unread again elsewhere.
+      noteThreadRowFrame('framed');
+      replaceThread({ ...mkThread('framed', 0), latestTurnCompletedAt: 300 });
+      return ids.map((id) => ({ ...mkThread(id, 200), latestTurnCompletedAt: 100 }));
+    });
+
+    await markThreadsRead([getThreadById('framed')!, getThreadById('quiet')!]);
+    expect(getThreadById('framed')?.lastReadAt).toBe(0);
+    expect(getThreadById('framed')?.latestTurnCompletedAt).toBe(300);
+    expect(getThreadById('quiet')?.lastReadAt).toBe(200);
   });
 });
