@@ -254,8 +254,8 @@ const maxThreadAgentRowReads = 32
 // tokens, in the order asked, each as the listing places it, wherever it
 // falls against the listing's row limit. A row stands on its own: what
 // nests under it, and a spawn on a paired computer's rows, are the
-// listing's. The read is as many statements as the listing's, and walks the
-// listed spawns and the named rows alone, not every listed row.
+// listing's. The read takes no more statements than the listing, and reads
+// each named row and the spawns above it up to the thread, no other row.
 //
 //ao:scope threads:read
 func (a *App) GetThreadAgentRows(threadID string, tokens []string) ([]ThreadAgentRowRead, error) {
@@ -482,7 +482,7 @@ func newThreadAgentView(a *App) threadAgentView {
 // of them tokens names.
 func (v threadAgentView) tree(root string, depth int, tokens []string, limit int) ([]store.ThreadAgentRequest, bool, error) {
 	return v.app.store.ListThreadAgentTree(store.ThreadAgentTreeRead{
-		Root: root, Waiting: v.waiting, SettledSince: v.since, Depth: depth, OpenDepth: threadAgentRowDepth,
+		Root: root, Waiting: v.waiting, SettledSince: v.since, Depth: depth,
 		Limit: limit, AnswerHead: threadAgentAnswerHead, Tokens: tokens,
 	})
 }

@@ -2,17 +2,40 @@ package store
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
 
-// agentTreeSpawnHistory seeds a standing agent's ledger: a chief that
-// spawned three managers, which spawned ten workers, owed open sends,
-// holding answers settled inside the window, a history of answers settled
-// 20 days ago and spawns more local spawns settled then, as a loop
-// spawning a worker every 15 minutes leaves 2,880 in the 30 days a settled
-// spawn is kept. Every answer is 4 KiB.
-func agentTreeSpawnHistory(t *testing.T, s *Store, history, open, spawns int) (chief string, since int64) {
+// agentTreeShape is a standing agent's ledger and the computer around it:
+// a chief that spawned three managers, which spawned ten workers, then
+// history settled answers and spawns local spawns settled 20 days ago (a
+// loop spawning a worker every 15 minutes leaves 2,880 in the 30 days a
+// settled spawn is kept), 300 answers settled inside the window, open
+// sends and openSpawns open spawns of the chief, deep open sends of the
+// workers, two spawns down, and busy other threads with an open send each,
+// none of them in the chief's tree. Every answer is 4 KiB.
+type agentTreeShape struct {
+	history, open, spawns, openSpawns, deep, busy int
+}
+
+func (shape agentTreeShape) String() string {
+	var parts []string
+	for _, part := range []struct {
+		n    int
+		what string
+	}{
+		{shape.history, "settled"}, {shape.open, "open"}, {shape.spawns, "settled spawns"},
+		{shape.openSpawns, "open spawns"}, {shape.deep, "open at depth 2"}, {shape.busy, "busy threads"},
+	} {
+		if part.n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", part.n, part.what))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func agentTreeSpawnHistory(t *testing.T, s *Store, shape agentTreeShape) (chief string, since int64) {
 	t.Helper()
 	now := time.Now().UnixMilli()
 	chief = "chief"
@@ -31,55 +54,78 @@ func agentTreeSpawnHistory(t *testing.T, s *Store, history, open, spawns int) (c
 		seedAgentRequest(t, s, "spawn-"+workers[i], managers[i%len(managers)], ThreadRequestSpawn, workers[i], false, created)
 		created++
 	}
+	if shape.busy > 0 {
+		columns, err := s.db.Query(`SELECT name FROM pragma_table_info('threads') WHERE name <> 'id'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for columns.Next() {
+			var name string
+			if err := columns.Scan(&name); err != nil {
+				t.Fatal(err)
+			}
+			names = append(names, name)
+		}
+		if err := columns.Close(); err != nil {
+			t.Fatal(err)
+		}
+		list := strings.Join(names, ", ")
+		mustExec(t, s.db, `WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1)
+			INSERT INTO threads (id, `+list+`) SELECT printf('busy-%06d', i), `+list+` FROM seq, threads WHERE threads.id = ?2`,
+			shape.busy, chief)
+	}
 	since = now - 30_000
+	old := now - 20*24*time.Hour.Milliseconds()
 	for _, batch := range []struct {
-		prefix  string
-		n       int
-		settled any
+		prefix, caller, kind, target string
+		n                            int
+		settled                      any
 	}{
-		{"old", history, now - 20*24*time.Hour.Milliseconds()},
-		{"spawned", spawns, now - 20*24*time.Hour.Milliseconds()},
-		{"recent", 300, now - 1_000},
-		{"open", open, nil},
+		{"old", "'chief'", "send", "printf('worker-%d', i % 10)", shape.history, old},
+		{"spawned", "'chief'", "spawn", "printf('spawned-thread-%06d', i)", shape.spawns, old},
+		{"recent", "'chief'", "send", "printf('worker-%d', i % 10)", 300, now - 1_000},
+		{"open", "'chief'", "send", "printf('worker-%d', i % 10)", shape.open, nil},
+		{"open-spawn", "'chief'", "spawn", "printf('open-spawn-thread-%06d', i)", shape.openSpawns, nil},
+		{"deep", "printf('worker-%d', i % 10)", "send", "'chief'", shape.deep, nil},
+		{"busy", "printf('busy-%06d', i)", "send", "'chief'", shape.busy, nil},
 	} {
 		mustExec(t, s.db, `WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1)
 			INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, notify, state, answer, answer_kind,
 				settled_at, created_at, updated_at)
-			SELECT printf('%s-%06d', ?2, i), ?3, CASE WHEN ?2 = 'spawned' THEN 'spawn' ELSE 'send' END,
-			       CASE WHEN ?2 = 'spawned' THEN printf('spawned-thread-%06d', i) ELSE printf('worker-%d', i % 10) END,
-			       CASE WHEN ?2 = 'spawned' THEN 0 ELSE 1 END,
+			SELECT printf('%s-%06d', ?2, i), `+batch.caller+`, ?3, `+batch.target+`, ?3 <> 'spawn',
 			       CASE WHEN ?4 IS NULL THEN 'running' ELSE 'finished' END,
 			       CASE WHEN ?4 IS NULL THEN NULL ELSE zeroblob(4096) END,
-			       CASE WHEN ?4 IS NULL THEN '' ELSE 'final' END, ?4, ?5 + i, ?5 + i FROM seq`,
-			batch.n, batch.prefix, chief, batch.settled, created)
+			       CASE WHEN ?4 IS NULL THEN '' ELSE 'final' END, ?4, ?5 + i, ?5 + i FROM seq WHERE ?1 > 0`,
+			batch.n, batch.prefix, batch.kind, batch.settled, created)
 		created += int64(batch.n)
 	}
 	return chief, since
 }
 
 // The listing and a read of one named row cost what the listed rows and the
-// tree's spawns cost, not the chief's history, before and after ANALYZE: a
-// read of one named row stays within 1 ms; the listing of 200 open rows
-// within 10 ms; and at 50,000 settled answers, with 2,000 more open or up to
-// 5,000 settled spawns more, the listing costs at most twice what it costs
-// at 3,000 settled answers with the same open rows.
+// tree's depth cost, not the chief's history, its open spawns, the open
+// work below it or the open work of threads outside its tree, before and
+// after ANALYZE: a read of one named row stays within 1 ms, at the top of
+// the tree or two spawns down, and the listing within 10 ms.
 func TestListThreadAgentTreeAtScale(t *testing.T) {
 	if testing.Short() {
-		t.Skip("seeds 55,000 requests")
+		t.Skip("seeds up to 57,000 requests")
 	}
-	type key struct {
-		open     int
-		analyzed bool
-	}
-	small := map[key]time.Duration{}
-	for _, shape := range []struct{ history, open, spawns int }{
-		{3_000, 200, 0}, {3_000, 2_200, 0}, {50_000, 200, 0}, {50_000, 2_200, 0}, {50_000, 200, 1_500}, {50_000, 200, 5_000},
+	for _, shape := range []agentTreeShape{
+		{history: 3_000, open: 200}, {history: 3_000, open: 2_200},
+		{history: 50_000, open: 200}, {history: 50_000, open: 2_200},
+		{history: 50_000, open: 200, spawns: 1_500}, {history: 50_000, open: 200, spawns: 5_000},
+		{history: 50_000, open: 200, busy: 2_000}, {history: 50_000, open: 200, busy: 20_000},
+		{history: 50_000, open: 200, openSpawns: 2_000}, {history: 50_000, open: 200, deep: 500},
+		{history: 50_000, open: 200, spawns: 5_000, openSpawns: 2_000, deep: 500},
 	} {
 		s := newTestStore(t)
-		chief, since := agentTreeSpawnHistory(t, s, shape.history, shape.open, shape.spawns)
-		read := ThreadAgentTreeRead{Root: chief, SettledSince: since, Depth: 4, OpenDepth: 4, Limit: 128, AnswerHead: 160}
-		// The fewest of more runs than the read pool has connections: after
-		// ANALYZE each connection compiles the statement again once.
+		chief, since := agentTreeSpawnHistory(t, s, shape)
+		read := ThreadAgentTreeRead{Root: chief, SettledSince: since, Depth: 4, Limit: 128, AnswerHead: 160}
+		// The fewest of more runs than the read pool has connections, so
+		// no connection's first run, which compiles the statement, is the
+		// one measured.
 		fewest := func(call func()) time.Duration {
 			best := time.Duration(1 << 62)
 			for range 20 {
@@ -89,38 +135,46 @@ func TestListThreadAgentTreeAtScale(t *testing.T) {
 			}
 			return best
 		}
+		named := []struct {
+			token string
+			depth int
+		}{{"recent-000050", 0}}
+		if shape.deep > 0 {
+			named = append(named, struct {
+				token string
+				depth int
+			}{"deep-000100", 2})
+		}
 		for _, analyzed := range []bool{false, true} {
 			if analyzed {
 				mustExec(t, s.db, `ANALYZE`)
 			}
+			name := fmt.Sprintf("%v, analyzed %v", shape, analyzed)
 			listing := fewest(func() {
 				rows, more, err := s.ListThreadAgentTree(read)
 				if err != nil || len(rows) != read.Limit || !more {
-					t.Fatalf("listing: %d rows, more %v, %v", len(rows), more, err)
+					t.Fatalf("%s: listing %d rows, more %v, %v", name, len(rows), more, err)
 				}
 			})
-			named := read
-			named.Tokens = []string{"recent-000050"}
-			row := fewest(func() {
-				rows, _, err := s.ListThreadAgentTree(named)
-				if err != nil || len(rows) != 1 || rows[0].Token != "recent-000050" || rows[0].Depth != 0 {
-					t.Fatalf("named read: %+v, %v", rows, err)
-				}
-			})
-			name := fmt.Sprintf("%d settled, %d open, %d settled spawns, analyzed %v", shape.history, shape.open, shape.spawns, analyzed)
-			t.Logf("%s: listing %v, one named row %v", name, listing, row)
-			if row > time.Millisecond {
-				t.Errorf("%s: one named row took %v; at most 1ms", name, row)
-			}
-			if shape.open == 200 && listing > 10*time.Millisecond {
+			if listing > 10*time.Millisecond {
 				t.Errorf("%s: the listing took %v; at most 10ms", name, listing)
 			}
-			at := key{shape.open, analyzed}
-			if shape.history == 3_000 {
-				small[at] = listing
-			} else if listing > 2*small[at] {
-				t.Errorf("%s: the listing took %v, %v at 3000 settled; the history must not cost more than that again", name, listing, small[at])
+			report := fmt.Sprintf("listing %v", listing)
+			for _, row := range named {
+				one := read
+				one.Tokens = []string{row.token}
+				took := fewest(func() {
+					rows, _, err := s.ListThreadAgentTree(one)
+					if err != nil || len(rows) != 1 || rows[0].Token != row.token || rows[0].Depth != row.depth {
+						t.Fatalf("%s: named read of %s: %+v, %v", name, row.token, rows, err)
+					}
+				})
+				if took > time.Millisecond {
+					t.Errorf("%s: the named read of %s took %v; at most 1ms", name, row.token, took)
+				}
+				report += fmt.Sprintf(", %s %v", row.token, took)
 			}
+			t.Logf("%s: %s", name, report)
 		}
 	}
 }

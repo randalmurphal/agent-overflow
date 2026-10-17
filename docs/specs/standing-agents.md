@@ -1181,17 +1181,18 @@ closes up their spacing so the row holds at a phone width.
   read, the listed rows in one, the targets' titles and providers in one,
   their last messages in one. Each thread's rows are read by caller in
   four arms, open, settled inside the window, local spawns kept for open
-  work and remote spawns with open work, each held to its own index, and
-  the spawns kept for open work are found by climbing from the threads
-  with open work, so the cost follows the listed rows and not the threads'
-  settled history, spawns included, whatever statistics the database
-  holds.
-  A thread two spawns reach is walked once, under the first in tree
-  order; the rows the later spawn would have nested take no place in the
-  row limit. Only spawns move that walk, so a read of named rows walks the
-  listed spawns and the named rows alone: each row has the listing's
-  place, wherever it falls against the row limit, and the rows and their
-  targets are read for those rows alone. A row
+  work and remote spawns with open work, each through its own index and
+  each taking at most the row limit, and the recursion stops at the limit,
+  so the cost follows the listed rows and the depth, not the threads'
+  settled history, their open spawns or the open work of threads outside
+  the tree, whatever statistics the database holds. A local spawn is kept
+  for open work by counts it carries of the open work up to four spawns
+  below its target, which the ledger keeps in the transaction of every
+  write to a request. A thread is reached by at most one local spawn, so
+  a read of named rows climbs from each row to the listed thread, one
+  spawn a step, and gives each row the listing's place, wherever it falls
+  against the row limit; the rows and their targets are read for those
+  rows alone. A row
   carries the head of its answer (what the row shows), never the whole
   answer or the late reply, and names its wake item from the request
   (`thread_requests.wake_item_id`, `late_wake_item_id`, recorded when the

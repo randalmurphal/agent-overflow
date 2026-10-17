@@ -52,6 +52,7 @@ export const migrationExceptions: MigrationException[] = [
   { version: 154, table: 'standing_agents', dropped: true, reason: 'v154 moves every standing agent to an agents record whose id is its thread id, and drops the table' },
   { version: 155, table: 'agent_wakes', columns: ['last_output', 'last_stderr'], rowsMayShrink: true, reason: 'v155 clears what a cancelled loop or watch carried and keeps each thread its 16 newest cancelled rows' },
   { version: 155, table: 'remote_watches', rowsMayShrink: true, reason: 'v155 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
+  { version: 157, table: 'thread_requests', columns: ['lineage_only'], reason: 'v157 keeps the newest of two local spawns of one thread and makes the older one lineage-only' },
 ];
 
 /**

@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -40,15 +42,14 @@ func assertPlanSearches(t *testing.T, s *Store, what, table string, allowed []st
 // Every read of the Agents segment's tree, the listing's and a read of
 // named rows, is a SEARCH through an index that leaves the caller's
 // settled history out, each arm through its own, before and after ANALYZE
-// has seen a history of 5,000 settled answers and 2,000 settled spawns:
-// with the statistics a read the history could serve otherwise becomes a
-// SCAN. Every arm is held to its index, so the plans do not change.
-// idx_thread_requests_caller, which orders a caller's whole history, is not
-// among them.
+// has seen a history of 5,000 settled answers, 2,000 settled spawns and
+// 2,000 open requests: no read takes a settled_at range below the window,
+// which is the history. idx_thread_requests_caller, which orders a
+// caller's whole history, is not among them.
 func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
-	chief, since := agentTreeSpawnHistory(t, s, 5_000, 200, 2_000)
+	chief, since := agentTreeSpawnHistory(t, s, agentTreeShape{history: 5_000, open: 2_000, spawns: 2_000})
 	seedAgentRequest(t, s, "remote-open", chief, ThreadRequestSpawn, "", false, 1)
 	mustExec(t, s.db, `UPDATE thread_requests SET target_computer_id = 'pc', target_thread_id = 'far' WHERE token = 'remote-open'`)
 	settleAgentRequest(t, s, "remote-open", 1)
@@ -56,22 +57,20 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 		t.Fatal(err)
 	}
 	arms := []string{
-		"SEARCH r USING INDEX idx_thread_requests_caller_settled (caller_thread_id=? AND settled_at=?)",
-		"SEARCH r USING INDEX idx_thread_requests_caller_settled (caller_thread_id=? AND settled_at>?)",
-		"SEARCH r USING INDEX idx_thread_requests_spawn_caller (caller_thread_id=? AND target_thread_id=?)",
-		"SEARCH r USING INDEX idx_thread_requests_nested_caller (caller_thread_id=?)",
+		"SEARCH a USING INDEX idx_thread_requests_open_created (caller_thread_id=?)",
+		"SEARCH a USING INDEX idx_thread_requests_caller_settled (caller_thread_id=? AND settled_at>?)",
+		"SEARCH a USING INDEX idx_thread_requests_open_below (caller_thread_id=?)",
+		"SEARCH a USING INDEX idx_thread_requests_nested_caller (caller_thread_id=?)",
+	}
+	under := []string{
+		"SEARCH c USING INDEX idx_thread_requests_caller_settled (caller_thread_id=? AND settled_at>?)",
+		"SEARCH c USING INDEX idx_thread_requests_open_below (caller_thread_id=?)",
+		"SEARCH c USING INDEX idx_thread_requests_nested_caller (caller_thread_id=?)",
 	}
 	named := []string{
 		"SEARCH r USING INDEX sqlite_autoindex_thread_requests_1 (token=?)",
-		"SEARCH r USING INDEX idx_thread_requests_spawn_settled (caller_thread_id=? AND settled_at=?)",
-		"SEARCH r USING INDEX idx_thread_requests_spawn_settled (caller_thread_id=? AND settled_at>?)",
-		"SEARCH r USING INDEX idx_thread_requests_spawn_caller (caller_thread_id=? AND target_thread_id=?)",
+		"SEARCH sp USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
 	}
-	callers := []string{
-		"SEARCH c USING INDEX idx_thread_requests_open (caller_thread_id>?)",
-		"SEARCH c USING INDEX idx_thread_requests_nested_caller (caller_thread_id>?)",
-	}
-	arms, named = append(arms, callers...), append(named, callers...)
 	for _, analyzed := range []bool{false, true} {
 		if analyzed {
 			mustExec(t, s.db, `ANALYZE`)
@@ -82,19 +81,23 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 			args  []any
 			want  []string
 		}{
-			{"threadAgentTreeSQL", threadAgentTreeSQL, []any{chief, "[]", since, 4, 4}, arms},
-			{"threadAgentNamedTreeSQL", threadAgentNamedTreeSQL, []any{chief, "[]", since, 4, 4, `["recent-000050"]`}, named},
+			{"threadAgentTreeSQL", threadAgentTreeSQL(129), []any{chief, "[]", since, 4, 160}, append(arms, under...)},
+			{"threadAgentNamedRowsSQL", threadAgentNamedRowsSQL, []any{chief, "[]", since, 4, 160, `["recent-000050"]`}, append(named, under...)},
 		} {
 			name := fmt.Sprintf("%s (analyzed %v)", read.name, analyzed)
-			assertPlanSearches(t, s, name, "r", []string{
-				"idx_thread_requests_caller_settled", "idx_thread_requests_spawn_caller", "idx_thread_requests_spawn_settled",
-				"idx_thread_requests_nested_caller", "idx_thread_requests_spawn_target", "sqlite_autoindex_thread_requests_1",
-			}, read.query, read.args...)
-			assertPlanSearches(t, s, name, "c", []string{
-				"idx_thread_requests_caller_settled", "idx_thread_requests_spawn_caller", "idx_thread_requests_nested_caller",
-				"idx_thread_requests_open",
-			}, read.query, read.args...)
+			arm := []string{"idx_thread_requests_open_created", "idx_thread_requests_caller_settled",
+				"idx_thread_requests_open_below", "idx_thread_requests_nested_caller"}
+			assertPlanSearches(t, s, name, "r", []string{"sqlite_autoindex_thread_requests_1"}, read.query, read.args...)
+			assertPlanSearches(t, s, name, "c", arm, read.query, read.args...)
 			text := planText(explainPlan(t, s, read.query, read.args...))
+			if read.name == "threadAgentTreeSQL" {
+				assertPlanSearches(t, s, name, "a", arm, read.query, read.args...)
+			} else {
+				assertPlanSearches(t, s, name, "sp", []string{"idx_thread_requests_spawn_link"}, read.query, read.args...)
+			}
+			if strings.Contains(text, "settled_at<?") {
+				t.Errorf("%s reads the settled history:\n%s", name, text)
+			}
 			for _, line := range read.want {
 				if !strings.Contains(text, line) {
 					t.Errorf("%s does not read %q:\n%s", name, line, text)
@@ -104,6 +107,71 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 	}
 	assertPlanSearches(t, s, "HasOpenThreadRequests", "thread_requests", []string{"idx_thread_requests_caller_settled"},
 		hasOpenThreadRequestsSQL, "lead")
+}
+
+// Neither tree statement compiles again on a rebind on a connection that
+// ran it before ANALYZE wrote statistics and runs it again after.
+func TestThreadAgentTreeCompilesOnceWithStatistics(t *testing.T) {
+	t.Parallel()
+	for _, shape := range []agentTreeShape{
+		{history: 5_000, open: 2_000, spawns: 2_000},
+		{history: 50_000, open: 200, spawns: 5_000, openSpawns: 2_000, deep: 500, busy: 2_000},
+	} {
+		t.Run(shape.String(), func(t *testing.T) {
+			t.Parallel()
+			compilesOnceWithStatistics(t, shape)
+		})
+	}
+}
+
+func compilesOnceWithStatistics(t *testing.T, shape agentTreeShape) {
+	s := newTestStore(t)
+	chief, since := agentTreeSpawnHistory(t, s, shape)
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	reads := map[string][]any{
+		threadAgentTreeSQL(129): {chief, "[]", since, 4, 160},
+		threadAgentNamedRowsSQL: {chief, "[]", since, 4, 160, `["recent-000050","open-000007"]`},
+	}
+	run := func(query string, args []any, shift int64) {
+		t.Helper()
+		args = slices.Clone(args)
+		args[2] = since + shift
+		rows, err := conn.QueryContext(ctx, query, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for query, args := range reads {
+		run(query, args, 0)
+	}
+	if _, err := conn.ExecContext(ctx, `ANALYZE`); err != nil {
+		t.Fatal(err)
+	}
+	before := len(recompilingStatements())
+	for shift := range int64(3) {
+		for query, args := range reads {
+			run(query, args, shift)
+		}
+	}
+	for _, found := range recompilingStatements()[before:] {
+		if _, ours := reads[found.query]; ours {
+			t.Errorf("compiles again on a rebind after ANALYZE (%s):\n%s", found.site, found.query)
+		}
+	}
 }
 
 // The four arms list what one predicate would: an open row, one settled
@@ -136,7 +204,7 @@ func TestThreadAgentRequestsArmsAgainstAHistory(t *testing.T) {
 		seedAgentRequest(t, s, token, "lead", ThreadRequestSend, "peer", true, int64(1_000+i))
 		settleAgentRequest(t, s, token, int64(2_000+i))
 	}
-	rows, more, err := s.ListThreadAgentTree(ThreadAgentTreeRead{Root: "lead", SettledSince: 4_000, Depth: 4, OpenDepth: 4, Limit: 64, AnswerHead: 1})
+	rows, more, err := s.ListThreadAgentTree(ThreadAgentTreeRead{Root: "lead", SettledSince: 4_000, Depth: 4, Limit: 64, AnswerHead: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

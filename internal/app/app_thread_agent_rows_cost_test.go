@@ -231,10 +231,10 @@ func TestAgentTreeReadCost(t *testing.T) {
 		name        string
 		reads, most float64
 	}{
-		{"the listing", list.reads, 5}, {"the tree", tree.reads, 2}, {"the request states", states.reads, 1},
+		{"the listing", list.reads, 4}, {"the tree", tree.reads, 1}, {"the request states", states.reads, 1},
 		{"a drain of frames", frames.reads, 1}, {"the session check", resume.reads, 0},
-		{"a row read of 1", rowReads[1].reads, 4}, {"a row read of 8", rowReads[8].reads, 4},
-		{"a row read of 32", rowReads[maxThreadAgentRowReads].reads, 4},
+		{"a row read of 1", rowReads[1].reads, 3}, {"a row read of 8", rowReads[8].reads, 3},
+		{"a row read of 32", rowReads[maxThreadAgentRowReads].reads, 3},
 	} {
 		if leg.reads > leg.most {
 			t.Errorf("%s ran %.1f reads; want at most %.0f", leg.name, leg.reads, leg.most)

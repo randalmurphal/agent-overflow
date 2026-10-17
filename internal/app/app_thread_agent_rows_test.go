@@ -201,9 +201,8 @@ func TestThreadAgentRowsBoundTheirDepthAndCycles(t *testing.T) {
 
 // A row reads as the listing shows it, at its depth under the thread that
 // reads it: within the listing's depth, made here by that thread or a
-// thread its spawns made, and still listed, placed under the first spawn
-// that reaches its thread when a later one reaches it too. Any other reads
-// as not listed.
+// thread its spawns made, and still listed. Any other reads as not
+// listed.
 func TestThreadAgentRowReadsOneListedRow(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -217,18 +216,13 @@ func TestThreadAgentRowReadsOneListedRow(t *testing.T) {
 	peer := f.plainThread(t)
 	f.seedAgentRow(t, "quiet", f.caller.ID, store.ThreadRequestSend, peer.ID, false)
 	f.seedAgentRow(t, "owed", chain[1], store.ThreadRequestSend, peer.ID, true)
-	// A later spawn reaches the chain's third thread one level up from
-	// where the chain does: its rows stay under the chain's.
-	side := f.plainThread(t)
-	f.seedAgentRow(t, "to-side", f.caller.ID, store.ThreadRequestSpawn, side.ID, false)
-	f.seedAgentRow(t, "side-again", side.ID, store.ThreadRequestSpawn, chain[3], false)
 	listing := f.agentRows(t, f.caller.ID).Rows
 	depths := map[string]int{}
 	for _, row := range listing {
 		depths[row.Token] = row.Depth
 	}
-	if depths["chain-d"] != 3 || depths["side-again"] != 1 {
-		t.Fatalf("the listing places chain-d at %d and side-again at %d; want 3 and 1", depths["chain-d"], depths["side-again"])
+	if depths["chain-d"] != 3 || depths["owed"] != 1 {
+		t.Fatalf("the listing places chain-d at %d and owed at %d; want 3 and 1", depths["chain-d"], depths["owed"])
 	}
 	read := func(threadID, token string) ThreadAgentRowRead {
 		t.Helper()
@@ -342,16 +336,22 @@ func TestThreadAgentRowStopInterruptsOnlyASpawnedThread(t *testing.T) {
 			t.Parallel()
 			f := newRequestFixture(t)
 			interrupted := f.mockClaudeRecordingInterrupts(t, "busy with someone else's work")
-			// Another thread's request keeps the target's turn running.
+			// The caller's spawn keeps the target's turn running. A thread
+			// is spawned once, so the spawn row is that one; a stranger's
+			// send to the thread is someone else's.
 			busy := f.runningRequest(t, "someone else's work")
-			stranger := f.plainThread(t)
-			f.seedAgentRow(t, "row", stranger.ID, tc.kind, busy.ThreadID, true)
+			caller, token := f.caller.ID, busy.Token
+			if tc.kind == store.ThreadRequestSend {
+				stranger := f.plainThread(t)
+				f.seedAgentRow(t, "row", stranger.ID, tc.kind, busy.ThreadID, true)
+				caller, token = stranger.ID, "row"
+			}
 			waitUntil(t, 10*time.Second, func() bool {
 				live, err := f.adapter().LiveState(t.Context(), busy.ThreadID)
 				return err == nil && live.ActiveTurn
 			})
 
-			stop, err := f.app.StopThreadAgentRow(t.Context(), stranger.ID, "row")
+			stop, err := f.app.StopThreadAgentRow(t.Context(), caller, token)
 			if err != nil || stop.Outcome != threadAgentStopped {
 				t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
 			}
