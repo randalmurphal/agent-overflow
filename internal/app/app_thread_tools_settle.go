@@ -48,14 +48,7 @@ func (a *App) installThreadRequestObserver() {
 			// wake, and both stop or start a provider session: a stop drains
 			// the thread's event queue, so doing that on the worker waits for
 			// itself. Shutdown joins these through threadRequestsWG.
-			if a.lifeCtx().Err() != nil {
-				return
-			}
-			a.threadRequestsWG.Add(1)
-			go func() {
-				defer a.threadRequestsWG.Done()
-				a.settleReceiptsForEndedTurn(threadID)
-			}()
+			a.goThreadRequestSettling(func() { a.settleReceiptsForEndedTurn(threadID) })
 		})
 	})
 }
@@ -235,14 +228,22 @@ func (a *App) runThreadSettlementWork(work threadSettlementWork) {
 // these through threadRequestsWG, and a wake dropped by a shutdown is redelivered
 // by the next boot's undelivered-wake pass.
 func (a *App) runThreadSettlementWorkDetached(work threadSettlementWork) {
-	if work.token == "" || a.lifeCtx().Err() != nil {
+	if work.token == "" {
 		return
 	}
-	a.threadRequestsWG.Add(1)
-	go func() {
-		defer a.threadRequestsWG.Done()
-		a.runThreadSettlementWork(work)
-	}()
+	a.goThreadRequestSettling(func() { a.runThreadSettlementWork(work) })
+}
+
+// goThreadRequestSettling runs a settlement or a wake delivery on its own
+// goroutine, joined at shutdown through threadRequestsWG, and reports
+// whether it started it. Once shutdown has begun it runs nothing: work
+// started then could outlive the join and the store. What it would have
+// done is left to the next boot's sweeps.
+func (a *App) goThreadRequestSettling(fn func()) bool {
+	if a.lifeCtx().Err() != nil {
+		return false
+	}
+	return a.threadRequestsWG.Go(fn)
 }
 
 // settleThreadReceipt writes one settlement on the destination row and hands

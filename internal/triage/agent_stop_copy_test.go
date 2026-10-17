@@ -150,7 +150,7 @@ func TestAgentParksOnItsOwnMonitor(t *testing.T) {
 	for _, rewrite := range [][2]string{
 		{`"name":"Bash","input":{"command":"sleep 60; echo SHELL-DONE","run_in_background":true}`,
 			`"name":"Monitor","input":{"command":"sleep 60; echo SHELL-DONE","description":"shell done","timeout_ms":3600000}`},
-		{`"content":"Command running in background with ID: bdq6lce49. Output is being written to: /tmp/claude-502/-tmp-spike-work/de4518bd-156b-4796-99cd-afe78125d5cb/tasks/bdq6lce49.output. You will be notified when it completes. To check interim output, use Read on that file path."`,
+		{`"content":"Command running in background with ID: bdq6lce49. Output is being written to: /tmp/ao-fixture/-tmp-spike-work/de4518bd-156b-4796-99cd-afe78125d5cb/tasks/bdq6lce49.output. You will be notified when it completes. To check interim output, use Read on that file path."`,
 			`"content":"Monitor started (task bdq6lce49, timeout 3600000ms). You will be notified on each event. Keep working."`},
 	} {
 		if strings.Count(capture, rewrite[0]) != 1 {

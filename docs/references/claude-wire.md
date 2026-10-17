@@ -940,7 +940,7 @@ Fires even for trivial foreground commands with `output_file: ""`.
  "task_id": "bwh4ptwpo",
  "tool_use_id": "toolu_01NoZSorBGb7jSQMhNrs6qZj",
  "status": "completed",
- "output_file": "/private/tmp/claude-502/.../tasks/bwh4ptwpo.output",
+ "output_file": "/private/tmp/ao-fixture/.../tasks/bwh4ptwpo.output",
  "summary": "Background command \"...\" completed (exit code 0)"}
 ```
 

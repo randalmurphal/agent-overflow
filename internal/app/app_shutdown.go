@@ -246,9 +246,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// about. stopIdleSessionReaper is idempotent and blocks until the
 	// goroutine returns.
 	a.remoteWatchWG.Wait()
+	// Before the request work is joined: an idle close stops a session,
+	// and the events a stop drains reach the turn observer that starts
+	// settlements.
+	a.stopIdleSessionReaper()
+	record("stop idle session reaper", nil)
 	// The request sweep writes rows and can queue a wake, so it is joined
-	// beside the remote watches and before the store is closed.
-	a.threadRequestsWG.Wait()
+	// beside the remote watches and before the store is closed. Closing
+	// it refuses the settlements a later session close would start.
+	a.threadRequestsWG.Close()
 	// The project identity refresh writes project rows. appCtx is already
 	// cancelled, which kills its git read and stops the pass unrecorded.
 	a.projectIdentityWG.Wait()
@@ -259,8 +265,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// A permission-mode follow writes the thread row; appCtx is cancelled,
 	// so it is returning or finishing one bounded write.
 	a.permissionModeFollowWG.Wait()
-	a.stopIdleSessionReaper()
-	record("stop idle session reaper", nil)
 
 	// Step 3c: stop the retention TTL sweep. The sweep writes to
 	// SQLite (cascading thread deletes) and calls deleteThreadTreeLocked

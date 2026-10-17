@@ -208,8 +208,10 @@ type App struct {
 	// ready. See app_thread_tools_wait.go.
 	threadRequests threadRequestState
 	// threadRequestsWG joins the request sweep goroutine at shutdown, the
-	// way remoteWatchWG joins the remote completion watcher.
-	threadRequestsWG sync.WaitGroup
+	// way remoteWatchWG joins the remote completion watcher, with the
+	// polls, settlements and wake deliveries it counts. They start from any
+	// goroutine while it may be waited on, so it is a workGroup.
+	threadRequestsWG workGroup
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
