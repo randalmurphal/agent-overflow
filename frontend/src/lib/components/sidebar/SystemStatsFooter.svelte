@@ -4,22 +4,25 @@
   import { hasMultipleBackends } from '../../stores/attachedBackends.svelte';
   import { selectedTelemetryComputers, telemetrySelection } from '../../stores/telemetryComputers.svelte';
   import { getTelemetryFooterShape, recordTelemetryFooterShape, telemetryFooterShapeKey, type FooterShape } from '../../stores/telemetryFooterShape.svelte';
+  import { pageGrantsKnownTracked } from '../../transport/scopes';
   import TelemetryComputerPicker from '../usage/TelemetryComputerPicker.svelte';
 
   const computers = $derived(selectedTelemetryComputers('system'));
   const rows = $derived(computers.map((computer) => ({ ...computer, stats: computer.connected ? getSystemStats(computer.key) : null })));
   const multiple = $derived(hasMultipleBackends());
 
-  // Settled once every selected computer has a sample or is offline. The
-  // attached list is published by the manifest before the socket that
-  // carries samples opens, so a settled footer has its full list.
+  // Settled once every attached selected computer has a sample or is
+  // offline; a selected computer that is no longer attached is not waited
+  // for. Samples arrive over a socket the manifest opens after publishing
+  // the attached list, so a settled footer has its full list.
   const settled = $derived((rows.length > 0 || multiple) && rows.every((row) => row.stats !== null || !(row.connected || row.starting)));
   const shapeKey = $derived(telemetryFooterShapeKey('system', telemetrySelection('system')));
-  // The one shape both the paint and the record read: until settled, at
-  // least the last settled shape for this selection, so the footer does
-  // not grow when the attached list or the first sample arrives.
+  // The one shape both the paint and the record read. Until the manifest
+  // has published the attached list, it is at least the last settled
+  // shape for this selection, so the list arriving does not grow the
+  // footer; after that it follows the attached selection.
   const shape: FooterShape = $derived.by(() => {
-    if (settled) return { lines: rows.length, picker: multiple };
+    if (settled || pageGrantsKnownTracked()) return { lines: rows.length, picker: multiple };
     const recorded = getTelemetryFooterShape(shapeKey);
     return { lines: Math.max(rows.length, recorded?.lines ?? 0), picker: multiple || (recorded?.picker ?? false) };
   });
