@@ -39,6 +39,8 @@ export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats 
   let query: UsageQuery | null = null;
   let targets: { key: BackendKey; name: string }[] = [];
   let offline: string[] = [];
+  // Computers whose read failed in the last run for this query.
+  let lastFailed: string[] = [];
 
   const scheduler = createRefreshScheduler({
     name: 'usage stats refresh', delayMs: 100, maxWaitMs: 500, minIntervalMs: 250,
@@ -63,6 +65,7 @@ export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats 
       });
       // A failed refresh must not turn a known total into zero.
       if (!captured.threadId || failed.length === 0) buckets = combineUsageBuckets(rows);
+      lastFailed = failed;
       unavailable = [...missing, ...failed];
       error = failed.length ? 'Usage could not be refreshed. Showing the last available report.' : null;
       loading = false;
@@ -98,10 +101,15 @@ export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats 
       }
       if (key !== previousKey) {
         scheduler.reset(); buckets = null; error = null; reportedError = null;
-        unavailable = missing; loading = false;
+        unavailable = missing; loading = false; lastFailed = [];
         previousKey = key;
         if (requested) scheduler.request({ immediate: true });
-      } else if (requested) scheduler.request();
+      } else if (requested) {
+        // A computer leaving `pending` for offline keeps the key; publish
+        // it with the same change so no reader sees neither.
+        unavailable = [...missing, ...lastFailed];
+        scheduler.request();
+      }
     });
   });
 

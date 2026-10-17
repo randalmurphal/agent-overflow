@@ -8,13 +8,17 @@
   // keep Sidebar.svelte layout-only); clicking the period label cycles
   // the period instead, via stopPropagation — same nested
   // button-inside-clickable-row idiom as ThreadRow's chevron.
-  // Hidden entirely when the selected period has no usage at all.
+  // Until its answer settles the footer paints at least the last settled
+  // shape for this selection and period (one line when none is recorded,
+  // nothing when the last answer was empty), so the sidebar above it does
+  // not shift when usage arrives. An answer that differs resizes it once.
 
   import { UsageQuery } from '../../stores/bindings';
   import { getUsageRefreshVersion } from '../../stores/usageRefresh.svelte';
   import { cycleUsagePeriod, getUsagePeriod, periodFromMillis } from '../../stores/usagePeriod.svelte';
   import { createUsageStats, localTzOffsetMinutes } from '../../stores/usageQuery.svelte';
   import { telemetrySelection, telemetrySelectionLabel } from '../../stores/telemetryComputers.svelte';
+  import { getTelemetryFooterShape, recordTelemetryFooterShape, telemetryFooterShapeKey } from '../../stores/telemetryFooterShape.svelte';
   import { formatTokens } from '../../utils/format';
   import { formatUsageCostOrNull } from '../../utils/usageDisplay';
   import LazyOverlay from '../primitives/LazyOverlay.svelte';
@@ -56,6 +60,25 @@
       }),
   );
 
+  // The query's own effect runs first and clears a superseded reply, so
+  // a reply is never recorded under the next selection or period.
+  const shapeKey = $derived(telemetryFooterShapeKey('usage', telemetrySelection('usage'), getUsagePeriod()));
+  const waiting = $derived(stats.buckets === null || stats.loading || stats.pending.length > 0);
+  // Provider rows plus the "Partial usage" / "Usage unavailable" line.
+  const contentLines = $derived(rows.length + (stats.unavailable.length > 0 ? 1 : 0));
+  let lastSettled = $state<number | null>(null);
+  // The one shape both the paint and the record read. A settled answer is
+  // its own shape and never reads the record it writes.
+  const shape = $derived(waiting
+    ? Math.max(contentLines, getTelemetryFooterShape(shapeKey)?.lines ?? lastSettled ?? 1)
+    : contentLines);
+  $effect(() => {
+    if (waiting) return;
+    recordTelemetryFooterShape(shapeKey, { lines: shape, picker: false });
+    lastSettled = shape;
+  });
+  const placeholders = $derived(Math.max(shape - Math.max(contentLines, 1), 0));
+
   let modalOpen = $state(false);
 
   function openModal(): void {
@@ -75,7 +98,7 @@
   }
 </script>
 
-{#if rows.length > 0 || stats.unavailable.length > 0 || telemetrySelection('usage') !== null}
+{#if shape > 0 || telemetrySelection('usage') !== null}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="border-t border-border-subtle px-3 py-1.5 shrink-0 flex items-center justify-between gap-3 text-[0.6875rem] leading-tight text-fg-muted cursor-pointer hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -96,7 +119,7 @@
         <span class="truncate text-fg-subtle" title={`Unavailable: ${stats.unavailable.join(', ')}`}>{rows.length > 0 ? 'Partial usage' : 'Usage unavailable'}</span>
       {/if}
       {#if rows.length === 0 && stats.unavailable.length === 0}
-        <span class="text-fg-subtle" data-testid="usage-footer-empty">{stats.loading || stats.pending.length > 0 ? 'Loading usage…' : 'No usage in this selection'}</span>
+        <span class="text-fg-subtle" data-testid="usage-footer-empty">{waiting ? 'Loading usage…' : 'No usage in this selection'}</span>
       {/if}
       {#each rows as row (row.provider)}
         <span class="grid grid-cols-[3.5rem_1fr] items-center gap-2" data-testid="usage-footer-row">
@@ -104,6 +127,7 @@
           <span class="text-center tabular-nums whitespace-pre truncate">{row.valueLabel}</span>
         </span>
       {/each}
+      {#each { length: placeholders }, i (i)}<span data-testid="usage-footer-placeholder-row">&nbsp;</span>{/each}
     </span>
     <button
       type="button"

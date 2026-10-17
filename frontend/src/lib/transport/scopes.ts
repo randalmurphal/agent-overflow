@@ -258,6 +258,17 @@ export function pageGrantsKnown(): boolean {
 }
 
 /**
+ * `pageGrantsKnown` for a reactive reader: a `$derived` re-runs when the
+ * manifest answers. The same synchronous manifest step publishes the
+ * attached-backend list (the native shell attaches its stored list right
+ * after settling), so a reader that runs after it sees the current list.
+ */
+export function pageGrantsKnownTracked(): boolean {
+  subscribeScopes();
+  return pageGrantsSettled;
+}
+
+/**
  * The home answer read OUTSIDE a reactive context before the manifest has
  * spoken is a lie the caller will never see corrected: the merged idle
  * memory trim did exactly that at mount, answered "not on host", and
@@ -424,8 +435,11 @@ export function isViewOnlyGrantSet(scopes: Iterable<string>): boolean {
  */
 export function setPageGrantsFromBootstrap(remote: boolean): void {
   pageOnHost = remote !== true;
+  const settling = !pageGrantsSettled;
   pageGrantsSettled = true;
   resolve(HOME_BACKEND);
+  // The snapshot can resolve to what the placeholder already said.
+  if (settling) notifyScopesChanged?.();
   const waiters = settleWaiters;
   settleWaiters = [];
   for (const settle of waiters) settle();
