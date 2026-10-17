@@ -380,6 +380,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2514763466: 'home', // SetThreadGroup
 	1041195811: 'thread', // SetThreadMcpServerEnabled
 	3112222989: 'thread', // SetThreadPinGroup
+	2294583674: 'home', // SetThreadPlacement
 	3978807241: 'home', // SetWSLDistroPreference
 	4062584181: 'home', // SetWebviewGPUVsyncDisabled
 	3648660014: 'home', // SetWindowBackgroundColor

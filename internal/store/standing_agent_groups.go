@@ -6,39 +6,24 @@ import (
 	"fmt"
 )
 
-// An assistant's thread and the threads it spawned are never in a sidebar
-// group: the agent's row holds its spawned threads the way a group holds
-// members (docs/specs/standing-agents.md, "Sidebar"). An assistant's threads
-// are created ungrouped, and every group move refuses them, so the sidebar
-// never has to pick between the two nestings.
+// An assistant's own thread is never in a sidebar group: its row holds the
+// threads it spawned the way a group holds members
+// (docs/specs/standing-agents.md, "Sidebar"). A thread it spawned may be
+// grouped like any other (ruling 36, thread_placement.go).
 
 // ErrStandingAgentGrouped is what a move INTO a group reports for a
 // standing agent.
 var ErrStandingAgentGrouped = errors.New("store: a standing agent is not grouped; its row holds the threads it spawned")
 
-// ErrSpawnedChildGrouped is what a move INTO a group reports for a thread a
-// standing agent spawned.
-var ErrSpawnedChildGrouped = errors.New("store: a thread a standing agent spawned nests under that agent, not in a group")
-
-// spawnerSQL is the local thread whose spawn request made the named thread,
-// the same read threadColumns makes for spawnedByThreadId.
-const spawnerSQL = `(SELECT caller_thread_id FROM thread_requests
-   WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = ?
-   ORDER BY created_at DESC LIMIT 1)`
-
 // refuseAgentGroupingTx fails a move of threadID into a group when the
-// thread is a standing agent or a standing agent spawned it.
+// thread is a standing agent.
 func refuseAgentGroupingTx(tx *sql.Tx, threadID string) error {
-	var agent, child bool
-	err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE thread_id = ?),
-		EXISTS(SELECT 1 FROM agents WHERE thread_id = `+spawnerSQL+`)`, threadID, threadID).Scan(&agent, &child)
-	switch {
-	case err != nil:
+	var agent bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE thread_id = ?)`, threadID).Scan(&agent); err != nil {
 		return fmt.Errorf("probe standing agent: %w", err)
-	case agent:
+	}
+	if agent {
 		return ErrStandingAgentGrouped
-	case child:
-		return ErrSpawnedChildGrouped
 	}
 	return nil
 }
@@ -66,7 +51,7 @@ func (s *Store) ListSpawnedThreadIDs(spawnerID string) ([]string, error) {
 func (s *Store) ListArchivedSpawnedThreads(spawnerID string) (threads []Thread, err error) {
 	action := fmt.Sprintf("store: list archived threads spawned by %s", spawnerID)
 	rows, err := s.reader().Query(`SELECT `+threadColumns+` FROM owned_threads AS threads
-		WHERE archived = 1 AND (id IN (
+		WHERE archived = 1 AND placement = 'nested' AND (id IN (
 			SELECT target_thread_id FROM thread_requests
 			 WHERE caller_thread_id = ?1 AND kind = 'spawn' AND target_computer_id = '')
 		OR id IN (

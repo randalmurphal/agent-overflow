@@ -32,18 +32,20 @@
 //
 // A standing agent (docs/specs/standing-agents.md, "Sidebar"): an
 // assistant's current thread (`agentId`) is an agent node, and its children
-// are the live threads whose `spawnedByThreadId` names it, unless they are
-// assistants themselves, and its past threads that are not archived. The backend keeps an agent and its children out of groups; a
-// `groupId` or pin left on an agent's row is ignored here. An agent whose
+// are the live nested threads whose `spawnedByThreadId` names it, unless
+// they are assistants themselves, and its nested past threads that are not
+// archived. A grouped or standalone child is a member of its group or a
+// plain row, like any thread there (ruling 36). The backend keeps an agent
+// out of groups; a `groupId` or pin left on an agent's row is ignored here. An agent whose
 // row is not in the list (archived, or filtered out) nests nothing: its
 // spawned threads render as plain rows. The builder runs per project, but
 // what it receives is the sidebar's per-project bucket, and the bucketing
-// (ProjectsSection) files a thread an agent spawned into another project
-// under the agent's project. So a child of another project nests here, and
+// (ProjectsSection) files a nested thread an agent spawned into another
+// project under the agent's project. So a child of another project nests here, and
 // its own project's list never sees it.
 
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
-import type { Thread, ThreadGroup } from '../types/models';
+import type { Thread, ThreadGroup, ThreadPlacement } from '../types/models';
 import {
   resolveEffectiveThreadStatus,
   lastKnownThreadStatusPill,
@@ -161,17 +163,34 @@ export function isStandingAgent(thread: Pick<Thread, 'agentId'>): boolean {
 }
 
 /**
+ * Where the sidebar shows a thread. A row from a backend older than
+ * placement carries none: a spawned or past thread is nested, as such a
+ * backend nested it before its group, and any other is grouped when it has
+ * a group. A nested thread whose agent row is absent still falls back to
+ * its group in the builder.
+ */
+export function threadPlacement(
+  thread: Pick<Thread, 'placement' | 'groupId' | 'spawnedByThreadId' | 'pastAgentId'>,
+): ThreadPlacement {
+  if (thread.placement) return thread.placement;
+  if (thread.spawnedByThreadId || thread.pastAgentId) return 'nested';
+  return thread.groupId ? 'grouped' : 'nested';
+}
+
+/**
  * The thread id of the agent row that would nest this thread: its spawner,
  * or, for an assistant's past thread, that assistant's current thread
- * (currentThreadIdOf). Undefined for an agent's own row and for a thread
- * no agent spawned. Whether that agent row is in the sidebar is the
- * caller's to check.
+ * (currentThreadIdOf). Undefined for an agent's own row, for a thread no
+ * agent spawned, and for one placed in a group or as a plain row
+ * (ruling 36). Whether that agent row is in the sidebar is the caller's to
+ * check.
  */
 export function nestingAgentThreadId(
-  thread: Pick<Thread, 'agentId' | 'pastAgentId' | 'spawnedByThreadId'>,
+  thread: Pick<Thread, 'agentId' | 'pastAgentId' | 'spawnedByThreadId' | 'placement' | 'groupId'>,
   currentThreadIdOf: (agentId: string) => string | undefined,
 ): string | undefined {
   if (thread.agentId) return undefined;
+  if (threadPlacement(thread) !== 'nested') return undefined;
   if (thread.pastAgentId) return currentThreadIdOf(thread.pastAgentId);
   return thread.spawnedByThreadId || undefined;
 }
@@ -396,8 +415,8 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
  * section. Members sort by the same comparator, their own pins included.
  *
  * Agents: an assistant's current thread is an agent node in the same
- * section, and a thread it spawned or a past thread of the assistant is
- * built at depth 1 under it, before any group its `groupId` could name. An
+ * section, and a nested thread it spawned or a nested past thread of the
+ * assistant is built at depth 1 under it. A nested thread has no group. An
  * assistant never nests under the assistant that spawned it: it is an agent
  * row of its own.
  */
@@ -484,7 +503,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
   const nodes: SidebarTreeNode[] = [];
   for (const thread of visibleThreads) {
     if (agentIds.has(thread.id)) continue;
-    const spawner = thread.pastAgentId ? currentThreadOf.get(thread.pastAgentId) : thread.spawnedByThreadId;
+    const spawner = nestingAgentThreadId(thread, (agentId) => currentThreadOf.get(agentId));
     if (spawner && agentIds.has(spawner)) {
       const bucket = childrenByAgent.get(spawner);
       if (bucket) bucket.push(thread);

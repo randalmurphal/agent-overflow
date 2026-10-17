@@ -56,11 +56,11 @@ user changes it.
    kind.
 4. **The agent is the group.** A standing agent's row folds the threads
    it spawned, one header instead of a group row plus a pinned thread.
-   Groups stay for gathering threads nobody spawned. An agent row never
-   sits inside a group, and a group never contains an agent's children.
-   A thread the agent spawned into another project on this computer
-   nests under the agent row too, and that project's list does not show
-   it (ruling 2026-10-16).
+   An agent row never sits inside a group. A thread the agent spawned
+   nests under its row unless it was placed in a group or as a plain
+   row (ruling 36). A nested thread the agent spawned into another
+   project on this computer nests under the agent row too, and that
+   project's list does not show it (ruling 2026-10-16).
 5. **Done folds away.** A worker that has nothing left for anyone
    leaves the row list and counts in a "done" footer under the agent:
    a settled idle child (idle and read, not pinned, not open in a pane)
@@ -243,6 +243,26 @@ Rulings of 2026-10-16 (sidebar hierarchy):
     fold, unread dots and cross-project nesting
     ([Organizing](agent-thread-tools.md)). It says what each does, never
     when to use it.
+
+Ruling of 2026-10-17 (spawn placement):
+
+36. **A spawned thread has a placement.** A thread a standing agent
+    spawns is nested under the agent's row (the default), grouped in a
+    named group of its own project, or standalone, a plain row in its
+    own project. The agent sets it at spawn and changes it with
+    `thread_update`; the user changes it from the row's menu or by
+    dragging the row onto a group. Placement is organization only: the
+    spawn record stays, so the agent still finds, reads and sends to the
+    thread, and its answer still arrives as a message and marks the
+    thread read (ruling 30). Rulings 4, 5 and 32 to 34, the
+    cross-project filing, the activity bump and the agent row's counts
+    apply to nested threads only; a grouped or standalone thread
+    behaves like any thread in its place. Taking a thread out of a
+    group (Remove from Group, a drag to the list, the group's delete,
+    `thread_update` with `group` null) leaves it standalone, a spawned
+    thread included; `Nest Under <agent>` or `placement` `nested` puts
+    it back under the agent. A placement change unpins the thread, as a
+    group move does. An agent row still never joins a group.
 
 ## Non-goals
 
@@ -614,11 +634,14 @@ place under the successor. Differences from an ordinary thread row:
   (next fire, missed count) and from the agent's own registered labels
   (what a watch is called). The dot keeps the live status; the state
   line never repeats it.
-- Children: the threads this assistant spawned, derived from
-  `thread_requests` rows of kind spawn whose `caller_thread_id` is its
-  current thread (a handoff moves its predecessors' rows there), joined
-  to the resulting thread id, and its past threads that are not
-  archived. A thread the assistant did not spawn never nests under it.
+- Children: the threads this assistant spawned whose placement is
+  nested, derived from `thread_requests` rows of kind spawn whose
+  `caller_thread_id` is its current thread (a handoff moves its
+  predecessors' rows there), joined to the resulting thread id, and its
+  past threads that are not archived and are nested. A thread the
+  assistant did not spawn never nests under it. A grouped child renders
+  in its group and a standalone child as a plain row of its own
+  project, both like any thread there (ruling 36).
   An assistant another assistant created is a top-level agent row,
   never a child. A child in another project on this computer nests here
   all the same and carries that project's name on its sublabel line,
@@ -654,11 +677,19 @@ place under the successor. Differences from an ordinary thread row:
 - Drag: a thread dropped on an agent row is not adopted (ruling 3 and
   the spawn-record source). The drop is a no-op with the same affordance
   as dropping on another project. Dragging an agent row onto a group is
-  refused the same way.
+  refused the same way. A child dragged onto a group of its own project
+  joins it and becomes grouped.
 - Groups: an agent row renders in the groups section, above the pin
   blocks, sorted among groups by the same bubbled status. It cannot join
-  a group, and its children are not group members. An assistant's
-  threads are created ungrouped.
+  a group. A child is a group member only while its placement is
+  grouped.
+- Placement items on a child's menu (a thread an assistant spawned, or
+  its past thread): a nested child offers Move to Group and Make
+  Standalone; a standalone child offers Move to Group and
+  `Nest Under <agent>`; a grouped child offers Move to Group, Remove
+  from Group (which makes it standalone) and `Nest Under <agent>`, the
+  agent named by its current title. A placement change unpins the row,
+  as a group move does.
 - New Thread, Same Assistant: an icon-only hover action on the row
   (`aria-label` "New Thread, Same Assistant"), shown at rest under the
   compact layout, and the same item in its menu
@@ -693,11 +724,12 @@ Mechanics, as built:
 - The thread row carries the lineage: `agentId` on an assistant's
   current thread, `pastAgentId` and `agentSupersededAt` on a past
   thread, `spawnedByThreadId` (the newest local spawn request naming
-  it) and `archivedChildCount` (an assistant's archived spawned and past
-  threads, never an assistant it created), derived in `threadColumns`, so one `thread:updated`
-  frame moves the row. A spawn's accept re-broadcasts the spawned
-  thread; a child's archive, unarchive and delete re-broadcast the child
-  and its spawner, whose `archivedChildCount` they change; a handoff
+  it), `placement`, and `archivedChildCount` (an assistant's archived
+  nested spawned and past threads, never an assistant it created),
+  derived in `threadColumns`, so one `thread:updated` frame moves the
+  row. A spawn's accept re-broadcasts the spawned thread; a child's
+  archive, unarchive, delete, group move and placement change
+  re-broadcast the child and its spawner, whose `archivedChildCount` they change; a handoff
   re-broadcasts the old thread, the successor and every live child. The
   partial index `idx_thread_requests_spawn_target` serves the lookup,
   and while the thread it created exists the thread-request retention
@@ -705,19 +737,29 @@ Mechanics, as built:
   answer, late reply and wake cleared. The ledger tools treat that
   token as unknown; the lineage reads, and a worker's prompt routing
   (`StandingAgentSpawnerOf`), still find the row.
-- `SetThreadGroup` refuses an assistant's thread
-  (`ErrStandingAgentGrouped`) and a thread an assistant spawned
-  (`ErrSpawnedChildGrouped`), and `thread_spawn` with `group` is refused
-  for an assistant caller. The frontend never offers the group items on
-  those rows and the drag payload marks them `agentBound`, so no group
-  target accepts them.
+- Placement is `threads.placement` (`nested`, `grouped`,
+  `standalone`), with a CHECK that a row is grouped exactly when it has
+  a group. A row is created standalone, or grouped with its group; the
+  write that names a local spawn's thread (`NameLocalThreadRequestTarget`)
+  makes it nested in the same transaction when the spawn resolved to
+  nested, and a handoff makes the old thread nested. `SetThreadGroup`
+  makes a row grouped and an ungroup makes a grouped row standalone;
+  `SetThreadPlacement` writes nested or standalone and refuses nested
+  for a thread with no local spawn row or past-assistant link
+  (`ErrThreadNotSpawned`). When the last link a nested thread had is
+  deleted (its spawner's or its assistant's delete) a trigger makes it
+  standalone. A remote spawn has no local spawner on its destination,
+  so its thread is standalone there. `SetThreadGroup` still refuses an
+  assistant's thread (`ErrStandingAgentGrouped`). The drag payload
+  marks only agent rows `agentBound`, so a group target accepts a
+  child.
 - `ListStandingAgentWakes` (route all) and `thread:wakes_changed` feed
   `stores/threadWakes.svelte.ts`, one key per thread, so a frame reruns
   only the row of the thread it names; the state line
   (`utils/agentStateLine.ts`) shows the running row, else the soonest
   loop or watch, with `+N more`. A row the bulk read missed asks
   `ListThreadWakes` once on mount.
-- `ListArchivedSpawnedThreads` (newest first) feeds the done footer
+- `ListArchivedSpawnedThreads` (nested only, newest first) feeds the done footer
   through `stores/agentArchivedChildren.svelte.ts`, keyed by the row's
   `archivedChildCount` so a changed count reads again. The fold state
   lives in `sidebar:collapsedAgents`, keyed by assistant id; an open
@@ -764,14 +806,14 @@ Mechanics, as built:
   and refuses none of them. A refusal is `store.ErrThreadReadRefused`;
   a focus stamp treats it as a no-op.
 - Cross-project nesting happens where the sidebar buckets threads by
-  project (`ProjectsSection`): a thread whose spawner, or whose past
-  assistant's current thread, is an agent row in another project's
+  project (`ProjectsSection`): a nested thread whose spawner, or whose
+  past assistant's current thread, is an agent row in another project's
   bucket is filed under that project, after the computer filter and
   before search. The tree builder still runs per project.
 - A spawned thread's row carries `spawnedByAgent` beside
-  `spawnedByThreadId`: the group refusal holds while the assistant is
-  archived (its own row is then absent), and the row's menu and drag
-  payload read the bond from the row, not from a lookup of the agent.
+  `spawnedByThreadId`: the placement items hold while the assistant is
+  archived (its own row is then absent), and the row's menu reads the
+  bond from the row, not from a lookup of the agent.
   The live spawned rows go out again whenever that bond changes:
   creation by `thread_new_assistant`, a handoff, the assistant's delete
   (which takes the spawn rows with it) and a committed move.

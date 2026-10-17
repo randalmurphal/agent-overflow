@@ -531,9 +531,16 @@ type Thread struct {
 	// (migration v76), or "" for a top-level thread. SetThreadGroup is its
 	// ONE writer. A grouped row pins like any other; a row that joins or
 	// leaves a group loses its pin (SetThreadGroup, DeleteThreadGroup), and
-	// the FK's ON DELETE SET NULL is what makes deleting a group ungroup its
-	// members instead of deleting them.
+	// DeleteThreadGroup ungroups its members before the group row goes.
 	GroupID string `json:"groupId,omitempty"`
+	// Placement is where the sidebar shows the row (migration v159):
+	// PlacementNested under the standing agent that spawned it,
+	// PlacementGrouped in GroupID's group, PlacementStandalone as a plain
+	// row of its project. The schema makes it grouped exactly when GroupID
+	// is set. Its writers are SetThreadGroup, SetThreadPlacement, the write
+	// that names a local spawn's thread and a handoff; an insert derives it
+	// from GroupID, so the field is ignored there.
+	Placement string `json:"placement"`
 	// WorktreeSetupState is the durable half of the per-project worktree
 	// setup run this thread's worktree was cut with (migration v47):
 	// "running", "failed", or "" for nothing to say — never ran, succeeded,

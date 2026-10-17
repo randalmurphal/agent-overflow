@@ -192,10 +192,10 @@ func (s *Store) RenameThreadGroup(id, name string) error {
 
 // DeleteThreadGroup removes the group and ungroups its members, active
 // and archived alike, and returns every member row as it now stands. A
-// thread leaving a group loses its pin, so the members' pins are cleared
-// in the same transaction; the FK's ON DELETE SET NULL then clears their
-// group_id (every writer connection carries foreign_keys=1, dsn.go). No
-// thread is deleted.
+// thread leaving a group loses its pin and becomes standalone, so the
+// members are ungrouped in the same transaction before the group row goes:
+// the placement CHECK would refuse the FK's ON DELETE SET NULL on a row
+// still grouped. No thread is deleted.
 func (s *Store) DeleteThreadGroup(id string) ([]Thread, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -204,7 +204,8 @@ func (s *Store) DeleteThreadGroup(id string) ([]Thread, error) {
 	defer tx.Rollback()
 
 	members, err := queryIDs(tx,
-		`UPDATE threads SET pinned_at = NULL, pin_group = NULL WHERE group_id = ? RETURNING id`, id)
+		`UPDATE threads SET pinned_at = NULL, pin_group = NULL, group_id = NULL, placement = 'standalone'
+		  WHERE group_id = ? RETURNING id`, id)
 	if err != nil {
 		return nil, fmt.Errorf("store: unpin members of thread group %s: %w", id, err)
 	}
@@ -242,9 +243,12 @@ func (s *Store) DeleteThreadGroup(id string) ([]Thread, error) {
 //   - Every named id must have been updated, or the whole call fails and
 //     rolls back. A partial multi-select move is not a state the sidebar
 //     could explain.
-//   - A standing agent, or a thread one spawned, is refused by a move INTO
-//     a group (ErrStandingAgentGrouped, ErrSpawnedChildGrouped): the
-//     agent's own row is where they nest.
+//   - A standing agent is refused by a move INTO a group
+//     (ErrStandingAgentGrouped): its own row is a container. A thread one
+//     spawned joins a group like any other.
+//   - A move into a group makes the row grouped; an ungroup makes a row
+//     that was grouped standalone and leaves the placement of a row that
+//     was not alone (thread_placement.go).
 //   - A row that changes group loses its pin in the same statement: a
 //     thread starts unpinned in a group it joins, and a thread leaving a
 //     group leaves its pin behind. A row whose group does not change keeps
@@ -280,13 +284,14 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) ([]Thread,
 	// Every right-hand side reads the row as it was before the UPDATE, so
 	// the pin CASEs compare against the old group_id.
 	const groupSQL = `UPDATE threads
-   SET group_id = ?,
+   SET group_id = ?, placement = 'grouped',
        pinned_at = CASE WHEN group_id IS ? THEN pinned_at END,
        pin_group = CASE WHEN group_id IS ? THEN pin_group END
  WHERE id = ?
    AND project_id = (SELECT project_id FROM thread_groups WHERE id = ?)`
 	const ungroupSQL = `UPDATE threads
    SET group_id = NULL,
+       placement = CASE WHEN group_id IS NULL THEN placement ELSE 'standalone' END,
        pinned_at = CASE WHEN group_id IS NULL THEN pinned_at END,
        pin_group = CASE WHEN group_id IS NULL THEN pin_group END
  WHERE id = ?`

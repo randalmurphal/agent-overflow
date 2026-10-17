@@ -42,7 +42,7 @@
     unpinThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
-  import { isStandingAgent } from '../../utils/sidebarTree';
+  import { isStandingAgent, threadPlacement } from '../../utils/sidebarTree';
   import { getEffectiveThreadStatus } from '../../stores/threadStatuses.svelte';
   import {
     applyThreadImportUpdatesAction,
@@ -54,7 +54,7 @@
     getSelectedThreadIds,
     isThreadSelected,
   } from '../../stores/threadFilter.svelte';
-  import { getThreadById } from '../../stores/threads.svelte';
+  import { assistantCurrentThread, getThreadById } from '../../stores/threads.svelte';
   import {
     TerminalsClosingNote,
     terminalsClosingNoteForThreadDelete,
@@ -66,6 +66,7 @@
     createThreadGroupAndMoveAction,
     moveThreadsToGroupAction,
     removeThreadsFromGroupAction,
+    setThreadPlacementAction,
   } from './threadGroupActions';
   import { providerSupports } from '../../providers/catalog';
   import { openThreadFromNavigation, openThreadInNewPane } from '../../stores/panes.svelte';
@@ -94,7 +95,7 @@
     /** Whether the row is currently the pane's active thread. Delete
      *  clears the pane when true. */
     isActive: boolean;
-    /** A standing agent or a thread one spawned: no group items. */
+    /** A standing agent's own row: no group items. */
     agentBound?: boolean;
     /** An agent's live spawned threads, for Archive Done Children. */
     agentChildren?: readonly Thread[];
@@ -355,9 +356,9 @@
       .filter((t) => t.groupId)
       .map((t) => t.id);
   });
-  // A standing agent, or a thread one spawned, never joins a group; a bulk
-  // selection holding one has no group move either.
-  let bulkAgentBound = $derived(inBulkContext && selectedThreads.some((t) => isStandingAgent(t) || t.spawnedByAgent === true));
+  // A standing agent's own row never joins a group; a bulk selection
+  // holding one has no group move either.
+  let bulkAgentBound = $derived(inBulkContext && selectedThreads.some((t) => isStandingAgent(t)));
   let canMoveToGroup = $derived(
     Boolean(groupProjectId) && moveTargetIds.length > 0 && !archivedChild
       && !(inBulkContext ? bulkAgentBound : agentBound),
@@ -371,6 +372,27 @@
     return [...getThreadGroupsForProject(groupProjectId)]
       .sort((a, b) => a.name.localeCompare(b.name));
   });
+
+  // ── Placement ────────────────────────────────────────────────────────────
+  //
+  // A thread an assistant spawned, or its past thread, sits under the agent
+  // row, in a group or as a plain row (docs/specs/standing-agents.md ruling
+  // 36). Move to Group and Remove from Group above cover grouped; these two
+  // cover the rest. The agent is named by its current title.
+  let placedChild = $derived(
+    !inBulkContext && !archivedChild && !isAgent
+      && (thread.spawnedByAgent === true || Boolean(thread.pastAgentId)),
+  );
+  let currentPlacement = $derived(threadPlacement(thread));
+  let nestingAgentTitle = $derived.by(() => {
+    if (!placedChild) return '';
+    const agentThreadId = thread.pastAgentId
+      ? assistantCurrentThread(thread.pastAgentId)?.id
+      : thread.spawnedByThreadId;
+    return (agentThreadId ? getThreadById(agentThreadId)?.title : '') || 'Assistant';
+  });
+  let canMakeStandalone = $derived(placedChild && currentPlacement === 'nested');
+  let canNest = $derived(placedChild && currentPlacement !== 'nested');
 
   // The project is expanded first for the same reason the project header
   // does it: the new group's row opens inline rename, and a row inside a
@@ -588,6 +610,28 @@
               onSelect={() => {
                 onClose();
                 void removeThreadsFromGroupAction(removeTargetIds);
+              }}
+            />
+          {/if}
+          {#if canMakeStandalone}
+            <MenuItem
+              label="Make Standalone"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void setThreadPlacementAction([thread.id], 'standalone');
+              }}
+            />
+          {/if}
+          {#if canNest}
+            <MenuItem
+              label={`Nest Under ${nestingAgentTitle}`}
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void setThreadPlacementAction([thread.id], 'nested');
               }}
             />
           {/if}

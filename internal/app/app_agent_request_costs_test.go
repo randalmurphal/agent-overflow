@@ -180,13 +180,18 @@ func TestALocalSpawnOrAskIsAcceptedInTwoTransactions(t *testing.T) {
 		before := storeCostOf(f.app.store)
 		target, fresh, err := adapter.acceptRequest(origin, store.ThreadRequest{
 			Token: token, Kind: kind, OriginThreadID: f.caller.ID, Notify: true,
-		}, func() (store.Thread, error) { return made, nil })
+		}, func() (store.Thread, error) { return made, nil }, kind == store.ThreadRequestSpawn)
 		cost := storeCostOf(f.app.store).since(before)
 		if err != nil || target != made.ID || !fresh {
 			t.Fatalf("%s: accept = %q %v, %v", kind, target, fresh, err)
 		}
-		if cost.commits != 2 || cost.writes > 4 {
-			t.Errorf("%s: the accept cost %+v, want 2 commits and at most 4 writes", kind, cost)
+		// A spawn's naming write also nests its thread, one keyed update.
+		maxWrites := uint64(4)
+		if kind == store.ThreadRequestSpawn {
+			maxWrites = 5
+		}
+		if cost.commits != 2 || cost.writes > maxWrites {
+			t.Errorf("%s: the accept cost %+v, want 2 commits and at most %d writes", kind, cost, maxWrites)
 		}
 		if row := f.request(t, token); row.State != store.ThreadRequestAccepted || row.TargetThreadID != made.ID ||
 			row.Kind != kind || row.CallerThreadID != f.caller.ID || !row.Notify {

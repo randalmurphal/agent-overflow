@@ -345,9 +345,17 @@ does not exist, through the same organize patch `thread_update` uses.
 A group name is unique per project, compared without case, and the
 lookup and the insert share one write transaction, so two spawns
 naming the same new group land in one group rather than two;
-a fork's group lives in its source's project. A standing agent's
-spawns nest under its own sidebar row and never join a group, so
-`group` from an agent caller is refused with that reason. `from_thread` forks that thread's history at its tail
+a fork's group lives in its source's project. `placement` (`nested`,
+`grouped` or `standalone`, default `nested`) says where the new
+thread's sidebar row appears when a standing agent spawns it: under the
+agent's row, in the group `group` names, or as a plain row in its own
+project ([standing agents](standing-agents.md) ruling 36). `group`
+implies `grouped`; `grouped` without `group`, or `group` with `nested`
+or `standalone`, is refused before a request exists. A thread spawned
+on another computer, or by a thread that is not an assistant, renders
+as a plain row unless grouped, whatever `placement` says. Placement is
+organization only: the spawn record, the reply path and the read mark
+on an answer are the same in every placement. `from_thread` forks that thread's history at its tail
 (the same fork `thread_ask` uses, visible instead of hidden) and sends
 `prompt` there, for "try approach B in a fork"; the fork runs on the
 source thread's computer in its project and workspace and keeps that
@@ -572,12 +580,20 @@ sidebar already calls: `thread_ids` (one to fifty) and any of `title`,
 `archived`, `pin` (`front` / `back` / `none`; the app's front and back
 burner are the two pin tiers), `group` (a group name in the thread's
 project, unique there without case and created when it does not
-exist; `null` ungroups). One call covers "archive these five" or
-"group these as auth work". A thread inside a group pins like any
-other; joining or leaving a group clears the thread's pin, and a pin in
-the same call applies after the group move, so it lands inside the new
-group. Refusals mirror the store: the calling thread cannot archive
-itself, and a title is trimmed and refused when empty. Works on another computer's threads;
+exist; `null` ungroups, leaving the thread `standalone`), `placement`
+(`nested`, `grouped` or `standalone`, the same field `thread_spawn`
+takes). One call covers "archive these five" or "group these as auth
+work". `group` implies `grouped`; `grouped` needs `group` unless the
+thread is already in a group, and `group` with `nested` or
+`standalone` is refused for the whole call. `nested` is refused per id
+for a thread no thread on this computer spawned and that is not an
+assistant's past thread. A thread an assistant spawned joins a group
+like any other; an assistant's own thread is refused. A thread inside
+a group pins like any other; joining or leaving a group, or any other
+placement change, clears the thread's pin, and a pin in the same call
+applies after the move, so it lands inside the new place. Refusals
+mirror the store: the calling thread cannot archive itself, and a
+title is trimmed and refused when empty. Works on another computer's threads;
 a thread joins groups only on its own computer. Used only when the user
 asks, or on threads the caller spawned once it is done with them.
 
@@ -812,6 +828,18 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > for that work; a pinned thread keeps its dot. A collapsed agent row
 > or group shows one dot for its members. The user marks a whole agent
 > row or group read from its menu; these tools mark nothing read.
+> `thread_spawn` and `thread_update` take a `placement` for a thread a
+> standing agent spawned. `nested`, the default, shows it under the
+> agent's row as described here. `grouped`, which naming a `group`
+> implies, shows it as a member of that group in its own project,
+> outside the agent's row and its done footer. `standalone` shows it as
+> a plain row in its own project's list, outside the agent's row and
+> its done footer. In every placement it stays the agent's spawn:
+> `spawned_by_me` lists it, `thread_send` and `thread_show` reach it,
+> and its answer arrives as a message and marks it read as before.
+> Taking a thread out of a group, by the user or with `group` null,
+> leaves it standalone; `placement` `nested` puts it back under the
+> agent.
 >
 > Other computers. `thread_options` lists paired computers, whether
 > each is reachable now, and its projects and settings. Spawning there

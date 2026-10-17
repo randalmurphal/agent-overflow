@@ -16,6 +16,11 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 		if _, err := s.SetThreadRequestTarget(token, computer, target, "", ""); err != nil {
 			t.Fatalf("target %s: %v", token, err)
 		}
+		if computer == "" {
+			if _, err := s.SetThreadPlacement([]string{target}, PlacementNested); err != nil {
+				t.Fatalf("nest %s: %v", target, err)
+			}
+		}
 	}
 	spawn("tok-1", "agent", "", "child-1", 100)
 	spawn("tok-2", "agent", "", "child-2", 200)
@@ -69,6 +74,20 @@ func TestThreadRowsCarryAgentLineage(t *testing.T) {
 	}
 	if got := row("agent").ArchivedChildCount; got != 1 {
 		t.Errorf("archived children after one archive = %d, want 1", got)
+	}
+	// Only a nested child counts in the agent's done footer: placed as a
+	// plain row it leaves the count and the list, and nested again returns.
+	if _, err := s.SetThreadPlacement([]string{"child-1"}, PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
+	if got := row("agent").ArchivedChildCount; got != 0 {
+		t.Errorf("archived children with the child standalone = %d, want 0", got)
+	}
+	if listed, err := s.ListArchivedSpawnedThreads("agent"); err != nil || len(listed) != 0 {
+		t.Errorf("archived threads with the child standalone = %+v, %v; want none", listed, err)
+	}
+	if _, err := s.SetThreadPlacement([]string{"child-1"}, PlacementNested); err != nil {
+		t.Fatal(err)
 	}
 	// A spawner that is not an agent never pays for the count.
 	if _, _, err := s.ArchiveThread("far-child"); err != nil {
@@ -129,6 +148,9 @@ func TestACreatedAssistantIsNeverItsCreatorsChild(t *testing.T) {
 		if _, err := s.SetThreadRequestTarget(token, "", target, "", ""); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := s.SetThreadPlacement([]string{"worker"}, PlacementNested); err != nil {
+		t.Fatal(err)
 	}
 	for _, id := range []string{"created", "worker"} {
 		if _, _, err := s.ArchiveThread(id); err != nil {

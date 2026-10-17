@@ -164,7 +164,7 @@ func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, tar
 	var fields []string
 	for _, column := range strings.Split(threadInsertColumns, ",") {
 		column = strings.TrimSpace(column)
-		if column != "id" {
+		if column != "id" && column != "placement" {
 			fields = append(fields, column+"=excluded."+column)
 		}
 	}
@@ -174,8 +174,12 @@ func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, tar
 	// it replaces had begun, or had kept it as a holder its forks read.
 	// The pin is local and stays, unless the row leaves its group: a thread
 	// leaving a group loses its pin (the CASEs read the pre-update row).
+	// A nested row stays nested while it arrives ungrouped: the link it
+	// nests by is this computer's own, and the trigger that ends nesting
+	// with the link already ran if the link is gone.
 	const keepPinInGroup = `,pinned_at=CASE WHEN threads.group_id IS excluded.group_id THEN threads.pinned_at END` +
-		`,pin_group=CASE WHEN threads.group_id IS excluded.group_id THEN threads.pin_group END`
+		`,pin_group=CASE WHEN threads.group_id IS excluded.group_id THEN threads.pin_group END` +
+		`,placement=CASE WHEN excluded.placement = 'standalone' AND threads.placement = 'nested' THEN 'nested' ELSE excluded.placement END`
 	if err := writeThread(tx, prepared, lastReadAt, ` ON CONFLICT(id) DO UPDATE SET `+strings.Join(fields, ",")+keepPinInGroup+`,live_todo='',worktree_setup_state='',deleting=0`); err != nil {
 		return false, err
 	}

@@ -11,7 +11,7 @@ import { createThreadPane } from '../../stores/thread.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { clearThreadSelection, setThreadSelection } from '../../stores/threadFilter.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { replaceAllThreads } from '../../stores/threads.svelte';
+import { getThreadById, replaceAllThreads } from '../../stores/threads.svelte';
 import { setThreadStatus } from '../../stores/threadStatuses.svelte';
 import {
   consumePendingGroupRename,
@@ -846,16 +846,58 @@ describe('<ThreadContextMenu> standing agent', () => {
     expect(item(baseElement, 'Archive Done Children').getAttribute('title')).toBe('No spawned thread is done');
   });
 
-  it('keeps the pin items but drops the group items on a thread an agent spawned', () => {
+  // A thread an assistant spawned moves between its three placements from
+  // its menu (docs/specs/standing-agents.md ruling 36).
+  it.each([
+    ['nested', { placement: 'nested' as const }, ['Move to Group', 'Make Standalone'], ['Remove from Group', 'Nest Under Release agent']],
+    ['standalone', { placement: 'standalone' as const }, ['Move to Group', 'Nest Under Release agent'], ['Remove from Group', 'Make Standalone']],
+    ['grouped', { placement: 'grouped' as const, groupId: 'g1' }, ['Move to Group', 'Remove from Group', 'Nest Under Release agent'], ['Make Standalone']],
+    // A row from a backend older than placement nests as it always did.
+    ['without a placement', {}, ['Move to Group', 'Make Standalone'], ['Nest Under Release agent']],
+  ])('offers a %s child its placement moves and keeps its pin items', (_, overrides, present, absent) => {
+    replaceAllThreads([makeThread({ id: 'agent-1', projectId: 'project-1', title: 'Release agent', agentId: 'agent-1' })]);
     const { baseElement } = renderAgentMenu(
-      makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1' }),
-      { agentBound: true },
+      makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, ...overrides }),
     );
     const labels = labelsOf(baseElement);
     expect(labels).toContain('Pin Thread');
-    expect(labels).not.toContain('Move to Group');
-    expect(labels).not.toContain('Remove from Group');
     expect(labels).not.toContain('New Thread, Same Assistant');
+    for (const label of present) expect(labels).toContain(label);
+    for (const label of absent) expect(labels).not.toContain(label);
+  });
+
+  it('names an assistant past thread by its current title and offers no placement moves on a plain thread', () => {
+    replaceAllThreads([makeThread({ id: 'current', projectId: 'project-1', title: 'Ops', agentId: 'agent-a' })]);
+    const past = renderAgentMenu(makeThread({ projectId: 'project-1', pastAgentId: 'agent-a', placement: 'standalone' }));
+    expect(labelsOf(past.baseElement)).toContain('Nest Under Ops');
+    past.unmount();
+    const plain = renderAgentMenu(makeThread({ projectId: 'project-1', placement: 'standalone' }));
+    const labels = labelsOf(plain.baseElement);
+    expect(labels).toContain('Move to Group');
+    expect(labels.some((label) => label.startsWith('Nest Under') || label === 'Make Standalone')).toBe(false);
+  });
+
+  it.each([
+    ['Make Standalone', 'nested', 'standalone'],
+    ['Nest Under Release agent', 'standalone', 'nested'],
+  ] as const)('%s writes the placement through the binding and reconciles the row', async (label, from, to) => {
+    replaceAllThreads([
+      makeThread({ id: 'agent-1', projectId: 'project-1', title: 'Release agent', agentId: 'agent-1' }),
+      makeThread({ id: 'child', projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: from, pinnedAt: 5 }),
+    ]);
+    const place = setBindingMock('SetThreadPlacement', vi.fn(async (ids: string[], placement: string) => [
+      makeThread({ id: ids[0], projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: placement as 'nested' }),
+    ]));
+    const { baseElement } = renderAgentMenu(
+      makeThread({ id: 'child', projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: from }),
+    );
+    await fireEvent.click(item(baseElement, label));
+    await waitFor(() => expect(place).toHaveBeenCalledWith(['child'], to));
+    await waitFor(() => {
+      const row = getThreadById('child');
+      expect(row?.placement).toBe(to);
+      expect(row?.pinnedAt ?? null).toBeNull();
+    });
   });
 
   it('New Thread, Same Assistant starts the next thread through the binding', async () => {
@@ -912,12 +954,17 @@ describe('<ThreadContextMenu> standing agent', () => {
     ));
   });
 
-  it('hides the group items in bulk when the selection holds an agent or a spawned thread', () => {
+  it('hides the group items in bulk when the selection holds an agent, and keeps them for a spawned thread', () => {
     replaceAllThreads([
       makeThread({ id: 'a', projectId: 'project-1' }),
       makeThread({ id: 'b', projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true }),
+      makeThread({ id: 'c', projectId: 'project-1', agentId: 'agent-c' }),
     ]);
     setThreadSelection(['a', 'b']);
+    const spawned = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1' }));
+    expect(labelsOf(spawned.baseElement)).toContain('Move to Group');
+    spawned.unmount();
+    setThreadSelection(['a', 'c']);
     const { baseElement } = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1' }));
     const labels = labelsOf(baseElement);
     expect(labels).toContain('Archive (2)');

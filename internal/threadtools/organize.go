@@ -22,6 +22,7 @@ type updateArgs struct {
 	Archived  *bool           `json:"archived"`
 	Pin       *string         `json:"pin"`
 	Group     json.RawMessage `json:"group"`
+	Placement *string         `json:"placement"`
 }
 
 type updateResult struct {
@@ -134,8 +135,18 @@ func updatePatch(args updateArgs) (UpdateCall, error) {
 		}
 		patch.Group = group
 	}
+	if args.Placement != nil {
+		placement := trim(*args.Placement)
+		if placement == "" {
+			return UpdateCall{}, invalidf("placement must be nested, grouped or standalone.")
+		}
+		if err := checkPlacement(placement, patch.Group); err != nil {
+			return UpdateCall{}, err
+		}
+		patch.Placement = &placement
+	}
 	if !patch.Patched() {
-		return UpdateCall{}, invalidf("Set at least one of title, archived, pin or group.")
+		return UpdateCall{}, invalidf("Set at least one of title, archived, pin, group or placement.")
 	}
 	return patch, nil
 }
@@ -207,6 +218,9 @@ func marshalUpdate(call UpdateCall) (json.RawMessage, error) {
 		} else {
 			fields["group"] = *call.Group
 		}
+	}
+	if call.Placement != nil {
+		fields["placement"] = *call.Placement
 	}
 	return json.Marshal(fields)
 }

@@ -34,6 +34,7 @@ type spawnArgs struct {
 	Base          string   `json:"base"`
 	BaseLocal     bool     `json:"base_local"`
 	Group         string   `json:"group"`
+	Placement     string   `json:"placement"`
 	Provider      string   `json:"provider"`
 	Model         string   `json:"model"`
 	Effort        string   `json:"effort"`
@@ -122,6 +123,11 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	if utf8.RuneCountInString(call.Group) > MaxTitleRunes {
 		return nil, invalidf("group must be at most %d characters.", MaxTitleRunes)
 	}
+	placement, err := ResolveSpawnPlacement(trim(args.Placement), call.Group)
+	if err != nil {
+		return nil, err
+	}
+	call.Placement = placement
 	if call.Mode != "" && !slices.Contains([]string{"chat", "plan"}, call.Mode) {
 		return nil, invalidf("mode must be chat or plan. The permission level is runtime_mode, a separate parameter.")
 	}
@@ -420,4 +426,27 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// ResolveSpawnPlacement resolves a spawn's placement: nested by default,
+// grouped when group names a group, and refused when the two contradict.
+// The app runs it again on the call it receives, so a caller that skips the
+// tools layer cannot spawn with a contradiction.
+func ResolveSpawnPlacement(placement, group string) (string, error) {
+	named := &group
+	if group == "" {
+		named = nil
+	}
+	if err := checkPlacement(placement, named); err != nil {
+		return "", err
+	}
+	switch {
+	case group != "":
+		return PlacementGrouped, nil
+	case placement == PlacementGrouped:
+		return "", invalidf("placement grouped needs group, the name of the group to put the thread in.")
+	case placement == "":
+		return PlacementNested, nil
+	}
+	return placement, nil
 }

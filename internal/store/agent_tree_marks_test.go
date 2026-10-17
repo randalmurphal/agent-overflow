@@ -68,7 +68,7 @@ func (r *agentTreeMarksRun) spawn(caller string) string {
 			SourceThreadID: caller, Kind: ThreadRequestSpawn, State: ThreadReceiptAccepted, CreatedAt: at, UpdatedAt: at}); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.NameLocalThreadRequestTarget(token, child); err != nil {
+		if err := s.NameLocalThreadRequestTarget(token, child, false); err != nil {
 			t.Fatal(err)
 		}
 	}

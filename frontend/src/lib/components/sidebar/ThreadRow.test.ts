@@ -435,19 +435,20 @@ describe('<ThreadRow> drag source', () => {
   });
 
   it.each([
-    ['a standing agent', { agentId: 'agent-1' }],
-    ['a thread a standing agent spawned', { spawnedByThreadId: 'agent-1', spawnedByAgent: true }],
-    // The agent's own row is archived, so it is not in the list; the bond
-    // rides on the child's row.
-    ['a thread an archived standing agent spawned', { spawnedByThreadId: 'archived-agent', spawnedByAgent: true }],
-  ])('marks the payload of %s agent-bound, so no group takes the drop', async (_, overrides) => {
+    ['a standing agent', { agentId: 'agent-1' }, true],
+    // A thread an agent spawned joins groups (ruling 36): its payload is
+    // not agent-bound, nested, grouped or with its agent archived.
+    ['a nested thread a standing agent spawned', { spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: 'nested' as const }, false],
+    ['a grouped thread a standing agent spawned', { spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: 'grouped' as const, groupId: 'g1' }, false],
+    ['a thread an archived standing agent spawned', { spawnedByThreadId: 'archived-agent', spawnedByAgent: true }, false],
+  ])('marks the payload of %s agent-bound only when it is the agent', async (_, overrides, bound) => {
     setBindingMock('ListThreads', async () => [makeThread({ id: 'agent-1', agentId: 'agent-1' })]);
     await refreshThreads();
     const thread = makeThread({ id: 'drag-bound', projectId: 'project-1', ...overrides });
     const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
     const dataTransfer = makeDataTransfer();
     await fireEvent.dragStart(rendered.getByTestId('thread-row'), { dataTransfer });
-    expect(JSON.parse(dataTransfer.getData(THREAD_ROW_DRAG_MIME))).toMatchObject({ agentBound: true });
+    expect(JSON.parse(dataTransfer.getData(THREAD_ROW_DRAG_MIME)).agentBound === true).toBe(bound);
   });
 
   it('drags the thread from the worktree sublabel instead of selecting its text', async () => {

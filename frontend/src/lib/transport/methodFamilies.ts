@@ -80,6 +80,7 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
 
   // A batch of thread ids; the atomic write must belong to one backend.
   2514763466: 'threadList', // SetThreadGroup
+  2294583674: 'threadList', // SetThreadPlacement
 };
 
 const RESOLVERS: Readonly<Record<IdFamily, (id: string) => BackendKey | undefined>> = {

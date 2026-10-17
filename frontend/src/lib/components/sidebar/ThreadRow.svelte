@@ -312,11 +312,10 @@
   let isJumpTarget = $derived(
     !inGroup && !isAgent && sidebarPinGroup(thread) === 'front',
   );
-  // A standing agent, or a thread one spawned, never joins a group: the
-  // drag payload says so, and every group target refuses it. The row
-  // carries the bond (spawnedByAgent) so it holds while the agent's own
-  // row is archived or listed elsewhere.
-  let agentBound = $derived(isAgent || thread.spawnedByAgent === true);
+  // A standing agent's own row never joins a group: the drag payload says
+  // so, and every group target refuses it. A thread it spawned joins
+  // groups like any other (docs/specs/standing-agents.md ruling 36).
+  let agentBound = $derived(isAgent);
 
   function handleAgentChevronClick(e: MouseEvent): void {
     e.stopPropagation();

@@ -33,10 +33,11 @@ import (
 // UpdateThreads applies one organize patch to threads on this computer.
 func (t threadToolsApp) UpdateThreads(ctx context.Context, caller threadtools.Caller, call threadtools.UpdateCall) (threadtools.UpdateReport, error) {
 	patch := threadapp.OrganizePatch{
-		Title:    call.Title,
-		Archived: call.Archived,
-		Pin:      call.Pin,
-		Group:    call.Group,
+		Title:     call.Title,
+		Archived:  call.Archived,
+		Pin:       call.Pin,
+		Group:     call.Group,
+		Placement: call.Placement,
 	}
 	// A refusal that belongs to the patch itself is the same answer for
 	// every id, so it refuses the call rather than filling fifty rows with
@@ -159,7 +160,9 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 		a.emitThreadGroup("create", *result.CreatedGroup)
 	}
 	a.announceThreadIfChanged(organizeThreadAction(result), result.Thread.ID, result.Changed)
-	if result.ArchivedChanged {
+	// An archived child counts in its agent's done footer only while it is
+	// nested, so a placement change on one moves that count too.
+	if result.ArchivedChanged || (result.Changed && result.Thread.Archived) {
 		a.broadcastSpawnerRow(result.Thread)
 	}
 	return result, nil
@@ -311,9 +314,20 @@ func threadToolsOrganizeError(threadID string, err error) error {
 	case errors.Is(err, store.ErrStandingAgentGrouped):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
 			"That thread is an assistant's, and an assistant is not grouped: its own sidebar row holds the threads it spawned.", err)
-	case errors.Is(err, store.ErrSpawnedChildGrouped):
+	case errors.Is(err, store.ErrStandingAgentPlaced):
 		return errorsx.Public(threadtools.CodeInvalidRequest,
-			"An assistant spawned that thread, so it nests under the assistant's sidebar row rather than in a group.", err)
+			"That thread is an assistant's, and its own sidebar row is a row of its own: it takes no placement.", err)
+	case errors.Is(err, store.ErrThreadNotSpawned):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"No thread on this computer spawned that thread, so there is no agent row to nest it under. Use standalone, or group it.", err)
+	case errors.Is(err, store.ErrPlacementNeedsGroup):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"That thread is in no group, so placement grouped needs group, the name of the group to put it in.", err)
+	case errors.Is(err, threadapp.ErrPlacementContradictsGroup):
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			"group and placement disagree: a group name means grouped, and group null cannot be grouped.", err)
+	case errors.Is(err, store.ErrInvalidPlacement):
+		return errorsx.Public(threadtools.CodeInvalidRequest, "placement must be nested, grouped or standalone.", err)
 	case errors.Is(err, store.ErrThreadGone), errors.Is(err, sql.ErrNoRows), errors.As(err, &moved):
 		return threadToolsNotFound(threadID)
 	}

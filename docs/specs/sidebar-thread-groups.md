@@ -7,7 +7,10 @@ members pin individually (store v139). Revised 2026-10-16: a group
 bounds its members, a collapsed group carries its members' dot, a
 show-more footer's dot counts unread rows, and running members sort
 above unread ones
-([standing agents](standing-agents.md) rulings 31 to 34).
+([standing agents](standing-agents.md) rulings 31 to 34). Revised
+2026-10-17: a thread a standing agent spawned may be a member, and
+membership is the row's `placement` (store v159, standing agents
+ruling 36).
 
 ## Goal
 
@@ -175,6 +178,14 @@ the row. Collapsed, it carries its members' bubbled dot.
 - `DeleteThreadGroup` clears the members' pins, active and archived, in
   the transaction that deletes the group, and returns the member rows as
   they now stand.
+- Migration v159 adds `threads.placement` (`nested`, `grouped`,
+  `standalone`) with a CHECK that a row is `grouped` exactly when its
+  `group_id` is set. `SetThreadGroup` writes `grouped` with the group;
+  an ungroup writes `standalone` on a row that was grouped and leaves
+  other rows alone. `DeleteThreadGroup` ungroups its members to
+  `standalone` itself before the delete, so the FK's `SET NULL` finds
+  no member left. A thread created into a group (a fork of a grouped
+  thread, a draft in a group) is inserted `grouped`.
 - `ApplyThreadOrganize` (agent `thread_update`) runs the group move
   before the pin, so a patch that sets both lands the pin inside the new
   group.
@@ -285,10 +296,10 @@ Names are trimmed and non-empty; a blank rename is rejected.
   dashed outline so the ungroup target is visible. Drops from another
   project set `dropEffect = 'none'`.
 - A standing agent is a third container beside a group: `ThreadRow`'s
-  agent variant takes the group row's geometry, its spawned threads
-  render as members behind the same rail, and neither the agent nor a
-  spawned thread can be grouped
-  ([standing agents](standing-agents.md#sidebar)).
+  agent variant takes the group row's geometry, its nested spawned
+  threads render as members behind the same rail, and the agent cannot
+  be grouped. A spawned thread moved into a group is an ordinary member
+  there ([standing agents](standing-agents.md#sidebar) ruling 36).
 - `ThreadRow` keeps the pin affordance and pin menu items on grouped
   rows; `ThreadGroupRow` has none. `ThreadContextMenu` adds the "Move to Group"
   submenu (`MenuSubmenuItem`) and "Remove from Group";

@@ -3554,7 +3554,7 @@ func TestASpawnWhoseCallerIsDeletedMidCreateStillRuns(t *testing.T) {
 				t.Fatal(err)
 			}
 			return made, nil
-		})
+		}, true)
 	if err != nil || target != made.ID || !fresh {
 		t.Fatalf("accept = %q %v, %v; want the created thread", target, fresh, err)
 	}
