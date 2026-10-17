@@ -334,18 +334,21 @@ func TestAgentTreeMarksCheckFindsAMissedWriter(t *testing.T) {
 
 // A spawn that names a thread with open work below it already carries that
 // work to every spawn above it, each count at its own depth: inserted with
-// its target, and named after its insert. The thread four spawns down has
-// one open send, the one below it two, then three, then four, so a count
-// moved to the wrong depth is seen.
+// its target, and named after its insert. Three spawns stand above it, so
+// each of the carry's six counts lands on one of them. The thread four
+// spawns down has one open send, the one below it two, then three, then
+// four, so a count moved to the wrong depth is seen.
 func TestAgentTreeMarksCarryANamedSubtreeUpTheChain(t *testing.T) {
 	t.Parallel()
 	for _, named := range []bool{false, true} {
 		t.Run(fmt.Sprintf("named after insert %v", named), func(t *testing.T) {
 			t.Parallel()
 			s := newTestStore(t)
-			for _, id := range []string{"root", "a", "b", "x", "y", "z", "w", "peer"} {
+			for _, id := range []string{"top", "root", "a", "b", "x", "y", "z", "w", "peer"} {
 				mustCreateThread(t, s, id)
 			}
+			seedAgentRequest(t, s, "top-root", "top", ThreadRequestSpawn, "root", false, 0)
+			settleAgentRequest(t, s, "top-root", 1)
 			seedAgentRequest(t, s, "root-a", "root", ThreadRequestSpawn, "a", false, 1)
 			settleAgentRequest(t, s, "root-a", 2)
 			seedAgentRequest(t, s, "a-b", "a", ThreadRequestSpawn, "b", false, 3)
@@ -370,12 +373,13 @@ func TestAgentTreeMarksCarryANamedSubtreeUpTheChain(t *testing.T) {
 			}
 			settleAgentRequest(t, s, "b-x", 41)
 			want := map[string][agentOpenDepth]int64{
-				"b-x":    {1, 2, 3, 4},
-				"a-b":    {0, 1, 2, 3},
-				"root-a": {0, 0, 1, 2},
-				"x-y":    {2, 3, 4, 0},
-				"y-z":    {3, 4, 0, 0},
-				"z-w":    {4, 0, 0, 0},
+				"b-x":      {1, 2, 3, 4},
+				"a-b":      {0, 1, 2, 3},
+				"root-a":   {0, 0, 1, 2},
+				"top-root": {0, 0, 0, 1},
+				"x-y":      {2, 3, 4, 0},
+				"y-z":      {3, 4, 0, 0},
+				"z-w":      {4, 0, 0, 0},
 			}
 			if got := agentTreeMarks(t, s.db); !maps.Equal(got, want) {
 				t.Fatalf("marks %v; want %v", got, want)

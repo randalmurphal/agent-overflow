@@ -200,6 +200,17 @@ export async function holdNextRun(home: string): Promise<{ running: () => Promis
 }
 
 /**
+ * Waits for the sidebar's system footer (sidebar-system-stats), which
+ * mounts when its first sample arrives and shrinks the projects section
+ * above it by its height: a row near the sidebar's bottom that was in view
+ * or under a pointer moves when it does. A spec that captures, measures or
+ * taps sidebar rows waits for it after opening the page.
+ */
+export async function awaitSidebarSettled(page: Page): Promise<void> {
+  await expect(page.getByTestId('sidebar-system-stats')).toBeVisible();
+}
+
+/**
  * Captures the window once every target is visible and wholly in it. The
  * harness's temporary root, which a watch's directory shows, is written as
  * `<harness root>` in the capture: the spec asserts the real path before it,

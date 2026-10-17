@@ -10,7 +10,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { threadRows, type ThreadRow } from './thread-tools-helpers.js';
-import { capture } from './wake-rows-helpers.js';
+import { awaitSidebarSettled, capture } from './wake-rows-helpers.js';
 
 interface ThreadGroup {
   id: string;
@@ -73,6 +73,7 @@ test('bounded agent and group rows, a cross-project child and Mark All Read fit 
 
   await page.emulateMedia({ colorScheme: 'dark' });
   await harness.open(page);
+  await awaitSidebarSettled(page);
   const width = page.viewportSize()!.width;
   const agentRow = page.locator(`[data-sidebar-thread-id="${lead}"]`);
   const agentShell = page.locator('[data-testid="thread-row-shell"]', { has: agentRow });
@@ -96,12 +97,7 @@ test('bounded agent and group rows, a cross-project child and Mark All Read fit 
   // The group's bound and its show-more.
   const groupRow = page.getByTestId('thread-group-row');
   const groupMore = page.locator('[data-group-member] [data-testid="sidebar-container-show-more"]');
-  // Scrolled into the middle until it stays wholly in view: rows the
-  // agent's show-more added can still move the list after one scroll.
-  await expect(async () => {
-    await groupMore.evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
-    await expect(groupMore).toBeInViewport({ ratio: 1, timeout: 1_000 });
-  }).toPass();
+  await groupMore.scrollIntoViewIfNeeded();
   await expect(groupMore).toHaveText('Show 1 More');
   await expectFits(groupMore, width);
   await capture(page, 'compact-hierarchy-group-bound.png', groupMore);

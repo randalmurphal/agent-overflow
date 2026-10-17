@@ -8,7 +8,7 @@ import type { Locator } from '@playwright/test';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import { awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
-import { capture } from './wake-rows-helpers.js';
+import { awaitSidebarSettled, capture } from './wake-rows-helpers.js';
 
 async function expectFits(target: Locator, viewportWidth: number): Promise<void> {
   const box = (await target.boundingBox())!;
@@ -55,6 +55,7 @@ test('an agent row folds, previews and lists its done children on a phone', asyn
   await awaitTurnCompleted(harness, agent);
 
   await harness.open(page);
+  await awaitSidebarSettled(page);
   const width = page.viewportSize()!.width;
   const agentRow = page.locator(`[data-sidebar-thread-id="${agent}"]`);
   // The live rows behind the rail, not the done list's.

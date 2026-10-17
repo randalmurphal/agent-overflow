@@ -14,7 +14,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp, HarnessMockEventData } from '../src/harness.js';
 import { awaitTurnCompleted, threadRows, type ThreadRow } from './thread-tools-helpers.js';
-import { capture } from './wake-rows-helpers.js';
+import { awaitSidebarSettled, capture } from './wake-rows-helpers.js';
 
 interface ThreadGroup {
   id: string;
@@ -103,6 +103,7 @@ test('an agent row and a group bound their members, fold done work, roll up thei
   // Three projects and an expanded done list: room for every captured row.
   await page.setViewportSize({ width: 1280, height: 900 });
   await harness.open(page);
+  await awaitSidebarSettled(page);
   await expect(page.locator('html')).toHaveClass(/dark/);
   const agentRow = row(page, lead);
   await expect(agentRow).toHaveAttribute('data-sidebar-agent', '');

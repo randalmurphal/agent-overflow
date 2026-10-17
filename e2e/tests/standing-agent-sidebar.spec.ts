@@ -23,7 +23,7 @@ import {
   threadToolsScenario,
   type ProviderName,
 } from './thread-tools-helpers.js';
-import { capture } from './wake-rows-helpers.js';
+import { awaitSidebarSettled, capture } from './wake-rows-helpers.js';
 
 interface ThreadGroup {
   id: string;
@@ -97,6 +97,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await harness.rpc('MarkThreadUnread', workerA);
 
     await harness.open(page);
+    await awaitSidebarSettled(page);
     const agentRow = row(page, agent);
     await expect(agentRow).toHaveAttribute('data-sidebar-agent', '');
     await expect(agentRow).toHaveAttribute('data-expanded', 'true');
