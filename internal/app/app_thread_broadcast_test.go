@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -271,13 +272,15 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "gone-thread") {
 			t.Fatalf("MarkThreadsRead error = %v, want one naming the gone thread", err)
 		}
-		if len(rows) != 2 || rows[0].ID != first.ID || rows[1].ID != second.ID {
-			t.Fatalf("MarkThreadsRead rows = %+v, want the two it changed", rows)
+		changed := []string{first.ID, second.ID}
+		slices.Sort(changed)
+		if len(rows) != 2 || rows[0].ID != changed[0] || rows[1].ID != changed[1] {
+			t.Fatalf("MarkThreadsRead rows = %+v, want the two it changed, in id order", rows)
 		}
 		if len(broadcasts.events) != 2 {
 			t.Fatalf("emitted %d thread:updated events, want one per changed row: %+v", len(broadcasts.events), broadcasts.events)
 		}
-		for i, want := range []string{first.ID, second.ID} {
+		for i, want := range changed {
 			frame := broadcasts.events[i]
 			if frame.Action != triage.ThreadActionFull || frame.Thread == nil || frame.Thread.ID != want {
 				t.Fatalf("frame %d = %+v, want the full row of %s", i, frame, want)

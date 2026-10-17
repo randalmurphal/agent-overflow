@@ -3232,10 +3232,13 @@ export function MarkThreadUnread(id: string): $CancellablePromise<void> {
 /**
  * MarkThreadsRead is MarkThreadRead for every thread named, in one call: an
  * agent row's or a group's Mark All Read (docs/specs/standing-agents.md
- * ruling 31). Each thread takes its own lock in turn, never two at once,
- * and each changed row is announced. It returns the rows it changed; a
- * thread that fails does not stop the rest, and the failures come back
- * joined, naming each thread.
+ * ruling 31). Repeated ids count once, and a call names at most
+ * store.MarkThreadsReadLimit threads. The stamps are one store transaction
+ * that takes no thread lock: each is a single conditional row write whose
+ * statement itself skips a thread this computer may not change, which is
+ * what MarkThreadRead's lock and CheckMutable guard. Each changed row is
+ * announced, and the call returns them; a thread that is gone or not
+ * changeable here is an error naming it, after the rest are marked.
  */
 export function MarkThreadsRead(ids: string[]): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(1726279585, ids).then(($result: any) => {

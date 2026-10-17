@@ -361,13 +361,18 @@ export function markThreadRead(id: string, lastReadAt: number): Promise<void> {
     });
 }
 
+/** The most threads one MarkThreadsRead call takes (store.MarkThreadsReadLimit). */
+export const MARK_THREADS_READ_LIMIT = 500;
+
 /**
  * Mark All Read on an agent row or a group (docs/specs/standing-agents.md
- * ruling 31): one MarkThreadsRead call on the computer that holds the
- * threads, for every one with something to read. Each read marker is
- * claimed at the stamp this client expects for the length of the call, and
- * the rows the call changed are reconciled through threadReplyRow, so a
- * frame that arrived meanwhile is not undone. Throws the call's failure.
+ * ruling 31): MarkThreadsRead on the computer that holds the threads, for
+ * every one with something to read, in calls of at most
+ * MARK_THREADS_READ_LIMIT. Each read marker is claimed at the stamp this
+ * client expects for the length of the calls, and the rows each call
+ * changed are reconciled through threadReplyRow, so a frame that arrived
+ * meanwhile is not undone. Throws the first call's failure after the rest
+ * have run.
  */
 export async function markThreadsRead(threads: readonly Thread[]): Promise<void> {
   const owed = threads.filter((thread) => hasUnread(thread) || thread.hasFailedTurn || thread.hasIncompleteTurn);
@@ -377,8 +382,17 @@ export async function markThreadsRead(threads: readonly Thread[]): Promise<void>
   try {
     const mark = threadRowFrameMark();
     const backend = threadBackend(owed[0].id) ?? HOME_BACKEND;
-    const rows = await withBackendTarget(backend, () => MarkThreadsRead(owed.map((thread) => thread.id)));
-    for (const reply of (rows ?? []) as Thread[]) {
+    const rows: Thread[] = [];
+    let failure: unknown = null;
+    for (let start = 0; start < owed.length; start += MARK_THREADS_READ_LIMIT) {
+      const ids = owed.slice(start, start + MARK_THREADS_READ_LIMIT).map((thread) => thread.id);
+      try {
+        rows.push(...((await withBackendTarget(backend, () => MarkThreadsRead(ids))) ?? []) as Thread[]);
+      } catch (err) {
+        failure ??= err;
+      }
+    }
+    for (const reply of rows) {
       const row = threadReplyRow(reply, mark, getThreadById(reply.id));
       if (row === null) continue;
       updateThreadReadState(row.id, {
@@ -387,6 +401,7 @@ export async function markThreadsRead(threads: readonly Thread[]): Promise<void>
         hasFailedTurn: row.hasFailedTurn,
       });
     }
+    if (failure !== null) throw failure;
   } finally {
     for (const release of releases) release();
   }

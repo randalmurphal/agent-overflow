@@ -5,9 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/threadmode"
 )
 
 // newTestProject inserts a fresh project row and returns it. Threads in
@@ -3148,5 +3152,106 @@ func TestMarkThreadReadThroughStopsAtTheAnsweringTurn(t *testing.T) {
 	}
 	if _, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, base+5000); err != nil || changed {
 		t.Fatalf("NULL marker = changed %v, %v; want no change", changed, err)
+	}
+}
+
+// MarkThreadsReadNow stamps every named thread owed a read with the clamp
+// MarkThreadReadNow applies, counts a repeated id once, refuses a thread that
+// is gone or that this computer may not change, refuses a call over the
+// limit, and costs the same statements for fifty threads as for two.
+func TestMarkThreadsReadNowStampsTheBatchInOneTransaction(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ahead := time.Now().UnixMilli() + 60_000
+	create := func(id string) {
+		t.Helper()
+		if err := s.CreateThread(makeThread(id, "claude")); err != nil {
+			t.Fatalf("CreateThread(%s): %v", id, err)
+		}
+	}
+	// A completed turn ahead of the clock: the stamp is its completion.
+	create("ahead")
+	insertCompletedTurn(t, s, "ahead", "turn-ahead", ahead, ahead+1000)
+	// An interrupted newest turn: the stamp covers its start.
+	create("open-turn")
+	if err := s.InsertTurn(Turn{TurnID: "turn-open", ThreadID: "open-turn", TurnIndex: 0, StartedAt: ahead + 5000}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	// Already read through its turn: no change.
+	create("current")
+	insertCompletedTurn(t, s, "current", "turn-current", 100, 200)
+	if _, _, err := s.MarkThreadReadNow(ctx, "current"); err != nil {
+		t.Fatalf("MarkThreadReadNow(current): %v", err)
+	}
+	// A holder is not this computer's to change.
+	create("holder")
+	if _, err := s.db.Exec(`UPDATE threads SET mode = ? WHERE id = ?`, threadmode.ModeHolder, "holder"); err != nil {
+		t.Fatalf("make holder: %v", err)
+	}
+
+	held, err := s.GetThread("holder")
+	if err != nil {
+		t.Fatalf("GetThread(holder): %v", err)
+	}
+	changed, refused, err := s.MarkThreadsReadNow(ctx, []string{"ahead", "open-turn", "current", "ahead", "holder", "gone"})
+	if err != nil {
+		t.Fatalf("MarkThreadsReadNow: %v", err)
+	}
+	if !slices.Equal(refused, []string{"gone", "holder"}) {
+		t.Fatalf("refused = %v, want [gone holder]", refused)
+	}
+	got := map[string]int64{}
+	for _, row := range changed {
+		got[row.ID] = *row.LastReadAt
+	}
+	if len(changed) != 2 || got["ahead"] != ahead+1000 || got["open-turn"] != ahead+5000 {
+		t.Fatalf("changed = %v, want ahead at %d and open-turn at %d", got, ahead+1000, ahead+5000)
+	}
+	if holder, err := s.GetThread("holder"); err != nil || !reflect.DeepEqual(holder.LastReadAt, held.LastReadAt) {
+		t.Fatalf("holder LastReadAt = %v (%v), want it untouched at %v", holder.LastReadAt, err, held.LastReadAt)
+	}
+	// Each changed thread now reads as read through its target.
+	for _, id := range []string{"ahead", "open-turn"} {
+		if again, refused, err := s.MarkThreadsReadNow(ctx, []string{id}); err != nil || len(again) != 0 || len(refused) != 0 {
+			t.Fatalf("second mark of %s = %d changed, refused %v, %v; want nothing", id, len(again), refused, err)
+		}
+	}
+
+	// Over the limit, refused whole with the number.
+	over := make([]string, MarkThreadsReadLimit+1)
+	for i := range over {
+		over[i] = fmt.Sprintf("over-%d", i)
+	}
+	if _, _, err := s.MarkThreadsReadNow(ctx, over); err == nil || !strings.Contains(err.Error(), fmt.Sprint(MarkThreadsReadLimit)) {
+		t.Fatalf("MarkThreadsReadNow over the limit = %v, want a refusal naming %d", err, MarkThreadsReadLimit)
+	}
+
+	// Repeats count once toward the limit.
+	repeated := slices.Repeat([]string{"ahead"}, MarkThreadsReadLimit+1)
+	if _, refused, err := s.MarkThreadsReadNow(ctx, repeated); err != nil || len(refused) != 0 {
+		t.Fatalf("MarkThreadsReadNow of one id repeated past the limit = refused %v, %v; want it counted once", refused, err)
+	}
+
+	// Fifty threads cost what two do.
+	cost := func(n int) [3]uint64 {
+		t.Helper()
+		ids := make([]string, n)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("cost-%d-%d", n, i)
+			create(ids[i])
+			insertCompletedTurn(t, s, ids[i], "turn-"+ids[i], ahead, ahead+1000)
+		}
+		// Every statement the transaction runs goes through the statement
+		// cache, which counts it (sql_rebind_test.go).
+		statements, writes, commits := cachedStmtRuns.Load(), s.WriteCount(), s.CommitCount()
+		changed, refused, err := s.MarkThreadsReadNow(ctx, ids)
+		if err != nil || len(changed) != n || len(refused) != 0 {
+			t.Fatalf("MarkThreadsReadNow(%d) = %d changed, refused %v, %v", n, len(changed), refused, err)
+		}
+		return [3]uint64{uint64(cachedStmtRuns.Load() - statements), s.WriteCount() - writes, s.CommitCount() - commits}
+	}
+	two, fifty := cost(2), cost(50)
+	if want := [3]uint64{3, 1, 1}; two != want || fifty != want {
+		t.Fatalf("(statements, writes, commits) = %v for 2 threads, %v for 50; want %v for both: the stamp, the read back and the refused list", two, fifty, want)
 	}
 }

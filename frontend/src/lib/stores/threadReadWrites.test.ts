@@ -6,7 +6,14 @@ import {
   resetLocalReadMarkersForTest,
   withLocalReadMarker,
 } from './threadReadWrites';
-import { markThreadRead, markThreadUnread, replaceAllThreads, getThreadById } from './threads.svelte';
+import {
+  MARK_THREADS_READ_LIMIT,
+  getThreadById,
+  markThreadRead,
+  markThreadUnread,
+  markThreadsRead,
+  replaceAllThreads,
+} from './threads.svelte';
 import type { Thread } from '../types/models';
 
 function mkThread(id: string, lastReadAt: number | undefined): Thread {
@@ -102,5 +109,25 @@ describe('threadReadWrites', () => {
 
     await expect(markThreadRead('thread-1', 1_234)).resolves.toBeUndefined();
     expect(pendingLocalReadMarker('thread-1').held).toBe(false);
+  });
+  it('splits Mark All Read into calls the backend takes, and keeps the rows of a call that worked when another fails', async () => {
+    const threads = Array.from({ length: MARK_THREADS_READ_LIMIT + 1 }, (_, i) => ({
+      ...mkThread(`t${i}`, 0),
+      latestTurnCompletedAt: 100,
+    }));
+    replaceAllThreads(threads);
+    const calls: string[][] = [];
+    setBindingMock('MarkThreadsRead', async (ids: string[]) => {
+      calls.push(ids);
+      if (calls.length === 1) throw new Error('first call failed');
+      return ids.map((id) => ({ ...mkThread(id, 200), latestTurnCompletedAt: 100 }));
+    });
+
+    await expect(markThreadsRead(threads)).rejects.toThrow('first call failed');
+    expect(calls.map((ids) => ids.length)).toEqual([MARK_THREADS_READ_LIMIT, 1]);
+    expect(getThreadById(`t${MARK_THREADS_READ_LIMIT}`)?.lastReadAt).toBe(200);
+    expect(getThreadById('t0')?.lastReadAt).toBe(0);
+    expect(pendingLocalReadMarker('t0').held).toBe(false);
+    expect(pendingLocalReadMarker(`t${MARK_THREADS_READ_LIMIT}`).held).toBe(false);
   });
 });

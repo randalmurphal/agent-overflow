@@ -4,8 +4,9 @@ Status: design signed off 2026-09-02, implemented on `main` the same day
 (store v76, bindings, sidebar UI, e2e `sidebar-thread-groups.spec.ts`).
 Revised 2026-09-28: groups are their own section and not pinnable;
 members pin individually (store v139). Revised 2026-10-16: a group
-bounds its members, a collapsed group carries its members' dot, and
-running members sort above unread ones
+bounds its members, a collapsed group carries its members' dot, a
+show-more footer's dot counts unread rows, and running members sort
+above unread ones
 ([standing agents](standing-agents.md) rulings 31 to 34).
 
 ## Goal
@@ -54,8 +55,13 @@ the row. Collapsed, it carries its members' bubbled dot.
   visibility exceptions. A group takes one slot; its members take none.
 - **Member bound.** Inside a group, the members show the project's
   preview limit (8), then a show-more footer under the group's rail that
-  reveals the project's increment (20) per click, with the hidden
-  members' rolled-up dot as the project footer has it. Pinned members
+  reveals the project's increment (20) per click. The footer carries the
+  hidden members' rolled-up dot, ranked as a collapsed group ranks its
+  members, so one unread hidden member lights it and a working or
+  needs-you one outranks it. The project's own show-more footer and a
+  collapsed project's dot rank the same way (ruling 2026-10-16,
+  replacing the rule that only a working or needs-you status lit them).
+  Pinned members
   always show and take no slot; a member open in a pane is never hidden
   by the bound. The paging is session state per group. The same bound
   cuts a standing agent's live children (ruling 2026-10-16).

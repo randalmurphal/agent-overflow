@@ -278,23 +278,31 @@ export function isDraftNode(node: SidebarTreeNode): boolean {
 }
 
 /**
+ * How strongly a node's displayed status claims a rolled-up dot: its status
+ * tier, then its live-status priority. The tier ignores pins, so a pinned
+ * idle member never masks a running one, and it ranks an unread idle row
+ * (the Completed pill) above a read one. Every rolled-up dot ranks with
+ * this: a container row's (groupDisplay) and a show-more row's or
+ * collapsed project's (rollupDisplayStatus).
+ */
+export function displayRank(node: Pick<SidebarTreeNode, 'normalSortGroup' | 'displayLiveStatus'>): number {
+  return SORT_GROUP_PRIORITY[node.normalSortGroup] * 1000 + statusPriority(node.displayLiveStatus);
+}
+
+/**
  * The status a container row shows: its most important member's, pill
- * included, ranked by status tier and then by live-status priority. The
- * tier ignores pins: a pinned idle member must not mask a running one. An
- * agent passes its own node among the members, so its own status competes.
+ * included (displayRank). An agent passes its own node among the members,
+ * so its own status competes.
  */
 function groupDisplay(
   members: readonly SidebarThreadTreeNode[],
 ): { displayLiveStatus: ThreadLiveStatus; displayStatus: ThreadStatusPill | null } {
   let top: SidebarThreadTreeNode | null = null;
-  let topGroupPriority = -1;
-  let topPriority = -1;
+  let topRank = -1;
   for (const member of members) {
-    const groupPriority = SORT_GROUP_PRIORITY[member.normalSortGroup];
-    const priority = statusPriority(member.displayLiveStatus);
-    if (groupPriority > topGroupPriority || (groupPriority === topGroupPriority && priority > topPriority)) {
-      topGroupPriority = groupPriority;
-      topPriority = priority;
+    const rank = displayRank(member);
+    if (rank > topRank) {
+      topRank = rank;
       top = member;
     }
   }

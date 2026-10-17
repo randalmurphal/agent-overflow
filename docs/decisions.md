@@ -276,7 +276,9 @@ Mechanism in
   only persisted done state; a group and an agent row each show the
   project's preview limit of members, pinned members exempt; a
   collapsed agent row or group shows its members' bubbled dot, replacing
-  the 2026-09-02 rule that a collapsed group renders none of it; running
+  the 2026-09-02 rule that a collapsed group renders none of it; every
+  show-more footer (project, group, agent) and a collapsed project's dot
+  rank their hidden rows the same way, so an unread one lights it; running
   sorts above unread inside a container; a child spawned into another
   project on this computer nests under its agent, not in its own
   project's list. Mark All Read on either marks every member in one

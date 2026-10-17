@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -932,12 +933,12 @@ func (s *Store) MarkThreadActivity(threadID string, at int64) error {
 	return nil
 }
 
-// threadReadStateQuery reads the three timestamps MarkThreadReadNow clamps
-// its stamp to (the newest completed turn, an interrupted newest turn's
-// start, the newest turn error that lights the Failed pill) plus the marker
-// already stored. The error stamp is the column hasFailedTurn compares, so
-// the pill and the read that clears it cannot disagree.
-const threadReadStateQuery = `SELECT
+// threadReadTargetColumns are the three timestamps a read stamp clamps to,
+// over a `threads` row: the newest completed turn, an interrupted newest
+// turn's start, and the newest turn error that lights the Failed pill. The
+// error stamp is the column hasFailedTurn compares, so the pill and the
+// read that clears it cannot disagree.
+const threadReadTargetColumns = `
     (SELECT MAX(completed_at) FROM turns
       WHERE thread_id = threads.id AND completed_at IS NOT NULL),
     (SELECT CASE WHEN completed_at IS NULL THEN started_at END
@@ -945,25 +946,71 @@ const threadReadStateQuery = `SELECT
       WHERE thread_id = threads.id
       ORDER BY turns.turn_index DESC
       LIMIT 1),
-    newest_turn_error_at,
+    newest_turn_error_at`
+
+// threadReadStateQuery is the per-row read markThreadsReadSQL makes, as a
+// single-row probe the plan and page-count guards measure.
+const threadReadStateQuery = `SELECT ` + threadReadTargetColumns + `,
     last_read_at
    FROM threads
   WHERE id = ?`
 
+// MarkThreadsReadLimit caps one MarkThreadsReadNow call. A caller with more
+// threads splits them into calls of at most this many.
+const MarkThreadsReadLimit = 500
+
+// markThreadsReadSQL stamps every named thread that is still owed a read,
+// in one statement, and returns the ids it stamped. ?1 is the JSON array of
+// ids, ?2 the current unix-ms. Each stamp is the later of now and the
+// thread's newest read target (threadReadTargetColumns): provider
+// timestamps can run ahead of the wall clock, and a stamp short of the
+// target would leave the pill on. A thread is owed a read unless its marker
+// already covers that target, or, with no target, covers now. Only a thread
+// this computer may change is stamped: not a holder, not mid fork
+// preparation, and not refused by its transfer state
+// (threadTransferReadableExpr), the same rows CheckThreadExecutionAccess
+// passes but for the provider session's native transfer, which governs
+// execution, not read state.
+var markThreadsReadSQL = `UPDATE threads SET last_read_at = MAX(?2, marks.target)
+  FROM (WITH targets(id, marker, completed, started, errored) AS (
+          SELECT id, last_read_at,` + threadReadTargetColumns + `
+            FROM threads
+           WHERE id IN (SELECT value FROM json_each(?1)) AND ` + threadReadMutableSQL + `
+        )
+        SELECT id, marker, MAX(COALESCE(completed, -1), COALESCE(started, -1), COALESCE(errored, -1)) AS target
+          FROM targets) AS marks
+ WHERE threads.id = marks.id
+   AND (marks.marker IS NULL OR (marks.target >= 0 AND marks.marker < marks.target) OR (marks.target < 0 AND marks.marker < ?2))
+RETURNING id`
+
+// threadReadMutableSQL is markThreadsReadSQL's predicate for a `threads`
+// row this computer may stamp read.
+var threadReadMutableSQL = `mode <> ` + sqlTextLiteral(threadmode.ModeHolder) + ` AND fork_preparing = 0
+     AND ` + threadTransferReadableExpr("threads.")
+
+// markThreadsReadRefusedSQL lists the ids of ?1 markThreadsReadSQL could
+// not stamp: gone, or failing threadReadMutableSQL.
+var markThreadsReadRefusedSQL = `SELECT value FROM json_each(?1)
+ WHERE value NOT IN (SELECT id FROM threads
+                      WHERE id IN (SELECT value FROM json_each(?1)) AND ` + threadReadMutableSQL + `)
+ ORDER BY value`
+
+// threadRowsByJSONIDsSQL reads the thread rows whose ids are in the JSON
+// array ?1, one statement text for any number of ids.
+var threadRowsByJSONIDsSQL = `SELECT ` + threadColumns + ` FROM threads WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id`
+
 // MarkThreadReadNow stamps last_read_at with the current unix-ms, clamped to
-// the latest sidebar read target. Completed turns key off completed_at; an
-// interrupted newest turn keys off started_at so opening it clears the
-// durable Interrupted pill just like opening a completed thread clears
-// Completed. The clamp is load-bearing because provider timestamps can
-// occasionally be ahead of wall-clock now when the frontend asks to mark the
-// thread read.
+// the latest sidebar read target (markThreadsReadSQL). Completed turns key
+// off completed_at; an interrupted newest turn keys off started_at so
+// opening it clears the durable Interrupted pill just like opening a
+// completed thread clears Completed.
 //
 // Does NOT bump updated_at: read-state is UI bookkeeping, not a thread
 // mutation, and bumping would thrash the sidebar ordering.
 //
 // The context is required rather than optional. This is a write, so it
 // runs on the single writer connection, and database/sql makes a caller
-// wait for that connection to come free — behind a retention sweep's
+// wait for that connection to come free: behind a retention sweep's
 // delete batch, a streaming flush, or a checkpoint. A context-less
 // Begin waits for that with no ceiling; callers of a bookkeeping write
 // nobody is watching need one.
@@ -971,88 +1018,68 @@ const threadReadStateQuery = `SELECT
 // Returns the stamped row plus whether the stamp moved. Opening a thread
 // whose read marker already covers its newest turn is the common case and
 // changes nothing, so it hands back (zero row, false, nil) and the caller
-// broadcasts nothing.
+// broadcasts nothing. A thread that is gone, or that this computer may not
+// change, is sql.ErrNoRows.
 func (s *Store) MarkThreadReadNow(ctx context.Context, id string) (Thread, bool, error) {
-	now := nowMillis()
-	tx, err := s.db.BeginTx(ctx, nil)
+	rows, refused, err := s.MarkThreadsReadNow(ctx, []string{id})
 	if err != nil {
-		return Thread{}, false, fmt.Errorf("store: begin mark thread read %s: %w", id, err)
-	}
-	defer tx.Rollback()
-
-	var latestTurnCompletedAt, latestIncompleteStartedAt, latestErrorAt, lastReadAt sql.NullInt64
-	err = tx.QueryRowContext(ctx, threadReadStateQuery, id).
-		Scan(&latestTurnCompletedAt, &latestIncompleteStartedAt, &latestErrorAt, &lastReadAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Thread{}, false, fmt.Errorf("store: mark thread read %s: %w", id, sql.ErrNoRows)
-		}
-		return Thread{}, false, fmt.Errorf("store: read thread read-state %s: %w", id, err)
-	}
-
-	readTarget := int64(0)
-	hasReadTarget := false
-	if latestTurnCompletedAt.Valid {
-		hasReadTarget = true
-		readTarget = latestTurnCompletedAt.Int64
-	}
-	if latestIncompleteStartedAt.Valid {
-		hasReadTarget = true
-		if latestIncompleteStartedAt.Int64 > readTarget {
-			readTarget = latestIncompleteStartedAt.Int64
-		}
-	}
-	// The Failed pill is read state too: the stamp must pass the error row
-	// that lit it, or a read after the newest turn completed would be a
-	// no-op that leaves the pill on.
-	if latestErrorAt.Valid {
-		hasReadTarget = true
-		if latestErrorAt.Int64 > readTarget {
-			readTarget = latestErrorAt.Int64
-		}
-	}
-
-	if lastReadAt.Valid {
-		if hasReadTarget && lastReadAt.Int64 >= readTarget {
-			if err := tx.Commit(); err != nil {
-				return Thread{}, false, fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
-			}
-			return Thread{}, false, nil
-		}
-	}
-
-	readAt := now
-	if hasReadTarget && readTarget > readAt {
-		readAt = readTarget
-	}
-	if lastReadAt.Valid && lastReadAt.Int64 >= readAt {
-		if err := tx.Commit(); err != nil {
-			return Thread{}, false, fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
-		}
-		return Thread{}, false, nil
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE threads SET last_read_at = ? WHERE id = ?`, readAt, id)
-	if err != nil {
-		return Thread{}, false, fmt.Errorf("store: mark thread read %s: %w", id, err)
-	}
-	if err := requireRowsAffected(result, fmt.Sprintf("store: mark thread read %s", id)); err != nil {
 		return Thread{}, false, err
 	}
-	// Read back inside the write's own transaction, like every other
-	// thread-row mutation: the caller broadcasts this row on
-	// `thread:updated`, and the two no-op returns above are what keeps a
-	// re-open of an already-read thread silent.
-	rows, err := listThreadsByIDTx(tx, []string{id})
-	if err != nil {
-		return Thread{}, false, fmt.Errorf("store: read back mark thread read %s: %w", id, err)
+	if len(refused) > 0 {
+		return Thread{}, false, fmt.Errorf("store: mark thread read %s: %w", id, sql.ErrNoRows)
 	}
-	if len(rows) != 1 {
-		return Thread{}, false, fmt.Errorf("store: read back mark thread read %s: %d rows, want 1", id, len(rows))
-	}
-	if err := tx.Commit(); err != nil {
-		return Thread{}, false, fmt.Errorf("store: commit mark thread read %s: %w", id, err)
+	if len(rows) == 0 {
+		return Thread{}, false, nil
 	}
 	return rows[0], true, nil
+}
+
+// MarkThreadsReadNow is MarkThreadReadNow for up to MarkThreadsReadLimit
+// threads in one transaction of a fixed number of statements: the stamp
+// (markThreadsReadSQL), the changed rows read back, and the ids it could not
+// stamp. Repeated ids count once. It returns the rows it changed, in id
+// order, and refused: each named thread that is gone or that this computer
+// may not change. A thread whose marker was already current is in neither.
+func (s *Store) MarkThreadsReadNow(ctx context.Context, ids []string) (changed []Thread, refused []string, err error) {
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
+	if len(ids) > MarkThreadsReadLimit {
+		return nil, nil, fmt.Errorf("store: mark %d threads read: at most %d in one call", len(ids), MarkThreadsReadLimit)
+	}
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: mark %d threads read: encode ids: %w", len(ids), err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: begin mark %d threads read: %w", len(ids), err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	stamped, err := queryStringsTx(tx, markThreadsReadSQL, string(encoded), nowMillis())
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: mark %d threads read: %w", len(ids), err)
+	}
+	if len(stamped) > 0 {
+		stampedJSON, err := json.Marshal(stamped)
+		if err != nil {
+			return nil, nil, fmt.Errorf("store: mark %d threads read: encode stamped ids: %w", len(ids), err)
+		}
+		if changed, err = scanThreadQuery(tx, threadRowsByJSONIDsSQL, string(stampedJSON)); err != nil {
+			return nil, nil, fmt.Errorf("store: read back %d threads marked read: %w", len(stamped), err)
+		}
+		if len(changed) != len(stamped) {
+			return nil, nil, fmt.Errorf("store: read back %d threads marked read: %d rows", len(stamped), len(changed))
+		}
+	}
+	if refused, err = queryStringsTx(tx, markThreadsReadRefusedSQL, string(encoded)); err != nil {
+		return nil, nil, fmt.Errorf("store: mark %d threads read: list refused: %w", len(ids), err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("store: commit mark %d threads read: %w", len(ids), err)
+	}
+	return changed, refused, nil
 }
 
 // MarkThreadReadThrough stamps last_read_at up to at, a turn's completion,
@@ -1069,7 +1096,7 @@ func (s *Store) MarkThreadReadThrough(ctx context.Context, id string, at int64) 
 	if err != nil {
 		return Thread{}, false, fmt.Errorf("store: begin mark thread read through %s: %w", id, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx,
 		`UPDATE threads SET last_read_at = ? WHERE id = ? AND last_read_at IS NOT NULL AND last_read_at < ?`, at, id, at)
 	if err != nil {
@@ -1693,6 +1720,26 @@ func (s *Store) UpdateBranchForWorkspace(spellings []string, branch string) ([]T
 // listThreadsByIDTx reads the full thread projection for an explicit id set,
 // inside the caller's transaction. Only used by writers that have to hand
 // back exactly the rows they touched.
+// scanThreadQuery runs a threadColumns query in tx and scans its rows.
+func scanThreadQuery(tx *sql.Tx, query string, args ...any) ([]Thread, error) {
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	var threads []Thread
+	for rows.Next() {
+		thread, err := scanThread(rows)
+		if err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		threads = append(threads, thread)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	return threads, nil
+}
+
 func listThreadsByIDTx(tx *sql.Tx, ids []string) ([]Thread, error) {
 	placeholders := make([]string, len(ids))
 	args := make([]any, len(ids))

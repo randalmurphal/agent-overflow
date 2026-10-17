@@ -12,6 +12,8 @@ import {
   boundContainerMembers,
   flattenSidebarThreadTree,
   nextContainerRevealLimit,
+  previewSidebarThreads,
+  rollupDisplayStatus,
   sameSidebarVisibleNodes,
   sidebarVisibleNodeId,
   type SidebarTreeVisibleNode,
@@ -224,6 +226,46 @@ describe('rolled-up dot', () => {
     const dark = build(true);
     expect(dark.find((n) => n.kind === 'agent')?.displayStatus).toBeNull();
     expect(dark.find((n) => n.kind === 'group')?.displayStatus).toBeNull();
+  });
+
+  it('lights a show-more row for an unread hidden member, and ranks a working one above it', () => {
+    const group: ThreadGroup = { id: 'g', projectId: 'project-1', name: 'g', createdAt: 0, updatedAt: 0 };
+    const members = (prefix: string, extra: Partial<Thread>) =>
+      Array.from({ length: THREAD_PREVIEW_LIMIT + 1 }, (_, i) => mkThread(`${prefix}${i}`, { updatedAt: 1000 - i, ...extra }));
+    const moreOf = (rows: readonly SidebarTreeVisibleNode[]) => {
+      const more = rows[rows.length - 1];
+      if (more?.kind !== 'container-more') throw new Error('no show-more row');
+      return more.hiddenStatus;
+    };
+
+    // Unread rows sort first, so every member is unread for one to be cut.
+    // A group's:
+    const groupRows = flattenSidebarThreadTree({
+      nodes: buildSidebarThreadTree({ threads: members('m', { groupId: 'g', ...unread }), groups: [group] }),
+    });
+    expect(moreOf(groupRows)).toMatchObject({ liveStatus: 'idle', pill: { label: 'Completed' } });
+
+    // An agent's: every live child is unread, the hidden one included.
+    const agentRows = flattenSidebarThreadTree({
+      nodes: [agentNode([agent, ...members('c', { spawnedByThreadId: 'agent', ...unread })])],
+    });
+    expect(moreOf(agentRows)).toMatchObject({ liveStatus: 'idle', pill: { label: 'Completed' } });
+
+    // The project's own show-more, over unread top-level threads.
+    const top = members('t', unread);
+    const preview = previewSidebarThreads({ nodes: buildSidebarThreadTree({ threads: top }), limit: THREAD_PREVIEW_LIMIT, openThreadIds: new Set() });
+    expect(preview.hiddenNodes).toHaveLength(1);
+    expect(rollupDisplayStatus(preview.hiddenNodes)).toMatchObject({ liveStatus: 'idle', pill: { label: 'Completed' } });
+
+    // Read, nothing to show; working, it outranks the unread one.
+    expect(rollupDisplayStatus(previewSidebarThreads({
+      nodes: buildSidebarThreadTree({ threads: members('r', {}) }), limit: THREAD_PREVIEW_LIMIT, openThreadIds: new Set(),
+    }).hiddenNodes)).toBeNull();
+    const mixed = buildSidebarThreadTree({
+      threads: [mkThread('busy', unread), mkThread('done', unread)],
+      liveStatusOf: statuses({ busy: 'running' }),
+    });
+    expect(rollupDisplayStatus(mixed)?.liveStatus).toBe('running');
   });
 });
 

@@ -243,10 +243,11 @@ func TestThreadTurnErrorStatementPlans(t *testing.T) {
 		}
 	}
 	for name, query := range map[string]string{
-		"read state": threadReadStateQuery,
-		"thread row": `SELECT ` + threadColumns + ` FROM threads WHERE id = ?1`,
+		"read state":      threadReadStateQuery,
+		"thread row":      `SELECT ` + threadColumns + ` FROM threads WHERE id = ?1`,
+		"batch read mark": markThreadsReadSQL,
 	} {
-		text := planText(explainPlan(t, s, query, "t"))
+		text := planText(explainPlan(t, s, query, `["t"]`, int64(0)))
 		for _, probe := range []string{"idx_items_thread_error", "idx_import_history_items_error", "turn_index>?"} {
 			if strings.Contains(text, probe) {
 				t.Errorf("%s probes the timeline for turn errors (%s):\n%s", name, probe, text)

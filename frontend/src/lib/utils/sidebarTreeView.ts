@@ -12,7 +12,7 @@ import type { ThreadStatusPill } from './threadStatusPill';
 import {
   assistantKey,
   sidebarNodeSection,
-  statusPriority,
+  displayRank,
   type SidebarAgentTreeNode,
   type SidebarThreadTreeNode,
   type SidebarTreeNode,
@@ -514,21 +514,22 @@ export function nextSidebarThreadRevealLimit(input: {
 }
 
 /**
- * Roll up the most-important display status across a list of nodes —
- * used both for the "Show more" hidden-status pill and the per-project
- * status dot when the project is collapsed.
+ * Roll up the most important display status across a list of nodes, ranked
+ * as a container row ranks its members (displayRank), so an unread hidden
+ * row shows its dot: the "Show more" hidden-status dot of a project, group
+ * or agent, and the per-project status dot when the project is collapsed.
  */
 export function rollupDisplayStatus(
   nodes: readonly SidebarTreeNode[],
 ): { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null {
   let best: { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null = null;
-  let bestPriority = 0;
+  let bestRank = -1;
   for (const node of nodes) {
     if (node.displayStatus == null) continue;
-    const priority = statusPriority(node.displayLiveStatus);
-    if (priority > bestPriority) {
+    const rank = displayRank(node);
+    if (rank > bestRank) {
       best = { liveStatus: node.displayLiveStatus, pill: node.displayStatus };
-      bestPriority = priority;
+      bestRank = rank;
     }
   }
   return best;

@@ -222,7 +222,9 @@ Rulings of 2026-10-16 (sidebar hierarchy):
     project's preview limit of member rows, then a show-more footer that
     reveals the project's increment. Pinned members always show and do
     not count toward the limit; a member open in a pane is never hidden
-    by it.
+    by it. The footer's dot rolls up the hidden rows, an unread one
+    included, as a collapsed container's does (ruling 33); the project's
+    own show-more footer does the same.
 33. **A collapsed container carries its members' dot.** A collapsed agent
     row or group shows the bubbled status of its members (one dot, gone
     once every member is read and idle); expanded, each row shows its
@@ -621,7 +623,8 @@ place under the successor. Differences from an ordinary thread row:
   first, then needs-you, then running, then unread, then idle by last
   activity (ruling 34). The live children show the project's preview
   limit (8), then a show-more footer revealing 20 more per click,
-  styled as the project's own; pinned children always show above the
+  styled as the project's own, its dot lit by any unread hidden child
+  or outranked by a working or needs-you one; pinned children always show above the
   bound and take no slot, and a child open in a pane is never hidden by
   it (ruling 32). A group bounds its members the same way.
 - Done fold (ruling 5): a child that is settled idle (effective status
@@ -736,9 +739,14 @@ Mechanics, as built:
   ends Interrupted. An error or interrupted answer marks read the same
   way: the caller received it.
 - `MarkThreadsRead(ids)` (`threads:operate`, route home, sent to the
-  agent's or group's computer) stamps each thread as `MarkThreadRead`
-  does, one thread lock at a time, announces each changed row and
-  returns them; the client reconciles them through `threadReplyRow`.
+  agent's or group's computer) stamps up to 500 distinct threads
+  (`store.MarkThreadsReadLimit`; the client splits a larger set) with
+  `MarkThreadRead`'s clamp in one transaction of three statements
+  (`Store.MarkThreadsReadNow`): one conditional `UPDATE` over the ids,
+  which skips a thread this computer may not change, the changed rows
+  read back, and the ids it refused. It takes no thread lock, announces
+  each changed row and returns them, and names the refused ids in its
+  error; the client reconciles the rows through `threadReplyRow`.
 - Cross-project nesting happens where the sidebar buckets threads by
   project (`ProjectsSection`): a thread whose spawner, or whose past
   assistant's current thread, is an agent row in another project's

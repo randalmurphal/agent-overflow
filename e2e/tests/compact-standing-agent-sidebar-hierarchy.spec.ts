@@ -80,6 +80,7 @@ test('bounded agent and group rows, a cross-project child and Mark All Read fit 
   // Nine unread workers and the away child: eight live, a show-more for two.
   const agentMore = page.locator('[data-agent-member] [data-testid="sidebar-container-show-more"]');
   await expect(agentMore).toHaveText('Show 2 More');
+  await expect(agentMore.getByTestId('sidebar-container-hidden-status')).toHaveAttribute('data-status', 'idle');
   await expectFits(agentMore, width);
   await agentMore.tap();
   await expect.poll(async () => (await liveIds(page, '[data-agent-member]')).length).toBe(10);
@@ -96,7 +97,7 @@ test('bounded agent and group rows, a cross-project child and Mark All Read fit 
   await groupMore.scrollIntoViewIfNeeded();
   await expect(groupMore).toHaveText('Show 1 More');
   await expectFits(groupMore, width);
-  await capture(page, 'compact-hierarchy-group-bound.png', groupRow, groupMore);
+  await capture(page, 'compact-hierarchy-group-bound.png', groupMore);
   await groupMore.tap();
   await expect.poll(async () => (await liveIds(page, '[data-group-member]')).length).toBe(9);
 

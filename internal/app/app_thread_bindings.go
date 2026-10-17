@@ -2,8 +2,8 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -324,27 +324,31 @@ func (a *App) MarkThreadRead(id string) error {
 
 // MarkThreadsRead is MarkThreadRead for every thread named, in one call: an
 // agent row's or a group's Mark All Read (docs/specs/standing-agents.md
-// ruling 31). Each thread takes its own lock in turn, never two at once,
-// and each changed row is announced. It returns the rows it changed; a
-// thread that fails does not stop the rest, and the failures come back
-// joined, naming each thread.
+// ruling 31). Repeated ids count once, and a call names at most
+// store.MarkThreadsReadLimit threads. The stamps are one store transaction
+// that takes no thread lock: each is a single conditional row write whose
+// statement itself skips a thread this computer may not change, which is
+// what MarkThreadRead's lock and CheckMutable guard. Each changed row is
+// announced, and the call returns them; a thread that is gone or not
+// changeable here is an error naming it, after the rest are marked.
 //
 //ao:scope threads:operate
 //ao:route home
 func (a *App) MarkThreadsRead(ids []string) ([]store.Thread, error) {
-	changedRows := make([]store.Thread, 0, len(ids))
-	var errs []error
-	for _, id := range ids {
-		row, changed, err := a.markThreadReadLocked(id)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("mark %s read: %w", id, err))
-			continue
-		}
-		if changed {
-			changedRows = append(changedRows, row)
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
+	defer cancel()
+	rows, refused, err := a.threadApplication().MarkReadMany(ctx, ids)
+	if err != nil {
+		return nil, err
 	}
-	return changedRows, errors.Join(errs...)
+	for _, row := range rows {
+		a.announceThreadIfChanged(triage.ThreadActionFull, row.ID, true)
+	}
+	if len(refused) > 0 {
+		return rows, fmt.Errorf("mark threads read: %d not found or not changeable on this computer: %s",
+			len(refused), strings.Join(refused, ", "))
+	}
+	return rows, nil
 }
 
 // markThreadReadLocked is one thread's stamp under its mutation lock, with
