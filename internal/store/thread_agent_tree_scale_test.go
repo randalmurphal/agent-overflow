@@ -171,7 +171,8 @@ func TestAgentTreeMarksCascadeAtScale(t *testing.T) {
 	if testing.Short() {
 		t.Skip("seeds 5,000 spawned threads")
 	}
-	t.Parallel()
+	// Serial: the bound is wall time, which the package's parallel tests
+	// would share.
 	const spawns = 5_000
 	s := newTestStore(t)
 	chain := []string{"chief", "manager", "lead", "worker", "busy"}
