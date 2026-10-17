@@ -63,6 +63,10 @@ export class BootstrapRejectedError extends Error {
 // than "try again later".
 const CREDENTIAL_REFUSED_STATUSES = new Set([401, 403, 404]);
 
+/** Bounds one attached computer's manifest fetch; the desktop proxy's
+ *  upstream bound (internal/backendproxy bootstrapFetchTimeout) matches. */
+export const BACKEND_MANIFEST_TIMEOUT_MS = 5_000;
+
 // The URL parameter carrying the one-time page ticket. Mirrors
 // transport.PageTicketParam (internal/transport/credential.go).
 const PAGE_TICKET_PARAM = 't';
@@ -497,11 +501,17 @@ export function validateWsUrl(
 // absolute (./manifestBackends.ts, `descriptorForAttachedId`) and the
 // check follows it, so the rule is the same sentence with a different
 // subject rather than an exemption.
+//
+// The whole exchange is bounded by BACKEND_MANIFEST_TIMEOUT_MS so a computer
+// that never answers fails its first connect onto the reconnect ladder
+// instead of reading as starting forever. The native shell bounds its own
+// route attempts.
 setBackendManifestFetcher(async (descriptor) => {
   const remote = originPartsOf(descriptor.bootstrapUrl);
   const path = new URL(descriptor.bootstrapUrl, window.location.href).pathname;
+  const signal = isNativeShell() ? undefined : AbortSignal.timeout(BACKEND_MANIFEST_TIMEOUT_MS);
   const resp = await fetchAuthenticatedManifest(
-    descriptor.bootstrapUrl, path, credentialsForUrl(descriptor.bootstrapUrl), descriptor.id,
+    descriptor.bootstrapUrl, path, credentialsForUrl(descriptor.bootstrapUrl), descriptor.id, signal,
   );
   const data = (await resp.json()) as Partial<Bootstrap>;
   const wsUrl = typeof data.wsUrl === 'string' ? data.wsUrl : descriptor.wsUrl;
