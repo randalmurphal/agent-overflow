@@ -109,24 +109,30 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 		hasOpenThreadRequestsSQL, "lead")
 }
 
-// Neither tree statement compiles again on a rebind on a connection that
-// ran it before ANALYZE wrote statistics and runs it again after.
+// Neither tree statement compiles again on a rebind once ANALYZE has
+// written statistics: each is compiled after ANALYZE, before and after the
+// other on one connection, and run with a new window each time. With
+// statistics the planner reads a bound value it compares with an indexed
+// column, and a plan that read one expires at every rebind.
 func TestThreadAgentTreeCompilesOnceWithStatistics(t *testing.T) {
 	t.Parallel()
 	for _, shape := range []agentTreeShape{
 		{history: 5_000, open: 2_000, spawns: 2_000},
 		{history: 50_000, open: 200, spawns: 5_000, openSpawns: 2_000, deep: 500, busy: 2_000},
 	} {
-		t.Run(shape.String(), func(t *testing.T) {
-			t.Parallel()
-			compilesOnceWithStatistics(t, shape)
-		})
+		for _, namedFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%v, named first %v", shape, namedFirst), func(t *testing.T) {
+				t.Parallel()
+				compilesOnceWithStatistics(t, shape, namedFirst)
+			})
+		}
 	}
 }
 
-func compilesOnceWithStatistics(t *testing.T, shape agentTreeShape) {
+func compilesOnceWithStatistics(t *testing.T, shape agentTreeShape, namedFirst bool) {
 	s := newTestStore(t)
 	chief, since := agentTreeSpawnHistory(t, s, shape)
+	mustExec(t, s.db, `ANALYZE`)
 	ctx := context.Background()
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -137,39 +143,43 @@ func compilesOnceWithStatistics(t *testing.T, shape agentTreeShape) {
 			t.Error(err)
 		}
 	}()
-	reads := map[string][]any{
-		threadAgentTreeSQL(129): {chief, "[]", since, 4, 160},
-		threadAgentNamedRowsSQL: {chief, "[]", since, 4, 160, `["recent-000050","open-000007"]`},
+	reads := []struct {
+		name, query string
+		args        []any
+	}{
+		{"the listing", threadAgentTreeSQL(129), []any{chief, "[]", since, 4, 160}},
+		{"the named read", threadAgentNamedRowsSQL, []any{chief, "[]", since, 4, 160, `["recent-000050","deep-000100"]`}},
 	}
-	run := func(query string, args []any, shift int64) {
-		t.Helper()
-		args = slices.Clone(args)
-		args[2] = since + shift
-		rows, err := conn.QueryContext(ctx, query, args...)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for rows.Next() {
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			t.Fatal(err)
-		}
+	if namedFirst {
+		slices.Reverse(reads)
 	}
-	for query, args := range reads {
-		run(query, args, 0)
-	}
-	if _, err := conn.ExecContext(ctx, `ANALYZE`); err != nil {
-		t.Fatal(err)
-	}
-	before := len(recompilingStatements())
-	for shift := range int64(3) {
-		for query, args := range reads {
-			run(query, args, shift)
-		}
-	}
-	for _, found := range recompilingStatements()[before:] {
-		if _, ours := reads[found.query]; ours {
-			t.Errorf("compiles again on a rebind after ANALYZE (%s):\n%s", found.site, found.query)
+	for _, read := range reads {
+		for shift := range int64(3) {
+			args := slices.Clone(read.args)
+			args[2] = since + shift
+			rows, err := conn.QueryContext(ctx, read.query, args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+			}
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				t.Fatal(err)
+			}
+			cache := cacheOf(t, conn)
+			cache.mu.Lock()
+			el, ok := cache.entries[read.query]
+			cache.mu.Unlock()
+			if !ok {
+				t.Fatalf("%s is not cached", read.name)
+			}
+			recompiles, err := cachedStmtRecompiles(el.Value.(*cachedStmt).stmt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recompiles {
+				t.Fatalf("%s compiles again on its rebind %d after ANALYZE", read.name, shift+1)
+			}
 		}
 	}
 }

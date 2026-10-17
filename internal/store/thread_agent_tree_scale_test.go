@@ -55,22 +55,7 @@ func agentTreeSpawnHistory(t *testing.T, s *Store, shape agentTreeShape) (chief 
 		created++
 	}
 	if shape.busy > 0 {
-		columns, err := s.db.Query(`SELECT name FROM pragma_table_info('threads') WHERE name <> 'id'`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var names []string
-		for columns.Next() {
-			var name string
-			if err := columns.Scan(&name); err != nil {
-				t.Fatal(err)
-			}
-			names = append(names, name)
-		}
-		if err := columns.Close(); err != nil {
-			t.Fatal(err)
-		}
-		list := strings.Join(names, ", ")
+		list := agentTreeThreadColumns(t, s)
 		mustExec(t, s.db, `WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1)
 			INSERT INTO threads (id, `+list+`) SELECT printf('busy-%06d', i), `+list+` FROM seq, threads WHERE threads.id = ?2`,
 			shape.busy, chief)
@@ -177,4 +162,66 @@ func TestListThreadAgentTreeAtScale(t *testing.T) {
 			t.Logf("%s: %s", name, report)
 		}
 	}
+}
+
+// Deleting a thread that holds 5,000 open local spawns, four spawns below
+// a chief, settles each one's marks up the chain in the delete's cascade
+// within 1 s, and leaves the marks the walk finds.
+func TestAgentTreeMarksCascadeAtScale(t *testing.T) {
+	if testing.Short() {
+		t.Skip("seeds 5,000 spawned threads")
+	}
+	t.Parallel()
+	const spawns = 5_000
+	s := newTestStore(t)
+	chain := []string{"chief", "manager", "lead", "worker", "busy"}
+	for i, id := range chain {
+		mustCreateThread(t, s, id)
+		if i > 0 {
+			seedAgentRequest(t, s, "spawn-"+id, chain[i-1], ThreadRequestSpawn, id, false, int64(i))
+		}
+	}
+	mustExec(t, s.db, `WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1)
+		INSERT INTO threads (id, `+agentTreeThreadColumns(t, s)+`) SELECT printf('child-%06d', i), `+agentTreeThreadColumns(t, s)+`
+		  FROM seq, threads WHERE threads.id = 'busy'`, spawns)
+	mustExec(t, s.db, `WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1)
+		INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, created_at, updated_at)
+		SELECT printf('open-spawn-%06d', i), 'busy', 'spawn', printf('child-%06d', i), 'running', 10 + i, 10 + i FROM seq`, spawns)
+	var marks [agentOpenDepth]int64
+	if err := s.db.QueryRow(`SELECT open_below_0, open_below_1, open_below_2, open_below_3 FROM thread_requests WHERE token = 'spawn-manager'`).
+		Scan(&marks[0], &marks[1], &marks[2], &marks[3]); err != nil || marks != [agentOpenDepth]int64{1, 1, 1, spawns} {
+		t.Fatalf("the manager's spawn carries %v, %v; want the busy thread's %d spawns at depth 3", marks, err, spawns)
+	}
+	start := time.Now()
+	if err := s.DeleteThread("busy"); err != nil {
+		t.Fatal(err)
+	}
+	took := time.Since(start)
+	t.Logf("deleting a thread with %d open local spawns took %v", spawns, took)
+	if took > time.Second {
+		t.Errorf("the delete took %v; at most 1s", took)
+	}
+	assertAgentTreeMarks(t, s.db, "after the delete")
+}
+
+// agentTreeThreadColumns is every column of threads but id, for copying a
+// thread's row.
+func agentTreeThreadColumns(t *testing.T, s *Store) string {
+	t.Helper()
+	columns, err := s.db.Query(`SELECT name FROM pragma_table_info('threads') WHERE name <> 'id'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for columns.Next() {
+		var name string
+		if err := columns.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	if err := columns.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(names, ", ")
 }

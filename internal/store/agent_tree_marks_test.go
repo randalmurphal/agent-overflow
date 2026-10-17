@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"slices"
 	"testing"
@@ -328,5 +329,58 @@ func TestAgentTreeMarksCheckFindsAMissedWriter(t *testing.T) {
 	}
 	if !missed {
 		t.Fatal("400 writes without the delete trigger left the marks as the walk finds them; the check proves nothing")
+	}
+}
+
+// A spawn that names a thread with open work below it already carries that
+// work to every spawn above it, each count at its own depth: inserted with
+// its target, and named after its insert. The thread four spawns down has
+// one open send, the one below it two, then three, then four, so a count
+// moved to the wrong depth is seen.
+func TestAgentTreeMarksCarryANamedSubtreeUpTheChain(t *testing.T) {
+	t.Parallel()
+	for _, named := range []bool{false, true} {
+		t.Run(fmt.Sprintf("named after insert %v", named), func(t *testing.T) {
+			t.Parallel()
+			s := newTestStore(t)
+			for _, id := range []string{"root", "a", "b", "x", "y", "z", "w", "peer"} {
+				mustCreateThread(t, s, id)
+			}
+			seedAgentRequest(t, s, "root-a", "root", ThreadRequestSpawn, "a", false, 1)
+			settleAgentRequest(t, s, "root-a", 2)
+			seedAgentRequest(t, s, "a-b", "a", ThreadRequestSpawn, "b", false, 3)
+			settleAgentRequest(t, s, "a-b", 4)
+			for i, link := range [][2]string{{"x", "y"}, {"y", "z"}, {"z", "w"}} {
+				token := link[0] + "-" + link[1]
+				seedAgentRequest(t, s, token, link[0], ThreadRequestSpawn, link[1], false, int64(10+i))
+				settleAgentRequest(t, s, token, int64(20+i))
+			}
+			for depth, thread := range []string{"x", "y", "z", "w"} {
+				for i := range depth + 1 {
+					seedAgentRequest(t, s, fmt.Sprintf("%s-open-%d", thread, i), thread, ThreadRequestSend, "peer", true, int64(30+i))
+				}
+			}
+			if named {
+				seedAgentRequest(t, s, "b-x", "b", ThreadRequestSpawn, "", false, 40)
+				if _, err := s.SetThreadRequestTarget("b-x", "", "x", "", ""); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				seedAgentRequest(t, s, "b-x", "b", ThreadRequestSpawn, "x", false, 40)
+			}
+			settleAgentRequest(t, s, "b-x", 41)
+			want := map[string][agentOpenDepth]int64{
+				"b-x":    {1, 2, 3, 4},
+				"a-b":    {0, 1, 2, 3},
+				"root-a": {0, 0, 1, 2},
+				"x-y":    {2, 3, 4, 0},
+				"y-z":    {3, 4, 0, 0},
+				"z-w":    {4, 0, 0, 0},
+			}
+			if got := agentTreeMarks(t, s.db); !maps.Equal(got, want) {
+				t.Fatalf("marks %v; want %v", got, want)
+			}
+			assertAgentTreeMarks(t, s.db, "after the spawn named x")
+		})
 	}
 }

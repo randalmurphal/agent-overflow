@@ -361,10 +361,36 @@ func TestListNestedOpenRemoteSpawnsPagesFromTheLastRow(t *testing.T) {
 
 // A local spawn may not reach its caller or a thread within four spawns
 // above it: the marks count a path once only while no spawn repeats on it.
-// A cycle five spawns long is kept, and its marks stay exact.
+// Each back edge goes to the root of a chain k spawns long, which no spawn
+// reaches, so only the guard's check at that distance refuses it, at insert
+// and when an update makes a send a spawn. A cycle five spawns long is
+// kept, and its marks stay exact.
 func TestASpawnCycleWithinTheMarkDepthIsRefused(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
+	refused := func(what string, err error) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), "reaches a thread above its caller") {
+			t.Fatalf("%s: %v; want the cycle refused", what, err)
+		}
+	}
+	for k := range agentOpenDepth {
+		chain := []string{fmt.Sprintf("k%d-root", k)}
+		mustCreateThread(t, s, chain[0])
+		for i := 1; i <= k; i++ {
+			chain = append(chain, fmt.Sprintf("k%d-t%d", k, i))
+			mustCreateThread(t, s, chain[i])
+			seedAgentRequest(t, s, fmt.Sprintf("k%d-s%d", k, i), chain[i-1], ThreadRequestSpawn, chain[i], false, int64(100+i))
+		}
+		bottom, root := chain[k], chain[0]
+		refused(fmt.Sprintf("a spawn %d spawns below its target", k), s.InsertThreadRequest(ThreadRequest{
+			Token: fmt.Sprintf("k%d-back", k), CallerThreadID: bottom, Kind: ThreadRequestSpawn,
+			TargetThreadID: root, State: ThreadRequestRunning, CreatedAt: 200, UpdatedAt: 200}))
+		send := fmt.Sprintf("k%d-send", k)
+		seedAgentRequest(t, s, send, bottom, ThreadRequestSend, root, true, 210)
+		_, err := s.db.Exec(`UPDATE thread_requests SET kind = 'spawn', notify = 0 WHERE token = ?`, send)
+		refused(fmt.Sprintf("a send %d spawns below its target made a spawn", k), err)
+	}
 	chain := []string{"c0", "c1", "c2", "c3", "c4"}
 	for _, id := range chain {
 		mustCreateThread(t, s, id)
@@ -372,18 +398,7 @@ func TestASpawnCycleWithinTheMarkDepthIsRefused(t *testing.T) {
 	for i := 1; i < len(chain); i++ {
 		seedAgentRequest(t, s, fmt.Sprintf("s%d", i), chain[i-1], ThreadRequestSpawn, chain[i], false, int64(100+i))
 	}
-	for i := 1; i < len(chain); i++ {
-		err := s.InsertThreadRequest(ThreadRequest{Token: fmt.Sprintf("back-%d", i), CallerThreadID: chain[i], Kind: ThreadRequestSpawn,
-			TargetThreadID: chain[i-1], State: ThreadRequestRunning, CreatedAt: 200, UpdatedAt: 200})
-		if err == nil || !strings.Contains(err.Error(), "reaches a thread above its caller") {
-			t.Fatalf("a spawn from %s to %s: %v; want the cycle refused", chain[i], chain[i-1], err)
-		}
-	}
 	seedAgentRequest(t, s, "to-self", "c4", ThreadRequestSend, "c4", true, 210)
-	if _, err := s.db.Exec(`UPDATE thread_requests SET kind = 'spawn', notify = 0 WHERE token = 'to-self'`); err == nil ||
-		!strings.Contains(err.Error(), "reaches a thread above its caller") {
-		t.Fatalf("a send turned into a spawn of its caller: %v; want the cycle refused", err)
-	}
 	seedAgentRequest(t, s, "c4-c0", "c4", ThreadRequestSpawn, "c0", false, 220)
 	assertAgentTreeMarks(t, s.db, "a cycle of five spawns")
 	for _, token := range []string{"c4-c0", "to-self", "s1", "s2", "s3", "s4"} {

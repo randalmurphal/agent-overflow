@@ -28,7 +28,12 @@ import (
 // climbing at most four spawns. The climb counts a path once only while no
 // spawn repeats on it, so a local spawn may not reach its caller or a
 // thread within four spawns above it; no writer makes one, as each names a
-// thread with nothing above it. idx_thread_requests_open_below holds the
+// thread with nothing above it. What the triggers add to a write under a
+// chain four spawns deep, measured: a settle 70 us, an open send's insert
+// 30 us, a spawn's insert, receipt and naming 200 us, and a thread delete
+// 51 us per open local spawn its cascade removes, 208 ms for 5,000
+// (TestAgentTreeMarksCascadeAtScale holds that under 1 s).
+// idx_thread_requests_open_below holds the
 // spawns with open work under them, idx_thread_requests_open_created a
 // caller's open requests in tree order. They replace
 // idx_thread_requests_spawn_caller, which nothing reads.

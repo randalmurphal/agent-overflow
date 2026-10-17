@@ -19,6 +19,16 @@ import (
 // (open_below_0 to open_below_3, migration v157).
 const agentOpenDepth = 4
 
+// agentRootSQL and agentWindowSQL are the tree reads' root (?1) and settled
+// window (?3) as expressions rather than bare parameters: with statistics
+// the planner reads a bare parameter's bound value to weigh an index on the
+// column it is compared with, and a plan that read one compiles again on
+// every rebind (TestThreadAgentTreeCompilesOnceWithStatistics).
+const (
+	agentRootSQL   = `CAST(?1 AS TEXT)`
+	agentWindowSQL = `CAST(?3 AS INTEGER)`
+)
+
 // ThreadAgentRequest is a request as the Agents segment lists it. Its
 // ThreadRequest carries neither the answer nor the late reply, which a row
 // never shows whole: AnswerHead is the start of the newer of the two.
@@ -132,7 +142,7 @@ func (s *Store) ListThreadAgentTree(read ThreadAgentTreeRead) (_ []ThreadAgentRe
 func threadAgentTreeSQL(limit int) string {
 	n := strconv.Itoa(limit)
 	var seeds, steps []string
-	for _, arm := range agentRowArms("a", "?1") {
+	for _, arm := range agentRowArms("a", agentRootSQL) {
 		seeds = append(seeds, `SELECT r.token, 0, printf('%020d', r.created_at) || r.token || char(1), json_array(r.caller_thread_id),
            r.kind, r.target_computer_id, r.target_thread_id
       FROM thread_requests r
@@ -170,10 +180,7 @@ SELECT ` + threadAgentRequestColumns + `, tree.t_depth,
 // `up` climbs from each named row's caller to the root, one spawn a step
 // (idx_thread_requests_spawn_link), prefixing each spawn's part of the
 // listing's sort key: the row is listed when the row and every spawn above
-// it are, within the depth. The cost is the depth per named row. The climb
-// is held to its index: unheld, it reads the same index, but the package's
-// compile-once gate caught the statement compiling again on rebinds after
-// ANALYZE in some runs; no test reproduces that on every run.
+// it are, within the depth. The cost is the depth per named row.
 var threadAgentNamedRowsSQL = `WITH RECURSIVE
   up(token, at, depth, sort) AS (
     SELECT r.token, r.caller_thread_id, 0, printf('%020d', r.created_at) || r.token || char(1)
@@ -181,13 +188,13 @@ var threadAgentNamedRowsSQL = `WITH RECURSIVE
      WHERE r.token = json_each.value AND ` + agentRowListedSQL("r") + ` AND ` + agentRowKindSQL("r") + `
     UNION ALL
     SELECT up.token, sp.caller_thread_id, up.depth + 1, printf('%020d', sp.created_at) || sp.token || char(1) || up.sort
-      FROM up CROSS JOIN thread_requests sp INDEXED BY idx_thread_requests_spawn_link
-     WHERE up.at <> ?1 AND up.depth + 1 < ?4 AND ` + agentSpawnLinkSQL("sp") + ` AND sp.target_thread_id = up.at
+      FROM up CROSS JOIN thread_requests sp
+     WHERE up.at <> ` + agentRootSQL + ` AND up.depth + 1 < ?4 AND ` + agentSpawnLinkSQL("sp") + ` AND sp.target_thread_id = up.at
        AND ` + agentRowListedSQL("sp") + `)
 SELECT ` + threadAgentRequestColumns + `, up.depth,
        up.depth = ?4 - 1 AND ` + agentSpawnLinkSQL("r") + ` AND (` + agentRowsUnderSQL("r.target_thread_id") + `)
   FROM up CROSS JOIN thread_requests r
- WHERE up.at = ?1 AND r.token = up.token
+ WHERE up.at = ` + agentRootSQL + ` AND r.token = up.token
  ORDER BY up.sort`
 
 // agentArm is one arm of a read of a caller's rows: the index that reads
@@ -232,9 +239,9 @@ func agentRowArms(alias, caller string) []agentArm {
 	by := a + `caller_thread_id = ` + caller + ` AND `
 	return []agentArm{
 		{"idx_thread_requests_open_created", false, by + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL`},
-		{"idx_thread_requests_caller_settled", false, by + a + `lineage_only = 0 AND ` + a + `settled_at >= ?3`},
-		{"idx_thread_requests_open_below", true, by + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + ` AND ` + a + `settled_at < ?3`},
-		{"idx_thread_requests_nested_caller", true, by + nestedRemoteSpawnSQL(alias) + ` AND ` + a + `settled_at < ?3`},
+		{"idx_thread_requests_caller_settled", false, by + a + `lineage_only = 0 AND ` + a + `settled_at >= ` + agentWindowSQL},
+		{"idx_thread_requests_open_below", true, by + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL},
+		{"idx_thread_requests_nested_caller", true, by + nestedRemoteSpawnSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL},
 	}
 }
 
@@ -285,7 +292,7 @@ func agentRowKindSQL(alias string) string {
 // found by its key.
 func agentRowListedSQL(alias string) string {
 	a := alias + "."
-	return `(` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ?3
+	return `(` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ` + agentWindowSQL + `
          OR (` + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + `)
          OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)))`
 }
