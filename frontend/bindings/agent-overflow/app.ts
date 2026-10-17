@@ -3256,7 +3256,7 @@ export function MarkThreadUnread(id: string): $CancellablePromise<void> {
  */
 export function MarkThreadsRead(ids: string[]): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(1726279585, ids).then(($result: any) => {
-        return $$createType119($result);
+        return $$createType121($result);
     });
 }
 
