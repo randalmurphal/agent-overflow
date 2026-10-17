@@ -172,8 +172,8 @@ SELECT ` + threadAgentRequestColumns + `, tree.t_depth,
 // listing's sort key: the row is listed when the row and every spawn above
 // it are, within the depth. The cost is the depth per named row. The climb
 // is held to its index: unheld, it reads the same index, but the package's
-// compile-once gate has caught the statement compiling again on rebinds
-// after ANALYZE (TestListThreadAgentTreeAtScale).
+// compile-once gate caught the statement compiling again on rebinds after
+// ANALYZE in some runs; no test reproduces that on every run.
 var threadAgentNamedRowsSQL = `WITH RECURSIVE
   up(token, at, depth, sort) AS (
     SELECT r.token, r.caller_thread_id, 0, printf('%020d', r.created_at) || r.token || char(1)
