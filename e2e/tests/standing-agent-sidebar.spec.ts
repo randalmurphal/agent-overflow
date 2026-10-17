@@ -175,7 +175,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await chevron.click();
     await expect(agentRow).toHaveAttribute('data-expanded', 'false');
     await expect(page.locator('[data-agent-member]')).toHaveCount(0);
-    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('3');
+    // The count is the live children; the folded worker is in the footer.
+    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('2');
     await expect(state).toBeVisible();
     await capture(page, `${provider}-agent-folded.png`, agentRow);
     await agentRow.focus();
@@ -186,7 +187,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(agentRow).toHaveAttribute('data-expanded', 'false');
     await page.reload();
     await expect(agentRow).toHaveAttribute('data-expanded', 'false');
-    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('3');
+    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('2');
 
     // ---- A collapsed agent previews the focused child alone.
     await chevron.click();
@@ -194,7 +195,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(page.getByTestId('chat-header-title')).toHaveText('Worker B');
     await chevron.click();
     await expect.poll(() => memberIds(page)).toEqual([workerB]);
-    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('3');
+    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('2');
     await capture(page, `${provider}-agent-collapsed-preview.png`, agentRow, row(page, workerB));
     await chevron.click();
     await expect.poll(() => memberIds(page)).toHaveLength(2);
