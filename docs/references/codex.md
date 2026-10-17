@@ -306,7 +306,7 @@ The shape, from `ImportedExternalAgentSessionRecord` (serde derives with no
 
 ```json
 {"records": [{
-  "source_path": "/home/u/.claude/projects/-repo/<uuid>.jsonl",
+  "source_path": "/home/user/.claude/projects/-repo/<uuid>.jsonl",
   "content_sha256": "…", "imported_thread_id": "<codex thread uuid>",
   "imported_at": 1786133870, "source_modified_at": 1786133860000000000,
   "connector_names": ["linear"], "title": "Fix the parser"}],
