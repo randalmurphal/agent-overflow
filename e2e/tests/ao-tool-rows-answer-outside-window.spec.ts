@@ -45,15 +45,17 @@ for (const provider of ['claude', 'codex'] as const) {
     });
     const lead = seed.projects[0].threadIds[1];
     // The request settled and its wake was confirmed two minutes ago, past
-    // the listing's settled window.
+    // the listing's settled window, with the row the echo recorded
+    // (wake_item_id).
     const conn = new DatabaseSync(join(harness.bootstrap.dataDir, 'agent-overflow.db'));
     try {
       conn.exec('PRAGMA busy_timeout = 5000');
       const now = Date.now() - 120_000;
       conn.prepare(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, notify, state, answer, answer_kind,
-        settled_at, delivered_at, delivered_how, confirmed_at, created_at, updated_at)
-        VALUES (?, ?, 'send', ?, 1, 'finished', ?, 'final', ?, ?, 'queued', ?, ?, ?)`)
-        .run(token, lead, workerId, Buffer.from('Rebased.'), now, now, now, now - 60_000, now);
+        settled_at, delivered_at, delivered_how, confirmed_at, wake_item_id, created_at, updated_at)
+        VALUES (?, ?, 'send', ?, 1, 'finished', ?, 'final', ?, ?, 'queued', ?,
+          (SELECT id FROM items WHERE thread_id = ? AND kind = 'user_text' AND json_extract(meta, '$.sendId') = ?), ?, ?)`)
+        .run(token, lead, workerId, Buffer.from('Rebased.'), now, now, now, lead, `thread-wake:${token}`, now - 60_000, now);
     } finally {
       conn.close();
     }

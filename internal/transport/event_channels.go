@@ -1408,12 +1408,13 @@ var channelPolicies = []ChannelPolicy{
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsRead,
-		Why: "{threadId,id?,row?,removed?}: one spawn, send or ask a thread " +
-			"made of another thread changed (written, settled, re-targeted, " +
-			"waited on, delivered) or its target's turn, prompt, title or " +
-			"latest activity changed, with the row as it stands; no id is " +
-			"every request of the thread. Scope threads:read because " +
-			"ListThreadAgentRows, the pull half, carries it. NOT " +
+		Why: "{threadId,id?}: one spawn, send or ask a thread made of " +
+			"another thread changed (written, settled, re-targeted, waited " +
+			"on, delivered) or its target's turn, prompt, title or latest " +
+			"activity changed; no id is every request of the thread. The " +
+			"frame names the row and carries none of it: a reader reads " +
+			"the row (GetThreadAgentRows) or the list. Scope threads:read " +
+			"because ListThreadAgentRows, the pull half, carries it. NOT " +
 			"EntityFiltered: a pane lists the rows of threads its own " +
 			"thread spawned, which no pane may be watching. Never " +
 			"latest-only: the frames of different requests each carry " +

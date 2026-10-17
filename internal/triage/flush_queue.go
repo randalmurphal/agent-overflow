@@ -207,13 +207,21 @@ func (r *Router) SetFlushUserTextConfirmedHook(fn func(threadID string, item sto
 	r.mu.Unlock()
 }
 
+// ConsumedSend is a flush send the provider consumed: the timeline row that
+// carries it and the send ids it carries (all of a joined message's).
+type ConsumedSend struct {
+	ItemID  string
+	SendIDs []string
+}
+
 // SetFlushSendConsumedHook wires the app-layer callback that runs when the
-// provider consumes a flush send, with the send ids the send carries (all
-// of a joined message's). It runs on every confirmation source and never
-// on an interrupt's anchoring, under the thread's flush anchor lock and
-// often on the provider read loop: the same contract as
-// SetFlushUserTextConfirmedHook. Nil disables it.
-func (r *Router) SetFlushSendConsumedHook(fn func(threadID string, sendIDs []string)) {
+// provider consumes flush sends. It runs on every confirmation source and
+// never on an interrupt's anchoring, under the thread's flush anchor lock
+// and often on the provider read loop: the same contract as
+// SetFlushUserTextConfirmedHook. A queue-boundary merge reports its folded
+// members again with the row that now carries them, whether or not they
+// were reported before. Nil disables it.
+func (r *Router) SetFlushSendConsumedHook(fn func(threadID string, sends []ConsumedSend)) {
 	r.mu.Lock()
 	r.flushSendConsumed = fn
 	r.mu.Unlock()

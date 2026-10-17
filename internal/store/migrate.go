@@ -1749,6 +1749,8 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: lateDeliveryRouteMigrationVersion, Name: "late_delivery_route", SQL: lateDeliveryRouteV153SQL},
 	{Version: agentRecordsMigrationVersion, Name: "agent_records", SQL: agentRecordsV154SQL},
 	{Version: ledgerIndexesMigrationVersion, Name: "ledger_indexes", SQL: ledgerIndexesV155SQL, Rebuild: true},
+	{Version: wakeItemsMigrationVersion, Name: "wake_items", SQL: wakeItemsV156SQL, Fix: recordConfirmedWakeItems},
+	{Version: agentTreeMarksMigrationVersion, Name: "agent_tree_marks", SQL: agentTreeMarksV157SQL, Fix: fillAgentTreeMarks},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

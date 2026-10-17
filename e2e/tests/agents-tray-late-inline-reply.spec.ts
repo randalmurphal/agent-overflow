@@ -35,17 +35,21 @@ for (const provider of ['claude', 'codex'] as const) {
     const project = seed.projects[0];
     const lead = project.threadIds[0];
     // The send settled just now and its answer came by the confirmed wake
-    // above. The worker has since written a late reply; its wake is owed
-    // (notify, which keeps a send listed) but not due for an hour, so only
-    // the status call below delivers it.
+    // above, whose row the echo recorded (wake_item_id). The worker has
+    // since written a late reply; its wake is owed (notify, which keeps a
+    // send listed) but not due for an hour, so only the status call below
+    // delivers it.
     const conn = new DatabaseSync(join(harness.bootstrap.dataDir, 'agent-overflow.db'));
     try {
       conn.exec('PRAGMA busy_timeout = 5000');
       const now = Date.now();
       conn.prepare(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, target_thread_title, notify, state, answer, answer_kind,
-        settled_at, delivered_at, delivered_how, confirmed_at, late_reply, late_reply_at, revision, wake_next_check, created_at, updated_at)
-        VALUES (?, ?, 'send', ?, ?, 1, 'finished', ?, 'final', ?, ?, 'queued', ?, ?, ?, 2, ?, ?, ?)`)
-        .run(token, lead, workerId, WORKER, Buffer.from('Rebased.'), now, now, now, Buffer.from('Also ran the tests.'), now, now + 3_600_000, now - 60_000, now);
+        settled_at, delivered_at, delivered_how, confirmed_at, wake_item_id, late_reply, late_reply_at, revision, wake_next_check, created_at, updated_at)
+        VALUES (?, ?, 'send', ?, ?, 1, 'finished', ?, 'final', ?, ?, 'queued', ?,
+          (SELECT id FROM items WHERE thread_id = ? AND kind = 'user_text' AND json_extract(meta, '$.sendId') = ?),
+          ?, ?, 2, ?, ?, ?)`)
+        .run(token, lead, workerId, WORKER, Buffer.from('Rebased.'), now, now, now, lead, `thread-wake:${token}`,
+          Buffer.from('Also ran the tests.'), now, now + 3_600_000, now - 60_000, now);
     } finally {
       conn.close();
     }

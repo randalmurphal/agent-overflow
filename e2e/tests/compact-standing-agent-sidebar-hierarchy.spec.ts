@@ -10,7 +10,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { threadRows, type ThreadRow } from './thread-tools-helpers.js';
-import { capture } from './wake-rows-helpers.js';
+import { awaitSidebarSettled, capture } from './wake-rows-helpers.js';
 
 interface ThreadGroup {
   id: string;
@@ -73,6 +73,7 @@ test('bounded agent and group rows, a cross-project child and Mark All Read fit 
 
   await page.emulateMedia({ colorScheme: 'dark' });
   await harness.open(page);
+  await awaitSidebarSettled(page);
   const width = page.viewportSize()!.width;
   const agentRow = page.locator(`[data-sidebar-thread-id="${lead}"]`);
   const agentShell = page.locator('[data-testid="thread-row-shell"]', { has: agentRow });

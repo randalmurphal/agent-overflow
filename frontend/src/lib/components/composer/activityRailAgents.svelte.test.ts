@@ -86,7 +86,7 @@ describe('agents controller', () => {
     // settled row is shown.
     const { pane, controller, clock } = await mountAgents([row('child')]);
     clock.now = 0;
-    setBindingMock('ListThreadAgentRows', async () => ({ rows: [row('child', { state: 'finished', settledAt: Date.now() })], hidden: false }));
+    setBindingMock('GetThreadAgentRows', async () => [{ token: 'child', row: row('child', { state: 'finished', settledAt: Date.now() }), listed: true }]);
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'child' });
     await vi.advanceTimersByTimeAsync(500);
     clock.now = Date.now();
@@ -176,7 +176,7 @@ describe('agents controller', () => {
   it('keeps the identity of rows a read did not change', async () => {
     const { pane, controller } = await mountAgents([row('a'), row('b')]);
     const [a, b] = controller.rows;
-    setBindingMock('ListThreadAgentRows', async () => ({ rows: [row('a'), row('b', { activity: 'Reading' })], hidden: false }));
+    setBindingMock('GetThreadAgentRows', async () => [{ token: 'b', row: row('b', { activity: 'Reading' }), listed: true }]);
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'b' });
     await vi.advanceTimersByTimeAsync(500);
     expect(controller.rows[0]).toBe(a);
@@ -186,10 +186,12 @@ describe('agents controller', () => {
 
   it('reads again for its own thread and a nested caller, not another thread, and after a lost frame', async () => {
     const { pane, read } = await mountAgents([row('child'), row('grand', { callerThreadId: 't-child', depth: 1 })]);
+    const readRow = setBindingMock('GetThreadAgentRows', async (_id: string, tokens: string[]) => tokens.map((token) => ({ token, row: row(token), listed: true })));
     emitWailsEvent('thread:agent_rows_changed', { threadId: 'unrelated', id: 'x' });
     await vi.advanceTimersByTimeAsync(500);
     expect(read).toHaveBeenCalledTimes(1);
-    emitWailsEvent('thread:agent_rows_changed', { threadId: 't-child', id: 'grand' });
+    expect(readRow).not.toHaveBeenCalled();
+    emitWailsEvent('thread:agent_rows_changed', { threadId: 't-child', id: 'new' });
     await vi.advanceTimersByTimeAsync(500);
     expect(read).toHaveBeenCalledTimes(2);
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId });
@@ -198,6 +200,65 @@ describe('agents controller', () => {
     emitWailsEvent('transport:gap', { channel: 'thread:agent_rows_changed' }, '');
     await vi.advanceTimersByTimeAsync(500);
     expect(read).toHaveBeenCalledTimes(4);
+    expect(readRow).not.toHaveBeenCalled();
+  });
+
+  it('reads the rows a burst named in one read and keeps their places in the tree', async () => {
+    const { pane, read, controller } = await mountAgents([
+      row('child', { nestedHidden: true }),
+      row('grand', { callerThreadId: 't-child', depth: 1 }),
+    ]);
+    const readRows = setBindingMock('GetThreadAgentRows', async (_id: string, tokens: string[]) => tokens.map((token) => ({
+      token, row: row(token, { callerThreadId: token === 'grand' ? 't-child' : 'caller', activity: `Reading ${token}` }), listed: true,
+    })));
+    for (let i = 0; i < 20; i++) {
+      emitWailsEvent('thread:agent_rows_changed', { threadId: 't-child', id: 'grand' });
+      emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'child' });
+    }
+    await vi.advanceTimersByTimeAsync(500);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(readRows).toHaveBeenCalledTimes(1);
+    expect(readRows.mock.calls[0][0]).toBe(pane.threadId);
+    expect([...(readRows.mock.calls[0][1] as string[])].sort()).toEqual(['child', 'grand']);
+    expect(controller.rows.map((r) => [r.token, r.depth, r.nestedHidden ?? false, r.activity])).toEqual([
+      ['child', 0, true, 'Reading child'],
+      ['grand', 1, false, 'Reading grand'],
+    ]);
+  });
+
+  it('reads the list for a burst naming more rows than one row read takes', async () => {
+    const many = Array.from({ length: 128 }, (_, i) => row(`r${i}`));
+    const { pane, read } = await mountAgents(many);
+    const readRows = setBindingMock('GetThreadAgentRows', async (_id: string, tokens: string[]) => tokens.map((token) => ({ token, row: row(token), listed: true })));
+    for (const one of many) emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: one.token });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(readRows).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(2);
+    for (const one of many.slice(0, 2)) emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: one.token });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(readRows).toHaveBeenCalledTimes(1);
+    expect(readRows.mock.calls[0][1]).toEqual(['r0', 'r1']);
+  });
+
+  it('reads the list when a row read says the row left it, or the row is a paired computer\'s', async () => {
+    const { pane, read, controller } = await mountAgents([
+      row('child'),
+      row('remote', { computerId: 'box', computer: 'Box' }),
+      row('nested', { callerThreadId: 't-remote', depth: 1, ownerComputerId: 'box' }),
+    ]);
+    const readRow = setBindingMock('GetThreadAgentRows', async (_id: string, tokens: string[]) => tokens.map((token) => ({ token, listed: false })));
+    setBindingMock('ListThreadAgentRows', async () => ({ rows: [row('remote', { computerId: 'box', computer: 'Box' })], hidden: false }));
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'child' });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(readRow).toHaveBeenCalledTimes(1);
+    expect(controller.rows.map((r) => r.token)).toEqual(['remote']);
+    const listAgain = setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'remote' });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(listAgain).toHaveBeenCalledTimes(1);
+    expect(readRow).toHaveBeenCalledTimes(1);
+    void read;
   });
 
   it('lists an agent\'s queued message as incoming until it leaves the queue, and not a person\'s', async () => {
@@ -245,6 +306,7 @@ describe('agents controller', () => {
   it('keeps the last list through a failed read', async () => {
     const { pane, controller } = await mountAgents([row('child')]);
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setBindingMock('GetThreadAgentRows', async () => { throw new Error('row read failed'); });
     setBindingMock('ListThreadAgentRows', async () => { throw new Error('read failed'); });
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'child' });
     await vi.advanceTimersByTimeAsync(500);

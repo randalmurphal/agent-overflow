@@ -470,9 +470,10 @@ thread's session start finds it gone, the start fails with
 `errAssistantSessionGone` and the app runs New Thread, Same Assistant
 itself (`recoverAssistantSessionLoss`, unless a handoff of the assistant
 already runs, which takes the sends below the same way): a
-Claude or Claude TUI resume checks the transcript before anything is
-torn down (`requireAssistantClaudeSession`, `sessionfork.LocateSessionFile`,
-the check the workflow runner's resume makes), and a Codex start's
+provider whose capabilities name a transcript to check (Claude and Claude
+TUI, `provider.ClaudeProjectsTranscript`) has it checked before anything
+is torn down (`requireAssistantSession`, `sessionfork.ResumeTranscriptGone`,
+the lookup the workflow runner's resume makes), and a Codex start's
 `thread/resume` refusal (`codex.IsThreadNotFound`, the workflow runner's
 signal) marks it. The successor's opening block says the provider
 cleaned up the previous thread's session, names that thread's id, says
@@ -1081,9 +1082,9 @@ closes up their spacing so the row holds at a phone width.
   running target's latest activity is a second line; the chevron opens the
   row's digest: the activity, what it is blocked on in full, the last
   message in the thread (a request without the footer the app appended)
-  and the answer once it settled. State comes from
-  the thread tools' own derivation (`requestStateView`); reading never
-  delivers an answer.
+  and the answer once it settled. State comes from the thread tools' own
+  derivation (`requestStateFrom`, which `requestStateView` runs for
+  `thread_status`); reading never delivers an answer.
 - **Nesting.** A spawned thread's own rows nest under its row, as provider
   subagents nest under theirs, four levels deep; a row at the bound whose
   thread has agents of its own says so. A settled spawn stays listed while
@@ -1161,13 +1162,42 @@ closes up their spacing so the row holds at a phone width.
   that predates the calls has the request cancelled and the turn
   interrupted, and the row and the Stop's toast say its own work was not
   shown or stopped.
-- **Live updates.** `ListThreadAgentRows` is read when the thread opens,
-  after a reconnect or a lost frame, and on each
-  `thread:agent_rows_changed` frame naming the thread or a thread its list
-  nests. The backend sends one after every change to a request, to the
-  target a running request works in, and to a wait parked on one,
-  coalesced off the emit path. Reads go through the rate-bounded refresh
-  scheduler.
+- **Live updates.** The backend sends `thread:agent_rows_changed` after
+  every change to a request, to the target a running request works in,
+  and to a wait parked on one, coalesced off the emit path: one statement
+  names the callers of a batch. The frame names the caller and the
+  request and carries no row. `ListThreadAgentRows` is read when the
+  thread opens, after a reconnect or a lost frame, and on a frame naming
+  the thread or a thread its list nests that is not about a local row the
+  pane lists: a new row, a frame about every request of a caller, a row a
+  paired computer listed or a spawn on one. Frames about local rows the
+  pane lists read those rows alone, up to 32 per read
+  (`GetThreadAgentRows`), and the pane keeps each row's place, depth and
+  nesting marks; past 32, or when the read says a row is no longer
+  listed, the pane reads the list. Reads go through the rate-bounded
+  refresh scheduler, so a burst of frames is one read.
+- **Reads.** A listing is a constant number of statements whatever the
+  tree's size: the tree's shape with each row's depth in one recursive
+  read, the listed rows in one, the targets' titles and providers in one,
+  their last messages in one. Each thread's rows are read by caller in
+  four arms, open, settled inside the window, local spawns kept for open
+  work and remote spawns with open work, each through its own index and
+  each taking at most the row limit, and the recursion stops at the limit,
+  so the cost follows the listed rows and the depth, not the threads'
+  settled history, their open spawns or the open work of threads outside
+  the tree, whatever statistics the database holds. A local spawn is kept
+  for open work by counts it carries of the open work up to four spawns
+  below its target, which the ledger keeps in the transaction of every
+  write to a request. A thread is reached by at most one local spawn, so
+  a read of named rows climbs from each row to the listed thread, one
+  spawn a step, and gives each row the listing's place, wherever it falls
+  against the row limit; the rows and their targets are read for those
+  rows alone. A row
+  carries the head of its answer (what the row shows), never the whole
+  answer or the late reply, and names its wake item from the request
+  (`thread_requests.wake_item_id`, `late_wake_item_id`, recorded when the
+  echo confirms the wake), not by a send-id lookup. A tool row's state
+  read (`GetThreadRequestStates`) is one statement for all its tokens.
 
 #### Agent thread companion
 

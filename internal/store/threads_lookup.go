@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -261,6 +262,42 @@ func (s *Store) ListThreadLastMessages(threadIDs []string, cutAt string) (map[st
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate thread last messages: %w", err)
+	}
+	return out, nil
+}
+
+// ThreadName is what a row naming another thread shows of it.
+type ThreadName struct {
+	Title    string
+	Provider string
+}
+
+// ThreadNames reads the title and provider of each of ids that has a row,
+// in one statement.
+func (s *Store) ThreadNames(ids []string) (_ map[string]ThreadName, err error) {
+	out := make(map[string]ThreadName, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: encode thread ids for their names: %w", err)
+	}
+	rows, err := s.reader().Query(`SELECT t.id, t.title, t.provider FROM json_each(?) j CROSS JOIN threads t WHERE t.id = j.value`, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("store: read thread names: %w", err)
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var id string
+		var name ThreadName
+		if err := rows.Scan(&id, &name.Title, &name.Provider); err != nil {
+			return nil, fmt.Errorf("store: scan a thread name: %w", err)
+		}
+		out[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read thread names: %w", err)
 	}
 	return out, nil
 }

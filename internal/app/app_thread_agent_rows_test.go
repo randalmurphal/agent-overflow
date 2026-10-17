@@ -199,6 +199,76 @@ func TestThreadAgentRowsBoundTheirDepthAndCycles(t *testing.T) {
 	}
 }
 
+// A row reads as the listing shows it, at its depth under the thread that
+// reads it: within the listing's depth, made here by that thread or a
+// thread its spawns made, and still listed. Any other reads as not
+// listed.
+func TestThreadAgentRowReadsOneListedRow(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	chain := []string{f.caller.ID}
+	for range threadAgentRowDepth + 1 {
+		chain = append(chain, f.plainThread(t).ID)
+	}
+	for index := 0; index+1 < len(chain); index++ {
+		f.seedAgentRow(t, "chain-"+string(rune('a'+index)), chain[index], store.ThreadRequestSpawn, chain[index+1], false)
+	}
+	peer := f.plainThread(t)
+	f.seedAgentRow(t, "quiet", f.caller.ID, store.ThreadRequestSend, peer.ID, false)
+	f.seedAgentRow(t, "owed", chain[1], store.ThreadRequestSend, peer.ID, true)
+	listing := f.agentRows(t, f.caller.ID).Rows
+	depths := map[string]int{}
+	for _, row := range listing {
+		depths[row.Token] = row.Depth
+	}
+	if depths["chain-d"] != 3 || depths["owed"] != 1 {
+		t.Fatalf("the listing places chain-d at %d and owed at %d; want 3 and 1", depths["chain-d"], depths["owed"])
+	}
+	read := func(threadID, token string) ThreadAgentRowRead {
+		t.Helper()
+		got, err := f.app.GetThreadAgentRows(threadID, []string{token})
+		if err != nil || len(got) != 1 || got[0].Token != token {
+			t.Fatalf("GetThreadAgentRows(%s) = %+v, %v", token, got, err)
+		}
+		return got[0]
+	}
+	for _, want := range listing {
+		got := read(f.caller.ID, want.Token)
+		if !got.Listed || got.Row == nil {
+			t.Fatalf("%s reads as not listed", want.Token)
+		}
+		if *got.Row != want {
+			t.Fatalf("%s reads\n %+v\nwant the listing's\n %+v", want.Token, *got.Row, want)
+		}
+	}
+	// Read together, in the order asked, with what is not listed named.
+	tokens := append(agentRowTokens(listing), "quiet")
+	slices.Reverse(tokens)
+	batch, err := f.app.GetThreadAgentRows(f.caller.ID, tokens)
+	if err != nil || len(batch) != len(tokens) {
+		t.Fatalf("GetThreadAgentRows = %d reads, %v", len(batch), err)
+	}
+	for i, got := range batch {
+		if got.Token != tokens[i] || got.Listed != (got.Token != "quiet") {
+			t.Fatalf("read %d = %+v; want %s", i, got, tokens[i])
+		}
+	}
+	if _, err := f.app.GetThreadAgentRows(f.caller.ID, make([]string, maxThreadAgentRowReads+1)); err == nil {
+		t.Fatal("an oversized read was answered")
+	}
+	for _, token := range []string{"quiet", "chain-e", "missing"} {
+		if got := read(f.caller.ID, token); got.Listed || got.Row != nil {
+			t.Fatalf("%s reads as listed: %+v", token, got)
+		}
+	}
+	if got := read(peer.ID, "owed"); got.Listed {
+		t.Fatalf("a thread outside the lineage read %+v", got)
+	}
+	if got := read(chain[1], "owed"); !got.Listed || got.Row.Depth != 0 {
+		t.Fatalf("the caller's own read = %+v", got)
+	}
+}
+
 // A person's Stop on a spawn cancels the request with the wake left armed,
 // so the agent is told in words that name the user, and stops the work.
 func TestThreadAgentRowStopCancelsForTheUser(t *testing.T) {
@@ -266,16 +336,22 @@ func TestThreadAgentRowStopInterruptsOnlyASpawnedThread(t *testing.T) {
 			t.Parallel()
 			f := newRequestFixture(t)
 			interrupted := f.mockClaudeRecordingInterrupts(t, "busy with someone else's work")
-			// Another thread's request keeps the target's turn running.
+			// The caller's spawn keeps the target's turn running. A thread
+			// is spawned once, so the spawn row is that one; a stranger's
+			// send to the thread is someone else's.
 			busy := f.runningRequest(t, "someone else's work")
-			stranger := f.plainThread(t)
-			f.seedAgentRow(t, "row", stranger.ID, tc.kind, busy.ThreadID, true)
+			caller, token := f.caller.ID, busy.Token
+			if tc.kind == store.ThreadRequestSend {
+				stranger := f.plainThread(t)
+				f.seedAgentRow(t, "row", stranger.ID, tc.kind, busy.ThreadID, true)
+				caller, token = stranger.ID, "row"
+			}
 			waitUntil(t, 10*time.Second, func() bool {
 				live, err := f.adapter().LiveState(t.Context(), busy.ThreadID)
 				return err == nil && live.ActiveTurn
 			})
 
-			stop, err := f.app.StopThreadAgentRow(t.Context(), stranger.ID, "row")
+			stop, err := f.app.StopThreadAgentRow(t.Context(), caller, token)
 			if err != nil || stop.Outcome != threadAgentStopped {
 				t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
 			}
@@ -615,63 +691,78 @@ func TestThreadAgentRowsChangesAreEmitted(t *testing.T) {
 	f.watchAgentRows()
 	f.mockClaudeHoldingTheTurn(t, "working")
 	ack := f.runningRequest(t, "rerun the deploy")
-	frame := func(want func(ThreadAgentRowChange) bool) ThreadAgentRowChange {
-		t.Helper()
-		var found ThreadAgentRowChange
-		waitUntil(t, 10*time.Second, func() bool {
-			f.bus.mu.Lock()
-			defer f.bus.mu.Unlock()
-			for _, event := range f.bus.all {
-				if event.Name != "thread:agent_rows_changed" {
-					continue
-				}
-				change, ok := event.Data.(ThreadAgentRowChange)
-				if ok && want(change) {
-					found = change
-					return true
-				}
+	frames := func() int {
+		f.bus.mu.Lock()
+		defer f.bus.mu.Unlock()
+		n := 0
+		for _, event := range f.bus.all {
+			if event.Name != "thread:agent_rows_changed" {
+				continue
 			}
-			return false
+			change, ok := event.Data.(ThreadAgentRowChange)
+			if !ok {
+				t.Fatalf("frame data %T", event.Data)
+			}
+			if change.ID == ack.Token {
+				if change.ThreadID != f.caller.ID {
+					t.Fatalf("frame addressed to %q; want the caller", change.ThreadID)
+				}
+				n++
+			}
+		}
+		return n
+	}
+	// after waits for a frame naming the request past those seen before,
+	// and for the row it names to read as want says.
+	after := func(seen int, want func(ThreadAgentRow) bool) ThreadAgentRow {
+		t.Helper()
+		var row ThreadAgentRow
+		waitUntil(t, 10*time.Second, func() bool {
+			if frames() <= seen {
+				return false
+			}
+			reads, err := f.app.GetThreadAgentRows(f.caller.ID, []string{ack.Token})
+			if err != nil {
+				t.Fatalf("GetThreadAgentRows: %v", err)
+			}
+			read := reads[0]
+			if !read.Listed || read.Row == nil {
+				return false
+			}
+			row = *read.Row
+			return want(row)
 		})
-		return found
+		return row
 	}
-	running := frame(func(c ThreadAgentRowChange) bool {
-		return c.ID == ack.Token && c.Row != nil && c.Row.State == threadtools.RequestRunning
-	})
-	if running.ThreadID != f.caller.ID {
-		t.Fatalf("frame addressed to %q; want the caller", running.ThreadID)
-	}
+	after(0, func(r ThreadAgentRow) bool { return r.State == threadtools.RequestRunning })
 
 	approval, err := json.Marshal(provider.ApprovalRequest{RequestID: "approval-1", ToolName: "Bash", Description: "rm -rf build", Kind: "command"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	seen := frames()
 	if err := f.app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventApprovalRequest, ThreadID: ack.ThreadID, ItemID: "approval-1", Meta: approval, Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("approval request: %v", err)
 	}
-	blocked := frame(func(c ThreadAgentRowChange) bool {
-		return c.ID == ack.Token && c.Row != nil && c.Row.State == threadtools.RequestBlocked
-	})
-	if blocked.Row.BlockedOn != "approval" || !strings.Contains(blocked.Row.BlockedDetail, "Bash") {
-		t.Fatalf("blocked row = %+v; want what it is blocked on", blocked.Row)
+	blocked := after(seen, func(r ThreadAgentRow) bool { return r.State == threadtools.RequestBlocked })
+	if blocked.BlockedOn != "approval" || !strings.Contains(blocked.BlockedDetail, "Bash") {
+		t.Fatalf("blocked row = %+v; want what it is blocked on", blocked)
 	}
 
 	// A rename reaches the row through the target's thread:updated frame.
+	seen = frames()
 	if err := f.app.RenameThread(ack.ThreadID, "Deploy rerun"); err != nil {
 		t.Fatalf("RenameThread: %v", err)
 	}
-	frame(func(c ThreadAgentRowChange) bool {
-		return c.ID == ack.Token && c.Row != nil && c.Row.Title == "Deploy rerun"
-	})
+	after(seen, func(r ThreadAgentRow) bool { return r.Title == "Deploy rerun" })
 
+	seen = frames()
 	if _, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token); err != nil {
 		t.Fatalf("StopThreadAgentRow: %v", err)
 	}
-	frame(func(c ThreadAgentRowChange) bool {
-		return c.ID == ack.Token && c.Row != nil && c.Row.State == threadtools.RequestCancelled
-	})
+	after(seen, func(r ThreadAgentRow) bool { return r.State == threadtools.RequestCancelled })
 }
 
 // The thread's own Stop ends its turn and leaves the threads it is waiting

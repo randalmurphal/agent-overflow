@@ -16,7 +16,6 @@ import { clearThreadStatus, projectSendResolved, projectSendStarted, setThreadSt
 import { __resetItemProjectionSourceCacheForTest } from '../../utils/itemProjectionSource.svelte';
 import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
 import type { Item } from '../../types/models';
-import type { ThreadAgentRow } from '../../stores/bindings';
 import { __resetAgentRequestAnswersForTest } from '../../stores/agentRequestAnswers.svelte';
 import { applyThreadAgentRowsChanged, applyThreadAgentRowsGap } from '../../stores/eventsThreadAgentRows';
 
@@ -75,7 +74,7 @@ function ledger(wakes: Record<string, string>) {
 
 /** A change frame for TOKEN, as the backend sends it when the request changes. */
 function frameFor(threadId = THREAD) {
-  applyThreadAgentRowsChanged({ threadId, id: TOKEN, row: { token: TOKEN, callerThreadId: threadId } as ThreadAgentRow }, 'home');
+  applyThreadAgentRowsChanged({ threadId, id: TOKEN }, 'home');
 }
 
 const spawnAck = JSON.stringify({

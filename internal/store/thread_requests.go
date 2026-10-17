@@ -237,21 +237,35 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     target_provider, nested_open, late_delivered_how, made_in_thread_id`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
+	return scanThreadRequestWith(row, nil, nil)
+}
+
+// scanThreadRequestWith scans a projection in threadRequestColumns' order
+// whose answer and late reply columns go to answer and lateReply instead of
+// the row's own fields when those are set, and whose columns after them go
+// to extra.
+func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) (ThreadRequest, error) {
 	var r ThreadRequest
 	var notify, polling, lineageOnly, nestedOpen int
 	var answerAgent sql.NullInt64
 	var answerAgentRole string
-	err := row.Scan(
+	if answer == nil {
+		answer = &r.Answer
+	}
+	if lateReply == nil {
+		lateReply = &r.LateReply
+	}
+	err := row.Scan(append([]any{
 		&r.Token, &r.CallerThreadID, &r.Kind, &r.DueAt,
 		&r.TargetComputerID, &r.TargetThreadID, &r.TargetThreadTitle, &r.OriginThreadID, &notify, &r.State,
-		&r.Answer, &r.AnswerKind, &r.LateReply, &r.LateReplyAt, &r.Revision,
+		answer, &r.AnswerKind, lateReply, &r.LateReplyAt, &r.Revision,
 		&r.SettledAt, &r.DeliveredAt, &r.DeliveredHow,
 		&r.LateDeliveredAt, &r.ExpiresAt,
 		&polling, &r.NextCheck, &r.Attempts, &r.Issue,
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
-	)
+	}, extra...)...)
 	r.NestedOpen = nestedOpen != 0
 	r.AnswerAgent = answerAgentOf(answerAgent.Int64, answerAgentRole)
 	r.AnswerAgentUnrecorded = !answerAgent.Valid
@@ -445,10 +459,10 @@ func MarkThreadRequestDeliveredTx(tx *sql.Tx, token, how string, at int64, late 
 	// The retry schedule is cleared with the delivery: what it counted is
 	// over, and the row's second wake starts its own attempts from zero.
 	retry := `, wake_attempts = 0, wake_next_check = 0, wake_issue = ''`
-	query := `UPDATE thread_requests SET delivered_at = ?, delivered_how = ?, confirmed_at = ?, updated_at = ?` + retry +
+	query := `UPDATE thread_requests SET delivered_at = ?, delivered_how = ?, confirmed_at = ?, wake_item_id = '', updated_at = ?` + retry +
 		` WHERE token = ? AND delivered_at IS NULL` + settled
 	if late {
-		query = `UPDATE thread_requests SET late_delivered_at = ?, late_delivered_how = ?, late_confirmed_at = ?, updated_at = ?` + retry +
+		query = `UPDATE thread_requests SET late_delivered_at = ?, late_delivered_how = ?, late_confirmed_at = ?, late_wake_item_id = '', updated_at = ?` + retry +
 			` WHERE token = ? AND late_reply IS NOT NULL AND late_delivered_at IS NULL` + settled
 	}
 	var confirmed any
@@ -780,85 +794,6 @@ func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset 
 	}
 	return collectThreadRequests(rows, fmt.Sprintf("store: list thread requests for %s", callerThreadID))
 }
-
-// ListThreadAgentRequests returns the spawns, sends and asks one thread
-// made that its activity rail lists as agents, oldest first: every spawn,
-// and a send or ask whose answer the thread is still owed a wake for
-// (`notify`) or is parked waiting on (one of `waiting`). Each is open,
-// settled at or after settledSince, or a spawn something under it is still
-// open in: a local spawn whose thread, or a thread under it through local
-// spawns down to depth levels, has a request open or a remote spawn whose
-// computer last reported open work; or a remote spawn whose computer last
-// reported open work (`nested_open`). That is the row the open work nests
-// under. At most limit rows, and whether there were more.
-func (s *Store) ListThreadAgentRequests(callerThreadID string, waiting []string, settledSince int64, depth, limit int) (_ []ThreadRequest, more bool, err error) {
-	action := "store: list agent requests for " + callerThreadID
-	if limit < 1 {
-		limit = 64
-	}
-	if depth < 1 {
-		depth = 1
-	}
-	if waiting == nil {
-		waiting = []string{}
-	}
-	tokens, err := json.Marshal(waiting)
-	if err != nil {
-		return nil, false, fmt.Errorf("%s: encode waiting tokens: %w", action, err)
-	}
-	rows, err := s.reader().Query(threadAgentRequestsSQL+strconv.Itoa(limit+1),
-		callerThreadID, string(tokens), settledSince, depth)
-	if err != nil {
-		return nil, false, fmt.Errorf("%s: %w", action, err)
-	}
-	out, err := collectThreadRequests(rows, action)
-	if err != nil {
-		return nil, false, err
-	}
-	if len(out) > limit {
-		return out[:limit], true, nil
-	}
-	return out, false, nil
-}
-
-// threadAgentRequestsSQL is ListThreadAgentRequests' read, its LIMIT
-// appended. `sub` walks the caller's local spawns down to ?4 levels, each
-// step probing the queued thread's spawns (idx_thread_requests_spawn_caller)
-// and carrying the path of threads above it; the threads on the path of one
-// with work open in it are the ones a settled spawn into is kept for. The
-// rows listed are the union of four arms, each read through the index whose
-// predicate it states, so no arm reads the caller's settled history: open
-// and recently settled (idx_thread_requests_caller_settled), local spawns
-// into a thread with open work (idx_thread_requests_spawn_caller), and
-// remote spawns with open work (idx_thread_requests_nested_caller).
-var threadAgentRequestsSQL = `WITH RECURSIVE
-  sub(thread_id, path, depth) AS (
-    SELECT ?1, json_array(?1), 0
-    UNION
-    SELECT r.target_thread_id, json_insert(sub.path, '$[#]', r.target_thread_id), sub.depth + 1
-      FROM sub CROSS JOIN thread_requests r
-     WHERE r.caller_thread_id = sub.thread_id AND r.kind = 'spawn' AND r.target_computer_id = ''
-       AND r.lineage_only = 0 AND r.target_thread_id <> '' AND sub.depth < ?4),
-  hot(thread_id) AS (
-    SELECT json_each.value FROM sub, json_each(sub.path)
-     WHERE EXISTS (SELECT 1 FROM thread_requests c
-                    WHERE c.caller_thread_id = sub.thread_id AND ` + openAgentRequestSQL("c") + `)
-        OR EXISTS (SELECT 1 FROM thread_requests c
-                    WHERE c.caller_thread_id = sub.thread_id AND ` + nestedRemoteSpawnSQL("c") + `))
-SELECT ` + threadRequestColumns + ` FROM thread_requests r
- WHERE r.token IN (
-     SELECT token FROM thread_requests WHERE caller_thread_id = ?1 AND lineage_only = 0 AND settled_at IS NULL
-     UNION ALL
-     SELECT token FROM thread_requests WHERE caller_thread_id = ?1 AND lineage_only = 0 AND settled_at >= ?3
-     UNION ALL
-     SELECT token FROM thread_requests
-      WHERE caller_thread_id = ?1 AND kind = 'spawn' AND target_computer_id = '' AND lineage_only = 0
-        AND target_thread_id IN (SELECT thread_id FROM hot)
-     UNION ALL
-     SELECT token FROM thread_requests t WHERE t.caller_thread_id = ?1 AND ` + nestedRemoteSpawnSQL("t") + `)
-   AND r.kind IN ('spawn','send','ask')
-   AND (r.kind = 'spawn' OR r.notify = 1 OR r.token IN (SELECT value FROM json_each(?2)))
- ORDER BY r.created_at ASC, r.token ASC LIMIT `
 
 // nestedRemoteSpawnSQL matches a spawn on another computer whose last
 // agent_rows answer listed open work, the predicate of
@@ -1311,11 +1246,11 @@ func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, scope 
 		return err
 	}
 	if removed || scope != WithdrawQueued {
-		delivered, confirmed, route := "delivered_at", "confirmed_at", "delivered_how"
+		delivered, confirmed, route, item := "delivered_at", "confirmed_at", "delivered_how", "wake_item_id"
 		if late {
-			delivered, confirmed, route = "late_delivered_at", "late_confirmed_at", "late_delivered_how"
+			delivered, confirmed, route, item = "late_delivered_at", "late_confirmed_at", "late_delivered_how", "late_wake_item_id"
 		}
-		query := `UPDATE thread_requests SET ` + delivered + ` = NULL, ` + confirmed + ` = NULL, ` + route + ` = '', notify = 0, updated_at = ?
+		query := `UPDATE thread_requests SET ` + delivered + ` = NULL, ` + confirmed + ` = NULL, ` + route + ` = '', ` + item + ` = '', notify = 0, updated_at = ?
 		           WHERE token = ? AND ` + delivered + ` IS NOT NULL AND ` + route + ` = ? AND lineage_only = 0`
 		// A message still in the queue never reached the provider. One that
 		// left it goes back only while no echo has confirmed it.
@@ -1335,17 +1270,23 @@ func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, scope 
 
 // ConfirmThreadWake records the provider's echo of a queued answer, or of a
 // late reply (late): the second phase of its delivery mark, after which no
-// session end or restart gives it back. It reports whether the mark was
-// still unconfirmed. A lineage-only row is left as the sweep left it.
-func (s *Store) ConfirmThreadWake(token string, late bool, at int64) (bool, error) {
+// session end or restart gives it back, with itemID, the caller's timeline
+// row that carried it. It reports whether the mark changed. An echo of a
+// wake already confirmed changes only the row it names: a merge the
+// provider made of several messages leaves one row carrying them all
+// (triage's fold). An empty itemID names no row and leaves the one recorded.
+// A lineage-only row is left as the sweep left it.
+func (s *Store) ConfirmThreadWake(token string, late bool, itemID string, at int64) (bool, error) {
 	action := fmt.Sprintf("store: confirm thread wake %s", token)
-	query := `UPDATE thread_requests SET confirmed_at = ?, updated_at = ?
-	           WHERE token = ? AND delivered_at IS NOT NULL AND confirmed_at IS NULL AND lineage_only = 0`
+	delivered, confirmed, item := "delivered_at", "confirmed_at", "wake_item_id"
 	if late {
-		query = `UPDATE thread_requests SET late_confirmed_at = ?, updated_at = ?
-		          WHERE token = ? AND late_delivered_at IS NOT NULL AND late_confirmed_at IS NULL AND lineage_only = 0`
+		delivered, confirmed, item = "late_delivered_at", "late_confirmed_at", "late_wake_item_id"
 	}
-	result, err := s.db.Exec(query, at, nowMillis(), token)
+	result, err := s.db.Exec(`UPDATE thread_requests
+		    SET `+confirmed+` = COALESCE(`+confirmed+`, ?1), `+item+` = CASE WHEN ?2 = '' THEN `+item+` ELSE ?2 END, updated_at = ?3
+		  WHERE token = ?4 AND `+delivered+` IS NOT NULL AND lineage_only = 0
+		    AND (`+confirmed+` IS NULL OR (?2 <> '' AND `+item+` IS NOT ?2))`,
+		at, itemID, nowMillis(), token)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}

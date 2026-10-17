@@ -186,6 +186,9 @@ test('an expanded running command shows its live tail, follows the bottom, and y
   await scroll.hover();
   await page.mouse.wheel(0, -240);
   await expect(tail).toHaveAttribute('data-following', 'false');
+  // The follow pauses on the wheel event, which can come before the scroll
+  // it starts lands: the held position is read once the reader is up.
+  await expect.poll(() => scroll.evaluate((el: HTMLElement) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeGreaterThan(200);
   const heldTop = await scroll.evaluate((el: HTMLElement) => el.scrollTop);
   expect(heldTop).toBeGreaterThan(0);
   await waitForGate(harness, 'grow-3');

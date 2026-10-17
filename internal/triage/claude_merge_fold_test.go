@@ -587,8 +587,10 @@ func TestAMergeFoldedMemberIsReportedConsumed(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	var consumed []string
-	router.SetFlushSendConsumedHook(func(_ string, sendIDs []string) {
-		consumed = append(consumed, sendIDs...)
+	router.SetFlushSendConsumedHook(func(_ string, sends []ConsumedSend) {
+		for _, send := range sends {
+			consumed = append(consumed, send.SendIDs...)
+		}
 	})
 
 	digestA, err := claude.UserMessageBlockDigest("the completion", nil, false)
@@ -630,8 +632,14 @@ func TestEveryMergeFoldedMemberIsReportedConsumed(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	var consumed []string
-	router.SetFlushSendConsumedHook(func(_ string, sendIDs []string) {
-		consumed = append(consumed, sendIDs...)
+	carriedBy := map[string]string{}
+	router.SetFlushSendConsumedHook(func(_ string, sends []ConsumedSend) {
+		for _, send := range sends {
+			consumed = append(consumed, send.SendIDs...)
+			for _, id := range send.SendIDs {
+				carriedBy[id] = send.ItemID
+			}
+		}
 	})
 
 	digestA, err := claude.UserMessageBlockDigest("one", nil, false)
@@ -666,6 +674,10 @@ func TestEveryMergeFoldedMemberIsReportedConsumed(t *testing.T) {
 	for _, owner := range []string{"remote-completion:c:r", "thread-wake:tok"} {
 		if !slices.Contains(consumed, owner) {
 			t.Errorf("consumed hook saw %q; folded member owner %q was never confirmed", consumed, owner)
+		}
+		// The member rows are gone: the survivor carries their messages.
+		if carriedBy[owner] != "user:3:flush:3" {
+			t.Errorf("%s was last reported in %q; want the survivor's row", owner, carriedBy[owner])
 		}
 	}
 }

@@ -1538,10 +1538,10 @@ func TestThreadWakeDeliveryIsConfirmedByItsEcho(t *testing.T) {
 		t.Fatalf("inline delivery confirmed at %d, want 920", row.ConfirmedAt)
 	}
 
-	if confirmed, err := s.ConfirmThreadWake("tok-queued", false, 950); err != nil || !confirmed {
+	if confirmed, err := s.ConfirmThreadWake("tok-queued", false, "", 950); err != nil || !confirmed {
 		t.Fatalf("ConfirmThreadWake = %v, %v; want true", confirmed, err)
 	}
-	if confirmed, err := s.ConfirmThreadWake("tok-queued", false, 960); err != nil || confirmed {
+	if confirmed, err := s.ConfirmThreadWake("tok-queued", false, "", 960); err != nil || confirmed {
 		t.Fatalf("second ConfirmThreadWake = %v, %v; want false", confirmed, err)
 	}
 	if got := unconfirmed(); len(got) != 0 {
@@ -1638,7 +1638,7 @@ func TestALineageOnlyRowIsNeverGivenBackOrConfirmed(t *testing.T) {
 		if err := s.WithdrawThreadWake("tok", late, "", WithdrawUnconfirmed); err != nil {
 			t.Fatalf("WithdrawThreadWake(late=%v, unconfirmed): %v", late, err)
 		}
-		if confirmed, err := s.ConfirmThreadWake("tok", late, 1000); err != nil || confirmed {
+		if confirmed, err := s.ConfirmThreadWake("tok", late, "", 1000); err != nil || confirmed {
 			t.Errorf("ConfirmThreadWake(late=%v) on the lineage-only row: confirmed=%v err=%v", late, confirmed, err)
 		}
 	}
@@ -1667,7 +1667,7 @@ func TestWithdrawThreadWakeWithItsRowIgnoresTheConfirmation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("QueueThreadWake: %v", err)
 	}
-	if _, err := s.ConfirmThreadWake("tok", false, 950); err != nil {
+	if _, err := s.ConfirmThreadWake("tok", false, "", 950); err != nil {
 		t.Fatalf("ConfirmThreadWake: %v", err)
 	}
 	if err := s.WithdrawThreadWake("tok", false, "queue:tok", WithdrawQueued); err != nil {

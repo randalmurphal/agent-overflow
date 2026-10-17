@@ -136,6 +136,7 @@ export {
     TerminalOpenOptions,
     TerminalReplay,
     ThreadAgentRow,
+    ThreadAgentRowRead,
     ThreadAgentRows,
     ThreadAgentStop,
     ThreadContextUsage,

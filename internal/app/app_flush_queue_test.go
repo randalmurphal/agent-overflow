@@ -3643,9 +3643,9 @@ func TestDiscardedSendsRestoreWithTheQueueInOrder(t *testing.T) {
 	lifecycle("u-0", provider.CommandDiscarded)
 	handler(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: thread.ID, Content: "error", Timestamp: time.Now()})
 
+	// The restore writes the draft before it emits queue_restored.
 	waitForCondition(t, "discarded sends restored with the queue", func() bool {
-		draft, _, err := app.store.GetThreadDraft(thread.ID)
-		return err == nil && draft.Content != ""
+		return len(emittedQueueRestored(rec)) > 0
 	})
 	draft, _, err := app.store.GetThreadDraft(thread.ID)
 	if err != nil {
