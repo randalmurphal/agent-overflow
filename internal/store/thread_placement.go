@@ -62,7 +62,7 @@ func (s *Store) SetThreadPlacement(threadIDs []string, placement string) ([]Thre
 	if err != nil {
 		return nil, fmt.Errorf("store: begin thread placement: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	ids := uniqueNonEmptyStrings(threadIDs)
 	for _, id := range ids {
