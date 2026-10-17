@@ -12,8 +12,8 @@
 import type { Locator, Page } from '@playwright/test';
 
 import { test, expect, type SeedResult } from './fixtures.js';
-import type { HarnessApp } from '../src/harness.js';
-import { threadRows, type ThreadRow } from './thread-tools-helpers.js';
+import type { HarnessApp, HarnessMockEventData } from '../src/harness.js';
+import { awaitTurnCompleted, threadRows, type ThreadRow } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
 
 interface ThreadGroup {
@@ -154,19 +154,36 @@ test('an agent row and a group bound their members, fold done work, roll up thei
   await expect(row(page, archived)).toHaveAttribute('data-archived-child', 'true');
   await expect(row(page, settled)).not.toHaveAttribute('data-archived-child', 'true');
   await capture(page, 'hierarchy-done-footer-expanded.png', agentRow, footer, row(page, archived));
+  // Unarchived, the settled worker is still done: it moves to the settled
+  // part of the list, not to the live rows, and the count stays.
+  await harness.rpc('UnarchiveThread', archived);
+  await expect(row(page, archived)).not.toHaveAttribute('data-archived-child', 'true');
+  await expect.poll(async () => (await doneIds(page)).sort()).toEqual([settled, archived].sort());
+  expect(await liveIds(page, '[data-agent-member]')).not.toContain(archived);
+  await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('2 done');
   await footer.getByTestId('thread-row-agent-done-toggle').click();
   await expect.poll(() => doneIds(page)).toEqual([]);
   await capture(page, 'hierarchy-done-footer-collapsed.png', agentRow, footer);
 
-  // ---- Opening the cross-project child opens it in its own project.
+  // ---- Opening the cross-project child opens it in its own project and
+  // workspace: the pane names that project, and a message sent from it runs
+  // in that project's checkout.
   await awayRow.click();
   await expect(page.getByTestId('chat-header-title')).toHaveText('Away worker');
-  await expect.poll(async () => ((await threadRows(harness)).find((r) => r.id === awayChild))?.projectId).toBe(away.projects[0].projectId);
+  await expect(page.getByTestId('chat-header-project')).toHaveText('hierarchy-away');
+  const ranIn = harness.waitForEvent<HarnessMockEventData>('harness:mock', (ev) => ev.cwd === away.projects[0].path, 60_000);
+  await page.getByLabel('Message Input').fill('one more thing');
+  await page.getByTestId('composer-send').click();
+  expect((await ranIn).cwd).toBe(away.projects[0].path);
+  await awaitTurnCompleted(harness, awayChild);
 
   // ---- Collapsed, the agent row carries its children's dot.
   const chevron = agentRow.getByTestId('thread-row-agent-expand');
   await chevron.click();
   await expect(agentRow).toHaveAttribute('data-expanded', 'false');
+  // Its count is its live children: the pinned one, the away one and nine
+  // workers, not the two done.
+  await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('11');
   const agentDot = agentRow.getByTestId('thread-row-status-dot');
   await expect(agentDot).toHaveAttribute('data-rolled-up', '');
   await expect(agentDot).toHaveAttribute('aria-label', 'Completed');

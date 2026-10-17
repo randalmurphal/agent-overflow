@@ -794,18 +794,20 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 >
 > Organizing. `thread_update` renames, archives, pins to the front or
 > back burner, or groups threads, many at once; `thread_group` renames
-> or deletes a group. `thread_options` lists the groups. Never archive
-> the thread you are in. In the user's sidebar, pinning keeps a thread
-> above the fold of its list, or of the group or agent row it sits
-> under, where the user sees it. A group gathers threads of one
-> project under one named row. Archiving takes a thread out of the
-> list; a thread a standing agent spawned then counts in that agent's
-> done footer. A standing agent's row holds the threads it spawned,
-> including ones it spawned into another project on this computer,
-> which show under it with that project's name. A thread it spawned
-> that is idle, read, unpinned and not open folds into its done footer
-> too, and returns to the row with new activity. An answer a spawned
-> thread delivers to the thread that spawned it, an error included,
+> or deletes a group. `thread_options` lists the groups. An archive of
+> the thread you are in is refused: its row in the result carries the
+> error and none of the call's changes, and the other threads are
+> updated. In the user's sidebar, pinning keeps a thread above the
+> fold of its list, or of the group or agent row it sits under, where
+> the user sees it. A group gathers threads of one project under one
+> named row. Archiving takes a thread out of the list; a thread a
+> standing agent spawned then counts in that agent's done footer. A
+> standing agent's row holds the threads it spawned, including ones it
+> spawned into another project on this computer, which show under it
+> with that project's name. A thread it spawned that is idle, read,
+> unpinned and not open folds into its done footer too, and returns to
+> the row with new activity. An answer a spawned thread delivers to
+> the thread on this computer that spawned it, an error included,
 > marks the spawned thread read, so it shows the user no unread dot
 > for that work; a pinned thread keeps its dot. A collapsed agent row
 > or group shows one dot for its members. The user marks a whole agent

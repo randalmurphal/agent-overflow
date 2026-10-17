@@ -247,3 +247,109 @@ func (f *requestFixture) reload(t *testing.T, threadID string) store.Thread {
 	}
 	return row
 }
+
+// A worker whose turn errored still answered its spawner: the spawner has the
+// error, so the worker is marked read through that turn (ruling 30).
+func TestAnErroredAnswerToTheSpawnerMarksTheWorkerRead(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	installMockClaudeTurns(t, f.app, [][]string{{
+		mockClaudeInitLine,
+		`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"tried"}]}}`,
+		`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["the tool failed"]}`,
+	}})
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "try it", Title: "Worker", WaitSeconds: 20,
+	})
+	if err != nil || ack.State != store.ThreadRequestErrored {
+		t.Fatalf("Spawn = %+v, %v; want an errored request", ack, err)
+	}
+	row := f.awaitThread(t, ack.ThreadID, "the errored worker marked read", func(row store.Thread) bool {
+		return row.LatestTurnCompletedAt != nil && !threadUnread(row)
+	})
+	if *row.LastReadAt != *row.LatestTurnCompletedAt {
+		t.Errorf("LastReadAt = %d, want the errored turn's completion %d", *row.LastReadAt, *row.LatestTurnCompletedAt)
+	}
+}
+
+// Which settled receipts earn the mark: an answer the target's own turn gave
+// (a reply, its final message, its error or its interruption). A cancel, an
+// expiry and a receipt still open mark nothing. The mark costs a writer
+// transaction only when it moves: an already-read worker takes none.
+func TestTheReadMarkFollowsTheAnswerAndCostsNothingWhenRead(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.mockClaude(t, "done")
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "do it", Title: "Worker", WaitSeconds: 20,
+	})
+	if err != nil || ack.State != store.ThreadRequestFinished {
+		t.Fatalf("Spawn = %+v, %v; want a finished request", ack, err)
+	}
+	f.awaitThread(t, ack.ThreadID, "the worker marked read", func(row store.Thread) bool {
+		return row.LatestTurnCompletedAt != nil && !threadUnread(row)
+	})
+	settled := f.receipt(t, ack.Token)
+	if settled.TurnID == "" {
+		t.Fatalf("settled receipt %+v carries no turn", settled)
+	}
+
+	// Already read: no writer transaction.
+	before := storeCostOf(f.app.store)
+	f.app.markAnsweredRead(settled)
+	if cost := storeCostOf(f.app.store).since(before); cost.writes != 0 || cost.commits != 0 {
+		t.Fatalf("marking an already-read worker cost %+v, want no write and no commit", cost)
+	}
+
+	for _, tc := range []struct {
+		state string
+		marks bool
+	}{
+		{store.ThreadReceiptReplied, true},
+		{store.ThreadReceiptFinished, true},
+		{store.ThreadReceiptErrored, true},
+		{store.ThreadReceiptInterrupted, true},
+		{store.ThreadReceiptCancelled, false},
+		{store.ThreadReceiptExpired, false},
+		{store.ThreadReceiptRunning, false},
+		{store.ThreadReceiptAccepted, false},
+	} {
+		if err := f.app.MarkThreadUnread(ack.ThreadID); err != nil {
+			t.Fatalf("MarkThreadUnread: %v", err)
+		}
+		receipt := settled
+		receipt.State = tc.state
+		before := storeCostOf(f.app.store)
+		f.app.markAnsweredRead(receipt)
+		cost := storeCostOf(f.app.store).since(before)
+		if marked := !threadUnread(f.reload(t, ack.ThreadID)); marked != tc.marks {
+			t.Errorf("a %s receipt marked the worker read = %v, want %v", tc.state, marked, tc.marks)
+		}
+		if tc.marks && cost.commits != 1 {
+			t.Errorf("a %s mark cost %+v, want one transaction", tc.state, cost)
+		}
+		if !tc.marks && (cost.writes != 0 || cost.commits != 0) {
+			t.Errorf("a %s receipt cost %+v, want no write", tc.state, cost)
+		}
+	}
+}
+
+// A held mark waits for its turn's end; a session that ends first leaves
+// the turn without a completion, so the hold goes with it.
+func TestASessionEndDropsTheHeldReadMarksOfItsUnfinishedTurns(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	thread, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	f.app.holdAnsweredRead(thread.ID, 3)
+	f.app.finishAnsweredReads(thread.ID, false)
+	if !f.app.hasAnsweredReads(thread.ID) {
+		t.Fatal("a turn end that did not complete the held turn dropped its hold")
+	}
+	f.app.finishAnsweredReads(thread.ID, true)
+	if f.app.hasAnsweredReads(thread.ID) {
+		t.Fatal("the session ended and the hold for its unfinished turn is still there")
+	}
+}

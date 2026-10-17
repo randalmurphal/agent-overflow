@@ -3255,3 +3255,36 @@ func TestMarkThreadsReadNowStampsTheBatchInOneTransaction(t *testing.T) {
 		t.Fatalf("(statements, writes, commits) = %v for 2 threads, %v for 50; want %v for both: the stamp, the read back and the refused list", two, fifty, want)
 	}
 }
+
+// The read mark's caller reads the thread, finds it unpinned and writes; a
+// pin that lands between the two must still keep the dot, so the write
+// itself skips a pinned row.
+func TestMarkThreadReadThroughSkipsAThreadPinnedSinceTheCallerRead(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	thr := makeThread("thread-pinned-meanwhile", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	base := time.Now().UnixMilli() + 60_000
+	insertCompletedTurn(t, s, thr.ID, "turn-answer", base, base+1000)
+	if _, _, err := s.MarkThreadUnread(thr.ID); err != nil {
+		t.Fatalf("MarkThreadUnread: %v", err)
+	}
+	// The caller's read: unpinned and owed the mark.
+	read, err := s.GetThread(thr.ID)
+	if err != nil || read.PinnedAt != nil || *read.LastReadAt >= base+1000 {
+		t.Fatalf("GetThread = %+v, %v; want an unpinned unread thread", read, err)
+	}
+	// The pin lands, then the caller's write.
+	if _, _, err := s.PinThread(thr.ID); err != nil {
+		t.Fatalf("PinThread: %v", err)
+	}
+	if _, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, base+1000); err != nil || changed {
+		t.Fatalf("MarkThreadReadThrough on a pinned thread = changed %v, %v; want no change", changed, err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil || *got.LastReadAt != 0 {
+		t.Fatalf("pinned thread LastReadAt = %v, %v; want it still unread at 0", got.LastReadAt, err)
+	}
+}
