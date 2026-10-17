@@ -45,9 +45,16 @@ function stateLine(page: Page, id: string): Locator {
   return page.locator(`[data-testid="thread-row-shell"]:has([data-sidebar-thread-id="${id}"]) [data-testid="thread-row-agent-state"]`);
 }
 
-/** The ids of the rows behind the agent's rail, top to bottom. */
+/** The ids of the live rows behind the agent's rail, top to bottom. */
 async function memberIds(page: Page): Promise<string[]> {
-  return await page.locator('[data-agent-member] [data-sidebar-thread-id]').evaluateAll((els) =>
+  return await page.locator('[data-agent-member]:not([data-agent-done-row]) [data-sidebar-thread-id]').evaluateAll((els) =>
+    els.map((el) => (el as HTMLElement).dataset.sidebarThreadId ?? ''),
+  );
+}
+
+/** The ids of the rows an open done footer lists, top to bottom. */
+async function doneIds(page: Page): Promise<string[]> {
+  return await page.locator('[data-agent-done-row] [data-sidebar-thread-id]').evaluateAll((els) =>
     els.map((el) => (el as HTMLElement).dataset.sidebarThreadId ?? ''),
   );
 }
@@ -85,6 +92,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const { projectId, path: cwd, threadIds } = seed.projects[0];
     const [agent, workerA, workerB, loose] = threadIds;
     await harness.rpc('PinThread', workerB);
+    // Unread, so Worker A stays a live row: a settled idle worker folds
+    // into the done footer, as the live spawn below does.
+    await harness.rpc('MarkThreadUnread', workerA);
 
     await harness.open(page);
     const agentRow = row(page, agent);
@@ -140,8 +150,22 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(loop.isError, loop.text).toBe(false);
     await awaitTurnCompleted(harness, agent);
     expect(await threadRows(harness)).toHaveLength(5);
-    await expect.poll(() => memberIds(page)).toContain(spawned);
+    // The spawned worker answers its agent, which marks it read (no unread
+    // dot for agent-to-agent work), so it settles idle and folds into the
+    // done footer.
+    await expect.poll(async () => {
+      const spawnedRow = (await threadRows(harness)).find((r) => r.id === spawned) as { lastReadAt?: number; latestTurnCompletedAt?: number } | undefined;
+      return spawnedRow?.latestTurnCompletedAt !== undefined && (spawnedRow.lastReadAt ?? 0) >= spawnedRow.latestTurnCompletedAt;
+    }, { timeout: 60_000 }).toBe(true);
+    const footer = page.getByTestId('thread-row-agent-done');
+    await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
+    await expect.poll(() => memberIds(page)).toEqual(expect.not.arrayContaining([spawned]));
+    await footer.getByTestId('thread-row-agent-done-toggle').click();
+    await expect.poll(() => doneIds(page)).toEqual([spawned]);
     await expect(row(page, spawned).getByTestId('thread-row-title')).toHaveText('Spawned worker');
+    await expect(row(page, spawned).getByTestId('thread-row-status-dot')).toHaveCount(0);
+    await footer.getByTestId('thread-row-agent-done-toggle').click();
+    await expect.poll(() => doneIds(page)).toEqual([]);
     const state = stateLine(page, agent);
     await expect(state).toHaveText(/^loop board check · next (59m|1h)$/);
     await expect(page.getByTestId('thread-row-agent-state')).toHaveCount(1);
@@ -151,18 +175,19 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await chevron.click();
     await expect(agentRow).toHaveAttribute('data-expanded', 'false');
     await expect(page.locator('[data-agent-member]')).toHaveCount(0);
-    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('3');
+    // The count is the live children; the folded worker is in the footer.
+    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('2');
     await expect(state).toBeVisible();
     await capture(page, `${provider}-agent-folded.png`, agentRow);
     await agentRow.focus();
     await page.keyboard.press('ArrowRight');
     await expect(agentRow).toHaveAttribute('data-expanded', 'true');
-    await expect.poll(() => memberIds(page)).toHaveLength(3);
+    await expect.poll(() => memberIds(page)).toHaveLength(2);
     await page.keyboard.press('ArrowLeft');
     await expect(agentRow).toHaveAttribute('data-expanded', 'false');
     await page.reload();
     await expect(agentRow).toHaveAttribute('data-expanded', 'false');
-    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('3');
+    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('2');
 
     // ---- A collapsed agent previews the focused child alone.
     await chevron.click();
@@ -170,10 +195,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(page.getByTestId('chat-header-title')).toHaveText('Worker B');
     await chevron.click();
     await expect.poll(() => memberIds(page)).toEqual([workerB]);
-    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('3');
+    await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveText('2');
     await capture(page, `${provider}-agent-collapsed-preview.png`, agentRow, row(page, workerB));
     await chevron.click();
-    await expect.poll(() => memberIds(page)).toHaveLength(3);
+    await expect.poll(() => memberIds(page)).toHaveLength(2);
 
     // ---- Drags: nothing joins a group through an agent. A new group holds
     // Loose thread so there is a group row to drop on.
@@ -184,7 +209,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await row(page, workerA).dragTo(groupRow);
     await agentRow.dragTo(groupRow);
     await row(page, loose).dragTo(agentRow);
-    await expect.poll(() => memberIds(page)).toHaveLength(3);
+    await expect.poll(() => memberIds(page)).toHaveLength(2);
     expect((await rowById(harness, workerA))?.groupId ?? null).toBeNull();
     expect((await rowById(harness, agent))?.groupId ?? null).toBeNull();
     expect((await rowById(harness, loose))?.groupId).toBe(ops.id);
@@ -192,7 +217,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
 
     // ---- Menus.
     const agentMenu = await menuLabels(page, agentRow);
-    expect(agentMenu).toEqual(expect.arrayContaining(['Loops and Watches', 'New Thread, Same Assistant']));
+    expect(agentMenu).toEqual(expect.arrayContaining(['Loops and Watches', 'New Thread, Same Assistant', 'Mark All Read']));
     expect(agentMenu.some((label) => label.startsWith('Archive Done Children'))).toBe(true);
     for (const absent of ['Pin Thread', 'Move to Group']) expect(agentMenu).not.toContain(absent);
     expect(agentMenu.some((label) => /Promote|Demote/.test(label))).toBe(false);
@@ -214,10 +239,11 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await page.getByRole('menuitem', { name: 'Archive Thread' }).click();
     await page.getByRole('dialog').or(page.getByRole('alertdialog')).getByRole('button', { name: 'Archive', exact: true }).click();
     await expect.poll(() => memberIds(page)).toEqual(expect.not.arrayContaining([workerA]));
-    const footer = page.getByTestId('thread-row-agent-done');
-    await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
+    await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('2 done');
     await expect(footer).toHaveAttribute('data-expanded', 'false');
     await footer.getByTestId('thread-row-agent-done-toggle').click();
+    // Settled idle first, then the archived ones.
+    await expect.poll(() => doneIds(page)).toEqual([spawned, workerA]);
     await expect(row(page, workerA)).toHaveAttribute('data-archived-child', 'true');
     expect(await row(page, workerA).evaluate((el) => getComputedStyle(el).opacity)).not.toBe('1');
     // An archived row offers no pin: pinning belongs to live rows.
@@ -227,11 +253,12 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // An archived child opens from the footer like any row.
     await row(page, workerA).click();
     await expect(page.getByTestId('chat-header-title')).toHaveText('Worker A');
-    // Unarchiving returns it to the fold and clears the footer.
+    // Unarchived, it returns to the live rows: it is open in the pane, and
+    // an open thread never folds. The footer keeps the settled worker.
     await harness.rpc('UnarchiveThread', workerA);
     await expect.poll(() => memberIds(page)).toContain(workerA);
     await expect(row(page, workerA)).not.toHaveAttribute('data-archived-child', 'true');
-    await expect(footer).toHaveCount(0);
+    await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
 
     // ---- Archive Done Children archives every idle child behind a confirm.
     await agentRow.click({ button: 'right' });
@@ -242,8 +269,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect.poll(() => memberIds(page)).toEqual([]);
     await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('3 done');
     await expect.poll(async () => (await harness.rpc<SidebarRow[]>('HarnessListThreadRows')).map((r) => r.id).sort()).toEqual([agent, loose].sort());
-    // The footer lists the three, newest first, dimmed.
-    await footer.getByTestId('thread-row-agent-done-toggle').click();
+    // The footer, still open, lists the three archived, dimmed.
+    await expect(footer).toHaveAttribute('data-expanded', 'true');
     await expect(page.locator('[data-archived-child]')).toHaveCount(3);
     await expect(agentRow.getByTestId('thread-row-agent-count')).toHaveCount(0);
 
@@ -264,6 +291,8 @@ test('a spawned thread that is an assistant leaves the fold, and a thread nobody
   });
   const [lead, child, grandchild, stranger] = seed.projects[0].threadIds;
   await harness.rpc('HarnessMakeAssistant', lead);
+  // Unread, so neither folds into a done footer: this is about lineage.
+  for (const id of [child, grandchild]) await harness.rpc('MarkThreadUnread', id);
   await harness.open(page);
   // Only the lead's direct spawn nests; the grandchild's spawner is not an
   // agent, so it stays a plain row with the stranger.

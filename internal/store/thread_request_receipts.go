@@ -520,6 +520,11 @@ type LocalSettlement struct {
 	// computer sent to another one: the receipt was minted elsewhere and
 	// its answer is not that request's.
 	Outbound bool
+	// AnsweredBySpawned is whether the thread that answered was spawned on
+	// this computer by the thread that asked, as Thread.SpawnedByThreadID
+	// reads it, so the answer may mark it read
+	// (docs/specs/standing-agents.md ruling 30).
+	AnsweredBySpawned bool
 }
 
 // SettleLocalThreadRequest settles a receipt and, when the request was made
@@ -550,9 +555,17 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 	}
 	out := LocalSettlement{Settled: true, Receipt: receipt}
 	var targetComputer string
-	var notify int
-	err = tx.QueryRow(`SELECT target_computer_id, notify FROM thread_requests WHERE token = ? AND lineage_only = 0`, token).
-		Scan(&targetComputer, &notify)
+	var notify, answeredBySpawned int
+	// The spawner is read as threadColumns reads it: the caller of the
+	// newest local spawn request that made the thread.
+	err = tx.QueryRow(`SELECT target_computer_id, notify,
+	        COALESCE((
+	          SELECT spawn.caller_thread_id FROM thread_requests AS spawn
+	           WHERE spawn.kind = 'spawn' AND spawn.target_computer_id = '' AND spawn.target_thread_id = ?
+	           ORDER BY spawn.created_at DESC LIMIT 1
+	        ), '') = thread_requests.caller_thread_id
+	   FROM thread_requests WHERE token = ? AND lineage_only = 0`, receipt.TargetThreadID, token).
+		Scan(&targetComputer, &notify, &answeredBySpawned)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
@@ -583,6 +596,7 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 			}
 			out.Receipt.CollectedRevision, out.Receipt.CollectedAt = receipt.Revision, now
 			out.Notify = notify != 0
+			out.AnsweredBySpawned = answeredBySpawned != 0 && receipt.TargetThreadID != ""
 		}
 	}
 	if err := tx.Commit(); err != nil {

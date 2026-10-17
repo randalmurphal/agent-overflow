@@ -54,10 +54,12 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     setBindingMock('ListArchivedSpawnedThreads', async () => [thread('done', { spawnedByThreadId: 'agent', archived: true })]);
   });
 
+  // The child is pinned, so it stays a live row rather than folding into
+  // the done footer as a settled idle child would.
   function renderList() {
     const threads = [
       thread('agent', { agentId: 'agent', archivedChildCount: 1 }),
-      thread('child', { spawnedByThreadId: 'agent' }),
+      thread('child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
       thread('loose', { groupId: 'ops' }),
     ];
     replaceAllThreads(threads);
@@ -151,6 +153,43 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     expect(list).toHaveBeenCalledTimes(2);
   });
 
+  it('marks the agent and every child it nests that has something to read from the agent row\'s menu', async () => {
+    const unread = { latestTurnCompletedAt: 20, lastReadAt: 10 };
+    const threads = [
+      thread('agent', { agentId: 'agent', ...unread }),
+      thread('live-child', { spawnedByThreadId: 'agent', ...unread }),
+      thread('pinned-child', { spawnedByThreadId: 'agent', pinnedAt: 1, ...unread }),
+      thread('loose', unread),
+    ];
+    replaceAllThreads(threads);
+    const calls: string[][] = [];
+    setBindingMock('MarkThreadsRead', vi.fn(async (ids: string[]) => {
+      calls.push(ids);
+      return [];
+    }));
+    const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [], pane: createThreadPane() });
+    await flush();
+    await fireEvent.contextMenu(view.container.querySelector<HTMLElement>('[data-sidebar-thread-id="agent"]')!);
+    await flush();
+    await fireEvent.click(view.getByRole('menuitem', { name: 'Mark All Read' }));
+    await flush();
+    expect(calls.map((ids) => [...ids].sort())).toEqual([['agent', 'live-child', 'pinned-child']]);
+  });
+
+  it('counts only the live children on a collapsed agent row', async () => {
+    const threads = [
+      thread('agent', { agentId: 'agent' }),
+      thread('live-child', { spawnedByThreadId: 'agent', latestTurnCompletedAt: 20, lastReadAt: 10 }),
+      thread('pinned-child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
+      thread('settled-child', { spawnedByThreadId: 'agent' }),
+    ];
+    replaceAllThreads(threads);
+    setAgentExpanded('agent', false);
+    const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [], pane: createThreadPane() });
+    await flush();
+    expect(view.container.querySelector('[data-testid="thread-row-agent-count"]')?.textContent?.trim()).toBe('2');
+  });
+
   it('comes back closed after its last archived child leaves', async () => {
     const view = renderList();
     await flush();
@@ -163,16 +202,36 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
       projectId: 'project',
       threads: [
         thread('agent', { agentId: 'agent', archivedChildCount: count }),
-        thread('child', { spawnedByThreadId: 'agent' }),
+        thread('child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
         thread('loose', { groupId: 'ops' }),
       ],
       groups: [{ id: 'ops', projectId: 'project', name: 'Ops', createdAt: 0, updatedAt: 0 }],
       pane: createThreadPane(),
     });
-    await rerender(0);
-    await flush();
-    expect(view.container.querySelector('[data-testid="thread-row-agent-done-toggle"]')).toBeNull();
-    expect(isAgentDoneExpanded('agent')).toBe(false);
+    // A zero that passes (the agent row's count catching up with a child
+    // that just left) keeps the footer open, however long after it the
+    // settle window ends.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await rerender(0);
+      await tick();
+      expect(view.container.querySelector('[data-testid="thread-row-agent-done-toggle"]')).toBeNull();
+      vi.advanceTimersByTime(700);
+      await rerender(1);
+      await tick();
+      vi.advanceTimersByTime(2000);
+      expect(isAgentDoneExpanded('agent')).toBe(true);
+      // A zero that stays closes it once the 750 ms window has passed, not
+      // before.
+      await rerender(0);
+      await tick();
+      vi.advanceTimersByTime(749);
+      expect(isAgentDoneExpanded('agent')).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(isAgentDoneExpanded('agent')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
     // Three children archive: the footer returns closed with its count.
     await rerender(3);
     await flush();
@@ -192,7 +251,7 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     expect(list).toHaveBeenCalledTimes(1);
     const rows = (promoted: boolean) => [
       thread('agent', promoted ? { agentId: 'agent', archivedChildCount: 1 } : {}),
-      thread('child', { spawnedByThreadId: 'agent' }),
+      thread('child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
       thread('loose', { groupId: 'ops' }),
     ];
     // Demoted: the row is a plain thread and every agent-only state goes.

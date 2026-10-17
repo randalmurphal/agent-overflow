@@ -833,6 +833,7 @@ describe('<ThreadContextMenu> standing agent', () => {
       'Rename Thread',
       'New Thread, Same Assistant',
       'Loops and Watches',
+      'Mark All Read',
       'Archive Done Children',
       'Fork Thread',
       'Mark Unread',

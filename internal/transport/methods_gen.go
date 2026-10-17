@@ -282,6 +282,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995, Scope: "threads:operate", Route: "thread"},                           // main.App.MarkDiffReviewCommentsSent
 	{Name: "MarkThreadRead", ID: 1480646012, Scope: "threads:operate", Route: "thread"},                                       // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375, Scope: "threads:operate", Route: "thread"},                                      // main.App.MarkThreadUnread
+	{Name: "MarkThreadsRead", ID: 1726279585, Scope: "threads:operate", Route: "home"},                                        // main.App.MarkThreadsRead
 	{Name: "MintAttachmentDownloadTicket", ID: 3197504008, Scope: "threads:read", Route: "thread"},                            // main.App.MintAttachmentDownloadTicket
 	{Name: "MintAttachmentUploadTicket", ID: 1857144453, Scope: "attachments:write", Route: "thread"},                         // main.App.MintAttachmentUploadTicket
 	{Name: "MintDevicePairing", ID: 400809065, Scope: "access:admin", Route: "home", StepUp: true, Remote: true},              // main.App.MintDevicePairing

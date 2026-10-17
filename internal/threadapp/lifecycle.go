@@ -86,6 +86,17 @@ func (s *Service) MarkRead(ctx context.Context, threadID string) (store.Thread, 
 	return database.MarkThreadReadNow(ctx, threadID)
 }
 
+// MarkReadMany is MarkRead for up to store.MarkThreadsReadLimit threads in
+// one transaction; refused names the threads that are gone or that this
+// computer may not change.
+func (s *Service) MarkReadMany(ctx context.Context, threadIDs []string) (changed []store.Thread, refused []string, err error) {
+	database, err := s.database("mark threads read")
+	if err != nil {
+		return nil, nil, err
+	}
+	return database.MarkThreadsReadNow(ctx, threadIDs)
+}
+
 func (s *Service) MarkUnread(threadID string) (store.Thread, bool, error) {
 	database, err := s.database("mark thread unread")
 	if err != nil {

@@ -51,7 +51,7 @@ function mkGroup(id: string, overrides: Partial<ThreadGroup> = {}): ThreadGroup 
 
 /** Node id of either kind — thread nodes and group nodes sort in one list. */
 const nodeId = (node: SidebarTreeNode | SidebarTreeVisibleNode): string =>
-  node.kind === 'agent-done' ? sidebarVisibleNodeId(node) : sidebarTreeNodeId(node);
+  node.kind === 'agent-done' || node.kind === 'container-more' ? sidebarVisibleNodeId(node) : sidebarTreeNodeId(node);
 const nodeIds = (nodes: readonly (SidebarTreeNode | SidebarTreeVisibleNode)[]): string[] => nodes.map(nodeId);
 
 function liveStatusMap(map: Record<string, ThreadLiveStatus>) {
@@ -607,7 +607,10 @@ describe('flattenSidebarThreadTree with standing agents', () => {
     mkThread('done-2', { spawnedByThreadId: 'agent', archived: true, updatedAt: 40 }),
   ];
   const plain = mkThread('plain');
-  const tree = () => buildSidebarThreadTree({ threads: [agent, ...children, plain] });
+  // The children are working: a settled idle child folds into the footer,
+  // which the fold tests below cover on their own.
+  const working = liveStatusMap({ 'child-a': 'running', 'child-b': 'running' });
+  const tree = () => buildSidebarThreadTree({ threads: [agent, ...children, plain], liveStatusOf: working });
 
   it('lists an expanded agent\'s children under it, then its done footer, then the plain rows', () => {
     const rows = flattenSidebarThreadTree({ nodes: tree() });
@@ -628,7 +631,7 @@ describe('flattenSidebarThreadTree with standing agents', () => {
 
   it('omits the footer for an agent with no archived children', () => {
     const rows = flattenSidebarThreadTree({
-      nodes: buildSidebarThreadTree({ threads: [mkThread('agent', { agentId: 'ops' }), children[0]] }),
+      nodes: buildSidebarThreadTree({ threads: [mkThread('agent', { agentId: 'ops' }), children[0]], liveStatusOf: working }),
     });
     expect(rows.map(sidebarVisibleNodeId)).toEqual(['agent:ops', 'child-a']);
   });
@@ -696,7 +699,7 @@ describe('flattenSidebarThreadTree with standing agents', () => {
     const opened = flattenSidebarThreadTree({ nodes: tree(), expandedDoneAgentIds: new Set(['ops']), archivedChildrenOf: () => [] });
     expect(sameSidebarVisibleNodes(base, opened)).toBe(false);
     const counted = flattenSidebarThreadTree({
-      nodes: buildSidebarThreadTree({ threads: [{ ...agent, archivedChildCount: 3 }, ...children, plain] }),
+      nodes: buildSidebarThreadTree({ threads: [{ ...agent, archivedChildCount: 3 }, ...children, plain], liveStatusOf: working }),
     });
     expect(sameSidebarVisibleNodes(base, counted)).toBe(false);
     const folded = flattenSidebarThreadTree({ nodes: tree(), collapsedAgentIds: new Set(['ops']) });

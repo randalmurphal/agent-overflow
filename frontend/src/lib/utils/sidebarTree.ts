@@ -18,7 +18,9 @@
 //   5. paused (reserved for future; no current source emits it).
 //   6. idle + read (no pill).
 // Within each tier (after pinned): latestActivityAt desc, then thread.id
-// localeCompare for stability.
+// localeCompare for stability. Inside a group or an agent row (depth 1),
+// tier 4 splits: running rows sort above completed (unread) ones, so a
+// container reads needs-you, running, unread, idle.
 //
 // Every thread renders flat: at the top level, as a direct member of a
 // group, or under the standing agent that spawned it. Members bubble:
@@ -33,8 +35,12 @@
 // are the live threads whose `spawnedByThreadId` names it, unless they are
 // assistants themselves, and its past threads that are not archived. The backend keeps an agent and its children out of groups; a
 // `groupId` or pin left on an agent's row is ignored here. An agent whose
-// row is not in the list (another project, archived) nests nothing: its
-// spawned threads render as plain rows.
+// row is not in the list (archived, or filtered out) nests nothing: its
+// spawned threads render as plain rows. The builder runs per project, but
+// what it receives is the sidebar's per-project bucket, and the bucketing
+// (ProjectsSection) files a thread an agent spawned into another project
+// under the agent's project. So a child of another project nests here, and
+// its own project's list never sees it.
 
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread, ThreadGroup } from '../types/models';
@@ -155,6 +161,22 @@ export function isStandingAgent(thread: Pick<Thread, 'agentId'>): boolean {
 }
 
 /**
+ * The thread id of the agent row that would nest this thread: its spawner,
+ * or, for an assistant's past thread, that assistant's current thread
+ * (currentThreadIdOf). Undefined for an agent's own row and for a thread
+ * no agent spawned. Whether that agent row is in the sidebar is the
+ * caller's to check.
+ */
+export function nestingAgentThreadId(
+  thread: Pick<Thread, 'agentId' | 'pastAgentId' | 'spawnedByThreadId'>,
+  currentThreadIdOf: (agentId: string) => string | undefined,
+): string | undefined {
+  if (thread.agentId) return undefined;
+  if (thread.pastAgentId) return currentThreadIdOf(thread.pastAgentId);
+  return thread.spawnedByThreadId || undefined;
+}
+
+/**
  * The key of an agent row's sidebar state (its fold, its done footer): the
  * assistant's id, so a handoff to a new thread keeps it.
  */
@@ -272,23 +294,31 @@ export function isDraftNode(node: SidebarTreeNode): boolean {
 }
 
 /**
+ * How strongly a node's displayed status claims a rolled-up dot: its status
+ * tier, then its live-status priority. The tier ignores pins, so a pinned
+ * idle member never masks a running one, and it ranks an unread idle row
+ * (the Completed pill) above a read one. Every rolled-up dot ranks with
+ * this: a container row's (groupDisplay) and a show-more row's or
+ * collapsed project's (rollupDisplayStatus).
+ */
+export function displayRank(node: Pick<SidebarTreeNode, 'normalSortGroup' | 'displayLiveStatus'>): number {
+  return SORT_GROUP_PRIORITY[node.normalSortGroup] * 1000 + statusPriority(node.displayLiveStatus);
+}
+
+/**
  * The status a container row shows: its most important member's, pill
- * included, ranked by status tier and then by live-status priority. The
- * tier ignores pins: a pinned idle member must not mask a running one. An
- * agent passes its own node among the members, so its own status competes.
+ * included (displayRank). An agent passes its own node among the members,
+ * so its own status competes.
  */
 function groupDisplay(
   members: readonly SidebarThreadTreeNode[],
 ): { displayLiveStatus: ThreadLiveStatus; displayStatus: ThreadStatusPill | null } {
   let top: SidebarThreadTreeNode | null = null;
-  let topGroupPriority = -1;
-  let topPriority = -1;
+  let topRank = -1;
   for (const member of members) {
-    const groupPriority = SORT_GROUP_PRIORITY[member.normalSortGroup];
-    const priority = statusPriority(member.displayLiveStatus);
-    if (groupPriority > topGroupPriority || (groupPriority === topGroupPriority && priority > topPriority)) {
-      topGroupPriority = groupPriority;
-      topPriority = priority;
+    const rank = displayRank(member);
+    if (rank > topRank) {
+      topRank = rank;
       top = member;
     }
   }
@@ -335,6 +365,12 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
   const rightSortGroup = rightPinGroup === null ? right.sortGroup : right.normalSortGroup;
   const groupCmp = SORT_GROUP_PRIORITY[rightSortGroup] - SORT_GROUP_PRIORITY[leftSortGroup];
   if (groupCmp !== 0) return groupCmp;
+  // Inside a container the shared activity tier splits: running above
+  // unread. The top level keeps the two interleaved by activity.
+  if (left.depth > 0 && right.depth > 0) {
+    const runningCmp = Number(rightSortGroup === 'running') - Number(leftSortGroup === 'running');
+    if (runningCmp !== 0) return runningCmp;
+  }
 
   if (right.latestActivityAt !== left.latestActivityAt) {
     return right.latestActivityAt > left.latestActivityAt ? 1 : -1;

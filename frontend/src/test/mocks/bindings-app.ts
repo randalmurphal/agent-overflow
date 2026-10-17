@@ -163,6 +163,7 @@ export const DiscardUnpreparedThreadTransfer = dispatch('DiscardUnpreparedThread
 export const GetThread = dispatch('GetThread');
 export const ListThreads = dispatch('ListThreads');
 export const MarkThreadRead = dispatch('MarkThreadRead');
+export const MarkThreadsRead = dispatch('MarkThreadsRead');
 export const MarkThreadUnread = dispatch('MarkThreadUnread');
 export const PinThread = dispatch('PinThread');
 export const SetThreadPinGroup = dispatch('SetThreadPinGroup');

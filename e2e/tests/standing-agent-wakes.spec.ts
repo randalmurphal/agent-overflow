@@ -4875,7 +4875,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(refused.text).toContain('That prompt is no longer open');
       await workerDone;
 
-      // The worker carried on to the end of its turn.
+      // The worker carried on to the end of its turn. That turn answered the
+      // agent, which marked the worker read into the agent's done list.
+      await page.getByTestId('thread-row-agent-done-toggle').click();
       await page.getByTestId('thread-row').getByText('Release worker', { exact: true }).click();
       await expect(page.getByText('Release 4.2 is on staging.').first()).toBeVisible();
 

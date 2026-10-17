@@ -2,7 +2,8 @@
 // never mutable route slots; newly paired computers are visible by default.
 import { onBackendIdentity } from '../transport/backendIdentity';
 import type { BackendKey } from '../transport/backendKey';
-import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
+import type { Thread } from '../types/models';
+import { backendDisplayName, getAttachedBackends, threadMachine } from './attachedBackends.svelte';
 import { onFrontendValueChanged, readFrontendValue, writeFrontendValue } from './frontendStorage';
 import { remoteAccessAvailable } from '../transport/buildVariant';
 
@@ -42,6 +43,10 @@ export function sidebarDevices() { return devices; }
 export function sidebarDeviceFilterActive(): boolean { return hiddenRoutes.size > 0; }
 export function sidebarBackendVisible(key: BackendKey | undefined): boolean {
   return key === undefined || !hiddenRoutes.has(key);
+}
+/** Whether the device filter shows this thread's computer. */
+export function sidebarThreadVisible(thread: Pick<Thread, 'id' | 'projectId'>): boolean {
+  return !sidebarDeviceFilterActive() || sidebarBackendVisible(threadMachine(thread.id, thread.projectId));
 }
 export function setSidebarDeviceVisible(id: string, visible: boolean): void {
   if (!id || !devices.some((device) => device.id === id)) return;

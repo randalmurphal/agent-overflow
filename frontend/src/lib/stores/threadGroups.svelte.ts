@@ -19,6 +19,7 @@ import { ListThreadGroups } from './bindings';
 import { onBackendDetached } from '../transport/backends';
 import { clearThreadGroupMembership } from './threads.svelte';
 import { addErrorToast } from './toast.svelte';
+import { forgetContainerVisibleLimit } from './sidebar.svelte';
 import type { ThreadGroup } from '../types/models';
 import type { ThreadGroupUpdateEvent } from '../types/events';
 
@@ -128,6 +129,7 @@ export function upsertThreadGroup(group: ThreadGroup): void {
 
 export function removeThreadGroup(id: string): void {
   if (!id) return;
+  forgetContainerVisibleLimit(id);
   invalidateReplicaCatalog(threadGroupBackend(id) ?? '', 'groups');
   catalogWriter.mutate(threadGroupBackend(id), (rows) => rows.filter((group) => group.id !== id));
 }

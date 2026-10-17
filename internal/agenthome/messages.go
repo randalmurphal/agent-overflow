@@ -43,7 +43,7 @@ Start a discussion with the user to set your role. Your first reply is two or th
 
 As the user answers, push back on anything vague or conflicting, propose a one-line role, and iterate until the user agrees with it. Only then write %s in your home: the role line first, then each grant with its scope and today's date, your standing rules, and who you report to. Then build and test, inside your home, any scripts or tools the role needs. Finish by confirming in one short paragraph what you wrote and what you will do next.
 
-Whenever the user raises your role again, have the same discussion and edit %s. If the user points you at an old thread to learn from, read it with thread_show or thread_ask.`,
+Whenever the user raises your role again, have the same discussion and edit %s. If the user points you at an old thread to learn from, read it with thread_show or thread_ask. What pinning, groups, archive, the done fold and unread dots do in the user's sidebar is in the Organizing paragraph of your thread tools guide.`,
 		name, home, InstructionsFile, InstructionsFile)
 }
 
@@ -56,7 +56,7 @@ func CreatedOpeningMessage(name, home, creatorName, creatorThreadID, role string
 Its opening role text for you, its own words:
 %[5]s
 
-Discuss your role with %[2]q, not the user. Reply to it with thread_reply and the token of this message: say who you are, propose a one-line role from its text, and push back on anything vague or conflicting. Iterate as it answers. Write %[6]s in your home only when it agrees: the role line first, then that you have no grants until it gives them, your standing rules, and that you report to %[2]q. Then build and test, inside your home, any scripts or tools the role needs, and confirm to it in one short paragraph.`,
+Discuss your role with %[2]q, not the user. Reply to it with thread_reply and the token of this message: say who you are, propose a one-line role from its text, and push back on anything vague or conflicting. Iterate as it answers. Write %[6]s in your home only when it agrees: the role line first, then that you have no grants until it gives them, your standing rules, and that you report to %[2]q. Then build and test, inside your home, any scripts or tools the role needs, and confirm to it in one short paragraph. What pinning, groups, archive, the done fold and unread dots do in the user's sidebar is in the Organizing paragraph of your thread tools guide.`,
 		name, creatorName, creatorThreadID, home, quoted, InstructionsFile)
 }
 

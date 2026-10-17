@@ -51,6 +51,12 @@ type threadRequestState struct {
 	// with the thread's running entry, so the set holds at most one entry
 	// per turn whose receipts are still running.
 	personStops map[string][]personStop
+	// answeredReads maps a thread to the turns whose answer to its spawner
+	// settled while they ran (a thread_reply), so the turn's end stamps the
+	// read mark the answer earned (holdAnsweredRead). An entry goes at
+	// that turn's end or the session's, so it holds at most the turns
+	// still running.
+	answeredReads map[string]map[int]bool
 	// settleLocks serializes everything that can settle or deliver one
 	// token, so a settlement and a timing-out wait never both deliver the
 	// answer and never neither.

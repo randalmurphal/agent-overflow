@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { pendingForks } from '../../stores/forkPreparation.svelte';
   import ForkPendingRow from './ForkPendingRow.svelte';
   import { projectHasScope } from '../../transport/entityScopes';
@@ -23,6 +24,7 @@
     collapseThreadList,
     getAgentDoneVisibleLimit,
     getCollapsedAgents,
+    getContainerVisibleLimit,
     getCollapsedGroups,
     closeAgentDone,
     getExpandedDoneAgents,
@@ -31,6 +33,7 @@
     isAgentExpanded,
     isGroupExpanded,
     isThreadListExpanded,
+    setContainerVisibleLimit,
     setThreadListVisibleLimit,
   } from '../../stores/sidebar.svelte';
   import { getArchivedChildren, loadArchivedChildren } from '../../stores/agentArchivedChildren.svelte';
@@ -51,17 +54,23 @@
   import { openNewAssistantDialog } from '../../stores/newAssistant.svelte';
   import Icon from '../primitives/Icon.svelte';
   import AgentDoneFooter from './AgentDoneFooter.svelte';
+  import ContainerShowMore from './ContainerShowMore.svelte';
   import ThreadGroupRow from './ThreadGroupRow.svelte';
   import ThreadRow from './ThreadRow.svelte';
   import { assistantKey, buildSidebarThreadTree } from '../../utils/sidebarTree';
   import {
+    agentDoneCount,
+    agentLiveChildCount,
     flattenSidebarThreadTree,
+    nextContainerRevealLimit,
     nextSidebarThreadRevealLimit,
     previewSidebarThreads,
     rollupDisplayStatus,
     sameSidebarVisibleNodes,
     sameThreadStatusPill,
+    sidebarChildFolds,
     sidebarVisibleNodeId,
+    type SidebarContainerMoreNode,
   } from '../../utils/sidebarTreeView';
   import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
   import { GROUP_RAIL_LEFT_PX } from '../../utils/sidebarRowMetrics';
@@ -162,6 +171,8 @@
       expandedDoneAgentIds: getExpandedDoneAgents(),
       archivedChildrenOf: (agent) => getArchivedChildren(agent.id, agent.archivedChildCount ?? 0),
       doneLimitOf: getAgentDoneVisibleLimit,
+      openThreadIds: openIds,
+      memberLimitOf: getContainerVisibleLimit,
     });
     if (sameSidebarVisibleNodes(prevVisibleNodes, next)) return prevVisibleNodes;
     prevVisibleNodes = next;
@@ -170,19 +181,60 @@
 
   // An open done footer reads its agent's archived children, and reads
   // them again when the row's count moves (a child archived, unarchived or
-  // deleted on any client). A footer whose count reaches zero leaves the
-  // list, and its open state goes with it.
+  // deleted on any client). A footer whose count, settled idle children
+  // and archived ones together, reaches zero leaves the list, and its open
+  // state goes with it.
+  //
+  // The zero is checked again after a settle window before the footer
+  // closes: archiving a folded child removes its row (locally, or by its
+  // `unlisted` frame) before the agent row's count says it was archived,
+  // and that passing zero must not shut a footer the user has open.
+  const DONE_CLOSE_SETTLE_MS = 750;
+  const pendingDoneCloses = new Map<string, ReturnType<typeof setTimeout>>();
+  function doneCountOf(key: string): number {
+    for (const node of tree) {
+      if (node.kind === 'agent' && assistantKey(node.thread) === key) {
+        return agentDoneCount(node, openIds, pane?.threadId ?? null);
+      }
+    }
+    return 0;
+  }
   $effect(() => {
     for (const node of tree) {
-      if (node.kind !== 'agent' || !isAgentDoneExpanded(assistantKey(node.thread))) continue;
-      const count = node.thread.archivedChildCount ?? 0;
-      if (count === 0) {
-        closeAgentDone(assistantKey(node.thread));
+      const key = node.kind === 'agent' ? assistantKey(node.thread) : '';
+      if (node.kind !== 'agent' || !isAgentDoneExpanded(key)) continue;
+      if (agentDoneCount(node, openIds, pane?.threadId ?? null) === 0) {
+        if (!pendingDoneCloses.has(key)) {
+          pendingDoneCloses.set(key, setTimeout(() => {
+            pendingDoneCloses.delete(key);
+            if (doneCountOf(key) === 0) closeAgentDone(key);
+          }, DONE_CLOSE_SETTLE_MS));
+        }
         continue;
       }
-      loadArchivedChildren(node.thread.id, count);
+      const archived = node.thread.archivedChildCount ?? 0;
+      if (archived > 0) loadArchivedChildren(node.thread.id, archived);
     }
   });
+  onDestroy(() => {
+    for (const timer of pendingDoneCloses.values()) clearTimeout(timer);
+    pendingDoneCloses.clear();
+  });
+
+  // A container's show-more: the members its bound cuts are the group's,
+  // or the agent's children that are not folded into its done footer.
+  function handleContainerReveal(more: SidebarContainerMoreNode): void {
+    for (const node of tree) {
+      if (node.kind === 'thread') continue;
+      const key = node.kind === 'group' ? node.group.id : assistantKey(node.thread);
+      if (key !== more.containerKey) continue;
+      const members = node.kind === 'group'
+        ? node.children
+        : node.children.filter((child) => !sidebarChildFolds(child, openIds, pane?.threadId ?? null));
+      setContainerVisibleLimit(key, nextContainerRevealLimit(members, openIds, getContainerVisibleLimit(key)));
+      return;
+    }
+  }
 
   function handleShowMore(e: MouseEvent): void {
     e.stopPropagation();
@@ -420,7 +472,21 @@
             class="mx-2 my-1 border-t border-border-subtle/60"
           ></div>
         {/if}
-        {#if node.kind === 'agent-done'}
+        {#if node.kind === 'container-more'}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div
+            role="listitem"
+            class="border-l border-border-subtle/60 pb-px -mb-px"
+            style:margin-left="{GROUP_RAIL_LEFT_PX}px"
+            data-group-member={node.ownerGroupId ? '' : null}
+            data-agent-member={node.ownerAgentId ? '' : null}
+            ondragover={(e) => { if (node.ownerGroupId) memberDragOver(e, node.ownerGroupId); else agentDragOver(e); }}
+            ondragleave={(e) => { if (node.ownerGroupId) memberDragLeave(e, node.ownerGroupId); }}
+            ondrop={(e) => { if (node.ownerGroupId) memberDrop(e, node.ownerGroupId); else agentDrop(e); }}
+          >
+            <ContainerShowMore {node} onReveal={() => handleContainerReveal(node)} />
+          </div>
+        {:else if node.kind === 'agent-done'}
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
           <div
             role="listitem"
@@ -439,6 +505,7 @@
               {pane}
               expanded={isGroupExpanded(node.group.id)}
               memberThreadIds={node.children.map((member) => member.thread.id)}
+              status={node.displayStatus === null ? null : { liveStatus: node.displayLiveStatus, pill: node.displayStatus }}
               dropActive={dropTargetGroupId === node.group.id && dropTargetAccepts}
               onDropTargetChange={(active, accepts) => setGroupDropTarget(node.group.id, active, accepts)}
             />
@@ -462,6 +529,7 @@
             style:margin-left={node.ownerGroupId || node.ownerAgentId ? `${GROUP_RAIL_LEFT_PX}px` : null}
             data-group-member={node.ownerGroupId ? '' : null}
             data-agent-member={node.ownerAgentId ? '' : null}
+            data-agent-done-row={node.kind === 'thread' && (node.archived || node.folded) ? '' : null}
             ondragover={(e) => { if (node.ownerGroupId) memberDragOver(e, node.ownerGroupId); else if (node.kind === 'agent' || node.ownerAgentId) agentDragOver(e); }}
             ondragleave={(e) => { if (node.ownerGroupId) memberDragLeave(e, node.ownerGroupId); }}
             ondrop={(e) => { if (node.ownerGroupId) memberDrop(e, node.ownerGroupId); else if (node.kind === 'agent' || node.ownerAgentId) agentDrop(e); }}
@@ -471,7 +539,12 @@
               {pane}
               indent={node.depth + 1}
               inGroup={node.ownerGroupId !== null || node.ownerAgentId !== null}
-              agent={node.kind === 'agent' ? { expanded: isAgentExpanded(assistantKey(node.thread)), childCount: node.children.length } : null}
+              agent={node.kind === 'agent' ? {
+                expanded: isAgentExpanded(assistantKey(node.thread)),
+                childCount: agentLiveChildCount(node, openIds, pane?.threadId ?? null),
+                rolledUp: node.displayStatus === null ? null : { liveStatus: node.displayLiveStatus, pill: node.displayStatus },
+              } : null}
+              listProjectId={projectId}
               agentChildren={node.kind === 'agent' ? node.children.map((child) => child.thread) : []}
               archivedChild={node.kind === 'thread' && node.archived === true}
               selected={isThreadSelected(node.thread.id)}

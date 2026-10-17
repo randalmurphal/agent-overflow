@@ -197,6 +197,11 @@ func (a *App) markThreadFocused(threadID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 		defer cancel()
 		row, changed, err := a.store.MarkThreadReadNow(ctx, threadID)
+		if errors.Is(err, store.ErrThreadReadRefused) {
+			// Focus on a thread this computer may not change (a holder, one
+			// mid-transfer or moved away) leaves its read state alone.
+			return
+		}
 		if err != nil {
 			// Nobody is waiting on this write, so a failure would
 			// otherwise be invisible: the sidebar keeps showing the

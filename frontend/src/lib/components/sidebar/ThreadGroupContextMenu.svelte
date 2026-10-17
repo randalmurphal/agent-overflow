@@ -27,7 +27,7 @@
     newThreadInGroupAction,
     removeThreadsFromGroupAction,
   } from './threadGroupActions';
-  import { archiveThreadAction } from './threadRowActions';
+  import { archiveThreadAction, markAllReadAction } from './threadRowActions';
   import { projectHasScope } from '../../transport/entityScopes';
 
   interface Props {
@@ -121,6 +121,15 @@
           onSelect={() => {
             onClose();
             onRename();
+          }}
+        />
+        <MenuItem
+          label="Mark All Read"
+          disabled={memberCount === 0 || operateUngranted}
+          title={ungrantedTitle}
+          onSelect={() => {
+            onClose();
+            void markAllReadAction(memberThreadIds.flatMap((id) => getThreadById(id) ?? []));
           }}
         />
         <MenuItem

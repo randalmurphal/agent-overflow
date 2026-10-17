@@ -44,6 +44,8 @@ test('compact: the agent session, its hygiene wake and the worker first message 
   await capture(page, 'compact-hygiene-wake.png', wake.getByTestId('agent-message-toggle'), outcome);
 
   await page.goBack();
+  // The worker's answer to the agent marked it read: it is in the done list.
+  await page.getByTestId('thread-row-agent-done-toggle').tap();
   await page.getByTestId('thread-row').getByText('Parser review', { exact: true }).tap();
   const first = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="spawn"]');
   await expect(first).toHaveCount(1);

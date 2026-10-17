@@ -34,6 +34,9 @@ test('an agent row folds, previews and lists its done children on a phone', asyn
   const [agent, workerA, workerB, finished] = threadIds;
   await harness.rpc('HarnessMakeAssistant', agent);
   await harness.rpc('ArchiveThread', finished);
+  // Unread, so the workers stay live rows: a settled idle worker folds into
+  // the done footer.
+  for (const id of [workerA, workerB]) await harness.rpc('MarkThreadUnread', id);
   // The agent registers a loop so the row carries a state line.
   await setScenario(
     harness,
@@ -54,7 +57,8 @@ test('an agent row folds, previews and lists its done children on a phone', asyn
   await harness.open(page);
   const width = page.viewportSize()!.width;
   const agentRow = page.locator(`[data-sidebar-thread-id="${agent}"]`);
-  const members = page.locator('[data-agent-member] [data-sidebar-thread-id]');
+  // The live rows behind the rail, not the done list's.
+  const members = page.locator('[data-agent-member]:not([data-agent-done-row]) [data-sidebar-thread-id]');
   const chevron = agentRow.getByTestId('thread-row-agent-expand');
   const footer = page.getByTestId('thread-row-agent-done');
   await expect(agentRow).toHaveAttribute('data-sidebar-agent', '');

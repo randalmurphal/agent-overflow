@@ -28,6 +28,9 @@
   import { addErrorToast } from '../../stores/toast.svelte';
   import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import type { Thread } from '../../types/models';
+  import type { ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
+  import type { ThreadStatusPill } from '../../utils/threadStatusPill';
+  import { entryIdFor, getProjectLabelText } from '../../stores/projects.svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FileText from '@lucide/svelte/icons/file-text';
   import Terminal from '@lucide/svelte/icons/terminal';
@@ -95,6 +98,7 @@
     agent = null,
     agentChildren = [],
     archivedChild = false,
+    listProjectId = null,
   }: {
     thread: Thread;
     pane: ThreadPane | null;
@@ -117,11 +121,25 @@
      * it, and a state line names its soonest loop or watch. Null for an
      * ordinary thread row.
      */
-    agent?: { expanded: boolean; childCount: number } | null;
+    agent?: {
+      expanded: boolean;
+      childCount: number;
+      /**
+       * The bubbled status of the agent's own thread and its children,
+       * which the row shows while it is collapsed (ruling 33).
+       */
+      rolledUp?: { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null;
+    } | null;
     /** The agent's live spawned threads, for the menu's Archive Done Children. */
     agentChildren?: readonly Thread[];
     /** An archived spawned thread listed under an agent's done footer. */
     archivedChild?: boolean;
+    /**
+     * The project whose list renders this row. A child an agent spawned into
+     * another project nests under the agent here and names its own project
+     * on the sublabel line.
+     */
+    listProjectId?: string | null;
   } = $props();
 
   // isActive: this thread is what the FOCUSED pane shows (the sidebar's
@@ -422,8 +440,19 @@
   // A status from an unreachable computer is its last report: shown, but
   // still, and labelled as such.
   let unreachableMachine = $derived(unreachableThreadMachineName(thread.id, thread.projectId));
-  let pill = $derived(
+  let ownRowPill = $derived(
     unreachableMachine !== null ? lastKnownThreadStatusPill(ownPill, unreachableMachine) : ownPill,
+  );
+  // A collapsed agent row carries its children's dot; expanded, each row
+  // shows its own (ruling 33). The bubbled pill already went through the
+  // unreachable-computer treatment in the tree.
+  let rolledUp = $derived(agent !== null && !agent.expanded ? (agent.rolledUp ?? null) : undefined);
+  let pill = $derived(rolledUp !== undefined ? (rolledUp?.pill ?? null) : ownRowPill);
+  let dotStatus = $derived(rolledUp ? rolledUp.liveStatus : liveStatus);
+  let foreignProjectName = $derived(
+    listProjectId && thread.projectId && entryIdFor(thread.projectId) !== entryIdFor(listProjectId)
+      ? getProjectLabelText(thread.projectId)
+      : '',
   );
   const WORKTREE_META_OFFSET_PX = 14;
   let worktreeIndentPx = $derived(rowPaddingLeftPx + WORKTREE_META_OFFSET_PX);
@@ -466,8 +495,8 @@
     {selected ? 'bg-accent/15' : isActive ? 'bg-accent/20' : 'hover:bg-surface-2/30'}
     {isOpen ? 'after:absolute after:left-0 after:inset-y-1 after:w-0.5 after:rounded-full after:bg-accent' : ''}
     {isOpen && !isActive ? 'after:opacity-70' : ''}
-    {isCursorTarget ? 'ring-1 ring-accent/70 ring-inset' : (pill?.ringClass ?? '')}
-    {pill?.glowClass ?? ''}"
+    {isCursorTarget ? 'ring-1 ring-accent/70 ring-inset' : (ownRowPill?.ringClass ?? '')}
+    {ownRowPill?.glowClass ?? ''}"
   data-testid="thread-row-shell"
   data-open={isOpen || null}
   data-focused={isActive || null}
@@ -552,7 +581,8 @@
       aria-label={pill.label}
       title={pill.label}
       data-testid="thread-row-status-dot"
-      data-status={liveStatus}
+      data-status={dotStatus}
+      data-rolled-up={rolledUp ? '' : undefined}
     ></span>
   {/if}
 
@@ -705,7 +735,7 @@
   {:else if agent !== null}
     <AgentStateLine threadId={thread.id} indentPx={GROUP_GLYPH_LEFT_PX} />
   {:else if !editing}
-    <ThreadRowSublabel {thread} indentPx={worktreeIndentPx} />
+    <ThreadRowSublabel {thread} indentPx={worktreeIndentPx} projectName={foreignProjectName} />
   {/if}
 </div>
 

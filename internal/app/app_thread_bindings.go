@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -317,19 +318,53 @@ func (a *App) RenameThread(id string, title string) error {
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) MarkThreadRead(id string) error {
-	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
+	_, _, err := a.stampThreadRead(id)
+	return err
+}
+
+// MarkThreadsRead is MarkThreadRead for every thread named, in one call: an
+// agent row's or a group's Mark All Read (docs/specs/standing-agents.md
+// ruling 31). Repeated ids count once, and a call names at most
+// store.MarkThreadsReadLimit threads. The stamps are one store transaction
+// that takes no thread lock: each is a single conditional row write whose
+// statement itself skips a thread this computer may not change, which is
+// what MarkThreadRead's lock and CheckMutable guard. Each changed row is
+// announced, and the call returns them; a thread that is gone or not
+// changeable here is an error naming it, after the rest are marked.
+//
+//ao:scope threads:operate
+//ao:route home
+func (a *App) MarkThreadsRead(ids []string) ([]store.Thread, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
+	defer cancel()
+	rows, refused, err := a.threadApplication().MarkReadMany(ctx, ids)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer unlock()
+	for _, row := range rows {
+		a.announceThreadIfChanged(triage.ThreadActionFull, row.ID, true)
+	}
+	if len(refused) > 0 {
+		return rows, fmt.Errorf("mark threads read: %d not found or not changeable on this computer: %s",
+			len(refused), strings.Join(refused, ", "))
+	}
+	return rows, nil
+}
+
+// stampThreadRead is one thread's stamp with the deadline MarkThreadRead
+// gives it, announcing the row when it moved. It takes no thread lock, as
+// MarkThreadsRead takes none: the stamp's statement itself refuses a thread
+// this computer may not change (store.MarkThreadsReadNow), one rule for
+// both. A refusal is store.ErrThreadReadRefused.
+func (a *App) stampThreadRead(id string) (store.Thread, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 	defer cancel()
 	row, changed, err := a.threadApplication().MarkRead(ctx, id)
 	if err != nil {
-		return err
+		return store.Thread{}, false, err
 	}
 	a.announceThreadIfChanged(triage.ThreadActionFull, row.ID, changed)
-	return nil
+	return row, changed, nil
 }
 
 // MarkThreadUnread stamps last_read_at to zero. NULL is reserved for

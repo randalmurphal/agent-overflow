@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/threadmode"
 )
 
 // newTestProject inserts a fresh project row and returns it. Threads in
@@ -3086,5 +3089,223 @@ func TestMarkThreadReadNowClampsToImportedErrorItem(t *testing.T) {
 	}
 	if after.HasFailedTurn {
 		t.Fatal("HasFailedTurn = true after reading the imported error, want false")
+	}
+}
+
+// TestMarkThreadReadThroughStopsAtTheAnsweringTurn: the read mark an answer
+// gives a spawned thread covers that turn and no later one, never moves the
+// marker backward, and leaves a never-tracked or missing row alone.
+func TestMarkThreadReadThroughStopsAtTheAnsweringTurn(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	thr := makeThread("thread-read-through", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	base := time.Now().UnixMilli() + 60_000
+	insertCompletedTurn(t, s, thr.ID, "turn-answer", base, base+1000)
+
+	row, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, base+1000)
+	if err != nil || !changed {
+		t.Fatalf("MarkThreadReadThrough = changed %v, %v; want a change", changed, err)
+	}
+	if row.LastReadAt == nil || *row.LastReadAt != base+1000 {
+		t.Fatalf("returned LastReadAt = %v, want %d", row.LastReadAt, base+1000)
+	}
+
+	// A later turn the user caused stays unread: the mark covered only the
+	// turn that answered.
+	if err := s.InsertTurn(Turn{TurnID: "turn-later", ThreadID: thr.ID, TurnIndex: 1, StartedAt: base + 2000}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-later", base+3000, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted: %v", err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if *got.LastReadAt != base+1000 || *got.LatestTurnCompletedAt != base+3000 {
+		t.Fatalf("LastReadAt %d, LatestTurnCompletedAt %d; want %d and %d", *got.LastReadAt, *got.LatestTurnCompletedAt, base+1000, base+3000)
+	}
+
+	// Never backward, and a repeat is a no-op.
+	for _, at := range []int64{base, base + 1000} {
+		if _, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, at); err != nil || changed {
+			t.Fatalf("MarkThreadReadThrough(%d) = changed %v, %v; want no change", at, changed, err)
+		}
+	}
+	got, _ = s.GetThread(thr.ID)
+	if *got.LastReadAt != base+1000 {
+		t.Fatalf("LastReadAt = %d after older marks, want %d", *got.LastReadAt, base+1000)
+	}
+
+	// A missing row is no error and no change.
+	if _, changed, err := s.MarkThreadReadThrough(ctx, "thread-gone", base); err != nil || changed {
+		t.Fatalf("missing row = changed %v, %v; want no change, no error", changed, err)
+	}
+
+	// NULL means never tracked, which reads as read: it stays NULL.
+	if _, err := s.db.Exec(`UPDATE threads SET last_read_at = NULL WHERE id = ?`, thr.ID); err != nil {
+		t.Fatalf("clear last_read_at: %v", err)
+	}
+	if _, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, base+5000); err != nil || changed {
+		t.Fatalf("NULL marker = changed %v, %v; want no change", changed, err)
+	}
+}
+
+// MarkThreadsReadNow stamps every named thread owed a read with the clamp
+// MarkThreadReadNow applies, counts a repeated id once, refuses a thread that
+// is gone or that this computer may not change, refuses a call over the
+// limit, and costs the same statements for fifty threads as for two.
+func TestMarkThreadsReadNowStampsTheBatchInOneTransaction(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ahead := time.Now().UnixMilli() + 60_000
+	create := func(id string) {
+		t.Helper()
+		if err := s.CreateThread(makeThread(id, "claude")); err != nil {
+			t.Fatalf("CreateThread(%s): %v", id, err)
+		}
+	}
+	// A completed turn ahead of the clock: the stamp is its completion.
+	create("ahead")
+	insertCompletedTurn(t, s, "ahead", "turn-ahead", ahead, ahead+1000)
+	// An interrupted newest turn: the stamp covers its start.
+	create("open-turn")
+	if err := s.InsertTurn(Turn{TurnID: "turn-open", ThreadID: "open-turn", TurnIndex: 0, StartedAt: ahead + 5000}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	// Already read through its turn: no change.
+	create("current")
+	insertCompletedTurn(t, s, "current", "turn-current", 100, 200)
+	if _, _, err := s.MarkThreadReadNow(ctx, "current"); err != nil {
+		t.Fatalf("MarkThreadReadNow(current): %v", err)
+	}
+	// A holder is not this computer's to change.
+	create("holder")
+	if _, err := s.db.Exec(`UPDATE threads SET mode = ? WHERE id = ?`, threadmode.ModeHolder, "holder"); err != nil {
+		t.Fatalf("make holder: %v", err)
+	}
+
+	// A fork still being prepared, and a thread mid-move to another
+	// computer, are not this computer's to change either.
+	create("forking")
+	if _, err := s.db.Exec(`UPDATE threads SET fork_preparing = 1 WHERE id = ?`, "forking"); err != nil {
+		t.Fatalf("mark fork preparing: %v", err)
+	}
+	create("moving")
+	seedTransfer(t, s, "moving", "outgoing", "move", "prepared", 0)
+	markerOf := func(id string) sql.NullInt64 {
+		t.Helper()
+		var lastReadAt sql.NullInt64
+		if err := s.db.QueryRow(`SELECT last_read_at FROM threads WHERE id = ?`, id).Scan(&lastReadAt); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		return lastReadAt
+	}
+	refusedBefore := map[string]sql.NullInt64{}
+	for _, id := range []string{"holder", "forking", "moving"} {
+		refusedBefore[id] = markerOf(id)
+	}
+	changed, refused, err := s.MarkThreadsReadNow(ctx, []string{"ahead", "open-turn", "current", "ahead", "holder", "forking", "moving", "gone"})
+	if err != nil {
+		t.Fatalf("MarkThreadsReadNow: %v", err)
+	}
+	if !slices.Equal(refused, []string{"forking", "gone", "holder", "moving"}) {
+		t.Fatalf("refused = %v, want [forking gone holder moving]", refused)
+	}
+	got := map[string]int64{}
+	for _, row := range changed {
+		got[row.ID] = *row.LastReadAt
+	}
+	if len(changed) != 2 || got["ahead"] != ahead+1000 || got["open-turn"] != ahead+5000 {
+		t.Fatalf("changed = %v, want ahead at %d and open-turn at %d", got, ahead+1000, ahead+5000)
+	}
+	for id, before := range refusedBefore {
+		if after := markerOf(id); after != before {
+			t.Fatalf("%s last_read_at moved from %v to %v; a refused thread is not stamped", id, before, after)
+		}
+	}
+	// The batch of one names a refusal as such.
+	if _, _, err := s.MarkThreadReadNow(ctx, "moving"); !errors.Is(err, ErrThreadReadRefused) || !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("MarkThreadReadNow(moving) = %v, want ErrThreadReadRefused wrapping sql.ErrNoRows", err)
+	}
+	// Each changed thread now reads as read through its target.
+	for _, id := range []string{"ahead", "open-turn"} {
+		if again, refused, err := s.MarkThreadsReadNow(ctx, []string{id}); err != nil || len(again) != 0 || len(refused) != 0 {
+			t.Fatalf("second mark of %s = %d changed, refused %v, %v; want nothing", id, len(again), refused, err)
+		}
+	}
+
+	// Over the limit, refused whole with the number.
+	over := make([]string, MarkThreadsReadLimit+1)
+	for i := range over {
+		over[i] = fmt.Sprintf("over-%d", i)
+	}
+	if _, _, err := s.MarkThreadsReadNow(ctx, over); err == nil || !strings.Contains(err.Error(), fmt.Sprint(MarkThreadsReadLimit)) {
+		t.Fatalf("MarkThreadsReadNow over the limit = %v, want a refusal naming %d", err, MarkThreadsReadLimit)
+	}
+
+	// Repeats count once toward the limit.
+	repeated := slices.Repeat([]string{"ahead"}, MarkThreadsReadLimit+1)
+	if _, refused, err := s.MarkThreadsReadNow(ctx, repeated); err != nil || len(refused) != 0 {
+		t.Fatalf("MarkThreadsReadNow of one id repeated past the limit = refused %v, %v; want it counted once", refused, err)
+	}
+
+	// Fifty threads cost what two do.
+	cost := func(n int) [3]uint64 {
+		t.Helper()
+		ids := make([]string, n)
+		for i := range ids {
+			ids[i] = fmt.Sprintf("cost-%d-%d", n, i)
+			create(ids[i])
+			insertCompletedTurn(t, s, ids[i], "turn-"+ids[i], ahead, ahead+1000)
+		}
+		// Every statement the transaction runs goes through the statement
+		// cache, which counts it (sql_rebind_test.go).
+		statements, writes, commits := cachedStmtRuns.Load(), s.WriteCount(), s.CommitCount()
+		changed, refused, err := s.MarkThreadsReadNow(ctx, ids)
+		if err != nil || len(changed) != n || len(refused) != 0 {
+			t.Fatalf("MarkThreadsReadNow(%d) = %d changed, refused %v, %v", n, len(changed), refused, err)
+		}
+		return [3]uint64{uint64(cachedStmtRuns.Load() - statements), s.WriteCount() - writes, s.CommitCount() - commits}
+	}
+	two, fifty := cost(2), cost(50)
+	if want := [3]uint64{3, 1, 1}; two != want || fifty != want {
+		t.Fatalf("(statements, writes, commits) = %v for 2 threads, %v for 50; want %v for both: the stamp, the read back and the refused list", two, fifty, want)
+	}
+}
+
+// The read mark's caller reads the thread, finds it unpinned and writes; a
+// pin that lands between the two must still keep the dot, so the write
+// itself skips a pinned row.
+func TestMarkThreadReadThroughSkipsAThreadPinnedSinceTheCallerRead(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	thr := makeThread("thread-pinned-meanwhile", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	base := time.Now().UnixMilli() + 60_000
+	insertCompletedTurn(t, s, thr.ID, "turn-answer", base, base+1000)
+	if _, _, err := s.MarkThreadUnread(thr.ID); err != nil {
+		t.Fatalf("MarkThreadUnread: %v", err)
+	}
+	// The caller's read: unpinned and owed the mark.
+	read, err := s.GetThread(thr.ID)
+	if err != nil || read.PinnedAt != nil || *read.LastReadAt >= base+1000 {
+		t.Fatalf("GetThread = %+v, %v; want an unpinned unread thread", read, err)
+	}
+	// The pin lands, then the caller's write.
+	if _, _, err := s.PinThread(thr.ID); err != nil {
+		t.Fatalf("PinThread: %v", err)
+	}
+	if _, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, base+1000); err != nil || changed {
+		t.Fatalf("MarkThreadReadThrough on a pinned thread = changed %v, %v; want no change", changed, err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil || *got.LastReadAt != 0 {
+		t.Fatalf("pinned thread LastReadAt = %v, %v; want it still unread at 0", got.LastReadAt, err)
 	}
 }
