@@ -7,11 +7,13 @@
 // agent owns the directory) reaches the provider on a start and on a
 // resume, as Claude's appended system prompt and as Codex's developer
 // instructions, with the app guide switched off so the block cannot ride on
-// it; deleting the assistant's thread is confirmed once, whatever the
-// confirmDelete setting, naming the home folder, and removes the home with
-// the record; and a home that cannot be removed leaves the delete
+// it; on Codex, a rewrite of instructions.md between two sessions reaches
+// the resumed thread as one injected developer message, and an unchanged
+// home injects nothing; deleting the assistant's thread is confirmed once,
+// whatever the confirmDelete setting, naming the home folder, and removes
+// the home with the record; and a home that cannot be removed leaves the delete
 // unfinished with a toast saying why and the folder named in its details.
-import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 
@@ -25,6 +27,24 @@ const OWNS_SENTENCE = 'You own that directory and keep your durable state there.
 
 /** A mock's launch: what it was configured with, and Claude's `--resume` value. */
 type SessionLaunch = MockSessionConfig & { resumeRef: string };
+
+/** The mocks spawned in cwd, in spawn order, once there are at least `expected` of them. */
+async function mocksIn(harness: HarnessApp, cwd: string, expected: number): Promise<MockInfo[]> {
+  let seen: MockInfo[] = [];
+  await expect
+    .poll(
+      async () => {
+        const mocks = await harness.rpc<MockInfo[]>('HarnessListMocks');
+        seen = mocks
+          .filter((mock) => mock.registration.cwd === cwd && mock.sessionConfig)
+          .sort((a, b) => Number(a.mockId.split('-')[1]) - Number(b.mockId.split('-')[1]));
+        return seen.length;
+      },
+      { timeout: 20_000 },
+    )
+    .toBeGreaterThanOrEqual(expected);
+  return seen;
+}
 
 /**
  * The session configs of the mocks spawned in cwd, in spawn order, once
@@ -130,6 +150,54 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(await harness.rpc('GetStandingAgent', thread)).toBeNull();
   });
 }
+
+// A resumed Codex thread restores its context from the rollout and never
+// shows a changed developerInstructions to the model, so the home block's
+// change reaches it only as an injected developer message. Each session is
+// its own mock process, so a mock's latched injectedItems is that
+// session's alone.
+test("codex: a rewrite of an assistant's instructions.md reaches its resumed thread once", async ({ harness }) => {
+  test.setTimeout(120_000);
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'agent-instructions-codex', repo: {}, threads: [{ title: 'Release agent', provider: 'codex' }] }],
+  });
+  const { path: cwd, threadIds } = seed.projects[0];
+  const [thread] = threadIds;
+  await setScenario(harness, cwd, plainScenario({ name: 'instructions-codex', provider: 'codex', texts: ['ok'], afterTurns: 'repeatLast' }));
+  await harness.rpc('GetProviderStatuses');
+  const agent = await harness.rpc<{ id: string; home: string }>('HarnessMakeAssistant', thread);
+  const instructions = join(agent.home, 'instructions.md');
+  const BEFORE = 'Carry parser changes from review to merge.';
+  const AFTER = 'Carry release notes from draft to publication.';
+  writeFileSync(instructions, `${BEFORE}\n`);
+
+  // ---- A fresh start carries the instructions and injects nothing.
+  await runSession(harness, thread, 'first');
+  const [started] = await mocksIn(harness, cwd, 1);
+  expect(started.sessionConfig?.resumed ?? false).toBe(false);
+  expect(started.sessionConfig?.developerInstructions).toContain(BEFORE);
+  expect(started.injectedItems ?? []).toEqual([]);
+
+  // ---- The rewrite reaches the resumed thread as one developer message
+  // that carries the new text and not the old.
+  writeFileSync(instructions, `${AFTER}\n`);
+  await runSession(harness, thread, 'second');
+  const resumed = (await mocksIn(harness, cwd, 2))[1];
+  expect(resumed.sessionConfig?.resumed).toBe(true);
+  const injected = resumed.injectedItems ?? [];
+  expect(injected).toHaveLength(1);
+  expect(injected[0].role).toBe('developer');
+  expect(injected[0].text.startsWith('The developer instructions for this conversation have changed.')).toBe(true);
+  expect(injected[0].text).toContain(AFTER);
+  expect(injected[0].text).not.toContain(BEFORE);
+  expect(injected[0].text).toContain(OWNS_SENTENCE);
+
+  // ---- An unchanged home on the next resume injects nothing.
+  await runSession(harness, thread, 'third');
+  const unchanged = (await mocksIn(harness, cwd, 3))[2];
+  expect(unchanged.sessionConfig?.resumed).toBe(true);
+  expect(unchanged.injectedItems ?? []).toEqual([]);
+});
 
 test('an assistant whose home cannot be removed is not deleted, and the toast says why', async ({ harness, page }) => {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {

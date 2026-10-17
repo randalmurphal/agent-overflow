@@ -238,9 +238,14 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// about. stopIdleSessionReaper is idempotent and blocks until the
 	// goroutine returns.
 	a.remoteWatchWG.Wait()
+	// Before the request work is joined: an idle close hands the requests
+	// it took back to a settlement goroutine.
+	a.stopIdleSessionReaper()
+	record("stop idle session reaper", nil)
 	// The request sweep writes rows and can queue a wake, so it is joined
-	// beside the remote watches and before the store is closed.
-	a.threadRequestsWG.Wait()
+	// beside the remote watches and before the store is closed. Closing
+	// it refuses the settlements a later session close would start.
+	a.threadRequestsWG.Close()
 	// After every producer of a notice: a session start a notice began
 	// registers its session, and Step 4 must see it to close it.
 	a.stopAgentNoticeWork()
@@ -254,8 +259,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// A permission-mode follow writes the thread row; appCtx is cancelled,
 	// so it is returning or finishing one bounded write.
 	a.permissionModeFollowWG.Wait()
-	a.stopIdleSessionReaper()
-	record("stop idle session reaper", nil)
 
 	// Step 3c: stop the retention TTL sweep. The sweep writes to
 	// SQLite (cascading thread deletes) and calls deleteThreadLocked

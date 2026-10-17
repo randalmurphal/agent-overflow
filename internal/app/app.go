@@ -220,13 +220,15 @@ type App struct {
 	agentRoles     agenthome.RoleCache
 	agentRolesOnce sync.Once
 	// threadRequestsWG joins the request sweep goroutine at shutdown, the
-	// way remoteWatchWG joins the remote completion watcher.
-	threadRequestsWG sync.WaitGroup
+	// way remoteWatchWG joins the remote completion watcher, with the
+	// settlements, wake runs and emits it counts. They start from any
+	// goroutine while it may be waited on, so it is a workGroup.
+	threadRequestsWG workGroup
 	// threadRequestSettling counts, inside threadRequestsWG, the
 	// settlements and wake deliveries in flight (goThreadRequestSettling),
 	// so a caller can wait for what a settlement sets off without waiting
 	// out the sweep.
-	threadRequestSettling sync.WaitGroup
+	threadRequestSettling workGroup
 	// agentWakes is the wake supervisor's in-process state: the runs and
 	// long-running watch processes in flight. Zero value ready. See
 	// app_agent_wakes.go.

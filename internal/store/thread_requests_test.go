@@ -55,7 +55,7 @@ func mustGetThreadRequest(t *testing.T, s *Store, token string) ThreadRequest {
 // with no role line apart from an ordinary thread; a late reply replaces it
 // with the agent it was written under; a settlement with no agent records
 // none. A receipt records it the same way, and a new row is never read as
-// written before v150.
+// written before v151.
 func TestThreadRequestRecordsTheAnsweringAgent(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
@@ -99,7 +99,7 @@ func TestThreadRequestRecordsTheAnsweringAgent(t *testing.T) {
 
 	for _, token := range []string{"tok-agent", "tok-roleless", "tok-ordinary"} {
 		if row := mustGetThreadRequest(t, s, token); row.AnswerAgentUnrecorded {
-			t.Errorf("%s reads as written before v150", token)
+			t.Errorf("%s reads as written before v151", token)
 		}
 	}
 
@@ -1656,7 +1656,7 @@ func TestALineageOnlyRowIsNeverGivenBackOrConfirmed(t *testing.T) {
 }
 
 // A wake whose queue row is still there never reached the provider, so it
-// goes back whatever its confirmation reads: a row queued before v149 was
+// goes back whatever its confirmation reads: a row queued before v150 was
 // recorded as confirmed by the migration's backfill.
 func TestWithdrawThreadWakeWithItsRowIgnoresTheConfirmation(t *testing.T) {
 	s := newTestStore(t)

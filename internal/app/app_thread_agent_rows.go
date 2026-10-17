@@ -1003,11 +1003,11 @@ func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
 	}
 	e.draining = true
 	e.mu.Unlock()
-	a.threadRequestsWG.Add(1)
-	go func() {
-		defer a.threadRequestsWG.Done()
-		a.drainThreadAgentEmits()
-	}()
+	if !a.threadRequestsWG.Go(a.drainThreadAgentEmits) {
+		e.mu.Lock()
+		e.draining = false
+		e.mu.Unlock()
+	}
 }
 
 func (a *App) drainThreadAgentEmits() {

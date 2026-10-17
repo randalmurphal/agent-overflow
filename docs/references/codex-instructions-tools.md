@@ -139,13 +139,19 @@ The current source in `app-server-protocol/src/protocol/v2/thread.rs` exposes
 config/read. `core/src/session/mod.rs` resolves developer instructions from
 config on cold start/resume, whereas base instructions explicitly consult
 conversation history. On a resume the resolved value does not reach the model
-until the context is rebuilt by compaction
-([codex-wire.md](codex-wire.md#thread-unload-and-cold-resume-verified-01621)); a
-`thread/inject_items` developer message does
-([per-thread channels](codex-wire.md#developer-instructions-across-a-restart-and-per-thread-channels-verified-01621)). AO therefore reads cwd-scoped config before appending
+until the context is rebuilt by compaction, and a `thread/inject_items`
+developer message does
+([codex-wire.md](codex-wire.md#developer-instructions-on-a-resumed-or-forked-thread-verified-01621)). AO therefore reads cwd-scoped config before appending
 its own text: the app guide, then the guides of the browser and thread tools
 servers when those are on
 ([prompt-tool-overrides.md §App guide](../specs/prompt-tool-overrides.md#app-guide)).
 Native developer instructions remain first and unchanged, joined to AO's text
 by a blank line. AO omits the override when it has nothing to append, and when
 config/read fails, which it reports to the thread as a non-fatal error.
+
+A resumed or forked thread never shows a changed value to the model: Codex
+restores the model's context from the rollout, and the restored context has
+no developer-instructions field. AO therefore records the digest of the
+composed text each thread last received and injects a changed text once
+with `thread/inject_items` before the session's first turn
+([codex-wire.md §Developer instructions on a resumed or forked thread](codex-wire.md#developer-instructions-on-a-resumed-or-forked-thread-verified-01621)).

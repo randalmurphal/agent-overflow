@@ -3,10 +3,12 @@ package store
 import (
 	"bytes"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1649,7 +1651,7 @@ func TestMigrationV33RemovesQueueFromWorkItems(t *testing.T) {
 
 // TestV12ChannelMaxTurnsColumn covers the plain ALTER TABLE ADD COLUMN
 // migration: a pre-existing channel row must backfill to 8, new rows can
-// set an explicit value, and the NOT NULL constraint is enforced. v143
+// set an explicit value, and the NOT NULL constraint is enforced. v144
 // drops the table.
 func TestV12ChannelMaxTurnsColumn(t *testing.T) {
 	db := migrateThrough(t, 11)
@@ -1829,6 +1831,45 @@ func TestApplyRebuildMigrationRefusesAFix(t *testing.T) {
 	}
 }
 
+// A Rebuild migration's Check runs inside the rebuild's transaction: a
+// refusal names the migration and its cause and applies nothing, and a
+// pass lets the rebuild run.
+func TestApplyRebuildMigrationRunsItsCheck(t *testing.T) {
+	latest := migrations[len(migrations)-1].Version
+	db := migratedDB(t)
+	refused := errors.New("synthetic cause")
+	for _, tc := range []struct {
+		name  string
+		check error
+	}{{"refused", refused}, {"passed", nil}} {
+		synthetic := Migration{
+			Version: latest + 1,
+			Name:    "synthetic_rebuild_with_check_" + tc.name,
+			SQL:     `CREATE TABLE synthetic_rebuild_probe_` + tc.name + ` (id INTEGER PRIMARY KEY);`,
+			Rebuild: true,
+			Check:   func(*sql.Tx) error { return tc.check },
+		}
+		err := applyRebuildMigration(db, synthetic)
+		var tables int
+		if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, "synthetic_rebuild_probe_"+tc.name).Scan(&tables); err != nil {
+			t.Fatal(err)
+		}
+		if tc.check != nil {
+			want := "migration v" + strconv.Itoa(synthetic.Version) + " (" + synthetic.Name + ") refused: synthetic cause"
+			if err == nil || err.Error() != want {
+				t.Fatalf("%s: err = %v, want %q", tc.name, err, want)
+			}
+			if tables != 0 {
+				t.Fatalf("%s: the refused rebuild created its table", tc.name)
+			}
+			continue
+		}
+		if err != nil || tables != 1 {
+			t.Fatalf("%s: err = %v, tables = %d; want the rebuild applied", tc.name, err, tables)
+		}
+	}
+}
+
 // TestNoShippedRebuildMigrationCarriesAFix is the standing version of the
 // guard above: applyRebuildMigration would refuse such a migration at
 // boot, which is a runtime failure on a user's database. This catches it
@@ -1838,9 +1879,6 @@ func TestNoShippedRebuildMigrationCarriesAFix(t *testing.T) {
 		if m.Rebuild && m.Fix != nil {
 			t.Errorf("migration v%d (%s) is a Rebuild and carries a Fix; split the data fixup into its own migration",
 				m.Version, m.Name)
-		}
-		if m.Rebuild && m.Check != nil {
-			t.Errorf("migration v%d (%s) is a Rebuild and carries a Check", m.Version, m.Name)
 		}
 	}
 }

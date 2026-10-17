@@ -462,6 +462,11 @@ app-managed server adds one.
   also omits it rather than replace instructions AO could not read, and
   reports a non-fatal error on the thread
   ([codex-instructions-tools.md §App-owned appended guidance](../references/codex-instructions-tools.md#app-owned-appended-guidance)).
+  The value on a resume or fork does not reach the model, so a resumed
+  thread whose composed text changed since it last received one, or a
+  fork child's first start, gets the text as one injected developer
+  message before its first turn
+  ([codex-wire.md §Developer instructions on a resumed or forked thread](../references/codex-wire.md#developer-instructions-on-a-resumed-or-forked-thread-verified-01621)).
 
 ### Claude prompt snapshot
 

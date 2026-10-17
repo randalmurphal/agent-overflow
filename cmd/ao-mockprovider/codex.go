@@ -292,6 +292,8 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			Kind: control.ReportUserInput, Turn: turn,
 			Input: codexInputText(params), SessionRef: vars["THREAD_ID"],
 		})
+	case "thread/inject_items":
+		a.injectItems(id, params)
 	case "thread/fork":
 		a.forkThread(id, params)
 	case "thread/revert":

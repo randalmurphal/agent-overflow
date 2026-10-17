@@ -27,16 +27,7 @@
   import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../../utils/liveContentActivity';
   import { formatPayloadSize } from '../../utils/payloadExpansion.svelte';
 
-  let {
-    threadId,
-    launchId,
-    maxHeight = 'min(40vh, 18rem)',
-  }: {
-    threadId: string;
-    launchId: string;
-    /** CSS max-height of the tail's viewport. */
-    maxHeight?: string;
-  } = $props();
+  let { threadId, launchId }: { threadId: string; launchId: string } = $props();
 
   // The attach effect keys on the ids' VALUES: a parent re-rendering with
   // a fresh but equal pair must not release and re-acquire the watch.
@@ -101,10 +92,11 @@
       Earlier output not shown{tail.size > 0 ? ` (${formatPayloadSize(tail.size)} so far)` : ''}
     </p>
   {/if}
+  <!-- Ten lines of output tall: the box carries the output's type, so `lh`
+       is the output's line height, and 1rem is its py-2. -->
   <div
     bind:this={scrollEl}
-    class="pane-scroll-surface overflow-y-auto overflow-x-hidden [overflow-anchor:none] px-3 py-2"
-    style:max-height={maxHeight}
+    class="pane-scroll-surface max-h-[min(40vh,calc(10lh+1rem))] overflow-y-auto overflow-x-hidden [overflow-anchor:none] px-3 py-2 text-[0.6875rem] leading-relaxed"
     use:nestedScroll
     onscroll={handleScroll}
     data-testid="background-task-live-tail-scroll"
@@ -125,7 +117,7 @@
       {:else if attachment === null || tail === null}
         <p class="text-[0.6875rem] text-fg-subtle" role="status" aria-live="polite">Loading output…</p>
       {:else}
-        <AnsiText source={text} class="text-[0.6875rem] whitespace-pre-wrap break-words text-fg-muted leading-relaxed" />
+        <AnsiText source={text} class="whitespace-pre-wrap break-words text-fg-muted" />
       {/if}
     </div>
   </div>

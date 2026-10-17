@@ -188,14 +188,9 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 	}
 	a.emitAgentWakeRow(row.ThreadID, claimedRow)
 	row = claimedRow
-	ctx, run, ok := a.beginAgentWakeRun(row)
-	if !ok {
-		// Shutting down. The row stays `running`, and the next boot records
-		// the cut and runs it again.
-		return false
-	}
-	go func() {
-		defer a.endAgentWakeRun(row.ID, run)
+	// False when shutting down: the row stays `running`, and the next
+	// boot records the cut and runs it again.
+	return a.startAgentWakeRun(row, func(ctx context.Context, run *agentWakeRun) {
 		select {
 		case a.agentWakeSlots() <- struct{}{}:
 		case <-ctx.Done():
@@ -203,8 +198,7 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 		}
 		defer func() { <-a.agentWakeSlots() }()
 		a.runAgentWakeFire(ctx, run, row, fire)
-	}()
-	return true
+	})
 }
 
 // currentAgentWake reads a row as it stands now, for what its previous wake
@@ -427,14 +421,9 @@ func agentWatchEnvironment(home string) []string {
 // restarted with backoff when it exits, and its stdout lines batched into
 // wakes. A row whose process is already supervised is left alone.
 func (a *App) startAgentWatchProcess(row store.AgentWake) {
-	ctx, run, ok := a.beginAgentWakeRun(row)
-	if !ok {
-		return
-	}
-	go func() {
-		defer a.endAgentWakeRun(row.ID, run)
+	a.startAgentWakeRun(row, func(ctx context.Context, run *agentWakeRun) {
 		a.superviseAgentWatch(ctx, run, row.ID)
-	}()
+	})
 }
 
 func (a *App) superviseAgentWatch(ctx context.Context, run *agentWakeRun, wakeID string) {
@@ -652,16 +641,18 @@ func readAgentWatchLines(stdout io.Reader, lines chan<- agentWatchLine) {
 	}
 }
 
-// beginAgentWakeRun registers a run for one row. False when one is already
-// registered for it or the app is shutting down.
-func (a *App) beginAgentWakeRun(row store.AgentWake) (context.Context, *agentWakeRun, bool) {
+// startAgentWakeRun registers a run for one row and runs body on its own
+// goroutine, joined at shutdown with the sweep before the store closes: a
+// run writes its row when it ends. False, with nothing run, when one is
+// already registered for it or the app is shutting down.
+func (a *App) startAgentWakeRun(row store.AgentWake, body func(ctx context.Context, run *agentWakeRun)) bool {
 	a.agentWakes.mu.Lock()
 	defer a.agentWakes.mu.Unlock()
 	if a.shuttingDown.Load() || a.lifeCtx().Err() != nil {
-		return nil, nil, false
+		return false
 	}
 	if _, running := a.agentWakes.runs[row.ID]; running {
-		return nil, nil, false
+		return false
 	}
 	if a.agentWakes.runs == nil {
 		a.agentWakes.runs = make(map[string]*agentWakeRun)
@@ -669,10 +660,15 @@ func (a *App) beginAgentWakeRun(row store.AgentWake) (context.Context, *agentWak
 	ctx, cancel := context.WithCancel(a.lifeCtx())
 	run := &agentWakeRun{threadID: row.ThreadID, cancel: cancel, done: make(chan struct{})}
 	a.agentWakes.runs[row.ID] = run
-	// Joined at shutdown with the sweep, before the store closes: a run
-	// writes its row when it ends.
-	a.threadRequestsWG.Add(1)
-	return ctx, run, true
+	if !a.threadRequestsWG.Go(func() {
+		defer a.endAgentWakeRun(row.ID, run)
+		body(ctx, run)
+	}) {
+		delete(a.agentWakes.runs, row.ID)
+		cancel()
+		return false
+	}
+	return true
 }
 
 func (a *App) endAgentWakeRun(wakeID string, run *agentWakeRun) {
@@ -683,7 +679,6 @@ func (a *App) endAgentWakeRun(wakeID string, run *agentWakeRun) {
 	a.agentWakes.mu.Unlock()
 	run.cancel()
 	close(run.done)
-	a.threadRequestsWG.Done()
 }
 
 // stopAgentWakeRun stops the run of one row, if any, without waiting.

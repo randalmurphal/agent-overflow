@@ -631,8 +631,13 @@ func (a *App) spawnProviderSession(
 		// thread-tools entry is registered whether or not its switch is on
 		// (so the tool list can be turned on live), while its guide is only
 		// sent when the tools are on, and a live switch reaches the text at
-		// the next start or resume.
+		// the next start or resume: a resumed thread whose text changed
+		// gets it injected (codexDeveloperInstructionsDelivery).
 		cfg.DeveloperInstructions = a.codexDeveloperInstructions(threadID, appGuide, mcpServers)
+		cfg.DeveloperInstructionsDelivery, err = a.codexDeveloperInstructionsDelivery(threadID, cfg.ResumeThreadID)
+		if err != nil {
+			return session{}, err
+		}
 		// Ownership of a row sitting in the PROVIDER's queue is a store
 		// question — the id grammar is deterministic and therefore not a
 		// credential — so the codex package asks the app layer. AO writes no

@@ -962,3 +962,17 @@ token that postdates the file. Two as-built notes:
   violet cast; `fg-hint` (#8a8ac0, 6.5:1) clears the stated-tier 4.5:1
   claim with room, so the §9.11 "state only fg-muted" guidance is a
   default, not a rule.
+
+### 9.15 Discarded-row dimming is solved per applied theme (2026-10-16)
+
+Rows Claude discarded after a stalled response are dimmed by opacity
+(app.css `.discarded-row`, `.discarded-reasoning`). The strength is not a
+palette constant: `theme/discardedDim.ts` probes the live cascade's
+`--fg-muted` and `--surface-0` after every theme or mode change (App.svelte)
+and writes `--fade-discarded` / `--fade-discarded-reasoning` into one
+`<style id="discarded-dim">`: the least opacity that keeps the row's text
+at 4.5:1, or none when the theme already paints that text at or under the
+floor. Like `--accent-fg` it is derived, so a user theme gets a readable
+dim without stating anything; unlike it, the inputs include app.css's own
+oklch palette and the derived tiers, which only the cascade can answer.
+`discardedDim.browser.test.ts` measures every built-in in each mode.

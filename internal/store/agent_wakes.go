@@ -38,7 +38,7 @@ const MaxAgentWakesPerThread = 64
 
 // MaxCancelledAgentWakesPerThread bounds the cancelled rows one thread
 // keeps. A cancelled row is kept only so a label registered again revives
-// it with its id; v155 pruned every thread to this many.
+// it with its id; v156 pruned every thread to this many.
 const MaxCancelledAgentWakesPerThread = 16
 
 // MaxAgentWakeOutputBytes bounds the data one wake carries and the

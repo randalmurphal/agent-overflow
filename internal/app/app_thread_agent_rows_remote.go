@@ -209,11 +209,13 @@ func (a *App) startPeerAgentRowsLocked() {
 			kept = append(kept, spawn)
 		default:
 			delete(c.queued, spawn.Token)
+			if !a.threadRequestsWG.Go(func() { a.askPeerAgentRows(spawn) }) {
+				// Shutting down: nothing more starts.
+				continue
+			}
 			c.running[spawn.Token] = true
 			c.inFlight++
 			c.perComputer[computer]++
-			a.threadRequestsWG.Add(1)
-			go a.askPeerAgentRows(spawn)
 		}
 	}
 	clear(c.waiting[len(kept):])
@@ -222,7 +224,6 @@ func (a *App) startPeerAgentRowsLocked() {
 
 // askPeerAgentRows runs one queued call and records its answer.
 func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
-	defer a.threadRequestsWG.Done()
 	listing, err := a.peerThreadAgentRows(a.lifeCtx(), spawn.TargetComputerID, spawn.MadeIn(),
 		spawn.TargetThreadID, threadAgentRowDepth-1)
 	shutdown := errors.Is(err, context.Canceled) && a.lifeCtx().Err() != nil

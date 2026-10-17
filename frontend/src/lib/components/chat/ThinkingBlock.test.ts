@@ -54,19 +54,37 @@ describe('<ThinkingBlock>', () => {
   });
 
   // Reasoning Claude discarded after a stalled response stays readable and
-  // expandable; the header is dimmed behind a rule and tagged after its
-  // label (utils/discardedItems.ts). An unmarked row carries neither.
-  it('dims and tags a discarded row and leaves an unmarked row alone', () => {
+  // expandable; the header is dimmed in place and its kind icon becomes the
+  // record's scissors in the same box, since a visible tag would narrow the
+  // text beside it (utils/discardedItems.ts). The toggle's own label names
+  // the discard: it overrides any label inside the button, so the cue is
+  // hidden from assistive tech rather than read twice. An unmarked row keeps
+  // its brain icon and its plain label.
+  it('dims a discarded row and swaps its icon for the discard cue, and leaves an unmarked row alone', () => {
     const discarded = render(ThinkingBlock, {
       props: { item: makeItem({ kind: 'thinking', summary: 'Let me think about ' }), discarded: true },
     });
-    expect(discarded.getByTestId('thinking-discarded').textContent).toBe('Discarded');
+    expect(
+      discarded.getByRole('button', {
+        name: 'Toggle Thinking Block, discarded by Claude after the response stalled',
+      }),
+    ).toBe(discarded.getByTestId('thinking-toggle'));
+    const cue = discarded.getByTestId('thinking-discarded');
+    expect(cue.getAttribute('aria-hidden')).toBe('true');
+    expect(cue.getAttribute('aria-label')).toBeNull();
+    expect(cue.getAttribute('title')).toBe('Discarded by Claude after the response stalled');
+    expect(cue.querySelector('.lucide-icon')).not.toBeNull();
+    const slot = discarded.getByTestId('thinking-toggle-icon-slot');
+    expect(slot.contains(cue)).toBe(true);
+    expect(slot.querySelector('[data-icon="brain"]')).toBeNull();
     expect(discarded.getByTestId('thinking-header').className).toContain('discarded-reasoning');
     expect(discarded.getByTestId('thinking-body').textContent).toBe('Let me think about');
     discarded.unmount();
 
     const plain = render(ThinkingBlock, { props: { item: makeItem({ kind: 'thinking', summary: 'reasoning' }) } });
     expect(plain.queryByTestId('thinking-discarded')).toBeNull();
+    expect(plain.getByRole('button', { name: 'Toggle Thinking Block' })).toBe(plain.getByTestId('thinking-toggle'));
+    expect(plain.getByTestId('thinking-toggle-icon-slot').querySelector('[data-icon="brain"]')).not.toBeNull();
     expect(plain.getByTestId('thinking-header').className).not.toContain('discarded-reasoning');
   });
 

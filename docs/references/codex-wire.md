@@ -1288,15 +1288,9 @@ Fixture: `fixtures/codex/thread_unload_cold_resume_20261016.ndjson`.
   one. A `config` bag carrying `model_reasoning_effort` counts as naming
   one (`has_model_resume_override`), so such a resume without `model`
   came back on the default model.
-- **`developerInstructions` on a cold resume does not reach the model.**
-  The full developer context is injected only while the session has no
-  reference context (`record_context_updates_and_set_reference_context_item`,
-  `core/src/session/mod.rs`); a resume restores the reference from the
-  rollout, and developer instructions are not a world-state section, so no
-  diff is emitted. The model kept following the original instructions
-  after both resume paths, and the new text was absent from the rollout.
-  It took effect after `thread/compact/start`, which rebuilds the context
-  (run on the immediate cold-resume path only).
+- `developerInstructions` on a cold resume does not reach the model until
+  a compaction; see
+  [Developer instructions on a resumed or forked thread](#developer-instructions-on-a-resumed-or-forked-thread-verified-01621).
 - The model's own account of its tools is unreliable after a resume: it
   answered "missing" in the same turn that produced an `imageView` item.
   Read the tool item, not the reply.
@@ -1327,31 +1321,92 @@ ChatGPT account"). Fixture:
 Each step asked for a reply ending in the token the current instructions
 name.
 
-- A thread started with token A in one process, then resumed in a second
-  process with `developerInstructions` naming B, replied with A. A restart
-  is the same cold resume as the one in
-  [Thread unload and cold resume](#thread-unload-and-cold-resume-verified-01621),
-  for the same reason.
-- `thread/inject_items {threadId, items:[{type:"message", role:"developer",
-  content:[{type:"input_text", text}]}]}` on the idle thread answers `{}`;
-  the next reply followed the injected token. The item is written to the
-  rollout as a `developer` message (`core/src/session/inject.rs`).
-- `turn/start` `additionalContext: {"<key>": {value, kind:"application"}}`
-  (experimental) was followed. It reaches history as one developer message
-  `<key>value</key>`, emitted only when the value for the key changed
-  since the thread was loaded (`core/src/state/additional_context.rs`);
-  the same value on the next two turns wrote nothing. A value is
-  middle-truncated to 1,000 tokens (`context-fragments/src/additional_context.rs`).
+- What a restart, `thread/inject_items`, `turn/start` `additionalContext`
+  and a compaction do to a thread's developer instructions is in
+  [Developer instructions on a resumed or forked thread](#developer-instructions-on-a-resumed-or-forked-thread-verified-01621).
 - A second thread started on the same process with its own token D replied
   with D; the first thread kept its own token on its next turn.
-- After `thread/compact/start` the first thread replied with B, the
-  thread-level value from the resume: compaction rebuilds the context from
-  the thread's configuration and drops the injected and additional-context
-  messages. The additional context sent again with the same value was not
-  re-emitted, so it stayed lost.
 - Keeping client developer messages across compaction is the
   `retain_client_developer_messages` feature, under development and off by
   default (`features/src/lib.rs`).
+
+### Developer instructions on a resumed or forked thread (verified 0.162.1)
+
+A `developerInstructions` value sent on `thread/resume` or `thread/fork`
+is accepted into the thread's configuration but does not reach the model.
+Both loads restore the model's context from the rollout
+(`record_initial_history`: `InitialHistory::Resumed` and
+`InitialHistory::Forked` both run `apply_rollout_reconstruction`,
+`core/src/session/mod.rs`). The full developer context is injected only
+while the session has no reference context; the restored
+`TurnContextItem` carries no developer-instructions field, and developer
+instructions are not a world-state section, so no diff is emitted. The
+model keeps the text the thread was started with, in the same process or
+a new one, until a compaction rebuilds the context from the thread's
+configuration. `baseInstructions` is not affected
+([codex-instructions-tools.md](codex-instructions-tools.md#base-instructions)).
+A spike on codex-cli 0.162.1 (2026-10-16) confirmed it: a thread started
+with instructions naming one end token and resumed in a second process
+with another kept the first; after `thread/compact/start` it used the one
+the resume sent. Unverified: that a compaction installs the thread-level
+value when the resume left `developerInstructions` out; no capture shows
+that case.
+
+`thread/inject_items` delivers new text to one thread without a restart:
+
+```json
+{"method": "thread/inject_items",
+ "params": {"threadId": "...",
+            "items": [{"type": "message", "role": "developer",
+                       "content": [{"type": "input_text", "text": "..."}]}]}}
+```
+
+It answers `{}`. In the spike, notifications the resume set off
+(`thread/tokenUsage/updated`, `thread/goal/cleared`) arrived between the
+request and its answer; the injection itself wrote none that was seen. On
+an idle thread the item is appended to the model-visible history and the
+rollout as a `developer` message (`core/src/session/inject.rs`), so later
+resumes keep it, and the next turn follows it: in the spike, a thread
+resumed in a second process and given the injection before any turn
+answered with the injected token. With a turn active, the item instead
+becomes that turn's pending input (`inject_client_response_items`). A
+compaction drops it. An unknown thread is refused with
+`-32600` `thread not found: <id>`, and an item that is not a Responses API
+item with `-32600` `items[<n>] is not a valid response item: ...`
+(`app-server/src/request_processors/turn_processor.rs`
+`thread_inject_items_response_inner`). The method exists throughout AO's
+supported range (0.143+) and is not experimental. The experimental
+`turn/start` `additionalContext` also reaches the model, but each value is
+middle-truncated to 1,000 tokens and is not re-emitted after a compaction
+while unchanged, so it cannot carry AO's guide.
+
+Agent Overflow records, per thread, the SHA-256 digest of the composed
+developer instructions (the cwd's configured value, then its guide) the
+thread's Codex thread last received (`codex_developer_instructions`, which
+names the Codex thread it describes). A fresh `thread/start` records the
+digest without injecting. A resume whose composed text has a different
+digest, or no record (a thread that predates the record, a fork child, a
+thread a rollback repointed at a forked Codex thread), injects one
+developer message before the session is handed to a caller, then records
+the new digest. The message states that it replaces the developer
+instructions given at the start of the conversation and any earlier
+update, and that permissions and environment context are unchanged; with
+nothing composed it states that the earlier instructions no longer apply.
+An in-place `thread/revert` forgets the record, because the cut can drop
+an injected message. A live session whose thread was cut in place gives
+the thread back the text it started with (`RestoreDeveloperInstructions`),
+since upstream reloads a reverted thread from its rollout. A failed read
+of the configured value skips the check; a failed injection or record is
+a non-fatal error on the thread, and the next session start sends the
+text again. A session that only forks or reverts runs no check. See
+`internal/provider/codex/developer_instructions.go`.
+
+A message queued in the provider by `codex queue --thread` is dispatched by
+the thread's idle hook (`on_thread_idle`) as soon as `thread/resume` loads
+the thread, so that turn can start before the injection; the injection then
+joins it as pending input rather than preceding it. Agent Overflow writes
+no such rows and retires only its own legacy ones before the resume
+(`BeforeResume`), so a row another client queued keeps this order.
 
 ### `model/safetyBuffering/updated`
 

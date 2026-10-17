@@ -51,10 +51,9 @@ var (
 // The first emit is deliberately at t = systemStatsInterval, not t=0:
 // gopsutil computes CPU% as a delta against the prior `cpu.Percent`
 // call, so emitting immediately after Prime would push a microsecond-
-// window value (essentially noise rounding to 0). The frontend's
-// `{#if stats}` guard hides the panel until the first real sample
-// arrives, which reads cleaner than a 2s "0%" flash followed by the
-// real number.
+// window value (essentially noise rounding to 0). The frontend shows
+// a waiting row until the first real sample arrives rather than a 2s
+// "0%" followed by the real number.
 func (a *App) startSystemStatsSampler() {
 	ctx := a.lifeCtx()
 	go func() {

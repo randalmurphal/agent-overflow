@@ -1540,3 +1540,67 @@ func TestACancelThatLosesToAReplyLeavesTheTurnRunning(t *testing.T) {
 		t.Fatalf("the running turn was touched: %+v found=%v err=%v", turn, found, err)
 	}
 }
+
+// A teardown's give-back that shutdown refused leaves a request the next
+// boot settles as it settles one the give-back put back on the queue: the
+// boot's restore and request sweep end both in the same state, with the
+// request neither lost nor left running on a session that is gone.
+func TestARefusedTeardownGiveBackIsSettledAtBootLikeACompletedOne(t *testing.T) {
+	t.Parallel()
+	type outcome struct {
+		receipt, request string
+		queued, wakes    int
+		draft            string
+	}
+	run := func(t *testing.T, refused bool) outcome {
+		f := newRequestFixture(t)
+		callerMidTurn(t, f)
+		h := newHeldRequestTarget(t, f)
+		tokens, uuid := h.send(t, "check the changelog")
+		token := tokens[0]
+		h.lifecycle(t, uuid, provider.CommandQueued)
+		if refused {
+			// Shutdown has joined the request work.
+			f.app.threadRequestsWG.Close()
+		}
+		unlock := f.app.threadApplication().LockMutations(h.thread.ID)
+		sess, _ := f.app.sessionManager().take(h.thread.ID)
+		err := f.app.teardownAndCloseSessionHoldingMutations(h.thread.ID, sess)
+		unlock()
+		if err != nil {
+			t.Fatalf("teardown: %v", err)
+		}
+		f.app.threadRequestsWG.Wait()
+		if !refused {
+			assertRequestOwedAgain(t, f, h.thread.ID, token)
+		} else if record, found, err := f.app.findRecordedSend(h.thread.ID, threadRequestSendID(token)); err != nil || !found || !record.dispatched {
+			// The give-back would have put the message back on the queue.
+			t.Fatalf("request message = %+v found=%v err=%v; want it still in the timeline, not given back", record, found, err)
+		}
+
+		after := f.restart(t)
+		after.app.restoreDurableFlushQueueAtBoot()
+		after.app.sweepThreadRequestsAtBoot()
+		after.app.threadRequestsWG.Wait()
+		draft, _, err := after.app.store.GetThreadDraft(h.thread.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return outcome{
+			receipt: string(after.receipt(t, token).State),
+			request: string(after.request(t, token).State),
+			queued:  len(durableQueueRows(t, after.app, h.thread.ID)),
+			wakes:   len(after.wakes(t, token)),
+			draft:   draft.Content,
+		}
+	}
+	given := run(t, false)
+	refused := run(t, true)
+	t.Logf("after the boot: %+v", given)
+	if refused != given {
+		t.Fatalf("after the boot, a refused give-back left %+v; a completed one leaves %+v", refused, given)
+	}
+	if given.receipt == string(store.ThreadReceiptRunning) || given.receipt == string(store.ThreadReceiptAccepted) {
+		t.Fatalf("the boot left the request %+v, want it settled", given)
+	}
+}

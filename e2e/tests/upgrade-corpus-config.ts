@@ -40,19 +40,19 @@ export interface MigrationException {
 }
 
 export const migrationExceptions: MigrationException[] = [
-  { version: 143, table: 'channels', dropped: true, reason: 'v143 removes discussions and their channels' },
-  { version: 143, table: 'channel_messages', dropped: true, reason: 'v143 removes discussions and their channel messages' },
-  { version: 143, table: 'discussion_definitions', dropped: true, reason: 'v143 removes discussion definitions' },
-  { version: 143, table: 'threads', columns: ['mode'], reason: 'v143 turns a former discussion thread into a chat thread' },
-  { version: 143, table: 'scratch_threads', columns: ['return_mode'], reason: 'v143 returns a side chat opened from a discussion to chat mode' },
-  { version: 143, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v143 keeps only model favorites; discussion favorites are removed' },
-  { version: 145, table: 'automations', dropped: true, reason: 'v145 removes the workflow scheduler and drops its automations' },
-  { version: 145, table: 'automation_cursors', dropped: true, reason: "v145 drops the scheduler's per-source cursors with its automations" },
-  { version: 145, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v145 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
-  { version: 154, table: 'standing_agents', dropped: true, reason: 'v154 moves every standing agent to an agents record whose id is its thread id, and drops the table' },
-  { version: 155, table: 'agent_wakes', columns: ['last_output', 'last_stderr'], rowsMayShrink: true, reason: 'v155 clears what a cancelled loop or watch carried and keeps each thread its 16 newest cancelled rows' },
-  { version: 155, table: 'remote_watches', rowsMayShrink: true, reason: 'v155 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
-  { version: 157, table: 'thread_requests', columns: ['lineage_only'], reason: 'v157 keeps the newest of two local spawns of one thread and makes the older one lineage-only' },
+  { version: 144, table: 'channels', dropped: true, reason: 'v144 removes discussions and their channels' },
+  { version: 144, table: 'channel_messages', dropped: true, reason: 'v144 removes discussions and their channel messages' },
+  { version: 144, table: 'discussion_definitions', dropped: true, reason: 'v144 removes discussion definitions' },
+  { version: 144, table: 'threads', columns: ['mode'], reason: 'v144 turns a former discussion thread into a chat thread' },
+  { version: 144, table: 'scratch_threads', columns: ['return_mode'], reason: 'v144 returns a side chat opened from a discussion to chat mode' },
+  { version: 144, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v144 keeps only model favorites; discussion favorites are removed' },
+  { version: 146, table: 'automations', dropped: true, reason: 'v146 removes the workflow scheduler and drops its automations' },
+  { version: 146, table: 'automation_cursors', dropped: true, reason: "v146 drops the scheduler's per-source cursors with its automations" },
+  { version: 146, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v146 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
+  { version: 155, table: 'standing_agents', dropped: true, reason: 'v155 moves every standing agent to an agents record whose id is its thread id, and drops the table' },
+  { version: 156, table: 'agent_wakes', columns: ['last_output', 'last_stderr'], rowsMayShrink: true, reason: 'v156 clears what a cancelled loop or watch carried and keeps each thread its 16 newest cancelled rows' },
+  { version: 156, table: 'remote_watches', rowsMayShrink: true, reason: 'v156 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
+  { version: 158, table: 'thread_requests', columns: ['lineage_only'], reason: 'v158 keeps the newest of two local spawns of one thread and makes the older one lineage-only' },
 ];
 
 /**

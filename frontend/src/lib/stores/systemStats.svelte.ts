@@ -2,8 +2,7 @@
 // from the Go backend every ~2s on the `system:stats` channel.
 //
 // Consumed by the sidebar's SystemStatsFooter. Null until the first
-// event arrives so the footer can hide rather than flashing a
-// placeholder.
+// event arrives, which the footer shows as a waiting row.
 
 import type { SystemStatsEvent } from '../types/events';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';

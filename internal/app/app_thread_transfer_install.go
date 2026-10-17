@@ -256,9 +256,9 @@ func (installer appTransferInstaller) Install(ctx context.Context, row store.Thr
 }
 
 // transferredThreadMode is the mode a received conversation installs with. A
-// peer from before migration v143 still sends a former discussion thread's
+// peer from before migration v144 still sends a former discussion thread's
 // 'discussion' mode, and a recipe prepared before that update still holds
-// it; v143 made those threads ordinary chats.
+// it; v144 made those threads ordinary chats.
 func transferredThreadMode(mode string) string {
 	if mode == "discussion" {
 		return threadmode.ModeChat

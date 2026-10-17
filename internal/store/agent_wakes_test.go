@@ -12,7 +12,7 @@ import (
 	"agent-overflow/internal/threadmode"
 )
 
-// v144 over a populated database: the rows it finds survive and every
+// v145 over a populated database: the rows it finds survive and every
 // schema object they use is unchanged; the two new tables have exactly the
 // spec's columns, constraints and due index; agent rows and wakes in every
 // state written after it read back whole through a store opened on the file;
@@ -152,7 +152,7 @@ func TestStandingAgentsMigration(t *testing.T) {
 		if w.LongRunning {
 			long = 1
 		}
-		// The columns as v144 made them; later migrations add their own.
+		// The columns as v145 made them; later migrations add their own.
 		mustExec(t, db, `INSERT INTO agent_wakes (id, thread_id, kind, label, note, command, cwd, interval_seconds,
 			timeout_seconds, long_running, next_at, last_run_at, last_outcome, last_output, undelivered, missed, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			w.ID, w.ThreadID, w.Kind, w.Label, w.Note, w.Command, w.Cwd, nullableMillis(w.IntervalSeconds),
@@ -204,7 +204,7 @@ func TestStandingAgentsMigration(t *testing.T) {
 	if want := []string{"w-armed", "w-running", "w-long"}; !slices.Equal(liveIDs, want) {
 		t.Errorf("live wakes = %v, want %v", liveIDs, want)
 	}
-	// v154 made each row an assistant whose id is its thread's, keeping
+	// v155 made each row an assistant whose id is its thread's, keeping
 	// the home as it was.
 	if agent, found, err := s.GetStandingAgent("watcher"); err != nil || !found ||
 		agent != (StandingAgent{ID: "watcher", ThreadID: "watcher", Home: "/h/watcher", NotifyOnTick: true, CreatedAt: 11}) {
