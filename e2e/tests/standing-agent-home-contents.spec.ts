@@ -72,7 +72,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await capture(page, `${provider}-hygiene-wake.png`, wake, outcome);
 
     // The worker's first message is the agent's spawn prompt, opening with
-    // the attached file.
+    // the attached file. Its answer to the agent marked it read, so it is in
+    // the agent's done list.
+    await page.getByTestId('thread-row-agent-done-toggle').click();
     await openThread(page, 'Parser review');
     const first = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="spawn"]');
     await expect(first).toHaveCount(1);
