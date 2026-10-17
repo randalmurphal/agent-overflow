@@ -9,6 +9,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  BACKEND_MANIFEST_TIMEOUT_MS,
   BootstrapRejectedError,
   defaultBootstrap,
   isLoopbackHostname,
@@ -411,6 +412,25 @@ describe('defaultBootstrap', () => {
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(BackendStartingError);
     expect((err as BackendStartingError).progress.phase).toBe('store.migrate');
+  });
+
+  it('fails an attached backend\'s manifest fetch that never answers', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', vi.fn((_input: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+      })));
+      let settled = false;
+      const result = fetchBackendManifest({
+        id: 'desk', backendId: 'b-desk', name: 'Desk', wsUrl: SAME_ORIGIN_WS, bootstrapUrl: '/bootstrap/desk.json',
+      }).catch((e: unknown) => e).finally(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(BACKEND_MANIFEST_TIMEOUT_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result).toMatchObject({ name: 'TimeoutError' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([

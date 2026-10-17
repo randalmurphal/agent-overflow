@@ -28,6 +28,7 @@ import { resetFrontendPreferencesForTest } from '../lib/stores/frontendPreferenc
 import { resetClientDeviceNameForTest } from '../lib/stores/clientDeviceName.svelte';
 import { writeFrontendValue } from '../lib/stores/frontendStorage';
 import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
+import { resetUsageFooterShapesForTest } from '../lib/stores/usageFooterShape.svelte';
 
 function installBrowserTraceSinks(): void {
   // uiRenderTrace is compiled in under MODE==='test' and flushes on a real
@@ -96,4 +97,5 @@ afterEach(() => {
   // (unlike happy-dom's per-file in-memory shim), so also cancel any
   // pending debounced flush and wipe the size-priors keys it wrote.
   __resetSizePriorsStorageForTest();
+  resetUsageFooterShapesForTest();
 });

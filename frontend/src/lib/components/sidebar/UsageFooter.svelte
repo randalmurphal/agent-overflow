@@ -8,15 +8,17 @@
   // keep Sidebar.svelte layout-only); clicking the period label cycles
   // the period instead, via stopPropagation — same nested
   // button-inside-clickable-row idiom as ThreadRow's chevron.
-  // The row is reserved while a reply is pending so the sidebar above it
-  // does not shift when usage arrives. A reply with no usage collapses
-  // it, and it stays collapsed while a later query is pending.
+  // While a reply is pending the footer holds the last answered shape for
+  // this selection and period (one row when none is recorded, nothing
+  // when the last reply had no usage), so the sidebar above it does not
+  // shift when usage arrives. A reply that differs resizes it once.
 
   import { UsageQuery } from '../../stores/bindings';
   import { getUsageRefreshVersion } from '../../stores/usageRefresh.svelte';
   import { cycleUsagePeriod, getUsagePeriod, periodFromMillis } from '../../stores/usagePeriod.svelte';
   import { createUsageStats, localTzOffsetMinutes } from '../../stores/usageQuery.svelte';
   import { telemetrySelection, telemetrySelectionLabel } from '../../stores/telemetryComputers.svelte';
+  import { getUsageFooterShape, recordUsageFooterShape, usageFooterShapeKey } from '../../stores/usageFooterShape.svelte';
   import { formatTokens } from '../../utils/format';
   import { formatUsageCostOrNull } from '../../utils/usageDisplay';
   import LazyOverlay from '../primitives/LazyOverlay.svelte';
@@ -58,12 +60,19 @@
       }),
   );
 
-  // Set from each reply; a pending query keeps the last answer's state.
-  let collapsed = $state(false);
+  // The query's own effect runs first and clears a superseded reply, so
+  // a reply is never recorded under the next selection or period.
+  const shapeKey = $derived(usageFooterShapeKey(telemetrySelection('usage'), getUsagePeriod()));
+  let lastAnswered = $state<number | null>(null);
   $effect(() => {
-    if (stats.buckets !== null && stats.pending.length === 0) collapsed = rows.length === 0 && stats.unavailable.length === 0;
+    if (stats.buckets === null || stats.pending.length > 0) return;
+    // An unavailable report holds one row, like a provider's.
+    const answered = rows.length > 0 ? rows.length : stats.unavailable.length > 0 ? 1 : 0;
+    recordUsageFooterShape(shapeKey, answered);
+    lastAnswered = answered;
   });
   const waiting = $derived(stats.buckets === null || stats.loading || stats.pending.length > 0);
+  const shape = $derived(getUsageFooterShape(shapeKey) ?? lastAnswered ?? 1);
 
   let modalOpen = $state(false);
 
@@ -84,7 +93,7 @@
   }
 </script>
 
-{#if rows.length > 0 || stats.unavailable.length > 0 || telemetrySelection('usage') !== null || (waiting && !collapsed)}
+{#if rows.length > 0 || stats.unavailable.length > 0 || telemetrySelection('usage') !== null || (waiting && shape > 0)}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="border-t border-border-subtle px-3 py-1.5 shrink-0 flex items-center justify-between gap-3 text-[0.6875rem] leading-tight text-fg-muted cursor-pointer hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -106,6 +115,9 @@
       {/if}
       {#if rows.length === 0 && stats.unavailable.length === 0}
         <span class="text-fg-subtle" data-testid="usage-footer-empty">{waiting ? 'Loading usage…' : 'No usage in this selection'}</span>
+        {#if waiting}
+          {#each { length: Math.max(shape - 1, 0) }, i (i)}<span data-testid="usage-footer-placeholder-row">&nbsp;</span>{/each}
+        {/if}
       {/if}
       {#each rows as row (row.provider)}
         <span class="grid grid-cols-[3.5rem_1fr] items-center gap-2" data-testid="usage-footer-row">

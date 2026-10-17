@@ -40,6 +40,7 @@ import { __resetBackendIdentityForTest } from '../lib/transport/backendIdentity'
 import { setPageGrantsFromBootstrap } from '../lib/transport/scopes';
 import { resetBuildVariantPage } from './helpers/buildVariant';
 import { resetStagedBackends } from './helpers/backends';
+import { resetUsageFooterShapesForTest } from '../lib/stores/usageFooterShape.svelte';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -330,6 +331,9 @@ afterEach(() => {
   // bucket, which outlives the localStorage wipe below.
   resetCompanionStashForTest();
   reinitAppStorageForTest();
+  // The usage footer's recorded shapes are a module-level mirror of
+  // localStorage, so the wipe below does not reach them.
+  resetUsageFooterShapesForTest();
   // Any component test that imports timelineSizePriors.svelte.ts installs
   // the real localStorage-backed size-priors adapter at module scope
   // (installSizePriorsPersistence runs on import). Reset its debounce
