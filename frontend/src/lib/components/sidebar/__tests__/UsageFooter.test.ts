@@ -8,7 +8,8 @@ import '../../usage/UsageModal.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { UsageBucket } from '../../../stores/bindings';
 import { cycleUsagePeriod, getUsagePeriod, resetUsagePeriodForTest } from '../../../stores/usagePeriod.svelte';
-import { resetUsageRefreshForTest } from '../../../stores/usageRefresh.svelte';
+import { bumpUsageRefresh, resetUsageRefreshForTest } from '../../../stores/usageRefresh.svelte';
+import { flushSync } from 'svelte';
 
 const STORAGE_KEY = 'agent-overflow:usage:period';
 
@@ -102,6 +103,16 @@ describe('<UsageFooter>', () => {
     expect(queryByTestId('sidebar-usage-footer')).toBeNull();
     resolve([providerBucket('claude', { outputTokens: 100, costUsd: 1 })]);
     expect(await findAllByTestId('usage-footer-row')).toHaveLength(1);
+  });
+
+  it('keeps a failed computer unavailable while the next refresh is pending', async () => {
+    setBindingMock('GetUsageStats', async () => { throw new Error('read failed'); });
+    const { getByTestId, findByText } = render(UsageFooter);
+    await findByText('Usage unavailable');
+    setBindingMock('GetUsageStats', () => new Promise<UsageBucket[]>(() => {}));
+    bumpUsageRefresh('any-thread');
+    flushSync();
+    expect(getByTestId('sidebar-usage-footer').textContent).toContain('Usage unavailable');
   });
 
   it('clicking the period label cycles + persists the period without opening the modal', async () => {
