@@ -176,6 +176,20 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     expect(calls.map((ids) => [...ids].sort())).toEqual([['agent', 'live-child', 'pinned-child']]);
   });
 
+  it('counts only the live children on a collapsed agent row', async () => {
+    const threads = [
+      thread('agent', { agentId: 'agent' }),
+      thread('live-child', { spawnedByThreadId: 'agent', latestTurnCompletedAt: 20, lastReadAt: 10 }),
+      thread('pinned-child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
+      thread('settled-child', { spawnedByThreadId: 'agent' }),
+    ];
+    replaceAllThreads(threads);
+    setAgentExpanded('agent', false);
+    const view = render(ProjectThreadList, { projectId: 'project', threads, groups: [], pane: createThreadPane() });
+    await flush();
+    expect(view.container.querySelector('[data-testid="thread-row-agent-count"]')?.textContent?.trim()).toBe('2');
+  });
+
   it('comes back closed after its last archived child leaves', async () => {
     const view = renderList();
     await flush();

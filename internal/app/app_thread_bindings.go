@@ -318,7 +318,7 @@ func (a *App) RenameThread(id string, title string) error {
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) MarkThreadRead(id string) error {
-	_, _, err := a.markThreadReadLocked(id)
+	_, _, err := a.stampThreadRead(id)
 	return err
 }
 
@@ -351,14 +351,12 @@ func (a *App) MarkThreadsRead(ids []string) ([]store.Thread, error) {
 	return rows, nil
 }
 
-// markThreadReadLocked is one thread's stamp under its mutation lock, with
-// the deadline MarkThreadRead gives it, announcing the row when it moved.
-func (a *App) markThreadReadLocked(id string) (store.Thread, bool, error) {
-	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
-	if err != nil {
-		return store.Thread{}, false, err
-	}
-	defer unlock()
+// stampThreadRead is one thread's stamp with the deadline MarkThreadRead
+// gives it, announcing the row when it moved. It takes no thread lock, as
+// MarkThreadsRead takes none: the stamp's statement itself refuses a thread
+// this computer may not change (store.MarkThreadsReadNow), one rule for
+// both. A refusal is store.ErrThreadReadRefused.
+func (a *App) stampThreadRead(id string) (store.Thread, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 	defer cancel()
 	row, changed, err := a.threadApplication().MarkRead(ctx, id)

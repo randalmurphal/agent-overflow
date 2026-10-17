@@ -756,6 +756,12 @@ Mechanics, as built:
   read back, and the ids it refused. It takes no thread lock, announces
   each changed row and returns them, and names the refused ids in its
   error; the client reconciles the rows through `threadReplyRow`.
+  `MarkThreadRead` and a focus stamp are the batch of one, so all three
+  refuse the same threads: a holder, a fork still being prepared, and
+  one whose transfer state refuses it (`threadTransferReadableExpr`). A
+  provider session's native transfer governs execution, not read state,
+  and refuses none of them. A refusal is `store.ErrThreadReadRefused`;
+  a focus stamp treats it as a no-op.
 - Cross-project nesting happens where the sidebar buckets threads by
   project (`ProjectsSection`): a thread whose spawner, or whose past
   assistant's current thread, is an agent row in another project's

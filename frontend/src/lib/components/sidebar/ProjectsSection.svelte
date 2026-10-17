@@ -39,13 +39,12 @@
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
   import SidebarDeviceFilter from './SidebarDeviceFilter.svelte';
-  import { sidebarBackendVisible, sidebarDeviceFilterActive } from '../../stores/sidebarDevices.svelte';
+  import { sidebarBackendVisible, sidebarDeviceFilterActive, sidebarThreadVisible } from '../../stores/sidebarDevices.svelte';
   import { projectBackend } from '../../transport/entityIndex';
   import {
     backendDisplayName,
     getAttachedBackends,
     hasMultipleBackends,
-    threadMachine,
   } from '../../stores/attachedBackends.svelte';
   import { catalogLoadState } from '../../stores/catalogLoad.svelte';
   import CatalogStatusRow from './CatalogStatusRow.svelte';
@@ -90,7 +89,7 @@
       groups: getThreadGroups(),
       query,
       entryOf: entryIdFor,
-      threadVisible: (t) => !filterDevices || sidebarBackendVisible(threadMachine(t.id, t.projectId)),
+      threadVisible: sidebarThreadVisible,
       filterDevices,
     });
   });

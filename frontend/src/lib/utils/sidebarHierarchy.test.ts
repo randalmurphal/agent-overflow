@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread, ThreadGroup } from '../types/models';
-import { buildSidebarThreadTree, type SidebarAgentTreeNode, type SidebarGroupTreeNode } from './sidebarTree';
+import { buildSidebarThreadTree, nestingAgentThreadId, type SidebarAgentTreeNode, type SidebarGroupTreeNode } from './sidebarTree';
 import {
   agentDoneCount,
   agentLiveChildCount,
@@ -20,7 +20,7 @@ import {
   type SidebarTreeVisibleNode,
 } from './sidebarTreeView';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from './sidebarThreadLimits';
-import { bucketSidebarThreads } from '../components/sidebar/sidebarBuckets';
+import { bucketSidebarThreads, sidebarNestingAgent } from '../components/sidebar/sidebarBuckets';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
   return {
@@ -322,6 +322,35 @@ describe('cross-project children', () => {
     const past = mkThread('past', { pastAgentId: 'ops', projectId: 'other' });
     const { threadsByProject } = bucketSidebarThreads({ ...base, threads: [home, past] });
     expect(ids(threadsByProject.get('home'))).toEqual(['agent', 'past']);
+  });
+
+  it('answers where a child sits and where its activity goes with one rule', () => {
+    // The activity bump asks sidebarNestingAgent with the same lookup the
+    // bucketing builds; for every case, the two land in the same project.
+    const cases: { name: string; agent: Thread; threadVisible: (t: Thread) => boolean; want: string }[] = [
+      { name: 'shown', agent: home, threadVisible: () => true, want: 'home' },
+      { name: 'archived', agent: { ...home, archived: true }, threadVisible: () => true, want: 'other' },
+      { name: 'on a hidden computer', agent: home, threadVisible: (t) => t.id !== 'agent', want: 'other' },
+    ];
+    for (const { name, agent, threadVisible, want } of cases) {
+      const nested = sidebarNestingAgent(away, {
+        threadById: (id) => (id === agent.id ? agent : undefined),
+        currentThreadIdOf: (agentId) => (agentId === agent.agentId ? agent.id : undefined),
+        threadVisible,
+      });
+      expect(nested?.projectId ?? away.projectId, name).toBe(want);
+      const { threadsByProject } = bucketSidebarThreads({ ...base, threads: [agent, away], threadVisible, filterDevices: true });
+      expect(ids(threadsByProject.get(want)), name).toContain('away');
+    }
+  });
+
+  it('never nests an agent row under another agent', () => {
+    // An assistant another agent created records its creator as spawner.
+    const created = mkThread('created', { agentId: 'helper', spawnedByThreadId: 'agent', projectId: 'other' });
+    expect(nestingAgentThreadId(created, () => undefined)).toBeUndefined();
+    const { threadsByProject } = bucketSidebarThreads({ ...base, threads: [home, created] });
+    expect(ids(threadsByProject.get('other'))).toEqual(['created']);
+    expect(ids(threadsByProject.get('home'))).toEqual(['agent']);
   });
 
   it('leaves the child in its own project while the agent row is not in the sidebar', () => {

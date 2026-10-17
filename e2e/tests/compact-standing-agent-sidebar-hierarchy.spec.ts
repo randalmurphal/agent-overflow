@@ -85,7 +85,9 @@ test('bounded agent and group rows, a cross-project child and Mark All Read fit 
   await agentMore.tap();
   await expect.poll(async () => (await liveIds(page, '[data-agent-member]')).length).toBe(10);
   const awayShell = page.locator('[data-testid="thread-row-shell"]', { has: page.locator(`[data-sidebar-thread-id="${awayChild}"]`) });
-  await awayShell.scrollIntoViewIfNeeded();
+  // Bottom-aligned, the away row keeps the agent row above it in view,
+  // wherever the show-more tap left the list scrolled.
+  await awayShell.evaluate((el) => el.scrollIntoView({ block: 'end', behavior: 'instant' }));
   await expect(awayShell.getByTestId('thread-row-project-name')).toHaveText('compact-hierarchy-away-project-with-a-long-name');
   await expectFits(awayShell, width);
   await expectFits(awayShell.getByTestId('thread-row-project'), width);

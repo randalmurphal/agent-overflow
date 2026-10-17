@@ -41,6 +41,37 @@ export interface SidebarBuckets {
  * computer the device filter shows. Otherwise the thread stays in its own
  * project, as a plain row.
  */
+/**
+ * Whether an agent's row is in the sidebar, so it can nest the threads it
+ * spawned: an assistant's current thread in a project, listed (not
+ * archived), on a computer the device filter shows (threadVisible), and
+ * not a mode the sidebar never lists.
+ */
+export function sidebarAgentRowShown(agent: Thread, threadVisible: (thread: Thread) => boolean): boolean {
+  return Boolean(agent.agentId) && Boolean(agent.projectId) && !agent.archived
+    && threadVisible(agent) && threadMatchesQuery(agent, '');
+}
+
+/**
+ * The agent row in the sidebar that nests this thread, if any: its spawner,
+ * or its assistant's current thread for a past thread
+ * (nestingAgentThreadId), when that row is shown (sidebarAgentRowShown).
+ * The bucketing files the thread under that agent's project and its
+ * activity bumps that project, both through this one answer.
+ */
+export function sidebarNestingAgent(
+  thread: Thread,
+  lookup: {
+    threadById: (id: string) => Thread | undefined;
+    currentThreadIdOf: (agentId: string) => string | undefined;
+    threadVisible: (thread: Thread) => boolean;
+  },
+): Thread | undefined {
+  const agentId = nestingAgentThreadId(thread, lookup.currentThreadIdOf);
+  const agent = agentId ? lookup.threadById(agentId) : undefined;
+  return agent && sidebarAgentRowShown(agent, lookup.threadVisible) ? agent : undefined;
+}
+
 export function bucketSidebarThreads(input: SidebarBucketsInput): SidebarBuckets {
   const { query } = input;
   const nameMatchedGroupIds = new Set<string>();
@@ -51,17 +82,20 @@ export function bucketSidebarThreads(input: SidebarBucketsInput): SidebarBuckets
   }
 
   const listed = (thread: Thread) => !thread.archived && input.threadVisible(thread);
-  // The entry of every agent row the sidebar shows, by its thread id, and
-  // each assistant's current thread, for its past threads.
-  const agentEntries = new Map<string, string>();
+  // The assistants' rows by thread id, and each assistant's current
+  // thread, for sidebarNestingAgent.
+  const agents = new Map<string, Thread>();
   const currentThreadOf = new Map<string, string>();
   for (const thread of input.threads) {
-    if (!thread.agentId || !thread.projectId || !listed(thread) || !threadMatchesQuery(thread, '')) continue;
-    const entry = input.entryOf(thread.projectId);
-    if (!entry) continue;
-    agentEntries.set(thread.id, entry);
-    currentThreadOf.set(thread.agentId, thread.id);
+    if (!thread.agentId) continue;
+    agents.set(thread.id, thread);
+    if (!currentThreadOf.has(thread.agentId)) currentThreadOf.set(thread.agentId, thread.id);
   }
+  const nesting = {
+    threadById: (id: string) => agents.get(id),
+    currentThreadIdOf: (agentId: string) => currentThreadOf.get(agentId),
+    threadVisible: input.threadVisible,
+  };
 
   const threadsByProject = new Map<string, Thread[]>();
   const populatedGroupIds = new Set<string>();
@@ -69,8 +103,8 @@ export function bucketSidebarThreads(input: SidebarBucketsInput): SidebarBuckets
     if (!listed(thread)) continue;
     let key = thread.projectId ? input.entryOf(thread.projectId) : '';
     if (!key) continue;
-    const spawner = nestingAgentThreadId(thread, (agentId) => currentThreadOf.get(agentId));
-    const agentEntry = spawner ? agentEntries.get(spawner) : undefined;
+    const agent = sidebarNestingAgent(thread, nesting);
+    const agentEntry = agent?.projectId ? input.entryOf(agent.projectId) : '';
     if (agentEntry) key = agentEntry;
     const groupId = thread.groupId ?? '';
     // A name-matched group brings its whole membership back. The

@@ -955,6 +955,11 @@ const threadReadStateQuery = `SELECT ` + threadReadTargetColumns + `,
    FROM threads
   WHERE id = ?`
 
+// ErrThreadReadRefused is a read stamp on one thread that is gone or that
+// this computer may not change (MarkThreadsReadNow's refused list). It
+// wraps sql.ErrNoRows.
+var ErrThreadReadRefused = fmt.Errorf("thread is gone or not changeable on this computer: %w", sql.ErrNoRows)
+
 // MarkThreadsReadLimit caps one MarkThreadsReadNow call. A caller with more
 // threads splits them into calls of at most this many.
 const MarkThreadsReadLimit = 500
@@ -1019,14 +1024,14 @@ var threadRowsByJSONIDsSQL = `SELECT ` + threadColumns + ` FROM threads WHERE id
 // whose read marker already covers its newest turn is the common case and
 // changes nothing, so it hands back (zero row, false, nil) and the caller
 // broadcasts nothing. A thread that is gone, or that this computer may not
-// change, is sql.ErrNoRows.
+// change, is ErrThreadReadRefused.
 func (s *Store) MarkThreadReadNow(ctx context.Context, id string) (Thread, bool, error) {
 	rows, refused, err := s.MarkThreadsReadNow(ctx, []string{id})
 	if err != nil {
 		return Thread{}, false, err
 	}
 	if len(refused) > 0 {
-		return Thread{}, false, fmt.Errorf("store: mark thread read %s: %w", id, sql.ErrNoRows)
+		return Thread{}, false, fmt.Errorf("store: mark thread read %s: %w", id, ErrThreadReadRefused)
 	}
 	if len(rows) == 0 {
 		return Thread{}, false, nil

@@ -8,7 +8,8 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // setupEventListeners.
 import type { TurnCompletedEvent } from '../types/events';
 import type { Thread } from '../types/models';
-import { nestingAgentThreadId } from '../utils/sidebarTree';
+import { sidebarNestingAgent } from '../components/sidebar/sidebarBuckets';
+import { sidebarThreadVisible } from './sidebarDevices.svelte';
 import { closePanesShowingThread, findPaneShowingThread, iterPanes, moveAssistantPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
@@ -140,10 +141,12 @@ export function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
  * ruling 4), so the activity bumps the project the row sits in.
  */
 function sidebarProjectIdOf(thread: Thread): string | undefined {
-  const agentId = nestingAgentThreadId(thread, (id) => assistantCurrentThread(id)?.id);
-  const agent = agentId ? getThreadById(agentId) : undefined;
-  if (agent?.agentId && !agent.archived && agent.projectId) return agent.projectId;
-  return thread.projectId;
+  const agent = sidebarNestingAgent(thread, {
+    threadById: getThreadById,
+    currentThreadIdOf: (agentId) => assistantCurrentThread(agentId)?.id,
+    threadVisible: sidebarThreadVisible,
+  });
+  return agent?.projectId ?? thread.projectId;
 }
 
 export function syncThreadActivity(threadId: string, updatedAt: number): void {

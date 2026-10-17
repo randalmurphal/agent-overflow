@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import {
@@ -148,5 +151,20 @@ describe('threadReadWrites', () => {
     expect(getThreadById('framed')?.lastReadAt).toBe(0);
     expect(getThreadById('framed')?.latestTurnCompletedAt).toBe(300);
     expect(getThreadById('quiet')?.lastReadAt).toBe(200);
+  });
+});
+
+// The client splits Mark All Read at the backend's per-call limit; a limit
+// that drifted from the store's would have the backend refuse every split
+// call. The Go source is the reference.
+describe('the Mark All Read split', () => {
+  it('matches store.MarkThreadsReadLimit', () => {
+    const source = readFileSync(
+      resolve(dirname(fileURLToPath(import.meta.url)), '../../../../internal/store/threads.go'),
+      'utf8',
+    );
+    const limit = /MarkThreadsReadLimit = (\d+)/.exec(source);
+    expect(limit, 'store.MarkThreadsReadLimit is not declared in internal/store/threads.go any more').not.toBeNull();
+    expect(MARK_THREADS_READ_LIMIT).toBe(Number(limit![1]));
   });
 });

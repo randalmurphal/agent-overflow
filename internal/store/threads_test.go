@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -3189,16 +3188,32 @@ func TestMarkThreadsReadNowStampsTheBatchInOneTransaction(t *testing.T) {
 		t.Fatalf("make holder: %v", err)
 	}
 
-	held, err := s.GetThread("holder")
-	if err != nil {
-		t.Fatalf("GetThread(holder): %v", err)
+	// A fork still being prepared, and a thread mid-move to another
+	// computer, are not this computer's to change either.
+	create("forking")
+	if _, err := s.db.Exec(`UPDATE threads SET fork_preparing = 1 WHERE id = ?`, "forking"); err != nil {
+		t.Fatalf("mark fork preparing: %v", err)
 	}
-	changed, refused, err := s.MarkThreadsReadNow(ctx, []string{"ahead", "open-turn", "current", "ahead", "holder", "gone"})
+	create("moving")
+	seedTransfer(t, s, "moving", "outgoing", "move", "prepared", 0)
+	markerOf := func(id string) sql.NullInt64 {
+		t.Helper()
+		var lastReadAt sql.NullInt64
+		if err := s.db.QueryRow(`SELECT last_read_at FROM threads WHERE id = ?`, id).Scan(&lastReadAt); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		return lastReadAt
+	}
+	refusedBefore := map[string]sql.NullInt64{}
+	for _, id := range []string{"holder", "forking", "moving"} {
+		refusedBefore[id] = markerOf(id)
+	}
+	changed, refused, err := s.MarkThreadsReadNow(ctx, []string{"ahead", "open-turn", "current", "ahead", "holder", "forking", "moving", "gone"})
 	if err != nil {
 		t.Fatalf("MarkThreadsReadNow: %v", err)
 	}
-	if !slices.Equal(refused, []string{"gone", "holder"}) {
-		t.Fatalf("refused = %v, want [gone holder]", refused)
+	if !slices.Equal(refused, []string{"forking", "gone", "holder", "moving"}) {
+		t.Fatalf("refused = %v, want [forking gone holder moving]", refused)
 	}
 	got := map[string]int64{}
 	for _, row := range changed {
@@ -3207,8 +3222,14 @@ func TestMarkThreadsReadNowStampsTheBatchInOneTransaction(t *testing.T) {
 	if len(changed) != 2 || got["ahead"] != ahead+1000 || got["open-turn"] != ahead+5000 {
 		t.Fatalf("changed = %v, want ahead at %d and open-turn at %d", got, ahead+1000, ahead+5000)
 	}
-	if holder, err := s.GetThread("holder"); err != nil || !reflect.DeepEqual(holder.LastReadAt, held.LastReadAt) {
-		t.Fatalf("holder LastReadAt = %v (%v), want it untouched at %v", holder.LastReadAt, err, held.LastReadAt)
+	for id, before := range refusedBefore {
+		if after := markerOf(id); after != before {
+			t.Fatalf("%s last_read_at moved from %v to %v; a refused thread is not stamped", id, before, after)
+		}
+	}
+	// The batch of one names a refusal as such.
+	if _, _, err := s.MarkThreadReadNow(ctx, "moving"); !errors.Is(err, ErrThreadReadRefused) || !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("MarkThreadReadNow(moving) = %v, want ErrThreadReadRefused wrapping sql.ErrNoRows", err)
 	}
 	// Each changed thread now reads as read through its target.
 	for _, id := range []string{"ahead", "open-turn"} {

@@ -525,10 +525,30 @@ onBackendDetached(({ threadIds }) => dropThreadsForDetachedBackend(threadIds));
  * currently track it (e.g. archived parent not in the filtered view).
  */
 export function getThreadById(id: string): Thread | undefined {
-  return threads.find((t) => t.id === id);
+  return threadIndex().byId.get(id);
 }
 
 /** The listed current thread of the assistant with this id, if any. */
 export function assistantCurrentThread(agentId: string): Thread | undefined {
-  return threads.find((t) => t.agentId === agentId);
+  return threadIndex().currentByAgent.get(agentId);
+}
+
+// The list by thread id and by assistant, for lookups made per event.
+// Every write replaces the list's array, so the index is rebuilt on the
+// first lookup after one. Reading `threads` keeps a reactive caller
+// subscribed to the list, as the scan it replaces did.
+let indexedRows: Thread[] | null = null;
+let indexes = { byId: new Map<string, Thread>(), currentByAgent: new Map<string, Thread>() };
+function threadIndex(): typeof indexes {
+  const rows = threads;
+  if (rows === indexedRows) return indexes;
+  const byId = new Map<string, Thread>();
+  const currentByAgent = new Map<string, Thread>();
+  for (const row of rows) {
+    byId.set(row.id, row);
+    if (row.agentId && !currentByAgent.has(row.agentId)) currentByAgent.set(row.agentId, row);
+  }
+  indexedRows = rows;
+  indexes = { byId, currentByAgent };
+  return indexes;
 }
