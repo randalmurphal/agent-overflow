@@ -6,17 +6,12 @@ import (
 	"time"
 )
 
-// agentTreeHistory seeds a standing agent's ledger: a chief that spawned
-// three managers, which spawned ten workers, owed open sends, holding
-// answers settled inside the window and a history of answers settled 20
-// days ago, every answer 4 KiB.
-func agentTreeHistory(t *testing.T, s *Store, history, open int) (chief string, since int64) {
-	return agentTreeSpawnHistory(t, s, history, open, 0)
-}
-
-// agentTreeSpawnHistory is agentTreeHistory with spawns more local spawns
-// the chief made and settled 20 days ago, as a loop spawning a worker every
-// 15 minutes leaves 2,880 in the 30 days a settled spawn is kept.
+// agentTreeSpawnHistory seeds a standing agent's ledger: a chief that
+// spawned three managers, which spawned ten workers, owed open sends,
+// holding answers settled inside the window, a history of answers settled
+// 20 days ago and spawns more local spawns settled then, as a loop
+// spawning a worker every 15 minutes leaves 2,880 in the 30 days a settled
+// spawn is kept. Every answer is 4 KiB.
 func agentTreeSpawnHistory(t *testing.T, s *Store, history, open, spawns int) (chief string, since int64) {
 	t.Helper()
 	now := time.Now().UnixMilli()
