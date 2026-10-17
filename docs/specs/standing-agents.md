@@ -698,7 +698,7 @@ place under the successor. Differences from an ordinary thread row:
   disabled with the reason.
 - Context menu: Open, Rename, New Thread Same Assistant, Loops and
   Watches (opens the thread with its background tray open), Archive Done
-  Children (the spawned threads and past threads whose effective status
+  Children (the nested spawned and past threads whose effective status
   is idle, behind a confirm), Mark All Read (the agent's thread and
   every live child, folded ones included, in one call; ruling 31),
   Archive and Delete (the confirm described under

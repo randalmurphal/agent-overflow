@@ -192,7 +192,9 @@ the row. Collapsed, it carries its members' bubbled dot.
 - A returning conversation transfer arrives ungrouped; the local row's
   pin survives only if the row was not in a group.
 - Fork copies `group_id` from the source row (all fork paths), never the
-  pin.
+  pin. A `thread_spawn` fork then takes the spawn's placement, which
+  leaves that group unless the spawn names one
+  ([agent thread tools](agent-thread-tools.md)).
 
 ### Backend API
 

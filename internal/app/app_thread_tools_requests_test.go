@@ -738,6 +738,46 @@ func TestThreadSpawnRemovesTheThreadWhenItsGroupPatchFails(t *testing.T) {
 	}
 }
 
+// A fork copies its source's group, and the spawn's placement wins over it:
+// a from_thread spawn of a grouped source lands nested by default and
+// standalone when asked, out of the group either way, and in the group a
+// spawn names when it names one.
+func TestAForkSpawnTakesItsPlacementOverItsSourcesGroup(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.mockClaude(t, "on it", "on it", "on it")
+	source := f.forkableThread(t, "fork-placement-source")
+	group, err := f.app.store.CreateThreadGroup(source.ProjectID, "Sweep")
+	if err != nil {
+		t.Fatalf("CreateThreadGroup: %v", err)
+	}
+	if _, err := f.app.store.SetThreadGroup([]string{source.ID}, group.ID); err != nil {
+		t.Fatalf("SetThreadGroup: %v", err)
+	}
+	for _, tc := range []struct {
+		name, placement, group, wantPlacement, wantGroup string
+	}{
+		{name: "default", wantPlacement: store.PlacementNested},
+		{name: "standalone", placement: threadtools.PlacementStandalone, wantPlacement: store.PlacementStandalone},
+		{name: "named group", group: "Sweep", wantPlacement: store.PlacementGrouped, wantGroup: group.ID},
+	} {
+		ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+			FromThread: source.ID, Prompt: "carry on", Placement: tc.placement, Group: tc.group,
+		})
+		if err != nil {
+			t.Fatalf("%s: Spawn: %v", tc.name, err)
+		}
+		spawned, err := f.app.store.GetThread(ack.ThreadID)
+		if err != nil {
+			t.Fatalf("%s: GetThread: %v", tc.name, err)
+		}
+		if spawned.Placement != tc.wantPlacement || spawned.GroupID != tc.wantGroup {
+			t.Errorf("%s: fork = %s in group %q, want %s in group %q",
+				tc.name, spawned.Placement, spawned.GroupID, tc.wantPlacement, tc.wantGroup)
+		}
+	}
+}
+
 // threadIDsInStore is every thread row, for a test asserting that a refused
 // call created none.
 func threadIDsInStore(t *testing.T, app *App) []string {
