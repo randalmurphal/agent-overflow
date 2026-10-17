@@ -154,8 +154,10 @@ func tableSQL(t *testing.T, path, table string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
 	rows, err := queryIDs(db, `SELECT type || ' ' || name || ': ' || sql FROM sqlite_master WHERE tbl_name = '`+table+`' AND sql IS NOT NULL ORDER BY type, name`)
+	if closeErr := db.Close(); err == nil {
+		err = closeErr
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +193,7 @@ func TestPreSyncDatabasesAreRefusedByName(t *testing.T) {
 }
 
 // The repairs development.md gives, applied as written in the order it
-// states, leave a database this build opens and migrates to its last
+// states, or the first after the second with the change it states, leave a database this build opens and migrates to its last
 // version, from each state a pre-sync build left.
 func TestThePreSyncRepairsOpen(t *testing.T) {
 	t.Run("before v142, both repairs", func(t *testing.T) {
@@ -209,6 +211,25 @@ func TestThePreSyncRepairsOpen(t *testing.T) {
 		requireRefused(t, path, agentTreeMarksMigrationVersion, "agent_tree_marks",
 			"thread_requests.open_below_0", preSyncBeforeV143)
 		applyRepair(t, path, repairBeforeV143)
+		requireOpens(t, path)
+	})
+	t.Run("before v142, repaired out of order", func(t *testing.T) {
+		path := beforeV142DB(t)
+		applyRepair(t, path, repairBeforeV143)
+		block := repairSQL(t, repairBeforeV142)
+		const insert = "VALUES (152, 'receipt_own_turn')"
+		if !strings.Contains(block, insert) {
+			t.Fatalf("%s has no %q to change", repairBeforeV142, insert)
+		}
+		db, err := sql.Open("sqlite", poolDSN(path, writerConnPragmas))
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		mustExec(t, db, strings.Replace(block, insert, "VALUES (153, 'receipt_own_turn')", 1))
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
 		requireOpens(t, path)
 	})
 	t.Run("before v143", func(t *testing.T) {

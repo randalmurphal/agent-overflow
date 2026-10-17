@@ -37,10 +37,12 @@ below that repairs it. Repair it with the app stopped, in
 `sqlite3 <data dir>/agent-overflow.db`. A database without
 `thread_pull_requests` takes [Before main's v142](#before-mains-v142) and
 then [Before main's v143](#before-mains-v143), in that order; one with
-`thread_pull_requests` takes only the second. The runner reads only the
-highest recorded version, so the names of rows below it may not match
-their numbers. `TestThePreSyncRepairsOpen` runs these blocks as written
-on databases each pre-sync build left and opens the results.
+`thread_pull_requests` takes only the second. A database that took the
+second first is refused at v153; run the first block on it with 153 in
+place of 152 in its `INSERT`. The runner reads only the highest recorded
+version, so the names of rows below it may not match their numbers.
+`TestThePreSyncRepairsOpen` runs these blocks on databases each pre-sync
+build left and opens the results.
 
 #### Before main's v142
 
