@@ -1859,6 +1859,7 @@ func TestThreadToolsLateCollectionStatesTheAnswersAge(t *testing.T) {
 // plain caller's fork in its source's group and nests an assistant's.
 func TestThreadToolsReachForkKeepsOrLeavesItsSourcesGroupByCaller(t *testing.T) {
 	t.Parallel()
+	remotetest.Require(t)
 	for _, tc := range []struct {
 		name          string
 		assistant     bool
