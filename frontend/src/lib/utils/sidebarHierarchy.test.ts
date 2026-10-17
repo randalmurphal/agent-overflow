@@ -105,8 +105,8 @@ describe('done fold', () => {
     expect(tail).toEqual(['settled', 'settled-older', 'done-1', 'agent:ops:done']);
     const settledRow = open.find((row) => row.kind === 'thread' && row.thread.id === 'settled');
     const archivedRow = open.find((row) => row.kind === 'thread' && row.thread.id === 'done-1');
-    expect(settledRow?.kind === 'thread' && settledRow.archived).toBeFalsy();
-    expect(archivedRow?.kind === 'thread' && archivedRow.archived).toBe(true);
+    expect(settledRow?.kind === 'thread' && !settledRow.archived && settledRow.folded).toBe(true);
+    expect(archivedRow?.kind === 'thread' && archivedRow.archived && !archivedRow.folded).toBe(true);
     const footer = open[open.length - 1];
     expect(footer).toMatchObject({ kind: 'agent-done', count: 4, expanded: true, hiddenCount: 1 });
   });

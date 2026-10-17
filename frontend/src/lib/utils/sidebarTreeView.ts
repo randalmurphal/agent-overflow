@@ -80,6 +80,11 @@ export type SidebarTreeVisibleNode =
      * footer: the row renders muted, and it is not in the live list.
      */
     archived?: boolean;
+    /**
+     * True for a settled idle child listed under an agent's open done
+     * footer: a live row, shown in the done list rather than the live rows.
+     */
+    folded?: boolean;
   })
   | SidebarAgentDoneNode
   | SidebarContainerMoreNode;
@@ -297,7 +302,7 @@ export function flattenSidebarThreadTree(
       const shown = done.slice(0, limit);
       hiddenCount = Math.max(0, done.length - shown.length);
       for (const { row, archived } of shown) {
-        visibleNodes.push({ ...row, startsSection: false, ...placement, ...(archived ? { archived: true } : {}) });
+        visibleNodes.push({ ...row, startsSection: false, ...placement, ...(archived ? { archived: true } : { folded: true }) });
       }
     }
     visibleNodes.push({
@@ -391,7 +396,7 @@ export function sameSidebarVisibleNodes(
       continue;
     }
     if (x.kind === 'thread' && y.kind === 'thread') {
-      if (x.thread !== y.thread || x.archived !== y.archived) return false;
+      if (x.thread !== y.thread || x.archived !== y.archived || x.folded !== y.folded) return false;
     }
     if (x.kind === 'group' && y.kind === 'group') {
       if (x.group !== y.group) return false;

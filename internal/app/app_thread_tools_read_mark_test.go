@@ -186,3 +186,63 @@ func TestReplyMidTurnMarksTheWorkerReadWhenTheTurnEnds(t *testing.T) {
 	}
 	waitFor(t, "the hold released", func() bool { return !f.app.hasAnsweredReads(ack.ThreadID) })
 }
+
+// An assistant pins a thread it spawned with thread_update (ruling 7 of the
+// sidebar hierarchy: a pinned child stays above the fold), and the pin then
+// keeps the worker's dot through its next answer.
+func TestAssistantPinsItsSpawnedThreadAndThePinKeepsTheDot(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.assistantCaller(t)
+	f.mockClaude(t, "first answer", "second answer")
+
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "start", Title: "Worker", WaitSeconds: 20,
+	})
+	if err != nil || ack.State != store.ThreadRequestFinished {
+		t.Fatalf("Spawn = %+v, %v; want a finished request", ack, err)
+	}
+	first := f.awaitThread(t, ack.ThreadID, "the worker marked read", func(row store.Thread) bool {
+		return row.LatestTurnCompletedAt != nil && !threadUnread(row)
+	})
+	if !first.SpawnedByAgent {
+		t.Fatalf("worker row = %+v, want it bound to the assistant", first)
+	}
+
+	report, err := f.adapter().UpdateThreads(t.Context(), f.callerIdentity(), threadtools.UpdateCall{
+		ThreadIDs: []string{ack.ThreadID},
+		Pin:       stringPtr(threadtools.PinFront),
+	})
+	if err != nil {
+		t.Fatalf("UpdateThreads: %v", err)
+	}
+	if row := updateResultFor(t, report, ack.ThreadID); !row.Updated || row.Error != "" {
+		t.Fatalf("pin result = %+v, want updated", row)
+	}
+	if pinned := f.reload(t, ack.ThreadID); pinned.PinnedAt == nil {
+		t.Fatal("the assistant's pin did not land")
+	}
+
+	send, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: ack.ThreadID, Message: "again", WaitSeconds: 20,
+	})
+	if err != nil || send.State != store.ThreadRequestFinished {
+		t.Fatalf("Send = %+v, %v; want a finished request", send, err)
+	}
+	f.awaitThread(t, ack.ThreadID, "the second turn complete", func(row store.Thread) bool {
+		return row.LatestTurnCompletedAt != nil && *row.LatestTurnCompletedAt > *first.LatestTurnCompletedAt
+	})
+	time.Sleep(200 * time.Millisecond)
+	if !threadUnread(f.reload(t, ack.ThreadID)) {
+		t.Fatal("the pinned worker was marked read by its answer; a pin keeps the dot")
+	}
+}
+
+func (f *requestFixture) reload(t *testing.T, threadID string) store.Thread {
+	t.Helper()
+	row, err := f.app.store.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread(%s): %v", threadID, err)
+	}
+	return row
+}

@@ -171,9 +171,20 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
       groups: [{ id: 'ops', projectId: 'project', name: 'Ops', createdAt: 0, updatedAt: 0 }],
       pane: createThreadPane(),
     });
+    // A zero that passes (the agent row's count catching up with a child
+    // that just left) keeps the footer open.
     await rerender(0);
     await flush();
     expect(view.container.querySelector('[data-testid="thread-row-agent-done-toggle"]')).toBeNull();
+    await rerender(1);
+    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(isAgentDoneExpanded('agent')).toBe(true);
+    // A zero that stays closes it once it has settled.
+    await rerender(0);
+    await flush();
+    expect(isAgentDoneExpanded('agent')).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 900));
     expect(isAgentDoneExpanded('agent')).toBe(false);
     // Three children archive: the footer returns closed with its count.
     await rerender(3);

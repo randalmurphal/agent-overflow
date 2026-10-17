@@ -77,6 +77,10 @@ type HarnessSeedThread struct {
 	// finished spawn request row, so the sidebar nests it under an
 	// assistant spawner and counts it once archived.
 	SpawnedBy string `json:"spawnedBy,omitempty"`
+	// SpawnedByID is the id of a thread seeded before, in any project: the
+	// spawner of a thread an agent spawned into another project. At most
+	// one of SpawnedBy and SpawnedByID.
+	SpawnedByID string `json:"spawnedById,omitempty"`
 	// Assistant makes the thread an assistant's current thread, its title
 	// the name, with the record and home New Assistant makes and no opening
 	// message.
@@ -302,7 +306,15 @@ func (h *Harness) seedProject(spec HarnessSeedProject) (HarnessSeedProjectResult
 
 	seededByTitle := map[string]string{}
 	for ti, threadSpec := range spec.Threads {
-		spawner := ""
+		spawner := threadSpec.SpawnedByID
+		if threadSpec.SpawnedBy != "" && spawner != "" {
+			return out, fmt.Errorf("thread %d: spawnedBy and spawnedById are exclusive", ti+1)
+		}
+		if spawner != "" {
+			if _, err := database.GetThread(spawner); err != nil {
+				return out, fmt.Errorf("thread %d: spawnedById %q: %w", ti+1, spawner, err)
+			}
+		}
 		if threadSpec.SpawnedBy != "" {
 			var ok bool
 			if spawner, ok = seededByTitle[threadSpec.SpawnedBy]; !ok {

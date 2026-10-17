@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { pendingForks } from '../../stores/forkPreparation.svelte';
   import ForkPendingRow from './ForkPendingRow.svelte';
   import { projectHasScope } from '../../transport/entityScopes';
@@ -182,16 +183,41 @@
   // deleted on any client). A footer whose count, settled idle children
   // and archived ones together, reaches zero leaves the list, and its open
   // state goes with it.
+  //
+  // The zero is checked again after a settle window before the footer
+  // closes: archiving a folded child removes its row (locally, or by its
+  // `unlisted` frame) before the agent row's count says it was archived,
+  // and that passing zero must not shut a footer the user has open.
+  const DONE_CLOSE_SETTLE_MS = 750;
+  const pendingDoneCloses = new Map<string, ReturnType<typeof setTimeout>>();
+  function doneCountOf(key: string): number {
+    for (const node of tree) {
+      if (node.kind === 'agent' && assistantKey(node.thread) === key) {
+        return agentDoneCount(node, openIds, pane?.threadId ?? null);
+      }
+    }
+    return 0;
+  }
   $effect(() => {
     for (const node of tree) {
-      if (node.kind !== 'agent' || !isAgentDoneExpanded(assistantKey(node.thread))) continue;
+      const key = node.kind === 'agent' ? assistantKey(node.thread) : '';
+      if (node.kind !== 'agent' || !isAgentDoneExpanded(key)) continue;
       if (agentDoneCount(node, openIds, pane?.threadId ?? null) === 0) {
-        closeAgentDone(assistantKey(node.thread));
+        if (!pendingDoneCloses.has(key)) {
+          pendingDoneCloses.set(key, setTimeout(() => {
+            pendingDoneCloses.delete(key);
+            if (doneCountOf(key) === 0) closeAgentDone(key);
+          }, DONE_CLOSE_SETTLE_MS));
+        }
         continue;
       }
       const archived = node.thread.archivedChildCount ?? 0;
       if (archived > 0) loadArchivedChildren(node.thread.id, archived);
     }
+  });
+  onDestroy(() => {
+    for (const timer of pendingDoneCloses.values()) clearTimeout(timer);
+    pendingDoneCloses.clear();
   });
 
   // A container's show-more: the members its bound cuts are the group's,
@@ -502,6 +528,7 @@
             style:margin-left={node.ownerGroupId || node.ownerAgentId ? `${GROUP_RAIL_LEFT_PX}px` : null}
             data-group-member={node.ownerGroupId ? '' : null}
             data-agent-member={node.ownerAgentId ? '' : null}
+            data-agent-done-row={node.kind === 'thread' && (node.archived || node.folded) ? '' : null}
             ondragover={(e) => { if (node.ownerGroupId) memberDragOver(e, node.ownerGroupId); else if (node.kind === 'agent' || node.ownerAgentId) agentDragOver(e); }}
             ondragleave={(e) => { if (node.ownerGroupId) memberDragLeave(e, node.ownerGroupId); }}
             ondrop={(e) => { if (node.ownerGroupId) memberDrop(e, node.ownerGroupId); else if (node.kind === 'agent' || node.ownerAgentId) agentDrop(e); }}

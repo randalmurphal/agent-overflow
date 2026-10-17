@@ -720,7 +720,9 @@ Mechanics, as built:
   whose session start failed writes the thread's error row, so the
   child shows Failed and stays in the live rows. The footer's count is
   the folded children plus `archivedChildCount`, and its open state
-  resets when that sum reaches zero. One bound (`boundContainerMembers`)
+  resets when that sum stays at zero past a short settle window: an
+  archived folded child leaves the live rows before the agent row's
+  count includes it, and that passing zero keeps the footer open. One bound (`boundContainerMembers`)
   cuts both a group's members and an agent's live children; its paging
   is session state per container, like the footer's.
 - The read mark on an answer: a settlement the caller on this computer
@@ -749,7 +751,8 @@ Mechanics, as built:
   creation by `thread_new_assistant`, a handoff, the assistant's delete
   (which takes the spawn rows with it) and a committed move.
 - The harness seeds lineage with `HarnessSeedThread.spawnedBy`, the
-  title of a thread seeded earlier in the same project, and an
+  title of a thread seeded earlier in the same project, or
+  `spawnedById`, the id of one seeded before in any project, and an
   assistant with `HarnessSeedThread.assistant`.
 
 Discussions are removed first (slice 1), and the tree code that nests
