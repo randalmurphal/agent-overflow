@@ -726,8 +726,9 @@ Mechanics, as built:
   cuts both a group's members and an agent's live children; its paging
   is session state per container, like the footer's.
 - The read mark on an answer: a settlement the caller on this computer
-  collected, whose target's `spawnedByThreadId` is that caller and whose
-  target is not pinned, stamps the target's `last_read_at` up to the
+  collected, whose target's `spawnedByThreadId` is that caller (read in
+  the settlement's own transaction, `LocalSettlement.AnsweredBySpawned`)
+  and whose target is not pinned, stamps the target's `last_read_at` up to the
   answering turn's `completed_at` (`Store.MarkThreadReadThrough`, never
   backward) and announces the row. A `thread_reply` settles while its
   turn runs, so the mark is held in memory for that turn and stamped

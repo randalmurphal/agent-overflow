@@ -22,10 +22,11 @@ import (
 // restart, which loses it.
 
 // markAnsweredRead stamps, or holds for its turn's end, the read mark a
-// settled receipt earned. Only an answer the target's own turn gave counts:
-// a reply, that turn's final message, or its error or interruption. A
-// cancel, and a settlement for a message the target never read, carry no
-// turn and mark nothing.
+// settled receipt earned. The settlement read that its target was spawned
+// by its source (LocalSettlement.AnsweredBySpawned). Only an answer the
+// target's own turn gave counts: a reply, that turn's final message, or its
+// error or interruption. A cancel, and a settlement for a message the
+// target never read, carry no turn and mark nothing.
 func (a *App) markAnsweredRead(receipt store.ThreadRequestReceipt) {
 	switch receipt.State {
 	case store.ThreadReceiptReplied, store.ThreadReceiptFinished, store.ThreadReceiptErrored, store.ThreadReceiptInterrupted:
@@ -37,14 +38,6 @@ func (a *App) markAnsweredRead(receipt store.ThreadRequestReceipt) {
 	}
 	index, ok := threadRequestTurnIndex(receipt.TargetThreadID, receipt.TurnID)
 	if !ok {
-		return
-	}
-	thread, err := a.store.GetThread(receipt.TargetThreadID)
-	if err != nil {
-		log.Printf("thread tools: read %s for its answer's read mark: %v", receipt.TargetThreadID, err)
-		return
-	}
-	if thread.SpawnedByThreadID != receipt.SourceThreadID {
 		return
 	}
 	turn, found, err := a.store.GetTurnByThreadIndex(receipt.TargetThreadID, index)

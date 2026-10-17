@@ -462,9 +462,10 @@ type threadSettlementWork struct {
 	// late marks it as the second wake of a late reply.
 	wake bool
 	late bool
-	// answered is the settled receipt when its answer reached a caller on
-	// this computer, so the thread that answered may be marked read
-	// (markAnsweredRead). Nil for every other settlement.
+	// answered is the settled receipt when its answer reached the thread
+	// on this computer that spawned the thread that answered, which may
+	// then be marked read (markAnsweredRead). Nil for every other
+	// settlement.
 	answered *store.ThreadRequestReceipt
 }
 
@@ -623,8 +624,10 @@ func (a *App) settleReadReceiptLocked(
 	}
 	if result.Collected {
 		work.wake = a.collectionWakeOwed(token, result.Notify)
-		answered := result.Receipt
-		work.answered = &answered
+		if result.AnsweredBySpawned {
+			answered := result.Receipt
+			work.answered = &answered
+		}
 	}
 	return work, true, nil
 }
