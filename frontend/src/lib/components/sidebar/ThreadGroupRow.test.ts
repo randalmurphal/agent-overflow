@@ -429,3 +429,18 @@ describe('<ThreadGroupRow> compact layout', () => {
     expect(isGroupExpanded('group-1')).toBe(wasExpanded);
   });
 });
+
+describe('<ThreadGroupRow> rolled-up dot', () => {
+  const status = { liveStatus: 'idle' as const, pill: { label: 'Completed', dotClass: 'bg-accent', pulse: false } };
+
+  it('shows its members\' bubbled dot only while collapsed', () => {
+    const collapsed = renderRow({ expanded: false, status });
+    expect(collapsed.getByTestId('thread-group-row-status-dot').getAttribute('aria-label')).toBe('Completed');
+    collapsed.unmount();
+    const expanded = renderRow({ expanded: true, status });
+    expect(expanded.queryByTestId('thread-group-row-status-dot')).toBeNull();
+    expanded.unmount();
+    const dark = renderRow({ expanded: false, status: null });
+    expect(dark.queryByTestId('thread-group-row-status-dot')).toBeNull();
+  });
+});

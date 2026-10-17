@@ -27,6 +27,7 @@ import {
   UnpinThread,
 } from '../../stores/bindings';
 import {
+  markThreadsRead,
   markThreadUnread,
   prependThreadReply,
   removeThread,
@@ -261,6 +262,19 @@ export async function markThreadUnreadAction(ctx: ThreadActionCtx): Promise<void
     addToast('info', 'Marked unread.');
   } catch (err) {
     console.error('Failed to mark thread unread:', err);
+    addErrorToast(userFacingError(err), err);
+  }
+}
+
+/**
+ * Mark All Read on an agent row (its thread and live children) or a group
+ * (its members), in one call (docs/specs/standing-agents.md ruling 31).
+ */
+export async function markAllReadAction(threads: readonly Thread[]): Promise<void> {
+  try {
+    await markThreadsRead(threads);
+  } catch (err) {
+    console.error('Failed to mark threads read:', err);
     addErrorToast(userFacingError(err), err);
   }
 }

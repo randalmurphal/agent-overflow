@@ -6,7 +6,7 @@
   // matching threads).
 
   import { onDestroy } from 'svelte';
-  import type { ProjectWithCounts, Thread, ThreadGroup } from '../../types/models';
+  import type { ProjectWithCounts } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     entryIdFor,
@@ -50,7 +50,7 @@
   import { catalogLoadState } from '../../stores/catalogLoad.svelte';
   import CatalogStatusRow from './CatalogStatusRow.svelte';
   import ProjectList from './ProjectList.svelte';
-  import { threadGroupMatchesQuery, threadMatchesQuery } from './threadSearch';
+  import { bucketSidebarThreads } from './sidebarBuckets';
   import type {
     ProjectNewThreadHandler,
     ProjectNewTerminalHandler,
@@ -76,65 +76,23 @@
 
   // Threads and groups bucketed by sidebar ENTRY (a repo checked out on
   // two attached machines is one entry, and both machines' rows sit under
-  // it), both filtered by the search query in ONE pass because the two
-  // filters are coupled: a group whose NAME matches shows all of its
-  // members, including the ones the thread filter would have dropped, so
-  // the thread bucket cannot be computed without knowing which group
-  // names matched.
-  //
-  // Project-less threads (no projectId) have no sidebar surface and are
-  // skipped. A group that neither matches by name nor holds a surviving
-  // member is dropped, so search never leaves an empty container behind.
+  // it), filtered by the search query, with an agent's cross-project
+  // children filed under the agent's entry (bucketSidebarThreads).
   //
   // Both maps are re-minted per derivation, as threadsByProject always
   // was: the ROWS inside them are stable references, and the identity
   // cutoffs downstream (visibleProjects here, sameSidebarVisibleNodes in
   // ProjectThreadList) are what keep a streaming beat off the DOM.
   let searchBuckets = $derived.by(() => {
-    const groups = getThreadGroups();
     const filterDevices = sidebarDeviceFilterActive();
-    const nameMatchedGroupIds = new Set<string>();
-    if (query) {
-      for (const group of groups) {
-        if (threadGroupMatchesQuery(group, query)) nameMatchedGroupIds.add(group.id);
-      }
-    }
-
-    const threadsByProject = new Map<string, Thread[]>();
-    const populatedGroupIds = new Set<string>();
-    for (const t of getThreads()) {
-      if (t.archived || (filterDevices && !sidebarBackendVisible(threadMachine(t.id, t.projectId)))) continue;
-      const key = t.projectId ? entryIdFor(t.projectId) : '';
-      if (!key) continue;
-      const groupId = t.groupId ?? '';
-      // A name-matched group brings its whole membership back. The
-      // empty-query call is the "is this row eligible at all" test — it
-      // still excludes workflow-owned modes.
-      const matches = threadMatchesQuery(t, query)
-        || (groupId !== '' && nameMatchedGroupIds.has(groupId) && threadMatchesQuery(t, ''));
-      if (!matches) continue;
-      if (groupId !== '') populatedGroupIds.add(groupId);
-      const bucket = threadsByProject.get(key);
-      if (bucket) bucket.push(t);
-      else threadsByProject.set(key, [t]);
-    }
-
-    const groupsByProject = new Map<string, ThreadGroup[]>();
-    for (const group of groups) {
-      if (!group.projectId) continue;
-      if (filterDevices && !populatedGroupIds.has(group.id)) continue;
-      if (query && !nameMatchedGroupIds.has(group.id) && !populatedGroupIds.has(group.id)) {
-        continue;
-      }
-      // Keyed by ENTRY, like the thread buckets: ProjectList looks both
-      // up under the entry's representative id, so a member project's
-      // groups have to land there or they vanish from a merged entry.
-      const key = entryIdFor(group.projectId);
-      const bucket = groupsByProject.get(key);
-      if (bucket) bucket.push(group);
-      else groupsByProject.set(key, [group]);
-    }
-    return { threadsByProject, groupsByProject };
+    return bucketSidebarThreads({
+      threads: getThreads(),
+      groups: getThreadGroups(),
+      query,
+      entryOf: entryIdFor,
+      threadVisible: (t) => !filterDevices || sidebarBackendVisible(threadMachine(t.id, t.projectId)),
+      filterDevices,
+    });
   });
 
   let threadsByProject = $derived(searchBuckets.threadsByProject);

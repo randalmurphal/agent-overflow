@@ -6,11 +6,12 @@ import { computerCatalog, readComputerRows, retainUnavailableComputerRows, type 
 import { currentThreadRow, noteThread, onThreadOwnershipChanged, threadBackend, threadGroupBackend } from '../transport/entityIndex';
 import type { Thread } from '../types/models';
 import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
+import { hasUnread } from '../utils/threadStatusPill';
 import { clearThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { clearThreadSizePriors } from '../utils/virtual/priors';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import { clearItemProjectionSourcesForThread } from '../utils/itemProjectionSource.svelte';
-import { ListThreads, MarkThreadRead, MarkThreadUnread } from './bindings';
+import { ListThreads, MarkThreadRead, MarkThreadsRead, MarkThreadUnread } from './bindings';
 import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './liveTodoState.svelte';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
@@ -24,10 +25,10 @@ import { forgetArchivedChildren } from './agentArchivedChildren.svelte';
 import { notifyStandingAgentEnded } from './standingAgentEnded';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
-import { onBackendDetached } from '../transport/backends';
-import type { BackendKey } from '../transport/backendKey';
-import { withLocalReadMarker } from './threadReadWrites';
-import { threadReplyRow, threadRowFramedSince } from './threadRowFrames';
+import { onBackendDetached, withBackendTarget } from '../transport/backends';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
+import { claimLocalReadMarker, withLocalReadMarker } from './threadReadWrites';
+import { threadReplyRow, threadRowFrameMark, threadRowFramedSince } from './threadRowFrames';
 import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelte';
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn' | 'hasFailedTurn'>>;
@@ -358,6 +359,37 @@ export function markThreadRead(id: string, lastReadAt: number): Promise<void> {
     .catch((err) => {
       console.error('Failed to mark thread read:', err);
     });
+}
+
+/**
+ * Mark All Read on an agent row or a group (docs/specs/standing-agents.md
+ * ruling 31): one MarkThreadsRead call on the computer that holds the
+ * threads, for every one with something to read. Each read marker is
+ * claimed at the stamp this client expects for the length of the call, and
+ * the rows the call changed are reconciled through threadReplyRow, so a
+ * frame that arrived meanwhile is not undone. Throws the call's failure.
+ */
+export async function markThreadsRead(threads: readonly Thread[]): Promise<void> {
+  const owed = threads.filter((thread) => hasUnread(thread) || thread.hasFailedTurn || thread.hasIncompleteTurn);
+  if (owed.length === 0) return;
+  const now = Date.now();
+  const releases = owed.map((thread) => claimLocalReadMarker(thread.id, Math.max(now, thread.latestTurnCompletedAt ?? 0)));
+  try {
+    const mark = threadRowFrameMark();
+    const backend = threadBackend(owed[0].id) ?? HOME_BACKEND;
+    const rows = await withBackendTarget(backend, () => MarkThreadsRead(owed.map((thread) => thread.id)));
+    for (const reply of (rows ?? []) as Thread[]) {
+      const row = threadReplyRow(reply, mark, getThreadById(reply.id));
+      if (row === null) continue;
+      updateThreadReadState(row.id, {
+        lastReadAt: row.lastReadAt,
+        hasIncompleteTurn: row.hasIncompleteTurn,
+        hasFailedTurn: row.hasFailedTurn,
+      });
+    }
+  } finally {
+    for (const release of releases) release();
+  }
 }
 
 /**

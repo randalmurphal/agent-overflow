@@ -40,7 +40,7 @@ import {
   stageBackend,
 } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transport/entityIndex';
-import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
+import { addProjectLocal, refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { isAgentExpanded, resetSidebarForTest, setAgentExpanded, setShowProviderIcons } from '../../stores/sidebar.svelte';
@@ -1708,6 +1708,34 @@ describe('<ThreadRow> standing agent variant', () => {
     await fireEvent.click(chevron);
     expect(isAgentExpanded('agent-1')).toBe(false);
     expect(isAgentExpanded('thread-1')).toBe(true);
+  });
+
+  it('shows its children\'s bubbled dot while collapsed and its own once expanded', () => {
+    const rolledUp = { liveStatus: 'idle' as const, pill: { label: 'Completed', dotClass: 'bg-accent', pulse: false } };
+    const thread = makeThread({ agentId: 'agent-1' });
+    const collapsed = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { expanded: false, childCount: 2, rolledUp } } });
+    const dot = collapsed.getByTestId('thread-row-status-dot');
+    expect(dot.getAttribute('aria-label')).toBe('Completed');
+    expect(dot.hasAttribute('data-rolled-up')).toBe(true);
+    collapsed.unmount();
+    // Expanded, the row is its own thread again: read, so no dot.
+    const expanded = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { expanded: true, childCount: 2, rolledUp } } });
+    expect(expanded.queryByTestId('thread-row-status-dot')).toBeNull();
+    expanded.unmount();
+    // Collapsed with every child read: dark.
+    const dark = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { expanded: false, childCount: 2, rolledUp: null } } });
+    expect(dark.queryByTestId('thread-row-status-dot')).toBeNull();
+  });
+
+  it('names its own project on the sublabel line when it lists under an agent in another project', () => {
+    addProjectLocal({ id: 'p-home', path: '/tmp/home', name: 'Home Repo', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false });
+    addProjectLocal({ id: 'p-other', path: '/tmp/other', name: 'Other Repo', sortPosition: 1, createdAt: 0, updatedAt: 0, archived: false });
+    const child = makeThread({ id: 'child-x', projectId: 'p-other', spawnedByThreadId: 'agent-thread' });
+    const away = render(ThreadRow, { props: { thread: child, pane: createThreadPane(), inGroup: true, indent: 2, listProjectId: 'p-home' } });
+    expect(away.getByTestId('thread-row-project-name').textContent?.trim()).toBe('Other Repo');
+    away.unmount();
+    const home = render(ThreadRow, { props: { thread: child, pane: createThreadPane(), inGroup: true, indent: 2, listProjectId: 'p-other' } });
+    expect(home.queryByTestId('thread-row-project')).toBeNull();
   });
 
   it('hides the count once expanded and when there is nothing under the agent', () => {

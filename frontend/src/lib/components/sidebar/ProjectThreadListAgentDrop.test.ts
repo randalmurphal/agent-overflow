@@ -54,10 +54,12 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     setBindingMock('ListArchivedSpawnedThreads', async () => [thread('done', { spawnedByThreadId: 'agent', archived: true })]);
   });
 
+  // The child is pinned, so it stays a live row rather than folding into
+  // the done footer as a settled idle child would.
   function renderList() {
     const threads = [
       thread('agent', { agentId: 'agent', archivedChildCount: 1 }),
-      thread('child', { spawnedByThreadId: 'agent' }),
+      thread('child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
       thread('loose', { groupId: 'ops' }),
     ];
     replaceAllThreads(threads);
@@ -163,7 +165,7 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
       projectId: 'project',
       threads: [
         thread('agent', { agentId: 'agent', archivedChildCount: count }),
-        thread('child', { spawnedByThreadId: 'agent' }),
+        thread('child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
         thread('loose', { groupId: 'ops' }),
       ],
       groups: [{ id: 'ops', projectId: 'project', name: 'Ops', createdAt: 0, updatedAt: 0 }],
@@ -192,7 +194,7 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     expect(list).toHaveBeenCalledTimes(1);
     const rows = (promoted: boolean) => [
       thread('agent', promoted ? { agentId: 'agent', archivedChildCount: 1 } : {}),
-      thread('child', { spawnedByThreadId: 'agent' }),
+      thread('child', { spawnedByThreadId: 'agent', pinnedAt: 1 }),
       thread('loose', { groupId: 'ops' }),
     ];
     // Demoted: the row is a plain thread and every agent-only state goes.

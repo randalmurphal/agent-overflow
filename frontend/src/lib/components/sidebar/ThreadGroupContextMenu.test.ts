@@ -12,7 +12,7 @@ import { createThreadPane } from '../../stores/thread.svelte';
 import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
 import { getFocusedPaneOrNull, resetPanesForTest } from '../../stores/panes.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
-import { replaceAllThreads } from '../../stores/threads.svelte';
+import { getThreadById, replaceAllThreads } from '../../stores/threads.svelte';
 import { upsertThreadGroup, resetThreadGroupsForTest } from '../../stores/threadGroups.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
@@ -103,6 +103,7 @@ describe('<ThreadGroupContextMenu> without threads:operate', () => {
     for (const label of [
       'New Thread',
       'Rename Group',
+      'Mark All Read',
       'Archive Threads (2)',
       'Ungroup All',
       'Delete Group',
@@ -111,7 +112,7 @@ describe('<ThreadGroupContextMenu> without threads:operate', () => {
       expect(row.getAttribute('aria-disabled'), label).toBe('true');
       expect(row.getAttribute('title'), label).toBe(INERT);
     }
-    expect(visibleLabels(baseElement)).toHaveLength(5);
+    expect(visibleLabels(baseElement)).toHaveLength(6);
     await fireEvent.click(getByRole('menuitem', { name: 'Delete Group' }));
     await flush();
     expect(rename).not.toHaveBeenCalled();
@@ -150,6 +151,7 @@ describe('<ThreadGroupContextMenu>', () => {
     expect(visibleLabels(baseElement)).toEqual([
       'New Thread',
       'Rename Group',
+      'Mark All Read',
       'Archive Threads (2)',
       'Ungroup All',
       'Delete Group',
@@ -224,6 +226,28 @@ describe('<ThreadGroupContextMenu>', () => {
     await fireEvent.click(getByRole('button', { name: 'Delete' }));
     await flush();
     expect(del).toHaveBeenCalledWith('group-1');
+  });
+
+  it('marks every member with something to read read in one call, and applies the rows it returns', async () => {
+    replaceAllThreads([
+      mkThread('t1', { latestTurnCompletedAt: 20, lastReadAt: 10 }),
+      mkThread('t2', { latestTurnCompletedAt: 20, lastReadAt: 20 }),
+      mkThread('t3', { hasFailedTurn: true, latestTurnCompletedAt: 20, lastReadAt: 20 }),
+    ]);
+    const calls: string[][] = [];
+    setBindingMock('MarkThreadsRead', async (ids: string[]) => {
+      calls.push(ids);
+      return ids.map((id) => ({ ...mkThread(id), latestTurnCompletedAt: 20, lastReadAt: 30, hasFailedTurn: false }));
+    });
+    const { getByRole } = renderMenu();
+
+    await fireEvent.click(getByRole('menuitem', { name: 'Mark All Read' }));
+    await flush();
+    await flush();
+
+    expect(calls).toEqual([['t1', 't3']]);
+    expect(getThreadById('t1')?.lastReadAt).toBe(30);
+    expect(getThreadById('t3')?.hasFailedTurn).toBe(false);
   });
 
   it('archives every member sequentially when confirmArchive is off', async () => {

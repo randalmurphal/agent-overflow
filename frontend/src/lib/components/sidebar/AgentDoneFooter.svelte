@@ -1,7 +1,8 @@
 <script lang="ts">
-  // The `N done` footer under a standing agent's children: the count of the
-  // threads it spawned that are now archived, opening to list them inline
-  // above it, newest first, paged like the project's own show-more footer.
+  // The `N done` footer under a standing agent's children: the count of its
+  // settled idle children and the threads it spawned that are now archived,
+  // opening to list them inline above it, settled idle first, newest first
+  // within each, paged like the project's own show-more footer.
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
   import type { SidebarAgentDoneNode } from '../../utils/sidebarTreeView';

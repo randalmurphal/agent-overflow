@@ -18,7 +18,9 @@
 //   5. paused (reserved for future; no current source emits it).
 //   6. idle + read (no pill).
 // Within each tier (after pinned): latestActivityAt desc, then thread.id
-// localeCompare for stability.
+// localeCompare for stability. Inside a group or an agent row (depth 1),
+// tier 4 splits: running rows sort above completed (unread) ones, so a
+// container reads needs-you, running, unread, idle.
 //
 // Every thread renders flat: at the top level, as a direct member of a
 // group, or under the standing agent that spawned it. Members bubble:
@@ -33,8 +35,12 @@
 // are the live threads whose `spawnedByThreadId` names it, unless they are
 // assistants themselves, and its past threads that are not archived. The backend keeps an agent and its children out of groups; a
 // `groupId` or pin left on an agent's row is ignored here. An agent whose
-// row is not in the list (another project, archived) nests nothing: its
-// spawned threads render as plain rows.
+// row is not in the list (archived, or filtered out) nests nothing: its
+// spawned threads render as plain rows. The builder runs per project, but
+// what it receives is the sidebar's per-project bucket, and the bucketing
+// (ProjectsSection) files a thread an agent spawned into another project
+// under the agent's project. So a child of another project nests here, and
+// its own project's list never sees it.
 
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread, ThreadGroup } from '../types/models';
@@ -335,6 +341,12 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
   const rightSortGroup = rightPinGroup === null ? right.sortGroup : right.normalSortGroup;
   const groupCmp = SORT_GROUP_PRIORITY[rightSortGroup] - SORT_GROUP_PRIORITY[leftSortGroup];
   if (groupCmp !== 0) return groupCmp;
+  // Inside a container the shared activity tier splits: running above
+  // unread. The top level keeps the two interleaved by activity.
+  if (left.depth > 0 && right.depth > 0) {
+    const runningCmp = Number(rightSortGroup === 'running') - Number(leftSortGroup === 'running');
+    if (runningCmp !== 0) return runningCmp;
+  }
 
   if (right.latestActivityAt !== left.latestActivityAt) {
     return right.latestActivityAt > left.latestActivityAt ? 1 : -1;

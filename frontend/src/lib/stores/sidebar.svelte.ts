@@ -197,6 +197,9 @@ let collapsedAgents: Set<string> = $state(stringSetFromStorage(COLLAPSED_AGENTS_
 // layout to come back to.
 let expandedDoneAgents: Set<string> = $state(new Set());
 let doneVisibleLimits: Record<string, number> = $state({});
+// How many unpinned members each group (by id) or agent (by assistant key)
+// shows before its show-more footer. Page-load state, like the done paging.
+let containerVisibleLimits: Record<string, number> = $state({});
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
@@ -355,6 +358,24 @@ export function toggleAgent(threadId: string): void {
 export function forgetAgentSidebarState(threadId: string): void {
   setAgentExpanded(threadId, true);
   closeAgentDone(threadId);
+  forgetContainerVisibleLimit(threadId);
+}
+
+/** How many unpinned members a group or an agent row shows; grows by reveals. */
+export function getContainerVisibleLimit(containerKey: string): number {
+  return containerVisibleLimits[containerKey] ?? THREAD_PREVIEW_LIMIT;
+}
+
+export function setContainerVisibleLimit(containerKey: string, limit: number): void {
+  if (getContainerVisibleLimit(containerKey) === limit) return;
+  containerVisibleLimits = { ...containerVisibleLimits, [containerKey]: limit };
+}
+
+/** Drops a container's paging: a deleted group, or an agent that left the list. */
+export function forgetContainerVisibleLimit(containerKey: string): void {
+  if (!(containerKey in containerVisibleLimits)) return;
+  const { [containerKey]: _dropped, ...rest } = containerVisibleLimits;
+  containerVisibleLimits = rest;
 }
 
 /** The agents whose `N done` footer is open, listing their archived children. */
@@ -461,6 +482,7 @@ export function resetSidebarForTest(): void {
   collapsedAgents = new Set();
   expandedDoneAgents = new Set();
   doneVisibleLimits = {};
+  containerVisibleLimits = {};
   threadListVisibleLimits = {};
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
   removeLocalStorageKey(SORT_MODE_KEY);

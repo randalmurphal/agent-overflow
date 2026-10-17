@@ -1,7 +1,8 @@
 <script lang="ts">
   // The line under a thread row naming its worktree and, on a page with
-  // several computers, the machine it is on. Nothing renders when the
-  // thread has neither.
+  // several computers, the machine it is on, and the thread's project when
+  // it renders under an agent in another project's list. Nothing renders
+  // when the thread has none of them.
   import type { Thread } from '../../types/models';
   import {
     attachedBackendEntry,
@@ -15,15 +16,18 @@
   import { pathBasename } from '../../utils/pathDisplay';
   import MonitorIcon from '@lucide/svelte/icons/monitor';
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
+  import Folder from '@lucide/svelte/icons/folder';
   import Icon from '../primitives/Icon.svelte';
 
   interface Props {
     thread: Thread;
     /** Left edge of the line, in px: the row's padding plus a small offset. */
     indentPx: number;
+    /** The thread's project, set only when the list is another project's. */
+    projectName?: string;
   }
 
-  let { thread, indentPx }: Props = $props();
+  let { thread, indentPx, projectName = '' }: Props = $props();
 
   let worktreeName = $derived(pathBasename(thread.worktreePath));
   // Remote-only projects need the same host label as merged projects.
@@ -46,7 +50,7 @@
         ? `Computer: ${machineName}`
         : `Computer: ${machineName}. No browser on this computer.`,
   );
-  let show = $derived(Boolean(thread.worktreePath && worktreeName) || machineName !== '');
+  let show = $derived(Boolean(thread.worktreePath && worktreeName) || machineName !== '' || projectName !== '');
   const rightPaddingPx = 52;
 </script>
 
@@ -54,10 +58,22 @@
   <div
     class="relative -mt-1.5 flex h-3.5 items-center text-[0.625rem] leading-none text-fg-hint"
     style="padding-left: {indentPx}px; padding-right: {rightPaddingPx}px"
-    title={worktreeName ? `Worktree: ${thread.worktreePath}` : machineTitle}
-    aria-label={worktreeName ? `Worktree ${worktreeName}` : `Computer ${machineName}`}
+    title={worktreeName ? `Worktree: ${thread.worktreePath}` : machineName ? machineTitle : `Project: ${projectName}`}
+    aria-label={worktreeName ? `Worktree ${worktreeName}` : machineName ? `Computer ${machineName}` : `Project ${projectName}`}
     data-testid="thread-row-worktree"
   >
+    {#if projectName}
+      <span
+        class="inline-flex min-w-0 max-w-full shrink-0 items-center gap-1 px-1 py-0 text-fg-hint"
+        data-testid="thread-row-project"
+        title={`Project: ${projectName}`}
+      >
+        <Icon icon={Folder} size={10} strokeWidth={1.8} class="shrink-0 opacity-85" />
+        <span class="min-w-0 truncate text-[0.625rem]" data-testid="thread-row-project-name">
+          {projectName}
+        </span>
+      </span>
+    {/if}
     {#if machineName}
       <span
         class="inline-flex min-w-0 max-w-full shrink-0 items-center gap-1 px-1 py-0 text-fg-hint"

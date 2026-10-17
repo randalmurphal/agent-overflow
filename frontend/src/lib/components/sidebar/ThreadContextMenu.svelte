@@ -31,6 +31,7 @@
     deleteThreadAction,
     forkThreadAction,
     transferThreadAction,
+    markAllReadAction,
     markThreadUnreadAction,
     PIN_GROUP_BACK,
     PIN_GROUP_FRONT,
@@ -506,6 +507,15 @@
             <MenuItem
               label="Loops and Watches"
               onSelect={() => void openLoopsAndWatches()}
+            />
+            <MenuItem
+              label="Mark All Read"
+              disabled={operateUngranted}
+              title={ungrantedTitle}
+              onSelect={() => {
+                onClose();
+                void markAllReadAction([thread, ...agentChildren]);
+              }}
             />
             <MenuItem
               label={doneChildren.length > 0 ? `Archive Done Children (${doneChildren.length})` : 'Archive Done Children'}

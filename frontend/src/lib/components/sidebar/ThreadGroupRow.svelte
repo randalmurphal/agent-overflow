@@ -23,6 +23,8 @@
     threadDragPayloadForEvent,
   } from '../../utils/threadDragPayload';
   import { projectHasScope } from '../../transport/entityScopes';
+  import type { ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
+  import type { ThreadStatusPill } from '../../utils/threadStatusPill';
 
   interface Props {
     group: ThreadGroup;
@@ -43,6 +45,11 @@
      * underneath it, but nothing here lights up.
      */
     onDropTargetChange?: (active: boolean, accepts: boolean) => void;
+    /**
+     * The members' bubbled status. A collapsed group shows it as one dot;
+     * expanded, each member shows its own (ruling 33).
+     */
+    status?: { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null;
   }
 
   let {
@@ -52,6 +59,7 @@
     memberThreadIds,
     dropActive = false,
     onDropTargetChange,
+    status = null,
   }: Props = $props();
 
   let rowEl: HTMLDivElement | undefined = $state(undefined);
@@ -275,6 +283,17 @@
     <span class="inline-flex items-center shrink-0 text-fg-subtle" aria-hidden="true" data-testid="thread-group-row-folder">
       <Icon icon={expanded ? FolderOpen : Folder} size={11} strokeWidth={1.75} />
     </span>
+
+    {#if !expanded && status}
+      <span
+        class="w-1.5 h-1.5 rounded-full shrink-0 {status.pill.dotClass} {status.pill.pulse ? 'animate-pulse' : ''}"
+        role="status"
+        aria-label={status.pill.label}
+        title={status.pill.label}
+        data-testid="thread-group-row-status-dot"
+        data-status={status.liveStatus}
+      ></span>
+    {/if}
 
     {#if editing}
       <input

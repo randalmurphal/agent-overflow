@@ -16,8 +16,14 @@ entity stores. `Sidebar.svelte` owns the top-level render boundary;
   own: it uses the group row's geometry, folds the threads it spawned on its
   chevron (`sidebar:collapsedAgents`), and offers no pin or group item. Its
   state line reads `stores/threadWakes.svelte.ts`; its `N done` footer
-  (`AgentDoneFooter.svelte`) reads `stores/agentArchivedChildren.svelte.ts`.
+  (`AgentDoneFooter.svelte`) counts the settled idle children the view folds
+  (`utils/sidebarTreeView.ts`) and reads the archived ones from
+  `stores/agentArchivedChildren.svelte.ts`. Groups and agent rows share one
+  member bound (`boundContainerMembers`, `ContainerShowMore.svelte`).
   Rules: [standing agents](../../../../../docs/specs/standing-agents.md#sidebar).
+- A thread an agent spawned into another project is filed under the agent's
+  project where the sidebar buckets threads (`sidebarBuckets.ts`); the tree
+  builder still runs per project.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
   directory. Reconcile rows from each RPC response.
 - Inline rename stays in the owning row. Context menus delegate through the

@@ -181,8 +181,10 @@ describe('standing agent rows', () => {
   function agentThreads(): Thread[] {
     const threads = [
       thread('agent', { agentId: 'agent', archivedChildCount: 2, updatedAt: 5 }),
-      thread('worker-a', { spawnedByThreadId: 'agent', updatedAt: 4 }),
-      thread('worker-b', { spawnedByThreadId: 'agent', updatedAt: 3 }),
+      // Pinned, so neither folds into the done footer (a settled idle
+      // worker would) and neither shows a status dot.
+      thread('worker-a', { spawnedByThreadId: 'agent', updatedAt: 4, pinnedAt: 1 }),
+      thread('worker-b', { spawnedByThreadId: 'agent', updatedAt: 3, pinnedAt: 1 }),
       thread('loose', { pinnedAt: 1 }),
     ];
     replaceAllThreads(threads);
@@ -202,7 +204,7 @@ describe('standing agent rows', () => {
     expect(agent.querySelector('[data-testid="thread-row-agent-icon"]')).not.toBeNull();
     const members = view.container.querySelectorAll('[data-agent-member] [data-sidebar-thread-id]');
     expect(Array.from(members, (el) => (el as HTMLElement).dataset.sidebarThreadId)).toEqual(['worker-a', 'worker-b']);
-    // Both workers are pinned nowhere and the loose pinned thread follows the agent block.
+    // The loose pinned thread follows the agent block.
     const order = Array.from(view.container.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]'), (el) => el.dataset.sidebarThreadId);
     expect(order).toEqual(['agent', 'worker-a', 'worker-b', 'loose']);
 
