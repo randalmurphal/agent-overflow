@@ -4,9 +4,8 @@
   // desktop (`strip`), and the right end of the activity rail under
   // compact (`rail`), where it wears the rail's chip box so the row stays
   // the height twin of the composer's reservation spacer.
-  // Hidden until the lifetime usage bucket has data, matching
-  // SystemStatsFooter's hide-until-data approach for a fresh thread with
-  // no settled turns yet. Click opens a popover with the full token/cost
+  // Hidden until the lifetime usage bucket has data: a fresh thread with
+  // no settled turns has no cost to report. Click opens a popover with the full token/cost
   // breakdown; the per-model split is fetched lazily on first open since
   // the closed chip never needs it.
   import type { ThreadPane } from '../../stores/thread.svelte';

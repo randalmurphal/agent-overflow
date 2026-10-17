@@ -10,7 +10,9 @@
   const multiple = $derived(hasMultipleBackends());
 </script>
 
-{#if multiple || rows.some((row) => row.stats)}
+<!-- Mounted with its waiting rows before the first sample so the footer
+     holds its height and the sidebar above it does not shift. -->
+{#if multiple || rows.length > 0}
   <div class="border-t border-border-subtle px-3 py-2 shrink-0 flex flex-col gap-2 text-[0.6875rem] leading-tight text-fg-muted" data-testid="sidebar-system-stats">
     {#if multiple}<TelemetryComputerPicker kind="system" />{/if}
     {#each rows as row (row.key)}

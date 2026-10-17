@@ -8,7 +8,9 @@
   // keep Sidebar.svelte layout-only); clicking the period label cycles
   // the period instead, via stopPropagation — same nested
   // button-inside-clickable-row idiom as ThreadRow's chevron.
-  // Hidden entirely when the selected period has no usage at all.
+  // The row is reserved while a reply is pending so the sidebar above it
+  // does not shift when usage arrives. A reply with no usage collapses
+  // it, and it stays collapsed while a later query is pending.
 
   import { UsageQuery } from '../../stores/bindings';
   import { getUsageRefreshVersion } from '../../stores/usageRefresh.svelte';
@@ -56,6 +58,13 @@
       }),
   );
 
+  // Set from each reply; a pending query keeps the last answer's state.
+  let collapsed = $state(false);
+  $effect(() => {
+    if (stats.buckets !== null && stats.pending.length === 0) collapsed = rows.length === 0 && stats.unavailable.length === 0;
+  });
+  const waiting = $derived(stats.buckets === null || stats.loading || stats.pending.length > 0);
+
   let modalOpen = $state(false);
 
   function openModal(): void {
@@ -75,7 +84,7 @@
   }
 </script>
 
-{#if rows.length > 0 || stats.unavailable.length > 0 || telemetrySelection('usage') !== null}
+{#if rows.length > 0 || stats.unavailable.length > 0 || telemetrySelection('usage') !== null || (waiting && !collapsed)}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="border-t border-border-subtle px-3 py-1.5 shrink-0 flex items-center justify-between gap-3 text-[0.6875rem] leading-tight text-fg-muted cursor-pointer hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -96,7 +105,7 @@
         <span class="truncate text-fg-subtle" title={`Unavailable: ${stats.unavailable.join(', ')}`}>{rows.length > 0 ? 'Partial usage' : 'Usage unavailable'}</span>
       {/if}
       {#if rows.length === 0 && stats.unavailable.length === 0}
-        <span class="text-fg-subtle" data-testid="usage-footer-empty">{stats.loading || stats.pending.length > 0 ? 'Loading usage…' : 'No usage in this selection'}</span>
+        <span class="text-fg-subtle" data-testid="usage-footer-empty">{waiting ? 'Loading usage…' : 'No usage in this selection'}</span>
       {/if}
       {#each rows as row (row.provider)}
         <span class="grid grid-cols-[3.5rem_1fr] items-center gap-2" data-testid="usage-footer-row">

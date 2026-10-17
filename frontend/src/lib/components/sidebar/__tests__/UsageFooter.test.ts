@@ -7,7 +7,7 @@ import UsageFooter from '../UsageFooter.svelte';
 import '../../usage/UsageModal.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { UsageBucket } from '../../../stores/bindings';
-import { getUsagePeriod, resetUsagePeriodForTest } from '../../../stores/usagePeriod.svelte';
+import { cycleUsagePeriod, getUsagePeriod, resetUsagePeriodForTest } from '../../../stores/usagePeriod.svelte';
 import { resetUsageRefreshForTest } from '../../../stores/usageRefresh.svelte';
 
 const STORAGE_KEY = 'agent-overflow:usage:period';
@@ -89,6 +89,19 @@ describe('<UsageFooter>', () => {
     await waitFor(() => {
       expect(queryByTestId('sidebar-usage-footer')).toBeNull();
     });
+  });
+
+  it('stays collapsed while a later query is pending, then shows its usage', async () => {
+    setBindingMock('GetUsageStats', async () => []);
+    const { queryByTestId, findAllByTestId } = render(UsageFooter);
+    await waitFor(() => expect(queryByTestId('sidebar-usage-footer')).toBeNull());
+    let resolve!: (rows: UsageBucket[]) => void;
+    setBindingMock('GetUsageStats', () => new Promise<UsageBucket[]>((done) => { resolve = done; }));
+    cycleUsagePeriod();
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    expect(queryByTestId('sidebar-usage-footer')).toBeNull();
+    resolve([providerBucket('claude', { outputTokens: 100, costUsd: 1 })]);
+    expect(await findAllByTestId('usage-footer-row')).toHaveLength(1);
   });
 
   it('clicking the period label cycles + persists the period without opening the modal', async () => {
