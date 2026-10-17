@@ -34,8 +34,10 @@ type SpawnCall struct {
 	// ungrouped.
 	Group string `json:"group,omitempty"`
 	// Placement is nested, grouped or standalone: where the new thread's
-	// sidebar row appears when a standing agent spawns it. The tools layer
-	// resolves it: nested by default, grouped when Group names a group.
+	// sidebar row appears when a standing agent spawns it. Empty when the
+	// call omitted it: the destination resolves it (ResolveSpawnPlacement)
+	// and reads the omission to decide what a fork does with its source's
+	// group.
 	Placement string `json:"placement,omitempty"`
 	// FromThread forks that thread's history at its tail first. The fork
 	// runs on the source thread's computer, in its project and workspace.

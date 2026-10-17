@@ -5,16 +5,17 @@ import (
 	"testing"
 )
 
-// TestSpawnResolvesItsPlacement: nested by default, grouped by a group
-// name, and a contradiction refused before the app hears of it.
+// TestSpawnResolvesItsPlacement: the placement a call names reaches the
+// app as named and an omitted one reaches it empty, for the destination to
+// resolve; a contradiction is refused before the app hears of it.
 func TestSpawnResolvesItsPlacement(t *testing.T) {
 	app := spawnApp()
 	server := New(app)
 	for args, want := range map[string]string{
-		`{"prompt":"go"}`:                                       PlacementNested,
+		`{"prompt":"go"}`:                                       "",
 		`{"prompt":"go","placement":"nested"}`:                  PlacementNested,
 		`{"prompt":"go","placement":"standalone"}`:              PlacementStandalone,
-		`{"prompt":"go","group":"Sweep"}`:                       PlacementGrouped,
+		`{"prompt":"go","group":"Sweep"}`:                       "",
 		`{"prompt":"go","group":"Sweep","placement":"grouped"}`: PlacementGrouped,
 	} {
 		before := len(app.spawns)

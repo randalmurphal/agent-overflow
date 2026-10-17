@@ -123,11 +123,14 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	if utf8.RuneCountInString(call.Group) > MaxTitleRunes {
 		return nil, invalidf("group must be at most %d characters.", MaxTitleRunes)
 	}
-	placement, err := ResolveSpawnPlacement(trim(args.Placement), call.Group)
-	if err != nil {
+	// Checked here and resolved where the thread is made: an omitted
+	// placement travels empty, because the destination decides the default
+	// by who is asking (a standing agent's fork leaves its source's group,
+	// any other caller's keeps it).
+	call.Placement = trim(args.Placement)
+	if _, err := ResolveSpawnPlacement(call.Placement, call.Group); err != nil {
 		return nil, err
 	}
-	call.Placement = placement
 	if call.Mode != "" && !slices.Contains([]string{"chat", "plan"}, call.Mode) {
 		return nil, invalidf("mode must be chat or plan. The permission level is runtime_mode, a separate parameter.")
 	}
@@ -430,8 +433,10 @@ func firstNonEmpty(values ...string) string {
 
 // ResolveSpawnPlacement resolves a spawn's placement: nested by default,
 // grouped when group names a group, and refused when the two contradict.
-// The app runs it again on the call it receives, so a caller that skips the
-// tools layer cannot spawn with a contradiction.
+// The tools layer runs it to refuse a contradiction before a request
+// exists; the destination runs it on the call it receives to resolve the
+// placement, so a caller that skips the tools layer cannot spawn with a
+// contradiction either.
 func ResolveSpawnPlacement(placement, group string) (string, error) {
 	named := &group
 	if group == "" {
