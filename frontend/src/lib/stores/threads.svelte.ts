@@ -443,9 +443,9 @@ export function updateThreadPinState(
 }
 
 /**
- * Reconcile the rows SetThreadGroup returned — every thread the call
- * touched. Only the three fields that RPC
- * owns are patched: a full row swap would drag lastReadAt /
+ * Reconcile the rows SetThreadGroup or SetThreadPlacement returned: every
+ * thread the call touched. Only the four fields those RPCs
+ * own are patched: a full row swap would drag lastReadAt /
  * latestTurnCompletedAt backwards past a local read-mark the debounced
  * persist has not landed yet (the reason mergeThreadRowWithLocal exists).
  * The backend also emits thread:updated `replace` for each row, which is
@@ -463,7 +463,7 @@ export function updateThreadGroupState(
   catalogWriter.mutate(rows.map((row) => threadBackend(row.id)), (current) => current.map((t) => {
     const row = byId.get(t.id);
     if (row === undefined) return t;
-    return { ...t, groupId: row.groupId, pinnedAt: row.pinnedAt, pinGroup: row.pinGroup };
+    return { ...t, groupId: row.groupId, placement: row.placement, pinnedAt: row.pinnedAt, pinGroup: row.pinGroup };
   }));
 }
 
@@ -478,14 +478,14 @@ export function clearThreadGroupMembership(groupId: string): void {
   // Empty placeholders have no catalog row but still carry the group intent.
   for (const pane of getAllPanes().values()) {
     if (pane.thread?.groupId === groupId) {
-      pane.replaceThread({ ...pane.thread, groupId: undefined, pinnedAt: undefined, pinGroup: undefined });
+      pane.replaceThread({ ...pane.thread, groupId: undefined, placement: 'standalone', pinnedAt: undefined, pinGroup: undefined });
     }
   }
   // A group's members live on the group's computer; a read of it in flight
   // may carry members this client has not listed yet.
   const backends = [threadGroupBackend(groupId), ...threads.filter((t) => t.groupId === groupId).map((t) => threadBackend(t.id))];
   catalogWriter.mutate(backends, (rows) => rows.map((t) => t.groupId === groupId
-    ? { ...t, groupId: undefined, pinnedAt: undefined, pinGroup: undefined }
+    ? { ...t, groupId: undefined, placement: 'standalone', pinnedAt: undefined, pinGroup: undefined }
     : t));
 }
 

@@ -1853,3 +1853,50 @@ func TestThreadToolsLateCollectionStatesTheAnswersAge(t *testing.T) {
 		t.Errorf("wake body = %q, want the answer itself", wake.Message)
 	}
 }
+
+// A fork of a grouped thread on the paired computer is made there, and the
+// source forwards an omitted placement as omitted: the destination keeps a
+// plain caller's fork in its source's group and nests an assistant's.
+func TestThreadToolsReachForkKeepsOrLeavesItsSourcesGroupByCaller(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	for _, tc := range []struct {
+		name          string
+		assistant     bool
+		wantPlacement string
+		wantGroup     bool
+	}{
+		{name: "plain caller", wantPlacement: store.PlacementGrouped, wantGroup: true},
+		{name: "assistant", assistant: true, wantPlacement: store.PlacementStandalone},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := newReachPair(t)
+			if tc.assistant {
+				testAssistant(t, p.source, p.caller.ID)
+			}
+			installMockClaudeReplies(t, p.dest, "on it")
+			source := forkableThreadOn(t, p.dest, "reach-fork-source")
+			group, err := p.dest.store.CreateThreadGroup(source.ProjectID, "Sweep")
+			if err != nil {
+				t.Fatalf("CreateThreadGroup: %v", err)
+			}
+			if _, err := p.dest.store.SetThreadGroup([]string{source.ID}, group.ID); err != nil {
+				t.Fatalf("SetThreadGroup: %v", err)
+			}
+			result := p.call(t, "thread_spawn", `{"from_thread":"`+source.ID+`","prompt":"carry on"}`)
+			threadID, _ := result["thread_id"].(string)
+			fork, err := p.dest.store.GetThread(threadID)
+			if err != nil {
+				t.Fatalf("the fork on the destination (%v): %v", result, err)
+			}
+			wantGroup := ""
+			if tc.wantGroup {
+				wantGroup = group.ID
+			}
+			if fork.Placement != tc.wantPlacement || fork.GroupID != wantGroup {
+				t.Errorf("fork = %s in group %q, want %s in group %q", fork.Placement, fork.GroupID, tc.wantPlacement, wantGroup)
+			}
+		})
+	}
+}

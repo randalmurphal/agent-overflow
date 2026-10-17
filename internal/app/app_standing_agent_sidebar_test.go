@@ -17,13 +17,13 @@ import (
 )
 
 // The sidebar agent row's backend (docs/specs/standing-agents.md, "Sidebar
-// agent row"): a thread row names the agent that spawned it, promotion
-// takes the agent and its spawned threads out of their groups, a group move
-// refuses them afterwards, and what moves an agent's archived-child count
+// agent row"): a thread row names the agent that spawned it, a group move
+// refuses the agent's own thread but not the threads it spawned, which take
+// any placement (ruling 36), and what moves an agent's archived-child count
 // re-broadcasts the agent's row.
 
-// recordSpawn is the row a finished thread_spawn leaves: a local spawn
-// request from spawner naming child.
+// recordSpawn is what a finished thread_spawn with the default placement
+// leaves: a local spawn request from spawner naming child, nested under it.
 func recordSpawn(t *testing.T, app *App, token, spawner, child string) {
 	t.Helper()
 	if err := app.store.InsertThreadRequest(store.ThreadRequest{
@@ -33,6 +33,9 @@ func recordSpawn(t *testing.T, app *App, token, spawner, child string) {
 		SettledAt: 2, CreatedAt: 1, UpdatedAt: 2,
 	}); err != nil {
 		t.Fatalf("record spawn %s: %v", token, err)
+	}
+	if _, err := app.store.SetThreadPlacement([]string{child}, store.PlacementNested); err != nil {
+		t.Fatalf("nest %s: %v", child, err)
 	}
 }
 
@@ -48,7 +51,7 @@ func fullFrameFor(frames []triage.ThreadUpdateEvent, threadID string) *store.Thr
 	return found
 }
 
-func TestGroupMovesRefuseAStandingAgentAndItsSpawnedThreads(t *testing.T) {
+func TestGroupMovesRefuseAStandingAgentButPlaceItsSpawnedThreads(t *testing.T) {
 	t.Parallel()
 	f := newOrganizeFixture(t)
 	agent := f.thread(t, "agent")
@@ -61,33 +64,76 @@ func TestGroupMovesRefuseAStandingAgentAndItsSpawnedThreads(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := f.app.store.SetThreadGroup([]string{agent.ID}, group.ID); !errors.Is(err, store.ErrStandingAgentGrouped) {
+	if _, err := f.app.SetThreadGroup([]string{agent.ID}, group.ID); !errors.Is(err, store.ErrStandingAgentGrouped) {
 		t.Errorf("group the agent: %v", err)
 	}
-	// One refused id fails the whole move: the plain thread stays put.
-	if _, err := f.app.store.SetThreadGroup([]string{plain.ID, child.ID}, group.ID); !errors.Is(err, store.ErrSpawnedChildGrouped) {
-		t.Errorf("group the spawned thread: %v", err)
+	moved, err := f.app.SetThreadGroup([]string{plain.ID, child.ID}, group.ID)
+	if err != nil || len(moved) != 2 {
+		t.Fatalf("group the plain and the spawned thread = %+v, %v", moved, err)
 	}
-	if got := f.reload(t, plain.ID); got.GroupID != "" {
-		t.Errorf("the plain thread moved in a refused call: %+v", got)
-	}
-	// Leaving a group is never refused.
-	if _, err := f.app.store.SetThreadGroup([]string{agent.ID, child.ID}, ""); err != nil {
-		t.Errorf("ungroup: %v", err)
+	if got := f.reload(t, child.ID); got.Placement != store.PlacementGrouped || got.GroupID != group.ID {
+		t.Errorf("grouped child = %s in %q", got.Placement, got.GroupID)
 	}
 
-	report, err := f.adapter.UpdateThreads(t.Context(), caller("someone"), threadtools.UpdateCall{
-		ThreadIDs: []string{child.ID}, Group: stringPtr("Release"),
-	})
-	if err != nil {
-		t.Fatalf("UpdateThreads: %v", err)
+	update := func(ids []string, call threadtools.UpdateCall) threadtools.UpdateReport {
+		t.Helper()
+		call.ThreadIDs = ids
+		report, err := f.adapter.UpdateThreads(t.Context(), caller("someone"), call)
+		if err != nil {
+			t.Fatalf("UpdateThreads %+v: %v", call, err)
+		}
+		return report
 	}
-	if row := updateResultFor(t, report, child.ID); row.Updated || !strings.Contains(row.Error, "nests under the assistant") {
-		t.Errorf("tool group move of a spawned thread = %+v, want the refusal", row)
+	placementIs := func(step, id, want string) {
+		t.Helper()
+		if got := f.reload(t, id); got.Placement != want {
+			t.Errorf("%s: %s placement = %s, want %s", step, id, got.Placement, want)
+		}
 	}
-	if got := f.reload(t, child.ID); got.GroupID != "" {
-		t.Errorf("the spawned thread joined a group: %+v", got)
+	f.events.reset()
+	report := update([]string{child.ID}, threadtools.UpdateCall{Placement: stringPtr(store.PlacementNested)})
+	if row := updateResultFor(t, report, child.ID); !row.Updated {
+		t.Fatalf("tool nest = %+v", row)
 	}
+	placementIs("tool nest", child.ID, store.PlacementNested)
+	if got := fullFrameFor(f.threadFrames(t), child.ID); got == nil || got.Placement != store.PlacementNested || got.GroupID != "" {
+		t.Errorf("tool nest frame = %+v", got)
+	}
+	update([]string{child.ID}, threadtools.UpdateCall{Placement: stringPtr(store.PlacementStandalone)})
+	placementIs("tool standalone", child.ID, store.PlacementStandalone)
+	update([]string{child.ID}, threadtools.UpdateCall{Group: stringPtr("Release")})
+	placementIs("tool group", child.ID, store.PlacementGrouped)
+	// Ungrouping leaves the child standalone; grouped with no group keeps
+	// a grouped thread where it is.
+	update([]string{child.ID}, threadtools.UpdateCall{Placement: stringPtr(store.PlacementGrouped)})
+	placementIs("tool grouped in place", child.ID, store.PlacementGrouped)
+	update([]string{child.ID}, threadtools.UpdateCall{Group: stringPtr("")})
+	placementIs("tool ungroup", child.ID, store.PlacementStandalone)
+
+	// Per id: nested for a thread nothing spawned, grouped with no group
+	// for an ungrouped one, any placement for the assistant's own thread.
+	report = update([]string{plain.ID, agent.ID, child.ID}, threadtools.UpdateCall{Placement: stringPtr(store.PlacementNested)})
+	if row := updateResultFor(t, report, plain.ID); row.Updated || !strings.Contains(row.Error, "No thread on this computer spawned that thread") {
+		t.Errorf("nest a plain thread = %+v", row)
+	}
+	if row := updateResultFor(t, report, agent.ID); row.Updated || !strings.Contains(row.Error, "takes no placement") {
+		t.Errorf("nest the agent = %+v", row)
+	}
+	if row := updateResultFor(t, report, child.ID); !row.Updated {
+		t.Errorf("nest the child beside the refusals = %+v", row)
+	}
+	placementIs("refused nest", plain.ID, store.PlacementGrouped)
+	report = update([]string{child.ID}, threadtools.UpdateCall{Placement: stringPtr(store.PlacementGrouped)})
+	if row := updateResultFor(t, report, child.ID); row.Updated || !strings.Contains(row.Error, "needs group") {
+		t.Errorf("grouped without a group on a nested thread = %+v", row)
+	}
+	// A patch that contradicts itself is refused for the whole call.
+	if _, err := f.adapter.UpdateThreads(t.Context(), caller("someone"), threadtools.UpdateCall{
+		ThreadIDs: []string{child.ID}, Group: stringPtr("Release"), Placement: stringPtr(store.PlacementStandalone),
+	}); err == nil || !strings.Contains(err.Error(), "disagree") {
+		t.Errorf("group with standalone = %v, want the whole call refused", err)
+	}
+	placementIs("contradiction", child.ID, store.PlacementNested)
 }
 
 func TestASpawnedThreadsArchiveMovesItsAgentsRow(t *testing.T) {
@@ -134,6 +180,25 @@ func TestASpawnedThreadsArchiveMovesItsAgentsRow(t *testing.T) {
 		t.Fatalf("tool archive = %+v", row)
 	}
 	agentCount("tool archive", 1)
+
+	// An archived child counts only while nested: a placement change moves
+	// the count and re-broadcasts the agent's row.
+	f.events.reset()
+	if _, err := f.app.SetThreadPlacement([]string{child.ID}, store.PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
+	agentCount("standalone", 0)
+	f.events.reset()
+	report, err = f.adapter.UpdateThreads(t.Context(), caller("someone"), threadtools.UpdateCall{
+		ThreadIDs: []string{child.ID}, Placement: stringPtr(store.PlacementNested),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row := updateResultFor(t, report, child.ID); !row.Updated {
+		t.Fatalf("tool nest = %+v", row)
+	}
+	agentCount("tool nest", 1)
 
 	f.events.reset()
 	if err := f.app.DeleteThread(child.ID); err != nil {
@@ -256,15 +321,54 @@ func TestASpawnBroadcastsItsThreadNamingTheSpawner(t *testing.T) {
 		t.Fatalf("no full frame of the spawned thread named its spawner")
 	}
 
-	// A standing agent's spawned threads nest under its row, so a group
-	// in its spawn is refused before any thread exists.
+	if spawned.Placement != store.PlacementNested {
+		t.Errorf("a spawn with no placement = %s, want nested", spawned.Placement)
+	}
+
+	// A standing agent places what it spawns: grouped by naming a group,
+	// standalone on request. The spawn record names it either way.
 	testAssistant(t, f.app, f.caller.ID)
+	for _, tc := range []struct {
+		call      threadtools.SpawnCall
+		placement string
+		group     string
+	}{
+		{threadtools.SpawnCall{Prompt: "start", Group: "Sweep"}, store.PlacementGrouped, "Sweep"},
+		{threadtools.SpawnCall{Prompt: "start", Placement: threadtools.PlacementStandalone}, store.PlacementStandalone, ""},
+		{threadtools.SpawnCall{Prompt: "start", Placement: threadtools.PlacementNested}, store.PlacementNested, ""},
+	} {
+		ack, err := f.adapter().Spawn(context.Background(), f.callerIdentity(), tc.call)
+		if err != nil {
+			t.Fatalf("spawn %+v: %v", tc.call, err)
+		}
+		row, err := f.app.store.GetThread(ack.ThreadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.Placement != tc.placement || row.SpawnedByThreadID != f.caller.ID || !row.SpawnedByAgent {
+			t.Errorf("spawn %+v = placement %s spawnedBy %q agent %v", tc.call, row.Placement, row.SpawnedByThreadID, row.SpawnedByAgent)
+		}
+		if tc.group != "" {
+			group, err := f.app.store.GetThreadGroup(row.GroupID)
+			if err != nil || group.Name != tc.group {
+				t.Errorf("spawn %+v group = %+v, %v", tc.call, group, err)
+			}
+		}
+	}
+	// A contradiction is refused before any thread exists, inside the API
+	// as well as in the tools layer.
 	before, err := f.app.store.ListThreads()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.adapter().Spawn(context.Background(), f.callerIdentity(), threadtools.SpawnCall{Prompt: "start", Group: "Sweep"}); err == nil || !strings.Contains(err.Error(), "Omit group") {
-		t.Fatalf("grouped spawn by a standing agent: %v", err)
+	requestsBefore, err := f.app.store.ListThreadRequestsByCaller(f.caller.ID, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.adapter().Spawn(context.Background(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "start", Group: "Sweep", Placement: threadtools.PlacementStandalone,
+	}); err == nil {
+		t.Fatal("a spawn with group and standalone was accepted")
 	}
 	after, err := f.app.store.ListThreads()
 	if err != nil {
@@ -272,6 +376,9 @@ func TestASpawnBroadcastsItsThreadNamingTheSpawner(t *testing.T) {
 	}
 	if len(after) != len(before) {
 		t.Fatalf("a refused spawn left a thread behind: %d rows, had %d", len(after), len(before))
+	}
+	if requestsAfter, err := f.app.store.ListThreadRequestsByCaller(f.caller.ID, 100, 0); err != nil || len(requestsAfter) != len(requestsBefore) {
+		t.Fatalf("a refused spawn left a request behind: %d rows, had %d (%v)", len(requestsAfter), len(requestsBefore), err)
 	}
 }
 

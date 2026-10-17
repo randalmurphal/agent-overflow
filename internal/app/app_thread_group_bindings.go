@@ -85,9 +85,7 @@ func (a *App) DeleteThreadGroup(id string) error {
 	if err != nil {
 		return err
 	}
-	for _, thread := range members {
-		a.announceThread(triage.ThreadActionFull, thread.ID)
-	}
+	a.announceMovedThreads(members)
 	a.emitThreadGroup("delete", group)
 	return nil
 }
@@ -107,8 +105,37 @@ func (a *App) SetThreadGroup(threadIDs []string, groupID string) ([]store.Thread
 	if err != nil {
 		return nil, err
 	}
-	for _, thread := range moved {
-		a.announceThread(triage.ThreadActionFull, thread.ID)
-	}
+	a.announceMovedThreads(moved)
 	return moved, nil
+}
+
+// SetThreadPlacement makes threads nested under the standing agent that
+// spawned them or standalone in their project, out of any group they were
+// in; a move into a group is SetThreadGroup. It returns every row the call
+// touched and emits one thread:updated "full" frame per row
+// (docs/specs/standing-agents.md ruling 36). Nested is refused for a thread
+// nothing on this computer spawned, and any placement for an assistant's
+// own thread.
+//
+//ao:scope threads:operate
+//ao:route home
+func (a *App) SetThreadPlacement(threadIDs []string, placement string) ([]store.Thread, error) {
+	placed, err := a.threadApplication().SetPlacement(threadIDs, placement)
+	if err != nil {
+		return nil, err
+	}
+	a.announceMovedThreads(placed)
+	return placed, nil
+}
+
+// announceMovedThreads announces each row a group or placement move wrote,
+// and the agent row of each archived one: an archived child counts in its
+// agent's done footer only while it is nested.
+func (a *App) announceMovedThreads(rows []store.Thread) {
+	for _, thread := range rows {
+		a.announceThread(triage.ThreadActionFull, thread.ID)
+		if thread.Archived {
+			a.broadcastSpawnerRow(thread)
+		}
+	}
 }

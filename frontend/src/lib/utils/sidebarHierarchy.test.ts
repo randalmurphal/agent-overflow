@@ -180,6 +180,21 @@ describe('container bound', () => {
 });
 
 describe('collapsed agent count', () => {
+  // Ruling 36: a grouped or standalone child is not the agent's, so it is
+  // neither a live child nor a folded one, whatever its state.
+  it('counts nested children only, live and done', () => {
+    const node = agentNode([
+      agent,
+      child('nested-live', unread),
+      child('nested-done'),
+      child('standalone-live', { ...unread, placement: 'standalone' }),
+      child('standalone-done', { placement: 'standalone' }),
+      child('grouped-done', { placement: 'grouped', groupId: 'g1' }),
+    ]);
+    expect(agentLiveChildCount(node, undefined, null)).toBe(1);
+    expect(agentDoneCount(node, undefined, null)).toBe(1);
+  });
+
   it('counts the live children, not the folded ones', () => {
     const node = agentNode([agent, child('u1', unread), child('u2', unread), child('s1'), child('s2')]);
     expect(agentLiveChildCount(node, undefined, null)).toBe(2);
@@ -360,6 +375,21 @@ describe('cross-project children', () => {
       ...base, threads: [home, away], filterDevices: true, threadVisible: (t) => t.id !== 'agent',
     });
     expect(ids(filtered.threadsByProject.get('other'))).toEqual(['away']);
+  });
+
+  it('leaves a grouped or standalone child in its own project, and its activity there', () => {
+    const standalone = { ...away, id: 'standalone', placement: 'standalone' as const };
+    const grouped = { ...away, id: 'grouped', placement: 'grouped' as const, groupId: 'g-other' };
+    const { threadsByProject } = bucketSidebarThreads({ ...base, threads: [home, away, standalone, grouped] });
+    expect(ids(threadsByProject.get('home'))).toEqual(['agent', 'away']);
+    expect(ids(threadsByProject.get('other'))).toEqual(['standalone', 'grouped']);
+    for (const thread of [standalone, grouped]) {
+      expect(sidebarNestingAgent(thread, {
+        threadById: (id) => (id === home.id ? home : undefined),
+        currentThreadIdOf: () => home.id,
+        threadVisible: () => true,
+      }), thread.id).toBeUndefined();
+    }
   });
 
   it('applies search after the move', () => {

@@ -24,15 +24,24 @@ import (
 // thread when from_thread names one, a fresh thread otherwise. A group the
 // call names is joined once the thread exists, through the organize patch
 // the sidebar's own grouping uses, so the group is created in the NEW
-// thread's project: a fork's source project, or the destination's.
+// thread's project: a fork's source project, or the destination's. The
+// spawn's placement wins over the group a fork inherits from its source:
+// a fork spawned nested or standalone leaves that group (standalone), and
+// the naming write then nests a nested one. keepSourceGroup is a fork the
+// call did not place, made by a thread that is not a standing agent: it
+// stays in its source's group.
 func (t threadToolsApp) createSpawnedThread(
-	ctx context.Context, call threadtools.SpawnCall, create CreateThreadOptions,
+	ctx context.Context, call threadtools.SpawnCall, create CreateThreadOptions, keepSourceGroup bool,
 ) (store.Thread, error) {
 	thread, err := t.createSpawnedThreadUngrouped(ctx, call, create)
-	if err != nil || call.Group == "" {
+	if err != nil || (call.Group == "" && (thread.GroupID == "" || keepSourceGroup)) {
 		return thread, err
 	}
 	group := call.Group
+	what := fmt.Sprintf("join group %q", group)
+	if group == "" {
+		what = "leave the group its source is in"
+	}
 	applied, err := t.app.applyThreadOrganizePatch(ctx, thread.ID, threadapp.OrganizePatch{Group: &group})
 	if err == nil {
 		return applied.Thread, nil
@@ -43,11 +52,11 @@ func (t threadToolsApp) createSpawnedThread(
 	if deleteErr := t.app.DeleteThread(thread.ID); deleteErr != nil {
 		log.Printf("thread tools: delete spawned thread %s after its group patch failed: %v", thread.ID, deleteErr)
 		return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
-			"Thread %s was created but could not join group %q (%v), and removing it failed too. It is on this computer, ungrouped.",
-			thread.ID, group, err), errors.Join(err, deleteErr))
+			"Thread %s was created but could not %s (%v), and removing it failed too. It is on this computer.",
+			thread.ID, what, err), errors.Join(err, deleteErr))
 	}
 	return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
-		"That spawn could not join group %q: %v. No thread was left behind; make the request again.", group, err), err)
+		"That spawn could not %s: %v. No thread was left behind; make the request again.", what, err), err)
 }
 
 func (t threadToolsApp) createSpawnedThreadUngrouped(

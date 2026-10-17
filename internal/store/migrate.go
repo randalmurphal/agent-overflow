@@ -1751,6 +1751,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: ledgerIndexesMigrationVersion, Name: "ledger_indexes", SQL: ledgerIndexesV156SQL, Rebuild: true, Check: refusePreSyncObject("index", "idx_thread_requests_caller_settled")},
 	{Version: wakeItemsMigrationVersion, Name: "wake_items", SQL: wakeItemsV157SQL, Fix: recordConfirmedWakeItems},
 	{Version: agentTreeMarksMigrationVersion, Name: "agent_tree_marks", SQL: agentTreeMarksV158SQL, Fix: fillAgentTreeMarks, Check: refusePreSyncColumn("thread_requests", "open_below_0")},
+	{Version: spawnPlacementMigrationVersion, Name: "spawn_placement", SQL: spawnPlacementV159SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

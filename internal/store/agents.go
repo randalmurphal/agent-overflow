@@ -354,6 +354,11 @@ func (s *Store) HandOffAssistant(oldThreadID, newThreadID string, now int64) (ha
 		oldThreadID, agent.ID, now); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: record the old thread: %w", action, err)
 	}
+	// The old thread now nests under the agent row as its past thread, as
+	// it did before placement existed.
+	if _, err := tx.Exec(`UPDATE threads SET placement = 'nested' WHERE id = ? AND group_id IS NULL`, oldThreadID); err != nil {
+		return AssistantHandOff{}, fmt.Errorf("%s: nest the old thread: %w", action, err)
+	}
 	handOff.Agent = agent
 	if handOff.MovedWakeIDs, err = queryIDs(tx, `UPDATE agent_wakes SET thread_id = ?
 		WHERE thread_id = ? AND state IN ('armed','running') RETURNING id`, newThreadID, oldThreadID); err != nil {

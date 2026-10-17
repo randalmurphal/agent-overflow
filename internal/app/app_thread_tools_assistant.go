@@ -55,7 +55,7 @@ func (t threadToolsApp) NewAssistant(ctx context.Context, caller threadtools.Cal
 		Kind:           store.ThreadRequestSpawn,
 		TargetThreadID: thread.ID,
 		Notify:         true,
-	}, nil)
+	}, nil, false)
 	if err == nil {
 		err = t.dispatchRequest(ctx, origin, token, store.ThreadRequestSpawn, thread.ID, prompt, true)
 	}

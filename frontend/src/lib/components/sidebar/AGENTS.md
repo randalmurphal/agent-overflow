@@ -7,8 +7,8 @@ entity stores. `Sidebar.svelte` owns the top-level render boundary;
 ## Rows and actions
 
 - A thread renders flat under its project or group, except a standing
-  agent's spawned threads, which nest under the agent row by spawn
-  lineage. Keep one row grammar for normal, grouped and nested entries. Shared controls such as
+  agent's spawned threads whose `placement` is nested, which nest under
+  the agent row by spawn lineage. Keep one row grammar for normal, grouped and nested entries. Shared controls such as
   `ThreadRowPinButton` receive callbacks; they do not own entities.
 - Groups are not pinnable. A group's members pin like top-level threads, but
   never as numbered jump targets.
@@ -21,7 +21,7 @@ entity stores. `Sidebar.svelte` owns the top-level render boundary;
   `stores/agentArchivedChildren.svelte.ts`. Groups and agent rows share one
   member bound (`boundContainerMembers`, `ContainerShowMore.svelte`).
   Rules: [standing agents](../../../../../docs/specs/standing-agents.md#sidebar).
-- A thread an agent spawned into another project is filed under the agent's
+- A nested thread an agent spawned into another project is filed under the agent's
   project where the sidebar buckets threads (`sidebarBuckets.ts`); the tree
   builder still runs per project.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
@@ -41,8 +41,8 @@ because browsers do not expose `DataTransfer` payloads consistently.
 
 Clear the record on every drop target as well as `dragend`; the source row may
 unmount before `dragend`. Groups accept same-project threads not already in the
-group, never one whose payload is `agentBound` (a standing agent or a thread one
-spawned), and stop propagation. An agent row and its member rows are not drop
+group, never one whose payload is `agentBound` (a standing agent's own row),
+and stop propagation. An agent row and its member rows are not drop
 targets. The list background accepts grouped threads for
 ungrouping. Keep hover ownership in `ProjectThreadList` so child rows illuminate
 their group and rejected group targets clear the background affordance.

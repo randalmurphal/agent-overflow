@@ -414,6 +414,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetThreadGroup", ID: 2514763466, Scope: "threads:operate", Route: "home"},                                         // main.App.SetThreadGroup
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", Route: "thread", StepUp: true},               // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate", Route: "thread"},                                    // main.App.SetThreadPinGroup
+	{Name: "SetThreadPlacement", ID: 2294583674, Scope: "threads:operate", Route: "home"},                                     // main.App.SetThreadPlacement
 	{Name: "SetWSLDistroPreference", ID: 3978807241, Scope: "host", Route: "home", StepUp: true},                              // main.App.SetWSLDistroPreference
 	{Name: "SetWebviewGPUVsyncDisabled", ID: 4062584181, Scope: "host", Route: "home", StepUp: true},                          // main.App.SetWebviewGPUVsyncDisabled
 	{Name: "SetWindowBackgroundColor", ID: 3648660014, Scope: "host", Route: "home"},                                          // main.App.SetWindowBackgroundColor

@@ -265,7 +265,7 @@ Mechanism in
   [standing agents](specs/standing-agents.md) rulings 22 to 29,
   "Retention" and "Session loss").
 - Multi-agent discussions are removed. A thread nests under another only
-  as an assistant's spawned child or past thread; every other
+  as an assistant's nested spawned child or past thread; every other
   thread renders flat under its project or group
   ([standing agents](specs/standing-agents.md) ruling 15 and "Sidebar").
 - Agent rows and groups (ruling 2026-10-16,
@@ -283,6 +283,13 @@ Mechanism in
   project on this computer nests under its agent, not in its own
   project's list. Mark All Read on either marks every member in one
   call.
+- A spawned thread's placement (ruling 2026-10-17,
+  [standing agents](specs/standing-agents.md) ruling 36): an assistant
+  puts a thread it spawns under its own row (the default), in a named
+  group, or as a plain row in its project, and it or the user moves it
+  later. Placement is organization only: the spawn record, the reply
+  path and the read mark on an answer do not change. The nesting rules
+  apply to nested threads only. An agent row never joins a group.
 - Thread content search matches title and workspace path only. Searching
   message text server-side (t3-code does) is undecided, not rejected.
 - A fork is a snapshot of its source at the cut. Nothing the source does

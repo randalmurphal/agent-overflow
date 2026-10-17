@@ -353,3 +353,29 @@ func TestASessionEndDropsTheHeldReadMarksOfItsUnfinishedTurns(t *testing.T) {
 		t.Fatal("the session ended and the hold for its unfinished turn is still there")
 	}
 }
+
+// Placement is organization only (ruling 36): a standalone or grouped
+// spawn's answer to its spawner marks it read as a nested one's does.
+func TestAnAnswerMarksAPlacedSpawnRead(t *testing.T) {
+	t.Parallel()
+	for _, call := range []threadtools.SpawnCall{
+		{Prompt: "work", Title: "Standalone worker", Placement: threadtools.PlacementStandalone, WaitSeconds: 20},
+		{Prompt: "work", Title: "Grouped worker", Group: "Sweep", WaitSeconds: 20},
+	} {
+		t.Run(call.Title, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.mockClaude(t, "done")
+			ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), call)
+			if err != nil || ack.State != store.ThreadRequestFinished {
+				t.Fatalf("Spawn = %+v, %v; want a finished request", ack, err)
+			}
+			row := f.awaitThread(t, ack.ThreadID, "the worker marked read", func(row store.Thread) bool {
+				return row.LatestTurnCompletedAt != nil && !threadUnread(row)
+			})
+			if row.Placement == store.PlacementNested {
+				t.Errorf("the worker is nested; the spawn asked for %+v", call)
+			}
+		})
+	}
+}

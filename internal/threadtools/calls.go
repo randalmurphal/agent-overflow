@@ -33,6 +33,12 @@ type SpawnCall struct {
 	// created there when it does not exist. Empty leaves the thread
 	// ungrouped.
 	Group string `json:"group,omitempty"`
+	// Placement is nested, grouped or standalone: where the new thread's
+	// sidebar row appears when a standing agent spawns it. Empty when the
+	// call omitted it: the destination resolves it (ResolveSpawnPlacement)
+	// and reads the omission to decide what a fork does with its source's
+	// group.
+	Placement string `json:"placement,omitempty"`
 	// FromThread forks that thread's history at its tail first. The fork
 	// runs on the source thread's computer, in its project and workspace.
 	FromThread         string `json:"from_thread,omitempty"`
@@ -135,11 +141,14 @@ type UpdateCall struct {
 	// Group is a group name in the thread's own project, created when it
 	// does not exist. A set pointer to an empty string ungroups.
 	Group *string `json:"group,omitempty"`
+	// Placement is nested, grouped or standalone. Grouped needs Group,
+	// unless the thread is in a group already.
+	Placement *string `json:"placement,omitempty"`
 }
 
 // Patched reports whether the patch changes anything.
 func (c UpdateCall) Patched() bool {
-	return c.Title != nil || c.Archived != nil || c.Pin != nil || c.Group != nil
+	return c.Title != nil || c.Archived != nil || c.Pin != nil || c.Group != nil || c.Placement != nil
 }
 
 // GroupCall renames or deletes one group.

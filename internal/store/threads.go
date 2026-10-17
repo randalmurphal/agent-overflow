@@ -71,7 +71,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
     (SELECT MAX(completed_at) FROM turns
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
     archived, last_read_at, pinned_at, pin_group,
-    COALESCE(group_id, ''),
+    COALESCE(group_id, ''), placement,
     worktree_setup_state, import_source,
     created_by_device, created_branch, created_head_commit,
 	EXISTS (
@@ -130,13 +130,13 @@ var threadColumns = `id, COALESCE(project_id, ''),
        JOIN owned_threads AS child ON child.id = thread_requests.target_thread_id
       WHERE thread_requests.caller_thread_id = threads.id
         AND thread_requests.kind = 'spawn' AND thread_requests.target_computer_id = ''
-        AND child.archived = 1
+        AND child.archived = 1 AND child.placement = 'nested'
         AND NOT EXISTS (SELECT 1 FROM agents AS created WHERE created.thread_id = child.id)
         AND EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = threads.id))
     + (SELECT COUNT(*) FROM agent_past_threads
        JOIN agents ON agents.id = agent_past_threads.agent_id
        JOIN owned_threads AS past ON past.id = agent_past_threads.thread_id
-      WHERE agents.thread_id = threads.id AND past.archived = 1)`
+      WHERE agents.thread_id = threads.id AND past.archived = 1 AND past.placement = 'nested')`
 
 // -- Validation errors for enum fields. Each binding checks against the
 // -- list before hitting SQLite so the caller sees a typed error instead
@@ -245,7 +245,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt, &pinGroup,
-		&t.GroupID,
+		&t.GroupID, &t.Placement,
 		&t.WorktreeSetupState, &t.ImportSource,
 		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &hasFailedTurn, &isDraft, &t.OwnershipEpoch,
@@ -345,10 +345,10 @@ const threadInsertColumns = `id, project_id, title, provider, model,
 		    forked_from_thread_id, last_token_usage,
 		    created_at, updated_at, archived, last_read_at, import_source,
 		    created_by_device, created_branch, created_remote_url, created_head_commit,
-		    group_id`
+		    group_id, placement`
 
 const threadInsertSQL = `INSERT INTO threads (` + threadInsertColumns + `)
-		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		 WHERE ? = '' OR EXISTS (SELECT 1 FROM thread_groups WHERE id = ? AND project_id = ?)`
 
 func insertThread(tx *sql.Tx, t Thread, lastReadAtArg any) error {
@@ -372,7 +372,7 @@ func writeThread(tx *sql.Tx, t Thread, lastReadAtArg any, conflict string) error
 		// whole-row UpdateThread carrying a stale copy must not be able to
 		// blank a thread's provenance or its git origin.
 		t.CreatedByDevice, t.Origin.Branch, "", t.Origin.HeadCommit,
-		nilIfEmpty(t.GroupID),
+		nilIfEmpty(t.GroupID), insertedPlacement(t.GroupID),
 		t.GroupID, t.GroupID, t.ProjectID,
 	)
 	if err != nil {

@@ -344,6 +344,7 @@ const ROW_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = {
   1726279585: 'thread', // MarkThreadsRead
   2721360259: 'project', // ListProjects
   2514763466: 'thread', // SetThreadGroup
+  2294583674: 'thread', // SetThreadPlacement
   2929723500: 'thread', // UpdateThreadBranch
 };
 

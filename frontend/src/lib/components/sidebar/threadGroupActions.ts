@@ -20,6 +20,7 @@ import {
   DeleteThreadGroup,
   RenameThreadGroup,
   SetThreadGroup,
+  SetThreadPlacement,
 } from '../../stores/bindings';
 import {
   removeThreadGroup,
@@ -39,7 +40,7 @@ import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { threadBackend } from '../../transport/entityIndex';
 import type { BackendKey } from '../../transport/backendKey';
 import { userFacingError } from '../../utils/userFacingError';
-import type { Thread, ThreadGroup } from '../../types/models';
+import type { Thread, ThreadGroup, ThreadPlacement } from '../../types/models';
 
 /** The name a group is born with; the row opens inline rename on top of it. */
 export const NEW_THREAD_GROUP_NAME = 'New Group';
@@ -173,6 +174,32 @@ export async function removeThreadsFromGroupAction(
   threadIds: readonly string[],
 ): Promise<boolean> {
   return setThreadGroupMembership(threadIds, '', 'remove threads from group');
+}
+
+/**
+ * Nest threads under the standing agent that spawned them, or make them
+ * plain rows of their project, out of any group they were in
+ * (docs/specs/standing-agents.md ruling 36). Grouped is a group move. A row
+ * whose placement changes comes back unpinned.
+ */
+export async function setThreadPlacementAction(
+  threadIds: readonly string[],
+  placement: Exclude<ThreadPlacement, 'grouped'>,
+): Promise<boolean> {
+  if (threadIds.length === 0) return false;
+  if (spansBackends(threadIds)) {
+    addToast('error', CROSS_MACHINE_GROUP_REFUSAL);
+    return false;
+  }
+  try {
+    const mark = threadRowFrameMark();
+    const rows = await SetThreadPlacement([...threadIds], placement) as Thread[];
+    updateThreadGroupState(rows, mark);
+    return true;
+  } catch (err) {
+    reportGroupFailure(placement === 'nested' ? 'nest thread under its assistant' : 'make thread standalone', err);
+    return false;
+  }
 }
 
 /** Shown when a batch names threads on two machines. A group belongs to one

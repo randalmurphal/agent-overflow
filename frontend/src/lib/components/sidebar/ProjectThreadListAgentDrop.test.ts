@@ -99,9 +99,22 @@ describe('<ProjectThreadList> drops on a standing agent', () => {
     expect(setGroup).not.toHaveBeenCalled();
   });
 
+  it('a spawned thread dragged onto a group joins it', async () => {
+    const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
+    const { container } = renderList();
+    await flush();
+    const group = container.querySelector<HTMLElement>('[data-testid="thread-group-row-shell"]')!;
+    const child: ThreadDragPayload = { threadId: 'child', title: 'Child', projectId: 'project' };
+    expect(await fireEvent.dragOver(group, dragEventInit(child))).toBe(false);
+    await tick();
+    expect(group.hasAttribute('data-drop-active')).toBe(true);
+    await fireEvent.drop(group, dragEventInit(child));
+    await flush();
+    expect(setGroup).toHaveBeenCalledWith(['child'], expect.any(String));
+  });
+
   it.each([
     ['the agent row', { threadId: 'agent', title: 'Agent', projectId: 'project', agentBound: true }],
-    ['a spawned thread', { threadId: 'child', title: 'Child', projectId: 'project', agentBound: true }],
   ])('%s dragged onto a group is refused: no move, the cursor says no', async (_, payload: ThreadDragPayload) => {
     const setGroup = setBindingMock('SetThreadGroup', vi.fn(async () => []));
     const { container } = renderList();

@@ -39,6 +39,11 @@ var ErrEmptyThreadTitle = errors.New("threadapp: a thread title cannot be empty"
 // project. Groups are per project, so there is nowhere to create it.
 var ErrThreadHasNoProject = errors.New("threadapp: a thread with no project cannot join a group")
 
+// ErrPlacementContradictsGroup is a patch whose placement and group say two
+// things: a group name with nested or standalone, or an ungroup with
+// grouped.
+var ErrPlacementContradictsGroup = errors.New("threadapp: a group name means grouped, and an ungroup cannot be grouped")
+
 // OrganizePatch is what one thread's organizing call changes. A nil field
 // is a field the call did not carry and this thread keeps.
 type OrganizePatch struct {
@@ -49,13 +54,18 @@ type OrganizePatch struct {
 	// Pin is PinFront, PinBack or PinNone.
 	Pin *string
 	// Group is a group NAME in the thread's own project, created when no
-	// group of that name is there. The empty string ungroups.
+	// group of that name is there. The empty string ungroups, leaving the
+	// thread standalone.
 	Group *string
+	// Placement is store.PlacementNested, PlacementGrouped or
+	// PlacementStandalone. Grouped without Group keeps a grouped thread
+	// where it is and refuses an ungrouped one (store.ErrPlacementNeedsGroup).
+	Placement *string
 }
 
 // Patched reports whether the patch asks for anything at all.
 func (p OrganizePatch) Patched() bool {
-	return p.Title != nil || p.Archived != nil || p.Pin != nil || p.Group != nil
+	return p.Title != nil || p.Archived != nil || p.Pin != nil || p.Group != nil || p.Placement != nil
 }
 
 // Validate checks what can be judged without reading a thread: the shape of
@@ -75,6 +85,19 @@ func (p OrganizePatch) Validate() error {
 		case PinFront, PinBack, PinNone:
 		default:
 			return fmt.Errorf("threadapp: unknown pin tier %q", *p.Pin)
+		}
+	}
+	if p.Placement != nil {
+		switch *p.Placement {
+		case store.PlacementNested, store.PlacementGrouped, store.PlacementStandalone:
+		default:
+			return fmt.Errorf("%w: %q", store.ErrInvalidPlacement, *p.Placement)
+		}
+		if p.Group != nil {
+			named := strings.TrimSpace(*p.Group) != ""
+			if named != (*p.Placement == store.PlacementGrouped) {
+				return ErrPlacementContradictsGroup
+			}
 		}
 	}
 	return nil
@@ -158,6 +181,9 @@ type organizePlan struct {
 	// be created under groupName, in the thread's own project.
 	createGroup bool
 	groupName   string
+	// placement is nested or standalone to write after the group move, or
+	// empty for "leave it alone". Grouped is the group move itself.
+	placement string
 	// pin is the tier to write, or empty for "leave it alone".
 	pin string
 	// archive is the archive flag to write, or nil for "leave it alone".
@@ -208,11 +234,27 @@ func planOrganizePatch(database *store.Store, thread store.Thread, patch Organiz
 		}
 	}
 
+	if patch.Placement != nil && patch.Group == nil {
+		switch placement := *patch.Placement; {
+		case placement == store.PlacementGrouped:
+			if thread.GroupID == "" {
+				return organizePlan{}, store.ErrPlacementNeedsGroup
+			}
+		case placement != thread.Placement:
+			plan.placement = placement
+		}
+	}
+	if patch.Placement != nil && patch.Group != nil && *patch.Group == "" && *patch.Placement != thread.Placement {
+		// An ungroup with nested: the store's ungroup leaves the row
+		// standalone, and the placement write then nests it.
+		plan.placement = *patch.Placement
+	}
+
 	if patch.Pin != nil {
 		// The move runs first in the store's write, so the pin is compared
-		// with what the row holds after it: nothing, when it changes group.
+		// with what the row holds after it: nothing, when it moves.
 		current := currentPinTier(thread)
-		if plan.moveGroup {
+		if plan.moveGroup || plan.placement != "" {
 			current = PinNone
 		}
 		if tier := *patch.Pin; tier != current {
@@ -242,6 +284,10 @@ func (p organizePlan) write(thread store.Thread) (store.ThreadOrganizeWrite, err
 		MoveGroup: p.moveGroup,
 		GroupID:   p.groupID,
 		Archived:  p.archive,
+	}
+	if p.placement != "" {
+		placement := p.placement
+		write.Placement = &placement
 	}
 	if p.title != "" {
 		title := p.title

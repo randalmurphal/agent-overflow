@@ -105,6 +105,34 @@ const (
 	PinNone  = "none"
 )
 
+// Placements: where the sidebar shows a thread a standing agent spawned
+// (docs/specs/standing-agents.md ruling 36). They match the store's values.
+const (
+	PlacementNested     = "nested"
+	PlacementGrouped    = "grouped"
+	PlacementStandalone = "standalone"
+)
+
+// checkPlacement refuses a placement outside the three and a placement that
+// contradicts group: a group name implies grouped, and ungrouping (an empty
+// name, set) cannot be grouped. Grouped with no group at all is left to the
+// caller, because only the thread knows whether it is in a group already.
+func checkPlacement(placement string, group *string) error {
+	switch placement {
+	case "", PlacementNested, PlacementGrouped, PlacementStandalone:
+	default:
+		return invalidf("placement must be nested, grouped or standalone.")
+	}
+	switch {
+	case group == nil:
+	case *group != "" && (placement == PlacementNested || placement == PlacementStandalone):
+		return invalidf("group puts the thread in a group, so it cannot also be %s. Pass placement grouped with group, or drop group.", placement)
+	case *group == "" && placement == PlacementGrouped:
+		return invalidf("group null takes the thread out of its group, so placement cannot be grouped.")
+	}
+	return nil
+}
+
 // LiveState is the part of the app's live projection the state derivation
 // needs. Everything here dies with the provider session; the durable
 // fallbacks live on Thread.

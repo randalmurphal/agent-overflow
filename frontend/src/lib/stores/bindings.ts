@@ -88,6 +88,7 @@ export {
   RenameThreadGroup,
   DeleteThreadGroup,
   SetThreadGroup,
+  SetThreadPlacement,
 
   // Session management
   StartSession,

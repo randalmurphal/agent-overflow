@@ -1513,10 +1513,20 @@ export class Thread {
      * (migration v76), or "" for a top-level thread. SetThreadGroup is its
      * ONE writer. A grouped row pins like any other; a row that joins or
      * leaves a group loses its pin (SetThreadGroup, DeleteThreadGroup), and
-     * the FK's ON DELETE SET NULL is what makes deleting a group ungroup its
-     * members instead of deleting them.
+     * DeleteThreadGroup ungroups its members before the group row goes.
      */
     "groupId"?: string;
+
+    /**
+     * Placement is where the sidebar shows the row (migration v159):
+     * PlacementNested under the standing agent that spawned it,
+     * PlacementGrouped in GroupID's group, PlacementStandalone as a plain
+     * row of its project. The schema makes it grouped exactly when GroupID
+     * is set. Its writers are SetThreadGroup, SetThreadPlacement, the write
+     * that names a local spawn's thread and a handoff; an insert derives it
+     * from GroupID, so the field is ignored there.
+     */
+    "placement": string;
 
     /**
      * WorktreeSetupState is the durable half of the per-project worktree
@@ -1692,6 +1702,9 @@ export class Thread {
         if (!("archived" in $$source)) {
             this["archived"] = false;
         }
+        if (!("placement" in $$source)) {
+            this["placement"] = "";
+        }
         if (!("worktreeSetupState" in $$source)) {
             this["worktreeSetupState"] = "";
         }
@@ -1721,10 +1734,10 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField34_0 = $$createType18;
+        const $$createField35_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
-            $$parsedSource["origin"] = $$createField34_0($$parsedSource["origin"]);
+            $$parsedSource["origin"] = $$createField35_0($$parsedSource["origin"]);
         }
         return new Thread($$parsedSource as Partial<Thread>);
     }

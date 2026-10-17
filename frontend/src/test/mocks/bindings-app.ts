@@ -173,6 +173,7 @@ export const CreateThreadGroup = dispatch('CreateThreadGroup');
 export const RenameThreadGroup = dispatch('RenameThreadGroup');
 export const DeleteThreadGroup = dispatch('DeleteThreadGroup');
 export const SetThreadGroup = dispatch('SetThreadGroup');
+export const SetThreadPlacement = dispatch('SetThreadPlacement');
 export const RenameThread = dispatch('RenameThread');
 export const RegenerateThreadTitle = dispatch('RegenerateThreadTitle');
 export const SwitchThread = dispatch('SwitchThread');

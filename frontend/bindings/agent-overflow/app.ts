@@ -5044,6 +5044,21 @@ export function SetThreadPinGroup(id: string, group: number): $CancellablePromis
 }
 
 /**
+ * SetThreadPlacement makes threads nested under the standing agent that
+ * spawned them or standalone in their project, out of any group they were
+ * in; a move into a group is SetThreadGroup. It returns every row the call
+ * touched and emits one thread:updated "full" frame per row
+ * (docs/specs/standing-agents.md ruling 36). Nested is refused for a thread
+ * nothing on this computer spawned, and any placement for an assistant's
+ * own thread.
+ */
+export function SetThreadPlacement(threadIDs: string[], placement: string): $CancellablePromise<store$0.Thread[]> {
+    return $Call.ByID(2294583674, threadIDs, placement).then(($result: any) => {
+        return $$createType121($result);
+    });
+}
+
+/**
  * SetWSLDistroPreference persists the new distro pick to the
  * launcher's wsl.json. The change applies on the next Windows-side
  * launch; the running backend stays in its current distro for the

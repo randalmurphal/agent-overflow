@@ -190,7 +190,7 @@ func TestALocalSpawnIsAcceptedInTwoTransactions(t *testing.T) {
 		t.Fatalf("source before its thread = %+v", row)
 	}
 	if n := commitsOf(t, s, func() {
-		if err := s.NameLocalThreadRequestTarget("tok", "made"); err != nil {
+		if err := s.NameLocalThreadRequestTarget("tok", "made", false); err != nil {
 			t.Fatal(err)
 		}
 	}); n != 1 {
@@ -207,7 +207,7 @@ func TestALocalSpawnIsAcceptedInTwoTransactions(t *testing.T) {
 	}
 	// A receipt that already names its thread is not repointed, and the
 	// source row is left with it.
-	if err := s.NameLocalThreadRequestTarget("tok", "caller"); err == nil {
+	if err := s.NameLocalThreadRequestTarget("tok", "caller", false); err == nil {
 		t.Fatal("a second naming was not refused")
 	}
 	if row, _, _ := s.GetThreadRequest("tok"); row.TargetThreadID != "made" {
@@ -237,7 +237,7 @@ func TestNamingALocalSpawnKeepsItsSettlementAndRefusesTheRest(t *testing.T) {
 	}); err != nil || !ok {
 		t.Fatalf("settle = %v, %v", ok, err)
 	}
-	if err := s.NameLocalThreadRequestTarget("settled", "made"); err != nil {
+	if err := s.NameLocalThreadRequestTarget("settled", "made", false); err != nil {
 		t.Fatal(err)
 	}
 	if row, _, _ := s.GetThreadRequest("settled"); row.State != ThreadRequestCancelled || row.TargetThreadID != "made" {
@@ -256,7 +256,7 @@ func TestNamingALocalSpawnKeepsItsSettlementAndRefusesTheRest(t *testing.T) {
 	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{Token: "foreign", OwnerDeviceID: "peer", Kind: ThreadRequestSpawn}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.NameLocalThreadRequestTarget("foreign", "made"); err != nil {
+	if err := s.NameLocalThreadRequestTarget("foreign", "made", false); err != nil {
 		t.Fatalf("a receipt with no source row: %v", err)
 	}
 	if got, _, _ := s.GetThreadRequestReceipt("foreign"); got.TargetThreadID != "made" {

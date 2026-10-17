@@ -34,6 +34,7 @@ type spawnArgs struct {
 	Base          string   `json:"base"`
 	BaseLocal     bool     `json:"base_local"`
 	Group         string   `json:"group"`
+	Placement     string   `json:"placement"`
 	Provider      string   `json:"provider"`
 	Model         string   `json:"model"`
 	Effort        string   `json:"effort"`
@@ -121,6 +122,14 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	if utf8.RuneCountInString(call.Group) > MaxTitleRunes {
 		return nil, invalidf("group must be at most %d characters.", MaxTitleRunes)
+	}
+	// Checked here and resolved where the thread is made: an omitted
+	// placement travels empty, because the destination decides the default
+	// by who is asking (a standing agent's fork leaves its source's group,
+	// any other caller's keeps it).
+	call.Placement = trim(args.Placement)
+	if _, err := ResolveSpawnPlacement(call.Placement, call.Group); err != nil {
+		return nil, err
 	}
 	if call.Mode != "" && !slices.Contains([]string{"chat", "plan"}, call.Mode) {
 		return nil, invalidf("mode must be chat or plan. The permission level is runtime_mode, a separate parameter.")
@@ -420,4 +429,29 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// ResolveSpawnPlacement resolves a spawn's placement: nested by default,
+// grouped when group names a group, and refused when the two contradict.
+// The tools layer runs it to refuse a contradiction before a request
+// exists; the destination runs it on the call it receives to resolve the
+// placement, so a caller that skips the tools layer cannot spawn with a
+// contradiction either.
+func ResolveSpawnPlacement(placement, group string) (string, error) {
+	named := &group
+	if group == "" {
+		named = nil
+	}
+	if err := checkPlacement(placement, named); err != nil {
+		return "", err
+	}
+	switch {
+	case group != "":
+		return PlacementGrouped, nil
+	case placement == PlacementGrouped:
+		return "", invalidf("placement grouped needs group, the name of the group to put the thread in.")
+	case placement == "":
+		return PlacementNested, nil
+	}
+	return placement, nil
 }

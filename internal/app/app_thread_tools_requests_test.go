@@ -738,6 +738,140 @@ func TestThreadSpawnRemovesTheThreadWhenItsGroupPatchFails(t *testing.T) {
 	}
 }
 
+// A fork copies its source's group. A standing agent's spawn places the
+// fork (ruling 36): a from_thread spawn of a grouped source lands nested by
+// default and standalone when asked, out of the group either way, and in
+// the group a spawn names when it names one. Any other caller's fork keeps
+// the source's group unless the call places it.
+func TestAForkSpawnTakesItsPlacementOverItsSourcesGroup(t *testing.T) {
+	t.Parallel()
+	type forkCase struct {
+		name, placement, group, wantPlacement string
+		wantSourceGroup                       bool
+	}
+	run := func(t *testing.T, assistant bool, cases []forkCase) {
+		f := newRequestFixture(t)
+		if assistant {
+			f.assistantCaller(t)
+		}
+		replies := make([]string, len(cases))
+		for i := range replies {
+			replies[i] = "on it"
+		}
+		f.mockClaude(t, replies...)
+		source := f.forkableThread(t, "fork-placement-source")
+		group, err := f.app.store.CreateThreadGroup(source.ProjectID, "Sweep")
+		if err != nil {
+			t.Fatalf("CreateThreadGroup: %v", err)
+		}
+		if _, err := f.app.store.SetThreadGroup([]string{source.ID}, group.ID); err != nil {
+			t.Fatalf("SetThreadGroup: %v", err)
+		}
+		for _, tc := range cases {
+			ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+				FromThread: source.ID, Prompt: "carry on", Placement: tc.placement, Group: tc.group,
+			})
+			if err != nil {
+				t.Fatalf("%s: Spawn: %v", tc.name, err)
+			}
+			spawned, err := f.app.store.GetThread(ack.ThreadID)
+			if err != nil {
+				t.Fatalf("%s: GetThread: %v", tc.name, err)
+			}
+			wantGroup := ""
+			if tc.wantSourceGroup {
+				wantGroup = group.ID
+			}
+			if spawned.Placement != tc.wantPlacement || spawned.GroupID != wantGroup {
+				t.Errorf("%s: fork = %s in group %q, want %s in group %q",
+					tc.name, spawned.Placement, spawned.GroupID, tc.wantPlacement, wantGroup)
+			}
+		}
+	}
+	t.Run("assistant", func(t *testing.T) {
+		t.Parallel()
+		run(t, true, []forkCase{
+			{name: "default", wantPlacement: store.PlacementNested},
+			{name: "standalone", placement: threadtools.PlacementStandalone, wantPlacement: store.PlacementStandalone},
+			{name: "named group", group: "Sweep", wantPlacement: store.PlacementGrouped, wantSourceGroup: true},
+		})
+	})
+	t.Run("plain caller", func(t *testing.T) {
+		t.Parallel()
+		run(t, false, []forkCase{
+			{name: "default", wantPlacement: store.PlacementGrouped, wantSourceGroup: true},
+			{name: "nested", placement: threadtools.PlacementNested, wantPlacement: store.PlacementNested},
+			{name: "standalone", placement: threadtools.PlacementStandalone, wantPlacement: store.PlacementStandalone},
+		})
+	})
+}
+
+// The tool a live session calls leaves an omitted placement for the
+// destination to resolve, so a plain caller's thread_spawn of a grouped
+// source keeps the source's group, and an assistant's lands nested.
+func TestThreadSpawnToolForkOfAGroupedSource(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		assistant     bool
+		wantPlacement string
+		wantGroup     bool
+	}{
+		{name: "plain caller", wantPlacement: store.PlacementGrouped, wantGroup: true},
+		{name: "assistant", assistant: true, wantPlacement: store.PlacementNested},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			if tc.assistant {
+				f.assistantCaller(t)
+			}
+			f.mockClaude(t, "on it")
+			source := f.forkableThread(t, "tool-fork-source")
+			group, err := f.app.store.CreateThreadGroup(source.ProjectID, "Sweep")
+			if err != nil {
+				t.Fatalf("CreateThreadGroup: %v", err)
+			}
+			if _, err := f.app.store.SetThreadGroup([]string{source.ID}, group.ID); err != nil {
+				t.Fatalf("SetThreadGroup: %v", err)
+			}
+			answer, err := f.app.threadToolsServer().Call(t.Context(), f.callerIdentity(), "thread_spawn",
+				json.RawMessage(`{"from_thread":"`+source.ID+`","prompt":"carry on"}`))
+			if err != nil {
+				t.Fatalf("thread_spawn: %v", err)
+			}
+			spawned, err := f.app.store.GetThread(spawnedThreadID(t, answer))
+			if err != nil {
+				t.Fatalf("GetThread: %v", err)
+			}
+			wantGroup := ""
+			if tc.wantGroup {
+				wantGroup = group.ID
+			}
+			if spawned.Placement != tc.wantPlacement || spawned.GroupID != wantGroup {
+				t.Errorf("fork = %s in group %q, want %s in group %q", spawned.Placement, spawned.GroupID, tc.wantPlacement, wantGroup)
+			}
+		})
+	}
+}
+
+// spawnedThreadID reads the new thread's id off a thread_spawn result as
+// the model reads it.
+func spawnedThreadID(t *testing.T, answer any) string {
+	t.Helper()
+	encoded, err := json.Marshal(answer)
+	if err != nil {
+		t.Fatalf("encode spawn result: %v", err)
+	}
+	var result struct {
+		ThreadID string `json:"thread_id"`
+	}
+	if err := json.Unmarshal(encoded, &result); err != nil || result.ThreadID == "" {
+		t.Fatalf("spawn result %s: no thread_id (%v)", encoded, err)
+	}
+	return result.ThreadID
+}
+
 // threadIDsInStore is every thread row, for a test asserting that a refused
 // call created none.
 func threadIDsInStore(t *testing.T, app *App) []string {
@@ -757,21 +891,28 @@ func threadIDsInStore(t *testing.T, app *App) []string {
 // disk, a session ref on the row, and a stamped user message to cut at.
 func (f *requestFixture) forkableThread(t *testing.T, sessionID string) store.Thread {
 	t.Helper()
+	return forkableThreadOn(t, f.app, sessionID)
+}
+
+// forkableThreadOn is forkableThread on any app, such as the destination
+// of a paired fixture.
+func forkableThreadOn(t *testing.T, app *App, sessionID string) store.Thread {
+	t.Helper()
 	workspace := t.TempDir()
-	writeClaudeProjectSession(t, testProviderHome(t, f.app), workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"`+sessionID+`","message":{"role":"user","content":"what is the retry policy"}}
+	writeClaudeProjectSession(t, testProviderHome(t, app), workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"`+sessionID+`","message":{"role":"user","content":"what is the retry policy"}}
 {"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"`+sessionID+`","message":{"role":"assistant","content":[{"type":"text","text":"three attempts"}]}}
 `)
-	thread, err := createTestThread(t, f.app, string(provider.Claude), workspace, "claude-opus-4-7", threadmode.ModeChat)
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", threadmode.ModeChat)
 	if err != nil {
 		t.Fatalf("create forkable thread: %v", err)
 	}
 	thread.SessionRef = sessionID
-	if err := f.app.store.UpdateThread(thread); err != nil {
+	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update session ref: %v", err)
 	}
-	insertUserItemWithMeta(t, f.app.store, thread.ID, thread.ID+":u0", 0, "what is the retry policy", `{"provider_item_id":"u0"}`)
-	insertAssistantTextItem(t, f.app.store, thread.ID, thread.ID+":a0", 0, "three attempts")
-	updated, err := f.app.store.GetThread(thread.ID)
+	insertUserItemWithMeta(t, app.store, thread.ID, thread.ID+":u0", 0, "what is the retry policy", `{"provider_item_id":"u0"}`)
+	insertAssistantTextItem(t, app.store, thread.ID, thread.ID+":a0", 0, "three attempts")
+	updated, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
@@ -3554,7 +3695,7 @@ func TestASpawnWhoseCallerIsDeletedMidCreateStillRuns(t *testing.T) {
 				t.Fatal(err)
 			}
 			return made, nil
-		})
+		}, true)
 	if err != nil || target != made.ID || !fresh {
 		t.Fatalf("accept = %q %v, %v; want the created thread", target, fresh, err)
 	}

@@ -12,7 +12,6 @@ import {
   awaitGate,
   awaitToolAnswer,
   awaitTurnCompleted,
-  plainScenario,
   setScenario,
   threadToolsScenario,
   type ProviderName,
@@ -109,10 +108,18 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
   // its own after it, as the real CLI does; without the hold the mock would
   // open that turn while the held one still runs.
   await setScenario(harness, busyProject.path, hold ? { ...busyScript, claude: { holdQueuedInput: true } } : busyScript);
+  // The audit's turn is held until the spawn has answered: a turn that
+  // ended before the ack was built would ride back inside it instead of
+  // waking the lead, and the lead's second turn is that wake.
   await setScenario(
     harness,
     auditProject.path,
-    plainScenario({ name: `${tag}-audit-script`, provider, texts: [AUDIT_ANSWER], afterTurns: 'silent' }),
+    threadToolsScenario({
+      name: `${tag}-audit-script`,
+      provider,
+      turns: [{ steps: [{ gate: 'hold-audit' }], text: AUDIT_ANSWER }],
+      afterTurns: 'silent',
+    }),
   );
   await setScenario(
     harness,
@@ -161,6 +168,8 @@ export async function runAgentFlow(harness: HarnessApp, provider: ProviderName, 
   await harness.rpc('SendMessage', lead, LEAD_ASK, null);
   const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', timeoutMs: 60_000 });
   expect(spawn.isError, spawn.text).toBe(false);
+  const auditMock = await awaitGate(harness, 'hold-audit', auditProject.path);
+  await advanceGate(harness, auditMock.mockId, 'hold-audit');
   const send = await awaitToolAnswer<{ token: string }>(harness, { tool: 'thread_send', timeoutMs: 60_000 });
   expect(send.isError, send.text).toBe(false);
   const replyMock = hold ? null : await awaitGate(harness, 'hold-reply', busyProject.path);

@@ -124,3 +124,79 @@ func TestApplyOrganizePatchPinsGroupedThreads(t *testing.T) {
 		t.Errorf("ungrouped thread = %+v (changed %v), want it out of the group and unpinned", result.Thread, result.Changed)
 	}
 }
+
+// spawnedChild makes a thread spawned by another one on this computer and
+// nested under it, the only kind of thread a placement patch moves.
+func spawnedChild(t *testing.T, service *Service, database *store.Store, id string) store.Thread {
+	t.Helper()
+	service.deps.NewID = func() string { return id + "-spawner" }
+	spawner, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatalf("Create spawner: %v", err)
+	}
+	service.deps.NewID = func() string { return id }
+	child, err := service.Create(CreateOptions{ProjectID: "project"})
+	if err != nil {
+		t.Fatalf("Create child: %v", err)
+	}
+	token := id + "-token"
+	if _, err := database.AcceptLocalThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: spawner.ID, Kind: store.ThreadRequestSpawn, State: store.ThreadRequestUnconfirmed,
+	}, store.ThreadRequestReceipt{Token: token, OwnerDeviceID: "device", Kind: store.ThreadRequestSpawn, SourceThreadID: spawner.ID}); err != nil {
+		t.Fatalf("AcceptLocalThreadRequest: %v", err)
+	}
+	if err := database.NameLocalThreadRequestTarget(token, child.ID, true); err != nil {
+		t.Fatalf("NameLocalThreadRequestTarget: %v", err)
+	}
+	child, err = database.GetThread(child.ID)
+	if err != nil || child.Placement != store.PlacementNested {
+		t.Fatalf("spawned child = %+v, %v; want it nested", child, err)
+	}
+	return child
+}
+
+// An ungroup with placement nested takes a grouped child out of its group
+// and back under its spawner in one patch: the store's ungroup leaves it
+// standalone, and the plan's placement write nests it.
+func TestApplyOrganizePatchUngroupsAndNestsInOnePatch(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	child := spawnedChild(t, service, database, "child")
+	group, err := database.CreateThreadGroup("project", "Sweep")
+	if err != nil {
+		t.Fatalf("CreateThreadGroup: %v", err)
+	}
+	if _, err := database.SetThreadGroup([]string{child.ID}, group.ID); err != nil {
+		t.Fatalf("SetThreadGroup: %v", err)
+	}
+	result, err := service.ApplyOrganizePatch(child.ID, OrganizePatch{
+		Group:     patchString(""),
+		Placement: patchString(store.PlacementNested),
+	})
+	if err != nil {
+		t.Fatalf("ApplyOrganizePatch: %v", err)
+	}
+	if result.Thread.GroupID != "" || result.Thread.Placement != store.PlacementNested {
+		t.Errorf("child = %s in group %q, want nested with no group", result.Thread.Placement, result.Thread.GroupID)
+	}
+}
+
+// A placement change clears the pin, so a pin named in the same patch is
+// compared with no pin and written after the move: the child keeps the
+// tier it held, now in its new place.
+func TestApplyOrganizePatchKeepsAPinNamedWithAPlacementChange(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	child := spawnedChild(t, service, database, "child")
+	if _, _, err := database.PinThread(child.ID); err != nil {
+		t.Fatalf("PinThread: %v", err)
+	}
+	result, err := service.ApplyOrganizePatch(child.ID, OrganizePatch{
+		Placement: patchString(store.PlacementStandalone),
+		Pin:       patchString(PinFront),
+	})
+	if err != nil {
+		t.Fatalf("ApplyOrganizePatch: %v", err)
+	}
+	if result.Thread.Placement != store.PlacementStandalone || currentPinTier(result.Thread) != PinFront {
+		t.Errorf("child = %s pinned %q, want standalone and pinned front", result.Thread.Placement, currentPinTier(result.Thread))
+	}
+}

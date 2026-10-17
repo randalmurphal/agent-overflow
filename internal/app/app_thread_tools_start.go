@@ -217,17 +217,6 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 	if _, err := t.spawnThreadOptions(ctx, origin, call); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	if call.Group != "" {
-		// A standing agent's spawned threads nest under its own sidebar row
-		// (store.ErrSpawnedChildGrouped); the group would be refused once
-		// the thread existed, so it is refused before.
-		if _, standing, err := t.app.store.GetStandingAgent(caller.ThreadID); err != nil {
-			return threadtools.RequestAck{}, err
-		} else if standing {
-			return threadtools.RequestAck{}, errorsx.Public(threadtools.CodeInvalidRequest,
-				"This thread is an assistant's, and the threads it spawns nest under its own sidebar row rather than in a group. Omit group.", nil)
-		}
-	}
 	token := newThreadRequestToken()
 	if _, err := t.acceptSpawn(ctx, origin, token, call); err != nil {
 		return threadtools.RequestAck{}, err
@@ -243,6 +232,15 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 // the source row it advances exists only on the computer that made the
 // request.
 func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOrigin, token string, call threadtools.SpawnCall) (string, error) {
+	// A fork made by a thread that is not a standing agent keeps its
+	// source's group unless the call places it (ruling 36 governs the
+	// threads a standing agent spawns).
+	keepSourceGroup := origin.agent == nil && call.Placement == "" && call.Group == ""
+	placement, err := threadtools.ResolveSpawnPlacement(call.Placement, call.Group)
+	if err != nil {
+		return "", t.failRequest(token, err)
+	}
+	call.Placement = placement
 	create, err := t.spawnThreadOptions(ctx, origin, call)
 	if err != nil {
 		return "", t.failRequest(token, err)
@@ -253,8 +251,11 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 		OriginThreadID: call.FromThread,
 		Notify:         call.Notify,
 	}, func() (store.Thread, error) {
-		return t.createSpawnedThread(ctx, call, create)
-	})
+		return t.createSpawnedThread(ctx, call, create, keepSourceGroup)
+		// The naming write nests a nested spawn's thread. A paired
+		// computer's spawn has no spawn row here to nest under, so its
+		// thread is standalone, or grouped by its group.
+	}, call.Placement == threadtools.PlacementNested)
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
@@ -339,7 +340,7 @@ func (t threadToolsApp) acceptSend(ctx context.Context, origin threadRequestOrig
 		Token:          token,
 		Kind:           store.ThreadRequestSend,
 		TargetThreadID: target.ID,
-	}, nil)
+	}, nil, false)
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
@@ -424,7 +425,7 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 			RuntimeMode:  string(provider.RuntimeReadOnly),
 			RequestToken: token,
 		})
-	})
+	}, false)
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
@@ -469,7 +470,7 @@ func (t threadToolsApp) refuseSelf(caller threadtools.Caller, threadID, verb str
 // either. A local token is fresh, so it is never a retry.
 func (t threadToolsApp) acceptRequest(
 	origin threadRequestOrigin, request store.ThreadRequest,
-	create func() (store.Thread, error),
+	create func() (store.Thread, error), nest bool,
 ) (target string, fresh bool, err error) {
 	token, kind := request.Token, request.Kind
 	receiptRow := threadReceiptFor(origin, token, kind, request.TargetThreadID)
@@ -515,7 +516,7 @@ func (t threadToolsApp) acceptRequest(
 			if _, err := t.app.store.SetThreadReceiptTarget(token, target); err != nil {
 				return "", false, err
 			}
-		} else if err := t.app.store.NameLocalThreadRequestTarget(token, target); err != nil {
+		} else if err := t.app.store.NameLocalThreadRequestTarget(token, target, nest); err != nil {
 			// One write names the thread on both rows and accepts the source
 			// row; a request a settlement already moved keeps its state.
 			return "", false, err

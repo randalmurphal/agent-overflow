@@ -47,6 +47,9 @@ type ThreadOrganizeWrite struct {
 	// ungroup. It is ignored when CreateGroup minted the destination.
 	MoveGroup bool
 	GroupID   string
+	// Placement writes nested or standalone after the group move
+	// (SetThreadPlacement's rules); grouped is the group move itself.
+	Placement *string
 	// Pin is the tier to write.
 	Pin *ThreadPinWrite
 	// Archived flips the archive flag.
@@ -70,9 +73,9 @@ type ThreadOrganizeResult struct {
 // ApplyThreadOrganize writes a title, a group move, a pin tier and the
 // archive flag as one change.
 //
-// Order is load-bearing rather than incidental: a group move clears the
-// pin of a row that changes group, so the move runs before the pin and a
-// pin in the same write lands inside the new group. Any refusal (a group
+// Order is load-bearing rather than incidental: a group move and a
+// placement change clear the pin of a row that moves, so both run before
+// the pin and a pin in the same write lands inside the new place. Any refusal (a group
 // that is gone, a thread handed to another computer) rolls back
 // everything, including a group this call created.
 func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) (ThreadOrganizeResult, error) {
@@ -119,6 +122,13 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 		if groupID != before.GroupID {
 			result.Changed = true
 		}
+	}
+	if write.Placement != nil {
+		changed, err := setThreadPlacementTx(tx, threadID, *write.Placement)
+		if err != nil {
+			return ThreadOrganizeResult{}, err
+		}
+		result.Changed = result.Changed || changed
 	}
 	if write.Pin != nil {
 		changed, err := applyThreadPinTx(tx, threadID, *write.Pin)
