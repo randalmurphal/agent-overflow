@@ -27,12 +27,14 @@ import (
 // thread's project: a fork's source project, or the destination's. The
 // spawn's placement wins over the group a fork inherits from its source:
 // a fork spawned nested or standalone leaves that group (standalone), and
-// the naming write then nests a nested one.
+// the naming write then nests a nested one. keepSourceGroup is a fork the
+// call did not place, made by a thread that is not a standing agent: it
+// stays in its source's group.
 func (t threadToolsApp) createSpawnedThread(
-	ctx context.Context, call threadtools.SpawnCall, create CreateThreadOptions,
+	ctx context.Context, call threadtools.SpawnCall, create CreateThreadOptions, keepSourceGroup bool,
 ) (store.Thread, error) {
 	thread, err := t.createSpawnedThreadUngrouped(ctx, call, create)
-	if err != nil || (call.Group == "" && thread.GroupID == "") {
+	if err != nil || (call.Group == "" && (thread.GroupID == "" || keepSourceGroup)) {
 		return thread, err
 	}
 	group := call.Group

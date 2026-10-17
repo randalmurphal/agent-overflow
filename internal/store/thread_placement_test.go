@@ -355,3 +355,58 @@ func TestRetiredHolderIsStandalone(t *testing.T) {
 		})
 	}
 }
+
+// The naming write nests only under a source row that is there: a spawn
+// whose caller was deleted while its thread was being created names the
+// thread on the receipt and leaves it standalone, with no link to nest it.
+func TestNamingWriteWithoutItsSourceRowLeavesTheThreadStandalone(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "agent")
+	mustCreateThread(t, s, "child")
+	if _, err := s.AcceptLocalThreadRequest(ThreadRequest{
+		Token: "tok", CallerThreadID: "agent", Kind: ThreadRequestSpawn, State: ThreadRequestUnconfirmed,
+	}, ThreadRequestReceipt{Token: "tok", OwnerDeviceID: "device", Kind: ThreadRequestSpawn, SourceThreadID: "agent"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteThread("agent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.NameLocalThreadRequestTarget("tok", "child", true); err != nil {
+		t.Fatalf("name after the caller's delete: %v", err)
+	}
+	if got, _ := placementOf(t, s, "child"); got != PlacementStandalone {
+		t.Errorf("child with no source row = %s, want standalone", got)
+	}
+}
+
+// An assistant's done-footer count takes its archived past threads only
+// while they are nested: placed as a plain row, one leaves the count.
+func TestArchivedChildCountTakesNestedPastThreadsOnly(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "old")
+	mustCreateThread(t, s, "new")
+	mustCreateAssistant(t, s, "old", "/h/agent")
+	if _, err := s.HandOffAssistant("old", "new", 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ArchiveThread("old"); err != nil {
+		t.Fatal(err)
+	}
+	count := func() int {
+		t.Helper()
+		row, err := s.GetThread("new")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return row.ArchivedChildCount
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("archived children with the past thread nested = %d, want 1", got)
+	}
+	if _, err := s.SetThreadPlacement([]string{"old"}, PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(); got != 0 {
+		t.Errorf("archived children with the past thread standalone = %d, want 0", got)
+	}
+}

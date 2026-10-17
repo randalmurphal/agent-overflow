@@ -232,6 +232,10 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 // the source row it advances exists only on the computer that made the
 // request.
 func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOrigin, token string, call threadtools.SpawnCall) (string, error) {
+	// A fork made by a thread that is not a standing agent keeps its
+	// source's group unless the call places it (ruling 36 governs the
+	// threads a standing agent spawns).
+	keepSourceGroup := origin.agent == nil && call.Placement == "" && call.Group == ""
 	placement, err := threadtools.ResolveSpawnPlacement(call.Placement, call.Group)
 	if err != nil {
 		return "", t.failRequest(token, err)
@@ -247,7 +251,7 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 		OriginThreadID: call.FromThread,
 		Notify:         call.Notify,
 	}, func() (store.Thread, error) {
-		return t.createSpawnedThread(ctx, call, create)
+		return t.createSpawnedThread(ctx, call, create, keepSourceGroup)
 		// The naming write nests a nested spawn's thread. A paired
 		// computer's spawn has no spawn row here to nest under, so its
 		// thread is standalone, or grouped by its group.

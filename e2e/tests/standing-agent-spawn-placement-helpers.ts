@@ -5,7 +5,8 @@
 // agent row (folded into its done footer once settled), the grouped one in
 // its group and the standalone one as a plain row of its own project; then
 // the row menu (and on desktop a drag onto the group) moves the workers
-// between placements. Screenshots are dark mode.
+// between placements, offering those moves only while the agent's row is
+// shown (not while the assistant is archived). Screenshots are dark mode.
 import type { Locator, Page } from '@playwright/test';
 
 import { expect, type SeedResult } from './fixtures.js';
@@ -178,6 +179,27 @@ export async function runSpawnPlacement(harness: HarnessApp, page: Page, layout:
   await expect(menu.getByRole('menuitem', { name: 'Move to Group' })).toBeVisible();
   await expect(menu.getByRole('menuitem', { name: 'Make Standalone', exact: true })).toHaveCount(0);
   await capture(page, `${tag}-child-menu.png`, menu);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menuitem')).toHaveCount(0);
+
+  // The placement items exist only while the agent's row is in the
+  // sidebar: with the assistant archived, its children are the plain rows
+  // they render as and their menus offer neither; unarchived, they return.
+  const placementItems = (menu: Locator) => menu.getByRole('menuitem', { name: /^(Nest Under|Make Standalone)/ });
+  await harness.rpc('ArchiveThread', agent);
+  await expect.poll(() => sidebarPlace(page, nested.id, workers.projectId)).toBe('project');
+  for (const worker of [nested, standalone]) {
+    const archivedMenu = await openMenu(page, layout, worker.id);
+    await expect(archivedMenu.getByRole('menuitem', { name: 'Move to Group' })).toBeVisible();
+    await expect(placementItems(archivedMenu)).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menuitem')).toHaveCount(0);
+  }
+  await harness.rpc('UnarchiveThread', agent);
+  await expect(row(page, agent)).toBeVisible();
+  await expect.poll(() => sidebarPlace(page, nested.id, workers.projectId)).not.toBe('project');
+  const restoredMenu = await openMenu(page, layout, standalone.id);
+  await expect(placementItems(restoredMenu)).toHaveText(['Nest Under Ops lead']);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menuitem')).toHaveCount(0);
 

@@ -106,8 +106,9 @@ the row. Collapsed, it carries its members' bubbled dot.
   thread; it honors the `confirmDelete` setting. Archiving a member hides it; the group stays
   and the membership survives unarchive. Deleting a project deletes its
   groups. A fork of a grouped thread lands in the same group, unpinned:
-  the source's pin is its own. A `thread_spawn` fork takes the spawn's
-  placement instead, and leaves the group unless the spawn names one.
+  the source's pin is its own. A standing agent's `thread_spawn` fork
+  takes the spawn's placement instead, and leaves the group unless the
+  spawn names one.
 - **Search.** A group shows when its name matches (all members shown)
   or when any member matches (only matching members shown). A group with
   no match is hidden.
@@ -193,8 +194,9 @@ the row. Collapsed, it carries its members' bubbled dot.
 - A returning conversation transfer arrives ungrouped; the local row's
   pin survives only if the row was not in a group.
 - Fork copies `group_id` from the source row (all fork paths), never the
-  pin. A `thread_spawn` fork then takes the spawn's placement, which
-  leaves that group unless the spawn names one
+  pin. A standing agent's `thread_spawn` fork then takes the spawn's
+  placement, which leaves that group unless the spawn names one; another
+  caller's fork leaves it only when the call names `placement` or `group`
   ([agent thread tools](agent-thread-tools.md)).
 
 ### Backend API

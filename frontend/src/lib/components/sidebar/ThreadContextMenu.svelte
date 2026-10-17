@@ -61,6 +61,8 @@
     withTerminalsNote,
   } from '../../stores/worktreeRemoval.svelte';
   import { getThreadGroupsForProject } from '../../stores/threadGroups.svelte';
+  import { sidebarThreadVisible } from '../../stores/sidebarDevices.svelte';
+  import { sidebarAgentRowShown } from './sidebarBuckets';
   import { expandProject } from '../../stores/sidebar.svelte';
   import {
     createThreadGroupAndMoveAction,
@@ -378,21 +380,21 @@
   // A thread an assistant spawned, or its past thread, sits under the agent
   // row, in a group or as a plain row (docs/specs/standing-agents.md ruling
   // 36). Move to Group and Remove from Group above cover grouped; these two
-  // cover the rest. The agent is named by its current title.
-  let placedChild = $derived(
-    !inBulkContext && !archivedChild && !isAgent
-      && (thread.spawnedByAgent === true || Boolean(thread.pastAgentId)),
-  );
-  let currentPlacement = $derived(threadPlacement(thread));
-  let nestingAgentTitle = $derived.by(() => {
-    if (!placedChild) return '';
+  // cover the rest. They exist only while the agent's row is in the
+  // sidebar (sidebarAgentRowShown): a child of an archived or hidden
+  // assistant, or of a thread that is no assistant, is the plain row it
+  // renders as. The agent is named by that row's title.
+  let placementAgent = $derived.by(() => {
+    if (inBulkContext || archivedChild || isAgent) return undefined;
     const agentThreadId = thread.pastAgentId
       ? assistantCurrentThread(thread.pastAgentId)?.id
       : thread.spawnedByThreadId;
-    return (agentThreadId ? getThreadById(agentThreadId)?.title : '') || 'Assistant';
+    const agent = agentThreadId ? getThreadById(agentThreadId) : undefined;
+    return agent && sidebarAgentRowShown(agent, sidebarThreadVisible) ? agent : undefined;
   });
-  let canMakeStandalone = $derived(placedChild && currentPlacement === 'nested');
-  let canNest = $derived(placedChild && currentPlacement !== 'nested');
+  let currentPlacement = $derived(threadPlacement(thread));
+  let canMakeStandalone = $derived(Boolean(placementAgent) && currentPlacement === 'nested');
+  let canNest = $derived(Boolean(placementAgent) && currentPlacement !== 'nested');
 
   // The project is expanded first for the same reason the project header
   // does it: the new group's row opens inline rename, and a row inside a
@@ -626,7 +628,7 @@
           {/if}
           {#if canNest}
             <MenuItem
-              label={`Nest Under ${nestingAgentTitle}`}
+              label={`Nest Under ${placementAgent?.title ?? ''}`}
               disabled={operateUngranted}
               title={ungrantedTitle}
               onSelect={() => {

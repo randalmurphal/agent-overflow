@@ -738,44 +738,72 @@ func TestThreadSpawnRemovesTheThreadWhenItsGroupPatchFails(t *testing.T) {
 	}
 }
 
-// A fork copies its source's group, and the spawn's placement wins over it:
-// a from_thread spawn of a grouped source lands nested by default and
-// standalone when asked, out of the group either way, and in the group a
-// spawn names when it names one.
+// A fork copies its source's group. A standing agent's spawn places the
+// fork (ruling 36): a from_thread spawn of a grouped source lands nested by
+// default and standalone when asked, out of the group either way, and in
+// the group a spawn names when it names one. Any other caller's fork keeps
+// the source's group unless the call places it.
 func TestAForkSpawnTakesItsPlacementOverItsSourcesGroup(t *testing.T) {
 	t.Parallel()
-	f := newRequestFixture(t)
-	f.mockClaude(t, "on it", "on it", "on it")
-	source := f.forkableThread(t, "fork-placement-source")
-	group, err := f.app.store.CreateThreadGroup(source.ProjectID, "Sweep")
-	if err != nil {
-		t.Fatalf("CreateThreadGroup: %v", err)
+	type forkCase struct {
+		name, placement, group, wantPlacement string
+		wantSourceGroup                       bool
 	}
-	if _, err := f.app.store.SetThreadGroup([]string{source.ID}, group.ID); err != nil {
-		t.Fatalf("SetThreadGroup: %v", err)
+	run := func(t *testing.T, assistant bool, cases []forkCase) {
+		f := newRequestFixture(t)
+		if assistant {
+			f.assistantCaller(t)
+		}
+		replies := make([]string, len(cases))
+		for i := range replies {
+			replies[i] = "on it"
+		}
+		f.mockClaude(t, replies...)
+		source := f.forkableThread(t, "fork-placement-source")
+		group, err := f.app.store.CreateThreadGroup(source.ProjectID, "Sweep")
+		if err != nil {
+			t.Fatalf("CreateThreadGroup: %v", err)
+		}
+		if _, err := f.app.store.SetThreadGroup([]string{source.ID}, group.ID); err != nil {
+			t.Fatalf("SetThreadGroup: %v", err)
+		}
+		for _, tc := range cases {
+			ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+				FromThread: source.ID, Prompt: "carry on", Placement: tc.placement, Group: tc.group,
+			})
+			if err != nil {
+				t.Fatalf("%s: Spawn: %v", tc.name, err)
+			}
+			spawned, err := f.app.store.GetThread(ack.ThreadID)
+			if err != nil {
+				t.Fatalf("%s: GetThread: %v", tc.name, err)
+			}
+			wantGroup := ""
+			if tc.wantSourceGroup {
+				wantGroup = group.ID
+			}
+			if spawned.Placement != tc.wantPlacement || spawned.GroupID != wantGroup {
+				t.Errorf("%s: fork = %s in group %q, want %s in group %q",
+					tc.name, spawned.Placement, spawned.GroupID, tc.wantPlacement, wantGroup)
+			}
+		}
 	}
-	for _, tc := range []struct {
-		name, placement, group, wantPlacement, wantGroup string
-	}{
-		{name: "default", wantPlacement: store.PlacementNested},
-		{name: "standalone", placement: threadtools.PlacementStandalone, wantPlacement: store.PlacementStandalone},
-		{name: "named group", group: "Sweep", wantPlacement: store.PlacementGrouped, wantGroup: group.ID},
-	} {
-		ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
-			FromThread: source.ID, Prompt: "carry on", Placement: tc.placement, Group: tc.group,
+	t.Run("assistant", func(t *testing.T) {
+		t.Parallel()
+		run(t, true, []forkCase{
+			{name: "default", wantPlacement: store.PlacementNested},
+			{name: "standalone", placement: threadtools.PlacementStandalone, wantPlacement: store.PlacementStandalone},
+			{name: "named group", group: "Sweep", wantPlacement: store.PlacementGrouped, wantSourceGroup: true},
 		})
-		if err != nil {
-			t.Fatalf("%s: Spawn: %v", tc.name, err)
-		}
-		spawned, err := f.app.store.GetThread(ack.ThreadID)
-		if err != nil {
-			t.Fatalf("%s: GetThread: %v", tc.name, err)
-		}
-		if spawned.Placement != tc.wantPlacement || spawned.GroupID != tc.wantGroup {
-			t.Errorf("%s: fork = %s in group %q, want %s in group %q",
-				tc.name, spawned.Placement, spawned.GroupID, tc.wantPlacement, tc.wantGroup)
-		}
-	}
+	})
+	t.Run("plain caller", func(t *testing.T) {
+		t.Parallel()
+		run(t, false, []forkCase{
+			{name: "default", wantPlacement: store.PlacementGrouped, wantSourceGroup: true},
+			{name: "nested", placement: threadtools.PlacementNested, wantPlacement: store.PlacementNested},
+			{name: "standalone", placement: threadtools.PlacementStandalone, wantPlacement: store.PlacementStandalone},
+		})
+	})
 }
 
 // threadIDsInStore is every thread row, for a test asserting that a refused

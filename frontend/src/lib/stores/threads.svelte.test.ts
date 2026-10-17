@@ -10,6 +10,7 @@ import {
   updateThreadModel,
   replaceThread,
   touchThreadActivity,
+  clearThreadGroupMembership,
 } from './threads.svelte';
 import type { Thread } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -50,6 +51,22 @@ function makeThread(id: string, overrides: Partial<Thread> = {}): Thread {
 }
 
 describe('threads store', () => {
+  // A group delete leaves its members standalone on the backend; the
+  // client's rows say the same, so a spawned member renders as a plain row
+  // and its menu offers Nest Under rather than Make Standalone.
+  it('leaves the members of a deleted group standalone', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread('member', { groupId: 'g1', placement: 'grouped', pinnedAt: 5 }),
+      makeThread('other', { groupId: 'g2', placement: 'grouped' }),
+    ]);
+    await refreshThreads();
+    clearThreadGroupMembership('g1');
+    expect(getThreads().map((t) => [t.id, t.groupId, t.placement, t.pinnedAt])).toEqual([
+      ['member', undefined, 'standalone', undefined],
+      ['other', 'g2', 'grouped', undefined],
+    ]);
+  });
+
   describe('refreshThreads()', () => {
     it('replaces the store with the RPC result', async () => {
       const loaded = [makeThread('t1'), makeThread('t2')];

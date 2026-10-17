@@ -351,9 +351,11 @@ thread's sidebar row appears when a standing agent spawns it: under the
 agent's row, in the group `group` names, or as a plain row in its own
 project ([standing agents](standing-agents.md) ruling 36). `group`
 implies `grouped`; `grouped` without `group`, or `group` with `nested`
-or `standalone`, is refused before a request exists. The placement
-wins over the group a `from_thread` fork copies from its source: a fork
-spawned without `group` leaves that group. A thread spawned
+or `standalone`, is refused before a request exists. A
+`from_thread` fork copies its source's group. A standing agent's fork
+takes the spawn's placement instead (default `nested`) and leaves that
+group unless `group` names one; any other caller's fork keeps the
+source's group unless the call names `placement` or `group`. A thread spawned
 on another computer, or by a thread that is not an assistant, renders
 as a plain row unless grouped, whatever `placement` says. Placement is
 organization only: the spawn record, the reply path and the read mark

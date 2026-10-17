@@ -478,7 +478,7 @@ export function clearThreadGroupMembership(groupId: string): void {
   // Empty placeholders have no catalog row but still carry the group intent.
   for (const pane of getAllPanes().values()) {
     if (pane.thread?.groupId === groupId) {
-      pane.replaceThread({ ...pane.thread, groupId: undefined, pinnedAt: undefined, pinGroup: undefined });
+      pane.replaceThread({ ...pane.thread, groupId: undefined, placement: 'standalone', pinnedAt: undefined, pinGroup: undefined });
     }
   }
   // A group's members live on the group's computer; a read of it in flight

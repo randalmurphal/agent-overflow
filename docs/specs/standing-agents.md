@@ -688,8 +688,11 @@ place under the successor. Differences from an ordinary thread row:
   Standalone; a standalone child offers Move to Group and
   `Nest Under <agent>`; a grouped child offers Move to Group, Remove
   from Group (which makes it standalone) and `Nest Under <agent>`, the
-  agent named by its current title. A placement change unpins the row,
-  as a group move does.
+  agent named by its row's title. Make Standalone and Nest Under exist
+  only while the agent's row is in the sidebar: a child of an archived
+  assistant, or of one the device filter hides, is the plain row it
+  renders as and offers neither. A placement change unpins the row, as
+  a group move does.
 - New Thread, Same Assistant: an icon-only hover action on the row
   (`aria-label` "New Thread, Same Assistant"), shown at rest under the
   compact layout, and the same item in its menu

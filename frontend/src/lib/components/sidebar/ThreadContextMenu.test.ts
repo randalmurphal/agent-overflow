@@ -877,6 +877,36 @@ describe('<ThreadContextMenu> standing agent', () => {
     expect(labels.some((label) => label.startsWith('Nest Under') || label === 'Make Standalone')).toBe(false);
   });
 
+  // The placement items exist only while the agent's row is in the
+  // sidebar: a child of an archived assistant renders as a plain row and
+  // gets none, and they return when the assistant is unarchived.
+  it.each(['nested', 'standalone'] as const)('offers a %s child of an archived assistant no placement items', (placement) => {
+    const placementItem = (label: string) => label.startsWith('Nest Under') || label === 'Make Standalone';
+    const child = makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement });
+    replaceAllThreads([makeThread({ id: 'agent-1', projectId: 'project-1', title: 'Release agent', agentId: 'agent-1', archived: true })]);
+    const archived = renderAgentMenu(child);
+    const labels = labelsOf(archived.baseElement);
+    expect(labels).toContain('Move to Group');
+    expect(labels.some(placementItem)).toBe(false);
+    archived.unmount();
+
+    replaceAllThreads([makeThread({ id: 'agent-1', projectId: 'project-1', title: 'Release agent', agentId: 'agent-1' })]);
+    const shown = renderAgentMenu(child);
+    expect(labelsOf(shown.baseElement).filter(placementItem)).toEqual([
+      placement === 'nested' ? 'Make Standalone' : 'Nest Under Release agent',
+    ]);
+  });
+
+  it('offers no placement items to a child of a thread that is no assistant', () => {
+    replaceAllThreads([makeThread({ id: 'spawner', projectId: 'project-1', title: 'Plain spawner' })]);
+    const { baseElement } = renderAgentMenu(
+      makeThread({ projectId: 'project-1', spawnedByThreadId: 'spawner', spawnedByAgent: false, placement: 'nested' }),
+    );
+    const labels = labelsOf(baseElement);
+    expect(labels).toContain('Move to Group');
+    expect(labels.some((label) => label.startsWith('Nest Under') || label === 'Make Standalone')).toBe(false);
+  });
+
   it.each([
     ['Make Standalone', 'nested', 'standalone'],
     ['Nest Under Release agent', 'standalone', 'nested'],
