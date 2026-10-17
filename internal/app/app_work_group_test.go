@@ -60,7 +60,14 @@ func awaitParkedIn(t *testing.T, fn string) {
 	deadline := time.Now().Add(10 * time.Second)
 	buf := make([]byte, 1<<20)
 	for time.Now().Before(deadline) {
-		for _, stack := range strings.Split(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+		n := runtime.Stack(buf, true)
+		if n == len(buf) {
+			// The package's other tests leave goroutines behind; the
+			// waiter may be past the end of a short dump.
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
+		for _, stack := range strings.Split(string(buf[:n]), "\n\n") {
 			header, _, _ := strings.Cut(stack, "\n")
 			if strings.Contains(stack, "."+fn+"(") && strings.Contains(header, ".Wait") {
 				return
