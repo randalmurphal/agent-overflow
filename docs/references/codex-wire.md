@@ -1288,15 +1288,9 @@ Fixture: `fixtures/codex/thread_unload_cold_resume_20261016.ndjson`.
   one. A `config` bag carrying `model_reasoning_effort` counts as naming
   one (`has_model_resume_override`), so such a resume without `model`
   came back on the default model.
-- **`developerInstructions` on a cold resume does not reach the model.**
-  The full developer context is injected only while the session has no
-  reference context (`record_context_updates_and_set_reference_context_item`,
-  `core/src/session/mod.rs`); a resume restores the reference from the
-  rollout, and developer instructions are not a world-state section, so no
-  diff is emitted. The model kept following the original instructions
-  after both resume paths, and the new text was absent from the rollout.
-  It took effect after `thread/compact/start`, which rebuilds the context
-  (run on the immediate cold-resume path only).
+- `developerInstructions` on a cold resume does not reach the model until
+  a compaction; see
+  [Developer instructions on a resumed or forked thread](#developer-instructions-on-a-resumed-or-forked-thread-verified-01621).
 - The model's own account of its tools is unreliable after a resume: it
   answered "missing" in the same turn that produced an `imageView` item.
   Read the tool item, not the reply.
@@ -1327,28 +1321,11 @@ ChatGPT account"). Fixture:
 Each step asked for a reply ending in the token the current instructions
 name.
 
-- A thread started with token A in one process, then resumed in a second
-  process with `developerInstructions` naming B, replied with A. A restart
-  is the same cold resume as the one in
-  [Thread unload and cold resume](#thread-unload-and-cold-resume-verified-01621),
-  for the same reason.
-- `thread/inject_items {threadId, items:[{type:"message", role:"developer",
-  content:[{type:"input_text", text}]}]}` on the idle thread answers `{}`;
-  the next reply followed the injected token. The item is written to the
-  rollout as a `developer` message (`core/src/session/inject.rs`).
-- `turn/start` `additionalContext: {"<key>": {value, kind:"application"}}`
-  (experimental) was followed. It reaches history as one developer message
-  `<key>value</key>`, emitted only when the value for the key changed
-  since the thread was loaded (`core/src/state/additional_context.rs`);
-  the same value on the next two turns wrote nothing. A value is
-  middle-truncated to 1,000 tokens (`context-fragments/src/additional_context.rs`).
+- What a restart, `thread/inject_items`, `turn/start` `additionalContext`
+  and a compaction do to a thread's developer instructions is in
+  [Developer instructions on a resumed or forked thread](#developer-instructions-on-a-resumed-or-forked-thread-verified-01621).
 - A second thread started on the same process with its own token D replied
   with D; the first thread kept its own token on its next turn.
-- After `thread/compact/start` the first thread replied with B, the
-  thread-level value from the resume: compaction rebuilds the context from
-  the thread's configuration and drops the injected and additional-context
-  messages. The additional context sent again with the same value was not
-  re-emitted, so it stayed lost.
 - Keeping client developer messages across compaction is the
   `retain_client_developer_messages` feature, under development and off by
   default (`features/src/lib.rs`).

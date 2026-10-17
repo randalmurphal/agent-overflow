@@ -288,10 +288,13 @@ func (a *App) runThreadWakeDetached(deliver, dropped func()) {
 		dropped()
 		return
 	}
-	a.goThreadRequestSettling(func() {
+	if !a.goThreadRequestSettling(func() {
 		defer func() { <-slots }()
 		deliver()
-	})
+	}) {
+		<-slots
+		dropped()
+	}
 }
 
 func (a *App) threadWakeDeliverySlots() chan struct{} {

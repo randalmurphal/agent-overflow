@@ -33,26 +33,31 @@ migrations from that version on move up one. A database a
 personal-assistant build migrated before that sync holds them under the old
 numbers and lacks main's table. Opening it fails with "this database was
 migrated by a pre-sync personal-assistant build" and names the section
-below that repairs it. Repair it with the app stopped, in
+below that repairs it: [Before main's v142](#before-mains-v142) when it
+has no `thread_pull_requests`, [Before main's v143](#before-mains-v143)
+otherwise. Repair it with the app stopped, in
 `sqlite3 <data dir>/agent-overflow.db`. A database without
-`thread_pull_requests` takes [Before main's v142](#before-mains-v142) and
-then [Before main's v143](#before-mains-v143), in that order; one with
-`thread_pull_requests` takes only the second. A database that took the
-second first is refused at v153; run the first block on it with 153 in
-place of 152 in its `INSERT`. The runner reads only the highest recorded
-version, so the names of rows below it may not match their numbers.
-`TestThePreSyncRepairsOpen` runs these blocks on databases each pre-sync
-build left and opens the results.
+`thread_pull_requests` takes both blocks, the first one first. Each block
+stops at its first error (`.bail on`) and changes nothing on a database it
+already repaired, so running one again is safe. The runner reads only the
+highest recorded version, so the names of rows below it may not match
+their numbers. `TestThePreSyncRepairsOpen` runs these blocks on databases
+each pre-sync build left and opens the results.
 
 #### Before main's v142
 
 main's `thread_pull_requests` is migration v142. A database from before
 that sync holds `receipt_own_turn` as v151 and has no
-`thread_pull_requests`. Opening it fails at v152.
+`thread_pull_requests`. Opening it fails at v152, or at v153 after only the
+next section's block.
 
 ```sql
+.bail on
 BEGIN;
-CREATE TABLE thread_pull_requests (
+INSERT INTO migration_versions (version, name)
+ SELECT CASE WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_developer_instructions') THEN 153 ELSE 152 END, 'receipt_own_turn'
+ WHERE NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_pull_requests');
+CREATE TABLE IF NOT EXISTS thread_pull_requests (
  thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
  forge TEXT NOT NULL CHECK(forge IN ('github', 'gitlab')),
  host TEXT NOT NULL,
@@ -68,32 +73,37 @@ CREATE TABLE thread_pull_requests (
  removal_failed_at INTEGER NOT NULL DEFAULT 0,
  outcome TEXT NOT NULL DEFAULT '' CHECK(outcome IN ('', 'removed', 'kept', 'gone', 'closed', 'skipped'))
 );
-CREATE INDEX idx_thread_pull_requests_pending ON thread_pull_requests(forge, host, project) WHERE handled_at = 0;
-INSERT INTO migration_versions (version, name) VALUES (152, 'receipt_own_turn');
+CREATE INDEX IF NOT EXISTS idx_thread_pull_requests_pending ON thread_pull_requests(forge, host, project) WHERE handled_at = 0;
 COMMIT;
 ```
 
 The table is `threadPullRequestsV142SQL`
-(`internal/store/migration_v142_thread_pull_requests.go`). This leaves
-`receipt_own_turn` at v152, which the next section moves to v153; opening
-the database before that fails at v153.
+(`internal/store/migration_v142_thread_pull_requests.go`). The block
+records `receipt_own_turn` at v152, which the next block moves to v153, or
+at v153 when the next block already ran.
 
 #### Before main's v143
 
 main's `codex_developer_instructions` is migration v143. A database from
-before that sync holds `agent_tree_marks` as v157 and has no
-`codex_developer_instructions`. Opening it fails at v158.
+before that sync holds personal-assistant's migrations one below their
+current numbers and has no `codex_developer_instructions`. Opening it fails
+at the first one it already holds: v153, v154, v155, v156 or v158.
 
 ```sql
+.bail on
 BEGIN;
-CREATE TABLE codex_developer_instructions (
+UPDATE migration_versions SET version = -version
+ WHERE version BETWEEN 143 AND 157
+   AND NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_developer_instructions');
+UPDATE migration_versions SET version = 1 - version WHERE version < 0;
+INSERT INTO migration_versions (version, name)
+ SELECT 143, 'codex_developer_instructions'
+ WHERE NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_developer_instructions');
+CREATE TABLE IF NOT EXISTS codex_developer_instructions (
  thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
  session_ref TEXT NOT NULL CHECK(session_ref <> ''),
  digest TEXT NOT NULL CHECK(length(digest) = 64)
 );
-UPDATE migration_versions SET version = -version WHERE version BETWEEN 143 AND 157;
-UPDATE migration_versions SET version = 1 - version WHERE version < 0;
-INSERT INTO migration_versions (version, name) VALUES (143, 'codex_developer_instructions');
 COMMIT;
 ```
 

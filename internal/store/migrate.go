@@ -96,8 +96,7 @@ type Migration struct {
 	Fix func(tx *sql.Tx) error
 	// Check is an optional precondition that runs inside the migration's
 	// transaction before SQL. It refuses, with the cause, a database the
-	// migration cannot apply to; it changes nothing. Not supported on
-	// Rebuild migrations, which refuse it as they refuse a Fix.
+	// migration cannot apply to; it changes nothing.
 	Check func(tx *sql.Tx) error
 	// Rebuild marks a migration whose SQL performs a full table rebuild
 	// (CREATE new / copy / DROP old / RENAME) to change a CHECK or drop a
@@ -1745,13 +1744,13 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: spawnLineageMigrationVersion, Name: "spawn_lineage", SQL: spawnLineageV149SQL},
 	{Version: deliveryConfirmationsMigrationVersion, Name: "delivery_confirmations", SQL: deliveryConfirmationsV150SQL},
 	{Version: answerAgentMigrationVersion, Name: "answer_agent", SQL: answerAgentV151SQL},
-	{Version: agentRowsRemoteMigrationVersion, Name: "agent_rows_remote", SQL: agentRowsRemoteV152SQL, Check: refusePreSyncColumn("thread_requests", "nested_open", preSyncBeforeV142)},
-	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV153SQL, Check: refusePreSyncColumn("thread_request_receipts", "own_turn", preSyncBeforeV143)},
-	{Version: lateDeliveryRouteMigrationVersion, Name: "late_delivery_route", SQL: lateDeliveryRouteV154SQL},
-	{Version: agentRecordsMigrationVersion, Name: "agent_records", SQL: agentRecordsV155SQL},
-	{Version: ledgerIndexesMigrationVersion, Name: "ledger_indexes", SQL: ledgerIndexesV156SQL, Rebuild: true},
+	{Version: agentRowsRemoteMigrationVersion, Name: "agent_rows_remote", SQL: agentRowsRemoteV152SQL, Check: refusePreSyncColumn("thread_requests", "nested_open")},
+	{Version: receiptOwnTurnMigrationVersion, Name: "receipt_own_turn", SQL: receiptOwnTurnV153SQL, Check: refusePreSyncColumn("thread_request_receipts", "own_turn")},
+	{Version: lateDeliveryRouteMigrationVersion, Name: "late_delivery_route", SQL: lateDeliveryRouteV154SQL, Check: refusePreSyncColumn("thread_requests", "late_delivered_how")},
+	{Version: agentRecordsMigrationVersion, Name: "agent_records", SQL: agentRecordsV155SQL, Check: refusePreSyncObject("table", "agents")},
+	{Version: ledgerIndexesMigrationVersion, Name: "ledger_indexes", SQL: ledgerIndexesV156SQL, Rebuild: true, Check: refusePreSyncObject("index", "idx_thread_requests_caller_settled")},
 	{Version: wakeItemsMigrationVersion, Name: "wake_items", SQL: wakeItemsV157SQL, Fix: recordConfirmedWakeItems},
-	{Version: agentTreeMarksMigrationVersion, Name: "agent_tree_marks", SQL: agentTreeMarksV158SQL, Fix: fillAgentTreeMarks, Check: refusePreSyncColumn("thread_requests", "open_below_0", preSyncBeforeV143)},
+	{Version: agentTreeMarksMigrationVersion, Name: "agent_tree_marks", SQL: agentTreeMarksV158SQL, Fix: fillAgentTreeMarks, Check: refusePreSyncColumn("thread_requests", "open_below_0")},
 }
 
 // MigrationStep describes one pending migration as it begins, or a
@@ -2170,9 +2169,6 @@ func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, ac
 	if m.Fix != nil {
 		return fmt.Errorf("migration v%d (%s): a Rebuild migration cannot carry a Fix; split the data fixup into its own migration", m.Version, m.Name)
 	}
-	if m.Check != nil {
-		return fmt.Errorf("migration v%d (%s): a Rebuild migration cannot carry a Check", m.Version, m.Name)
-	}
 	log.Printf("store: applying rebuild migration v%d: %s", m.Version, m.Name)
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -2201,6 +2197,12 @@ func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, ac
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin rebuild v%d: %w", m.Version, err)
+	}
+	if m.Check != nil {
+		if err := m.Check(tx); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration v%d (%s) refused: %w", m.Version, m.Name, err)
+		}
 	}
 	for _, stmt := range sqlStatements(m.SQL) {
 		if index, ok := createIndexName(stmt); ok && activity != nil {

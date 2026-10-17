@@ -28,10 +28,6 @@ const OWNS_SENTENCE = 'You own that directory and keep your durable state there.
 /** A mock's launch: what it was configured with, and Claude's `--resume` value. */
 type SessionLaunch = MockSessionConfig & { resumeRef: string };
 
-/**
- * The session configs of the mocks spawned in cwd, in spawn order, once
- * there are at least `expected` of them.
- */
 /** The mocks spawned in cwd, in spawn order, once there are at least `expected` of them. */
 async function mocksIn(harness: HarnessApp, cwd: string, expected: number): Promise<MockInfo[]> {
   let seen: MockInfo[] = [];
@@ -50,6 +46,10 @@ async function mocksIn(harness: HarnessApp, cwd: string, expected: number): Prom
   return seen;
 }
 
+/**
+ * The session configs of the mocks spawned in cwd, in spawn order, once
+ * there are at least `expected` of them.
+ */
 async function configsIn(harness: HarnessApp, cwd: string, expected: number): Promise<SessionLaunch[]> {
   let seen: SessionLaunch[] = [];
   await expect

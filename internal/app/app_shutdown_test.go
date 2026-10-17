@@ -541,3 +541,31 @@ func TestShutdownStepFnObservesErrorsPerStep(t *testing.T) {
 		t.Fatalf("recorder captured %v, want errors.Is(injected)", storeErr)
 	}
 }
+
+// Once shutdown has joined the request work, a settlement is refused
+// rather than run past the join and the store's close: an idle close, a
+// handed-off wake or a wake that won its slot after their own checks
+// start nothing.
+func TestASettlementAfterShutdownIsRefused(t *testing.T) {
+	app, _ := newFullyWiredTestApp(t)
+	if err := app.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	var ran atomic.Bool
+	if app.goThreadRequestSettling(func() { ran.Store(true) }) {
+		t.Error("goThreadRequestSettling started work after shutdown")
+	}
+	// Below the lifetime check: the group itself refuses.
+	if app.threadRequestsWG.Go(func() { ran.Store(true) }) {
+		t.Error("threadRequestsWG started a member after shutdown joined it")
+	}
+	dropped := false
+	app.runThreadWakeDetached(func() { ran.Store(true) }, func() { dropped = true })
+	if !dropped {
+		t.Error("a wake refused at shutdown was not dropped")
+	}
+	app.threadRequestSettling.Wait()
+	if ran.Load() {
+		t.Fatal("work ran after shutdown")
+	}
+}

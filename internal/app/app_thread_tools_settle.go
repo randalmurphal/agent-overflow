@@ -517,15 +517,22 @@ func (a *App) runThreadSettlementWorkDetached(work threadSettlementWork) {
 
 // goThreadRequestSettling runs a settlement or a wake delivery on its own
 // goroutine, joined at shutdown through threadRequestsWG and counted in
-// threadRequestSettling.
-func (a *App) goThreadRequestSettling(fn func()) {
-	a.threadRequestsWG.Add(1)
+// threadRequestSettling, and reports whether it started it. Once shutdown
+// has begun it runs nothing: work started then could outlive the join and
+// the store. What it would have done is left to the next boot's sweeps.
+func (a *App) goThreadRequestSettling(fn func()) bool {
+	if a.lifeCtx().Err() != nil {
+		return false
+	}
 	a.threadRequestSettling.Add(1)
-	go func() {
-		defer a.threadRequestsWG.Done()
+	started := a.threadRequestsWG.Go(func() {
 		defer a.threadRequestSettling.Done()
 		fn()
-	}()
+	})
+	if !started {
+		a.threadRequestSettling.Done()
+	}
+	return started
 }
 
 // settleThreadReceipt writes one settlement on the destination row and hands

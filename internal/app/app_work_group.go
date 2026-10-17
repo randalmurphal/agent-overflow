@@ -8,14 +8,42 @@ import "sync"
 // before the Wait it might race, and panics when one lands while a Wait is
 // returning; that work cannot promise it while shutdown, the harness or a
 // test waits. Wait returns at the first moment no member runs, and a member
-// that starts after that moment is not waited for. The zero value is ready.
+// that starts after that moment is not waited for. Close refuses every
+// later Go, so shutdown joins every member Go started. The zero value is
+// ready.
 type workGroup struct {
 	mu   sync.Mutex
 	idle sync.Cond
 	n    int
 	// zeros counts the moments n reached zero, so a Wait wakes at the
 	// first one even when a member has started again since.
-	zeros uint64
+	zeros  uint64
+	closed bool
+}
+
+// Go runs fn on its own goroutine as a member and reports true, or runs
+// nothing and reports false once Close has begun.
+func (g *workGroup) Go(fn func()) bool {
+	g.mu.Lock()
+	if g.closed {
+		g.mu.Unlock()
+		return false
+	}
+	g.n++
+	g.mu.Unlock()
+	go func() {
+		defer g.Done()
+		fn()
+	}()
+	return true
+}
+
+// Close refuses every later Go and waits for the members running.
+func (g *workGroup) Close() {
+	g.mu.Lock()
+	g.closed = true
+	g.mu.Unlock()
+	g.Wait()
 }
 
 func (g *workGroup) Add(delta int) {

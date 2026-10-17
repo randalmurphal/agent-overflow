@@ -77,3 +77,34 @@ func awaitParkedIn(t *testing.T, fn string) {
 	}
 	t.Fatalf("no goroutine in %s parked in a Wait", fn)
 }
+
+// Close waits for the members running and refuses every later one.
+func TestWorkGroupCloseJoinsAndRefuses(t *testing.T) {
+	t.Parallel()
+	var g workGroup
+	release := make(chan struct{})
+	if !g.Go(func() { <-release }) {
+		t.Fatal("Go refused before Close")
+	}
+	closed := make(chan struct{})
+	go func() {
+		g.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close returned with a member running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return once the member ended")
+	}
+	ran := false
+	if g.Go(func() { ran = true }) || ran {
+		t.Fatal("Go ran a member after Close")
+	}
+	g.Close()
+}
