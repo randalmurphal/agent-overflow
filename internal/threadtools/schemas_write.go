@@ -225,7 +225,7 @@ func updateSchema(shape Shape) map[string]any {
 			"description": "Group name inside the thread's own project, created when it does not exist. null ungroups. A thread joins groups only on its own computer, and a group of the same name in another project is a different group. Joining or leaving a group unpins the thread; a pin in the same call applies after the move.",
 		},
 	}
-	description := "Organize threads the way the sidebar does: rename, archive, pin to the front or back burner, or group them, many at once. Set at least one of title, archived, pin or group. The whole patch is checked against each thread before anything is touched, so a thread is either fully updated or untouched with a reason. Do this when the user asks, or for threads you spawned once you are done with them."
+	description := "Organize threads the way the sidebar does: rename, archive, pin to the front or back burner, or group them, many at once. Set at least one of title, archived, pin or group. The whole patch is checked against each thread before anything is touched, so a thread is either fully updated or untouched with a reason."
 	if shape.Paired() {
 		description += " Threads on other computers are grouped by computer and applied there; one unreachable computer fails only its own ids."
 	}

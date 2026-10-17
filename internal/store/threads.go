@@ -1055,6 +1055,49 @@ func (s *Store) MarkThreadReadNow(ctx context.Context, id string) (Thread, bool,
 	return rows[0], true, nil
 }
 
+// MarkThreadReadThrough stamps last_read_at up to at, a turn's completion,
+// and never backward: the read mark a spawned thread gets when its turn
+// answers its spawner (docs/specs/standing-agents.md ruling 30). Unlike
+// MarkThreadReadNow it reads nothing later than at, so a turn the user
+// caused after the one that answered still shows as unread. A row whose
+// marker already covers at (NULL, "never tracked", included: that reads as
+// read) or that is gone changes nothing and hands back (zero row, false,
+// nil). The context bounds the wait for the writer connection, as
+// MarkThreadReadNow's does.
+func (s *Store) MarkThreadReadThrough(ctx context.Context, id string, at int64) (Thread, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Thread{}, false, fmt.Errorf("store: begin mark thread read through %s: %w", id, err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx,
+		`UPDATE threads SET last_read_at = ? WHERE id = ? AND last_read_at IS NOT NULL AND last_read_at < ?`, at, id, at)
+	if err != nil {
+		return Thread{}, false, fmt.Errorf("store: mark thread read through %s: %w", id, err)
+	}
+	changed, err := rowsChanged(result, fmt.Sprintf("store: mark thread read through %s", id))
+	if err != nil {
+		return Thread{}, false, err
+	}
+	if !changed {
+		if err := tx.Commit(); err != nil {
+			return Thread{}, false, fmt.Errorf("store: commit mark thread read through no-op %s: %w", id, err)
+		}
+		return Thread{}, false, nil
+	}
+	rows, err := listThreadsByIDTx(tx, []string{id})
+	if err != nil {
+		return Thread{}, false, fmt.Errorf("store: read back mark thread read through %s: %w", id, err)
+	}
+	if len(rows) != 1 {
+		return Thread{}, false, fmt.Errorf("store: read back mark thread read through %s: %d rows, want 1", id, len(rows))
+	}
+	if err := tx.Commit(); err != nil {
+		return Thread{}, false, fmt.Errorf("store: commit mark thread read through %s: %w", id, err)
+	}
+	return rows[0], true, nil
+}
+
 // MarkThreadUnread stamps last_read_at to zero. NULL is reserved for
 // "never tracked" and is treated as read by the frontend so old rows do not
 // light up on first launch; an explicit unread action needs a concrete value

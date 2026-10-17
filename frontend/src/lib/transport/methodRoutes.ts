@@ -248,6 +248,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1673567995: 'thread', // MarkDiffReviewCommentsSent
 	1480646012: 'thread', // MarkThreadRead
 	236597375: 'thread', // MarkThreadUnread
+	1726279585: 'home', // MarkThreadsRead
 	3197504008: 'thread', // MintAttachmentDownloadTicket
 	1857144453: 'thread', // MintAttachmentUploadTicket
 	400809065: 'home', // MintDevicePairing

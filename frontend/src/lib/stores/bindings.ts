@@ -60,6 +60,7 @@ export {
   ListArchivedThreads,
   ListThreads,
   MarkThreadRead,
+  MarkThreadsRead,
   MarkThreadUnread,
   PinThread,
   SetThreadPinGroup,

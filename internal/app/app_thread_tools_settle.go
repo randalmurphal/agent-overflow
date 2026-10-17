@@ -42,6 +42,12 @@ func (a *App) installThreadRequestObserver() {
 			if !sessionEnded && !turnEnded {
 				return
 			}
+			// A read mark held for a turn that answered mid-turn has its
+			// own gate, one map read, since that answer already left the
+			// running set.
+			if a.hasAnsweredReads(threadID) && a.lifeCtx().Err() == nil {
+				a.goThreadRequestSettling(func() { a.finishAnsweredReads(threadID, sessionEnded) })
+			}
 			// The gate is read here, on the event worker, because that is what
 			// keeps a turn end on a thread with no requests to one map read
 			// and no goroutine.
@@ -456,6 +462,10 @@ type threadSettlementWork struct {
 	// late marks it as the second wake of a late reply.
 	wake bool
 	late bool
+	// answered is the settled receipt when its answer reached a caller on
+	// this computer, so the thread that answered may be marked read
+	// (markAnsweredRead). Nil for every other settlement.
+	answered *store.ThreadRequestReceipt
 }
 
 // dropScratchThread and keepScratchThread name what a settlement does with
@@ -477,6 +487,9 @@ func (a *App) runThreadSettlementWork(work threadSettlementWork) {
 	a.refreshThreadToolsAdmission(work.targetThread)
 	if work.wake {
 		a.deliverThreadWake(work.token, work.late)
+	}
+	if work.answered != nil {
+		a.markAnsweredRead(*work.answered)
 	}
 	if work.dropScratch {
 		// The scratch thread has done its work. The answer lives in the
@@ -610,6 +623,8 @@ func (a *App) settleReadReceiptLocked(
 	}
 	if result.Collected {
 		work.wake = a.collectionWakeOwed(token, result.Notify)
+		answered := result.Receipt
+		work.answered = &answered
 	}
 	return work, true, nil
 }

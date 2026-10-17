@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -317,19 +318,51 @@ func (a *App) RenameThread(id string, title string) error {
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) MarkThreadRead(id string) error {
+	_, _, err := a.markThreadReadLocked(id)
+	return err
+}
+
+// MarkThreadsRead is MarkThreadRead for every thread named, in one call: an
+// agent row's or a group's Mark All Read (docs/specs/standing-agents.md
+// ruling 31). Each thread takes its own lock in turn, never two at once,
+// and each changed row is announced. It returns the rows it changed; a
+// thread that fails does not stop the rest, and the failures come back
+// joined, naming each thread.
+//
+//ao:scope threads:operate
+//ao:route home
+func (a *App) MarkThreadsRead(ids []string) ([]store.Thread, error) {
+	changedRows := make([]store.Thread, 0, len(ids))
+	var errs []error
+	for _, id := range ids {
+		row, changed, err := a.markThreadReadLocked(id)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("mark %s read: %w", id, err))
+			continue
+		}
+		if changed {
+			changedRows = append(changedRows, row)
+		}
+	}
+	return changedRows, errors.Join(errs...)
+}
+
+// markThreadReadLocked is one thread's stamp under its mutation lock, with
+// the deadline MarkThreadRead gives it, announcing the row when it moved.
+func (a *App) markThreadReadLocked(id string) (store.Thread, bool, error) {
 	unlock, err := a.threadApplication().LockMutable(context.Background(), id)
 	if err != nil {
-		return err
+		return store.Thread{}, false, err
 	}
 	defer unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 	defer cancel()
 	row, changed, err := a.threadApplication().MarkRead(ctx, id)
 	if err != nil {
-		return err
+		return store.Thread{}, false, err
 	}
 	a.announceThreadIfChanged(triage.ThreadActionFull, row.ID, changed)
-	return nil
+	return row, changed, nil
 }
 
 // MarkThreadUnread stamps last_read_at to zero. NULL is reserved for

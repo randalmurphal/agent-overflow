@@ -430,6 +430,10 @@ thread_status lists them, and thread_cancel with a label stops one.
 A script outside the app can message the assistant's thread:
 
     agent-overflow thread send <thread-id> "text"
+
+What pinning, groups, archive, the done fold and unread dots do in the
+sidebar is in the Organizing paragraph of the thread tools guide every
+session carries.
 `, thread.Title, thread.Title, agent.ID, thread.ID, project)
 }
 

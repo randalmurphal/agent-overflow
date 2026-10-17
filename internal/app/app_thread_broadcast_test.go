@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -245,6 +246,52 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 			t.Fatalf("MarkThreadRead(repeat): %v", err)
 		}
 		broadcasts.expectSilence("re-reading a thread whose marker is already current")
+	})
+
+	t.Run("mark all read", func(t *testing.T) {
+		app := newTestAppWithStore(t)
+		first := mustCreateBroadcastThread(t, app)
+		second := mustCreateBroadcastThread(t, app)
+		already := mustCreateBroadcastThread(t, app)
+		for _, thread := range []store.Thread{first, second, already} {
+			mustCompleteBroadcastTurn(t, app, thread.ID)
+		}
+		for _, thread := range []store.Thread{first, second} {
+			if err := app.MarkThreadUnread(thread.ID); err != nil {
+				t.Fatalf("MarkThreadUnread: %v", err)
+			}
+		}
+		if err := app.MarkThreadRead(already.ID); err != nil {
+			t.Fatalf("MarkThreadRead: %v", err)
+		}
+		broadcasts := captureThreadBroadcasts(t, app)
+
+		// A gone thread fails alone; the rest are still marked.
+		rows, err := app.MarkThreadsRead([]string{first.ID, "gone-thread", second.ID, already.ID})
+		if err == nil || !strings.Contains(err.Error(), "gone-thread") {
+			t.Fatalf("MarkThreadsRead error = %v, want one naming the gone thread", err)
+		}
+		if len(rows) != 2 || rows[0].ID != first.ID || rows[1].ID != second.ID {
+			t.Fatalf("MarkThreadsRead rows = %+v, want the two it changed", rows)
+		}
+		if len(broadcasts.events) != 2 {
+			t.Fatalf("emitted %d thread:updated events, want one per changed row: %+v", len(broadcasts.events), broadcasts.events)
+		}
+		for i, want := range []string{first.ID, second.ID} {
+			frame := broadcasts.events[i]
+			if frame.Action != triage.ThreadActionFull || frame.Thread == nil || frame.Thread.ID != want {
+				t.Fatalf("frame %d = %+v, want the full row of %s", i, frame, want)
+			}
+			if frame.Thread.LastReadAt == nil || frame.Thread.LatestTurnCompletedAt == nil || *frame.Thread.LastReadAt < *frame.Thread.LatestTurnCompletedAt {
+				t.Fatalf("frame %d row is still unread: %+v", i, frame.Thread)
+			}
+		}
+
+		broadcasts.reset()
+		if rows, err := app.MarkThreadsRead([]string{first.ID, second.ID}); err != nil || len(rows) != 0 {
+			t.Fatalf("MarkThreadsRead(repeat) = %+v, %v; want nothing changed", rows, err)
+		}
+		broadcasts.expectSilence("marking read threads read")
 	})
 
 	t.Run("reasoning effort", func(t *testing.T) {

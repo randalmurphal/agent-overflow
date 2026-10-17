@@ -3088,3 +3088,65 @@ func TestMarkThreadReadNowClampsToImportedErrorItem(t *testing.T) {
 		t.Fatal("HasFailedTurn = true after reading the imported error, want false")
 	}
 }
+
+// TestMarkThreadReadThroughStopsAtTheAnsweringTurn: the read mark an answer
+// gives a spawned thread covers that turn and no later one, never moves the
+// marker backward, and leaves a never-tracked or missing row alone.
+func TestMarkThreadReadThroughStopsAtTheAnsweringTurn(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	thr := makeThread("thread-read-through", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	base := time.Now().UnixMilli() + 60_000
+	insertCompletedTurn(t, s, thr.ID, "turn-answer", base, base+1000)
+
+	row, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, base+1000)
+	if err != nil || !changed {
+		t.Fatalf("MarkThreadReadThrough = changed %v, %v; want a change", changed, err)
+	}
+	if row.LastReadAt == nil || *row.LastReadAt != base+1000 {
+		t.Fatalf("returned LastReadAt = %v, want %d", row.LastReadAt, base+1000)
+	}
+
+	// A later turn the user caused stays unread: the mark covered only the
+	// turn that answered.
+	if err := s.InsertTurn(Turn{TurnID: "turn-later", ThreadID: thr.ID, TurnIndex: 1, StartedAt: base + 2000}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	if err := s.UpdateTurnCompleted("turn-later", base+3000, "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted: %v", err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if *got.LastReadAt != base+1000 || *got.LatestTurnCompletedAt != base+3000 {
+		t.Fatalf("LastReadAt %d, LatestTurnCompletedAt %d; want %d and %d", *got.LastReadAt, *got.LatestTurnCompletedAt, base+1000, base+3000)
+	}
+
+	// Never backward, and a repeat is a no-op.
+	for _, at := range []int64{base, base + 1000} {
+		if _, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, at); err != nil || changed {
+			t.Fatalf("MarkThreadReadThrough(%d) = changed %v, %v; want no change", at, changed, err)
+		}
+	}
+	got, _ = s.GetThread(thr.ID)
+	if *got.LastReadAt != base+1000 {
+		t.Fatalf("LastReadAt = %d after older marks, want %d", *got.LastReadAt, base+1000)
+	}
+
+	// A missing row is no error and no change.
+	if _, changed, err := s.MarkThreadReadThrough(ctx, "thread-gone", base); err != nil || changed {
+		t.Fatalf("missing row = changed %v, %v; want no change, no error", changed, err)
+	}
+
+	// NULL means never tracked, which reads as read: it stays NULL.
+	if _, err := s.db.Exec(`UPDATE threads SET last_read_at = NULL WHERE id = ?`, thr.ID); err != nil {
+		t.Fatalf("clear last_read_at: %v", err)
+	}
+	if _, changed, err := s.MarkThreadReadThrough(ctx, thr.ID, base+5000); err != nil || changed {
+		t.Fatalf("NULL marker = changed %v, %v; want no change", changed, err)
+	}
+}

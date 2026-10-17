@@ -3230,6 +3230,20 @@ export function MarkThreadUnread(id: string): $CancellablePromise<void> {
 }
 
 /**
+ * MarkThreadsRead is MarkThreadRead for every thread named, in one call: an
+ * agent row's or a group's Mark All Read (docs/specs/standing-agents.md
+ * ruling 31). Each thread takes its own lock in turn, never two at once,
+ * and each changed row is announced. It returns the rows it changed; a
+ * thread that fails does not stop the rest, and the failures come back
+ * joined, naming each thread.
+ */
+export function MarkThreadsRead(ids: string[]): $CancellablePromise<store$0.Thread[]> {
+    return $Call.ByID(1726279585, ids).then(($result: any) => {
+        return $$createType119($result);
+    });
+}
+
+/**
  * MintAttachmentDownloadTicket authorizes ONE read of one thread-owned
  * attachment and returns the relative URL its bytes come from.
  * 
