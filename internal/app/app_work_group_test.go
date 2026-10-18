@@ -120,12 +120,13 @@ func TestWorkGroupCloseJoinsAndRefuses(t *testing.T) {
 // the group.
 func TestWorkGroupMembersStartOnlyThroughGo(t *testing.T) {
 	t.Parallel()
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	// Application tests run from the repository root.
+	files, err := filepath.Glob(filepath.Join("internal", "app", "*.go"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no package sources found: %v", err)
 	}
 	for _, file := range files {
-		if strings.HasSuffix(file, "_test.go") || file == "app_work_group.go" {
+		if strings.HasSuffix(file, "_test.go") || filepath.Base(file) == "app_work_group.go" {
 			continue
 		}
 		src, err := os.ReadFile(file)

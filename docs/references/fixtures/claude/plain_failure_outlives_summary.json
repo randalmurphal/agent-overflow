@@ -49,7 +49,7 @@
       "task_id": "b6d8rvqwm",
       "tool_use_id": "toolu_01Su1Ua2WsLvrJEBmTZF6srV",
       "status": "failed",
-      "output_file": "/private/tmp/claude-502/-private-tmp-ao-claude-bg-20260423-105853-workspace-plain-failure/ff78c28a-44c5-4b16-8234-6598b8e28c42/tasks/b6d8rvqwm.output",
+      "output_file": "/private/tmp/ao-fixture/-private-tmp-ao-claude-bg-20260423-105853-workspace-plain-failure/ff78c28a-44c5-4b16-8234-6598b8e28c42/tasks/b6d8rvqwm.output",
       "summary": "Background command \"Background spike task that sleeps, prints, and exits with code 7\" failed with exit code 7",
       "session_id": "ff78c28a-44c5-4b16-8234-6598b8e28c42",
       "uuid": "6adc313d-60e5-49ff-90c0-9128c363f794"
