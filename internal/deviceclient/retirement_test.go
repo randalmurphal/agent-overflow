@@ -85,9 +85,6 @@ func TestRenewalCompletesForWaitersWhenTheLeaderIsCancelled(t *testing.T) {
 // A lock another process holds cannot wedge this client's mutex behind a
 // caller with no deadline.
 func TestSessionTransactionBoundsItsLockWait(t *testing.T) {
-	saved := profileWriteTimeout
-	profileWriteTimeout = 40 * time.Millisecond
-	t.Cleanup(func() { profileWriteTimeout = saved })
 	client, dir := openAgainst(t, newBackend(t), nil)
 	release, err := lockProfile(t.Context(), dir, "backend-a.json")
 	if err != nil {
@@ -98,6 +95,11 @@ func TestSessionTransactionBoundsItsLockWait(t *testing.T) {
 			t.Error(err)
 		}
 	}()
+	// Shortened only once the fixture is written: its key and session
+	// writes take the same bound and would otherwise race it.
+	saved := profileWriteTimeout
+	profileWriteTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { profileWriteTimeout = saved })
 	err = client.sessionTransaction(context.Background(), func(string, *Session) error { return nil })
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("contended transaction: %v", err)

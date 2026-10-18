@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -289,10 +291,13 @@ func TestCodexSendRequestContextCancel(t *testing.T) {
 
 func TestCodexSendRequestReturnsErrorWhenSessionStops(t *testing.T) {
 	t.Parallel()
+	// The child marks the request line as read, so the session stops with
+	// the request on the wire rather than between registering and writing it.
+	received := filepath.Join(t.TempDir(), "received")
 	ctx, cancelProc := context.WithCancel(context.Background())
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary: "sh",
-		Args:   []string{"-c", "cat >/dev/null"},
+		Args:   []string{"-c", `IFS= read -r line && : > "$0"; cat >/dev/null`, received},
 	})
 	if err != nil {
 		t.Fatalf("spawn quiet process: %v", err)
@@ -322,20 +327,23 @@ func TestCodexSendRequestReturnsErrorWhenSessionStops(t *testing.T) {
 		errCh <- err
 	}()
 
-	deadline := time.Now().Add(2 * time.Second)
-	observedPending := false
-	for time.Now().Before(deadline) {
-		s.mu.Lock()
-		pendingCount := len(s.pending)
-		s.mu.Unlock()
-		if pendingCount == 1 {
-			observedPending = true
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(received); err == nil {
 			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the child to read the request")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !observedPending {
-		t.Fatal("timed out waiting for pending request registration")
+	s.mu.Lock()
+	pendingCount := len(s.pending)
+	s.mu.Unlock()
+	if pendingCount != 1 {
+		t.Fatalf("pending requests = %d, want the written request", pendingCount)
 	}
 
 	if err := s.Close(); err != nil {
