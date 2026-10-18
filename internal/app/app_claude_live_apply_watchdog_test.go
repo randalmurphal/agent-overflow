@@ -120,13 +120,17 @@ func TestWatchdogWaitsWhileATurnRuns(t *testing.T) {
 // cmd-2 (a tombstone: its verdict decides nothing), and cmd-2 is confirmed
 // by the CLI. Neither may produce a revert or a restart when the windows
 // later expire.
+//
+// The expiries are driven by hand so both entries are settled before either
+// sweep runs; the window override is long enough that no armed timer can
+// fire underneath the sequence.
 func TestWatchdogIgnoresAnsweredAndSupersededApplies(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-watchdog-settled", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
 	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
-	armWatchdogWindow(app, 20*time.Millisecond)
+	armWatchdogWindow(app, 10*time.Second)
 
 	prev := optimistic
 	prev.ReasoningEffort = provider.EffortHigh
@@ -137,6 +141,8 @@ func TestWatchdogIgnoresAnsweredAndSupersededApplies(t *testing.T) {
 	app.observeClaudeCommandResult(id, token,
 		commandResultEvent(t, "cmd-2", "Set effort level to xhigh (this session only): deep reasoning"))
 
+	app.sweepUnconfirmedClaudeLiveApply("cmd-1")
+	app.sweepUnconfirmedClaudeLiveApply("cmd-2")
 	assertNoRestartWithin(t, started, 200*time.Millisecond, "one apply was superseded and the other was confirmed")
 	if app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{Effort: "xhigh"}) {
 		t.Fatal("the watchdog degraded an axis whose apply was confirmed")
@@ -283,13 +289,16 @@ func TestWatchdogRestartsTheWindowWhenTheTurnDrains(t *testing.T) {
 // ends before the first window expires, the only sweep that ever runs sees an
 // idle thread and a full window's worth of silence — evidence it does not
 // have. The deferral is therefore stamped at REGISTRATION, not by a sweep.
+//
+// Driven by hand, like the test above: no sweep runs while the turn is busy,
+// so only the registration can have recorded it.
 func TestWatchdogRestartsTheWindowWhenATurnDrainsInsideTheFirstOne(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	id, token := "thread-watchdog-drain-early", "tok-1"
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", FastMode: true}
 	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
-	armWatchdogWindow(app, 80*time.Millisecond)
+	armWatchdogWindow(app, 10*time.Second)
 	liveness := installClaudeLivenessForThread(app, id)
 	liveness.ActiveTurns.Store(1)
 
@@ -298,11 +307,12 @@ func TestWatchdogRestartsTheWindowWhenATurnDrainsInsideTheFirstOne(t *testing.T)
 	app.registerClaudeLiveConfigApplies(id, token, prev,
 		claude.LiveUpdate{FastMode: claude.FastModeOn}, claude.LiveApplyReceipt{FastCommandUUID: "cmd-fast"})
 
-	// Drains well inside the first window, so the t=80 sweep sees an idle
+	// Drains inside the first window, so the first sweep sees an idle
 	// thread. Without the registration-time stamp it declines there.
 	liveness.ActiveTurns.Store(0)
+	app.sweepUnconfirmedClaudeLiveApply("cmd-fast")
 
-	assertNoRestartWithin(t, started, 150*time.Millisecond,
+	assertNoRestartWithin(t, started, 50*time.Millisecond,
 		"the turn holding the command drained inside the first window, so no window has measured the CLI yet")
 	if _, ok := app.peekClaudeLiveConfigApply("cmd-fast"); !ok {
 		t.Fatal("a sweep decided an apply whose whole window had been held by a turn")
@@ -313,6 +323,7 @@ func TestWatchdogRestartsTheWindowWhenATurnDrainsInsideTheFirstOne(t *testing.T)
 
 	// The successor window is a real one: with the CLI still silent through
 	// it, the apply is declined exactly as an undeferred one would be.
+	app.sweepUnconfirmedClaudeLiveApply("cmd-fast")
 	waitRestart(t, started, id)
 	if !app.claudeLiveApplyIsDegraded(token, claude.LiveUpdate{FastMode: claude.FastModeOn}) {
 		t.Fatal("the successor window did not decide the unanswered fast apply")

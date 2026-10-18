@@ -17,8 +17,16 @@ import (
 // Watcher watches the shared workflow tree and every project-local workflow
 // tree beneath one configuration root.
 type Watcher struct {
-	root      string
-	debounce  time.Duration
+	root     string
+	debounce time.Duration
+	// after starts one debounce wait. It is time.After in production;
+	// tests replace it before start so a burst's window stays open until
+	// they release it.
+	after func(time.Duration) <-chan time.Time
+	// handled, when set, is called with each event's path once the loop
+	// has handled it. Nil in production; tests use it to know the loop
+	// has caught up with the changes they made.
+	handled   func(path string)
 	emit      func()
 	watcher   *fsnotify.Watcher
 	watched   map[string]struct{}
@@ -30,6 +38,17 @@ type Watcher struct {
 // NewWatcher starts a recursive workflow-definition watcher. emit is called
 // after a trailing-edge debounce whenever a relevant tree changes.
 func NewWatcher(root string, debounce time.Duration, emit func()) (*Watcher, error) {
+	definitionsWatcher, err := openWatcher(root, debounce, emit)
+	if err != nil {
+		return nil, err
+	}
+	definitionsWatcher.start()
+	return definitionsWatcher, nil
+}
+
+// openWatcher arms the watches without starting the loop, so a test can
+// replace fields the loop reads before start.
+func openWatcher(root string, debounce time.Duration, emit func()) (*Watcher, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("workflow definitions watcher: root is required")
 	}
@@ -51,15 +70,19 @@ func NewWatcher(root string, debounce time.Duration, emit func()) (*Watcher, err
 		return nil, fmt.Errorf("workflow definitions watcher: create watcher: %w", err)
 	}
 	definitionsWatcher := &Watcher{
-		root: filepath.Clean(root), debounce: debounce, emit: emit, watcher: fsWatcher,
+		root: filepath.Clean(root), debounce: debounce, after: time.After, emit: emit, watcher: fsWatcher,
 		watched: make(map[string]struct{}), done: make(chan struct{}),
 	}
 	if err := definitionsWatcher.refreshWatches(); err != nil {
 		return nil, errors.Join(err, fsWatcher.Close())
 	}
-	definitionsWatcher.waitGroup.Add(1)
-	go definitionsWatcher.loop()
 	return definitionsWatcher, nil
+}
+
+// start runs the event loop. Call it once, after openWatcher.
+func (w *Watcher) start() {
+	w.waitGroup.Add(1)
+	go w.loop()
 }
 
 // Close stops the watcher. It is safe to call more than once.
@@ -75,28 +98,10 @@ func (w *Watcher) Close() error {
 
 func (w *Watcher) loop() {
 	defer w.waitGroup.Done()
-	var timer *time.Timer
+	// timerChannel is the pending debounce wait. Each queued event replaces
+	// it, so only the wait started by the last event of a burst can emit; an
+	// abandoned wait's channel is never read again.
 	var timerChannel <-chan time.Time
-	defer func() {
-		if timer != nil {
-			timer.Stop()
-		}
-	}()
-	queueEmit := func() {
-		if timer == nil {
-			timer = time.NewTimer(w.debounce)
-			timerChannel = timer.C
-			return
-		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timer.Reset(w.debounce)
-		timerChannel = timer.C
-	}
 
 	for {
 		select {
@@ -106,21 +111,11 @@ func (w *Watcher) loop() {
 			if !ok {
 				return
 			}
-			// The root watch exists only to discover the workflows/ and projects/
-			// trees. Database and settings churn at the root is irrelevant.
-			if !w.inDefinitionTree(event.Name) {
-				continue
+			if w.handleEvent(event) {
+				timerChannel = w.after(w.debounce)
 			}
-			if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
-				w.forgetWatchTree(event.Name)
-			}
-			if event.Op&(fsnotify.Create|fsnotify.Rename) != 0 {
-				if err := w.refreshWatches(); err != nil {
-					log.Printf("workflow definitions watcher refresh: %v", err)
-				}
-			}
-			if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) != 0 && w.relevant(event.Name) {
-				queueEmit()
+			if w.handled != nil {
+				w.handled(event.Name)
 			}
 		case err, ok := <-w.watcher.Errors:
 			if !ok {
@@ -132,6 +127,25 @@ func (w *Watcher) loop() {
 			w.emit()
 		}
 	}
+}
+
+// handleEvent keeps the watches in step with one event and reports whether
+// it changed a definition tree.
+func (w *Watcher) handleEvent(event fsnotify.Event) bool {
+	// The root watch exists only to discover the workflows/ and projects/
+	// trees. Database and settings churn at the root is irrelevant.
+	if !w.inDefinitionTree(event.Name) {
+		return false
+	}
+	if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+		w.forgetWatchTree(event.Name)
+	}
+	if event.Op&(fsnotify.Create|fsnotify.Rename) != 0 {
+		if err := w.refreshWatches(); err != nil {
+			log.Printf("workflow definitions watcher refresh: %v", err)
+		}
+	}
+	return event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) != 0 && w.relevant(event.Name)
 }
 
 func (w *Watcher) refreshWatches() error {

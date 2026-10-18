@@ -458,11 +458,12 @@ func TestManagerEnqueueRoundTrip(t *testing.T) {
 func TestManagerConcurrentEnqueueAllWritten(t *testing.T) {
 	dir := t.TempDir()
 	m := NewManager(ManagerConfig{
-		RootDir:      dir,
-		QueueSize:    1024,
-		WriterConfig: WriterConfig{FsyncEvery: 1},
-		IdleTimeout:  100 * time.Second,
-		Enabled:      true,
+		RootDir:   dir,
+		QueueSize: 1024,
+		// The default fsync batching: this case is about concurrent
+		// enqueues, and a sync per record makes the drain disk-bound.
+		IdleTimeout: 100 * time.Second,
+		Enabled:     true,
 	})
 	defer m.Shutdown(context.Background())
 
