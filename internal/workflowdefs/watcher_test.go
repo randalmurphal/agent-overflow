@@ -143,8 +143,23 @@ func TestWatcherCloseDropsAPendingWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	observed.expectNoEmit(t, "closing with a pending debounce wait")
-	if left := watcherGoroutines(); len(left) != 0 {
+	if left := awaitNoWatcherGoroutines(5 * time.Second); len(left) != 0 {
 		t.Fatalf("Close left %d watcher goroutines:\n%s", len(left), strings.Join(left, "\n\n"))
+	}
+}
+
+// awaitNoWatcherGoroutines retries until no watcher goroutine is left or the
+// deadline passes, and returns what is left. Close joins each goroutine on a
+// signal sent from its deferred calls, so a joined goroutine can still be
+// finishing them when Close returns.
+func awaitNoWatcherGoroutines(within time.Duration) []string {
+	deadline := time.Now().Add(within)
+	for {
+		left := watcherGoroutines()
+		if len(left) == 0 || time.Now().After(deadline) {
+			return left
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
