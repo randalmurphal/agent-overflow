@@ -16,7 +16,7 @@ import (
 func TestAFIFOInTheHomeIsRefusedWithoutBlocking(t *testing.T) {
 	t.Parallel()
 	home := writeHome(t, map[string]string{MemoryIndexFile: "index"})
-	for _, name := range []string{InstructionsFile, "verification.md"} {
+	for _, name := range []string{InstructionsFile, "verification.md", memoryDir} {
 		if err := syscall.Mkfifo(filepath.Join(home, name), 0o600); err != nil {
 			t.Skip("no FIFOs here:", err)
 		}
@@ -25,6 +25,11 @@ func TestAFIFOInTheHomeIsRefusedWithoutBlocking(t *testing.T) {
 		text, problem := readContext(t, home, InstructionsFile)
 		if problem == nil || !strings.Contains(problem.Error(), "not a regular file") || !strings.HasPrefix(text, instructionsHeading) {
 			t.Errorf("ReadContext = %q, %v", text, problem)
+		}
+	})
+	within(t, "the index check", func() {
+		if notices, problem := indexCheck(t, home); problem == nil || !strings.HasPrefix(notices, "[Index check: memory/ could not be read: ") {
+			t.Errorf("index check = %q, %v", notices, problem)
 		}
 	})
 	within(t, "RunHook", func() {

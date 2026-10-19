@@ -87,7 +87,7 @@ func TestCodexDeveloperInstructionsCarryTheHomeBlock(t *testing.T) {
 	f := newThreadToolsFixture(t)
 	thread := f.thread(t, "agent")
 	row := testAssistant(t, f.app, thread.ID)
-	agent, err := f.app.readStandingAgentSession(thread)
+	agent, err := f.app.readStandingAgentSession(thread, "")
 	block := agent.Block
 	if err != nil || len(agent.Problems) > 0 || !strings.HasPrefix(block, standingAgentIdentity(thread.Title, thread.ID, row.Home)) {
 		t.Fatalf("readStandingAgentSession = %+v, %v", agent, err)
@@ -330,8 +330,9 @@ func TestAnAssistantRecordDeletedForgetsItsCachedRole(t *testing.T) {
 	}
 }
 
-// codexHookMatchers returns the SessionStart matcher of every logged request
-// for method, "" for a request that registers no hooks.
+// codexHookMatchers returns, for every logged request for method, the
+// matchers of its SessionStart groups joined by ";", "" for a request that
+// registers no hooks.
 func codexHookMatchers(t *testing.T, requestLog, method string) []string {
 	t.Helper()
 	data, err := os.ReadFile(requestLog)
@@ -355,19 +356,22 @@ func codexHookMatchers(t *testing.T, requestLog, method string) []string {
 		if json.Unmarshal([]byte(line), &req) != nil || req.Method != method {
 			continue
 		}
-		matcher := ""
-		if groups := req.Params.Config.Hooks.SessionStart; len(groups) == 1 {
-			matcher = groups[0].Matcher
+		groups := make([]string, 0, len(req.Params.Config.Hooks.SessionStart))
+		for _, group := range req.Params.Config.Hooks.SessionStart {
+			groups = append(groups, group.Matcher)
 		}
-		matchers = append(matchers, matcher)
+		matchers = append(matchers, strings.Join(groups, ";"))
 	}
 	return matchers
 }
 
-// A Codex assistant's start is recorded as owed until a turn delivers it,
-// and a session that ends first leaves the next one to register the hooks
-// for its resume. An ordinary thread records nothing.
-func TestCodexAssistantCarriesAnOwedDeliveryToItsNextSession(t *testing.T) {
+// A Codex assistant's resume registers for the resume the hook of each home
+// file whose context the thread's model did not receive as it reads now:
+// every file the thread holds no receipt for, then only the file that
+// changed since its receipt. The receipts the session keeps are the digests
+// of what arrived, under the provider session. An ordinary thread registers
+// no hooks.
+func TestCodexAssistantResumeRunsTheHooksWhoseFileChanged(t *testing.T) {
 	t.Parallel()
 	app, bus := setupE2EApp(t)
 	requestLog := filepath.Join(t.TempDir(), "requests.jsonl")
@@ -378,37 +382,85 @@ func TestCodexAssistantCarriesAnOwedDeliveryToItsNextSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testAssistant(t, app, thread.ID)
+	row := testAssistant(t, app, thread.ID)
+	plain := provider.SessionStartHookSources
+	resume := provider.SessionStartResumeSources
+	restart := func() {
+		t.Helper()
+		if err := app.StopSession(thread.ID); err != nil {
+			t.Fatal(err)
+		}
+		startCodexSessionAndWait(t, app, bus, thread.ID)
+	}
 
 	startCodexSessionAndWait(t, app, bus, thread.ID)
 	awaitSessionRef(t, app, thread.ID, "codex-root")
-	if got, err := app.store.CodexSessionStartPending(thread.ID, "codex-root"); err != nil || got != string(provider.SessionStartAfterStart) {
-		t.Fatalf("owed after a fresh start = %q, %v; want start", got, err)
+	if got := codexHookMatchers(t, requestLog, "thread/start"); strings.Join(got, ",") != plain+";"+plain {
+		t.Fatalf("thread/start matchers = %q", got)
 	}
-	if err := app.StopSession(thread.ID); err != nil {
+	// No turn delivered the start, so the resume runs both hooks.
+	restart()
+	if got := codexHookMatchers(t, requestLog, "thread/resume"); strings.Join(got, ",") != resume+";"+resume {
+		t.Fatalf("thread/resume matchers = %q, want both hooks registered for the resume", got)
+	}
+
+	// What the session keeps is the digest of what arrived.
+	thread, err = app.store.GetThread(thread.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	startCodexSessionAndWait(t, app, bus, thread.ID)
-	if got := codexHookMatchers(t, requestLog, "thread/start"); strings.Join(got, ",") != provider.SessionStartHookSources {
-		t.Errorf("thread/start matchers = %q", got)
+	agent, err := app.readStandingAgentSession(thread, "codex-root")
+	if err != nil || agent.Receipts == nil {
+		t.Fatalf("readStandingAgentSession = %+v, %v", agent, err)
 	}
-	if got := codexHookMatchers(t, requestLog, "thread/resume"); strings.Join(got, ",") != provider.SessionStartHookSources+"|resume" {
-		t.Errorf("thread/resume matchers = %q, want the hooks registered for the resume", got)
+	for _, file := range agenthome.ContextFiles {
+		text, _ := agenthome.ReadContext(row.Home, file)
+		if err := agent.Receipts.Keep("codex-root", file.Name, text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	received, err := app.store.SessionStartReceipts(thread.ID, "codex-root")
+	if err != nil || len(received) != len(agenthome.ContextFiles) {
+		t.Fatalf("receipts = %v, %v", received, err)
+	}
+	for _, file := range agenthome.ContextFiles {
+		if text, _ := agenthome.ReadContext(row.Home, file); received[file.Name] != agenthome.ContextDigest(text) {
+			t.Fatalf("receipt of %s = %q", file.Name, received[file.Name])
+		}
+	}
+	restart()
+	if got := codexHookMatchers(t, requestLog, "thread/resume"); len(got) != 2 || got[1] != plain+";"+plain {
+		t.Fatalf("thread/resume matchers = %q, want no hook registered for an unchanged home", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(row.Home, agenthome.MemoryIndexFile), []byte("- a new fact\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restart()
+	if got := codexHookMatchers(t, requestLog, "thread/resume"); len(got) != 3 || got[2] != plain+";"+resume {
+		t.Fatalf("thread/resume matchers = %q, want MEMORY.md registered for the resume", got)
+	}
+
+	// A compaction forgets the receipts: what it dropped is no longer held.
+	if err := agent.Receipts.Forget(); err != nil {
+		t.Fatal(err)
+	}
+	if received, err := app.store.SessionStartReceipts(thread.ID, "codex-root"); err != nil || len(received) != 0 {
+		t.Fatalf("receipts after Forget = %v, %v", received, err)
 	}
 	if err := app.StopSession(thread.ID); err != nil {
 		t.Fatal(err)
 	}
 
-	plain, err := createTestThread(t, app, string(provider.Codex), t.TempDir(), "gpt-5", "chat")
+	other, err := createTestThread(t, app, string(provider.Codex), t.TempDir(), "gpt-5", "chat")
 	if err != nil {
 		t.Fatal(err)
 	}
-	startCodexSessionAndWait(t, app, bus, plain.ID)
-	awaitSessionRef(t, app, plain.ID, "codex-root")
-	if got, err := app.store.CodexSessionStartPending(plain.ID, "codex-root"); err != nil || got != "" {
-		t.Fatalf("an ordinary thread recorded %q, %v", got, err)
-	}
+	startCodexSessionAndWait(t, app, bus, other.ID)
 	if got := codexHookMatchers(t, requestLog, "thread/start"); len(got) != 2 || got[1] != "" {
 		t.Errorf("an ordinary thread registered hooks: %q", got)
+	}
+	if err := app.StopSession(other.ID); err != nil {
+		t.Fatal(err)
 	}
 }

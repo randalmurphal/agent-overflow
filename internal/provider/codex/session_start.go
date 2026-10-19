@@ -29,7 +29,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if binary == "" {
 		binary = "codex"
 	}
-	sessionStart, err := provider.NewSessionStartDelivery(cfg.SessionStartHooks)
+	sessionStart, err := provider.NewSessionStartDelivery(cfg.SessionStartHooks, cfg.SessionStartReceipts)
 	if err != nil {
 		return nil, fmt.Errorf("codex: %w", err)
 	}
@@ -100,9 +100,6 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		planBuffersByItemID: make(map[string]*planBuffer),
 		planBuffersByTurnID: make(map[string]*planBuffer),
 		ownsQueuedClient:    cfg.OwnsQueuedClientID,
-	}
-	if pending := cfg.SessionStartPending; pending != nil && sessionStart != nil {
-		s.sessionStartRecord = pending.Record
 	}
 	if delivery := cfg.DeveloperInstructionsDelivery; delivery != nil {
 		s.developerInstructionsRecord = delivery.Record
@@ -196,13 +193,6 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 	s.mu.Lock()
 	s.rehydrateParams = threadRehydrateParams(threadParams)
 	s.mu.Unlock()
-	// A resume of a thread that still owes a delivery registers the hooks
-	// for the resume too: the cold load drops what Codex had queued.
-	owed := provider.SessionStartEvent("")
-	if cfg.ResumeThreadID != "" && cfg.SessionStartPending != nil {
-		owed = cfg.SessionStartPending.After
-	}
-	threadParams = withSessionStartHooks(threadParams, cfg.SessionStartHooks, owed != "")
 
 	var method string
 	if cfg.ResumeThreadID != "" {
@@ -291,14 +281,12 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 		// earlier instructions. A failure leaves the session usable.
 		s.reportDeveloperInstructionsFailure(s.ensureDeveloperInstructions(ctx, developerInstructions))
 		// A resumed thread carries the hooks' earlier output in its
-		// history, unless a delivery was still owed when it was last
-		// loaded, which this resume registered them for.
-		if owed != "" {
-			s.sessionStart.Expect(owed)
-		}
+		// history; the resume runs the hooks whose Resume is set. Only a
+		// compaction's expectation writes and can warn.
+		s.sessionStart.Expect(provider.SessionStartAfterResume)
 	} else {
 		// A new thread runs its SessionStart hooks in its first turn.
-		s.expectSessionStart()
+		s.sessionStart.Expect(provider.SessionStartAfterStart)
 		if s.developerInstructionsRecord != nil && developerInstructions.known {
 			// A new thread reads the composed text in its initial context.
 			s.reportDeveloperInstructionsFailure(s.recordDeveloperInstructions(DeveloperInstructionsDigest(developerInstructions.text)))

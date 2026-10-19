@@ -54,11 +54,15 @@ type Config struct {
 	// app stamps its guide here (internal/app/app_agent_guide.go).
 	AppendSystemPrompt string
 	// SessionStartHooks run at a fresh start, after a compaction and after a
-	// clear, registered beside the relay in the `--settings` payload
-	// (claude.SessionStartHookGroup). The gateway checks the first main
-	// request after a start or a compaction for their context and reports
-	// a warning when it is missing (Session.observeMainRequest).
+	// clear, and those whose Resume is set at this process's resume too,
+	// registered beside the relay in the `--settings` payload
+	// (claude.SessionStartHookGroups). The gateway checks the first main
+	// request after a start, a resume or a compaction for their context and
+	// reports a warning when it is missing (Session.observeMainRequest).
 	SessionStartHooks []provider.SessionStartHook
+	// SessionStartReceipts keeps what the hooks delivered; nil keeps
+	// nothing.
+	SessionStartReceipts *provider.SessionStartReceipts
 	// SystemPromptDir is the directory both prompt files are created in;
 	// required when either prompt is set. Same contract as
 	// claude.Config.SystemPromptDir.

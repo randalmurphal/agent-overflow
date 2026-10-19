@@ -1,7 +1,7 @@
 // Package agenthome reads the two well-known files of a standing agent's home
-// for the app: what the SessionStart hook delivers to its sessions (RunHook),
-// the role line its messages carry, and the files it attaches to a spawn or a
-// send
+// for the app: what the SessionStart hooks deliver to its sessions (RunHook),
+// with the memory index checked against memory/ (memory_index.go), the role
+// line its messages carry, and the files it attaches to a spawn or a send
 // (docs/specs/standing-agents.md, "Agent home contents"). The app prescribes
 // nothing else about the home; the agent-home skill
 // (assets/skills/pstack/skills/agent-home) is where the layout is taught, and
@@ -13,6 +13,8 @@ package agenthome
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -50,7 +52,7 @@ const (
 	// says when the SessionStart hook (RunHook) delivers the context files,
 	// so an agent that resumed a thread from before the hooks, or whose
 	// provider skipped them, reads the files itself.
-	DeliverySentence = "Agent Overflow puts your " + InstructionsFile + " and " + MemoryIndexFile + " in your context, each under its own heading, when this thread starts and after each compaction; when you do not see them, read them from your home before you act."
+	DeliverySentence = "Agent Overflow puts your " + InstructionsFile + " and " + MemoryIndexFile + " in your context, each under its own heading, when this thread starts and after each compaction, and again when the thread resumes after one of them changed; the latest copy is current. When you do not see them, read them from your home before you act."
 	// LoadSkillSentence follows the delivery sentence in every session block.
 	LoadSkillSentence = "Load the agent-home skill before any work. If it is not installed, tell the user to install the skills library from Settings, Agents, Skills, and keep your home files by hand until it is."
 )
@@ -68,10 +70,13 @@ const (
 // ContextFile is one home file a standing agent's session receives through
 // its SessionStart hook (RunHook), under its heading. The text a hook
 // delivers always opens with Heading, so a provider can tell this hook's
-// output from any other SessionStart hook's.
+// output from any other SessionStart hook's, and ends with Ending, so a
+// provider that reads every hook's output from one block can tell where it
+// stops.
 type ContextFile struct {
 	Name    string
 	Heading string
+	Ending  string
 	// Cap bounds the delivered text in bytes of its cleaned text without
 	// its trailing line breaks.
 	Cap int
@@ -81,8 +86,8 @@ type ContextFile struct {
 // delivers, in order, one hook each: each stays inside the providers' 10,000
 // character limit on one hook's output, which the two together would not.
 var ContextFiles = []ContextFile{
-	{Name: InstructionsFile, Heading: instructionsHeading, Cap: InstructionsCap},
-	{Name: MemoryIndexFile, Heading: memoryIndexHeading, Cap: MemoryIndexCap},
+	{Name: InstructionsFile, Heading: instructionsHeading, Ending: "[End of " + InstructionsFile + "]", Cap: InstructionsCap},
+	{Name: MemoryIndexFile, Heading: memoryIndexHeading, Ending: "[End of " + MemoryIndexFile + "]", Cap: MemoryIndexCap},
 }
 
 // ContextFileNamed is the context file called name.
@@ -97,17 +102,25 @@ func ContextFileNamed(name string) (ContextFile, bool) {
 
 // ReadContext reads file from home as the text its hook delivers: the
 // heading, then the cleaned and capped text, or a notice in its place when
-// the file or the home is missing, empty or unreadable. problem is every
-// failure other than absence; the caller logs and surfaces it. The text
-// depends on the file alone, so two reads of an unchanged file are the same
-// bytes.
+// the file or the home is missing, empty or unreadable, then the ending.
+// The memory index is followed by its check against memory/
+// (checkMemoryIndex). problem is every failure other than absence; the
+// caller logs and surfaces it. The text depends on the home's files alone,
+// so two reads of an unchanged home are the same bytes.
 func ReadContext(home string, file ContextFile) (text string, problem error) {
+	body, problem := readContextBody(home, file)
+	return file.Heading + "\n\n" + body + "\n\n" + file.Ending, problem
+}
+
+// readContextBody is what ReadContext delivers between the heading and the
+// ending.
+func readContextBody(home string, file ContextFile) (_ string, problem error) {
 	root, err := os.OpenRoot(home)
 	if errors.Is(err, fs.ErrNotExist) {
-		return file.Heading + "\n\n[Your home does not exist, so " + file.Name + " was not read.]", nil
+		return "[Your home does not exist, so " + file.Name + " was not read.]", nil
 	}
 	if err != nil {
-		return fmt.Sprintf("%s\n\n[Your home could not be opened, so %s was not read: %v]", file.Heading, file.Name, err),
+		return fmt.Sprintf("[Your home could not be opened, so %s was not read: %v]", file.Name, err),
 			fmt.Errorf("open the agent home %s: %w", home, err)
 	}
 	defer func() {
@@ -115,17 +128,77 @@ func ReadContext(home string, file ContextFile) (text string, problem error) {
 			problem = errors.Join(problem, fmt.Errorf("close the agent home %s: %w", home, err))
 		}
 	}()
-	body, err := readCapped(root, file.Name, file.Cap)
+	// The index is read whole for its check, and capped after.
+	keep := file.Cap
+	if file.Name == MemoryIndexFile {
+		keep = MaxRawRead
+	}
+	text, end, err := readCleanedFile(root, file.Name, keep)
+	var body string
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return file.Heading + "\n\n[" + file.Name + " does not exist yet.]", nil
+		body = "[" + file.Name + " does not exist yet.]"
 	case err != nil:
-		return fmt.Sprintf("%s\n\n[%s could not be read: %v. Read it yourself.]", file.Heading, file.Name, err),
+		return fmt.Sprintf("[%s could not be read: %v. Read it yourself.]", file.Name, err),
 			fmt.Errorf("read %s: %w", filepath.Join(home, file.Name), err)
-	case strings.TrimSpace(body) == "":
-		return file.Heading + "\n\n[" + file.Name + " is empty.]", nil
+	default:
+		body = capText(file.Name, text, end, file.Cap)
+		if strings.TrimSpace(body) == "" {
+			body = "[" + file.Name + " is empty.]"
+		}
 	}
-	return file.Heading + "\n\n" + body, nil
+	if file.Name != MemoryIndexFile {
+		return body, nil
+	}
+	notice, err := checkMemoryIndex(root, text)
+	if err != nil {
+		problem = fmt.Errorf("check %s against %s: %w", filepath.Join(home, MemoryIndexFile), filepath.Join(home, memoryDir), err)
+	}
+	return joinNotice(body, notice), problem
+}
+
+// ContextDigest identifies a context a hook delivered, or would deliver:
+// the SHA-256 of its text without its stamp, in hex, so a delivery and a
+// read of the same files agree.
+func ContextDigest(text string) string {
+	sum := sha256.Sum256([]byte(withoutStamp(text)))
+	return hex.EncodeToString(sum[:])
+}
+
+// StampPrefix opens the line RunHook puts under a context's heading, before
+// the delivery's time (stampLayout). Claude Code leaves out a resumed
+// session's SessionStart context whose text its transcript already holds
+// (docs/references/claude-wire.md, SessionStart hooks), so a file changed
+// back to a copy the session had before would not reach the model; the time
+// makes each delivery its own text, and tells claude-tui which run a context
+// in a model request came from (provider.SessionStartHook.Stamp).
+const StampPrefix = "[Delivered at "
+
+// stampLayout is the delivery's time in a stamp: RFC 3339 in UTC, to the
+// millisecond, so two runs a moment apart differ.
+const stampLayout = "2006-01-02T15:04:05.000Z07:00"
+
+// stamp is text, which ReadContext read for file, with the stamp of a
+// delivery at at under its heading.
+func stamp(text string, file ContextFile, at time.Time) string {
+	return file.Heading + "\n" + StampPrefix + at.UTC().Format(stampLayout) +
+		"; it replaces any earlier copy of " + file.Name + " in this conversation.]" +
+		strings.TrimPrefix(text, file.Heading)
+}
+
+// withoutStamp is text without the stamp under its heading. ReadContext
+// follows the heading with a blank line, so a second line that opens with
+// StampPrefix is always a stamp.
+func withoutStamp(text string) string {
+	heading, rest, ok := strings.Cut(text, "\n")
+	if !ok || !strings.HasPrefix(rest, StampPrefix) {
+		return text
+	}
+	_, rest, ok = strings.Cut(rest, "\n")
+	if !ok {
+		return text
+	}
+	return heading + "\n" + rest
 }
 
 // Problems reads every context file of home and returns the failures other
@@ -140,30 +213,32 @@ func Problems(home string) []error {
 	return problems
 }
 
-// readCapped reads name from root as delivered text: cleaned first
-// (CleanText), then held to limit bytes of the cleaned text without its
-// trailing line breaks, cut after the last line break inside the cap (or on
-// a rune boundary when the cap falls inside one line) with a notice naming
-// the line and the byte of the cleaned text the cut stopped at.
-func readCapped(root *os.Root, name string, limit int) (_ string, err error) {
+// readCleanedFile reads name from root as cleaned text (readCleaned) until
+// it holds more than keep bytes.
+func readCleanedFile(root *os.Root, name string, keep int) (_ string, _ readEnd, err error) {
 	file, err := openRegular(root, name)
 	if err != nil {
-		return "", err
+		return "", readWhole, err
 	}
 	defer closeInto(file, &err)
-	text, end, err := readCleaned(file, limit)
-	if err != nil {
-		return "", err
-	}
+	return readCleaned(file, keep)
+}
+
+// capText is cleaned text read until end as delivered text: held to limit
+// bytes without its trailing line breaks, cut after the last line break
+// inside the cap (or on a rune boundary when the cap falls inside one line)
+// with a notice naming the line and the byte of the cleaned text the cut
+// stopped at.
+func capText(name, text string, end readEnd, limit int) string {
 	if head := strings.TrimRight(text, "\n"); len(head) <= limit {
 		if end != readRawBound {
-			return head, nil
+			return head
 		}
 		// The raw bound stopped the read inside the cap: what was read is
 		// all of it the session gets, and the agent is told where to go on.
 		return joinNotice(head, fmt.Sprintf(
 			"[%s stops here, inside line %d: Agent Overflow reads at most the first %d MiB of a file and the rest of it was not read. Read it yourself from line %d.]",
-			name, strings.Count(text, "\n")+1, MaxRawRead>>20, strings.Count(text, "\n")+1)), nil
+			name, strings.Count(text, "\n")+1, MaxRawRead>>20, strings.Count(text, "\n")+1))
 	}
 	cut, whole := cutAt(text, limit)
 	line := strings.Count(text[:cut], "\n")
@@ -175,12 +250,16 @@ func readCapped(root *os.Root, name string, limit int) (_ string, err error) {
 	}
 	return joinNotice(strings.TrimRight(text[:cut], "\n"), fmt.Sprintf(
 		"[%s stops here, %s (byte %d of its text with hidden characters removed): Agent Overflow delivers at most %d KiB of it. Read it yourself from line %d.]",
-		name, where, cut, limit>>10, from)), nil
+		name, where, cut, limit>>10, from))
 }
 
-// joinNotice puts a cut notice on the line after what was delivered.
+// joinNotice puts a notice on the line after what was delivered; an empty
+// notice adds nothing.
 func joinNotice(head, notice string) string {
-	if head == "" {
+	switch {
+	case notice == "":
+		return head
+	case head == "":
 		return notice
 	}
 	return head + "\n" + notice

@@ -560,7 +560,13 @@ with the user's own and run beside them:
   stdin.
 - A fresh process runs its start's hooks before its first
   `system/init`. A compaction runs its hooks before its
-  `system/compact_boundary`.
+  `system/compact_boundary`. A process started with `--resume` runs its
+  `resume` or `fork` hooks while it loads the conversation, and awaits
+  them before its first `system/init` (read from the bundle).
+- At a resume or a fork, a hook's context whose text a SessionStart
+  attachment of the loaded transcript already holds is left out of the
+  model's context; its `hook_response` is written all the same (read
+  from the bundle).
 - Each run writes `system/hook_started` (`hook_id`, `hook_name`
   `SessionStart:<source>`, `hook_event` `SessionStart`, `uuid`,
   `session_id`) and then `system/hook_response`, which adds `output`
@@ -573,22 +579,37 @@ with the user's own and run beside them:
   is written to disk and replaced by a preview and its path.
 - `disableAllHooks` in the user's settings turns every hook off.
 - An interactive session (claude-tui) writes no `hook_response`. A
-  run's contexts reach the next main model request as one block,
-  `SessionStart:<source> hook additional context: ` and the contexts
-  joined by newlines.
+  run's contexts reach the next main model request as one
+  `<system-reminder>` block: `SessionStart hook additional context: `,
+  with no source, then the contexts joined by newlines (2.1.261 to
+  2.1.283, read from the bundle). The transcript keeps every earlier
+  run's block, so a request after a resume carries the start's block too.
+- A print-mode process yields its first `system/init` before it reads
+  any input. A print-mode resume adds its hooks' messages to the loaded
+  conversation in memory, not to the transcript (read from the bundle).
 - Each run also writes `attachment` rows to the session JSONL: a
   `hook_success` per hook (`hookName` `SessionStart:<source>`) and one
   `hook_additional_context` holding the contexts. They stay in the
   transcript, so a resume that runs the hooks adds a second set beside
   the start's until a compaction rebuilds the context.
 
-Agent Overflow registers `startup|compact|clear`, timeout 60
-(`claude.SessionStartHookGroup`; claude-tui puts the same group beside
-its relay). The headless parser counts a `hook_response` with exit code
-0 whose context opens with a hook's heading, and checks a start at
-`system/init` and a compaction at its `compact_boundary`
-(`parse_session_start.go`). claude-tui's gateway counts the headings in
-the first main model request after the start or after `PostCompact`.
+Agent Overflow registers each hook in a group of its own, timeout 60
+(`claude.SessionStartHookGroups`; claude-tui puts the same groups beside
+its relay). The matcher is `startup|compact|clear`, and
+`startup|compact|clear|resume|fork` for a hook whose `Resume` is set on a
+launch with `--resume`. Each context carries its delivery time under its
+heading (`provider.SessionStartHook.Stamp`), so a resume's is never text
+the transcript already holds. The headless parser counts a
+`hook_response` with exit code 0 whose context opens with a hook's
+heading, and checks a start or a resume at `system/init` and a compaction
+at its `compact_boundary`. It keeps the delivered contexts as the
+thread's receipts under the frame's `session_id` at the turn's `result`,
+once the turn has been recorded (`parse_session_start.go`). claude-tui's
+gateway reads the first main model request after the start, a resume or
+`PostCompact`: in each `SessionStart hook additional context: ` block, a
+hook's context runs from its heading to its ending, and counts only when
+its stamp's time is not before that start or compaction
+(`claudetui/session_start.go`).
 
 ## `system` model-fallback family
 

@@ -6,7 +6,7 @@ disable-model-invocation: false
 
 # Agent home
 
-You are a standing agent. Your session starts with a block that names your home (`<home>` below), and the app puts the text of `<home>/instructions.md` and `<home>/MEMORY.md` in your context when the thread starts and after each compaction. This skill says what goes in the home and how to keep it true over time: current, short, and free of slop.
+You are a standing agent. Your session starts with a block that names your home (`<home>` below), and the app puts the text of `<home>/instructions.md` and `<home>/MEMORY.md` in your context when the thread starts, after each compaction, and when the thread resumes after either file changed. This skill says what goes in the home and how to keep it true over time: current, short, and free of slop.
 
 ## First load
 
@@ -23,7 +23,7 @@ You are a standing agent. Your session starts with a block that names your home 
 | `memory/<slug>.md` | One fact per file | By you, when a fact changes a future session |
 | `MEMORY.md` | The index of `memory/` | By you, with every memory change |
 
-The app reads `instructions.md` and `MEMORY.md` when a new thread starts and after each compaction, never while you work and not when a thread resumes. An edit reaches your context at the next compaction or new thread, not now: keep the change in mind yourself until then. When you do not see either file in your context, read it from `<home>` before you act. The app removes control and invisible formatting characters before it measures either file against its cap, reads at most the first 1 MiB of a file (the rest is not read, and the delivered text says so), and reads only regular files: a link out of the home, a directory or a pipe in a file's place is reported, not read.
+The app reads `instructions.md` and `MEMORY.md` when a new thread starts, after each compaction, and when a thread resumes after the file changed since your context last got it; never while you work. An edit reaches your context at the next compaction, resume or new thread, not now: keep the change in mind yourself until then. Each file arrives under its own heading, with the time it was delivered on the line below, and ends with `[End of <file>]`; the latest copy is current. When you do not see either file in your context, read it from `<home>` before you act. The app removes control and invisible formatting characters before it measures either file against its cap, reads at most the first 1 MiB of a file (the rest is not read, and the delivered text says so), and reads only regular files: a link out of the home, a directory or a pipe in a file's place is reported, not read.
 
 ### instructions.md
 
@@ -93,3 +93,5 @@ The index the app delivers: one line per memory, grouped by type.
 ```
 
 Keep it under 4 KiB: the app delivers at most 4 KiB and cuts the rest with a notice. When it grows near that, merge or delete memories that no longer change a decision rather than shorten every line.
+
+The app checks the whole index against `memory/` each time it delivers it. After the index, a line starting `[Index check:` names the `.md` files directly in `memory/` that the index does not link, and another names the links into `memory/` whose files do not exist. Fix the index, or the files, in the turn you see one.

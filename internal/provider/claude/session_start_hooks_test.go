@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -11,8 +12,8 @@ import (
 )
 
 var testSessionStartHooks = []provider.SessionStartHook{
-	{Label: "instructions.md", Command: `'/opt/a o/agent-overflow' __agent-home-context 'instructions.md' '/h/it'\''s'`, Heading: "## Your standing instructions"},
-	{Label: "MEMORY.md", Command: `'/opt/a o/agent-overflow' __agent-home-context 'MEMORY.md' '/h/it'\''s'`, Heading: "## Your memory index"},
+	{Label: "instructions.md", Command: `'/opt/a o/agent-overflow' __agent-home-context 'instructions.md' '/h/it'\''s'`, Heading: "## Your standing instructions", Ending: "[End of instructions.md]", Stamp: "[Delivered at "},
+	{Label: "MEMORY.md", Command: `'/opt/a o/agent-overflow' __agent-home-context 'MEMORY.md' '/h/it'\''s'`, Heading: "## Your memory index", Ending: "[End of MEMORY.md]", Stamp: "[Delivered at "},
 }
 
 func settingsArg(t *testing.T, args []string) map[string]any {
@@ -33,27 +34,32 @@ func settingsArg(t *testing.T, args []string) map[string]any {
 	return settings
 }
 
-// The hooks ride the one inline settings block beside its other keys, as a
-// SessionStart group for start, compaction and clear with a command handler
-// per hook, and a session without hooks carries no hooks key.
+// The hooks ride the one inline settings block beside its other keys, each
+// in a SessionStart group of its own for start, compaction and clear, and
+// for resume and fork too when it runs at a resume; a session without hooks
+// carries no hooks key.
 func TestBuildArgsRegistersSessionStartHooksInTheSettingsBlock(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7", FastMode: true})
 	if _, ok := settingsArg(t, buildArgs(cfg, "", ""))["hooks"]; ok {
 		t.Fatal("a session without hooks carries a hooks key")
 	}
-	cfg.SessionStartHooks = testSessionStartHooks
+	cfg.SessionStartHooks = append([]provider.SessionStartHook{}, testSessionStartHooks...)
+	cfg.SessionStartHooks[1].Resume = true
 	settings := settingsArg(t, buildArgs(cfg, "", ""))
 	if settings["fastMode"] != true || settings["crossSessionInbound"] != "refuse" {
 		t.Fatalf("the hooks displaced the block's other keys: %v", settings)
 	}
 	got, _ := json.Marshal(settings["hooks"])
-	want, _ := json.Marshal(map[string]any{"SessionStart": []any{map[string]any{
-		"matcher": "startup|compact|clear",
-		"hooks": []any{
-			map[string]any{"type": "command", "command": testSessionStartHooks[0].Command, "timeout": 60},
-			map[string]any{"type": "command", "command": testSessionStartHooks[1].Command, "timeout": 60},
+	want, _ := json.Marshal(map[string]any{"SessionStart": []any{
+		map[string]any{
+			"matcher": "startup|compact|clear",
+			"hooks":   []any{map[string]any{"type": "command", "command": testSessionStartHooks[0].Command, "timeout": 60}},
 		},
-	}}})
+		map[string]any{
+			"matcher": "startup|compact|clear|resume|fork",
+			"hooks":   []any{map[string]any{"type": "command", "command": testSessionStartHooks[1].Command, "timeout": 60}},
+		},
+	}})
 	if string(got) != string(want) {
 		t.Fatalf("hooks = %s\nwant    %s", got, want)
 	}
@@ -66,8 +72,13 @@ func TestBuildArgsRegistersSessionStartHooksInTheSettingsBlock(t *testing.T) {
 
 func sessionStartParser(t *testing.T) *Parser {
 	t.Helper()
+	return sessionStartParserWith(t, nil)
+}
+
+func sessionStartParserWith(t *testing.T, receipts *provider.SessionStartReceipts) *Parser {
+	t.Helper()
 	p := NewParser()
-	delivery, err := provider.NewSessionStartDelivery(testSessionStartHooks)
+	delivery, err := provider.NewSessionStartDelivery(testSessionStartHooks, receipts)
 	if err != nil {
 		t.Fatalf("NewSessionStartDelivery: %v", err)
 	}
@@ -96,13 +107,18 @@ func hookContextStdout(context string) string {
 
 const (
 	sessionStartInitLine    = `{"type":"system","subtype":"init","session_id":"s-1","model":"claude-opus-4-7","cwd":"/tmp","tools":[]}`
-	sessionStartCompactLine = `{"type":"system","subtype":"compact_boundary","uuid":"c-1","content":"Conversation compacted","compactMetadata":{"trigger":"auto"}}`
+	sessionStartCompactLine = `{"type":"system","subtype":"compact_boundary","uuid":"c-1","session_id":"s-1","content":"Conversation compacted","compactMetadata":{"trigger":"auto"}}`
 	sessionStartResultLine  = `{"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","session_id":"s-1","result":"ok"}`
 )
 
+const (
+	instructionsContext = "## Your standing instructions\n\nRole\n\n[End of instructions.md]"
+	memoryContext       = "## Your memory index\n\n- a\n\n[End of MEMORY.md]"
+)
+
 var (
-	instructionsDelivered = hookContextStdout("## Your standing instructions\n\nRole")
-	memoryDelivered       = hookContextStdout("## Your memory index\n\n- a")
+	instructionsDelivered = hookContextStdout(instructionsContext)
+	memoryDelivered       = hookContextStdout(memoryContext)
 )
 
 func parseLines(t *testing.T, p *Parser, lines ...[]byte) []provider.ProviderEvent {
@@ -118,10 +134,11 @@ func parseLines(t *testing.T, p *Parser, lines ...[]byte) []provider.ProviderEve
 	return events
 }
 
-// warnings are the non-fatal error rows among events, with the index of each.
-func sessionStartWarnings(events []provider.ProviderEvent) (warnings []string, at []int) {
+// warningRows are the delivery warnings among events, with the index of
+// each; a fatal one is marked.
+func warningRows(events []provider.ProviderEvent) (warnings []string, at []int) {
 	for i, event := range events {
-		if event.Kind == provider.EventError && strings.Contains(event.Content, "did not reach this session") {
+		if event.Kind == provider.EventError && (strings.Contains(event.Content, "did not reach this session") || strings.Contains(event.Content, "could not record")) {
 			var meta map[string]any
 			if json.Unmarshal(event.Meta, &meta) != nil || meta["fatal"] != false {
 				return append(warnings, "fatal: "+event.Content), append(at, i)
@@ -149,7 +166,7 @@ func TestParserSettlesTheStartAtInit(t *testing.T) {
 		hookResponseLine("startup", instructionsDelivered, 0),
 		hookResponseLine("startup", memoryDelivered, 0),
 		[]byte(sessionStartInitLine), []byte(sessionStartResultLine))
-	if warnings, _ := sessionStartWarnings(events); len(warnings) > 0 {
+	if warnings, _ := warningRows(events); len(warnings) > 0 {
 		t.Fatalf("warnings after both hooks delivered: %v", warnings)
 	}
 	for _, event := range events {
@@ -163,13 +180,13 @@ func TestParserSettlesTheStartAtInit(t *testing.T) {
 	events = parseLines(t, p,
 		hookResponseLine("startup", memoryDelivered, 0),
 		[]byte(sessionStartInitLine))
-	warnings, at := sessionStartWarnings(events)
+	warnings, at := warningRows(events)
 	if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "instructions.md did not reach this session after its start: ") ||
 		at[0] < kindIndex(events, provider.EventInit) {
 		t.Fatalf("events = %+v", events)
 	}
 	// The next init and result have nothing to settle.
-	if warnings, _ := sessionStartWarnings(parseLines(t, p, []byte(sessionStartInitLine), []byte(sessionStartResultLine))); len(warnings) > 0 {
+	if warnings, _ := warningRows(parseLines(t, p, []byte(sessionStartInitLine), []byte(sessionStartResultLine))); len(warnings) > 0 {
 		t.Fatalf("settled twice: %v", warnings)
 	}
 }
@@ -182,17 +199,17 @@ func TestParserSettlesACompactionAtItsBoundary(t *testing.T) {
 		hookResponseLine("compact", instructionsDelivered, 0),
 		hookResponseLine("compact", memoryDelivered, 0),
 		[]byte(sessionStartCompactLine), []byte(sessionStartResultLine))
-	if warnings, _ := sessionStartWarnings(events); len(warnings) > 0 {
+	if warnings, _ := warningRows(events); len(warnings) > 0 {
 		t.Fatalf("warnings after both hooks delivered: %v", warnings)
 	}
 
 	events = parseLines(t, p, []byte(sessionStartCompactLine))
-	warnings, at := sessionStartWarnings(events)
+	warnings, at := warningRows(events)
 	if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "instructions.md and MEMORY.md did not reach this session after its compaction: ") ||
 		at[0] < kindIndex(events, provider.EventCompactBoundary) {
 		t.Fatalf("events = %+v", events)
 	}
-	if warnings, _ := sessionStartWarnings(parseLines(t, p, []byte(sessionStartResultLine))); len(warnings) > 0 {
+	if warnings, _ := warningRows(parseLines(t, p, []byte(sessionStartResultLine))); len(warnings) > 0 {
 		t.Fatalf("the result settled the compaction again: %v", warnings)
 	}
 
@@ -204,7 +221,7 @@ func TestParserSettlesACompactionAtItsBoundary(t *testing.T) {
 		hookResponseLine("startup", instructionsDelivered, 0),
 		hookResponseLine("startup", memoryDelivered, 0),
 		[]byte(sessionStartInitLine), []byte(sessionStartCompactLine), []byte(sessionStartResultLine))
-	if warnings, _ := sessionStartWarnings(events); len(warnings) != 1 || !strings.Contains(warnings[0], "after its compaction") {
+	if warnings, _ := warningRows(events); len(warnings) != 1 || !strings.Contains(warnings[0], "after its compaction") {
 		t.Fatalf("warnings = %v", warnings)
 	}
 }
@@ -227,7 +244,7 @@ func TestParserSettlesEachCompactionOfATurn(t *testing.T) {
 			boundaries = append(boundaries, i)
 		}
 	}
-	warnings, at := sessionStartWarnings(events)
+	warnings, at := warningRows(events)
 	if len(boundaries) != 2 || len(warnings) != 1 || !strings.HasPrefix(warnings[0], "MEMORY.md did not reach this session after its compaction: ") ||
 		at[0] < boundaries[1] {
 		t.Fatalf("events = %+v", events)
@@ -242,7 +259,7 @@ func TestParserCountsOnlyTheHooksSuccessfulOutput(t *testing.T) {
 		want bool
 	}{
 		"json":            {hookResponseLine("compact", memoryDelivered, 0), true},
-		"plain":           {hookResponseLine("compact", "## Your memory index\n\n- a\n", 0), true},
+		"plain":           {hookResponseLine("compact", memoryContext+"\n", 0), true},
 		"failed":          {hookResponseLine("compact", memoryDelivered, 1), false},
 		"other hook":      {hookResponseLine("compact", hookContextStdout("user context"), 0), false},
 		"heading later":   {hookResponseLine("compact", hookContextStdout("x ## Your memory index"), 0), false},
@@ -255,7 +272,7 @@ func TestParserCountsOnlyTheHooksSuccessfulOutput(t *testing.T) {
 		if events := parseLines(t, p, tc.line); len(events) > 0 {
 			t.Errorf("%s: the frame rendered %+v", name, events)
 		}
-		warnings, _ := sessionStartWarnings(parseLines(t, p, []byte(sessionStartCompactLine)))
+		warnings, _ := warningRows(parseLines(t, p, []byte(sessionStartCompactLine)))
 		if delivered := len(warnings) == 1 && strings.HasPrefix(warnings[0], "instructions.md did not reach"); delivered != tc.want {
 			t.Errorf("%s: warnings = %v, want MEMORY.md delivered %v", name, warnings, tc.want)
 		}
@@ -274,7 +291,7 @@ func TestParserQuotesAFailedRun(t *testing.T) {
 		"bare":      {[]byte(`{"type":"system","subtype":"hook_response","hook_event":"SessionStart"}`), "a SessionStart hook failed (no exit code)."},
 	} {
 		p := sessionStartParser(t)
-		warnings, _ := sessionStartWarnings(parseLines(t, p, tc.line, hookResponseLine("compact", instructionsDelivered, 0), []byte(sessionStartCompactLine)))
+		warnings, _ := warningRows(parseLines(t, p, tc.line, hookResponseLine("compact", instructionsDelivered, 0), []byte(sessionStartCompactLine)))
 		if len(warnings) != 1 || warnings[0] != "MEMORY.md did not reach this session after its compaction: "+tc.want {
 			t.Errorf("%s: warnings = %v", name, warnings)
 		}
@@ -287,23 +304,111 @@ func TestParserWithoutSessionStartHooks(t *testing.T) {
 	events := parseLines(t, p,
 		hookResponseLine("startup", hookContextStdout("## Your memory index"), 1),
 		[]byte(sessionStartInitLine), []byte(sessionStartCompactLine), []byte(sessionStartResultLine))
-	if warnings, _ := sessionStartWarnings(events); len(warnings) > 0 || kindIndex(events, provider.EventTurnComplete) < 0 {
+	if warnings, _ := warningRows(events); len(warnings) > 0 || kindIndex(events, provider.EventTurnComplete) < 0 {
 		t.Fatalf("events = %+v", events)
 	}
 }
 
-// The session arms the start only when it starts fresh: a resume runs no
-// hooks (provider.SessionStartHookSources). Hooks the delivery cannot tell
-// apart are refused before anything spawns.
-func TestNewSessionExpectsTheHooksOnlyOnAFreshStart(t *testing.T) {
+// A delivery keeps its receipts under the session the settling frame names,
+// at the turn's result, when the transcript holds them: the start's settle at
+// init, a compaction's at its boundary, after the compaction forgot the
+// receipts its delivery replaced, the held ones included.
+func TestParserKeepsTheReceiptsOfWhatArrived(t *testing.T) {
+	var log []string
+	receipts := &provider.SessionStartReceipts{
+		Keep: func(sessionRef, label, context string) error {
+			log = append(log, "keep "+sessionRef+" "+label+" "+context)
+			return nil
+		},
+		Forget: func() error {
+			log = append(log, "forget")
+			return nil
+		},
+	}
+	p := sessionStartParserWith(t, receipts)
+	p.sessionStart.Expect(provider.SessionStartAfterStart)
+	parseLines(t, p,
+		hookResponseLine("startup", instructionsDelivered, 0),
+		hookResponseLine("startup", memoryDelivered, 0),
+		[]byte(sessionStartInitLine))
+	if len(log) != 0 {
+		t.Fatalf("kept before the turn's result: %q", log)
+	}
+	parseLines(t, p, []byte(sessionStartResultLine))
+	want := []string{
+		"keep s-1 instructions.md " + instructionsContext,
+		"keep s-1 MEMORY.md " + memoryContext,
+	}
+	if strings.Join(log, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("receipts:\n%s\nwant\n%s", strings.Join(log, "\n"), strings.Join(want, "\n"))
+	}
+
+	log = nil
+	p = sessionStartParserWith(t, receipts)
+	p.sessionStart.Expect(provider.SessionStartAfterStart)
+	parseLines(t, p,
+		hookResponseLine("startup", instructionsDelivered, 0),
+		hookResponseLine("startup", memoryDelivered, 0),
+		[]byte(sessionStartInitLine),
+		hookResponseLine("compact", memoryDelivered, 0),
+		[]byte(sessionStartCompactLine),
+		[]byte(sessionStartResultLine))
+	want = []string{
+		"forget",
+		"keep s-1 MEMORY.md " + memoryContext,
+	}
+	if strings.Join(log, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("receipts:\n%s\nwant\n%s", strings.Join(log, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A receipt or a compaction the store could not record is a warning row of
+// the frame that tried: the result for a receipt, the boundary for a
+// compaction.
+func TestParserWarnsWhenReceiptsAreNotRecorded(t *testing.T) {
+	p := sessionStartParserWith(t, &provider.SessionStartReceipts{
+		Keep:   func(string, string, string) error { return errors.New("database is locked") },
+		Forget: func() error { return errors.New("disk full") },
+	})
+	p.sessionStart.Expect(provider.SessionStartAfterStart)
+	events := parseLines(t, p,
+		hookResponseLine("startup", instructionsDelivered, 0),
+		hookResponseLine("startup", memoryDelivered, 0),
+		[]byte(sessionStartInitLine), []byte(sessionStartResultLine))
+	if warnings, at := warningRows(events); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "Agent Overflow could not record that instructions.md and MEMORY.md reached this session") ||
+		at[0] < kindIndex(events, provider.EventInit) || at[0] > kindIndex(events, provider.EventTurnComplete) {
+		t.Fatalf("events = %+v", events)
+	}
+	events = parseLines(t, p,
+		hookResponseLine("compact", instructionsDelivered, 0),
+		hookResponseLine("compact", memoryDelivered, 0),
+		[]byte(sessionStartCompactLine), []byte(sessionStartResultLine))
+	if warnings, at := warningRows(events); len(warnings) != 2 || !strings.HasPrefix(warnings[0], "Agent Overflow could not record that this compaction") ||
+		!strings.HasPrefix(warnings[1], "Agent Overflow could not record that instructions.md and MEMORY.md reached") ||
+		at[0] < kindIndex(events, provider.EventCompactBoundary) || at[1] > kindIndex(events, provider.EventTurnComplete) {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+// The session expects every hook when it starts fresh, and only those whose
+// Resume is set when it resumes. Hooks the delivery cannot tell apart are
+// refused before anything spawns.
+func TestNewSessionExpectsTheHooksItsSpawnRuns(t *testing.T) {
 	t.Parallel()
+	resuming := append([]provider.SessionStartHook{}, testSessionStartHooks...)
+	resuming[1].Resume = true
 	for name, tc := range map[string]struct {
 		resume string
-		want   bool
-	}{"fresh": {"", true}, "resume": {"sess-1", false}} {
+		hooks  []provider.SessionStartHook
+		want   string
+	}{
+		"fresh":            {"", testSessionStartHooks, "instructions.md and MEMORY.md did not reach this session after its start"},
+		"resume":           {"sess-1", testSessionStartHooks, ""},
+		"resume of a hook": {"sess-1", resuming, "MEMORY.md did not reach this session after its resume"},
+	} {
 		binary := mockexec.Write(t, t.TempDir()+"/mock-claude", "#!/bin/sh\nexec cat\n")
 		events := make(chan provider.ProviderEvent, 100)
-		s, err := NewSession(context.Background(), testThread, Config{Binary: binary, Resume: tc.resume, SessionStartHooks: testSessionStartHooks},
+		s, err := NewSession(context.Background(), testThread, Config{Binary: binary, Resume: tc.resume, SessionStartHooks: tc.hooks},
 			func(event provider.ProviderEvent) { events <- event })
 		if err != nil {
 			t.Fatalf("%s: NewSession: %v", name, err)
@@ -313,17 +418,17 @@ func TestNewSessionExpectsTheHooksOnlyOnAFreshStart(t *testing.T) {
 				t.Fatalf("%s: write: %v", name, err)
 			}
 		}
-		var warned bool
+		var warning string
 		for evt := waitEvent(t, events); evt.Kind != provider.EventTurnComplete; evt = waitEvent(t, events) {
 			if evt.Kind == provider.EventError {
-				if warned || !strings.HasPrefix(evt.Content, "instructions.md and MEMORY.md did not reach this session after its start") {
-					t.Fatalf("%s: error %+v", name, evt)
+				if warning != "" {
+					t.Fatalf("%s: second error %+v", name, evt)
 				}
-				warned = true
+				warning = evt.Content
 			}
 		}
-		if warned != tc.want {
-			t.Errorf("%s: warned %v, want %v", name, warned, tc.want)
+		if (tc.want == "") != (warning == "") || !strings.HasPrefix(warning, tc.want) {
+			t.Errorf("%s: warning %q, want %q", name, warning, tc.want)
 		}
 		if err := s.Close(); err != nil {
 			t.Errorf("%s: Close: %v", name, err)
@@ -332,7 +437,7 @@ func TestNewSessionExpectsTheHooksOnlyOnAFreshStart(t *testing.T) {
 
 	binary := mockexec.Write(t, t.TempDir()+"/mock-claude", "#!/bin/sh\nexit 1\n")
 	if _, err := NewSession(context.Background(), testThread, Config{Binary: binary, SessionStartHooks: []provider.SessionStartHook{{Label: "a", Command: "a"}}},
-		func(provider.ProviderEvent) {}); err == nil || !strings.Contains(err.Error(), "heading are all required") {
+		func(provider.ProviderEvent) {}); err == nil || !strings.Contains(err.Error(), "heading, ending and stamp are all required") {
 		t.Fatalf("NewSession with a hook without a heading: %v", err)
 	}
 }

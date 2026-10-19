@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"maps"
 	"strconv"
 	"strings"
@@ -15,40 +14,21 @@ import (
 
 // A thread's SessionStart hooks (Config.SessionStartHooks) ride the
 // thread/start|resume `config` map, which Codex reads as the thread's
-// session-flags config layer. Codex runs a hook from a non-managed layer
-// only when the config's `hooks.state` holds its trust hash, so the map
-// carries the hash of each hook it registers: the trust covers exactly
-// these commands and nothing else the user configured
-// (docs/references/codex-wire.md, SessionStart hooks). The runs are
-// followed by observeSessionStartHooks.
+// session-flags config layer, each hook in a matcher group of its own.
+// Codex runs a hook from a non-managed layer only when the config's
+// `hooks.state` holds its trust hash, so the map carries the hash of each
+// hook it registers: the trust covers exactly these commands and nothing
+// else the user configured (docs/references/codex-wire.md, SessionStart
+// hooks). The runs are followed by observeSessionStartHooks.
 //
-// Codex keeps the hooks a start or a compaction queued only in the loaded
-// thread, so a cold load (every resume AO sends, and a rehydrate) drops
-// them. A delivery still expected is recorded across sessions
-// (SessionStartPending), and the load that follows registers the hooks for
-// `resume` too, once, so the next turn runs them.
+// A resume registers a hook for `resume` too when its Resume is set: the
+// thread's model does not hold its current context. Codex keeps the hooks a
+// load queued only in the loaded thread, so a rehydrate registers for
+// `resume` the hooks the open expectation still waits for.
 
 // sessionFlagsHookKeySource is the key source Codex gives the session-flags
 // layer's hooks (codex-rs/hooks/src/engine/discovery.rs, 0.153 to 0.162).
 const sessionFlagsHookKeySource = "/<session-flags>/config.toml"
-
-// sessionStartHookSourcesOwed adds a resume to the sources the hooks run
-// for, on a load while a delivery is still owed: the load dropped the hooks
-// Codex had queued for it.
-const sessionStartHookSourcesOwed = provider.SessionStartHookSources + "|resume"
-
-// SessionStartPending is the record of the SessionStart delivery a thread's
-// Codex thread is expected to make, kept across its sessions. A Config
-// without one (a throwaway session that only forks or reverts) records
-// nothing.
-type SessionStartPending struct {
-	// After is the expectation recorded for the Codex thread being resumed,
-	// "" when none is.
-	After provider.SessionStartEvent
-	// Record persists the expectation Codex thread codexThreadID holds:
-	// after when one opens, "" when it settles.
-	Record func(codexThreadID string, after provider.SessionStartEvent) error
-}
 
 // sessionStartHandler is one hook's command handler: what the thread
 // config registers and what its trust hash covers.
@@ -83,35 +63,45 @@ func (h sessionStartHandler) trustHash(matcher string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// sessionStartHookConfig is the `hooks` value of the thread config: one
-// SessionStart matcher group with a command handler per hook, and the
-// trust state of each; owed adds `resume` to the group's sources. nil for
-// no hooks.
-func sessionStartHookConfig(hooks []provider.SessionStartHook, owed bool) map[string]any {
+// sessionStartHookConfig is the `hooks` value of the thread config: a
+// SessionStart matcher group per hook, holding its command handler, with the
+// resume sources in the groups resume marks, and the trust state of each
+// handler. nil for no hooks.
+func sessionStartHookConfig(hooks []provider.SessionStartHook, resume []bool) map[string]any {
 	if len(hooks) == 0 {
 		return nil
 	}
-	matcher := provider.SessionStartHookSources
-	if owed {
-		matcher = sessionStartHookSourcesOwed
-	}
-	handlers := make([]any, 0, len(hooks))
+	groups := make([]any, 0, len(hooks))
 	state := make(map[string]any, len(hooks))
 	for i, hook := range hooks {
+		matcher := provider.SessionStartMatcher(i < len(resume) && resume[i])
 		handler := newSessionStartHandler(hook)
-		handlers = append(handlers, handler.config())
-		key := sessionFlagsHookKeySource + ":session_start:0:" + strconv.Itoa(i)
+		groups = append(groups, map[string]any{"matcher": matcher, "hooks": []any{handler.config()}})
+		key := sessionFlagsHookKeySource + ":session_start:" + strconv.Itoa(i) + ":0"
 		state[key] = map[string]any{"trusted_hash": handler.trustHash(matcher)}
 	}
 	return map[string]any{
-		"SessionStart": []any{map[string]any{"matcher": matcher, "hooks": handlers}},
+		"SessionStart": groups,
 		"state":        state,
 	}
 }
 
+// resumingHooks marks the hooks a load registers for its resume: those whose
+// Resume is set, on a thread/resume.
+func resumingHooks(hooks []provider.SessionStartHook, resuming bool) []bool {
+	if !resuming {
+		return nil
+	}
+	resume := make([]bool, len(hooks))
+	for i, hook := range hooks {
+		resume[i] = hook.Resume
+	}
+	return resume
+}
+
 // withSessionStartHooks is a copy of a thread's params whose `config`
-// registers hooks for a load that owes a delivery or not.
-func withSessionStartHooks(params map[string]any, hooks []provider.SessionStartHook, owed bool) map[string]any {
+// registers hooks, for its resume those resume marks.
+func withSessionStartHooks(params map[string]any, hooks []provider.SessionStartHook, resume []bool) map[string]any {
 	if len(hooks) == 0 {
 		return params
 	}
@@ -120,7 +110,7 @@ func withSessionStartHooks(params map[string]any, hooks []provider.SessionStartH
 	if config == nil {
 		config = map[string]any{}
 	}
-	config["hooks"] = sessionStartHookConfig(hooks, owed)
+	config["hooks"] = sessionStartHookConfig(hooks, resume)
 	params = maps.Clone(params)
 	params["config"] = config
 	return params
@@ -251,20 +241,14 @@ func (s *Session) observeSessionStartHooks(method string, params json.RawMessage
 		}
 		s.mu.Unlock()
 		if due && readNestedString(params, "turn", "status") == "completed" {
-			if warning := s.sessionStart.Settle(); warning != "" {
+			// The rollout holds the turn's items by its completion.
+			warnings := s.sessionStart.Settle(s.rootThreadID())
+			for _, warning := range append(warnings, s.sessionStart.Keep()...) {
 				s.emitNonFatalError(warning)
 			}
-			s.recordSessionStart("")
 		}
 	}
 	return false
-}
-
-// expectSessionStart opens an expectation after the thread's start and
-// records it for the thread's next session.
-func (s *Session) expectSessionStart() {
-	s.sessionStart.Expect(provider.SessionStartAfterStart)
-	s.recordSessionStart(provider.SessionStartAfterStart)
 }
 
 // expectSessionStartAfterCompaction arms the hooks for a compaction. Codex
@@ -272,9 +256,20 @@ func (s *Session) expectSessionStart() {
 // seen earlier came from before it and no longer counts, and the hooks have
 // not had their chance in this turn yet.
 func (s *Session) expectSessionStartAfterCompaction() {
-	s.sessionStart.ExpectAfresh(provider.SessionStartAfterCompaction)
+	warning := s.sessionStart.ExpectAfresh(provider.SessionStartAfterCompaction)
 	s.setSessionStartDueTurn("")
-	s.recordSessionStart(provider.SessionStartAfterCompaction)
+	if warning != "" {
+		s.emitNonFatalError(warning)
+	}
+}
+
+// DropSessionStartDeliveries forgets what the SessionStart hooks delivered
+// since the last settled turn, after a revert cut the thread's history in
+// place: a delivery in a cut turn, which an interrupt kept from settling,
+// is no longer the model's, and the open expectation waits for the hooks
+// again. The caller forgets the thread's receipts.
+func (s *Session) DropSessionStartDeliveries() {
+	s.sessionStart.DropDeliveries()
 }
 
 // setSessionStartDueTurn records the turn that gives the hooks of the
@@ -283,22 +278,4 @@ func (s *Session) setSessionStartDueTurn(turnID string) {
 	s.mu.Lock()
 	s.sessionStartDueTurn = turnID
 	s.mu.Unlock()
-}
-
-// recordSessionStart persists the thread's open expectation, "" once it
-// settled. A failed write is put on the thread: the next session would
-// resume without the hooks it owes, or run them once more.
-func (s *Session) recordSessionStart(after provider.SessionStartEvent) {
-	if s.sessionStartRecord == nil {
-		return
-	}
-	if err := s.sessionStartRecord(s.rootThreadID(), after); err != nil {
-		s.emitNonFatalError(fmt.Sprintf("Agent Overflow could not record whether this thread's SessionStart hooks still owe their context, so its next session may start without it or with a second copy: %v", err))
-	}
-}
-
-// sessionStartOwed reports whether a load of the thread now owes the
-// hooks' delivery: one is still expected, which the load would drop.
-func (s *Session) sessionStartOwed() bool {
-	return s.sessionStart.Expecting() != ""
 }

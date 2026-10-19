@@ -12,9 +12,11 @@
 //
 // Two deliberate deviations from the captures:
 //
-//   - `session_id` is omitted everywhere. The mock owns the session id and
-//     a hard-coded one from a capture would make the app's own session
-//     bookkeeping disagree with the process it is talking to.
+//   - `session_id` is omitted, except on `compactBoundaryLine`, which
+//     carries the mock's own `${SESSION_ID}` because the app keeps a
+//     compaction's SessionStart receipts under it. The mock owns the
+//     session id, and a hard-coded one from a capture would make the app's
+//     own session bookkeeping disagree with the process it is talking to.
 //   - `canUseToolLine` builds the control_request by hand for a scenario
 //     that wants to choose the ordering itself. The scenario `approval`
 //     step is the normal route and now carries `toolUseId`/`agentId` too
@@ -168,6 +170,7 @@ export function compactBoundaryLine(uuid: string): string {
   return j({
     type: 'system',
     subtype: 'compact_boundary',
+    session_id: '${SESSION_ID}',
     uuid,
     content: 'Context compacted',
     compact_metadata: { trigger: 'auto', pre_tokens: 312377, post_tokens: 22074 },

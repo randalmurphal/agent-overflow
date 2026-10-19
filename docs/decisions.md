@@ -382,11 +382,16 @@ Mechanism in
 - An assistant's session block depends on its record alone, so a home
   file edit keeps the provider's prompt cache. The home files reach the
   model through SessionStart hooks at a start and at each compaction,
-  not on a resume, which would stack another copy per resume (ruling
-  2026-10-18); an edit reaches the next new thread or compaction. On
-  Codex the thread's config trusts only the hook commands it registers.
-  Hooks that did not deliver are a non-fatal error row, not a failed
-  turn ([home file delivery](specs/standing-agents.md#agent-home-contents)).
+  and at a resume only for a file whose context the thread's model did
+  not last receive as it reads now, judged by the digest of what was
+  delivered: a resume that ran every hook would stack another copy per
+  resume (rulings 2026-10-18 and 2026-10-19); an edit reaches the next
+  new thread, compaction or resume. The delivered memory index carries a
+  check naming the memory files it does not link and the links to files
+  that are gone. On Codex the thread's config trusts only the hook
+  commands it registers. Hooks that did not deliver are a non-fatal
+  error row, not a failed turn
+  ([home file delivery](specs/standing-agents.md#agent-home-contents)).
 - Messages between agents are not the person's messages (ruling
   2026-10-13). A thread tool's spawn prompt, request or question, the
   answer that comes back, a loop, watch, outside send or worker wake, a

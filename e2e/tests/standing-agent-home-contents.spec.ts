@@ -4,14 +4,17 @@
 // Coverage (standing-agent-home-contents-helpers.ts): a static session block
 // beside the app guide, the same bytes on every session whatever the files
 // hold; instructions.md and MEMORY.md delivered by the SessionStart hooks at
-// a first start and at each compaction, never at a resume; a rewrite of
-// MEMORY.md made while a session runs reaching that session at its next
-// compaction; a worker spawned with home_files whose first message opens
-// with the attached verification file and whose footer names the agent, its
-// role and the route of its questions; the role line on a message from the
-// agent to an ordinary thread and none on one back; each file past its cap
-// cut at its head; no warning row. A provider that runs no hook leaves a
-// warning row for the start and for the compaction. Then the timeline: neither the block nor
+// a first start and at each compaction, and at a resume only each file that
+// changed since the thread's model last received it; a rewrite of MEMORY.md
+// made while a session runs reaching that session at its next compaction;
+// MEMORY.md's index check naming the memory file it does not link and the
+// link to a file that is gone; a worker spawned with home_files whose first
+// message opens with the attached verification file and whose footer names
+// the agent, its role and the route of its questions; the role line on a
+// message from the agent to an ordinary thread and none on one back; each
+// file past its cap cut at its head; no warning row. A provider that runs no
+// hook leaves a warning row for the start, for the compaction and for the
+// resume that runs the hooks again. Then the timeline: neither the block nor
 // the delivered files show as a message, the worker's first message is an
 // agent row whose body shows the attached file and whose facts name the
 // agent's role and the route of its questions.
@@ -90,7 +93,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await harness.open(page);
     await openThread(page, 'Hookless lead');
     await expect(page.getByText('Still here.', { exact: true })).toBeVisible();
-    for (const after of ['start', 'compaction'] as const) {
+    for (const after of ['start', 'compaction', 'resume'] as const) {
       await expect(page.getByText(undeliveredWarning(after), { exact: true })).toHaveCount(1);
     }
   });

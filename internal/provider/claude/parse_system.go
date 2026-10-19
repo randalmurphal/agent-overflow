@@ -47,7 +47,7 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 			Meta:      meta,
 			Timestamp: now,
 			Raw:       line,
-		}}, p.settleSessionStart(threadID, now)...), nil
+		}}, p.settleSessionStart(threadID, info.SessionID, now)...), nil
 
 	case "commands_changed":
 		// Spontaneous full-list push after mid-session skill discovery or a
@@ -101,9 +101,11 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		}}
 		// The compaction's SessionStart hooks have run by its boundary.
 		if p != nil {
-			p.sessionStart.Expect(provider.SessionStartAfterCompaction)
+			if warning := p.sessionStart.Expect(provider.SessionStartAfterCompaction); warning != "" {
+				events = append(events, sessionStartWarnings(threadID, []string{warning}, now)...)
+			}
 		}
-		return append(events, p.settleSessionStart(threadID, now)...), nil
+		return append(events, p.settleSessionStart(threadID, readRawString(raw["session_id"]), now)...), nil
 
 	case "api_retry":
 		// Normalize the SDK's `data` payload into a shape both providers

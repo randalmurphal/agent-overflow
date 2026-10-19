@@ -1,6 +1,8 @@
 package agenthome
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,14 +25,20 @@ func writeHome(t *testing.T, files map[string]string) string {
 	return home
 }
 
-// readContext reads the context file called name from home.
+// readContext reads the context file called name from home, and returns its
+// text without the ending every delivery closes with.
 func readContext(t *testing.T, home, name string) (string, error) {
 	t.Helper()
 	file, ok := ContextFileNamed(name)
 	if !ok {
 		t.Fatalf("%s is not a context file", name)
 	}
-	return ReadContext(home, file)
+	text, problem := ReadContext(home, file)
+	head, found := strings.CutSuffix(text, "\n\n"+file.Ending)
+	if !found || !strings.HasPrefix(text, file.Heading+"\n\n") {
+		t.Fatalf("%s: %q does not open with its heading and close with %q", name, text, file.Ending)
+	}
+	return head, problem
 }
 
 func TestContextCarriesEachFileUnderItsHeading(t *testing.T) {
@@ -38,6 +46,7 @@ func TestContextCarriesEachFileUnderItsHeading(t *testing.T) {
 	home := writeHome(t, map[string]string{
 		InstructionsFile: "Release lead for the app.\n\nGrants: none.\n",
 		MemoryIndexFile:  "# Memory\n\n- [Rule](memory/rule.md): hook\n",
+		"memory/rule.md": "Rule",
 	})
 	for name, want := range map[string]string{
 		InstructionsFile: instructionsHeading + "\n\nRelease lead for the app.\n\nGrants: none.",
@@ -53,6 +62,34 @@ func TestContextCarriesEachFileUnderItsHeading(t *testing.T) {
 	}
 	if problems := Problems(home); len(problems) > 0 {
 		t.Fatalf("problems: %v", problems)
+	}
+	// The ending closes each delivery after the text and its notices.
+	for _, file := range ContextFiles {
+		if text, _ := ReadContext(home, file); !strings.HasSuffix(text, "hook\n\n[End of "+file.Name+"]") && !strings.HasSuffix(text, "none.\n\n[End of "+file.Name+"]") {
+			t.Fatalf("%s: %q", file.Name, text)
+		}
+	}
+}
+
+// ContextDigest is the same for the same text and differs for any other.
+func TestContextDigest(t *testing.T) {
+	t.Parallel()
+	if got, want := ContextDigest(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; got != want {
+		t.Fatalf("digest = %s, want %s", got, want)
+	}
+	if ContextDigest("a") != ContextDigest("a") || ContextDigest("a") == ContextDigest("a ") {
+		t.Fatal("the digest is not of the text")
+	}
+	// Only a stamp on the line under the heading is left out.
+	for text, want := range map[string]string{
+		"## H\n" + StampPrefix + "T.]\n\nbody": "## H\n\nbody",
+		"## H\n\n" + StampPrefix + "T.]":       "## H\n\n" + StampPrefix + "T.]",
+		"## H\n" + StampPrefix + "T.]":         "## H\n" + StampPrefix + "T.]",
+		StampPrefix + "T.]\nbody":              StampPrefix + "T.]\nbody",
+	} {
+		if sum := sha256.Sum256([]byte(want)); ContextDigest(text) != hex.EncodeToString(sum[:]) {
+			t.Errorf("digest of %q is not the SHA-256 of %q", text, want)
+		}
 	}
 }
 
@@ -185,6 +222,7 @@ func TestContextDropsFormatCharacters(t *testing.T) {
 	home := writeHome(t, map[string]string{
 		InstructionsFile: "Release " + hidden + "lead\n",
 		MemoryIndexFile:  "- [A](memory/a.md):" + hidden + " hook\n",
+		"memory/a.md":    "A",
 	})
 	if got, _ := readContext(t, home, InstructionsFile); got != instructionsHeading+"\n\nRelease lead" {
 		t.Fatalf("instructions = %q", got)
@@ -415,6 +453,7 @@ func TestTheSkillNamesTheLiterals(t *testing.T) {
 	skill := string(raw)
 	for _, literal := range []string{
 		InstructionsFile, MemoryIndexFile, "8 KiB", "4 KiB", "32 KiB", "home_files",
+		strings.TrimSpace(IndexCheckPrefix), strings.TrimSuffix(ContextFiles[0].Ending, InstructionsFile+"]") + "<file>]",
 		"name: agent-home", "disable-model-invocation: false",
 	} {
 		if !strings.Contains(skill, literal) {
@@ -497,7 +536,7 @@ func TestTheRawBoundStopsAReadInsideTheCap(t *testing.T) {
 		home := writeHome(t, map[string]string{InstructionsFile: text, MemoryIndexFile: text, "big.md": text})
 		for _, file := range ContextFiles {
 			got, problem := ReadContext(home, file)
-			if want := file.Heading + "\n\n" + notice(file.Name, 1); problem != nil || got != want {
+			if want := file.Heading + "\n\n" + notice(file.Name, 1) + "\n\n" + file.Ending; problem != nil || got != want {
 				t.Errorf("%s: %s = %q, %v; want %q", name, file.Name, got, problem, want)
 			}
 		}

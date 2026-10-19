@@ -295,7 +295,7 @@ func (a *App) startSessionNow(threadID string) error {
 		}
 	}
 
-	agent, err := a.readStandingAgentSession(t)
+	agent, err := a.readStandingAgentSession(t, opts.Resume)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
@@ -572,6 +572,7 @@ func (a *App) spawnProviderSession(
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.AppendSystemPrompt = appGuide
 		cfg.SessionStartHooks = agent.Hooks
+		cfg.SessionStartReceipts = agent.Receipts
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		if mcpServers[remoteMCPName] != nil {
@@ -637,10 +638,7 @@ func (a *App) spawnProviderSession(
 		// gets it injected (codexDeveloperInstructionsDelivery).
 		cfg.DeveloperInstructions = a.codexDeveloperInstructions(threadID, appGuide, mcpServers)
 		cfg.SessionStartHooks = agent.Hooks
-		cfg.SessionStartPending, err = a.codexSessionStartPending(threadID, cfg.ResumeThreadID, agent.Hooks)
-		if err != nil {
-			return session{}, err
-		}
+		cfg.SessionStartReceipts = agent.Receipts
 		cfg.DeveloperInstructionsDelivery, err = a.codexDeveloperInstructionsDelivery(threadID, cfg.ResumeThreadID)
 		if err != nil {
 			return session{}, err
@@ -767,6 +765,7 @@ func (a *App) spawnProviderSession(
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
 		cfg.AppendSystemPrompt = appGuide
 		cfg.SessionStartHooks = agent.Hooks
+		cfg.SessionStartReceipts = agent.Receipts
 		cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
 		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
 		cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)

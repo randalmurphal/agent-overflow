@@ -657,32 +657,36 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 	return string(data), true
 }
 
-// SessionStartHookGroup is the SessionStart matcher group that registers
-// hooks in a settings block: provider.SessionStartHookSources with a command
-// handler per hook, which Claude Code runs in parallel. nil for no hooks.
-// Shared with claude-tui, which drives the same binary.
-func SessionStartHookGroup(hooks []provider.SessionStartHook) map[string]any {
+// SessionStartHookGroups are the SessionStart matcher groups that register
+// hooks in a settings block, one per hook with its own matcher
+// (provider.SessionStartMatcher). Claude Code runs the matching hooks in
+// parallel. nil for no hooks. Shared with claude-tui, which drives the same
+// binary.
+func SessionStartHookGroups(hooks []provider.SessionStartHook) []any {
 	if len(hooks) == 0 {
 		return nil
 	}
-	handlers := make([]any, 0, len(hooks))
+	groups := make([]any, 0, len(hooks))
 	for _, hook := range hooks {
-		handlers = append(handlers, map[string]any{
-			"type":    "command",
-			"command": hook.Command,
-			"timeout": provider.SessionStartHookTimeoutSeconds,
+		groups = append(groups, map[string]any{
+			"matcher": provider.SessionStartMatcher(hook.Resume),
+			"hooks": []any{map[string]any{
+				"type":    "command",
+				"command": hook.Command,
+				"timeout": provider.SessionStartHookTimeoutSeconds,
+			}},
 		})
 	}
-	return map[string]any{"matcher": provider.SessionStartHookSources, "hooks": handlers}
+	return groups
 }
 
 // inlineSettingsHooksForCLI is the block's `hooks` value; nil for none.
 func inlineSettingsHooksForCLI(cfg Config) map[string]any {
-	group := SessionStartHookGroup(cfg.SessionStartHooks)
-	if group == nil {
+	groups := SessionStartHookGroups(cfg.SessionStartHooks)
+	if groups == nil {
 		return nil
 	}
-	return map[string]any{"SessionStart": []any{group}}
+	return map[string]any{"SessionStart": groups}
 }
 
 // inlineSettingsEnvForCLI builds the `env` half of the block. Returns nil

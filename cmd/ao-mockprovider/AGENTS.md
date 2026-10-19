@@ -71,10 +71,10 @@ control channel aligned with verified provider behavior.
   its message items as `injected_items` before the answer.
 - Run the SessionStart hooks of Claude's `--settings` and of Codex's
   `config.hooks` where each CLI runs them (`session_start_hooks.go`): Claude
-  before a fresh process's first init and before a scenario's
-  `compact_boundary`; Codex at the turn start after `thread/start` or
-  `thread/resume` and right after a scenario's compaction, and only hooks
-  whose trust hash matches. Report each run as `session_start_context`
+  before a process's first init, with source `startup`, `resume` or `fork`
+  from its launch flags, and before a scenario's `compact_boundary`; Codex
+  at the turn start after `thread/start` or `thread/resume` and right after
+  a scenario's compaction, and only hooks whose trust hash matches. Report each run as `session_start_context`
   before the frames of its outcome (`hook_response`, `hook/completed`), and
   run none under the scenario's `sessionStartHooksOff`. A scenario writes
   the turn start and the compaction and never scripts the hook frames.

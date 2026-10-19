@@ -6,6 +6,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"agent-overflow/internal/stringsx"
@@ -13,7 +14,8 @@ import (
 
 // HookSubcommand is the argv[1] sentinel that routes this binary to RunHook:
 // the SessionStart hook a standing agent's sessions run, once per context
-// file, at a start, after a compaction and after a clear.
+// file, at a start, after a compaction and after a clear, and at a resume
+// when the thread's model does not hold the file's current context.
 const HookSubcommand = "__agent-home-context"
 
 // maxHookInput bounds the hook input RunHook drains from stdin. Claude and
@@ -52,10 +54,16 @@ type hookSpecificOutput struct {
 
 // RunHook is the entry point of HookSubcommand. args are the context file's
 // name and the home. It prints the file as ReadContext delivers it, so the
-// output always opens with the file's heading, and exits 0 when it printed:
-// a file that cannot be read is delivered as a notice and its problem goes to
-// stderr. A refused argument list exits 1 with nothing on stdout.
+// output always opens with the file's heading followed by the delivery's
+// stamp (StampPrefix), and exits 0 when it printed: a file that cannot be
+// read is delivered as a notice and its problem goes to stderr. A refused
+// argument list exits 1 with nothing on stdout.
 func RunHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return runHookAt(args, stdin, stdout, stderr, time.Now())
+}
+
+// runHookAt is RunHook at the time now.
+func runHookAt(args []string, stdin io.Reader, stdout, stderr io.Writer, now time.Time) int {
 	if _, err := io.Copy(io.Discard, io.LimitReader(stdin, maxHookInput)); err != nil {
 		fmt.Fprintf(stderr, "%s: read the hook input: %v\n", HookSubcommand, err)
 	}
@@ -82,6 +90,7 @@ func RunHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if problem != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", HookSubcommand, problem)
 	}
+	text = stamp(text, file, now)
 	data, err := json.Marshal(hookOutput{HookSpecificOutput: hookSpecificOutput{HookEventName: "SessionStart", AdditionalContext: text}})
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: encode the output: %v\n", HookSubcommand, err)

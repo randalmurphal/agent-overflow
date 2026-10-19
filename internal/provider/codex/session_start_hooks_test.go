@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -13,8 +14,8 @@ import (
 )
 
 var testSessionStartHooks = []provider.SessionStartHook{
-	{Label: "instructions.md", Command: `'/opt/ao' __agent-home-context 'instructions.md' '/h'`, Heading: "## Your standing instructions"},
-	{Label: "MEMORY.md", Command: `'/opt/ao' __agent-home-context 'MEMORY.md' '/h'`, Heading: "## Your memory index"},
+	{Label: "instructions.md", Command: `'/opt/ao' __agent-home-context 'instructions.md' '/h'`, Heading: "## Your standing instructions", Ending: "[End of instructions.md]", Stamp: "[Delivered at "},
+	{Label: "MEMORY.md", Command: `'/opt/ao' __agent-home-context 'MEMORY.md' '/h'`, Heading: "## Your memory index", Ending: "[End of MEMORY.md]", Stamp: "[Delivered at "},
 }
 
 func trustHash(command, matcher string) string {
@@ -32,9 +33,9 @@ func TestSessionStartHookTrustHashMatchesCodex(t *testing.T) {
 	if got, want := trustHash(command, provider.SessionStartHookSources), "sha256:5cfcd58168640bf35ec346e3d67278caecbb107f6d08dd0f693c088e6e67d886"; got != want {
 		t.Fatalf("trust hash = %s, want %s", got, want)
 	}
-	// The group's matcher is part of the identity: the hooks registered for
-	// a resume are trusted by their own hash.
-	if trustHash(command, sessionStartHookSourcesOwed) == trustHash(command, provider.SessionStartHookSources) {
+	// The group's matcher is part of the identity: a hook registered for a
+	// resume is trusted by its own hash.
+	if trustHash(command, provider.SessionStartResumeSources) == trustHash(command, provider.SessionStartHookSources) {
 		t.Fatal("the matcher does not reach the hash")
 	}
 }
@@ -69,32 +70,34 @@ func sessionStartHooksJSON(t *testing.T, hooks any) string {
 }
 
 // wantSessionStartHooks is the `hooks` config registering
-// testSessionStartHooks in one group of matcher.
-func wantSessionStartHooks(t *testing.T, matcher string) string {
+// testSessionStartHooks, each in a group of its own whose matcher is the
+// resume one where resume marks it.
+func wantSessionStartHooks(t *testing.T, resume ...bool) string {
 	t.Helper()
-	return sessionStartHooksJSON(t, map[string]any{
-		"SessionStart": []any{map[string]any{
+	groups := []any{}
+	state := map[string]any{}
+	for i, hook := range testSessionStartHooks {
+		matcher := provider.SessionStartMatcher(i < len(resume) && resume[i])
+		groups = append(groups, map[string]any{
 			"matcher": matcher,
-			"hooks": []any{
-				map[string]any{"type": "command", "command": testSessionStartHooks[0].Command, "timeout": 60},
-				map[string]any{"type": "command", "command": testSessionStartHooks[1].Command, "timeout": 60},
-			},
-		}},
-		"state": map[string]any{
-			"/<session-flags>/config.toml:session_start:0:0": map[string]any{"trusted_hash": trustHash(testSessionStartHooks[0].Command, matcher)},
-			"/<session-flags>/config.toml:session_start:0:1": map[string]any{"trusted_hash": trustHash(testSessionStartHooks[1].Command, matcher)},
-		},
-	})
+			"hooks":   []any{map[string]any{"type": "command", "command": hook.Command, "timeout": 60}},
+		})
+		state["/<session-flags>/config.toml:session_start:"+strconv.Itoa(i)+":0"] = map[string]any{"trusted_hash": trustHash(hook.Command, matcher)}
+	}
+	return sessionStartHooksJSON(t, map[string]any{"SessionStart": groups, "state": state})
 }
 
-// The thread config registers each hook as a command handler of one
-// SessionStart group and trusts each by its hash under the key Codex gives
-// the session-flags layer's handlers.
+// The thread config registers each hook as the command handler of a
+// SessionStart group of its own and trusts each by its hash under the key
+// Codex gives the session-flags layer's handlers.
 func TestThreadParamsCarryTheSessionStartHooks(t *testing.T) {
 	t.Parallel()
 	config := buildThreadParams(Config{SessionStartHooks: testSessionStartHooks}, "0.157.1")["config"].(map[string]any)
-	if got, want := sessionStartHooksJSON(t, config["hooks"]), wantSessionStartHooks(t, "startup|compact|clear"); got != want {
+	if got, want := sessionStartHooksJSON(t, config["hooks"]), wantSessionStartHooks(t); got != want {
 		t.Fatalf("hooks = %s\nwant    %s", got, want)
+	}
+	if !strings.Contains(sessionStartHooksJSON(t, config["hooks"]), `"matcher":"startup|compact|clear"`) {
+		t.Fatalf("hooks = %s", sessionStartHooksJSON(t, config["hooks"]))
 	}
 	if trustHash(testSessionStartHooks[0].Command, provider.SessionStartHookSources) == trustHash(testSessionStartHooks[1].Command, provider.SessionStartHookSources) {
 		t.Fatal("two commands share a hash")
@@ -112,36 +115,49 @@ func TestThreadParamsCarryTheSessionStartHooks(t *testing.T) {
 		}
 	}
 
-	// A load that owes a delivery copies the params rather than editing
-	// the ones Resume keeps.
+	// A load that runs a hook at its resume copies the params rather than
+	// editing the ones Resume keeps.
 	params := buildThreadParams(Config{SessionStartHooks: testSessionStartHooks}, "0.157.1")
-	owed := withSessionStartHooks(params, testSessionStartHooks, true)
-	if got, want := sessionStartHooksJSON(t, owed["config"].(map[string]any)["hooks"]), wantSessionStartHooks(t, "startup|compact|clear|resume"); got != want {
-		t.Fatalf("owed hooks = %s\nwant         %s", got, want)
+	resumed := withSessionStartHooks(params, testSessionStartHooks, []bool{false, true})
+	if got, want := sessionStartHooksJSON(t, resumed["config"].(map[string]any)["hooks"]), wantSessionStartHooks(t, false, true); got != want {
+		t.Fatalf("resume hooks = %s\nwant          %s", got, want)
 	}
-	if got, want := sessionStartHooksJSON(t, params["config"].(map[string]any)["hooks"]), wantSessionStartHooks(t, "startup|compact|clear"); got != want {
+	if !strings.Contains(sessionStartHooksJSON(t, resumed["config"].(map[string]any)["hooks"]), `"matcher":"startup|compact|clear|resume|fork"`) {
+		t.Fatalf("resume hooks = %s", sessionStartHooksJSON(t, resumed["config"].(map[string]any)["hooks"]))
+	}
+	if got, want := sessionStartHooksJSON(t, params["config"].(map[string]any)["hooks"]), wantSessionStartHooks(t); got != want {
 		t.Fatalf("withSessionStartHooks edited its input: %s", got)
 	}
 }
 
-// startRecorder records a session's SessionStart expectations and errors.
-type startRecorder struct {
-	mu      sync.Mutex
-	records []string
-	errors  []string
-	fail    error
+// receiptRecorder records the receipts a session keeps and forgets, and the
+// errors it reports.
+type receiptRecorder struct {
+	mu        sync.Mutex
+	records   []string
+	errors    []string
+	keepErr   error
+	forgetErr error
 }
 
-func (r *startRecorder) pending(after provider.SessionStartEvent) *SessionStartPending {
-	return &SessionStartPending{After: after, Record: func(codexThreadID string, after provider.SessionStartEvent) error {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		r.records = append(r.records, codexThreadID+" "+string(after))
-		return r.fail
-	}}
+func (r *receiptRecorder) receipts() *provider.SessionStartReceipts {
+	return &provider.SessionStartReceipts{
+		Keep: func(sessionRef, label, context string) error {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.records = append(r.records, "keep "+sessionRef+" "+label+" "+context)
+			return r.keepErr
+		},
+		Forget: func() error {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.records = append(r.records, "forget")
+			return r.forgetErr
+		},
+	}
 }
 
-func (r *startRecorder) onEvent(evt provider.ProviderEvent) {
+func (r *receiptRecorder) onEvent(evt provider.ProviderEvent) {
 	if evt.Kind != provider.EventError {
 		return
 	}
@@ -150,7 +166,7 @@ func (r *startRecorder) onEvent(evt provider.ProviderEvent) {
 	r.errors = append(r.errors, evt.Content)
 }
 
-func (r *startRecorder) take() (records, errs []string) {
+func (r *receiptRecorder) take() (records, errs []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	records, errs = r.records, r.errors
@@ -158,51 +174,43 @@ func (r *startRecorder) take() (records, errs []string) {
 	return records, errs
 }
 
-// A fresh thread expects the hooks from its start and records that. A
-// resumed one carries their earlier output and registers them only for its
-// next compaction, unless its last session left a delivery owed: then it
-// registers them for the resume too and expects them again.
-func TestNewSessionRegistersTheHooksForWhatTheThreadOwes(t *testing.T) {
+// A fresh thread registers every hook for its start and expects them all. A
+// resumed one registers for its resume only the hooks whose Resume is set,
+// and expects those.
+func TestNewSessionRegistersTheHooksTheLoadRuns(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name, method, resume string
-		pending              bool
-		owed                 provider.SessionStartEvent
-		matcher              string
+		hooks                []provider.SessionStartHook
+		resumeHooks          []bool
 		expecting            provider.SessionStartEvent
-		records              []string
 	}{
-		{"fresh", "thread/start", "", true, "", "startup|compact|clear", provider.SessionStartAfterStart, []string{"mock-thread start"}},
-		{"fresh without a record", "thread/start", "", false, "", "startup|compact|clear", provider.SessionStartAfterStart, nil},
-		{"resume", "thread/resume", "mock-thread", true, "", "startup|compact|clear", "", nil},
-		{"resume owing a start", "thread/resume", "mock-thread", true, provider.SessionStartAfterStart, "startup|compact|clear|resume", provider.SessionStartAfterStart, nil},
-		{"resume owing a compaction", "thread/resume", "mock-thread", true, provider.SessionStartAfterCompaction, "startup|compact|clear|resume", provider.SessionStartAfterCompaction, nil},
-		// A record without hooks has nothing to follow.
-		{"fresh without hooks", "thread/start", "", true, "", "", "", nil},
-		{"resume without hooks", "thread/resume", "mock-thread", true, provider.SessionStartAfterStart, "", "", nil},
+		{"fresh", "thread/start", "", testSessionStartHooks, nil, provider.SessionStartAfterStart},
+		// A fresh thread holds no context to resume past.
+		{"fresh with a resuming hook", "thread/start", "", hooksResumingAt(1), nil, provider.SessionStartAfterStart},
+		{"resume", "thread/resume", "mock-thread", testSessionStartHooks, nil, ""},
+		{"resume of a hook", "thread/resume", "mock-thread", hooksResumingAt(1), []bool{false, true}, provider.SessionStartAfterResume},
+		{"resume of both", "thread/resume", "mock-thread", hooksResumingAt(0, 1), []bool{true, true}, provider.SessionStartAfterResume},
+		{"fresh without hooks", "thread/start", "", nil, nil, ""},
+		{"resume without hooks", "thread/resume", "mock-thread", nil, nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
 			requestLog := filepath.Join(dir, "requests.jsonl")
 			binary := writeInjectAppServer(t, dir, requestLog, "configured", "")
-			recorder := &startRecorder{}
-			cfg := Config{Binary: binary, WorkDir: dir, ResumeThreadID: tc.resume}
-			if tc.matcher != "" {
-				cfg.SessionStartHooks = testSessionStartHooks
-			}
-			if tc.pending {
-				cfg.SessionStartPending = recorder.pending(tc.owed)
-			}
-			sess, err := NewSession(t.Context(), "thread-1", cfg, recorder.onEvent)
+			recorder := &receiptRecorder{}
+			sess, err := NewSession(t.Context(), "thread-1", Config{
+				Binary: binary, WorkDir: dir, ResumeThreadID: tc.resume, SessionStartHooks: tc.hooks, SessionStartReceipts: recorder.receipts(),
+			}, recorder.onEvent)
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
 			t.Cleanup(func() { _ = sess.Close() })
 			config, _ := findRequestParams(t, requestLog, tc.method)["config"].(map[string]any)
 			want := "null"
-			if tc.matcher != "" {
-				want = wantSessionStartHooks(t, tc.matcher)
+			if tc.hooks != nil {
+				want = wantSessionStartHooks(t, tc.resumeHooks...)
 			}
 			if got := sessionStartHooksJSON(t, config["hooks"]); got != want {
 				t.Errorf("hooks = %s\nwant    %s", got, want)
@@ -210,12 +218,20 @@ func TestNewSessionRegistersTheHooksForWhatTheThreadOwes(t *testing.T) {
 			if got := sess.sessionStart.Expecting(); got != tc.expecting {
 				t.Errorf("expecting = %q, want %q", got, tc.expecting)
 			}
-			records, errs := recorder.take()
-			if strings.Join(records, ",") != strings.Join(tc.records, ",") || len(errs) > 0 {
-				t.Errorf("records %v, errors %v; want records %v", records, errs, tc.records)
+			if records, errs := recorder.take(); len(records) > 0 || len(errs) > 0 {
+				t.Errorf("records %v, errors %v", records, errs)
 			}
 		})
 	}
+}
+
+// hooksResumingAt are the test hooks, those at indexes running at a resume.
+func hooksResumingAt(indexes ...int) []provider.SessionStartHook {
+	hooks := append([]provider.SessionStartHook{}, testSessionStartHooks...)
+	for _, i := range indexes {
+		hooks[i].Resume = true
+	}
+	return hooks
 }
 
 // Hooks a delivery could not tell apart are refused before Codex starts.
@@ -231,29 +247,32 @@ func TestNewSessionRefusesHooksItCannotFollow(t *testing.T) {
 	}
 }
 
-// A rehydrate is a cold load: while a delivery is still expected it
-// registers the hooks for the resume, and once the delivery settled it
-// registers them as the thread's start did.
-func TestResumeRegistersTheHooksWhileADeliveryIsOwed(t *testing.T) {
+// A rehydrate is a cold load: Codex drops the hooks the earlier load
+// queued, so it registers for the resume the hooks the open expectation
+// still waits for, and once the delivery settled it registers them as the
+// thread's start did. The settled delivery keeps its receipts under the
+// Codex thread.
+func TestResumeRegistersTheHooksTheDeliveryStillWaitsFor(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	requestLog := filepath.Join(dir, "requests.jsonl")
 	binary := writeInjectAppServer(t, dir, requestLog, "configured", "")
-	recorder := &startRecorder{}
+	recorder := &receiptRecorder{}
 	sess, err := NewSession(t.Context(), "thread-1", Config{
-		Binary: binary, WorkDir: dir, SessionStartHooks: testSessionStartHooks, SessionStartPending: recorder.pending(""),
+		Binary: binary, WorkDir: dir, SessionStartHooks: testSessionStartHooks, SessionStartReceipts: recorder.receipts(),
 	}, recorder.onEvent)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { _ = sess.Close() })
+	turnStarted(t, sess, "t1")
+	hookRun(t, sess, "t1", "sessionFlags", "completed", instructionsContext)
 	if err := sess.Resume(t.Context()); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	turnStarted(t, sess, "t1")
-	hookRun(t, sess, "t1", "sessionFlags", "completed", instructionsContext)
-	hookRun(t, sess, "t1", "sessionFlags", "completed", memoryContext)
-	turnCompleted(t, sess, "t1", "completed")
+	turnStarted(t, sess, "t2")
+	hookRun(t, sess, "t2", "sessionFlags", "completed", memoryContext)
+	turnCompleted(t, sess, "t2", "completed")
 	if err := sess.Resume(t.Context()); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
@@ -261,14 +280,15 @@ func TestResumeRegistersTheHooksWhileADeliveryIsOwed(t *testing.T) {
 	if len(resumes) != 2 {
 		t.Fatalf("thread/resume requests = %d, want 2", len(resumes))
 	}
-	for i, matcher := range []string{"startup|compact|clear|resume", "startup|compact|clear"} {
+	for i, resume := range [][]bool{{false, true}, nil} {
 		config, _ := resumes[i]["config"].(map[string]any)
-		if got, want := sessionStartHooksJSON(t, config["hooks"]), wantSessionStartHooks(t, matcher); got != want {
+		if got, want := sessionStartHooksJSON(t, config["hooks"]), wantSessionStartHooks(t, resume...); got != want {
 			t.Errorf("resume %d hooks = %s\nwant       %s", i, got, want)
 		}
 	}
-	if records, errs := recorder.take(); strings.Join(records, ",") != "mock-thread start,mock-thread " || len(errs) > 0 {
-		t.Fatalf("records %v, errors %v", records, errs)
+	records, errs := recorder.take()
+	if want := []string{"keep mock-thread instructions.md " + instructionsContext, "keep mock-thread MEMORY.md " + memoryContext}; strings.Join(records, "\n") != strings.Join(want, "\n") || len(errs) > 0 {
+		t.Fatalf("records %q, errors %v; want records %q", records, errs, want)
 	}
 }
 
@@ -295,7 +315,12 @@ const sessionStartRootThread = "codex-thread-1"
 
 func sessionStartSession(t *testing.T, expect provider.SessionStartEvent) (*Session, *sessionStartEvents) {
 	t.Helper()
-	delivery, err := provider.NewSessionStartDelivery(testSessionStartHooks)
+	return sessionStartSessionWith(t, expect, testSessionStartHooks, nil)
+}
+
+func sessionStartSessionWith(t *testing.T, expect provider.SessionStartEvent, hooks []provider.SessionStartHook, receipts *provider.SessionStartReceipts) (*Session, *sessionStartEvents) {
+	t.Helper()
+	delivery, err := provider.NewSessionStartDelivery(hooks, receipts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,8 +381,8 @@ func compacted(t *testing.T, s *Session, turn string) {
 }
 
 const (
-	instructionsContext = "## Your standing instructions (instructions.md in your home)\n\nRole"
-	memoryContext       = "## Your memory index (MEMORY.md in your home)\n\n- a"
+	instructionsContext = "## Your standing instructions (instructions.md in your home)\n\nRole\n\n[End of instructions.md]"
+	memoryContext       = "## Your memory index (MEMORY.md in your home)\n\n- a\n\n[End of MEMORY.md]"
 )
 
 // warningsBeforeCompletion are the delivery warnings among events; each must
@@ -465,27 +490,31 @@ func TestCodexSettlesOnlyAtTheTurnThatRanTheHooks(t *testing.T) {
 	}
 }
 
-// Each expectation is recorded as it opens and cleared as it settles; a
-// record that fails is put on the thread.
-func TestCodexRecordsTheOpenExpectation(t *testing.T) {
+// The turn that settles a delivery keeps its receipts under the Codex
+// thread; a compaction forgets the receipts first. A receipt or a compaction
+// the store could not record is a non-fatal row of the thread.
+func TestCodexKeepsTheReceiptsOfWhatArrived(t *testing.T) {
 	t.Parallel()
-	s, rec := sessionStartSession(t, "")
-	recorder := &startRecorder{}
-	s.sessionStartRecord = recorder.pending("").Record
-	s.expectSessionStart()
+	recorder := &receiptRecorder{}
+	s, rec := sessionStartSessionWith(t, provider.SessionStartAfterStart, testSessionStartHooks, recorder.receipts())
 	turnStarted(t, s, "t1")
+	hookRun(t, s, "t1", "sessionFlags", "completed", instructionsContext, memoryContext)
 	compacted(t, s, "t1")
+	hookRun(t, s, "t1", "sessionFlags", "completed", memoryContext)
 	turnCompleted(t, s, "t1", "completed")
-	turnStarted(t, s, "t2")
-	hookRun(t, s, "t2", "sessionFlags", "completed", instructionsContext, memoryContext)
-	turnCompleted(t, s, "t2", "completed")
-	rec.take()
-	if records, _ := recorder.take(); strings.Join(records, ",") != "codex-thread-1 start,codex-thread-1 compaction,codex-thread-1 " {
-		t.Fatalf("records = %v", records)
+	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "instructions.md did not reach this session after its compaction") {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	records, _ := recorder.take()
+	if want := []string{"forget", "keep codex-thread-1 MEMORY.md " + memoryContext}; strings.Join(records, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("records %q, want %q", records, want)
 	}
 
-	recorder.fail = errors.New("disk full")
-	notify(t, s, "thread/compacted", map[string]any{"turnId": "t3"})
+	recorder.keepErr, recorder.forgetErr = errors.New("database is locked"), errors.New("disk full")
+	turnStarted(t, s, "t2")
+	compacted(t, s, "t2")
+	hookRun(t, s, "t2", "sessionFlags", "completed", instructionsContext, memoryContext)
+	turnCompleted(t, s, "t2", "completed")
 	var failures []string
 	for _, event := range rec.take() {
 		if event.Kind == provider.EventError {
@@ -496,8 +525,33 @@ func TestCodexRecordsTheOpenExpectation(t *testing.T) {
 			failures = append(failures, event.Content)
 		}
 	}
-	if len(failures) != 1 || !strings.Contains(failures[0], "could not record") || !strings.HasSuffix(failures[0], ": disk full") {
+	if len(failures) != 2 || !strings.HasPrefix(failures[0], "Agent Overflow could not record that this compaction") || !strings.HasSuffix(failures[0], ": disk full") ||
+		!strings.HasPrefix(failures[1], "Agent Overflow could not record that instructions.md and MEMORY.md reached this session") {
 		t.Fatalf("record failure rows = %v", failures)
+	}
+}
+
+// A resume expects only the hooks it registered, and the turn that ran them
+// settles it.
+func TestCodexSettlesAResumeAtItsFirstCompletedTurn(t *testing.T) {
+	t.Parallel()
+	recorder := &receiptRecorder{}
+	s, rec := sessionStartSessionWith(t, provider.SessionStartAfterResume, hooksResumingAt(1), recorder.receipts())
+	turnStarted(t, s, "t1")
+	turnCompleted(t, s, "t1", "completed")
+	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "MEMORY.md did not reach this session after its resume") {
+		t.Fatalf("warnings = %v", warnings)
+	}
+
+	s, rec = sessionStartSessionWith(t, provider.SessionStartAfterResume, hooksResumingAt(1), recorder.receipts())
+	turnStarted(t, s, "t1")
+	hookRun(t, s, "t1", "sessionFlags", "completed", memoryContext)
+	turnCompleted(t, s, "t1", "completed")
+	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) > 0 {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	if records, _ := recorder.take(); len(records) != 1 || records[0] != "keep codex-thread-1 MEMORY.md "+memoryContext {
+		t.Fatalf("records = %q", records)
 	}
 }
 
@@ -518,6 +572,31 @@ func TestCodexKeepsTheExpectationPastAnUnfinishedTurn(t *testing.T) {
 		if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "instructions.md did not reach") {
 			t.Fatalf("%s: warnings = %v", status, warnings)
 		}
+	}
+}
+
+// A revert in place that cut a turn whose delivery an interrupt kept from
+// settling drops it: the next completed turn warns and keeps no receipt,
+// and a rehydrate registers the hook again.
+func TestCodexDropsTheDeliveriesARevertCut(t *testing.T) {
+	t.Parallel()
+	recorder := &receiptRecorder{}
+	s, rec := sessionStartSessionWith(t, provider.SessionStartAfterResume, hooksResumingAt(1), recorder.receipts())
+	turnStarted(t, s, "t1")
+	hookRun(t, s, "t1", "sessionFlags", "completed", memoryContext)
+	turnCompleted(t, s, "t1", "interrupted")
+	rec.take()
+	s.DropSessionStartDeliveries()
+	if pending := s.sessionStart.Pending(); len(pending) != 2 || !pending[1] {
+		t.Fatalf("pending after the revert = %v", pending)
+	}
+	turnStarted(t, s, "t2")
+	turnCompleted(t, s, "t2", "completed")
+	if warnings := warningsBeforeCompletion(t, rec.take()); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "MEMORY.md did not reach this session after its resume") {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	if records, _ := recorder.take(); len(records) != 0 {
+		t.Fatalf("records = %q", records)
 	}
 }
 

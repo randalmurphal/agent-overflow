@@ -39,7 +39,7 @@ const homeContentsRole = "Release lead for the test project."
 func homeContentsWant(name string, row store.StandingAgent) string {
 	return "You are the standing agent " + strconv.Quote(name) + " (assistant id " + row.ID + "; this thread is " + row.ThreadID + "). Your home is " + row.Home +
 		". You own that directory and keep your durable state there." +
-		" Agent Overflow puts your instructions.md and MEMORY.md in your context, each under its own heading, when this thread starts and after each compaction; when you do not see them, read them from your home before you act." +
+		" Agent Overflow puts your instructions.md and MEMORY.md in your context, each under its own heading, when this thread starts and after each compaction, and again when the thread resumes after one of them changed; the latest copy is current. When you do not see them, read them from your home before you act." +
 		" Load the agent-home skill before any work. If it is not installed, tell the user to install the skills library from Settings, Agents, Skills, and keep your home files by hand until it is." +
 		"\n\n" + agenthome.BaseInstructions
 }
@@ -47,13 +47,17 @@ func homeContentsWant(name string, row store.StandingAgent) string {
 // homeContextWant is what the two hooks deliver for the fixture files, in
 // order.
 func homeContextWant(index string) string {
-	return "## Your standing instructions (instructions.md in your home)\n\n" + homeContentsRole + "\n\nGrants: none." +
-		"\n\n## Your memory index (MEMORY.md in your home)\n\n" + index
+	return "## Your standing instructions (instructions.md in your home)\n\n" + homeContentsRole + "\n\nGrants: none.\n\n[End of instructions.md]" +
+		"\n\n## Your memory index (MEMORY.md in your home)\n\n" + index + "\n\n[End of MEMORY.md]"
 }
 
 func writeHomeFile(t *testing.T, home, name, text string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(home, name), []byte(text), 0o600); err != nil {
+	path := filepath.Join(home, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -69,8 +73,9 @@ type startedSession struct {
 // with.
 type startSession func(t *testing.T) startedSession
 
-// homeHookCommands are the commands of AO's SessionStart group in a hooks
-// map: the one whose matcher is provider.SessionStartHookSources.
+// homeHookCommands are the commands of AO's SessionStart groups in a hooks
+// map: those whose matcher is provider.SessionStartHookSources, or
+// provider.SessionStartResumeSources for a hook a resume runs.
 func homeHookCommands(t *testing.T, hooks any) []string {
 	t.Helper()
 	raw, _ := json.Marshal(hooks)
@@ -89,9 +94,7 @@ func homeHookCommands(t *testing.T, hooks any) []string {
 	}
 	var commands []string
 	for _, group := range decoded.SessionStart {
-		// A Codex thread whose start has not delivered yet registers them
-		// for its resume too.
-		if group.Matcher != provider.SessionStartHookSources && group.Matcher != provider.SessionStartHookSources+"|resume" {
+		if group.Matcher != provider.SessionStartHookSources && group.Matcher != provider.SessionStartResumeSources {
 			continue
 		}
 		for _, hook := range group.Hooks {
@@ -192,7 +195,7 @@ func codexStarted(app *App, threadID, logPath string) startSession {
 					t.Fatalf("hook trust state %v for %d hooks", state, len(started.hooks))
 				}
 				for i := range started.hooks {
-					if _, ok := state["/<session-flags>/config.toml:session_start:0:"+strconv.Itoa(i)]; !ok {
+					if _, ok := state["/<session-flags>/config.toml:session_start:"+strconv.Itoa(i)+":0"]; !ok {
 						t.Fatalf("hook %d is not trusted: %v", i, state)
 					}
 				}
@@ -212,7 +215,8 @@ func codexStarted(app *App, threadID, logPath string) startSession {
 }
 
 // runHomeHooks runs the hook commands as both providers do, through a POSIX
-// shell with the hook input on stdin, and joins the context each delivered.
+// shell with the hook input on stdin, and joins the context each delivered,
+// each without its stamp.
 // The commands run this test binary, whose TestMain serves the hook verb.
 func runHomeHooks(t *testing.T, commands []string) string {
 	t.Helper()
@@ -241,7 +245,13 @@ func runHomeHooks(t *testing.T, commands []string) string {
 		if err := json.Unmarshal(stdout, &output); err != nil || output.HookSpecificOutput.HookEventName != "SessionStart" {
 			t.Fatalf("hook output %q: %v", stdout, err)
 		}
-		contexts = append(contexts, output.HookSpecificOutput.AdditionalContext)
+		// Each delivery carries its stamp on the line under its heading.
+		heading, rest, _ := strings.Cut(output.HookSpecificOutput.AdditionalContext, "\n")
+		stampLine, body, _ := strings.Cut(rest, "\n")
+		if !strings.HasPrefix(stampLine, agenthome.StampPrefix) {
+			t.Fatalf("hook output %q has no stamp under its heading", output.HookSpecificOutput.AdditionalContext)
+		}
+		contexts = append(contexts, heading+"\n"+body)
 	}
 	return strings.Join(contexts, "\n\n")
 }
@@ -290,6 +300,7 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 			// deliver both.
 			writeHomeFile(t, row.Home, agenthome.InstructionsFile, homeContentsRole+"\n\nGrants: none.\n")
 			writeHomeFile(t, row.Home, agenthome.MemoryIndexFile, "# Memory\n- [A](memory/a.md): first\n")
+			writeHomeFile(t, row.Home, "memory/a.md", "A")
 			first := start(t)
 			if got := blockOf(first.block); got != want {
 				t.Fatalf("first start's block:\n%s\nwant:\n%s", got, want)
@@ -301,7 +312,8 @@ func TestStandingAgentSessionsCarryTheirHomeFiles(t *testing.T) {
 			// ---- An edit changes nothing the session starts with, so the
 			// provider's prompt cache holds, and reaches the next delivery.
 			writeHomeFile(t, row.Home, agenthome.MemoryIndexFile, "# Memory\n- [B](memory/b.md): rewritten\n")
-			if got := runHomeHooks(t, first.hooks); got != homeContextWant("# Memory\n- [B](memory/b.md): rewritten") {
+			writeHomeFile(t, row.Home, "memory/b.md", "B")
+			if got := runHomeHooks(t, first.hooks); got != homeContextWant("# Memory\n- [B](memory/b.md): rewritten\n[Index check: memory/ holds 1 file MEMORY.md does not link: memory/a.md.]") {
 				t.Fatalf("after the rewrite the hooks delivered:\n%s", got)
 			}
 			second := start(t)
@@ -426,22 +438,76 @@ func TestStandingAgentHooksRefuseWhatTheyCannotRun(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	exe := filepath.Join(t.TempDir(), "agent-overflow")
-	if _, err := standingAgentHooks(home, func() (string, error) { return "", errors.New("no /proc") }); err == nil ||
-		err.Error() != "locate this executable for the SessionStart hooks that deliver the home files: no /proc" {
-		t.Fatalf("a failed lookup: %v", err)
+	if hooks, problems := standingAgentHooks(home, false, nil, func() (string, error) { return "", errors.New("no /proc") }); hooks != nil || len(problems) != 1 ||
+		problems[0].Error() != "locate this executable for the SessionStart hooks that deliver the home files: no /proc" {
+		t.Fatalf("a failed lookup: %v, %v", hooks, problems)
 	}
-	if hooks, err := standingAgentHooks("agents/a", func() (string, error) { return exe, nil }); err == nil || hooks != nil ||
-		!strings.HasPrefix(err.Error(), "build the SessionStart hook that delivers instructions.md: ") {
-		t.Fatalf("a relative home: %v, %v", hooks, err)
+	if hooks, problems := standingAgentHooks("agents/a", false, nil, func() (string, error) { return exe, nil }); hooks != nil || len(problems) != 1 ||
+		!strings.HasPrefix(problems[0].Error(), "build the SessionStart hook that delivers instructions.md: ") {
+		t.Fatalf("a relative home: %v, %v", hooks, problems)
 	}
-	hooks, err := standingAgentHooks(home, func() (string, error) { return exe, nil })
-	if err != nil || len(hooks) != len(agenthome.ContextFiles) {
-		t.Fatalf("hooks = %+v, %v", hooks, err)
+	hooks, problems := standingAgentHooks(home, false, nil, func() (string, error) { return exe, nil })
+	if len(problems) > 0 || len(hooks) != len(agenthome.ContextFiles) {
+		t.Fatalf("hooks = %+v, %v", hooks, problems)
 	}
 	for i, file := range agenthome.ContextFiles {
-		if want, _ := agenthome.HookCommand(exe, home, file); hooks[i] != (provider.SessionStartHook{Label: file.Name, Command: want, Heading: file.Heading}) {
+		want, _ := agenthome.HookCommand(exe, home, file)
+		if hooks[i] != (provider.SessionStartHook{Label: file.Name, Command: want, Heading: file.Heading, Ending: file.Ending, Stamp: agenthome.StampPrefix}) {
 			t.Errorf("hook %d = %+v", i, hooks[i])
 		}
+	}
+}
+
+// A resume runs the hook of each file whose context now differs from the
+// one the thread's model last received, and of each file it has no receipt
+// for; a fresh start runs every hook anyway and marks none.
+func TestStandingAgentHooksResumeWhatChanged(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, agenthome.InstructionsFile), []byte("Release lead\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(t.TempDir(), "agent-overflow")
+	locate := func() (string, error) { return exe, nil }
+	current := map[string]string{}
+	for _, file := range agenthome.ContextFiles {
+		text, _ := agenthome.ReadContext(home, file)
+		current[file.Name] = agenthome.ContextDigest(text)
+	}
+	resumes := func(resume bool, received map[string]string) []bool {
+		t.Helper()
+		hooks, problems := standingAgentHooks(home, resume, received, locate)
+		if len(problems) > 0 || len(hooks) != len(agenthome.ContextFiles) {
+			t.Fatalf("hooks = %+v, %v", hooks, problems)
+		}
+		marked := make([]bool, len(hooks))
+		for i, hook := range hooks {
+			marked[i] = hook.Resume
+		}
+		return marked
+	}
+	for name, tc := range map[string]struct {
+		resume   bool
+		received map[string]string
+		want     []bool
+	}{
+		"fresh":         {false, nil, []bool{false, false}},
+		"no receipts":   {true, nil, []bool{true, true}},
+		"none read":     {true, map[string]string{}, []bool{true, true}},
+		"both current":  {true, current, []bool{false, false}},
+		"index changed": {true, map[string]string{agenthome.InstructionsFile: current[agenthome.InstructionsFile], agenthome.MemoryIndexFile: "old"}, []bool{false, true}},
+		"one receipt":   {true, map[string]string{agenthome.MemoryIndexFile: current[agenthome.MemoryIndexFile]}, []bool{true, false}},
+	} {
+		if got := resumes(tc.resume, tc.received); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: resume = %v, want %v", name, got, tc.want)
+		}
+	}
+	// An edit changes the context, and so the decision.
+	if err := os.WriteFile(filepath.Join(home, agenthome.InstructionsFile), []byte("Release lead, now also on call\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := resumes(true, current); !slices.Equal(got, []bool{true, false}) {
+		t.Errorf("after an edit: resume = %v", got)
 	}
 }
 
@@ -478,7 +544,7 @@ func homeWarningRows(t *testing.T, app *App, threadID string) int {
 	}
 	n := 0
 	for _, item := range items {
-		if strings.Contains(item.Summary, "One of this standing agent's home files cannot reach its sessions: ") {
+		if strings.Contains(item.Summary, "One of this standing agent's home files could not be read, and its sessions receive a notice about it: ") {
 			n++
 		}
 	}
@@ -492,7 +558,7 @@ func requireHomeWarningRow(t *testing.T, app *App, threadID, path, why string) {
 		t.Fatal(err)
 	}
 	for _, item := range items {
-		if strings.Contains(item.Summary, "One of this standing agent's home files cannot reach its sessions: ") &&
+		if strings.Contains(item.Summary, "One of this standing agent's home files could not be read, and its sessions receive a notice about it: ") &&
 			strings.Contains(item.Summary, path) && strings.Contains(item.Summary, why) {
 			return
 		}

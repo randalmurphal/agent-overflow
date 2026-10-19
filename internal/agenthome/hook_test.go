@@ -8,8 +8,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestMain runs the hook when a test runs this test binary as the hook
@@ -46,23 +48,62 @@ func runHook(t *testing.T, args []string, stdin io.Reader) (code int, stdout, st
 	return code, out.String(), errOut.String()
 }
 
+// unstamped is a delivered context without its stamp, which it must carry.
+func unstamped(t *testing.T, context string) string {
+	t.Helper()
+	if _, rest, _ := strings.Cut(context, "\n"); !strings.HasPrefix(rest, StampPrefix) {
+		t.Fatalf("no stamp under the heading: %q", context)
+	}
+	return withoutStamp(context)
+}
+
 func TestRunHookDeliversTheCurrentFile(t *testing.T) {
 	t.Parallel()
-	home := writeHome(t, map[string]string{InstructionsFile: "Release lead\n", MemoryIndexFile: "- [A](memory/a.md): first\n"})
+	home := writeHome(t, map[string]string{InstructionsFile: "Release lead\n", MemoryIndexFile: "- [A](memory/a.md): first\n", "memory/a.md": "A", "memory/b.md": "B"})
 	for _, file := range ContextFiles {
 		code, stdout, stderr := runHook(t, []string{file.Name, home}, strings.NewReader(`{"source":"startup"}`))
 		want, _ := ReadContext(home, file)
-		if code != 0 || stderr != "" || hookContext(t, stdout) != want || !strings.HasSuffix(stdout, "}\n") {
+		if code != 0 || stderr != "" || unstamped(t, hookContext(t, stdout)) != want || !strings.HasSuffix(stdout, "}\n") {
 			t.Fatalf("%s: %d, %q, %q; want the context %q", file.Name, code, stdout, stderr, want)
 		}
 	}
 	// Each run reads the file as it is then.
-	if err := os.WriteFile(filepath.Join(home, MemoryIndexFile), []byte("- [B](memory/b.md): second\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, MemoryIndexFile), []byte("- [A](memory/a.md): first\n- [B](memory/b.md): second\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, stdout, _ := runHook(t, []string{MemoryIndexFile, home}, strings.NewReader(""))
-	if got := hookContext(t, stdout); got != memoryIndexHeading+"\n\n- [B](memory/b.md): second" {
+	if got := unstamped(t, hookContext(t, stdout)); got != memoryIndexHeading+"\n\n- [A](memory/a.md): first\n- [B](memory/b.md): second\n\n[End of MEMORY.md]" {
 		t.Fatalf("after an edit: %q", got)
+	}
+}
+
+// Every delivery carries a stamp of its time under the heading, whatever the
+// hook input, so each is text of its own, which Claude Code does not leave
+// out as one its transcript holds; the digest of the delivery is the digest
+// of the file as ReadContext reads it.
+func TestRunHookStampsEachDelivery(t *testing.T) {
+	t.Parallel()
+	home := writeHome(t, map[string]string{InstructionsFile: "Release lead\n", MemoryIndexFile: "- index\n"})
+	at := time.Date(2026, 10, 19, 10, 4, 5, 123456789, time.FixedZone("x", 3600))
+	for _, file := range ContextFiles {
+		read, _ := ReadContext(home, file)
+		want := file.Heading + "\n[Delivered at 2026-10-19T09:04:05.123Z; it replaces any earlier copy of " + file.Name + " in this conversation.]" + strings.TrimPrefix(read, file.Heading)
+		for _, input := range []string{`{"hook_event_name":"SessionStart","source":"resume"}`, `{"source":"startup"}`, `{"source":"compact"}`, `{}`, ``, `{"source":"resume"`} {
+			var stdout, stderr strings.Builder
+			code := runHookAt([]string{file.Name, home}, strings.NewReader(input), &stdout, &stderr, at)
+			got := hookContext(t, stdout.String())
+			if code != 0 || stderr.String() != "" || got != want {
+				t.Fatalf("%s for %q: %d, %q\ngot  %q\nwant %q", file.Name, input, code, stderr.String(), got, want)
+			}
+			if ContextDigest(got) != ContextDigest(read) {
+				t.Fatalf("%s for %q: the delivery's digest is not the file's", file.Name, input)
+			}
+		}
+		var stdout, stderr strings.Builder
+		runHookAt([]string{file.Name, home}, strings.NewReader(""), &stdout, &stderr, at.Add(time.Millisecond))
+		if again := hookContext(t, stdout.String()); again == want || ContextDigest(again) != ContextDigest(want) {
+			t.Fatalf("%s a moment later: %q", file.Name, again)
+		}
 	}
 }
 
@@ -74,7 +115,7 @@ func TestRunHookDeliversTheCurrentFile(t *testing.T) {
 // both.
 const providerContextLimit = 10_000
 
-// Every context file's largest delivery, its cap and its cut notice
+// Every context file's largest delivery, its cut notice and its stamp
 // included, reaches the model whole on both providers.
 func TestRunHookOutputFitsBothProviders(t *testing.T) {
 	t.Parallel()
@@ -90,14 +131,41 @@ func TestRunHookOutputFitsBothProviders(t *testing.T) {
 			"text past the raw bound":           strings.Repeat("\x00", MaxRawRead-file.Cap/2) + strings.Repeat("z\n", file.Cap),
 		} {
 			home := writeHome(t, map[string]string{file.Name: content})
-			code, stdout, stderr := runHook(t, []string{file.Name, home}, strings.NewReader(""))
+			code, stdout, stderr := runHook(t, []string{file.Name, home}, strings.NewReader(`{"source":"startup"}`))
 			if code != 0 || stderr != "" {
 				t.Fatalf("%s, %s: %d, %q", file.Name, name, code, stderr)
 			}
-			if context := hookContext(t, stdout); len(context) > providerContextLimit || !strings.Contains(context, " stops here, ") {
+			if context := hookContext(t, stdout); len(context) > providerContextLimit || !strings.Contains(context, " stops here, ") || !strings.Contains(context, StampPrefix) {
 				t.Errorf("%s, %s: %d bytes of context, want a cut at most %d: %q", file.Name, name, len(context), providerContextLimit, context[len(context)-min(len(context), 300):])
 			}
 		}
+	}
+}
+
+// The memory index at its cap with the largest notices the index check
+// writes, every name at its bound, and its stamp still reaches the model
+// whole.
+func TestRunHookOutputWithTheIndexCheckFitsBothProviders(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("€", maxListedNameBytes)
+	files := map[string]string{}
+	var index strings.Builder
+	for i := range maxListedNames + 1 {
+		index.WriteString("- [gone](memory/" + long + strconv.Itoa(i) + ".md)\n")
+		files["memory/unlinked-"+long+strconv.Itoa(i)+".md"] = "x"
+	}
+	for index.Len() < MemoryIndexCap+100 {
+		index.WriteString("- filler line\n")
+	}
+	files[MemoryIndexFile] = index.String()
+	home := writeHome(t, files)
+	code, stdout, stderr := runHook(t, []string{MemoryIndexFile, home}, strings.NewReader(`{"source":"startup"}`))
+	if code != 0 || stderr != "" {
+		t.Fatalf("%d, %q", code, stderr)
+	}
+	context := hookContext(t, stdout)
+	if len(context) > providerContextLimit || strings.Count(context, IndexCheckPrefix) != 2 || !strings.Contains(context, " stops here, ") || !strings.Contains(context, StampPrefix) {
+		t.Fatalf("%d bytes of context, want both notices within %d: %q", len(context), providerContextLimit, context[len(context)-min(len(context), 3000):])
 	}
 }
 
@@ -110,7 +178,7 @@ func TestRunHookDeliversAnUnreadableFileAsANotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, stdout, stderr := runHook(t, []string{InstructionsFile, home}, strings.NewReader(""))
-	if code != 0 || hookContext(t, stdout) != instructionsHeading+"\n\n[instructions.md could not be read: not a regular file. Read it yourself.]" ||
+	if code != 0 || unstamped(t, hookContext(t, stdout)) != instructionsHeading+"\n\n[instructions.md could not be read: not a regular file. Read it yourself.]\n\n[End of instructions.md]" ||
 		!strings.HasPrefix(stderr, HookSubcommand+": read "+filepath.Join(home, InstructionsFile)+": not a regular file") {
 		t.Fatalf("%d, %q, %q", code, stdout, stderr)
 	}
@@ -201,6 +269,12 @@ func TestHookCommandRunsThroughAShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	file, _ := ContextFileNamed(MemoryIndexFile)
+	if err := os.Mkdir(filepath.Join(home, "memory"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "memory", "a.md"), []byte("A"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	command, err := HookCommand(link, home, file)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +287,7 @@ func TestHookCommandRunsThroughAShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v: %s", err, stderr.String())
 	}
-	if got := hookContext(t, string(stdout)); got != memoryIndexHeading+"\n\n- [A](memory/a.md): hook" {
+	if got := unstamped(t, hookContext(t, string(stdout))); got != memoryIndexHeading+"\n\n- [A](memory/a.md): hook\n\n[End of MEMORY.md]" {
 		t.Fatalf("context = %q (stderr %q)", got, stderr.String())
 	}
 }

@@ -208,7 +208,7 @@ func TestNewAssistantToolCreatesAnAssistantThatReportsToItsCreator(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := f.app.readStandingAgentSession(thread)
+	agent, err := f.app.readStandingAgentSession(thread, "")
 	if err != nil || !strings.Contains(agent.Block, `You report to the standing agent "`+f.caller.Title+`" (thread `+f.caller.ID+`), which created you.`) {
 		t.Fatalf("session block = %q, %v", agent.Block, err)
 	}

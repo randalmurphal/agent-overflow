@@ -158,10 +158,15 @@ func (a *App) tryCodexThreadRevert(
 	if err := a.store.DeleteCodexDeveloperInstructionsDigest(threadID); err != nil {
 		return codexHistoryCut{}, false, err
 	}
+	// It can remove a home file a resume delivered too, so the next resume
+	// runs every hook.
+	if err := a.store.ForgetSessionStartReceipts(threadID); err != nil {
+		return codexHistoryCut{}, false, err
+	}
 	reverted, err := session.Revert(context.Background(), firstDroppedTurnID)
 	switch {
 	case err == nil:
-		session.RestoreDeveloperInstructions(context.Background())
+		a.restoreCodexSessionAfterCut(session, threadID)
 		return codexHistoryCut{ThreadRef: reverted.ThreadID, Reverted: true}, false, nil
 	case errors.Is(err, codex.ErrThreadRevertUnsupported):
 		// Version skew between what the thread reported and what this
@@ -178,7 +183,7 @@ func (a *App) tryCodexThreadRevert(
 		log.Printf("app: codex rollback: thread %s left the in-place cut at turn %s unresolved (%v); verifying the provider boundary", threadID, firstDroppedTurnID, err)
 		if verified, applied := a.codexRevertBoundaryApplied(session, threadID, lastKeptTurnID, firstDroppedTurnID); applied {
 			log.Printf("app: codex rollback: thread %s is already cut at turn %s; converging in place", threadID, firstDroppedTurnID)
-			session.RestoreDeveloperInstructions(context.Background())
+			a.restoreCodexSessionAfterCut(session, threadID)
 			return codexHistoryCut{ThreadRef: verified.ThreadID, Reverted: true}, false, nil
 		}
 		return codexHistoryCut{}, true, nil
@@ -187,6 +192,18 @@ func (a *App) tryCodexThreadRevert(
 	default:
 		return codexHistoryCut{}, false, err
 	}
+}
+
+// restoreCodexSessionAfterCut gives a session whose thread was cut in place
+// what the cut took: the thread's own developer instructions, and the home
+// files a dropped turn delivered. The cut accepts a turn in flight, which is
+// always among the dropped ones, so the session drops a delivery that turn
+// had not settled, and the receipts are forgotten again for one it settled
+// during the cut.
+func (a *App) restoreCodexSessionAfterCut(session *codex.Session, threadID string) {
+	session.RestoreDeveloperInstructions(context.Background())
+	session.DropSessionStartDeliveries()
+	a.forgetSessionStartReceiptsAfterCut(threadID)
 }
 
 // forkCodexThreadHistory performs only the identity-changing fallback. It is

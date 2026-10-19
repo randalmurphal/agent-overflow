@@ -13,6 +13,7 @@ import type { HarnessApp } from '../src/harness.js';
 import { topUpScenarios, type TopUpScenario } from './upgrade-corpus-config.js';
 import type { CensusGrowth } from './upgrade-corpus-helpers.js';
 import { timed } from './upgrade-corpus-tools.js';
+import { compactBoundaryLine } from './agent-visibility-helpers.js';
 import { awaitToolAnswer, awaitTurnCompleted, threadToolsScenario } from './thread-tools-helpers.js';
 import {
   doneResult,
@@ -137,9 +138,10 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
     await harness.rpc('SetChatBarFavorite', { kind: 'model', provider: 'claude', value: MODEL.claude, label: 'Opus' }, true);
     // Two assistants made by New Assistant, one told about every tick and
     // one moved to a new thread by New Thread, Same Assistant, which leaves
-    // a past thread. Each opening and handoff message takes a turn. A new
-    // assistant takes the provider of the thread created last, so a Claude
-    // thread goes first.
+    // a past thread. Each opening and handoff message takes a turn, whose
+    // session keeps the receipts of the home files its start delivered. A
+    // new assistant takes the provider of the thread created last, so a
+    // Claude thread goes first.
     const remembered = await harness.rpc<{ id: string }>('CreateThread', {
       projectId,
       title: `Top-up v${version}: the profile New Assistant takes`,
@@ -207,7 +209,9 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
           ],
           text: 'Scheduled.',
         }, {
-          steps: [{ call: { tool: 'thread_cancel', args: { label: 'once' } } }],
+          // The turn compacts first, so the corpus holds a compaction row
+          // and the receipts its hooks keep.
+          steps: [{ emitLines: [compactBoundaryLine('topup-compaction-${TURN}')] }, { call: { tool: 'thread_cancel', args: { label: 'once' } } }],
           text: 'Stopped the one-off watch.',
         }],
         afterTurns: 'silent',
@@ -240,35 +244,6 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
         return row?.state === 'armed' && (row.lastRunAt ?? 0) > 0;
       }, { timeout: TURN_TIMEOUT_MS })
       .toBe(true);
-
-    // Two Codex assistants whose opening turn failed, so each still owes
-    // its home files to the next turn: one after its start, one after a
-    // compaction inside that turn. A Codex thread goes first, for the
-    // provider New Assistant takes.
-    const codexProfile = await harness.rpc<{ id: string }>('CreateThread', {
-      projectId,
-      title: `Top-up v${version}: the Codex profile New Assistant takes`,
-      provider: 'codex',
-      model: MODEL.codex,
-      mode: 'chat',
-    });
-    threadIds.push(codexProfile.id);
-    const compaction = ['item/started', 'item/completed'].map(
-      (method) =>
-        `{"jsonrpc":"2.0","method":"${method}","params":{"threadId":"\${THREAD_ID}","turnId":"\${TURN_ID}","item":{"type":"contextCompaction","id":"compaction-\${TURN}"}}}`,
-    );
-    for (const [after, steps] of [['start', []], ['compaction', [{ emitLines: compaction }]]] as const) {
-      await harness.rpc('HarnessSetScenario', {
-        scenario: threadToolsScenario({
-          name: `topup-owed-${after}`,
-          provider: 'codex',
-          turns: [{ steps: [...steps], fail: `Top-up: the turn after the ${after} failed.` }],
-          afterTurns: 'silent',
-        }),
-      });
-      const owed = await assistant(`Top-up v${version} ${nonce}: owes its home files after its ${after}`);
-      await harness.rpc('StopSession', owed);
-    }
 
     // Threads at every chat-bar setting the schema enumerates, drafts only.
     for (const variant of THREAD_VARIANTS) {

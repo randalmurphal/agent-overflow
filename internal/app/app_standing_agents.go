@@ -15,7 +15,6 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
@@ -448,8 +447,11 @@ type standingAgentSession struct {
 	// cache.
 	Block string
 	// Hooks deliver each context file of the home (agenthome.ContextFiles)
-	// at the session's start and after each compaction.
+	// at the session's start and after each compaction, and at a resume
+	// when the thread's model does not hold the file as it reads now.
 	Hooks []provider.SessionStartHook
+	// Receipts keeps what the hooks delivered; nil without hooks.
+	Receipts *provider.SessionStartReceipts
 	// Problems are the context file reads that failed for a reason other
 	// than absence, and a hook that cannot be built; the caller surfaces
 	// them.
@@ -459,8 +461,9 @@ type standingAgentSession struct {
 // readStandingAgentSession reads what the thread's sessions start with as an
 // assistant's current thread; the zero value for any other thread, a past
 // one included. It is read at every start and resume, so a rename reaches
-// the next session.
-func (a *App) readStandingAgentSession(thread store.Thread) (standingAgentSession, error) {
+// the next session. resumeRef is the provider session the start resumes,
+// "" for a fresh one.
+func (a *App) readStandingAgentSession(thread store.Thread, resumeRef string) (standingAgentSession, error) {
 	row, found, err := a.store.GetStandingAgent(thread.ID)
 	if err != nil {
 		return standingAgentSession{}, fmt.Errorf("read the assistant of %s: %w", thread.ID, err)
@@ -476,55 +479,81 @@ func (a *App) readStandingAgentSession(thread store.Thread) (standingAgentSessio
 	if row.Home == "" {
 		return session, nil
 	}
-	session.Problems = agenthome.Problems(row.Home)
-	hooks, err := standingAgentHooks(row.Home, os.Executable)
-	if err != nil {
-		session.Problems = append(session.Problems, err)
+	var received map[string]string
+	if resumeRef != "" {
+		received, err = a.store.SessionStartReceipts(thread.ID, resumeRef)
+		if err != nil {
+			return standingAgentSession{}, fmt.Errorf("read what the home files' hooks delivered to %s: %w", thread.ID, err)
+		}
 	}
-	session.Hooks = hooks
+	session.Hooks, session.Problems = standingAgentHooks(row.Home, resumeRef != "", received, os.Executable)
+	if len(session.Hooks) > 0 {
+		session.Receipts = a.sessionStartReceipts(thread.ID)
+	}
 	return session, nil
 }
 
 // standingAgentHooks are the SessionStart hooks that deliver each context
-// file of home by running this executable, which locate finds.
-func standingAgentHooks(home string, locate func() (string, error)) ([]provider.SessionStartHook, error) {
+// file of home by running this executable, which locate finds, and the
+// problems of reading the files. For a resume, received is the digest of what
+// each hook last delivered to the thread's model, and a hook whose file now
+// reads otherwise runs at the resume.
+func standingAgentHooks(home string, resume bool, received map[string]string, locate func() (string, error)) ([]provider.SessionStartHook, []error) {
+	var problems []error
+	texts := make([]string, len(agenthome.ContextFiles))
+	for i, file := range agenthome.ContextFiles {
+		text, problem := agenthome.ReadContext(home, file)
+		if problem != nil {
+			problems = append(problems, problem)
+		}
+		texts[i] = text
+	}
 	executable, err := locate()
 	if err != nil {
-		return nil, fmt.Errorf("locate this executable for the SessionStart hooks that deliver the home files: %w", err)
+		return nil, append(problems, fmt.Errorf("locate this executable for the SessionStart hooks that deliver the home files: %w", err))
 	}
 	hooks := make([]provider.SessionStartHook, 0, len(agenthome.ContextFiles))
-	for _, file := range agenthome.ContextFiles {
+	for i, file := range agenthome.ContextFiles {
 		command, err := agenthome.HookCommand(executable, home, file)
 		if err != nil {
-			return nil, fmt.Errorf("build the SessionStart hook that delivers %s: %w", file.Name, err)
+			return nil, append(problems, fmt.Errorf("build the SessionStart hook that delivers %s: %w", file.Name, err))
 		}
-		hooks = append(hooks, provider.SessionStartHook{Label: file.Name, Command: command, Heading: file.Heading})
+		hooks = append(hooks, provider.SessionStartHook{
+			Label:   file.Name,
+			Command: command,
+			Heading: file.Heading,
+			Ending:  file.Ending,
+			Stamp:   agenthome.StampPrefix,
+			Resume:  resume && received[file.Name] != agenthome.ContextDigest(texts[i]),
+		})
 	}
-	return hooks, nil
+	return hooks, problems
 }
 
-// codexSessionStartPending gives a Codex session with SessionStart hooks the
-// record of the delivery its thread still owes: what resumeRef's Codex
-// thread owes, and the writer of each expectation the session opens and
-// settles. Nil without hooks.
-func (a *App) codexSessionStartPending(threadID, resumeRef string, hooks []provider.SessionStartHook) (*codex.SessionStartPending, error) {
-	if len(hooks) == 0 {
-		return nil, nil
-	}
-	pending := &codex.SessionStartPending{
-		Record: func(codexThreadID string, after provider.SessionStartEvent) error {
-			return a.store.SetCodexSessionStartPending(threadID, codexThreadID, string(after))
+// sessionStartReceipts keeps, per hook, the digest of what threadID's model
+// received from its home files' hooks (store.SessionStartReceipts).
+func (a *App) sessionStartReceipts(threadID string) *provider.SessionStartReceipts {
+	return &provider.SessionStartReceipts{
+		Keep: func(sessionRef, label, context string) error {
+			return a.store.PutSessionStartReceipt(threadID, sessionRef, label, agenthome.ContextDigest(context))
+		},
+		Forget: func() error {
+			return a.store.ForgetSessionStartReceipts(threadID)
 		},
 	}
-	if resumeRef == "" {
-		return pending, nil
+}
+
+// forgetSessionStartReceiptsAfterCut forgets what the hooks delivered to
+// threadID's model after a cut of its history that may have removed it, so
+// the next resume runs every hook. The cut has happened, so a failure is a
+// warning on the thread.
+func (a *App) forgetSessionStartReceiptsAfterCut(threadID string) {
+	if err := a.store.ForgetSessionStartReceipts(threadID); err != nil {
+		log.Printf("standing agent %s: forget the home files' receipts after a cut of the history: %v", threadID, err)
+		if err := a.emitNoticeToThread(threadID, noticeKindWarning, "Agent Overflow could not record that this rollback removed home files a resume delivered, so the next resume may not deliver them again: "+err.Error()+"."); err != nil {
+			log.Printf("standing agent %s: %v", threadID, err)
+		}
 	}
-	after, err := a.store.CodexSessionStartPending(threadID, resumeRef)
-	if err != nil {
-		return nil, err
-	}
-	pending.After = provider.SessionStartEvent(after)
-	return pending, nil
 }
 
 // assistantName reads an assistant's name and current thread, empty when it
@@ -545,10 +574,6 @@ func (a *App) assistantName(agentID string) (name, threadID string) {
 	return thread.Title, agent.ThreadID
 }
 
-// reportStandingAgentHomeProblems logs each failed read of a standing agent's
-// home files with its path and puts it on the thread as a warning row, after
-// the start succeeds or fails: its sessions get a notice in that file's place
-// until it can be read, and the person watching the agent has to know.
 // reportStandingAgentCompactionProblems reports the home files of the
 // assistant whose current thread compacted that cannot be read, as its
 // session start does: the compaction runs the hooks that deliver them.
@@ -563,10 +588,14 @@ func (a *App) reportStandingAgentCompactionProblems(threadID string) {
 	}
 }
 
+// reportStandingAgentHomeProblems logs each failed read of a standing agent's
+// home files with its path and puts it on the thread as a warning row, after
+// the start succeeds or fails: its sessions get a notice about it until it
+// can be read, and the person watching the agent has to know.
 func (a *App) reportStandingAgentHomeProblems(threadID string, problems []error) {
 	for _, problem := range problems {
 		log.Printf("standing agent %s: %v", threadID, problem)
-		if err := a.emitNoticeToThread(threadID, noticeKindWarning, "One of this standing agent's home files cannot reach its sessions: "+problem.Error()+"."); err != nil {
+		if err := a.emitNoticeToThread(threadID, noticeKindWarning, "One of this standing agent's home files could not be read, and its sessions receive a notice about it: "+problem.Error()+"."); err != nil {
 			log.Printf("standing agent %s: %v", threadID, err)
 		}
 	}

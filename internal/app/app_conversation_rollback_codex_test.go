@@ -2,6 +2,7 @@ package app
 
 import (
 	"agent-overflow/internal/testutil/mockexec"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -490,6 +491,15 @@ type codexForkMock struct {
 	// activeTurnID makes the resumed fake session announce an active turn and
 	// settle it as interrupted while handling thread/revert.
 	activeTurnID string
+	// sessionStartContext, set with activeTurnID, is the context a
+	// SessionStart hook run delivers in the active turn.
+	sessionStartContext string
+	// activeTurnRevertStatus replaces "interrupted" as the status the
+	// active turn settles with while handling thread/revert.
+	activeTurnRevertStatus string
+	// nextTurnID makes `turn/start` answer with this turn, then start and
+	// complete it.
+	nextTurnID string
 	// revertErrorMessage makes `thread/revert` answer invalid_request
 	// with this message instead of succeeding.
 	revertErrorMessage string
@@ -544,15 +554,34 @@ func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
 		resumeTurnStarted = fmt.Sprintf(
 			`printf '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"%s","turn":{"id":"%s","status":"inProgress"}}}\n'`,
 			mock.resumedThreadID, mock.activeTurnID)
+		if mock.sessionStartContext != "" {
+			run := `{"id":"session_start:0:0","eventName":"sessionStart","handlerType":"command","executionMode":"sync","scope":"thread","sourcePath":"/<session-flags>/config.toml","source":"sessionFlags","displayOrder":0,"startedAt":1,"status":"%s","entries":%s}`
+			resumeTurnStarted += fmt.Sprintf(`
+		printf '{"jsonrpc":"2.0","method":"hook/started","params":{"threadId":"%s","turnId":"%s","run":`+run+`}}\n'
+		printf '{"jsonrpc":"2.0","method":"hook/completed","params":{"threadId":"%s","turnId":"%s","run":`+run+`}}\n'`,
+				mock.resumedThreadID, mock.activeTurnID, "running", "[]",
+				mock.resumedThreadID, mock.activeTurnID, "completed", `[{"kind":"context","text":"`+mock.sessionStartContext+`"}]`)
+		}
+		status := cmp.Or(mock.activeTurnRevertStatus, "interrupted")
 		revertTurnCompleted = fmt.Sprintf(
-			`printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted"}}}\n'`,
-			mock.resumedThreadID, mock.activeTurnID)
+			`printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"%s"}}}\n'`,
+			mock.resumedThreadID, mock.activeTurnID, status)
 		revertReply = revertTurnCompleted + "\n        " + revertReply
 	}
 	if mock.revertErrorMessage != "" {
 		revertReply = fmt.Sprintf(
 			`printf '{"jsonrpc":"2.0","id":%%s,"error":{"code":-32600,"message":"%s"}}\n' "$id"`,
 			mock.revertErrorMessage)
+	}
+	turnStartClause := ""
+	if mock.nextTurnID != "" {
+		turnStartClause = fmt.Sprintf(`    if /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/start"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"turn":{"id":"%[2]s","status":"inProgress"}}}\n' "$id"
+        printf '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"%[1]s","turn":{"id":"%[2]s","status":"inProgress"}}}\n'
+        printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%[1]s","turn":{"id":"%[2]s","status":"completed"}}}\n'
+        continue
+    fi
+`, mock.resumedThreadID, mock.nextTurnID)
 	}
 	injectClauses := ""
 	if mock.injectLogPath != "" {
@@ -618,7 +647,7 @@ while IFS= read -r line; do
         continue
     fi
 done
-`, mock.turnsTail, injectClauses, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
+`, mock.turnsTail, turnStartClause+injectClauses, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
 		logRevertRequest, revertReply, logInterruptRequest, logForkRequest, tailExpr,
 		mock.forkedThreadID)
 
@@ -697,9 +726,17 @@ func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
 	if err := app.store.PutCodexDeveloperInstructionsDigest(thread.ID, "provider-inplace-revert", strings.Repeat("d", 64)); err != nil {
 		t.Fatal(err)
 	}
+	if err := app.store.PutSessionStartReceipt(thread.ID, "provider-inplace-revert", "MEMORY.md", strings.Repeat("e", 64)); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("revert: %v", err)
+	}
+	// It can drop a home file a resume delivered too, so the next resume
+	// must run every hook.
+	if received, err := app.store.SessionStartReceipts(thread.ID, "provider-inplace-revert"); err != nil || len(received) != 0 {
+		t.Fatalf("receipts after an in-place revert = %v, %v; want none", received, err)
 	}
 	// The cut can drop a developer-instructions message injected at an
 	// earlier resume, so the thread's next start must send the text again.

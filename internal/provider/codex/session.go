@@ -325,12 +325,10 @@ type Session struct {
 	developerInstructionsComposed composedDeveloperInstructions
 	// sessionStart follows the delivery of sessionStartHooks, nil without
 	// hooks; sessionStartDueTurn is the turn that gave them their chance to
-	// run, guarded by mu; sessionStartRecord persists the open expectation
-	// (session_start_hooks.go).
+	// run, guarded by mu (session_start_hooks.go).
 	sessionStart        *provider.SessionStartDelivery
 	sessionStartHooks   []provider.SessionStartHook
 	sessionStartDueTurn string
-	sessionStartRecord  func(codexThreadID string, after provider.SessionStartEvent) error
 	// rehydrateParams holds the thread-scoped params this session loaded
 	// its thread with that turn/start does not repeat (see
 	// threadRehydrateParams). Guarded by mu; read by Resume.
@@ -728,14 +726,15 @@ type Config struct {
 	// developer_instructions.go.
 	DeveloperInstructions string
 	// SessionStartHooks run at the thread's start, after a compaction and
-	// after a clear, registered with their trust in the thread/start|resume
-	// `config` map (sessionStartHookConfig). A start or a compaction whose
-	// next turn completes without their output is reported as a warning
+	// after a clear, and those whose Resume is set at a thread/resume too,
+	// registered with their trust in the thread/start|resume `config` map
+	// (sessionStartHookConfig). A start, resume or compaction whose next
+	// turn completes without their output is reported as a warning
 	// (session_start_hooks.go).
 	SessionStartHooks []provider.SessionStartHook
-	// SessionStartPending carries the delivery the hooks owe across the
-	// thread's sessions. Nil for a session that never runs a turn.
-	SessionStartPending *SessionStartPending
+	// SessionStartReceipts keeps what the hooks delivered. Nil for a
+	// session that never runs a turn.
+	SessionStartReceipts *provider.SessionStartReceipts
 	// DeveloperInstructionsDelivery records what the thread's model has
 	// read as developer instructions, so a resume can inject a changed
 	// text. Nil for a session that never runs a turn.

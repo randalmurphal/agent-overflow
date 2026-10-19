@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -676,6 +678,14 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := createAppTestThread(t, app, "revert-tui", "claude-tui", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "the original prompt")
+	// The dropped prompt may have carried what a resume's hooks delivered.
+	thread.SessionRef = "tui-session"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	if err := app.store.PutSessionStartReceipt(thread.ID, thread.SessionRef, "MEMORY.md", "digest"); err != nil {
+		t.Fatalf("put receipt: %v", err)
+	}
 
 	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, nil)
 	if err != nil {
@@ -702,6 +712,9 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 	}
 	if !ok || draft.Content != "the original prompt" {
 		t.Fatalf("draft = (ok=%v, %q), want (true, \"the original prompt\")", ok, draft.Content)
+	}
+	if received, err := app.store.SessionStartReceipts(thread.ID, thread.SessionRef); err != nil || len(received) != 0 {
+		t.Fatalf("receipts after the revert = %v, %v; want none", received, err)
 	}
 }
 
@@ -956,6 +969,111 @@ func TestInterruptAndRevertIfCleanCodexUsesLiveThreadRevert(t *testing.T) {
 	turns, err := app.store.ListRecentTurns(thread.ID, 1)
 	if err != nil || len(turns) != 1 || turns[0].TurnIndex != next {
 		t.Fatalf("next native turn = %+v, err=%v, want index %d", turns, err, next)
+	}
+}
+
+// A live in-place cut drops what the cut turn's SessionStart hooks
+// delivered: a delivery an interrupt kept from settling leaves the session,
+// so the next completed turn warns and keeps no receipt, and a receipt the
+// turn kept while the cut ran is forgotten once the cut lands.
+func TestInterruptAndRevertIfCleanCodexDropsTheCutHomeFiles(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		status string
+		// warns is whether the turn after the cut reports the home file
+		// missing.
+		warns bool
+	}{
+		"settled by the interrupt": {"interrupted", true},
+		"settled during the cut":   {"completed", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestApp(t)
+			app.triage = triage.NewRouter(app.store, app.emit)
+			workspace := t.TempDir()
+			thread := createAppTestThread(t, app, "codex-live-revert-home", "codex", workspace)
+			thread.SessionRef = "provider-codex-live-revert-home"
+			if err := app.store.UpdateThread(thread); err != nil {
+				t.Fatalf("update thread: %v", err)
+			}
+			insertCodexTurn(t, app.store, thread.ID, 0, "turn-kept")
+			insertUserItem(t, app.store, thread.ID, "u:0", 0, "kept prompt")
+			if err := app.triage.Handle(provider.ProviderEvent{
+				Kind: provider.EventTurnStart, ThreadID: thread.ID, TurnID: "turn-dropped", TurnIndex: 1, Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("start active turn: %v", err)
+			}
+			insertUserItem(t, app.store, thread.ID, "u:1", 1, "restore me")
+			binary := writeCodexForkAtBinary(t, codexForkMock{
+				resumedThreadID:        thread.SessionRef,
+				forkedThreadID:         "unused-fork",
+				userAgent:              "codex_cli_rs/0.149.0 (Linux; x86_64)",
+				historyMode:            "paginated",
+				activeTurnID:           "turn-dropped",
+				sessionStartContext:    "## Memory [End]",
+				activeTurnRevertStatus: tc.status,
+				nextTurnID:             "turn-after",
+			})
+			var mu sync.Mutex
+			var warnings []string
+			afterDone := make(chan struct{})
+			sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+				Binary:         binary,
+				Model:          "test-model",
+				WorkDir:        workspace,
+				ResumeThreadID: thread.SessionRef,
+				SessionStartHooks: []provider.SessionStartHook{
+					{Label: "MEMORY.md", Command: "true", Heading: "## Memory", Ending: "[End]", Stamp: "[Delivered at ", Resume: true},
+				},
+				SessionStartReceipts: app.sessionStartReceipts(thread.ID),
+			}, func(event provider.ProviderEvent) {
+				switch {
+				case event.Kind == provider.EventError:
+					mu.Lock()
+					warnings = append(warnings, event.Content)
+					mu.Unlock()
+				case event.Kind == provider.EventTurnComplete && event.TurnID == "turn-after":
+					close(afterDone)
+				case event.Kind == provider.EventTurnComplete:
+					if err := app.triage.Handle(event); err != nil {
+						t.Errorf("triage provider event: %v", err)
+					}
+				}
+			})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			defer sess.Close()
+			app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "codex-live-revert-home-token", Codex: sess})
+
+			result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, nil)
+			if err != nil || !result.Reverted {
+				t.Fatalf("interrupt-and-revert: %+v, %v", result, err)
+			}
+			if received, err := app.store.SessionStartReceipts(thread.ID, thread.SessionRef); err != nil || len(received) != 0 {
+				t.Fatalf("receipts after the cut = %v, %v; want none", received, err)
+			}
+			if err := sess.Send(context.Background(), "next", provider.SendOptions{}); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			select {
+			case <-afterDone:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the turn after the cut never completed")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			missing := slices.ContainsFunc(warnings, func(w string) bool {
+				return strings.HasPrefix(w, "MEMORY.md did not reach this session after its resume")
+			})
+			if missing != tc.warns {
+				t.Fatalf("warnings = %q, want the missing-delivery warning %v", warnings, tc.warns)
+			}
+			if received, err := app.store.SessionStartReceipts(thread.ID, thread.SessionRef); err != nil || len(received) != 0 {
+				t.Fatalf("receipts after the next turn = %v, %v; want none", received, err)
+			}
+		})
 	}
 }
 

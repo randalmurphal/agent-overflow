@@ -169,7 +169,9 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		// TUI owns its own conversation; AO has no fork file to write). AO only
 		// mirrors the native revert in its own timeline + draft below. claude-tui
 		// Send clears the composer before its next paste so the prompt the TUI
-		// restored can't fuse with the re-send.
+		// restored can't fuse with the re-send. The dropped prompt may have
+		// carried the home files a resume delivered.
+		a.forgetSessionStartReceiptsAfterCut(args.thread.ID)
 	} else {
 		// Mark BEFORE the stop, mirroring the Codex branch: the stop's
 		// teardown settles still-running background launches with

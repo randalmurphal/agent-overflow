@@ -66,11 +66,15 @@ type Session struct {
 	rec   *reconstructor
 
 	// sessionStart follows the delivery of Config.SessionStartHooks
-	// (observeMainRequest); nil when the session has none. sessionStartMu
-	// orders a compaction's Expect against a main request's check and
-	// settle, which run on the relay's and the gateway's goroutines.
-	sessionStartMu sync.Mutex
-	sessionStart   *provider.SessionStartDelivery
+	// (observeMainRequest); nil when the session has none. sessionStartSince
+	// is when its open expectation opened: a context stamped earlier came
+	// from an earlier run. sessionStartMu orders a compaction's Expect
+	// against a main request's check and settle, which run on the relay's
+	// and the gateway's goroutines.
+	sessionStartMu    sync.Mutex
+	sessionStart      *provider.SessionStartDelivery
+	sessionStartHooks []provider.SessionStartHook
+	sessionStartSince time.Time
 
 	gateway *gateway
 	relay   *hookRelay
@@ -162,7 +166,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if onEvent == nil {
 		return nil, fmt.Errorf("claudetui: onEvent callback is required")
 	}
-	sessionStart, err := claude.NewSessionStartDelivery(cfg.SessionStartHooks, cfg.Resume)
+	sessionStart, err := claude.NewSessionStartDelivery(cfg.SessionStartHooks, cfg.SessionStartReceipts, cfg.Resume)
 	if err != nil {
 		return nil, fmt.Errorf("claudetui: %w", err)
 	}
@@ -184,6 +188,8 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	s.parser.SetAgentLaunchLookup(cfg.AgentLaunchByTask)
 	s.rec = newReconstructor(s.feedEnvelope)
 	s.sessionStart = sessionStart
+	s.sessionStartHooks = cfg.SessionStartHooks
+	s.sessionStartSince = time.Now()
 	// Debug-gated: record per-request routing/reconstruction decisions to the
 	// "decision" event stream only when the logger is live, so a production
 	// session never builds a decisionLog (the hook stays nil). See debuglog.go.
@@ -411,66 +417,11 @@ func (s *Session) finalizeCompaction(trigger, summary string) {
 	// The compaction's SessionStart hooks run after PostCompact; the next
 	// main request carries their context.
 	s.sessionStartMu.Lock()
-	s.sessionStart.Expect(provider.SessionStartAfterCompaction)
-	s.sessionStartMu.Unlock()
-}
-
-// observeMainRequest settles an expected SessionStart delivery on the first
-// main request after a start or a compaction: the request carries the
-// hooks' context, under their headings, when they delivered. The body is
-// searched only while a delivery is expected.
-func (s *Session) observeMainRequest(body []byte) {
-	s.sessionStartMu.Lock()
-	after := s.sessionStart.Expecting()
-	if after == "" {
-		s.sessionStartMu.Unlock()
-		return
-	}
-	for _, context := range sessionStartContexts(body, sessionStartSource(after)) {
-		s.sessionStart.DeliverWithin(context)
-	}
-	warning := s.sessionStart.Settle()
+	s.sessionStartSince = time.Now()
+	warning := s.sessionStart.Expect(provider.SessionStartAfterCompaction)
 	s.sessionStartMu.Unlock()
 	if warning != "" {
 		s.emitNonFatalError(warning)
-	}
-}
-
-// sessionStartSource is the SessionStart source whose hooks deliver after
-// the event.
-func sessionStartSource(after provider.SessionStartEvent) string {
-	if after == provider.SessionStartAfterCompaction {
-		return "compact"
-	}
-	return "startup"
-}
-
-// sessionStartContexts are the SessionStart hook contexts of source in a
-// model request body: Claude Code sends a run's contexts in one block that
-// opens with "SessionStart:<source> hook additional context: "
-// (docs/references/claude-wire.md, SessionStart hooks). Each is the rest of
-// the JSON string that holds the block, still escaped. Only these count, so
-// a summary or a message that quotes a heading, or the start's block a
-// compaction kept, is not a delivery.
-func sessionStartContexts(body []byte, source string) [][]byte {
-	marker := []byte("SessionStart:" + source + " hook additional context: ")
-	var contexts [][]byte
-	for rest := body; ; {
-		at := bytes.Index(rest, marker)
-		if at < 0 {
-			return contexts
-		}
-		rest = rest[at+len(marker):]
-		end := 0
-		for end < len(rest) && rest[end] != '"' {
-			if rest[end] == '\\' {
-				end++
-			}
-			end++
-		}
-		end = min(end, len(rest))
-		contexts = append(contexts, rest[:end])
-		rest = rest[end:]
 	}
 }
 
