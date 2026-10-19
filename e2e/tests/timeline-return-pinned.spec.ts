@@ -5,11 +5,12 @@
 // The return pins the fetched tail. Its rows are heavy in bytes and short on
 // screen, so the viewport fill pages older history in under a paused
 // auto-scroll. A row at the tail grows while that page is in flight (here a
-// diagram finishing its render), below the pinned viewport. The older page
-// lands as a head splice, which arms the virtualizer's reading hold, and the
-// pause release pins to the new bottom. The hold must not then pull the
-// viewport back up by the growth (docs/architecture/frontend-scroll.md,
-// Load Paging).
+// diagram finishing its render), below the pinned viewport. The test holds
+// both the page and the diagram's renderer, so the render finishes inside the
+// pause rather than racing the fill's start. The older page lands as a head
+// splice, which arms the virtualizer's reading hold, and the pause release
+// pins to the new bottom. The hold must not then pull the viewport back up by
+// the growth (docs/architecture/frontend-scroll.md, Load Paging).
 import type { Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import {
@@ -118,6 +119,21 @@ async function holdOlderPages(page: Page, threadId: string) {
   };
 }
 
+// Holds the flowchart renderer's code, which mermaid imports on its first
+// flowchart render, until released. The diagram keeps its placeholder
+// height until then.
+async function holdDiagramRender(page: Page) {
+  let requested = false;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(/\/flowDiagram-[\w-]+\.js(?:\?|$)/, async (route) => {
+    requested = true;
+    await released;
+    await route.continue();
+  });
+  return { requested: () => requested, release: () => release() };
+}
+
 async function geometry(page: Page) {
   return page.getByTestId('message-timeline-scroll').evaluate((el) => ({
     distance: Math.round(el.scrollHeight - el.scrollTop - el.clientHeight),
@@ -178,6 +194,7 @@ test('a pinned reader whose turn finishes while the return loads history lands o
   await harness.rpc('HarnessSetScenario', { scenario: scenario() });
   const threadId = await seedThreads(harness);
   const olderPages = await holdOlderPages(page, threadId);
+  const diagramRender = await holdDiagramRender(page);
   await harness.open(page);
   const timeline = page.getByTestId('message-timeline-scroll');
   const open = (title: string) => page.getByTestId('thread-row').getByText(title, { exact: true }).click();
@@ -201,7 +218,10 @@ test('a pinned reader whose turn finishes while the return loads history lands o
   await open(MAIN);
   await expect.poll(() => olderPages.heldCount(), { message: 'the return pages older history in' }).toBeGreaterThan(0);
   await expect(timeline.getByText(FINISHED)).toBeAttached();
-  await expect(timeline.locator('.streamdown-mermaid-host svg').first()).toBeAttached({ timeout: 30_000 });
+  await expect.poll(() => diagramRender.requested(), { message: 'the diagram waits on its renderer' }).toBe(true);
+  expect((await settledGeometry(page)).distance, 'pinned before the diagram renders').toBeLessThanOrEqual(2);
+  diagramRender.release();
+  await expect(timeline.locator('[data-mermaid-svg]').getByText('Stage 3', { exact: true })).toBeAttached({ timeout: 30_000 });
   // The precondition: the diagram grew the tail while the fill's pause held
   // the pinned viewport, so the release has somewhere to pin to.
   const beforeSplice = await settledGeometry(page);
