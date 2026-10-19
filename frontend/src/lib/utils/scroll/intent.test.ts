@@ -13,6 +13,7 @@ import {
   createScrollIntent,
   isSelectingInside,
   resetScrollIntentModuleStateForTest,
+  setScrollIntentPlatformForTest,
   type ScrollIntent,
   type ScrollIntentDeps,
 } from './intent';
@@ -143,8 +144,8 @@ function wheel(target: Element, init: WheelEventInit): void {
   target.dispatchEvent(event);
 }
 
-function key(target: Element, k: string): void {
-  target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: k }));
+function key(target: Element, k: string, modifiers: KeyboardEventInit = {}): void {
+  target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: k, ...modifiers }));
 }
 
 function touch(target: Element, type: string, clientY: number, clientX = 0): void {
@@ -359,6 +360,38 @@ describe('nested-scroller attribution', () => {
     release();
 
     expect(h.state.escaped).toBe(true);
+  });
+
+  it('an up key consumed by a registered box does not escape', () => {
+    const h = build();
+    const { leaf, release } = nestedBox(h, { scrollTop: 200 });
+
+    key(leaf, 'ArrowUp');
+    release();
+
+    expect(h.state.escaped).toBe(false);
+  });
+
+  it('a down key consumed by a registered box records no down intent', () => {
+    const h = build();
+    h.state.escaped = true;
+    const { leaf, release } = nestedBox(h, { scrollTop: 0 });
+
+    key(leaf, 'End');
+    release();
+
+    expect(h.intent.debugState().recentDownIntentActive).toBe(false);
+  });
+
+  it('a down key at the registered box bottom chains out and records down intent', () => {
+    const h = build();
+    h.state.escaped = true;
+    const { leaf, release } = nestedBox(h, { scrollTop: 400, clientHeight: 100, scrollHeight: 500 });
+
+    key(leaf, 'End');
+    release();
+
+    expect(h.intent.debugState().recentDownIntentActive).toBe(true);
   });
 });
 
@@ -873,6 +906,8 @@ describe('deferred scroll pass', () => {
     });
 
     describe('navigation keys typed into an editable inside the scroller', () => {
+      beforeEach(() => setScrollIntentPlatformForTest(false));
+
       function escapedWith(target: () => HTMLElement): { h: Harness; field: HTMLElement } {
         const h = build();
         h.state.escaped = true;
@@ -952,6 +987,109 @@ describe('deferred scroll pass', () => {
         await settleDeferredPass();
 
         expect(h.state.escaped).toBe(false);
+      });
+
+      it.each(['Home', 'PageUp'])('%s in a textarea moves the caret and keeps follow', (k) => {
+        const h = build();
+        const field = textarea()();
+        h.child.append(field);
+        key(field, k);
+
+        expect(h.state.escaped).toBe(false);
+      });
+
+      // macOS binds these keys to scrolling, in an editor too.
+      describe('on macOS', () => {
+        beforeEach(() => setScrollIntentPlatformForTest(true));
+
+        /** A textarea that scrolls, `scrollTop` px into its 500 px of content. */
+        function scrollingTextarea(scrollTop: number): () => HTMLElement {
+          return () => {
+            const el = document.createElement('textarea');
+            el.style.overflowY = 'auto';
+            Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 100 });
+            Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => 500 });
+            el.scrollTop = scrollTop;
+            return el;
+          };
+        }
+
+        function overflowingEditor(): HTMLElement {
+          const el = document.createElement('div');
+          el.setAttribute('contenteditable', 'true');
+          Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 100 });
+          Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => 500 });
+          return el;
+        }
+
+        it.each([
+          ['End in a textarea', textarea(), 'End'],
+          ['PageDown in a textarea', textarea(), 'PageDown'],
+          ['End in a text input', input('text'), 'End'],
+          ['End in a contenteditable', editableLine, 'End'],
+          ['End in a textarea at its own end', scrollingTextarea(400), 'End'],
+          ['End in a contenteditable whose content overflows a box that does not scroll', overflowingEditor, 'End'],
+        ])('%s scrolls the log, so its late landing at the bottom re-sticks', async (_name, make, k) => {
+          const { h, field } = escapedWith(make);
+          key(field, k);
+          await pastWindow();
+          landAt(h, 0, 500);
+          await settleDeferredPass();
+
+          expect(h.state.escaped).toBe(false);
+        });
+
+        it.each([
+          ['ArrowDown', 'ArrowDown', {}],
+          ['Shift+End', 'End', { shiftKey: true }],
+          ['Option+PageDown', 'PageDown', { altKey: true }],
+          ['Command+End', 'End', { metaKey: true }],
+        ])('%s in a textarea moves the caret and arms no landing', async (_name, k, modifiers) => {
+          const { h, field } = escapedWith(textarea());
+          key(field, k, modifiers);
+          await pastWindow();
+          landAt(h, 0, 500);
+          await settleDeferredPass();
+
+          expect(h.state.escaped).toBe(true);
+        });
+
+        it('End in a textarea that can still scroll down scrolls the textarea and arms no landing', async () => {
+          const { h, field } = escapedWith(scrollingTextarea(100));
+          key(field, 'End');
+          await pastWindow();
+          landAt(h, 0, 500);
+          await settleDeferredPass();
+
+          expect(h.state.escaped).toBe(true);
+        });
+
+        it.each(['Home', 'PageUp'])('%s in a textarea scrolls the log up and escapes', (k) => {
+          const h = build();
+          const field = textarea()();
+          h.child.append(field);
+          key(field, k);
+
+          expect(h.state.escaped).toBe(true);
+        });
+
+        it('Home in a textarea that can still scroll up scrolls the textarea and keeps follow', () => {
+          const h = build();
+          const field = scrollingTextarea(100)();
+          h.child.append(field);
+          key(field, 'Home');
+
+          expect(h.state.escaped).toBe(false);
+        });
+
+        it('ArrowUp in a textarea moves the caret and keeps follow', () => {
+          const h = build();
+          const field = textarea()();
+          h.child.append(field);
+          key(field, 'ArrowUp');
+
+          expect(h.state.escaped).toBe(false);
+        });
       });
     });
 

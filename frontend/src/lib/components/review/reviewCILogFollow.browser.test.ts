@@ -5,8 +5,9 @@
 // the bottom, including one who wheeled back there however late the
 // scroll landed, and leave a reader who wheeled away alone. Navigation
 // keys typed into an editor inside the log move its caret and say nothing
-// about following. Expanding a section holds its row where it was
-// instead of following to the end.
+// about following, except the keys macOS binds to scrolling, which scroll
+// the editor when it can move and the log otherwise. Expanding a section
+// holds its row where it was instead of following to the end.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { userEvent } from 'vitest/browser';
@@ -19,6 +20,7 @@ import { FakeCILog, numberedLines, section } from '../../../test/helpers/ciLog';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
+import { isMacPlatform } from '../../utils/platform';
 
 const VIEWPORT_PX = 400;
 // A log of two blocks whose last block is partial, so growth re-measures
@@ -29,6 +31,8 @@ const GROWTH_LINES = 31;
 const AT_BOTTOM_PX = 2;
 
 const JOB: CIJob = { id: '20', name: 'unit', status: 'running', logsAvailable: true };
+// macOS binds End and Home to scrolling, in an editor too.
+const MAC = isMacPlatform();
 
 const mounted: { app: object; host: HTMLElement }[] = [];
 
@@ -173,7 +177,7 @@ describe('ReviewCILogView tail follow', () => {
     await settledAtBottom(scroll, 'the tail after growth');
   });
 
-  for (const key of ['End', 'ArrowDown']) {
+  for (const key of MAC ? ['ArrowDown'] : ['End', 'ArrowDown']) {
     it(`stays put when a scroll with no input reaches the end after ${key} was typed in an editor inside the log`, async () => {
       const { p, scroll, fake } = mountLog();
       await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
@@ -210,6 +214,87 @@ describe('ReviewCILogView tail follow', () => {
       expect(scroll.scrollTop).toBe(readingAt);
     });
   }
+
+  /** A reader 600 px above the tail with a one-line editor focused at the
+   * top of the log. */
+  async function readingWithEditor(editor: HTMLTextAreaElement) {
+    const mounted = mountLog();
+    const { scroll } = mounted;
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
+    await settledAtBottom(scroll, 'the opened log at its tail');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+    scroll.scrollTop -= 600;
+    await raf();
+    await raf();
+    scroll.firstElementChild!.prepend(editor);
+    editor.focus({ preventScroll: true });
+    return mounted;
+  }
+
+  it.runIf(MAC)('follows again once End typed in an editor inside the log scrolls it to the end', async () => {
+    const editor = document.createElement('textarea');
+    editor.value = 'a comment being edited';
+    const { p, scroll, fake } = await readingWithEditor(editor);
+    await userEvent.keyboard('{End}');
+    await settledAtBottom(scroll, 'the End scroll at the tail');
+
+    fake.grow(numberedLines(GROWTH_LINES, FIRST_LINES + 1));
+    p.log = fake.state;
+    flushSync();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES + GROWTH_LINES}`) === true, 'the grown log');
+    await settledAtBottom(scroll, 'the tail after growth');
+  });
+
+  it.runIf(MAC)('stays put when End scrolled an editor that could still scroll and a scroll with no input reaches the end', async () => {
+    const editor = document.createElement('textarea');
+    editor.rows = 3;
+    editor.value = Array.from({ length: 40 }, (_, i) => `comment line ${i}`).join('\n');
+    const { p, scroll, fake } = await readingWithEditor(editor);
+    editor.scrollTop = 0;
+    const before = scroll.scrollTop;
+    await userEvent.keyboard('{End}');
+    await waitFor(() => editor.scrollTop > 0, 'the editor scrolled to its end');
+    expect(scroll.scrollTop, 'End scrolled the editor, not the log').toBe(before);
+
+    scroll.scrollTop = scroll.scrollHeight;
+    await raf();
+    await raf();
+    const readingAt = scroll.scrollTop;
+    fake.grow(numberedLines(GROWTH_LINES, FIRST_LINES + 1));
+    p.log = fake.state;
+    flushSync();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES + GROWTH_LINES}`) === true, 'the grown log');
+    for (let i = 0; i < 12; i += 1) await raf();
+    expect(scroll.scrollTop).toBe(readingAt);
+  });
+
+  it(`${MAC ? 'lets go of the tail' : 'keeps following'} when Home is typed in an editor inside the log`, async () => {
+    const { p, scroll, fake } = mountLog();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES}`) === true, 'the last block');
+    await settledAtBottom(scroll, 'the opened log at its tail');
+
+    const editor = document.createElement('textarea');
+    editor.value = 'first line\nsecond line';
+    scroll.firstElementChild!.append(editor);
+    await settledAtBottom(scroll, 'the tail with the editor');
+    editor.focus({ preventScroll: true });
+    await userEvent.keyboard('{Home}');
+
+    fake.grow(numberedLines(GROWTH_LINES, FIRST_LINES + 1));
+    p.log = fake.state;
+    flushSync();
+    await waitFor(() => scroll.textContent?.includes(`line ${FIRST_LINES + GROWTH_LINES}`) === true, 'the grown log');
+    if (!MAC) {
+      await settledAtBottom(scroll, 'the tail after growth');
+      return;
+    }
+    // Home scrolled the log to its top; the reader stays there.
+    await waitFor(() => scroll.scrollTop <= AT_BOTTOM_PX, 'the Home scroll at the top');
+    const readingAt = scroll.scrollTop;
+    for (let i = 0; i < 12; i += 1) await raf();
+    expect(scroll.scrollTop).toBe(readingAt);
+  });
 
   it('keeps following when ArrowUp is typed in an editor inside the log', async () => {
     const { p, scroll, fake } = mountLog();

@@ -731,7 +731,13 @@ navigation key whose target consumes it (a writable, enabled textarea or
 text-type input, a select, or content whose `isContentEditable` is true)
 moves a caret, not the scroller, and is neither escape nor down intent. A
 readonly or disabled field, a checkbox, or a button in a non-editable
-island of an editor leaves the key to the scroller.
+island of an editor leaves the key to the scroller. On macOS an
+unmodified Home, End, PageUp or PageDown scrolls instead of moving the
+caret, even in an editor: it moves the editor when the editor scrolls and
+can move that way, and the scroller otherwise, so it is key intent like
+any other scrolling key. A key that scrolls is attributed like a wheel
+(see "Nested Scrollers And Gesture Attribution"): one a nested box or the
+editor consumes is neither escape nor down intent.
 
 Down input (wheel, key, touch) is the only consent path for re-sticking
 after escape. A down gesture made while escaped stays pending until its
@@ -1434,11 +1440,12 @@ Every such box opts in with the `nestedScroll` action
 (`utils/scroll/wheelAttribution.ts`). On each gesture the intent machine
 walks `event.target` up to its own scroll element, and the first
 registered scroller that can still move in that direction owns the
-event; the machine then ignores it. Nothing registered can consume it →
-the gesture belongs to the boundary, and native scroll chaining takes it
-there. That chaining is deliberate, because browsing up out of a nested
-box has to reach the pane, which is why nested boxes keep the default
-`overscroll-behavior` rather than `contain`.
+event; the machine then ignores it. A scrolling key uses the same walk
+from its target. Nothing registered can consume it → the gesture belongs
+to the boundary, and native scroll chaining takes it there. That chaining
+is deliberate, because browsing up out of a nested box has to reach the
+pane, which is why nested boxes keep the default `overscroll-behavior`
+rather than `contain`.
 
 A registry, not a computed-style measurement: wheel handling runs while layout
 is dirty mid-stream, so `getComputedStyle` over every ancestor of every

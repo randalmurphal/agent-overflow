@@ -20,9 +20,10 @@ import type { SpringChase } from './springTypes';
 import { nowMs } from './time';
 import { trace } from './trace';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
-import { touchDragConsumedBelow, wheelConsumedBelow } from './wheelAttribution';
+import { canConsumeDelta, scrollDeltaConsumedBelow, touchDragConsumedBelow, wheelConsumedBelow } from './wheelAttribution';
 import { recordScrollEventObservation } from './eventObservation';
 import { wheelDeltaPx } from './overlayScrollbar';
+import { isMacPlatform } from '../platform';
 
 const RECENT_DOWN_INTENT_WINDOW_MS = 250;
 const SCROLLBAR_DRAG_SESSION_FAILSAFE_MS = 30_000;
@@ -37,6 +38,10 @@ export const RESIZE_CLEAR_PADDING_MS = 1;
 
 const UP_KEYS: ReadonlySet<string> = new Set(['PageUp', 'ArrowUp', 'Home']);
 const DOWN_KEYS: ReadonlySet<string> = new Set(['PageDown', 'ArrowDown', 'End']);
+// The navigation keys the macOS text system binds to scrolling instead of
+// the caret. Typed unmodified into an editor, WebKit and Chromium on macOS
+// scroll the editor when it can move that way and the scroller otherwise.
+const MAC_EDITOR_SCROLL_KEYS: ReadonlySet<string> = new Set(['PageUp', 'PageDown', 'Home', 'End']);
 
 // Whether the primary button is held, for selection tracking. READ from the
 // browser's own button bitmask on every pointer event, never LATCHED from a
@@ -86,19 +91,26 @@ function installModuleSelectionListeners(): void {
   window.addEventListener('blur', releasePrimaryButton);
 }
 
-/** Test-only escape hatch to reset the module-global primary-button state. */
+let platformIsMacForTest: boolean | null = null;
+
+/** Test-only escape hatch to reset the module-global state. */
 export function resetScrollIntentModuleStateForTest(): void {
   primaryButtonHeld = false;
+  platformIsMacForTest = null;
+}
+
+export function setScrollIntentPlatformForTest(isMac: boolean | null): void {
+  platformIsMacForTest = isMac;
 }
 
 // Input types whose navigation keys move a caret or change a value.
 const TEXT_INPUT_TYPES: ReadonlySet<string> = new Set(['text', 'search', 'url', 'tel', 'email', 'password', 'number']);
 
 /**
- * The target consumes navigation keys itself (a writable text field, a
- * select, editable content), so they do not move the scroller. A readonly
- * or disabled text field, a checkbox, or a button in a non-editable island
- * of an editor leaves them to the scroller.
+ * The target takes navigation keys for its caret or value (a writable text
+ * field, a select, editable content). A readonly or disabled text field, a
+ * checkbox, or a button in a non-editable island of an editor leaves them
+ * to scrolling.
  */
 function isEditableTarget(target: EventTarget | null): boolean {
   if (target instanceof HTMLTextAreaElement) return !target.readOnly && !target.disabled;
@@ -107,6 +119,24 @@ function isEditableTarget(target: EventTarget | null): boolean {
   }
   if (target instanceof HTMLSelectElement) return true;
   return target instanceof HTMLElement && target.isContentEditable;
+}
+
+/**
+ * Whether a navigation key typed with this target scrolls. An editor takes
+ * every navigation key for its caret or value, except the keys macOS binds
+ * to scrolling.
+ */
+function navigationKeyScrolls(e: KeyboardEvent): boolean {
+  if (!isEditableTarget(e.target)) return true;
+  if (e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return false;
+  return MAC_EDITOR_SCROLL_KEYS.has(e.key) && (platformIsMacForTest ?? isMacPlatform());
+}
+
+/** The editor is a scroll container that can still move this way. */
+function editorScrollsItself(editor: EventTarget | null, delta: number): boolean {
+  if (!(editor instanceof HTMLElement)) return false;
+  const overflow = getComputedStyle(editor).overflowY;
+  return (overflow === 'auto' || overflow === 'scroll') && canConsumeDelta(editor, delta);
 }
 
 export function isSelectingInside(scrollEl: HTMLElement): boolean {
@@ -819,13 +849,22 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   // Keydown / touch handlers (intent signals).
   function handleKeydown(e: KeyboardEvent): void {
+    const up = UP_KEYS.has(e.key);
+    if (!up && !DOWN_KEYS.has(e.key)) return;
     // A navigation key typed into an editor inside the scroller (a message
-    // being edited, a plan-review comment) moves the caret, not the scroller.
-    if (isEditableTarget(e.target)) return;
-    if (UP_KEYS.has(e.key)) escapeFromUserInput('key');
-    if (e.key === 'End') recordRecentDownIntent('key', Number.POSITIVE_INFINITY, false);
-    else if (e.key === 'PageDown') recordRecentDownIntent('key', deps.getScrollEl()?.clientHeight ?? 0, false);
-    else if (DOWN_KEYS.has(e.key)) recordRecentDownIntent('key', Number.POSITIVE_INFINITY, true);
+    // being edited, a plan-review comment) moves its caret unless macOS
+    // binds it to scrolling.
+    if (!navigationKeyScrolls(e)) return;
+    // A key that scrolls moves the first box from its target up that can
+    // move its way: the editor it was typed into, then a nested scroller.
+    const delta = up ? -1 : 1;
+    if (isEditableTarget(e.target) && editorScrollsItself(e.target, delta)) return;
+    const scrollEl = deps.getScrollEl();
+    if (scrollEl && scrollDeltaConsumedBelow(e.target, scrollEl, delta)) return;
+    if (up) escapeFromUserInput('key');
+    else if (e.key === 'End') recordRecentDownIntent('key', Number.POSITIVE_INFINITY, false);
+    else if (e.key === 'PageDown') recordRecentDownIntent('key', scrollEl?.clientHeight ?? 0, false);
+    else recordRecentDownIntent('key', Number.POSITIVE_INFINITY, true);
   }
   function handleTouchStart(e: TouchEvent): void {
     touchStartY = e.touches[0]?.clientY ?? null;
