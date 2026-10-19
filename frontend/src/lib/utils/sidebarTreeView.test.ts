@@ -693,6 +693,24 @@ describe('flattenSidebarThreadTree with standing agents', () => {
     expect(rows[1].kind === 'thread' && rows[1].archived !== true).toBe(true);
   });
 
+  it('lists a thread once when the done list names a thread still listed outside the agent', () => {
+    // The successor is listed while the past thread keeps a stale
+    // standalone placement, so it is a top-level row, not a child.
+    const successor = mkThread('agent-next', { agentId: 'ops', archivedChildCount: 2 });
+    const past = mkThread('agent', { pastAgentId: 'ops', placement: 'standalone', updatedAt: 10 });
+    const rows = flattenSidebarThreadTree({
+      nodes: buildSidebarThreadTree({ threads: [successor, past, plain] }),
+      expandedDoneAgentIds: new Set(['ops']),
+      archivedChildrenOf: () => [{ ...past, archived: true }, archived[0]],
+    });
+    const ids = rows.map(sidebarVisibleNodeId);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.filter((id) => id === 'agent')).toEqual(['agent']);
+    expect(ids).toContain('done-1');
+    const live = rows.find((row) => row.kind === 'thread' && row.thread.id === 'agent');
+    expect(live?.kind === 'thread' && live.archived !== true && live.ownerAgentId === null).toBe(true);
+  });
+
   it('cuts off on the fields an agent row and its footer render', () => {
     const base = flattenSidebarThreadTree({ nodes: tree() });
     expect(sameSidebarVisibleNodes(base, flattenSidebarThreadTree({ nodes: tree() }))).toBe(true);

@@ -247,6 +247,7 @@ export function flattenSidebarThreadTree(
   input: FlattenSidebarThreadTreeInput,
 ): SidebarTreeVisibleNode[] {
   const visibleNodes: SidebarTreeVisibleNode[] = [];
+  let listed: Set<string> | null = null;
   const collapsedGroupIds = input.collapsedGroupIds;
   const collapsedAgentIds = input.collapsedAgentIds;
 
@@ -297,9 +298,9 @@ export function flattenSidebarThreadTree(
     let hiddenCount = 0;
     if (expanded) {
       // Settled idle first, newest first; then the archived ones, which
-      // arrive newest first. A thread a handoff just superseded can be in
-      // the archived list before its row leaves the live list; it shows
-      // once, as the live row.
+      // arrive newest first. An archived list can name a thread still
+      // listed live, such as one a handoff just superseded before its row
+      // leaves; it shows once, as the live row.
       const done: Array<{ row: SidebarThreadTreeNode; archived: boolean }> = [...folded]
         .sort((a, b) => b.latestActivityAt - a.latestActivityAt
           || (a.thread.id < b.thread.id ? 1 : a.thread.id > b.thread.id ? -1 : 0))
@@ -309,9 +310,9 @@ export function flattenSidebarThreadTree(
         if (loaded === null) {
           loading = true;
         } else {
-          const children = new Set(node.children.map((child) => child.thread.id));
+          listed ??= listedThreadIds(input.nodes);
           for (const thread of loaded) {
-            if (!children.has(thread.id)) done.push({ row: archivedChildNode(thread), archived: true });
+            if (!listed.has(thread.id)) done.push({ row: archivedChildNode(thread), archived: true });
           }
         }
       }
@@ -328,6 +329,16 @@ export function flattenSidebarThreadTree(
     });
   }
   return visibleNodes;
+}
+
+/** The id of every thread the nodes hold, top-level rows and members alike. */
+function listedThreadIds(nodes: readonly SidebarTreeNode[]): Set<string> {
+  const ids = new Set<string>();
+  for (const node of nodes) {
+    if (node.kind !== 'group') ids.add(node.thread.id);
+    if (node.kind !== 'thread') for (const child of node.children) ids.add(child.thread.id);
+  }
+  return ids;
 }
 
 /** Emit a container's members up to its bound, then its show-more footer. */

@@ -64,7 +64,8 @@ function setThreads(rows: Thread[]): void {
  * An assistant has one current thread. A handoff lists the new thread
  * before the old one leaves, so a write that holds two current threads of
  * one assistant keeps the one that was not current before (the newest when
- * both are new) and holds the other as the past thread it now is.
+ * both are new) and holds the other as the past thread it now is: nested
+ * under the agent row unless it is in a group, as the handoff placed it.
  */
 function oneCurrentThreadPerAssistant(before: readonly Thread[], rows: Thread[]): Thread[] {
   let current: Map<string, Thread> | null = null;
@@ -84,7 +85,7 @@ function oneCurrentThreadPerAssistant(before: readonly Thread[], rows: Thread[])
   }
   if (!duplicated) return rows;
   return rows.map((row) => (row.agentId && current!.get(row.agentId) !== row
-    ? { ...row, agentId: undefined, pastAgentId: row.agentId }
+    ? { ...row, agentId: undefined, pastAgentId: row.agentId, placement: row.groupId ? row.placement : 'nested' }
     : row));
 }
 // Ownership changes before the destination's row is applied. Fence the

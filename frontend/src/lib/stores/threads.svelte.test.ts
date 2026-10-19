@@ -287,8 +287,13 @@ describe('standing agent state on removal', () => {
     prependThread(makeThread('agent-next', { agentId: 'agent', createdAt: 5 }));
     const current = getThreads().filter((t) => t.agentId === 'agent');
     expect(current.map((t) => t.id)).toEqual(['agent-next']);
-    expect(getThreads().find((t) => t.id === 'agent')).toMatchObject({ agentId: undefined, pastAgentId: 'agent' });
+    expect(getThreads().find((t) => t.id === 'agent')).toMatchObject({ agentId: undefined, pastAgentId: 'agent', placement: 'nested' });
     expect(isAgentDoneExpanded('agent')).toBe(true);
+    // The old thread takes the placement the handoff gave it: nested, or
+    // its group's.
+    prependThread(makeThread('in-group', { agentId: 'grouped', groupId: 'g1', placement: 'grouped', createdAt: 1 }));
+    prependThread(makeThread('in-group-next', { agentId: 'grouped', createdAt: 2 }));
+    expect(getThreads().find((t) => t.id === 'in-group')).toMatchObject({ agentId: undefined, pastAgentId: 'grouped', placement: 'grouped' });
     // Two new rows of one assistant in one write: the newest is current.
     setBindingMock('ListThreads', async () => [
       makeThread('a', { agentId: 'other', createdAt: 1 }),
