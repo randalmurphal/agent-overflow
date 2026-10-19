@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/terminal"
 )
 
@@ -185,6 +186,9 @@ func hookSettingsJSON(cfg Config) (string, error) {
 	for _, ev := range observeHookEvents {
 		hooks[ev] = observeEntry
 	}
+	if group := claude.SessionStartHookGroup(cfg.SessionStartHooks); group != nil {
+		hooks["SessionStart"] = append(append([]any{}, observeEntry...), group)
+	}
 
 	block := map[string]any{"hooks": hooks}
 	if inbound := strings.TrimSpace(cfg.CrossSessionInbound); inbound != "" {
@@ -210,7 +214,7 @@ func hookCommand(cfg Config) (string, error) {
 			return "", fmt.Errorf("claudetui: resolve AO executable for hook: %w", err)
 		}
 	}
-	return shellQuote(exe) + " " + HookSubcommand, nil
+	return stringsx.ShellQuote(exe) + " " + HookSubcommand, nil
 }
 
 // BaseURLEnv is the variable that points Claude Code at an API endpoint. This
@@ -300,10 +304,4 @@ func buildEnv(cfg Config, gatewayURL, hookURL, hookToken string) []string {
 		out = append(out, todoReminderModeEnvVar+"=off")
 	}
 	return out
-}
-
-// shellQuote wraps s in single quotes, escaping any embedded single quotes,
-// so it survives Claude Code running the hook command through a shell.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

@@ -293,6 +293,9 @@ func (s *Session) classifyAndEmitNotification(
 	parentToolUseID string,
 	mappedChildThreadIDs []string,
 ) {
+	if parentToolUseID == "" && s.observeSessionStartHooks(method, params) {
+		return
+	}
 	events, handled := s.classifyNotificationWithBufferedPlan(method, params)
 	if !handled {
 		s.warnUnclaimedNotification(method)

@@ -42,6 +42,7 @@ var holderClearedRows = []struct{ table, column string }{
 	{"agents", "thread_id"},
 	{"async_questions", "thread_id"},
 	{"codex_developer_instructions", "thread_id"},
+	{"codex_session_start_pending", "thread_id"},
 	{"diff_review_comments", "thread_id"},
 	{"flush_queue_items", "thread_id"},
 	{"message_anchors", "thread_id"},

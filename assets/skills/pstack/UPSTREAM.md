@@ -41,7 +41,7 @@ and `other-provider`, read through the `setup-pstack` skill.
 | `automations/benny/skills/reproduce-and-fix-issues/references/control-adapter.md` | Copies live in the agent home; `ao-browser-tools` named for web and Electron apps |
 | `automations/benny/skills/reproduce-and-fix-issues/references/feature-map.example.md` | Copies live in the agent home |
 | `automations/benny/skills/reproduce-and-fix-issues/references/verify-existing-fix.md` | PR links come from the forge |
-| `skills/agent-home/SKILL.md` | Added, not from upstream: authored for Agent Overflow. The layout and memory discipline of a standing agent's home and its hygiene loop; the literals it names are the ones the app reads (`internal/agenthome`) |
+| `skills/agent-home/SKILL.md` | Added, not from upstream: authored for Agent Overflow. The layout and memory discipline of a standing agent's home; the literals it names are the ones the app reads (`internal/agenthome`) |
 | `skills/architect/SKILL.md` | Settings file path; panel defaults |
 | `skills/arena/SKILL.md` | Settings file path; panel defaults; candidates as subagents or threads by provider |
 | `skills/automate-me/SKILL.md` | History from `thread_search` and `thread_show`; provider skill folders; question tool |

@@ -14,6 +14,7 @@ import {
   backgroundTasksChangedLine,
   claudeScenario,
   claudeTurnsScenario,
+  compactBoundaryLine,
   emit,
   startMock,
   taskNotificationLine,
@@ -108,13 +109,7 @@ function agentFinishes(): string[] {
 const compactingLine = '{"type":"system","subtype":"status","status":"compacting"}';
 const compactionDone = [
   '{"type":"system","subtype":"status","status":null,"compact_result":"success"}',
-  JSON.stringify({
-    type: 'system',
-    subtype: 'compact_boundary',
-    uuid: 'compact-1',
-    content: 'Context compacted',
-    compact_metadata: { trigger: 'auto', pre_tokens: 312377, post_tokens: 22074 },
-  }),
+  compactBoundaryLine('compact-1'),
 ];
 
 function scenario(name: string) {

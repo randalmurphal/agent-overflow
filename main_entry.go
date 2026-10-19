@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -602,6 +603,17 @@ func parseFlags(args []string) (cliFlags, error) {
 		if out.headless || out.harness || out.soak || out.frontend || out.connect != "" {
 			return cliFlags{}, fmt.Errorf("--%s is for the desktop boot the update helper starts", supervise.DesktopWaitPIDFlag)
 		}
+	}
+	if out.dataDir != "" {
+		// Resolved once against the launch directory: the boot later moves
+		// off a Windows drive mount, and paths under the root reach
+		// processes that run elsewhere, such as a standing agent's
+		// SessionStart hook, which runs in the thread's workspace.
+		dataDir, err := filepath.Abs(out.dataDir)
+		if err != nil {
+			return cliFlags{}, fmt.Errorf("resolve --data-dir: %w", err)
+		}
+		out.dataDir = dataDir
 	}
 	return out, nil
 }

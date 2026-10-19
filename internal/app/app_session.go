@@ -295,21 +295,20 @@ func (a *App) startSessionNow(threadID string) error {
 		}
 	}
 
-	// Read once per start: the files' text is fixed for this session's life.
-	agentHome, homeProblems, err := a.standingAgentPrompt(t)
+	agent, err := a.readStandingAgentSession(t)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agentHome, onEvent)
+	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, agent, onEvent)
 	if err != nil {
-		if codex.IsThreadNotFound(err) && agentHome != "" {
+		if codex.IsThreadNotFound(err) && agent.Block != "" {
 			// An assistant's Codex thread the provider no longer has.
 			err = errors.Join(errAssistantSessionGone, err)
 		}
 		a.emitProviderStatusOnSessionStartError(t.Provider)
 		// The start failed for its own reason; the home file that could not
 		// be read is still news the user needs before the next attempt.
-		a.reportStandingAgentHomeProblems(threadID, homeProblems)
+		a.reportStandingAgentHomeProblems(threadID, agent.Problems)
 		return fmt.Errorf("start session: %w", err)
 	}
 
@@ -324,7 +323,7 @@ func (a *App) startSessionNow(threadID string) error {
 		a.signalRemotePeers()
 	}
 	a.emitProviderSessionAccount(threadID)
-	a.reportStandingAgentHomeProblems(threadID, homeProblems)
+	a.reportStandingAgentHomeProblems(threadID, agent.Problems)
 	// The fresh session launched with today's prompt, which clears any
 	// prompt change flag; a save that landed while it spawned flags it.
 	a.reconcileStalePromptSession(threadID)
@@ -537,7 +536,7 @@ func (a *App) spawnProviderSession(
 	opts provider.SessionOptions,
 	mcpServers map[string]any,
 	credential aoSessionCredential,
-	agentHome string,
+	agent standingAgentSession,
 	onEvent func(provider.ProviderEvent),
 ) (session, error) {
 	// liveness is initialized once and attached to whichever provider
@@ -558,9 +557,11 @@ func (a *App) spawnProviderSession(
 	if err != nil {
 		return session{}, err
 	}
-	// A standing agent's home block (app_standing_agents.go) rides the same
-	// channels, spawn-only too, and whatever the guide setting says.
-	appGuide = joinPromptParts(appGuide, agentHome)
+	// A standing agent's block (app_standing_agents.go) rides the same
+	// channels, spawn-only too, and whatever the guide setting says. Its home
+	// files ride SessionStart hooks instead, so an edit to them leaves the
+	// prompt, and the provider's prompt cache, as they were.
+	appGuide = joinPromptParts(appGuide, agent.Block)
 
 	switch t.Provider {
 	case string(provider.Claude):
@@ -570,6 +571,7 @@ func (a *App) spawnProviderSession(
 		}
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.AppendSystemPrompt = appGuide
+		cfg.SessionStartHooks = agent.Hooks
 		cfg.InstalledCLIVersion = a.installedProviderVersion(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		if mcpServers[remoteMCPName] != nil {
@@ -634,6 +636,11 @@ func (a *App) spawnProviderSession(
 		// the next start or resume: a resumed thread whose text changed
 		// gets it injected (codexDeveloperInstructionsDelivery).
 		cfg.DeveloperInstructions = a.codexDeveloperInstructions(threadID, appGuide, mcpServers)
+		cfg.SessionStartHooks = agent.Hooks
+		cfg.SessionStartPending, err = a.codexSessionStartPending(threadID, cfg.ResumeThreadID, agent.Hooks)
+		if err != nil {
+			return session{}, err
+		}
 		cfg.DeveloperInstructionsDelivery, err = a.codexDeveloperInstructionsDelivery(threadID, cfg.ResumeThreadID)
 		if err != nil {
 			return session{}, err
@@ -759,6 +766,7 @@ func (a *App) spawnProviderSession(
 		// headless one; there is no separate TUI binary setting.
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
 		cfg.AppendSystemPrompt = appGuide
+		cfg.SessionStartHooks = agent.Hooks
 		cfg.InstalledCLIVersion = a.installedProviderVersion(string(provider.Claude))
 		cfg.ModelAliases = a.providerDiscoveryService().ClaudeModelAliases()
 		cfg.AgentLaunchByTask = a.claudeAgentLaunchLookup(threadID)

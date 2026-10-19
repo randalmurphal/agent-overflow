@@ -559,7 +559,8 @@ per-method version gate reads; the default is above every gate, so this
 is the only way a spec exercises a gate's fails-closed branch. It does
 not reach `--version`, the account probe, one-shot text generation, or
 the Claude sign-in. Those invocations answer and exit before a scenario
-loads.
+loads. `sessionStartHooksOff` runs none of the SessionStart hooks the
+app registers, as a CLI whose user turned hooks off does.
 
 `claude.holdQueuedInput` selects how the Claude mock consumes a user
 envelope that arrives while a turn is running. The `command_lifecycle`
@@ -728,7 +729,7 @@ commands and posts progress reports (`registered`, `turn_started`,
 `advance_released`, `advance_buffered`, `approval_pending`,
 `approval_decided`, `turn_interrupted`, `history_cut`, `history_resumed`, `mcp_result`,
 `mcp_tools`, `fixture_error`, `session_config`, `injected_items`,
-`scenario_done`, `exiting`),
+`session_start_context`, `scenario_done`, `exiting`),
 which the harness re-emits as `harness:mock` events
 (`{mockId, protocol, cwd, scenario, report}`). Tests await these
 instead of sleeping.
@@ -755,7 +756,12 @@ posts once per mock with the permission/sandbox configuration the app
 actually launched it with. `injected_items` carries the messages a Codex
 mock received through `thread/inject_items` (`report.injectedItems`, each
 `{role, text}`), posted before the answer; `HarnessListMocks` latches them
-on the mock's row as `injectedItems`. `scenario_done` is per TURN: every turn that
+on the mock's row as `injectedItems`. `session_start_context` reports one
+run of the SessionStart hooks the session was launched with, where its CLI
+runs them (`report.sessionStartRun`, `{source, contexts}`, the contexts of
+the hooks that delivered), posted before the frames of the run's outcome;
+`HarnessListMocks` latches the first 32 on the mock's row as
+`sessionStartRuns`. `scenario_done` is per TURN: every turn that
 runs its step list to completion reports it for its own 1-based turn
 number, repeated (`repeatLast`) turns included. Await it with the turn
 you drove, not just its first occurrence. `user_input` additionally carries `report.input` and

@@ -139,7 +139,7 @@ Authoritative method list from
 | `rawResponseItem/completed` | Raw response items: `spawn_agent` / `wait_agent` / `write_stdin` enrichment and the live mailbox carrier. Only available on a fresh `thread/start` with `experimentalRawEvents`. See §`<subagent_notification>`. |
 | `item/mcpToolCall/progress`, `item/autoApprovalReview/started`, `item/autoApprovalReview/completed` | Recognised and dropped (consumed, so never opted out). |
 | `autoApprovalReview/strictReviewRequired` | 0.149. Reachable only in the `auto` runtime mode: strict review replaced the cheap in-line assessment, so tool calls slow down. One warning row; the payload carries no reason. |
-| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each. |
+| `hook/started`, `hook/completed` | Hook lifecycle; one notification row each, except the runs of the thread's own SessionStart hooks (`source` `sessionFlags`), which render none. See §SessionStart hooks. |
 | `thread/started` | Session-level. First notification on a new thread; emits `EventSessionInit`. |
 | `thread/status/changed` | Session-level. Thread status transitions; emits `EventSessionStatus`. |
 | `thread/archived`, `thread/unarchived`, `thread/closed` | Recognised, no event. |
@@ -1782,6 +1782,168 @@ cursor until its terminal boundary arrives, so refresh never persists a launch
 that a later independent batch cannot settle.
 
 ---
+
+## SessionStart hooks (verified 0.157.1)
+
+Spikes 2026-10-18, codex-cli 0.157.1 against a mock Responses server;
+source read at `rust-v0.143.0`, `rust-v0.153.4` and `rust-v0.162.1`, which
+agree on everything below. Agent Overflow uses these hooks to deliver a
+standing agent's home files
+([standing agents](../specs/standing-agents.md#agent-home-contents));
+the mechanism is `internal/provider/codex/session_start_hooks.go`.
+
+### Registration in the thread config
+
+`thread/start` and `thread/resume` take hooks in their `config` map,
+which Codex reads as the thread's session-flags config layer:
+
+```json
+{"config": {"hooks": {
+  "SessionStart": [{"matcher": "startup|compact|clear",
+                    "hooks": [{"type": "command", "command": "...", "timeout": 60}]}],
+  "state": {"/<session-flags>/config.toml:session_start:0:0":
+              {"trusted_hash": "sha256:..."}}}}}
+```
+
+- Sources: `startup`, `resume`, `clear`, `compact`. A matcher that is
+  empty or `*` takes every source; one of only letters, digits, `_` and
+  `|` is a list of exact names; anything else is a regular expression
+  found anywhere in the source (`hooks/src/engine/matcher.rs`).
+- `timeout` is in seconds: 600 when absent, at least 1.
+- The command runs in the thread's cwd, with the hook input JSON on
+  stdin (`session_id`, `cwd`, `hook_event_name`, `source`, ...),
+  through the thread's local shell (`build_hooks_config`,
+  `core/src/session/mod.rs`): the user's shell when it is zsh, bash or
+  sh, otherwise zsh then bash on macOS and bash then zsh on Linux, then
+  `/bin/sh` (`default_user_shell`, `shell-command/src/shell_detect.rs`).
+  It runs as `<shell> -c <command>`, not as a login shell; PowerShell
+  takes `-NoProfile -Command` and cmd `/c` (`Shell::derive_exec_args`,
+  `core/src/shell.rs`). A thread without exactly one local environment
+  runs `$SHELL -lc <command>` instead (`/bin/sh` when `SHELL` is unset,
+  `%COMSPEC% /C` on Windows; `hooks/src/engine/command_runner.rs`). Exit 0 delivers stdout as context:
+  `hookSpecificOutput.additionalContext` of a JSON object, or the
+  trimmed text when stdout is not JSON. A non-zero exit fails the run
+  ("hook exited with code N"), and so does a JSON object that is not
+  SessionStart output ("hook returned invalid session start JSON
+  output").
+- In the tags read, `rust-v0.153.4` is the first with a context limit: a
+  context over `additionalContextLimit` tokens (2,500 when unset, counted
+  at 4 bytes a token) is written to disk and replaced by a preview. Agent Overflow's largest delivery stays under 10,000 bytes.
+- The `hooks` feature (stable, on by default) turns all hooks off when a
+  user sets `features.hooks = false`.
+
+### Trust
+
+Codex runs a hook from a non-managed layer only when
+`hooks.state[<key>].trusted_hash` equals the hook's current hash. An
+untrusted hook does not run: no `hook/started`, and nothing reaches the
+model. `hooks/list` reports each hook's `key`, `trustStatus` and
+`currentHash`.
+
+- Key: `<key source>:<event>:<group index>:<handler index>`. The
+  session-flags layer's key source is `/<session-flags>/config.toml`, so
+  the first handler of the first SessionStart group is
+  `/<session-flags>/config.toml:session_start:0:0`.
+- Hash: `sha256:` and the lowercase hex SHA-256 of the canonical JSON of
+  the handler's normalized identity, object keys sorted, no white space,
+  strings escaped as serde_json escapes them (`"`, `\` and the control
+  characters below U+0020 only; `<`, `>`, `&`, U+2028, U+2029 and
+  non-ASCII as they are):
+
+  ```json
+  {"event_name":"session_start","hooks":[{"async":false,"command":"<command>","timeout":60,"type":"command"}],"matcher":"startup|compact|clear"}
+  ```
+
+  (`hook_hash` in `hooks/src/engine/discovery.rs`, `version_for_toml` in
+  `config/src/fingerprint.rs`). The spike matched `hooks/list`
+  `currentHash` to this computation for a command holding quotes, a
+  backslash, `<>&`, non-ASCII, U+2028, an emoji, a tab and control
+  characters.
+
+A hash in the thread's own config trusts exactly that command, matcher
+and timeout in that layer. Hooks of the user's or a project's config
+keep their own trust state.
+
+### When the hooks run
+
+- A start, a cold resume, a compaction or a clear queues the hooks
+  whose matcher takes its source. Codex runs queued hooks before the
+  first model request of the next regular turn, and right after a
+  compaction inside a turn (`run_pending_session_start_hooks`,
+  `core/src/session/turn.rs`).
+- The queue lives only in the loaded thread's memory
+  (`pending_session_start_sources`, `core/src/state/session.rs`). A cold
+  load queues its own source alone (`resume` for a resumed history), so
+  a start or a compaction whose hooks had not run when the thread was
+  unloaded never runs them.
+- `thread/compact/start` is a turn of its own that runs no hooks; the
+  next turn runs the `compact` ones. A review (`review/start`) runs as a
+  sub-conversation and runs none either.
+- A warm `thread/resume`, of a thread still loaded in the process, runs
+  none. A resume that carries `config` reloads a loaded thread cold when
+  it is idle and no other connection subscribes to it
+  (`resume_running_thread`,
+  `app-server/src/request_processors/thread_processor.rs`). A spawned
+  subagent's thread runs no SessionStart hooks.
+- Each run reports `hook/started` and then `hook/completed`, each with
+  a `run` (`HookRunSummary`): `id` (`session-start:<order>:<key source>`),
+  `eventName` `sessionStart`, `handlerType` `command`, `executionMode`
+  `sync`, `scope` `thread`, `sourcePath`, `source` (`sessionFlags` for
+  the thread config, `user` for the user's `config.toml`, ...),
+  `displayOrder`, `status` (`running`, then `completed` or `failed`),
+  `statusMessage`, `startedAt`, `completedAt`, `durationMs` and
+  `entries` (`{kind, text}`; `context` carries the delivered text,
+  `error` a failure).
+- The context reaches the model as a `developer` message after the
+  thread's other initial context, and is written to the rollout as a
+  `response_item`.
+
+### Copies across resumes and compactions
+
+Spike, one thread, a matcher that takes every source:
+
+- Each cold resume added another developer message with that run's
+  output after the previous turn. After three cold resumes the request
+  carried four copies (startup and three resumes). They persist in the
+  rollout, so every later resume keeps them.
+- A warm resume added none.
+- A compaction dropped every earlier copy: the next request carried
+  exactly one, the `compact` run's, after the summary and the rebuilt
+  initial context.
+- With `startup|compact` a cold resume ran nothing, and the request
+  carried the startup copy alone.
+
+A matcher without `resume` keeps one copy per compaction window, holding
+the text as it was at the last start or compaction.
+
+### What Agent Overflow does
+
+- Registers `startup|compact|clear`, timeout 60 and the trust hash of
+  each command (`sessionStartHookConfig`) on `thread/start` and
+  `thread/resume`, so a resumed thread that compacts runs them too. Each
+  command quotes its words in POSIX single quotes, which sh, bash and zsh
+  read verbatim. A fish user's hooks run under zsh or bash; only the
+  `$SHELL -lc` fallback can reach fish, which reads the quotes the same
+  unless a path holds a backslash. Agent Overflow runs Codex on Unix
+  only, on Windows inside WSL, so the command never reaches PowerShell
+  or `cmd.exe`. A shell startup file that prints to stdout for every
+  command (zsh's `.zshenv`, or a login profile under the fallback) puts
+  its text ahead of the hook's output, which then no longer opens with
+  a heading and is reported as not delivered.
+- Root `hook/started` and `hook/completed` with `eventName`
+  `sessionStart` and `source` `sessionFlags` render no row. A
+  `completed` run's `context` entries count as delivered when they open
+  with one of the hooks' headings.
+- A fresh `thread/start` and a compaction (the `contextCompaction` item,
+  or the deprecated `thread/compacted`) expect a delivery, checked when
+  the turn that ran the hooks, or else the next regular turn, completes
+  with status `completed`; an interrupted or failed turn leaves it to the
+  turn after (`observeSessionStartHooks`).
+- An open expectation is recorded per thread
+  (`codex_session_start_pending`). A `thread/resume` or rehydrate while
+  one is open registers the hooks as `startup|compact|clear|resume`, with
+  the trust hash of that matcher, so the load's next turn delivers what
+  the unloaded thread had queued.
 
 ## Manual compaction: `thread/compact/start`
 

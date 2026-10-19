@@ -86,6 +86,9 @@ type Parser struct {
 	// betweenTurns is true from a top-level `result` until the next turn
 	// shows itself (observeTurnWindow).
 	betweenTurns bool
+	// sessionStart follows the delivery of Config.SessionStartHooks
+	// (parse_session_start.go); nil when the session has none.
+	sessionStart *provider.SessionStartDelivery
 	// advisorToolUses flags `server_tool_use` IDs (the `srvtoolu_*`
 	// prefix) emitted by Claude's server-side advisor tool. The matching
 	// `advisor_tool_result` content block on a later assistant envelope

@@ -53,6 +53,12 @@ type Config struct {
 	// headless does (spike-verified 2.1.284 via PTY + wire capture). The
 	// app stamps its guide here (internal/app/app_agent_guide.go).
 	AppendSystemPrompt string
+	// SessionStartHooks run at a fresh start, after a compaction and after a
+	// clear, registered beside the relay in the `--settings` payload
+	// (claude.SessionStartHookGroup). The gateway checks the first main
+	// request after a start or a compaction for their context and reports
+	// a warning when it is missing (Session.observeMainRequest).
+	SessionStartHooks []provider.SessionStartHook
 	// SystemPromptDir is the directory both prompt files are created in;
 	// required when either prompt is set. Same contract as
 	// claude.Config.SystemPromptDir.

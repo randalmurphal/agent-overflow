@@ -48,11 +48,9 @@ What this breaks today, on Codex only:
 - The app guide and the browser, thread and workflow tool guides: a setting
   change or a tool switch "reaches the text at the next start or resume"
   (`spawnProviderSession`, `app_session.go`) only for a new thread.
-- A standing agent's home block: slice 9 of
-  [standing-agents.md](standing-agents.md#slices-and-verification) requires
-  a rewrite of `instructions.md` to reach the next start. On a resumed Codex
-  thread it does not. The harness mock cannot show what a model reads, so
-  that slice's proof stops at the wire parameter.
+- A standing agent's session block, which a rename changes. Its home files
+  do not travel in developer instructions: SessionStart hooks deliver them
+  ([home file delivery](standing-agents.md#agent-home-contents)).
 - The user's own `developer_instructions` in `config.toml`.
 
 A fork has the same defect: `InitialHistory::Forked` also runs
@@ -357,7 +355,8 @@ sends to stay on the old account until they are reaped, as today.
 ## Instructions delivery
 
 Thread-level `developerInstructions` stays as it is: the composed value
-(the cwd's configured text, then AO's guide and home block) is sent on
+(the cwd's configured text, then AO's guide and a standing agent's
+session block) is sent on
 every start and resume, so a new thread and every compaction carry the
 current text.
 
@@ -377,7 +376,7 @@ start. A fork child has no digest and always gets one injection at its
 first start: a fork at `lastTurnId` cuts history, so the child can lack an
 injection its parent received after the cut, and the parent's digest says
 nothing about what the child's history holds.
-`additionalContext` is not used: AO's guide and a home block
+`additionalContext` is not used: AO's guide and a session block
 exceed its 1,000-token cap.
 
 This keeps today's product rule, a change applies at the thread's next
@@ -467,7 +466,7 @@ this change.
 | 11 | A dev server descends from its thread's process | `app_preview.go:406` `devServerOwners`; `sessionruntime/manager.go:447` | `devServerOwners` reads `Session.OwnedProcesses` with no provider branch: a Codex session returns its background terminals' `osPid` from `thread/backgroundTerminals/list`, a Claude session its connection's process | Go test: two Codex sessions on one connection, each with a terminal, attribute a listener to the right thread; a Claude session still attributes by its process |
 | 12 | Process-wide reads may borrow any thread's session | `app_codex_bindings.go:189-212`; `codexapp/service.go:35-36`, `:139`, `:214`; `manager.go:371-399` | They use a registry connection of the matching key or a one-shot | Go test that no codexapp read reaches a session |
 | 13 | A forked thread is released when its process exits | `session_fork.go`; mock `codex_writer_lock.go` | Every thread a connection loads is owned by one session or unsubscribed at once | `codex-revert.spec.ts` and `fork-midturn.spec.ts` with sharing on; mock refuses a resume while it still holds the fork loaded |
-| 14 | A resume or a fork delivers developer instructions | `session_start.go:168`; `session_fork.go` `forkThreadWith`; `developer_instructions.go` | A changed composed value is injected once per change, on resumed and forked threads, against a digest persisted on the thread row | [Instructions delivery](#instructions-delivery): Go tests that a changed value sends one `thread/inject_items` and an unchanged one none, that a thread with no digest gets one injection, that a fork child injects once at its first start, and that the digest survives an app restart; mock reports injected items; `standing-agent-home-contents.spec.ts` asserts the injection after an `instructions.md` rewrite on Codex |
+| 14 | A resume or a fork delivers developer instructions | `session_start.go:168`; `session_fork.go` `forkThreadWith`; `developer_instructions.go` | A changed composed value is injected once per change, on resumed and forked threads, against a digest persisted on the thread row | [Instructions delivery](#instructions-delivery): Go tests that a changed value sends one `thread/inject_items` and an unchanged one none, that a thread with no digest gets one injection, that a fork child injects once at its first start, and that the digest survives an app restart; mock reports injected items; `codex-developer-instructions.spec.ts` asserts one injection after a guide change on a resumed thread |
 | 15 | The binary banner is a session fact | `app_provider_binary_watch.go` | It is a connection fact projected to sessions | Existing watcher tests with two sessions on one connection |
 | 16 | Starts on a process never overlap | `NewSession`, `session_start.go:27` | At most one `thread/start` or `thread/fork` in flight per connection | Go test with concurrent opens on one connection |
 | 17 | Outbound frames carry no secret | `raw_tool_calls.go:357` `newCodexProviderEventLogRedactor` (`in` only) | Outbound `thread/start`, `thread/resume` and `thread/fork` are logged with `AO_TOKEN` masked | Go test that a logged outbound start frame contains no token |

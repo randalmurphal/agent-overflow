@@ -203,6 +203,14 @@ type claudeAdapter struct {
 	// permission follows the permission mode and model the process runs
 	// (claude_permission_mode.go).
 	permission *claudePermissionMode
+
+	// sessionStart holds the SessionStart hooks of the --settings the app
+	// spawned this process with, and startSource the source the process
+	// runs them for before its first init (claude_session_start.go). Both
+	// are read-only after construction; startHooks runs them once.
+	sessionStart []sessionStartHook
+	startSource  string
+	startHooks   sync.Once
 }
 
 func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
@@ -214,6 +222,10 @@ func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
 		sessionMirror: slices.Contains(args, "--session-mirror"),
 		tasks:         newClaudeTaskLedger(),
 		permission:    newClaudePermissionMode(args),
+		startSource:   claudeStartSource(args),
+	}
+	if !e.sc.SessionStartHooksOff {
+		a.sessionStart = claudeSessionStartHooks(args)
 	}
 	w.onLine(a.noteEnvelope)
 	return a
@@ -606,9 +618,11 @@ func (a *claudeAdapter) sendInterruptedTurn(vars scenario.Vars) {
 //
 // This is the frame that tells AO the provider is up (triage opens the
 // logical turn on it), so it is where a scenario's startupDelayMs is
-// spent — once, before the first one.
+// spent, once, before the first one. Print mode awaits the start's
+// SessionStart hooks before its first init, so they run there too.
 func (a *claudeAdapter) writeInit(vars scenario.Vars) {
 	a.e.awaitStartupDelay()
+	a.startHooks.Do(func() { a.runSessionStartHooks(vars, a.startSource) })
 	a.w.writeLine(mustJSON(map[string]any{
 		"type":                "system",
 		"subtype":             "init",

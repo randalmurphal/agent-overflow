@@ -156,6 +156,8 @@ type Report struct {
 	SessionConfig *SessionConfig `json:"sessionConfig,omitempty"`
 	// InjectedItems is set only on ReportInjectedItems reports.
 	InjectedItems []InjectedItem `json:"injectedItems,omitempty"`
+	// SessionStartRun is set only on ReportSessionStartContext reports.
+	SessionStartRun *SessionStartRun `json:"sessionStartRun,omitempty"`
 	// Gate names the waitSignal gate an advance report concerns: the gate
 	// that was RELEASED (ReportAdvanceReleased) or the name the buffered
 	// advance carried (ReportAdvanceBuffered). Empty is a real value on
@@ -263,7 +265,24 @@ const (
 	// answer. It is how a spec sees the developer instructions the app
 	// injects into a resumed thread, which no turn input carries.
 	ReportInjectedItems = "injected_items"
+	// ReportSessionStartContext carries one run of the SessionStart hooks
+	// a mock's session configuration declares: SessionRef is the session,
+	// SessionStartRun the source the hooks ran for and the context each
+	// delivered. Posted after the run's start frames and before the frames
+	// of its outcome (Claude's hook_response, Codex's hook/completed). It
+	// is how a spec sees what a standing agent's home hooks gave the model,
+	// which no turn input or launch argument carries.
+	ReportSessionStartContext = "session_start_context"
 )
+
+// SessionStartRun is one run of a session's SessionStart hooks: the source
+// they ran for ("startup", "compact", ...) and, in configuration order, the
+// context each hook that succeeded delivered to the model. Contexts is empty,
+// never nil, when no hook delivered.
+type SessionStartRun struct {
+	Source   string   `json:"source"`
+	Contexts []string `json:"contexts"`
+}
 
 // InjectedItem is one message item of a `thread/inject_items` request:
 // its role and the text of its content parts, joined.

@@ -460,12 +460,6 @@ func TestUnknownProviderIsRefused(t *testing.T) {
 	}
 }
 
-func TestShellQuoteSurvivesAnApostrophe(t *testing.T) {
-	if got, want := shellQuote(`it's fine`), `'it'\''s fine'`; got != want {
-		t.Fatalf("shellQuote = %q, want %q", got, want)
-	}
-}
-
 // -- helpers --------------------------------------------------------------
 
 func equalStrings(a, b []string) bool {

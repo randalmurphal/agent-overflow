@@ -21,11 +21,17 @@ func TestAFIFOInTheHomeIsRefusedWithoutBlocking(t *testing.T) {
 			t.Skip("no FIFOs here:", err)
 		}
 	}
-	within(t, "ReadSessionBlock", func() {
-		block := ReadSessionBlock(home)
-		if len(block.Problems) != 1 || !strings.Contains(block.Problems[0].Error(), "not a regular file") ||
-			!strings.Contains(block.Text, "index") {
-			t.Errorf("block = %+v", block)
+	within(t, "ReadContext", func() {
+		text, problem := readContext(t, home, InstructionsFile)
+		if problem == nil || !strings.Contains(problem.Error(), "not a regular file") || !strings.HasPrefix(text, instructionsHeading) {
+			t.Errorf("ReadContext = %q, %v", text, problem)
+		}
+	})
+	within(t, "RunHook", func() {
+		var stdout, stderr strings.Builder
+		if code := RunHook([]string{InstructionsFile, home}, strings.NewReader("{}"), &stdout, &stderr); code != 0 ||
+			!strings.Contains(stdout.String(), "not a regular file") || !strings.Contains(stderr.String(), "not a regular file") {
+			t.Errorf("RunHook = %d, %q, %q", code, stdout.String(), stderr.String())
 		}
 	})
 	within(t, "RoleLine", func() {

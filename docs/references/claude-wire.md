@@ -537,6 +537,59 @@ mode to `approval-required` without a restart and posts a warning notice
 naming the model. A later switch to a model whose remembered settings carry
 Auto restores it with a notice of its own.
 
+## SessionStart hooks (verified 2.1.283)
+
+Spike 2026-10-18, claude 2.1.283 in print mode with Agent Overflow's
+stream-json flags; limits read from the same version's bundle. Agent
+Overflow uses these hooks to deliver a standing agent's home files
+([standing agents](../specs/standing-agents.md#agent-home-contents)).
+
+Hooks in the inline `--settings` JSON (the flag settings layer) merge
+with the user's own and run beside them:
+
+```json
+{"hooks": {"SessionStart": [{"matcher": "startup|compact|clear",
+  "hooks": [{"type": "command", "command": "...", "timeout": 60}]}]}}
+```
+
+- Sources: `startup`, `resume`, `clear`, `compact`, `fork`. A process
+  started with `--resume` runs `resume`, and with `--fork-session` too,
+  `fork` (read from the bundle).
+- Each command runs through `/bin/sh -c` (Node's `spawn` with
+  `shell: true`; Git Bash on Windows), with the hook input JSON on
+  stdin.
+- A fresh process runs its start's hooks before its first
+  `system/init`. A compaction runs its hooks before its
+  `system/compact_boundary`.
+- Each run writes `system/hook_started` (`hook_id`, `hook_name`
+  `SessionStart:<source>`, `hook_event` `SessionStart`, `uuid`,
+  `session_id`) and then `system/hook_response`, which adds `output`
+  (stdout then stderr), `stdout`, `stderr`, `exit_code` and `outcome`
+  (`success` for exit 0, else `error`).
+- Stdout that starts with `{` is read as hook JSON, and
+  `hookSpecificOutput.additionalContext` is the context; other stdout
+  is plain-text context.
+- A context longer than 10,000 characters (JavaScript string length)
+  is written to disk and replaced by a preview and its path.
+- `disableAllHooks` in the user's settings turns every hook off.
+- An interactive session (claude-tui) writes no `hook_response`. A
+  run's contexts reach the next main model request as one block,
+  `SessionStart:<source> hook additional context: ` and the contexts
+  joined by newlines.
+- Each run also writes `attachment` rows to the session JSONL: a
+  `hook_success` per hook (`hookName` `SessionStart:<source>`) and one
+  `hook_additional_context` holding the contexts. They stay in the
+  transcript, so a resume that runs the hooks adds a second set beside
+  the start's until a compaction rebuilds the context.
+
+Agent Overflow registers `startup|compact|clear`, timeout 60
+(`claude.SessionStartHookGroup`; claude-tui puts the same group beside
+its relay). The headless parser counts a `hook_response` with exit code
+0 whose context opens with a hook's heading, and checks a start at
+`system/init` and a compaction at its `compact_boundary`
+(`parse_session_start.go`). claude-tui's gateway counts the headings in
+the first main model request after the start or after `PostCompact`.
+
 ## `system` model-fallback family
 
 Four subtypes, one shape, one meaning each: the model the user asked for

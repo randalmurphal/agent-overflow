@@ -161,6 +161,19 @@ export function finishTextLines(
   ];
 }
 
+/** Claude's `system/compact_boundary` for an automatic compaction. A
+ * scenario's uuid may hold ${TURN}, so each turn's boundary is its own
+ * row. */
+export function compactBoundaryLine(uuid: string): string {
+  return j({
+    type: 'system',
+    subtype: 'compact_boundary',
+    uuid,
+    content: 'Context compacted',
+    compact_metadata: { trigger: 'auto', pre_tokens: 312377, post_tokens: 22074 },
+  });
+}
+
 /** Streamed thinking block, same framing contract as textLines. */
 export function thinkingLines(
   messageId: string,

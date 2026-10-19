@@ -43,6 +43,7 @@
 // for archived threads and discarding them, and a copy of such a thread
 // refused with the cause; and the transfer dialog naming what a standing
 // agent leaves behind.
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -1287,8 +1288,18 @@ function pidsIn(file: string): number[] {
     .map(Number);
 }
 
-/** Whether a process runs: present in /proc and not a zombie. */
+/** Whether a process runs: it exists and is not a zombie. Linux reads its
+ * state from /proc; macOS, which has no /proc, asks ps. */
 function alive(pid: number): boolean {
+  if (process.platform === 'darwin') {
+    try {
+      return !execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim().startsWith('Z');
+    } catch (err) {
+      // ps exits 1 when no such process exists; anything else is a failure.
+      if ((err as { status?: number }).status === 1) return false;
+      throw err;
+    }
+  }
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
     return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z';

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -56,7 +57,7 @@ func WriteMockClaudeSession(t *testing.T, dir string, events []string) string {
 	b.WriteString("read -r _ || true\n")
 	for _, evt := range events {
 		b.WriteString("printf '%s\\n' ")
-		b.WriteString(shellSingleQuote(evt))
+		b.WriteString(stringsx.ShellQuote(evt))
 		b.WriteString("\n")
 	}
 	// Stay alive until stdin closes so sessions can test reconnect/close.
@@ -153,12 +154,12 @@ func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) strin
 		for _, line := range batch {
 			if gate, ok := strings.CutPrefix(line, mockWaitForFilePrefix); ok {
 				b.WriteString("      while [ ! -e ")
-				b.WriteString(shellSingleQuote(gate))
+				b.WriteString(stringsx.ShellQuote(gate))
 				b.WriteString(" ]; do sleep 0.02; done\n")
 				continue
 			}
 			b.WriteString("      emit ")
-			b.WriteString(shellSingleQuote(line))
+			b.WriteString(stringsx.ShellQuote(line))
 			b.WriteString("\n")
 		}
 		b.WriteString("      ;;\n")
@@ -214,13 +215,13 @@ func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string
 	b.WriteString("  if [ -z \"$id\" ]; then continue; fi\n")
 	for _, key := range keys {
 		tmpl := responses[key]
-		b.WriteString(fmt.Sprintf("  if /bin/echo \"$line\" | /usr/bin/grep -q %s; then\n", shellSingleQuote(key)))
-		b.WriteString(fmt.Sprintf("    printf %s \"$id\"\n", shellSingleQuote(tmpl+"\n")))
+		b.WriteString(fmt.Sprintf("  if /bin/echo \"$line\" | /usr/bin/grep -q %s; then\n", stringsx.ShellQuote(key)))
+		b.WriteString(fmt.Sprintf("    printf %s \"$id\"\n", stringsx.ShellQuote(tmpl+"\n")))
 		b.WriteString("    continue\n")
 		b.WriteString("  fi\n")
 	}
 	if hasFallback {
-		b.WriteString(fmt.Sprintf("  printf %s \"$id\"\n", shellSingleQuote(fallback+"\n")))
+		b.WriteString(fmt.Sprintf("  printf %s \"$id\"\n", stringsx.ShellQuote(fallback+"\n")))
 	}
 	b.WriteString("done\n")
 	b.WriteString("exit 0\n")
@@ -242,7 +243,7 @@ func WriteMockGhCLI(t *testing.T, dir string, responses map[string]string) strin
 	// Use an if/elif ladder: for each prefix, check "$cmd" starts with it.
 	first := true
 	for key, body := range responses {
-		cond := fmt.Sprintf("[[ \"$cmd\" == %s* ]]", shellSingleQuote(key))
+		cond := fmt.Sprintf("[[ \"$cmd\" == %s* ]]", stringsx.ShellQuote(key))
 		if first {
 			b.WriteString(fmt.Sprintf("if %s; then\n", cond))
 			first = false
@@ -250,7 +251,7 @@ func WriteMockGhCLI(t *testing.T, dir string, responses map[string]string) strin
 			b.WriteString(fmt.Sprintf("elif %s; then\n", cond))
 		}
 		// Escape body by rendering via printf %s and passing through single-quoted.
-		b.WriteString(fmt.Sprintf("  printf '%%s\\n' %s\n", shellSingleQuote(body)))
+		b.WriteString(fmt.Sprintf("  printf '%%s\\n' %s\n", stringsx.ShellQuote(body)))
 		b.WriteString("  exit 0\n")
 	}
 	if !first {
@@ -305,12 +306,4 @@ func InitGitRepoWithCommits(t *testing.T, commits []CommitSpec) string {
 		RunGit(t, repo, "commit", "-m", msg, "--allow-empty")
 	}
 	return repo
-}
-
-// shellSingleQuote wraps s in single quotes suitable for `bash`, escaping any
-// embedded single quotes by closing the quote, emitting a backslash-escaped
-// quote, and reopening it. The returned value already includes the outer
-// quotes.
-func shellSingleQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

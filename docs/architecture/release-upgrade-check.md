@@ -62,7 +62,8 @@ candidate boots on the migrated root and runs `topUp`
 file edits with persisted diffs, Claude and Codex subagents, usage limits, a
 session death, a Codex revert), then forks, a side chat, a draft with image
 and file attachments, pins, a group, an archive, a rename, a favorite,
-threads at every chat-bar setting, a worktree, project settings and an
+assistants (a handoff, loops and watches, home files a Codex thread
+still owes), threads at every chat-bar setting, a worktree, project settings and an
 archived project, and workflow runs (finished, gated, questioned,
 cancelled). Those rows are written by the candidate's own code
 paths at its own schema, which is what a corpus handed to the next release

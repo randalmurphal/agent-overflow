@@ -2,6 +2,8 @@ package main
 
 import (
 	"flag"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -257,6 +259,23 @@ func TestCheckServeFlags(t *testing.T) {
 				t.Fatalf("checkBackendVerbFlags(%q, %q) = %v, want nil", verb, args, err)
 			}
 		}
+	}
+}
+
+// A relative --data-dir is resolved against the launch directory once, so
+// a later change of directory, or a child running elsewhere, names the same
+// root.
+func TestParseFlagsResolvesARelativeDataDir(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags, err := parseFlags([]string{"--frontend", "--data-dir", "rel/root"})
+	if err != nil || flags.dataDir != filepath.Join(cwd, "rel", "root") {
+		t.Fatalf("data dir = %q, %v; want it under %s", flags.dataDir, err, cwd)
+	}
+	if flags, err := parseFlags([]string{"--frontend"}); err != nil || flags.dataDir != "" {
+		t.Fatalf("no --data-dir = %q, %v", flags.dataDir, err)
 	}
 }
 

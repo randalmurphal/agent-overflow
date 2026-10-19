@@ -227,6 +227,10 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if binary == "" {
 		binary = "claude"
 	}
+	sessionStart, err := NewSessionStartDelivery(cfg.SessionStartHooks, cfg.Resume)
+	if err != nil {
+		return nil, fmt.Errorf("claude: %w", err)
+	}
 
 	systemPromptPath, err := WriteSystemPromptFile(cfg.SystemPromptDir, cfg.SystemPrompt)
 	if err != nil {
@@ -294,6 +298,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// process is a turn another Claude session started (session_peer.go).
 	s.parser.peerTurns = s
 	s.parser.agentLaunchLookup = cfg.AgentLaunchByTask
+	s.parser.sessionStart = sessionStart
 
 	go s.readLoop()
 

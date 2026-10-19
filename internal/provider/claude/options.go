@@ -617,6 +617,9 @@ type cliInlineSettings struct {
 	// mechanism.
 	OutputStyle string            `json:"outputStyle,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
+	// Hooks carries Config.SessionStartHooks. The flagSettings layer's hooks
+	// merge with the user's own and run beside them.
+	Hooks map[string]any `json:"hooks,omitempty"`
 }
 
 // inlineSettingsForCLI builds the JSON payload for the `--settings` CLI
@@ -630,17 +633,20 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 		CrossSessionInbound: strings.TrimSpace(cfg.CrossSessionInbound),
 		OutputStyle:         strings.TrimSpace(cfg.OutputStyle),
 		Env:                 inlineSettingsEnvForCLI(cfg),
+		Hooks:               inlineSettingsHooksForCLI(cfg),
 	}
 	if !settings.FastMode &&
 		settings.CrossSessionInbound == "" &&
 		settings.OutputStyle == "" &&
-		len(settings.Env) == 0 {
+		len(settings.Env) == 0 &&
+		len(settings.Hooks) == 0 {
 		return "", false
 	}
 	data, err := json.Marshal(settings)
 	if err != nil {
-		// `cliInlineSettings` is bools + strings + map[string]string with
-		// no custom marshalers, so json.Marshal cannot fail in practice.
+		// `cliInlineSettings` is bools, strings and maps of strings, ints
+		// and slices with no custom marshalers, so json.Marshal cannot fail
+		// in practice.
 		// Panic loudly if it ever does — silently dropping the flag would
 		// mean the user's autocompact / fastMode / output-style /
 		// cross-session / subagent-limit settings are quietly ignored,
@@ -649,6 +655,34 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 		panic(fmt.Sprintf("claude: cliInlineSettings marshal failed (unreachable): %v", err))
 	}
 	return string(data), true
+}
+
+// SessionStartHookGroup is the SessionStart matcher group that registers
+// hooks in a settings block: provider.SessionStartHookSources with a command
+// handler per hook, which Claude Code runs in parallel. nil for no hooks.
+// Shared with claude-tui, which drives the same binary.
+func SessionStartHookGroup(hooks []provider.SessionStartHook) map[string]any {
+	if len(hooks) == 0 {
+		return nil
+	}
+	handlers := make([]any, 0, len(hooks))
+	for _, hook := range hooks {
+		handlers = append(handlers, map[string]any{
+			"type":    "command",
+			"command": hook.Command,
+			"timeout": provider.SessionStartHookTimeoutSeconds,
+		})
+	}
+	return map[string]any{"matcher": provider.SessionStartHookSources, "hooks": handlers}
+}
+
+// inlineSettingsHooksForCLI is the block's `hooks` value; nil for none.
+func inlineSettingsHooksForCLI(cfg Config) map[string]any {
+	group := SessionStartHookGroup(cfg.SessionStartHooks)
+	if group == nil {
+		return nil
+	}
+	return map[string]any{"SessionStart": []any{group}}
 }
 
 // inlineSettingsEnvForCLI builds the `env` half of the block. Returns nil

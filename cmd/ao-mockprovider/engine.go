@@ -580,9 +580,11 @@ func (e *engine) handleCommand(cmd control.Command) {
 		e.advance(cmd.Name)
 	case control.CommandEmit:
 		vars := e.currentVars()
-		for _, line := range cmd.Lines {
-			e.w.writeLine(vars.Substitute(line), 0, 0)
+		lines := make([]string, len(cmd.Lines))
+		for i, line := range cmd.Lines {
+			lines[i] = vars.Substitute(line)
 		}
+		e.writeScenarioLines(vars, lines, false, 0, 0, 0)
 	case control.CommandExit:
 		e.terminate(cmd.Code)
 	case control.CommandLoginComplete:

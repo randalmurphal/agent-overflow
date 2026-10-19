@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/aocli"
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
@@ -127,6 +128,14 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == claudetui.HookSubcommand {
 		claudetui.RunHookChild()
 		return
+	}
+
+	// A standing agent's sessions run this binary as their SessionStart hook,
+	// once per home file, at a start and after a compaction; it prints the
+	// file as hook output. Same tiny-sidecar shape. See
+	// internal/agenthome/hook.go.
+	if len(os.Args) > 1 && os.Args[1] == agenthome.HookSubcommand {
+		os.Exit(agenthome.RunHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	}
 
 	// A supervisor asks a staged binary what it is before it writes anything

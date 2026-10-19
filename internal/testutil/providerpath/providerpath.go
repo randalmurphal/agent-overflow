@@ -19,6 +19,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/stringsx"
 )
 
 // Names are the provider executables poisoned on PATH.
@@ -103,7 +105,7 @@ func Install() (check func() error, err error) {
 // which a test points at its own t.TempDir. Builtins only, so a test that
 // narrows PATH cannot break the record.
 func poisonScript(record string) string {
-	quoted := "'" + strings.ReplaceAll(record, "'", `'\''`) + "'"
+	quoted := stringsx.ShellQuote(record)
 	return "#!/bin/sh\n" +
 		"line=\"ran $0\"\n" +
 		"for arg in \"$@\"; do line=\"$line $arg\"; done\n" +

@@ -241,6 +241,35 @@ export async function topUp(harness: HarnessApp, version: string): Promise<TopUp
       }, { timeout: TURN_TIMEOUT_MS })
       .toBe(true);
 
+    // Two Codex assistants whose opening turn failed, so each still owes
+    // its home files to the next turn: one after its start, one after a
+    // compaction inside that turn. A Codex thread goes first, for the
+    // provider New Assistant takes.
+    const codexProfile = await harness.rpc<{ id: string }>('CreateThread', {
+      projectId,
+      title: `Top-up v${version}: the Codex profile New Assistant takes`,
+      provider: 'codex',
+      model: MODEL.codex,
+      mode: 'chat',
+    });
+    threadIds.push(codexProfile.id);
+    const compaction = ['item/started', 'item/completed'].map(
+      (method) =>
+        `{"jsonrpc":"2.0","method":"${method}","params":{"threadId":"\${THREAD_ID}","turnId":"\${TURN_ID}","item":{"type":"contextCompaction","id":"compaction-\${TURN}"}}}`,
+    );
+    for (const [after, steps] of [['start', []], ['compaction', [{ emitLines: compaction }]]] as const) {
+      await harness.rpc('HarnessSetScenario', {
+        scenario: threadToolsScenario({
+          name: `topup-owed-${after}`,
+          provider: 'codex',
+          turns: [{ steps: [...steps], fail: `Top-up: the turn after the ${after} failed.` }],
+          afterTurns: 'silent',
+        }),
+      });
+      const owed = await assistant(`Top-up v${version} ${nonce}: owes its home files after its ${after}`);
+      await harness.rpc('StopSession', owed);
+    }
+
     // Threads at every chat-bar setting the schema enumerates, drafts only.
     for (const variant of THREAD_VARIANTS) {
       const thread = await harness.rpc<{ id: string }>('CreateThread', {

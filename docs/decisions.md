@@ -368,8 +368,8 @@ Mechanism in
 - Pre-existing dangling Codex child rows in old fork threads are left inert
   on purpose (`internal/store/AGENTS.md`).
 - A standing agent's home: the app reads two well-known files from it,
-  `instructions.md` and `MEMORY.md` (above its archive marker), when they
-  exist, injects them capped at every session start and resume, and
+  `instructions.md` and `MEMORY.md`, delivers them capped through
+  SessionStart hooks when a thread starts and after each compaction, and
   prescribes nothing else. This refines standing agents ruling 2; the
   layout and the memory discipline are the optional `agent-home` skill's
   ([agent home contents](specs/standing-agents.md#agent-home-contents)).
@@ -379,6 +379,14 @@ Mechanism in
   start. A standing agent is named with its role line on the footers it
   sends and on the wakes of its replies, on either computer: a thread on
   another computer behaves as a local one does.
+- An assistant's session block depends on its record alone, so a home
+  file edit keeps the provider's prompt cache. The home files reach the
+  model through SessionStart hooks at a start and at each compaction,
+  not on a resume, which would stack another copy per resume (ruling
+  2026-10-18); an edit reaches the next new thread or compaction. On
+  Codex the thread's config trusts only the hook commands it registers.
+  Hooks that did not deliver are a non-fatal error row, not a failed
+  turn ([home file delivery](specs/standing-agents.md#agent-home-contents)).
 - Messages between agents are not the person's messages (ruling
   2026-10-13). A thread tool's spawn prompt, request or question, the
   answer that comes back, a loop, watch, outside send or worker wake, a

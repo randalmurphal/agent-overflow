@@ -112,6 +112,9 @@ func (s *Session) Resume(ctx context.Context) error {
 		params[key] = value
 	}
 	s.mu.Unlock()
+	// The unload dropped the hooks Codex had queued for a delivery still
+	// expected; registered for the resume, the next turn runs them.
+	params = withSessionStartHooks(params, s.sessionStartHooks, s.sessionStartOwed())
 	params["threadId"] = rootThreadID
 	params["excludeTurns"] = true
 	_, err := s.sendRequest(ctx, "thread/resume", params)

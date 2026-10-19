@@ -35,6 +35,15 @@ func (r *eventRecorder) snapshot() []provider.ProviderEvent {
 	return append([]provider.ProviderEvent(nil), r.events...)
 }
 
+// take returns the events recorded since the last take.
+func (r *eventRecorder) take() []provider.ProviderEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	events := r.events
+	r.events = nil
+	return events
+}
+
 func (r *eventRecorder) waitForKind(t *testing.T, kind provider.EventKind) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

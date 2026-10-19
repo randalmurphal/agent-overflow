@@ -58,8 +58,9 @@ func buildThreadParams(cfg Config, codexVersion string) map[string]any {
 	// thread-level reasoning_effort default, mirrored by the per-turn
 	// `effort` override on turn/start). Handling in codex-source (0.147):
 	// app-server/src/request_processors/thread_processor.rs and
-	// app-server/src/config_manager.rs — request overrides merge into the
-	// CLI-override layer with dotted keys expanded into nested TOML. See
+	// app-server/src/config_manager.rs. Request overrides merge into the
+	// session-flags layer, the one `-c` overrides fill, with dotted keys
+	// expanded into nested TOML. See
 	// docs/references/codex-instructions-tools.md.
 	configOverrides := map[string]any{}
 	if len(cfg.MCPServers) > 0 {
@@ -83,6 +84,12 @@ func buildThreadParams(cfg Config, codexVersion string) map[string]any {
 	}
 	for key, value := range threadFeatureOverrides() {
 		configOverrides[key] = value
+	}
+	// Shared with thread/resume like the tool overrides: a resumed thread
+	// that compacts runs the hooks too. A load that owes a delivery
+	// registers them for its resume as well (withSessionStartHooks).
+	if hooks := sessionStartHookConfig(cfg.SessionStartHooks, false); hooks != nil {
+		configOverrides["hooks"] = hooks
 	}
 	params["config"] = configOverrides
 

@@ -208,9 +208,9 @@ func TestNewAssistantToolCreatesAnAssistantThatReportsToItsCreator(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	block, _, err := f.app.standingAgentPrompt(thread)
-	if err != nil || !strings.Contains(block, `You report to the standing agent "`+f.caller.Title+`" (thread `+f.caller.ID+`), which created you.`) {
-		t.Fatalf("session block = %q, %v", block, err)
+	agent, err := f.app.readStandingAgentSession(thread)
+	if err != nil || !strings.Contains(agent.Block, `You report to the standing agent "`+f.caller.Title+`" (thread `+f.caller.ID+`), which created you.`) {
+		t.Fatalf("session block = %q, %v", agent.Block, err)
 	}
 	// An assistant it created is its own row, never the creator's child.
 	if caller, err := f.app.store.GetThread(f.caller.ID); err != nil || caller.ArchivedChildCount != 0 {

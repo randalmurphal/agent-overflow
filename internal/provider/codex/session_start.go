@@ -29,6 +29,10 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	if binary == "" {
 		binary = "codex"
 	}
+	sessionStart, err := provider.NewSessionStartDelivery(cfg.SessionStartHooks)
+	if err != nil {
+		return nil, fmt.Errorf("codex: %w", err)
+	}
 
 	childCtx, cancel := context.WithCancel(ctx)
 
@@ -64,10 +68,12 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 			sandbox:             cfg.Sandbox,
 			approvalsReviewer:   threadApprovalsReviewer(cfg),
 		},
-		pending:  make(map[int64]chan json.RawMessage),
-		onEvent:  onEvent,
-		cancel:   cancel,
-		readDone: make(chan struct{}),
+		pending:           make(map[int64]chan json.RawMessage),
+		onEvent:           onEvent,
+		sessionStart:      sessionStart,
+		sessionStartHooks: cfg.SessionStartHooks,
+		cancel:            cancel,
+		readDone:          make(chan struct{}),
 		collab: sessionCollabState{
 			childParentByThread:       make(map[string]string),
 			childParentByAgentPath:    make(map[string]string),
@@ -94,6 +100,9 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		planBuffersByItemID: make(map[string]*planBuffer),
 		planBuffersByTurnID: make(map[string]*planBuffer),
 		ownsQueuedClient:    cfg.OwnsQueuedClientID,
+	}
+	if pending := cfg.SessionStartPending; pending != nil && sessionStart != nil {
+		s.sessionStartRecord = pending.Record
 	}
 	if delivery := cfg.DeveloperInstructionsDelivery; delivery != nil {
 		s.developerInstructionsRecord = delivery.Record
@@ -187,6 +196,13 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 	s.mu.Lock()
 	s.rehydrateParams = threadRehydrateParams(threadParams)
 	s.mu.Unlock()
+	// A resume of a thread that still owes a delivery registers the hooks
+	// for the resume too: the cold load drops what Codex had queued.
+	owed := provider.SessionStartEvent("")
+	if cfg.ResumeThreadID != "" && cfg.SessionStartPending != nil {
+		owed = cfg.SessionStartPending.After
+	}
+	threadParams = withSessionStartHooks(threadParams, cfg.SessionStartHooks, owed != "")
 
 	var method string
 	if cfg.ResumeThreadID != "" {
@@ -274,9 +290,19 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 		// Before the session is handed to a caller, so no turn runs on the
 		// earlier instructions. A failure leaves the session usable.
 		s.reportDeveloperInstructionsFailure(s.ensureDeveloperInstructions(ctx, developerInstructions))
-	} else if s.developerInstructionsRecord != nil && developerInstructions.known {
-		// A new thread reads the composed text in its initial context.
-		s.reportDeveloperInstructionsFailure(s.recordDeveloperInstructions(DeveloperInstructionsDigest(developerInstructions.text)))
+		// A resumed thread carries the hooks' earlier output in its
+		// history, unless a delivery was still owed when it was last
+		// loaded, which this resume registered them for.
+		if owed != "" {
+			s.sessionStart.Expect(owed)
+		}
+	} else {
+		// A new thread runs its SessionStart hooks in its first turn.
+		s.expectSessionStart()
+		if s.developerInstructionsRecord != nil && developerInstructions.known {
+			// A new thread reads the composed text in its initial context.
+			s.reportDeveloperInstructionsFailure(s.recordDeveloperInstructions(DeveloperInstructionsDigest(developerInstructions.text)))
+		}
 	}
 
 	return nil

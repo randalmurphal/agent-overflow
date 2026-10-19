@@ -1,18 +1,17 @@
 ---
 name: agent-home
-description: "The home of a standing agent: standing instructions, rulings, verification, one-fact memory files, the injected MEMORY.md index and the hygiene loop that keeps it true. Load it at the start of every session of a standing agent and before writing to its home."
+description: "The home of a standing agent: standing instructions, rulings, verification, one-fact memory files and the MEMORY.md index the app delivers. Load it at the start of every session of a standing agent and before writing to its home."
 disable-model-invocation: false
 ---
 
 # Agent home
 
-You are a standing agent. Your session starts with a block that names your home (`<home>` below) and carries the text of `<home>/instructions.md` and `<home>/MEMORY.md` when they exist. This skill says what goes in the home and how to keep it true over time: current, short, and free of slop.
+You are a standing agent. Your session starts with a block that names your home (`<home>` below), and the app puts the text of `<home>/instructions.md` and `<home>/MEMORY.md` in your context when the thread starts and after each compaction. This skill says what goes in the home and how to keep it true over time: current, short, and free of slop.
 
 ## First load
 
 1. List `<home>`. Keep every file there: the `README.md` the app wrote, your scripts, your notes. Never delete or rewrite a file this skill does not name.
 2. Create whichever of these is missing: `instructions.md`, `rulings.md`, `verification.md`, `memory/`, `MEMORY.md`. Seed `instructions.md` from what the user has told you in this thread. Give the others a heading and nothing else.
-3. Call `thread_status` with no arguments. If no loop is labeled `agent-home hygiene`, register it (see [Hygiene loop](#hygiene-loop)).
 
 ## Layout
 
@@ -22,9 +21,9 @@ You are a standing agent. Your session starts with a block that names your home 
 | `rulings.md` | Every ruling the user gave you | By you, append-only |
 | `verification.md` | What you check before calling work done | By you, when a miss is found |
 | `memory/<slug>.md` | One fact per file | By you, when a fact changes a future session |
-| `MEMORY.md` | The index of `memory/` | By the hygiene loop only |
+| `MEMORY.md` | The index of `memory/` | By you, with every memory change |
 
-The app reads `instructions.md` and `MEMORY.md` when a session starts or resumes, never while it runs. An edit reaches your next start or resume, not the session you are in. It removes control and invisible formatting characters before it measures either file against its cap, reads at most the first 1 MiB of a file (the rest is not read, and the injected text says so), and reads only regular files: a link out of the home, a directory or a pipe in a file's place is reported, not read.
+The app reads `instructions.md` and `MEMORY.md` when a new thread starts and after each compaction, never while you work and not when a thread resumes. An edit reaches your context at the next compaction or new thread, not now: keep the change in mind yourself until then. When you do not see either file in your context, read it from `<home>` before you act. The app removes control and invisible formatting characters before it measures either file against its cap, reads at most the first 1 MiB of a file (the rest is not read, and the delivered text says so), and reads only regular files: a link out of the home, a directory or a pipe in a file's place is reported, not read.
 
 ### instructions.md
 
@@ -34,7 +33,7 @@ Line 1 is your role in one sentence with no heading marker, for example `Release
 - **Standing rules** the user gave you.
 - **Reports to.** The user, or a lead thread by id.
 
-Edit it by hand in the turn the user rules. No loop edits it. The session start injects at most 8 KiB of it and cuts the rest with a notice, so keep it under that.
+Edit it by hand in the turn the user rules. The app delivers at most 8 KiB of it and cuts the rest with a notice, so keep it under that.
 
 ### rulings.md
 
@@ -62,7 +61,6 @@ name: <slug, the file name without .md>
 description: <one line; the index shows it>
 type: user | feedback | project | reference
 source: <thread id and item id, or a date and where it came from>
-last_verified: <YYYY-MM-DD>
 ---
 
 <the fact>
@@ -73,13 +71,13 @@ How to apply: <feedback and project only>
 
 - Write only what changes the actions of a future session. Never a procedural log, never a narration of what you did.
 - The repository is the primary store for anything a repository doc should hold. Point at the doc; never copy it here.
-- Update the file that covers a fact rather than add a near duplicate. Delete a file that turns out wrong.
-- Name a source for every memory. One without a source shows in the index as unverified until you add one.
-- Do not touch `MEMORY.md` when you write a memory. The next hygiene pass indexes it.
+- Update the file that covers a fact rather than add a near duplicate. When a fact turns out stale or wrong, fix or delete its file in the turn you find out.
+- Name a source for every memory.
+- Add, change or remove the memory's line in `MEMORY.md` in the same turn.
 
 ### MEMORY.md
 
-The index the session start injects: one line per memory, grouped by type.
+The index the app delivers: one line per memory, grouped by type.
 
 ```markdown
 # Memory
@@ -92,27 +90,6 @@ The index the session start injects: one line per memory, grouped by type.
 ## Project
 
 ## Reference
-
-<!-- agent-home:archive -->
-## Archive
-- [Title](memory/<slug>.md): <description>
 ```
 
-Nothing from the line `<!-- agent-home:archive -->` down is injected. The marker counts only as a line of its own, written exactly so (it is case-sensitive), with nothing but spaces around it; a mention inside a line does not count, and a line holding only the marker counts even inside a code fence. Keep the part above it under 4 KiB: the session start injects at most 4 KiB and cuts the rest with a notice. Only the hygiene loop writes this file, never at the moment you write a memory and never by hand, so its bytes stay the same between loop runs and the session's prompt cache holds.
-
-## Hygiene loop
-
-Register one loop on yourself with `thread_loop`: `label` `agent-home hygiene`, `every_seconds` 21600 (six hours; pick another interval if your memory changes faster or slower), `note` `Run the agent-home hygiene pass.` When it fires, load this skill and run the pass:
-
-1. Read the frontmatter of every `memory/*.md`.
-2. For each memory, note its `last_verified` as it stands before this pass, then check it:
-   - Its source still exists. A thread source (`thread <id>, item <id>`): `thread_show` the thread `around` the item. Any other source (a repository file, a page, a person's statement on a date): open what it names now. When you cannot check the source, or it has none, the memory is unverified: leave its `last_verified` as it is.
-   - No later line in `rulings.md` contradicts it.
-
-   A memory whose source is gone or that a ruling contradicts gets `stale: <reason>` in its frontmatter and leaves the index. Set `last_verified` to today only on a memory that passed both checks.
-3. Merge duplicates into one file and delete the rest.
-4. Rewrite `MEMORY.md` from the frontmatter: one line per memory that is not stale, grouped by type. End the line of an unverified memory with `(unverified: <no source, or why its source could not be checked>)`.
-5. While the part above the archive marker is over 4 KiB, move the line of the least recently verified memory below the marker: the oldest `last_verified` noted in step 2, before this pass changed any, with none counting oldest and the slug in alphabetical order breaking a tie.
-6. Write nothing else. End the turn by stating what changed: memories marked stale, merged, archived and verified, and the index size. That is the wake's outcome.
-
-A stale memory stays on disk with its reason until you delete it or its source confirms it again.
+Keep it under 4 KiB: the app delivers at most 4 KiB and cuts the rest with a notice. When it grows near that, merge or delete memories that no longer change a decision rather than shorten every line.

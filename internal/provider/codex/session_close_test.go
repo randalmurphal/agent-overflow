@@ -115,6 +115,10 @@ var sessionCloseFieldDispositions = map[string]string{
 	"queueListDirty":                   "scalar flag",
 	"usageAcct":                        "fixed-size accounting scalars",
 	"requestTimeoutOverride":           "scalar config",
+	"sessionStart":                     "bounded: one flag per configured hook; read only by notifications, which stop once Close joins the read loop",
+	"sessionStartHooks":                "bounded: the configured hooks, set once at start; read only by Resume, which a closed session refuses",
+	"sessionStartDueTurn":              "one turn id, replaced per turn",
+	"sessionStartRecord":               "construction-time callback",
 
 	// Process/identity/infrastructure — lives exactly as long as the Session.
 	"proc":     "process handle; Close closes it",

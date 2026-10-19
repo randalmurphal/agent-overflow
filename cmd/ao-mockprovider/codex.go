@@ -83,6 +83,13 @@ type codexAdapter struct {
 	// (scenario.CodexOptions.KeepHistory, codex_revert.go).
 	keepHistory bool
 
+	// sessionStart holds the trusted SessionStart hooks of the thread's
+	// config, and pendingSessionStart the source a thread/start, a
+	// thread/resume or a compaction queued them to run for at the next
+	// opportunity (codex_session_start.go). Guarded by mu.
+	sessionStart        []sessionStartHook
+	pendingSessionStart string
+
 	// login is the account sign-in this connection is serving, if any. It
 	// carries its own lock rather than sharing mu: its completion arrives on
 	// the control-poll goroutine while account/login/* arrive on the stdin
@@ -204,6 +211,7 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// The history contract is settled here and nowhere else — a resume
 		// can only report what the thread already is.
 		a.noteThreadStart(params)
+		a.noteSessionStartHooks(params, "startup")
 		a.markThreadLoaded()
 		a.respond(id, method, a.e.currentVars())
 	case "thread/resume":
@@ -228,6 +236,7 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			a.reportSessionConfig(params, true)
 		}
 		a.reportResumedHistory(a.e.currentVars()["THREAD_ID"])
+		a.noteSessionStartHooks(params, "resume")
 		a.markThreadLoaded()
 		a.respond(id, method, a.e.currentVars())
 	case "turn/start":

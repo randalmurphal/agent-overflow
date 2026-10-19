@@ -43,6 +43,12 @@ type Config struct {
 	// (internal/app/app_agent_guide.go). Stamped at spawn like
 	// AdditionalDirs, so PlanLiveUpdate never sees it.
 	AppendSystemPrompt string
+	// SessionStartHooks run at a fresh start, after a compaction and after
+	// a clear (provider.SessionStartHookSources), registered in the inline
+	// `--settings` payload (SessionStartHookGroup). A start or a
+	// compaction that ends its turn without their output is reported as a
+	// warning (Parser.sessionStart). Stamped at spawn like AppendSystemPrompt.
+	SessionStartHooks []provider.SessionStartHook
 	// SystemPromptDir is the existing directory the SystemPrompt and
 	// AppendSystemPrompt files are created in. Required when either is set.
 	// It must be a directory its owner sweeps, because a process that dies

@@ -52,6 +52,23 @@ const maxTrackedPendingAdvances = 32
 // at most once per start; anything near the bound is a runaway caller.
 const maxTrackedInjectedItems = 32
 
+// maxTrackedSessionStartRuns bounds MockInfo.SessionStartRuns. A session
+// runs its hooks at a start and at each compaction.
+const maxTrackedSessionStartRuns = 32
+
+// cloneSessionStartRuns copies runs, contexts included, so a MockInfo handed
+// out of the lock shares nothing with the registry.
+func cloneSessionStartRuns(runs []SessionStartRun) []SessionStartRun {
+	if runs == nil {
+		return nil
+	}
+	out := make([]SessionStartRun, len(runs))
+	for i, run := range runs {
+		out[i] = SessionStartRun{Source: run.Source, Contexts: slices.Clone(run.Contexts)}
+	}
+	return out
+}
+
 // MockInfo is the backend-side view of a registered mock, exposed
 // through HarnessListMocks.
 type MockInfo struct {
@@ -77,6 +94,11 @@ type MockInfo struct {
 	// ReportInjectedItems reports for the same reason as SessionConfig.
 	// Bounded by maxTrackedInjectedItems.
 	InjectedItems []InjectedItem `json:"injectedItems,omitempty"`
+	// SessionStartRuns lists, in arrival order, the SessionStart hook runs
+	// this mock reported, latched from its ReportSessionStartContext
+	// reports for the same reason as SessionConfig: a start's run happens
+	// before a test knows to listen. Bounded by maxTrackedSessionStartRuns.
+	SessionStartRuns []SessionStartRun `json:"sessionStartRuns,omitempty"`
 	// OpenGate names the waitSignal gate this mock is currently blocked
 	// on ("stall" for an indefinite stall step), empty when it is not
 	// blocked. Projected from the mock's own waiting_signal /
@@ -286,6 +308,7 @@ func (s *Server) Mocks() []MockInfo {
 		info := conn.info
 		info.PendingAdvances = slices.Clone(conn.info.PendingAdvances)
 		info.InjectedItems = slices.Clone(conn.info.InjectedItems)
+		info.SessionStartRuns = cloneSessionStartRuns(conn.info.SessionStartRuns)
 		if info.PendingAdvances == nil {
 			info.PendingAdvances = []string{}
 		}
@@ -473,6 +496,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	info := conn.info
 	info.PendingAdvances = slices.Clone(conn.info.PendingAdvances)
 	info.InjectedItems = slices.Clone(conn.info.InjectedItems)
+	info.SessionStartRuns = cloneSessionStartRuns(conn.info.SessionStartRuns)
 	s.mu.Unlock()
 	s.report(info, rep)
 	w.WriteHeader(http.StatusNoContent)
@@ -505,6 +529,12 @@ func (s *Server) applyReportLocked(conn *mockConn, rep Report) {
 	case ReportInjectedItems:
 		room := maxTrackedInjectedItems - len(conn.info.InjectedItems)
 		conn.info.InjectedItems = append(conn.info.InjectedItems, rep.InjectedItems[:min(room, len(rep.InjectedItems))]...)
+	case ReportSessionStartContext:
+		if rep.SessionStartRun != nil && len(conn.info.SessionStartRuns) < maxTrackedSessionStartRuns {
+			run := *rep.SessionStartRun
+			run.Contexts = slices.Clone(run.Contexts)
+			conn.info.SessionStartRuns = append(conn.info.SessionStartRuns, run)
+		}
 	case ReportWaitingSignal:
 		conn.info.OpenGate = rep.Detail
 	case ReportAdvanceReleased:

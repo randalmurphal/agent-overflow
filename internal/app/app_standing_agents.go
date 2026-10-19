@@ -14,6 +14,8 @@ import (
 	"agent-overflow/internal/agenthome"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
@@ -437,35 +439,92 @@ session carries.
 `, thread.Title, thread.Title, agent.ID, thread.ID, project)
 }
 
-// standingAgentPrompt is the block an assistant's sessions carry beside the
-// app guide (docs/specs/standing-agents.md, "Agent home contents"): who it
-// is, read from the record (name, id, current thread, home, the creator it
-// reports to), the skill sentence, then the text of the home's
-// instructions.md and MEMORY.md under their headings
-// (agenthome.ReadSessionBlock). "" for any other thread, a past one
-// included. It is read at every start and resume and never while a session
-// runs, so a rename or a rewrite of either file reaches the next session and
-// a session's prompt is fixed for its life. Problems are the file reads that
-// failed for a reason other than absence; the start proceeds without that
-// file and the caller surfaces them.
-func (a *App) standingAgentPrompt(thread store.Thread) (block string, problems []error, err error) {
+// standingAgentSession is what an assistant's sessions start with beside the
+// app guide (docs/specs/standing-agents.md, "Agent home contents").
+type standingAgentSession struct {
+	// Block is agenthome.SessionBlock, read from the record (name, id,
+	// current thread, home, the creator it reports to). It changes only
+	// with the record, so a home file's edit keeps the provider's prompt
+	// cache.
+	Block string
+	// Hooks deliver each context file of the home (agenthome.ContextFiles)
+	// at the session's start and after each compaction.
+	Hooks []provider.SessionStartHook
+	// Problems are the context file reads that failed for a reason other
+	// than absence, and a hook that cannot be built; the caller surfaces
+	// them.
+	Problems []error
+}
+
+// readStandingAgentSession reads what the thread's sessions start with as an
+// assistant's current thread; the zero value for any other thread, a past
+// one included. It is read at every start and resume, so a rename reaches
+// the next session.
+func (a *App) readStandingAgentSession(thread store.Thread) (standingAgentSession, error) {
 	row, found, err := a.store.GetStandingAgent(thread.ID)
 	if err != nil {
-		return "", nil, fmt.Errorf("read the assistant of %s: %w", thread.ID, err)
+		return standingAgentSession{}, fmt.Errorf("read the assistant of %s: %w", thread.ID, err)
 	}
 	if !found {
-		return "", nil, nil
+		return standingAgentSession{}, nil
 	}
 	identity := agenthome.Identity{Name: thread.Title, AgentID: row.ID, ThreadID: thread.ID, Home: row.Home}
 	if row.CreatorAgentID != "" {
 		identity.CreatorName, identity.CreatorThreadID = a.assistantName(row.CreatorAgentID)
 	}
-	sentence := agenthome.IdentitySentence(identity)
+	session := standingAgentSession{Block: agenthome.SessionBlock(identity)}
 	if row.Home == "" {
-		return sentence, nil, nil
+		return session, nil
 	}
-	home := agenthome.ReadSessionBlock(row.Home)
-	return joinPromptParts(sentence, home.Text), home.Problems, nil
+	session.Problems = agenthome.Problems(row.Home)
+	hooks, err := standingAgentHooks(row.Home, os.Executable)
+	if err != nil {
+		session.Problems = append(session.Problems, err)
+	}
+	session.Hooks = hooks
+	return session, nil
+}
+
+// standingAgentHooks are the SessionStart hooks that deliver each context
+// file of home by running this executable, which locate finds.
+func standingAgentHooks(home string, locate func() (string, error)) ([]provider.SessionStartHook, error) {
+	executable, err := locate()
+	if err != nil {
+		return nil, fmt.Errorf("locate this executable for the SessionStart hooks that deliver the home files: %w", err)
+	}
+	hooks := make([]provider.SessionStartHook, 0, len(agenthome.ContextFiles))
+	for _, file := range agenthome.ContextFiles {
+		command, err := agenthome.HookCommand(executable, home, file)
+		if err != nil {
+			return nil, fmt.Errorf("build the SessionStart hook that delivers %s: %w", file.Name, err)
+		}
+		hooks = append(hooks, provider.SessionStartHook{Label: file.Name, Command: command, Heading: file.Heading})
+	}
+	return hooks, nil
+}
+
+// codexSessionStartPending gives a Codex session with SessionStart hooks the
+// record of the delivery its thread still owes: what resumeRef's Codex
+// thread owes, and the writer of each expectation the session opens and
+// settles. Nil without hooks.
+func (a *App) codexSessionStartPending(threadID, resumeRef string, hooks []provider.SessionStartHook) (*codex.SessionStartPending, error) {
+	if len(hooks) == 0 {
+		return nil, nil
+	}
+	pending := &codex.SessionStartPending{
+		Record: func(codexThreadID string, after provider.SessionStartEvent) error {
+			return a.store.SetCodexSessionStartPending(threadID, codexThreadID, string(after))
+		},
+	}
+	if resumeRef == "" {
+		return pending, nil
+	}
+	after, err := a.store.CodexSessionStartPending(threadID, resumeRef)
+	if err != nil {
+		return nil, err
+	}
+	pending.After = provider.SessionStartEvent(after)
+	return pending, nil
 }
 
 // assistantName reads an assistant's name and current thread, empty when it
@@ -488,12 +547,26 @@ func (a *App) assistantName(agentID string) (name, threadID string) {
 
 // reportStandingAgentHomeProblems logs each failed read of a standing agent's
 // home files with its path and puts it on the thread as a warning row, after
-// the start succeeds or fails: the session runs, or would have run, without
-// that file, and the person watching the agent has to know.
+// the start succeeds or fails: its sessions get a notice in that file's place
+// until it can be read, and the person watching the agent has to know.
+// reportStandingAgentCompactionProblems reports the home files of the
+// assistant whose current thread compacted that cannot be read, as its
+// session start does: the compaction runs the hooks that deliver them.
+func (a *App) reportStandingAgentCompactionProblems(threadID string) {
+	row, found, err := a.store.GetStandingAgent(threadID)
+	if err != nil {
+		log.Printf("standing agent %s: read the assistant after a compaction: %v", threadID, err)
+		return
+	}
+	if found && row.Home != "" {
+		a.reportStandingAgentHomeProblems(threadID, agenthome.Problems(row.Home))
+	}
+}
+
 func (a *App) reportStandingAgentHomeProblems(threadID string, problems []error) {
 	for _, problem := range problems {
 		log.Printf("standing agent %s: %v", threadID, problem)
-		if err := a.emitNoticeToThread(threadID, noticeKindWarning, "One of this standing agent's home files could not be read for its session start: "+problem.Error()+"."); err != nil {
+		if err := a.emitNoticeToThread(threadID, noticeKindWarning, "One of this standing agent's home files cannot reach its sessions: "+problem.Error()+"."); err != nil {
 			log.Printf("standing agent %s: %v", threadID, err)
 		}
 	}
