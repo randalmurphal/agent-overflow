@@ -10,7 +10,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/DerekStride/tree-sitter-sql v0.0.0-20260222203909-851e9cb257ba
 	github.com/airbus-cert/tree-sitter-powershell v0.26.6-0.20260710083446-e7bd348c49fd
-	github.com/chromedp/cdproto v0.157.9
+	github.com/chromedp/cdproto v0.158.0
 	github.com/chromedp/chromedp v0.20.1
 	github.com/chromedp/chromedp/remote v0.2.0
 	github.com/coder/websocket v1.8.15
@@ -18,12 +18,12 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/gobwas/ws v1.4.0
-	github.com/godbus/dbus/v5 v5.2.2
+	github.com/godbus/dbus/v5 v5.2.4
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/mdns v1.0.7
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
 	github.com/jsimonetti/rtnetlink v1.4.2
-	github.com/klauspost/compress v1.20.1
+	github.com/klauspost/compress v1.20.3
 	github.com/miekg/dns v1.1.73
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/rjeczalik/notify v0.9.3
@@ -56,15 +56,15 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	go.yaml.in/yaml/v3 v3.0.5
-	golang.org/x/crypto v0.57.0
-	golang.org/x/image v0.46.0
-	golang.org/x/mod v0.41.0
-	golang.org/x/net v0.60.0
+	golang.org/x/crypto v0.58.0
+	golang.org/x/image v0.47.0
+	golang.org/x/mod v0.42.0
+	golang.org/x/net v0.61.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0
-	golang.org/x/text v0.42.0
-	modernc.org/libc v1.77.1
+	golang.org/x/text v0.43.0
+	modernc.org/libc v1.79.0
 	modernc.org/sqlite v1.60.1
 	tailscale.com v1.104.1
 )
@@ -145,7 +145,7 @@ require (
 	github.com/djherbis/times v1.6.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
 	github.com/dominikbraun/graph v0.23.0 // indirect
-	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/ebitengine/purego v0.11.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
@@ -227,7 +227,7 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
-	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
@@ -282,9 +282,9 @@ require (
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260811152304-ee035b5b010f // indirect
-	golang.org/x/term v0.46.0 // indirect
+	golang.org/x/term v0.47.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	golang.org/x/tools v0.50.0 // indirect
+	golang.org/x/tools v0.52.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
