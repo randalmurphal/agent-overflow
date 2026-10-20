@@ -9,6 +9,7 @@
   import ReviewUnresolvedStepper from './ReviewUnresolvedStepper.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
+  import { readinessPill } from '../../utils/reviewReadiness';
   import type { PRDetail } from '../../types/models';
 
   // The PR overview: the first row of the diff list, holding the Merge,
@@ -41,7 +42,8 @@
 </script>
 
 <div class="flex flex-col gap-2.5 px-[var(--review-slab-inset)] pb-3 pt-2.5" data-testid="review-overview">
-  {#if detail.readiness}
+  <!-- A detail with no readiness (an older backend) has no section. -->
+  {#if readinessPill(detail)}
     <ReviewMergeSection {review} {detail} {hasWorkspace} />
   {/if}
   {#if detail.body}

@@ -3,7 +3,7 @@
 // has PR #5 open on GitHub, the diff and PR reads are mocked, and the
 // pane is switched to pr scope.
 
-import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { fireEvent, render, waitFor, type RenderResult } from '@testing-library/svelte';
 import { expect } from 'vitest';
 import ReviewPane from '../../lib/components/review/ReviewPane.svelte';
 import { makeStubPanelContext } from './panelContext';
@@ -125,10 +125,12 @@ function seedSourcePanePR(): void {
   });
 }
 
-type View = ReturnType<typeof render>;
+/** The mounted pane's queries, typed by the component so `getByTestId`
+ * answers an element and not the overloads' union. */
+export type ReviewPaneView = RenderResult<typeof ReviewPane>;
 
 /** Opens the scope menu and picks pr scope. */
-async function pickPRScope(view: View): Promise<void> {
+async function pickPRScope(view: ReviewPaneView): Promise<void> {
   const trigger = view.getByTestId('review-scope-select');
   await waitFor(() => {
     expect(trigger).toBeEnabled();
@@ -145,7 +147,7 @@ async function pickPRScope(view: View): Promise<void> {
 export async function mountReviewPanePR(
   detail: PRDetail,
   options: { threads?: ReviewThread[]; events?: ReviewEvent[] } = {},
-): Promise<View> {
+): Promise<ReviewPaneView> {
   const threads = options.threads ?? [];
   setBindingMock('SubscribePRUpdates', async () => ({
     id: 'sub-1',

@@ -4,7 +4,7 @@ import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
 import { getToasts } from '../../stores/toast.svelte';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
-import { PR_KEY, mountReviewPanePR, prDetailFixture, resetReviewPanePR } from '../../../test/helpers/reviewPanePR';
+import { PR_KEY, mountReviewPanePR, prDetailFixture, resetReviewPanePR, type ReviewPaneView } from '../../../test/helpers/reviewPanePR';
 import type { PRDetail } from '../../types/models';
 
 // The Merge section through the whole pane: the store's actions, the
@@ -30,14 +30,14 @@ function frame(detail: PRDetail, seq: number): void {
 }
 
 // Opens the section from the refs line pill, as a reader would.
-async function openMergeSection(view: Awaited<ReturnType<typeof mountReviewPanePR>>): Promise<void> {
+async function openMergeSection(view: ReviewPaneView): Promise<void> {
   await fireEvent.click(view.getByTestId('review-pr-readiness'));
   await waitFor(() => {
     expect(view.getByTestId('review-pr-merge').getAttribute('data-open')).toBe('true');
   });
 }
 
-async function openMergeMenu(view: Awaited<ReturnType<typeof mountReviewPanePR>>): Promise<HTMLElement> {
+async function openMergeMenu(view: ReviewPaneView): Promise<HTMLElement> {
   await fireEvent.click(view.getByTestId('review-merge-trigger'));
   return await waitFor(() => view.getByTestId('review-merge-menu'));
 }
