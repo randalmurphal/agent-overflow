@@ -107,10 +107,21 @@ func TestPRActionRefreshPollsInteractively(t *testing.T) {
 }
 
 // A failed action reaches the caller as the one sentence under its kind,
-// and polls nothing.
+// and polls nothing. The pump is parked so the ticker cannot poll on its
+// own; a request served by the pump still runs while parked, so a failure
+// that wrongly asked for a refresh would show as a poll.
 func TestPRActionFailureIsExplained(t *testing.T) {
 	t.Parallel()
-	app, script, _, _ := newScriptedPump(t, ok)
+	app, script, _, sub := newScriptedPump(t, ok)
+	app.prUpdates.mu.Lock()
+	pump := app.livePRUpdatePumpLocked(sub.PRKey)
+	app.prUpdates.mu.Unlock()
+	if pump == nil {
+		t.Fatal("no live pump after subscribe")
+	}
+	pump.paused.Store(true)
+	// A tick in flight when the pump was parked finishes first.
+	time.Sleep(20 * time.Millisecond)
 	before := len(script.calls())
 	err := app.settlePRAction(context.Background(), testPR, gitops.ActionMerge, errors.New("forge PUT merge: HTTP 418"))
 	var explained *gitops.ForgeActionError
@@ -118,8 +129,8 @@ func TestPRActionFailureIsExplained(t *testing.T) {
 		t.Fatalf("settle = %T %v, want a forge ForgeActionError", err, err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if polls := len(script.calls()) - before; polls > 4 {
-		t.Fatalf("a failure should not add a poll beyond the ticker's; got %d", polls)
+	if polls := len(script.calls()) - before; polls != 0 {
+		t.Fatalf("a failure should not poll; got %d", polls)
 	}
 }
 
