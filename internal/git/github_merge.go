@@ -133,9 +133,9 @@ func validMergeHead(headSHA string) (string, error) {
 	return headSHA, nil
 }
 
-// Approve submits an approving review pinned to headSHA, so an approval
-// of a head that moved is refused by GitHub rather than applied to code
-// the viewer has not seen.
+// Approve submits an approving review pinned to headSHA (commit_id), the
+// head the viewer saw. GitHub does not refuse an approval of a head that
+// has moved: the review lands on that commit and shows as outdated.
 func (f *githubForge) Approve(ctx context.Context, ref PRReference, headSHA string) error {
 	headSHA, err := validMergeHead(headSHA)
 	if err != nil {

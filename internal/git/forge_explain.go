@@ -101,7 +101,11 @@ func ExplainForgeError(ref PRReference, action ForgeAction, err error) error {
 		}
 		return wrap(ForgeErrorForbidden, fmt.Sprintf("No access to %s on %s with this login.", ref.Project(), labels.host(ref.Host)))
 	case errors.As(err, &graphQL):
-		return wrap(ForgeErrorRefused, graphQLSentence(graphQL, labels, action, name))
+		kind := ForgeErrorRefused
+		if graphQLHeadMoved(graphQL) {
+			kind = ForgeErrorStaleHead
+		}
+		return wrap(kind, graphQLSentence(graphQL, labels, action, name))
 	case errors.As(err, &status):
 		return wrap(statusKind(status), statusSentence(status, labels, ref, action, name))
 	}
@@ -145,6 +149,16 @@ func setupSentence(setup *forgeapi.SetupError, labels forgeLabelSet) string {
 	return setup.Message
 }
 
+// graphQLHeadMoved reports a GraphQL refusal because the head moved past
+// the expectedHeadOid the caller sent.
+func graphQLHeadMoved(graphQL *forgeapi.GraphQLError) bool {
+	if len(graphQL.Problems) == 0 {
+		return false
+	}
+	lower := strings.ToLower(graphQL.Problems[0].Message)
+	return strings.Contains(lower, "head branch was modified") || strings.Contains(lower, "expected head")
+}
+
 func graphQLSentence(graphQL *forgeapi.GraphQLError, labels forgeLabelSet, action ForgeAction, name string) string {
 	message := ""
 	if len(graphQL.Problems) > 0 {
@@ -154,7 +168,7 @@ func graphQLSentence(graphQL *forgeapi.GraphQLError, labels forgeLabelSet, actio
 	switch {
 	case strings.Contains(lower, "approve your own"):
 		return "You cannot approve your own pull request."
-	case strings.Contains(lower, "head branch was modified") || strings.Contains(lower, "expected head"):
+	case graphQLHeadMoved(graphQL):
 		return "The branch moved after you loaded this pull request. Reload and try again."
 	case strings.Contains(lower, "not mergeable") || strings.Contains(lower, "protected branch") || strings.Contains(lower, "required status") || strings.Contains(lower, "review is required"):
 		return fmt.Sprintf("%s blocks this merge: %s", labels.name, trimSentence(message))

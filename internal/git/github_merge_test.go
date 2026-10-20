@@ -888,6 +888,14 @@ func TestGitHubMerge(t *testing.T) {
 		if gql, ok := errors.AsType[*forgeapi.GraphQLError](err); !ok || gql.Problems[0].Type != "UNPROCESSABLE" {
 			t.Fatalf("GraphQL refusal = %v", err)
 		}
+		if explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(githubTestRef(5), ActionMerge, err)); explained == nil || explained.Kind != ForgeErrorStaleHead ||
+			explained.Message != "The branch moved after you loaded this pull request. Reload and try again." {
+			t.Fatalf("head moved explained = %+v", explained)
+		}
+		other := &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Message: "Pull request is not mergeable"}}}
+		if explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(githubTestRef(5), ActionMerge, other)); explained == nil || explained.Kind != ForgeErrorRefused {
+			t.Fatalf("refusal explained = %+v", explained)
+		}
 		fake.set("MergePR", forgeAPIAnswer{Status: http.StatusForbidden, Body: `{"message":"Resource not accessible by integration"}`})
 		_, err = core.MergePR(t.Context(), githubTestRef(5), MergeRequest{Method: MergeMethodMerge, HeadSHA: testHead})
 		if forbidden, ok := errors.AsType[*forgeapi.ForbiddenError](err); !ok || forbidden.Status.Status != http.StatusForbidden {
