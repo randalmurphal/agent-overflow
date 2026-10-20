@@ -197,6 +197,7 @@
         loading={approvePending}
         disabled={busy}
         title={merge?.viewerApproved ? 'Withdraw your approval' : 'Approve this pull request as it is now'}
+        ariaLabel={merge?.viewerApproved ? 'Withdraw approval' : 'Approve pull request'}
         onclick={() => { void (merge?.viewerApproved ? review.unapprovePR() : review.approvePR()); }}
       >
         {merge?.viewerApproved ? 'Unapprove' : 'Approve'}
@@ -221,7 +222,9 @@
         {#if mergePending}
           <span class="inline-block size-3 animate-spin rounded-full border border-current border-r-transparent" aria-hidden="true"></span>
         {/if}
-        {mergeLabel}
+        <!-- The phone's row has no room for the long label. -->
+        <span class="compact:hidden">{mergeLabel}</span>
+        <span class="hidden compact:inline">{mergeLabel === 'Auto-merge when ready' ? 'Auto-merge' : mergeLabel}</span>
         <Icon icon={ChevronDown} size={12} class="shrink-0 opacity-80" />
       </button>
     {/if}

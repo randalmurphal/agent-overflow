@@ -265,7 +265,7 @@ fake forge on desktop and compact.
 | Draft | `Draft` grey | Approve · `Auto-merge when ready ▾` | "Draft" row with Mark ready |
 | Auto-merge armed (e2e) | as blocked or ready | `Auto-merge set` button, menu offers Cancel | "Auto-merge set by X · method" row with Cancel |
 | Merged (e2e) | `Merged` accent | no actions | "Merged by X · time" row |
-| Closed | `Closed` red | no actions | "Closed by X · time" row |
+| Closed | `Closed` red | no actions | "Closed without merging · time" row |
 | Viewer cannot merge | as above | no Merge button | a row with `CannotMergeReason` |
 | Viewer is the author (GitHub) | as above | no Approve | the approvals blocker row carries no Approve; without one, a row with `CannotApproveReason` |
 | Action in flight | unchanged | the pressed button spins; every merge control disables until the pump's frame lands (or 15s) | unchanged |

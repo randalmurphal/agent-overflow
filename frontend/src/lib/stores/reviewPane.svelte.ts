@@ -741,8 +741,10 @@ function createReviewPaneState(
     return prEntityKey ? overriddenPRThreads(prEntityKey, threads) : threads;
   });
   const prEvents = $derived<readonly ReviewEvent[]>(prSnapshot?.events ?? EMPTY_PR_EVENTS);
+  // A poll that failed after the action is the pump's answer too: the
+  // banner says why the forge's state is unknown, and the button is free.
   const mergeActionShown = $derived<MergeActionKind | null>(
-    mergeAction ?? (mergeAwait !== null && prSnapshot === mergeAwait.snapshot ? mergeAwait.kind : null),
+    mergeAction ?? (mergeAwait !== null && prSnapshot === mergeAwait.snapshot && prUpdateError === null ? mergeAwait.kind : null),
   );
   // The live feed universe: every thread, verdict, and commit push the
   // section could show, chronological newest first. The frozen order is
@@ -1942,7 +1944,9 @@ function createReviewPaneState(
     } catch (err) {
       if (disposed) return;
       mergeAction = null;
-      addErrorToast(`${MERGE_ACTION_LABEL[kind]} failed: ${userFacingError(err)}`, err, 0, mergeFailureAction(err));
+      const action = mergeFailureAction(err);
+      // A failure with a fix to press stays until pressed or dismissed.
+      addErrorToast(`${MERGE_ACTION_LABEL[kind]} failed: ${userFacingError(err)}`, err, action ? 0 : undefined, action);
       if (prRef === ref) void refreshPRThreads();
       return;
     }
