@@ -408,6 +408,7 @@ scope or permission) is a `*ForbiddenError`, never "unauthenticated".
 | 304 | no error, `Response.NotModified` | Caller keeps its state |
 | Dial, DNS, TLS, timeout | `*TransientError` wrapping the cause | Retry on the next tick |
 | GraphQL `errors` | `*GraphQLError{Problems, Data}` | Caller decides on partial data |
+| GraphQL `errors` with a `NOT_FOUND` problem | `*GraphQLError{Problems, Data}` | `git.ExplainForgeError`: kind `not_found`, the REST 404 sentence |
 
 `StatusError.Error()` carries the method, the redacted URL, the status and a
 bounded body (4 KiB). No forge error is classified from CLI stderr.

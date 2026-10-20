@@ -111,6 +111,9 @@ func ExplainForgeError(ref PRReference, action ForgeAction, err error) error {
 		}
 		return wrap(ForgeErrorForbidden, fmt.Sprintf("No access to %s on %s with this login.", ref.Project(), labels.host(ref.Host)))
 	case errors.As(err, &graphQL):
+		if graphQLNotFound(graphQL) {
+			return wrap(ForgeErrorNotFound, notFoundSentence(labels, ref, name))
+		}
 		kind := ForgeErrorRefused
 		if graphQLHeadMoved(graphQL) {
 			kind = ForgeErrorStaleHead
@@ -157,6 +160,24 @@ func setupSentence(setup *forgeapi.SetupError, labels forgeLabelSet) string {
 		return fmt.Sprintf("Your `%s` login has no token for %s. Run `%s auth login --hostname %s` to continue.", labels.binary, setup.Host, labels.binary, setup.Host)
 	}
 	return setup.Message
+}
+
+// notFoundSentence is the not-found sentence: a REST 404 and a GitHub
+// GraphQL NOT_FOUND read the same, since neither tells a missing object
+// from one this login cannot see.
+func notFoundSentence(labels forgeLabelSet, ref PRReference, name string) string {
+	return fmt.Sprintf("%s was not found on %s, or this login cannot see it.", name, labels.host(ref.Host))
+}
+
+// graphQLNotFound reports a GraphQL answer with a NOT_FOUND problem: the
+// object the query named does not resolve for this login.
+func graphQLNotFound(graphQL *forgeapi.GraphQLError) bool {
+	for _, problem := range graphQL.Problems {
+		if problem.Type == "NOT_FOUND" {
+			return true
+		}
+	}
+	return false
 }
 
 // graphQLHeadMoved reports a GraphQL refusal because the head moved past
@@ -207,7 +228,7 @@ func statusSentence(status *forgeapi.StatusError, labels forgeLabelSet, ref PRRe
 	reason := trimSentence(forgeBodyMessage(status.Body))
 	switch status.Status {
 	case http.StatusNotFound:
-		return fmt.Sprintf("%s was not found on %s, or this login cannot see it.", name, labels.host(ref.Host))
+		return notFoundSentence(labels, ref, name)
 	case http.StatusConflict:
 		return "The branch moved after you loaded this. Reload and try again."
 	case http.StatusUnauthorized:
