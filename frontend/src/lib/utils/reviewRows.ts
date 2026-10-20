@@ -100,7 +100,7 @@ export function buildReviewRows(input: ReviewRowsInput): ReviewRowsResult {
   const rows: ReviewRow[] = [];
   const rowKeys: string[] = [];
   const fileOfRow: number[] = [];
-  const firstRowOfFile: number[] = new Array(input.files.length).fill(-1);
+  const firstRowOfFile: number[] = Array.from({ length: input.files.length }, () => -1);
   const insertsByFile = buildInsertsByFile(
     input.files,
     input.drafts,

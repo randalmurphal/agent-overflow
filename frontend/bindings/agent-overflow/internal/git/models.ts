@@ -766,6 +766,13 @@ export class ReviewThread {
     "path": string;
     "line": number | null;
     "startLine": number | null;
+
+    /**
+     * OriginalLine and OriginalStartLine are set when the forge reports the
+     * line the thread was written against (GitHub outdated threads).
+     */
+    "originalLine"?: number | null;
+    "originalStartLine"?: number | null;
     "side": string;
 
     /**
@@ -815,10 +822,10 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField8_0 = $$createType16;
+        const $$createField10_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
-            $$parsedSource["comments"] = $$createField8_0($$parsedSource["comments"]);
+            $$parsedSource["comments"] = $$createField10_0($$parsedSource["comments"]);
         }
         return new ReviewThread($$parsedSource as Partial<ReviewThread>);
     }
