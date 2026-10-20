@@ -121,11 +121,12 @@ describe('visibleBody', () => {
 });
 
 describe('countReviewComments', () => {
-  it('counts per file and overall, unresolved only for open resolvable threads', () => {
+  it('counts per file and overall, unresolved for every open resolvable thread, outdated included', () => {
     const counts = countReviewComments({
       prThreads: [
         thread({ id: 't1', path: 'src/a.ts' }),
         thread({ id: 't2', path: 'src/a.ts', isResolved: true }),
+        // Outdated but open: the code moved, the question is still asked.
         thread({ id: 't3', path: 'src/a.ts', isOutdated: true }),
         // A PR-level comment: neutral, never unresolved.
         thread({ id: 'conv', path: '', line: null, side: '', isResolvable: false }),
@@ -133,11 +134,11 @@ describe('countReviewComments', () => {
       drafts: [draft({ id: 'd1', filePath: 'src/b.ts' })],
     });
 
-    expect(counts.byFile.get('src/a.ts')).toEqual({ total: 3, unresolved: 1 });
+    expect(counts.byFile.get('src/a.ts')).toEqual({ total: 3, unresolved: 2 });
     expect(counts.byFile.get('src/b.ts')).toEqual({ total: 1, unresolved: 0 });
     expect(counts.byFile.get('')).toEqual({ total: 1, unresolved: 0 });
     expect(counts.byFile.has('src/c.ts')).toBe(false);
-    expect(counts.tally).toEqual({ unresolved: 1, drafts: 1, total: 5 });
+    expect(counts.tally).toEqual({ unresolved: 2, drafts: 1, total: 5 });
   });
 
   it('is empty with nothing to count', () => {

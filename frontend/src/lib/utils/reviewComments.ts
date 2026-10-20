@@ -8,7 +8,7 @@ import type { DiffReviewComment, ReviewThread } from '../types/models';
 
 /** 'comment' = a non-resolvable thread (flat conversation comment) —
  * neutral, so it doesn't masquerade as "unresolved". */
-export type CommentItemState = 'unresolved' | 'resolved' | 'outdated' | 'draft' | 'comment';
+export type CommentItemState = 'unresolved' | 'resolved' | 'draft' | 'comment';
 
 export interface CommentFileCounts {
   total: number;
@@ -95,7 +95,8 @@ export function visibleBody(body: string): string {
 /** Forge timestamps are ISO strings; unparseable input maps to null so
  * the row simply omits the time instead of showing "NaN ago". */
 function threadState(thread: ReviewThread): CommentItemState {
-  if (thread.isOutdated) return 'outdated';
+  // Outdated is a marker, not a state: an open thread on moved code is
+  // still unresolved (utils/reviewThreadStyle.ts).
   // Legacy payloads without the field are all resolvable diff threads.
   if (thread.isResolvable === false) return 'comment';
   if (thread.isResolved) return 'resolved';

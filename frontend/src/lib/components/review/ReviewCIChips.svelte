@@ -1,5 +1,6 @@
 <script lang="ts">
   import ExternalLink from '@lucide/svelte/icons/external-link';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
   import Popover from '../primitives/Popover.svelte';
   import { OpenExternalURL } from '../../stores/bindings';
@@ -9,10 +10,12 @@
   import { rateLimitMessage, type ForgeFailure } from '../../utils/forgeFailure';
 
   // Git-style pipeline chips: one per stage (GitLab) / workflow
-  // (GitHub), rendered on the PR header's meta line. Hover shows the
+  // (GitHub), rendered on the PR header's CI line. Hover shows the
   // per-status job tally; click opens the stage's job list; clicking a
   // job with a fetchable log opens the log view (external checks link
-  // out instead).
+  // out instead). The refresh control is the line's last item so it
+  // wraps WITH the chips on a narrow pane instead of sitting on a row
+  // of its own.
 
   interface Props {
     pipeline: CIPipeline | null;
@@ -23,9 +26,22 @@
     /** The PR's forge, which names the rate limit. */
     forge?: string;
     onOpenJob: (stageName: string, job: CIJob) => void;
+    /** Has the pump re-poll CI now, no diff or thread refresh. */
+    onRefresh?: () => void;
+    /** A manual refresh is in flight; the chips stay. */
+    refreshing?: boolean;
   }
 
-  let { pipeline, loading, error, failure = null, forge = '', onOpenJob }: Props = $props();
+  let {
+    pipeline,
+    loading,
+    error,
+    failure = null,
+    forge = '',
+    onOpenJob,
+    onRefresh,
+    refreshing = false,
+  }: Props = $props();
 
   let openStageIndex: number | null = $state(null);
   let chipEls: (HTMLElement | undefined)[] = $state([]);
@@ -68,13 +84,13 @@
   }
 </script>
 
-{#if stages.length > 0}
-  <div class="flex flex-wrap items-center gap-1" data-testid="review-ci-chips">
+<div class="flex min-w-0 flex-wrap items-center gap-1" data-testid="review-ci-chips">
+  {#if stages.length > 0}
     {#each stages as stage, index (stageKeys[index] ?? index)}
       <button
         bind:this={chipEls[index]}
         type="button"
-        class="flex items-center gap-1.5 rounded border border-border-subtle px-1.5 py-0.5 hover:bg-surface-2/60 {openStageIndex === index ? 'bg-surface-2/60' : ''}"
+        class="flex h-6 items-center gap-1.5 rounded border border-border-subtle px-1.5 hover:bg-surface-2/60 compact:h-8 compact:select-none {openStageIndex === index ? 'bg-surface-2/60' : ''}"
         title={stageTooltip(stage)}
         aria-expanded={openStageIndex === index}
         data-testid="review-ci-chip"
@@ -88,7 +104,7 @@
     {#if pipeline?.url}
       <button
         type="button"
-        class="text-fg-subtle hover:text-fg"
+        class="inline-flex size-6 items-center justify-center rounded text-fg-subtle hover:bg-surface-2 hover:text-fg compact:size-8"
         title="Open pipeline in browser"
         aria-label="Open pipeline in browser"
         onclick={() => { if (pipeline?.url) void OpenExternalURL(pipeline.url); }}
@@ -96,14 +112,29 @@
         <Icon icon={ExternalLink} size={11} />
       </button>
     {/if}
-  </div>
-{:else if loading}
-  <span class="text-fg-subtle">Loading checks…</span>
-{:else if error && failure?.kind === 'rate_limited'}
-  <span class="text-warning" title={rateLimitMessage(forge, failure)} data-testid="review-ci-rate-limited">Checks paused</span>
-{:else if error}
-  <span class="text-error" title={error}>Checks unavailable</span>
-{/if}
+  {:else if loading}
+    <span class="text-fg-subtle">Loading checks…</span>
+  {:else if error && failure?.kind === 'rate_limited'}
+    <span class="text-warning" title={rateLimitMessage(forge, failure)} data-testid="review-ci-rate-limited">Checks paused</span>
+  {:else if error}
+    <span class="text-error" title={error}>Checks unavailable</span>
+  {:else}
+    <span class="text-fg-subtle">No checks</span>
+  {/if}
+  {#if onRefresh}
+    <button
+      type="button"
+      class="inline-flex size-6 items-center justify-center rounded text-fg-subtle hover:bg-surface-2 hover:text-fg disabled:opacity-50 compact:size-8"
+      aria-label="Refresh CI status"
+      title="Refresh CI status"
+      data-testid="review-ci-refresh"
+      disabled={refreshing}
+      onclick={onRefresh}
+    >
+      <Icon icon={RefreshCw} size={12} class={refreshing ? 'animate-spin' : ''} />
+    </button>
+  {/if}
+</div>
 
 <Popover
   anchor={openStageIndex !== null ? chipEls[openStageIndex] : undefined}

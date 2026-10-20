@@ -397,24 +397,34 @@ func githubThreadNodes(p *Pull) []map[string]any {
 		if thread.Side == "file" {
 			subjectType, diffSide = "FILE", "RIGHT"
 		}
-		var line, startLine, startSide any
-		if thread.Line != nil && !thread.Outdated {
-			line = *thread.Line
+		// GitHub answers the original lines for every thread and nulls the
+		// current ones once the thread is outdated.
+		var line, startLine, startSide, originalLine, originalStartLine any
+		if thread.Line != nil {
+			originalLine = *thread.Line
+			if !thread.Outdated {
+				line = *thread.Line
+			}
 		}
-		if thread.StartLine != nil && !thread.Outdated {
-			startLine, startSide = *thread.StartLine, diffSide
+		if thread.StartLine != nil {
+			originalStartLine = *thread.StartLine
+			if !thread.Outdated {
+				startLine, startSide = *thread.StartLine, diffSide
+			}
 		}
 		out = append(out, map[string]any{
-			"id":            thread.ID,
-			"isResolved":    thread.Resolved,
-			"isOutdated":    thread.Outdated,
-			"path":          thread.Path,
-			"line":          line,
-			"startLine":     startLine,
-			"diffSide":      diffSide,
-			"startDiffSide": startSide,
-			"subjectType":   subjectType,
-			"comments":      graphQLConnection(githubThreadCommentNodes(thread), 0, githubGraphQLPageSize),
+			"id":                thread.ID,
+			"isResolved":        thread.Resolved,
+			"isOutdated":        thread.Outdated,
+			"path":              thread.Path,
+			"line":              line,
+			"startLine":         startLine,
+			"originalLine":      originalLine,
+			"originalStartLine": originalStartLine,
+			"diffSide":          diffSide,
+			"startDiffSide":     startSide,
+			"subjectType":       subjectType,
+			"comments":          graphQLConnection(githubThreadCommentNodes(thread), 0, githubGraphQLPageSize),
 		})
 	}
 	return out

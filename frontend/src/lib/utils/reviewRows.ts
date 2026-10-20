@@ -219,12 +219,16 @@ function buildInsertsByFile(
     const anchor = prThreadAnchor(thread);
     const lines = anchor.side === 'file' ? null : linesOf(anchor.filePath);
     const anchored = lines !== null && anchorLinesMatch(lines, anchor);
-    const orphaned = thread.isOutdated || !anchored;
+    // Placement follows the anchor alone: a thread the forge calls outdated
+    // whose line still matches the diff stays on that line (GitLab keeps
+    // the position through pushes); one whose line is gone sits under the
+    // file header. Only settled threads start folded.
+    const orphaned = !anchored;
     add(anchor.filePath, orphaned ? 0 : anchorLine(anchor), {
       kind: 'pr-thread',
       thread,
       anchor,
-      collapsed: (thread.isResolved || thread.isOutdated) && !expandedPRThreadIds.has(thread.id),
+      collapsed: thread.isResolved && !expandedPRThreadIds.has(thread.id),
       orphaned,
     });
   }

@@ -304,9 +304,12 @@ export async function defaultBaseBranch(workspace: WorkspaceRef): Promise<string
   return defaultBranch.name;
 }
 
-/** Whether a file starts collapsed: lockfiles and files over 400 rows. */
+/** Display rows past which a file starts collapsed. */
+export const COLLAPSE_ROW_LIMIT = 5000;
+
+/** Whether a file starts collapsed: lockfiles and files over 5000 rows. */
 export function collapsedByDefault(file: ReviewFile): boolean {
-  return isLockfileish(file.path) || displayRowCount(file) > 400;
+  return isLockfileish(file.path) || displayRowCount(file) > COLLAPSE_ROW_LIMIT;
 }
 
 interface EditFileGroup {

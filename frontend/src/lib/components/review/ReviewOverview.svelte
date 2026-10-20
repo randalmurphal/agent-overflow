@@ -1,7 +1,9 @@
 <script lang="ts">
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import ReviewCollapsibleSection from './ReviewCollapsibleSection.svelte';
   import ReviewConversation from './ReviewConversation.svelte';
+  import ReviewIconButton from './ReviewIconButton.svelte';
   import ReviewResizableBody from './ReviewResizableBody.svelte';
   import ReviewUnresolvedStepper from './ReviewUnresolvedStepper.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
@@ -88,6 +90,16 @@
             {#snippet label()}{unresolvedCount} unresolved{/snippet}
           </ReviewUnresolvedStepper>
         {/if}
+        <!-- Re-reads the PR's threads and verdicts; the diff stays put
+             (store refreshPRThreads). -->
+        <ReviewIconButton
+          icon={RefreshCw}
+          label="Refresh conversation"
+          testid="review-refresh-comments"
+          disabled={review.refreshingPRData}
+          spinning={review.refreshingPRData}
+          onclick={() => { void review.refreshPRThreads(); }}
+        />
       {/snippet}
       <!-- The default cap leaves the diff visible under the open section on
            a laptop screen; the resize handle replaces it the moment the

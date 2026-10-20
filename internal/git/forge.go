@@ -193,7 +193,11 @@ type ReviewThread struct {
 	Path      string `json:"path"`
 	Line      *int   `json:"line"`
 	StartLine *int   `json:"startLine"`
-	Side      string `json:"side"`
+	// OriginalLine and OriginalStartLine are set when the forge reports the
+	// line the thread was written against (GitHub outdated threads).
+	OriginalLine      *int   `json:"originalLine,omitempty"`
+	OriginalStartLine *int   `json:"originalStartLine,omitempty"`
+	Side              string `json:"side"`
 	// IsResolvable distinguishes threads with a real resolve state from
 	// flat comments (GitHub conversation comments, non-resolvable GitLab
 	// notes) where IsResolved=false would misread as "needs attention".

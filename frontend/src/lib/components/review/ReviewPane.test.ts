@@ -17,6 +17,14 @@ import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 
+// The view toggles (whitespace, wrap, split) are checkbox rows of the
+// toolbar's "..." menu, which closes on every pick: open it, find the row.
+async function openViewOption(view: { getByTestId: (id: string) => HTMLElement }, testId: string): Promise<HTMLElement> {
+  const trigger = view.getByTestId('review-view-options');
+  if (trigger.getAttribute('aria-expanded') !== 'true') await fireEvent.click(trigger);
+  return await waitFor(() => view.getByTestId(testId));
+}
+
 function makeCtx(): PanelContext {
   return makeStubPanelContext();
 }
@@ -336,30 +344,34 @@ describe('<ReviewPane>', () => {
       expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
     });
 
-    const toggle = view.getByTestId('review-ignore-whitespace-toggle');
-    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    // The toggle is a checkbox row of the view-options menu, which closes
+    // on every pick.
+    let toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
     expect(calls).toEqual([false]);
     // Disabled mid-load so a second flip can't race the reload it starts.
     await waitFor(() => {
-      expect(toggle).toBeEnabled();
+      expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
     });
 
     await fireEvent.click(toggle);
     await waitFor(() => {
       expect(headerPaths()).toEqual(['src/app.ts']);
     });
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
     expect(calls).toEqual([false, true]);
 
+    toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
     await waitFor(() => {
-      expect(toggle).toBeEnabled();
+      expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
     });
     await fireEvent.click(toggle);
     await waitFor(() => {
       expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
     });
-    expect(toggle).toHaveAttribute('aria-pressed', 'false');
     expect(calls).toEqual([false, true, false]);
+    toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
   });
 
   it('disables hide-whitespace for a diff source that cannot honor it', async () => {
@@ -381,17 +393,20 @@ describe('<ReviewPane>', () => {
 
     const view = render(ReviewPane, { ctx: makeCtx() });
     await waitFor(() => {
-      expect(view.getByTestId('review-ignore-whitespace-toggle')).toBeEnabled();
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
     });
+    let toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+    await waitFor(() => {
+      expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
+    });
+    await fireEvent.keyDown(toggle, { key: 'Escape' });
 
     await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'edits' } });
-    await waitFor(() => {
-      expect(view.getByTestId('review-ignore-whitespace-toggle')).toBeDisabled();
+    await waitFor(async () => {
+      toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
+      expect(toggle).toHaveAttribute('aria-disabled', 'true');
     });
-    expect(view.getByTestId('review-ignore-whitespace-toggle')).toHaveAttribute(
-      'title',
-      'Hide whitespace changes — not available for this diff',
-    );
+    expect(toggle).toHaveAttribute('title', 'Not available for this diff');
   });
 
   it('switches to split view and back', async () => {
@@ -400,12 +415,12 @@ describe('<ReviewPane>', () => {
       expect(view.getAllByTestId('review-line-block')).toHaveLength(1);
     });
 
-    await fireEvent.click(view.getByTestId('review-split-toggle'));
+    await fireEvent.click(await openViewOption(view, 'review-split-toggle'));
     const block = view.getByTestId('review-line-block');
     // Split view renders the del/add pair side by side on one visual row.
     expect(block.querySelectorAll('.w-1\\/2')).toHaveLength(2);
 
-    await fireEvent.click(view.getByTestId('review-split-toggle'));
+    await fireEvent.click(await openViewOption(view, 'review-split-toggle'));
     expect(view.getByTestId('review-line-block').querySelectorAll('.w-1\\/2')).toHaveLength(0);
   });
 
@@ -562,16 +577,15 @@ describe('<ReviewPane>', () => {
       expect(view.getByTestId('review-pr-header')).toBeInTheDocument();
     });
 
-    // Toolbar now owns the state badge + branch refs.
-    const meta = view.getByTestId('review-pr-meta');
-    expect(meta.textContent).toContain('open');
-    expect(meta.textContent).toContain('main ← feature');
-
-    // The header no longer duplicates the branch refs or the PR-detail +/- stats.
+    // The title bar owns the state pill (author line) and the branch refs
+    // (refs line); the toolbar keeps only the diff's own counts.
     const header = view.getByTestId('review-pr-header');
-    expect(header.querySelector('[data-testid="review-pr-meta"]')).toBeNull();
-    expect(header.textContent).not.toContain('main ← feature');
+    expect(view.getByTestId('review-pr-state').textContent?.trim()).toBe('open');
+    expect(view.getByTestId('review-pr-author-line').contains(view.getByTestId('review-pr-state'))).toBe(true);
+    expect(view.getByTestId('review-pr-refs').getAttribute('title')).toBe('main ← feature');
+    expect(view.getByTestId('review-pr-refs-line').contains(view.getByTestId('review-pr-refs'))).toBe(true);
     expect(header.textContent).not.toContain('+99');
+    expect(view.getByTestId('review-scope-select').parentElement?.textContent).not.toContain('main ← feature');
   });
 
   it('closing the pane releases its PR hold and its diff read', async () => {
@@ -1268,7 +1282,7 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
       expectOwnColors(view.container);
     });
     if (mode === 'split') {
-      await fireEvent.click(view.getByTestId('review-split-toggle'));
+      await fireEvent.click(await openViewOption(view, 'review-split-toggle'));
       expect(view.getByTestId('review-line-block').querySelectorAll('.w-1\\/2').length).toBeGreaterThan(0);
       expectOwnColors(view.container);
     }
@@ -1465,9 +1479,9 @@ describe('<ReviewPane> syntax colors across rebuilds', () => {
       expectOwnColors(view.container);
     });
     const colored = coloredTexts(view.container);
-    const toggle = view.getByTestId('review-ignore-whitespace-toggle');
+    const toggle = await openViewOption(view, 'review-ignore-whitespace-toggle');
     await waitFor(() => {
-      expect(toggle).toBeEnabled();
+      expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
     });
 
     const release = hold();

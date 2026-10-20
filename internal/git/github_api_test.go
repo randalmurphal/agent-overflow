@@ -271,10 +271,14 @@ func TestReadPRActorShapes(t *testing.T) {
 		]},
 		"commits":{"nodes":[{"commit":{"id":"C_1","statusCheckRollup":null}}]},
 		"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-			{"id":"T1","isResolved":false,"isOutdated":false,"path":"a.go","line":3,"startLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
+			{"id":"T1","isResolved":false,"isOutdated":false,"path":"a.go","line":3,"startLine":null,"originalLine":3,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
 			 "comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
 				{"id":"c1","databaseId":11,"author":{"login":"github-actions"},"body":"bot","createdAt":"2026-01-01T00:00:00Z","replyTo":null},
 				{"id":"c2","databaseId":12,"author":null,"body":"ghost","createdAt":"2026-01-01T00:00:01Z","replyTo":{"id":"c1","databaseId":11}}
+			 ]}},
+			{"id":"T2","isResolved":false,"isOutdated":true,"path":"a.go","line":null,"startLine":null,"originalLine":5,"originalStartLine":4,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
+			 "comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
+				{"id":"c3","databaseId":13,"author":{"login":"plain"},"body":"old","createdAt":"2026-01-01T00:00:02Z","replyTo":null}
 			 ]}}
 		]},
 		"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
@@ -298,14 +302,23 @@ func TestReadPRActorShapes(t *testing.T) {
 		d.LatestReviews[1].AuthorLogin != "plain" || d.LatestReviews[1].AuthorName != "" {
 		t.Fatalf("latest reviews = %+v, want the two with an author", d.LatestReviews)
 	}
-	if len(got.Threads) != 2 {
-		t.Fatalf("threads = %+v, want the review thread and the unminimized comment", got.Threads)
+	if len(got.Threads) != 3 {
+		t.Fatalf("threads = %+v, want the two review threads and the unminimized comment", got.Threads)
+	}
+	// A current thread carries both lines; an outdated one has no current
+	// line and keeps the line it was written against.
+	if current := got.Threads[0]; current.Line == nil || *current.Line != 3 || current.OriginalLine == nil || *current.OriginalLine != 3 || current.OriginalStartLine != nil {
+		t.Fatalf("current thread lines = line %v original %v start %v", current.Line, current.OriginalLine, current.OriginalStartLine)
+	}
+	if outdated := got.Threads[1]; !outdated.IsOutdated || outdated.Line != nil || outdated.StartLine != nil ||
+		outdated.OriginalLine == nil || *outdated.OriginalLine != 5 || outdated.OriginalStartLine == nil || *outdated.OriginalStartLine != 4 {
+		t.Fatalf("outdated thread lines = %+v", outdated)
 	}
 	review := got.Threads[0].Comments
 	if len(review) != 2 || review[0].AuthorLogin != "github-actions" || review[1].AuthorLogin != "" || review[1].ReplyTo == nil || review[1].ReplyTo.DatabaseID != 11 {
 		t.Fatalf("review thread comments = %+v", review)
 	}
-	if c := got.Threads[1].Comments[0]; c.Body != "shown" || c.AuthorLogin != "plain" || c.AuthorName != "" {
+	if c := got.Threads[2].Comments[0]; c.Body != "shown" || c.AuthorLogin != "plain" || c.AuthorName != "" {
 		t.Fatalf("conversation comment = %+v", c)
 	}
 }
@@ -365,7 +378,7 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 }
 
 func githubThreadJSON(id string, comments []string, hasNext bool) string {
-	return fmt.Sprintf(`{"id":%q,"isResolved":false,"isOutdated":false,"path":"a.go","line":1,"startLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE","comments":{"pageInfo":{"hasNextPage":%t,"endCursor":"c-%s"},"nodes":[%s]}}`,
+	return fmt.Sprintf(`{"id":%q,"isResolved":false,"isOutdated":false,"path":"a.go","line":1,"startLine":null,"originalLine":1,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE","comments":{"pageInfo":{"hasNextPage":%t,"endCursor":"c-%s"},"nodes":[%s]}}`,
 		id, hasNext, id, strings.Join(comments, ","))
 }
 

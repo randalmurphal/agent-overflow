@@ -3,12 +3,8 @@
   import { SvelteSet } from 'svelte/reactivity';
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
-  import Columns2 from '@lucide/svelte/icons/columns-2';
-  import ListTree from '@lucide/svelte/icons/list-tree';
-  import MessagesSquare from '@lucide/svelte/icons/messages-square';
-  import Pilcrow from '@lucide/svelte/icons/pilcrow';
+  import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import WrapText from '@lucide/svelte/icons/wrap-text';
   import X from '@lucide/svelte/icons/x';
   import ReviewCILogView from './ReviewCILogView.svelte';
   import ReviewCommentThread from './ReviewCommentThread.svelte';
@@ -27,16 +23,22 @@
     type ReviewScope,
   } from '../../stores/reviewPane.svelte';
   import { GitListBranches } from '../../stores/bindings';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { getPane } from '../../stores/panes.svelte';
   import type { GitBranch, GitStatus } from '../../types/git';
   import type { DiffReviewComment } from '../../types/models';
   import { countReviewComments, type CommentCounts } from '../../utils/reviewComments';
-  import { fileExtensionLabel } from '../../utils/reviewTree';
+  import { filterReviewFiles } from '../../utils/reviewTree';
+  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import { rateLimitMessage } from '../../utils/forgeFailure';
   import { forgeLabels } from '../../utils/forgeLabels';
   import { threadHasScope } from '../../transport/entityScopes';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
   import Icon from '../primitives/Icon.svelte';
+  import Menu from '../primitives/Menu.svelte';
+  import MenuItem from '../primitives/MenuItem.svelte';
+  import Popover from '../primitives/Popover.svelte';
+  import { restorePickerFocus } from '../panes/paneComposerFocus';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
 
   interface Props {
@@ -44,11 +46,16 @@
   }
 
   let { ctx }: Props = $props();
-  // Extension-filter state is owned here (not in the tree) so the
-  // dropdown's "Apply filter to diff" toggle can also narrow the diff
-  // body, and the selection survives rail tab switches.
+  // File-filter state (type chips, hide tests) is owned here, not in the
+  // tree, so the dropdown's "Apply filter to diff" toggle can also narrow
+  // the diff body, and the selection survives the rail hiding.
   const activeExtensions = new SvelteSet<string>();
-  let extensionsFilterDiff = $state(false);
+  let hideTests = $state(false);
+  let filterDiff = $state(false);
+  // The "..." menu: view toggles that are set once per reading session
+  // (whitespace, wrap, split), off the toolbar so the row fits a phone.
+  let moreOpen = $state(false);
+  let moreTriggerEl: HTMLButtonElement | undefined = $state(undefined);
   // Drafting, sending and submitting comments all write under
   // `threads:operate` on the thread's computer (Create/SendDiffReviewComments).
   // The gutter affordance is withheld and the send button goes inert with a
@@ -88,12 +95,13 @@
   let treeVisible = $state(storedTreeVisible ?? true);
   let jumpFilePath: string | null = $state(null);
   let topFileIndex = $state(-1);
-  // The files the diff body renders: the full set, or the extension-
-  // filtered subset when the dropdown's apply-to-diff toggle is on.
+  // The files the diff body renders: the full set, or the tree's filtered
+  // subset (type chips, hide tests; never the search box) when the
+  // dropdown's apply-to-diff toggle is on.
   const diffFiles = $derived.by(() => {
     const files = review?.files ?? [];
-    if (!extensionsFilterDiff || activeExtensions.size === 0) return files;
-    return files.filter((file) => activeExtensions.has(fileExtensionLabel(file.path)));
+    if (!filterDiff || (activeExtensions.size === 0 && !hideTests)) return files;
+    return filterReviewFiles(files, '', activeExtensions, hideTests).files;
   });
   // The tree highlights by index into the FULL file list; the diff body
   // reports indexes into diffFiles — map through the path.
@@ -188,8 +196,22 @@
     appStorageSet('reviewTreeVisible', treeVisible ? 'true' : 'false');
   }
 
+  // On the phone the open tree covers the diff, so picking a file is also
+  // the way back to it.
   function jumpToFile(filePath: string): void {
     jumpFilePath = filePath;
+    if (isCompactLayout() && treeVisible) toggleTree();
+  }
+
+  function closeMore(reason?: PopoverCloseReason): void {
+    moreOpen = false;
+    restorePickerFocus(reason, { triggerEl: moreTriggerEl });
+  }
+
+  // A pick closes the menu, as the header's "..." menu does.
+  function pickViewOption(action: () => void): void {
+    moreOpen = false;
+    action();
   }
 
   function onJumpConsumed(): void {
@@ -294,7 +316,9 @@
 </script>
 
 <section bind:this={rootEl} class="flex h-full min-h-0 flex-col bg-surface-1" data-testid="review-pane">
-  <div class="flex shrink-0 items-center gap-2 compact:flex-wrap border-b border-border-subtle px-3 py-2">
+  <!-- Wraps: a narrow pane carries the counts and the icon run on a second
+       row instead of clipping them. -->
+  <div class="flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle px-3 py-2">
     <select
       class="rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
       aria-label="Review scope"
@@ -371,16 +395,12 @@
       </select>
     {/if}
 
-    <div class="min-w-0 flex-1 truncate text-right text-[0.6875rem] tabular-nums text-fg-muted">
+    <!-- On the phone the counts take a row of their own under the controls
+         instead of truncating between them. -->
+    <div class="ml-auto shrink-0 whitespace-nowrap text-right text-[0.6875rem] tabular-nums text-fg-muted compact:order-last compact:basis-full">
       {#if review && !review.conflictView}
-        {#if review.scope === 'pr' && review.prDetail}
-          <span data-testid="review-pr-meta">
-            <span class="rounded border border-border-subtle px-1.5 py-0.5">{review.prDetail.draft ? 'draft' : review.prDetail.state}</span>
-            <span class="ml-1.5">{review.prDetail.baseRefName} ← {review.prDetail.headRefName}</span>
-          </span>
-        {/if}
         {#if diffFiles.length > 0}
-          <span data-testid="review-diff-stats" class="ml-2">
+          <span data-testid="review-diff-stats">
             {diffFiles.length} {diffFiles.length === 1 ? 'file' : 'files'}
             {#if totalAdditions > 0}<span class="text-success">+{totalAdditions}</span>{/if}
             {#if totalDeletions > 0}<span class="text-error">-{totalDeletions}</span>{/if}
@@ -404,60 +424,6 @@
 
     <button
       type="button"
-      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {treeVisible ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
-      aria-label="Toggle file tree"
-      aria-pressed={treeVisible}
-      title="File tree"
-      data-testid="review-tree-toggle"
-      disabled={!review}
-      onclick={toggleTree}
-    >
-      <Icon icon={ListTree} size={14} />
-    </button>
-
-    <button
-      type="button"
-      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.viewMode === 'split' ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
-      aria-label="Toggle split view"
-      aria-pressed={review?.viewMode === 'split'}
-      title="Split view"
-      data-testid="review-split-toggle"
-      disabled={!review}
-      onclick={() => review?.setViewMode(review.viewMode === 'split' ? 'stacked' : 'split')}
-    >
-      <Icon icon={Columns2} size={14} />
-    </button>
-
-    <button
-      type="button"
-      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.wordWrap ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
-      aria-label="Toggle word wrap"
-      aria-pressed={review?.wordWrap}
-      title="Word wrap"
-      data-testid="review-wrap-toggle"
-      disabled={!review}
-      onclick={() => review?.setWordWrap(!review.wordWrap)}
-    >
-      <Icon icon={WrapText} size={14} />
-    </button>
-
-    <button
-      type="button"
-      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.ignoreWhitespace ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
-      aria-label="Toggle hide whitespace changes"
-      aria-pressed={review?.ignoreWhitespace}
-      title={review && !review.canIgnoreWhitespace
-        ? 'Hide whitespace changes — not available for this diff'
-        : 'Hide whitespace changes'}
-      data-testid="review-ignore-whitespace-toggle"
-      disabled={!review || !review.canIgnoreWhitespace || review.loading}
-      onclick={() => { void review?.setIgnoreWhitespace(!review.ignoreWhitespace); }}
-    >
-      <Icon icon={Pilcrow} size={14} />
-    </button>
-
-    <button
-      type="button"
       class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
       aria-label={review?.allCollapsed ? 'Expand all files' : 'Collapse all files'}
       title={review?.allCollapsed ? 'Expand all files' : 'Collapse all files'}
@@ -468,27 +434,56 @@
       <Icon icon={review?.allCollapsed ? ChevronsUpDown : ChevronsDownUp} size={14} />
     </button>
 
-    {#if review?.scope === 'pr'}
-      <button
-        type="button"
-        class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
-        aria-label="Refresh PR comments"
-        title="Refresh comments (diff stays put)"
-        data-testid="review-refresh-comments"
-        disabled={review.refreshingPRData || review.loading}
-        onclick={() => { void review?.refreshPRThreads(); }}
-      >
-        {#if review.refreshingPRData}
-          <Icon icon={RefreshCw} size={14} class="animate-spin" />
-        {:else}
-          <Icon icon={MessagesSquare} size={14} />
-        {/if}
-      </button>
-    {/if}
+    <!-- View settings a reader sets once: off the toolbar so the row fits
+         a phone, each a checkbox row that stays open-able while the diff
+         reloads under it. -->
+    <button
+      bind:this={moreTriggerEl}
+      type="button"
+      class="inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50 {moreOpen ? 'bg-surface-2 text-fg' : ''}"
+      aria-label="View options"
+      title="View options"
+      aria-haspopup="menu"
+      aria-expanded={moreOpen}
+      data-testid="review-view-options"
+      disabled={!review}
+      onclick={() => { moreOpen = !moreOpen; }}
+    >
+      <Icon icon={Ellipsis} size={14} />
+    </button>
+    <Popover anchor={moreTriggerEl} open={moreOpen} onClose={closeMore} placement="bottom-end" role="none">
+      {#if review}
+        <Menu ariaLabel="View options" onClose={closeMore} minWidthClass="min-w-[220px]">
+          <MenuItem
+            label="Hide whitespace changes"
+            checkbox
+            checked={review.ignoreWhitespace}
+            disabled={!review.canIgnoreWhitespace || review.loading}
+            title={!review.canIgnoreWhitespace ? 'Not available for this diff' : undefined}
+            testId="review-ignore-whitespace-toggle"
+            onSelect={() => pickViewOption(() => { void review?.setIgnoreWhitespace(!review.ignoreWhitespace); })}
+          />
+          <MenuItem
+            label="Word wrap"
+            checkbox
+            checked={review.wordWrap}
+            testId="review-wrap-toggle"
+            onSelect={() => pickViewOption(() => review?.setWordWrap(!review.wordWrap))}
+          />
+          <MenuItem
+            label="Split view"
+            checkbox
+            checked={review.viewMode === 'split'}
+            testId="review-split-toggle"
+            onSelect={() => pickViewOption(() => review?.setViewMode(review.viewMode === 'split' ? 'stacked' : 'split'))}
+          />
+        </Menu>
+      {/if}
+    </Popover>
 
     <button
       type="button"
-      class="relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
+      class="relative inline-flex h-7 w-7 compact:h-9 compact:w-9 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
       aria-label="Reload review diff"
       title={diffStale ? 'Workspace changed — reload' : 'Reload'}
       data-testid="review-reload"
@@ -687,21 +682,24 @@
     {:else if review.files.length === 0}
       <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-empty">No changed files.</div>
     {:else}
-      <div class="flex min-h-0 flex-1">
-        {#if treeVisible}
-          <ReviewRail
-            files={review.files}
-            activeFileIndex={treeActiveFileIndex}
-            onSelectFile={jumpToFile}
-            commentCounts={commentCounts.byFile}
-            {activeExtensions}
-            filterDiff={extensionsFilterDiff}
-            onFilterDiffChange={(value) => { extensionsFilterDiff = value; }}
-          />
-        {/if}
+      <!-- Relative: on the phone the open rail lays over the diff. -->
+      <div class="relative flex min-h-0 flex-1">
+        <ReviewRail
+          files={review.files}
+          activeFileIndex={treeActiveFileIndex}
+          onSelectFile={jumpToFile}
+          commentCounts={commentCounts.byFile}
+          open={treeVisible}
+          onToggleOpen={toggleTree}
+          {activeExtensions}
+          {hideTests}
+          onHideTestsChange={(value) => { hideTests = value; }}
+          {filterDiff}
+          onFilterDiffChange={(value) => { filterDiff = value; }}
+        />
         {#if diffFiles.length === 0}
           <div class="px-4 py-3 text-xs text-fg-muted" data-testid="review-filter-empty">
-            No files match the type filter.
+            No files match the filter.
           </div>
         {:else}
         {#snippet overviewRow()}

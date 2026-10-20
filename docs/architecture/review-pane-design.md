@@ -241,8 +241,11 @@ polling.
   "PR updated, reload" banner. Drafts stay anchored to the old SHA (valid
   for the API); after reload, drafts whose lines vanished are flagged
   orphaned, never silently dropped.
-- **Resolved / outdated threads:** rendered collapsed at their anchors
-  (outdated grouped per file), toggleable.
+- **Resolved threads:** rendered collapsed at their anchors, toggleable.
+  Outdated is a marker, not a state: an outdated thread keeps its resolve
+  state, stays at its anchor while the diff still has the line, and
+  groups under the file header once it does not (GitHub reports no
+  current line for an outdated thread; the original line is shown).
 - **Huge diffs:** files over a line threshold and lockfile/generated files
   render collapsed by default; the virtualizer handles the rest.
 - **Context expansion (`···`):** available only when the commit exists

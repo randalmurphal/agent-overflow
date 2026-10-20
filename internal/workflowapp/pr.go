@@ -150,7 +150,13 @@ func PRReviewCommentsMessage(prURL string, ref gitops.PRReference, threads []git
 		fmt.Fprintf(&data, "ID: %s\n", untrustedtext.Field(thread.ID))
 		fmt.Fprintf(&data, "Path: %s\n", untrustedtext.Field(thread.Path))
 		fmt.Fprintf(&data, "Side: %s\n", untrustedtext.Field(thread.Side))
-		fmt.Fprintf(&data, "Line: %s\n", PRLineRange(thread.StartLine, thread.Line))
+		// An outdated GitHub thread has no current line; the line it was
+		// written at still locates the comment for the agent.
+		startLine, line := thread.StartLine, thread.Line
+		if line == nil && thread.OriginalLine != nil {
+			startLine, line = thread.OriginalStartLine, thread.OriginalLine
+		}
+		fmt.Fprintf(&data, "Line: %s\n", PRLineRange(startLine, line))
 		fmt.Fprintf(&data, "Outdated: %t\n", thread.IsOutdated)
 		for commentIndex, comment := range thread.Comments {
 			if data.Len() >= workflowPRMessageMaxRunes {

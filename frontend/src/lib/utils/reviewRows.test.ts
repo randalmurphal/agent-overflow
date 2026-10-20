@@ -65,7 +65,7 @@ function prThread(overrides: Partial<ReviewThread> = {}): ReviewThread {
   return {
     id: overrides.id ?? 'prt-1',
     path: overrides.path ?? 'src/file.ts',
-    line: overrides.line ?? 2,
+    line: 'line' in overrides ? overrides.line : 2,
     startLine: overrides.startLine,
     side: overrides.side ?? 'right',
     isResolvable: overrides.isResolvable ?? true,
@@ -235,7 +235,7 @@ describe('buildReviewRows', () => {
     if (row.kind === 'pr-thread') expect(row.orphaned).toBe(false);
   });
 
-  it('groups outdated and unanchored PR threads under the file header', () => {
+  it('groups unanchored PR threads under the file header; an outdated one on a matching line stays inline', () => {
     const files = parseReviewFiles(addedPatch('src/file.ts', 2));
     const result = buildReviewRows({
       files,
@@ -244,15 +244,20 @@ describe('buildReviewRows', () => {
       drafts: [],
       openEditors: [],
       prThreads: [
-        prThread({ id: 'outdated', line: 1, isOutdated: true }),
+        prThread({ id: 'outdated-gone', line: null, isOutdated: true }),
         prThread({ id: 'missing', line: 99 }),
+        prThread({ id: 'outdated-here', line: 1, isOutdated: true }),
       ],
       expandedPRThreadIds: new Set(),
     });
 
-    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'pr-thread', 'pr-thread', 'line-block', 'surface-end']);
+    expect(result.rows.map((row) => row.kind)).toEqual(['file-header', 'pr-thread', 'pr-thread', 'line-block', 'pr-thread', 'line-block', 'surface-end']);
     const prRows = result.rows.filter((row): row is Extract<ReviewRow, { kind: 'pr-thread' }> => row.kind === 'pr-thread');
-    expect(prRows.map((row) => row.orphaned)).toEqual([true, true]);
+    expect(prRows.map((row) => [row.thread.id, row.orphaned, row.collapsed]).sort()).toEqual([
+      ['missing', true, false],
+      ['outdated-gone', true, false],
+      ['outdated-here', false, false],
+    ]);
   });
 
   it('collapses resolved PR threads by default and expands from store state', () => {
