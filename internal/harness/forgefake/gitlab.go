@@ -464,7 +464,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 		return unhandled("%v", err)
 	}
 	if iids, named := query["iids[]"]; named {
-		return glabMRsByIID(r, query, iids, perPage, page)
+		return e.glabMRsByIID(r, query, iids, perPage, page)
 	}
 	if order := query.Get("order_by"); order != "" && order != "updated_at" {
 		return unhandled("order_by=%q is not implemented", order)
@@ -485,7 +485,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 		if gitlabStates[p.State] != state || (branch != "" && p.HeadRef != branch) {
 			continue
 		}
-		matches = append(matches, gitlabMRListItem(r, p))
+		matches = append(matches, e.gitlabMRListItem(r, p))
 	}
 	items, next := paginate(matches, perPage, page)
 	if items == nil {
@@ -496,7 +496,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 
 // glabMRsByIID answers the merge requests iids names, in any state, newest
 // first. An iid the project does not have is absent, as GitLab answers it.
-func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) response {
+func (e *Engine) glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) response {
 	if state := query.Get("state"); state != "all" {
 		return unhandled("iids[] with state=%q is not implemented", state)
 	}
@@ -516,7 +516,7 @@ func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) r
 	var matches []map[string]any
 	for i := len(r.Pulls) - 1; i >= 0; i-- {
 		if p := &r.Pulls[i]; wanted[p.Number] {
-			matches = append(matches, gitlabMRListItem(r, p))
+			matches = append(matches, e.gitlabMRListItem(r, p))
 		}
 	}
 	items, next := paginate(matches, perPage, page)
@@ -526,8 +526,11 @@ func glabMRsByIID(r *Repo, query url.Values, iids []string, perPage, page int) r
 	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
 }
 
-// gitlabMRListItem is one merge request as the list endpoint answers it.
-func gitlabMRListItem(r *Repo, p *Pull) map[string]any {
+// gitlabMRListItem is one merge request as the list endpoint answers it:
+// the fields the app reads of the list's basic view (measured in
+// docs/references/forge-api-measurements.md). It carries no pipeline.
+// Callers hold mu.
+func (e *Engine) gitlabMRListItem(r *Repo, p *Pull) map[string]any {
 	var mergedAt any
 	if p.MergedAt != "" {
 		mergedAt = p.MergedAt
@@ -547,7 +550,42 @@ func gitlabMRListItem(r *Repo, p *Pull) map[string]any {
 		"target_branch":     p.BaseRef,
 		"sha":               p.HeadSHA,
 		"merged_at":         mergedAt,
+		"author":            gitlabUser(p.Author, p.AuthorName),
+		"reviewers":         gitlabReviewerList(p.Reviewers),
+		"draft":             p.Draft,
+		"work_in_progress":  p.Draft,
+		"created_at":        p.CreatedAt,
+		"updated_at":        p.UpdatedAt,
+		"user_notes_count":  userNoteCount(p),
+		"has_conflicts":     p.Mergeable == "conflicts",
+		// blocking_discussions_resolved reads as the single merge
+		// request's does.
+		"blocking_discussions_resolved": !r.Merge.DiscussionsMustResolve || !gitlabUnresolved(p),
+		"detailed_merge_status":         e.gitlabDetailedStatus(r, p),
 	}
+}
+
+// gitlabReviewerList is a merge request's reviewers as users. GitLab's
+// state on them is the account's, not a review's.
+func gitlabReviewerList(logins []string) []map[string]any {
+	out := make([]map[string]any, 0, len(logins))
+	for _, login := range logins {
+		user := gitlabUser(login, "")
+		user["state"] = "active"
+		out = append(out, user)
+	}
+	return out
+}
+
+// userNoteCount is the pull's human comments: its conversation comments
+// and every comment of its review threads (GitLab user_notes_count,
+// GitHub totalCommentsCount).
+func userNoteCount(p *Pull) int {
+	n := len(p.Comments)
+	for _, thread := range p.Threads {
+		n += len(thread.Comments)
+	}
+	return n
 }
 
 func glabPipelineJobs(e *Engine, c *call, m []string) response {

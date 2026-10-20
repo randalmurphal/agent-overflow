@@ -21,9 +21,11 @@ import (
 // or the PR pump's lifetime. Cancelling it ends the request. A context
 // marked with forgeapi.WithInteractive is a user's own action.
 //
-// Repository-scoped operations (ListOpenPRs, ListMergedPRHeads, CreatePR)
-// resolve the repository from cwd. PR-scoped operations take the
-// PRReference, which carries the forge host, and no cwd.
+// Checkout-scoped operations (ListOpenPRs, ListMergedPRHeads, CreatePR)
+// resolve the repository from cwd. Repository-scoped operations
+// (ListProjectPRs, the pipeline reads, job logs, attachments, PR states)
+// take a RepoReference and PR-scoped ones a PRReference, both carrying
+// the forge host, and no cwd.
 type Forge interface {
 	// ID returns "github" or "gitlab", the canonical short id for this forge.
 	ID() string
@@ -42,6 +44,9 @@ type Forge interface {
 	// of repo's repository, in one request per 100 PRs. A PR the forge does
 	// not resolve is absent from the answer. See pr_state.go.
 	ReadPRStates(ctx context.Context, repo RepoReference, prs []TrackedPR) (map[int]PRState, error)
+	// ListProjectPRs reads every open PR/MR of repo in one list read (see
+	// pr_list.go).
+	ListProjectPRs(ctx context.Context, repo RepoReference) ([]PRListRow, error)
 	// CreatePR opens a PR/MR for the current branch in cwd. Returns the URL.
 	CreatePR(ctx context.Context, cwd, title, body, base string, draft bool) (string, error)
 	// ReadPR reads the parts of a PR/MR want names, the PR pump's one

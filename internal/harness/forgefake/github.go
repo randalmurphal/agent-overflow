@@ -338,6 +338,8 @@ func ghPullReview(e *Engine, c *call, m []string) response {
 	}
 	review := Review{ID: e.ids.next(), Author: e.viewer, State: state, Body: in.Body, SubmittedAt: githubNow(), CommitSHA: commit}
 	p.Reviews = append(p.Reviews, review)
+	// A review answers the reviewer's request.
+	p.Reviewers = slices.DeleteFunc(p.Reviewers, func(login string) bool { return strings.EqualFold(login, review.Author) })
 	return jsonResponse(map[string]any{
 		"id":           review.ID,
 		"node_id":      githubReviewNodeID(review.ID),

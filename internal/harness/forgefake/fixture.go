@@ -119,6 +119,18 @@ type Pull struct {
 	HeadRepo string `json:"headRepo,omitempty"`
 	// headRepoID is the fork's generated project id.
 	headRepoID int64
+	// Reviewers are the logins a review is requested from (GitHub
+	// reviewRequests, GitLab reviewers). A GitHub review from one ends
+	// its request, as on GitHub; GitLab keeps its reviewers.
+	Reviewers []string `json:"reviewers,omitempty"`
+	// CreatedAt and UpdatedAt are RFC 3339; they default to
+	// 2026-01-01T00:00:00Z and to CreatedAt. CommittedAt is the head
+	// commit's time (GitHub committedDate), defaulting to CreatedAt, and
+	// Commits its commit count (GitHub commits.totalCount), 1 by default.
+	CreatedAt   string `json:"createdAt,omitempty"`
+	UpdatedAt   string `json:"updatedAt,omitempty"`
+	CommittedAt string `json:"committedAt,omitempty"`
+	Commits     int    `json:"commits,omitempty"`
 	// HeadSHA, BaseSHA and StartSHA are generated when omitted. StartSHA is
 	// the base branch's tip (GitHub baseRefOid, GitLab start_sha); BaseSHA
 	// is GitLab's merge base.
@@ -588,6 +600,9 @@ func (p *Pull) normalize(forge string, ids *idSource) error {
 	case "clean", "conflicts", "checking":
 	default:
 		return fmt.Errorf("mergeable %q is not clean, conflicts or checking", p.Mergeable)
+	}
+	if err := p.normalizeList(); err != nil {
+		return err
 	}
 	p.Author = defaultString(p.Author, "ao-author")
 	p.HeadRef = defaultString(p.HeadRef, "feature")
