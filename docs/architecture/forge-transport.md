@@ -124,6 +124,18 @@ func (Token) MarshalText() ([]byte, error)
   when that is empty (keyring). A glab login with `is_oauth2` true runs
   `glab api --hostname H version` before every read so glab refreshes an
   expired OAuth2 token first; the source keeps no state about expiry.
+- Expiry: GitLab answers an expired or revoked token with a bare 401, so
+  the client learns expiry while the token works (`expiry.go`). A glab
+  token that is not OAuth2 (`SourceInfo.ExpiryLookup`) costs one
+  `GET personal_access_tokens/self` on the first request after it is read,
+  once per token fingerprint, inside that request's `prepare` and context,
+  10s bound; the client keeps `expires_at` (a date, UTC midnight) and
+  `revoked`. The lookup never sends its own lookup, never refreshes on its
+  401, and never fails the request: a failure is logged once per host and
+  that token is not asked again. GitHub's expiry is the
+  `GitHub-Authentication-Token-Expiration` response header (fine-grained
+  and expiring tokens), kept per fingerprint from any response, no extra
+  request. An isolated boot's fixed token is never looked up.
 - Header: GitHub `Authorization: Bearer`. GitLab `Private-Token` for a
   personal token, `Authorization: Bearer` for an OAuth2 login (both verified
   against gitlab.com; glab itself sends `Private-Token` for a PAT).
@@ -218,15 +230,20 @@ id.
 
 GitLab's `ReadPR` reads the merge request once
 (`projects/P/merge_requests/N`) and derives every part from it: `Detail`
-adds its approvals, `Threads` its discussions (`per_page=100`, paged by
-`X-Next-Page`, positions normalized against `diff_refs.head_sha`), and `CI`
+adds its approvals and the project's merge settings (`projects/P`, cached
+per project for 10 minutes, then revalidated through the ETag store: a
+`W/` ETag answered 304), `Threads` and `Events` its discussions
+(`per_page=100`, paged by `X-Next-Page`, positions normalized against
+`diff_refs.head_sha`; one read serves both, system notes are the events,
+and the merge request's `merged_at`/`closed_at` supply the merge and close
+GitLab records as state events rather than notes), and `CI`
 the jobs of its `head_pipeline` (`per_page=100`, paged by `X-Next-Page`,
 at most `gitlabCIJobsMaxPages` (5) pages). A job's trace is read on
 request (`StreamCIJobLog`, as on GitHub).
 
 | Tick | GitLab requests |
 |---|---|
-| Pump (`Detail`, `Threads`) | 1 merge request + 1 approvals + 1 discussions page per 100 discussions |
+| Pump (`Detail`, `Threads`, `Events`) | 1 merge request + 1 approvals + 1 discussions page per 100 discussions; + 1 `projects/P` per project per 10 minutes |
 | CI phase, a head pipeline | 1 merge request + 1 jobs page per 100 jobs |
 | CI phase, no head pipeline | 1 merge request |
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
@@ -378,8 +395,8 @@ scope) is a `*ForbiddenError`, never "unauthenticated".
 | Observation | Error | Caller behavior |
 |---|---|---|
 | CLI missing when the token is read | `*SetupError{Kind: "missing"}` | Setup banner, as today |
-| CLI present, no token for the host | `*SetupError{Kind: "unauthenticated"}` | Setup banner |
-| 401 after one token refresh | `*SetupError{Kind: "unauthenticated"}` | Setup banner |
+| CLI present, no token for the host | `*SetupError{Kind: "unauthenticated", Host}` | Setup banner |
+| 401 after one token refresh | `*SetupError{Kind: "unauthenticated", Host, ExpiredAt}`: `ExpiredAt` when the token's remembered expiry (see Credentials) has passed; a remembered revocation leaves it zero and says "revoked" in `Message` | Setup banner; `git.ExplainForgeError` names the expiry date |
 | 403 without rate-limit headers | `*ForbiddenError{Status, Scope, Message}`: `Scope` from an `insufficient_scope` body, `X-Accepted-OAuth-Scopes` or a fine-grained-token refusal; `Message` the body's | `git.ExplainForgeError` names the scope or the project; a merge action shows the forge's message |
 | Rate limited (rules above), or refused for the reserve | `*RateLimitedError{Host, Pool, Until, Reserve}` | Pollers wait for `Until`; see below |
 | 404 on a PR-, job- or thread-scoped path | `*StatusError` matching `errors.Is(err, ErrNotFound)` | `ErrCIJobLogNotFound`, PR gone, log not published yet |

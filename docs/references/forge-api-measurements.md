@@ -94,6 +94,8 @@ empty body. The pipeline jobs list carries a weak `ETag` but answers 200 to
 
 ## Merge readiness and actions
 
+### GitHub
+
 GitHub only, 2026-10-20: read-only `__type` introspection and queries on
 github.com with the developer's `gh` login, on randalmurphal/agent-overflow
 (viewer `ADMIN`, rulesets only) and cli/cli (viewer `READ`, branch
@@ -155,3 +157,71 @@ protection on `trunk`). No mutation was run.
   introspection only. REST `commit_id` on `POST pulls/N/reviews` and
   `DELETE git/refs/heads/B` (422 "Reference does not exist" when the
   branch is gone) are from GitHub's REST documentation, not probed.
+
+### GitLab
+
+Read-only `glab api` GETs on 2026-10-20 against gitlab.com (server
+`19.6.0-pre`, glab 1.117.0, an OAuth2 login) on the merge requests the
+login authored, plus GitLab's own source (`app/services/system_notes/`,
+`lib/api/merge_requests.rb`, `app/models/merge_request.rb`) read through
+the same API. No merge action was sent.
+
+- `projects/P` carries `merge_method`, `squash_option`,
+  `remove_source_branch_after_merge`,
+  `only_allow_merge_if_pipeline_succeeds`,
+  `only_allow_merge_if_all_discussions_are_resolved` and
+  `permissions.project_access` / `group_access` (`access_level`). It sends
+  a weak `ETag` (`W/"..."`, `Cache-Control: max-age=0, private,
+  must-revalidate`) and answers 304 to a matching `If-None-Match`.
+- The single merge request carries `detailed_merge_status`,
+  `has_conflicts`, `draft`, `state`, `merged_at`, `merged_by`,
+  `merge_user`, `closed_at`, `closed_by`, `user.can_merge`,
+  `merge_when_pipeline_succeeds`, `squash`, `squash_on_merge`,
+  `force_remove_source_branch`, `should_remove_source_branch`,
+  `blocking_discussions_resolved`, `project_id`, `source_project_id`,
+  `merge_commit_sha`, `squash_commit_sha`, `merge_after`. No
+  `auto_merge_strategy`. A user field with no user is an object of nulls.
+  A merged merge request keeps `merge_when_pipeline_succeeds: true` when
+  it was auto-merged.
+- The approvals read carries `approvals_required`, `approvals_left`,
+  `approved`, `approved_by[].user`, `approved_by[].approved_at`,
+  `user_has_approved`, `user_can_approve`. An author could approve their
+  own merge request on this instance; a user who has approved reads
+  `user_can_approve: false`.
+- `detailed_merge_status` values observed on open merge requests:
+  `mergeable`, `unchecked`, `not_approved`, `discussions_not_resolved`,
+  `draft_status`, `requested_changes`, `conflict`; on merged ones
+  `not_open`.
+- System notes in the discussions (first line, the phrasing GitLab's
+  source writes): `approved this merge request`, `unapproved this merge
+  request`, `marked this merge request as **draft**` (optionally ` from
+  <commit>`), `marked this merge request as **ready**`, `enabled an
+  automatic merge when all merge checks for <sha> pass`, `canceled the
+  automatic merge`, `aborted the automatic merge because <reason>`,
+  ``changed target branch from `X` to `Y` ``, ``deleted the `X` branch.
+  This merge request now targets the `Y` branch``, `requested review from
+  @a, @b, and @c` (optionally ` and removed review request for ...` or
+  ` and removed approval`), `added N commit(s)` followed by an HTML commit
+  list and a "Compare with previous version" link. Merges, closes and
+  reopens are resource state events, not notes: no merged, closed or
+  reopened note appears on a merged merge request. GitLab writes no
+  force-push or rebase wording; a list item `N commits from branch
+  <target>` appears for a rebase and a merge of the target alike.
+- Draft titles: GitLab's prefix is `[draft]`, `(draft)` or `draft:`, any
+  case, stripped repeatedly (at most 20); `WIP:` is no longer a draft
+  prefix.
+- `PUT .../merge` reads `auto_merge = merge_when_pipeline_succeeds ||
+  auto_merge` (both still accepted on 19.6); Grape ignores an undeclared
+  parameter, so a server before 17.11 drops `auto_merge` rather than
+  answering 400. A user who cannot merge gets 401 (`unauthorized!`), a
+  merge request that is not mergeable 405, a moved head 409, a failed
+  merge 422. `POST .../cancel_auto_merge` (19.5+) answers 201 with the
+  merge request, 403 or 409;
+  `POST .../cancel_merge_when_pipeline_succeeds` answers 201 with a status
+  hash whose `status` is `error` when nothing was armed. An explicit
+  `should_remove_source_branch: false` overrides the merge request's
+  `force_remove_source_branch` (`MergeService#delete_source_branch?`).
+- `GET personal_access_tokens/self` with an OAuth2 token answers 400
+  "This endpoint requires token type to be a personal access token". The
+  personal-token answer (`expires_at` as a date, `revoked`, `active`) was
+  not observed on this machine.

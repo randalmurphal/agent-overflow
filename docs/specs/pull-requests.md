@@ -182,7 +182,7 @@ and correlation id stay behind "Details". The sentences:
 |---|---|
 | CLI missing | existing `SetupError` text |
 | Not logged in | "Your `glab` login for HOST has no token. Run `glab auth login --hostname HOST`." |
-| Token expired | "Your GitLab token for HOST expired on DATE. Run `glab auth login --hostname HOST`." (GitLab: `GET personal_access_tokens/self` once after a 401, interactive only; GitHub has no expiry read) |
+| Token expired | "Your GitLab token for HOST expired on DATE. Run `glab auth login --hostname HOST`." (the expiry is learned while the token works: GitLab `GET personal_access_tokens/self` once per personal token, GitHub the `GitHub-Authentication-Token-Expiration` header; see forge transport "Credentials") |
 | Token lacks scope | "Your HOST token lacks the `api` scope, so NAME cannot ACTION." (GitLab `insufficient_scope`; GitHub `X-Accepted-OAuth-Scopes` or "Resource not accessible by personal access token") |
 | No access | "No access to PROJECT with this login." |
 | Project or PR gone | "PROJECT!N was not found on HOST." |

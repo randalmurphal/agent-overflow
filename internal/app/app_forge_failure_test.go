@@ -353,8 +353,21 @@ func TestPRUpdateGitLabNotModifiedTickIsQuiet(t *testing.T) {
 	var mu sync.Mutex
 	type seen struct{ path, inm string }
 	var requests []seen
+	var projectReads atomic.Int32
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		suffix := r.URL.Path[strings.Index(r.URL.Path, "/merge_requests/"):]
+		// The project's merge settings are read once, not per tick.
+		if strings.HasSuffix(r.URL.Path, "/projects/group/widget") {
+			projectReads.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"merge_method":"merge"}`))
+			return
+		}
+		i := strings.Index(r.URL.Path, "/merge_requests/")
+		if i < 0 {
+			http.NotFound(w, r)
+			return
+		}
+		suffix := r.URL.Path[i:]
 		body, ok := bodies[suffix]
 		if !ok {
 			http.NotFound(w, r)
@@ -415,6 +428,9 @@ func TestPRUpdateGitLabNotModifiedTickIsQuiet(t *testing.T) {
 		if n < ticks-1 || n > ticks {
 			t.Fatalf("requests per endpoint = %v (%s)", perPath, path)
 		}
+	}
+	if n := projectReads.Load(); n != 1 {
+		t.Fatalf("project reads over %d ticks = %d, want 1", ticks, n)
 	}
 }
 

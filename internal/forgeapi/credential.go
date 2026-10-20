@@ -87,6 +87,7 @@ func (c *Client) read(ctx context.Context, rejected string) error {
 		if ctx.Err() != nil {
 			return c.contextError(ctx, err)
 		}
+		err = withHost(err, c.host)
 		c.credMu.Lock()
 		c.failErr, c.failUntil = err, now.Add(tokenFailureTTL)
 		c.token.Zero()
@@ -107,6 +108,7 @@ func (c *Client) read(ctx context.Context, rejected string) error {
 	}
 	c.failErr = nil
 	c.readAt = now
+	c.expiryLookup = info.ExpiryLookup
 	if fp == c.fp && c.token != nil {
 		return nil
 	}
