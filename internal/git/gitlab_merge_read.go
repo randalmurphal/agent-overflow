@@ -19,10 +19,12 @@ import (
 // settings, and the forge events from the system notes the discussions
 // read already carries. See docs/specs/pull-requests.md.
 
-// gitlabCacheTTL is how long one project's merge settings, and one host's
-// viewer login, answer every detail read. A read after it goes to the
-// transport, which revalidates it with the ETag GitLab sends (a 304 while
-// unchanged).
+// gitlabCacheTTL is how long one login's merge settings of a project, and
+// one login's viewer on a host, answer every detail read. A read after it
+// goes to the transport, which revalidates it with the ETag GitLab sends
+// (a 304 while unchanged). Both caches are keyed on the credential's
+// fingerprint (forgeapi.Client.CredentialFingerprint), so another login
+// never reads the previous one's viewer or permissions.
 const gitlabCacheTTL = 10 * time.Minute
 
 // gitlabCacheMax bounds each cache's entries; the oldest read goes first.
@@ -102,10 +104,15 @@ func (c *gitlabCache[V]) put(key string, value V, now time.Time) {
 	c.entries[key] = gitlabCacheEntry[V]{value: value, readAt: now}
 }
 
-// projectSettings is ref's project's merge settings, read from projects/P
-// at most once per gitlabCacheTTL.
+// projectSettings is ref's project's merge settings as the current login
+// reads them, read from projects/P at most once per login per
+// gitlabCacheTTL.
 func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Client, ref PRReference) (gitlabProjectSettings, error) {
-	key := ref.Host + " " + ref.Project()
+	fp, err := client.CredentialFingerprint(ctx)
+	if err != nil {
+		return gitlabProjectSettings{}, err
+	}
+	key := fp + " " + ref.Host + " " + ref.Project()
 	if settings, ok := f.projects.get(key, f.core.nowFn()); ok {
 		return settings, nil
 	}
@@ -117,14 +124,20 @@ func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Clie
 	return settings, nil
 }
 
-// viewerLogin is the username host's login reads as (GET user), read at
-// most once per gitlabCacheTTL per host. It never fails the read it serves:
-// a refusal or an unreadable answer is logged and cached as unknown ("")
-// for the TTL, so a login that cannot read its user costs no request per
-// tick; a cancelled, rate-limited or unreachable read caches nothing and
-// the next read asks again.
+// viewerLogin is the username host's current login reads as (GET user),
+// read at most once per login per gitlabCacheTTL. It never fails the read
+// it serves: a refusal or an unreadable answer is logged and cached as
+// unknown ("") for the TTL, so a login that cannot read its user costs no
+// request per tick; a cancelled, rate-limited or unreachable read, or a
+// credential that cannot be read, caches nothing and the next read asks
+// again.
 func (f *gitlabForge) viewerLogin(ctx context.Context, client *forgeapi.Client, host string) string {
-	if viewer, ok := f.viewers.get(host, f.core.nowFn()); ok {
+	fp, err := client.CredentialFingerprint(ctx)
+	if err != nil {
+		return ""
+	}
+	key := fp + " " + host
+	if viewer, ok := f.viewers.get(key, f.core.nowFn()); ok {
 		return viewer
 	}
 	var user struct {
@@ -137,10 +150,10 @@ func (f *gitlabForge) viewerLogin(ctx context.Context, client *forgeapi.Client, 
 			return ""
 		}
 		log.Printf("gitlab: reading the login on %s failed; merge requests read as not the viewer's for %s: %v", host, gitlabCacheTTL, err)
-		f.viewers.put(host, "", f.core.nowFn())
+		f.viewers.put(key, "", f.core.nowFn())
 		return ""
 	}
-	f.viewers.put(host, user.Username, f.core.nowFn())
+	f.viewers.put(key, user.Username, f.core.nowFn())
 	return user.Username
 }
 

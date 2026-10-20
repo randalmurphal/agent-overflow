@@ -19,8 +19,8 @@ import (
 // Core's forge API transport. Only CreatePR runs glab.
 type gitlabForge struct {
 	core *Core
-	// projects caches each project's merge settings and viewers each
-	// host's login (gitlab_merge_read.go).
+	// projects caches each login's merge settings of a project and
+	// viewers each login's username on a host (gitlab_merge_read.go).
 	projects gitlabCache[gitlabProjectSettings]
 	viewers  gitlabCache[string]
 	// routes remembers, per host, a server that answered the older cancel
@@ -220,8 +220,8 @@ func gitlabDiscussionPath(ref PRReference, discussionID string) string {
 
 // ReadPR reads the merge request once and derives every wanted part from
 // it: the detail adds the approvals, the project's merge settings (read
-// once per project per gitlabCacheTTL) and the viewer's login (once per
-// host per gitlabCacheTTL), the threads and the
+// once per login per project per gitlabCacheTTL) and the viewer's login
+// (once per login per host per gitlabCacheTTL), the threads and the
 // events the discussions (paged; the system notes are events, the rest
 // threads), CI the head pipeline's jobs (paged). A part not wanted costs no
 // request. prev and stepsFor are unused: the pipeline's jobs list is one

@@ -1,9 +1,12 @@
 package git
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -569,6 +572,89 @@ func TestGitLabViewerReadFailureLeavesTheViewerUnknown(t *testing.T) {
 	clock.advance(gitlabCacheTTL)
 	if _, err := core.GetPRDetail(t.Context(), gitlabTestRef(7)); err != nil || userReads() != 2 {
 		t.Fatalf("after the TTL: %v, user reads %d, want 2", err, userReads())
+	}
+}
+
+// swappableTokenSource answers the login set last, the way glab answers
+// after `glab auth login` as another user. Its bases point at an httptest
+// GitLab over plain HTTP.
+type swappableTokenSource struct {
+	token   atomic.Value // string
+	apiHost string
+}
+
+func (s *swappableTokenSource) Token(context.Context, string, string) ([]byte, forgeapi.SourceInfo, error) {
+	return []byte(s.token.Load().(string)), forgeapi.SourceInfo{Header: forgeapi.AuthPrivateToken, APIHost: s.apiHost, APIProtocol: "http"}, nil
+}
+
+// The viewer and the project's permissions are cached per login, not per
+// host: once the login is replaced (here the old token is revoked, so the
+// next request's 401 reads the new one), the next detail read asks GitLab
+// who the viewer is and what it may do again, inside the cache's TTL.
+func TestGitLabCachesFollowTheLogin(t *testing.T) {
+	t.Parallel()
+	logins := map[string]string{"token-alice": "alice", "token-bob": "bob"}
+	var accepted atomic.Value
+	accepted.Store("token-alice")
+	calls := &forgeAPICalls{}
+	mr := gitlabTestProject + "/merge_requests/7"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := forgeAPICall{Method: r.Method, Path: strings.TrimPrefix(r.URL.EscapedPath(), "/api/v4/"), Header: r.Header.Clone()}
+		calls.mu.Lock()
+		calls.calls = append(calls.calls, call)
+		calls.mu.Unlock()
+		token := r.Header.Get("Private-Token")
+		if token != accepted.Load().(string) {
+			http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch call.Path {
+		case "user":
+			_, _ = io.WriteString(w, `{"username":"`+logins[token]+`"}`)
+		case mr:
+			_, _ = io.WriteString(w, gitlabMergeMR(t, map[string]any{"author": map[string]any{"username": "bob"}}))
+		case mr + "/approvals":
+			_, _ = io.WriteString(w, `{"approvals_required":0}`)
+		case gitlabTestProject:
+			_, _ = io.WriteString(w, gitlabTestProjectSettings)
+		default:
+			t.Errorf("unexpected %s %s", call.Method, call.Path)
+			http.Error(w, "unexpected", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	source := &swappableTokenSource{apiHost: strings.TrimPrefix(srv.URL, "http://")}
+	source.token.Store("token-alice")
+	svc, err := forgeapi.New(forgeapi.Options{Version: "test", TokenSource: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Close)
+	core := NewCore(WithForgeAPI(svc))
+	clock := &testClockCore{t: time.Unix(1_700_000_000, 0)}
+	core.nowFn = clock.now
+	reads := func(path string) int { return countPrefix(gitlabPaths(calls), "GET "+path) }
+
+	if detail, err := core.GetPRDetail(t.Context(), gitlabTestRef(7)); err != nil || detail.ViewerIsAuthor {
+		t.Fatalf("as alice: %v, viewer is author %v", err, detail.ViewerIsAuthor)
+	}
+	source.token.Store("token-bob")
+	accepted.Store("token-bob")
+	clock.advance(time.Minute)
+	detail, err := core.GetPRDetail(t.Context(), gitlabTestRef(7))
+	if err != nil || !detail.ViewerIsAuthor {
+		t.Fatalf("as bob: %v, viewer is author %v, want bob's own merge request", err, detail.ViewerIsAuthor)
+	}
+	if n := reads("user"); n != 2 {
+		t.Fatalf("user reads = %d, want one per login (%q)", n, gitlabPaths(calls))
+	}
+	if n := reads(gitlabTestProject); n != 2 {
+		t.Fatalf("project reads = %d, want one per login (%q)", n, gitlabPaths(calls))
+	}
+	// The same login inside the TTL still reads from the caches.
+	if _, err := core.GetPRDetail(t.Context(), gitlabTestRef(7)); err != nil || reads("user") != 2 || reads(gitlabTestProject) != 2 {
+		t.Fatalf("bob again: %v, user reads %d, project reads %d", err, reads("user"), reads(gitlabTestProject))
 	}
 }
 

@@ -435,3 +435,49 @@ func TestMutationProbeFailureIsNotADeadLogin(t *testing.T) {
 		})
 	}
 }
+
+// CredentialFingerprint names the token the next request sends: the same
+// secret the same name, another secret another, and a login replaced
+// behind the client is read again after five minutes like a request reads
+// it, with no request in between. Without a token it fails.
+func TestCredentialFingerprint(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("CredentialFingerprint sent %s %s", r.Method, r.URL.Path)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	src := &testSource{tokens: []string{testSecret}}
+	s, clock := liveService(t, src, srv)
+	gl := s.GitLab("gitlab.example.com")
+
+	first, err := gl.CredentialFingerprint(t.Context())
+	if err != nil || first == "" {
+		t.Fatalf("CredentialFingerprint = %q, %v", first, err)
+	}
+	if again, err := gl.CredentialFingerprint(t.Context()); err != nil || again != first || src.readCount() != 1 {
+		t.Fatalf("same token: %q vs %q, %v, reads %d", again, first, err, src.readCount())
+	}
+	if other, err := s.GitLab("other.example.com").CredentialFingerprint(t.Context()); err != nil || other != first {
+		t.Fatalf("the same secret on another host = %q, %v, want %q", other, err, first)
+	}
+
+	src.set(nil, "fake-token-2")
+	if within, err := gl.CredentialFingerprint(t.Context()); err != nil || within != first {
+		t.Fatalf("within the re-read interval = %q, %v, want the current token's %q", within, err, first)
+	}
+	clock.advance(tokenRereadAfter)
+	second, err := gl.CredentialFingerprint(t.Context())
+	if err != nil || second == "" || second == first {
+		t.Fatalf("after the login changed = %q, %v (first %q)", second, err, first)
+	}
+	if second != fingerprint([]byte("fake-token-2")) {
+		t.Fatalf("fingerprint %q is not the new token's", second)
+	}
+
+	clock.advance(tokenRereadAfter)
+	src.set(UnauthenticatedError(ForgeGitLab, nil))
+	if fp, err := gl.CredentialFingerprint(t.Context()); err == nil || fp != "" {
+		t.Fatalf("without a login = %q, %v, want an error", fp, err)
+	}
+}
