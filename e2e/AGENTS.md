@@ -28,7 +28,8 @@ states its own coverage; do not maintain a duplicate spec catalog here.
 - Shared provider frames, pairing flows, and result narrowing belong in the
   relevant `*-helpers.ts` or `probe-wire.ts`, not inline copies.
 - `forge-helpers.ts` seeds the fake `gh`/`glab` and forge API
-  (`HarnessForgeSeed`), publishes a seeded workspace's branch as a PR
+  (`HarnessForgeSeed`), arms a route's refusal (`HarnessForgeRefuse`),
+  publishes a seeded workspace's branch as a PR
   through a local origin, reads the recorded calls (a union on `via`: `cli`
   or `http`) and opens a PR's review pane through the UI. A forge call the
   fake does not answer is added to the fake first:

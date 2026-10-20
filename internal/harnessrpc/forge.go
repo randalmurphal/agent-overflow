@@ -78,6 +78,15 @@ func (h *Harness) HarnessForgeRateLimit(limit forgefake.RateLimit) error {
 	return h.forge.SetRateLimit(limit)
 }
 
+// HarnessForgeRefuse makes one fake forge route answer a refusal in
+// place of its handler (forgefake.Refusal): {route, status, header,
+// body, times}, route a REST route name or "gh graphql <operation>",
+// times 0 until cleared. Status 0 clears the route's refusal; HarnessReset
+// clears every one.
+func (h *Harness) HarnessForgeRefuse(refusal forgefake.Refusal) error {
+	return h.forge.SetRefusal(refusal)
+}
+
 // ForgeAPIEndpoint is where an isolated boot's forge API transport sends
 // its requests (forgeapi.Options.Isolated): the fake's base URL and the
 // fixed token it accepts.

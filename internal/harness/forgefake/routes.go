@@ -56,10 +56,13 @@ var githubAPI = []apiRoute{
 	{name: "gh api run jobs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/runs/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname", "if-none-match"}, run: ghRunJobs},
 	{name: "gh api job logs", method: "GET", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/actions/jobs/(\d+)/logs$`), flags: []string{"hostname", "if-none-match", "range"}, run: ghJobLogs},
 	{name: "gh api attachment", method: "GET", pattern: regexp.MustCompile(`^https://.+`), run: ghAttachment},
+	{name: "gh api pull reviews", method: "POST", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/reviews$`), flags: []string{"hostname"}, run: ghPullReview},
+	{name: "gh api delete branch", method: "DELETE", pattern: regexp.MustCompile(`^repos/([^/]+/[^/]+)/git/refs/heads/(.+)$`), flags: []string{"hostname"}, run: ghDeleteBranch},
+	{name: "gh api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"hostname"}, run: forgeUser},
 }
 
 var gitlabAPI = []apiRoute{
-	{name: "glab repository identity", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)$`), flags: []string{"hostname"}, run: forgeRepositoryIdentity},
+	{name: "glab repository identity", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)$`), flags: []string{"hostname", "if-none-match"}, run: glabProjectRead},
 	{name: "glab api merge request", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname", "if-none-match"}, run: glabMR},
 	{name: "glab api approvals", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approvals$`), flags: []string{"hostname"}, run: glabApprovals},
 	{name: "glab api discussions", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/discussions(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabDiscussions},
@@ -67,6 +70,13 @@ var gitlabAPI = []apiRoute{
 	{name: "glab api pipeline jobs", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/pipelines/(\d+)/jobs(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabPipelineJobs},
 	{name: "glab api job trace", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/jobs/(\d+)/trace$`), flags: []string{"hostname", "if-none-match", "range"}, run: glabJobTrace},
 	{name: "glab api upload", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/uploads/([0-9a-f]{32})/([^/?]+)$`), flags: []string{"hostname"}, run: glabUpload},
+	{name: "glab api approve", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/approve$`), flags: []string{"hostname"}, run: glabApprove},
+	{name: "glab api unapprove", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/unapprove$`), flags: []string{"hostname"}, run: glabUnapprove},
+	{name: "glab api merge", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/merge$`), flags: []string{"hostname"}, run: glabMerge},
+	{name: "glab api cancel auto-merge", method: "POST", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/cancel_auto_merge$`), flags: []string{"hostname"}, run: glabCancelAutoMerge},
+	{name: "glab api rebase", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/rebase$`), flags: []string{"hostname"}, run: glabRebase},
+	{name: "glab api update merge request", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname"}, run: glabUpdateMR},
+	{name: "glab api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"hostname"}, run: forgeUser},
 }
 
 // api dispatches a REST request, mapped by httpCall onto its endpoint,
@@ -87,7 +97,10 @@ func (e *Engine) api(c *call, routes []apiRoute) response {
 				return unhandled("%s does not implement --%s", route.name, name)
 			}
 		}
-		resp := route.run(e, c, match)
+		resp, refused := e.refusal(route.name)
+		if !refused {
+			resp = route.run(e, c, match)
+		}
 		if resp.route == "" {
 			resp.route = route.name
 		}

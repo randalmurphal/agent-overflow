@@ -37,10 +37,11 @@ type call struct {
 // is the forge host the request is for (its Host header), spelled as
 // PRReference.Host: a port is allowed and compared as given. base is the
 // fake listener's own URL ("http://[::1]:port"), which a next-page link
-// points at.
+// points at. body is the request body a REST mutation carries.
 type httpCall struct {
 	host string
 	base string
+	body []byte
 }
 
 func (c *call) flag(long string) string {

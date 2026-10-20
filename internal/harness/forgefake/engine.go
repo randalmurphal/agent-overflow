@@ -170,6 +170,8 @@ type Engine struct {
 	offline bool
 	// rateLimits are the pools under a limit (SetRateLimit).
 	rateLimits map[rateLimitKey]RateLimit
+	// refusals are the routes answering a refusal (SetRefusal), by name.
+	refusals map[string]*Refusal
 	// traceRequests counts the trace requests each running synthetic
 	// GitLab job answered, which is how far its trace has grown.
 	traceRequests map[int64]int
@@ -230,7 +232,8 @@ func (e *Engine) Seed(fixture Fixture) (Fixture, error) {
 	return fixture.clone(), nil
 }
 
-// Reset drops the seeded state, the rate limits and the invocation log.
+// Reset drops the seeded state, the rate limits, the refusals and the
+// invocation log.
 // Ids keep counting
 // so none repeats across tests.
 func (e *Engine) Reset() {
@@ -241,6 +244,7 @@ func (e *Engine) Reset() {
 	clear(e.sshHosts)
 	e.offline = false
 	clear(e.rateLimits)
+	clear(e.refusals)
 	clear(e.traceRequests)
 	e.log = nil
 	e.dropped = 0
