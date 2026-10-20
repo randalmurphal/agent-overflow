@@ -523,7 +523,14 @@ func TestResponseCredentialIsTheTokenSent(t *testing.T) {
 		})
 	}
 	<-allHeld
-	// The fifth prepares with alice's token and waits for a slot.
+	// The fifth prepares with alice's token and waits for a slot; the
+	// service reports the moment it is prepared.
+	fifthPrepared := make(chan string, 1)
+	s.prepared = func(ex *exchange) {
+		if strings.HasSuffix(ex.req.URL.Path, "/user") {
+			fifthPrepared <- ex.key.fingerprint
+		}
+	}
 	var resp *Response
 	var fifthErr error
 	done := make(chan struct{})
@@ -531,7 +538,9 @@ func TestResponseCredentialIsTheTokenSent(t *testing.T) {
 		defer close(done)
 		resp, fifthErr = gl.Do(t.Context(), Request{Path: "user", Timeout: 5 * time.Second})
 	}()
-	time.Sleep(50 * time.Millisecond)
+	if prepared := <-fifthPrepared; prepared != fingerprint([]byte("alice-token")) {
+		t.Fatalf("the fifth prepared with %q, want alice's fingerprint", prepared)
+	}
 	// The credential is re-read as bob's while the fifth still waits.
 	clock.advance(tokenRereadAfter + time.Second)
 	bob, err := gl.CredentialFingerprint(t.Context())

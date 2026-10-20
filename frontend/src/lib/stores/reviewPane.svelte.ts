@@ -27,6 +27,7 @@ import {
   VerifyEditDiffs,
 } from './bindings';
 import { addCompanionClosedObserver, openCompanion } from './companionPanes.svelte';
+import { addThreadRemovedObserver } from './threads.svelte';
 import { peekGitStatus, peekGitStatusError } from './gitStatusStore.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
@@ -471,13 +472,17 @@ const statesBySourcePane = new Map<string, ReviewPaneState>();
 // checkout, and a thread switch hides the companion and reopens it later;
 // the held PR outlives both so the pane stays on the merged PR's snapshot
 // until closed (docs/specs/pull-requests.md#actions). It goes when the
-// pane leaves pr scope or the review companion closes for good.
+// pane leaves pr scope, the review companion closes for good, or the
+// thread is removed.
 const heldPRByRow = new Map<string, PRRef>();
 addCompanionClosedObserver((sourcePaneId, kind, threadId) => {
   if (kind !== 'review') return;
   const row = threadId ?? statesBySourcePane.get(sourcePaneId)?.rowId;
   if (row) heldPRByRow.delete(row);
 });
+// A deleted or archived thread takes its hidden companions with it
+// (companionStash), with no live companion left to close.
+addThreadRemovedObserver((threadId) => heldPRByRow.delete(threadId));
 
 // Stable identity for "this pane is on no PR": ReviewDiffBody re-anchors
 // the reader on a prThreads IDENTITY change, so a fresh [] per read would

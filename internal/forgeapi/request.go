@@ -36,6 +36,9 @@ func (c *Client) prepare(ctx context.Context, r Request, graphQL bool) (*exchang
 	if err != nil {
 		return nil, err
 	}
+	if c.svc.prepared != nil {
+		c.svc.prepared(ex)
+	}
 	return ex, nil
 }
 

@@ -30,6 +30,7 @@ import type { TransportHello } from '../transport/wsClient';
 import { companionSubjectKey } from './companionSubject';
 import { __seedGitStatusForTest } from './gitStatusStore.svelte';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { removeThread } from './threads.svelte';
 import { createThreadPane } from './thread.svelte';
 import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
@@ -1310,9 +1311,25 @@ describe('reviewPane store — PR scope', () => {
     const back = reviewStateForPane('pane-1', baseSubject);
     expect(back.prRef?.number).toBe(5);
     await waitLoaded(back);
-    // Closing the companion is the end of it: the next state starts clean.
-    closeCompanion(reopened!.paneId);
+    // Hidden again, then the thread is deleted: nothing is left to close,
+    // and nothing is held for a thread that is gone.
+    hideCompanion(reopened!.paneId);
     disposeReviewStateForPane('pane-1', back);
+    removeThread('thread-1');
+    const gone = reviewStateForPane('pane-1', baseSubject);
+    expect(gone.prRef).toBeNull();
+    disposeReviewStateForPane('pane-1', gone);
+    // Closing the companion is the end of it too: the next state starts clean.
+    const again = openCompanion('pane-1', 'review');
+    seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/5', openPrNumber: 5 });
+    const held = reviewStateForPane('pane-1', baseSubject);
+    await waitLoaded(held);
+    expect(held.prRef?.number).toBe(5);
+    seedPaneWorkspaceStatus('pane-1', { forge: 'github' });
+    await tick();
+    expect(held.prRef?.number).toBe(5);
+    closeCompanion(again!.paneId);
+    disposeReviewStateForPane('pane-1', held);
     const fresh = reviewStateForPane('pane-1', baseSubject);
     expect(fresh.prRef).toBeNull();
     disposeReviewStateForPane('pane-1', fresh);

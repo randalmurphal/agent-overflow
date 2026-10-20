@@ -70,9 +70,11 @@ type Service struct {
 	gates     *gates
 	etags     *etagStore
 
-	// now and resolveBase are replaced only by tests, before first use.
+	// now, resolveBase and prepared are replaced only by tests, before
+	// first use; prepared observes every exchange the moment it is prepared.
 	now         func() time.Time
 	resolveBase func(forge, host string, info SourceInfo) (rest, graphQL *url.URL, err error)
+	prepared    func(ex *exchange)
 
 	mu      sync.Mutex
 	closed  bool
