@@ -817,7 +817,7 @@ func glabMerge(e *Engine, c *call, m []string) response {
 	}
 	status := e.gitlabDetailedStatus(r, p)
 	if status != "mergeable" {
-		if !(in.AutoMerge || in.MergeWhenPipelineSucceeds) || status == "conflict" {
+		if (!in.AutoMerge && !in.MergeWhenPipelineSucceeds) || status == "conflict" {
 			return glabStatus(http.StatusMethodNotAllowed, "405 Method Not Allowed")
 		}
 		now := glabNow()

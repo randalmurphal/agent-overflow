@@ -215,10 +215,6 @@ type ForgeMerger interface {
 	MarkReady(ctx context.Context, ref PRReference) error
 }
 
-// errForgeMergeNotImplemented is the placeholder answer of a forge whose
-// merge actions are not written yet. Nothing ships returning it.
-var errForgeMergeNotImplemented = errors.New("forge: merge actions are not implemented for this forge")
-
 func (nullForge) Approve(context.Context, PRReference, string) error   { return ErrUnsupportedForge }
 func (nullForge) Unapprove(context.Context, PRReference, string) error { return ErrUnsupportedForge }
 func (nullForge) Merge(context.Context, PRReference, MergeRequest) (MergeOutcome, error) {
