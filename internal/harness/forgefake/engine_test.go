@@ -2163,7 +2163,7 @@ func TestRefusalKnob(t *testing.T) {
 		t.Fatalf("after a one-time refusal = %+v", got)
 	}
 	// Until cleared, with headers, on a GraphQL operation too.
-	if err := e.SetRefusal(Refusal{Route: "gh api pull reviews", Status: 403, Header: map[string]string{"X-Accepted-OAuth-Scopes": "repo"}, Body: json.RawMessage(`{"message":"Resource not accessible by integration"}`)}); err != nil {
+	if err := e.SetRefusal(Refusal{Route: "gh api pull reviews", Status: 403, Header: map[string]string{"X-Accepted-OAuth-Scopes": "repo", "X-OAuth-Scopes": "read:org"}, Body: json.RawMessage(`{"message":"Resource not accessible by integration"}`)}); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {

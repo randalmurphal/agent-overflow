@@ -1288,7 +1288,7 @@ func TestRefusalsReachTheAppsExplanations(t *testing.T) {
 
 	gh := newRig(t, githubMergeFixture("running"))
 	ghRef := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
-	if err := gh.engine.SetRefusal(forgefake.Refusal{Route: "gh api pull reviews", Status: 403, Header: map[string]string{"X-Accepted-OAuth-Scopes": "repo"}, Body: []byte(`{"message":"Resource not accessible by integration"}`)}); err != nil {
+	if err := gh.engine.SetRefusal(forgefake.Refusal{Route: "gh api pull reviews", Status: 403, Header: map[string]string{"X-Accepted-OAuth-Scopes": "repo", "X-OAuth-Scopes": "read:org"}, Body: []byte(`{"message":"Resource not accessible by integration"}`)}); err != nil {
 		t.Fatal(err)
 	}
 	if got := explained(t, ghRef, gitops.ActionApprove, gh.core.ApprovePR(ctx, ghRef, strings.Repeat("9", 40))); got.Kind != gitops.ForgeErrorForbidden || !strings.Contains(got.Message, "lacks the `repo` scope") {

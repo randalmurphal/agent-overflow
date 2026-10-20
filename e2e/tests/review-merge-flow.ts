@@ -276,7 +276,7 @@ export function reviewMergeFlow({ compact }: MergeSurface): void {
       // A token without the scope: the toast names it, Approve is free.
       await refuseForgeRoute(harness, forge === 'gitlab'
         ? { route: 'glab api approve', status: 403, times: 1, body: { error: 'insufficient_scope', error_description: 'The request requires higher privileges than provided by the access token.', scope: 'api' } }
-        : { route: 'gh api pull reviews', status: 403, times: 1, header: { 'X-Accepted-OAuth-Scopes': 'repo' }, body: { message: 'Resource not accessible by integration' } });
+        : { route: 'gh api pull reviews', status: 403, times: 1, header: { 'X-Accepted-OAuth-Scopes': 'repo', 'X-OAuth-Scopes': 'read:org' }, body: { message: 'Resource not accessible by integration' } });
       await press(approve);
       const scopeToast = page.getByTestId('toast').filter({ hasText: 'Approve failed' });
       await expect(scopeToast.getByTestId('toast-message')).toContainText(`lacks the \`${SCOPE[forge]}\` scope`);

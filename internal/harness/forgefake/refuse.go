@@ -12,9 +12,9 @@ import (
 // Refusal makes one route answer Status, Header and Body in place of its
 // handler, so a spec can drive the app's handling of a forge refusal the
 // fixture cannot cause: a token without a scope (403 with GitLab's
-// insufficient_scope body, or GitHub's X-Accepted-OAuth-Scopes header), a
-// login the forge refuses (401), a merge it will not take (405, 422), a
-// head that moved (409). Route is a REST route's name (`glab api
+// insufficient_scope body, or GitHub's X-Accepted-OAuth-Scopes beside an
+// X-OAuth-Scopes that grants none of them), a login the forge refuses
+// (401), a merge it will not take (405, 422), a head that moved (409). Route is a REST route's name (`glab api
 // approve`) or a GraphQL operation's (`gh graphql MergePR`); a GraphQL
 // route may also answer 200 with a body carrying `errors`, which is how
 // GitHub refuses a mutation. Times is how many requests it refuses, 0
