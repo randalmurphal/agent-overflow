@@ -274,7 +274,7 @@ fake forge on desktop and compact.
 | Viewer is the author (GitHub) | as above | no Approve | the approvals blocker row carries no Approve; without one, a row with `CannotApproveReason` |
 | Action in flight | unchanged | the pressed button spins; every merge control disables until the pump's frame lands (or 15s) | unchanged |
 | Action failed (e2e: 403, 409) | unchanged | buttons re-enable | toast with sentence, Details, Reload when 409 |
-| Stale snapshot under a banner | last known | actions disabled with the banner's reason | last known rows |
+| Stale snapshot under a banner (the diff predates the live head, or the pump is failing) | last known | every action disabled, its hover text the reason; head-pinned actions always send the head the DIFF was loaded at | last known rows |
 | Commit picked (no overview row) | pill still shown; click opens the section for the next overview mount | n/a | n/a |
 | PR detail failed to load | no pill | no section | n/a |
 | Compact (e2e, screenshot) | pill wraps with the refs line | header wraps: pill, then actions on their own row | rows wrap, fix buttons stay right |

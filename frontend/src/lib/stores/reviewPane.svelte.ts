@@ -215,6 +215,9 @@ export interface ReviewPaneState {
   setMergeOpen(open: boolean): void;
   /** The action in flight, or null. Every merge control disables on it. */
   readonly mergeAction: MergeActionKind | null;
+  /** Why the merge actions are withheld (a stale diff, a failing pump),
+   * or null when they may run. */
+  readonly mergeWithheldReason: string | null;
   approvePR(): Promise<void>;
   unapprovePR(): Promise<void>;
   mergePR(choice: MergePRChoice): Promise<void>;
@@ -591,8 +594,13 @@ function createReviewPaneState(
   // git-status store, so it becomes selectable the moment status lands (or a
   // PR opens while the pane sits open) instead of only when something
   // re-enters pr scope.
-  const prRef: PRRef | null = $derived(workspacePRRef());
+  // In pr scope the PR stays on screen after the forge stops listing it
+  // (a merge, from here or elsewhere): the last open PR is held until the
+  // scope changes, so the merged snapshot does not vanish under the
+  // reader when git status catches up.
   let scope: ReviewScope = $state(persisted?.scope ?? 'workspace');
+  let heldPRRef = $state<PRRef | null>(null);
+  const prRef: PRRef | null = $derived(workspacePRRef() ?? (scope === 'pr' ? heldPRRef : null));
   let baseBranch: string | null = $state(persisted?.baseBranch ?? null);
   // The head THIS pane's diff was computed at, stamped with the PR it was
   // computed FOR. The PR's live head lives in the shared store; staleness
@@ -872,6 +880,16 @@ function createReviewPaneState(
     const live = prSnapshot?.headSHA ?? '';
     return live !== '' && loadedPRHeadSHA !== '' && live !== loadedPRHeadSHA;
   });
+  // Why the merge actions are withheld: the diff on screen is not the PR
+  // the forge holds, or the forge's state is unknown. Null when they may run.
+  const mergeWithheldReason = $derived<string | null>(
+    prStale ? 'The pull request changed since you loaded it. Reload to act on it.'
+      : prUpdateError !== null ? 'Updates from the forge are failing, so its state is unknown.'
+        : null,
+  );
+  // Head-pinned actions name the head the DIFF was loaded at, so a push
+  // the reader has not seen is refused by the forge, not merged blind.
+  const mergeHeadSHA = $derived(loadedPRHeadSHA || (prSnapshot?.headSHA ?? ''));
   const sourceKey = $derived.by(() => {
     if (scope === 'edits') {
       // An edit payload is immutable, so its id is the stable identity;
@@ -961,6 +979,11 @@ function createReviewPaneState(
   const disposePaintedRetention = $effect.root(() => {
     $effect(() => {
       paintedSpans.retain(files.map((file) => file.path));
+    });
+    $effect(() => {
+      const live = workspacePRRef();
+      if (live) heldPRRef = live;
+      else if (scope !== 'pr') heldPRRef = null;
     });
     $effect(() => {
       // A recompute after a push empties the tree until the new one
@@ -1934,8 +1957,11 @@ function createReviewPaneState(
   // pending until that frame replaces the snapshot, so the button never
   // flips back to its old label before the forge's answer is on screen.
   async function runMergeAction(kind: MergeActionKind, call: () => Promise<unknown>): Promise<void> {
-    if (scope !== 'pr' || !prRef || mergeAction !== null) return;
+    if (scope !== 'pr' || !prRef || mergeAction !== null || mergeWithheldReason !== null) return;
     const ref = prRef;
+    // The baseline is the snapshot BEFORE the call: the backend has the
+    // pump poll before it answers, so the frame can land first.
+    const before = untrack(() => prSnapshot);
     mergeAction = kind;
     clearTimeout(mergeAwaitTimer);
     mergeAwait = null;
@@ -1952,7 +1978,8 @@ function createReviewPaneState(
     }
     if (disposed) return;
     mergeAction = null;
-    mergeAwait = { kind, snapshot: untrack(() => prSnapshot) };
+    if (untrack(() => prSnapshot) !== before) return;
+    mergeAwait = { kind, snapshot: before };
     mergeAwaitTimer = setTimeout(() => { mergeAwait = null; }, MERGE_ACTION_FRAME_WAIT_MS);
   }
 
@@ -1967,7 +1994,7 @@ function createReviewPaneState(
 
   function approvePR(): Promise<void> {
     const ref = prRef;
-    const head = prSnapshot?.headSHA ?? '';
+    const head = mergeHeadSHA;
     if (!ref) return Promise.resolve();
     return runMergeAction('approve', () => ApprovePR(prReferenceWire(ref), head));
   }
@@ -1980,13 +2007,16 @@ function createReviewPaneState(
 
   function mergePR(choice: MergePRChoice): Promise<void> {
     const ref = prRef;
-    const head = prSnapshot?.headSHA ?? '';
+    const head = mergeHeadSHA;
+    // GitHub's auto-merge has no branch delete; the repository's own
+    // setting decides, so the toggle is not sent with it.
+    const deleteBranch = choice.autoMerge && ref?.forge === 'github' ? false : choice.deleteBranch;
     if (!ref) return Promise.resolve();
     return runMergeAction(choice.autoMerge ? 'auto_merge' : 'merge', async () => {
       const outcome = (await MergePR(prReferenceWire(ref), {
         method: choice.method,
         headSHA: head,
-        deleteBranch: choice.deleteBranch,
+        deleteBranch,
         autoMerge: choice.autoMerge,
       })) as MergeOutcome;
       // The forge took the merge but has not finished it (GitLab merges
@@ -2004,7 +2034,7 @@ function createReviewPaneState(
 
   function updatePRBranch(): Promise<void> {
     const ref = prRef;
-    const head = prSnapshot?.headSHA ?? '';
+    const head = mergeHeadSHA;
     if (!ref) return Promise.resolve();
     return runMergeAction('update_branch', () => UpdatePRBranch(prReferenceWire(ref), head));
   }
@@ -2459,6 +2489,7 @@ function createReviewPaneState(
     get mergeOpen() { return mergeOpen; },
     setMergeOpen(open: boolean): void { mergeOpen = open; },
     get mergeAction() { return mergeActionShown; },
+    get mergeWithheldReason() { return mergeWithheldReason; },
     approvePR,
     unapprovePR,
     mergePR,

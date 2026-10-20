@@ -42,7 +42,8 @@
   const settledPR = $derived(mergeState === 'merged' || mergeState === 'closed');
   const armed = $derived(merge?.autoMerge ?? null);
   const pending = $derived(review.mergeAction);
-  const busy = $derived(pending !== null);
+  const withheld = $derived(review.mergeWithheldReason);
+  const busy = $derived(pending !== null || withheld !== null);
   const blockers = $derived<readonly MergeBlocker[]>(readiness?.blockers ?? []);
   const settled = $derived<readonly MergeBlocker[]>(readiness?.settled ?? []);
   const methods = $derived<readonly string[]>(merge?.methods?.length ? merge.methods : ['merge']);
@@ -196,7 +197,7 @@
         testId="review-merge-approve"
         loading={approvePending}
         disabled={busy}
-        title={merge?.viewerApproved ? 'Withdraw your approval' : 'Approve this pull request as it is now'}
+        title={withheld ?? (merge?.viewerApproved ? 'Withdraw your approval' : 'Approve this pull request as it is now')}
         ariaLabel={merge?.viewerApproved ? 'Withdraw approval' : 'Approve pull request'}
         onclick={() => { void (merge?.viewerApproved ? review.unapprovePR() : review.approvePR()); }}
       >
@@ -212,6 +213,7 @@
         type="button"
         class="{triggerClass} {canMergeNow && !armed ? TRIGGER_PRIMARY : TRIGGER_SECONDARY} {menuOpen ? 'ring-1 ring-inset ring-border' : ''}"
         aria-label="Merge options"
+        title={withheld ?? undefined}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         aria-busy={mergePending ? 'true' : undefined}
@@ -253,7 +255,7 @@
           <span class="min-w-0 flex-1">
             <span class="block truncate text-fg">Auto-merge set by {authorDisplayName({ authorLogin: armed.byLogin, authorName: armed.byName })} · {mergeMethodLabel(armed.method)}{#if time(armed.at)} · {time(armed.at)}{/if}</span>
             {#if armed.waitsFor}
-              <span class="block truncate text-[0.6875rem] text-fg-muted">Merges once {armed.waitsFor}</span>
+              <span class="block truncate text-[0.6875rem] text-fg-muted compact:whitespace-normal compact:break-words">Merges once {armed.waitsFor}</span>
             {/if}
           </span>
           {#if armed.canCancel}
@@ -266,13 +268,16 @@
         <div class={rowClass} data-testid="review-merge-blocker" data-kind={blocker.kind}>
           <span class="size-2 shrink-0 rounded-full {blockerDot(blocker)}"></span>
           <span class="min-w-0 flex-1">
-            <span class="block truncate text-fg">{blocker.text}</span>
+            <span class="block truncate text-fg compact:whitespace-normal compact:break-words" title={blocker.text}>{blocker.text}</span>
             {#if blocker.detail}
-              <span class="block truncate text-[0.6875rem] text-fg-muted">{blocker.detail}</span>
+              <span class="block truncate text-[0.6875rem] text-fg-muted compact:whitespace-normal compact:break-words" title={blocker.detail}>{blocker.detail}</span>
             {/if}
           </span>
           {#if blocker.kind === 'approvals' && merge?.viewerApproved}
             <span class="shrink-0 text-[0.6875rem] text-fg-subtle" data-testid="review-merge-you-approved">you approved</span>
+          {:else if blocker.kind === 'approvals' && merge && !merge.viewerCanApprove && merge.cannotApproveReason}
+            <!-- The row says why there is no Approve beside it. -->
+            <span class="min-w-0 text-[0.6875rem] text-fg-subtle" data-testid="review-merge-cannot-approve">{merge.cannotApproveReason}</span>
           {/if}
           {#if action}
             <Button variant="ghost" size="xs" class={actionClass} testId={action.testid} disabled={action.merge ? busy : false} onclick={action.run}>{action.label}</Button>
@@ -283,9 +288,9 @@
         <div class={rowClass} data-testid="review-merge-settled" data-kind={row.kind}>
           <span class="size-2 shrink-0 rounded-full bg-success"></span>
           <span class="min-w-0 flex-1">
-            <span class="block truncate text-fg-muted">{row.text}</span>
+            <span class="block truncate text-fg-muted compact:whitespace-normal compact:break-words" title={row.text}>{row.text}</span>
             {#if row.detail}
-              <span class="block truncate text-[0.6875rem] text-fg-subtle">{row.detail}</span>
+              <span class="block truncate text-[0.6875rem] text-fg-subtle compact:whitespace-normal compact:break-words" title={row.detail}>{row.detail}</span>
             {/if}
           </span>
           {#if row.kind === 'approvals' && merge?.viewerApproved && !settledPR}
@@ -296,7 +301,7 @@
       {#if !settledPR && merge && !merge.viewerCanMerge && merge.cannotMergeReason}
         <div class={rowClass} data-testid="review-merge-cannot">
           <span class="size-2 shrink-0 rounded-full bg-fg-subtle"></span>
-          <span class="min-w-0 flex-1 truncate text-fg-muted">{merge.cannotMergeReason}</span>
+          <span class="min-w-0 flex-1 truncate text-fg-muted compact:whitespace-normal compact:break-words" title={merge.cannotMergeReason}>{merge.cannotMergeReason}</span>
         </div>
       {/if}
       {#if !settledPR && merge && !merge.viewerCanApprove && !merge.viewerApproved && merge.cannotApproveReason && !blockers.some((blocker) => blocker.kind === 'approvals')}
@@ -356,7 +361,7 @@
         {:else}
           <MenuItem
             label="Auto-merge when ready"
-            description={mergeState === 'ready' ? 'already ready' : merge?.autoMergeAvailable ? undefined : 'not available here'}
+            description={mergeState === 'ready' ? 'already ready' : !merge?.autoMergeAvailable ? 'not available here' : deleteBranch && review.prRef?.forge === 'github' ? 'GitHub keeps the branch' : undefined}
             disabled={!canAutoMerge}
             testId="review-merge-auto"
             onSelect={() => pickAndClose(() => { void review.mergePR({ method, deleteBranch, autoMerge: true }); })}

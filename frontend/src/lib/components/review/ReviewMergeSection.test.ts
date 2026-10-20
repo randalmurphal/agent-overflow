@@ -4,6 +4,7 @@ import { applyPRReviewUpdated } from '../../stores/eventsPRReview';
 import { getToasts } from '../../stores/toast.svelte';
 import { TransportError } from '../../transport/wsClient';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { PR_KEY, mountReviewPanePR, prDetailFixture, resetReviewPanePR, type ReviewPaneView } from '../../../test/helpers/reviewPanePR';
 import type { PRDetail } from '../../types/models';
 
@@ -242,10 +243,10 @@ describe('<ReviewMergeSection>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-merge-cannot')).toHaveTextContent('You do not have write access to owner/repo.');
     });
-    // The approvals blocker row carries no Approve; the reason is the row.
+    // The approvals blocker row carries no Approve; it says why instead.
     const approvals = view.getAllByTestId('review-merge-blocker')[0];
     expect(within(approvals).queryByTestId('review-merge-row-approve')).toBeNull();
-    expect(view.queryByTestId('review-merge-cannot-approve')).toBeNull();
+    expect(within(approvals).getByTestId('review-merge-cannot-approve')).toHaveTextContent('You cannot approve your own pull request.');
   });
 
   it('offers the fixes of the rebase and draft blockers', async () => {
@@ -303,5 +304,93 @@ describe('<ReviewMergeSection>', () => {
       expect(view.getByTestId('review-pr-setup')).toHaveTextContent('lacks the `repo` scope');
     });
     expect(view.queryByTestId('review-pr-update-error')).toBeNull();
+  });
+});
+
+describe('<ReviewMergeSection> guards', () => {
+  it('withholds every action while the diff is stale or the pump is failing, and pins the head the diff was loaded at', async () => {
+    const approve = setBindingMock('ApprovePR', async () => undefined);
+    const view = await mountReviewPanePR(blocked());
+    await openMergeSection(view);
+    // A push the reader has not seen: the banner, and no action until Reload.
+    frame(blocked({ headSHA: 'sha-b' }), 2);
+    await waitFor(() => {
+      expect(view.getByTestId('review-pr-stale')).toBeInTheDocument();
+    });
+    expect(view.getByTestId('review-merge-approve')).toBeDisabled();
+    expect(view.getByTestId('review-merge-trigger')).toBeDisabled();
+    expect(view.getByTestId('review-merge-trigger').getAttribute('title')).toContain('Reload to act on it');
+    await fireEvent.click(view.getByTestId('review-merge-approve'));
+    expect(approve).not.toHaveBeenCalled();
+    // Back on the loaded head: the action sends that head, never a newer one.
+    frame(blocked({ headSHA: 'sha-a' }), 3);
+    await waitFor(() => {
+      expect(view.getByTestId('review-merge-approve')).toBeEnabled();
+    });
+    applyPRReviewUpdated({ prKey: PR_KEY, error: 'failed to refresh pull request (id: x)', errorKind: 'transient', seq: 4 });
+    await waitFor(() => {
+      expect(view.getByTestId('review-merge-approve')).toBeDisabled();
+    });
+    frame(blocked({ headSHA: 'sha-a' }), 5);
+    await waitFor(() => {
+      expect(view.getByTestId('review-merge-approve')).toBeEnabled();
+    });
+    await fireEvent.click(view.getByTestId('review-merge-approve'));
+    expect(approve).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }), 'sha-a');
+  });
+
+  it('does not stay pending when the frame lands before the call answers', async () => {
+    const approved = blocked({ merge: { ...blocked().merge, viewerApproved: true } });
+    setBindingMock('ApprovePR', async () => {
+      frame(approved, 2);
+    });
+    const view = await mountReviewPanePR(blocked());
+    await openMergeSection(view);
+    await fireEvent.click(view.getByTestId('review-merge-approve'));
+    await waitFor(() => {
+      expect(view.getByTestId('review-merge-approve')).toHaveTextContent('Unapprove');
+    });
+    expect(view.getByTestId('review-merge-approve')).toBeEnabled();
+    expect(view.getByTestId('review-merge-trigger')).toBeEnabled();
+  });
+
+  it('sends no branch delete with a GitHub auto-merge and says so', async () => {
+    const merge = setBindingMock('MergePR', async () => ({ merged: false, autoMerge: true }));
+    const view = await mountReviewPanePR(blocked());
+    await openMergeSection(view);
+    let menu = await openMergeMenu(view);
+    await fireEvent.click(within(menu).getByTestId('review-merge-delete-branch'));
+    expect(within(menu).getByTestId('review-merge-auto')).toHaveTextContent('GitHub keeps the branch');
+    await fireEvent.click(within(menu).getByTestId('review-merge-auto'));
+    expect(merge).toHaveBeenCalledWith(expect.objectContaining({ Number: 5 }), { method: 'merge', headSHA: 'sha-a', deleteBranch: false, autoMerge: true });
+    menu = view.queryByTestId('review-merge-menu') as HTMLElement;
+    expect(menu).toBeNull();
+  });
+
+  it('keeps the merged PR on screen after git status stops listing it', async () => {
+    const view = await mountReviewPanePR(prDetailFixture());
+    frame(prDetailFixture({ state: 'merged', mergedBy: 'octocat', readiness: { state: 'merged', blockers: [], settled: [] } }), 2);
+    await waitFor(() => {
+      expect(view.getByTestId('review-pr-readiness')).toHaveTextContent('Merged');
+    });
+    __seedGitStatusForTest('/repo', {
+      isRepo: true,
+      branch: 'feature',
+      isDefaultBranch: false,
+      hasChanges: false,
+      insertions: 0,
+      deletions: 0,
+      fileCount: 0,
+      hasUpstream: true,
+      aheadCount: 0,
+      behindCount: 0,
+      hasOriginRemote: true,
+      forge: 'github',
+      openPrUrl: '',
+      openPrNumber: 0,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(view.getByTestId('review-pr-readiness')).toHaveTextContent('Merged');
+    expect(view.getByTestId('review-pr-merge')).toBeInTheDocument();
   });
 });
